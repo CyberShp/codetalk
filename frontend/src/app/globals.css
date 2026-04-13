@@ -1,0 +1,56 @@
+@import url('https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@400;500;600;700&family=Inter:wght@300;400;500;600&family=JetBrains+Mono:wght@400;500&display=swap');
+@import "tailwindcss";
+
+/* Kinetic Shadow Framework — always dark */
+:root {
+  --surface: #10141A;
+  --surface-container-low: #181C22;
+  --surface-container: #1C2026;
+  --surface-container-high: #262A31;
+  --surface-container-lowest: #0C0F14;
+  --primary: #A4E6FF;
+  --on-primary: #003544;
+  --primary-container: #00687F;
+  --primary-fixed-dim: #5AB8D6;
+  --secondary: #ECFFE3;
+  --secondary-fixed-dim: #8FD680;
+  --tertiary: #FFD1CD;
+  --tertiary-container: #8C1D18;
+  --on-surface: #DFE2EB;
+  --on-surface-variant: #BFC5D0;
+  --outline-variant: #44474E;
+}
+
+@theme inline {
+  --color-surface: var(--surface);
+  --color-surface-container-low: var(--surface-container-low);
+  --color-surface-container: var(--surface-container);
+  --color-surface-container-high: var(--surface-container-high);
+  --color-surface-container-lowest: var(--surface-container-lowest);
+  --color-primary: var(--primary);
+  --color-on-primary: var(--on-primary);
+  --color-primary-container: var(--primary-container);
+  --color-primary-fixed-dim: var(--primary-fixed-dim);
+  --color-secondary: var(--secondary);
+  --color-secondary-fixed-dim: var(--secondary-fixed-dim);
+  --color-tertiary: var(--tertiary);
+  --color-tertiary-container: var(--tertiary-container);
+  --color-on-surface: var(--on-surface);
+  --color-on-surface-variant: var(--on-surface-variant);
+  --color-outline-variant: var(--outline-variant);
+  --font-display: 'Space Grotesk', sans-serif;
+  --font-ui: 'Inter', sans-serif;
+  --font-data: 'JetBrains Mono', monospace;
+}
+
+body {
+  background: var(--surface);
+  color: var(--on-surface);
+  font-family: var(--font-ui);
+}
+
+/* Scrollbar styling */
+::-webkit-scrollbar { width: 6px; height: 6px; }
+::-webkit-scrollbar-track { background: var(--surface-container-low); }
+::-webkit-scrollbar-thumb { background: var(--outline-variant); border-radius: 3px; }
+::-webkit-scrollbar-thumb:hover { background: var(--on-surface-variant); }

@@ -1,0 +1,30 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+venv/
+
+# Node
+node_modules/
+.next/
+out/
+
+# Environment
+.env
+.env.local
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Legacy nested git
+.git-backup/
+
+# IDE
+.idea/
+.vscode/
+*.swp
+
+# Docker volumes
+data/

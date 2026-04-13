@@ -1,0 +1,48 @@
+services:
+  postgres:
+    image: postgres:16
+    ports:
+      - "5433:5432"
+    volumes:
+      - pg_data:/var/lib/postgresql/data
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:-codetalks}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-changeme}
+      POSTGRES_DB: ${POSTGRES_DB:-codetalks}
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-codetalks}"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+
+  backend:
+    build: ./backend
+    ports:
+      - "8000:8000"
+    volumes:
+      - ./backend:/app
+      - code_volume:/data/repos
+    depends_on:
+      postgres:
+        condition: service_healthy
+    env_file: .env
+    environment:
+      DATABASE_URL: postgresql+asyncpg://${POSTGRES_USER:-codetalks}:${POSTGRES_PASSWORD:-changeme}@postgres:5432/${POSTGRES_DB:-codetalks}
+
+  deepwiki:
+    image: ghcr.io/asyncfuncai/deepwiki-open:latest
+    ports:
+      - "8001:8001"
+      - "3001:3000"
+    volumes:
+      - deepwiki_data:/root/.adalflow
+      - code_volume:/data/repos:ro
+    environment:
+      OPENAI_API_KEY: ${OPENAI_API_KEY:-}
+      ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY:-}
+      GOOGLE_API_KEY: ${GOOGLE_API_KEY:-}
+
+volumes:
+  pg_data:
+  code_volume:
+  deepwiki_data:
