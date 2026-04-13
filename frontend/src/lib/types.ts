@@ -80,10 +80,15 @@ export interface TaskDetail extends AnalysisTask {
   tool_runs: ToolRun[];
 }
 
+export type ProxyMode = "system" | "direct";
+
 export interface LLMConfig {
   id: string;
   provider: string;
   model_name: string;
+  has_api_key: boolean;
+  base_url: string | null;
+  proxy_mode: ProxyMode;
   is_default: boolean;
   created_at: string;
 }
@@ -91,6 +96,9 @@ export interface LLMConfig {
 export interface LLMConfigCreate {
   provider: string;
   model_name: string;
+  api_key?: string;
+  base_url?: string;
+  proxy_mode?: ProxyMode;
   is_default?: boolean;
 }
 

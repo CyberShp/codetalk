@@ -24,6 +24,9 @@ def upgrade() -> None:
     sa.Column('id', sa.UUID(), nullable=False),
     sa.Column('provider', sa.String(length=50), nullable=False),
     sa.Column('model_name', sa.String(length=100), nullable=False),
+    sa.Column('api_key_encrypted', sa.Text(), nullable=True),
+    sa.Column('base_url', sa.Text(), nullable=True),
+    sa.Column('proxy_mode', sa.String(length=20), nullable=False, server_default='system'),
     sa.Column('is_default', sa.Boolean(), nullable=False),
     sa.Column('created_at', sa.DateTime(timezone=True), server_default=sa.text('now()'), nullable=False),
     sa.PrimaryKeyConstraint('id')

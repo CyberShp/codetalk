@@ -3,6 +3,7 @@ from pydantic_settings import BaseSettings
 
 class Settings(BaseSettings):
     database_url: str = "postgresql+asyncpg://codetalks:changeme@localhost:5432/codetalks"
+    fernet_key: str = ""
     openai_api_key: str = ""
     anthropic_api_key: str = ""
     google_api_key: str = ""

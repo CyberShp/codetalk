@@ -5,7 +5,7 @@ import GlassPanel from "@/components/ui/GlassPanel";
 import CyberInput from "@/components/ui/CyberInput";
 import StatusBadge from "@/components/ui/StatusBadge";
 import { api } from "@/lib/api";
-import type { LLMConfig, ToolInfo } from "@/lib/types";
+import type { LLMConfig, ToolInfo, ProxyMode } from "@/lib/types";
 
 export default function SettingsPage() {
   const [aiEnabled, setAiEnabled] = useState(true);
@@ -13,6 +13,10 @@ export default function SettingsPage() {
   const [tools, setTools] = useState<ToolInfo[]>([]);
   const [provider, setProvider] = useState("google");
   const [modelName, setModelName] = useState("");
+  const [apiKey, setApiKey] = useState("");
+  const [baseUrl, setBaseUrl] = useState("");
+  const [proxyMode, setProxyMode] = useState<ProxyMode>("system");
+  const [showApiKey, setShowApiKey] = useState(false);
   const [saving, setSaving] = useState(false);
 
   const loadConfigs = useCallback(async () => {
@@ -44,9 +48,14 @@ export default function SettingsPage() {
       await api.settings.saveLLM({
         provider,
         model_name: modelName.trim(),
+        api_key: apiKey.trim() || undefined,
+        base_url: baseUrl.trim() || undefined,
+        proxy_mode: proxyMode,
         is_default: configs.length === 0,
       });
       setModelName("");
+      setApiKey("");
+      setBaseUrl("");
       await loadConfigs();
     } catch (e) {
       console.error("Failed to save config:", e);
@@ -84,15 +93,17 @@ export default function SettingsPage() {
           </div>
           <button
             onClick={toggleAI}
-            className={`relative w-11 h-6 rounded-full transition-colors ${
-              aiEnabled ? "bg-primary-container" : "bg-surface-container-high"
+            className={`relative w-11 h-6 rounded-full transition-colors duration-200 ${
+              aiEnabled
+                ? "bg-primary-container"
+                : "bg-surface-container-high ring-1 ring-outline-variant"
             }`}
           >
             <span
-              className={`absolute top-0.5 w-5 h-5 rounded-full transition-transform ${
+              className={`absolute top-1 left-1 w-4 h-4 rounded-full transition-all duration-200 ${
                 aiEnabled
-                  ? "translate-x-5.5 bg-primary"
-                  : "translate-x-0.5 bg-on-surface-variant"
+                  ? "translate-x-5 bg-primary"
+                  : "bg-on-surface-variant"
               }`}
             />
           </button>
@@ -108,25 +119,40 @@ export default function SettingsPage() {
         {configs.map((cfg) => (
           <div
             key={cfg.id}
-            className="flex items-center justify-between bg-surface-container-lowest/50 rounded-lg px-4 py-3 mb-3"
+            className="bg-surface-container-lowest/50 rounded-lg px-4 py-3 mb-3"
           >
-            <div>
-              <p className="text-sm text-on-surface">
-                {cfg.provider} / {cfg.model_name}
-              </p>
-            </div>
-            <div className="flex items-center gap-3">
-              {cfg.is_default && (
-                <span className="text-[10px] px-2 py-0.5 rounded-full bg-primary/10 text-primary-fixed-dim">
-                  default
-                </span>
-              )}
-              <button
-                onClick={() => handleDelete(cfg.id)}
-                className="text-xs text-tertiary hover:text-tertiary/80"
-              >
-                Remove
-              </button>
+            <div className="flex items-center justify-between">
+              <div>
+                <p className="text-sm text-on-surface">
+                  {cfg.provider} / {cfg.model_name}
+                </p>
+                <div className="flex items-center gap-3 mt-1">
+                  {cfg.base_url && (
+                    <span className="font-data text-[10px] text-on-surface-variant truncate max-w-[200px]">
+                      {cfg.base_url}
+                    </span>
+                  )}
+                  <span className={`text-[10px] ${cfg.has_api_key ? "text-secondary-fixed-dim" : "text-on-surface-variant/40"}`}>
+                    {cfg.has_api_key ? "Key set" : "No key"}
+                  </span>
+                  <span className="text-[10px] text-on-surface-variant/60">
+                    {cfg.proxy_mode === "system" ? "System proxy" : "Direct"}
+                  </span>
+                </div>
+              </div>
+              <div className="flex items-center gap-3">
+                {cfg.is_default && (
+                  <span className="text-[10px] px-2 py-0.5 rounded-full bg-primary/10 text-primary-fixed-dim">
+                    default
+                  </span>
+                )}
+                <button
+                  onClick={() => handleDelete(cfg.id)}
+                  className="text-xs text-tertiary hover:text-tertiary/80"
+                >
+                  Remove
+                </button>
+              </div>
             </div>
           </div>
         ))}
@@ -155,11 +181,58 @@ export default function SettingsPage() {
             onChange={(e) => setModelName(e.target.value)}
           />
         </div>
-        <p className="text-xs text-on-surface-variant/60 mt-3">
-          API keys are configured via Docker environment variables
-          (OPENAI_API_KEY, GOOGLE_API_KEY, etc. in docker-compose.yml).
-          Provider/model selection here controls which LLM deepwiki uses at runtime.
-        </p>
+        <div className="grid grid-cols-2 gap-4 mt-3">
+          <div>
+            <label className="block text-xs text-on-surface-variant mb-1.5 tracking-wide uppercase">
+              API Key
+            </label>
+            <div className="relative">
+              <input
+                type={showApiKey ? "text" : "password"}
+                placeholder="sk-..."
+                value={apiKey}
+                onChange={(e) => setApiKey(e.target.value)}
+                className="w-full bg-surface-container-lowest/50 text-on-surface font-data text-sm px-4 py-2 pr-12 rounded-md outline-none placeholder:text-on-surface-variant/40 focus:ring-1 focus:ring-primary-container"
+              />
+              <button
+                type="button"
+                onClick={() => setShowApiKey(!showApiKey)}
+                className="absolute right-2 top-1/2 -translate-y-1/2 text-[10px] text-on-surface-variant hover:text-on-surface px-1.5 py-0.5 rounded"
+              >
+                {showApiKey ? "HIDE" : "SHOW"}
+              </button>
+            </div>
+          </div>
+          <CyberInput
+            label="Base URL (optional)"
+            placeholder="https://api.openai.com/v1"
+            value={baseUrl}
+            onChange={(e) => setBaseUrl(e.target.value)}
+          />
+        </div>
+        <div className="mt-3">
+          <label className="block text-xs text-on-surface-variant mb-1.5 tracking-wide uppercase">
+            Proxy
+          </label>
+          <div className="flex gap-2">
+            {([
+              { value: "system" as const, label: "Follow System Proxy" },
+              { value: "direct" as const, label: "Direct (No Proxy)" },
+            ]).map((opt) => (
+              <button
+                key={opt.value}
+                onClick={() => setProxyMode(opt.value)}
+                className={`px-3 py-1.5 text-xs rounded-md transition-colors ${
+                  proxyMode === opt.value
+                    ? "bg-surface-container-high text-on-surface"
+                    : "text-on-surface-variant hover:text-on-surface"
+                }`}
+              >
+                {opt.label}
+              </button>
+            ))}
+          </div>
+        </div>
         <button
           onClick={handleSave}
           disabled={saving || !modelName.trim()}
