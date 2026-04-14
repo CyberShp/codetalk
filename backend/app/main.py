@@ -1,3 +1,4 @@
+import logging
 from contextlib import asynccontextmanager
 
 from fastapi import FastAPI
@@ -6,6 +7,8 @@ from sqlalchemy import text
 
 from app.api.router import api_router
 from app.database import engine
+
+logging.basicConfig(level=logging.INFO, format="%(name)s %(levelname)s: %(message)s")
 
 
 @asynccontextmanager

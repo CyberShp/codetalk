@@ -133,8 +133,22 @@ async def _build_options(task: AnalysisTask, db: AsyncSession) -> dict:
         )
         llm_config = result.scalar_one_or_none()
         if llm_config:
-            options.setdefault("provider", llm_config.provider)
+            provider = llm_config.provider
+            if provider == "custom":
+                provider = "openai"
+            options.setdefault("provider", provider)
             options.setdefault("model", llm_config.model_name)
+            if llm_config.base_url:
+                options.setdefault("llm_base_url", llm_config.base_url)
+            if llm_config.api_key_encrypted:
+                from app.utils.crypto import decrypt_key
+                options.setdefault("llm_api_key", decrypt_key(llm_config.api_key_encrypted))
+            options.setdefault("proxy_mode", llm_config.proxy_mode)
+            logger.info(
+                "LLM config: provider=%s model=%s base_url=%s proxy=%s has_key=%s",
+                provider, llm_config.model_name, llm_config.base_url or "(default)",
+                llm_config.proxy_mode, bool(llm_config.api_key_encrypted),
+            )
     return options
 
 
