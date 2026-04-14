@@ -27,20 +27,32 @@ class DeepwikiAdapter(BaseToolAdapter):
     def __init__(self, base_url: str = "http://deepwiki:8001"):
         self.base_url = base_url
         self._client: httpx.AsyncClient | None = None
+        self._client_proxy_mode: str | None = None
         self._file_tree: str = ""
         self._readme: str = ""
 
     def _get_client(self, proxy_mode: str = "system") -> httpx.AsyncClient:
-        if self._client is not None and not self._client.is_closed:
+        if (
+            self._client is not None
+            and not self._client.is_closed
+            and self._client_proxy_mode == proxy_mode
+        ):
             return self._client
-        proxy = None if proxy_mode == "direct" else None
-        kwargs: dict = {
-            "base_url": self.base_url,
-            "timeout": httpx.Timeout(300, connect=10),
-        }
-        if proxy_mode == "direct":
-            kwargs["proxy"] = None
-        self._client = httpx.AsyncClient(**kwargs)
+        if self._client is not None and not self._client.is_closed:
+            # proxy_mode changed — close old client before creating new one
+            import asyncio
+            try:
+                loop = asyncio.get_running_loop()
+                loop.create_task(self._client.aclose())
+            except RuntimeError:
+                pass
+        trust_env = proxy_mode != "direct"
+        self._client = httpx.AsyncClient(
+            base_url=self.base_url,
+            timeout=httpx.Timeout(300, connect=10),
+            trust_env=trust_env,
+        )
+        self._client_proxy_mode = proxy_mode
         return self._client
 
     @property
@@ -118,8 +130,6 @@ class DeepwikiAdapter(BaseToolAdapter):
             chat_payload["model"] = request.options["model"]
         if request.options.get("language"):
             chat_payload["language"] = request.options["language"]
-        if request.options.get("llm_api_key"):
-            chat_payload["api_key"] = request.options["llm_api_key"]
         if request.target_files:
             chat_payload["included_files"] = ",".join(request.target_files)
 

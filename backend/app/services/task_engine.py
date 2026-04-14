@@ -4,6 +4,7 @@ import logging
 from datetime import datetime, timezone
 from uuid import UUID
 
+import httpx
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -98,7 +99,7 @@ async def run_task(task_id: UUID) -> None:
             else:
                 task.status = "completed"
                 if task.ai_enabled:
-                    summary = _build_summary(results)
+                    summary = await _build_summary(results, options)
                     task.ai_summary = summary
 
             await db.commit()
@@ -152,7 +153,52 @@ async def _build_options(task: AnalysisTask, db: AsyncSession) -> dict:
     return options
 
 
-def _build_summary(results: list[UnifiedResult]) -> str:
+async def _build_summary(results: list[UnifiedResult], options: dict) -> str:
+    """Build AI summary via configured LLM endpoint, fallback to plaintext."""
+    plaintext = _plaintext_summary(results)
+
+    base_url = options.get("llm_base_url")
+    api_key = options.get("llm_api_key")
+    model = options.get("model")
+    if not (base_url and api_key and model):
+        logger.info("No LLM endpoint configured, using plaintext summary")
+        return plaintext
+
+    proxy_mode = options.get("proxy_mode", "system")
+    trust_env = proxy_mode != "direct"
+
+    prompt = (
+        "Summarize the following code analysis results concisely. "
+        "Highlight key architectural patterns, important components, "
+        "and notable findings.\n\n" + plaintext
+    )
+
+    try:
+        async with httpx.AsyncClient(
+            base_url=base_url,
+            timeout=httpx.Timeout(60, connect=10),
+            trust_env=trust_env,
+        ) as client:
+            resp = await client.post(
+                "/chat/completions",
+                headers={"Authorization": f"Bearer {api_key}"},
+                json={
+                    "model": model,
+                    "messages": [{"role": "user", "content": prompt}],
+                    "max_tokens": 1024,
+                },
+            )
+            resp.raise_for_status()
+            data = resp.json()
+            content = data["choices"][0]["message"]["content"]
+            logger.info("AI summary generated via %s/%s", base_url, model)
+            return content
+    except Exception as exc:
+        logger.warning("LLM summary failed (%s), falling back to plaintext", exc)
+        return plaintext
+
+
+def _plaintext_summary(results: list[UnifiedResult]) -> str:
     parts = []
     for r in results:
         doc = r.data.get("documentation", "")
