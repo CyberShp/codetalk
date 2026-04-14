@@ -10,7 +10,7 @@ export default function CyberInput({ label, className = "", ...rest }: Props) {
   return (
     <label className="block">
       {label && (
-        <span className="block text-xs text-on-surface-variant mb-1.5 tracking-wide uppercase">
+        <span className="block text-xs text-on-surface-variant mb-1.5">
           {label}
         </span>
       )}

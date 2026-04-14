@@ -20,7 +20,7 @@ export default function DataTable<T>({ columns, data, keyField }: Props<T>) {
     <div className="overflow-x-auto">
       <table className="w-full text-sm">
         <thead>
-          <tr className="text-left text-xs text-on-surface-variant/60 uppercase tracking-wider">
+          <tr className="text-left text-xs text-on-surface-variant/60">
             {columns.map((col) => (
               <th key={col.key} className={`pb-3 pr-4 font-medium ${col.className ?? ""}`}>
                 {col.header}

@@ -55,7 +55,7 @@ export default function CodePanel({ node, repoName }: Props) {
       {hasCodeRange ? (
         loading ? (
           <div className="text-xs text-on-surface-variant/50 py-4">
-            Loading function code...
+            加载函数代码中...
           </div>
         ) : error ? (
           <div className="text-xs text-tertiary py-2">{error}</div>
@@ -77,7 +77,7 @@ export default function CodePanel({ node, repoName }: Props) {
         ) : null
       ) : (
         <p className="text-xs text-on-surface-variant/50 py-2">
-          No function-level context for this node type.
+          该节点类型无函数级上下文。
         </p>
       )}
     </GlassPanel>

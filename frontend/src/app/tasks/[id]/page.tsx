@@ -49,7 +49,7 @@ export default function TaskDetailPage() {
   if (!task) {
     return (
       <div className="p-6">
-        <p className="text-on-surface-variant/50">Loading task...</p>
+        <p className="text-on-surface-variant/50">加载任务中...</p>
       </div>
     );
   }
@@ -68,7 +68,7 @@ export default function TaskDetailPage() {
       <div className="flex items-center justify-between">
         <div>
           <h2 className="font-display text-lg font-semibold text-on-surface">
-            Task {task.id.slice(0, 8)}
+            任务 {task.id.slice(0, 8)}
           </h2>
           <p className="text-sm text-on-surface-variant mt-0.5">
             {task.task_type} &middot; {task.tools.join(", ")}
@@ -100,7 +100,7 @@ export default function TaskDetailPage() {
                     : "text-on-surface-variant hover:text-on-surface"
                 }`}
               >
-                {t}
+                {{ documentation: "文档", graph: "图谱", findings: "发现" }[t]}
               </button>
             ))}
           </div>
@@ -113,8 +113,8 @@ export default function TaskDetailPage() {
                   <MarkdownRenderer content={documentation} />
                   {diagrams.length > 0 && (
                     <div className="mt-6 space-y-4">
-                      <h4 className="text-xs text-on-surface-variant uppercase tracking-wider">
-                        Architecture Diagrams
+                      <h4 className="text-xs text-on-surface-variant">
+                        架构图
                       </h4>
                       {diagrams.map((d, i) => (
                         <MermaidRenderer key={i} chart={d.content} />
@@ -125,10 +125,10 @@ export default function TaskDetailPage() {
               ) : (
                 <p className="text-sm text-on-surface-variant/50">
                   {task.status === "running"
-                    ? "Documentation is being generated..."
+                    ? "文档生成中..."
                     : task.status === "pending"
-                      ? "Waiting to start..."
-                      : "No documentation generated."}
+                      ? "等待启动..."
+                      : "未生成文档。"}
                 </p>
               )}
             </GlassPanel>
@@ -147,10 +147,10 @@ export default function TaskDetailPage() {
                 <GlassPanel>
                   <p className="text-sm text-on-surface-variant/50">
                     {task.status === "running"
-                      ? "Knowledge graph is being generated..."
+                      ? "知识图谱生成中..."
                       : task.tools.includes("gitnexus")
-                        ? "No graph data. GitNexus may not have completed."
-                        : "Add gitnexus to task tools to generate a knowledge graph."}
+                        ? "无图谱数据。GitNexus 可能尚未完成。"
+                        : "将 GitNexus 添加到任务工具以生成知识图谱。"}
                   </p>
                 </GlassPanel>
               )}
@@ -163,8 +163,8 @@ export default function TaskDetailPage() {
               {/* Tool execution timeline (collapsed) */}
               {task.tool_runs.length > 0 && (
                 <GlassPanel>
-                  <h4 className="text-xs text-on-surface-variant uppercase tracking-wider mb-3">
-                    Execution Timeline
+                  <h4 className="text-xs text-on-surface-variant mb-3">
+                    执行时间线
                   </h4>
                   <div className="flex gap-2 flex-wrap">
                     {task.tool_runs.map((run) => (
@@ -187,8 +187,7 @@ export default function TaskDetailPage() {
           {tab === "findings" && (
             <GlassPanel>
               <p className="text-sm text-on-surface-variant/50">
-                No findings from other tools yet. Additional analysis tools
-                (Zoekt, Joern, CodeCompass) are planned for future phases.
+                暂无其他工具的发现。更多分析工具（Zoekt、Joern、CodeCompass）将在后续阶段支持。
               </p>
             </GlassPanel>
           )}
@@ -197,8 +196,8 @@ export default function TaskDetailPage() {
         {/* Sidebar */}
         <div className="space-y-4">
           <GlassPanel>
-            <h4 className="text-xs text-on-surface-variant uppercase tracking-wider mb-3">
-              AI Summary
+            <h4 className="text-xs text-on-surface-variant mb-3">
+              AI 摘要
             </h4>
             {task.ai_summary ? (
               <p className="text-sm text-on-surface/80 leading-relaxed">
@@ -208,37 +207,37 @@ export default function TaskDetailPage() {
               <p className="text-sm text-on-surface-variant/50">
                 {task.ai_enabled
                   ? task.status === "running"
-                    ? "Generating summary..."
-                    : "No summary generated."
-                  : "AI analysis disabled"}
+                    ? "生成摘要中..."
+                    : "未生成摘要。"
+                  : "AI 分析已禁用"}
               </p>
             )}
           </GlassPanel>
 
           <GlassPanel>
-            <h4 className="text-xs text-on-surface-variant uppercase tracking-wider mb-3">
-              Task Info
+            <h4 className="text-xs text-on-surface-variant mb-3">
+              任务信息
             </h4>
             <dl className="space-y-2 text-sm">
               <div className="flex justify-between">
-                <dt className="text-on-surface-variant">Type</dt>
+                <dt className="text-on-surface-variant">类型</dt>
                 <dd className="text-on-surface font-data text-xs">{task.task_type}</dd>
               </div>
               <div className="flex justify-between">
                 <dt className="text-on-surface-variant">AI</dt>
                 <dd className="text-on-surface font-data text-xs">
-                  {task.ai_enabled ? "Enabled" : "Disabled"}
+                  {task.ai_enabled ? "已启用" : "已禁用"}
                 </dd>
               </div>
               <div className="flex justify-between">
-                <dt className="text-on-surface-variant">Created</dt>
+                <dt className="text-on-surface-variant">创建时间</dt>
                 <dd className="text-on-surface font-data text-xs">
                   {new Date(task.created_at).toLocaleString()}
                 </dd>
               </div>
               {task.started_at && (
                 <div className="flex justify-between">
-                  <dt className="text-on-surface-variant">Started</dt>
+                  <dt className="text-on-surface-variant">开始时间</dt>
                   <dd className="text-on-surface font-data text-xs">
                     {new Date(task.started_at).toLocaleTimeString()}
                   </dd>
@@ -246,7 +245,7 @@ export default function TaskDetailPage() {
               )}
               {task.completed_at && (
                 <div className="flex justify-between">
-                  <dt className="text-on-surface-variant">Completed</dt>
+                  <dt className="text-on-surface-variant">完成时间</dt>
                   <dd className="text-on-surface font-data text-xs">
                     {new Date(task.completed_at).toLocaleTimeString()}
                   </dd>

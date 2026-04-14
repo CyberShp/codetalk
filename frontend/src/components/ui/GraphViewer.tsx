@@ -115,7 +115,7 @@ export default function GraphViewer({ nodes, edges, selectedNodeId, onNodeClick 
   if (nodes.length === 0) {
     return (
       <div className="flex items-center justify-center h-64 text-on-surface-variant/50 text-sm">
-        No graph data available.
+        暂无图谱数据。
       </div>
     );
   }

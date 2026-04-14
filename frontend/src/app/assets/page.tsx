@@ -55,14 +55,14 @@ export default function AssetsPage() {
   const repoColumns = [
     {
       key: "name",
-      header: "Repository",
+      header: "仓库",
       render: (r: Repository) => (
         <span className="text-on-surface font-medium">{r.name}</span>
       ),
     },
     {
       key: "source",
-      header: "Source",
+      header: "来源",
       render: (r: Repository) => (
         <span className="font-data text-xs text-on-surface-variant">
           {r.source_type}
@@ -80,7 +80,7 @@ export default function AssetsPage() {
     },
     {
       key: "branch",
-      header: "Branch",
+      header: "分支",
       render: (r: Repository) => (
         <span className="font-data text-xs text-on-surface-variant">
           {r.branch}
@@ -89,7 +89,7 @@ export default function AssetsPage() {
     },
     {
       key: "indexed",
-      header: "Last Indexed",
+      header: "最近索引",
       render: (r: Repository) => (
         <span className="font-data text-xs text-on-surface-variant">
           {r.last_indexed_at
@@ -120,7 +120,7 @@ export default function AssetsPage() {
           }}
           className="px-3 py-1 text-xs font-medium rounded-md bg-primary-container text-primary hover:shadow-[0_0_8px_rgba(164,230,255,0.2)] transition-shadow"
         >
-          Analyze
+          分析
         </button>
       ),
     },
@@ -130,27 +130,27 @@ export default function AssetsPage() {
     <div className="space-y-6">
       <div className="flex items-center justify-between">
         <h2 className="font-display text-lg font-semibold text-on-surface">
-          Assets
+          资产
         </h2>
         <button
           onClick={() => setShowNewProject(true)}
           className="px-4 py-2 text-sm font-medium rounded-md bg-primary-container text-primary hover:shadow-[0_0_12px_rgba(164,230,255,0.2)] transition-shadow"
         >
-          Add Project
+          新建项目
         </button>
       </div>
 
       <div className="grid grid-cols-[240px_1fr] gap-6">
         {/* Project Tree */}
         <GlassPanel className="h-fit">
-          <h3 className="text-xs text-on-surface-variant uppercase tracking-wider mb-3">
-            Projects
+          <h3 className="text-xs text-on-surface-variant mb-3">
+            项目
           </h3>
           {loading ? (
-            <p className="text-xs text-on-surface-variant/50">Loading...</p>
+            <p className="text-xs text-on-surface-variant/50">加载中...</p>
           ) : projects.length === 0 ? (
             <p className="text-xs text-on-surface-variant/50">
-              No projects yet. Create one to get started.
+              暂无项目。创建一个以开始使用。
             </p>
           ) : (
             <div className="space-y-1">
@@ -177,8 +177,8 @@ export default function AssetsPage() {
         {/* Repo Table */}
         <GlassPanel>
           <div className="flex items-center justify-between mb-4">
-            <h3 className="text-xs text-on-surface-variant uppercase tracking-wider">
-              Repositories
+            <h3 className="text-xs text-on-surface-variant">
+              仓库
               {selectedProject && (
                 <span className="text-primary ml-2">
                   {projects.find((p) => p.id === selectedProject)?.name}
@@ -190,7 +190,7 @@ export default function AssetsPage() {
                 onClick={() => setShowNewRepo(true)}
                 className="px-3 py-1.5 text-xs font-medium rounded-md bg-surface-container-high text-on-surface-variant hover:text-on-surface transition-colors"
               >
-                Add Repository
+                添加仓库
               </button>
             )}
           </div>
@@ -199,8 +199,8 @@ export default function AssetsPage() {
           ) : (
             <p className="text-sm text-on-surface-variant/50">
               {selectedProject
-                ? "No repositories yet. Add one above."
-                : "Select a project to view repositories."}
+                ? "暂无仓库。在上方添加一个。"
+                : "选择一个项目以查看仓库。"}
             </p>
           )}
         </GlassPanel>
@@ -261,18 +261,18 @@ function NewProjectModal({
     <div className="fixed inset-0 z-50 flex items-center justify-center bg-surface/60 backdrop-blur-sm">
       <GlassPanel className="w-full max-w-md">
         <h3 className="font-display text-sm font-semibold text-on-surface mb-4">
-          New Project
+          新建项目
         </h3>
         <div className="space-y-3">
           <CyberInput
-            label="Project Name"
+            label="项目名称"
             placeholder="my-project"
             value={name}
             onChange={(e) => setName(e.target.value)}
           />
           <CyberInput
-            label="Description"
-            placeholder="Optional description"
+            label="描述"
+            placeholder="可选描述"
             value={description}
             onChange={(e) => setDescription(e.target.value)}
           />
@@ -282,14 +282,14 @@ function NewProjectModal({
             onClick={onClose}
             className="px-4 py-2 text-xs text-on-surface-variant hover:text-on-surface"
           >
-            Cancel
+            取消
           </button>
           <button
             onClick={handleSubmit}
             disabled={saving || !name.trim()}
             className="px-4 py-2 text-sm font-medium rounded-md bg-primary-container text-primary disabled:opacity-40"
           >
-            {saving ? "Creating..." : "Create"}
+            {saving ? "创建中..." : "创建"}
           </button>
         </div>
       </GlassPanel>
@@ -332,15 +332,15 @@ function NewRepoModal({
 
   const sourceTypes: { value: SourceType; label: string; disabled?: boolean }[] = [
     { value: "git_url", label: "Git URL" },
-    { value: "local_path", label: "Local Path" },
-    { value: "zip_upload", label: "Upload (Soon)", disabled: true },
+    { value: "local_path", label: "本地路径" },
+    { value: "zip_upload", label: "上传（即将推出）", disabled: true },
   ];
 
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center bg-surface/60 backdrop-blur-sm">
       <GlassPanel className="w-full max-w-md">
         <h3 className="font-display text-sm font-semibold text-on-surface mb-4">
-          Add Repository
+          添加仓库
         </h3>
 
         {/* Source Type Tabs */}
@@ -365,13 +365,13 @@ function NewRepoModal({
 
         <div className="space-y-3">
           <CyberInput
-            label="Repository Name"
+            label="仓库名称"
             placeholder="my-repo"
             value={name}
             onChange={(e) => setName(e.target.value)}
           />
           <CyberInput
-            label={sourceType === "git_url" ? "Git URL" : "Path (under /data/repos/)"}
+            label={sourceType === "git_url" ? "Git URL" : "路径（/data/repos/ 下）"}
             placeholder={
               sourceType === "git_url"
                 ? "https://github.com/owner/repo.git"
@@ -382,7 +382,7 @@ function NewRepoModal({
           />
           {sourceType === "git_url" && (
             <CyberInput
-              label="Branch"
+              label="分支"
               placeholder="main"
               value={branch}
               onChange={(e) => setBranch(e.target.value)}
@@ -395,14 +395,14 @@ function NewRepoModal({
             onClick={onClose}
             className="px-4 py-2 text-xs text-on-surface-variant hover:text-on-surface"
           >
-            Cancel
+            取消
           </button>
           <button
             onClick={handleSubmit}
             disabled={saving || !name.trim() || !uri.trim()}
             className="px-4 py-2 text-sm font-medium rounded-md bg-primary-container text-primary disabled:opacity-40"
           >
-            {saving ? "Adding..." : "Add"}
+            {saving ? "添加中..." : "添加"}
           </button>
         </div>
       </GlassPanel>

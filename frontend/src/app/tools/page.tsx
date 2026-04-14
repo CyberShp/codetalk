@@ -7,22 +7,22 @@ import type { ToolInfo } from "@/lib/types";
 
 const toolDescriptions: Record<string, string> = {
   deepwiki:
-    "AI-powered repository documentation and knowledge graph generation using RAG.",
+    "基于 RAG 的 AI 驱动仓库文档与知识图谱生成。",
   zoekt:
-    "Fast trigram-based code search engine for large codebases.",
+    "面向大型代码库的快速三元组代码搜索引擎。",
   joern:
-    "Code property graph analysis for C/C++ \u2014 call graphs, taint analysis, security scanning.",
+    "C/C++ 代码属性图分析 — 调用图、污点分析、安全扫描。",
   codecompass:
-    "Code comprehension tool for C/C++ \u2014 call graphs, dependency analysis, pointer analysis.",
+    "C/C++ 代码理解工具 — 调用图、依赖分析、指针分析。",
   gitnexus:
-    "Git-native code search and cross-repository dependency tracking.",
+    "Git 原生代码搜索与跨仓库依赖追踪。",
 };
 
 const comingSoonTools: ToolInfo[] = [
-  { name: "zoekt", capabilities: ["code_search"], healthy: false, message: "Not configured" },
-  { name: "joern", capabilities: ["call_graph", "taint_analysis", "security_scan", "ast_analysis"], healthy: false, message: "Not configured" },
-  { name: "codecompass", capabilities: ["call_graph", "dependency_graph", "pointer_analysis"], healthy: false, message: "Not configured" },
-  { name: "gitnexus", capabilities: ["code_search", "dependency_graph"], healthy: false, message: "Not configured" },
+  { name: "zoekt", capabilities: ["code_search"], healthy: false, message: "未配置" },
+  { name: "joern", capabilities: ["call_graph", "taint_analysis", "security_scan", "ast_analysis"], healthy: false, message: "未配置" },
+  { name: "codecompass", capabilities: ["call_graph", "dependency_graph", "pointer_analysis"], healthy: false, message: "未配置" },
+  { name: "gitnexus", capabilities: ["code_search", "dependency_graph"], healthy: false, message: "未配置" },
 ];
 
 export default function ToolsPage() {
@@ -38,12 +38,11 @@ export default function ToolsPage() {
   return (
     <div className="space-y-6">
       <h2 className="font-display text-lg font-semibold text-on-surface">
-        Analysis Tools
+        分析工具
       </h2>
       <p className="text-sm text-on-surface-variant">
-        CodeTalks orchestrates external analysis tools. All analysis is
-        performed by the tools themselves \u2014 CodeTalks only manages execution and
-        displays results.
+        CodeTalks 编排外部分析工具。所有分析由工具本身执行 — CodeTalks
+        仅管理执行流程并展示结果。
       </p>
 
       <div className="grid grid-cols-3 gap-4">

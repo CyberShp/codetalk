@@ -75,7 +75,7 @@ export default function SettingsPage() {
   return (
     <div className="space-y-6 max-w-3xl">
       <h2 className="font-display text-lg font-semibold text-on-surface">
-        Settings
+        设置
       </h2>
 
       {/* AI Toggle */}
@@ -83,11 +83,10 @@ export default function SettingsPage() {
         <div className="flex items-center justify-between">
           <div>
             <h3 className="text-sm font-medium text-on-surface">
-              AI Summary Generation
+              AI 摘要生成
             </h3>
             <p className="text-xs text-on-surface-variant mt-1">
-              Enable AI-powered summaries for analysis results via LLM
-              providers.
+              启用 AI 驱动的分析结果摘要（通过 LLM 提供商）。
             </p>
           </div>
           <button
@@ -112,7 +111,7 @@ export default function SettingsPage() {
       {/* LLM Configuration */}
       <GlassPanel>
         <h3 className="text-sm font-medium text-on-surface mb-4">
-          LLM Configuration
+          LLM 配置
         </h3>
 
         {configs.map((cfg) => (
@@ -132,24 +131,24 @@ export default function SettingsPage() {
                     </span>
                   )}
                   <span className={`text-[10px] ${cfg.has_api_key ? "text-secondary-fixed-dim" : "text-on-surface-variant/40"}`}>
-                    {cfg.has_api_key ? "Key set" : "No key"}
+                    {cfg.has_api_key ? "已设置" : "未设置"}
                   </span>
                   <span className="text-[10px] text-on-surface-variant/60">
-                    {cfg.proxy_mode === "system" ? "System proxy" : "Direct"}
+                    {cfg.proxy_mode === "system" ? "系统代理" : "直连"}
                   </span>
                 </div>
               </div>
               <div className="flex items-center gap-3">
                 {cfg.is_default && (
                   <span className="text-[10px] px-2 py-0.5 rounded-full bg-primary/10 text-primary-fixed-dim">
-                    default
+                    默认
                   </span>
                 )}
                 <button
                   onClick={() => handleDelete(cfg.id)}
                   className="text-xs text-tertiary hover:text-tertiary/80"
                 >
-                  Remove
+                  删除
                 </button>
               </div>
             </div>
@@ -165,7 +164,7 @@ export default function SettingsPage() {
           />
           <div className="grid grid-cols-2 gap-4">
             <CyberInput
-              label="Model Name"
+              label="模型名称"
               placeholder="gpt-4o / deepseek-v3 / qwen-72b"
               value={modelName}
               onChange={(e) => setModelName(e.target.value)}
@@ -187,19 +186,19 @@ export default function SettingsPage() {
                   onClick={() => setShowApiKey(!showApiKey)}
                   className="absolute right-2 top-1/2 -translate-y-1/2 text-[10px] text-on-surface-variant hover:text-on-surface px-1.5 py-0.5 rounded"
                 >
-                  {showApiKey ? "HIDE" : "SHOW"}
+                  {showApiKey ? "隐藏" : "显示"}
                 </button>
               </div>
             </div>
           </div>
           <div>
-            <label className="block text-xs text-on-surface-variant mb-1.5 tracking-wide uppercase">
-              Proxy
+            <label className="block text-xs text-on-surface-variant mb-1.5">
+              代理
             </label>
             <div className="flex gap-2">
               {([
-                { value: "system" as const, label: "Follow System Proxy" },
-                { value: "direct" as const, label: "Direct (No Proxy)" },
+                { value: "system" as const, label: "使用系统代理" },
+                { value: "direct" as const, label: "直连（无代理）" },
               ]).map((opt) => (
                 <button
                   key={opt.value}
@@ -221,14 +220,14 @@ export default function SettingsPage() {
           disabled={saving || !modelName.trim()}
           className="mt-4 px-4 py-2 text-sm font-medium rounded-md bg-primary-container text-primary hover:shadow-[0_0_12px_rgba(164,230,255,0.2)] transition-shadow disabled:opacity-40"
         >
-          {saving ? "Saving..." : "Save"}
+          {saving ? "保存中..." : "保存"}
         </button>
       </GlassPanel>
 
       {/* System Health */}
       <GlassPanel>
         <h3 className="text-sm font-medium text-on-surface mb-4">
-          System Health
+          系统健康
         </h3>
         <div className="space-y-2">
           {tools.map((tool) => (
@@ -239,7 +238,7 @@ export default function SettingsPage() {
               <div>
                 <p className="text-sm text-on-surface">{tool.name}</p>
                 <p className="text-xs text-on-surface-variant font-data">
-                  {tool.healthy ? "Connected" : "Not available"}
+                  {tool.healthy ? "已连接" : "不可用"}
                 </p>
               </div>
               <StatusBadge status={tool.healthy ? "online" : "offline"} />
@@ -247,7 +246,7 @@ export default function SettingsPage() {
           ))}
           {tools.length === 0 && (
             <p className="text-sm text-on-surface-variant/50">
-              Loading tools...
+              加载工具中...
             </p>
           )}
         </div>

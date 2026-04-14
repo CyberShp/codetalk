@@ -40,6 +40,16 @@ const styles: Record<Variant, { bg: string; glow: string; text: string }> = {
   },
 };
 
+const labels: Record<Variant, string> = {
+  running: "运行中",
+  completed: "已完成",
+  failed: "失败",
+  pending: "等待中",
+  cancelled: "已取消",
+  online: "在线",
+  offline: "离线",
+};
+
 export default function StatusBadge({ status }: { status: Variant }) {
   const s = styles[status] ?? styles.pending;
   return (
@@ -49,7 +59,7 @@ export default function StatusBadge({ status }: { status: Variant }) {
       <span
         className={`w-1.5 h-1.5 rounded-full ${s.text.replace("text-", "bg-")}`}
       />
-      {status}
+      {labels[status] ?? status}
     </span>
   );
 }

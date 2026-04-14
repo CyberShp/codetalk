@@ -21,7 +21,7 @@ export default function LogTerminal({ logs }: { logs: LogEntry[] }) {
     <div className="bg-surface-container-lowest rounded-lg p-4 h-56 overflow-y-auto font-data text-xs leading-relaxed">
       {logs.length === 0 && (
         <span className="text-on-surface-variant/40">
-          Waiting for logs...
+          等待日志...
         </span>
       )}
       {logs.map((log, i) => (

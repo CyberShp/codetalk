@@ -4,11 +4,11 @@ import Link from "next/link";
 import { usePathname } from "next/navigation";
 
 const navItems = [
-  { label: "Dashboard", href: "/dashboard", icon: "⬡" },
-  { label: "Tasks", href: "/tasks", icon: "◈" },
-  { label: "Tools", href: "/tools", icon: "⬢" },
-  { label: "Assets", href: "/assets", icon: "◇" },
-  { label: "Settings", href: "/settings", icon: "⚙" },
+  { label: "仪表盘", href: "/dashboard", icon: "⬡" },
+  { label: "任务", href: "/tasks", icon: "◈" },
+  { label: "工具", href: "/tools", icon: "⬢" },
+  { label: "资产", href: "/assets", icon: "◇" },
+  { label: "设置", href: "/settings", icon: "⚙" },
 ];
 
 export default function Sidebar() {
@@ -21,8 +21,8 @@ export default function Sidebar() {
         <h1 className="font-display text-xl font-bold text-primary tracking-wider">
           CODETALKS
         </h1>
-        <p className="text-xs text-on-surface-variant mt-1 tracking-widest uppercase">
-          Code Analysis Platform
+        <p className="text-xs text-on-surface-variant mt-1">
+          代码分析编排平台
         </p>
       </div>
 
@@ -53,7 +53,7 @@ export default function Sidebar() {
           href="/tasks?new=true"
           className="block w-full py-2.5 text-center text-sm font-medium rounded-md bg-primary-container text-primary hover:shadow-[0_0_12px_rgba(164,230,255,0.2)] transition-shadow"
         >
-          New Analysis
+          新建分析
         </Link>
       </div>
     </aside>

@@ -42,7 +42,7 @@ export default function ToolCard({
       </div>
       {comingSoon && (
         <span className="text-xs text-on-surface-variant/50 italic">
-          Coming Soon
+          即将推出
         </span>
       )}
     </div>

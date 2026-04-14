@@ -23,23 +23,23 @@ export default function DashboardPage() {
   const healthyTools = tools.filter((t) => t.healthy);
 
   const stats = [
-    { label: "Total Projects", value: projects.length, accent: "text-primary" },
-    { label: "Active Tasks", value: activeTasks.length, accent: "text-primary-fixed-dim" },
-    { label: "Completed", value: completedTasks.length, accent: "text-secondary-fixed-dim" },
-    { label: "Tool Health", value: `${healthyTools.length}/${tools.length}`, accent: "text-primary" },
+    { label: "项目总数", value: projects.length, accent: "text-primary" },
+    { label: "运行中任务", value: activeTasks.length, accent: "text-primary-fixed-dim" },
+    { label: "已完成", value: completedTasks.length, accent: "text-secondary-fixed-dim" },
+    { label: "工具健康", value: `${healthyTools.length}/${tools.length}`, accent: "text-primary" },
   ];
 
   return (
     <div className="space-y-6">
       <h2 className="font-display text-lg font-semibold text-on-surface">
-        Dashboard
+        仪表盘
       </h2>
 
       {/* Stats Grid */}
       <div className="grid grid-cols-4 gap-4">
         {stats.map((s) => (
           <GlassPanel key={s.label}>
-            <p className="text-xs text-on-surface-variant uppercase tracking-wider">
+            <p className="text-xs text-on-surface-variant">
               {s.label}
             </p>
             <p className={`font-display text-3xl font-bold mt-2 ${s.accent}`}>
@@ -53,11 +53,11 @@ export default function DashboardPage() {
         {/* Recent Activity */}
         <GlassPanel>
           <h3 className="font-display text-sm font-semibold text-on-surface mb-4">
-            Recent Activity
+            最近活动
           </h3>
           {tasks.length === 0 ? (
             <p className="text-sm text-on-surface-variant/50">
-              No tasks yet. Create your first analysis from the Tasks page.
+              暂无任务。前往任务页面创建您的第一个分析。
             </p>
           ) : (
             <div className="space-y-3">
@@ -89,11 +89,11 @@ export default function DashboardPage() {
         {/* Active Tasks */}
         <GlassPanel>
           <h3 className="font-display text-sm font-semibold text-on-surface mb-4">
-            Active Tasks
+            运行中任务
           </h3>
           {activeTasks.length === 0 ? (
             <p className="text-sm text-on-surface-variant/50">
-              No active tasks
+              暂无运行中任务
             </p>
           ) : (
             <div className="space-y-4">
@@ -111,8 +111,8 @@ export default function DashboardPage() {
                   <p className="text-xs text-on-surface-variant mt-1">
                     {task.tools.join(", ")} &middot;{" "}
                     {task.started_at
-                      ? `Started ${new Date(task.started_at).toLocaleTimeString()}`
-                      : "Queued"}
+                      ? `开始于 ${new Date(task.started_at).toLocaleTimeString()}`
+                      : "排队中"}
                   </p>
                 </div>
               ))}

@@ -48,7 +48,7 @@ export default function TasksPage() {
     },
     {
       key: "repo",
-      header: "Repository",
+      header: "仓库",
       render: (t: AnalysisTask) => (
         <span className="text-on-surface font-data text-xs">
           {t.repository_id.slice(0, 8)}
@@ -57,14 +57,14 @@ export default function TasksPage() {
     },
     {
       key: "type",
-      header: "Type",
+      header: "类型",
       render: (t: AnalysisTask) => (
         <span className="text-xs text-on-surface-variant">{t.task_type}</span>
       ),
     },
     {
       key: "tools",
-      header: "Tools",
+      header: "工具",
       render: (t: AnalysisTask) => (
         <div className="flex gap-1">
           {t.tools.map((tool) => (
@@ -80,7 +80,7 @@ export default function TasksPage() {
     },
     {
       key: "progress",
-      header: "Progress",
+      header: "进度",
       className: "w-36",
       render: (t: AnalysisTask) => (
         <div className="flex items-center gap-2">
@@ -93,7 +93,7 @@ export default function TasksPage() {
     },
     {
       key: "status",
-      header: "Status",
+      header: "状态",
       className: "w-28",
       render: (t: AnalysisTask) => (
         <StatusBadge status={t.status as "running" | "completed" | "failed" | "pending"} />
@@ -101,7 +101,7 @@ export default function TasksPage() {
     },
     {
       key: "created",
-      header: "Created",
+      header: "创建时间",
       render: (t: AnalysisTask) => (
         <span className="text-xs text-on-surface-variant font-data">
           {new Date(t.created_at).toLocaleDateString()}
@@ -114,7 +114,7 @@ export default function TasksPage() {
     <div className="space-y-6">
       <div className="flex items-center justify-between">
         <h2 className="font-display text-lg font-semibold text-on-surface">
-          Tasks
+          任务
         </h2>
       </div>
 
@@ -130,7 +130,7 @@ export default function TasksPage() {
                 : "text-on-surface-variant hover:text-on-surface"
             }`}
           >
-            {tab}
+            {{ all: "全部", running: "运行中", completed: "已完成", failed: "失败", pending: "等待中" }[tab]}
           </button>
         ))}
       </div>
@@ -141,7 +141,7 @@ export default function TasksPage() {
           <DataTable columns={columns} data={tasks} keyField="id" />
         ) : (
           <p className="text-sm text-on-surface-variant/50">
-            No tasks found. Create an analysis from the Assets page.
+            暂无任务。前往资产页面创建分析。
           </p>
         )}
       </GlassPanel>
