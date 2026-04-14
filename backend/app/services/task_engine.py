@@ -75,6 +75,7 @@ async def run_task(task_id: UUID) -> None:
                     run.result = {
                         "documentation": result.data.get("documentation", ""),
                         "file_tree": result.data.get("file_tree", ""),
+                        "graph": result.data.get("graph"),
                         "diagrams": result.diagrams,
                         "metadata": result.metadata,
                     }

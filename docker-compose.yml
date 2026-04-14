@@ -42,7 +42,16 @@ services:
       ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY:-}
       GOOGLE_API_KEY: ${GOOGLE_API_KEY:-}
 
+  gitnexus:
+    build: ./docker/gitnexus
+    ports:
+      - "7100:7100"
+    volumes:
+      - gitnexus_data:/root/.gitnexus
+      - code_volume:/data/repos:ro
+
 volumes:
   pg_data:
   code_volume:
   deepwiki_data:
+  gitnexus_data:

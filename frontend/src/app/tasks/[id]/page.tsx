@@ -7,10 +7,12 @@ import StatusBadge from "@/components/ui/StatusBadge";
 import ProgressBar from "@/components/ui/ProgressBar";
 import MarkdownRenderer from "@/components/ui/MarkdownRenderer";
 import MermaidRenderer from "@/components/ui/MermaidRenderer";
+import GraphViewer from "@/components/ui/GraphViewer";
+import CodePanel from "@/components/ui/CodePanel";
 import { api } from "@/lib/api";
-import type { TaskDetail } from "@/lib/types";
+import type { TaskDetail, GraphNode, GraphData } from "@/lib/types";
 
-const detailTabs = ["documentation", "flow", "findings"] as const;
+const detailTabs = ["documentation", "graph", "findings"] as const;
 type Tab = (typeof detailTabs)[number];
 
 export default function TaskDetailPage() {
@@ -19,6 +21,7 @@ export default function TaskDetailPage() {
   const [tab, setTab] = useState<Tab>("documentation");
   const [task, setTask] = useState<TaskDetail | null>(null);
   const [error, setError] = useState("");
+  const [selectedNode, setSelectedNode] = useState<GraphNode | null>(null);
 
   useEffect(() => {
     if (!taskId) return;
@@ -54,6 +57,10 @@ export default function TaskDetailPage() {
   const docRun = task.tool_runs.find((r) => r.tool_name === "deepwiki");
   const documentation = (docRun?.result?.documentation as string) ?? "";
   const diagrams = (docRun?.result?.diagrams as Array<{ type: string; content: string }>) ?? [];
+
+  const graphRun = task.tool_runs.find((r) => r.tool_name === "gitnexus");
+  const graphData = (graphRun?.result?.graph as GraphData) ?? null;
+  const repoName = (graphRun?.result?.metadata as Record<string, unknown>)?.repo_name as string ?? "";
 
   return (
     <div className="space-y-6">
@@ -127,47 +134,54 @@ export default function TaskDetailPage() {
             </GlassPanel>
           )}
 
-          {tab === "flow" && (
-            <GlassPanel>
-              <h4 className="text-xs text-on-surface-variant uppercase tracking-wider mb-4">
-                Tool Execution Flow
-              </h4>
-              <div className="space-y-3">
-                {task.tool_runs.map((run) => (
-                  <div
-                    key={run.id}
-                    className="flex items-center gap-4 bg-surface-container-lowest/50 rounded-lg px-4 py-3"
-                  >
-                    <div className="w-10 h-10 rounded-md bg-surface-container-high flex items-center justify-center font-data text-xs text-primary-fixed-dim">
-                      {run.tool_name.slice(0, 2).toUpperCase()}
-                    </div>
-                    <div className="flex-1">
-                      <p className="text-sm text-on-surface font-medium">
-                        {run.tool_name}
-                      </p>
-                      <p className="text-xs text-on-surface-variant">
-                        {run.started_at
-                          ? `${new Date(run.started_at).toLocaleTimeString()} \u2014 ${
-                              run.completed_at
-                                ? new Date(run.completed_at).toLocaleTimeString()
-                                : "running"
-                            }`
-                          : "Queued"}
-                      </p>
-                      {run.error && (
-                        <p className="text-xs text-tertiary mt-1">{run.error}</p>
-                      )}
-                    </div>
-                    <StatusBadge status={run.status as "running" | "completed" | "failed" | "pending"} />
-                  </div>
-                ))}
-                {task.tool_runs.length === 0 && (
+          {tab === "graph" && (
+            <div className="space-y-4">
+              {graphData ? (
+                <GraphViewer
+                  nodes={graphData.nodes}
+                  edges={graphData.edges}
+                  selectedNodeId={selectedNode?.id ?? null}
+                  onNodeClick={setSelectedNode}
+                />
+              ) : (
+                <GlassPanel>
                   <p className="text-sm text-on-surface-variant/50">
-                    No tool runs yet.
+                    {task.status === "running"
+                      ? "Knowledge graph is being generated..."
+                      : task.tools.includes("gitnexus")
+                        ? "No graph data. GitNexus may not have completed."
+                        : "Add gitnexus to task tools to generate a knowledge graph."}
                   </p>
-                )}
-              </div>
-            </GlassPanel>
+                </GlassPanel>
+              )}
+
+              {/* Function-level code panel (below graph) */}
+              {selectedNode && (
+                <CodePanel node={selectedNode} repoName={repoName} />
+              )}
+
+              {/* Tool execution timeline (collapsed) */}
+              {task.tool_runs.length > 0 && (
+                <GlassPanel>
+                  <h4 className="text-xs text-on-surface-variant uppercase tracking-wider mb-3">
+                    Execution Timeline
+                  </h4>
+                  <div className="flex gap-2 flex-wrap">
+                    {task.tool_runs.map((run) => (
+                      <div
+                        key={run.id}
+                        className="flex items-center gap-2 bg-surface-container-lowest/50 rounded px-3 py-1.5"
+                      >
+                        <span className="font-data text-[10px] text-primary-fixed-dim">
+                          {run.tool_name}
+                        </span>
+                        <StatusBadge status={run.status as "running" | "completed" | "failed" | "pending"} />
+                      </div>
+                    ))}
+                  </div>
+                </GlassPanel>
+              )}
+            </div>
           )}
 
           {tab === "findings" && (

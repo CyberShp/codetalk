@@ -10,6 +10,7 @@ import type {
   ToolInfo,
   LLMConfig,
   LLMConfigCreate,
+  FileSlice,
 } from "./types";
 
 const BASE = process.env.NEXT_PUBLIC_API_URL || "http://localhost:8000";
@@ -85,5 +86,14 @@ export const api = {
       }),
     deleteLLM: (id: string) =>
       request<void>(`/api/settings/llm/${id}`, { method: "DELETE" }),
+  },
+
+  gitnexus: {
+    getFile: (repo: string, path: string, startLine?: number, endLine?: number) => {
+      const qs = new URLSearchParams({ repo, path });
+      if (startLine !== undefined) qs.set("start_line", String(startLine));
+      if (endLine !== undefined) qs.set("end_line", String(endLine));
+      return request<FileSlice>(`/api/gitnexus/file?${qs}`);
+    },
   },
 };

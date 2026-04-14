@@ -9,6 +9,7 @@ class Settings(BaseSettings):
     google_api_key: str = ""
     ollama_base_url: str = "http://host.docker.internal:11434"
     deepwiki_base_url: str = "http://deepwiki:8001"
+    gitnexus_base_url: str = "http://gitnexus:7100"
     repos_base_path: str = "/data/repos"
 
     model_config = {"env_file": ".env", "extra": "ignore"}

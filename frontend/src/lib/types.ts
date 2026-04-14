@@ -127,3 +127,42 @@ export interface LogEntry {
   message: string;
   tool?: string;
 }
+
+/* ── GitNexus Knowledge Graph types ── */
+
+export interface GraphNode {
+  id: string;
+  label: string; // File, Folder, Function, Method, Class, Module, etc.
+  properties: {
+    name: string;
+    filePath?: string;
+    startLine?: number;
+    endLine?: number;
+    content?: string;
+    description?: string;
+    heuristicLabel?: string;
+    processType?: string;
+    stepCount?: number;
+    [key: string]: unknown;
+  };
+}
+
+export interface GraphEdge {
+  id: string;
+  type: string; // CALLS, IMPORTS, CONTAINS, MEMBER_OF, etc.
+  sourceId: string;
+  targetId: string;
+  confidence?: number;
+}
+
+export interface GraphData {
+  nodes: GraphNode[];
+  edges: GraphEdge[];
+}
+
+export interface FileSlice {
+  content: string;
+  startLine: number;
+  endLine: number;
+  totalLines: number;
+}
