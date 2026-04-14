@@ -36,36 +36,47 @@ export default function ToolsPage() {
   const upcoming = comingSoonTools.filter((t) => !registeredNames.has(t.name));
 
   return (
-    <div className="space-y-6">
-      <h2 className="font-display text-lg font-semibold text-on-surface">
-        分析工具
-      </h2>
-      <p className="text-sm text-on-surface-variant">
-        CodeTalks 编排外部分析工具。所有分析由工具本身执行 — CodeTalks
-        仅管理执行流程并展示结果。
-      </p>
+    <div className="max-w-6xl mx-auto space-y-10 py-4">
+      <header className="space-y-3">
+        <h2 className="font-display text-2xl font-bold text-on-surface tracking-tight">
+          分析工具 <span className="text-primary/40 text-sm font-normal ml-2">Analysis Arsenal</span>
+        </h2>
+        <p className="text-sm text-on-surface-variant max-w-2xl leading-relaxed">
+          CodeTalks 编排外部分析工具。所有分析由工具本身执行 — CodeTalks
+          仅管理执行流程并展示结果。
+        </p>
+      </header>
 
-      <div className="grid grid-cols-3 gap-4">
-        {tools.map((tool) => (
-          <ToolCard
-            key={tool.name}
-            name={tool.name}
-            description={toolDescriptions[tool.name] ?? ""}
-            capabilities={tool.capabilities}
-            healthy={tool.healthy}
-          />
-        ))}
-        {upcoming.map((tool) => (
-          <ToolCard
-            key={tool.name}
-            name={tool.name}
-            description={toolDescriptions[tool.name] ?? ""}
-            capabilities={tool.capabilities}
-            healthy={false}
-            comingSoon
-          />
-        ))}
-      </div>
+      <section className="space-y-6">
+        <div className="flex items-center gap-4">
+          <div className="h-px flex-1 bg-gradient-to-r from-outline-variant/50 to-transparent" />
+          <span className="text-[10px] font-bold text-on-surface-variant">
+            工具列表
+          </span>
+        </div>
+        
+        <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-5">
+          {tools.map((tool) => (
+            <ToolCard
+              key={tool.name}
+              name={tool.name}
+              description={toolDescriptions[tool.name] ?? ""}
+              capabilities={tool.capabilities}
+              healthy={tool.healthy}
+            />
+          ))}
+          {upcoming.map((tool) => (
+            <ToolCard
+              key={tool.name}
+              name={tool.name}
+              description={toolDescriptions[tool.name] ?? ""}
+              capabilities={tool.capabilities}
+              healthy={false}
+              comingSoon
+            />
+          ))}
+        </div>
+      </section>
     </div>
   );
 }
