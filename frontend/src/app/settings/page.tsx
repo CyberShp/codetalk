@@ -11,7 +11,6 @@ export default function SettingsPage() {
   const [aiEnabled, setAiEnabled] = useState(true);
   const [configs, setConfigs] = useState<LLMConfig[]>([]);
   const [tools, setTools] = useState<ToolInfo[]>([]);
-  const [provider, setProvider] = useState("google");
   const [modelName, setModelName] = useState("");
   const [apiKey, setApiKey] = useState("");
   const [baseUrl, setBaseUrl] = useState("");
@@ -46,7 +45,7 @@ export default function SettingsPage() {
     setSaving(true);
     try {
       await api.settings.saveLLM({
-        provider,
+        provider: "custom",
         model_name: modelName.trim(),
         api_key: apiKey.trim() || undefined,
         base_url: baseUrl.trim() || undefined,
@@ -110,10 +109,10 @@ export default function SettingsPage() {
         </div>
       </GlassPanel>
 
-      {/* LLM Provider */}
+      {/* LLM Configuration */}
       <GlassPanel>
         <h3 className="text-sm font-medium text-on-surface mb-4">
-          LLM Provider Configuration
+          LLM Configuration
         </h3>
 
         {configs.map((cfg) => (
@@ -123,12 +122,12 @@ export default function SettingsPage() {
           >
             <div className="flex items-center justify-between">
               <div>
-                <p className="text-sm text-on-surface">
-                  {cfg.provider} / {cfg.model_name}
+                <p className="text-sm text-on-surface font-medium">
+                  {cfg.model_name}
                 </p>
                 <div className="flex items-center gap-3 mt-1">
                   {cfg.base_url && (
-                    <span className="font-data text-[10px] text-on-surface-variant truncate max-w-[200px]">
+                    <span className="font-data text-[10px] text-primary-fixed-dim truncate max-w-[240px]">
                       {cfg.base_url}
                     </span>
                   )}
@@ -157,80 +156,64 @@ export default function SettingsPage() {
           </div>
         ))}
 
-        <div className="grid grid-cols-2 gap-4 mt-4">
-          <div>
-            <label className="block text-xs text-on-surface-variant mb-1.5 tracking-wide uppercase">
-              Provider
-            </label>
-            <select
-              value={provider}
-              onChange={(e) => setProvider(e.target.value)}
-              className="w-full bg-surface-container-lowest/50 text-on-surface font-data text-sm px-4 py-2 rounded-md outline-none focus:ring-1 focus:ring-primary-container"
-            >
-              <option value="google">Google (Gemini)</option>
-              <option value="openai">OpenAI</option>
-              <option value="anthropic">Anthropic</option>
-              <option value="ollama">Ollama (Local)</option>
-              <option value="openrouter">OpenRouter</option>
-            </select>
-          </div>
+        <div className="space-y-3 mt-4">
           <CyberInput
-            label="Model Name"
-            placeholder="gemini-2.0-flash"
-            value={modelName}
-            onChange={(e) => setModelName(e.target.value)}
-          />
-        </div>
-        <div className="grid grid-cols-2 gap-4 mt-3">
-          <div>
-            <label className="block text-xs text-on-surface-variant mb-1.5 tracking-wide uppercase">
-              API Key
-            </label>
-            <div className="relative">
-              <input
-                type={showApiKey ? "text" : "password"}
-                placeholder="sk-..."
-                value={apiKey}
-                onChange={(e) => setApiKey(e.target.value)}
-                className="w-full bg-surface-container-lowest/50 text-on-surface font-data text-sm px-4 py-2 pr-12 rounded-md outline-none placeholder:text-on-surface-variant/40 focus:ring-1 focus:ring-primary-container"
-              />
-              <button
-                type="button"
-                onClick={() => setShowApiKey(!showApiKey)}
-                className="absolute right-2 top-1/2 -translate-y-1/2 text-[10px] text-on-surface-variant hover:text-on-surface px-1.5 py-0.5 rounded"
-              >
-                {showApiKey ? "HIDE" : "SHOW"}
-              </button>
-            </div>
-          </div>
-          <CyberInput
-            label="Base URL (optional)"
-            placeholder="https://api.openai.com/v1"
+            label="Base URL"
+            placeholder="http://10.0.0.1:8080/v1"
             value={baseUrl}
             onChange={(e) => setBaseUrl(e.target.value)}
           />
-        </div>
-        <div className="mt-3">
-          <label className="block text-xs text-on-surface-variant mb-1.5 tracking-wide uppercase">
-            Proxy
-          </label>
-          <div className="flex gap-2">
-            {([
-              { value: "system" as const, label: "Follow System Proxy" },
-              { value: "direct" as const, label: "Direct (No Proxy)" },
-            ]).map((opt) => (
-              <button
-                key={opt.value}
-                onClick={() => setProxyMode(opt.value)}
-                className={`px-3 py-1.5 text-xs rounded-md transition-colors ${
-                  proxyMode === opt.value
-                    ? "bg-surface-container-high text-on-surface"
-                    : "text-on-surface-variant hover:text-on-surface"
-                }`}
-              >
-                {opt.label}
-              </button>
-            ))}
+          <div className="grid grid-cols-2 gap-4">
+            <CyberInput
+              label="Model Name"
+              placeholder="gpt-4o / deepseek-v3 / qwen-72b"
+              value={modelName}
+              onChange={(e) => setModelName(e.target.value)}
+            />
+            <div>
+              <label className="block text-xs text-on-surface-variant mb-1.5 tracking-wide uppercase">
+                API Key
+              </label>
+              <div className="relative">
+                <input
+                  type={showApiKey ? "text" : "password"}
+                  placeholder="sk-..."
+                  value={apiKey}
+                  onChange={(e) => setApiKey(e.target.value)}
+                  className="w-full bg-surface-container-lowest/50 text-on-surface font-data text-sm px-4 py-2 pr-12 rounded-md outline-none placeholder:text-on-surface-variant/40 focus:ring-1 focus:ring-primary-container"
+                />
+                <button
+                  type="button"
+                  onClick={() => setShowApiKey(!showApiKey)}
+                  className="absolute right-2 top-1/2 -translate-y-1/2 text-[10px] text-on-surface-variant hover:text-on-surface px-1.5 py-0.5 rounded"
+                >
+                  {showApiKey ? "HIDE" : "SHOW"}
+                </button>
+              </div>
+            </div>
+          </div>
+          <div>
+            <label className="block text-xs text-on-surface-variant mb-1.5 tracking-wide uppercase">
+              Proxy
+            </label>
+            <div className="flex gap-2">
+              {([
+                { value: "system" as const, label: "Follow System Proxy" },
+                { value: "direct" as const, label: "Direct (No Proxy)" },
+              ]).map((opt) => (
+                <button
+                  key={opt.value}
+                  onClick={() => setProxyMode(opt.value)}
+                  className={`px-3 py-1.5 text-xs rounded-md transition-colors ${
+                    proxyMode === opt.value
+                      ? "bg-surface-container-high text-on-surface"
+                      : "text-on-surface-variant hover:text-on-surface"
+                  }`}
+                >
+                  {opt.label}
+                </button>
+              ))}
+            </div>
           </div>
         </div>
         <button
@@ -238,7 +221,7 @@ export default function SettingsPage() {
           disabled={saving || !modelName.trim()}
           className="mt-4 px-4 py-2 text-sm font-medium rounded-md bg-primary-container text-primary hover:shadow-[0_0_12px_rgba(164,230,255,0.2)] transition-shadow disabled:opacity-40"
         >
-          {saving ? "Saving..." : "Save Provider"}
+          {saving ? "Saving..." : "Save"}
         </button>
       </GlassPanel>
 
