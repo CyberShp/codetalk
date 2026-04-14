@@ -54,6 +54,7 @@ class GitNexusAdapter(BaseToolAdapter):
     async def health_check(self) -> ToolHealth:
         try:
             resp = await self.client.get("/api/info")
+            resp.raise_for_status()
             data = resp.json()
             return ToolHealth(
                 is_healthy=True,

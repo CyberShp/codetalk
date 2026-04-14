@@ -110,7 +110,7 @@ export default function AssetsPage() {
               const task = await api.tasks.create({
                 repository_id: r.id,
                 task_type: "full_repo",
-                tools: ["deepwiki"],
+                tools: ["deepwiki", "gitnexus"],
                 ai_enabled: aiEnabled,
               });
               router.push(`/tasks/${task.id}`);
