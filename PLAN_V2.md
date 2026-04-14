@@ -56,14 +56,23 @@ Phase 0 (验证 deepwiki)
 
 | 文件 | 阶段 | 状态 |
 |------|------|------|
-| `v2/PHASE0_validate_deepwiki.md` | 工具验证 | TODO |
-| `v2/PHASE1A_backend_foundation.md` | 后端基础 | TODO |
-| `v2/PHASE1B_frontend_foundation.md` | 前端基础 | TODO |
-| `v2/PHASE2_deepwiki_adapter.md` | deepwiki 适配器 | TODO |
-| `v2/PHASE3_project_repo_crud.md` | 项目/仓库管理 | TODO |
-| `v2/PHASE4_deepwiki_e2e.md` | 端到端集成 | TODO |
-| `v2/PHASE5_polish_review.md` | 打磨 + review | TODO |
-| `v2/FUTURE_tools_roadmap.md` | 后续工具规划 | DEFERRED |
+| `v2/PHASE0_validate_deepwiki.md` | 工具验证 | DONE |
+| `v2/PHASE1A_backend_foundation.md` | 后端基础 | DONE |
+| `v2/PHASE1B_frontend_foundation.md` | 前端基础 | DONE |
+| `v2/PHASE2_deepwiki_adapter.md` | deepwiki 适配器 | DONE |
+| `v2/PHASE3_project_repo_crud.md` | 项目/仓库管理 | DONE |
+| `v2/PHASE4_deepwiki_e2e.md` | 端到端集成 | DONE |
+| `v2/PHASE5_polish_review.md` | 打磨 + review | DONE |
+| `v2/FUTURE_tools_roadmap.md` | 后续工具规划 | NEXT |
+
+## MVP 后的改进项
+
+| 项 | 优先级 | 说明 |
+|----|--------|------|
+| LLM config 执行链路接通 | P1 | api_key/base_url/proxy_mode 已存储，但 task_engine/adapter 尚未消费 |
+| F1: Zoekt 代码搜索 | 高 | 复杂度低，MVP 后第一个垂直切片 |
+| F2: Joern CPG/安全分析 | 高 | 复杂度高，需先 Phase 0 验证 |
+| F5: MR Diff 分析 | 中 | 需要 2+ 工具跑通后再加 |
 
 ## 铁律（每个任务文件开头重复）
 
