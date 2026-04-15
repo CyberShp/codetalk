@@ -8,6 +8,7 @@ import StatusBadge from "@/components/ui/StatusBadge";
 import DataTable from "@/components/ui/DataTable";
 import ProgressBar from "@/components/ui/ProgressBar";
 import NewAnalysisModal from "@/components/ui/NewAnalysisModal";
+import ConfirmDialog from "@/components/ui/ConfirmDialog";
 import { api } from "@/lib/api";
 import type { AnalysisTask } from "@/lib/types";
 
@@ -30,6 +31,14 @@ function TasksPageInner() {
   const [showNewAnalysis, setShowNewAnalysis] = useState(
     searchParams.get("new") === "true",
   );
+  const [deleteTarget, setDeleteTarget] = useState<string | null>(null);
+
+  // Sync with URL param — handles same-page navigation (e.g. sidebar link while already on /tasks)
+  useEffect(() => {
+    if (searchParams.get("new") === "true") {
+      setShowNewAnalysis(true);
+    }
+  }, [searchParams]);
 
   const loadTasks = useCallback(async () => {
     try {
@@ -46,6 +55,26 @@ function TasksPageInner() {
     const interval = setInterval(loadTasks, 5000);
     return () => clearInterval(interval);
   }, [loadTasks]);
+
+  const handleCancel = async (taskId: string) => {
+    try {
+      await api.tasks.cancel(taskId);
+      loadTasks();
+    } catch (e) {
+      console.error("Failed to cancel task:", e);
+    }
+  };
+
+  const handleDelete = async () => {
+    if (!deleteTarget) return;
+    try {
+      await api.tasks.delete(deleteTarget);
+      setDeleteTarget(null);
+      loadTasks();
+    } catch (e) {
+      console.error("Failed to delete task:", e);
+    }
+  };
 
   const columns = [
     {
@@ -115,6 +144,38 @@ function TasksPageInner() {
       ),
     },
     {
+      key: "actions",
+      header: "",
+      className: "w-16",
+      render: (t: AnalysisTask) => (
+        <div className="flex items-center gap-1">
+          {(t.status === "pending" || t.status === "running") && (
+            <button
+              onClick={(e) => { e.stopPropagation(); e.preventDefault(); handleCancel(t.id); }}
+              className="p-1.5 rounded-lg hover:bg-surface-container-highest/50 text-on-surface-variant/50 hover:text-tertiary transition-colors"
+              title="停止任务"
+            >
+              <svg width="14" height="14" viewBox="0 0 24 24" fill="currentColor">
+                <rect x="6" y="6" width="12" height="12" rx="2" />
+              </svg>
+            </button>
+          )}
+          {(t.status === "completed" || t.status === "failed" || t.status === "cancelled") && (
+            <button
+              onClick={(e) => { e.stopPropagation(); e.preventDefault(); setDeleteTarget(t.id); }}
+              className="p-1.5 rounded-lg hover:bg-surface-container-highest/50 text-on-surface-variant/50 hover:text-tertiary transition-colors"
+              title="删除任务"
+            >
+              <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                <polyline points="3 6 5 6 21 6" />
+                <path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2" />
+              </svg>
+            </button>
+          )}
+        </div>
+      ),
+    },
+    {
       key: "created",
       header: "创建时间",
       render: (t: AnalysisTask) => (
@@ -176,6 +237,16 @@ function TasksPageInner() {
           }}
         />
       )}
+
+      <ConfirmDialog
+        open={!!deleteTarget}
+        title="删除分析任务"
+        description="确定要删除此分析任务吗？所有相关的工具运行记录将被一同删除，此操作不可撤销。"
+        confirmLabel="删除"
+        variant="danger"
+        onConfirm={handleDelete}
+        onCancel={() => setDeleteTarget(null)}
+      />
     </div>
   );
 }

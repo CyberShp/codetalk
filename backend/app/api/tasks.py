@@ -1,5 +1,6 @@
 import asyncio
 import uuid
+from datetime import datetime, timezone
 
 from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy import select
@@ -9,7 +10,7 @@ from sqlalchemy.orm import selectinload
 from app.database import get_db
 from app.models.task import AnalysisTask, ToolRun
 from app.schemas.task import TaskCreate, TaskDetailResponse, TaskResponse, ToolRunResponse
-from app.services.task_engine import run_task
+from app.services import task_engine
 
 router = APIRouter(prefix="/api/tasks", tags=["tasks"])
 
@@ -41,7 +42,8 @@ async def create_task(data: TaskCreate, db: AsyncSession = Depends(get_db)):
     db.add(task)
     await db.commit()
     await db.refresh(task)
-    asyncio.create_task(run_task(task.id))
+    handle = asyncio.create_task(task_engine.run_task(task.id))
+    task_engine.register_task(task.id, handle)
     return TaskResponse.model_validate(task)
 
 
@@ -69,3 +71,31 @@ async def get_task_results(task_id: uuid.UUID, db: AsyncSession = Depends(get_db
         "task_id": str(task_id),
         "tool_runs": [ToolRunResponse.model_validate(r).model_dump() for r in runs],
     }
+
+
+@router.post("/{task_id}/cancel")
+async def cancel_task_endpoint(task_id: uuid.UUID, db: AsyncSession = Depends(get_db)):
+    task = await db.get(AnalysisTask, task_id)
+    if not task:
+        raise HTTPException(status_code=404, detail="Task not found")
+    if task.status not in ("pending", "running"):
+        raise HTTPException(status_code=409, detail="Task is not cancellable")
+
+    cancelled = await task_engine.cancel_task(task_id)
+    if not cancelled:
+        task.status = "cancelled"
+        task.completed_at = datetime.now(timezone.utc)
+        await db.commit()
+
+    return {"status": "cancelled"}
+
+
+@router.delete("/{task_id}", status_code=204)
+async def delete_task(task_id: uuid.UUID, db: AsyncSession = Depends(get_db)):
+    task = await db.get(AnalysisTask, task_id)
+    if not task:
+        raise HTTPException(status_code=404, detail="Task not found")
+    if task.status in ("pending", "running"):
+        await task_engine.cancel_task(task_id)
+    await db.delete(task)
+    await db.commit()

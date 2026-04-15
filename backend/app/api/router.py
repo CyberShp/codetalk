@@ -8,6 +8,7 @@ from app.api.settings import router as settings_router
 from app.api.repos import router as repos_router
 from app.api.gitnexus_proxy import router as gitnexus_router
 from app.api.components import router as components_router
+from app.api.wiki import router as wiki_router
 from app.api.ws import router as ws_router
 
 api_router = APIRouter()
@@ -19,4 +20,5 @@ api_router.include_router(settings_router)
 api_router.include_router(repos_router)
 api_router.include_router(gitnexus_router)
 api_router.include_router(components_router)
+api_router.include_router(wiki_router)
 api_router.include_router(ws_router)

@@ -33,3 +33,20 @@ async def sync_repository(
         }
     except Exception as exc:
         raise HTTPException(status_code=422, detail=str(exc))
+
+
+@router.delete("/{repo_id}", status_code=204)
+async def delete_repository(repo_id: uuid.UUID, db: AsyncSession = Depends(get_db)):
+    repo = await db.get(Repository, repo_id)
+    if not repo:
+        raise HTTPException(status_code=404, detail="Repository not found")
+    await db.delete(repo)
+    await db.commit()
+
+
+@router.post("/{repo_id}/sync/cancel")
+async def cancel_sync(repo_id: uuid.UUID):
+    cancelled = await source_manager.cancel_sync(repo_id)
+    if not cancelled:
+        raise HTTPException(status_code=409, detail="No active sync to cancel")
+    return {"status": "cancelled"}

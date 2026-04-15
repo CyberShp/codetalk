@@ -1,30 +1,87 @@
 "use client";
 
-import { useState, useEffect } from "react";
-import { useParams } from "next/navigation";
+import { useState, useEffect, useMemo, useCallback } from "react";
+import { useParams, useRouter } from "next/navigation";
 import GlassPanel from "@/components/ui/GlassPanel";
 import StatusBadge from "@/components/ui/StatusBadge";
 import ProgressBar from "@/components/ui/ProgressBar";
 import MarkdownRenderer from "@/components/ui/MarkdownRenderer";
-import MermaidRenderer from "@/components/ui/MermaidRenderer";
 import GraphViewer from "@/components/ui/GraphViewer";
 import CodePanel from "@/components/ui/CodePanel";
+import IntelligencePanel from "@/components/ui/IntelligencePanel";
 import FloatingChat from "@/components/ui/FloatingChat";
+import WikiViewer from "@/components/ui/WikiViewer";
+import ConfirmDialog from "@/components/ui/ConfirmDialog";
 import { api } from "@/lib/api";
 import type { TaskDetail, GraphNode, GraphData } from "@/lib/types";
-import { Clock, Tag, Cpu, Code, ChevronDown, ChevronUp, Bot } from "lucide-react";
+import { Clock, Tag, Cpu, ChevronDown, ChevronUp, Bot } from "lucide-react";
+
+const KEY_PROCESS_LIMIT = 10;
+
+function scoreProcess(p: GraphNode): number {
+  const isCross = p.properties.processType === "cross_community";
+  const steps = p.properties.stepCount ?? 0;
+  return (isCross ? 100 : 0) + steps;
+}
 
 const detailTabs = ["documentation", "graph", "findings", "ai_summary"] as const;
 type Tab = (typeof detailTabs)[number];
 
+const INTELLIGENCE_LABELS = new Set(["Process", "Community"]);
+
 export default function TaskDetailPage() {
   const params = useParams();
+  const router = useRouter();
   const taskId = params.id as string;
   const [tab, setTab] = useState<Tab>("documentation");
+  const [showDeleteConfirm, setShowDeleteConfirm] = useState(false);
   const [task, setTask] = useState<TaskDetail | null>(null);
   const [error, setError] = useState("");
   const [selectedNode, setSelectedNode] = useState<GraphNode | null>(null);
   const [showMetadata, setShowMetadata] = useState(false);
+  const [showOtherProcesses, setShowOtherProcesses] = useState(false);
+  const [previousProcess, setPreviousProcess] = useState<GraphNode | null>(null);
+
+  // Derive graph data — safe with task=null (useMemo must run unconditionally)
+  const graphRun = task?.tool_runs.find((r) => r.tool_name === "gitnexus");
+  const graphData = (graphRun?.result?.graph as GraphData) ?? null;
+  const repoName = (graphRun?.result?.metadata as Record<string, unknown>)?.repo_name as string ?? "";
+
+  // Build node lookup for resolving step symbolIds to names
+  const nodeMap = useMemo(() => {
+    if (!graphData) return new Map<string, GraphNode>();
+    const m = new Map<string, GraphNode>();
+    for (const n of graphData.nodes) m.set(n.id, n);
+    return m;
+  }, [graphData]);
+
+  // Score, rank, and split processes into key vs other
+  const { keyProcesses, otherProcesses } = useMemo(() => {
+    const all = graphData?.processes ?? [];
+    const scored = all.map((p) => ({ node: p, score: scoreProcess(p) }));
+    scored.sort((a, b) => b.score - a.score);
+    const key = scored.slice(0, KEY_PROCESS_LIMIT).map((s) => s.node);
+    const other = scored.slice(KEY_PROCESS_LIMIT).map((s) => s.node);
+    return { keyProcesses: key, otherProcesses: other };
+  }, [graphData]);
+
+  // Track breadcrumb: sticky — only cleared on explicit return or new intelligence node
+  const handleNodeClick = useCallback((node: GraphNode | null) => {
+    if (!node) {
+      setSelectedNode(null);
+      setPreviousProcess(null);
+      return;
+    }
+    if (selectedNode?.label === "Process" && !INTELLIGENCE_LABELS.has(node.label)) {
+      // Process → code step: save the process as breadcrumb anchor
+      setPreviousProcess(selectedNode);
+    } else if (INTELLIGENCE_LABELS.has(node.label)) {
+      // Selecting a new intelligence node: reset breadcrumb
+      setPreviousProcess(null);
+    }
+    // code → code: leave previousProcess untouched (sticky breadcrumb)
+    setSelectedNode(node);
+  }, [selectedNode]);
 
   useEffect(() => {
     if (!taskId) return;
@@ -40,6 +97,23 @@ export default function TaskDetailPage() {
     const interval = setInterval(load, 5000);
     return () => clearInterval(interval);
   }, [taskId]);
+
+  const handleCancel = async () => {
+    try {
+      await api.tasks.cancel(taskId);
+    } catch (e) {
+      console.error("Failed to cancel task:", e);
+    }
+  };
+
+  const handleDelete = async () => {
+    try {
+      await api.tasks.delete(taskId);
+      router.push("/tasks");
+    } catch (e) {
+      console.error("Failed to delete task:", e);
+    }
+  };
 
   if (error) {
     return (
@@ -57,15 +131,8 @@ export default function TaskDetailPage() {
     );
   }
 
-  const docRun = task.tool_runs.find((r) => r.tool_name === "deepwiki");
-  const documentation = (docRun?.result?.documentation as string) ?? "";
-  const diagrams = (docRun?.result?.diagrams as Array<{ type: string; content: string }>) ?? [];
-
-  const graphRun = task.tool_runs.find((r) => r.tool_name === "gitnexus");
-  const graphData = (graphRun?.result?.graph as GraphData) ?? null;
-  const repoName = (graphRun?.result?.metadata as Record<string, unknown>)?.repo_name as string ?? "";
-
-  const showCodeInSidebar = tab === "graph" && selectedNode;
+  const showSidebar = tab === "graph" && selectedNode;
+  const isIntelligenceNode = selectedNode && INTELLIGENCE_LABELS.has(selectedNode.label);
 
   return (
     <div className="max-w-[1600px] mx-auto space-y-6 pb-20">
@@ -78,6 +145,29 @@ export default function TaskDetailPage() {
                 {repoName || "项目分析"}
               </h2>
               <StatusBadge status={task.status as "running" | "completed" | "failed" | "pending"} />
+              {(task.status === "pending" || task.status === "running") && (
+                <button
+                  onClick={handleCancel}
+                  className="p-1.5 rounded-lg hover:bg-surface-container-highest/50 text-on-surface-variant/50 hover:text-tertiary transition-colors"
+                  title="停止任务"
+                >
+                  <svg width="14" height="14" viewBox="0 0 24 24" fill="currentColor">
+                    <rect x="6" y="6" width="12" height="12" rx="2" />
+                  </svg>
+                </button>
+              )}
+              {(task.status === "completed" || task.status === "failed" || task.status === "cancelled") && (
+                <button
+                  onClick={() => setShowDeleteConfirm(true)}
+                  className="p-1.5 rounded-lg hover:bg-surface-container-highest/50 text-on-surface-variant/50 hover:text-tertiary transition-colors"
+                  title="删除任务"
+                >
+                  <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                    <polyline points="3 6 5 6 21 6" />
+                    <path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2" />
+                  </svg>
+                </button>
+              )}
             </div>
             <div className="flex items-center gap-4 text-xs text-on-surface-variant/70 font-data">
               <span className="flex items-center gap-1.5">
@@ -158,7 +248,7 @@ export default function TaskDetailPage() {
       )}
 
       {/* Main Layout Grid: Now dynamic for real space saving */}
-      <div className={`grid gap-8 transition-all duration-500 ease-in-out ${showCodeInSidebar ? "grid-cols-[1fr_520px]" : "grid-cols-1"}`}>
+      <div className={`grid gap-8 transition-all duration-500 ease-in-out ${showSidebar ? "grid-cols-[1fr_520px]" : "grid-cols-1"}`}>
         {/* Main Content Area */}
         <div className="space-y-6 min-w-0">
           {/* Enhanced Tabs Navigation */}
@@ -169,7 +259,10 @@ export default function TaskDetailPage() {
                   key={t}
                   onClick={() => {
                     setTab(t);
-                    if (t !== "graph") setSelectedNode(null);
+                    if (t !== "graph") {
+                      setSelectedNode(null);
+                      setPreviousProcess(null);
+                    }
                   }}
                   className={`px-5 py-2 text-[11px] font-bold uppercase tracking-widest rounded-lg transition-all duration-200 ${
                     tab === t
@@ -187,45 +280,13 @@ export default function TaskDetailPage() {
               ))}
             </div>
             
-            {tab === "documentation" && documentation && (
-              <div className="hidden sm:flex items-center gap-2 text-[10px] text-on-surface-variant/50 font-data">
-                <Code size={12} />
-                {documentation.length} 字符
-              </div>
-            )}
           </div>
 
           {/* Tab Content Panels */}
           <div className="animate-in fade-in duration-500">
             {tab === "documentation" && (
-              <GlassPanel className="p-8">
-                {documentation ? (
-                  <div className="prose prose-invert prose-sm max-w-none prose-headings:font-display prose-headings:tracking-tight prose-a:text-primary hover:prose-a:text-primary-fixed">
-                    <MarkdownRenderer content={documentation} />
-                    {diagrams.length > 0 && (
-                      <div className="mt-12 pt-8 border-t border-outline-variant/20 space-y-8">
-                        <div className="flex items-center gap-2">
-                          <div className="h-4 w-1 bg-primary rounded-full" />
-                          <h4 className="text-xs font-bold uppercase tracking-[0.2em] text-on-surface-variant">
-                            系统架构图谱
-                          </h4>
-                        </div>
-                        {diagrams.map((d, i) => (
-                          <div key={i} className="bg-surface-container-lowest/20 rounded-xl p-6 border border-outline-variant/10">
-                            <MermaidRenderer chart={d.content} />
-                          </div>
-                        ))}
-                      </div>
-                    )}
-                  </div>
-                ) : (
-                  <div className="py-20 flex flex-col items-center justify-center space-y-4">
-                    <div className="w-12 h-12 rounded-full border-2 border-primary/20 border-t-primary animate-spin" />
-                    <p className="text-sm text-on-surface-variant/50 font-display italic">
-                      {task.status === "running" ? "正在通过深度语义扫描生成文档..." : "等待数据回传..."}
-                    </p>
-                  </div>
-                )}
+              <GlassPanel className="p-0 overflow-hidden">
+                <WikiViewer taskId={taskId} />
               </GlassPanel>
             )}
 
@@ -237,7 +298,7 @@ export default function TaskDetailPage() {
                       nodes={graphData.nodes}
                       edges={graphData.edges}
                       selectedNodeId={selectedNode?.id ?? null}
-                      onNodeClick={setSelectedNode}
+                      onNodeClick={handleNodeClick}
                     />
                     <div className="absolute top-4 left-4 pointer-events-none">
                       <div className="bg-surface-container-high/80 backdrop-blur-md px-3 py-1.5 rounded border border-outline-variant/30">
@@ -262,57 +323,129 @@ export default function TaskDetailPage() {
               <div className="space-y-8">
                 {graphData?.intelligence ? (
                   <>
-                    <div className="grid grid-cols-1 sm:grid-cols-2 gap-6">
-                      <GlassPanel className="bg-primary/5 border-primary/20 group hover:bg-primary/10 transition-colors">
-                        <h4 className="text-[10px] uppercase tracking-[0.2em] text-primary/70 font-bold mb-4">执行流概览</h4>
+                    {/* Summary metrics */}
+                    <div className="grid grid-cols-1 sm:grid-cols-3 gap-6">
+                      <GlassPanel className="bg-primary/5 border-primary/20">
+                        <h4 className="text-[10px] uppercase tracking-[0.2em] text-primary/70 font-bold mb-4">关键流程</h4>
                         <div className="flex items-baseline gap-2">
-                          <p className="text-5xl font-display font-black text-primary">{graphData.processes?.length || 0}</p>
-                          <span className="text-xs text-on-surface-variant">关键路径</span>
+                          <p className="text-5xl font-display font-black text-primary">{keyProcesses.length}</p>
+                          <span className="text-xs text-on-surface-variant">/ {(graphData.processes?.length || 0)} 总计</span>
                         </div>
                       </GlassPanel>
-                      <GlassPanel className="bg-secondary/5 border-secondary/20 group hover:bg-secondary/10 transition-colors">
-                        <h4 className="text-[10px] uppercase tracking-[0.2em] text-secondary/70 font-bold mb-4">逻辑社区聚类</h4>
+                      <GlassPanel className="bg-secondary/5 border-secondary/20">
+                        <h4 className="text-[10px] uppercase tracking-[0.2em] text-secondary/70 font-bold mb-4">逻辑社区</h4>
                         <div className="flex items-baseline gap-2">
                           <p className="text-5xl font-display font-black text-secondary">{graphData.communities?.length || 0}</p>
                           <span className="text-xs text-on-surface-variant">内聚模块</span>
                         </div>
                       </GlassPanel>
+                      <GlassPanel className="bg-tertiary/5 border-tertiary/20">
+                        <h4 className="text-[10px] uppercase tracking-[0.2em] text-tertiary/70 font-bold mb-4">跨社区流程</h4>
+                        <div className="flex items-baseline gap-2">
+                          <p className="text-5xl font-display font-black text-tertiary">
+                            {(graphData.intelligence as Record<string, Record<string, number>>)?.process_summary?.cross_community ?? 0}
+                          </p>
+                          <span className="text-xs text-on-surface-variant">跨模块协作</span>
+                        </div>
+                      </GlassPanel>
                     </div>
-                    
+
                     <div className="grid grid-cols-1 md:grid-cols-2 gap-8">
+                      {/* Key processes */}
                       <div className="space-y-4">
                         <div className="flex items-center gap-2 px-1">
                           <div className="h-3 w-3 bg-primary/20 rounded-sm border border-primary/40" />
-                          <h4 className="text-xs font-bold text-on-surface uppercase tracking-widest">核心业务流</h4>
+                          <h4 className="text-xs font-bold text-on-surface uppercase tracking-widest">关键流程</h4>
+                          <span className="text-[9px] text-on-surface-variant/40 font-data">按跨社区 + 步骤数排序</span>
                         </div>
-                        {graphData.processes?.map(p => (
-                          <div 
-                            key={p.id} 
-                            className="p-4 rounded-xl bg-surface-container-low border border-outline-variant/20 hover:border-primary/40 hover:bg-surface-container-high transition-all cursor-pointer group"
-                            onClick={() => { setTab("graph"); setSelectedNode(p); }}
-                          >
-                            <div className="flex items-center justify-between mb-2">
-                              <span className="text-[9px] font-data text-primary/70 border border-primary/20 px-1.5 py-0.5 rounded">{p.properties.processType}</span>
-                              <span className="text-[9px] text-on-surface-variant/40 font-data">{p.properties.stepCount} Steps</span>
+                        {keyProcesses.map(p => {
+                          const steps = p.steps ?? [];
+                          const isCross = p.properties.processType === "cross_community";
+                          return (
+                            <div
+                              key={p.id}
+                              className="p-4 rounded-xl bg-surface-container-low border border-outline-variant/20 hover:border-primary/40 hover:bg-surface-container-high transition-all cursor-pointer group"
+                              onClick={() => { setPreviousProcess(null); setTab("graph"); setSelectedNode(p); }}
+                            >
+                              <div className="flex items-center justify-between mb-2">
+                                <div className="flex items-center gap-1.5">
+                                  {isCross && (
+                                    <span className="text-[9px] font-data text-tertiary/90 bg-tertiary/10 border border-tertiary/20 px-1.5 py-0.5 rounded">跨社区</span>
+                                  )}
+                                  <span className="text-[9px] font-data text-primary/70 border border-primary/20 px-1.5 py-0.5 rounded">
+                                    {p.properties.stepCount} 步
+                                  </span>
+                                </div>
+                              </div>
+                              <p className="text-sm font-semibold text-on-surface group-hover:text-primary transition-colors mb-1">{p.properties.name}</p>
+                              {steps.length > 0 && (
+                                <div className="flex flex-wrap gap-1 mt-2">
+                                  {steps.slice(0, 5).map((s, i) => {
+                                    const node = nodeMap.get(s.symbolId);
+                                    return (
+                                      <span key={i} className="text-[9px] font-data text-on-surface-variant/60 bg-surface-container-high/50 px-1.5 py-0.5 rounded">
+                                        {node?.properties.name ?? s.symbolId.slice(0, 8)}
+                                      </span>
+                                    );
+                                  })}
+                                  {steps.length > 5 && (
+                                    <span className="text-[9px] text-on-surface-variant/40 font-data">+{steps.length - 5}</span>
+                                  )}
+                                </div>
+                              )}
                             </div>
-                            <p className="text-sm font-semibold text-on-surface group-hover:text-primary transition-colors">{p.properties.name}</p>
+                          );
+                        })}
+
+                        {/* Other processes (collapsible) */}
+                        {otherProcesses.length > 0 && (
+                          <button
+                            onClick={() => setShowOtherProcesses(!showOtherProcesses)}
+                            className="w-full flex items-center justify-center gap-1.5 text-[10px] text-on-surface-variant/50 hover:text-on-surface py-2 rounded-lg border border-outline-variant/10 hover:bg-surface-container-high/50 transition-colors"
+                          >
+                            {showOtherProcesses ? <ChevronUp size={12} /> : <ChevronDown size={12} />}
+                            {showOtherProcesses ? "收起" : `其他 ${otherProcesses.length} 个流程`}
+                          </button>
+                        )}
+                        {showOtherProcesses && otherProcesses.map(p => (
+                          <div
+                            key={p.id}
+                            className="p-3 rounded-lg bg-surface-container-low/50 border border-outline-variant/10 hover:border-primary/30 transition-all cursor-pointer group"
+                            onClick={() => { setPreviousProcess(null); setTab("graph"); setSelectedNode(p); }}
+                          >
+                            <div className="flex items-center justify-between">
+                              <p className="text-xs text-on-surface-variant group-hover:text-on-surface transition-colors truncate">{p.properties.name}</p>
+                              <span className="text-[9px] text-on-surface-variant/40 font-data shrink-0 ml-2">{p.properties.stepCount} 步</span>
+                            </div>
                           </div>
                         ))}
                       </div>
+
+                      {/* Communities */}
                       <div className="space-y-4">
                         <div className="flex items-center gap-2 px-1">
                           <div className="h-3 w-3 bg-secondary/20 rounded-sm border border-secondary/40" />
-                          <h4 className="text-xs font-bold text-on-surface uppercase tracking-widest">逻辑聚类分析</h4>
+                          <h4 className="text-xs font-bold text-on-surface uppercase tracking-widest">逻辑聚类</h4>
                         </div>
                         {graphData.communities?.map(c => (
-                          <div 
-                            key={c.id} 
+                          <div
+                            key={c.id}
                             className="p-4 rounded-xl bg-surface-container-low border border-outline-variant/20 hover:border-secondary/40 hover:bg-surface-container-high transition-all cursor-pointer group"
-                            onClick={() => { setTab("graph"); setSelectedNode(c); }}
+                            onClick={() => { setPreviousProcess(null); setTab("graph"); setSelectedNode(c); }}
                           >
                             <div className="flex items-center justify-between mb-2">
-                              <span className="text-[9px] font-data text-secondary/70 border border-secondary/20 px-1.5 py-0.5 rounded">Community</span>
-                              <span className="text-[9px] text-on-surface-variant/40 font-data">{c.properties.memberCount} Members</span>
+                              <span className="text-[9px] font-data text-secondary/70 border border-secondary/20 px-1.5 py-0.5 rounded">
+                                {c.properties.memberCount} 成员
+                              </span>
+                              {c.properties.cohesion != null && (
+                                <span className={`text-[9px] font-data px-1.5 py-0.5 rounded ${
+                                  (c.properties.cohesion as number) >= 0.5
+                                    ? "text-secondary/70 border border-secondary/20"
+                                    : "text-tertiary/70 border border-tertiary/20"
+                                }`}>
+                                  内聚度 {((c.properties.cohesion as number) * 100).toFixed(0)}%
+                                </span>
+                              )}
                             </div>
                             <p className="text-sm font-semibold text-on-surface group-hover:text-secondary transition-colors">{c.properties.name}</p>
                           </div>
@@ -353,16 +486,48 @@ export default function TaskDetailPage() {
           </div>
         </div>
 
-        {/* Dynamic Sidebar: Only shown for CodePanel */}
-        {showCodeInSidebar && (
-          <div className="sticky top-6 h-[calc(100vh-6rem)] animate-in slide-in-from-right-8 duration-500">
-            <CodePanel node={selectedNode!} repoName={repoName} />
+        {/* Dynamic Sidebar: context panel for selected node */}
+        {showSidebar && (
+          <div className="sticky top-6 h-[calc(100vh-6rem)] overflow-y-auto animate-in slide-in-from-right-8 duration-500 space-y-2">
+            {/* Breadcrumb: back to parent process */}
+            {previousProcess && !isIntelligenceNode && (
+              <button
+                onClick={() => {
+                  setSelectedNode(previousProcess);
+                  setPreviousProcess(null);
+                }}
+                className="flex items-center gap-2 w-full px-3 py-2.5 text-xs text-on-surface-variant hover:text-primary transition-all rounded-lg bg-surface-container-low hover:bg-surface-container-high border border-outline-variant/20 group"
+              >
+                <span className="group-hover:-translate-x-0.5 transition-transform inline-block shrink-0 text-base leading-none">←</span>
+                <span className="truncate">返回：{previousProcess.properties.name}</span>
+              </button>
+            )}
+            {isIntelligenceNode ? (
+              <IntelligencePanel
+                node={selectedNode!}
+                nodeMap={nodeMap}
+                edges={graphData?.edges ?? []}
+                onNodeClick={handleNodeClick}
+              />
+            ) : (
+              <CodePanel node={selectedNode!} repoName={repoName} />
+            )}
           </div>
         )}
       </div>
 
       {/* Floating AI Chat */}
       <FloatingChat taskId={taskId} />
+
+      <ConfirmDialog
+        open={showDeleteConfirm}
+        title="删除分析任务"
+        description="确定要删除此分析任务吗？所有相关的工具运行记录将被一同删除，此操作不可撤销。"
+        confirmLabel="删除"
+        variant="danger"
+        onConfirm={handleDelete}
+        onCancel={() => setShowDeleteConfirm(false)}
+      />
     </div>
   );
 }

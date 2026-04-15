@@ -6,6 +6,7 @@ import GlassPanel from "@/components/ui/GlassPanel";
 import DataTable from "@/components/ui/DataTable";
 import CyberInput from "@/components/ui/CyberInput";
 import NewAnalysisModal from "@/components/ui/NewAnalysisModal";
+import ConfirmDialog from "@/components/ui/ConfirmDialog";
 import { api } from "@/lib/api";
 import type { Project, Repository, SourceType } from "@/lib/types";
 
@@ -20,6 +21,8 @@ export default function AssetsPage() {
   const [syncingRepos, setSyncingRepos] = useState<Set<string>>(new Set());
   const [syncErrors, setSyncErrors] = useState<Record<string, string>>({});
   const [loading, setLoading] = useState(true);
+  const [deleteProjectTarget, setDeleteProjectTarget] = useState<{id: string; name: string} | null>(null);
+  const [deleteRepoTarget, setDeleteRepoTarget] = useState<{id: string; name: string} | null>(null);
 
   const loadProjects = useCallback(async () => {
     try {
@@ -55,6 +58,57 @@ export default function AssetsPage() {
   useEffect(() => {
     loadRepos();
   }, [loadRepos]);
+
+  const handleDeleteProject = async () => {
+    if (!deleteProjectTarget) return;
+    try {
+      await api.projects.delete(deleteProjectTarget.id);
+      setDeleteProjectTarget(null);
+      if (selectedProject === deleteProjectTarget.id) setSelectedProject(null);
+      loadProjects();
+    } catch (e) {
+      console.error("Failed to delete project:", e);
+    }
+  };
+
+  const handleDeleteRepo = async () => {
+    if (!deleteRepoTarget) return;
+    try {
+      await api.repos.delete(deleteRepoTarget.id);
+      setDeleteRepoTarget(null);
+      loadRepos();
+    } catch (e) {
+      console.error("Failed to delete repo:", e);
+    }
+  };
+
+  const handleSync = async (repoId: string) => {
+    setSyncingRepos((s) => new Set(s).add(repoId));
+    setSyncErrors((e) => { const next = { ...e }; delete next[repoId]; return next; });
+    try {
+      await api.repos.sync(repoId);
+      loadRepos();
+    } catch (e) {
+      setSyncErrors((prev) => ({
+        ...prev,
+        [repoId]: e instanceof Error ? e.message : "同步失败",
+      }));
+    } finally {
+      setSyncingRepos((s) => {
+        const next = new Set(s);
+        next.delete(repoId);
+        return next;
+      });
+    }
+  };
+
+  const handleCancelSync = async (repoId: string) => {
+    try {
+      await api.repos.cancelSync(repoId);
+    } catch (e) {
+      console.error("Failed to cancel sync:", e);
+    }
+  };
 
   const repoColumns = [
     {
@@ -105,41 +159,41 @@ export default function AssetsPage() {
     {
       key: "actions",
       header: "",
-      className: "w-40",
+      className: "w-48",
       render: (r: Repository) => (
-        <div className="flex gap-2">
+        <div className="flex gap-2 items-center">
+          {syncingRepos.has(r.id) ? (
+            <button
+              onClick={(e) => { e.stopPropagation(); handleCancelSync(r.id); }}
+              className="px-3 py-1 text-xs font-medium rounded-md bg-surface-container-high text-on-surface-variant hover:text-tertiary transition-colors"
+            >
+              取消
+            </button>
+          ) : (
+            <button
+              onClick={(e) => { e.stopPropagation(); handleSync(r.id); }}
+              className="px-3 py-1 text-xs font-medium rounded-md bg-surface-container-high text-on-surface-variant hover:text-on-surface transition-colors"
+            >
+              同步
+            </button>
+          )}
           <button
-            onClick={async () => {
-              setSyncingRepos((s) => new Set(s).add(r.id));
-              setSyncErrors((e) => { const next = { ...e }; delete next[r.id]; return next; });
-              try {
-                await api.repos.sync(r.id);
-                loadRepos();
-              } catch (e) {
-                setSyncErrors((prev) => ({
-                  ...prev,
-                  [r.id]: e instanceof Error ? e.message : "同步失败",
-                }));
-              } finally {
-                setSyncingRepos((s) => {
-                  const next = new Set(s);
-                  next.delete(r.id);
-                  return next;
-                });
-              }
-            }}
-            disabled={syncingRepos.has(r.id)}
-            className="px-3 py-1 text-xs font-medium rounded-md bg-surface-container-high text-on-surface-variant hover:text-on-surface transition-colors disabled:opacity-40"
-          >
-            {syncingRepos.has(r.id) ? "同步中..." : "同步"}
-          </button>
-          <button
-            onClick={() => setShowAnalysis(r.id)}
+            onClick={(e) => { e.stopPropagation(); setShowAnalysis(r.id); }}
             disabled={!r.last_indexed_at}
             title={r.last_indexed_at ? "创建分析任务" : "请先同步仓库"}
             className="px-3 py-1 text-xs font-medium rounded-md bg-primary-container text-primary hover:shadow-[0_0_8px_rgba(164,230,255,0.2)] transition-shadow disabled:opacity-30"
           >
             分析
+          </button>
+          <button
+            onClick={(e) => { e.stopPropagation(); setDeleteRepoTarget({id: r.id, name: r.name}); }}
+            className="p-1.5 rounded-lg hover:bg-surface-container-highest/50 text-on-surface-variant/50 hover:text-tertiary transition-colors"
+            title="删除仓库"
+          >
+            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+              <polyline points="3 6 5 6 21 6" />
+              <path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2" />
+            </svg>
           </button>
         </div>
       ),
@@ -175,20 +229,38 @@ export default function AssetsPage() {
           ) : (
             <div className="space-y-1">
               {projects.map((p) => (
-                <button
+                <div
                   key={p.id}
-                  onClick={() => setSelectedProject(p.id)}
-                  className={`w-full text-left px-3 py-2 rounded-md text-sm transition-colors ${
+                  className={`group flex items-center gap-1 rounded-md transition-colors ${
                     selectedProject === p.id
-                      ? "bg-surface-container-high text-primary"
-                      : "text-on-surface-variant hover:bg-surface-container hover:text-on-surface"
+                      ? "bg-surface-container-high"
+                      : "hover:bg-surface-container"
                   }`}
                 >
-                  <p className="font-medium">{p.name}</p>
-                  <p className="text-xs text-on-surface-variant/60 mt-0.5">
-                    {p.repo_count} repo{p.repo_count !== 1 ? "s" : ""}
-                  </p>
-                </button>
+                  <button
+                    onClick={() => setSelectedProject(p.id)}
+                    className={`flex-1 text-left px-3 py-2 text-sm ${
+                      selectedProject === p.id
+                        ? "text-primary"
+                        : "text-on-surface-variant hover:text-on-surface"
+                    }`}
+                  >
+                    <p className="font-medium">{p.name}</p>
+                    <p className="text-xs text-on-surface-variant/60 mt-0.5">
+                      {p.repo_count} repo{p.repo_count !== 1 ? "s" : ""}
+                    </p>
+                  </button>
+                  <button
+                    onClick={(e) => { e.stopPropagation(); setDeleteProjectTarget({id: p.id, name: p.name}); }}
+                    className="p-1.5 mr-1 rounded-lg opacity-0 group-hover:opacity-100 text-on-surface-variant/50 hover:text-tertiary transition-all"
+                    title="删除项目"
+                  >
+                    <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                      <polyline points="3 6 5 6 21 6" />
+                      <path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2" />
+                    </svg>
+                  </button>
+                </div>
               ))}
             </div>
           )}
@@ -266,6 +338,25 @@ export default function AssetsPage() {
           onClose={() => setShowAnalysis(null)}
         />
       )}
+
+      <ConfirmDialog
+        open={!!deleteProjectTarget}
+        title="删除项目"
+        description={`确定要删除项目「${deleteProjectTarget?.name}」吗？所有相关仓库及分析任务将被一同删除，此操作不可撤销。`}
+        confirmLabel="删除项目"
+        variant="danger"
+        onConfirm={handleDeleteProject}
+        onCancel={() => setDeleteProjectTarget(null)}
+      />
+      <ConfirmDialog
+        open={!!deleteRepoTarget}
+        title="删除仓库"
+        description={`确定要删除仓库「${deleteRepoTarget?.name}」吗？所有相关分析任务将被一同删除，此操作不可撤销。`}
+        confirmLabel="删除仓库"
+        variant="danger"
+        onConfirm={handleDeleteRepo}
+        onCancel={() => setDeleteRepoTarget(null)}
+      />
     </div>
   );
 }

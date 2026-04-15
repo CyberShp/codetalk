@@ -18,6 +18,9 @@ import type {
   ComponentConfigResponse,
   ApplyResult,
   RestartResult,
+  WikiResponse,
+  WikiGenerateResponse,
+  WikiStatus,
 } from "./types";
 
 const BASE = process.env.NEXT_PUBLIC_API_URL || "http://localhost:8000";
@@ -65,6 +68,10 @@ export const api = {
   repos: {
     sync: (repoId: string) =>
       request<SyncResult>(`/api/repos/${repoId}/sync`, { method: "POST" }),
+    delete: (repoId: string) =>
+      request<void>(`/api/repos/${repoId}`, { method: "DELETE" }),
+    cancelSync: (repoId: string) =>
+      request<{ status: string }>(`/api/repos/${repoId}/sync/cancel`, { method: "POST" }),
   },
 
   tasks: {
@@ -83,6 +90,10 @@ export const api = {
     get: (id: string) => request<TaskDetail>(`/api/tasks/${id}`),
     getResults: (id: string) =>
       request<Record<string, unknown>>(`/api/tasks/${id}/results`),
+    delete: (id: string) =>
+      request<void>(`/api/tasks/${id}`, { method: "DELETE" }),
+    cancel: (id: string) =>
+      request<{ status: string }>(`/api/tasks/${id}/cancel`, { method: "POST" }),
   },
 
   tools: {
@@ -118,6 +129,22 @@ export const api = {
       if (endLine !== undefined) qs.set("end_line", String(endLine));
       return request<FileSlice>(`/api/gitnexus/file?${qs}`);
     },
+  },
+
+  wiki: {
+    get: (taskId: string) =>
+      request<WikiResponse>(`/api/tasks/${taskId}/wiki`),
+    generate: (taskId: string, comprehensive = true, forceRefresh = false) =>
+      request<WikiGenerateResponse>(`/api/tasks/${taskId}/wiki/generate`, {
+        method: "POST",
+        body: JSON.stringify({ comprehensive, force_refresh: forceRefresh }),
+      }),
+    status: (taskId: string) =>
+      request<WikiStatus>(`/api/tasks/${taskId}/wiki/status`),
+    deleteCache: (taskId: string) =>
+      request<{ status: string }>(`/api/tasks/${taskId}/wiki/cache`, {
+        method: "DELETE",
+      }),
   },
 
   chat: {

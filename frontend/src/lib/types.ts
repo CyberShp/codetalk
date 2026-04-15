@@ -138,6 +138,11 @@ export interface LogEntry {
 
 /* ── GitNexus Knowledge Graph types ── */
 
+export interface ProcessStep {
+  symbolId: string;
+  step: number;
+}
+
 export interface GraphNode {
   id: string;
   label: string; // File, Folder, Function, Method, Class, Module, etc.
@@ -155,6 +160,7 @@ export interface GraphNode {
     cohesion?: number;
     [key: string]: unknown;
   };
+  steps?: ProcessStep[]; // enriched on Process nodes by backend
 }
 
 export interface GraphEdge {
@@ -240,4 +246,55 @@ export interface ApplyResult {
 export interface RestartResult {
   success: boolean;
   message: string;
+}
+
+/* ── Wiki types ── */
+
+export interface WikiPage {
+  id: string;
+  title: string;
+  content: string;
+  filePaths: string[];
+  importance: "high" | "medium" | "low";
+  relatedPages: string[];
+}
+
+export interface WikiSection {
+  id: string;
+  title: string;
+  pages: string[];
+  subsections?: string[];
+}
+
+export interface WikiStructure {
+  id: string;
+  title: string;
+  description: string;
+  pages: WikiPage[];
+  sections: WikiSection[];
+  rootSections: string[];
+}
+
+export interface WikiData {
+  wiki_structure: WikiStructure;
+  generated_pages: Record<string, WikiPage>;
+}
+
+export interface WikiResponse {
+  status: "ready" | "not_generated";
+  wiki: WikiData | null;
+  stale: boolean;
+}
+
+export interface WikiGenerateResponse {
+  status: string;
+  message: string;
+}
+
+export interface WikiStatus {
+  running: boolean;
+  current: number;
+  total: number;
+  page_title: string;
+  error: string | null;
 }

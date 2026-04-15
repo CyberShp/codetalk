@@ -1,0 +1,47 @@
+# =============================================================================
+# PersistentVolumeClaims
+# 注意: postgres 的 PVC (pg-data) 由 04-deployments.yaml StatefulSet 的
+#       volumeClaimTemplates 自动创建，不在此文件中。
+#
+# 重要: code-volume 同时被 backend(RW)、deepwiki(RO)、gitnexus(RW) 挂载
+#       必须使用支持 ReadWriteMany 的 StorageClass（NFS / CephFS / Longhorn RWX）
+#       若集群只有 ReadWriteOnce，参考 FAQ 8.1 的 workaround
+# =============================================================================
+---
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: code-volume
+  namespace: codetalk
+  annotations:
+    note: "backend(RW) + deepwiki(RO) 共享，必须 ReadWriteMany"
+spec:
+  accessModes: [ReadWriteMany]
+  resources:
+    requests:
+      storage: 50Gi
+  # storageClassName: nfs-client         # 示例：NFS provisioner
+
+---
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: deepwiki-data
+  namespace: codetalk
+spec:
+  accessModes: [ReadWriteOnce]
+  resources:
+    requests:
+      storage: 5Gi
+
+---
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: gitnexus-data
+  namespace: codetalk
+spec:
+  accessModes: [ReadWriteOnce]
+  resources:
+    requests:
+      storage: 5Gi

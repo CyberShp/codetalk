@@ -1,5 +1,6 @@
 """Task execution engine — orchestrates tool adapters for analysis tasks."""
 
+import asyncio
 import logging
 from datetime import datetime, timezone
 from uuid import UUID
@@ -17,6 +18,21 @@ from app.models.task import AnalysisTask, ToolRun
 from app.services import source_manager
 
 logger = logging.getLogger(__name__)
+
+_running_tasks: dict[UUID, asyncio.Task] = {}
+
+
+def register_task(task_id: UUID, handle: asyncio.Task) -> None:
+    _running_tasks[task_id] = handle
+
+
+async def cancel_task(task_id: UUID) -> bool:
+    """Cancel a running task. Returns True if handle was found and cancelled."""
+    handle = _running_tasks.pop(task_id, None)
+    if handle and not handle.done():
+        handle.cancel()
+        return True
+    return False
 
 
 async def run_task(task_id: UUID) -> None:
@@ -107,12 +123,19 @@ async def run_task(task_id: UUID) -> None:
 
             await db.commit()
 
+        except asyncio.CancelledError:
+            logger.info("Task %s cancelled", task_id)
+            task.status = "cancelled"
+            task.completed_at = datetime.now(timezone.utc)
+            await db.commit()
         except Exception as exc:
             logger.exception("Task %s failed", task_id)
             task.status = "failed"
             task.error = str(exc)
             task.completed_at = datetime.now(timezone.utc)
             await db.commit()
+        finally:
+            _running_tasks.pop(task_id, None)
 
 
 async def _create_tool_runs(

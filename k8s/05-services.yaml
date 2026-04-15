@@ -1,0 +1,84 @@
+# =============================================================================
+# Services
+# frontend / backend / deepwiki(web) 暴露 NodePort 方便内网访问
+# postgres / deepwiki-api / gitnexus 仅集群内部访问（ClusterIP）
+# =============================================================================
+
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: frontend
+  namespace: codetalk
+spec:
+  selector:
+    app: frontend
+  ports:
+    - name: http
+      port: 3000
+      targetPort: 3000
+      nodePort: 30003   # 内网访问: http://<node-ip>:30003
+  type: NodePort
+
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: postgres
+  namespace: codetalk
+spec:
+  selector:
+    app: postgres
+  ports:
+    - port: 5432
+      targetPort: 5432
+  type: ClusterIP
+
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: backend
+  namespace: codetalk
+spec:
+  selector:
+    app: backend
+  ports:
+    - name: http
+      port: 8000
+      targetPort: 8000
+      nodePort: 30800   # 内网访问: http://<node-ip>:30800
+  type: NodePort
+
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: deepwiki
+  namespace: codetalk
+spec:
+  selector:
+    app: deepwiki
+  ports:
+    - name: api
+      port: 8001
+      targetPort: 8001
+    - name: web
+      port: 3000
+      targetPort: 3000
+      nodePort: 30300   # deepwiki Web UI: http://<node-ip>:30300
+  type: NodePort
+
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: gitnexus
+  namespace: codetalk
+spec:
+  selector:
+    app: gitnexus
+  ports:
+    - port: 7100
+      targetPort: 7100
+  type: ClusterIP

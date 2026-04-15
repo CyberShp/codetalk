@@ -1,6 +1,6 @@
 "use client";
 
-import { useMemo, useState, useCallback } from "react";
+import { useMemo, useState, useCallback, useRef, useEffect } from "react";
 import type { GraphNode, GraphEdge } from "@/lib/types";
 
 /* ── Color map per node type ── */
@@ -52,9 +52,10 @@ interface LayoutNode {
 
 export default function GraphViewer({ nodes, edges, selectedNodeId, onNodeClick }: Props) {
   const [hoveredId, setHoveredId] = useState<string | null>(null);
+  const containerRef = useRef<HTMLDivElement>(null);
 
   /* Group nodes by label, lay out in columns */
-  const { layout, width, height, edgeLines } = useMemo(() => {
+  const { layout, width, height, edgeLines, posMap, connectedNodeIds } = useMemo(() => {
     // Filter out Folder nodes (too many, clutters graph)
     const filtered = nodes.filter((n) => n.label !== "Folder");
     const groups = new Map<string, GraphNode[]>();
@@ -67,13 +68,33 @@ export default function GraphViewer({ nodes, edges, selectedNodeId, onNodeClick 
     // Limit per column to prevent massive SVGs
     const MAX_PER_COL = 30;
 
+    // Identify focus nodes to ensure they are always in layout
+    const focusNodeIds = new Set<string>();
+    if (selectedNodeId) {
+      focusNodeIds.add(selectedNodeId);
+      const selNode = nodes.find(n => n.id === selectedNodeId);
+      if (selNode?.label === "Process" && selNode.steps) {
+        selNode.steps.forEach(s => focusNodeIds.add(s.symbolId));
+      }
+    }
+
     const laid: LayoutNode[] = [];
     const posMap = new Map<string, { x: number; y: number }>();
     let col = 0;
     let maxRow = 0;
 
     for (const [, group] of groups) {
-      const capped = group.slice(0, MAX_PER_COL);
+      // Ensure focus nodes in this group are prioritized in the rendered set
+      const focusInGroup = group.filter(n => focusNodeIds.has(n.id));
+      const othersInGroup = group.filter(n => !focusNodeIds.has(n.id));
+      
+      let capped: GraphNode[];
+      if (focusInGroup.length >= MAX_PER_COL) {
+        capped = focusInGroup.slice(0, MAX_PER_COL);
+      } else {
+        capped = [...focusInGroup, ...othersInGroup.slice(0, MAX_PER_COL - focusInGroup.length)];
+      }
+
       for (let row = 0; row < capped.length; row++) {
         const x = PADDING + col * COL_GAP;
         const y = PADDING + row * ROW_GAP;
@@ -82,6 +103,22 @@ export default function GraphViewer({ nodes, edges, selectedNodeId, onNodeClick 
         if (row > maxRow) maxRow = row;
       }
       col++;
+    }
+
+    // Compute connected node IDs for dim effect
+    const connectedNodeIds = new Set<string>();
+    if (selectedNodeId) {
+      connectedNodeIds.add(selectedNodeId);
+      // If selected node is a Process, include all its step nodes so the full path is lit
+      const selNode = nodes.find((n) => n.id === selectedNodeId);
+      if (selNode?.label === "Process" && selNode.steps) {
+        for (const s of selNode.steps) connectedNodeIds.add(s.symbolId);
+      }
+      // Also include 1-hop edge neighbors
+      for (const e of edges) {
+        if (e.sourceId === selectedNodeId) connectedNodeIds.add(e.targetId);
+        if (e.targetId === selectedNodeId) connectedNodeIds.add(e.sourceId);
+      }
     }
 
     // Build edge lines (only where both endpoints exist in layout)
@@ -128,8 +165,21 @@ export default function GraphViewer({ nodes, edges, selectedNodeId, onNodeClick 
       width: PADDING * 2 + col * COL_GAP,
       height: PADDING * 2 + (maxRow + 1) * ROW_GAP,
       edgeLines: lines,
+      posMap,
+      connectedNodeIds,
     };
-  }, [nodes, edges]);
+  }, [nodes, edges, selectedNodeId]);
+
+  // Auto-center on selected node
+  useEffect(() => {
+    if (!selectedNodeId || !containerRef.current) return;
+    const pos = posMap.get(selectedNodeId);
+    if (!pos) return;
+    const el = containerRef.current;
+    const centerX = pos.x + NODE_W / 2 - el.clientWidth / 2;
+    const centerY = pos.y + NODE_H / 2 - el.clientHeight / 2;
+    el.scrollTo({ left: centerX, top: centerY, behavior: "smooth" });
+  }, [selectedNodeId, posMap]);
 
   if (nodes.length === 0) {
     return (
@@ -143,7 +193,7 @@ export default function GraphViewer({ nodes, edges, selectedNodeId, onNodeClick 
   const svgHeight = Math.max(height, 300);
 
   return (
-    <div className="overflow-auto rounded-lg bg-surface-container-lowest/30 border border-outline-variant/10">
+    <div ref={containerRef} className="overflow-auto rounded-lg bg-surface-container-lowest/30 border border-outline-variant/10">
       <svg
         width={svgWidth}
         height={svgHeight}
@@ -160,10 +210,12 @@ export default function GraphViewer({ nodes, edges, selectedNodeId, onNodeClick 
         {/* Edges */}
         <g>
           {edgeLines.map((e) => {
-            const isConnected = e.sourceId === selectedNodeId || e.targetId === selectedNodeId || 
+            // Edge is "connected" if either endpoint is in the full connected set (includes process steps)
+            const isConnected = (!!selectedNodeId && (connectedNodeIds.has(e.sourceId) || connectedNodeIds.has(e.targetId))) ||
                               e.sourceId === hoveredId || e.targetId === hoveredId;
             const baseOpacity = e.confidence ? 0.1 + e.confidence * 0.2 : 0.15;
-            
+            const edgeOpacity = selectedNodeId && !isConnected ? 0.04 : (isConnected ? 0.85 : baseOpacity);
+
             return (
               <line
                 key={e.id}
@@ -172,8 +224,8 @@ export default function GraphViewer({ nodes, edges, selectedNodeId, onNodeClick 
                 x2={e.x2}
                 y2={e.y2}
                 stroke={e.color}
-                strokeOpacity={isConnected ? 0.8 : baseOpacity}
-                strokeWidth={isConnected ? e.strokeWidth + 1 : e.strokeWidth}
+                strokeOpacity={edgeOpacity}
+                strokeWidth={isConnected ? e.strokeWidth + 1.5 : e.strokeWidth}
                 className="transition-all duration-300"
               />
             );
@@ -185,6 +237,8 @@ export default function GraphViewer({ nodes, edges, selectedNodeId, onNodeClick 
           {layout.map(({ node, x, y }) => {
             const isSelected = node.id === selectedNodeId;
             const isHovered = node.id === hoveredId;
+            const isConnected = connectedNodeIds.has(node.id);
+            const isDimmed = !!selectedNodeId && !isConnected;
             const isCodeNode = CODE_LABELS.has(node.label);
             const color = NODE_COLORS[node.label] || "#6B7280";
 
@@ -198,8 +252,16 @@ export default function GraphViewer({ nodes, edges, selectedNodeId, onNodeClick 
                 }}
                 onMouseEnter={() => setHoveredId(node.id)}
                 onMouseLeave={() => setHoveredId(null)}
-                className={isCodeNode ? "cursor-pointer" : "cursor-default"}
+                style={{ opacity: isDimmed ? 0.15 : 1, transition: "opacity 300ms" }}
+                className={(isCodeNode || node.label === "Process" || node.label === "Community") ? "cursor-pointer" : "cursor-default"}
               >
+                {/* Pulse ring on selected node */}
+                {isSelected && (
+                  <rect width={NODE_W + 14} height={NODE_H + 14} x={-7} y={-7} rx={9} fill="none" stroke={color} strokeWidth={2}>
+                    <animate attributeName="opacity" values="0.6;0;0.6" dur="2s" repeatCount="indefinite" />
+                    <animate attributeName="stroke-width" values="2;5;2" dur="2s" repeatCount="indefinite" />
+                  </rect>
+                )}
                 {/* Node background */}
                 <rect
                   width={NODE_W}

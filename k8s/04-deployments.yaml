@@ -1,0 +1,391 @@
+# =============================================================================
+# Deployments × 5 (含 frontend)
+# 替换 HARBOR_HOST 为实际 Harbor 地址，例如 harbor.company.com
+# 替换 VERSION 为实际版本标签，例如 v1.0.0
+# =============================================================================
+
+# ─────────────────────────────────────────────
+# postgres — StatefulSet（有序重启、稳定 Pod 标识）
+# PVC 由 volumeClaimTemplates 自动创建，无需 01-pvc.yaml 中的 pg-data
+# ─────────────────────────────────────────────
+---
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: postgres
+  namespace: codetalk
+  labels:
+    app: postgres
+spec:
+  serviceName: postgres
+  replicas: 1
+  selector:
+    matchLabels:
+      app: postgres
+  template:
+    metadata:
+      labels:
+        app: postgres
+    spec:
+      containers:
+        - name: postgres
+          image: HARBOR_HOST/codetalk/postgres:VERSION
+          imagePullPolicy: IfNotPresent
+          ports:
+            - containerPort: 5432
+          env:
+            - name: POSTGRES_USER
+              valueFrom:
+                configMapKeyRef:
+                  name: codetalk-config
+                  key: POSTGRES_USER
+            - name: POSTGRES_DB
+              valueFrom:
+                configMapKeyRef:
+                  name: codetalk-config
+                  key: POSTGRES_DB
+            - name: POSTGRES_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: codetalk-secret
+                  key: POSTGRES_PASSWORD
+          volumeMounts:
+            - name: pg-data
+              mountPath: /var/lib/postgresql/data
+          readinessProbe:
+            exec:
+              command: ["pg_isready", "-U", "codetalks"]
+            initialDelaySeconds: 5
+            periodSeconds: 5
+            failureThreshold: 5
+          resources:
+            requests:
+              cpu: 250m
+              memory: 512Mi
+            limits:
+              cpu: 1000m
+              memory: 2Gi
+  volumeClaimTemplates:
+    - metadata:
+        name: pg-data
+      spec:
+        accessModes: [ReadWriteOnce]
+        resources:
+          requests:
+            storage: 10Gi
+        # storageClassName: <your-rwo-class>
+
+# ─────────────────────────────────────────────
+# backend
+# ─────────────────────────────────────────────
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: backend
+  namespace: codetalk
+  labels:
+    app: backend
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: backend
+  template:
+    metadata:
+      labels:
+        app: backend
+    spec:
+      initContainers:
+        # 等待 postgres 就绪再启动
+        - name: wait-for-postgres
+          image: HARBOR_HOST/codetalk/postgres:VERSION
+          command:
+            - sh
+            - -c
+            - |
+              until pg_isready -h postgres -U codetalks; do
+                echo "等待 postgres..."; sleep 2;
+              done
+      containers:
+        - name: backend
+          image: HARBOR_HOST/codetalk/backend:VERSION
+          imagePullPolicy: IfNotPresent
+          ports:
+            - containerPort: 8000
+          # 注意: docker.sock 挂载已移除 — backend 代码中没有调用 Docker API
+          env:
+            - name: POSTGRES_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: codetalk-secret
+                  key: POSTGRES_PASSWORD
+            - name: DATABASE_URL
+              value: "postgresql+asyncpg://codetalks:$(POSTGRES_PASSWORD)@postgres:5432/codetalks"
+            - name: REPOS_BASE_PATH
+              valueFrom:
+                configMapKeyRef:
+                  name: codetalk-config
+                  key: REPOS_BASE_PATH
+            - name: FERNET_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: codetalk-secret
+                  key: FERNET_KEY
+            - name: OPENAI_API_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: codetalk-secret
+                  key: OPENAI_API_KEY
+            - name: ANTHROPIC_API_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: codetalk-secret
+                  key: ANTHROPIC_API_KEY
+            - name: GOOGLE_API_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: codetalk-secret
+                  key: GOOGLE_API_KEY
+          volumeMounts:
+            - name: code-volume
+              mountPath: /data/repos
+          readinessProbe:
+            httpGet:
+              path: /health
+              port: 8000
+            initialDelaySeconds: 10
+            periodSeconds: 10
+          livenessProbe:
+            httpGet:
+              path: /health
+              port: 8000
+            initialDelaySeconds: 30
+            periodSeconds: 30
+            failureThreshold: 3
+          resources:
+            requests:
+              cpu: 250m
+              memory: 512Mi
+            limits:
+              cpu: 2000m
+              memory: 2Gi
+      volumes:
+        - name: code-volume
+          persistentVolumeClaim:
+            claimName: code-volume
+
+# ─────────────────────────────────────────────
+# deepwiki
+# ─────────────────────────────────────────────
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: deepwiki
+  namespace: codetalk
+  labels:
+    app: deepwiki
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: deepwiki
+  template:
+    metadata:
+      labels:
+        app: deepwiki
+    spec:
+      containers:
+        - name: deepwiki
+          image: HARBOR_HOST/codetalk/deepwiki:VERSION
+          imagePullPolicy: IfNotPresent
+          ports:
+            - containerPort: 8001
+              name: api
+            - containerPort: 3000
+              name: web
+          env:
+            - name: OPENAI_API_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: codetalk-secret
+                  key: OPENAI_API_KEY
+            - name: ANTHROPIC_API_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: codetalk-secret
+                  key: ANTHROPIC_API_KEY
+            - name: GOOGLE_API_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: codetalk-secret
+                  key: GOOGLE_API_KEY
+            - name: DEEPWIKI_EMBEDDING_API_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: codetalk-secret
+                  key: DEEPWIKI_EMBEDDING_API_KEY
+            - name: DEEPWIKI_EMBEDDER_TYPE
+              valueFrom:
+                configMapKeyRef:
+                  name: codetalk-config
+                  key: DEEPWIKI_EMBEDDER_TYPE
+            - name: OLLAMA_BASE_URL
+              valueFrom:
+                configMapKeyRef:
+                  name: codetalk-config
+                  key: OLLAMA_BASE_URL
+            - name: OLLAMA_HOST
+              valueFrom:
+                configMapKeyRef:
+                  name: codetalk-config
+                  key: OLLAMA_HOST
+          volumeMounts:
+            - name: deepwiki-data
+              mountPath: /root/.adalflow
+            - name: code-volume
+              mountPath: /data/repos
+              readOnly: true
+            - name: embedder-config
+              mountPath: /app/api/config/embedder.json
+              subPath: embedder.json
+          readinessProbe:
+            httpGet:
+              path: /api/health
+              port: 8001
+            initialDelaySeconds: 15
+            periodSeconds: 10
+            failureThreshold: 5
+          resources:
+            requests:
+              cpu: 500m
+              memory: 1Gi
+            limits:
+              cpu: 2000m
+              memory: 4Gi
+      volumes:
+        - name: deepwiki-data
+          persistentVolumeClaim:
+            claimName: deepwiki-data
+        - name: code-volume
+          persistentVolumeClaim:
+            claimName: code-volume
+        - name: embedder-config
+          configMap:
+            name: deepwiki-embedder-config
+
+# ─────────────────────────────────────────────
+# gitnexus
+# ─────────────────────────────────────────────
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: gitnexus
+  namespace: codetalk
+  labels:
+    app: gitnexus
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: gitnexus
+  template:
+    metadata:
+      labels:
+        app: gitnexus
+    spec:
+      containers:
+        - name: gitnexus
+          image: HARBOR_HOST/codetalk/gitnexus:VERSION
+          imagePullPolicy: IfNotPresent
+          ports:
+            - containerPort: 7100
+          volumeMounts:
+            - name: gitnexus-data
+              mountPath: /root/.gitnexus
+            - name: code-volume
+              mountPath: /data/repos
+          readinessProbe:
+            httpGet:
+              path: /health
+              port: 7100
+            initialDelaySeconds: 10
+            periodSeconds: 10
+            failureThreshold: 5
+          resources:
+            requests:
+              cpu: 250m
+              memory: 512Mi
+            limits:
+              cpu: 1000m
+              memory: 2Gi
+      volumes:
+        - name: gitnexus-data
+          persistentVolumeClaim:
+            claimName: gitnexus-data
+        - name: code-volume
+          persistentVolumeClaim:
+            claimName: code-volume
+
+# ─────────────────────────────────────────────
+# frontend (Next.js standalone)
+# NEXT_PUBLIC_API_URL / NEXT_PUBLIC_WS_URL 通过 entrypoint 在启动时注入
+# ─────────────────────────────────────────────
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: frontend
+  namespace: codetalk
+  labels:
+    app: frontend
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: frontend
+  template:
+    metadata:
+      labels:
+        app: frontend
+    spec:
+      containers:
+        - name: frontend
+          image: HARBOR_HOST/codetalk/frontend:VERSION
+          imagePullPolicy: IfNotPresent
+          ports:
+            - containerPort: 3000
+          env:
+            # 部署时替换为实际的内网地址，格式: http://<node-ip>:30800
+            - name: NEXT_PUBLIC_API_URL
+              valueFrom:
+                configMapKeyRef:
+                  name: codetalk-config
+                  key: NEXT_PUBLIC_API_URL
+            - name: NEXT_PUBLIC_WS_URL
+              valueFrom:
+                configMapKeyRef:
+                  name: codetalk-config
+                  key: NEXT_PUBLIC_WS_URL
+          readinessProbe:
+            httpGet:
+              path: /
+              port: 3000
+            initialDelaySeconds: 10
+            periodSeconds: 10
+          livenessProbe:
+            httpGet:
+              path: /
+              port: 3000
+            initialDelaySeconds: 20
+            periodSeconds: 30
+            failureThreshold: 3
+          resources:
+            requests:
+              cpu: 100m
+              memory: 256Mi
+            limits:
+              cpu: 500m
+              memory: 512Mi

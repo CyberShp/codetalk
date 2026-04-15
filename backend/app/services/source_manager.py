@@ -3,9 +3,21 @@
 import asyncio
 import os
 from pathlib import Path
+from uuid import UUID
 
 from app.config import settings
 from app.models.repository import Repository
+
+_running_syncs: dict[UUID, asyncio.subprocess.Process] = {}
+
+
+async def cancel_sync(repo_id: UUID) -> bool:
+    """Cancel a running sync operation. Returns True if process was found and terminated."""
+    proc = _running_syncs.pop(repo_id, None)
+    if proc and proc.returncode is None:
+        proc.terminate()
+        return True
+    return False
 
 
 async def resolve_source(repo: Repository) -> str:
@@ -42,7 +54,11 @@ async def _clone_or_pull(repo: Repository) -> str:
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.PIPE,
         )
-        _, stderr = await proc.communicate()
+        _running_syncs[repo.id] = proc
+        try:
+            _, stderr = await proc.communicate()
+        finally:
+            _running_syncs.pop(repo.id, None)
         if proc.returncode != 0:
             raise RuntimeError(
                 f"git pull failed for {repo.name}: {stderr.decode()}"
@@ -55,7 +71,11 @@ async def _clone_or_pull(repo: Repository) -> str:
         stdout=asyncio.subprocess.PIPE,
         stderr=asyncio.subprocess.PIPE,
     )
-    _, stderr = await proc.communicate()
+    _running_syncs[repo.id] = proc
+    try:
+        _, stderr = await proc.communicate()
+    finally:
+        _running_syncs.pop(repo.id, None)
     if proc.returncode != 0:
         raise RuntimeError(f"git clone failed for {repo.name}: {stderr.decode()}")
     return dest

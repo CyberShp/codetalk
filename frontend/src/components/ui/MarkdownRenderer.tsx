@@ -2,7 +2,9 @@
 
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
+import type { PluggableList } from "unified";
 import type { Components } from "react-markdown";
+import MermaidRenderer from "./MermaidRenderer";
 
 const components: Components = {
   h1: ({ children }) => (
@@ -25,6 +27,10 @@ const components: Components = {
   ),
   code: ({ className, children }) => {
     const isBlock = className?.startsWith("language-");
+    if (className === "language-mermaid") {
+      const chart = String(children).replace(/\n$/, "");
+      return <MermaidRenderer chart={chart} />;
+    }
     if (isBlock) {
       return (
         <pre className="bg-surface-container-lowest rounded-lg p-4 overflow-x-auto mb-4">
@@ -80,10 +86,16 @@ const components: Components = {
   ),
 };
 
-export default function MarkdownRenderer({ content }: { content: string }) {
+export default function MarkdownRenderer({
+  content,
+  rehypePlugins = [],
+}: {
+  content: string;
+  rehypePlugins?: PluggableList;
+}) {
   return (
     <div className="prose-kinetic">
-      <ReactMarkdown remarkPlugins={[remarkGfm]} components={components}>
+      <ReactMarkdown remarkPlugins={[remarkGfm]} rehypePlugins={rehypePlugins} components={components}>
         {content}
       </ReactMarkdown>
     </div>
