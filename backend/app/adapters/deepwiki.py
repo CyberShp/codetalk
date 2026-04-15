@@ -109,15 +109,24 @@ class DeepwikiAdapter(BaseToolAdapter):
             request.options.get("llm_base_url", "(default)"),
         )
 
+        language = request.options.get("language", "")
+
         target_desc = "the entire repository"
         if request.target_files:
             target_desc = f"these files: {', '.join(request.target_files)}"
 
-        prompt = (
-            f"Analyze {target_desc} and generate comprehensive documentation. "
-            "Include: architecture overview, key components, data flow, "
-            "and Mermaid diagrams where appropriate."
-        )
+        if language == "zh":
+            prompt = (
+                f"分析 {target_desc}，生成全面的中文技术文档。"
+                "包含：架构概览、核心组件、数据流，"
+                "以及适当的 Mermaid 图表。请全程使用中文撰写。"
+            )
+        else:
+            prompt = (
+                f"Analyze {target_desc} and generate comprehensive documentation. "
+                "Include: architecture overview, key components, data flow, "
+                "and Mermaid diagrams where appropriate."
+            )
 
         chat_payload: dict = {
             "repo_url": request.repo_local_path,

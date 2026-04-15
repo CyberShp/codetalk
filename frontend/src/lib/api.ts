@@ -10,7 +10,14 @@ import type {
   ToolInfo,
   LLMConfig,
   LLMConfigCreate,
+  LLMConfigUpdate,
   FileSlice,
+  SyncResult,
+  ComponentContract,
+  ComponentStatus,
+  ComponentConfigResponse,
+  ApplyResult,
+  RestartResult,
 } from "./types";
 
 const BASE = process.env.NEXT_PUBLIC_API_URL || "http://localhost:8000";
@@ -55,6 +62,11 @@ export const api = {
       }),
   },
 
+  repos: {
+    sync: (repoId: string) =>
+      request<SyncResult>(`/api/repos/${repoId}/sync`, { method: "POST" }),
+  },
+
   tasks: {
     list: (params?: { status?: string; repository_id?: string }) => {
       const qs = new URLSearchParams();
@@ -84,6 +96,17 @@ export const api = {
         method: "POST",
         body: JSON.stringify(data),
       }),
+    updateLLM: (id: string, data: LLMConfigUpdate) =>
+      request<LLMConfig>(`/api/settings/llm/${id}`, {
+        method: "PUT",
+        body: JSON.stringify(data),
+      }),
+    setDefaultLLM: (id: string) =>
+      request<LLMConfig>(`/api/settings/llm/${id}/default`, { method: "PATCH" }),
+    testLLM: (id: string) =>
+      request<{ success: boolean; message: string }>(`/api/settings/llm/${id}/test`, {
+        method: "POST",
+      }),
     deleteLLM: (id: string) =>
       request<void>(`/api/settings/llm/${id}`, { method: "DELETE" }),
   },
@@ -95,5 +118,37 @@ export const api = {
       if (endLine !== undefined) qs.set("end_line", String(endLine));
       return request<FileSlice>(`/api/gitnexus/file?${qs}`);
     },
+  },
+
+  chat: {
+    stream: (
+      taskId: string,
+      messages: { role: string; content: string }[],
+      signal?: AbortSignal,
+    ) =>
+      fetch(`${BASE}/api/chat/stream`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ task_id: taskId, messages }),
+        signal,
+      }),
+  },
+
+  components: {
+    contracts: () => request<ComponentContract[]>("/api/components/contracts"),
+    list: () => request<ComponentStatus[]>("/api/components"),
+    saveConfig: (component: string, domain: string, config: Record<string, string>) =>
+      request<ComponentConfigResponse>(`/api/components/${component}/${domain}`, {
+        method: "PUT",
+        body: JSON.stringify({ config }),
+      }),
+    apply: (component: string) =>
+      request<ApplyResult>(`/api/components/${component}/apply`, { method: "POST" }),
+    restart: (component: string) =>
+      request<RestartResult>(`/api/components/${component}/restart`, { method: "POST" }),
+    applyRestart: (component: string) =>
+      request<RestartResult>(`/api/components/${component}/apply-restart`, { method: "POST" }),
+    health: (component: string) =>
+      request<ComponentStatus>(`/api/components/${component}/health`),
   },
 };

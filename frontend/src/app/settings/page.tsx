@@ -4,6 +4,7 @@ import { useState, useEffect, useCallback } from "react";
 import GlassPanel from "@/components/ui/GlassPanel";
 import CyberInput from "@/components/ui/CyberInput";
 import StatusBadge from "@/components/ui/StatusBadge";
+import ComponentConfigPanel from "@/components/ComponentConfigPanel";
 import { api } from "@/lib/api";
 import type { LLMConfig, ToolInfo, ProxyMode } from "@/lib/types";
 
@@ -11,12 +12,17 @@ export default function SettingsPage() {
   const [aiEnabled, setAiEnabled] = useState(true);
   const [configs, setConfigs] = useState<LLMConfig[]>([]);
   const [tools, setTools] = useState<ToolInfo[]>([]);
+  const [showApiKey, setShowApiKey] = useState(false);
+  const [saving, setSaving] = useState(false);
+  const [testingId, setTestingId] = useState<string | null>(null);
+  const [testResult, setTestResult] = useState<{ id: string; success: boolean; message: string } | null>(null);
+
+  // Form state (shared by create and edit)
+  const [editingId, setEditingId] = useState<string | null>(null);
   const [modelName, setModelName] = useState("");
   const [apiKey, setApiKey] = useState("");
   const [baseUrl, setBaseUrl] = useState("");
   const [proxyMode, setProxyMode] = useState<ProxyMode>("system");
-  const [showApiKey, setShowApiKey] = useState(false);
-  const [saving, setSaving] = useState(false);
 
   const loadConfigs = useCallback(async () => {
     try {
@@ -40,21 +46,46 @@ export default function SettingsPage() {
     localStorage.setItem("codetalks_ai_enabled", String(next));
   };
 
+  const resetForm = () => {
+    setEditingId(null);
+    setModelName("");
+    setApiKey("");
+    setBaseUrl("");
+    setProxyMode("system");
+    setShowApiKey(false);
+  };
+
+  const startEdit = (cfg: LLMConfig) => {
+    setEditingId(cfg.id);
+    setModelName(cfg.model_name);
+    setApiKey("");
+    setBaseUrl(cfg.base_url ?? "");
+    setProxyMode(cfg.proxy_mode as ProxyMode);
+    setShowApiKey(false);
+  };
+
   const handleSave = async () => {
     if (!modelName.trim()) return;
     setSaving(true);
     try {
-      await api.settings.saveLLM({
-        provider: "custom",
-        model_name: modelName.trim(),
-        api_key: apiKey.trim() || undefined,
-        base_url: baseUrl.trim() || undefined,
-        proxy_mode: proxyMode,
-        is_default: configs.length === 0,
-      });
-      setModelName("");
-      setApiKey("");
-      setBaseUrl("");
+      if (editingId) {
+        await api.settings.updateLLM(editingId, {
+          model_name: modelName.trim(),
+          api_key: apiKey.trim() || undefined,
+          base_url: baseUrl.trim() || undefined,
+          proxy_mode: proxyMode,
+        });
+      } else {
+        await api.settings.saveLLM({
+          provider: "custom",
+          model_name: modelName.trim(),
+          api_key: apiKey.trim() || undefined,
+          base_url: baseUrl.trim() || undefined,
+          proxy_mode: proxyMode,
+          is_default: true,
+        });
+      }
+      resetForm();
       await loadConfigs();
     } catch (e) {
       console.error("Failed to save config:", e);
@@ -63,9 +94,32 @@ export default function SettingsPage() {
     }
   };
 
+  const handleSetDefault = async (id: string) => {
+    try {
+      await api.settings.setDefaultLLM(id);
+      await loadConfigs();
+    } catch (e) {
+      console.error("Failed to set default:", e);
+    }
+  };
+
+  const handleTest = async (id: string) => {
+    setTestingId(id);
+    setTestResult(null);
+    try {
+      const result = await api.settings.testLLM(id);
+      setTestResult({ id, ...result });
+    } catch (e) {
+      setTestResult({ id, success: false, message: e instanceof Error ? e.message : "请求失败" });
+    } finally {
+      setTestingId(null);
+    }
+  };
+
   const handleDelete = async (id: string) => {
     try {
       await api.settings.deleteLLM(id);
+      if (editingId === id) resetForm();
       await loadConfigs();
     } catch (e) {
       console.error("Failed to delete config:", e);
@@ -120,30 +174,50 @@ export default function SettingsPage() {
             className="bg-surface-container-lowest/50 rounded-lg px-4 py-3 mb-3"
           >
             <div className="flex items-center justify-between">
-              <div>
+              <div className="min-w-0 flex-1">
                 <p className="text-sm text-on-surface font-medium">
                   {cfg.model_name}
                 </p>
-                <div className="flex items-center gap-3 mt-1">
+                <div className="flex items-center gap-3 mt-1 flex-wrap">
                   {cfg.base_url && (
                     <span className="font-data text-[10px] text-primary-fixed-dim truncate max-w-[240px]">
                       {cfg.base_url}
                     </span>
                   )}
                   <span className={`text-[10px] ${cfg.has_api_key ? "text-secondary-fixed-dim" : "text-on-surface-variant/40"}`}>
-                    {cfg.has_api_key ? "已设置" : "未设置"}
+                    API Key {cfg.has_api_key ? "已设置" : "未设置"}
                   </span>
                   <span className="text-[10px] text-on-surface-variant/60">
                     {cfg.proxy_mode === "system" ? "系统代理" : "直连"}
                   </span>
                 </div>
               </div>
-              <div className="flex items-center gap-3">
-                {cfg.is_default && (
+              <div className="flex items-center gap-2 ml-3 shrink-0">
+                {cfg.is_default ? (
                   <span className="text-[10px] px-2 py-0.5 rounded-full bg-primary/10 text-primary-fixed-dim">
                     默认
                   </span>
+                ) : (
+                  <button
+                    onClick={() => handleSetDefault(cfg.id)}
+                    className="text-[10px] px-2 py-0.5 rounded-full text-on-surface-variant hover:bg-primary/10 hover:text-primary-fixed-dim transition-colors"
+                  >
+                    设为默认
+                  </button>
                 )}
+                <button
+                  onClick={() => handleTest(cfg.id)}
+                  disabled={testingId === cfg.id}
+                  className="text-xs text-secondary-fixed-dim hover:text-secondary disabled:opacity-40"
+                >
+                  {testingId === cfg.id ? "测试中..." : "测试"}
+                </button>
+                <button
+                  onClick={() => startEdit(cfg)}
+                  className="text-xs text-primary-fixed-dim hover:text-primary"
+                >
+                  编辑
+                </button>
                 <button
                   onClick={() => handleDelete(cfg.id)}
                   className="text-xs text-tertiary hover:text-tertiary/80"
@@ -152,10 +226,29 @@ export default function SettingsPage() {
                 </button>
               </div>
             </div>
+            {testResult?.id === cfg.id && (
+              <p className={`text-[11px] mt-2 ${testResult.success ? "text-secondary-fixed-dim" : "text-tertiary"}`}>
+                {testResult.success ? "测试成功" : "测试失败"}：{testResult.message}
+              </p>
+            )}
           </div>
         ))}
 
+        {/* Form: create or edit */}
         <div className="space-y-3 mt-4">
+          {editingId && (
+            <div className="flex items-center justify-between mb-1">
+              <p className="text-xs text-primary-fixed-dim">
+                编辑配置（留空 API Key 表示保持原值）
+              </p>
+              <button
+                onClick={resetForm}
+                className="text-xs text-on-surface-variant hover:text-on-surface"
+              >
+                取消编辑
+              </button>
+            </div>
+          )}
           <CyberInput
             label="Base URL"
             placeholder="http://10.0.0.1:8080/v1"
@@ -176,7 +269,7 @@ export default function SettingsPage() {
               <div className="relative">
                 <input
                   type={showApiKey ? "text" : "password"}
-                  placeholder="sk-..."
+                  placeholder={editingId ? "留空保持原值" : "sk-..."}
                   value={apiKey}
                   onChange={(e) => setApiKey(e.target.value)}
                   className="w-full bg-surface-container-lowest/50 text-on-surface font-data text-sm px-4 py-2 pr-12 rounded-md outline-none placeholder:text-on-surface-variant/40 focus:ring-1 focus:ring-primary-container"
@@ -220,9 +313,12 @@ export default function SettingsPage() {
           disabled={saving || !modelName.trim()}
           className="mt-4 px-4 py-2 text-sm font-medium rounded-md bg-primary-container text-primary hover:shadow-[0_0_12px_rgba(164,230,255,0.2)] transition-shadow disabled:opacity-40"
         >
-          {saving ? "保存中..." : "保存"}
+          {saving ? "保存中..." : editingId ? "更新配置" : "新增配置"}
         </button>
       </GlassPanel>
+
+      {/* Component Config */}
+      <ComponentConfigPanel />
 
       {/* System Health */}
       <GlassPanel>

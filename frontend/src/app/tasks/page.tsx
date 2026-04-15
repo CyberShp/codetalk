@@ -1,11 +1,13 @@
 "use client";
 
-import { useState, useEffect, useCallback } from "react";
+import { Suspense, useState, useEffect, useCallback } from "react";
 import Link from "next/link";
+import { useSearchParams, useRouter } from "next/navigation";
 import GlassPanel from "@/components/ui/GlassPanel";
 import StatusBadge from "@/components/ui/StatusBadge";
 import DataTable from "@/components/ui/DataTable";
 import ProgressBar from "@/components/ui/ProgressBar";
+import NewAnalysisModal from "@/components/ui/NewAnalysisModal";
 import { api } from "@/lib/api";
 import type { AnalysisTask } from "@/lib/types";
 
@@ -13,8 +15,21 @@ const tabs = ["all", "running", "completed", "failed", "pending"] as const;
 type Filter = (typeof tabs)[number];
 
 export default function TasksPage() {
+  return (
+    <Suspense>
+      <TasksPageInner />
+    </Suspense>
+  );
+}
+
+function TasksPageInner() {
+  const searchParams = useSearchParams();
+  const router = useRouter();
   const [filter, setFilter] = useState<Filter>("all");
   const [tasks, setTasks] = useState<AnalysisTask[]>([]);
+  const [showNewAnalysis, setShowNewAnalysis] = useState(
+    searchParams.get("new") === "true",
+  );
 
   const loadTasks = useCallback(async () => {
     try {
@@ -116,6 +131,12 @@ export default function TasksPage() {
         <h2 className="font-display text-lg font-semibold text-on-surface">
           任务
         </h2>
+        <button
+          onClick={() => setShowNewAnalysis(true)}
+          className="px-4 py-2 text-sm font-medium rounded-md bg-primary-container text-primary hover:shadow-[0_0_12px_rgba(164,230,255,0.2)] transition-shadow"
+        >
+          新建分析
+        </button>
       </div>
 
       {/* Filter Tabs */}
@@ -145,6 +166,16 @@ export default function TasksPage() {
           </p>
         )}
       </GlassPanel>
+
+      {/* New Analysis Modal */}
+      {showNewAnalysis && (
+        <NewAnalysisModal
+          onClose={() => {
+            setShowNewAnalysis(false);
+            router.replace("/tasks", { scroll: false });
+          }}
+        />
+      )}
     </div>
   );
 }

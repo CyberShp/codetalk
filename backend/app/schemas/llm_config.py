@@ -13,6 +13,14 @@ class LLMConfigCreate(BaseModel):
     is_default: bool = False
 
 
+class LLMConfigUpdate(BaseModel):
+    provider: str | None = None
+    model_name: str | None = None
+    api_key: str | None = None
+    base_url: str | None = None
+    proxy_mode: str | None = None
+
+
 class LLMConfigResponse(BaseModel):
     id: uuid.UUID
     provider: str

@@ -22,6 +22,8 @@ services:
     volumes:
       - ./backend:/app
       - code_volume:/data/repos
+      - /var/run/docker.sock:/var/run/docker.sock:ro
+      - .:/project:rw
     depends_on:
       postgres:
         condition: service_healthy
@@ -37,10 +39,17 @@ services:
     volumes:
       - deepwiki_data:/root/.adalflow
       - code_volume:/data/repos:ro
+      - ./docker/deepwiki/embedder.json:/app/api/config/embedder.json:ro
     environment:
       OPENAI_API_KEY: ${OPENAI_API_KEY:-}
+      OPENAI_BASE_URL: ${OPENAI_BASE_URL:-}
+      DEEPWIKI_EMBEDDING_BASE_URL: ${DEEPWIKI_EMBEDDING_BASE_URL:-}
+      DEEPWIKI_EMBEDDING_API_KEY: ${DEEPWIKI_EMBEDDING_API_KEY:-${OPENAI_API_KEY:-}}
       ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY:-}
       GOOGLE_API_KEY: ${GOOGLE_API_KEY:-}
+      DEEPWIKI_EMBEDDER_TYPE: ${DEEPWIKI_EMBEDDER_TYPE:-openai}
+      OLLAMA_BASE_URL: ${OLLAMA_BASE_URL:-http://host.docker.internal:11434}
+      OLLAMA_HOST: ${OLLAMA_HOST:-http://host.docker.internal:11434}
 
   gitnexus:
     build: ./docker/gitnexus
@@ -48,7 +57,7 @@ services:
       - "7100:7100"
     volumes:
       - gitnexus_data:/root/.gitnexus
-      - code_volume:/data/repos:ro
+      - code_volume:/data/repos
 
 volumes:
   pg_data:

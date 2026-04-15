@@ -5,6 +5,7 @@ import { useRouter } from "next/navigation";
 import GlassPanel from "@/components/ui/GlassPanel";
 import DataTable from "@/components/ui/DataTable";
 import CyberInput from "@/components/ui/CyberInput";
+import NewAnalysisModal from "@/components/ui/NewAnalysisModal";
 import { api } from "@/lib/api";
 import type { Project, Repository, SourceType } from "@/lib/types";
 
@@ -15,6 +16,9 @@ export default function AssetsPage() {
   const [repos, setRepos] = useState<Repository[]>([]);
   const [showNewProject, setShowNewProject] = useState(false);
   const [showNewRepo, setShowNewRepo] = useState(false);
+  const [showAnalysis, setShowAnalysis] = useState<string | null>(null);
+  const [syncingRepos, setSyncingRepos] = useState<Set<string>>(new Set());
+  const [syncErrors, setSyncErrors] = useState<Record<string, string>>({});
   const [loading, setLoading] = useState(true);
 
   const loadProjects = useCallback(async () => {
@@ -101,27 +105,43 @@ export default function AssetsPage() {
     {
       key: "actions",
       header: "",
-      className: "w-24",
+      className: "w-40",
       render: (r: Repository) => (
-        <button
-          onClick={async () => {
-            try {
-              const aiEnabled = localStorage.getItem("codetalks_ai_enabled") !== "false";
-              const task = await api.tasks.create({
-                repository_id: r.id,
-                task_type: "full_repo",
-                tools: ["deepwiki", "gitnexus"],
-                ai_enabled: aiEnabled,
-              });
-              router.push(`/tasks/${task.id}`);
-            } catch (e) {
-              console.error("Failed to create task:", e);
-            }
-          }}
-          className="px-3 py-1 text-xs font-medium rounded-md bg-primary-container text-primary hover:shadow-[0_0_8px_rgba(164,230,255,0.2)] transition-shadow"
-        >
-          分析
-        </button>
+        <div className="flex gap-2">
+          <button
+            onClick={async () => {
+              setSyncingRepos((s) => new Set(s).add(r.id));
+              setSyncErrors((e) => { const next = { ...e }; delete next[r.id]; return next; });
+              try {
+                await api.repos.sync(r.id);
+                loadRepos();
+              } catch (e) {
+                setSyncErrors((prev) => ({
+                  ...prev,
+                  [r.id]: e instanceof Error ? e.message : "同步失败",
+                }));
+              } finally {
+                setSyncingRepos((s) => {
+                  const next = new Set(s);
+                  next.delete(r.id);
+                  return next;
+                });
+              }
+            }}
+            disabled={syncingRepos.has(r.id)}
+            className="px-3 py-1 text-xs font-medium rounded-md bg-surface-container-high text-on-surface-variant hover:text-on-surface transition-colors disabled:opacity-40"
+          >
+            {syncingRepos.has(r.id) ? "同步中..." : "同步"}
+          </button>
+          <button
+            onClick={() => setShowAnalysis(r.id)}
+            disabled={!r.last_indexed_at}
+            title={r.last_indexed_at ? "创建分析任务" : "请先同步仓库"}
+            className="px-3 py-1 text-xs font-medium rounded-md bg-primary-container text-primary hover:shadow-[0_0_8px_rgba(164,230,255,0.2)] transition-shadow disabled:opacity-30"
+          >
+            分析
+          </button>
+        </div>
       ),
     },
   ];
@@ -194,6 +214,15 @@ export default function AssetsPage() {
               </button>
             )}
           </div>
+          {/* Sync errors */}
+          {Object.entries(syncErrors).map(([repoId, msg]) => (
+            <div
+              key={repoId}
+              className="mb-3 px-3 py-2 rounded-md bg-tertiary-container/20 text-xs text-tertiary"
+            >
+              {repos.find((r) => r.id === repoId)?.name ?? repoId}: {msg}
+            </div>
+          ))}
           {repos.length > 0 ? (
             <DataTable columns={repoColumns} data={repos} keyField="id" />
           ) : (
@@ -227,6 +256,14 @@ export default function AssetsPage() {
             loadRepos();
             loadProjects();
           }}
+        />
+      )}
+
+      {/* Analysis Modal */}
+      {showAnalysis && (
+        <NewAnalysisModal
+          repositoryId={showAnalysis}
+          onClose={() => setShowAnalysis(null)}
         />
       )}
     </div>

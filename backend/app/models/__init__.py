@@ -10,3 +10,4 @@ from app.models.project import Project  # noqa: E402, F401
 from app.models.repository import Repository  # noqa: E402, F401
 from app.models.task import AnalysisTask, TaskLog, ToolRun  # noqa: E402, F401
 from app.models.llm_config import LLMConfig  # noqa: E402, F401
+from app.models.component_config import ComponentConfig  # noqa: E402, F401

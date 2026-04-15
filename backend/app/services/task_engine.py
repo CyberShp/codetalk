@@ -41,6 +41,8 @@ async def run_task(task_id: UUID) -> None:
                 await db.commit()
 
             options = await _build_options(task, db)
+            if task.target_spec.get("mr_url"):
+                options["mr_url"] = task.target_spec["mr_url"]
             request = AnalysisRequest(
                 repo_local_path=local_path,
                 target_files=task.target_spec.get("files"),
@@ -129,11 +131,19 @@ async def _create_tool_runs(
 
 async def _build_options(task: AnalysisTask, db: AsyncSession) -> dict:
     options = dict(task.target_spec.get("options", {}))
+    options.setdefault("language", "zh")
     if task.ai_enabled:
         result = await db.execute(
             select(LLMConfig).where(LLMConfig.is_default.is_(True)).limit(1)
         )
         llm_config = result.scalar_one_or_none()
+        if not llm_config:
+            result = await db.execute(
+                select(LLMConfig).order_by(LLMConfig.created_at.desc()).limit(1)
+            )
+            llm_config = result.scalar_one_or_none()
+            if llm_config:
+                logger.warning("No default LLM config; falling back to %s", llm_config.model_name)
         if llm_config:
             provider = llm_config.provider
             if provider == "custom":
@@ -168,11 +178,18 @@ async def _build_summary(results: list[UnifiedResult], options: dict) -> str:
     proxy_mode = options.get("proxy_mode", "system")
     trust_env = proxy_mode != "direct"
 
-    prompt = (
-        "Summarize the following code analysis results concisely. "
-        "Highlight key architectural patterns, important components, "
-        "and notable findings.\n\n" + plaintext
-    )
+    language = options.get("language", "")
+    if language == "zh":
+        prompt = (
+            "请用中文简要总结以下代码分析结果。"
+            "重点说明关键架构模式、重要组件和值得注意的发现。\n\n" + plaintext
+        )
+    else:
+        prompt = (
+            "Summarize the following code analysis results concisely. "
+            "Highlight key architectural patterns, important components, "
+            "and notable findings.\n\n" + plaintext
+        )
 
     try:
         async with httpx.AsyncClient(

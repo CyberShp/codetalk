@@ -10,7 +10,9 @@ def _get_fernet() -> Fernet:
     if _fernet is None:
         key = settings.fernet_key
         if not key:
-            key = Fernet.generate_key().decode()
+            raise RuntimeError(
+                "FERNET_KEY not configured. Set it in .env and restart the backend."
+            )
         _fernet = Fernet(key.encode() if isinstance(key, str) else key)
     return _fernet
 

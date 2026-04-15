@@ -102,6 +102,14 @@ export interface LLMConfigCreate {
   is_default?: boolean;
 }
 
+export interface LLMConfigUpdate {
+  provider?: string;
+  model_name?: string;
+  api_key?: string;
+  base_url?: string;
+  proxy_mode?: ProxyMode;
+}
+
 export type ToolCapability =
   | "code_search"
   | "call_graph"
@@ -143,6 +151,8 @@ export interface GraphNode {
     heuristicLabel?: string;
     processType?: string;
     stepCount?: number;
+    memberCount?: number;
+    cohesion?: number;
     [key: string]: unknown;
   };
 }
@@ -158,6 +168,15 @@ export interface GraphEdge {
 export interface GraphData {
   nodes: GraphNode[];
   edges: GraphEdge[];
+  processes?: GraphNode[];
+  communities?: GraphNode[];
+  intelligence?: Record<string, unknown>;
+}
+
+export interface SyncResult {
+  status: "synced";
+  local_path: string;
+  last_indexed_at: string;
 }
 
 export interface FileSlice {
@@ -165,4 +184,60 @@ export interface FileSlice {
   startLine: number;
   endLine: number;
   totalLines: number;
+}
+
+/* ── Component Config types ── */
+
+export interface ConfigField {
+  name: string;
+  label: string;
+  field_type: "url" | "secret" | "text" | "select";
+  options?: string[];
+  placeholder?: string;
+}
+
+export interface ConfigDomain {
+  domain: string;
+  label: string;
+  fields: ConfigField[];
+  env_map: Record<string, string>;
+}
+
+export interface ComponentContract {
+  component: string;
+  label: string;
+  domains: ConfigDomain[];
+}
+
+export interface ComponentConfigResponse {
+  component: string;
+  domain: string;
+  config: Record<string, string>;
+  applied_at: string | null;
+  updated_at: string;
+}
+
+export interface ComponentHealth {
+  component: string;
+  healthy: boolean;
+  container_status: string | null;
+  version?: string | null;
+}
+
+export interface ComponentStatus {
+  component: string;
+  label: string;
+  health: ComponentHealth;
+  domains: ComponentConfigResponse[];
+}
+
+export interface ApplyResult {
+  success: boolean;
+  message: string;
+  override_preview: Record<string, string> | null;
+}
+
+export interface RestartResult {
+  success: boolean;
+  message: string;
 }
