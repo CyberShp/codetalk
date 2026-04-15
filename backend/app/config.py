@@ -10,6 +10,8 @@ class Settings(BaseSettings):
     ollama_base_url: str = "http://host.docker.internal:11434"
     deepwiki_base_url: str = "http://deepwiki:8001"
     gitnexus_base_url: str = "http://gitnexus:7100"
+    zoekt_base_url: str = "http://zoekt:6070"
+    zoekt_container_name: str = "codetalk-zoekt-1"
     repos_base_path: str = "/data/repos"
 
     model_config = {"env_file": ".env", "extra": "ignore"}

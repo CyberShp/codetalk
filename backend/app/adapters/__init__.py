@@ -39,6 +39,7 @@ def get_all_adapters() -> list[BaseToolAdapter]:
 def _register_defaults() -> None:
     from app.adapters.deepwiki import DeepwikiAdapter
     from app.adapters.gitnexus import GitNexusAdapter
+    from app.adapters.zoekt import ZoektAdapter
 
     def deepwiki_factory() -> DeepwikiAdapter:
         return DeepwikiAdapter(base_url=settings.deepwiki_base_url)
@@ -46,8 +47,15 @@ def _register_defaults() -> None:
     def gitnexus_factory() -> GitNexusAdapter:
         return GitNexusAdapter(base_url=settings.gitnexus_base_url)
 
+    def zoekt_factory() -> ZoektAdapter:
+        return ZoektAdapter(
+            base_url=settings.zoekt_base_url,
+            container_name=settings.zoekt_container_name,
+        )
+
     register_adapter(deepwiki_factory(), factory=deepwiki_factory)
     register_adapter(gitnexus_factory(), factory=gitnexus_factory)
+    register_adapter(zoekt_factory(), factory=zoekt_factory)
 
 
 _register_defaults()

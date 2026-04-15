@@ -60,8 +60,26 @@ services:
       - gitnexus_data:/root/.gitnexus
       - code_volume:/data/repos
 
+  zoekt:
+    image: ghcr.io/sourcegraph/zoekt:latest
+    platform: linux/amd64
+    ports:
+      - "6070:6070"
+    volumes:
+      - zoekt_index:/data/index
+      - code_volume:/data/repos:ro
+    entrypoint: ["zoekt-webserver"]
+    command: ["-index", "/data/index", "-listen", ":6070", "-rpc"]
+    healthcheck:
+      test: ["CMD-SHELL", "wget --spider -q http://localhost:6070/healthz || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 3
+    restart: unless-stopped
+
 volumes:
   pg_data:
   code_volume:
   deepwiki_data:
   gitnexus_data:
+  zoekt_index:

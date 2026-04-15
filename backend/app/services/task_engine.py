@@ -59,6 +59,7 @@ async def run_task(task_id: UUID) -> None:
             options = await _build_options(task, db)
             if task.target_spec.get("mr_url"):
                 options["mr_url"] = task.target_spec["mr_url"]
+            options["repo_name"] = repo.name
             request = AnalysisRequest(
                 repo_local_path=local_path,
                 target_files=task.target_spec.get("files"),
@@ -91,9 +92,7 @@ async def run_task(task_id: UUID) -> None:
                     run.status = "completed"
                     run.completed_at = datetime.now(timezone.utc)
                     run.result = {
-                        "documentation": result.data.get("documentation", ""),
-                        "file_tree": result.data.get("file_tree", ""),
-                        "graph": result.data.get("graph"),
+                        **result.data,
                         "diagrams": result.diagrams,
                         "metadata": result.metadata,
                     }

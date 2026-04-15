@@ -93,6 +93,11 @@ CONTRACTS: dict[str, ComponentContract] = {
         label="GitNexus (代码图谱)",
         domains=[],
     ),
+    "zoekt": ComponentContract(
+        component="zoekt",
+        label="Zoekt (代码搜索)",
+        domains=[],
+    ),
 }
 
 
