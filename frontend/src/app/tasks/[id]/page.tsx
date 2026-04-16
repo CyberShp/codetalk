@@ -53,6 +53,7 @@ export default function TaskDetailPage() {
   type SearchFile = { file: string; repo: string; matches: SearchMatch[] };
   const searchResults = (zoektRun?.result?.search_results as SearchFile[]) ?? [];
   const searchQuery = (zoektRun?.result?.query as string) ?? "";
+  const zoektIndexedOnly = zoektRun?.result?.indexed === true && !searchQuery;
 
   // Build node lookup for resolving step symbolIds to names
   const nodeMap = useMemo(() => {
@@ -481,7 +482,11 @@ export default function TaskDetailPage() {
                   ) : searchResults.length === 0 ? (
                     <GlassPanel className="py-16 flex flex-col items-center text-center space-y-3">
                       <p className="text-sm text-on-surface-variant/50">
-                        {zoektRun.status === "running" ? "搜索中..." : `关键词「${searchQuery}」未找到匹配结果`}
+                        {zoektRun.status === "running"
+                          ? "索引中..."
+                          : zoektIndexedOnly
+                            ? "Zoekt 索引已建立。本次未提供搜索关键词，因此未执行搜索。"
+                            : `关键词「${searchQuery}」未找到匹配结果`}
                       </p>
                     </GlassPanel>
                   ) : (

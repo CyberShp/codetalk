@@ -193,7 +193,24 @@ class ZoektAdapter(BaseToolAdapter):
         """
         query = request.options.get("query", "")
         if not query:
-            raise ValueError("zoekt analyze requires options.query")
+            # No search term provided — index was built in prepare(), skip search.
+            # This is a valid "index-only" state, not an error.
+            return UnifiedResult(
+                tool_name="zoekt",
+                capability=ToolCapability.CODE_SEARCH,
+                data={
+                    "search_results": [],
+                    "query": "",
+                    "indexed": True,
+                    "index_key": self._indexed_repo_name,
+                },
+                raw_output="",
+                metadata={
+                    "index_key": self._indexed_repo_name,
+                    "display_name": getattr(self, "_display_name", self._indexed_repo_name),
+                    "skipped": "no_query",
+                },
+            )
 
         # Build scoped query: constrain to the indexed repo
         scoped_query = query

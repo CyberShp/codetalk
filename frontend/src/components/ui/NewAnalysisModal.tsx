@@ -85,9 +85,7 @@ export default function NewAnalysisModal({
     }).catch(() => setLlmAvailable(false));
   }, [loadRepos]);
 
-  const missingInput =
-    (taskType === "file_paths" && !folderPath.trim()) ||
-    (zoektEnabled && !zoektQuery.trim());
+  const missingInput = taskType === "file_paths" && !folderPath.trim();
 
   const handleSubmit = async () => {
     if (!selectedRepo || missingInput) return;
@@ -103,9 +101,11 @@ export default function NewAnalysisModal({
       // deepwiki uses its own Ollama embedding — always include it,
       // independent of LLM config. ai_enabled only controls summary generation.
       const tools = ["deepwiki", "gitnexus"];
-      if (zoektEnabled && zoektQuery.trim()) {
+      if (zoektEnabled) {
         tools.push("zoekt");
-        targetSpec.options = { ...(targetSpec.options as Record<string, unknown> ?? {}), query: zoektQuery.trim() };
+        if (zoektQuery.trim()) {
+          targetSpec.options = { ...(targetSpec.options as Record<string, unknown> ?? {}), query: zoektQuery.trim() };
+        }
       }
       const task = await api.tasks.create({
         repository_id: selectedRepo,
@@ -251,8 +251,8 @@ export default function NewAnalysisModal({
           </div>
           {zoektEnabled && (
             <CyberInput
-              label="搜索关键词"
-              placeholder="函数名、类名或代码片段"
+              label="搜索线索（可选）"
+              placeholder="函数名、报错信息、路径片段……留空则仅建索引"
               value={zoektQuery}
               onChange={(e) => setZoektQuery(e.target.value)}
             />
