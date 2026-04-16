@@ -72,6 +72,16 @@ export const api = {
       request<void>(`/api/repos/${repoId}`, { method: "DELETE" }),
     cancelSync: (repoId: string) =>
       request<{ status: string }>(`/api/repos/${repoId}/sync/cancel`, { method: "POST" }),
+    search: (repoId: string, query: string) =>
+      request<{
+        results: { file: string; repo: string; matches: { line_number: number; line_content: string }[] }[];
+        query: string;
+        repo_name: string;
+        total_matches: number;
+      }>(`/api/repos/${repoId}/search`, {
+        method: "POST",
+        body: JSON.stringify({ query }),
+      }),
   },
 
   tasks: {

@@ -42,6 +42,12 @@ export default function TaskDetailPage() {
   const [showOtherProcesses, setShowOtherProcesses] = useState(false);
   const [previousProcess, setPreviousProcess] = useState<GraphNode | null>(null);
 
+  // Interactive search state
+  const [customSearchQuery, setCustomSearchQuery] = useState("");
+  const [interactiveResults, setInteractiveResults] = useState<SearchFile[] | null>(null);
+  const [isSearching, setIsSearching] = useState(false);
+  const [searchError, setSearchError] = useState("");
+
   // Derive graph data — safe with task=null (useMemo must run unconditionally)
   const graphRun = task?.tool_runs.find((r) => r.tool_name === "gitnexus");
   const graphData = (graphRun?.result?.graph as GraphData) ?? null;
@@ -54,6 +60,13 @@ export default function TaskDetailPage() {
   const searchResults = (zoektRun?.result?.search_results as SearchFile[]) ?? [];
   const searchQuery = (zoektRun?.result?.query as string) ?? "";
   const zoektIndexedOnly = zoektRun?.result?.indexed === true && !searchQuery;
+
+  // Sync customSearchQuery with searchQuery when task loads
+  useEffect(() => {
+    if (searchQuery && !customSearchQuery && !interactiveResults) {
+      setCustomSearchQuery(searchQuery);
+    }
+  }, [searchQuery]);
 
   // Build node lookup for resolving step symbolIds to names
   const nodeMap = useMemo(() => {
@@ -141,6 +154,25 @@ export default function TaskDetailPage() {
 
   const showSidebar = tab === "graph" && selectedNode;
   const isIntelligenceNode = selectedNode && INTELLIGENCE_LABELS.has(selectedNode.label);
+
+  const handleSearch = async (e?: React.FormEvent) => {
+    e?.preventDefault();
+    if (!customSearchQuery.trim() || !task?.repository_id) return;
+
+    setIsSearching(true);
+    setSearchError("");
+    try {
+      const resp = await api.repos.search(task.repository_id, customSearchQuery);
+      setInteractiveResults(resp.results);
+    } catch (err) {
+      setSearchError(err instanceof Error ? err.message : "搜索失败");
+    } finally {
+      setIsSearching(false);
+    }
+  };
+
+  const currentSearchResults = interactiveResults ?? searchResults;
+  const currentSearchQuery = interactiveResults ? customSearchQuery : searchQuery;
 
   return (
     <div className="max-w-[1600px] mx-auto space-y-6 pb-20">
@@ -282,7 +314,7 @@ export default function TaskDetailPage() {
                     documentation: "文档",
                     graph: "神经图谱",
                     findings: "发现",
-                    search: `搜索${searchResults.length > 0 ? ` (${searchResults.length})` : ""}`,
+                    search: `搜索${currentSearchResults.length > 0 ? ` (${currentSearchResults.length})` : ""}`,
                     ai_summary: "AI 摘要"
                   }[t]}
                 </button>
@@ -473,29 +505,71 @@ export default function TaskDetailPage() {
             )}
 
             {tab === "search" && (
-              <div className="space-y-4">
+              <div className="space-y-6">
+                {/* 搜索输入框区域 */}
+                {zoektRun && (
+                  <form onSubmit={handleSearch} className="flex gap-2">
+                    <div className="relative flex-1 group">
+                      <div className="absolute inset-y-0 left-3 flex items-center pointer-events-none text-on-surface-variant/40 group-focus-within:text-primary transition-colors">
+                        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round">
+                          <circle cx="11" cy="11" r="8" />
+                          <line x1="21" y1="21" x2="16.65" y2="16.65" />
+                        </svg>
+                      </div>
+                      <input
+                        type="text"
+                        value={customSearchQuery}
+                        onChange={(e) => setCustomSearchQuery(e.target.value)}
+                        placeholder="输入关键词进行实时全代码搜索..."
+                        className="w-full h-11 bg-surface-container-low border border-outline-variant/30 rounded-xl pl-10 pr-4 text-sm font-data text-on-surface placeholder:text-on-surface-variant/30 focus:outline-none focus:border-primary/50 focus:ring-4 focus:ring-primary/5 transition-all"
+                      />
+                    </div>
+                    <button
+                      type="submit"
+                      disabled={isSearching || !customSearchQuery.trim()}
+                      className="h-11 px-6 bg-primary text-on-primary text-xs font-bold uppercase tracking-widest rounded-xl hover:shadow-lg hover:shadow-primary/20 disabled:opacity-50 disabled:hover:shadow-none transition-all"
+                    >
+                      {isSearching ? "搜索中..." : "搜索"}
+                    </button>
+                  </form>
+                )}
+
+                {/* 状态反馈区 */}
+                {searchError && (
+                  <GlassPanel className="bg-tertiary-container/20 border-tertiary/30 py-3">
+                    <p className="text-sm text-tertiary">{searchError}</p>
+                  </GlassPanel>
+                )}
+
                 {zoektRun ? (
                   zoektRun.status === "failed" ? (
                     <GlassPanel className="bg-tertiary-container/20 border-tertiary/30">
                       <p className="text-sm text-tertiary">Zoekt 搜索失败：{zoektRun.error}</p>
                     </GlassPanel>
-                  ) : searchResults.length === 0 ? (
+                  ) : currentSearchResults.length === 0 ? (
                     <GlassPanel className="py-16 flex flex-col items-center text-center space-y-3">
                       <p className="text-sm text-on-surface-variant/50">
                         {zoektRun.status === "running"
                           ? "全速构建索引中..."
-                          : zoektIndexedOnly
-                            ? "代码全文索引已建立。由于本次未提供搜索关键词，已完成预索引并进入待命状态。"
-                            : `在当前代码库中未发现「${searchQuery}」的特征匹配。`}
+                          : isSearching 
+                            ? "搜索中..."
+                            : zoektIndexedOnly && !interactiveResults
+                              ? "代码全文索引已建立。请输入关键词开始实时搜索。"
+                              : `在当前代码库中未发现「${currentSearchQuery}」的特征匹配。`}
                       </p>
                     </GlassPanel>
                   ) : (
-                    <>
+                    <div className="space-y-4">
                       <div className="flex items-center gap-2 text-xs text-on-surface-variant/60 font-data">
-                        <span className="text-primary font-bold">{searchResults.length}</span> 个文件匹配关键词
-                        <span className="bg-surface-container-high px-2 py-0.5 rounded font-mono text-on-surface">「{searchQuery}」</span>
+                        <span className="text-primary font-bold">{currentSearchResults.length}</span> 个文件匹配关键词
+                        <span className="bg-surface-container-high px-2 py-0.5 rounded font-mono text-on-surface">「{currentSearchQuery}」</span>
+                        {interactiveResults && (
+                          <span className="text-[10px] bg-secondary/10 text-secondary border border-secondary/20 px-1.5 py-0.5 rounded ml-auto uppercase tracking-wider font-bold">
+                            实时结果
+                          </span>
+                        )}
                       </div>
-                      {searchResults.map((file, fi) => (
+                      {currentSearchResults.map((file, fi) => (
                         <GlassPanel key={fi} className="p-0 overflow-hidden">
                           <div className="flex items-center gap-2 px-4 py-2.5 bg-surface-container-high/50 border-b border-outline-variant/10">
                             <span className="font-mono text-xs text-secondary truncate">{file.file}</span>
@@ -515,7 +589,7 @@ export default function TaskDetailPage() {
                           </div>
                         </GlassPanel>
                       ))}
-                    </>
+                    </div>
                   )
                 ) : (
                   <GlassPanel className="py-16 flex flex-col items-center text-center space-y-3">
