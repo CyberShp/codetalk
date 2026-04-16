@@ -231,7 +231,7 @@ export default function NewAnalysisModal({
             <div>
               <p className="text-sm text-on-surface">代码搜索 (Zoekt)</p>
               <p className="text-[10px] text-on-surface-variant/60 mt-0.5">
-                在仓库中精确搜索关键词、函数名或模式
+                启用三元组代码搜索引擎，深度定位逻辑关联与跨模块调用。
               </p>
             </div>
             <button
@@ -251,8 +251,8 @@ export default function NewAnalysisModal({
           </div>
           {zoektEnabled && (
             <CyberInput
-              label="搜索线索（可选）"
-              placeholder="函数名、报错信息、路径片段……留空则仅建索引"
+              label="搜索关键词 (可选)"
+              placeholder="输入函数名、类名或关键报错。留空将仅完成代码索引，便于后续检索。"
               value={zoektQuery}
               onChange={(e) => setZoektQuery(e.target.value)}
             />

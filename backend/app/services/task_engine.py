@@ -245,8 +245,8 @@ def _plaintext_summary(results: list[UnifiedResult]) -> str:
             query = r.data.get("query", "")
             if r.metadata.get("skipped") == "no_query":
                 parts.append(
-                    f"zoekt: 索引已建立（仓库 {r.metadata.get('index_key', '')}），"
-                    "本次未提供搜索关键词，未执行搜索"
+                    f"zoekt: 代码指纹索引已建立（仓库 {r.metadata.get('display_name', '')}），"
+                    "本次任务未下达检索指令"
                 )
             else:
                 hits = r.data.get("search_results", [])

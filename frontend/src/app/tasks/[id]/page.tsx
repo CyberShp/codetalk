@@ -483,10 +483,10 @@ export default function TaskDetailPage() {
                     <GlassPanel className="py-16 flex flex-col items-center text-center space-y-3">
                       <p className="text-sm text-on-surface-variant/50">
                         {zoektRun.status === "running"
-                          ? "索引中..."
+                          ? "全速构建索引中..."
                           : zoektIndexedOnly
-                            ? "Zoekt 索引已建立。本次未提供搜索关键词，因此未执行搜索。"
-                            : `关键词「${searchQuery}」未找到匹配结果`}
+                            ? "代码全文索引已建立。由于本次未提供搜索关键词，已完成预索引并进入待命状态。"
+                            : `在当前代码库中未发现「${searchQuery}」的特征匹配。`}
                       </p>
                     </GlassPanel>
                   ) : (
