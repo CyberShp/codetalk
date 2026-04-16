@@ -241,11 +241,23 @@ async def _build_summary(results: list[UnifiedResult], options: dict) -> str:
 def _plaintext_summary(results: list[UnifiedResult]) -> str:
     parts = []
     for r in results:
-        doc = r.data.get("documentation", "")
-        n_diagrams = len(r.diagrams)
-        preview = doc[:200] + "..." if len(doc) > 200 else doc
-        parts.append(
-            f"{r.tool_name}: generated documentation ({len(doc)} chars, "
-            f"{n_diagrams} diagrams). Preview: {preview}"
-        )
+        if r.tool_name == "zoekt":
+            hits = r.data.get("search_results", [])
+            query = r.data.get("query", "")
+            total_matches = sum(len(f.get("matches", [])) for f in hits)
+            file_list = ", ".join(f.get("file", "") for f in hits[:5])
+            if len(hits) > 5:
+                file_list += f" ... and {len(hits) - 5} more"
+            parts.append(
+                f"zoekt: searched '{query}', found {len(hits)} matching files "
+                f"({total_matches} total matches). Files: {file_list}"
+            )
+        else:
+            doc = r.data.get("documentation", "")
+            n_diagrams = len(r.diagrams)
+            preview = doc[:200] + "..." if len(doc) > 200 else doc
+            parts.append(
+                f"{r.tool_name}: generated documentation ({len(doc)} chars, "
+                f"{n_diagrams} diagrams). Preview: {preview}"
+            )
     return " | ".join(parts)

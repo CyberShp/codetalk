@@ -24,7 +24,7 @@ function scoreProcess(p: GraphNode): number {
   return (isCross ? 100 : 0) + steps;
 }
 
-const detailTabs = ["documentation", "graph", "findings", "ai_summary"] as const;
+const detailTabs = ["documentation", "graph", "findings", "search", "ai_summary"] as const;
 type Tab = (typeof detailTabs)[number];
 
 const INTELLIGENCE_LABELS = new Set(["Process", "Community"]);
@@ -46,6 +46,13 @@ export default function TaskDetailPage() {
   const graphRun = task?.tool_runs.find((r) => r.tool_name === "gitnexus");
   const graphData = (graphRun?.result?.graph as GraphData) ?? null;
   const repoName = (graphRun?.result?.metadata as Record<string, unknown>)?.repo_name as string ?? "";
+
+  // Zoekt search results
+  const zoektRun = task?.tool_runs.find((r) => r.tool_name === "zoekt");
+  type SearchMatch = { line_number: number; line_content: string };
+  type SearchFile = { file: string; repo: string; matches: SearchMatch[] };
+  const searchResults = (zoektRun?.result?.search_results as SearchFile[]) ?? [];
+  const searchQuery = (zoektRun?.result?.query as string) ?? "";
 
   // Build node lookup for resolving step symbolIds to names
   const nodeMap = useMemo(() => {
@@ -270,10 +277,11 @@ export default function TaskDetailPage() {
                       : "text-on-surface-variant hover:text-on-surface hover:bg-surface-container-high"
                   }`}
                 >
-                  {{ 
-                    documentation: "文档", 
-                    graph: "神经图谱", 
+                  {{
+                    documentation: "文档",
+                    graph: "神经图谱",
                     findings: "发现",
+                    search: `搜索${searchResults.length > 0 ? ` (${searchResults.length})` : ""}`,
                     ai_summary: "AI 摘要"
                   }[t]}
                 </button>
@@ -457,6 +465,57 @@ export default function TaskDetailPage() {
                   <GlassPanel className="py-20 flex items-center justify-center">
                     <p className="text-sm text-on-surface-variant/40 italic font-display">
                       智能引擎正在分析代码深度关系，请稍后...
+                    </p>
+                  </GlassPanel>
+                )}
+              </div>
+            )}
+
+            {tab === "search" && (
+              <div className="space-y-4">
+                {zoektRun ? (
+                  zoektRun.status === "failed" ? (
+                    <GlassPanel className="bg-tertiary-container/20 border-tertiary/30">
+                      <p className="text-sm text-tertiary">Zoekt 搜索失败：{zoektRun.error}</p>
+                    </GlassPanel>
+                  ) : searchResults.length === 0 ? (
+                    <GlassPanel className="py-16 flex flex-col items-center text-center space-y-3">
+                      <p className="text-sm text-on-surface-variant/50">
+                        {zoektRun.status === "running" ? "搜索中..." : `关键词「${searchQuery}」未找到匹配结果`}
+                      </p>
+                    </GlassPanel>
+                  ) : (
+                    <>
+                      <div className="flex items-center gap-2 text-xs text-on-surface-variant/60 font-data">
+                        <span className="text-primary font-bold">{searchResults.length}</span> 个文件匹配关键词
+                        <span className="bg-surface-container-high px-2 py-0.5 rounded font-mono text-on-surface">「{searchQuery}」</span>
+                      </div>
+                      {searchResults.map((file, fi) => (
+                        <GlassPanel key={fi} className="p-0 overflow-hidden">
+                          <div className="flex items-center gap-2 px-4 py-2.5 bg-surface-container-high/50 border-b border-outline-variant/10">
+                            <span className="font-mono text-xs text-secondary truncate">{file.file}</span>
+                            <span className="text-[10px] text-on-surface-variant/40 shrink-0">{file.matches.length} 处</span>
+                          </div>
+                          <div className="divide-y divide-outline-variant/10">
+                            {file.matches.map((m, mi) => (
+                              <div key={mi} className="flex gap-3 px-4 py-2 hover:bg-surface-container-high/30 transition-colors">
+                                <span className="shrink-0 w-10 text-right text-[10px] font-data text-on-surface-variant/30 pt-0.5">
+                                  {m.line_number}
+                                </span>
+                                <code className="text-xs font-mono text-on-surface/80 whitespace-pre-wrap break-all leading-relaxed">
+                                  {m.line_content}
+                                </code>
+                              </div>
+                            ))}
+                          </div>
+                        </GlassPanel>
+                      ))}
+                    </>
+                  )
+                ) : (
+                  <GlassPanel className="py-16 flex flex-col items-center text-center space-y-3">
+                    <p className="text-sm text-on-surface-variant/40 italic">
+                      本次分析未启用 Zoekt 代码搜索。新建任务时开启「代码搜索」即可。
                     </p>
                   </GlassPanel>
                 )}

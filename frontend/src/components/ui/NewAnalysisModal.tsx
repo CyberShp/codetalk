@@ -50,6 +50,8 @@ export default function NewAnalysisModal({
   const [taskType, setTaskType] = useState<TaskType>("full_repo");
   const [folderPath, setFolderPath] = useState("");
   const [aiEnabled, setAiEnabled] = useState(true);
+  const [zoektEnabled, setZoektEnabled] = useState(false);
+  const [zoektQuery, setZoektQuery] = useState("");
   const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState("");
   const [llmAvailable, setLlmAvailable] = useState<boolean | null>(null);
@@ -83,7 +85,9 @@ export default function NewAnalysisModal({
     }).catch(() => setLlmAvailable(false));
   }, [loadRepos]);
 
-  const missingInput = taskType === "file_paths" && !folderPath.trim();
+  const missingInput =
+    (taskType === "file_paths" && !folderPath.trim()) ||
+    (zoektEnabled && !zoektQuery.trim());
 
   const handleSubmit = async () => {
     if (!selectedRepo || missingInput) return;
@@ -99,6 +103,10 @@ export default function NewAnalysisModal({
       // deepwiki uses its own Ollama embedding — always include it,
       // independent of LLM config. ai_enabled only controls summary generation.
       const tools = ["deepwiki", "gitnexus"];
+      if (zoektEnabled && zoektQuery.trim()) {
+        tools.push("zoekt");
+        targetSpec.options = { ...(targetSpec.options as Record<string, unknown> ?? {}), query: zoektQuery.trim() };
+      }
       const task = await api.tasks.create({
         repository_id: selectedRepo,
         task_type: taskType,
@@ -215,6 +223,40 @@ export default function NewAnalysisModal({
               }`}
             />
           </button>
+        </div>
+
+        {/* Zoekt Code Search */}
+        <div className="mb-5 border-t border-outline-variant/20 pt-4">
+          <div className="flex items-center justify-between mb-2">
+            <div>
+              <p className="text-sm text-on-surface">代码搜索 (Zoekt)</p>
+              <p className="text-[10px] text-on-surface-variant/60 mt-0.5">
+                在仓库中精确搜索关键词、函数名或模式
+              </p>
+            </div>
+            <button
+              onClick={() => setZoektEnabled(!zoektEnabled)}
+              className={`relative w-11 h-6 rounded-full transition-colors duration-200 ${
+                zoektEnabled
+                  ? "bg-secondary-container"
+                  : "bg-surface-container-high ring-1 ring-outline-variant"
+              }`}
+            >
+              <span
+                className={`absolute top-1 left-1 w-4 h-4 rounded-full transition-all duration-200 ${
+                  zoektEnabled ? "translate-x-5 bg-secondary" : "bg-on-surface-variant"
+                }`}
+              />
+            </button>
+          </div>
+          {zoektEnabled && (
+            <CyberInput
+              label="搜索关键词"
+              placeholder="函数名、类名或代码片段"
+              value={zoektQuery}
+              onChange={(e) => setZoektQuery(e.target.value)}
+            />
+          )}
         </div>
 
         {/* Error */}
