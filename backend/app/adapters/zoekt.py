@@ -31,7 +31,7 @@ class ZoektAdapter(BaseToolAdapter):
     def __init__(
         self,
         base_url: str = "http://zoekt:6070",
-        container_name: str = "codetalk-zoekt",
+        container_name: str = "codetalk-zoekt-1",
     ):
         self.base_url = base_url
         self.container_name = container_name
