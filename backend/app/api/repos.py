@@ -93,6 +93,11 @@ async def search_repository(
         raise HTTPException(status_code=503, detail="Zoekt 服务不可用，请检查容器状态")
     except httpx.HTTPStatusError as exc:
         raise HTTPException(status_code=503, detail=f"Zoekt 返回错误: {exc.response.status_code}")
+    except RuntimeError as exc:
+        # ZoektAdapter raises RuntimeError for infrastructure failures:
+        # container not found, zoekt-index non-zero exit, index not visible after indexing.
+        # All of these indicate Zoekt is unavailable or misconfigured — 503, not 500.
+        raise HTTPException(status_code=503, detail=f"Zoekt 服务异常: {exc}")
     except Exception as exc:
         raise HTTPException(status_code=500, detail=str(exc))
 

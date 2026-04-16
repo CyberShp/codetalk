@@ -44,6 +44,7 @@ export default function TaskDetailPage() {
 
   // Interactive search state
   const [customSearchQuery, setCustomSearchQuery] = useState("");
+  const [lastExecutedQuery, setLastExecutedQuery] = useState("");
   const [interactiveResults, setInteractiveResults] = useState<SearchFile[] | null>(null);
   const [isSearching, setIsSearching] = useState(false);
   const [searchError, setSearchError] = useState("");
@@ -161,8 +162,10 @@ export default function TaskDetailPage() {
 
     setIsSearching(true);
     setSearchError("");
+    const executedQuery = customSearchQuery.trim();
     try {
-      const resp = await api.repos.search(task.repository_id, customSearchQuery);
+      const resp = await api.repos.search(task.repository_id, executedQuery);
+      setLastExecutedQuery(executedQuery);
       setInteractiveResults(resp.results);
     } catch (err) {
       setSearchError(err instanceof Error ? err.message : "搜索失败");
@@ -172,7 +175,9 @@ export default function TaskDetailPage() {
   };
 
   const currentSearchResults = interactiveResults ?? searchResults;
-  const currentSearchQuery = interactiveResults ? customSearchQuery : searchQuery;
+  // Use lastExecutedQuery (not the live input value) so label stays stable
+  // until the next successful search completes.
+  const currentSearchQuery = interactiveResults !== null ? lastExecutedQuery : searchQuery;
 
   return (
     <div className="max-w-[1600px] mx-auto space-y-6 pb-20">
