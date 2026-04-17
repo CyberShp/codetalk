@@ -28,3 +28,11 @@ Thumbs.db
 
 # Docker volumes
 data/
+.repos/
+
+# Agent config (local per-developer)
+.cat-cafe/
+.claude/
+.codex/
+.gemini/
+.kimi/

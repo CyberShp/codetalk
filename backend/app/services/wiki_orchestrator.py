@@ -14,6 +14,9 @@ from datetime import datetime, timezone
 
 import httpx
 
+from app.config import settings
+from app.utils.repo_paths import to_tool_repo_path
+
 from app.services.wiki_prompts import build_page_prompt, build_structure_prompt
 
 logger = logging.getLogger(__name__)
@@ -111,6 +114,11 @@ class WikiOrchestrator:
             on_progress: Optional async callable(current, total, page_title) for progress updates.
         """
         trust_env = proxy_mode != "direct"
+        tool_repo_path = to_tool_repo_path(
+            repo_local_path,
+            host_base_path=settings.repos_base_path,
+            tool_base_path=settings.tool_repos_base_path,
+        )
 
         async with httpx.AsyncClient(
             base_url=self.base_url,
@@ -119,7 +127,7 @@ class WikiOrchestrator:
         ) as client:
             # Step 1: Fetch repo structure
             file_tree, readme = await self._fetch_repo_structure(
-                client, repo_local_path
+                client, tool_repo_path
             )
 
             # Step 2: Determine wiki structure
@@ -127,7 +135,7 @@ class WikiOrchestrator:
                 client,
                 file_tree,
                 readme,
-                repo_local_path,
+                tool_repo_path,
                 language,
                 provider,
                 model,
@@ -148,7 +156,7 @@ class WikiOrchestrator:
                     content = await self._generate_page(
                         client,
                         page,
-                        repo_local_path,
+                        tool_repo_path,
                         language,
                         provider,
                         model,

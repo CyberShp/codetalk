@@ -13,6 +13,9 @@ from collections.abc import AsyncIterator
 
 import httpx
 
+from app.config import settings
+from app.utils.repo_paths import to_tool_repo_path
+
 from .base import (
     AnalysisRequest,
     BaseToolAdapter,
@@ -89,7 +92,11 @@ class ZoektAdapter(BaseToolAdapter):
         In production repo_local_path is /data/repos/<uuid>, so the index key is the UUID.
         The human-readable repo_name option is kept in metadata only.
         """
-        repo_path = request.repo_local_path
+        repo_path = to_tool_repo_path(
+            request.repo_local_path,
+            host_base_path=settings.repos_base_path,
+            tool_base_path=settings.tool_repos_base_path,
+        )
         # Zoekt uses the directory basename as the repo name — we must match this.
         index_key = os.path.basename(repo_path.rstrip("/"))
         display_name = request.options.get("repo_name") or index_key

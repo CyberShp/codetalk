@@ -1,5 +1,5 @@
 import type { Metadata } from "next";
-import "./globals.css";
+import "../globals.css";
 import Sidebar from "@/components/layout/Sidebar";
 import TopBar from "@/components/layout/TopBar";
 
@@ -8,7 +8,7 @@ export const metadata: Metadata = {
   description: "Orchestrate open-source code analysis tools with rich visualization",
 };
 
-export default function RootLayout({
+export default function AppRootLayout({
   children,
 }: Readonly<{
   children: React.ReactNode;

@@ -7,6 +7,7 @@ from uuid import UUID
 
 from app.config import settings
 from app.models.repository import Repository
+from app.utils.repo_paths import ensure_repos_base_path
 
 _running_syncs: dict[UUID, asyncio.subprocess.Process] = {}
 
@@ -30,7 +31,7 @@ async def resolve_source(repo: Repository) -> str:
         if not resolved.is_relative_to(boundary):
             raise ValueError(
                 f"Local path must be under {settings.repos_base_path} "
-                f"(Docker volume boundary). Got: {path}"
+                f"(runtime shared repo boundary). Got: {path}"
             )
         return str(resolved)
 
@@ -46,8 +47,10 @@ async def resolve_source(repo: Repository) -> str:
 
 
 async def _clone_or_pull(repo: Repository) -> str:
+    base_path = ensure_repos_base_path(settings.repos_base_path)
+
     # Use repo UUID to avoid name collisions across projects
-    dest = os.path.join(settings.repos_base_path, str(repo.id))
+    dest = os.path.join(base_path, str(repo.id))
     if os.path.isdir(os.path.join(dest, ".git")):
         proc = await asyncio.create_subprocess_exec(
             "git", "-C", dest, "pull", "--ff-only",

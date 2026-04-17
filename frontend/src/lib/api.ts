@@ -21,6 +21,11 @@ import type {
   WikiResponse,
   WikiGenerateResponse,
   WikiStatus,
+  EvidenceItem,
+  AskContextResponse,
+  RepoDetail,
+  PaginatedAnalyses,
+  RepoGraphResponse,
 } from "./types";
 
 const BASE = process.env.NEXT_PUBLIC_API_URL || "http://localhost:8000";
@@ -82,6 +87,61 @@ export const api = {
         method: "POST",
         body: JSON.stringify({ query }),
       }),
+
+    // ── Repo-centric endpoints ────────────────────────────────────────────
+    get: (repoId: string) =>
+      request<RepoDetail>(`/api/repos/${repoId}`),
+
+    analyses: (repoId: string, page = 1, pageSize = 10) =>
+      request<PaginatedAnalyses>(
+        `/api/repos/${repoId}/analyses?page=${page}&page_size=${pageSize}`
+      ),
+
+    wiki: {
+      get: (repoId: string) =>
+        request<WikiResponse>(`/api/repos/${repoId}/wiki`),
+      generate: (repoId: string, comprehensive = true, forceRefresh = false) =>
+        request<WikiGenerateResponse>(`/api/repos/${repoId}/wiki/generate`, {
+          method: "POST",
+          body: JSON.stringify({ comprehensive, force_refresh: forceRefresh }),
+        }),
+      status: (repoId: string) =>
+        request<WikiStatus>(`/api/repos/${repoId}/wiki/status`),
+      deleteCache: (repoId: string) =>
+        request<{ status: string }>(`/api/repos/${repoId}/wiki/cache`, {
+          method: "DELETE",
+        }),
+    },
+
+    graph: {
+      get: (repoId: string) =>
+        request<RepoGraphResponse>(`/api/repos/${repoId}/graph`),
+    },
+
+    chat: {
+      stream: (
+        repoId: string,
+        messages: { role: string; content: string }[],
+        options?: {
+          filePath?: string;
+          deepResearch?: boolean;
+          includedFiles?: string[];
+        },
+        signal?: AbortSignal,
+      ) =>
+        fetch(`${BASE}/api/repos/${repoId}/chat/stream`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            repo_id: repoId,
+            messages,
+            file_path: options?.filePath,
+            deep_research: options?.deepResearch ?? false,
+            included_files: options?.includedFiles,
+          }),
+          signal,
+        }),
+    },
   },
 
   tasks: {
@@ -104,6 +164,12 @@ export const api = {
       request<void>(`/api/tasks/${id}`, { method: "DELETE" }),
     cancel: (id: string) =>
       request<{ status: string }>(`/api/tasks/${id}/cancel`, { method: "POST" }),
+    getFile: (id: string, path: string, start?: number, end?: number) => {
+      const qs = new URLSearchParams({ path });
+      if (start !== undefined) qs.set("start", String(start));
+      if (end !== undefined) qs.set("end", String(end));
+      return request<FileSlice>(`/api/tasks/${id}/file?${qs}`);
+    },
   },
 
   tools: {
@@ -162,11 +228,18 @@ export const api = {
       taskId: string,
       messages: { role: string; content: string }[],
       signal?: AbortSignal,
+      evidence?: EvidenceItem[],
     ) =>
       fetch(`${BASE}/api/chat/stream`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ task_id: taskId, messages }),
+        body: JSON.stringify({ task_id: taskId, messages, evidence: evidence ?? [] }),
+        signal,
+      }),
+    askContext: (taskId: string, query: string, signal?: AbortSignal) =>
+      request<AskContextResponse>("/api/chat/ask/context", {
+        method: "POST",
+        body: JSON.stringify({ task_id: taskId, query }),
         signal,
       }),
   },

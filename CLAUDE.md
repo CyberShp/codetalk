@@ -50,6 +50,8 @@ Browser → Next.js(:3000) → FastAPI(:8000) → ┬─ Zoekt(:6070)
                               PostgreSQL(:5432)
 ```
 
+本地 host-run 端口和重启规矩见 [docs/LOCAL_RUNTIME_RULES.md](docs/LOCAL_RUNTIME_RULES.md)。不要把 Docker 网络地址直接套到 host-run 进程上。
+
 ## 目录结构
 
 ```

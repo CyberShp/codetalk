@@ -10,6 +10,9 @@ from app.api.gitnexus_proxy import router as gitnexus_router
 from app.api.components import router as components_router
 from app.api.wiki import router as wiki_router
 from app.api.ws import router as ws_router
+from app.api.repo_wiki import router as repo_wiki_router
+from app.api.repo_chat import router as repo_chat_router
+from app.api.repo_graph import router as repo_graph_router
 
 api_router = APIRouter()
 api_router.include_router(chat_router)
@@ -22,3 +25,7 @@ api_router.include_router(gitnexus_router)
 api_router.include_router(components_router)
 api_router.include_router(wiki_router)
 api_router.include_router(ws_router)
+# Repo-centric endpoints (wiki/chat/graph keyed by repo_id directly)
+api_router.include_router(repo_wiki_router)
+api_router.include_router(repo_chat_router)
+api_router.include_router(repo_graph_router)

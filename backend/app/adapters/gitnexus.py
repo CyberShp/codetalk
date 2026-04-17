@@ -13,6 +13,9 @@ from collections.abc import AsyncIterator
 
 import httpx
 
+from app.config import settings
+from app.utils.repo_paths import to_tool_repo_path
+
 from .base import (
     AnalysisRequest,
     BaseToolAdapter,
@@ -71,9 +74,14 @@ class GitNexusAdapter(BaseToolAdapter):
 
     async def prepare(self, request: AnalysisRequest) -> None:
         """Trigger GitNexus indexing for the repository."""
+        tool_repo_path = to_tool_repo_path(
+            request.repo_local_path,
+            host_base_path=settings.repos_base_path,
+            tool_base_path=settings.tool_repos_base_path,
+        )
         resp = await self.client.post(
             "/api/analyze",
-            json={"path": request.repo_local_path},
+            json={"path": tool_repo_path},
         )
         resp.raise_for_status()
         job = resp.json()

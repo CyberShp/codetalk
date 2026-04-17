@@ -21,13 +21,17 @@ export default function CodePanel({ node, repoName }: Props) {
   useEffect(() => {
     if (!hasCodeRange || !repoName) return;
 
-    setLoading(true);
-    setError("");
-    api.gitnexus
-      .getFile(repoName, filePath!, startLine, endLine)
-      .then(setCode)
-      .catch((e) => setError(e instanceof Error ? e.message : "Failed to load"))
-      .finally(() => setLoading(false));
+    const timer = setTimeout(() => {
+      setLoading(true);
+      setError("");
+      api.gitnexus
+        .getFile(repoName, filePath!, startLine!, endLine!)
+        .then(setCode)
+        .catch((e) => setError(e instanceof Error ? e.message : "Failed to load"))
+        .finally(() => setLoading(false));
+    }, 0);
+    
+    return () => clearTimeout(timer);
   }, [node.id, repoName, filePath, startLine, endLine, hasCodeRange]);
 
   return (
@@ -53,7 +57,7 @@ export default function CodePanel({ node, repoName }: Props) {
       {node.properties.description && (
         <div className="mb-4 p-3 bg-secondary-container/10 border-l-2 border-secondary/50 rounded-r">
           <p className="text-xs text-on-surface-variant leading-relaxed italic">
-            "{node.properties.description}"
+            &quot;{node.properties.description}&quot;
           </p>
         </div>
       )}

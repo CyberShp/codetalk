@@ -15,6 +15,7 @@ from pydantic import BaseModel
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.config import settings
 from app.database import get_db
 from app.models.llm_config import LLMConfig
 from app.models.repository import Repository
@@ -26,7 +27,7 @@ logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/api/tasks", tags=["wiki"])
 
-_orchestrator = WikiOrchestrator()
+_orchestrator = WikiOrchestrator(base_url=settings.deepwiki_base_url)
 
 # ── In-memory generation status tracking (keyed by repository_id, not task_id) ──
 # Wiki cache is a repo-level resource. The lock must be repo-level to prevent
@@ -339,7 +340,7 @@ async def export_wiki(
     import httpx
 
     async with httpx.AsyncClient(
-        base_url="http://deepwiki:8001",
+        base_url=settings.deepwiki_base_url,
         timeout=httpx.Timeout(60, connect=10),
     ) as client:
         resp = await client.post("/export/wiki", json=export_payload)

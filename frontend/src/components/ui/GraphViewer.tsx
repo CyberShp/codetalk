@@ -1,6 +1,6 @@
 "use client";
 
-import { useMemo, useState, useCallback, useRef, useEffect } from "react";
+import { useMemo, useState, useRef, useEffect } from "react";
 import type { GraphNode, GraphEdge } from "@/lib/types";
 
 /* ── Color map per node type ── */

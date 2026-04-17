@@ -22,6 +22,7 @@ class TaskCreate(BaseModel):
 class TaskResponse(BaseModel):
     id: uuid.UUID
     repository_id: uuid.UUID
+    repository_name: str | None = None
     task_type: str
     status: str
     tools: list[str]

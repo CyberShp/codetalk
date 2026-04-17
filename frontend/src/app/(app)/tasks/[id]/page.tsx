@@ -1,6 +1,7 @@
 "use client";
 
-import { useState, useEffect, useMemo, useCallback } from "react";
+import React, { useState, useEffect, useMemo, useCallback } from "react";
+import Link from "next/link";
 import { useParams, useRouter } from "next/navigation";
 import GlassPanel from "@/components/ui/GlassPanel";
 import StatusBadge from "@/components/ui/StatusBadge";
@@ -9,14 +10,48 @@ import MarkdownRenderer from "@/components/ui/MarkdownRenderer";
 import GraphViewer from "@/components/ui/GraphViewer";
 import CodePanel from "@/components/ui/CodePanel";
 import IntelligencePanel from "@/components/ui/IntelligencePanel";
-import FloatingChat from "@/components/ui/FloatingChat";
 import WikiViewer from "@/components/ui/WikiViewer";
+import FloatingChat from "@/components/ui/FloatingChat";
 import ConfirmDialog from "@/components/ui/ConfirmDialog";
 import { api } from "@/lib/api";
 import type { TaskDetail, GraphNode, GraphData } from "@/lib/types";
-import { Clock, Tag, Cpu, ChevronDown, ChevronUp, Bot } from "lucide-react";
+import { ArrowLeft, ChevronDown, ChevronUp, Bot, Sparkles, MessageSquareText } from "lucide-react";
 
 const KEY_PROCESS_LIMIT = 10;
+const CODE_LABELS = new Set(["Function", "Method", "Class", "Module", "Route", "Tool"]);
+
+const GRAPH_NODE_COLORS: Record<string, string> = {
+  File: "#3B82F6", Folder: "#6366F1", Class: "#8B5CF6", Function: "#10B981",
+  Method: "#14B8A6", Module: "#F59E0B", Route: "#EF4444", Process: "#EC4899",
+  Community: "#6366F1", Tool: "#F97316",
+};
+
+type GraphSearchHit = {
+  node: GraphNode;
+  file: string;
+  matchLines: { lineNumber: number; lineContent: string }[];
+  community: GraphNode | null;
+  processes: GraphNode[];
+};
+
+function findBestGraphNode(nodes: GraphNode[], zoektFile: string, lineNum: number): GraphNode | null {
+  const norm = (p: string) => p.replace(/\\/g, "/").replace(/^\.\//, "");
+  const zf = norm(zoektFile);
+  let best: GraphNode | null = null;
+  let bestRange = Infinity;
+  for (const n of nodes) {
+    if (!n.properties.filePath) continue;
+    const fp = norm(String(n.properties.filePath));
+    if (fp !== zf && !fp.endsWith("/" + zf) && !zf.endsWith("/" + fp.split("/").slice(-2).join("/"))) continue;
+    const start = n.properties.startLine as number | undefined;
+    const end = n.properties.endLine as number | undefined;
+    if (start != null && end != null && lineNum >= start && lineNum <= end) {
+      const range = end - start;
+      if (range < bestRange) { bestRange = range; best = n; }
+    }
+  }
+  return best;
+}
 
 function scoreProcess(p: GraphNode): number {
   const isCross = p.properties.processType === "cross_community";
@@ -38,21 +73,36 @@ export default function TaskDetailPage() {
   const [task, setTask] = useState<TaskDetail | null>(null);
   const [error, setError] = useState("");
   const [selectedNode, setSelectedNode] = useState<GraphNode | null>(null);
-  const [showMetadata, setShowMetadata] = useState(false);
   const [showOtherProcesses, setShowOtherProcesses] = useState(false);
   const [previousProcess, setPreviousProcess] = useState<GraphNode | null>(null);
 
-  // Interactive search state
+  // Interactive search state (search tab)
   const [customSearchQuery, setCustomSearchQuery] = useState("");
   const [lastExecutedQuery, setLastExecutedQuery] = useState("");
   const [interactiveResults, setInteractiveResults] = useState<SearchFile[] | null>(null);
   const [isSearching, setIsSearching] = useState(false);
   const [searchError, setSearchError] = useState("");
 
+  // Wiki page context: file paths of the currently viewed wiki page
+  const [wikiPageFilePaths, setWikiPageFilePaths] = useState<string[]>([]);
+  const handleWikiPageChange = useCallback((_pageId: string, filePaths: string[]) => {
+    setWikiPageFilePaths(filePaths);
+  }, []);
+
+  // Graph tab search state
+  const [graphSearchQuery, setGraphSearchQuery] = useState("");
+  const [graphSearchLastQuery, setGraphSearchLastQuery] = useState("");
+  const [graphSearchResults, setGraphSearchResults] = useState<GraphSearchHit[]>([]);
+  const [isGraphSearching, setIsGraphSearching] = useState(false);
+  const [graphSearchError, setGraphSearchError] = useState("");
+  const [showGraphResults, setShowGraphResults] = useState(false);
+
   // Derive graph data — safe with task=null (useMemo must run unconditionally)
   const graphRun = task?.tool_runs.find((r) => r.tool_name === "gitnexus");
   const graphData = (graphRun?.result?.graph as GraphData) ?? null;
-  const repoName = (graphRun?.result?.metadata as Record<string, unknown>)?.repo_name as string ?? "";
+  const repoName = task?.repository_name
+    ?? ((graphRun?.result?.metadata as Record<string, unknown>)?.repo_name as string | undefined)
+    ?? "Repository";
 
   // Zoekt search results
   const zoektRun = task?.tool_runs.find((r) => r.tool_name === "zoekt");
@@ -67,7 +117,7 @@ export default function TaskDetailPage() {
     if (searchQuery && !customSearchQuery && !interactiveResults) {
       setCustomSearchQuery(searchQuery);
     }
-  }, [searchQuery]);
+  }, [searchQuery, customSearchQuery, interactiveResults]);
 
   // Build node lookup for resolving step symbolIds to names
   const nodeMap = useMemo(() => {
@@ -75,6 +125,33 @@ export default function TaskDetailPage() {
     const m = new Map<string, GraphNode>();
     for (const n of graphData.nodes) m.set(n.id, n);
     return m;
+  }, [graphData]);
+
+  // Community membership lookup: nodeId → Community node
+  const nodeCommunityMap = useMemo(() => {
+    if (!graphData) return new Map<string, GraphNode>();
+    const map = new Map<string, GraphNode>();
+    for (const edge of graphData.edges) {
+      if (edge.type.toUpperCase() === "MEMBER_OF") {
+        const community = graphData.communities?.find((c) => c.id === edge.targetId);
+        if (community) map.set(edge.sourceId, community);
+      }
+    }
+    return map;
+  }, [graphData]);
+
+  // Process membership lookup: nodeId → Process[] (this node appears in these processes)
+  const nodeProcessMap = useMemo(() => {
+    if (!graphData) return new Map<string, GraphNode[]>();
+    const map = new Map<string, GraphNode[]>();
+    for (const process of graphData.processes ?? []) {
+      for (const step of process.steps ?? []) {
+        const arr = map.get(step.symbolId) ?? [];
+        arr.push(process);
+        map.set(step.symbolId, arr);
+      }
+    }
+    return map;
   }, [graphData]);
 
   // Score, rank, and split processes into key vs other
@@ -120,14 +197,6 @@ export default function TaskDetailPage() {
     return () => clearInterval(interval);
   }, [taskId]);
 
-  const handleCancel = async () => {
-    try {
-      await api.tasks.cancel(taskId);
-    } catch (e) {
-      console.error("Failed to cancel task:", e);
-    }
-  };
-
   const handleDelete = async () => {
     try {
       await api.tasks.delete(taskId);
@@ -139,7 +208,7 @@ export default function TaskDetailPage() {
 
   if (error) {
     return (
-      <div className="p-6">
+      <div className="fixed inset-0 z-[80] flex items-center justify-center bg-surface p-6">
         <p className="text-tertiary">{error}</p>
       </div>
     );
@@ -147,7 +216,7 @@ export default function TaskDetailPage() {
 
   if (!task) {
     return (
-      <div className="p-6">
+      <div className="fixed inset-0 z-[80] flex items-center justify-center bg-surface p-6">
         <p className="text-on-surface-variant/50">加载任务中...</p>
       </div>
     );
@@ -175,112 +244,85 @@ export default function TaskDetailPage() {
   };
 
   const currentSearchResults = interactiveResults ?? searchResults;
-  // Use lastExecutedQuery (not the live input value) so label stays stable
-  // until the next successful search completes.
   const currentSearchQuery = interactiveResults !== null ? lastExecutedQuery : searchQuery;
 
+  const handleGraphSearch = async (e?: React.FormEvent) => {
+    e?.preventDefault();
+    if (!graphSearchQuery.trim() || !task?.repository_id) return;
+    setIsGraphSearching(true);
+    setGraphSearchError("");
+    const q = graphSearchQuery.trim();
+    try {
+      const resp = await api.repos.search(task.repository_id, q);
+      setGraphSearchLastQuery(q);
+      const allNodes = graphData?.nodes ?? [];
+      const nodeHitsMap = new Map<string, GraphSearchHit>();
+      for (const file of resp.results) {
+        for (const match of file.matches) {
+          const node = findBestGraphNode(allNodes, file.file, match.line_number);
+          if (!node) continue;
+          if (!nodeHitsMap.has(node.id)) {
+            nodeHitsMap.set(node.id, {
+              node,
+              file: file.file,
+              matchLines: [],
+              community: nodeCommunityMap.get(node.id) ?? null,
+              processes: nodeProcessMap.get(node.id) ?? [],
+            });
+          }
+          nodeHitsMap.get(node.id)!.matchLines.push({
+            lineNumber: match.line_number,
+            lineContent: match.line_content,
+          });
+        }
+      }
+      setGraphSearchResults(Array.from(nodeHitsMap.values()));
+      setShowGraphResults(true);
+    } catch (err) {
+      setGraphSearchError(err instanceof Error ? err.message : "搜索失败");
+    } finally {
+      setIsGraphSearching(false);
+    }
+  };
+
   return (
-    <div className="max-w-[1600px] mx-auto space-y-6 pb-20">
-      {/* Refined Header & Metadata Area */}
-      <div className="space-y-4">
-        <div className="flex items-end justify-between border-b border-outline-variant/30 pb-4">
-          <div className="space-y-1">
-            <div className="flex items-center gap-3">
-              <h2 className="font-display text-2xl font-bold text-on-surface tracking-tight">
-                {repoName || "项目分析"}
-              </h2>
-              <StatusBadge status={task.status as "running" | "completed" | "failed" | "pending"} />
-              {(task.status === "pending" || task.status === "running") && (
-                <button
-                  onClick={handleCancel}
-                  className="p-1.5 rounded-lg hover:bg-surface-container-highest/50 text-on-surface-variant/50 hover:text-tertiary transition-colors"
-                  title="停止任务"
-                >
-                  <svg width="14" height="14" viewBox="0 0 24 24" fill="currentColor">
-                    <rect x="6" y="6" width="12" height="12" rx="2" />
-                  </svg>
-                </button>
-              )}
-              {(task.status === "completed" || task.status === "failed" || task.status === "cancelled") && (
-                <button
-                  onClick={() => setShowDeleteConfirm(true)}
-                  className="p-1.5 rounded-lg hover:bg-surface-container-highest/50 text-on-surface-variant/50 hover:text-tertiary transition-colors"
-                  title="删除任务"
-                >
-                  <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-                    <polyline points="3 6 5 6 21 6" />
-                    <path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2" />
-                  </svg>
-                </button>
-              )}
-            </div>
-            <div className="flex items-center gap-4 text-xs text-on-surface-variant/70 font-data">
-              <span className="flex items-center gap-1.5">
-                <Tag size={12} className="text-primary/60" />
-                {task.id.slice(0, 8)}
-              </span>
-              <span className="flex items-center gap-1.5">
-                <Cpu size={12} className="text-secondary/60" />
-                {task.task_type}
-              </span>
-              <span className="flex items-center gap-1.5">
-                <Clock size={12} className="text-on-surface-variant/40" />
-                {new Date(task.created_at).toLocaleDateString()}
-              </span>
-            </div>
-          </div>
-          
-          <button 
-            onClick={() => setShowMetadata(!showMetadata)}
-            className="flex items-center gap-1 text-[10px] uppercase tracking-widest text-on-surface-variant hover:text-primary transition-colors font-bold"
+    <div className="fixed inset-0 z-[80] bg-surface text-on-surface">
+      <header className="fixed inset-x-0 top-0 z-[85] flex h-16 items-center justify-between border-b border-outline-variant/20 bg-surface/95 px-6 backdrop-blur-md">
+        <div className="flex min-w-0 items-center gap-3">
+          <Link
+            href="/tasks"
+            className="inline-flex h-10 items-center gap-2 rounded-full border border-outline-variant/20 bg-surface-container-low px-4 text-sm font-medium text-on-surface transition-colors hover:border-primary/30 hover:text-primary"
           >
-            任务详情 {showMetadata ? <ChevronUp size={14} /> : <ChevronDown size={14} />}
-          </button>
+            <ArrowLeft size={16} />
+            返回
+          </Link>
+          <div className="h-6 w-px bg-outline-variant/20" />
+          <Link
+            href="/dashboard"
+            className="text-[11px] font-black uppercase tracking-[0.35em] text-on-surface hover:text-primary"
+          >
+            CODETALKS
+          </Link>
+          <span className="truncate text-sm text-on-surface-variant">{repoName}</span>
+          <span className="rounded-full border border-outline-variant/20 px-2 py-0.5 font-mono text-[10px] text-on-surface-variant/60">
+            {task.id.slice(0, 8)}
+          </span>
         </div>
 
-        {showMetadata && (
-          <div className="animate-in slide-in-from-top-2 duration-300">
-            <GlassPanel className="bg-surface-container-lowest/30 border-dashed border-outline-variant/50">
-              <div className="grid grid-cols-2 sm:grid-cols-4 gap-6 p-1">
-                <div className="space-y-1">
-                  <p className="text-[10px] uppercase tracking-wider text-on-surface-variant/50 font-bold">工具链</p>
-                  <p className="text-xs font-data text-on-surface">{task.tools.join(", ")}</p>
-                </div>
-                <div className="space-y-1">
-                  <p className="text-[10px] uppercase tracking-wider text-on-surface-variant/50 font-bold">AI 增强</p>
-                  <p className="text-xs font-data text-on-surface">{task.ai_enabled ? "已启用" : "已禁用"}</p>
-                </div>
-                <div className="space-y-1">
-                  <p className="text-[10px] uppercase tracking-wider text-on-surface-variant/50 font-bold">开始时间</p>
-                  <p className="text-xs font-data text-on-surface">{task.started_at ? new Date(task.started_at).toLocaleTimeString() : "-"}</p>
-                </div>
-                <div className="space-y-1">
-                  <p className="text-[10px] uppercase tracking-wider text-on-surface-variant/50 font-bold">完成时间</p>
-                  <p className="text-xs font-data text-on-surface">{task.completed_at ? new Date(task.completed_at).toLocaleTimeString() : "-"}</p>
-                </div>
-              </div>
-              {task.tool_runs.length > 0 && (
-                <div className="mt-4 pt-4 border-t border-outline-variant/20">
-                  <p className="text-[10px] uppercase tracking-wider text-on-surface-variant/50 font-bold mb-2">执行状态</p>
-                  <div className="flex gap-2 flex-wrap">
-                    {task.tool_runs.map((run) => (
-                      <div key={run.id} className="flex items-center gap-2 bg-surface-container-high/50 rounded-full px-3 py-1 border border-outline-variant/10">
-                        <span className="font-data text-[10px] text-on-surface-variant">{run.tool_name}</span>
-                        <div className={`w-1.5 h-1.5 rounded-full ${
-                          run.status === "completed" ? "bg-primary" : 
-                          run.status === "failed" ? "bg-tertiary" : 
-                          run.status === "running" ? "bg-secondary animate-pulse" : "bg-outline"
-                        }`} />
-                      </div>
-                    ))}
-                  </div>
-                </div>
-              )}
-            </GlassPanel>
-          </div>
-        )}
-      </div>
+        <div className="flex items-center gap-3">
+          <StatusBadge status={task.status as "running" | "completed" | "failed" | "pending"} />
+          <Link
+            href={`/tasks/${taskId}/ask`}
+            className="inline-flex h-10 items-center gap-2 rounded-full bg-primary px-4 text-sm font-semibold text-on-primary transition-transform hover:scale-[1.01]"
+          >
+            <MessageSquareText size={16} />
+            AI 问答
+          </Link>
+        </div>
+      </header>
 
+      <div className="absolute inset-x-0 bottom-0 top-16 overflow-y-auto">
+        <div className="space-y-6 px-6 py-6 pb-20 xl:px-8 xl:py-8">
       <ProgressBar value={task.progress} className="h-1.5" />
 
       {task.error && (
@@ -320,43 +362,159 @@ export default function TaskDetailPage() {
                     graph: "神经图谱",
                     findings: "发现",
                     search: `搜索${currentSearchResults.length > 0 ? ` (${currentSearchResults.length})` : ""}`,
-                    ai_summary: "AI 摘要"
+                    ai_summary: "AI 摘要",
                   }[t]}
                 </button>
               ))}
             </div>
-            
+            <Link
+              href={`/tasks/${taskId}/ask`}
+              className="inline-flex items-center gap-2 rounded-full border border-primary/20 bg-primary/10 px-4 py-2 text-[11px] font-bold uppercase tracking-widest text-primary transition-colors hover:bg-primary/15"
+            >
+              <Sparkles size={12} />
+              打开全屏 AI 问答
+            </Link>
           </div>
 
           {/* Tab Content Panels */}
           <div className="animate-in fade-in duration-500">
             {tab === "documentation" && (
               <GlassPanel className="p-0 overflow-hidden">
-                <WikiViewer taskId={taskId} />
+                <WikiViewer taskId={taskId} onPageChange={handleWikiPageChange} />
               </GlassPanel>
             )}
 
             {tab === "graph" && (
-              <div className="space-y-6 h-[700px] flex flex-col">
-                {graphData ? (
-                  <div className="flex-1 min-h-0 relative">
-                    <GraphViewer
-                      nodes={graphData.nodes}
-                      edges={graphData.edges}
-                      selectedNodeId={selectedNode?.id ?? null}
-                      onNodeClick={handleNodeClick}
-                    />
-                    <div className="absolute top-4 left-4 pointer-events-none">
-                      <div className="bg-surface-container-high/80 backdrop-blur-md px-3 py-1.5 rounded border border-outline-variant/30">
-                        <p className="text-[10px] text-primary font-bold uppercase tracking-wider flex items-center gap-2">
-                          <span className="w-1.5 h-1.5 bg-primary rounded-full animate-pulse" />
-                          Neural Intelligence Active
-                        </p>
+              <div className="space-y-3">
+                {/* Graph Zoekt Search Bar */}
+                {graphData && task.repository_id && (
+                  <>
+                    <form onSubmit={handleGraphSearch} className="flex gap-2">
+                      <div className="relative flex-1 group">
+                        <div className="absolute inset-y-0 left-3 flex items-center pointer-events-none text-on-surface-variant/40 group-focus-within:text-primary transition-colors">
+                          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round">
+                            <circle cx="11" cy="11" r="8" /><line x1="21" y1="21" x2="16.65" y2="16.65" />
+                          </svg>
+                        </div>
+                        <input
+                          type="text"
+                          value={graphSearchQuery}
+                          onChange={(e) => setGraphSearchQuery(e.target.value)}
+                          placeholder="搜索代码，定位至图节点..."
+                          className="w-full h-10 bg-surface-container-low border border-outline-variant/30 rounded-xl pl-10 pr-4 text-sm font-data text-on-surface placeholder:text-on-surface-variant/30 focus:outline-none focus:border-primary/50 focus:ring-4 focus:ring-primary/5 transition-all"
+                        />
                       </div>
+                      <button
+                        type="submit"
+                        disabled={isGraphSearching || !graphSearchQuery.trim()}
+                        className="h-10 px-5 bg-primary text-on-primary text-xs font-bold uppercase tracking-widest rounded-xl hover:shadow-lg hover:shadow-primary/20 disabled:opacity-50 transition-all"
+                      >
+                        {isGraphSearching ? "搜索中..." : "搜索"}
+                      </button>
+                    </form>
+
+                    {graphSearchError && (
+                      <p className="text-xs text-tertiary px-1">{graphSearchError}</p>
+                    )}
+
+                    {showGraphResults && graphSearchResults.length > 0 && (
+                      <div className="max-h-52 overflow-y-auto bg-surface-container-lowest/40 rounded-xl border border-outline-variant/10 py-2">
+                        <div className="flex items-center justify-between px-3 pb-1.5 mb-1 border-b border-outline-variant/10">
+                          <span className="text-[10px] text-on-surface-variant/50 uppercase tracking-wider">
+                            {graphSearchResults.length} 节点匹配 · 「{graphSearchLastQuery}」
+                          </span>
+                          <button
+                            onClick={() => setShowGraphResults(false)}
+                            className="text-[10px] text-on-surface-variant/40 hover:text-on-surface px-1 transition-colors"
+                          >
+                            ✕
+                          </button>
+                        </div>
+                        <div className="space-y-0.5 px-2">
+                          {graphSearchResults.map((hit) => (
+                            <div
+                              key={hit.node.id}
+                              onClick={() => handleNodeClick(hit.node)}
+                              className={`flex items-center gap-2 px-2 py-1.5 rounded-lg cursor-pointer hover:bg-surface-container-high/50 transition-colors group ${
+                                selectedNode?.id === hit.node.id
+                                  ? "bg-primary/10 ring-1 ring-primary/20"
+                                  : ""
+                              }`}
+                            >
+                              <div
+                                className="shrink-0 w-2 h-2 rounded-full"
+                                style={{ background: GRAPH_NODE_COLORS[hit.node.label] ?? "#6B7280" }}
+                              />
+                              <div className="flex-1 min-w-0">
+                                <div className="flex items-center gap-1.5 flex-wrap">
+                                  <span className="text-xs font-medium text-on-surface truncate max-w-[160px]">
+                                    {hit.node.properties.name}
+                                  </span>
+                                  <span className="text-[9px] font-data text-on-surface-variant/50 bg-surface-container-high/80 px-1.5 py-0.5 rounded shrink-0">
+                                    {hit.node.label}
+                                  </span>
+                                  {hit.community && (
+                                    <span className="text-[9px] font-data text-secondary/70 bg-secondary/10 px-1.5 py-0.5 rounded shrink-0 truncate max-w-[100px]">
+                                      {hit.community.properties.name}
+                                    </span>
+                                  )}
+                                  {hit.processes.length > 0 && (
+                                    <span className="text-[9px] font-data text-tertiary/70 bg-tertiary/10 px-1.5 py-0.5 rounded shrink-0">
+                                      {hit.processes.length} 流程
+                                    </span>
+                                  )}
+                                </div>
+                                <div className="text-[9px] text-on-surface-variant/40 font-data truncate mt-0.5">
+                                  {hit.file}:{hit.matchLines[0]?.lineNumber}
+                                  {hit.matchLines.length > 1 && ` +${hit.matchLines.length - 1} 处`}
+                                </div>
+                              </div>
+                              <div className="flex gap-1 shrink-0 opacity-0 group-hover:opacity-100 transition-opacity">
+                                <button
+                                  onClick={(e) => { e.stopPropagation(); handleNodeClick(hit.node); }}
+                                  className="text-[9px] px-1.5 py-0.5 rounded bg-primary/20 text-primary hover:bg-primary/30 transition-colors font-bold"
+                                  title="定位到图节点，展开一跳邻居"
+                                >
+                                  定位
+                                </button>
+                                {CODE_LABELS.has(hit.node.label) && (
+                                  <button
+                                    onClick={(e) => { e.stopPropagation(); handleNodeClick(hit.node); }}
+                                    className="text-[9px] px-1.5 py-0.5 rounded bg-secondary/20 text-secondary hover:bg-secondary/30 transition-colors font-bold"
+                                    title="打开代码面板"
+                                  >
+                                    代码
+                                  </button>
+                                )}
+                              </div>
+                            </div>
+                          ))}
+                        </div>
+                      </div>
+                    )}
+
+                    {showGraphResults && !isGraphSearching && graphSearchLastQuery && graphSearchResults.length === 0 && (
+                      <p className="text-xs text-on-surface-variant/50 px-1">
+                        未在图谱中找到「{graphSearchLastQuery}」的节点匹配，可到搜索页查看完整代码结果。
+                      </p>
+                    )}
+                  </>
+                )}
+
+                {/* Graph Viewer */}
+                {graphData ? (
+                  <div className="h-[640px] flex flex-col">
+                    <div className="flex-1 min-h-0">
+                      <GraphViewer
+                        nodes={graphData.nodes}
+                        edges={graphData.edges}
+                        selectedNodeId={selectedNode?.id ?? null}
+                        onNodeClick={handleNodeClick}
+                      />
                     </div>
                   </div>
                 ) : (
-                  <GlassPanel className="flex-1 flex items-center justify-center text-on-surface-variant/50">
+                  <GlassPanel className="py-32 flex items-center justify-center text-on-surface-variant/50">
                     <p className="text-sm italic">
                       {task.status === "running" ? "神经连接构建中..." : "未发现图谱数据。"}
                     </p>
@@ -658,9 +816,15 @@ export default function TaskDetailPage() {
           </div>
         )}
       </div>
+        </div>
+      </div>
 
-      {/* Floating AI Chat */}
-      <FloatingChat taskId={taskId} />
+      {task.repository_id && (
+        <FloatingChat
+          repoId={task.repository_id}
+          currentPageFilePaths={tab === "documentation" ? wikiPageFilePaths : undefined}
+        />
+      )}
 
       <ConfirmDialog
         open={showDeleteConfirm}

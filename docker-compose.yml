@@ -21,7 +21,7 @@ services:
       - "8000:8000"
     volumes:
       - ./backend:/app
-      - code_volume:/data/repos
+      - ./.repos:/data/repos
       - /var/run/docker.sock:/var/run/docker.sock:ro
       - .:/project:rw
     depends_on:
@@ -39,7 +39,7 @@ services:
       - "3001:3000"
     volumes:
       - deepwiki_data:/root/.adalflow
-      - code_volume:/data/repos:ro
+      - ./.repos:/data/repos:ro
       - ./docker/deepwiki/embedder.json:/app/api/config/embedder.json:ro
     environment:
       OPENAI_API_KEY: ${OPENAI_API_KEY:-}
@@ -58,7 +58,7 @@ services:
       - "7100:7100"
     volumes:
       - gitnexus_data:/root/.gitnexus
-      - code_volume:/data/repos
+      - ./.repos:/data/repos
 
   zoekt:
     image: ghcr.io/sourcegraph/zoekt:latest
@@ -67,7 +67,7 @@ services:
       - "6070:6070"
     volumes:
       - zoekt_index:/data/index
-      - code_volume:/data/repos:ro
+      - ./.repos:/data/repos:ro
     entrypoint: ["zoekt-webserver"]
     command: ["-index", "/data/index", "-listen", ":6070", "-rpc"]
     healthcheck:
@@ -79,7 +79,6 @@ services:
 
 volumes:
   pg_data:
-  code_volume:
   deepwiki_data:
   gitnexus_data:
   zoekt_index:

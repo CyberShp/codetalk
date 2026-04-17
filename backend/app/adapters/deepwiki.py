@@ -12,6 +12,9 @@ from collections.abc import AsyncIterator
 
 import httpx
 
+from app.config import settings
+from app.utils.repo_paths import to_tool_repo_path
+
 from .base import (
     AnalysisRequest,
     BaseToolAdapter,
@@ -85,12 +88,17 @@ class DeepwikiAdapter(BaseToolAdapter):
             )
 
     async def prepare(self, request: AnalysisRequest) -> None:
+        tool_repo_path = to_tool_repo_path(
+            request.repo_local_path,
+            host_base_path=settings.repos_base_path,
+            tool_base_path=settings.tool_repos_base_path,
+        )
         resp = await self.client.get(
-            "/local_repo/structure", params={"path": request.repo_local_path}
+            "/local_repo/structure", params={"path": tool_repo_path}
         )
         if resp.status_code != 200:
             raise RuntimeError(
-                f"deepwiki cannot access repo at {request.repo_local_path}: HTTP {resp.status_code}"
+                f"deepwiki cannot access repo at {tool_repo_path}: HTTP {resp.status_code}"
             )
         body = resp.json()
         self._file_tree = body.get("file_tree", "")
@@ -99,6 +107,11 @@ class DeepwikiAdapter(BaseToolAdapter):
     async def analyze(self, request: AnalysisRequest) -> UnifiedResult:
         proxy_mode = request.options.get("proxy_mode", "system")
         http_client = self._get_client(proxy_mode)
+        tool_repo_path = to_tool_repo_path(
+            request.repo_local_path,
+            host_base_path=settings.repos_base_path,
+            tool_base_path=settings.tool_repos_base_path,
+        )
 
         logger.info(
             "deepwiki analyze: provider=%s model=%s proxy=%s has_key=%s base_url=%s",
@@ -129,7 +142,7 @@ class DeepwikiAdapter(BaseToolAdapter):
             )
 
         chat_payload: dict = {
-            "repo_url": request.repo_local_path,
+            "repo_url": tool_repo_path,
             "messages": [{"role": "user", "content": prompt}],
         }
 

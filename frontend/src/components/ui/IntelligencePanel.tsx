@@ -30,17 +30,16 @@ function ProcessView({
   nodeMap: Map<string, GraphNode>;
   onNodeClick: (node: GraphNode) => void;
 }) {
-  const steps = node.steps ?? [];
   const isCross = node.properties.processType === "cross_community";
 
   // Resolve steps to full nodes
   const resolvedSteps = useMemo(
     () =>
-      steps.map((s) => ({
+      (node.steps ?? []).map((s) => ({
         ...s,
         node: nodeMap.get(s.symbolId) ?? null,
       })),
-    [steps, nodeMap],
+    [node.steps, nodeMap],
   );
 
   return (
@@ -74,7 +73,7 @@ function ProcessView({
       <div className="flex gap-4 mb-4 text-[10px] font-data">
         <div className="flex flex-col">
           <span className="text-on-surface-variant/50 uppercase tracking-tighter">步骤数</span>
-          <span className="text-primary">{node.properties.stepCount ?? steps.length}</span>
+          <span className="text-primary">{node.properties.stepCount ?? (node.steps ?? []).length}</span>
         </div>
         {node.properties.processType && (
           <div className="flex flex-col">

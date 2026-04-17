@@ -46,6 +46,7 @@ export type TaskStatus = "pending" | "running" | "completed" | "failed" | "cance
 export interface AnalysisTask {
   id: string;
   repository_id: string;
+  repository_name?: string | null;
   task_type: TaskType;
   status: TaskStatus;
   tools: string[];
@@ -190,6 +191,7 @@ export interface FileSlice {
   startLine: number;
   endLine: number;
   totalLines: number;
+  actualPath?: string;
 }
 
 /* ── Component Config types ── */
@@ -297,4 +299,75 @@ export interface WikiStatus {
   total: number;
   page_title: string;
   error: string | null;
+}
+
+/* ── Ask / Evidence types ── */
+
+export interface EvidenceItem {
+  id: string;
+  type: "code" | "wiki";
+  title: string;
+  content: string;
+  file?: string;
+  line_range?: string;
+}
+
+export interface AskContextResponse {
+  evidence: EvidenceItem[];
+  sources_found: number;
+  query: string;
+}
+
+/* ── Repo-centric types (仓库中心架构) ── */
+
+export interface RepoDetail {
+  repo: {
+    id: string;
+    name: string;
+    source_type: SourceType;
+    source_uri: string;
+    local_path: string | null;
+    branch: string;
+    last_indexed_at: string | null;
+  };
+  wiki: {
+    status: "ready" | "not_generated";
+    generated_at: string | null;
+    stale: boolean;
+  };
+  graph: {
+    status: "ready" | "not_analyzed";
+    analyzed_at: string | null;
+    stats: {
+      node_count: number;
+      edge_count: number;
+      process_count: number;
+      community_count: number;
+    } | null;
+  };
+}
+
+export interface RepoAnalysisItem {
+  id: string;
+  task_type: TaskType;
+  status: TaskStatus;
+  error: string | null;
+  started_at: string | null;
+  completed_at: string | null;
+  created_at: string;
+}
+
+export interface PaginatedAnalyses {
+  items: RepoAnalysisItem[];
+  total: number;
+  page: number;
+  page_size: number;
+  pages: number;
+}
+
+export interface RepoGraphResponse {
+  status: "ready" | "not_analyzed";
+  graph: GraphData | null;
+  metadata: Record<string, unknown> | null;
+  analyzed_at: string | null;
 }

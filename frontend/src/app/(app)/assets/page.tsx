@@ -1,7 +1,6 @@
 "use client";
 
 import { useState, useEffect, useCallback } from "react";
-import { useRouter } from "next/navigation";
 import GlassPanel from "@/components/ui/GlassPanel";
 import DataTable from "@/components/ui/DataTable";
 import CyberInput from "@/components/ui/CyberInput";
@@ -11,7 +10,6 @@ import { api } from "@/lib/api";
 import type { Project, Repository, SourceType } from "@/lib/types";
 
 export default function AssetsPage() {
-  const router = useRouter();
   const [projects, setProjects] = useState<Project[]>([]);
   const [selectedProject, setSelectedProject] = useState<string | null>(null);
   const [repos, setRepos] = useState<Repository[]>([]);
@@ -499,11 +497,11 @@ function NewRepoModal({
             onChange={(e) => setName(e.target.value)}
           />
           <CyberInput
-            label={sourceType === "git_url" ? "Git URL" : "路径（/data/repos/ 下）"}
+            label={sourceType === "git_url" ? "Git URL" : "路径（当前 runtime 共享仓库目录下）"}
             placeholder={
               sourceType === "git_url"
                 ? "https://github.com/owner/repo.git"
-                : "/data/repos/myproject"
+                : "/absolute/path/to/shared-repos/myproject"
             }
             value={uri}
             onChange={(e) => setUri(e.target.value)}

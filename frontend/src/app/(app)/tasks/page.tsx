@@ -28,17 +28,16 @@ function TasksPageInner() {
   const router = useRouter();
   const [filter, setFilter] = useState<Filter>("all");
   const [tasks, setTasks] = useState<AnalysisTask[]>([]);
-  const [showNewAnalysis, setShowNewAnalysis] = useState(
-    searchParams.get("new") === "true",
-  );
+  const showNewAnalysis = searchParams.get("new") === "true";
   const [deleteTarget, setDeleteTarget] = useState<string | null>(null);
 
-  // Sync with URL param — handles same-page navigation (e.g. sidebar link while already on /tasks)
-  useEffect(() => {
-    if (searchParams.get("new") === "true") {
-      setShowNewAnalysis(true);
+  const setShowNewAnalysis = useCallback((val: boolean) => {
+    if (val) {
+      router.push("/tasks?new=true", { scroll: false });
+    } else {
+      router.replace("/tasks", { scroll: false });
     }
-  }, [searchParams]);
+  }, [router]);
 
   const loadTasks = useCallback(async () => {
     try {
@@ -51,9 +50,15 @@ function TasksPageInner() {
   }, [filter]);
 
   useEffect(() => {
-    loadTasks();
+    // Wrap in timeout to avoid synchronous setState in effect body warning
+    const timer = setTimeout(() => {
+      loadTasks();
+    }, 0);
     const interval = setInterval(loadTasks, 5000);
-    return () => clearInterval(interval);
+    return () => {
+      clearTimeout(timer);
+      clearInterval(interval);
+    };
   }, [loadTasks]);
 
   const handleCancel = async (taskId: string) => {
@@ -95,7 +100,7 @@ function TasksPageInner() {
       header: "仓库",
       render: (t: AnalysisTask) => (
         <span className="text-on-surface font-data text-xs">
-          {t.repository_id.slice(0, 8)}
+          {t.repository_name || t.repository_id.slice(0, 8)}
         </span>
       ),
     },
@@ -231,10 +236,7 @@ function TasksPageInner() {
       {/* New Analysis Modal */}
       {showNewAnalysis && (
         <NewAnalysisModal
-          onClose={() => {
-            setShowNewAnalysis(false);
-            router.replace("/tasks", { scroll: false });
-          }}
+          onClose={() => setShowNewAnalysis(false)}
         />
       )}
 
