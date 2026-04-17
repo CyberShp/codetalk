@@ -5,6 +5,7 @@ import { Send, Bot, Loader2, Square, Link as LinkIcon, FileText, Code2, Sparkles
 import MarkdownRenderer from "./MarkdownRenderer";
 import { api } from "@/lib/api";
 import type { EvidenceItem } from "@/lib/types";
+import { ChatWsClient } from "@/lib/chatWs";
 
 type Evidence = EvidenceItem;
 
@@ -107,6 +108,7 @@ export default function InsightAskPanel({ taskId, repoId, className }: Props) {
   const abortRef = useRef<AbortController | null>(null);
   const inputRef = useRef<HTMLInputElement>(null);
   const messagesRef = useRef(messages);
+  const wsClientRef = useRef<ChatWsClient | null>(null);
   // Ref-tracked iteration counter — safe to read inside async loops without stale closure issues
   const researchIterationRef = useRef(0);
   // Tracks the ID of the assistant message currently being streamed — used by the
@@ -118,6 +120,13 @@ export default function InsightAskPanel({ taskId, repoId, className }: Props) {
     messagesRef.current = messages;
   }, [messages]);
 
+  // Close WS connection on unmount
+  useEffect(() => {
+    return () => {
+      wsClientRef.current?.close();
+    };
+  }, []);
+
   useEffect(() => {
     if (scrollRef.current) {
       scrollRef.current.scrollTop = scrollRef.current.scrollHeight;
@@ -128,7 +137,11 @@ export default function InsightAskPanel({ taskId, repoId, className }: Props) {
   // handleSend's finally block is the sole owner of cleanup, preventing race conditions
   // where the old request's catch/finally could overwrite a new request's state.
   const handleStop = useCallback(() => {
-    abortRef.current?.abort();
+    if (wsClientRef.current?.connected) {
+      wsClientRef.current.stop();
+    } else {
+      abortRef.current?.abort();
+    }
   }, []);
 
   // Stream one API request via repo-centric endpoint, appending chunks to the given
@@ -291,7 +304,81 @@ export default function InsightAskPanel({ taskId, repoId, className }: Props) {
         { role: "user", content: query },
       );
 
-      // Phase 3: First stream via repo-centric API
+      // Phase 3: WS-first attempt
+      const wsClient = new ChatWsClient({
+        repoId: repoId!,
+        onChunk: (chunk) => {
+          const id = activeAssistantIdRef.current;
+          if (!id) return;
+          setMessages((prev) =>
+            prev.map((m) => (m.id === id ? { ...m, content: m.content + chunk } : m)),
+          );
+        },
+        onDone: () => {
+          setIsStreaming(false);
+          setIsAutoResearching(false);
+          setResearchStatus("");
+        },
+        onError: (message) => {
+          const id = activeAssistantIdRef.current;
+          if (id) {
+            setMessages((prev) =>
+              prev.map((m) =>
+                m.id === id && !m.content ? { ...m, content: `> ⚠️ ${message}` } : m,
+              ),
+            );
+          }
+          setIsStreaming(false);
+          setIsAutoResearching(false);
+          setResearchStatus("");
+        },
+        onResearchRound: (round) => {
+          if (round === 1) {
+            // First round bubble already created below; just update ribbon
+            researchIterationRef.current = 1;
+            setResearchIteration(1);
+            setResearchStatus(RESEARCH_STATUS[1]);
+            setIsAutoResearching(true);
+          } else {
+            // Continuation round: create new bubble and update refs/state
+            const continueId = `continue-${Date.now()}`;
+            activeAssistantIdRef.current = continueId;
+            setMessages((prev) => [
+              ...prev,
+              { id: continueId, role: "assistant", content: "", evidence, prompt: query },
+            ]);
+            researchIterationRef.current = round;
+            setResearchIteration(round);
+            setResearchStatus(RESEARCH_STATUS[round] ?? ">> PROCESSING...");
+            setIsAutoResearching(true);
+          }
+        },
+      });
+
+      wsClientRef.current = wsClient;
+      const wsConnected = await wsClient.connect();
+
+      if (wsConnected) {
+        // Create initial assistant bubble
+        setMessages((prev) => [
+          ...prev,
+          { id: assistantId, role: "assistant", content: "", evidence, prompt: query },
+        ]);
+        setActiveAnswerId(assistantId);
+        activeAssistantIdRef.current = assistantId;
+
+        wsClient.send({
+          messages: baseHistory,
+          deep_research: deepResearch,
+        });
+        // Backend drives all rounds; onDone/onError own cleanup — return here.
+        return;
+      }
+
+      // WS unavailable — fall back to HTTP
+      wsClientRef.current = null;
+
+      // Phase 3 (HTTP fallback): First stream via repo-centric API
       const fullText = await startStreaming(assistantId, baseHistory, evidence, query, deepResearch);
       let accHistory = [...baseHistory, { role: "assistant", content: fullText }];
 

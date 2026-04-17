@@ -15,7 +15,7 @@ from app.database import get_db
 from app.models.llm_config import LLMConfig
 from app.models.repository import Repository
 from app.api.chat import ChatMessage
-from app.utils.repo_paths import to_tool_repo_path
+from app.services.chat_payload import build_deepwiki_payload
 
 logger = logging.getLogger(__name__)
 
@@ -39,13 +39,6 @@ async def repo_chat_stream(
     if not repo or not repo.local_path:
         raise HTTPException(400, "Repository not synced")
 
-    repo_path = to_tool_repo_path(
-        repo.local_path,
-        host_base_path=settings.repos_base_path,
-        tool_base_path=settings.tool_repos_base_path,
-    )
-
-    # Build full payload for deepwiki
     result = await db.execute(
         select(LLMConfig).where(LLMConfig.is_default.is_(True)).limit(1)
     )
@@ -56,35 +49,14 @@ async def repo_chat_stream(
         )
         llm_config = result.scalar_one_or_none()
 
-    payload: dict = {
-        "repo_url": repo_path,
-        "type": "local",
-        "messages": [{"role": m.role, "content": m.content} for m in body.messages],
-        "language": "zh",
-    }
-
-    # File context
-    if body.file_path:
-        payload["filePath"] = body.file_path
-    if body.included_files:
-        payload["included_files"] = "\n".join(body.included_files)
-
-    # Deep research tag injection
-    if body.deep_research and payload["messages"]:
-        last = payload["messages"][-1]
-        if last["role"] == "user":
-            last["content"] = f"[DEEP RESEARCH] {last['content']}"
-
-    # LLM config
-    if llm_config:
-        provider = llm_config.provider
-        if provider == "custom":
-            provider = "openai"
-        payload["provider"] = provider
-        payload["model"] = llm_config.model_name
-
-    proxy_mode = llm_config.proxy_mode if llm_config else "system"
-    trust_env = proxy_mode != "direct"
+    payload, trust_env = build_deepwiki_payload(
+        repo,
+        body.messages,
+        llm_config,
+        file_path=body.file_path,
+        included_files=body.included_files,
+        deep_research=body.deep_research,
+    )
 
     await db.close()
 

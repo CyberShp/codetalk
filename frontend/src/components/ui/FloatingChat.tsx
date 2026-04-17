@@ -4,6 +4,7 @@ import { useState, useRef, useEffect, useCallback } from "react";
 import GlassPanel from "./GlassPanel";
 import MarkdownRenderer from "./MarkdownRenderer";
 import { api } from "@/lib/api";
+import { ChatWsClient } from "@/lib/chatWs";
 import { Send, MessageSquare, X, Bot, User, Loader2, Square } from "lucide-react";
 
 interface Message {
@@ -54,6 +55,7 @@ export default function FloatingChat({ repoId, currentPageFilePaths }: Props) {
 
   const scrollRef = useRef<HTMLDivElement>(null);
   const abortRef = useRef<AbortController | null>(null);
+  const wsClientRef = useRef<ChatWsClient | null>(null);
   const inputRef = useRef<HTMLInputElement>(null);
   // Ref-tracked values for use inside async callbacks where state may be stale
   const messagesRef = useRef(messages);
@@ -82,6 +84,7 @@ export default function FloatingChat({ repoId, currentPageFilePaths }: Props) {
   useEffect(() => {
     return () => {
       abortRef.current?.abort();
+      wsClientRef.current?.close();
     };
   }, []);
 
@@ -92,7 +95,11 @@ export default function FloatingChat({ repoId, currentPageFilePaths }: Props) {
     // request's catch/finally to overwrite the new request's placeholder message
     // and null out its abort controller.  handleSend's finally block is the sole
     // owner of cleanup.
-    abortRef.current?.abort();
+    if (wsClientRef.current?.connected) {
+      wsClientRef.current.stop();
+    } else {
+      abortRef.current?.abort();
+    }
   }, []);
 
   // Stream one API request, appending chunks to the given assistant message ID.
@@ -178,6 +185,80 @@ export default function FloatingChat({ repoId, currentPageFilePaths }: Props) {
       setResearchStatus(RESEARCH_STATUS[1]);
     }
 
+    // --- Attempt WS path ---
+    if (!wsClientRef.current?.connected) {
+      // Create a fresh client (callbacks via refs to avoid stale closures)
+      const wsClient = new ChatWsClient({
+        repoId,
+        onChunk: (chunk) => {
+          setMessages((prev) => {
+            const next = [...prev];
+            const last = next[next.length - 1];
+            if (last.id === activeAssistantIdRef.current) {
+              next[next.length - 1] = { ...last, content: last.content + chunk };
+            }
+            return next;
+          });
+        },
+        onDone: () => {
+          setIsStreaming(false);
+          setIsAutoResearching(false);
+          setResearchStatus("");
+          if (abortRef.current?.signal.aborted) {
+            abortRef.current = null;
+          }
+        },
+        onError: (message) => {
+          const targetId = activeAssistantIdRef.current;
+          if (targetId) {
+            setMessages((prev) =>
+              prev.map((m) =>
+                m.id === targetId && !m.content
+                  ? { ...m, content: `> ⚠️ ${message}` }
+                  : m,
+              ),
+            );
+          }
+          setIsStreaming(false);
+          setIsAutoResearching(false);
+          setResearchStatus("");
+        },
+        onResearchRound: (round) => {
+          researchIterationRef.current = round;
+          setResearchIteration(round);
+          setResearchStatus(RESEARCH_STATUS[round] ?? ">> PROCESSING...");
+          if (round > 1) {
+            setIsAutoResearching(true);
+            // Add a visible placeholder for the next continuation bubble
+            const continueId = `continue-${Date.now()}`;
+            activeAssistantIdRef.current = continueId;
+            setMessages((prev) => [
+              ...prev,
+              { id: continueId, role: "assistant", content: "" },
+            ]);
+          }
+        },
+      });
+      wsClientRef.current = wsClient;
+      const connected = await wsClient.connect();
+      if (!connected) {
+        wsClientRef.current = null;
+      }
+    }
+
+    if (wsClientRef.current?.connected) {
+      // WS path — backend drives all Deep Research rounds
+      wsClientRef.current.send({
+        messages: baseHistory,
+        file_path: undefined,
+        included_files: currentPageFilePaths,
+        deep_research: deepResearch,
+      });
+      // Control flow returns; onChunk/onDone/onError callbacks handle the rest.
+      return;
+    }
+
+    // --- HTTP fallback path ---
     try {
       const controller = new AbortController();
       abortRef.current = controller;
@@ -261,7 +342,7 @@ export default function FloatingChat({ repoId, currentPageFilePaths }: Props) {
         abortRef.current = null;
       }
     }
-  }, [input, isStreaming, isAutoResearching, deepResearch, streamSingle]);
+  }, [input, isStreaming, isAutoResearching, deepResearch, streamSingle, repoId, currentPageFilePaths]);
 
   const busy = isStreaming || isAutoResearching;
 
