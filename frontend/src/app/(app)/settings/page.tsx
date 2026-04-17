@@ -12,6 +12,8 @@ export default function SettingsPage() {
   const [aiEnabled, setAiEnabled] = useState(true);
   const [configs, setConfigs] = useState<LLMConfig[]>([]);
   const [tools, setTools] = useState<ToolInfo[]>([]);
+  const [deepwikiModels, setDeepwikiModels] = useState<Record<string, unknown> | null>(null);
+  const [deepwikiModelsError, setDeepwikiModelsError] = useState(false);
   const [showApiKey, setShowApiKey] = useState(false);
   const [saving, setSaving] = useState(false);
   const [testingId, setTestingId] = useState<string | null>(null);
@@ -36,6 +38,9 @@ export default function SettingsPage() {
   useEffect(() => {
     loadConfigs();
     api.tools.list().then(setTools).catch(() => {});
+    api.settings.deepwikiModels()
+      .then((data) => setDeepwikiModels(data))
+      .catch(() => setDeepwikiModelsError(true));
     const stored = localStorage.getItem("codetalks_ai_enabled");
     if (stored !== null) setAiEnabled(stored === "true");
   }, [loadConfigs]);
@@ -315,6 +320,46 @@ export default function SettingsPage() {
         >
           {saving ? "保存中..." : editingId ? "更新配置" : "新增配置"}
         </button>
+      </GlassPanel>
+
+      {/* DeepWiki Available Models */}
+      <GlassPanel>
+        <h3 className="text-sm font-medium text-on-surface mb-4">
+          DeepWiki 可用模型
+        </h3>
+        {deepwikiModelsError ? (
+          <p className="text-xs text-tertiary">无法连接 deepwiki 服务</p>
+        ) : deepwikiModels === null ? (
+          <p className="text-xs text-on-surface-variant/50">加载中...</p>
+        ) : Object.keys(deepwikiModels).length === 0 ? (
+          <p className="text-xs text-on-surface-variant/50">暂无可用模型</p>
+        ) : (
+          <div className="space-y-3">
+            {Object.entries(deepwikiModels).map(([provider, models]) => (
+              <div key={provider} className="bg-surface-container-lowest/50 rounded-lg px-4 py-3">
+                <p className="text-xs font-medium text-primary-fixed-dim mb-2 uppercase tracking-wide">
+                  {provider}
+                </p>
+                <div className="flex flex-wrap gap-2">
+                  {Array.isArray(models)
+                    ? models.map((m) => (
+                        <span
+                          key={String(m)}
+                          className="font-data text-[11px] text-on-surface-variant bg-surface-container-high px-2 py-0.5 rounded"
+                        >
+                          {String(m)}
+                        </span>
+                      ))
+                    : (
+                        <span className="font-data text-[11px] text-on-surface-variant">
+                          {JSON.stringify(models)}
+                        </span>
+                      )}
+                </div>
+              </div>
+            ))}
+          </div>
+        )}
       </GlassPanel>
 
       {/* Component Config */}

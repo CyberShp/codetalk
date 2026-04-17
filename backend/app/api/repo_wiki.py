@@ -10,6 +10,7 @@ from datetime import datetime, timezone
 
 from fastapi import APIRouter, Depends, HTTPException
 from fastapi.responses import StreamingResponse
+from pydantic import BaseModel
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -184,6 +185,50 @@ async def delete_repo_wiki_cache(repo_id: uuid.UUID, db: AsyncSession = Depends(
         await db.commit()
 
     return {"status": "deleted"}
+
+
+class WikiRegeneratePageRequest(BaseModel):
+    page_id: str
+    page_title: str
+    file_paths: list[str] = []
+
+
+@router.post("/{repo_id}/wiki/regenerate-page")
+async def regenerate_wiki_page(
+    repo_id: uuid.UUID,
+    body: WikiRegeneratePageRequest,
+    db: AsyncSession = Depends(get_db),
+):
+    """Regenerate a single wiki page without rebuilding the entire wiki."""
+    repo = await db.get(Repository, repo_id)
+    if not repo or not repo.local_path:
+        raise HTTPException(400, "Repository not synced")
+
+    owner, repo_name = _cache_owner_repo(repo)
+    llm_opts = await _get_llm_options(db)
+    provider = llm_opts.get("provider", "openai")
+    model = llm_opts.get("model", "gpt-4o")
+    proxy_mode = llm_opts.get("proxy_mode", "system")
+
+    try:
+        new_content = await _orchestrator.regenerate_page(
+            owner=owner,
+            repo=repo_name,
+            repo_local_path=repo.local_path,
+            page_id=body.page_id,
+            page_title=body.page_title,
+            file_paths=body.file_paths,
+            language="zh",
+            provider=provider,
+            model=model,
+            proxy_mode=proxy_mode,
+        )
+        return {"status": "ok", "content": new_content}
+    except ValueError as exc:
+        raise HTTPException(400, str(exc))
+    except Exception as exc:
+        logger.exception("Failed to regenerate wiki page %s", body.page_id)
+        raise HTTPException(502, f"Page regeneration failed: {exc}")
 
 
 @router.post("/{repo_id}/wiki/export")

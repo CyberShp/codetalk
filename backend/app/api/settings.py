@@ -5,6 +5,7 @@ from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.config import settings as app_settings
 from app.database import get_db
 from app.models.llm_config import LLMConfig
 from app.schemas.llm_config import LLMConfigCreate, LLMConfigResponse, LLMConfigUpdate
@@ -141,3 +142,20 @@ async def delete_llm_config(config_id: uuid.UUID, db: AsyncSession = Depends(get
         if next_config:
             next_config.is_default = True
     await db.commit()
+
+
+@router.get("/deepwiki/models")
+async def get_deepwiki_models():
+    """Proxy deepwiki /models/config — returns available model providers."""
+    try:
+        async with httpx.AsyncClient(
+            base_url=app_settings.deepwiki_base_url,
+            timeout=httpx.Timeout(15, connect=5),
+        ) as client:
+            resp = await client.get("/models/config")
+            resp.raise_for_status()
+            return resp.json()
+    except httpx.ConnectError:
+        raise HTTPException(502, "Cannot connect to deepwiki service")
+    except httpx.HTTPStatusError as exc:
+        raise HTTPException(502, f"deepwiki error: HTTP {exc.response.status_code}")

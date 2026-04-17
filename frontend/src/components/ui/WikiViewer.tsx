@@ -19,6 +19,8 @@ const wikiRehypePlugins: PluggableList = [rehypeRaw, [rehypeSanitize, defaultSch
 
 interface WikiViewerProps {
   taskId: string;
+  /** When provided, enables per-page regeneration via repo-centric API. */
+  repoId?: string;
   /** When true: full-page layout, anchor links scroll in-page. When false (default): embedded layout, anchor links open standalone page. */
   standalone?: boolean;
   /** Called whenever the visible wiki page changes, with the page's associated file paths. */
@@ -34,7 +36,7 @@ interface FilePanel {
   error: string | null;
 }
 
-export default function WikiViewer({ taskId, standalone = false, onPageChange }: WikiViewerProps) {
+export default function WikiViewer({ taskId, repoId, standalone = false, onPageChange }: WikiViewerProps) {
   const [wiki, setWiki] = useState<WikiData | null>(null);
   const [status, setStatus] = useState<"loading" | "not_generated" | "generating" | "ready" | "error">("loading");
   const [stale, setStale] = useState(false);
@@ -43,6 +45,7 @@ export default function WikiViewer({ taskId, standalone = false, onPageChange }:
   const [error, setError] = useState<string | null>(null);
   const [sidebarOpen, setSidebarOpen] = useState(true);
   const [filePanel, setFilePanel] = useState<FilePanel | null>(null);
+  const [regenerating, setRegenerating] = useState(false);
   const pollRef = useRef<ReturnType<typeof setInterval> | null>(null);
   const contentRef = useRef<HTMLDivElement>(null);
   // Use a ref for onPageChange to avoid adding it to the effect deps (prevents loop if parent
@@ -163,6 +166,33 @@ export default function WikiViewer({ taskId, standalone = false, onPageChange }:
     },
     [taskId],
   );
+
+  const handleRegeneratePage = async () => {
+    if (!repoId || !currentPageId || !currentPage) return;
+    setRegenerating(true);
+    try {
+      const result = await api.repos.wiki.regeneratePage(
+        repoId,
+        currentPageId,
+        currentPage.title,
+        currentPage.filePaths,
+      );
+      setWiki((prev) => {
+        if (!prev) return prev;
+        return {
+          ...prev,
+          generated_pages: {
+            ...prev.generated_pages,
+            [currentPageId]: { ...prev.generated_pages[currentPageId], content: result.content },
+          },
+        };
+      });
+    } catch (e) {
+      setError(e instanceof Error ? e.message : "页面重新生成失败");
+    } finally {
+      setRegenerating(false);
+    }
+  };
 
   // Page navigation
   const pages = wiki?.wiki_structure.pages ?? [];
@@ -352,10 +382,27 @@ export default function WikiViewer({ taskId, standalone = false, onPageChange }:
       <div ref={contentRef} className="flex-1 overflow-y-auto p-12 min-w-0 relative scroll-smooth custom-scrollbar">
         {currentPage ? (
           <div className={`mx-auto transition-all duration-700 ease-[cubic-bezier(0.2,0,0,1)] ${
-            sidebarOpen 
-              ? (filePanel ? "max-w-3xl" : "max-w-4xl") 
+            sidebarOpen
+              ? (filePanel ? "max-w-3xl" : "max-w-4xl")
               : (filePanel ? "max-w-4xl" : "max-w-5xl")
           }`}>
+            {/* Per-page regenerate button (repo-centric only) */}
+            {repoId && (
+              <div className="flex justify-end mb-4">
+                <button
+                  onClick={handleRegeneratePage}
+                  disabled={regenerating}
+                  className="flex items-center gap-1.5 text-[11px] text-on-surface-variant/50 hover:text-primary disabled:opacity-40 disabled:cursor-not-allowed py-1.5 px-3 rounded-lg border border-white/5 bg-white/[0.02] hover:bg-primary/10 transition-colors"
+                >
+                  {regenerating ? (
+                    <Loader2 size={11} className="animate-spin" />
+                  ) : (
+                    <RefreshCw size={11} />
+                  )}
+                  重新生成此页
+                </button>
+              </div>
+            )}
             <div className="prose prose-invert prose-slate max-w-none prose-headings:font-display prose-headings:tracking-tight prose-headings:font-bold prose-p:text-on-surface/80 prose-p:leading-relaxed prose-a:text-primary hover:prose-a:text-primary-fixed prose-pre:bg-white/[0.03] prose-pre:border prose-pre:border-white/5 prose-hr:border-white/5">
               <MarkdownRenderer
                 content={currentPage.content}

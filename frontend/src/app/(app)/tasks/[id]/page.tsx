@@ -380,7 +380,7 @@ export default function TaskDetailPage() {
           <div className="animate-in fade-in duration-500">
             {tab === "documentation" && (
               <GlassPanel className="p-0 overflow-hidden">
-                <WikiViewer taskId={taskId} onPageChange={handleWikiPageChange} />
+                <WikiViewer taskId={taskId} repoId={task?.repository_id ?? undefined} onPageChange={handleWikiPageChange} />
               </GlassPanel>
             )}
 

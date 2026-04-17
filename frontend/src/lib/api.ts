@@ -111,6 +111,11 @@ export const api = {
         request<{ status: string }>(`/api/repos/${repoId}/wiki/cache`, {
           method: "DELETE",
         }),
+      regeneratePage: (repoId: string, pageId: string, pageTitle: string, filePaths: string[]) =>
+        request<{ status: string; content: string }>(`/api/repos/${repoId}/wiki/regenerate-page`, {
+          method: "POST",
+          body: JSON.stringify({ page_id: pageId, page_title: pageTitle, file_paths: filePaths }),
+        }),
     },
 
     graph: {
@@ -196,6 +201,8 @@ export const api = {
       }),
     deleteLLM: (id: string) =>
       request<void>(`/api/settings/llm/${id}`, { method: "DELETE" }),
+    deepwikiModels: () =>
+      request<Record<string, unknown>>(`/api/settings/deepwiki/models`),
   },
 
   gitnexus: {
