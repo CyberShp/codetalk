@@ -64,7 +64,11 @@ export default function TaskAskPage() {
       </header>
 
       <div className="absolute inset-x-0 bottom-0 top-16">
-        <InsightAskPanel taskId={taskId} className="h-full" />
+        <InsightAskPanel
+          taskId={taskId}
+          repoId={task?.repository_id}
+          className="h-full"
+        />
       </div>
     </div>
   );
