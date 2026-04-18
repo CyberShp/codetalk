@@ -140,6 +140,7 @@ export const api = {
           filePath?: string;
           deepResearch?: boolean;
           includedFiles?: string[];
+          excludedDirs?: string[];
         },
         signal?: AbortSignal,
       ) =>
@@ -152,6 +153,7 @@ export const api = {
             file_path: options?.filePath,
             deep_research: options?.deepResearch ?? false,
             included_files: options?.includedFiles,
+            excluded_dirs: options?.excludedDirs,
           }),
           signal,
         }),

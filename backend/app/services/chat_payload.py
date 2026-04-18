@@ -1,10 +1,17 @@
 """Shared deepwiki payload builder for HTTP and WebSocket chat endpoints."""
 
-from app.api.chat import ChatMessage
+from pydantic import BaseModel
+
+from app.config import settings
 from app.models.llm_config import LLMConfig
 from app.models.repository import Repository
 from app.utils.repo_paths import to_tool_repo_path
-from app.config import settings
+
+
+class ChatMessage(BaseModel):
+    role: str
+    content: str
+
 
 DEFAULT_EXCLUDED_DIRS: list[str] = [
     "node_modules", ".git", "dist", "build", "__pycache__",

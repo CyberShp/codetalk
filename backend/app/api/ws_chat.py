@@ -27,8 +27,7 @@ from app.config import settings
 from app.database import get_db
 from app.models.llm_config import LLMConfig
 from app.models.repository import Repository
-from app.api.chat import ChatMessage
-from app.services.chat_payload import build_deepwiki_payload
+from app.services.chat_payload import ChatMessage, build_deepwiki_payload
 
 logger = logging.getLogger(__name__)
 
@@ -105,6 +104,7 @@ async def ws_chat(
         messages: list[ChatMessage],
         file_path: str | None,
         included_files: list[str] | None,
+        excluded_dirs: list[str] | None,
         deep_research: bool,
         is_continuation: bool,
     ) -> str:
@@ -119,6 +119,7 @@ async def ws_chat(
             llm_config,
             file_path=file_path,
             included_files=included_files,
+            excluded_dirs=excluded_dirs,
             # Only inject [DEEP RESEARCH] on first round; deepwiki tracks iterations
             deep_research=deep_research and not is_continuation,
         )
@@ -152,6 +153,7 @@ async def ws_chat(
         ]
         file_path: str | None = raw.get("file_path")
         included_files: list[str] | None = raw.get("included_files")
+        excluded_dirs: list[str] | None = raw.get("excluded_dirs")
         deep_research: bool = bool(raw.get("deep_research", False))
 
         round_num = 1
@@ -167,7 +169,7 @@ async def ws_chat(
         try:
             stream_task = asyncio.ensure_future(
                 _stream_cancellable(
-                    messages, file_path, included_files, deep_research, is_continuation=False
+                    messages, file_path, included_files, excluded_dirs, deep_research, is_continuation=False
                 )
             )
             stop_waiter = asyncio.ensure_future(stop_event.wait())
@@ -219,6 +221,7 @@ async def ws_chat(
                             acc_messages,
                             file_path,
                             included_files,
+                            excluded_dirs,
                             deep_research=True,
                             is_continuation=True,
                         )

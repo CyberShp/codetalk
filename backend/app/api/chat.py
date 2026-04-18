@@ -30,7 +30,7 @@ from app.models.llm_config import LLMConfig
 from app.models.repository import Repository
 from app.models.task import AnalysisTask
 from app.utils.repo_paths import to_tool_repo_path
-from app.services.chat_payload import DEFAULT_EXCLUDED_DIRS
+from app.services.chat_payload import DEFAULT_EXCLUDED_DIRS, ChatMessage
 
 logger = logging.getLogger(__name__)
 
@@ -256,11 +256,6 @@ class AskContextResponse(BaseModel):
     evidence: list[EvidenceItem]
     sources_found: int
     query: str
-
-
-class ChatMessage(BaseModel):
-    role: str
-    content: str
 
 
 class ChatRequest(BaseModel):

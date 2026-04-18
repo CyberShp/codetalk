@@ -17,8 +17,7 @@ from app.database import get_db
 from app.models.llm_config import LLMConfig
 from app.models.repository import Repository
 from app.models.chat_session import ChatSession
-from app.api.chat import ChatMessage
-from app.services.chat_payload import build_deepwiki_payload
+from app.services.chat_payload import ChatMessage, build_deepwiki_payload
 
 logger = logging.getLogger(__name__)
 
@@ -31,6 +30,7 @@ class RepoChatRequest(BaseModel):
     file_path: str | None = None
     deep_research: bool = False
     included_files: list[str] | None = None
+    excluded_dirs: list[str] | None = None
 
 
 class ChatSessionCreate(BaseModel):
@@ -68,6 +68,7 @@ async def repo_chat_stream(
         llm_config,
         file_path=body.file_path,
         included_files=body.included_files,
+        excluded_dirs=body.excluded_dirs,
         deep_research=body.deep_research,
     )
 

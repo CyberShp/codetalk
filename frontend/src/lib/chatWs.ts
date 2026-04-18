@@ -26,6 +26,7 @@ export interface ChatWsSendParams {
   messages: Array<{ role: string; content: string }>;
   file_path?: string;
   included_files?: string[];
+  excluded_dirs?: string[];
   deep_research?: boolean;
 }
 

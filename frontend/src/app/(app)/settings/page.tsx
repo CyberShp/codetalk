@@ -13,7 +13,6 @@ const LLM_PROVIDERS = [
   { value: "google", label: "Google" },
   { value: "ollama", label: "Ollama" },
   { value: "openrouter", label: "OpenRouter" },
-  { value: "anthropic", label: "Anthropic" },
   { value: "bedrock", label: "AWS Bedrock" },
   { value: "custom", label: "Custom (兼容 OpenAI)" },
 ] as const;
@@ -24,7 +23,6 @@ const PROVIDER_EMBEDDER_MAP: Record<string, string> = {
   ollama: "ollama",
   bedrock: "bedrock",
   openrouter: "openai",
-  anthropic: "openai",
   custom: "openai",
 };
 
@@ -403,18 +401,17 @@ export default function SettingsPage() {
         )}
       </GlassPanel>
 
-      {/* Embedder Recommendation */}
+      {/* Embedder Recommendation — based on live form provider state */}
       {(() => {
-        const defaultCfg = configs.find((c) => c.is_default);
-        const recEmbedder = defaultCfg ? PROVIDER_EMBEDDER_MAP[defaultCfg.provider] : null;
+        const recEmbedder = provider ? PROVIDER_EMBEDDER_MAP[provider] : null;
         if (!recEmbedder) return null;
         return (
           <div className="px-4 py-2.5 rounded-lg bg-primary/5 border border-primary/10">
             <p className="text-xs text-on-surface-variant">
               <span className="text-primary-fixed-dim font-medium">Embedder 推荐</span>
               {" — "}
-              当前默认 LLM provider 为{" "}
-              <span className="font-data text-on-surface">{defaultCfg!.provider}</span>
+              当前选择 provider 为{" "}
+              <span className="font-data text-on-surface">{provider}</span>
               ，推荐使用{" "}
               <span className="font-data text-secondary-fixed-dim">{recEmbedder}</span>
               {" "}embedder（可在下方组件配置中调整）
