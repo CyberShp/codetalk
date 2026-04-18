@@ -371,3 +371,92 @@ export interface RepoGraphResponse {
   metadata: Record<string, unknown> | null;
   analyzed_at: string | null;
 }
+
+/* ── Analysis (Joern + Semgrep) types ── */
+
+export type SeverityLevel = "ERROR" | "WARNING" | "INFO";
+
+export interface SemgrepFinding {
+  check_id: string;
+  path: string;
+  start: { line: number; col: number };
+  end: { line: number; col: number };
+  extra: {
+    message: string;
+    severity: SeverityLevel;
+    metadata: {
+      category?: string;
+      cwe?: string[];
+      owasp?: string[];
+      [key: string]: unknown;
+    };
+    dataflow_trace?: {
+      taint_source?: [string, { line: number }[]];
+      intermediate_vars?: Array<[string, { line: number }]>;
+      taint_sink?: [string, { line: number }[]];
+    };
+    fix?: string;
+    lines?: string;
+  };
+}
+
+/** Returned by GET /api/repos/{id}/analysis/summary */
+export interface AnalysisSummary {
+  repo_id: string;
+  repo_name: string;
+  tools: {
+    joern: {
+      healthy: boolean;
+      status: string | null;
+      capabilities: string[];
+    };
+    semgrep: {
+      healthy: boolean;
+      status: string | null;
+      capabilities: string[];
+    };
+  };
+}
+
+/** Enriched summary built from a full semgrep scan result */
+export interface SemgrepScanSummary {
+  total: number;
+  by_severity: Record<SeverityLevel, number>;
+  by_category: Record<string, number>;
+}
+
+export interface JoernMethodBranch {
+  control_structure_type: string;
+  condition: string | null;
+  line_number: number | null;
+  children: Array<{ code: string; label: string }>;
+}
+
+export interface JoernErrorPath {
+  kind: "throw" | "try-catch" | "error-return";
+  code: string;
+  line_number: number | null;
+}
+
+export interface JoernBoundaryValue {
+  code: string;
+  line_number: number | null;
+  operands: Array<{ code: string; type: string }>;
+}
+
+export interface TaintPath {
+  elements: Array<{ code: string; filename: string; line_number: number | null }>;
+}
+
+/** Matches _normalize_test_point() output in test_point_generator.py */
+export interface TestPoint {
+  id?: string;
+  scenario: string;
+  input_conditions: string;
+  expected_behavior: string;
+  risk_scenario: string;
+  boundary_values?: string | null;
+  risk_level: "high" | "medium" | "low";
+  source_location?: string | null;
+  category?: string;
+}

@@ -22,6 +22,8 @@ As of 2026-04-17, the observed listeners are:
 | Zoekt | `6070` | Dockerized |
 | deepwiki-open | `8001` | Dockerized |
 | GitNexus | `7100` | Dockerized |
+| Joern | `8080` | Dockerized (CPG server, 8G memory limit) |
+| Semgrep | `9090` | Dockerized (FastAPI wrapper over CLI) |
 
 ## Root Cause Summary For "unable to fetch"
 
@@ -114,7 +116,7 @@ Invalid examples:
 Authoritative check:
 
 ```bash
-lsof -nP -iTCP -sTCP:LISTEN | rg ':(3005|8000|5433|6070|7100|8001)\b'
+lsof -nP -iTCP -sTCP:LISTEN | rg ':(3005|8000|5433|6070|7100|8001|8080|9090)\b'
 ```
 
 This is the source of truth for "what is actually up".

@@ -26,6 +26,15 @@ import type {
   RepoDetail,
   PaginatedAnalyses,
   RepoGraphResponse,
+  AnalysisSummary,
+  SemgrepScanSummary,
+  SemgrepFinding,
+  JoernMethodBranch,
+  JoernErrorPath,
+  JoernBoundaryValue,
+  TaintPath,
+  TestPoint,
+  SeverityLevel,
 } from "./types";
 
 const BASE = process.env.NEXT_PUBLIC_API_URL || "http://localhost:8000";
@@ -130,6 +139,87 @@ export const api = {
     graph: {
       get: (repoId: string) =>
         request<RepoGraphResponse>(`/api/repos/${repoId}/graph`),
+    },
+
+    analysis: {
+      summary: (repoId: string) =>
+        request<AnalysisSummary>(`/api/repos/${repoId}/analysis/summary`),
+
+      joern: {
+        query: (repoId: string, cpgql: string) =>
+          request<{ result: unknown }>(`/api/repos/${repoId}/analysis/joern/query`, {
+            method: "POST",
+            body: JSON.stringify({ query: cpgql }),
+          }),
+        methods: (repoId: string) =>
+          request<{ methods: unknown[] }>(`/api/repos/${repoId}/analysis/joern/methods`),
+        /** Batch: branches + errors + boundaries in ONE CPG import. Preferred over individual calls. */
+        allForMethod: (repoId: string, methodName: string) =>
+          request<{ method: string; branches: JoernMethodBranch[]; errors: JoernErrorPath[]; boundaries: JoernBoundaryValue[] }>(
+            `/api/repos/${repoId}/analysis/joern/method/${encodeURIComponent(methodName)}/all`
+          ),
+        branches: (repoId: string, methodName: string) =>
+          request<{ branches: JoernMethodBranch[] }>(
+            `/api/repos/${repoId}/analysis/joern/method/${encodeURIComponent(methodName)}/branches`
+          ),
+        errors: (repoId: string, methodName: string) =>
+          request<{ errors: JoernErrorPath[] }>(
+            `/api/repos/${repoId}/analysis/joern/method/${encodeURIComponent(methodName)}/errors`
+          ),
+        boundaries: (repoId: string, methodName: string) =>
+          request<{ boundaries: JoernBoundaryValue[] }>(
+            `/api/repos/${repoId}/analysis/joern/method/${encodeURIComponent(methodName)}/boundaries`
+          ),
+        taint: (repoId: string, source: string, sink: string) =>
+          request<{ paths: TaintPath[] }>(`/api/repos/${repoId}/analysis/joern/taint`, {
+            method: "POST",
+            body: JSON.stringify({ source, sink }),
+          }),
+      },
+
+      semgrep: {
+        findings: (
+          repoId: string,
+          params?: { severity?: SeverityLevel; category?: string; page?: number }
+        ) => {
+          const qs = new URLSearchParams();
+          if (params?.severity) qs.set("severity", params.severity);
+          if (params?.category) qs.set("category", params.category);
+          if (params?.page) qs.set("page", String(params.page));
+          const q = qs.toString();
+          return request<{ findings: SemgrepFinding[]; total: number; page: number }>(
+            `/api/repos/${repoId}/analysis/semgrep/findings${q ? `?${q}` : ""}`
+          );
+        },
+        scan: (repoId: string) =>
+          request<{ status: string; summary: SemgrepScanSummary | null; findings: SemgrepFinding[] | null }>(
+            `/api/repos/${repoId}/analysis/semgrep/scan`,
+            { method: "POST" }
+          ),
+        scanIncremental: (repoId: string, baselineCommit: string) =>
+          request<{ findings: SemgrepFinding[] }>(
+            `/api/repos/${repoId}/analysis/semgrep/scan/incremental`,
+            {
+              method: "POST",
+              body: JSON.stringify({ baseline_commit: baselineCommit }),
+            }
+          ),
+      },
+
+      testPoints: {
+        generate: (
+          repoId: string,
+          target?: string,
+          perspective = "black_box"
+        ) =>
+          request<{ test_points: TestPoint[] }>(
+            `/api/repos/${repoId}/analysis/test-points`,
+            {
+              method: "POST",
+              body: JSON.stringify({ target, perspective }),
+            }
+          ),
+      },
     },
 
     chat: {

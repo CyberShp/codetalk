@@ -18,9 +18,12 @@ import type { WikiResponse, WikiStatus, WikiData, FileSlice } from "@/lib/types"
 const wikiRehypePlugins: PluggableList = [rehypeRaw, [rehypeSanitize, defaultSchema]];
 
 interface WikiViewerProps {
-  taskId: string;
-  /** When provided, enables per-page regeneration via repo-centric API. */
+  /** Task ID — required in task-centric mode, omit for repo-centric mode. */
+  taskId?: string;
+  /** Repo ID — enables per-page regeneration; when provided without taskId, uses repo-centric wiki APIs. */
   repoId?: string;
+  /** Repo name — needed in repo-centric mode for GitNexus file lookups. */
+  repoName?: string;
   /** When true: full-page layout, anchor links scroll in-page. When false (default): embedded layout, anchor links open standalone page. */
   standalone?: boolean;
   /** Called whenever the visible wiki page changes, with the page's associated file paths. */
@@ -36,7 +39,8 @@ interface FilePanel {
   error: string | null;
 }
 
-export default function WikiViewer({ taskId, repoId, standalone = false, onPageChange }: WikiViewerProps) {
+export default function WikiViewer({ taskId, repoId, repoName, standalone = false, onPageChange }: WikiViewerProps) {
+  const isRepoMode = !taskId && !!repoId;
   const [wiki, setWiki] = useState<WikiData | null>(null);
   const [status, setStatus] = useState<"loading" | "not_generated" | "generating" | "ready" | "error">("loading");
   const [stale, setStale] = useState(false);
@@ -55,7 +59,9 @@ export default function WikiViewer({ taskId, repoId, standalone = false, onPageC
 
   const loadWiki = useCallback(async () => {
     try {
-      const resp: WikiResponse = await api.wiki.get(taskId);
+      const resp: WikiResponse = isRepoMode
+        ? await api.repos.wiki.get(repoId!)
+        : await api.wiki.get(taskId!);
       if (resp.status === "ready" && resp.wiki) {
         setWiki(resp.wiki);
         setStale(resp.stale);
@@ -75,7 +81,9 @@ export default function WikiViewer({ taskId, repoId, standalone = false, onPageC
           return pages[0]?.id;
         });
       } else {
-        const gs = await api.wiki.status(taskId);
+        const gs = isRepoMode
+          ? await api.repos.wiki.status(repoId!)
+          : await api.wiki.status(taskId!);
         if (gs.running) {
           setStatus("generating");
           setGenStatus(gs);
@@ -87,7 +95,7 @@ export default function WikiViewer({ taskId, repoId, standalone = false, onPageC
       setError(e instanceof Error ? e.message : "Failed to load wiki");
       setStatus("error");
     }
-  }, [taskId, standalone]);
+  }, [taskId, repoId, isRepoMode, standalone]);
 
   useEffect(() => {
     void (async () => {
@@ -104,7 +112,9 @@ export default function WikiViewer({ taskId, repoId, standalone = false, onPageC
 
     const poll = async () => {
       try {
-        const gs = await api.wiki.status(taskId);
+        const gs = isRepoMode
+          ? await api.repos.wiki.status(repoId!)
+          : await api.wiki.status(taskId!);
         setGenStatus(gs);
         if (!gs.running) {
           if (gs.error) {
@@ -123,13 +133,17 @@ export default function WikiViewer({ taskId, repoId, standalone = false, onPageC
     return () => {
       if (pollRef.current) clearInterval(pollRef.current);
     };
-  }, [status, taskId, loadWiki]);
+  }, [status, taskId, repoId, isRepoMode, loadWiki]);
 
   const handleGenerate = async (forceRefresh = false) => {
     try {
       setStatus("generating");
       setGenStatus({ running: true, current: 0, total: 0, page_title: "", error: null });
-      await api.wiki.generate(taskId, true, forceRefresh);
+      if (isRepoMode) {
+        await api.repos.wiki.generate(repoId!, true, forceRefresh);
+      } else {
+        await api.wiki.generate(taskId!, true, forceRefresh);
+      }
     } catch (e) {
       setError(e instanceof Error ? e.message : "Failed to start generation");
       setStatus("error");
@@ -151,7 +165,9 @@ export default function WikiViewer({ taskId, repoId, standalone = false, onPageC
     async (file: string, start?: number, end?: number) => {
       setFilePanel({ path: file, targetStart: start, targetEnd: end, slice: null, loading: true, error: null });
       try {
-        const slice = await api.tasks.getFile(taskId, file, start, end);
+        const slice = isRepoMode && repoName
+          ? await api.gitnexus.getFile(repoName, file, start, end)
+          : await api.tasks.getFile(taskId!, file, start, end);
         setFilePanel({ path: file, targetStart: start, targetEnd: end, slice, loading: false, error: null });
       } catch (e) {
         setFilePanel({
@@ -164,7 +180,7 @@ export default function WikiViewer({ taskId, repoId, standalone = false, onPageC
         });
       }
     },
-    [taskId],
+    [taskId, isRepoMode, repoName],
   );
 
   const handleRegeneratePage = async () => {
@@ -320,11 +336,11 @@ export default function WikiViewer({ taskId, repoId, standalone = false, onPageC
       >
         {standalone && (
           <Link
-            href={`/tasks/${taskId}`}
+            href={isRepoMode ? `/repos/${repoId}` : `/tasks/${taskId}`}
             className="flex items-center gap-2 text-[10px] text-on-surface-variant/40 hover:text-primary transition-colors mb-6 group shrink-0"
           >
             <ArrowLeft size={12} className="group-hover:-translate-x-0.5 transition-transform" />
-            返回分析任务
+            {isRepoMode ? "返回仓库" : "返回分析任务"}
           </Link>
         )}
 
@@ -407,7 +423,7 @@ export default function WikiViewer({ taskId, repoId, standalone = false, onPageC
               <MarkdownRenderer
                 content={currentPage.content}
                 rehypePlugins={wikiRehypePlugins}
-                anchorBaseUrl={standalone ? undefined : `/tasks/${taskId}/wiki`}
+                anchorBaseUrl={standalone ? undefined : (isRepoMode ? `/repos/${repoId}/wiki` : `/tasks/${taskId}/wiki`)}
                 onCitationClick={handleCitationClick}
               />
             </div>

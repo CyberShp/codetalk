@@ -13,6 +13,7 @@ from app.api.ws import router as ws_router
 from app.api.repo_wiki import router as repo_wiki_router
 from app.api.repo_chat import router as repo_chat_router
 from app.api.repo_graph import router as repo_graph_router
+from app.api.repo_analysis import router as repo_analysis_router
 from app.api.ws_chat import router as ws_chat_router
 
 api_router = APIRouter()
@@ -31,3 +32,4 @@ api_router.include_router(repo_wiki_router)
 api_router.include_router(repo_chat_router)
 api_router.include_router(repo_graph_router)
 api_router.include_router(ws_chat_router)
+api_router.include_router(repo_analysis_router)

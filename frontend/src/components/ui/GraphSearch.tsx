@@ -39,6 +39,8 @@ interface GraphSearchProps {
   repo?: string;
   onNodeSelect: (nodeId: string) => void;
   selectedNodeId?: string | null;
+  /** Override root container class. Defaults to absolute overlay in top-left. */
+  className?: string;
 }
 
 function SkeletonCard() {
@@ -59,7 +61,7 @@ function SkeletonCard() {
   );
 }
 
-export default function GraphSearch({ repo, onNodeSelect, selectedNodeId }: GraphSearchProps) {
+export default function GraphSearch({ repo, onNodeSelect, selectedNodeId, className }: GraphSearchProps) {
   const [query, setQuery] = useState("");
   const [mode, setMode] = useState<SearchMode>("hybrid");
   const [results, setResults] = useState<SearchResult[]>([]);
@@ -96,7 +98,7 @@ export default function GraphSearch({ repo, onNodeSelect, selectedNodeId }: Grap
   const showEmpty = hasSearched && !isSearching && lastQuery && results.length === 0 && !error;
 
   return (
-    <div className="absolute top-4 left-4 z-50 w-[360px] backdrop-blur-md bg-surface/80 border border-outline-variant/15 rounded-xl shadow-2xl shadow-black/40 overflow-hidden">
+    <div className={className ?? "absolute top-4 left-4 z-50 w-[360px] backdrop-blur-md bg-surface/80 border border-outline-variant/15 rounded-xl shadow-2xl shadow-black/40 overflow-hidden"}>
       {/* Header */}
       <div className="px-4 pt-4 pb-3">
         <div className="flex items-center gap-2 mb-3">

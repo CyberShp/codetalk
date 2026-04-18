@@ -1,6 +1,7 @@
 "use client";
 
 import { useState, useEffect, useCallback } from "react";
+import Link from "next/link";
 import GlassPanel from "@/components/ui/GlassPanel";
 import DataTable from "@/components/ui/DataTable";
 import CyberInput from "@/components/ui/CyberInput";
@@ -113,7 +114,9 @@ export default function AssetsPage() {
       key: "name",
       header: "仓库",
       render: (r: Repository) => (
-        <span className="text-on-surface font-medium">{r.name}</span>
+        <Link href={`/repos/${r.id}`} className="text-on-surface font-medium hover:text-primary transition-colors">
+          {r.name}
+        </Link>
       ),
     },
     {

@@ -60,6 +60,40 @@ services:
       - gitnexus_data:/root/.gitnexus
       - ./.repos:/data/repos
 
+  joern:
+    image: ghcr.io/joernio/joern:latest
+    ports:
+      - "8080:8080"
+    volumes:
+      - ./.repos:/data/repos:ro
+      - joern_data:/root/.joern
+    command: ["joern", "--server", "--server-host", "0.0.0.0", "--server-port", "8080"]
+    deploy:
+      resources:
+        limits:
+          memory: 8G
+    healthcheck:
+      test: ["CMD-SHELL", "curl -sf http://localhost:8080/ || exit 1"]
+      interval: 15s
+      timeout: 10s
+      retries: 5
+      start_period: 30s
+    restart: unless-stopped
+
+  semgrep:
+    build: ./docker/semgrep
+    ports:
+      - "9090:9090"
+    volumes:
+      - ./.repos:/data/repos:ro
+      - ./docker/semgrep/rules:/rules:ro
+    healthcheck:
+      test: ["CMD-SHELL", "curl -sf http://localhost:9090/health || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 3
+    restart: unless-stopped
+
   zoekt:
     image: ghcr.io/sourcegraph/zoekt:latest
     platform: linux/amd64
@@ -82,3 +116,4 @@ volumes:
   deepwiki_data:
   gitnexus_data:
   zoekt_index:
+  joern_data:

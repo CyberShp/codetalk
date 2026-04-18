@@ -1,0 +1,42 @@
+rules:
+  - id: unhandled-promise-rejection
+    pattern: |
+      $PROMISE.then(...)
+    pattern-not: |
+      $PROMISE.then(...).catch(...)
+    message: >
+      Promise without .catch() handler.
+      Test point: force the async operation to reject and verify UI/API error response.
+    severity: WARNING
+    languages: [javascript, typescript]
+    metadata:
+      category: error-handling
+
+  - id: http-status-not-checked
+    patterns:
+      - pattern: |
+          $RESP = await fetch(...)
+      - pattern-not: |
+          $RESP = await fetch(...)
+          ...
+          if (!$RESP.ok) { ... }
+    message: >
+      HTTP response status not checked after fetch.
+      Test point: mock server returning 4xx/5xx and verify client behavior.
+    severity: WARNING
+    languages: [javascript, typescript]
+    metadata:
+      category: error-handling
+
+  - id: sql-string-concat
+    pattern: |
+      $QUERY = "..." + $INPUT + "..."
+    message: >
+      SQL query built with string concatenation — SQL injection risk.
+      Test point: inject SQL metacharacters (', ", ;, --, UNION) into $INPUT.
+    severity: ERROR
+    languages: [java, python, javascript, typescript, csharp, go]
+    metadata:
+      category: injection
+      owasp: A03:2021
+      test-relevance: critical

@@ -1,0 +1,85 @@
+rules:
+  - id: magic-number-in-comparison
+    patterns:
+      - pattern: |
+          if ($X > $NUM) { ... }
+      - metavariable-comparison:
+          metavariable: $NUM
+          comparison: $NUM > 0
+    message: >
+      Hardcoded boundary value $NUM in comparison.
+      Test point: verify behavior at $NUM-1, $NUM, $NUM+1.
+    severity: INFO
+    languages: [javascript, typescript, java, python, go, csharp]
+    metadata:
+      category: boundary-condition
+      test-relevance: high
+
+  - id: unchecked-error-return
+    patterns:
+      - pattern: |
+          $X = $FUNC(...)
+      - pattern-not: |
+          $X = $FUNC(...)
+          ...
+          if ($X ...) { ... }
+    message: >
+      Return value of $FUNC is not checked for errors.
+      Test point: force $FUNC to fail and verify error propagation.
+    severity: WARNING
+    languages: [go, c]
+    metadata:
+      category: error-handling
+
+  - id: catch-all-exception
+    pattern: |
+      try { ... } catch (Exception $E) { ... }
+    message: >
+      Broad exception catch may mask specific failures.
+      Test point: trigger specific exception types and verify handling.
+    severity: WARNING
+    languages: [java, csharp, python]
+    metadata:
+      category: error-handling
+
+  - id: empty-catch-block
+    pattern: |
+      try { ... } catch ($TYPE $E) { }
+    message: >
+      Empty catch block silently swallows errors.
+      Test point: trigger the exception and verify it's properly logged/handled.
+    severity: ERROR
+    languages: [java, csharp, javascript, typescript]
+    metadata:
+      category: error-handling
+      test-relevance: critical
+
+  - id: integer-overflow-risk
+    patterns:
+      - pattern: $X + $Y
+      - metavariable-type:
+          metavariable: $X
+          type: int
+    message: >
+      Integer arithmetic without overflow check.
+      Test point: use MAX_INT values for $X and $Y.
+    severity: WARNING
+    languages: [java, c, csharp]
+    metadata:
+      category: boundary-condition
+
+  - id: division-without-zero-check
+    patterns:
+      - pattern: $X / $Y
+      - pattern-not-inside: |
+          if ($Y != 0) { ... }
+      - pattern-not-inside: |
+          if ($Y > 0) { ... }
+    message: >
+      Division without zero check on divisor.
+      Test point: set $Y to 0 and verify error handling.
+    severity: ERROR
+    languages: [javascript, typescript, java, python, go, c, csharp]
+    metadata:
+      category: boundary-condition
+      test-relevance: critical
