@@ -12,10 +12,12 @@ import CodePanel from "@/components/ui/CodePanel";
 import IntelligencePanel from "@/components/ui/IntelligencePanel";
 import WikiViewer from "@/components/ui/WikiViewer";
 import FloatingChat from "@/components/ui/FloatingChat";
+import ChatPanel from "@/components/ui/ChatPanel";
 import ConfirmDialog from "@/components/ui/ConfirmDialog";
 import { api } from "@/lib/api";
+import { useChatEngine } from "@/hooks/useChatEngine";
 import type { TaskDetail, GraphNode, GraphData } from "@/lib/types";
-import { ArrowLeft, ChevronDown, ChevronUp, Bot, Sparkles, MessageSquareText } from "lucide-react";
+import { ArrowLeft, ChevronDown, ChevronUp, Bot, Sparkles, MessageSquareText, MessageSquare, X } from "lucide-react";
 
 const KEY_PROCESS_LIMIT = 10;
 const CODE_LABELS = new Set(["Function", "Method", "Class", "Module", "Route", "Tool"]);
@@ -88,6 +90,13 @@ export default function TaskDetailPage() {
   const handleWikiPageChange = useCallback((_pageId: string, filePaths: string[]) => {
     setWikiPageFilePaths(filePaths);
   }, []);
+
+  // Docked chat toggle (documentation tab)
+  const [showDocChat, setShowDocChat] = useState(false);
+  const docChatEngine = useChatEngine({
+    repoId: task?.repository_id ?? "",
+    currentPageFilePaths: wikiPageFilePaths,
+  });
 
   // Graph tab search state
   const [graphSearchQuery, setGraphSearchQuery] = useState("");
@@ -374,14 +383,57 @@ export default function TaskDetailPage() {
               <Sparkles size={12} />
               打开全屏 AI 问答
             </Link>
+            {tab === "documentation" && task.repository_id && (
+              <button
+                onClick={() => setShowDocChat((v) => !v)}
+                className={`inline-flex items-center gap-2 rounded-full border px-4 py-2 text-[11px] font-bold uppercase tracking-widest transition-colors ${
+                  showDocChat
+                    ? "border-secondary/40 bg-secondary/10 text-secondary hover:bg-secondary/15"
+                    : "border-white/10 bg-white/5 text-on-surface-variant hover:bg-white/10"
+                }`}
+              >
+                <MessageSquare size={12} />
+                {showDocChat ? "收起 Chat" : "侧边 Chat"}
+              </button>
+            )}
           </div>
 
           {/* Tab Content Panels */}
           <div className="animate-in fade-in duration-500">
             {tab === "documentation" && (
-              <GlassPanel className="p-0 overflow-hidden">
-                <WikiViewer taskId={taskId} repoId={task?.repository_id ?? undefined} onPageChange={handleWikiPageChange} />
-              </GlassPanel>
+              <div className={`grid gap-4 ${showDocChat ? "grid-cols-[1fr_420px]" : "grid-cols-1"}`}>
+                <GlassPanel className="p-0 overflow-hidden min-w-0">
+                  <WikiViewer taskId={taskId} repoId={task?.repository_id ?? undefined} onPageChange={handleWikiPageChange} />
+                </GlassPanel>
+                {showDocChat && task.repository_id && (
+                  <GlassPanel className="p-0 overflow-hidden flex flex-col" style={{ height: "calc(100vh - 14rem)" }}>
+                    {/* Docked Chat Header */}
+                    <div className="relative h-11 shrink-0 flex items-center justify-between px-4 bg-black/40 border-b border-white/5">
+                      <div className="absolute top-0 left-0 w-full h-[1px] bg-gradient-to-r from-transparent via-secondary/50 to-transparent" />
+                      <div className="flex items-center gap-2">
+                        <div className="w-1.5 h-1.5 rounded-full bg-secondary shadow-lg shadow-secondary/60 animate-pulse" />
+                        <h3 className="text-[10px] font-mono font-bold uppercase tracking-[0.2em] text-on-surface/70">
+                          Neural Link <span className="text-secondary/50">Doc</span>
+                        </h3>
+                      </div>
+                      <div className="flex items-center gap-3">
+                        <span className="text-[9px] font-mono text-on-surface-variant/40 italic">
+                          {wikiPageFilePaths.length > 0
+                            ? `${wikiPageFilePaths.length} files in scope`
+                            : "GLOBAL_CONTEXT"}
+                        </span>
+                        <button
+                          onClick={() => setShowDocChat(false)}
+                          className="p-1 rounded-md text-on-surface-variant hover:text-on-surface hover:bg-white/5 transition-all"
+                        >
+                          <X size={14} />
+                        </button>
+                      </div>
+                    </div>
+                    <ChatPanel engine={docChatEngine} repoId={task.repository_id} className="flex-1 min-h-0" />
+                  </GlassPanel>
+                )}
+              </div>
             )}
 
             {tab === "graph" && (
@@ -823,6 +875,7 @@ export default function TaskDetailPage() {
         <FloatingChat
           repoId={task.repository_id}
           currentPageFilePaths={tab === "documentation" ? wikiPageFilePaths : undefined}
+          hidden={tab === "documentation" && showDocChat}
         />
       )}
 

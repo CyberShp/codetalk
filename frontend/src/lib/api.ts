@@ -30,6 +30,15 @@ import type {
 
 const BASE = process.env.NEXT_PUBLIC_API_URL || "http://localhost:8000";
 
+export interface ChatSession {
+  id: string;
+  repo_id: string;
+  title: string | null;
+  messages: { role: string; content: string }[];
+  created_at: string | null;
+  updated_at: string | null;
+}
+
 async function request<T>(path: string, init?: RequestInit): Promise<T> {
   const res = await fetch(`${BASE}${path}`, {
     headers: { "Content-Type": "application/json", ...init?.headers },
@@ -146,6 +155,31 @@ export const api = {
           }),
           signal,
         }),
+
+      sessions: {
+        list: (repoId: string) =>
+          request<ChatSession[]>(`/api/repos/${repoId}/chat/sessions`),
+
+        get: (repoId: string, sessionId: string) =>
+          request<ChatSession>(`/api/repos/${repoId}/chat/sessions/${sessionId}`),
+
+        create: (repoId: string, body: { title?: string; messages?: { role: string; content: string }[] }) =>
+          request<ChatSession>(`/api/repos/${repoId}/chat/sessions`, {
+            method: "POST",
+            body: JSON.stringify(body),
+          }),
+
+        update: (repoId: string, sessionId: string, body: { title?: string; messages?: { role: string; content: string }[] }) =>
+          request<ChatSession>(`/api/repos/${repoId}/chat/sessions/${sessionId}`, {
+            method: "PUT",
+            body: JSON.stringify(body),
+          }),
+
+        delete: (repoId: string, sessionId: string) =>
+          request<void>(`/api/repos/${repoId}/chat/sessions/${sessionId}`, {
+            method: "DELETE",
+          }),
+      },
     },
   },
 
