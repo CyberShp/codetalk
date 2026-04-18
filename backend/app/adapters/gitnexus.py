@@ -99,6 +99,8 @@ class GitNexusAdapter(BaseToolAdapter):
             if status["status"] == "complete":
                 self._repo_name = status.get("repoName", "")
                 logger.info("gitnexus: indexing complete for %s", self._repo_name)
+                # Fire-and-forget embedding so semantic search can upgrade from BM25
+                asyncio.ensure_future(self._trigger_embed())
                 return
             if status["status"] == "failed":
                 raise RuntimeError(
@@ -106,6 +108,27 @@ class GitNexusAdapter(BaseToolAdapter):
                 )
 
         raise RuntimeError("GitNexus indexing timed out")
+
+    async def _trigger_embed(self) -> None:
+        """Start embedding job for the indexed repo (non-blocking).
+
+        Embedding enables hybrid/semantic search; BM25 works without it.
+        Only logs the result — never raises.
+        """
+        params: dict[str, str] = {}
+        if self._repo_name:
+            params["repo"] = self._repo_name
+        try:
+            resp = await self.client.post("/api/embed", params=params, timeout=10)
+            if resp.status_code == 202:
+                job_id = resp.json().get("jobId", "")
+                logger.info("gitnexus: embedding job started: %s", job_id)
+            else:
+                logger.warning(
+                    "gitnexus: embed returned unexpected status %d", resp.status_code
+                )
+        except Exception as exc:
+            logger.warning("gitnexus: embed trigger failed (non-fatal): %s", exc)
 
     async def analyze(self, request: AnalysisRequest) -> UnifiedResult:
         """Fetch the knowledge graph + intelligence from GitNexus bridge API."""

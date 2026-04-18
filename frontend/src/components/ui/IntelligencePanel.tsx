@@ -1,22 +1,28 @@
 "use client";
 
-import { useMemo } from "react";
+import { useMemo, useEffect, useState } from "react";
 import type { GraphNode, GraphEdge } from "@/lib/types";
 import GlassPanel from "./GlassPanel";
+import { api } from "@/lib/api";
+import ImpactView from "./ImpactView";
 
 interface Props {
   node: GraphNode;
   nodeMap: Map<string, GraphNode>;
   edges: GraphEdge[];
   onNodeClick: (node: GraphNode) => void;
+  repo?: string;
 }
 
-export default function IntelligencePanel({ node, nodeMap, edges, onNodeClick }: Props) {
+export default function IntelligencePanel({ node, nodeMap, edges, onNodeClick, repo }: Props) {
   if (node.label === "Process") {
-    return <ProcessView node={node} nodeMap={nodeMap} onNodeClick={onNodeClick} />;
+    return <ProcessView key={node.id} node={node} nodeMap={nodeMap} onNodeClick={onNodeClick} repo={repo} />;
   }
   if (node.label === "Community") {
-    return <CommunityView node={node} nodeMap={nodeMap} edges={edges} onNodeClick={onNodeClick} />;
+    return <CommunityView key={node.id} node={node} nodeMap={nodeMap} edges={edges} onNodeClick={onNodeClick} repo={repo} />;
+  }
+  if (node.label === "Function" || node.label === "Method" || node.label === "Class") {
+    return <ImpactView key={node.id} node={node} nodeMap={nodeMap} onNodeClick={onNodeClick} repo={repo} />;
   }
   return null;
 }
@@ -25,22 +31,49 @@ function ProcessView({
   node,
   nodeMap,
   onNodeClick,
+  repo,
 }: {
   node: GraphNode;
   nodeMap: Map<string, GraphNode>;
   onNodeClick: (node: GraphNode) => void;
+  repo?: string;
 }) {
   const isCross = node.properties.processType === "cross_community";
 
-  // Resolve steps to full nodes
-  const resolvedSteps = useMemo(
-    () =>
-      (node.steps ?? []).map((s) => ({
-        ...s,
-        node: nodeMap.get(s.symbolId) ?? null,
-      })),
-    [node.steps, nodeMap],
-  );
+  // API-enriched steps: undefined = loading/initial, empty array = no data/failed, array = data
+  const [apiSteps, setApiSteps] = useState<unknown[] | undefined>(undefined);
+
+  const name = node.properties.name as string | undefined;
+
+  useEffect(() => {
+    if (!name) return;
+    let cancelled = false;
+    api.gitnexus
+      .process(name, repo)
+      .then((data) => {
+        if (!cancelled) {
+          setApiSteps(
+            Array.isArray(data.steps) && data.steps.length > 0 ? data.steps : []
+          );
+        }
+      })
+      .catch(() => {
+        if (!cancelled) setApiSteps([]); /* silent fallback */
+      });
+    return () => { cancelled = true; };
+  }, [name, repo]);
+
+  const loadingSteps = !!name && apiSteps === undefined;
+
+  // Resolve steps to full nodes — prefer API data, fall back to graph
+  const resolvedSteps = useMemo(() => {
+    if (apiSteps === undefined) return []; // Still loading
+    const rawSteps = (apiSteps.length > 0 ? apiSteps : (node.steps ?? [])) as { symbolId: string }[];
+    return rawSteps.map((s) => ({
+      ...s,
+      node: nodeMap.get(s.symbolId) ?? null,
+    }));
+  }, [apiSteps, node.steps, nodeMap]);
 
   return (
     <GlassPanel>
@@ -84,7 +117,10 @@ function ProcessView({
       </div>
 
       {/* Steps chain */}
-      {resolvedSteps.length > 0 && (
+      {loadingSteps && (
+        <div className="h-16 rounded-lg bg-surface-container-high/30 animate-pulse" />
+      )}
+      {!loadingSteps && resolvedSteps.length > 0 && (
         <div className="space-y-0">
           <p className="text-[10px] uppercase tracking-wider text-on-surface-variant/50 font-bold mb-2">
             执行步骤链
@@ -138,7 +174,7 @@ function ProcessView({
         </div>
       )}
 
-      {resolvedSteps.length === 0 && (
+      {!loadingSteps && resolvedSteps.length === 0 && (
         <p className="text-xs text-on-surface-variant/50 py-2">
           该流程无步骤数据。
         </p>
@@ -152,14 +188,38 @@ function CommunityView({
   nodeMap,
   edges,
   onNodeClick,
+  repo,
 }: {
   node: GraphNode;
   nodeMap: Map<string, GraphNode>;
   edges: GraphEdge[];
   onNodeClick: (node: GraphNode) => void;
+  repo?: string;
 }) {
+  // API-enriched cluster data
+  const [apiData, setApiData] = useState<{
+    members?: unknown[];
+    cohesion?: number;
+    description?: string;
+  } | null>(null);
+
+  useEffect(() => {
+    const name = node.properties.name as string | undefined;
+    if (!name) return;
+    let cancelled = false;
+    api.gitnexus
+      .cluster(name, repo)
+      .then((data) => {
+        if (!cancelled) setApiData(data as typeof apiData);
+      })
+      .catch(() => {
+        /* silent fallback — apiData stays null */
+      });
+    return () => { cancelled = true; };
+  }, [node.properties.name, repo]);
+
   // Find members via MEMBER_OF edges pointing to this community
-  const members = useMemo(() => {
+  const graphMembers = useMemo(() => {
     const memberIds = edges
       .filter((e) => e.type === "MEMBER_OF" && e.targetId === node.id)
       .map((e) => e.sourceId);
@@ -168,7 +228,22 @@ function CommunityView({
       .filter((n): n is GraphNode => n != null);
   }, [node.id, edges, nodeMap]);
 
-  const cohesion = node.properties.cohesion as number | undefined;
+  // Prefer API member list (may include members outside current viewport), fall back to graph
+  const members = useMemo(() => {
+    if (!apiData?.members || !Array.isArray(apiData.members) || apiData.members.length === 0) {
+      return graphMembers;
+    }
+    const apiMs = apiData.members as { symbolId?: string; name?: string; label?: string }[];
+    return apiMs.map((am) => {
+      const id = (am.symbolId ?? am.name ?? "") as string;
+      return (
+        nodeMap.get(id) ??
+        ({ id, label: am.label ?? "Symbol", properties: { name: am.name ?? id } } as GraphNode)
+      );
+    });
+  }, [apiData, graphMembers, nodeMap]);
+  const cohesion = (apiData?.cohesion ?? node.properties.cohesion) as number | undefined;
+  const description = (apiData?.description as string | undefined) ?? (node.properties.description as string | undefined);
 
   return (
     <GlassPanel>
@@ -184,10 +259,10 @@ function CommunityView({
         </h4>
       </div>
 
-      {node.properties.description && (
+      {description && (
         <div className="mb-4 p-3 bg-secondary-container/10 border-l-2 border-secondary/50 rounded-r">
           <p className="text-xs text-on-surface-variant leading-relaxed italic">
-            &ldquo;{node.properties.description}&rdquo;
+            &ldquo;{description}&rdquo;
           </p>
         </div>
       )}

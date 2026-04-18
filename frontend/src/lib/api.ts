@@ -248,6 +248,79 @@ export const api = {
       if (endLine !== undefined) qs.set("end_line", String(endLine));
       return request<FileSlice>(`/api/gitnexus/file?${qs}`);
     },
+    search: (
+      query: string,
+      repo?: string,
+      mode: "hybrid" | "bm25" | "semantic" = "hybrid",
+      limit = 10,
+    ) =>
+      request<{
+        results: Array<{
+          id: string;
+          name: string;
+          label: string;
+          filePath: string;
+          score: number;
+          connections?: number;
+          cluster?: string;
+          processes?: string[];
+        }>;
+      }>("/api/gitnexus/search", {
+        method: "POST",
+        body: JSON.stringify({ query, repo, mode, limit, enrich: true }),
+      }),
+
+    query: (cypher: string, repo?: string) =>
+      request<{ results: unknown[] }>("/api/gitnexus/query", {
+        method: "POST",
+        body: JSON.stringify({ cypher, repo }),
+      }),
+
+    processes: (repo?: string) => {
+      const qs = new URLSearchParams();
+      if (repo) qs.set("repo", repo);
+      const q = qs.toString();
+      return request<{ processes: unknown[] }>(`/api/gitnexus/processes${q ? `?${q}` : ""}`);
+    },
+
+    process: (name: string, repo?: string) => {
+      const qs = new URLSearchParams({ name });
+      if (repo) qs.set("repo", repo);
+      return request<{ name: string; steps: unknown[]; [key: string]: unknown }>(
+        `/api/gitnexus/process?${qs}`
+      );
+    },
+
+    clusters: (repo?: string) => {
+      const qs = new URLSearchParams();
+      if (repo) qs.set("repo", repo);
+      const q = qs.toString();
+      return request<{ clusters: unknown[] }>(`/api/gitnexus/clusters${q ? `?${q}` : ""}`);
+    },
+
+    cluster: (name: string, repo?: string) => {
+      const qs = new URLSearchParams({ name });
+      if (repo) qs.set("repo", repo);
+      return request<{ name: string; members: unknown[]; cohesion?: number; [key: string]: unknown }>(
+        `/api/gitnexus/cluster?${qs}`
+      );
+    },
+
+    impact: (
+      target: string,
+      direction: "upstream" | "downstream" | "both" = "both",
+      depth = 3,
+      repo?: string,
+    ) =>
+      request<{
+        target: string;
+        depth: number;
+        upstream?: Array<{ nodes: unknown[]; rels: unknown[] }>;
+        downstream?: Array<{ nodes: unknown[]; rels: unknown[] }>;
+      }>("/api/gitnexus/impact", {
+        method: "POST",
+        body: JSON.stringify({ target, direction, depth, repo }),
+      }),
   },
 
   wiki: {

@@ -11,3 +11,4 @@ created: 2026-04-15
 
 | ID | Name | Status | Owner | Link |
 |----|------|--------|-------|------|
+| F001 | GitNexus GraphSearch UI | spec | gemini | [Link](docs/features/F001-graphsearch-ui.md) |

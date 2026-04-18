@@ -8,6 +8,7 @@ import StatusBadge from "@/components/ui/StatusBadge";
 import ProgressBar from "@/components/ui/ProgressBar";
 import MarkdownRenderer from "@/components/ui/MarkdownRenderer";
 import GraphViewer from "@/components/ui/GraphViewer";
+import GraphSearch from "@/components/ui/GraphSearch";
 import CodePanel from "@/components/ui/CodePanel";
 import IntelligencePanel from "@/components/ui/IntelligencePanel";
 import WikiViewer from "@/components/ui/WikiViewer";
@@ -20,40 +21,6 @@ import type { TaskDetail, GraphNode, GraphData } from "@/lib/types";
 import { ArrowLeft, ChevronDown, ChevronUp, Bot, Sparkles, MessageSquareText, MessageSquare, X } from "lucide-react";
 
 const KEY_PROCESS_LIMIT = 10;
-const CODE_LABELS = new Set(["Function", "Method", "Class", "Module", "Route", "Tool"]);
-
-const GRAPH_NODE_COLORS: Record<string, string> = {
-  File: "#3B82F6", Folder: "#6366F1", Class: "#8B5CF6", Function: "#10B981",
-  Method: "#14B8A6", Module: "#F59E0B", Route: "#EF4444", Process: "#EC4899",
-  Community: "#6366F1", Tool: "#F97316",
-};
-
-type GraphSearchHit = {
-  node: GraphNode;
-  file: string;
-  matchLines: { lineNumber: number; lineContent: string }[];
-  community: GraphNode | null;
-  processes: GraphNode[];
-};
-
-function findBestGraphNode(nodes: GraphNode[], zoektFile: string, lineNum: number): GraphNode | null {
-  const norm = (p: string) => p.replace(/\\/g, "/").replace(/^\.\//, "");
-  const zf = norm(zoektFile);
-  let best: GraphNode | null = null;
-  let bestRange = Infinity;
-  for (const n of nodes) {
-    if (!n.properties.filePath) continue;
-    const fp = norm(String(n.properties.filePath));
-    if (fp !== zf && !fp.endsWith("/" + zf) && !zf.endsWith("/" + fp.split("/").slice(-2).join("/"))) continue;
-    const start = n.properties.startLine as number | undefined;
-    const end = n.properties.endLine as number | undefined;
-    if (start != null && end != null && lineNum >= start && lineNum <= end) {
-      const range = end - start;
-      if (range < bestRange) { bestRange = range; best = n; }
-    }
-  }
-  return best;
-}
 
 function scoreProcess(p: GraphNode): number {
   const isCross = p.properties.processType === "cross_community";
@@ -64,7 +31,7 @@ function scoreProcess(p: GraphNode): number {
 const detailTabs = ["documentation", "graph", "findings", "search", "ai_summary"] as const;
 type Tab = (typeof detailTabs)[number];
 
-const INTELLIGENCE_LABELS = new Set(["Process", "Community"]);
+const INTELLIGENCE_LABELS = new Set(["Process", "Community", "Function", "Method", "Class"]);
 
 export default function TaskDetailPage() {
   const params = useParams();
@@ -98,14 +65,6 @@ export default function TaskDetailPage() {
     currentPageFilePaths: wikiPageFilePaths,
   });
 
-  // Graph tab search state
-  const [graphSearchQuery, setGraphSearchQuery] = useState("");
-  const [graphSearchLastQuery, setGraphSearchLastQuery] = useState("");
-  const [graphSearchResults, setGraphSearchResults] = useState<GraphSearchHit[]>([]);
-  const [isGraphSearching, setIsGraphSearching] = useState(false);
-  const [graphSearchError, setGraphSearchError] = useState("");
-  const [showGraphResults, setShowGraphResults] = useState(false);
-
   // Derive graph data — safe with task=null (useMemo must run unconditionally)
   const graphRun = task?.tool_runs.find((r) => r.tool_name === "gitnexus");
   const graphData = (graphRun?.result?.graph as GraphData) ?? null;
@@ -136,32 +95,6 @@ export default function TaskDetailPage() {
     return m;
   }, [graphData]);
 
-  // Community membership lookup: nodeId → Community node
-  const nodeCommunityMap = useMemo(() => {
-    if (!graphData) return new Map<string, GraphNode>();
-    const map = new Map<string, GraphNode>();
-    for (const edge of graphData.edges) {
-      if (edge.type.toUpperCase() === "MEMBER_OF") {
-        const community = graphData.communities?.find((c) => c.id === edge.targetId);
-        if (community) map.set(edge.sourceId, community);
-      }
-    }
-    return map;
-  }, [graphData]);
-
-  // Process membership lookup: nodeId → Process[] (this node appears in these processes)
-  const nodeProcessMap = useMemo(() => {
-    if (!graphData) return new Map<string, GraphNode[]>();
-    const map = new Map<string, GraphNode[]>();
-    for (const process of graphData.processes ?? []) {
-      for (const step of process.steps ?? []) {
-        const arr = map.get(step.symbolId) ?? [];
-        arr.push(process);
-        map.set(step.symbolId, arr);
-      }
-    }
-    return map;
-  }, [graphData]);
 
   // Score, rank, and split processes into key vs other
   const { keyProcesses, otherProcesses } = useMemo(() => {
@@ -254,45 +187,6 @@ export default function TaskDetailPage() {
 
   const currentSearchResults = interactiveResults ?? searchResults;
   const currentSearchQuery = interactiveResults !== null ? lastExecutedQuery : searchQuery;
-
-  const handleGraphSearch = async (e?: React.FormEvent) => {
-    e?.preventDefault();
-    if (!graphSearchQuery.trim() || !task?.repository_id) return;
-    setIsGraphSearching(true);
-    setGraphSearchError("");
-    const q = graphSearchQuery.trim();
-    try {
-      const resp = await api.repos.search(task.repository_id, q);
-      setGraphSearchLastQuery(q);
-      const allNodes = graphData?.nodes ?? [];
-      const nodeHitsMap = new Map<string, GraphSearchHit>();
-      for (const file of resp.results) {
-        for (const match of file.matches) {
-          const node = findBestGraphNode(allNodes, file.file, match.line_number);
-          if (!node) continue;
-          if (!nodeHitsMap.has(node.id)) {
-            nodeHitsMap.set(node.id, {
-              node,
-              file: file.file,
-              matchLines: [],
-              community: nodeCommunityMap.get(node.id) ?? null,
-              processes: nodeProcessMap.get(node.id) ?? [],
-            });
-          }
-          nodeHitsMap.get(node.id)!.matchLines.push({
-            lineNumber: match.line_number,
-            lineContent: match.line_content,
-          });
-        }
-      }
-      setGraphSearchResults(Array.from(nodeHitsMap.values()));
-      setShowGraphResults(true);
-    } catch (err) {
-      setGraphSearchError(err instanceof Error ? err.message : "搜索失败");
-    } finally {
-      setIsGraphSearching(false);
-    }
-  };
 
   return (
     <div className="fixed inset-0 z-[80] bg-surface text-on-surface">
@@ -438,124 +332,9 @@ export default function TaskDetailPage() {
 
             {tab === "graph" && (
               <div className="space-y-3">
-                {/* Graph Zoekt Search Bar */}
-                {graphData && task.repository_id && (
-                  <>
-                    <form onSubmit={handleGraphSearch} className="flex gap-2">
-                      <div className="relative flex-1 group">
-                        <div className="absolute inset-y-0 left-3 flex items-center pointer-events-none text-on-surface-variant/40 group-focus-within:text-primary transition-colors">
-                          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round">
-                            <circle cx="11" cy="11" r="8" /><line x1="21" y1="21" x2="16.65" y2="16.65" />
-                          </svg>
-                        </div>
-                        <input
-                          type="text"
-                          value={graphSearchQuery}
-                          onChange={(e) => setGraphSearchQuery(e.target.value)}
-                          placeholder="搜索代码，定位至图节点..."
-                          className="w-full h-10 bg-surface-container-low border border-outline-variant/30 rounded-xl pl-10 pr-4 text-sm font-data text-on-surface placeholder:text-on-surface-variant/30 focus:outline-none focus:border-primary/50 focus:ring-4 focus:ring-primary/5 transition-all"
-                        />
-                      </div>
-                      <button
-                        type="submit"
-                        disabled={isGraphSearching || !graphSearchQuery.trim()}
-                        className="h-10 px-5 bg-primary text-on-primary text-xs font-bold uppercase tracking-widest rounded-xl hover:shadow-lg hover:shadow-primary/20 disabled:opacity-50 transition-all"
-                      >
-                        {isGraphSearching ? "搜索中..." : "搜索"}
-                      </button>
-                    </form>
-
-                    {graphSearchError && (
-                      <p className="text-xs text-tertiary px-1">{graphSearchError}</p>
-                    )}
-
-                    {showGraphResults && graphSearchResults.length > 0 && (
-                      <div className="max-h-52 overflow-y-auto bg-surface-container-lowest/40 rounded-xl border border-outline-variant/10 py-2">
-                        <div className="flex items-center justify-between px-3 pb-1.5 mb-1 border-b border-outline-variant/10">
-                          <span className="text-[10px] text-on-surface-variant/50 uppercase tracking-wider">
-                            {graphSearchResults.length} 节点匹配 · 「{graphSearchLastQuery}」
-                          </span>
-                          <button
-                            onClick={() => setShowGraphResults(false)}
-                            className="text-[10px] text-on-surface-variant/40 hover:text-on-surface px-1 transition-colors"
-                          >
-                            ✕
-                          </button>
-                        </div>
-                        <div className="space-y-0.5 px-2">
-                          {graphSearchResults.map((hit) => (
-                            <div
-                              key={hit.node.id}
-                              onClick={() => handleNodeClick(hit.node)}
-                              className={`flex items-center gap-2 px-2 py-1.5 rounded-lg cursor-pointer hover:bg-surface-container-high/50 transition-colors group ${
-                                selectedNode?.id === hit.node.id
-                                  ? "bg-primary/10 ring-1 ring-primary/20"
-                                  : ""
-                              }`}
-                            >
-                              <div
-                                className="shrink-0 w-2 h-2 rounded-full"
-                                style={{ background: GRAPH_NODE_COLORS[hit.node.label] ?? "#6B7280" }}
-                              />
-                              <div className="flex-1 min-w-0">
-                                <div className="flex items-center gap-1.5 flex-wrap">
-                                  <span className="text-xs font-medium text-on-surface truncate max-w-[160px]">
-                                    {hit.node.properties.name}
-                                  </span>
-                                  <span className="text-[9px] font-data text-on-surface-variant/50 bg-surface-container-high/80 px-1.5 py-0.5 rounded shrink-0">
-                                    {hit.node.label}
-                                  </span>
-                                  {hit.community && (
-                                    <span className="text-[9px] font-data text-secondary/70 bg-secondary/10 px-1.5 py-0.5 rounded shrink-0 truncate max-w-[100px]">
-                                      {hit.community.properties.name}
-                                    </span>
-                                  )}
-                                  {hit.processes.length > 0 && (
-                                    <span className="text-[9px] font-data text-tertiary/70 bg-tertiary/10 px-1.5 py-0.5 rounded shrink-0">
-                                      {hit.processes.length} 流程
-                                    </span>
-                                  )}
-                                </div>
-                                <div className="text-[9px] text-on-surface-variant/40 font-data truncate mt-0.5">
-                                  {hit.file}:{hit.matchLines[0]?.lineNumber}
-                                  {hit.matchLines.length > 1 && ` +${hit.matchLines.length - 1} 处`}
-                                </div>
-                              </div>
-                              <div className="flex gap-1 shrink-0 opacity-0 group-hover:opacity-100 transition-opacity">
-                                <button
-                                  onClick={(e) => { e.stopPropagation(); handleNodeClick(hit.node); }}
-                                  className="text-[9px] px-1.5 py-0.5 rounded bg-primary/20 text-primary hover:bg-primary/30 transition-colors font-bold"
-                                  title="定位到图节点，展开一跳邻居"
-                                >
-                                  定位
-                                </button>
-                                {CODE_LABELS.has(hit.node.label) && (
-                                  <button
-                                    onClick={(e) => { e.stopPropagation(); handleNodeClick(hit.node); }}
-                                    className="text-[9px] px-1.5 py-0.5 rounded bg-secondary/20 text-secondary hover:bg-secondary/30 transition-colors font-bold"
-                                    title="打开代码面板"
-                                  >
-                                    代码
-                                  </button>
-                                )}
-                              </div>
-                            </div>
-                          ))}
-                        </div>
-                      </div>
-                    )}
-
-                    {showGraphResults && !isGraphSearching && graphSearchLastQuery && graphSearchResults.length === 0 && (
-                      <p className="text-xs text-on-surface-variant/50 px-1">
-                        未在图谱中找到「{graphSearchLastQuery}」的节点匹配，可到搜索页查看完整代码结果。
-                      </p>
-                    )}
-                  </>
-                )}
-
                 {/* Graph Viewer */}
                 {graphData ? (
-                  <div className="h-[640px] flex flex-col">
+                  <div className="relative h-[640px] flex flex-col">
                     <div className="flex-1 min-h-0">
                       <GraphViewer
                         nodes={graphData.nodes}
@@ -564,12 +343,30 @@ export default function TaskDetailPage() {
                         onNodeClick={handleNodeClick}
                       />
                     </div>
+                    {/* GitNexus Symbol Search — floating overlay */}
+                    <GraphSearch
+                      repo={repoName || undefined}
+                      onNodeSelect={(nodeId) => {
+                        const node = nodeMap.get(nodeId);
+                        if (node) handleNodeClick(node);
+                      }}
+                      selectedNodeId={selectedNode?.id ?? null}
+                    />
                   </div>
                 ) : (
-                  <GlassPanel className="py-32 flex items-center justify-center text-on-surface-variant/50">
+                  <GlassPanel className="py-32 flex flex-col items-center justify-center text-on-surface-variant/50 gap-2">
                     <p className="text-sm italic">
-                      {task.status === "running" ? "神经连接构建中..." : "未发现图谱数据。"}
+                      {graphRun?.status === "running"
+                        ? "神经连接构建中..."
+                        : graphRun?.status === "failed"
+                          ? "GitNexus 分析失败"
+                          : graphRun
+                            ? "图谱数据为空。"
+                            : "未执行 GitNexus 分析。"}
                     </p>
+                    {graphRun?.error && (
+                      <p className="text-xs text-tertiary/70 max-w-md text-center">{graphRun.error}</p>
+                    )}
                   </GlassPanel>
                 )}
               </div>
@@ -861,6 +658,7 @@ export default function TaskDetailPage() {
                 nodeMap={nodeMap}
                 edges={graphData?.edges ?? []}
                 onNodeClick={handleNodeClick}
+                repo={repoName || undefined}
               />
             ) : (
               <CodePanel node={selectedNode!} repoName={repoName} />
