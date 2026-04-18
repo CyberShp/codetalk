@@ -1,6 +1,6 @@
 "use client";
 
-import { useState, useEffect } from "react";
+import { useState, useEffect, useRef } from "react";
 import GlassPanel from "./GlassPanel";
 import ChatPanel from "./ChatPanel";
 import { useChatEngine } from "@/hooks/useChatEngine";
@@ -12,17 +12,42 @@ interface Props {
   currentPageFilePaths?: string[];
   /** When true, hide the floating bubble (used when docked chat is active). */
   hidden?: boolean;
+  /** Open from an external trigger (e.g., graph node "追问" button). */
+  forceOpen?: boolean;
+  /** Pre-fill input with this question when forceOpen fires. User can edit before sending. */
+  initialMessage?: string;
+  /** Called when user closes the chat panel. */
+  onClose?: () => void;
 }
 
-export default function FloatingChat({ repoId, currentPageFilePaths, hidden }: Props) {
+export default function FloatingChat({
+  repoId,
+  currentPageFilePaths,
+  hidden,
+  forceOpen,
+  initialMessage,
+  onClose,
+}: Props) {
   const engine = useChatEngine({ repoId, currentPageFilePaths });
-  const [isOpen, setIsOpen] = useState(false);
+  const [localOpen, setLocalOpen] = useState(false);
+  const prevInitialMessage = useRef<string | undefined>(undefined);
 
+  // Derive effective open: respect both local toggle and external forceOpen
+  const isOpen = localOpen || !!forceOpen;
+
+  // Pre-fill input when initialMessage changes (side effect on external DOM ref — allowed)
   useEffect(() => {
-    if (isOpen && engine.inputRef.current) {
-      engine.inputRef.current.focus();
+    if (initialMessage && initialMessage !== prevInitialMessage.current && isOpen) {
+      prevInitialMessage.current = initialMessage;
+      engine.setInput(initialMessage);
+      setTimeout(() => engine.inputRef.current?.focus(), 50);
     }
-  }, [isOpen, engine.inputRef]);
+  });
+
+  const handleClose = () => {
+    setLocalOpen(false);
+    onClose?.();
+  };
 
   return (
     <div className={`fixed bottom-6 right-6 z-50 flex flex-col items-end${hidden ? " hidden" : ""}`}>
@@ -48,7 +73,7 @@ export default function FloatingChat({ repoId, currentPageFilePaths, hidden }: P
                     : "GLOBAL_CONTEXT"}
                 </span>
                 <button
-                  onClick={() => setIsOpen(false)}
+                  onClick={handleClose}
                   className="p-1 rounded-md text-on-surface-variant hover:text-on-surface hover:bg-white/5 transition-all"
                 >
                   <X size={14} />
@@ -63,7 +88,7 @@ export default function FloatingChat({ repoId, currentPageFilePaths, hidden }: P
 
       {/* Floating action button */}
       <button
-        onClick={() => setIsOpen(!isOpen)}
+        onClick={() => { if (isOpen) { handleClose(); } else { setLocalOpen(true); } }}
         className={`w-14 h-14 rounded-full flex items-center justify-center shadow-lg transition-all duration-300 ${
           isOpen
             ? "bg-on-surface text-surface rotate-90 scale-90"

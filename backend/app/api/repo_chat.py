@@ -24,6 +24,60 @@ logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/api/repos", tags=["repo-chat"])
 
 
+async def _gitnexus_search_context(query: str, repo_name: str) -> str:
+    """Search GitNexus for symbols related to the user's question.
+
+    Iron Law: pure HTTP call to GitNexus /api/search. No analysis.
+    Returns formatted string for injection into chat context, or "" on failure.
+
+    B3 guard: skips silently when repo is not indexed by GitNexus (/api/repos).
+    """
+    if not repo_name:
+        return ""
+
+    try:
+        async with httpx.AsyncClient(
+            base_url=settings.gitnexus_base_url, timeout=10
+        ) as client:
+            # B3: skip if repo not indexed by GitNexus (/api/repos is Phase 5 endpoint)
+            repos_resp = await client.get("/api/repos", params={"repo": repo_name})
+            if repos_resp.status_code != 200:
+                return ""
+            repos = repos_resp.json().get("repos", [])
+            names = {r if isinstance(r, str) else (r.get("name") or r.get("repo") or "") for r in repos}
+            if repo_name not in names:
+                return ""
+
+            params: dict[str, str] = {"repo": repo_name}
+            resp = await client.post(
+                "/api/search",
+                params=params,
+                json={"query": query, "mode": "hybrid", "limit": 5, "enrich": True},
+            )
+            if resp.status_code != 200:
+                return ""
+            results = resp.json().get("results", [])
+            if not results:
+                return ""
+
+            lines = ["[知识图谱相关符号]:"]
+            for r in results[:5]:
+                name = r.get("name", "")
+                label = r.get("label", "")
+                path = r.get("filePath", "")
+                cluster = r.get("cluster", "")
+                processes = r.get("processes", [])
+                line = f"- {name} ({label}) @ {path}"
+                if cluster:
+                    line += f" [社区: {cluster}]"
+                if processes:
+                    line += f" [流程: {', '.join(str(p) for p in processes[:3])}]"
+                lines.append(line)
+            return "\n".join(lines)
+    except Exception:
+        return ""  # Non-fatal — chat works without graph context
+
+
 class RepoChatRequest(BaseModel):
     repo_id: uuid.UUID
     messages: list[ChatMessage]
@@ -62,9 +116,22 @@ async def repo_chat_stream(
         )
         llm_config = result.scalar_one_or_none()
 
+    # Inject GitNexus graph context — non-blocking, fails silently
+    messages = list(body.messages)
+    if messages and messages[-1].role == "user":
+        gitnexus_ctx = await _gitnexus_search_context(
+            messages[-1].content, repo.name or ""
+        )
+        if gitnexus_ctx:
+            last = messages[-1]
+            messages[-1] = ChatMessage(
+                role=last.role,
+                content=f"{last.content}\n\n{gitnexus_ctx}",
+            )
+
     payload, trust_env = build_deepwiki_payload(
         repo,
-        body.messages,
+        messages,
         llm_config,
         file_path=body.file_path,
         included_files=body.included_files,

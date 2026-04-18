@@ -321,6 +321,27 @@ export const api = {
         method: "POST",
         body: JSON.stringify({ target, direction, depth, repo }),
       }),
+
+    grep: (pattern: string, repo?: string, glob?: string) => {
+      const qs = new URLSearchParams({ pattern });
+      if (repo) qs.set("repo", repo);
+      if (glob) qs.set("glob", glob);
+      return request<{
+        matches: Array<{
+          file: string;
+          line: number;
+          content: string;
+          context?: string[];
+        }>;
+      }>(`/api/gitnexus/grep?${qs}`);
+    },
+
+    repos: (repo?: string) => {
+      const qs = new URLSearchParams();
+      if (repo) qs.set("repo", repo);
+      const q = qs.toString();
+      return request<{ repos: unknown[] }>(`/api/gitnexus/repos${q ? `?${q}` : ""}`);
+    },
   },
 
   wiki: {

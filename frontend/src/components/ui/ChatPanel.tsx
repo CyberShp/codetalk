@@ -106,7 +106,6 @@ export default function ChatPanel({ engine, repoId, className = "" }: ChatPanelP
     return () => {
       if (saveTimerRef.current) clearTimeout(saveTimerRef.current);
     };
-    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [messages, repoId]);
 
   const handleLoadSession = useCallback(

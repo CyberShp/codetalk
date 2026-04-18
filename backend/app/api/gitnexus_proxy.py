@@ -9,6 +9,8 @@ Used by the frontend to:
 - List all clusters/communities (/clusters)
 - Fetch single cluster detail (/cluster)
 - Analyze impact/blast radius via Cypher composition (/impact)
+- Regex code search (/grep)
+- List indexed repos (/repos)
 
 Iron law: pure HTTP proxy + format pass-through, zero analysis logic.
 """
@@ -258,3 +260,53 @@ async def analyze_impact(body: ImpactRequest):
         raise HTTPException(status_code=502, detail=str(exc))
 
     return {"target": target_name, "depth": depth, **results}
+
+
+@router.get("/grep")
+async def grep_code(
+    pattern: str = Query(..., description="Regex pattern"),
+    repo: str | None = Query(None),
+    glob: str | None = Query(None, description="File glob filter, e.g. *.py"),
+):
+    """Proxy to GitNexus GET /api/grep — regex code search."""
+    params: dict[str, str] = {"pattern": pattern}
+    if repo:
+        params["repo"] = repo
+    if glob:
+        params["glob"] = glob
+
+    try:
+        async with httpx.AsyncClient(
+            base_url=settings.gitnexus_base_url, timeout=30
+        ) as client:
+            resp = await client.get("/api/grep", params=params)
+            resp.raise_for_status()
+            return resp.json()
+    except httpx.HTTPStatusError as exc:
+        raise HTTPException(
+            status_code=exc.response.status_code, detail=exc.response.text
+        )
+    except httpx.HTTPError as exc:
+        raise HTTPException(status_code=502, detail=str(exc))
+
+
+@router.get("/repos")
+async def list_repos(repo: str | None = Query(None)):
+    """Proxy to GitNexus GET /api/repos — list indexed repositories."""
+    params: dict[str, str] = {}
+    if repo:
+        params["repo"] = repo
+
+    try:
+        async with httpx.AsyncClient(
+            base_url=settings.gitnexus_base_url, timeout=30
+        ) as client:
+            resp = await client.get("/api/repos", params=params)
+            resp.raise_for_status()
+            return resp.json()
+    except httpx.HTTPStatusError as exc:
+        raise HTTPException(
+            status_code=exc.response.status_code, detail=exc.response.text
+        )
+    except httpx.HTTPError as exc:
+        raise HTTPException(status_code=502, detail=str(exc))

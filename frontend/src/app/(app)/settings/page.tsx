@@ -26,6 +26,33 @@ const PROVIDER_EMBEDDER_MAP: Record<string, string> = {
   custom: "openai",
 };
 
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
+function readModelLabel(model: unknown): string {
+  if (typeof model === "string") return model;
+  if (!isRecord(model)) return JSON.stringify(model);
+  const candidate = model.displayName ?? model.name ?? model.id ?? model.model ?? model.value;
+  return typeof candidate === "string" ? candidate : JSON.stringify(model);
+}
+
+function normalizeDeepwikiProvider(value: unknown): {
+  models: string[];
+  supportsCustomModel: boolean;
+} {
+  const source = Array.isArray(value)
+    ? value
+    : isRecord(value) && Array.isArray(value.models)
+      ? value.models
+      : [];
+
+  return {
+    models: source.map(readModelLabel),
+    supportsCustomModel: isRecord(value) && value.supportsCustomModel === true,
+  };
+}
+
 export default function SettingsPage() {
   const [aiEnabled, setAiEnabled] = useState(true);
   const [configs, setConfigs] = useState<LLMConfig[]>([]);
@@ -376,25 +403,39 @@ export default function SettingsPage() {
           <div className="space-y-3">
             {Object.entries(deepwikiModels).map(([provider, models]) => (
               <div key={provider} className="bg-surface-container-lowest/50 rounded-lg px-4 py-3">
-                <p className="text-xs font-medium text-primary-fixed-dim mb-2 uppercase tracking-wide">
-                  {provider}
-                </p>
-                <div className="flex flex-wrap gap-2">
-                  {Array.isArray(models)
-                    ? models.map((m) => (
-                        <span
-                          key={String(m)}
-                          className="font-data text-[11px] text-on-surface-variant bg-surface-container-high px-2 py-0.5 rounded"
-                        >
-                          {String(m)}
-                        </span>
-                      ))
-                    : (
-                        <span className="font-data text-[11px] text-on-surface-variant">
-                          {JSON.stringify(models)}
-                        </span>
-                      )}
-                </div>
+                {(() => {
+                  const normalized = normalizeDeepwikiProvider(models);
+                  return (
+                    <>
+                      <div className="flex items-center gap-2 mb-2 flex-wrap">
+                        <p className="text-xs font-medium text-primary-fixed-dim uppercase tracking-wide">
+                          {provider}
+                        </p>
+                        {normalized.supportsCustomModel && (
+                          <span className="font-data text-[10px] text-secondary-fixed-dim bg-secondary/10 px-2 py-0.5 rounded">
+                            supports custom model
+                          </span>
+                        )}
+                      </div>
+                      <div className="flex flex-wrap gap-2">
+                        {normalized.models.length > 0 ? (
+                          normalized.models.map((model) => (
+                            <span
+                              key={model}
+                              className="font-data text-[11px] text-on-surface-variant bg-surface-container-high px-2 py-0.5 rounded"
+                            >
+                              {model}
+                            </span>
+                          ))
+                        ) : (
+                          <span className="font-data text-[11px] text-on-surface-variant/60">
+                            暂无模型明细
+                          </span>
+                        )}
+                      </div>
+                    </>
+                  );
+                })()}
               </div>
             ))}
           </div>
