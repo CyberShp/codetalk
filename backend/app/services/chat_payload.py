@@ -6,6 +6,12 @@ from app.models.repository import Repository
 from app.utils.repo_paths import to_tool_repo_path
 from app.config import settings
 
+DEFAULT_EXCLUDED_DIRS: list[str] = [
+    "node_modules", ".git", "dist", "build", "__pycache__",
+    ".next", "vendor", "coverage", ".nyc_output",
+    ".venv", "venv", ".tox", "egg-info",
+]
+
 
 def build_deepwiki_payload(
     repo: Repository,
@@ -14,6 +20,7 @@ def build_deepwiki_payload(
     *,
     file_path: str | None = None,
     included_files: list[str] | None = None,
+    excluded_dirs: list[str] | None = None,
     deep_research: bool = False,
 ) -> tuple[dict, bool]:
     """Build deepwiki request payload.
@@ -37,6 +44,12 @@ def build_deepwiki_payload(
         payload["filePath"] = file_path
     if included_files:
         payload["included_files"] = "\n".join(included_files)
+
+    # Smart file filtering — merge defaults with caller-supplied dirs
+    effective_excluded = list(DEFAULT_EXCLUDED_DIRS)
+    if excluded_dirs:
+        effective_excluded.extend(d for d in excluded_dirs if d not in effective_excluded)
+    payload["excluded_dirs"] = "\n".join(effective_excluded)
 
     # Deep research tag injection on the last user message
     if deep_research and payload["messages"]:

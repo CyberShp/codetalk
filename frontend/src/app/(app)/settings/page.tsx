@@ -8,6 +8,26 @@ import ComponentConfigPanel from "@/components/ComponentConfigPanel";
 import { api } from "@/lib/api";
 import type { LLMConfig, ToolInfo, ProxyMode } from "@/lib/types";
 
+const LLM_PROVIDERS = [
+  { value: "openai", label: "OpenAI" },
+  { value: "google", label: "Google" },
+  { value: "ollama", label: "Ollama" },
+  { value: "openrouter", label: "OpenRouter" },
+  { value: "anthropic", label: "Anthropic" },
+  { value: "bedrock", label: "AWS Bedrock" },
+  { value: "custom", label: "Custom (兼容 OpenAI)" },
+] as const;
+
+const PROVIDER_EMBEDDER_MAP: Record<string, string> = {
+  openai: "openai",
+  google: "google",
+  ollama: "ollama",
+  bedrock: "bedrock",
+  openrouter: "openai",
+  anthropic: "openai",
+  custom: "openai",
+};
+
 export default function SettingsPage() {
   const [aiEnabled, setAiEnabled] = useState(true);
   const [configs, setConfigs] = useState<LLMConfig[]>([]);
@@ -22,6 +42,7 @@ export default function SettingsPage() {
   // Form state (shared by create and edit)
   const [editingId, setEditingId] = useState<string | null>(null);
   const [modelName, setModelName] = useState("");
+  const [provider, setProvider] = useState("custom");
   const [apiKey, setApiKey] = useState("");
   const [baseUrl, setBaseUrl] = useState("");
   const [proxyMode, setProxyMode] = useState<ProxyMode>("system");
@@ -54,6 +75,7 @@ export default function SettingsPage() {
   const resetForm = () => {
     setEditingId(null);
     setModelName("");
+    setProvider("custom");
     setApiKey("");
     setBaseUrl("");
     setProxyMode("system");
@@ -63,6 +85,7 @@ export default function SettingsPage() {
   const startEdit = (cfg: LLMConfig) => {
     setEditingId(cfg.id);
     setModelName(cfg.model_name);
+    setProvider(cfg.provider || "custom");
     setApiKey("");
     setBaseUrl(cfg.base_url ?? "");
     setProxyMode(cfg.proxy_mode as ProxyMode);
@@ -75,6 +98,7 @@ export default function SettingsPage() {
     try {
       if (editingId) {
         await api.settings.updateLLM(editingId, {
+          provider,
           model_name: modelName.trim(),
           api_key: apiKey.trim() || undefined,
           base_url: baseUrl.trim() || undefined,
@@ -82,7 +106,7 @@ export default function SettingsPage() {
         });
       } else {
         await api.settings.saveLLM({
-          provider: "custom",
+          provider,
           model_name: modelName.trim(),
           api_key: apiKey.trim() || undefined,
           base_url: baseUrl.trim() || undefined,
@@ -184,6 +208,9 @@ export default function SettingsPage() {
                   {cfg.model_name}
                 </p>
                 <div className="flex items-center gap-3 mt-1 flex-wrap">
+                  <span className="font-data text-[10px] text-on-surface-variant/60 uppercase">
+                    {cfg.provider}
+                  </span>
                   {cfg.base_url && (
                     <span className="font-data text-[10px] text-primary-fixed-dim truncate max-w-[240px]">
                       {cfg.base_url}
@@ -254,6 +281,20 @@ export default function SettingsPage() {
               </button>
             </div>
           )}
+          <div>
+            <label className="block text-xs text-on-surface-variant mb-1.5 tracking-wide uppercase">
+              Provider
+            </label>
+            <select
+              value={provider}
+              onChange={(e) => setProvider(e.target.value)}
+              className="w-full bg-surface-container-lowest/50 text-on-surface font-data text-sm px-4 py-2 rounded-md outline-none focus:ring-1 focus:ring-primary-container"
+            >
+              {LLM_PROVIDERS.map((p) => (
+                <option key={p.value} value={p.value}>{p.label}</option>
+              ))}
+            </select>
+          </div>
           <CyberInput
             label="Base URL"
             placeholder="http://10.0.0.1:8080/v1"
@@ -361,6 +402,26 @@ export default function SettingsPage() {
           </div>
         )}
       </GlassPanel>
+
+      {/* Embedder Recommendation */}
+      {(() => {
+        const defaultCfg = configs.find((c) => c.is_default);
+        const recEmbedder = defaultCfg ? PROVIDER_EMBEDDER_MAP[defaultCfg.provider] : null;
+        if (!recEmbedder) return null;
+        return (
+          <div className="px-4 py-2.5 rounded-lg bg-primary/5 border border-primary/10">
+            <p className="text-xs text-on-surface-variant">
+              <span className="text-primary-fixed-dim font-medium">Embedder 推荐</span>
+              {" — "}
+              当前默认 LLM provider 为{" "}
+              <span className="font-data text-on-surface">{defaultCfg!.provider}</span>
+              ，推荐使用{" "}
+              <span className="font-data text-secondary-fixed-dim">{recEmbedder}</span>
+              {" "}embedder（可在下方组件配置中调整）
+            </p>
+          </div>
+        );
+      })()}
 
       {/* Component Config */}
       <ComponentConfigPanel />

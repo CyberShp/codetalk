@@ -35,11 +35,11 @@
     }
   },
   "retriever": {
-    "top_k": 20
+    "top_k": 30
   },
   "text_splitter": {
     "split_by": "word",
-    "chunk_size": 350,
-    "chunk_overlap": 100
+    "chunk_size": 500,
+    "chunk_overlap": 150
   }
 }

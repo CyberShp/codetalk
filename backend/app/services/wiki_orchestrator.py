@@ -17,6 +17,7 @@ import httpx
 from app.config import settings
 from app.utils.repo_paths import to_tool_repo_path
 
+from app.services.chat_payload import DEFAULT_EXCLUDED_DIRS
 from app.services.wiki_prompts import build_page_prompt, build_structure_prompt
 
 logger = logging.getLogger(__name__)
@@ -332,6 +333,7 @@ class WikiOrchestrator:
             "language": language,
             "provider": provider,
             "model": model,
+            "excluded_dirs": "\n".join(DEFAULT_EXCLUDED_DIRS),
         }
 
         raw = await self._stream_collect(client, payload)
@@ -359,6 +361,7 @@ class WikiOrchestrator:
             "language": language,
             "provider": provider,
             "model": model,
+            "excluded_dirs": "\n".join(DEFAULT_EXCLUDED_DIRS),
         }
         if page.file_paths:
             payload["included_files"] = ",".join(page.file_paths)

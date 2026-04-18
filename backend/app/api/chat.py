@@ -30,6 +30,7 @@ from app.models.llm_config import LLMConfig
 from app.models.repository import Repository
 from app.models.task import AnalysisTask
 from app.utils.repo_paths import to_tool_repo_path
+from app.services.chat_payload import DEFAULT_EXCLUDED_DIRS
 
 logger = logging.getLogger(__name__)
 
@@ -605,6 +606,7 @@ async def chat_stream(body: ChatRequest, db: AsyncSession = Depends(get_db)):
         "type": "local",
         "messages": messages,
         "language": "zh",
+        "excluded_dirs": "\n".join(DEFAULT_EXCLUDED_DIRS),
     }
 
     proxy_mode = "system"
