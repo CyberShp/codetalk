@@ -98,6 +98,16 @@ CONTRACTS: dict[str, ComponentContract] = {
         label="Zoekt (代码搜索)",
         domains=[],
     ),
+    "joern": ComponentContract(
+        component="joern",
+        label="Joern (CPG分析)",
+        domains=[],
+    ),
+    "semgrep": ComponentContract(
+        component="semgrep",
+        label="Semgrep (规则扫描)",
+        domains=[],
+    ),
 }
 
 

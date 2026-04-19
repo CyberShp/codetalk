@@ -10,6 +10,37 @@ import ConfirmDialog from "@/components/ui/ConfirmDialog";
 import { api } from "@/lib/api";
 import type { Project, Repository, SourceType } from "@/lib/types";
 
+function summarizeSyncError(error: unknown): string {
+  const raw = error instanceof Error ? error.message : String(error ?? "");
+  const text = raw.replace(/^API\s+\d+:\s*/i, "").replace(/\s+/g, " ").trim();
+  const lower = text.toLowerCase();
+
+  if (!text) return "同步失败";
+  if (lower.includes("syntax error")) {
+    return "同步失败，请检查仓库地址或本地路径格式";
+  }
+  if (lower.includes("local path does not exist")) {
+    return "同步失败，本地路径不存在";
+  }
+  if (lower.includes("local path must be under")) {
+    return "同步失败，本地路径不在共享仓库目录内";
+  }
+  if (lower.includes("repository not found")) {
+    return "同步失败，仓库不存在";
+  }
+  if (lower.includes("git clone failed")) {
+    return "同步失败，拉取仓库失败";
+  }
+  if (lower.includes("git pull failed")) {
+    return "同步失败，更新仓库失败";
+  }
+  if (lower.includes("operation not permitted")) {
+    return "同步失败，当前环境没有足够权限";
+  }
+
+  return text.length > 120 ? `${text.slice(0, 117)}...` : text;
+}
+
 export default function AssetsPage() {
   const [projects, setProjects] = useState<Project[]>([]);
   const [selectedProject, setSelectedProject] = useState<string | null>(null);
@@ -40,11 +71,17 @@ export default function AssetsPage() {
   const loadRepos = useCallback(async () => {
     if (!selectedProject) {
       setRepos([]);
+      setSyncErrors({});
       return;
     }
     try {
       const data = await api.projects.repos(selectedProject);
       setRepos(data);
+      setSyncErrors((prev) =>
+        Object.fromEntries(
+          Object.entries(prev).filter(([repoId]) => data.some((repo) => repo.id === repoId))
+        )
+      );
     } catch (e) {
       console.error("Failed to load repos:", e);
     }
@@ -90,7 +127,7 @@ export default function AssetsPage() {
     } catch (e) {
       setSyncErrors((prev) => ({
         ...prev,
-        [repoId]: e instanceof Error ? e.message : "同步失败",
+        [repoId]: summarizeSyncError(e),
       }));
     } finally {
       setSyncingRepos((s) => {

@@ -11,6 +11,7 @@ capability matrix MUST have a corresponding method. No "deployed but unused."
 
 import json as _json
 import logging
+import re
 from collections.abc import AsyncIterator
 from typing import Any
 
@@ -25,6 +26,8 @@ from .base import (
 )
 
 logger = logging.getLogger(__name__)
+
+_ANSI_RE = re.compile(r"\x1b\[[0-9;]*m")
 
 # ── Predefined CPGQL queries for each analysis category ──
 
@@ -129,10 +132,26 @@ class JoernAdapter(BaseToolAdapter):
             )
 
     async def prepare(self, request: AnalysisRequest) -> None:
-        """Import code into Joern's CPG."""
+        """Import code into Joern's CPG.
+
+        Skips import if the same project is already loaded in the Joern
+        workspace, avoiding a 3+ minute re-import for large C codebases.
+        """
         project_name = request.repo_local_path.rstrip("/").split("/")[-1]
+
+        # Check if already loaded in Joern workspace
+        if self._imported_project == project_name:
+            try:
+                check = await self._query("cpg.method.size")
+                if isinstance(check, (int, str)):
+                    logger.info("joern: CPG already loaded for %s, skipping import", project_name)
+                    return
+            except Exception:
+                pass  # CPG stale or closed — re-import
+
         await self._query(
-            f'importCode("{request.repo_local_path}", "{project_name}")'
+            f'importCode("{request.repo_local_path}", "{project_name}")',
+            timeout=600,
         )
         self._imported_project = project_name
         logger.info("joern: CPG imported for %s", project_name)
@@ -183,7 +202,9 @@ class JoernAdapter(BaseToolAdapter):
             f'val sink = cpg.call.name("{sink_pattern}").l\n'
             "sink.reachableBy(source)"
             ".map(path => path.elements"
-            ".map(e => (e.code, e.filename, e.lineNumber)).l).l"
+            '.map(e => Map("code" -> e.code, '
+            '"filename" -> e.filename, '
+            '"line_number" -> e.lineNumber.getOrElse(-1))).l).l.toJson'
         )
         return await self._query(query)
 
@@ -192,12 +213,10 @@ class JoernAdapter(BaseToolAdapter):
         query = (
             f'cpg.method.nameExact("{method_name}")'
             ".controlStructure"
-            ".map(cs => ("
-            "cs.controlStructureType, "
-            "cs.condition.code.headOption, "
-            "cs.lineNumber, "
-            "cs.astChildren.map(c => (c.code.take(100), c.label)).l"
-            ")).l"
+            '.map(cs => Map("type" -> cs.controlStructureType, '
+            '"condition" -> cs.condition.code.headOption.getOrElse(""), '
+            '"line" -> cs.lineNumber.getOrElse(-1)'
+            ")).l.toJson"
         )
         return await self._query(query)
 
@@ -207,13 +226,19 @@ class JoernAdapter(BaseToolAdapter):
             f'val method = cpg.method.nameExact("{method_name}")\n'
             "val throws = method.ast.isCall"
             '.nameExact("<operator>.throw")'
-            '.map(t => ("throw", t.code, t.lineNumber)).l\n'
+            '.map(t => Map("kind" -> "throw", '
+            '"code" -> t.code, '
+            '"line" -> t.lineNumber.getOrElse(-1))).l\n'
             "val catches = method.tryBlock"
-            '.map(t => ("try-catch", t.code.take(200), t.lineNumber)).l\n'
+            '.map(t => Map("kind" -> "try-catch", '
+            '"code" -> t.code.take(200), '
+            '"line" -> t.lineNumber.getOrElse(-1))).l\n'
             "val errorReturns = method.ast.isReturn"
             '.where(_.code(".*[Ee]rr.*|.*null.*|.*None.*|.*false.*"))'
-            '.map(r => ("error-return", r.code, r.lineNumber)).l\n'
-            "throws ++ catches ++ errorReturns"
+            '.map(r => Map("kind" -> "error-return", '
+            '"code" -> r.code, '
+            '"line" -> r.lineNumber.getOrElse(-1))).l\n'
+            "(throws ++ catches ++ errorReturns).toJson"
         )
         return await self._query(query)
 
@@ -223,16 +248,24 @@ class JoernAdapter(BaseToolAdapter):
             f'cpg.method.nameExact("{method_name}")'
             ".ast.isCall"
             '.name("<operator>.(greaterThan|lessThan|greaterEqualsThan|lessEqualsThan)")'
-            ".map(c => ("
-            "c.code, c.lineNumber, "
-            "c.argument.map(a => (a.code, a.typ.name)).l"
-            ")).l"
+            '.map(c => Map("code" -> c.code, '
+            '"line" -> c.lineNumber.getOrElse(-1)'
+            ")).l.toJson"
         )
         return await self._query(query)
 
     async def method_list(self) -> Any:
         """Get all method names — lightweight query for UI."""
-        return await self._query(QUERIES["methods"])
+        query = (
+            'cpg.method.internal.map(m => Map('
+            '"name" -> m.name, '
+            '"filename" -> m.filename, '
+            '"line" -> m.lineNumber.getOrElse(-1), '
+            '"lineEnd" -> m.lineNumberEnd.getOrElse(-1), '
+            '"paramCount" -> m.parameter.size'
+            ")).l.toJson"
+        )
+        return await self._query(query)
 
     async def stream_logs(self, run_id: str) -> AsyncIterator[str]:
         yield "joern: importing code into CPG..."
@@ -241,20 +274,29 @@ class JoernAdapter(BaseToolAdapter):
         yield "joern: completed"
 
     async def cleanup(self, request: AnalysisRequest) -> None:
-        if self._imported_project:
-            try:
-                await self._query(f'close("{self._imported_project}")')
-            except Exception as exc:
-                logger.warning("joern: cleanup failed: %s", exc)
-            self._imported_project = None
+        """No-op: keep the CPG loaded for subsequent queries.
+
+        Joern CPG import is expensive (3+ min for large repos). Closing
+        after every request would force a re-import on the next call.
+        The project is only evicted when a different repo is loaded.
+        """
+        pass
 
     # ── internal ──
 
-    async def _query(self, cpgql: str) -> Any:
-        """POST to Joern /query-sync and parse the response."""
+    async def _query(self, cpgql: str, timeout: int = 120) -> Any:
+        """POST to Joern /query-sync and parse the response.
+
+        Strips ANSI escape codes from Joern's REPL output, then
+        extracts JSON from the Scala REPL wrapper format:
+          val resN: Type = <json_or_scala_value>
+
+        Queries using .toJson produce: val resN: String = "..."
+        where the inner string is valid JSON.
+        """
         async with httpx.AsyncClient(
             base_url=self.base_url,
-            timeout=httpx.Timeout(120, connect=10),
+            timeout=httpx.Timeout(timeout, connect=10),
         ) as client:
             resp = await client.post(
                 "/query-sync",
@@ -263,9 +305,46 @@ class JoernAdapter(BaseToolAdapter):
             resp.raise_for_status()
             data = resp.json()
 
-            if "stdout" in data:
+            if "stdout" not in data:
+                return data
+
+            clean = _ANSI_RE.sub("", data["stdout"])
+
+            # Try direct JSON parse first (works for simple values)
+            try:
+                return _json.loads(clean)
+            except (_json.JSONDecodeError, TypeError):
+                pass
+
+            # Multi-statement queries produce multiple "val ..." lines.
+            # The final result is always the last "val resN: ... = ..."
+            # For .toJson queries, the value is a quoted JSON string.
+            lines = clean.strip().split("\n")
+            for line in reversed(lines):
+                line = line.strip()
+                eq_pos = line.find("= ")
+                if eq_pos == -1:
+                    continue
+                value_part = line[eq_pos + 2:].strip()
+                # Scala triple-quoted string: """..."""
+                if value_part.startswith('"""') and value_part.endswith('"""'):
+                    inner_str = value_part[3:-3]
+                    try:
+                        return _json.loads(inner_str)
+                    except (_json.JSONDecodeError, TypeError):
+                        pass
+                if value_part.startswith('"'):
+                    try:
+                        inner = _json.loads(value_part)
+                        if isinstance(inner, str):
+                            return _json.loads(inner)
+                        return inner
+                    except (_json.JSONDecodeError, TypeError):
+                        continue
+                # Non-string value (Int, etc.)
                 try:
-                    return _json.loads(data["stdout"])
+                    return _json.loads(value_part)
                 except (_json.JSONDecodeError, TypeError):
-                    return data["stdout"]
-            return data
+                    continue
+
+            return clean

@@ -4,6 +4,7 @@ import { useState, useEffect, useCallback } from "react";
 import GlassPanel from "@/components/ui/GlassPanel";
 import CyberInput from "@/components/ui/CyberInput";
 import StatusBadge from "@/components/ui/StatusBadge";
+import { usePageRestoreRefresh } from "@/hooks/usePageRestoreRefresh";
 import { api } from "@/lib/api";
 import type {
   ComponentContract,
@@ -26,7 +27,10 @@ export default function ComponentConfigPanel() {
     msg: string;
   } | null>(null);
 
+  const [loadError, setLoadError] = useState("");
+
   const load = useCallback(async () => {
+    setLoadError("");
     try {
       const [c, s] = await Promise.all([
         api.components.contracts(),
@@ -34,14 +38,17 @@ export default function ComponentConfigPanel() {
       ]);
       setContracts(c);
       setStatuses(s);
-    } catch {
-      /* silent */
+    } catch (e) {
+      setLoadError(e instanceof Error ? e.message : "组件配置加载失败");
     }
   }, []);
 
   useEffect(() => {
-    load();
+    void load();
   }, [load]);
+  usePageRestoreRefresh(() => {
+    void load();
+  });
 
   const formKey = (comp: string, domain: string) => `${comp}:${domain}`;
 
@@ -136,6 +143,20 @@ export default function ComponentConfigPanel() {
       setRestarting(null);
     }
   };
+
+  if (loadError) {
+    return (
+      <GlassPanel className="bg-tertiary-container/20 border-tertiary/30 py-6 flex flex-col items-center gap-3">
+        <p className="text-sm text-tertiary">{loadError}</p>
+        <button
+          onClick={() => { void load(); }}
+          className="px-3 py-1.5 rounded-lg border border-primary/20 bg-primary/10 text-primary text-xs font-bold uppercase tracking-widest hover:bg-primary/15 transition-colors"
+        >
+          重试
+        </button>
+      </GlassPanel>
+    );
+  }
 
   if (contracts.length === 0) return null;
 

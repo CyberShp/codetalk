@@ -1,6 +1,6 @@
 "use client";
 
-import { useState, useEffect, useMemo, useCallback } from "react";
+import { useState, useEffect, useMemo, useCallback, useRef } from "react";
 import Link from "next/link";
 import { useParams } from "next/navigation";
 import GlassPanel from "@/components/ui/GlassPanel";
@@ -12,6 +12,7 @@ import WikiViewer from "@/components/ui/WikiViewer";
 import FloatingChat from "@/components/ui/FloatingChat";
 import ChatPanel from "@/components/ui/ChatPanel";
 import { useChatEngine } from "@/hooks/useChatEngine";
+import { usePageRestoreRefresh } from "@/hooks/usePageRestoreRefresh";
 import { api } from "@/lib/api";
 import type { RepoDetail, RepoGraphResponse, GraphNode, GraphData } from "@/lib/types";
 import { ArrowLeft, MessageSquare, MessageSquareText, Sparkles, X, ShieldAlert } from "lucide-react";
@@ -38,6 +39,7 @@ type Tab = (typeof tabs)[number];
 export default function RepoDetailPage() {
   const params = useParams();
   const repoId = params.repoId as string;
+  const graphCacheKey = `repo-graph:${repoId}`;
 
   const [tab, setTab] = useState<Tab>("documentation");
   const [detail, setDetail] = useState<RepoDetail | null>(null);
@@ -45,6 +47,8 @@ export default function RepoDetailPage() {
 
   // Graph
   const [graphResp, setGraphResp] = useState<RepoGraphResponse | null>(null);
+  const [graphLoading, setGraphLoading] = useState(false);
+  const [graphError, setGraphError] = useState("");
   const [selectedNode, setSelectedNode] = useState<GraphNode | null>(null);
   const [previousProcess, setPreviousProcess] = useState<GraphNode | null>(null);
 
@@ -78,7 +82,10 @@ export default function RepoDetailPage() {
   const [showDocChat, setShowDocChat] = useState(false);
   const docChatEngine = useChatEngine({ repoId, currentPageFilePaths: wikiPageFilePaths });
 
-  const repoName = detail?.repo.name ?? "";
+  const gitnexusRepoKey =
+    ((graphResp?.metadata as Record<string, unknown> | null)?.repo_name as string | undefined)
+    ?? detail?.repo.id
+    ?? "";
   const graphData = (graphResp?.graph as GraphData) ?? null;
 
   const nodeMap = useMemo(() => {
@@ -103,11 +110,72 @@ export default function RepoDetailPage() {
     api.repos.get(repoId).then(setDetail).catch((e) => setError(e instanceof Error ? e.message : "加载仓库失败"));
   }, [repoId]);
 
-  // Load graph on tab switch
   useEffect(() => {
-    if (tab !== "graph" || graphResp) return;
-    api.repos.graph.get(repoId).then(setGraphResp).catch(() => {});
-  }, [tab, repoId, graphResp]);
+    setGraphResp(null);
+    setGraphError("");
+    setGraphLoading(false);
+    setSelectedNode(null);
+    setPreviousProcess(null);
+
+    if (typeof window === "undefined") return;
+
+    const cached = window.sessionStorage.getItem(graphCacheKey);
+    if (!cached) return;
+    try {
+      const parsed = JSON.parse(cached) as RepoGraphResponse;
+      if (parsed.graph) {
+        setGraphResp(parsed);
+      } else {
+        window.sessionStorage.removeItem(graphCacheKey);
+      }
+    } catch {
+      window.sessionStorage.removeItem(graphCacheKey);
+    }
+  }, [graphCacheKey]);
+
+  const graphLoadingRef = useRef(false);
+  const graphFetchedRef = useRef(false);
+  const loadGraph = useCallback(async (force = false) => {
+    if (!force && graphLoadingRef.current) return;
+    graphLoadingRef.current = true;
+    setGraphLoading(true);
+    setGraphError("");
+    try {
+      const resp = await api.repos.graph.get(repoId);
+      setGraphResp(resp);
+      if (typeof window !== "undefined" && resp.graph) {
+        window.sessionStorage.setItem(graphCacheKey, JSON.stringify(resp));
+      }
+    } catch (e) {
+      setGraphError(e instanceof Error ? e.message : "加载图谱失败");
+    } finally {
+      graphLoadingRef.current = false;
+      setGraphLoading(false);
+    }
+  }, [graphCacheKey, repoId]);
+
+  // Reset fetch-attempted flag when leaving graph tab
+  useEffect(() => {
+    if (tab !== "graph") {
+      graphFetchedRef.current = false;
+    }
+  }, [tab]);
+
+  // Load graph on tab switch — retry once per tab visit
+  useEffect(() => {
+    if (tab !== "graph") return;
+    if (graphResp?.graph && !graphError) return; // already have real data
+    if (graphFetchedRef.current) return; // already tried this tab visit
+    graphFetchedRef.current = true;
+    void loadGraph();
+  }, [tab, graphResp, graphError, loadGraph]);
+
+  const restoreRefresh = useCallback(() => {
+    if (tab === "graph") {
+      void loadGraph(true);
+    }
+  }, [tab, loadGraph]);
+  usePageRestoreRefresh(restoreRefresh);
 
   const handleSearch = async (e?: React.FormEvent) => {
     e?.preventDefault();
@@ -117,7 +185,7 @@ export default function RepoDetailPage() {
     setSearchError("");
     try {
       if (searchMode === "grep") {
-        const resp = await api.gitnexus.grep(q, repoName || undefined);
+        const resp = await api.gitnexus.grep(q, gitnexusRepoKey || undefined);
         setSearchResults(groupGrepResults(resp.matches));
       } else {
         const resp = await api.repos.search(repoId, q);
@@ -150,12 +218,12 @@ export default function RepoDetailPage() {
   const isIntelligenceNode = selectedNode && INTELLIGENCE_LABELS.has(selectedNode.label);
 
   return (
-    <div className="space-y-6">
-      {/* Header */}
-      <div className="flex items-center gap-3">
+    <div className="fixed inset-0 z-[80] bg-surface text-on-surface flex flex-col">
+      {/* Fixed Header */}
+      <div className="shrink-0 flex items-center gap-3 px-6 h-14 border-b border-outline-variant/10 bg-surface-container-lowest/80 backdrop-blur-md">
         <Link
           href="/assets"
-          className="inline-flex h-10 items-center gap-2 rounded-full border border-outline-variant/20 bg-surface-container-low px-4 text-sm font-medium text-on-surface transition-colors hover:border-primary/30 hover:text-primary"
+          className="inline-flex h-9 items-center gap-2 rounded-full border border-outline-variant/20 bg-surface-container-low px-4 text-sm font-medium text-on-surface transition-colors hover:border-primary/30 hover:text-primary"
         >
           <ArrowLeft size={16} />
           返回
@@ -163,26 +231,8 @@ export default function RepoDetailPage() {
         <div className="h-6 w-px bg-outline-variant/20" />
         <h1 className="text-lg font-display font-bold text-on-surface truncate">{detail.repo.name}</h1>
         <span className="text-[10px] font-data text-on-surface-variant/40 shrink-0">{detail.repo.branch}</span>
-      </div>
 
-      {/* Tabs */}
-      <div className="flex items-center justify-between">
-        <div className="flex gap-1 bg-surface-container-low/50 backdrop-blur-md rounded-xl p-1.5 border border-outline-variant/10 shadow-inner">
-          {tabs.map((t) => (
-            <button
-              key={t}
-              onClick={() => { setTab(t); if (t !== "graph") { setSelectedNode(null); setPreviousProcess(null); } }}
-              className={`px-5 py-2 text-[11px] font-bold uppercase tracking-widest rounded-lg transition-all duration-200 ${
-                tab === t
-                  ? "bg-primary text-on-primary shadow-lg shadow-primary/20 scale-105"
-                  : "text-on-surface-variant hover:text-on-surface hover:bg-surface-container-high"
-              }`}
-            >
-              {{ documentation: "文档", graph: "神经图谱", search: `搜索${searchResults?.length ? ` (${searchResults.length})` : ""}` }[t]}
-            </button>
-          ))}
-        </div>
-        <div className="flex items-center gap-2">
+        <div className="ml-auto flex items-center gap-2">
           <Link
             href={`/repos/${repoId}/analysis`}
             className="inline-flex items-center gap-2 rounded-full border border-tertiary/20 bg-tertiary/10 px-4 py-2 text-[11px] font-bold uppercase tracking-widest text-tertiary transition-colors hover:bg-tertiary/15"
@@ -213,14 +263,34 @@ export default function RepoDetailPage() {
         </div>
       </div>
 
-      {/* Content */}
+      {/* Tabs bar */}
+      <div className="shrink-0 flex items-center px-6 py-2 border-b border-outline-variant/5 bg-surface-container-lowest/50">
+        <div className="flex gap-1 bg-surface-container-low/50 backdrop-blur-md rounded-xl p-1.5 border border-outline-variant/10 shadow-inner">
+          {tabs.map((t) => (
+            <button
+              key={t}
+              onClick={() => { setTab(t); if (t !== "graph") { setSelectedNode(null); setPreviousProcess(null); } }}
+              className={`px-5 py-2 text-[11px] font-bold uppercase tracking-widest rounded-lg transition-all duration-200 ${
+                tab === t
+                  ? "bg-primary text-on-primary shadow-lg shadow-primary/20 scale-105"
+                  : "text-on-surface-variant hover:text-on-surface hover:bg-surface-container-high"
+              }`}
+            >
+              {{ documentation: "文档", graph: "神经图谱", search: `搜索${searchResults?.length ? ` (${searchResults.length})` : ""}` }[t]}
+            </button>
+          ))}
+        </div>
+      </div>
+
+      {/* Content — scrollable body */}
+      <div className="flex-1 min-h-0 overflow-y-auto px-6 py-4">
       <div className={`grid gap-8 transition-all duration-500 ease-in-out ${showSidebar ? "grid-cols-[1fr_520px]" : "grid-cols-1"}`}>
         <div className="space-y-6 min-w-0 animate-in fade-in duration-500">
           {/* Documentation */}
           {tab === "documentation" && (
             <div className={`grid gap-4 ${showDocChat ? "grid-cols-[1fr_420px]" : "grid-cols-1"}`}>
               <GlassPanel className="p-0 overflow-hidden min-w-0">
-                <WikiViewer repoId={repoId} repoName={repoName} onPageChange={handleWikiPageChange} />
+                <WikiViewer repoId={repoId} repoName={gitnexusRepoKey || undefined} onPageChange={handleWikiPageChange} />
               </GlassPanel>
               {showDocChat && (
                 <GlassPanel className="p-0 overflow-hidden flex flex-col" style={{ height: "calc(100vh - 14rem)" }}>
@@ -252,13 +322,13 @@ export default function RepoDetailPage() {
             <div className="space-y-3">
               {/* Symbol search — normal flow above graph */}
               <GraphSearch
-                repo={repoName || undefined}
+                repo={gitnexusRepoKey || undefined}
                 onNodeSelect={(nodeId) => { const node = nodeMap.get(nodeId); if (node) handleNodeClick(node); }}
                 selectedNodeId={selectedNode?.id ?? null}
                 className="relative w-full backdrop-blur-md bg-surface/80 border border-outline-variant/15 rounded-xl shadow-lg shadow-black/20 overflow-hidden"
               />
               {graphData ? (
-                <div className="h-[600px]">
+                <div className="h-[calc(100vh-16rem)]">
                   <GraphViewer
                     nodes={graphData.nodes}
                     edges={graphData.edges}
@@ -266,10 +336,22 @@ export default function RepoDetailPage() {
                     onNodeClick={handleNodeClick}
                   />
                 </div>
+              ) : graphError ? (
+                <GlassPanel className="py-16 flex flex-col items-center justify-center text-on-surface-variant/60 gap-4">
+                  <p className="text-sm">{graphError}</p>
+                  <button
+                    onClick={() => { void loadGraph(true); }}
+                    className="px-4 py-2 rounded-lg border border-primary/20 bg-primary/10 text-primary text-xs font-bold uppercase tracking-widest hover:bg-primary/15 transition-colors"
+                  >
+                    重试加载
+                  </button>
+                </GlassPanel>
               ) : (
                 <GlassPanel className="py-32 flex flex-col items-center justify-center text-on-surface-variant/50 gap-2">
                   <p className="text-sm italic">
-                    {graphResp?.status === "not_analyzed"
+                    {graphLoading
+                      ? "正在恢复 GitNexus 图谱..."
+                      : graphResp?.status === "not_analyzed"
                       ? "尚未执行 GitNexus 分析。请先创建分析任务。"
                       : "加载图谱数据中..."}
                   </p>
@@ -383,9 +465,9 @@ export default function RepoDetailPage() {
               </button>
             )}
             {isIntelligenceNode ? (
-              <IntelligencePanel node={selectedNode!} nodeMap={nodeMap} edges={graphData?.edges ?? []} onNodeClick={handleNodeClick} repo={repoName || undefined} />
+              <IntelligencePanel node={selectedNode!} nodeMap={nodeMap} edges={graphData?.edges ?? []} onNodeClick={handleNodeClick} repo={gitnexusRepoKey || undefined} />
             ) : (
-              <CodePanel node={selectedNode!} repoName={repoName} />
+              <CodePanel node={selectedNode!} repoName={gitnexusRepoKey} />
             )}
             <button
               onClick={() => handleAskAboutNode(selectedNode!)}
@@ -397,6 +479,8 @@ export default function RepoDetailPage() {
           </div>
         )}
       </div>
+
+      </div>{/* end scrollable body */}
 
       <FloatingChat
         repoId={repoId}

@@ -61,7 +61,9 @@ export default function ChatPanel({ engine, repoId, className = "" }: ChatPanelP
   // Load session list on mount (if repoId provided)
   useEffect(() => {
     if (!repoId) return;
-    api.repos.chat.sessions.list(repoId).then(setSessions).catch(() => {});
+    api.repos.chat.sessions.list(repoId).then(setSessions).catch((e) => {
+      console.warn("Chat sessions load failed:", e instanceof Error ? e.message : e);
+    });
   }, [repoId]);
 
   // Close dropdown on outside click

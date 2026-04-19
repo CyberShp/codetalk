@@ -16,6 +16,7 @@ import httpx
 
 from app.adapters import create_adapter
 from app.adapters.base import AnalysisRequest
+from app.adapters.gitnexus import GitNexusAdapter
 from app.adapters.joern import JoernAdapter
 from app.adapters.semgrep import SemgrepAdapter
 from app.config import settings
@@ -152,17 +153,32 @@ async def _get_gitnexus_context(
     repo_path: str, target: str | None
 ) -> dict[str, str]:
     """Fetch call chain and process context from GitNexus (best-effort)."""
+    gitnexus: GitNexusAdapter = create_adapter("gitnexus")  # type: ignore[assignment]
+    request = AnalysisRequest(repo_local_path=repo_path)
     try:
-        gitnexus = create_adapter("gitnexus")
+        await gitnexus.prepare(request)
+
+        process_flow = "N/A"
+        if not target:
+            analysis = await gitnexus.analyze(request)
+            processes = analysis.data.get("graph", {}).get("processes", [])
+            if processes:
+                process_flow = json.dumps(processes[:10], ensure_ascii=False)
+
         async with httpx.AsyncClient(
             base_url=settings.gitnexus_base_url,
             timeout=30,
         ) as client:
-            # Try to get call chain for target
             if target:
-                resp = await client.get(
+                resp = await client.post(
                     "/api/search",
-                    params={"q": target, "repo": repo_path.split("/")[-1]},
+                    params={"repo": gitnexus.current_repo_name},
+                    json={
+                        "query": target,
+                        "mode": "hybrid",
+                        "limit": 10,
+                        "enrich": True,
+                    },
                 )
                 if resp.status_code == 200:
                     data = resp.json()
@@ -170,10 +186,17 @@ async def _get_gitnexus_context(
                         "call_chain": json.dumps(
                             data.get("results", [])[:10], ensure_ascii=False
                         ),
-                        "process": "N/A",
+                        "process": process_flow,
                     }
+            elif process_flow != "N/A":
+                return {"call_chain": "N/A", "process": process_flow}
     except Exception as exc:
         logger.debug("GitNexus context unavailable: %s", exc)
+    finally:
+        try:
+            await gitnexus.cleanup(request)
+        except Exception:
+            pass
 
     return {"call_chain": "N/A", "process": "N/A"}
 
@@ -183,32 +206,35 @@ async def _call_deepwiki_chat(
     repo_path: str,
     llm_config: dict | None = None,
 ) -> str:
-    """Send assembled prompt to DeepWiki for LLM synthesis."""
-    payload = {
-        "model": "claude-sonnet-4-20250514",
+    """Send assembled prompt to DeepWiki for LLM synthesis.
+
+    Uses /chat/completions/stream (DeepWiki's only chat endpoint)
+    and collects the full streamed response.
+    """
+    payload: dict[str, Any] = {
+        "repo_url": repo_path,
+        "type": "local",
         "messages": [{"role": "user", "content": prompt}],
-        "stream": False,
-        "repo_path": repo_path,
+        "language": "zh",
     }
     if llm_config:
         payload.update(llm_config)
 
+    content = ""
     async with httpx.AsyncClient(
         base_url=settings.deepwiki_base_url,
-        timeout=httpx.Timeout(120, connect=10),
+        timeout=httpx.Timeout(300, connect=10),
     ) as client:
-        resp = await client.post(
-            "/chat/completions",
+        async with client.stream(
+            "POST",
+            "/chat/completions/stream",
             json=payload,
-        )
-        resp.raise_for_status()
-        data = resp.json()
-
-        # DeepWiki returns OpenAI-compatible format
-        choices = data.get("choices", [])
-        if choices:
-            return choices[0].get("message", {}).get("content", "")
-        return ""
+            timeout=300,
+        ) as response:
+            response.raise_for_status()
+            async for chunk in response.aiter_text():
+                content += chunk
+    return content
 
 
 def _format_for_prompt(data: Any, max_items: int = 20) -> str:

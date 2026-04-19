@@ -61,19 +61,21 @@ services:
       - ./.repos:/data/repos
 
   joern:
-    image: ghcr.io/joernio/joern:latest
+    image: ghcr.io/joernio/joern:nightly
     ports:
       - "8080:8080"
     volumes:
       - ./.repos:/data/repos:ro
       - joern_data:/root/.joern
+    environment:
+      JAVA_TOOL_OPTIONS: "-Xmx6g"
     command: ["joern", "--server", "--server-host", "0.0.0.0", "--server-port", "8080"]
     deploy:
       resources:
         limits:
           memory: 8G
     healthcheck:
-      test: ["CMD-SHELL", "curl -sf http://localhost:8080/ || exit 1"]
+      test: ["CMD-SHELL", "curl -sf -o /dev/null -w '' -X POST -H 'Content-Type: application/json' -d '{\"query\": \"version\"}' http://localhost:8080/query-sync || exit 1"]
       interval: 15s
       timeout: 10s
       retries: 5

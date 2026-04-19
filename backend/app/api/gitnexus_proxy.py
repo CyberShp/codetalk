@@ -25,6 +25,84 @@ from app.config import settings
 router = APIRouter(prefix="/api/gitnexus", tags=["gitnexus"])
 
 
+def _coerce_line_number(value: object) -> int | None:
+    if value is None:
+        return None
+    if isinstance(value, bool):
+        return None
+    if isinstance(value, int):
+        return value
+    if isinstance(value, float):
+        return int(value)
+    if isinstance(value, str):
+        stripped = value.strip()
+        if not stripped:
+            return None
+        try:
+            return int(stripped)
+        except ValueError:
+            return None
+    return None
+
+
+def _coerce_content(payload: dict) -> str:
+    raw = payload.get("content")
+    if isinstance(raw, str):
+        return raw
+    if isinstance(raw, list):
+        return "\n".join(str(item) for item in raw)
+    if raw is None:
+        return ""
+    return str(raw)
+
+
+def _normalize_file_slice(
+    payload: dict,
+    *,
+    requested_path: str,
+    requested_start_line: int | None,
+    requested_end_line: int | None,
+) -> dict[str, object]:
+    content = _coerce_content(payload)
+    line_count = len(content.splitlines()) if content else 0
+
+    start_line = (
+        _coerce_line_number(payload.get("startLine"))
+        or _coerce_line_number(payload.get("start_line"))
+        or _coerce_line_number(payload.get("lineStart"))
+        or _coerce_line_number(payload.get("line_start"))
+        or requested_start_line
+        or 1
+    )
+    end_line = (
+        _coerce_line_number(payload.get("endLine"))
+        or _coerce_line_number(payload.get("end_line"))
+        or _coerce_line_number(payload.get("lineEnd"))
+        or _coerce_line_number(payload.get("line_end"))
+        or requested_end_line
+    )
+    if end_line is None:
+        end_line = start_line + max(line_count - 1, 0)
+
+    total_lines = (
+        _coerce_line_number(payload.get("totalLines"))
+        or _coerce_line_number(payload.get("total_lines"))
+        or _coerce_line_number(payload.get("lineCount"))
+        or _coerce_line_number(payload.get("line_count"))
+        or line_count
+    )
+
+    actual_path = payload.get("actualPath") or payload.get("actual_path") or payload.get("path") or payload.get("filePath") or payload.get("file_path") or requested_path
+
+    return {
+        "content": content,
+        "startLine": start_line,
+        "endLine": end_line,
+        "totalLines": total_lines,
+        "actualPath": str(actual_path),
+    }
+
+
 @router.get("/file")
 async def get_file_content(
     repo: str = Query(..., description="Repository name"),
@@ -48,7 +126,12 @@ async def get_file_content(
             if resp.status_code == 404:
                 raise HTTPException(status_code=404, detail="File not found")
             resp.raise_for_status()
-            return resp.json()
+            return _normalize_file_slice(
+                resp.json(),
+                requested_path=path,
+                requested_start_line=start_line,
+                requested_end_line=end_line,
+            )
     except httpx.HTTPError as exc:
         raise HTTPException(status_code=502, detail=str(exc))
 

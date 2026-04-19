@@ -48,6 +48,10 @@ class GitNexusAdapter(BaseToolAdapter):
     def name(self) -> str:
         return "gitnexus"
 
+    @property
+    def current_repo_name(self) -> str:
+        return self._repo_name
+
     def capabilities(self) -> list[ToolCapability]:
         return [
             ToolCapability.KNOWLEDGE_GRAPH,

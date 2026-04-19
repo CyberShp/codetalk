@@ -39,6 +39,48 @@ import type {
 
 const BASE = process.env.NEXT_PUBLIC_API_URL || "http://localhost:8000";
 
+function collapseErrorText(text: string): string {
+  return text.replace(/\s+/g, " ").trim();
+}
+
+function extractErrorMessage(body: string): string {
+  const text = body.trim();
+  if (!text) return "Request failed";
+
+  try {
+    const parsed = JSON.parse(text) as unknown;
+    if (typeof parsed === "string") return collapseErrorText(parsed);
+    if (parsed && typeof parsed === "object") {
+      const record = parsed as Record<string, unknown>;
+      const detail = record.detail ?? record.message ?? parsed;
+      if (typeof detail === "string") return collapseErrorText(detail);
+      if (Array.isArray(detail)) {
+        const messages = detail
+          .map((item) => {
+            if (typeof item === "string") return item;
+            if (item && typeof item === "object") {
+              const row = item as Record<string, unknown>;
+              return typeof row.msg === "string"
+                ? row.msg
+                : typeof row.message === "string"
+                  ? row.message
+                  : JSON.stringify(row);
+            }
+            return String(item);
+          })
+          .filter(Boolean);
+        if (messages.length > 0) return collapseErrorText(messages.join("; "));
+      }
+      return collapseErrorText(JSON.stringify(detail));
+    }
+  } catch {
+    // Plain-text error body.
+  }
+
+  const firstLine = text.split("\n").map((line) => line.trim()).find(Boolean);
+  return collapseErrorText(firstLine ?? text);
+}
+
 export interface ChatSession {
   id: string;
   repo_id: string;
@@ -55,7 +97,7 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
   });
   if (!res.ok) {
     const body = await res.text().catch(() => "");
-    throw new Error(`API ${res.status}: ${body}`);
+    throw new Error(`API ${res.status}: ${extractErrorMessage(body)}`);
   }
   if (res.status === 204) {
     return undefined as T;
@@ -338,27 +380,39 @@ export const api = {
       if (endLine !== undefined) qs.set("end_line", String(endLine));
       return request<FileSlice>(`/api/gitnexus/file?${qs}`);
     },
-    search: (
+    search: async (
       query: string,
       repo?: string,
       mode: "hybrid" | "bm25" | "semantic" = "hybrid",
       limit = 10,
-    ) =>
-      request<{
+    ) => {
+      const raw = await request<{
         results: Array<{
-          id: string;
+          nodeId?: string;
+          id?: string;
           name: string;
           label: string;
           filePath: string;
           score: number;
-          connections?: number;
+          connections?: { outgoing?: unknown[]; incoming?: unknown[] } | number;
           cluster?: string;
           processes?: string[];
         }>;
       }>("/api/gitnexus/search", {
         method: "POST",
         body: JSON.stringify({ query, repo, mode, limit, enrich: true }),
-      }),
+      });
+      return {
+        results: raw.results.map((r) => ({
+          ...r,
+          id: r.nodeId || r.id || r.name,
+          connections:
+            r.connections != null && typeof r.connections === "object" && !Array.isArray(r.connections)
+              ? ((r.connections.outgoing?.length ?? 0) + (r.connections.incoming?.length ?? 0))
+              : r.connections as number | undefined,
+        })),
+      };
+    },
 
     query: (cypher: string, repo?: string) =>
       request<{ results: unknown[] }>("/api/gitnexus/query", {

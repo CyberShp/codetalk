@@ -52,6 +52,7 @@ export default function MarkdownRenderer({
   rehypePlugins = [],
   anchorBaseUrl,
   onCitationClick,
+  enableNumericCitations = true,
 }: {
   content: string;
   rehypePlugins?: PluggableList;
@@ -68,6 +69,11 @@ export default function MarkdownRenderer({
    * navigating.
    */
   onCitationClick?: (file: string, start?: number, end?: number) => void;
+  /**
+   * Numeric citations like [1] are used by InsightAskPanel footnotes, but wiki
+   * pages should not route them into file preview APIs.
+   */
+  enableNumericCitations?: boolean;
 }) {
   const components: Components = useMemo(
     () => ({
@@ -158,16 +164,21 @@ export default function MarkdownRenderer({
       ),
       a: ({ children, href }) => {
         const text = extractText(children);
-        // Source citation: matches file-path pattern (from wiki_prompts.py) or numeric [1]
+        // Source citation: file-path references from wiki prompts, optionally numeric [1]
         const isFileCitationText = FILE_CITATION_RE.test(text);
-        const isNumericCitationText = NUMERIC_CITATION_RE.test(text);
-        const isCitationHref = href && (FILE_CITATION_RE.test(href) || NUMERIC_CITATION_RE.test(href));
+        const isNumericCitationText = enableNumericCitations && NUMERIC_CITATION_RE.test(text);
+        const isCitationHref =
+          href &&
+          (
+            FILE_CITATION_RE.test(href) ||
+            (enableNumericCitations && NUMERIC_CITATION_RE.test(href))
+          );
 
         if (onCitationClick && (isFileCitationText || isNumericCitationText || (href && isCitationHref))) {
           const target = isCitationHref ? href! : text;
           
           // Case 1: Numeric Citation [1]
-          const numMatch = NUMERIC_CITATION_RE.exec(target);
+          const numMatch = enableNumericCitations ? NUMERIC_CITATION_RE.exec(target) : null;
           if (numMatch) {
             const citationIndex = numMatch[1];
             return (
@@ -206,6 +217,17 @@ export default function MarkdownRenderer({
               </button>
             );
           }
+        }
+
+        if (!enableNumericCitations && NUMERIC_CITATION_RE.test(text)) {
+          return (
+            <span
+              className="inline-flex items-center justify-center min-w-[1.4em] h-[1.4em] text-[10px] font-bold text-primary/70 bg-primary/5 border border-primary/10 rounded-sm mx-0.5 align-top"
+              title={`引用标记 ${text}`}
+            >
+              {text.replace(/\[|\]/g, "")}
+            </span>
+          );
         }
 
         if (href?.startsWith("#")) {
@@ -253,7 +275,7 @@ export default function MarkdownRenderer({
         );
       },
     }),
-    [anchorBaseUrl, onCitationClick]
+    [anchorBaseUrl, enableNumericCitations, onCitationClick]
   );
 
   return (

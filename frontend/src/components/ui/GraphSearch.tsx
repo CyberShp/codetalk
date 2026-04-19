@@ -201,13 +201,13 @@ export default function GraphSearch({ repo, onNodeSelect, selectedNodeId, classN
 
           {/* Result list */}
           <div className="max-h-[400px] overflow-y-auto scrollbar-thin divide-y divide-outline-variant/5">
-            {results.map((r) => {
+            {results.map((r, idx) => {
               const color = LABEL_COLORS[r.label] ?? "#6B7280";
               const isSelected = selectedNodeId === r.id;
               return (
                 <div
-                  key={r.id}
-                  onClick={() => onNodeSelect(r.id)}
+                  key={`${r.id}-${idx}`}
+                  onClick={() => { onNodeSelect(r.id); setIsCollapsed(true); }}
                   className={`group relative flex items-start gap-3 p-4 cursor-pointer transition-colors ${
                     isSelected
                       ? "bg-primary/10"
@@ -265,7 +265,7 @@ export default function GraphSearch({ repo, onNodeSelect, selectedNodeId, classN
                   {/* Locate button (hover only) */}
                   <div className="shrink-0 opacity-0 group-hover:opacity-100 transition-opacity self-start mt-0.5">
                     <button
-                      onClick={(e) => { e.stopPropagation(); onNodeSelect(r.id); }}
+                      onClick={(e) => { e.stopPropagation(); onNodeSelect(r.id); setIsCollapsed(true); }}
                       className="text-[9px] px-1.5 py-0.5 rounded bg-primary/20 text-primary hover:bg-primary/30 transition-colors font-bold"
                       title="Jump to node"
                     >

@@ -5,6 +5,7 @@ import GlassPanel from "@/components/ui/GlassPanel";
 import CyberInput from "@/components/ui/CyberInput";
 import StatusBadge from "@/components/ui/StatusBadge";
 import ComponentConfigPanel from "@/components/ComponentConfigPanel";
+import { usePageRestoreRefresh } from "@/hooks/usePageRestoreRefresh";
 import { api } from "@/lib/api";
 import type { LLMConfig, ToolInfo, ProxyMode } from "@/lib/types";
 
@@ -57,6 +58,7 @@ export default function SettingsPage() {
   const [aiEnabled, setAiEnabled] = useState(true);
   const [configs, setConfigs] = useState<LLMConfig[]>([]);
   const [tools, setTools] = useState<ToolInfo[]>([]);
+  const [toolsError, setToolsError] = useState("");
   const [deepwikiModels, setDeepwikiModels] = useState<Record<string, unknown> | null>(null);
   const [deepwikiModelsError, setDeepwikiModelsError] = useState(false);
   const [showApiKey, setShowApiKey] = useState(false);
@@ -81,15 +83,29 @@ export default function SettingsPage() {
     }
   }, []);
 
+  const loadTools = useCallback(async () => {
+    setToolsError("");
+    try {
+      const data = await api.tools.list();
+      setTools(data);
+    } catch (e) {
+      setToolsError(e instanceof Error ? e.message : "工具状态加载失败");
+    }
+  }, []);
+
   useEffect(() => {
-    loadConfigs();
-    api.tools.list().then(setTools).catch(() => {});
+    void loadConfigs();
+    void loadTools();
     api.settings.deepwikiModels()
       .then((data) => setDeepwikiModels(data))
       .catch(() => setDeepwikiModelsError(true));
     const stored = localStorage.getItem("codetalks_ai_enabled");
     if (stored !== null) setAiEnabled(stored === "true");
-  }, [loadConfigs]);
+  }, [loadConfigs, loadTools]);
+  usePageRestoreRefresh(() => {
+    void loadConfigs();
+    void loadTools();
+  });
 
   const toggleAI = () => {
     const next = !aiEnabled;
@@ -470,6 +486,9 @@ export default function SettingsPage() {
           系统健康
         </h3>
         <div className="space-y-2">
+          {toolsError && (
+            <p className="text-sm text-tertiary">{toolsError}</p>
+          )}
           {tools.map((tool) => (
             <div
               key={tool.name}

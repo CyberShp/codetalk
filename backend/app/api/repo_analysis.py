@@ -10,6 +10,7 @@ import uuid
 import httpx
 from fastapi import APIRouter, Depends, HTTPException, Query
 from pydantic import BaseModel
+from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.adapters import create_adapter
@@ -18,12 +19,18 @@ from app.adapters.joern import JoernAdapter
 from app.adapters.semgrep import SemgrepAdapter
 from app.config import settings
 from app.database import get_db
+from app.models.llm_config import LLMConfig
 from app.models.repository import Repository
 from app.utils.repo_paths import to_tool_repo_path
 
 logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/api/repos", tags=["analysis"])
+
+# In-memory scan result cache: repo_id → findings list.
+# Populated by POST /scan, read by GET /findings.
+# Cleared on next explicit scan.
+_findings_cache: dict[str, list[dict]] = {}
 
 
 # ── Helpers ──
@@ -48,8 +55,17 @@ def _tool_path(repo: Repository) -> str:
     )
 
 
+# Shared Joern adapter: CPG import is expensive (3+ min for large repos).
+# Reusing the instance lets prepare() skip re-import when the same repo
+# is already loaded.
+_joern_instance: JoernAdapter | None = None
+
+
 def _joern() -> JoernAdapter:
-    return create_adapter("joern")  # type: ignore[return-value]
+    global _joern_instance
+    if _joern_instance is None:
+        _joern_instance = create_adapter("joern")  # type: ignore[assignment]
+    return _joern_instance
 
 
 def _semgrep() -> SemgrepAdapter:
@@ -320,11 +336,13 @@ async def semgrep_scan(
         result = await semgrep.analyze(
             AnalysisRequest(repo_local_path=tool_path)
         )
+        findings = result.data.get("findings", [])
+        _findings_cache[str(repo_id)] = findings
         return {
             "status": "completed",
             "summary": result.data.get("summary"),
             "categorized": result.data.get("categorized"),
-            "findings": result.data.get("findings"),
+            "findings": findings,
             "metadata": result.metadata,
         }
     except httpx.ConnectError:
@@ -344,21 +362,29 @@ async def semgrep_findings(
 ):
     """Get Semgrep findings, filterable by severity and category.
 
-    Runs a scan if no cached results, or returns cached. For now, always scans.
+    Returns cached results if available. Use POST /scan to trigger a fresh scan.
     """
     repo = await _get_repo_or_404(repo_id, db)
-    semgrep = _semgrep()
-    tool_path = _tool_path(repo)
+    cache_key = str(repo_id)
 
     try:
-        if severity:
+        # Return cached findings if available
+        if cache_key in _findings_cache and not severity:
+            findings = _findings_cache[cache_key]
+        elif severity:
+            semgrep = _semgrep()
+            tool_path = _tool_path(repo)
             raw = await semgrep.scan_with_severity(tool_path, severity)
             findings = raw.get("results", [])
         else:
+            # No cache — run initial scan
+            semgrep = _semgrep()
+            tool_path = _tool_path(repo)
             result = await semgrep.analyze(
                 AnalysisRequest(repo_local_path=tool_path)
             )
             findings = result.data.get("findings", [])
+            _findings_cache[cache_key] = findings
 
         # Category filter (post-scan)
         if category:
@@ -432,6 +458,18 @@ async def generate_test_points(
     repo = await _get_repo_or_404(repo_id, db)
     tool_path = _tool_path(repo)
 
+    # Read user's LLM config for DeepWiki
+    result = await db.execute(
+        select(LLMConfig).where(LLMConfig.is_default.is_(True)).limit(1)
+    )
+    llm_cfg = result.scalar_one_or_none()
+    llm_config = None
+    if llm_cfg:
+        provider = llm_cfg.provider
+        if provider == "custom":
+            provider = "openai"
+        llm_config = {"provider": provider, "model": llm_cfg.model_name}
+
     from app.services.test_point_generator import generate_test_points as gen
 
     try:
@@ -439,6 +477,7 @@ async def generate_test_points(
             repo_path=tool_path,
             target=body.target,
             perspective=body.perspective,
+            llm_config=llm_config,
         )
         return {
             "status": "completed",

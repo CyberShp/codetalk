@@ -128,15 +128,15 @@ async def apply_component_config(
 @router.post("/{component}/restart", response_model=RestartResult)
 async def restart_component(component: str):
     """Restart a component container."""
-    contract = cm.get_contract(component)
-    if not contract:
-        raise HTTPException(status_code=404, detail="Unknown component")
-
     if component == "backend":
         return RestartResult(
             success=False,
             message="后端服务无法自行重启",
         )
+
+    contract = cm.get_contract(component)
+    if not contract:
+        raise HTTPException(status_code=404, detail="Unknown component")
 
     # Check if there are pending (unapplied) config changes
     # If override exists, use recreate to pick up env changes
@@ -150,15 +150,15 @@ async def apply_and_restart(
     db: AsyncSession = Depends(get_db),
 ):
     """Apply config + recreate container with new env vars."""
-    contract = cm.get_contract(component)
-    if not contract:
-        raise HTTPException(status_code=404, detail="Unknown component")
-
     if component == "backend":
         return RestartResult(
             success=False,
             message="后端服务无法自行重启",
         )
+
+    contract = cm.get_contract(component)
+    if not contract:
+        raise HTTPException(status_code=404, detail="Unknown component")
 
     # 1. Resolve env vars from saved config
     configs = await cm.get_configs(db, component)

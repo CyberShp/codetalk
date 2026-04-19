@@ -163,6 +163,17 @@ export default function WikiViewer({ taskId, repoId, repoName, standalone = fals
 
   const handleCitationClick = useCallback(
     async (file: string, start?: number, end?: number) => {
+      if (file.startsWith("citation-")) {
+        setFilePanel({
+          path: file,
+          targetStart: start,
+          targetEnd: end,
+          slice: null,
+          loading: false,
+          error: "该引用不支持源码预览",
+        });
+        return;
+      }
       setFilePanel({ path: file, targetStart: start, targetEnd: end, slice: null, loading: true, error: null });
       try {
         const slice = isRepoMode && repoName
@@ -425,6 +436,7 @@ export default function WikiViewer({ taskId, repoId, repoName, standalone = fals
                 rehypePlugins={wikiRehypePlugins}
                 anchorBaseUrl={standalone ? undefined : (isRepoMode ? `/repos/${repoId}/wiki` : `/tasks/${taskId}/wiki`)}
                 onCitationClick={handleCitationClick}
+                enableNumericCitations={false}
               />
             </div>
 
@@ -551,41 +563,48 @@ export default function WikiViewer({ taskId, repoId, repoName, standalone = fals
                 {filePanel.error}
               </div>
             )}
-            {filePanel.slice && (
-              <div className="text-[11px] font-data pb-8">
-                {filePanel.slice.startLine > 1 && (
-                  <div className="sticky top-0 z-10 flex items-center justify-center py-1.5 text-[10px] text-white/30 bg-gradient-to-b from-[#0D0D0F] to-transparent backdrop-blur-md">
-                    · · · {filePanel.slice.startLine - 1} lines above · · ·
-                  </div>
-                )}
-                <pre className="py-2 text-white/70 overflow-x-auto whitespace-pre leading-[1.6]">
-                  {filePanel.slice.content.split("\n").map((line, i) => {
-                    const currentLine = filePanel.slice!.startLine + i;
-                    const isTarget = filePanel.targetStart 
-                      ? (currentLine >= filePanel.targetStart && currentLine <= (filePanel.targetEnd || filePanel.targetStart))
-                      : false;
-                    
-                    return (
-                      <div 
-                        key={i} 
-                        className={`flex group px-4 transition-colors ${
-                          isTarget 
-                            ? "bg-primary/[0.15] border-l-[2px] border-primary" 
-                            : "hover:bg-white/[0.03] border-l-[2px] border-transparent"
-                        }`}
-                      >
-                        <span className={`select-none text-right w-10 shrink-0 pr-4 border-r border-white/5 transition-colors ${
-                          isTarget ? "text-primary/80" : "text-white/20 group-hover:text-white/40"
-                        }`}>
-                          {currentLine}
-                        </span>
-                        <span className={`pl-4 ${isTarget ? "text-white" : ""}`}>{line || " "}</span>
-                      </div>
-                    );
-                  })}
-                </pre>
-              </div>
-            )}
+            {filePanel.slice && (() => {
+              const startLine = Number.isFinite(filePanel.slice.startLine)
+                ? filePanel.slice.startLine
+                : 1;
+              const lines = filePanel.slice.content.split("\n");
+
+              return (
+                <div className="text-[11px] font-data pb-8">
+                  {startLine > 1 && (
+                    <div className="sticky top-0 z-10 flex items-center justify-center py-1.5 text-[10px] text-white/30 bg-gradient-to-b from-[#0D0D0F] to-transparent backdrop-blur-md">
+                      · · · {startLine - 1} lines above · · ·
+                    </div>
+                  )}
+                  <pre className="py-2 text-white/70 overflow-x-auto whitespace-pre leading-[1.6]">
+                    {lines.map((line, i) => {
+                      const currentLine = startLine + i;
+                      const isTarget = filePanel.targetStart
+                        ? (currentLine >= filePanel.targetStart && currentLine <= (filePanel.targetEnd || filePanel.targetStart))
+                        : false;
+
+                      return (
+                        <div
+                          key={i}
+                          className={`flex group px-4 transition-colors ${
+                            isTarget
+                              ? "bg-primary/[0.15] border-l-[2px] border-primary"
+                              : "hover:bg-white/[0.03] border-l-[2px] border-transparent"
+                          }`}
+                        >
+                          <span className={`select-none text-right w-10 shrink-0 pr-4 border-r border-white/5 transition-colors ${
+                            isTarget ? "text-primary/80" : "text-white/20 group-hover:text-white/40"
+                          }`}>
+                            {currentLine}
+                          </span>
+                          <span className={`pl-4 ${isTarget ? "text-white" : ""}`}>{line || " "}</span>
+                        </div>
+                      );
+                    })}
+                  </pre>
+                </div>
+              );
+            })()}
           </div>
         </div>
       )}

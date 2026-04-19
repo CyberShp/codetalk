@@ -1,7 +1,9 @@
 "use client";
 
-import { useState, useEffect } from "react";
+import { useState, useEffect, useCallback } from "react";
 import ToolCard from "@/components/ui/ToolCard";
+import GlassPanel from "@/components/ui/GlassPanel";
+import { usePageRestoreRefresh } from "@/hooks/usePageRestoreRefresh";
 import { api } from "@/lib/api";
 import type { ToolInfo } from "@/lib/types";
 
@@ -11,7 +13,9 @@ const toolDescriptions: Record<string, string> = {
   zoekt:
     "面向大型代码库的快速三元组代码搜索引擎。",
   joern:
-    "C/C++ 代码属性图分析 — 调用图、污点分析、安全扫描。",
+    "代码属性图分析 — CPG构建、调用图、污点分析、安全扫描。",
+  semgrep:
+    "规则驱动的静态分析 — OWASP扫描、自定义规则、增量检测。",
   codecompass:
     "C/C++ 代码理解工具 — 调用图、依赖分析、指针分析。",
   gitnexus:
@@ -27,13 +31,31 @@ const comingSoonTools: ToolInfo[] = [
 
 export default function ToolsPage() {
   const [tools, setTools] = useState<ToolInfo[]>([]);
+  const [loading, setLoading] = useState(true);
+  const [loadError, setLoadError] = useState("");
 
-  useEffect(() => {
-    api.tools.list().then(setTools).catch(() => {});
+  const loadTools = useCallback(async () => {
+    setLoading(true);
+    setLoadError("");
+    try {
+      const data = await api.tools.list();
+      setTools(data);
+    } catch (e) {
+      setLoadError(e instanceof Error ? e.message : "工具状态加载失败");
+    } finally {
+      setLoading(false);
+    }
   }, []);
 
+  useEffect(() => {
+    void loadTools();
+  }, [loadTools]);
+  usePageRestoreRefresh(() => {
+    void loadTools();
+  });
+
   const registeredNames = new Set(tools.map((t) => t.name));
-  const upcoming = comingSoonTools.filter((t) => !registeredNames.has(t.name));
+  const upcoming = loadError ? [] : comingSoonTools.filter((t) => !registeredNames.has(t.name));
 
   return (
     <div className="max-w-6xl mx-auto space-y-10 py-4">
@@ -54,28 +76,45 @@ export default function ToolsPage() {
             工具列表
           </span>
         </div>
-        
-        <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-5">
-          {tools.map((tool) => (
-            <ToolCard
-              key={tool.name}
-              name={tool.name}
-              description={toolDescriptions[tool.name] ?? ""}
-              capabilities={tool.capabilities}
-              healthy={tool.healthy}
-            />
-          ))}
-          {upcoming.map((tool) => (
-            <ToolCard
-              key={tool.name}
-              name={tool.name}
-              description={toolDescriptions[tool.name] ?? ""}
-              capabilities={tool.capabilities}
-              healthy={false}
-              comingSoon
-            />
-          ))}
-        </div>
+
+        {loadError ? (
+          <GlassPanel className="py-8 flex flex-col items-center gap-4">
+            <p className="text-sm text-tertiary">{loadError}</p>
+            <button
+              onClick={() => { void loadTools(); }}
+              className="px-4 py-2 rounded-lg border border-primary/20 bg-primary/10 text-primary text-xs font-bold uppercase tracking-widest hover:bg-primary/15 transition-colors"
+            >
+              重试
+            </button>
+          </GlassPanel>
+        ) : loading && tools.length === 0 ? (
+          <GlassPanel className="py-8 flex items-center justify-center">
+            <p className="text-sm text-on-surface-variant/50">加载工具状态中...</p>
+          </GlassPanel>
+        ) : (
+          <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-5">
+            {tools.map((tool) => (
+              <ToolCard
+                key={tool.name}
+                name={tool.name}
+                description={toolDescriptions[tool.name] ?? ""}
+                capabilities={tool.capabilities}
+                healthy={tool.healthy}
+                onStatusChange={() => { void loadTools(); }}
+              />
+            ))}
+            {upcoming.map((tool) => (
+              <ToolCard
+                key={tool.name}
+                name={tool.name}
+                description={toolDescriptions[tool.name] ?? ""}
+                capabilities={tool.capabilities}
+                healthy={false}
+                comingSoon
+              />
+            ))}
+          </div>
+        )}
       </section>
     </div>
   );

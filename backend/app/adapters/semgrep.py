@@ -117,7 +117,10 @@ class SemgrepAdapter(BaseToolAdapter):
             logger.warning("semgrep: custom rules failed: %s", exc)
             scan_meta["custom_rules"] = {"error": str(exc)}
 
-        # 3. Categorize findings (pure format conversion)
+        # 3. Clean up OSS "requires login" placeholders
+        _strip_login_placeholders(all_findings)
+
+        # 4. Categorize findings (pure format conversion)
         categorized = _categorize_findings(all_findings)
 
         return UnifiedResult(
@@ -220,6 +223,20 @@ class SemgrepAdapter(BaseToolAdapter):
 # ---------------------------------------------------------------------------
 # Response format conversion — no analysis logic, pure reshaping
 # ---------------------------------------------------------------------------
+
+
+def _strip_login_placeholders(findings: list[dict]) -> None:
+    """Remove 'requires login' placeholders from Semgrep OSS output.
+
+    Semgrep Registry rules return 'requires login' for fields like
+    `lines` and `fingerprint` when running without authentication.
+    Replace with None so the frontend skips rendering them.
+    """
+    for f in findings:
+        extra = f.get("extra", {})
+        for key in ("lines", "fingerprint"):
+            if extra.get(key) == "requires login":
+                extra[key] = None
 
 
 def _categorize_findings(findings: list[dict]) -> dict[str, list[dict]]:

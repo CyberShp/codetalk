@@ -329,6 +329,7 @@ class WikiOrchestrator:
 
         payload = {
             "repo_url": repo_local_path,
+            "type": "local",
             "messages": [{"role": "user", "content": prompt}],
             "language": language,
             "provider": provider,
@@ -357,6 +358,7 @@ class WikiOrchestrator:
 
         payload = {
             "repo_url": repo_local_path,
+            "type": "local",
             "messages": [{"role": "user", "content": prompt}],
             "language": language,
             "provider": provider,
@@ -364,7 +366,7 @@ class WikiOrchestrator:
             "excluded_dirs": "\n".join(DEFAULT_EXCLUDED_DIRS),
         }
         if page.file_paths:
-            payload["included_files"] = ",".join(page.file_paths)
+            payload["included_files"] = "\n".join(page.file_paths)
 
         return await self._stream_collect(client, payload)
 

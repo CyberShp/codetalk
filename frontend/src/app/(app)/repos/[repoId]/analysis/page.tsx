@@ -928,6 +928,9 @@ export default function AnalysisPage() {
   const [findings, setFindings] = useState<SemgrepFinding[]>([]);
   const [findingsLoading, setFindingsLoading] = useState(false);
   const [scanning, setScanning] = useState(false);
+  const [scanDone, setScanDone] = useState(false);
+  const [loadError, setLoadError] = useState("");
+  const [scanError, setScanError] = useState("");
 
   // Filters
   const [severityFilter, setSeverityFilter] = useState<SeverityLevel | null>(null);
@@ -940,7 +943,9 @@ export default function AnalysisPage() {
   }, [repoId]);
 
   useEffect(() => {
-    api.repos.analysis.summary(repoId).then(setSummary).catch(() => {});
+    api.repos.analysis.summary(repoId).then(setSummary).catch((e) => {
+      setLoadError(e instanceof Error ? e.message : "分析摘要加载失败");
+    });
   }, [repoId]);
 
   // Load findings for both Overview stats and Findings tab; only fetch once
@@ -951,12 +956,16 @@ export default function AnalysisPage() {
     api.repos.analysis.semgrep
       .findings(repoId)
       .then((r) => setFindings(r.findings))
-      .catch(() => {})
+      .catch((e) => {
+        setLoadError(e instanceof Error ? e.message : "扫描结果加载失败");
+      })
       .finally(() => setFindingsLoading(false));
   }, [repoId, activeNav]); // eslint-disable-line react-hooks/exhaustive-deps
 
   const handleRescan = useCallback(async () => {
     setScanning(true);
+    setScanDone(false);
+    setScanError("");
     setFindings([]);
     try {
       const [scanResp, s] = await Promise.all([
@@ -965,8 +974,10 @@ export default function AnalysisPage() {
       ]);
       setSummary(s);
       if (scanResp.findings) setFindings(scanResp.findings);
-    } catch {
-      // ignore — errors surfaced by tool health status
+      setScanDone(true);
+      setTimeout(() => setScanDone(false), 4000);
+    } catch (e) {
+      setScanError(e instanceof Error ? e.message : "扫描失败");
     } finally {
       setScanning(false);
     }
@@ -994,12 +1005,27 @@ export default function AnalysisPage() {
         <button
           onClick={handleRescan}
           disabled={scanning}
-          className="inline-flex items-center gap-1.5 rounded-full bg-surface-container-high border border-outline-variant/20 px-4 py-1.5 text-[11px] font-bold uppercase tracking-widest text-on-surface-variant hover:border-primary/30 hover:text-primary transition-colors disabled:opacity-50"
+          className={`inline-flex items-center gap-1.5 rounded-full border px-4 py-1.5 text-[11px] font-bold uppercase tracking-widest transition-all disabled:opacity-50 ${
+            scanDone
+              ? "bg-secondary/10 border-secondary/30 text-secondary"
+              : "bg-surface-container-high border-outline-variant/20 text-on-surface-variant hover:border-primary/30 hover:text-primary"
+          }`}
         >
-          {scanning ? <Loader2 size={11} className="animate-spin" /> : <RefreshCw size={11} />}
-          Re-scan
+          {scanning ? <Loader2 size={11} className="animate-spin" /> : scanDone ? <CheckCircle2 size={11} /> : <RefreshCw size={11} />}
+          {scanning ? "Scanning..." : scanDone ? "Done" : "Re-scan"}
         </button>
       </header>
+
+      {(loadError || scanError) && (
+        <div className="shrink-0 mx-4 mt-2 rounded-lg border border-tertiary/30 bg-tertiary-container/20 px-4 py-2 flex items-center justify-between">
+          <p className="text-xs text-tertiary">{scanError || loadError}</p>
+          {scanError && (
+            <button onClick={handleRescan} className="text-xs text-primary font-bold uppercase tracking-widest hover:underline">
+              重试
+            </button>
+          )}
+        </div>
+      )}
 
       {/* ── Body: sidebar + content ── */}
       <div className="flex flex-1 min-h-0 overflow-hidden">

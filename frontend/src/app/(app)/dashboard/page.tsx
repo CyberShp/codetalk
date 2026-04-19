@@ -1,9 +1,10 @@
 "use client";
 
-import { useState, useEffect } from "react";
+import { useState, useEffect, useCallback } from "react";
 import GlassPanel from "@/components/ui/GlassPanel";
 import StatusBadge from "@/components/ui/StatusBadge";
 import ProgressBar from "@/components/ui/ProgressBar";
+import { usePageRestoreRefresh } from "@/hooks/usePageRestoreRefresh";
 import { api } from "@/lib/api";
 import type { Project, AnalysisTask, ToolInfo } from "@/lib/types";
 
@@ -11,12 +12,40 @@ export default function DashboardPage() {
   const [projects, setProjects] = useState<Project[]>([]);
   const [tasks, setTasks] = useState<AnalysisTask[]>([]);
   const [tools, setTools] = useState<ToolInfo[]>([]);
+  const [loadError, setLoadError] = useState("");
+
+  const load = useCallback(async () => {
+    setLoadError("");
+    const results = await Promise.allSettled([
+      api.projects.list().then(setProjects),
+      api.tasks.list().then(setTasks),
+      api.tools.list().then(setTools),
+    ]);
+    const failures = results.filter((r) => r.status === "rejected");
+    if (failures.length === results.length) {
+      setLoadError("无法连接后端服务");
+    } else if (failures.length > 0) {
+      setLoadError("部分数据加载失败");
+    }
+  }, []);
 
   useEffect(() => {
-    api.projects.list().then(setProjects).catch(() => {});
-    api.tasks.list().then(setTasks).catch(() => {});
-    api.tools.list().then(setTools).catch(() => {});
+    Promise.allSettled([
+      api.projects.list().then(setProjects),
+      api.tasks.list().then(setTasks),
+      api.tools.list().then(setTools),
+    ]).then((results) => {
+      const failures = results.filter((r) => r.status === "rejected");
+      if (failures.length === results.length) {
+        setLoadError("无法连接后端服务");
+      } else if (failures.length > 0) {
+        setLoadError("部分数据加载失败");
+      }
+    });
   }, []);
+  usePageRestoreRefresh(() => {
+    void load();
+  });
 
   const activeTasks = tasks.filter((t) => t.status === "running");
   const completedTasks = tasks.filter((t) => t.status === "completed");
@@ -34,6 +63,18 @@ export default function DashboardPage() {
       <h2 className="font-display text-lg font-semibold text-on-surface">
         仪表盘
       </h2>
+
+      {loadError && (
+        <GlassPanel className="bg-tertiary-container/20 border-tertiary/30 py-3 flex items-center justify-between">
+          <p className="text-sm text-tertiary">{loadError}</p>
+          <button
+            onClick={() => { void load(); }}
+            className="px-3 py-1.5 rounded-lg border border-primary/20 bg-primary/10 text-primary text-xs font-bold uppercase tracking-widest hover:bg-primary/15 transition-colors"
+          >
+            重试
+          </button>
+        </GlassPanel>
+      )}
 
       {/* Stats Grid */}
       <div className="grid grid-cols-4 gap-4">

@@ -1,4 +1,8 @@
+"use client";
+
+import { useState } from "react";
 import StatusBadge from "./StatusBadge";
+import { api } from "@/lib/api";
 
 interface Props {
   name: string;
@@ -6,6 +10,7 @@ interface Props {
   capabilities: string[];
   healthy: boolean;
   comingSoon?: boolean;
+  onStatusChange?: () => void;
 }
 
 export default function ToolCard({
@@ -14,8 +19,27 @@ export default function ToolCard({
   capabilities,
   healthy,
   comingSoon,
+  onStatusChange,
 }: Props) {
+  const [restarting, setRestarting] = useState(false);
+  const [feedback, setFeedback] = useState<{ ok: boolean; msg: string } | null>(null);
   const status = comingSoon ? "offline" : healthy ? "online" : "offline";
+
+  const handleRestart = async () => {
+    setRestarting(true);
+    setFeedback(null);
+    try {
+      const result = await api.components.restart(name);
+      setFeedback({ ok: result.success, msg: result.message });
+      if (result.success && onStatusChange) {
+        setTimeout(onStatusChange, 3000);
+      }
+    } catch (e) {
+      setFeedback({ ok: false, msg: e instanceof Error ? e.message : "重启失败" });
+    } finally {
+      setRestarting(false);
+    }
+  };
 
   return (
     <div
@@ -32,10 +56,25 @@ export default function ToolCard({
             {description}
           </p>
         </div>
-        <div className="shrink-0 pt-0.5">
+        <div className="shrink-0 pt-0.5 flex items-center gap-2">
+          {!comingSoon && (
+            <button
+              onClick={handleRestart}
+              disabled={restarting}
+              className="opacity-0 group-hover:opacity-100 transition-opacity px-2 py-1 text-[10px] rounded-md bg-surface-container-high text-on-surface-variant hover:text-on-surface disabled:opacity-40"
+            >
+              {restarting ? "重启中..." : "重启"}
+            </button>
+          )}
           <StatusBadge status={status} />
         </div>
       </div>
+
+      {feedback && (
+        <p className={`text-[10px] ${feedback.ok ? "text-secondary-fixed-dim" : "text-tertiary"}`}>
+          {feedback.msg}
+        </p>
+      )}
 
       <div className="flex flex-wrap gap-1.5 mt-auto pt-2">
         {capabilities.map((cap) => (
