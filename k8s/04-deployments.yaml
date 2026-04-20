@@ -389,3 +389,132 @@ spec:
             limits:
               cpu: 500m
               memory: 512Mi
+
+# ─────────────────────────────────────────────
+# joern — CPG 分析引擎（JVM 重内存消耗）
+# ─────────────────────────────────────────────
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: joern
+  namespace: codetalk
+  labels:
+    app: joern
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: joern
+  template:
+    metadata:
+      labels:
+        app: joern
+    spec:
+      containers:
+        - name: joern
+          image: HARBOR_HOST/codetalk/joern:VERSION
+          imagePullPolicy: IfNotPresent
+          ports:
+            - containerPort: 8080
+          command: ["joern", "--server", "--server-host", "0.0.0.0", "--server-port", "8080"]
+          env:
+            - name: JAVA_TOOL_OPTIONS
+              value: "-Xmx6g"
+          volumeMounts:
+            - name: code-volume
+              mountPath: /data/repos
+              readOnly: true
+          readinessProbe:
+            exec:
+              command:
+                - sh
+                - -c
+                - 'curl -sf -X POST -H "Content-Type: application/json" -d ''{"query":"version"}'' http://localhost:8080/query-sync'
+            initialDelaySeconds: 30
+            periodSeconds: 15
+            timeoutSeconds: 10
+            failureThreshold: 5
+          livenessProbe:
+            exec:
+              command:
+                - sh
+                - -c
+                - 'curl -sf -X POST -H "Content-Type: application/json" -d ''{"query":"version"}'' http://localhost:8080/query-sync'
+            initialDelaySeconds: 60
+            periodSeconds: 30
+            failureThreshold: 3
+          resources:
+            requests:
+              cpu: 1000m
+              memory: 6Gi
+            limits:
+              cpu: 4000m
+              memory: 8Gi
+      volumes:
+        - name: code-volume
+          persistentVolumeClaim:
+            claimName: code-volume
+
+# ─────────────────────────────────────────────
+# zoekt — 代码搜索
+# ─────────────────────────────────────────────
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: zoekt
+  namespace: codetalk
+  labels:
+    app: zoekt
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: zoekt
+  template:
+    metadata:
+      labels:
+        app: zoekt
+    spec:
+      containers:
+        - name: zoekt
+          image: HARBOR_HOST/codetalk/zoekt:VERSION
+          imagePullPolicy: IfNotPresent
+          ports:
+            - containerPort: 6070
+          command: ["zoekt-webserver"]
+          args: ["-index", "/data/index", "-listen", ":6070", "-rpc"]
+          volumeMounts:
+            - name: code-volume
+              mountPath: /data/repos
+              readOnly: true
+            - name: zoekt-index
+              mountPath: /data/index
+          readinessProbe:
+            httpGet:
+              path: /healthz
+              port: 6070
+            initialDelaySeconds: 5
+            periodSeconds: 10
+          livenessProbe:
+            httpGet:
+              path: /healthz
+              port: 6070
+            initialDelaySeconds: 10
+            periodSeconds: 30
+            failureThreshold: 3
+          resources:
+            requests:
+              cpu: 250m
+              memory: 512Mi
+            limits:
+              cpu: 1000m
+              memory: 2Gi
+      volumes:
+        - name: code-volume
+          persistentVolumeClaim:
+            claimName: code-volume
+        - name: zoekt-index
+          persistentVolumeClaim:
+            claimName: zoekt-index

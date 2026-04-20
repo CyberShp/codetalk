@@ -82,3 +82,31 @@ spec:
     - port: 7100
       targetPort: 7100
   type: ClusterIP
+
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: joern
+  namespace: codetalk
+spec:
+  selector:
+    app: joern
+  ports:
+    - port: 8080
+      targetPort: 8080
+  type: ClusterIP
+
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: zoekt
+  namespace: codetalk
+spec:
+  selector:
+    app: zoekt
+  ports:
+    - port: 6070
+      targetPort: 6070
+  type: ClusterIP

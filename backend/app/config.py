@@ -35,7 +35,6 @@ class Settings(BaseSettings):
     zoekt_base_url: str = "http://zoekt:6070"
     zoekt_container_name: str = "codetalk-zoekt-1"
     joern_base_url: str = "http://joern:8080"
-    semgrep_base_url: str = "http://semgrep:9090"
     repos_base_path: str = _default_repos_base_path
     tool_repos_base_path: str = "/data/repos"
 

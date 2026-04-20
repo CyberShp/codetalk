@@ -40,7 +40,6 @@ def _register_defaults() -> None:
     from app.adapters.deepwiki import DeepwikiAdapter
     from app.adapters.gitnexus import GitNexusAdapter
     from app.adapters.joern import JoernAdapter
-    from app.adapters.semgrep import SemgrepAdapter
     from app.adapters.zoekt import ZoektAdapter
 
     def deepwiki_factory() -> DeepwikiAdapter:
@@ -58,14 +57,10 @@ def _register_defaults() -> None:
     def joern_factory() -> JoernAdapter:
         return JoernAdapter(base_url=settings.joern_base_url)
 
-    def semgrep_factory() -> SemgrepAdapter:
-        return SemgrepAdapter(base_url=settings.semgrep_base_url)
-
     register_adapter(deepwiki_factory(), factory=deepwiki_factory)
     register_adapter(gitnexus_factory(), factory=gitnexus_factory)
     register_adapter(zoekt_factory(), factory=zoekt_factory)
     register_adapter(joern_factory(), factory=joern_factory)
-    register_adapter(semgrep_factory(), factory=semgrep_factory)
 
 
 _register_defaults()

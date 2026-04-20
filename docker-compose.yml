@@ -31,6 +31,11 @@ services:
     environment:
       DATABASE_URL: postgresql+asyncpg://${POSTGRES_USER:-codetalks}:${POSTGRES_PASSWORD:-changeme}@postgres:5432/${POSTGRES_DB:-codetalks}
       REPOS_BASE_PATH: ${REPOS_BASE_PATH:-/data/repos}
+      # Override .env.local localhost values — container must use Docker DNS
+      DEEPWIKI_BASE_URL: http://deepwiki:8001
+      GITNEXUS_BASE_URL: http://gitnexus:7100
+      ZOEKT_BASE_URL: http://zoekt:6070
+      JOERN_BASE_URL: http://joern:8080
 
   deepwiki:
     image: ghcr.io/asyncfuncai/deepwiki-open:latest
@@ -82,19 +87,6 @@ services:
       start_period: 30s
     restart: unless-stopped
 
-  semgrep:
-    build: ./docker/semgrep
-    ports:
-      - "9090:9090"
-    volumes:
-      - ./.repos:/data/repos:ro
-      - ./docker/semgrep/rules:/rules:ro
-    healthcheck:
-      test: ["CMD-SHELL", "curl -sf http://localhost:9090/health || exit 1"]
-      interval: 10s
-      timeout: 5s
-      retries: 3
-    restart: unless-stopped
 
   zoekt:
     image: ghcr.io/sourcegraph/zoekt:latest

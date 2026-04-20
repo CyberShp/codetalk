@@ -1,6 +1,6 @@
 """Repository-level static analysis endpoints.
 
-Wraps Joern + Semgrep adapters for repo-centric access.
+Wraps Joern adapter for repo-centric CPG access.
 Follows the same pattern as repo_graph.py and repos.py.
 """
 
@@ -16,7 +16,6 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.adapters import create_adapter
 from app.adapters.base import AnalysisRequest
 from app.adapters.joern import JoernAdapter
-from app.adapters.semgrep import SemgrepAdapter
 from app.config import settings
 from app.database import get_db
 from app.models.llm_config import LLMConfig
@@ -28,9 +27,6 @@ logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/api/repos", tags=["analysis"])
 
 # In-memory scan result cache: repo_id → findings list.
-# Populated by POST /scan, read by GET /findings.
-# Cleared on next explicit scan.
-_findings_cache: dict[str, list[dict]] = {}
 
 
 # ── Helpers ──
@@ -67,9 +63,6 @@ def _joern() -> JoernAdapter:
         _joern_instance = create_adapter("joern")  # type: ignore[assignment]
     return _joern_instance
 
-
-def _semgrep() -> SemgrepAdapter:
-    return create_adapter("semgrep")  # type: ignore[return-value]
 
 
 # ── Combined analysis ──
@@ -356,118 +349,6 @@ def _reshape_taint_paths(raw: object) -> list[dict]:
             paths.append(path_data)
     return paths
 
-
-# ── Semgrep endpoints ──
-
-
-@router.post("/{repo_id}/analysis/semgrep/scan")
-async def semgrep_scan(
-    repo_id: uuid.UUID, db: AsyncSession = Depends(get_db)
-):
-    """Trigger a full Semgrep scan with all rule sets + custom rules."""
-    repo = await _get_repo_or_404(repo_id, db)
-    semgrep = _semgrep()
-    tool_path = _tool_path(repo)
-
-    try:
-        result = await semgrep.analyze(
-            AnalysisRequest(repo_local_path=tool_path)
-        )
-        findings = result.data.get("findings", [])
-        _findings_cache[str(repo_id)] = findings
-        return {
-            "status": "completed",
-            "summary": result.data.get("summary"),
-            "categorized": result.data.get("categorized"),
-            "findings": findings,
-            "metadata": result.metadata,
-        }
-    except httpx.ConnectError:
-        raise HTTPException(503, "Semgrep service unavailable")
-    except httpx.HTTPStatusError as exc:
-        raise HTTPException(503, f"Semgrep error: {exc.response.status_code}")
-
-
-@router.get("/{repo_id}/analysis/semgrep/findings")
-async def semgrep_findings(
-    repo_id: uuid.UUID,
-    severity: str | None = Query(None, description="Filter: INFO, WARNING, ERROR"),
-    category: str | None = Query(None, description="Filter: injection, auth_bypass, etc."),
-    page: int = Query(1, ge=1),
-    page_size: int = Query(50, ge=1, le=200),
-    db: AsyncSession = Depends(get_db),
-):
-    """Get Semgrep findings, filterable by severity and category.
-
-    Returns cached results if available. Use POST /scan to trigger a fresh scan.
-    """
-    repo = await _get_repo_or_404(repo_id, db)
-    cache_key = str(repo_id)
-
-    try:
-        # Return cached findings if available
-        if cache_key in _findings_cache and not severity:
-            findings = _findings_cache[cache_key]
-        elif severity:
-            semgrep = _semgrep()
-            tool_path = _tool_path(repo)
-            raw = await semgrep.scan_with_severity(tool_path, severity)
-            findings = raw.get("results", [])
-        else:
-            # No cache — run initial scan
-            semgrep = _semgrep()
-            tool_path = _tool_path(repo)
-            result = await semgrep.analyze(
-                AnalysisRequest(repo_local_path=tool_path)
-            )
-            findings = result.data.get("findings", [])
-            _findings_cache[cache_key] = findings
-
-        # Category filter (post-scan)
-        if category:
-            findings = [
-                f for f in findings
-                if category.lower() in f.get("check_id", "").lower()
-                or category.lower()
-                in f.get("extra", {}).get("metadata", {}).get("category", "").lower()
-            ]
-
-        # Pagination
-        total = len(findings)
-        start = (page - 1) * page_size
-        page_findings = findings[start : start + page_size]
-
-        return {
-            "findings": page_findings,
-            "total": total,
-            "page": page,
-            "page_size": page_size,
-            "pages": (total + page_size - 1) // page_size if total else 0,
-        }
-    except httpx.ConnectError:
-        raise HTTPException(503, "Semgrep service unavailable")
-
-
-class _IncrementalScanRequest(BaseModel):
-    baseline_commit: str
-
-
-@router.post("/{repo_id}/analysis/semgrep/scan/incremental")
-async def semgrep_incremental_scan(
-    repo_id: uuid.UUID,
-    body: _IncrementalScanRequest,
-    db: AsyncSession = Depends(get_db),
-):
-    """Incremental scan — only new findings since baseline commit."""
-    repo = await _get_repo_or_404(repo_id, db)
-    semgrep = _semgrep()
-    tool_path = _tool_path(repo)
-
-    try:
-        result = await semgrep.scan_incremental(tool_path, body.baseline_commit)
-        return result
-    except httpx.ConnectError:
-        raise HTTPException(503, "Semgrep service unavailable")
 
 
 # ── Combined: Test Points ──

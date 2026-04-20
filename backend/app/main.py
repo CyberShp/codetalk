@@ -42,3 +42,8 @@ app.include_router(api_router)
 @app.get("/")
 async def root():
     return {"name": "CodeTalks", "version": "0.1.0", "status": "running"}
+
+
+@app.get("/health")
+async def health():
+    return {"status": "ok"}
