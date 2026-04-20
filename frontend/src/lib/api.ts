@@ -32,6 +32,8 @@ import type {
   JoernMethodBranch,
   JoernErrorPath,
   JoernBoundaryValue,
+  JoernCallContext,
+  JoernCalleeImpact,
   TaintPath,
   TestPoint,
   SeverityLevel,
@@ -188,6 +190,10 @@ export const api = {
         request<AnalysisSummary>(`/api/repos/${repoId}/analysis/summary`),
 
       joern: {
+        rebuild: (repoId: string) =>
+          request<{ status: string; repo_id: string }>(`/api/repos/${repoId}/analysis/joern/rebuild`, {
+            method: "POST",
+          }),
         query: (repoId: string, cpgql: string) =>
           request<{ result: unknown }>(`/api/repos/${repoId}/analysis/joern/query`, {
             method: "POST",
@@ -195,9 +201,16 @@ export const api = {
           }),
         methods: (repoId: string) =>
           request<{ methods: unknown[] }>(`/api/repos/${repoId}/analysis/joern/methods`),
-        /** Batch: branches + errors + boundaries in ONE CPG import. Preferred over individual calls. */
+        /** Batch: branches + errors + boundaries + cross-function context in ONE CPG import. */
         allForMethod: (repoId: string, methodName: string) =>
-          request<{ method: string; branches: JoernMethodBranch[]; errors: JoernErrorPath[]; boundaries: JoernBoundaryValue[] }>(
+          request<{
+            method: string;
+            branches: JoernMethodBranch[];
+            errors: JoernErrorPath[];
+            boundaries: JoernBoundaryValue[];
+            callContext: JoernCallContext[];
+            calleeImpact: JoernCalleeImpact[];
+          }>(
             `/api/repos/${repoId}/analysis/joern/method/${encodeURIComponent(methodName)}/all`
           ),
         branches: (repoId: string, methodName: string) =>

@@ -5,8 +5,8 @@ IRON LAW: analyze() may ONLY do:
   (b) Response format conversion
 
 CAPABILITY UTILIZATION RULE: Must use ALL of:
-  - Multiple rule sets (p/default, p/security-audit, p/owasp-top-ten)
-  - Custom rules for boundary/exception patterns
+  - Multiple rule sets (p/default, p/bugs)
+  - Custom rules for boundary/exception/runtime patterns
   - --dataflow-traces for taint path tracking
   - --severity filtering
   - --baseline-commit for incremental scans
@@ -29,11 +29,10 @@ from .base import (
 
 logger = logging.getLogger(__name__)
 
-# ── Built-in rule sets to run — exhaustive, not "just p/default" ──
+# ── Built-in rule sets to run — runtime risk focused ──
 DEFAULT_RULE_SETS = [
-    "p/default",           # 高置信度基线
-    "p/security-audit",    # 宽泛安全审计
-    "p/owasp-top-ten",     # OWASP Top 10 覆盖
+    "p/default",           # 高置信度基线（含部分运行时 bug 检测）
+    "p/bugs",              # bug 模式：逻辑错误、资源泄漏、类型混淆等运行时风险
 ]
 
 # Custom rules directory (mounted into container at /rules)
@@ -49,7 +48,7 @@ class SemgrepAdapter(BaseToolAdapter):
 
     def capabilities(self) -> list[ToolCapability]:
         return [
-            ToolCapability.SECURITY_SCAN,
+            ToolCapability.SECURITY_SCAN,  # reused enum; semantically = risk_scan
             ToolCapability.TAINT_ANALYSIS,
             ToolCapability.CODE_SEARCH,
         ]
@@ -189,9 +188,8 @@ class SemgrepAdapter(BaseToolAdapter):
 
     async def stream_logs(self, run_id: str) -> AsyncIterator[str]:
         yield "semgrep: scanning with p/default..."
-        yield "semgrep: scanning with p/security-audit..."
-        yield "semgrep: scanning with p/owasp-top-ten..."
-        yield "semgrep: running custom boundary rules..."
+        yield "semgrep: scanning with p/bugs..."
+        yield "semgrep: running custom runtime risk rules..."
         yield "semgrep: completed"
 
     # ── internal ──
@@ -240,19 +238,18 @@ def _strip_login_placeholders(findings: list[dict]) -> None:
 
 
 def _categorize_findings(findings: list[dict]) -> dict[str, list[dict]]:
-    """Categorize findings into test-relevant groups.
+    """Categorize findings into runtime-risk groups.
 
     Pure format conversion based on metadata fields already in the Semgrep output.
     """
     categories: dict[str, list[dict]] = {
-        "injection": [],
-        "auth_bypass": [],
-        "error_handling": [],
-        "boundary_condition": [],
-        "null_safety": [],
-        "race_condition": [],
-        "crypto_weakness": [],
-        "config_issue": [],
+        "error_handling": [],       # 异常处理缺失/不当
+        "boundary_condition": [],   # 边界值/溢出/越界
+        "null_safety": [],          # 空指针/空值传播
+        "race_condition": [],       # 竞态条件/并发问题
+        "resource_leak": [],        # 资源未释放/泄漏
+        "type_confusion": [],       # 类型混淆/转换异常
+        "logic_error": [],          # 逻辑错误/死代码/不可达分支
         "other": [],
     }
 
@@ -263,30 +260,37 @@ def _categorize_findings(findings: list[dict]) -> dict[str, list[dict]]:
         cwe_str = " ".join(str(c).lower() for c in cwe_list)
         category_meta = metadata.get("category", "").lower()
 
-        if "injection" in cwe_str or "injection" in check_id:
-            categories["injection"].append(f)
-        elif "auth" in cwe_str or "auth" in check_id:
-            categories["auth_bypass"].append(f)
-        elif (
+        if (
             "error" in cwe_str or "exception" in cwe_str
             or "error" in check_id or "catch" in check_id
+            or "unhandled" in check_id
             or category_meta == "error-handling"
         ):
             categories["error_handling"].append(f)
         elif (
-            "boundary" in check_id or "overflow" in check_id
-            or "division" in check_id
+            "boundary" in check_id or "overflow" in check_id or "underflow" in check_id
+            or "division" in check_id or "out-of-bounds" in check_id
+            or "buffer" in check_id or "truncat" in check_id
             or category_meta == "boundary-condition"
         ):
             categories["boundary_condition"].append(f)
-        elif "null" in check_id or "none" in check_id:
+        elif "null" in check_id or "none" in check_id or "nullptr" in check_id:
             categories["null_safety"].append(f)
-        elif "race" in check_id or "toctou" in check_id:
+        elif "race" in check_id or "toctou" in check_id or "concurrent" in check_id:
             categories["race_condition"].append(f)
-        elif "crypto" in check_id or "hash" in check_id:
-            categories["crypto_weakness"].append(f)
-        elif "config" in check_id:
-            categories["config_issue"].append(f)
+        elif (
+            "leak" in check_id or "close" in check_id or "free" in check_id
+            or "resource" in check_id or "unclosed" in check_id
+        ):
+            categories["resource_leak"].append(f)
+        elif "type" in check_id or "cast" in check_id or "coercion" in check_id:
+            categories["type_confusion"].append(f)
+        elif (
+            "dead" in check_id or "unreachable" in check_id
+            or "logic" in check_id or "redundant" in check_id
+            or "useless" in check_id
+        ):
+            categories["logic_error"].append(f)
         else:
             categories["other"].append(f)
 

@@ -410,11 +410,6 @@ export interface AnalysisSummary {
       status: string | null;
       capabilities: string[];
     };
-    semgrep: {
-      healthy: boolean;
-      status: string | null;
-      capabilities: string[];
-    };
   };
 }
 
@@ -429,6 +424,7 @@ export interface JoernMethodBranch {
   control_structure_type: string;
   condition: string | null;
   line_number: number | null;
+  filename?: string;
   children: Array<{ code: string; label: string }>;
 }
 
@@ -436,12 +432,30 @@ export interface JoernErrorPath {
   kind: "throw" | "try-catch" | "error-return";
   code: string;
   line_number: number | null;
+  filename?: string;
 }
 
 export interface JoernBoundaryValue {
   code: string;
   line_number: number | null;
+  filename?: string;
   operands: Array<{ code: string; type: string }>;
+}
+
+export interface JoernCallContext {
+  caller: string;
+  callerFile: string;
+  callerLine: number;
+  callSites: Array<{ line: number; args: string[] }>;
+  callerBranches: Array<{ type: string; condition: string; line: number }>;
+}
+
+export interface JoernCalleeImpact {
+  callee: string;
+  calleeFile: string;
+  calleeLine: number;
+  errorReturns: Array<{ code: string; line: number }>;
+  callSitesInTarget: Array<{ line: number; code: string }>;
 }
 
 export interface TaintPath {

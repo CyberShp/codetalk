@@ -1,6 +1,6 @@
 """Test point generation pipeline.
 
-Orchestrates: Joern (CPG) + Semgrep (rules) + GitNexus (graph) + DeepWiki (LLM)
+Orchestrates: Joern (CPG) + GitNexus (graph) + DeepWiki (LLM)
 to produce black-box test point descriptions.
 
 IRON LAW: This service is pure orchestration. Each tool call goes through
@@ -18,7 +18,6 @@ from app.adapters import create_adapter
 from app.adapters.base import AnalysisRequest
 from app.adapters.gitnexus import GitNexusAdapter
 from app.adapters.joern import JoernAdapter
-from app.adapters.semgrep import SemgrepAdapter
 from app.config import settings
 
 logger = logging.getLogger(__name__)
@@ -51,8 +50,8 @@ TEST_POINT_PROMPT = """你是一个资深测试架构师。以下是静态分析
 [边界值条件]
 {boundaries}
 
-[安全扫描发现]
-{findings}
+[跨函数控制流（谁调用了此函数 + 此函数调用了谁）]
+{cross_function}
 
 [调用链上下文]
 {call_chain}
@@ -71,20 +70,19 @@ async def generate_test_points(
 ) -> list[dict]:
     """
     Pipeline:
-    1. Joern: Get branches, throws, catches, boundary values for target
-    2. Semgrep: Get relevant findings for target files
-    3. GitNexus: Get call chain and process context
-    4. Assemble structured analysis data
-    5. Send to DeepWiki Chat with specialized prompt
-    6. Parse LLM output into structured test points
+    1. Joern: Get branches, errors, boundaries + cross-function context for target
+    2. GitNexus: Get call chain and process context
+    3. Assemble structured analysis data
+    4. Send to DeepWiki Chat with specialized prompt
+    5. Parse LLM output into structured test points
     """
     joern: JoernAdapter = create_adapter("joern")  # type: ignore[assignment]
-    semgrep: SemgrepAdapter = create_adapter("semgrep")  # type: ignore[assignment]
 
-    # Step 1: Joern analysis
+    # Step 1: Joern analysis (intra-function + cross-function)
     branches: Any = []
     errors: Any = []
     boundaries: Any = []
+    cross_function: Any = []
 
     try:
         await joern.prepare(AnalysisRequest(repo_local_path=repo_path))
@@ -93,6 +91,16 @@ async def generate_test_points(
             branches = await joern.function_branches(target)
             errors = await joern.error_paths(target)
             boundaries = await joern.boundary_values(target)
+            # Cross-function context
+            try:
+                call_ctx = await joern.call_context(target)
+                callee_imp = await joern.callee_impact(target)
+                cross_function = {
+                    "callers": call_ctx[:10] if isinstance(call_ctx, list) else call_ctx,
+                    "callees": callee_imp[:10] if isinstance(callee_imp, list) else callee_imp,
+                }
+            except Exception as exc:
+                logger.warning("Joern cross-function query failed (non-fatal): %s", exc)
         else:
             analysis = await joern.analyze(
                 AnalysisRequest(repo_local_path=repo_path)
@@ -110,42 +118,24 @@ async def generate_test_points(
         except Exception:
             pass
 
-    # Step 2: Semgrep findings
-    relevant_findings: list[dict] = []
-    try:
-        semgrep_result = await semgrep.analyze(
-            AnalysisRequest(repo_local_path=repo_path)
-        )
-        all_findings = semgrep_result.data.get("findings", [])
-        if target:
-            relevant_findings = [
-                f for f in all_findings
-                if target.lower() in (f.get("path", "") + f.get("check_id", "")).lower()
-            ]
-        else:
-            relevant_findings = all_findings
-    except Exception as exc:
-        logger.warning("Semgrep analysis failed (non-fatal): %s", exc)
-        relevant_findings = [{"error": f"Semgrep unavailable: {exc}"}]
-
-    # Step 3: GitNexus context (best-effort)
+    # Step 2: GitNexus context (best-effort)
     gitnexus_context = await _get_gitnexus_context(repo_path, target)
 
-    # Step 4: Assemble prompt
+    # Step 3: Assemble prompt
     prompt = TEST_POINT_PROMPT.format(
         perspective=perspective,
         branches=_format_for_prompt(branches, max_items=30),
         errors=_format_for_prompt(errors, max_items=20),
         boundaries=_format_for_prompt(boundaries, max_items=20),
-        findings=_format_for_prompt(relevant_findings, max_items=20),
+        cross_function=_format_for_prompt(cross_function, max_items=20),
         call_chain=gitnexus_context.get("call_chain", "N/A"),
         process_flow=gitnexus_context.get("process", "N/A"),
     )
 
-    # Step 5: Call DeepWiki LLM
+    # Step 4: Call DeepWiki LLM
     test_points_raw = await _call_deepwiki_chat(prompt, repo_path, llm_config)
 
-    # Step 6: Parse into structured format and normalize field names
+    # Step 5: Parse into structured format and normalize field names
     return _parse_test_points(test_points_raw, target)
 
 

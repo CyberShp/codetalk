@@ -79,17 +79,15 @@ def _semgrep() -> SemgrepAdapter:
 async def get_analysis_summary(
     repo_id: uuid.UUID, db: AsyncSession = Depends(get_db)
 ):
-    """Get combined analysis summary from Joern + Semgrep.
+    """Get analysis summary from Joern CPG engine.
 
-    Runs a lightweight health probe against both tools and returns
-    their availability plus any cached analysis state.
+    Runs a lightweight health probe and returns availability
+    plus capabilities.
     """
     repo = await _get_repo_or_404(repo_id, db)
     joern = _joern()
-    semgrep = _semgrep()
 
     joern_health = await joern.health_check()
-    semgrep_health = await semgrep.health_check()
 
     return {
         "repo_id": str(repo_id),
@@ -100,16 +98,37 @@ async def get_analysis_summary(
                 "status": joern_health.container_status,
                 "capabilities": [c.value for c in joern.capabilities()],
             },
-            "semgrep": {
-                "healthy": semgrep_health.is_healthy,
-                "status": semgrep_health.container_status,
-                "capabilities": [c.value for c in semgrep.capabilities()],
-            },
         },
     }
 
 
 # ── Joern endpoints ──
+
+
+@router.post("/{repo_id}/analysis/joern/rebuild")
+async def joern_rebuild(
+    repo_id: uuid.UUID, db: AsyncSession = Depends(get_db)
+):
+    """Force re-import of repo into Joern CPG.
+
+    Clears the cached project name so prepare() will run a fresh
+    importCode() even if the same repo was previously loaded.
+    Use after code changes or Joern container restart.
+    """
+    repo = await _get_repo_or_404(repo_id, db)
+    joern = _joern()
+    tool_path = _tool_path(repo)
+
+    # Clear cached project so prepare() won't skip re-import
+    joern._imported_project = None
+
+    try:
+        await joern.prepare(AnalysisRequest(repo_local_path=tool_path))
+        return {"status": "rebuilt", "repo_id": str(repo_id)}
+    except httpx.ConnectError:
+        raise HTTPException(503, "Joern service unavailable")
+    except httpx.HTTPStatusError as exc:
+        raise HTTPException(503, f"Joern error: {exc.response.status_code}")
 
 
 class _CpgqlRequest(BaseModel):
@@ -167,9 +186,14 @@ async def method_all_analysis(
     method_name: str,
     db: AsyncSession = Depends(get_db),
 ):
-    """Batch: branches + errors + boundaries in ONE CPG import.
+    """Batch: branches + errors + boundaries + cross-function context in ONE CPG import.
 
-    Avoids triple prepare() when frontend queries all three at once.
+    Returns both intra-function analysis AND inter-procedural context:
+    - branches: control flow within the function
+    - errors: exception/error paths within the function
+    - boundaries: boundary value comparisons within the function
+    - callContext: who calls this function and from what control flow
+    - calleeImpact: what this function calls and their error returns
     """
     repo = await _get_repo_or_404(repo_id, db)
     joern = _joern()
@@ -180,11 +204,24 @@ async def method_all_analysis(
         branches = await joern.function_branches(method_name)
         errors = await joern.error_paths(method_name)
         boundaries = await joern.boundary_values(method_name)
+        # Cross-function context — catch errors individually so partial results still return
+        call_ctx = []
+        callee_imp = []
+        try:
+            call_ctx = await joern.call_context(method_name)
+        except Exception as exc:
+            logger.warning("joern: call_context failed for %s: %s", method_name, exc)
+        try:
+            callee_imp = await joern.callee_impact(method_name)
+        except Exception as exc:
+            logger.warning("joern: callee_impact failed for %s: %s", method_name, exc)
         return {
             "method": method_name,
             "branches": branches,
             "errors": errors,
             "boundaries": boundaries,
+            "callContext": call_ctx,
+            "calleeImpact": callee_imp,
         }
     except httpx.ConnectError:
         raise HTTPException(503, "Joern service unavailable")
@@ -447,13 +484,12 @@ async def generate_test_points(
     body: _TestPointRequest,
     db: AsyncSession = Depends(get_db),
 ):
-    """Generate black-box test points using Joern + Semgrep + GitNexus + LLM.
+    """Generate black-box test points using Joern + GitNexus + LLM.
 
     Core pipeline:
-    1. Joern: extract control flow, exception paths, boundary values
-    2. Semgrep: extract security findings and pattern matches
-    3. GitNexus: resolve call chains and process flows
-    4. LLM (DeepWiki): translate to black-box test descriptions
+    1. Joern: extract control flow, exception paths, boundary values + cross-function context
+    2. GitNexus: resolve call chains and process flows
+    3. LLM (DeepWiki): translate to black-box test descriptions
     """
     repo = await _get_repo_or_404(repo_id, db)
     tool_path = _tool_path(repo)

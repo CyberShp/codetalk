@@ -213,9 +213,14 @@ class JoernAdapter(BaseToolAdapter):
         query = (
             f'cpg.method.nameExact("{method_name}")'
             ".controlStructure"
-            '.map(cs => Map("type" -> cs.controlStructureType, '
+            ".map(cs => Map("
+            '"control_structure_type" -> cs.controlStructureType, '
             '"condition" -> cs.condition.code.headOption.getOrElse(""), '
-            '"line" -> cs.lineNumber.getOrElse(-1)'
+            '"line_number" -> cs.lineNumber.getOrElse(-1), '
+            '"filename" -> cs.file.name.headOption.getOrElse(""), '
+            '"children" -> cs.astChildren.l.take(5).map(c => Map('
+            '"code" -> c.code.take(120), '
+            '"label" -> c.label))'
             ")).l.toJson"
         )
         return await self._query(query)
@@ -228,16 +233,19 @@ class JoernAdapter(BaseToolAdapter):
             '.nameExact("<operator>.throw")'
             '.map(t => Map("kind" -> "throw", '
             '"code" -> t.code, '
-            '"line" -> t.lineNumber.getOrElse(-1))).l\n'
+            '"line_number" -> t.lineNumber.getOrElse(-1), '
+            '"filename" -> t.file.name.headOption.getOrElse(""))).l\n'
             "val catches = method.tryBlock"
             '.map(t => Map("kind" -> "try-catch", '
-            '"code" -> t.code.take(200), '
-            '"line" -> t.lineNumber.getOrElse(-1))).l\n'
+            '"code" -> t.code, '
+            '"line_number" -> t.lineNumber.getOrElse(-1), '
+            '"filename" -> t.file.name.headOption.getOrElse(""))).l\n'
             "val errorReturns = method.ast.isReturn"
             '.where(_.code(".*[Ee]rr.*|.*null.*|.*None.*|.*false.*"))'
             '.map(r => Map("kind" -> "error-return", '
             '"code" -> r.code, '
-            '"line" -> r.lineNumber.getOrElse(-1))).l\n'
+            '"line_number" -> r.lineNumber.getOrElse(-1), '
+            '"filename" -> r.file.name.headOption.getOrElse(""))).l\n'
             "(throws ++ catches ++ errorReturns).toJson"
         )
         return await self._query(query)
@@ -248,9 +256,75 @@ class JoernAdapter(BaseToolAdapter):
             f'cpg.method.nameExact("{method_name}")'
             ".ast.isCall"
             '.name("<operator>.(greaterThan|lessThan|greaterEqualsThan|lessEqualsThan)")'
-            '.map(c => Map("code" -> c.code, '
-            '"line" -> c.lineNumber.getOrElse(-1)'
+            ".map(c => Map("
+            '"code" -> c.code, '
+            '"line_number" -> c.lineNumber.getOrElse(-1), '
+            '"filename" -> c.file.name.headOption.getOrElse(""), '
+            '"operands" -> c.argument.map(a => Map('
+            '"code" -> a.code, '
+            '"type" -> a.typeFullName)).l'
             ")).l.toJson"
+        )
+        return await self._query(query)
+
+    async def call_context(self, method_name: str) -> Any:
+        """Cross-function: who calls this function and from what control flow context.
+
+        Returns callers, their branches leading to the call, and the arguments passed.
+        This enables understanding how upstream decisions affect the target function.
+        """
+        query = (
+            f'val target = cpg.method.nameExact("{method_name}")\n'
+            # Direct callers and their call sites
+            "val callers = target.callIn.method.l\n"
+            "callers.map(caller => {\n"
+            '  val callSites = caller.call.nameExact("' + method_name + '").l\n'
+            "  val branchesBeforeCall = caller.controlStructure.l\n"
+            '  Map(\n'
+            '    "caller" -> caller.name,\n'
+            '    "callerFile" -> caller.filename,\n'
+            '    "callerLine" -> caller.lineNumber.getOrElse(-1),\n'
+            '    "callSites" -> callSites.map(cs => Map(\n'
+            '      "line" -> cs.lineNumber.getOrElse(-1),\n'
+            '      "args" -> cs.argument.code.l\n'
+            "    )),\n"
+            '    "callerBranches" -> branchesBeforeCall.map(cs => Map(\n'
+            '      "type" -> cs.controlStructureType,\n'
+            '      "condition" -> cs.condition.code.headOption.getOrElse(""),\n'
+            '      "line" -> cs.lineNumber.getOrElse(-1)\n'
+            "    ))\n"
+            "  )\n"
+            "}).l.toJson"
+        )
+        return await self._query(query)
+
+    async def callee_impact(self, method_name: str) -> Any:
+        """Cross-function: what does this function call and how do returns propagate.
+
+        Shows the callees, their error returns, and how the target function
+        handles (or doesn't handle) those return values in its branches.
+        """
+        query = (
+            f'val target = cpg.method.nameExact("{method_name}")\n'
+            "val callees = target.call.callee.internal.l\n"
+            "callees.map(callee => {\n"
+            '  val errorReturns = callee.ast.isReturn'
+            '.where(_.code(".*[Ee]rr.*|.*null.*|.*NULL.*|.*-1.*|.*false.*")).l\n'
+            "  val callSitesInTarget = target.call.nameExact(callee.name).l\n"
+            '  Map(\n'
+            '    "callee" -> callee.name,\n'
+            '    "calleeFile" -> callee.filename,\n'
+            '    "calleeLine" -> callee.lineNumber.getOrElse(-1),\n'
+            '    "errorReturns" -> errorReturns.map(r => Map(\n'
+            '      "code" -> r.code,\n'
+            '      "line" -> r.lineNumber.getOrElse(-1)\n'
+            "    )),\n"
+            '    "callSitesInTarget" -> callSitesInTarget.map(cs => Map(\n'
+            '      "line" -> cs.lineNumber.getOrElse(-1),\n'
+            '      "code" -> cs.code\n'
+            "    ))\n"
+            "  )\n"
+            "}).l.toJson"
         )
         return await self._query(query)
 
