@@ -43,7 +43,9 @@ async def _gitnexus_search_context(query: str, repo_name: str) -> str:
             repos_resp = await client.get("/api/repos", params={"repo": repo_name})
             if repos_resp.status_code != 200:
                 return ""
-            repos = repos_resp.json().get("repos", [])
+            raw = repos_resp.json()
+            # GitNexus returns a JSON array, not {"repos": [...]}.
+            repos = raw if isinstance(raw, list) else raw.get("repos", [])
             names = {r if isinstance(r, str) else (r.get("name") or r.get("repo") or "") for r in repos}
             if repo_name not in names:
                 return ""
@@ -117,10 +119,12 @@ async def repo_chat_stream(
         llm_config = result.scalar_one_or_none()
 
     # Inject GitNexus graph context — non-blocking, fails silently
+    # GitNexus indexes repos by the UUID directory name (e.g. "e08faf4b-..."),
+    # NOT by the human-readable repo.name (e.g. "iscsi").
     messages = list(body.messages)
     if messages and messages[-1].role == "user":
         gitnexus_ctx = await _gitnexus_search_context(
-            messages[-1].content, repo.name or ""
+            messages[-1].content, str(repo.id)
         )
         if gitnexus_ctx:
             last = messages[-1]
