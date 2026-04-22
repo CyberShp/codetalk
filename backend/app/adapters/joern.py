@@ -226,15 +226,33 @@ class JoernAdapter(BaseToolAdapter):
     async def taint_analysis(
         self, source_pattern: str, sink_pattern: str
     ) -> Any:
-        """Cross-function taint tracking from source to sink."""
+        """Taint-like analysis: find methods where source and sink co-occur.
+
+        Uses method co-occurrence instead of reachableBy, which is too
+        expensive / often times out on large C codebases.  Returns methods
+        that contain BOTH source-pattern and sink-pattern calls, with all
+        matching call sites sorted by line number to show the data flow path.
+        """
+        # Build element maps BEFORE putting into tuples to preserve type info.
+        # Joern's Scala loses Call-specific properties (filename, code) when
+        # the node is placed in a heterogeneous tuple.
         query = (
-            f'val source = cpg.call.name("{source_pattern}").l\n'
-            f'val sink = cpg.call.name("{sink_pattern}").l\n'
-            "sink.reachableBy(source)"
-            ".map(path => path.elements"
-            '.map(e => Map("code" -> e.code, '
-            '"filename" -> e.filename, '
-            '"line_number" -> e.lineNumber.getOrElse(-1))).l).l.toJson'
+            f'val srcPat = "{source_pattern}"\n'
+            f'val sinkPat = "{sink_pattern}"\n'
+            'cpg.method.nameNot("<global>").filter(m =>\n'
+            "  m.ast.isCall.name(srcPat).nonEmpty &&\n"
+            "  m.ast.isCall.name(sinkPat).nonEmpty\n"
+            ").l.take(30).map(m => {\n"
+            "  val srcEls = m.ast.isCall.name(srcPat).sortBy(_.lineNumber.getOrElse(0)).l\n"
+            '    .map(c => Map("code" -> c.code, "file" -> c.file.name.headOption.getOrElse(""),\n'
+            '      "line" -> c.lineNumber.getOrElse(-1).toString, "role" -> "source"))\n'
+            "  val sinkEls = m.ast.isCall.name(sinkPat).sortBy(_.lineNumber.getOrElse(0)).l\n"
+            '    .map(c => Map("code" -> c.code, "file" -> c.file.name.headOption.getOrElse(""),\n'
+            '      "line" -> c.lineNumber.getOrElse(-1).toString, "role" -> "sink"))\n'
+            '  val allEls = (srcEls ++ sinkEls).sortBy(_("line"))\n'
+            '  Map("method" -> m.name, "file" -> m.filename,\n'
+            '    "elements" -> allEls)\n'
+            "}).toJson"
         )
         return await self._query(query)
 

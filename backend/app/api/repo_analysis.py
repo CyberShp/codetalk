@@ -319,17 +319,39 @@ async def taint_analysis(
 
 
 def _reshape_taint_paths(raw: object) -> list[dict]:
-    """Convert Joern raw taint result to TaintPath[] shape.
+    """Convert Joern taint co-occurrence result to TaintPath[] shape.
 
-    Joern query returns: [[("code","file",line), ...], ...]
-    Frontend expects: [{"elements": [{"code": str, "filename": str, "line_number": int}]}]
+    New format (method co-occurrence): [{method, file, elements: [{code, filename, line_number, is_source}]}]
+    Legacy format (reachableBy): [[{code, filename, line_number}, ...], ...]
+    Frontend expects: [{"elements": [{"code": str, "filename": str, "line_number": int, "is_source"?: bool}], "method"?: str, "file"?: str}]
     Pure format conversion — no analysis logic.
     """
     if not isinstance(raw, list):
         return []
     paths = []
     for path_data in raw:
-        if isinstance(path_data, list):
+        if isinstance(path_data, dict):
+            # New co-occurrence format: {method, file, elements: [...]}
+            if "elements" in path_data:
+                elements = []
+                for step in (path_data["elements"] if isinstance(path_data["elements"], list) else []):
+                    if isinstance(step, dict):
+                        ln = step.get("line") or step.get("line_number") or step.get("lineNumber") or -1
+                        elements.append({
+                            "code": step.get("code", ""),
+                            "filename": step.get("file") or step.get("filename", ""),
+                            "line_number": int(ln) if ln is not None else -1,
+                            "is_source": step.get("role") == "source" if "role" in step else step.get("is_source", False),
+                        })
+                if elements:
+                    entry: dict = {"elements": elements}
+                    if path_data.get("method"):
+                        entry["method"] = path_data["method"]
+                    if path_data.get("file"):
+                        entry["file"] = path_data["file"]
+                    paths.append(entry)
+        elif isinstance(path_data, list):
+            # Legacy reachableBy format: [step, step, ...]
             elements = []
             for step in path_data:
                 if isinstance(step, (list, tuple)) and len(step) >= 3:
@@ -346,8 +368,6 @@ def _reshape_taint_paths(raw: object) -> list[dict]:
                     })
             if elements:
                 paths.append({"elements": elements})
-        elif isinstance(path_data, dict) and "elements" in path_data:
-            paths.append(path_data)
     return paths
 
 

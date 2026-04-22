@@ -286,13 +286,22 @@ def _normalize_test_point(tp: dict, index: int, target: str | None) -> dict:
 
     Handles field name variations (input→input_conditions, etc.) and
     ensures every required field is present. Pure format conversion.
+    Flattens any nested objects to strings — LLM output can contain
+    e.g. risk_level: {priority: "high"} which crashes React rendering.
     """
     normalized: dict = {}
 
-    # Apply field aliases
+    # Apply field aliases and flatten non-scalar values
     for key, val in tp.items():
         canonical = _FIELD_MAP.get(key, key)
-        normalized[canonical] = val
+        if isinstance(val, dict):
+            # LLM sometimes nests e.g. {priority: "high"} — extract first string value
+            str_vals = [v for v in val.values() if isinstance(v, str)]
+            normalized[canonical] = str_vals[0] if str_vals else json.dumps(val, ensure_ascii=False)
+        elif isinstance(val, list):
+            normalized[canonical] = ", ".join(str(v) for v in val) if val else ""
+        else:
+            normalized[canonical] = val
 
     # Ensure required fields with defaults
     normalized.setdefault("id", f"tp-{index + 1:03d}")
@@ -305,8 +314,13 @@ def _normalize_test_point(tp: dict, index: int, target: str | None) -> dict:
     normalized.setdefault("source_location", target)
     normalized.setdefault("category", "general")
 
-    # Validate risk_level
-    if normalized["risk_level"] not in ("high", "medium", "low"):
+    # Validate risk_level — extract from nested object if needed
+    rl = normalized["risk_level"]
+    if isinstance(rl, dict):
+        rl = rl.get("priority", rl.get("level", "medium"))
+    if rl not in ("high", "medium", "low"):
         normalized["risk_level"] = "medium"
+    else:
+        normalized["risk_level"] = rl
 
     return normalized

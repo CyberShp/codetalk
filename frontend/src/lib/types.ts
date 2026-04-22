@@ -460,7 +460,9 @@ export interface JoernCalleeImpact {
 }
 
 export interface TaintPath {
-  elements: Array<{ code: string; filename: string; line_number: number | null }>;
+  elements: Array<{ code: string; filename: string; line_number: number | null; is_source?: boolean }>;
+  method?: string;
+  file?: string;
 }
 
 /** Matches _normalize_test_point() output in test_point_generator.py */

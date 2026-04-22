@@ -699,10 +699,10 @@ function TaintView({ repoId }: { repoId: string }) {
   };
 
   const PRESETS = [
-    { label: "数值溢出", source: "read|recv|input", sink: "add|mul|sub|shift" },
-    { label: "空指针", source: "malloc|calloc|alloc", sink: "deref|memcpy|strcpy" },
-    { label: "边界越界", source: "read|recv|argc", sink: "array|index|offset" },
-    { label: "资源泄漏", source: "open|fopen|socket", sink: "close|fclose|free" },
+    { label: "数值溢出", source: ".*read.*|.*recv.*|.*scanf.*|.*fgets.*|.*input.*", sink: ".*<operator>\\.addition.*|.*<operator>\\.multiplication.*|.*<operator>\\.shiftLeft.*|.*atoi.*|.*strtol.*" },
+    { label: "空指针", source: ".*malloc.*|.*calloc.*|.*realloc.*|.*strdup.*", sink: ".*<operator>\\.indirection.*|.*memcpy.*|.*strcpy.*|.*strcat.*|.*memset.*|.*free.*" },
+    { label: "边界越界", source: ".*read.*|.*recv.*|.*fread.*|.*strlen.*|.*fgets.*", sink: ".*<operator>\\.indexAccess.*|.*memcpy.*|.*strncpy.*|.*memmove.*|.*sprintf.*" },
+    { label: "资源泄漏", source: ".*open.*|.*fopen.*|.*socket.*|.*accept.*|.*dup.*", sink: ".*close.*|.*fclose.*|.*shutdown.*|.*free.*" },
   ];
 
   return (
@@ -799,14 +799,22 @@ function TaintPathCards({ paths }: { paths: TaintPath[] }) {
           <div key={globalIdx} className="group relative rounded-2xl border border-outline-variant/10 bg-surface-container-low p-6 transition-all hover:border-outline-variant/30 hover:shadow-xl">
             <div className="absolute left-0 top-0 bottom-0 w-1 bg-gradient-to-b from-primary/40 to-transparent opacity-0 group-hover:opacity-100 transition-opacity" />
             <div className="flex justify-between items-center mb-6">
-              <span className="text-[10px] font-data uppercase tracking-[0.3em] text-on-surface-variant/40">传播路径 {globalIdx + 1}</span>
-              <span className="text-[10px] font-data text-on-surface-variant/20 tracking-widest">{path.elements?.length} 个节点</span>
+              <div className="flex items-center gap-3">
+                <span className="text-[10px] font-data uppercase tracking-[0.3em] text-on-surface-variant/40">传播路径 {globalIdx + 1}</span>
+                {path.method && (
+                  <span className="text-[10px] font-data text-primary/60 tracking-tight">{path.method}()</span>
+                )}
+              </div>
+              <div className="flex items-center gap-3">
+                {path.file && <span className="text-[9px] font-data text-on-surface-variant/20 tracking-tight">{shortPath(path.file)}</span>}
+                <span className="text-[10px] font-data text-on-surface-variant/20 tracking-widest">{path.elements?.length} 个节点</span>
+              </div>
             </div>
             <div className="space-y-0.5 relative">
               <div className="absolute left-2 top-2 bottom-2 w-px bg-outline-variant/10" />
               {(path.elements ?? []).map((el, j) => {
-                const isSource = j === 0;
-                const isSink = j === (path.elements.length - 1);
+                const isSource = el.is_source === true || (el.is_source === undefined && j === 0);
+                const isSink = el.is_source === false || (el.is_source === undefined && j === (path.elements.length - 1));
                 return (
                   <div key={j} className="flex items-start gap-4 py-2 relative group/node">
                     <div className={`mt-1.5 w-4 h-4 rounded-full border flex items-center justify-center z-10 transition-all ${
