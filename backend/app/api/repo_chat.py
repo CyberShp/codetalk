@@ -1,6 +1,8 @@
 """Repository-level chat streaming endpoint."""
 
 import logging
+import os
+import re
 import uuid
 from datetime import datetime, timezone
 
@@ -22,6 +24,10 @@ from app.services.chat_payload import ChatMessage, build_deepwiki_payload
 logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/api/repos", tags=["repo-chat"])
+
+# Regex to extract C-style identifiers from user messages (potential function names).
+# Don't use \b — Python treats Chinese characters as \w, breaking word boundaries.
+_IDENT_RE = re.compile(r"(?<![a-zA-Z0-9_])([a-zA-Z_][a-zA-Z0-9_]{2,})(?![a-zA-Z0-9_])")
 
 
 async def _gitnexus_search_context(query: str, repo_name: str) -> str:
@@ -80,6 +86,95 @@ async def _gitnexus_search_context(query: str, repo_name: str) -> str:
         return ""  # Non-fatal — chat works without graph context
 
 
+async def _joern_code_context(query: str, repo_local_path: str) -> str:
+    """Look up function source code via Joern CPG for identifiers in the query.
+
+    Iron Law: pure HTTP call to Joern /query-sync. No analysis.
+    Extracts C-style identifiers from query, searches Joern for matching methods,
+    reads source code from repo files. Returns formatted code snippets or "".
+    """
+    # Extract potential function names from query
+    identifiers = _IDENT_RE.findall(query)
+    # Filter out common non-function words
+    stop = {"this", "that", "what", "which", "from", "with", "the", "and", "for", "not",
+            "how", "does", "has", "have", "its", "are", "was", "were", "been", "will",
+            "can", "may", "should", "would", "could", "about", "into", "over", "after"}
+    candidates = [w for w in identifiers if w.lower() not in stop and ("_" in w or len(w) > 4)]
+    if not candidates:
+        return ""
+
+    logger.info("joern code context: candidates=%s from query=%r", candidates[:5], query[:60])
+    snippets: list[str] = []
+    try:
+        # Query Joern for methods matching candidate names
+        name_pat = "|".join(re.escape(c) for c in candidates[:5])
+        cpgql = (
+            f'cpg.method.name(".*({name_pat}).*").l.take(5).map(m => '
+            'Map("name" -> m.name, "file" -> m.filename, '
+            '"line" -> m.lineNumber.getOrElse(-1).toString, '
+            '"lineEnd" -> m.lineNumberEnd.getOrElse(-1).toString)).toJson'
+        )
+        async with httpx.AsyncClient(
+            base_url=settings.joern_base_url, timeout=10
+        ) as client:
+            resp = await client.post("/query-sync", json={"query": cpgql})
+            if resp.status_code != 200:
+                return ""
+            data = resp.json()
+            stdout = data.get("stdout", "")
+            # Strip ANSI codes
+            clean = re.sub(r"\x1b\[[0-9;]*m", "", stdout)
+            # Parse Scala REPL output
+            import json as _json
+            methods = []
+            for line in clean.strip().split("\n"):
+                eq = line.find("= ")
+                if eq == -1:
+                    continue
+                val = line[eq + 2:].strip()
+                if val.startswith('"'):
+                    try:
+                        inner = _json.loads(val)
+                        if isinstance(inner, str):
+                            methods = _json.loads(inner)
+                    except Exception:
+                        pass
+
+        # Read source code from files for each method
+        for m in methods[:3]:
+            fname = m.get("file", "")
+            start = int(m.get("line", -1))
+            end = int(m.get("lineEnd", -1))
+            if start < 0 or not fname:
+                continue
+            # Build full path
+            fpath = os.path.join(repo_local_path, fname)
+            if not os.path.isfile(fpath):
+                continue
+            # Read lines [start-2, end+2] for context
+            try:
+                with open(fpath, encoding="utf-8", errors="replace") as f:
+                    all_lines = f.readlines()
+                lo = max(0, start - 2)
+                hi = min(len(all_lines), (end if end > start else start + 30) + 2)
+                code_lines = all_lines[lo:hi]
+                code = "".join(code_lines).rstrip()
+                if len(code) > 1500:
+                    code = code[:1500] + "\n// ... (truncated)"
+                snippets.append(f"// {m['name']}() @ {fname}:{start}\n{code}")
+            except Exception:
+                continue
+
+        if not snippets:
+            logger.info("joern code context: methods found but no source snippets read")
+            return ""
+        logger.info("joern code context: returning %d snippets", len(snippets))
+        return "[源码片段]:\n```c\n" + "\n\n".join(snippets) + "\n```"
+    except Exception as exc:
+        logger.warning("joern code context failed: %s", exc)
+        return ""  # Non-fatal
+
+
 class RepoChatRequest(BaseModel):
     repo_id: uuid.UUID
     messages: list[ChatMessage]
@@ -118,19 +213,29 @@ async def repo_chat_stream(
         )
         llm_config = result.scalar_one_or_none()
 
-    # Inject GitNexus graph context — non-blocking, fails silently
+    # Inject tool context — non-blocking, each fails silently.
+    # 1) GitNexus: graph relationships (symbols, clusters, connections)
+    # 2) Joern CPG: actual source code of functions mentioned in the query
     # GitNexus indexes repos by the UUID directory name (e.g. "e08faf4b-..."),
     # NOT by the human-readable repo.name (e.g. "iscsi").
     messages = list(body.messages)
     if messages and messages[-1].role == "user":
-        gitnexus_ctx = await _gitnexus_search_context(
-            messages[-1].content, str(repo.id)
-        )
+        user_text = messages[-1].content
+        extra_ctx_parts: list[str] = []
+
+        gitnexus_ctx = await _gitnexus_search_context(user_text, str(repo.id))
         if gitnexus_ctx:
+            extra_ctx_parts.append(gitnexus_ctx)
+
+        joern_ctx = await _joern_code_context(user_text, repo.local_path)
+        if joern_ctx:
+            extra_ctx_parts.append(joern_ctx)
+
+        if extra_ctx_parts:
             last = messages[-1]
             messages[-1] = ChatMessage(
                 role=last.role,
-                content=f"{last.content}\n\n{gitnexus_ctx}",
+                content=user_text + "\n\n" + "\n\n".join(extra_ctx_parts),
             )
 
     payload, trust_env = build_deepwiki_payload(
