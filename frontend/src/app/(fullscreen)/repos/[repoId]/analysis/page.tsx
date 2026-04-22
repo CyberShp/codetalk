@@ -95,11 +95,12 @@ function Pagination({
 }
 
 function usePagination<T>(items: T[], pageSize = PAGE_SIZE) {
+  const safe = Array.isArray(items) ? items : [];
   const [page, setPage] = useState(1);
-  const totalPages = Math.max(1, Math.ceil(items.length / pageSize));
+  const totalPages = Math.max(1, Math.ceil(safe.length / pageSize));
   // Reset to page 1 when items change
   const safePage = Math.min(page, totalPages);
-  const paged = items.slice((safePage - 1) * pageSize, safePage * pageSize);
+  const paged = safe.slice((safePage - 1) * pageSize, safePage * pageSize);
   return { page: safePage, setPage, totalPages, paged };
 }
 
@@ -379,11 +380,11 @@ function BranchesView({ repoId }: { repoId: string }) {
     setErr("");
     try {
       const result = await api.repos.analysis.joern.allForMethod(repoId, name);
-      setBranches(result.branches ?? []);
-      setErrors(result.errors ?? []);
-      setBoundaries(result.boundaries ?? []);
-      setCallContext(result.callContext ?? []);
-      setCalleeImpact(result.calleeImpact ?? []);
+      setBranches(Array.isArray(result.branches) ? result.branches : []);
+      setErrors(Array.isArray(result.errors) ? result.errors : []);
+      setBoundaries(Array.isArray(result.boundaries) ? result.boundaries : []);
+      setCallContext(Array.isArray(result.callContext) ? result.callContext : []);
+      setCalleeImpact(Array.isArray(result.calleeImpact) ? result.calleeImpact : []);
       setQueried(true);
     } catch (e) {
       setErr(e instanceof Error ? e.message : "查询失败");
