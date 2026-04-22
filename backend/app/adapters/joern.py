@@ -300,61 +300,68 @@ class JoernAdapter(BaseToolAdapter):
     async def call_context(self, method_name: str) -> Any:
         """Cross-function: who calls this function and from what control flow context.
 
-        Returns callers, their branches leading to the call, and the arguments passed.
-        This enables understanding how upstream decisions affect the target function.
+        Uses AST-based call-site search + line-range enclosing-method lookup
+        because Joern's c2cpg call-graph edges are often incomplete for C code
+        (macros, static functions, missing headers).
         """
         query = (
-            f'val target = cpg.method.nameExact("{method_name}")\n'
-            # Direct callers and their call sites
-            "val callers = target.callIn.method.l\n"
-            "callers.map(caller => {\n"
-            '  val callSites = caller.call.nameExact("' + method_name + '").l\n'
-            "  val branchesBeforeCall = caller.controlStructure.l\n"
-            '  Map(\n'
+            f'val callSites = cpg.call.nameExact("{method_name}").l\n'
+            "callSites.flatMap(cs => {\n"
+            "  val line = cs.lineNumber.getOrElse(-1)\n"
+            '  val file = cs.file.name.headOption.getOrElse("")\n'
+            '  val enclosing = cpg.method.filename(file)\n'
+            '    .filter(m => m.name != "<global>"\n'
+            "      && m.lineNumber.getOrElse(0) <= line\n"
+            "      && m.lineNumberEnd.getOrElse(0) >= line).l\n"
+            "  enclosing.map(caller => Map(\n"
             '    "caller" -> caller.name,\n'
             '    "callerFile" -> caller.filename,\n'
             '    "callerLine" -> caller.lineNumber.getOrElse(-1),\n'
-            '    "callSites" -> callSites.map(cs => Map(\n'
-            '      "line" -> cs.lineNumber.getOrElse(-1),\n'
-            '      "args" -> cs.argument.code.l\n'
+            '    "callSites" -> List(Map(\n'
+            '      "line" -> line,\n'
+            "      \"args\" -> cs.argument.code.l\n"
             "    )),\n"
-            '    "callerBranches" -> branchesBeforeCall.map(cs => Map(\n'
-            '      "type" -> cs.controlStructureType,\n'
-            '      "condition" -> cs.condition.code.headOption.getOrElse(""),\n'
-            '      "line" -> cs.lineNumber.getOrElse(-1)\n'
+            '    "callerBranches" -> caller.controlStructure.l.map(b => Map(\n'
+            '      "type" -> b.controlStructureType,\n'
+            '      "condition" -> b.condition.code.headOption.getOrElse(""),\n'
+            '      "line" -> b.lineNumber.getOrElse(-1)\n'
             "    ))\n"
-            "  )\n"
-            "}).l.toJson"
+            "  ))\n"
+            "}).toJson"
         )
         return await self._query(query)
 
     async def callee_impact(self, method_name: str) -> Any:
         """Cross-function: what does this function call and how do returns propagate.
 
-        Shows the callees, their error returns, and how the target function
-        handles (or doesn't handle) those return values in its branches.
+        Uses AST-based call discovery (method.ast.isCall) instead of
+        call-graph edges (method.call.callee) because Joern's c2cpg
+        often fails to build call edges for C code.
         """
         query = (
-            f'val target = cpg.method.nameExact("{method_name}")\n'
-            "val callees = target.call.callee.internal.l\n"
-            "callees.map(callee => {\n"
-            '  val errorReturns = callee.ast.isReturn'
+            f'val target = cpg.method.nameExact("{method_name}").head\n'
+            'val callNames = target.ast.isCall.filterNot(_.name.startsWith("<")).name.dedup.l\n'
+            "callNames.flatMap(cn => {\n"
+            "  val calleeMethods = cpg.method.nameExact(cn).internal.l\n"
+            "  calleeMethods.map(callee => {\n"
+            '    val errorReturns = callee.ast.isReturn'
             '.where(_.code(".*[Ee]rr.*|.*null.*|.*NULL.*|.*-1.*|.*false.*")).l\n'
-            "  val callSitesInTarget = target.call.nameExact(callee.name).l\n"
-            '  Map(\n'
-            '    "callee" -> callee.name,\n'
-            '    "calleeFile" -> callee.filename,\n'
-            '    "calleeLine" -> callee.lineNumber.getOrElse(-1),\n'
-            '    "errorReturns" -> errorReturns.map(r => Map(\n'
-            '      "code" -> r.code,\n'
-            '      "line" -> r.lineNumber.getOrElse(-1)\n'
-            "    )),\n"
-            '    "callSitesInTarget" -> callSitesInTarget.map(cs => Map(\n'
-            '      "line" -> cs.lineNumber.getOrElse(-1),\n'
-            '      "code" -> cs.code\n'
-            "    ))\n"
-            "  )\n"
-            "}).l.toJson"
+            "    val callSitesInTarget = target.ast.isCall.nameExact(cn).l\n"
+            '    Map(\n'
+            '      "callee" -> callee.name,\n'
+            '      "calleeFile" -> callee.filename,\n'
+            '      "calleeLine" -> callee.lineNumber.getOrElse(-1),\n'
+            '      "errorReturns" -> errorReturns.map(r => Map(\n'
+            '        "code" -> r.code,\n'
+            '        "line" -> r.lineNumber.getOrElse(-1)\n'
+            "      )),\n"
+            '      "callSitesInTarget" -> callSitesInTarget.map(cs => Map(\n'
+            '        "line" -> cs.lineNumber.getOrElse(-1),\n'
+            '        "code" -> cs.code\n'
+            "      ))\n"
+            "    )\n"
+            "  })\n"
+            "}).toJson"
         )
         return await self._query(query)
 
