@@ -103,7 +103,6 @@ async def _joern_code_context(query: str, repo_local_path: str) -> str:
     if not candidates:
         return ""
 
-    logger.info("joern code context: candidates=%s from query=%r", candidates[:5], query[:60])
     snippets: list[str] = []
     try:
         # Query Joern for methods matching candidate names
@@ -166,12 +165,9 @@ async def _joern_code_context(query: str, repo_local_path: str) -> str:
                 continue
 
         if not snippets:
-            logger.info("joern code context: methods found but no source snippets read")
             return ""
-        logger.info("joern code context: returning %d snippets", len(snippets))
         return "[源码片段]:\n```c\n" + "\n\n".join(snippets) + "\n```"
-    except Exception as exc:
-        logger.warning("joern code context failed: %s", exc)
+    except Exception:
         return ""  # Non-fatal
 
 

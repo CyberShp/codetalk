@@ -143,7 +143,13 @@ class DeepwikiAdapter(BaseToolAdapter):
 
         chat_payload: dict = {
             "repo_url": tool_repo_path,
+            "type": "local",
             "messages": [{"role": "user", "content": prompt}],
+            "excluded_dirs": "\n".join([
+                "node_modules", ".git", "dist", "build", "__pycache__",
+                ".next", "vendor", "coverage", ".nyc_output",
+                ".venv", "venv", ".tox", "egg-info",
+            ]),
         }
 
         if request.options.get("provider"):
