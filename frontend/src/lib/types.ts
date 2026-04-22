@@ -127,7 +127,8 @@ export interface ToolInfo {
   name: string;
   capabilities: ToolCapability[];
   healthy: boolean;
-  message: string;
+  container_status?: string;
+  message?: string;
 }
 
 export interface LogEntry {

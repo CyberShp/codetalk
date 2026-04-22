@@ -173,7 +173,7 @@ export class ChatWsClient {
 
 确保 WS 在 host-run 模式下正常工作：
 
-1. 前端 `chatWs.ts` 的 WS URL 使用 `location.host`（自动适配 host-run 端口 3004）
+1. 前端 `chatWs.ts` 的 WS URL 使用 `NEXT_PUBLIC_API_URL` / `NEXT_PUBLIC_WS_URL`，host-run 默认落到 `localhost:8000`
 2. Next.js 开发代理：如果前端 devServer 代理 API 请求，需确认 WS 升级请求也被代理
    - 检查 `next.config.js` 或 `next.config.ts` 中的 rewrites/proxy 配置
    - 如需要，添加 WS 代理规则
@@ -203,7 +203,7 @@ export class ChatWsClient {
 - [ ] Deep Research 多轮续研在 WS 模式下自动执行，前端显示轮次 Ribbon
 - [ ] WS 连接失败（如手动断开）→ 自动降级到 HTTP，用户无感知
 - [ ] `stop` 操作在 WS 模式下正常中止流（无 race condition）
-- [ ] Host-run 模式（前端 3003 / 后端 3004）WS 正常工作
+- [ ] Host-run 模式（前端 3005 / 后端 8000）WS 正常工作
 - [ ] Docker 模式（前端 3000 / 后端 8000）WS 正常工作
 - [ ] `repo_chat.py` 原 HTTP 端点仍正常工作（未被破坏）
 - [ ] 无 lint 错误

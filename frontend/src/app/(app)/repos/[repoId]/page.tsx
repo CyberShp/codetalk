@@ -34,6 +34,7 @@ function groupGrepResults(
 
 const INTELLIGENCE_LABELS = new Set(["Process", "Community", "Function", "Method", "Class"]);
 const tabs = ["documentation", "graph", "search"] as const;
+const GRAPH_RESTORE_REFRESH_MS = 5 * 60 * 1000;
 type Tab = (typeof tabs)[number];
 
 export default function RepoDetailPage() {
@@ -171,10 +172,15 @@ export default function RepoDetailPage() {
   }, [tab, graphResp, graphError, loadGraph]);
 
   const restoreRefresh = useCallback(() => {
-    if (tab === "graph") {
-      void loadGraph(true);
-    }
-  }, [tab, loadGraph]);
+    if (tab !== "graph") return;
+    const analyzedAtMs = graphResp?.analyzed_at ? Date.parse(graphResp.analyzed_at) : NaN;
+    const graphFresh =
+      !!graphResp?.graph &&
+      Number.isFinite(analyzedAtMs) &&
+      Date.now() - analyzedAtMs < GRAPH_RESTORE_REFRESH_MS;
+    if (graphFresh && !graphError) return;
+    void loadGraph(!!graphResp?.graph);
+  }, [tab, graphResp, graphError, loadGraph]);
   usePageRestoreRefresh(restoreRefresh);
 
   const handleSearch = async (e?: React.FormEvent) => {

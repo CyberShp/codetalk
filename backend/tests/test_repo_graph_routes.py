@@ -1,7 +1,9 @@
+import asyncio
 import unittest
 import uuid
 from datetime import datetime, timezone
 from types import SimpleNamespace
+from unittest.mock import AsyncMock, patch
 
 import httpx
 
@@ -41,6 +43,8 @@ class _FakeDB:
 class RepoGraphRouteContractTests(unittest.IsolatedAsyncioTestCase):
     async def asyncSetUp(self) -> None:
         self.holder = {"db": None}
+        repo_graph_api._live_graph_cache.clear()
+        repo_graph_api._live_graph_inflight.clear()
 
         async def _fake_db():
             yield self.holder["db"]
@@ -54,6 +58,8 @@ class RepoGraphRouteContractTests(unittest.IsolatedAsyncioTestCase):
     async def asyncTearDown(self) -> None:
         await self.client.aclose()
         app.dependency_overrides.clear()
+        repo_graph_api._live_graph_cache.clear()
+        repo_graph_api._live_graph_inflight.clear()
 
     async def test_get_repo_graph_cached_contract(self) -> None:
         repo_id = uuid.uuid4()
@@ -107,6 +113,71 @@ class RepoGraphRouteContractTests(unittest.IsolatedAsyncioTestCase):
                 "analyzed_at": None,
             },
         )
+
+    async def test_get_repo_graph_reuses_live_cache_across_requests(self) -> None:
+        repo_id = uuid.uuid4()
+        repo = SimpleNamespace(id=repo_id, local_path="/data/repos/open-iscsi")
+        self.holder["db"] = _FakeDB(
+            get_map={repo_id: repo},
+            execute_results=[_FakeResult(items=[]), _FakeResult(items=[])],
+        )
+        live_payload = {
+            "status": "ready",
+            "graph": {"nodes": [{"id": "n1"}], "edges": []},
+            "metadata": {"node_count": 1},
+            "analyzed_at": "2026-04-22T00:00:00+00:00",
+        }
+
+        with patch.object(
+            repo_graph_api,
+            "_build_live_graph_response",
+            AsyncMock(return_value=live_payload),
+        ) as build_live:
+            first = await self.client.get(f"/api/repos/{repo_id}/graph")
+            second = await self.client.get(f"/api/repos/{repo_id}/graph")
+
+        self.assertEqual(first.status_code, 200)
+        self.assertEqual(second.status_code, 200)
+        self.assertEqual(first.json(), live_payload)
+        self.assertEqual(second.json(), live_payload)
+        self.assertEqual(build_live.await_count, 1)
+
+    async def test_get_repo_graph_dedupes_concurrent_live_builds(self) -> None:
+        repo_id = uuid.uuid4()
+        repo = SimpleNamespace(id=repo_id, local_path="/data/repos/open-iscsi")
+        self.holder["db"] = _FakeDB(
+            get_map={repo_id: repo},
+            execute_results=[
+                _FakeResult(items=[]),
+                _FakeResult(items=[]),
+            ],
+        )
+        live_payload = {
+            "status": "ready",
+            "graph": {"nodes": [{"id": "n1"}], "edges": []},
+            "metadata": {"node_count": 1},
+            "analyzed_at": "2026-04-22T00:00:00+00:00",
+        }
+
+        async def slow_build(_repo_local_path: str) -> dict:
+            await asyncio.sleep(0.05)
+            return live_payload
+
+        with patch.object(
+            repo_graph_api,
+            "_build_live_graph_response",
+            AsyncMock(side_effect=slow_build),
+        ) as build_live:
+            first, second = await asyncio.gather(
+                self.client.get(f"/api/repos/{repo_id}/graph"),
+                self.client.get(f"/api/repos/{repo_id}/graph"),
+            )
+
+        self.assertEqual(first.status_code, 200)
+        self.assertEqual(second.status_code, 200)
+        self.assertEqual(first.json(), live_payload)
+        self.assertEqual(second.json(), live_payload)
+        self.assertEqual(build_live.await_count, 1)
 
 
 if __name__ == "__main__":

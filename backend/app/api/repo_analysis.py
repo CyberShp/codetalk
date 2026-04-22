@@ -114,6 +114,7 @@ async def joern_rebuild(
 
     # Clear cached project so prepare() won't skip re-import
     joern._imported_project = None
+    JoernAdapter.clear_cached_project(joern.base_url)
 
     try:
         await joern.prepare(AnalysisRequest(repo_local_path=tool_path))

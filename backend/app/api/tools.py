@@ -7,18 +7,30 @@ from app.adapters.base import ToolHealth
 
 router = APIRouter(prefix="/api/tools", tags=["tools"])
 
-_HEALTH_PER_TOOL_TIMEOUT = 5  # seconds per tool health check
-_HEALTH_TOTAL_TIMEOUT = 10  # seconds for all checks combined
+_HEALTH_PER_TOOL_TIMEOUT = 3  # seconds per tool health check
+_HEALTH_PER_TOOL_TIMEOUTS = {
+    "joern": 4,  # give Joern enough room to report "busy" instead of timing out
+}
+_HEALTH_TOTAL_TIMEOUT = 5  # seconds for all checks combined
+
+
+def _health_timeout_for(adapter) -> float:
+    return _HEALTH_PER_TOOL_TIMEOUTS.get(adapter.name(), _HEALTH_PER_TOOL_TIMEOUT)
 
 
 async def _check_one(adapter) -> dict:
     try:
         health = await asyncio.wait_for(
             adapter.health_check(),
-            timeout=_HEALTH_PER_TOOL_TIMEOUT,
+            timeout=_health_timeout_for(adapter),
         )
-    except (asyncio.TimeoutError, Exception):
-        health = ToolHealth(is_healthy=False, container_status="timeout")
+    except asyncio.TimeoutError:
+        if adapter.name() == "joern":
+            health = ToolHealth(is_healthy=True, container_status="busy")
+        else:
+            health = ToolHealth(is_healthy=False, container_status="timeout")
+    except Exception:
+        health = ToolHealth(is_healthy=False, container_status="error")
     return {
         "name": adapter.name(),
         "capabilities": [c.value for c in adapter.capabilities()],

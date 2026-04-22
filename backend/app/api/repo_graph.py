@@ -1,6 +1,8 @@
 """Repository-level graph data endpoint."""
 
+import asyncio
 import logging
+import time
 import uuid
 from datetime import datetime, timezone
 
@@ -17,6 +19,10 @@ from app.models.task import AnalysisTask
 
 router = APIRouter(prefix="/api/repos", tags=["repo-graph"])
 logger = logging.getLogger(__name__)
+
+_LIVE_GRAPH_CACHE_TTL_SECONDS = 300
+_live_graph_cache: dict[str, tuple[float, dict]] = {}
+_live_graph_inflight: dict[str, asyncio.Task[dict]] = {}
 
 
 def _task_graph_response(tasks: list[AnalysisTask]) -> dict | None:
@@ -55,6 +61,45 @@ async def _build_live_graph_response(repo_local_path: str) -> dict:
         await adapter.cleanup(request)
 
 
+def _cached_live_graph(repo_id: uuid.UUID) -> dict | None:
+    entry = _live_graph_cache.get(str(repo_id))
+    if entry is None:
+        return None
+    cached_at, payload = entry
+    if time.time() - cached_at > _LIVE_GRAPH_CACHE_TTL_SECONDS:
+        _live_graph_cache.pop(str(repo_id), None)
+        return None
+    return payload
+
+
+def _store_live_graph(repo_id: uuid.UUID, payload: dict) -> None:
+    _live_graph_cache[str(repo_id)] = (time.time(), payload)
+
+
+async def _get_or_build_live_graph(repo_id: uuid.UUID, repo_local_path: str) -> dict:
+    cached_live = _cached_live_graph(repo_id)
+    if cached_live:
+        return cached_live
+
+    key = str(repo_id)
+    task = _live_graph_inflight.get(key)
+    if task is None or task.done():
+        async def _runner() -> dict:
+            live = await _build_live_graph_response(repo_local_path)
+            _store_live_graph(repo_id, live)
+            return live
+
+        task = asyncio.create_task(_runner())
+        _live_graph_inflight[key] = task
+
+    try:
+        return await task
+    finally:
+        current = _live_graph_inflight.get(key)
+        if current is task and task.done():
+            _live_graph_inflight.pop(key, None)
+
+
 @router.get("/{repo_id}/graph")
 async def get_repo_graph(repo_id: uuid.UUID, db: AsyncSession = Depends(get_db)):
     """Get latest graph data for repo.
@@ -83,7 +128,7 @@ async def get_repo_graph(repo_id: uuid.UUID, db: AsyncSession = Depends(get_db))
         return cached
 
     try:
-        return await _build_live_graph_response(repo.local_path)
+        return await _get_or_build_live_graph(repo_id, repo.local_path)
     except Exception as exc:
         logger.warning("Live GitNexus graph failed for repo %s: %s (%s)", repo_id, exc, type(exc).__name__)
 

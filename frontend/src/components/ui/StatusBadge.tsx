@@ -1,6 +1,16 @@
 "use client";
 
-type Variant = "running" | "completed" | "failed" | "pending" | "cancelled" | "online" | "offline";
+type Variant =
+  | "running"
+  | "completed"
+  | "failed"
+  | "pending"
+  | "cancelled"
+  | "online"
+  | "offline"
+  | "checking"
+  | "busy"
+  | "timeout";
 
 const styles: Record<Variant, { bg: string; border: string; dot: string; text: string; animate?: string; glow: string }> = {
   running: {
@@ -54,6 +64,29 @@ const styles: Record<Variant, { bg: string; border: string; dot: string; text: s
     text: "text-tertiary",
     glow: "shadow-none",
   },
+  checking: {
+    bg: "bg-on-surface-variant/5",
+    border: "border-outline-variant/30",
+    dot: "bg-primary/70",
+    text: "text-on-surface-variant",
+    animate: "animate-pulse",
+    glow: "shadow-none",
+  },
+  busy: {
+    bg: "bg-amber-400/10",
+    border: "border-amber-400/20",
+    dot: "bg-amber-400",
+    text: "text-amber-400",
+    animate: "animate-pulse",
+    glow: "shadow-none",
+  },
+  timeout: {
+    bg: "bg-amber-400/10",
+    border: "border-amber-400/20",
+    dot: "bg-amber-400",
+    text: "text-amber-400",
+    glow: "shadow-none",
+  },
 };
 
 const labels: Record<Variant, string> = {
@@ -64,6 +97,9 @@ const labels: Record<Variant, string> = {
   cancelled: "已取消",
   online: "在线",
   offline: "离线",
+  checking: "检测中",
+  busy: "繁忙",
+  timeout: "超时",
 };
 
 export default function StatusBadge({ status }: { status: Variant }) {

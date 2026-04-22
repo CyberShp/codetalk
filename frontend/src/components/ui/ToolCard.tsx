@@ -9,6 +9,8 @@ interface Props {
   description: string;
   capabilities: string[];
   healthy: boolean;
+  containerStatus?: string;
+  loading?: boolean;
   comingSoon?: boolean;
   onStatusChange?: () => void;
 }
@@ -18,12 +20,24 @@ export default function ToolCard({
   description,
   capabilities,
   healthy,
+  containerStatus,
+  loading,
   comingSoon,
   onStatusChange,
 }: Props) {
   const [restarting, setRestarting] = useState(false);
   const [feedback, setFeedback] = useState<{ ok: boolean; msg: string } | null>(null);
-  const status = comingSoon ? "offline" : healthy ? "online" : "offline";
+  const status = comingSoon
+    ? "offline"
+    : loading
+      ? "checking"
+      : containerStatus === "busy"
+        ? "busy"
+        : containerStatus === "timeout"
+          ? "timeout"
+          : healthy
+            ? "online"
+            : "offline";
 
   const handleRestart = async () => {
     setRestarting(true);
@@ -57,7 +71,7 @@ export default function ToolCard({
           </p>
         </div>
         <div className="shrink-0 pt-0.5 flex items-center gap-2">
-          {!comingSoon && (
+          {!comingSoon && !loading && (
             <button
               onClick={handleRestart}
               disabled={restarting}
@@ -73,6 +87,11 @@ export default function ToolCard({
       {feedback && (
         <p className={`text-[10px] ${feedback.ok ? "text-secondary-fixed-dim" : "text-tertiary"}`}>
           {feedback.msg}
+        </p>
+      )}
+      {!feedback && !comingSoon && !loading && containerStatus && containerStatus !== "running" && (
+        <p className="text-[10px] text-on-surface-variant/60">
+          状态: {containerStatus}
         </p>
       )}
 

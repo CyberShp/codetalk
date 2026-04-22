@@ -31,10 +31,32 @@ _POLL_TIMEOUT = 600  # max seconds to wait for analysis
 
 
 class GitNexusAdapter(BaseToolAdapter):
+    _indexed_repo_by_path: dict[tuple[str, str], str] = {}
+    _prepare_locks: dict[tuple[str, str, int], asyncio.Lock] = {}
+
     def __init__(self, base_url: str = "http://gitnexus:7100"):
         self.base_url = base_url
         self._client: httpx.AsyncClient | None = None
         self._repo_name: str = ""
+
+    @classmethod
+    def _prepare_lock_for(cls, base_url: str, tool_repo_path: str) -> asyncio.Lock:
+        loop = asyncio.get_running_loop()
+        key = (base_url, tool_repo_path, id(loop))
+        lock = cls._prepare_locks.get(key)
+        if lock is None:
+            lock = asyncio.Lock()
+            cls._prepare_locks[key] = lock
+        return lock
+
+    @classmethod
+    def clear_cached_repo(cls, base_url: str, tool_repo_path: str | None = None) -> None:
+        if tool_repo_path is None:
+            stale = [key for key in cls._indexed_repo_by_path if key[0] == base_url]
+            for key in stale:
+                cls._indexed_repo_by_path.pop(key, None)
+            return
+        cls._indexed_repo_by_path.pop((base_url, tool_repo_path), None)
 
     @property
     def client(self) -> httpx.AsyncClient:
@@ -83,35 +105,66 @@ class GitNexusAdapter(BaseToolAdapter):
             host_base_path=settings.repos_base_path,
             tool_base_path=settings.tool_repos_base_path,
         )
-        resp = await self.client.post(
-            "/api/analyze",
-            json={"path": tool_repo_path},
-        )
-        resp.raise_for_status()
-        job = resp.json()
-        job_id = job["jobId"]
-        logger.info("gitnexus: analysis job started: %s", job_id)
+        cache_key = (self.base_url, tool_repo_path)
 
-        elapsed = 0
-        while elapsed < _POLL_TIMEOUT:
-            await asyncio.sleep(_POLL_INTERVAL)
-            elapsed += _POLL_INTERVAL
-
-            status_resp = await self.client.get(f"/api/analyze/{job_id}")
-            status = status_resp.json()
-
-            if status["status"] == "complete":
-                self._repo_name = status.get("repoName", "")
-                logger.info("gitnexus: indexing complete for %s", self._repo_name)
-                # Fire-and-forget embedding so semantic search can upgrade from BM25
-                asyncio.ensure_future(self._trigger_embed())
-                return
-            if status["status"] == "failed":
-                raise RuntimeError(
-                    f"GitNexus indexing failed: {status.get('error', 'unknown')}"
+        async with self._prepare_lock_for(self.base_url, tool_repo_path):
+            cached_repo_name = self._indexed_repo_by_path.get(cache_key)
+            if cached_repo_name and await self._repo_exists(cached_repo_name):
+                self._repo_name = cached_repo_name
+                logger.info(
+                    "gitnexus: repo already indexed for %s, skipping analyze",
+                    cached_repo_name,
                 )
+                return
+            if cached_repo_name:
+                self.clear_cached_repo(self.base_url, tool_repo_path)
 
-        raise RuntimeError("GitNexus indexing timed out")
+            resp = await self.client.post(
+                "/api/analyze",
+                json={"path": tool_repo_path},
+            )
+            resp.raise_for_status()
+            job = resp.json()
+            job_id = job["jobId"]
+            logger.info("gitnexus: analysis job started: %s", job_id)
+
+            elapsed = 0
+            while elapsed < _POLL_TIMEOUT:
+                await asyncio.sleep(_POLL_INTERVAL)
+                elapsed += _POLL_INTERVAL
+
+                status_resp = await self.client.get(f"/api/analyze/{job_id}")
+                status = status_resp.json()
+
+                if status["status"] == "complete":
+                    self._repo_name = status.get("repoName", "")
+                    if self._repo_name:
+                        self._indexed_repo_by_path[cache_key] = self._repo_name
+                    logger.info("gitnexus: indexing complete for %s", self._repo_name)
+                    # Fire-and-forget embedding so semantic search can upgrade from BM25
+                    asyncio.ensure_future(self._trigger_embed())
+                    return
+                if status["status"] == "failed":
+                    raise RuntimeError(
+                        f"GitNexus indexing failed: {status.get('error', 'unknown')}"
+                    )
+
+            raise RuntimeError("GitNexus indexing timed out")
+
+    async def _repo_exists(self, repo_name: str) -> bool:
+        """Lightweight existence check so fresh adapter instances can reuse indexed repos."""
+        try:
+            resp = await self.client.get("/api/repos", params={"repo": repo_name}, timeout=10)
+            if resp.status_code != 200:
+                return False
+            repos = resp.json().get("repos", [])
+            names = {
+                repo if isinstance(repo, str) else (repo.get("name") or repo.get("repo") or "")
+                for repo in repos
+            }
+            return repo_name in names
+        except Exception:
+            return False
 
     async def _trigger_embed(self) -> None:
         """Start embedding job for the indexed repo (non-blocking).

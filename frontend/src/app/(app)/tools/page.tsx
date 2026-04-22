@@ -22,6 +22,13 @@ const toolDescriptions: Record<string, string> = {
     "Git 原生代码搜索与跨仓库依赖追踪。",
 };
 
+const placeholderTools: ToolInfo[] = [
+  { name: "deepwiki", capabilities: ["documentation", "architecture_diagram", "knowledge_graph"], healthy: false, container_status: "checking", message: "检测中" },
+  { name: "gitnexus", capabilities: ["knowledge_graph", "ast_analysis", "dependency_graph"], healthy: false, container_status: "checking", message: "检测中" },
+  { name: "zoekt", capabilities: ["code_search"], healthy: false, container_status: "checking", message: "检测中" },
+  { name: "joern", capabilities: ["call_graph", "taint_analysis", "security_scan", "ast_analysis"], healthy: false, container_status: "checking", message: "检测中" },
+];
+
 const comingSoonTools: ToolInfo[] = [
   { name: "zoekt", capabilities: ["code_search"], healthy: false, message: "未配置" },
   { name: "joern", capabilities: ["call_graph", "taint_analysis", "security_scan", "ast_analysis"], healthy: false, message: "未配置" },
@@ -30,7 +37,7 @@ const comingSoonTools: ToolInfo[] = [
 ];
 
 export default function ToolsPage() {
-  const [tools, setTools] = useState<ToolInfo[]>([]);
+  const [tools, setTools] = useState<ToolInfo[]>(placeholderTools);
   const [loading, setLoading] = useState(true);
   const [loadError, setLoadError] = useState("");
 
@@ -87,12 +94,15 @@ export default function ToolsPage() {
               重试
             </button>
           </GlassPanel>
-        ) : loading && tools.length === 0 ? (
-          <GlassPanel className="py-8 flex items-center justify-center">
-            <p className="text-sm text-on-surface-variant/50">加载工具状态中...</p>
-          </GlassPanel>
         ) : (
-          <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-5">
+          <div className="space-y-4">
+            {loading && (
+              <GlassPanel className="py-3 px-4 flex items-center justify-between">
+                <p className="text-sm text-on-surface-variant/60">正在刷新工具健康状态...</p>
+                <span className="text-[10px] font-bold uppercase tracking-widest text-primary/70">checking</span>
+              </GlassPanel>
+            )}
+            <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-5">
             {tools.map((tool) => (
               <ToolCard
                 key={tool.name}
@@ -100,6 +110,8 @@ export default function ToolsPage() {
                 description={toolDescriptions[tool.name] ?? ""}
                 capabilities={tool.capabilities}
                 healthy={tool.healthy}
+                containerStatus={tool.container_status}
+                loading={loading}
                 onStatusChange={() => { void loadTools(); }}
               />
             ))}
@@ -113,6 +125,7 @@ export default function ToolsPage() {
                 comingSoon
               />
             ))}
+          </div>
           </div>
         )}
       </section>

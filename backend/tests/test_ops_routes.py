@@ -1,4 +1,5 @@
 import unittest
+import asyncio
 from contextlib import ExitStack
 from datetime import datetime, timezone
 from types import SimpleNamespace
@@ -42,6 +43,18 @@ class _FakeAdapter:
             raise self._error
         assert self._health is not None
         return self._health
+
+
+class _SlowBusyJoernAdapter(_FakeAdapter):
+    async def health_check(self) -> ToolHealth:
+        await asyncio.sleep(3.2)
+        return ToolHealth(True, "busy")
+
+
+class _BudgetTimedOutJoernAdapter(_FakeAdapter):
+    async def health_check(self) -> ToolHealth:
+        await asyncio.sleep(4.2)
+        return ToolHealth(True, "running")
 
 
 async def _fake_db():
@@ -150,10 +163,54 @@ class OpsRouteContractTests(unittest.IsolatedAsyncioTestCase):
                         "taint_analysis",
                     ],
                     "healthy": False,
-                    "container_status": "timeout",
+                    "container_status": "error",
                 },
             ],
         )
+
+    async def test_tools_list_allows_busy_joern_to_surface(self) -> None:
+        adapters = [
+            _FakeAdapter(
+                "deepwiki",
+                [ToolCapability.DOCUMENTATION],
+                ToolHealth(True, "running", version="1.0.0"),
+            ),
+            _SlowBusyJoernAdapter(
+                "joern",
+                [ToolCapability.CALL_GRAPH, ToolCapability.TAINT_ANALYSIS],
+            ),
+        ]
+
+        with patch.object(tools_api, "get_all_adapters", return_value=adapters):
+            response = await self.client.get("/api/tools")
+
+        self.assertEqual(response.status_code, 200)
+        payload = response.json()
+        self.assertEqual(payload[1]["name"], "joern")
+        self.assertTrue(payload[1]["healthy"])
+        self.assertEqual(payload[1]["container_status"], "busy")
+
+    async def test_tools_list_maps_joern_budget_timeout_to_busy(self) -> None:
+        adapters = [
+            _FakeAdapter(
+                "deepwiki",
+                [ToolCapability.DOCUMENTATION],
+                ToolHealth(True, "running", version="1.0.0"),
+            ),
+            _BudgetTimedOutJoernAdapter(
+                "joern",
+                [ToolCapability.CALL_GRAPH, ToolCapability.TAINT_ANALYSIS],
+            ),
+        ]
+
+        with patch.object(tools_api, "get_all_adapters", return_value=adapters):
+            response = await self.client.get("/api/tools")
+
+        self.assertEqual(response.status_code, 200)
+        payload = response.json()
+        self.assertEqual(payload[1]["name"], "joern")
+        self.assertTrue(payload[1]["healthy"])
+        self.assertEqual(payload[1]["container_status"], "busy")
 
     async def test_tool_health_contract(self) -> None:
         adapter = _FakeAdapter(

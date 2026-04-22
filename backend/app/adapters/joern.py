@@ -9,6 +9,8 @@ CAPABILITY UTILIZATION RULE: Every CPGQL query category listed in the
 capability matrix MUST have a corresponding method. No "deployed but unused."
 """
 
+import asyncio
+
 import json as _json
 import logging
 import re
@@ -105,9 +107,26 @@ QUERIES: dict[str, str] = {
 
 
 class JoernAdapter(BaseToolAdapter):
+    _loaded_project_by_base_url: dict[str, str] = {}
+    _prepare_locks: dict[tuple[str, int], asyncio.Lock] = {}
+
     def __init__(self, base_url: str = "http://joern:8080"):
         self.base_url = base_url
         self._imported_project: str | None = None
+
+    @classmethod
+    def _prepare_lock_for(cls, base_url: str) -> asyncio.Lock:
+        loop = asyncio.get_running_loop()
+        key = (base_url, id(loop))
+        lock = cls._prepare_locks.get(key)
+        if lock is None:
+            lock = asyncio.Lock()
+            cls._prepare_locks[key] = lock
+        return lock
+
+    @classmethod
+    def clear_cached_project(cls, base_url: str) -> None:
+        cls._loaded_project_by_base_url.pop(base_url, None)
 
     def name(self) -> str:
         return "joern"
@@ -122,8 +141,14 @@ class JoernAdapter(BaseToolAdapter):
 
     async def health_check(self) -> ToolHealth:
         try:
-            result = await self._query("val x = 1; x")
+            await self._query("val x = 1; x", timeout=3)
             return ToolHealth(is_healthy=True, container_status="running")
+        except httpx.TimeoutException as exc:
+            return ToolHealth(
+                is_healthy=True,
+                container_status="busy",
+                last_check=str(exc),
+            )
         except Exception as exc:
             return ToolHealth(
                 is_healthy=False,
@@ -138,23 +163,28 @@ class JoernAdapter(BaseToolAdapter):
         workspace, avoiding a 3+ minute re-import for large C codebases.
         """
         project_name = request.repo_local_path.rstrip("/").split("/")[-1]
+        async with self._prepare_lock_for(self.base_url):
+            loaded_project = self._loaded_project_by_base_url.get(self.base_url)
 
-        # Check if already loaded in Joern workspace
-        if self._imported_project == project_name:
-            try:
-                check = await self._query("cpg.method.size")
-                if isinstance(check, (int, str)):
-                    logger.info("joern: CPG already loaded for %s, skipping import", project_name)
-                    return
-            except Exception:
-                pass  # CPG stale or closed — re-import
+            # Check if already loaded in Joern workspace
+            if loaded_project == project_name:
+                try:
+                    check = await self._query("cpg.method.size")
+                    if isinstance(check, (int, str)):
+                        self._imported_project = project_name
+                        logger.info("joern: CPG already loaded for %s, skipping import", project_name)
+                        return
+                except Exception:
+                    self.clear_cached_project(self.base_url)
+                    # CPG stale or closed — re-import
 
-        await self._query(
-            f'importCode("{request.repo_local_path}", "{project_name}")',
-            timeout=600,
-        )
-        self._imported_project = project_name
-        logger.info("joern: CPG imported for %s", project_name)
+            await self._query(
+                f'importCode("{request.repo_local_path}", "{project_name}")',
+                timeout=600,
+            )
+            self._imported_project = project_name
+            self._loaded_project_by_base_url[self.base_url] = project_name
+            logger.info("joern: CPG imported for %s", project_name)
 
     async def analyze(self, request: AnalysisRequest) -> UnifiedResult:
         """Run all predefined queries and return structured results.

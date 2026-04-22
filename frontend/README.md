@@ -1,24 +1,52 @@
-This is a [Next.js](https://nextjs.org) project bootstrapped with [`create-next-app`](https://nextjs.org/docs/app/api-reference/cli/create-next-app).
+## Local Development
 
-## Getting Started
+CodeTalks host-run defaults on this machine are:
 
-First, run the development server:
+- frontend: `http://localhost:3005`
+- backend API: `http://localhost:8000`
+- tool containers: `6070 / 7100 / 8001 / 8080`
+
+Do not point this frontend at `3004`. That port belongs to the Cat Cafe runtime API on this shared machine.
+
+### Frontend
 
 ```bash
+cd frontend
+npm install
 npm run dev
-# or
-yarn dev
-# or
-pnpm dev
-# or
-bun dev
 ```
 
-Open [http://localhost:3000](http://localhost:3000) with your browser to see the result.
+### Backend
 
-You can start editing the page by modifying `app/page.tsx`. The page auto-updates as you edit the file.
+```bash
+cd backend
+python3 -m uvicorn app.main:app --host 0.0.0.0 --port 8000 --reload
+```
 
-This project uses [`next/font`](https://nextjs.org/docs/app/building-your-application/optimizing/fonts) to automatically optimize and load [Geist](https://vercel.com/font), a new font family for Vercel.
+The backend loads repo-root `/.env` plus `backend/.env.local`, so host-run overrides like `JOERN_BASE_URL=http://localhost:8080` remain effective.
+
+### Browser Contract
+
+Frontend code falls back to `http://localhost:8000` when `NEXT_PUBLIC_API_URL` is unset, and WebSocket code falls back to `ws://localhost:8000`.
+
+If you override them, they must still point at the CodeTalks backend, not Cat Cafe:
+
+```bash
+NEXT_PUBLIC_API_URL=http://localhost:8000
+NEXT_PUBLIC_WS_URL=ws://localhost:8000
+```
+
+### Verification
+
+```bash
+lsof -nP -iTCP -sTCP:LISTEN | rg ':(3005|8000|6070|7100|8001|8080)\b'
+```
+
+Expected listeners:
+
+- `node` on `3005` from `/Volumes/Media/codetalk/frontend`
+- backend on `8000`
+- Joern on `8080`
 
 ## Learn More
 
