@@ -249,7 +249,7 @@ class JoernAdapter(BaseToolAdapter):
             "  val sinkEls = m.ast.isCall.name(sinkPat).sortBy(_.lineNumber.getOrElse(0)).l\n"
             '    .map(c => Map("code" -> c.code, "file" -> c.file.name.headOption.getOrElse(""),\n'
             '      "line" -> c.lineNumber.getOrElse(-1).toString, "role" -> "sink"))\n'
-            '  val allEls = (srcEls ++ sinkEls).sortBy(_("line"))\n'
+            '  val allEls = (srcEls ++ sinkEls).sortBy(_("line").toInt)\n'
             '  Map("method" -> m.name, "file" -> m.filename,\n'
             '    "elements" -> allEls)\n'
             "}).toJson"

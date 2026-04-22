@@ -39,32 +39,31 @@ Browser → Next.js 前端 → FastAPI 后端 → 4 个分析引擎
 
 ---
 
-### 二、运行时风险概览 — 风险态势一目了然
+### 二、运行时风险概览 — Joern CPG 引擎入口
 
 ![运行时风险概览](demo-images/05_analysis_overview.png)
 
 **能力说明**：
-- **风险等级矩阵**：环形图直观展示 High Risk / Medium Risk / Low Risk 三级风险分布
-- **Risk Categories**（风险类别）：柱状图统计 Top 5 运行时风险类别（溢出、空指针、边界越界等）
-- **Joern CPG 引擎**：控制流/数据流/跨函数调用链深度分析
+- **Joern CPG 引擎状态**：实时显示引擎在线/离线状态与分析能力（call_graph, taint_analysis, ast_analysis, security_scan）
+- **三大分析入口**：分支分析、测试点生成、数据追踪，一页汇聚全部运行时风险分析能力
 - **一键重建分析**：右上角按钮触发 CPG 重建，支持代码变更后刷新
 
-**应用场景**：技术评审会议上，快速了解项目运行时风险面貌，包含异常分支、边界值和数值翻转等运行时隐患。
+**应用场景**：技术评审会议上，快速了解项目运行时风险分析能力，选择合适的分析维度切入。
 
 ---
 
 ### 三、分支分析 — 精准定位运行时隐患
 
-![分支分析](demo-images/06_findings.png)
+![分支分析 kill_iscsid](demo-images/06_branch_kill_iscsid.png)
 
-**能力说明**：
+**能力说明**（以 `kill_iscsid` 函数为例）：
 - 输入函数名，自动分析跨函数调用链上下文与运行时风险
-- 控制流分支展示：IF / SWITCH / DO / BREAK 等结构，标注文件路径 + 行号
-- 每个分支详情包含：条件表达式、代码块、调用和字面量
-- 调用上下文：谁调用了此函数、从什么控制流进入
-- 被调用影响：此函数调用了谁、对下游有什么影响
+- **调用上下文**：`main` 函数在 `L3904` 调用 `kill_iscsid(killiscsid, timeout)`，调用者分支展示 IF / WHILE / SWITCH / GOTO / BREAK 等完整控制流路径
+- **被调用影响**：`kill_iscsid` 调用了 `log_error`、`iscsid_exec_req`、`iscsi_err_print_msg` 三个下游函数
+- **控制流分支**：两处关键分支 — `priority != 0` 和 `rc != 0` 的异常处理路径
+- 每个分支标注文件路径 + 行号（如 `usr/iscsiadm.c:303`）
 
-**应用场景**：开发人员分析关键函数的异常分支（如空指针检查、状态机跳转、边界条件），定位运行时风险路径。
+**应用场景**：开发人员分析关键函数的异常分支（如优先级校验、IPC 请求失败处理），定位运行时风险路径。
 
 ---
 
@@ -84,17 +83,20 @@ Browser → Next.js 前端 → FastAPI 后端 → 4 个分析引擎
 
 ### 五、知识图谱 — 代码结构可视化
 
-![神经图谱](demo-images/04_graph.png)
+![神经图谱 Function 筛选](demo-images/04_graph_function.png)
 
 **能力说明**：
 - **6221 个节点**的大规模代码知识图谱：
   - Function 1960 / Struct 1033 / File 282 / Process 300 / Macro 2375 / Enum 93 / Class 3 / Community 175
-- 力导向图布局，节点按类型颜色区分
+- 按类型筛选：点击 Function 按钮，所有函数按调用树状图排列，上下文关系一目了然
 - 三种搜索模式：Hybrid / BM25 / Semantic
-- 点击节点展开详情面板（函数签名、文件位置、调用关系）
-- **「在 Chat 中追问」** 按钮：针对选中节点直接向 AI 提问
 
-**应用场景**：新人 onboarding 理解项目架构，或跨团队 code review 时快速掌握模块关系。
+![神经图谱 kill_iscsid 详情](demo-images/04_graph_kill_iscsid.png)
+
+- 点击 `kill_iscsid` 节点展开详情面板：文件位置 `usr/iscsiadm.c:288`，下游调用 `iscsid_exec_req`、`iscsi_err_print_m...`
+- **「在 CHAT 中追问」** 按钮：针对选中节点直接向 AI 提问，结合源码上下文深入分析
+
+**应用场景**：新人 onboarding 理解项目架构，或跨团队 code review 时快速掌握函数调用关系。
 
 ---
 
@@ -103,33 +105,48 @@ Browser → Next.js 前端 → FastAPI 后端 → 4 个分析引擎
 ![自动文档](demo-images/03_wiki.png)
 
 **能力说明**：
-- DeepWiki 引擎基于 RAG 自动生成结构化项目文档
+- DeepWiki 引擎基于 RAG 自动生成结构化项目文档（577 个文档分块索引）
 - 左侧可折叠目录树，按模块组织（项目概述、核心进程、配置管理等）
-- 文档内含代码引用链接，点击直接跳转到源文件
-- 侧边 AI 聊天面板：在阅读文档的同时向 AI 追问细节
+- 文档内含代码引用链接（如 `usr/meson.build`、`Makefile`），点击直接跳转到源文件
+- 全屏 AI 聊天面板：在阅读文档后向 AI 追问测试建议
 - 支持一键刷新重新生成
 
 **应用场景**：接手老项目时，不再需要花数天阅读代码，AI 直接生成文档结构；随时在侧边栏向 AI 提问。
 
 ---
 
-## 次核心功能演示
+### 七、全屏 AI 问答 — SFMEA 失效模式分析
 
-### 七、测试点生成 — AI 辅助风险测试
+![AI SFMEA kill_iscsid](demo-images/12_ai_sfmea_kill_iscsid.png)
 
-![测试点生成](demo-images/08_testpoints.png)
+**能力说明**（以 `kill_iscsid` 函数为例）：
+- 全屏 AI 聊天界面，支持基于 DeepWiki RAG 的深度代码问答
+- 输入"请针对 kill_iscsid 生成 SFMEA"，AI 结合 RAG 检索的源码上下文生成失效模式分析
+- 每条 SFMEA 包含：失效模式描述、失效原因列表、严重度评分（1-10）、具体检测方法
+- AI 回答基于 DeepWiki RAG 索引的 577 个文档分块，引用的函数名和常量名可追溯到索引内容
 
-**能力说明**：
-- **Joint Analysis Engine**：联合 Joern CPG 分析结果 + AI 生成
-- 可指定目标函数，也可全量生成
-- 每个测试点包含：风险等级、异常输入条件、期望行为、边界值、极端场景
-- 支持导出为 Markdown / JSON 格式
-
-**应用场景**：QA 团队根据生成的测试点编写边界条件和异常分支测试用例，覆盖数值翻转、空值传播、资源未释放等运行时风险场景。
+**应用场景**：安全审计或 FMEA 评审时，快速生成特定函数的失效模式分析表，节省人工梳理时间。
 
 ---
 
-### 八、资产管理 — 项目与仓库组织
+## 次核心功能演示
+
+### 八、测试点生成 — AI 辅助风险测试
+
+![测试点生成 kill_iscsid](demo-images/08_testpoints_kill_iscsid.png)
+
+**能力说明**（以 `kill_iscsid` 函数为例）：
+- **联合分析引擎**：Joern CPG 控制流分析 + GitNexus 调用链解析 + AI 生成
+- 指定目标函数 `kill_iscsid`，生成 4 个高质量测试点
+- 每个测试点包含：风险等级（HIGH/MEDIUM）、分类（BOUNDARY/ERROR_HANDLING）、输入条件、预期行为、风险场景、边界值
+- 示例：`{"priority": [-1, 0, 1]}` — 精确到参数级别的边界值建议
+- 支持导出为 Markdown / JSON 格式
+
+**应用场景**：QA 团队根据生成的测试点编写边界条件和异常分支测试用例，覆盖优先级校验、IPC 通信超时、进程信号发送失败等运行时风险场景。
+
+---
+
+### 九、资产管理 — 项目与仓库组织
 
 ![资产管理](demo-images/02_assets.png)
 
@@ -144,7 +161,7 @@ Browser → Next.js 前端 → FastAPI 后端 → 4 个分析引擎
 
 ---
 
-### 九、工具监控 — 引擎健康可视化
+### 十、工具监控 — 引擎健康可视化
 
 ![工具监控](demo-images/09_tools.png)
 
@@ -158,7 +175,7 @@ Browser → Next.js 前端 → FastAPI 后端 → 4 个分析引擎
 
 ---
 
-### 十、LLM 配置 — 灵活对接内网 AI
+### 十一、LLM 配置 — 灵活对接内网 AI
 
 ![系统设置](demo-images/10_settings.png)
 
@@ -173,7 +190,7 @@ Browser → Next.js 前端 → FastAPI 后端 → 4 个分析引擎
 
 ---
 
-### 十一、任务管理 — 分析全生命周期
+### 十二、任务管理 — 分析全生命周期
 
 ![任务管理](demo-images/11_tasks.png)
 

@@ -14,12 +14,15 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm.attributes import flag_modified
 
+from app.adapters import create_adapter
+from app.adapters.base import AnalysisRequest
 from app.config import settings
 from app.database import get_db
 from app.models.llm_config import LLMConfig
 from app.models.repository import Repository
 from app.models.chat_session import ChatSession
 from app.services.chat_payload import ChatMessage, build_deepwiki_payload
+from app.utils.repo_paths import to_tool_repo_path
 
 logger = logging.getLogger(__name__)
 
@@ -105,6 +108,15 @@ async def _joern_code_context(query: str, repo_local_path: str) -> str:
 
     snippets: list[str] = []
     try:
+        # Ensure Joern CPG is loaded for this repo before querying
+        tool_path = to_tool_repo_path(
+            repo_local_path,
+            host_base_path=settings.repos_base_path,
+            tool_base_path=settings.tool_repos_base_path,
+        )
+        joern = create_adapter("joern")
+        await joern.prepare(AnalysisRequest(repo_local_path=tool_path))
+
         # Query Joern for methods matching candidate names
         name_pat = "|".join(re.escape(c) for c in candidates[:5])
         cpgql = (
