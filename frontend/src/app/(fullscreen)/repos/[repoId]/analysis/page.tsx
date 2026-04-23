@@ -372,6 +372,7 @@ function BranchesView({ repoId }: { repoId: string }) {
   const [boundaries, setBoundaries] = useState<JoernBoundaryValue[]>([]);
   const [callContext, setCallContext] = useState<JoernCallContext[]>([]);
   const [calleeImpact, setCalleeImpact] = useState<JoernCalleeImpact[]>([]);
+  const [queriedMethod, setQueriedMethod] = useState("");
   const [queried, setQueried] = useState(false);
   const [err, setErr] = useState("");
 
@@ -387,6 +388,7 @@ function BranchesView({ repoId }: { repoId: string }) {
       setBoundaries(Array.isArray(result.boundaries) ? result.boundaries : []);
       setCallContext(Array.isArray(result.callContext) ? result.callContext : []);
       setCalleeImpact(Array.isArray(result.calleeImpact) ? result.calleeImpact : []);
+      setQueriedMethod(name);
       setQueried(true);
     } catch (e) {
       setErr(e instanceof Error ? e.message : "查询失败");
@@ -426,7 +428,7 @@ function BranchesView({ repoId }: { repoId: string }) {
         <>
           {/* ── 控制流图 ── */}
           <Section title="控制流图 (CFG)" count={1} accent="primary">
-            <CfgViewer repoId={repoId} methodName={methodName.trim()} />
+            <CfgViewer repoId={repoId} methodName={queriedMethod} />
           </Section>
 
           {/* ── 跨函数上下文 ── */}

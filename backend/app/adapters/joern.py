@@ -327,7 +327,7 @@ class JoernAdapter(BaseToolAdapter):
         query = (
             f'cpg.method.nameExact("{method_name}")'
             ".ast.isCall"
-            '.name("<operator>.(greaterThan|lessThan|greaterEqualsThan|lessEqualsThan)")'
+            '.name("<operator>.(greaterThan|lessThan|greaterEqualsThan|lessEqualsThan|notEquals|equals)")'
             ".map(c => Map("
             '"code" -> c.code, '
             '"line_number" -> c.lineNumber.getOrElse(-1), '
