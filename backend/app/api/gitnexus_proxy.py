@@ -290,51 +290,86 @@ class ImpactRequest(BaseModel):
     target: str                  # Symbol name (function/class/method)
     direction: str = "both"      # "upstream" | "downstream" | "both"
     depth: int = 3               # Traversal depth (clamped 1-5)
+    limit: int = 30              # Max items per depth layer
     repo: str | None = None
 
 
 @router.post("/impact")
 async def analyze_impact(body: ImpactRequest):
-    """Compose Cypher blast-radius query and proxy to GitNexus /api/query."""
+    """Compose per-depth Cypher queries and proxy to GitNexus /api/query.
+
+    Returns results grouped by depth layer so the frontend can show
+    direct (depth=1) vs transitive (depth=2,3) callers separately.
+
+    GitNexus uses Kùzu (not Neo4j).  Key dialect differences:
+    - All edges share label ``CodeRelation``; edge type is a ``type`` property.
+    - Variable-length paths use ``(r, _ | WHERE r.type = "CALLS")``.
+    - Parameter binding requires ``WHERE n.name = $p``, not ``{name: $p}``.
+    - Response JSON key is ``result`` (singular).
+    """
     depth = max(1, min(body.depth, 5))
+    limit = max(1, min(body.limit, 100))
     target_name = body.target
 
-    # Cypher parameterisation — $target_name is resolved by Neo4j, never
-    # interpolated into the query string, preventing injection.
     cypher_params = {"target_name": target_name}
-    queries: dict[str, str] = {}
-
-    if body.direction in ("upstream", "both"):
-        queries["upstream"] = (
-            f"MATCH path=(caller)-[:CALLS*1..{depth}]->"
-            "(target {name: $target_name}) "
-            "RETURN nodes(path) AS nodes, relationships(path) AS rels"
-        )
-
-    if body.direction in ("downstream", "both"):
-        queries["downstream"] = (
-            "MATCH path=(source {name: $target_name})"
-            f"-[:CALLS*1..{depth}]->(callee) "
-            "RETURN nodes(path) AS nodes, relationships(path) AS rels"
-        )
-
     params: dict[str, str] = {}
     if body.repo:
         params["repo"] = body.repo
 
-    results: dict[str, list] = {}
+    directions: list[str] = []
+    if body.direction in ("upstream", "both"):
+        directions.append("upstream")
+    if body.direction in ("downstream", "both"):
+        directions.append("downstream")
+
+    # Build per-depth queries for each direction.
+    # Uses Kùzu recursive-rel filter with exact depth range *d..d.
+    # First query is slow (cold Kùzu cache), subsequent queries are fast (<100ms).
+    tasks: list[tuple[str, int, str]] = []  # (direction, depth, cypher)
+    for d in range(1, depth + 1):
+        calls_filter = f'[:CodeRelation*{d}..{d} (r, _ | WHERE r.type = "CALLS")]'
+        for direction in directions:
+            if direction == "upstream":
+                cypher = (
+                    f"MATCH (caller)-{calls_filter}->(target) "
+                    "WHERE target.name = $target_name "
+                    "RETURN DISTINCT caller.name AS name, caller.filePath AS filePath, "
+                    f"caller.startLine AS startLine, caller.endLine AS endLine LIMIT {limit}"
+                )
+            else:
+                cypher = (
+                    f"MATCH (source)-{calls_filter}->(callee) "
+                    "WHERE source.name = $target_name "
+                    "RETURN DISTINCT callee.name AS name, callee.filePath AS filePath, "
+                    f"callee.startLine AS startLine, callee.endLine AS endLine LIMIT {limit}"
+                )
+            tasks.append((direction, d, cypher))
+
+    # Execute all queries
+    results: dict[str, list] = {d: [] for d in directions}
     try:
         async with httpx.AsyncClient(
-            base_url=settings.gitnexus_base_url, timeout=30
+            base_url=settings.gitnexus_base_url, timeout=60
         ) as client:
-            for direction, cypher in queries.items():
+            for direction, d, cypher in tasks:
                 resp = await client.post(
                     "/api/query",
                     params=params,
                     json={"cypher": cypher, "parameters": cypher_params},
                 )
                 resp.raise_for_status()
-                results[direction] = resp.json().get("results", [])
+                raw = resp.json().get("result", [])
+                # Filter out non-function nodes (File, Macro, etc.)
+                items = [
+                    r for r in raw
+                    if r.get("startLine") is not None
+                ]
+                results[direction].append({
+                    "depth": d,
+                    "items": items,
+                    "total": len(items),
+                    "limited": len(raw) >= limit,
+                })
     except httpx.HTTPStatusError as exc:
         raise HTTPException(
             status_code=exc.response.status_code, detail=exc.response.text

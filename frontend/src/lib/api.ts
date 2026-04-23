@@ -481,14 +481,14 @@ export const api = {
     impact: (
       target: string,
       direction: "upstream" | "downstream" | "both" = "both",
-      depth = 3,
+      depth = 1,
       repo?: string,
     ) =>
       request<{
         target: string;
         depth: number;
-        upstream?: Array<{ nodes: unknown[]; rels: unknown[] }>;
-        downstream?: Array<{ nodes: unknown[]; rels: unknown[] }>;
+        upstream?: Array<{ depth: number; items: Array<{ name: string; filePath: string; startLine: number; endLine: number }>; total: number; limited: boolean }>;
+        downstream?: Array<{ depth: number; items: Array<{ name: string; filePath: string; startLine: number; endLine: number }>; total: number; limited: boolean }>;
       }>("/api/gitnexus/impact", {
         method: "POST",
         body: JSON.stringify({ target, direction, depth, repo }),
