@@ -274,27 +274,51 @@ class JoernAdapter(BaseToolAdapter):
         return await self._query(query)
 
     async def error_paths(self, method_name: str) -> Any:
-        """Get all throw/catch/error-return paths in a function."""
+        """Get error handling patterns in a function.
+
+        Detects both C-style (error calls, goto cleanup, bare void returns)
+        and C++/Java-style (throw/catch) error patterns.
+
+        Note: each sub-query uses a fresh cpg.method traversal because
+        Joern traversals are lazy iterators — reusing a val consumes it.
+        """
+        m = f'cpg.method.nameExact("{method_name}")'
         query = (
-            f'val method = cpg.method.nameExact("{method_name}")\n'
-            "val throws = method.ast.isCall"
+            # C-style: calls to error/warn/fatal/log_error/perror functions
+            f"val errorCalls = {m}.ast.isCall"
+            '.name(".*([Ee]rr|log_error|warn|abort|exit|perror|die|fatal|panic|assert).*")'
+            '.filter(c => !c.name.matches(".*[Ss]tream.*|.*[Ii]ter.*"))'
+            '.map(c => Map("kind" -> "error-call", '
+            '"code" -> c.code, '
+            '"line_number" -> c.lineNumber.getOrElse(-1), '
+            '"filename" -> c.file.name.headOption.getOrElse(""))).l\n'
+            # C-style: goto statements (cleanup pattern)
+            f"val gotos = {m}.ast.isControlStructure"
+            '.controlStructureTypeExact("GOTO")'
+            '.map(g => Map("kind" -> "goto", '
+            '"code" -> g.code, '
+            '"line_number" -> g.lineNumber.getOrElse(-1), '
+            '"filename" -> g.file.name.headOption.getOrElse(""))).l\n'
+            # C/C++ error returns: negative values, NULL, false, error codes, bare void returns
+            f"val errorReturns = {m}.ast.isReturn"
+            '.where(_.code(".*([Ee]rr|null|NULL|None|false|-1|EXIT_).*|return;"))'
+            '.map(r => Map("kind" -> "error-return", '
+            '"code" -> r.code, '
+            '"line_number" -> r.lineNumber.getOrElse(-1), '
+            '"filename" -> r.file.name.headOption.getOrElse(""))).l\n'
+            # C++/Java: throw/catch
+            f"val throws = {m}.ast.isCall"
             '.nameExact("<operator>.throw")'
             '.map(t => Map("kind" -> "throw", '
             '"code" -> t.code, '
             '"line_number" -> t.lineNumber.getOrElse(-1), '
             '"filename" -> t.file.name.headOption.getOrElse(""))).l\n'
-            "val catches = method.tryBlock"
+            f"val catches = {m}.tryBlock"
             '.map(t => Map("kind" -> "try-catch", '
             '"code" -> t.code, '
             '"line_number" -> t.lineNumber.getOrElse(-1), '
             '"filename" -> t.file.name.headOption.getOrElse(""))).l\n'
-            "val errorReturns = method.ast.isReturn"
-            '.where(_.code(".*[Ee]rr.*|.*null.*|.*None.*|.*false.*"))'
-            '.map(r => Map("kind" -> "error-return", '
-            '"code" -> r.code, '
-            '"line_number" -> r.lineNumber.getOrElse(-1), '
-            '"filename" -> r.file.name.headOption.getOrElse(""))).l\n'
-            "(throws ++ catches ++ errorReturns).toJson"
+            "(errorCalls ++ gotos ++ errorReturns ++ throws ++ catches).toJson"
         )
         return await self._query(query)
 
@@ -310,7 +334,7 @@ class JoernAdapter(BaseToolAdapter):
             '"filename" -> c.file.name.headOption.getOrElse(""), '
             '"operands" -> c.argument.map(a => Map('
             '"code" -> a.code, '
-            '"type" -> a.typeFullName)).l'
+            '"order" -> a.order.toString)).l'
             ")).l.toJson"
         )
         return await self._query(query)
@@ -321,30 +345,40 @@ class JoernAdapter(BaseToolAdapter):
         Uses AST-based call-site search + line-range enclosing-method lookup
         because Joern's c2cpg call-graph edges are often incomplete for C code
         (macros, static functions, missing headers).
+
+        Only reports control structures whose AST subtree contains a call to
+        the target function — these are the enclosing branches that govern
+        whether the call is reached. This is the key value vs GitNexus.
         """
         query = (
             f'val callSites = cpg.call.nameExact("{method_name}").l\n'
             "callSites.flatMap(cs => {\n"
-            "  val line = cs.lineNumber.getOrElse(-1)\n"
+            "  val csLine = cs.lineNumber.getOrElse(-1)\n"
             '  val file = cs.file.name.headOption.getOrElse("")\n'
             '  val enclosing = cpg.method.filename(file)\n'
             '    .filter(m => m.name != "<global>"\n'
-            "      && m.lineNumber.getOrElse(0) <= line\n"
-            "      && m.lineNumberEnd.getOrElse(0) >= line).l\n"
-            "  enclosing.map(caller => Map(\n"
-            '    "caller" -> caller.name,\n'
-            '    "callerFile" -> caller.filename,\n'
-            '    "callerLine" -> caller.lineNumber.getOrElse(-1),\n'
-            '    "callSites" -> List(Map(\n'
-            '      "line" -> line,\n'
-            "      \"args\" -> cs.argument.code.l\n"
-            "    )),\n"
-            '    "callerBranches" -> caller.controlStructure.l.map(b => Map(\n'
-            '      "type" -> b.controlStructureType,\n'
-            '      "condition" -> b.condition.code.headOption.getOrElse(""),\n'
-            '      "line" -> b.lineNumber.getOrElse(-1)\n'
-            "    ))\n"
-            "  ))\n"
+            "      && m.lineNumber.getOrElse(0) <= csLine\n"
+            "      && m.lineNumberEnd.getOrElse(0) >= csLine).l\n"
+            "  enclosing.map(caller => {\n"
+            # Only control structures whose AST contains the target call
+            "    val enclosingBranches = caller.controlStructure"
+            f'      .where(_.ast.isCall.nameExact("{method_name}"))'
+            "      .l.map(b => Map(\n"
+            '        "type" -> b.controlStructureType,\n'
+            '        "condition" -> b.condition.code.headOption.getOrElse(""),\n'
+            '        "line" -> b.lineNumber.getOrElse(-1)\n'
+            "      ))\n"
+            "    Map(\n"
+            '      "caller" -> caller.name,\n'
+            '      "callerFile" -> caller.filename,\n'
+            '      "callerLine" -> caller.lineNumber.getOrElse(-1),\n'
+            '      "callSites" -> List(Map(\n'
+            '        "line" -> csLine,\n'
+            '        "args" -> cs.argument.code.l\n'
+            "      )),\n"
+            '      "callerBranches" -> enclosingBranches\n'
+            "    )\n"
+            "  })\n"
             "}).toJson"
         )
         return await self._query(query)
@@ -382,6 +416,19 @@ class JoernAdapter(BaseToolAdapter):
             "}).toJson"
         )
         return await self._query(query)
+
+    async def cfg_dot(self, method_name: str) -> str:
+        """Return the Control Flow Graph in DOT format for a function."""
+        query = f'cpg.method.nameExact("{method_name}").dotCfg.l.head'
+        raw = await self._query(query)
+        if isinstance(raw, str):
+            # _query can't parse multi-line triple-quoted Scala strings;
+            # extract DOT content between the outermost """ delimiters.
+            start = raw.find('"""')
+            end = raw.rfind('"""')
+            if start != -1 and end > start:
+                return raw[start + 3 : end]
+        return raw
 
     async def method_list(self) -> Any:
         """Get all method names — lightweight query for UI."""

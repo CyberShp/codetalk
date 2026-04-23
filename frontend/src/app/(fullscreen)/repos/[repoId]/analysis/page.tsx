@@ -1,6 +1,6 @@
 "use client";
 
-import { useState, useEffect, useCallback } from "react";
+import { useState, useEffect, useCallback, useRef } from "react";
 import Link from "next/link";
 import { useParams } from "next/navigation";
 import { api } from "@/lib/api";
@@ -312,6 +312,8 @@ function ErrorPathCards({ items }: { items: JoernErrorPath[] }) {
     throw: "bg-tertiary/10 text-tertiary border-tertiary/20",
     "try-catch": "bg-amber-400/10 text-amber-400 border-amber-400/20",
     "error-return": "bg-primary/10 text-primary border-primary/20",
+    "error-call": "bg-tertiary/10 text-tertiary border-tertiary/20",
+    goto: "bg-amber-400/10 text-amber-400 border-amber-400/20",
   };
   return (
     <div className="space-y-3">
@@ -349,7 +351,7 @@ function BoundaryCards({ items }: { items: JoernBoundaryValue[] }) {
             <div className="flex gap-2 flex-wrap pt-1">
               {bv.operands.map((op, j) => (
                 <span key={j} className="text-[10px] font-data px-2 py-0.5 rounded-full bg-amber-400/5 border border-amber-400/10 text-on-surface-variant/60">
-                  <span className="text-amber-400/40 uppercase text-[8px] mr-1">{op.type}</span>{op.code}
+                  {op.order && <span className="text-amber-400/40 uppercase text-[8px] mr-1">#{op.order}</span>}{op.code}
                 </span>
               ))}
             </div>
@@ -422,6 +424,11 @@ function BranchesView({ repoId }: { repoId: string }) {
 
       {queried && (
         <>
+          {/* ── 控制流图 ── */}
+          <Section title="控制流图 (CFG)" count={1} accent="primary">
+            <CfgViewer repoId={repoId} methodName={methodName.trim()} />
+          </Section>
+
           {/* ── 跨函数上下文 ── */}
           <Section title="调用上下文（谁调用了此函数）" count={callContext.length} accent="primary">
             {callContext.length === 0
@@ -488,6 +495,112 @@ function Section({
       </button>
       {open && <div className="border-t border-outline-variant/10 p-4">{children}</div>}
     </div>
+  );
+}
+
+// ── CFG Viewer ───────────────────────────────────────────────────────────
+function CfgViewer({ repoId, methodName }: { repoId: string; methodName: string }) {
+  const containerRef = useRef<HTMLDivElement>(null);
+  const [loading, setLoading] = useState(false);
+  const [error, setError] = useState("");
+  const [svgHtml, setSvgHtml] = useState("");
+
+  const loadCfg = useCallback(async () => {
+    if (!methodName) return;
+    setLoading(true);
+    setError("");
+    setSvgHtml("");
+    try {
+      const { dot } = await api.repos.analysis.joern.cfg(repoId, methodName);
+      if (!dot || typeof dot !== "string") {
+        setError("No CFG data returned");
+        return;
+      }
+      const { Graphviz } = await import("@hpcc-js/wasm-graphviz");
+      const graphviz = await Graphviz.load();
+      const svg = graphviz.dot(dot, "svg");
+      setSvgHtml(svg);
+    } catch (e) {
+      setError(e instanceof Error ? e.message : "CFG 加载失败");
+    } finally {
+      setLoading(false);
+    }
+  }, [repoId, methodName]);
+
+  useEffect(() => { loadCfg(); }, [loadCfg]);
+
+  // Apply dark theme styling to SVG after render
+  useEffect(() => {
+    if (!containerRef.current || !svgHtml) return;
+    const svg = containerRef.current.querySelector("svg");
+    if (!svg) return;
+    svg.setAttribute("width", "100%");
+    svg.removeAttribute("height");
+    svg.style.maxHeight = "600px";
+    // Style nodes
+    svg.querySelectorAll("polygon").forEach((p) => {
+      const fill = p.getAttribute("fill");
+      if (fill === "white" || fill === "#ffffff") p.setAttribute("fill", "transparent");
+      if (fill === "none") p.setAttribute("fill", "transparent");
+      p.setAttribute("stroke", "var(--outline-variant)");
+      p.setAttribute("stroke-opacity", "0.3");
+    });
+    svg.querySelectorAll("text").forEach((t) => {
+      t.setAttribute("fill", "var(--on-surface)");
+      t.style.fontFamily = "JetBrains Mono, monospace";
+      t.style.fontSize = "10px";
+    });
+    svg.querySelectorAll("path").forEach((p) => {
+      p.setAttribute("stroke", "var(--primary)");
+      p.setAttribute("stroke-opacity", "0.5");
+    });
+    // Arrow heads
+    svg.querySelectorAll("polygon[stroke]").forEach((p) => {
+      if (p.closest("g")?.querySelector("path")) {
+        p.setAttribute("fill", "var(--primary)");
+        p.setAttribute("fill-opacity", "0.5");
+        p.setAttribute("stroke", "var(--primary)");
+        p.setAttribute("stroke-opacity", "0.5");
+      }
+    });
+    // Highlight special nodes
+    svg.querySelectorAll("title").forEach((title) => {
+      const text = title.textContent ?? "";
+      const g = title.parentElement;
+      if (!g) return;
+      const rect = g.querySelector("polygon, ellipse, rect");
+      if (text.includes("METHOD") && rect) {
+        rect.setAttribute("fill", "rgba(164, 230, 255, 0.08)");
+        rect.setAttribute("stroke", "var(--primary)");
+        rect.setAttribute("stroke-opacity", "0.5");
+      }
+      if (text.includes("RETURN") && rect) {
+        rect.setAttribute("fill", "rgba(255, 209, 205, 0.08)");
+        rect.setAttribute("stroke", "var(--tertiary)");
+        rect.setAttribute("stroke-opacity", "0.5");
+      }
+    });
+  }, [svgHtml]);
+
+  if (loading) {
+    return (
+      <div className="flex items-center justify-center h-40 gap-2 text-on-surface-variant/40">
+        <Loader2 size={16} className="animate-spin" />
+        <span className="text-xs">加载控制流图…</span>
+      </div>
+    );
+  }
+  if (error) {
+    return <p className="text-xs text-tertiary p-4">{error}</p>;
+  }
+  if (!svgHtml) return null;
+
+  return (
+    <div
+      ref={containerRef}
+      className="overflow-auto rounded-lg bg-surface-container-lowest border border-outline-variant/10 p-4"
+      dangerouslySetInnerHTML={{ __html: svgHtml }}
+    />
   );
 }
 

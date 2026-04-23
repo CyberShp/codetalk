@@ -430,7 +430,7 @@ export interface JoernMethodBranch {
 }
 
 export interface JoernErrorPath {
-  kind: "throw" | "try-catch" | "error-return";
+  kind: "throw" | "try-catch" | "error-return" | "error-call" | "goto";
   code: string;
   line_number: number | null;
   filename?: string;
@@ -440,7 +440,7 @@ export interface JoernBoundaryValue {
   code: string;
   line_number: number | null;
   filename?: string;
-  operands: Array<{ code: string; type: string }>;
+  operands: Array<{ code: string; order?: string }>;
 }
 
 export interface JoernCallContext {

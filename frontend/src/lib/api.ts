@@ -225,6 +225,10 @@ export const api = {
           request<{ boundaries: JoernBoundaryValue[] }>(
             `/api/repos/${repoId}/analysis/joern/method/${encodeURIComponent(methodName)}/boundaries`
           ),
+        cfg: (repoId: string, methodName: string) =>
+          request<{ method: string; dot: string }>(
+            `/api/repos/${repoId}/analysis/joern/method/${encodeURIComponent(methodName)}/cfg`
+          ),
         taint: (repoId: string, source: string, sink: string) =>
           request<{ paths: TaintPath[] }>(`/api/repos/${repoId}/analysis/joern/taint`, {
             method: "POST",
