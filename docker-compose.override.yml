@@ -3,7 +3,7 @@ services:
   deepwiki:
     environment:
       DEEPWIKI_EMBEDDING_BASE_URL: "http://host.docker.internal:11434"
-      DEEPWIKI_EMBEDDING_API_KEY: "tp-cvm0h3plawkw50bmu1vdxwk76sp53ludi8r5ayucw9etk3bk"
+      DEEPWIKI_EMBEDDING_API_KEY: ""
       DEEPWIKI_EMBEDDER_TYPE: "ollama"
       OPENAI_BASE_URL: "https://ai.novacode.top/v1"
-      OPENAI_API_KEY: "sk-1e6ce00df88126bc16036bf507eea713eb7c114421693d87d0fd3937827f7d75"
+      OPENAI_API_KEY: ""
