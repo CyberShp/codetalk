@@ -339,6 +339,19 @@ class JoernAdapter(BaseToolAdapter):
         )
         return await self._query(query)
 
+    async def variable_tracking(self, method_name: str, var_name: str) -> Any:
+        """Find all usages of a variable within a method."""
+        query = (
+            f'val target = cpg.method.nameExact("{method_name}").head\n'
+            f'val usages = target.ast.isIdentifier.nameExact("{var_name}").l\n'
+            "usages.map(u => Map(\n"
+            '  "code" -> u.code,\n'
+            '  "line_number" -> u.lineNumber.getOrElse(-1),\n'
+            '  "filename" -> u.file.name.headOption.getOrElse("")\n'
+            ")).l.toJson"
+        )
+        return await self._query(query)
+
     async def call_context(self, method_name: str) -> Any:
         """Cross-function: who calls this function and from what control flow context.
 

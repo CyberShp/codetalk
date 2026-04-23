@@ -159,6 +159,13 @@ export const api = {
         `/api/repos/${repoId}/analyses?page=${page}&page_size=${pageSize}`
       ),
 
+    file: (repoId: string, path: string, startLine?: number, endLine?: number) => {
+      const params = new URLSearchParams({ path });
+      if (startLine != null) params.set("start_line", String(startLine));
+      if (endLine != null) params.set("end_line", String(endLine));
+      return request<FileSlice>(`/api/repos/${repoId}/file?${params}`);
+    },
+
     wiki: {
       get: (repoId: string) =>
         request<WikiResponse>(`/api/repos/${repoId}/wiki`),
@@ -228,6 +235,10 @@ export const api = {
         cfg: (repoId: string, methodName: string) =>
           request<{ method: string; dot: string }>(
             `/api/repos/${repoId}/analysis/joern/method/${encodeURIComponent(methodName)}/cfg`
+          ),
+        variableTracking: (repoId: string, methodName: string, varName: string) =>
+          request<{ method: string; variable: string; usages: any[] }>(
+            `/api/repos/${repoId}/analysis/joern/method/${encodeURIComponent(methodName)}/variable/${encodeURIComponent(varName)}/track`
           ),
         taint: (repoId: string, source: string, sink: string) =>
           request<{ paths: TaintPath[] }>(`/api/repos/${repoId}/analysis/joern/taint`, {

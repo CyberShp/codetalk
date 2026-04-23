@@ -286,6 +286,28 @@ async def method_boundaries(
         await joern.cleanup(AnalysisRequest(repo_local_path=tool_path))
 
 
+@router.get("/{repo_id}/analysis/joern/method/{method_name}/variable/{var_name}/track")
+async def variable_tracking(
+    repo_id: uuid.UUID,
+    method_name: str,
+    var_name: str,
+    db: AsyncSession = Depends(get_db),
+):
+    """Track variable usages within a method."""
+    repo = await _get_repo_or_404(repo_id, db)
+    joern = _joern()
+    tool_path = _tool_path(repo)
+
+    try:
+        await joern.prepare(AnalysisRequest(repo_local_path=tool_path))
+        result = await joern.variable_tracking(method_name, var_name)
+        return {"method": method_name, "variable": var_name, "usages": result}
+    except httpx.ConnectError:
+        raise HTTPException(503, "Joern service unavailable")
+    finally:
+        await joern.cleanup(AnalysisRequest(repo_local_path=tool_path))
+
+
 @router.get("/{repo_id}/analysis/joern/method/{method_name}/cfg")
 async def method_cfg(
     repo_id: uuid.UUID,

@@ -246,6 +246,35 @@ class RepoAnalysisRouteContractTests(unittest.IsolatedAsyncioTestCase):
             },
         )
 
+    async def test_joern_variable_tracking_contract(self) -> None:
+        repo_id = uuid.uuid4()
+        repo = SimpleNamespace(
+            id=repo_id,
+            name="open-iscsi",
+            local_path="/Volumes/Media/codetalk/.repos/open-iscsi",
+        )
+        self.holder["db"] = _FakeDB(get_map={repo_id: repo})
+
+        fake_joern = _FakeJoern()
+        fake_joern.variable_tracking = AsyncMock(return_value=[{"code": "x", "line_number": 10}])
+
+        with patch.object(
+            repo_analysis_api, "_joern", return_value=fake_joern
+        ):
+            response = await self.client.get(
+                f"/api/repos/{repo_id}/analysis/joern/method/main/variable/x/track"
+            )
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(
+            response.json(),
+            {
+                "method": "main",
+                "variable": "x",
+                "usages": [{"code": "x", "line_number": 10}],
+            },
+        )
+
     async def test_joern_taint_contract(self) -> None:
         repo_id = uuid.uuid4()
         repo = SimpleNamespace(

@@ -1,5 +1,6 @@
-"""Repository management endpoints (sync, status, search, detail, analyses)."""
+"""Repository management endpoints (sync, status, search, detail, analyses, file)."""
 
+import pathlib
 import uuid
 from datetime import datetime, timezone
 
@@ -12,6 +13,7 @@ from sqlalchemy.orm import selectinload
 
 from app.adapters import create_adapter
 from app.adapters.base import AnalysisRequest
+from app.config import settings
 from app.database import get_db
 from app.models.repository import Repository
 from app.models.task import AnalysisTask
@@ -199,6 +201,63 @@ async def get_repo_detail(repo_id: uuid.UUID, db: AsyncSession = Depends(get_db)
             "analyzed_at": graph_analyzed_at,
             "stats": graph_stats,
         },
+    }
+
+
+@router.get("/{repo_id}/file")
+async def get_file_content(
+    repo_id: uuid.UUID,
+    path: str = Query(..., description="Relative file path within the repo"),
+    start_line: int | None = Query(None, ge=1),
+    end_line: int | None = Query(None, ge=1),
+    db: AsyncSession = Depends(get_db),
+):
+    """Read a source file from a synced repository.
+
+    Pure file I/O — no analysis logic. Path traversal guarded.
+    """
+    repo = await db.get(Repository, repo_id)
+    if not repo:
+        raise HTTPException(404, "Repository not found")
+    if not repo.local_path:
+        raise HTTPException(400, "Repository not synced — no local path")
+
+    # DB may store a Docker-internal path (/data/repos/...) while
+    # the backend runs on the host.  Translate if needed.
+    raw_path = repo.local_path
+    tool_base = settings.tool_repos_base_path
+    if raw_path.startswith(tool_base):
+        raw_path = str(
+            pathlib.Path(settings.repos_base_path) / raw_path[len(tool_base) :].lstrip("/")
+        )
+    repo_root = pathlib.Path(raw_path).resolve()
+    target = (repo_root / path).resolve()
+    try:
+        target.relative_to(repo_root)
+    except ValueError:
+        raise HTTPException(403, "Path traversal blocked")
+    if not target.is_file():
+        raise HTTPException(404, f"File not found: {path}")
+
+    try:
+        all_lines = target.read_text(encoding="utf-8", errors="replace").splitlines(
+            keepends=True
+        )
+    except OSError:
+        raise HTTPException(500, "Failed to read file")
+
+    total = len(all_lines)
+    s = (start_line - 1) if start_line else 0
+    e = end_line if end_line else total
+    s = max(0, min(s, total))
+    e = max(s, min(e, total))
+
+    return {
+        "content": "".join(all_lines[s:e]),
+        "startLine": s + 1,
+        "endLine": e,
+        "totalLines": total,
+        "actualPath": path,
     }
 
 
