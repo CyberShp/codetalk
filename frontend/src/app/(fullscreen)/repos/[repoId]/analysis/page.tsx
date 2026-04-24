@@ -578,7 +578,7 @@ function BranchCards({
                 {br.children.map((child, j) => (
                   <div key={j} className="flex items-start gap-2 text-[11px] font-data pl-3 group/child">
                     <span className="text-on-surface-variant/30 shrink-0 uppercase text-[8px] mt-1 tracking-tighter">{child.label}</span>
-                    <code className="text-on-surface-variant/60 group-hover/child:text-on-surface transition-colors break-all bg-surface-container/50 px-1.5 py-0.5 rounded">{child.code}</code>
+                    <code className="text-on-surface-variant/60 group-hover/child:text-on-surface transition-colors break-words bg-surface-container/50 px-1.5 py-0.5 rounded">{child.code}</code>
                   </div>
                 ))}
               </div>
@@ -623,7 +623,7 @@ function ErrorPathCards({
             <span className={`text-[9px] font-data font-bold uppercase tracking-widest px-2 py-0.5 rounded-full border shrink-0 ${KIND_STYLE[ep.kind] ?? KIND_STYLE["error-return"]}`}>
               {ep.kind}
             </span>
-            <code className="text-[12px] font-data text-on-surface/80 break-all flex-1 py-0.5">{ep.code}</code>
+            <code className="text-[12px] font-data text-on-surface/80 break-words flex-1 py-0.5">{ep.code}</code>
             <CodeLink repoId={repoId} filePath={ep.filename ?? ""} line={ep.line_number ?? undefined} onOpen={onOpenSource} />
           </motion.div>
         ))}
@@ -817,7 +817,7 @@ function BranchesView({
           </div>
 
           {/* ── 函数内部分析 ── */}
-          <div className="grid grid-cols-1 md:grid-cols-3 gap-5">
+          <div className="grid grid-cols-1 lg:grid-cols-2 xl:grid-cols-3 gap-5">
             <Section title="控制流分支" count={branches.length} accent="primary">
               {branches.length === 0 ? (
                 <p className="text-xs text-on-surface-variant/40 italic">无控制流分支数据</p>
@@ -1377,6 +1377,7 @@ function TaintView({
     { label: "空指针", source: ".*malloc.*|.*calloc.*|.*realloc.*|.*strdup.*", sink: ".*<operator>\\.indirection.*|.*memcpy.*|.*strcpy.*|.*strcat.*|.*memset.*|.*free.*" },
     { label: "边界越界", source: ".*read.*|.*recv.*|.*fread.*|.*strlen.*|.*fgets.*", sink: ".*<operator>\\.indexAccess.*|.*memcpy.*|.*strncpy.*|.*memmove.*|.*sprintf.*" },
     { label: "资源泄漏", source: ".*open.*|.*fopen.*|.*socket.*|.*accept.*|.*dup.*", sink: ".*close.*|.*fclose.*|.*shutdown.*|.*free.*" },
+    { label: "数值翻转", source: ".*read.*|.*recv.*|.*scanf.*|.*fgets.*|.*input.*|.*atoi.*|.*strtol.*|.*strtoul.*", sink: ".*<operator>\\.cast.*|.*<operator>\\.minus.*|.*<operator>\\.not.*" },
   ];
 
   return (

@@ -8,6 +8,7 @@ import GraphViewer from "@/components/ui/GraphViewer";
 import GraphSearch from "@/components/ui/GraphSearch";
 import CodePanel from "@/components/ui/CodePanel";
 import IntelligencePanel from "@/components/ui/IntelligencePanel";
+import GraphCatalog from "@/components/ui/GraphCatalog";
 import WikiViewer from "@/components/ui/WikiViewer";
 import FloatingChat from "@/components/ui/FloatingChat";
 import ChatPanel from "@/components/ui/ChatPanel";
@@ -220,7 +221,7 @@ export default function RepoDetailPage() {
     );
   }
 
-  const showSidebar = tab === "graph" && selectedNode;
+  const showSidebar = tab === "graph" && (selectedNode || graphData);
   const isIntelligenceNode = selectedNode && INTELLIGENCE_LABELS.has(selectedNode.label);
 
   return (
@@ -461,27 +462,37 @@ export default function RepoDetailPage() {
         {/* Graph sidebar */}
         {showSidebar && (
           <div className="sticky top-6 h-[calc(100vh-10rem)] overflow-y-auto animate-in slide-in-from-right-8 duration-500 space-y-2">
-            {previousProcess && !isIntelligenceNode && (
-              <button
-                onClick={() => { setSelectedNode(previousProcess); setPreviousProcess(null); }}
-                className="flex items-center gap-2 w-full px-3 py-2.5 text-xs text-on-surface-variant hover:text-primary transition-all rounded-lg bg-surface-container-low hover:bg-surface-container-high border border-outline-variant/20 group"
-              >
-                <span className="group-hover:-translate-x-0.5 transition-transform inline-block shrink-0 text-base leading-none">&larr;</span>
-                <span className="truncate">返回：{previousProcess.properties.name}</span>
-              </button>
-            )}
-            {isIntelligenceNode ? (
-              <IntelligencePanel node={selectedNode!} nodeMap={nodeMap} edges={graphData?.edges ?? []} onNodeClick={handleNodeClick} repo={gitnexusRepoKey || undefined} />
+            {selectedNode ? (
+              <>
+                {previousProcess && !isIntelligenceNode && (
+                  <button
+                    onClick={() => { setSelectedNode(previousProcess); setPreviousProcess(null); }}
+                    className="flex items-center gap-2 w-full px-3 py-2.5 text-xs text-on-surface-variant hover:text-primary transition-all rounded-lg bg-surface-container-low hover:bg-surface-container-high border border-outline-variant/20 group"
+                  >
+                    <span className="group-hover:-translate-x-0.5 transition-transform inline-block shrink-0 text-base leading-none">&larr;</span>
+                    <span className="truncate">返回：{previousProcess.properties.name}</span>
+                  </button>
+                )}
+                {isIntelligenceNode ? (
+                  <IntelligencePanel node={selectedNode} nodeMap={nodeMap} edges={graphData?.edges ?? []} onNodeClick={handleNodeClick} repo={gitnexusRepoKey || undefined} />
+                ) : (
+                  <CodePanel node={selectedNode} repoName={gitnexusRepoKey} />
+                )}
+                <button
+                  onClick={() => handleAskAboutNode(selectedNode)}
+                  className="w-full flex items-center justify-center gap-2 px-4 py-2.5 rounded-xl border border-primary/20 bg-primary/5 text-primary text-[11px] font-bold uppercase tracking-widest hover:bg-primary/10 hover:border-primary/40 transition-all"
+                >
+                  <MessageSquareText size={13} />
+                  在 Chat 中追问
+                </button>
+              </>
             ) : (
-              <CodePanel node={selectedNode!} repoName={gitnexusRepoKey} />
+              <GraphCatalog
+                repo={gitnexusRepoKey || undefined}
+                nodeMap={nodeMap}
+                onNodeClick={handleNodeClick}
+              />
             )}
-            <button
-              onClick={() => handleAskAboutNode(selectedNode!)}
-              className="w-full flex items-center justify-center gap-2 px-4 py-2.5 rounded-xl border border-primary/20 bg-primary/5 text-primary text-[11px] font-bold uppercase tracking-widest hover:bg-primary/10 hover:border-primary/40 transition-all"
-            >
-              <MessageSquareText size={13} />
-              在 Chat 中追问
-            </button>
           </div>
         )}
       </div>

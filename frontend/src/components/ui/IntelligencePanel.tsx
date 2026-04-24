@@ -66,12 +66,16 @@ function ProcessView({
   const loadingSteps = !!name && apiSteps === undefined;
 
   // Resolve steps to full nodes — prefer API data, fall back to graph
+  // API steps: { step, name, filePath }; graph steps: { symbolId, step }
   const resolvedSteps = useMemo(() => {
     if (apiSteps === undefined) return []; // Still loading
-    const rawSteps = (apiSteps.length > 0 ? apiSteps : (node.steps ?? [])) as { symbolId: string }[];
+    const rawSteps = (apiSteps.length > 0 ? apiSteps : (node.steps ?? [])) as
+      { symbolId?: string; name?: string; filePath?: string }[];
     return rawSteps.map((s) => ({
       ...s,
-      node: nodeMap.get(s.symbolId) ?? null,
+      displayName: s.name ?? s.symbolId ?? "",
+      displayPath: s.filePath,
+      node: nodeMap.get(s.symbolId ?? "") ?? null,
     }));
   }, [apiSteps, node.steps, nodeMap]);
 
@@ -153,12 +157,12 @@ function ProcessView({
 
                   <div className="min-w-0 flex-1">
                     <p className={`text-xs font-medium truncate ${isClickable ? "text-on-surface hover:text-primary" : "text-on-surface-variant"}`}>
-                      {resolved?.properties.name ?? s.symbolId.slice(0, 16)}
+                      {resolved?.properties.name ?? s.displayName}
                     </p>
-                    {resolved?.properties.filePath && (
+                    {(resolved?.properties.filePath || s.displayPath) && (
                       <p className="text-[10px] text-on-surface-variant/50 font-data truncate">
-                        {resolved.properties.filePath}
-                        {resolved.properties.startLine != null && `:${resolved.properties.startLine}`}
+                        {resolved?.properties.filePath ?? s.displayPath}
+                        {resolved?.properties.startLine != null && `:${resolved.properties.startLine}`}
                       </p>
                     )}
                     {resolved && (
