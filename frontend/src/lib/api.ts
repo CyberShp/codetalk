@@ -35,6 +35,7 @@ import type {
   JoernCallContext,
   JoernCalleeImpact,
   TaintPath,
+  VarUsage,
   TestPoint,
   SeverityLevel,
 } from "./types";
@@ -237,13 +238,13 @@ export const api = {
             `/api/repos/${repoId}/analysis/joern/method/${encodeURIComponent(methodName)}/cfg`
           ),
         variableTracking: (repoId: string, methodName: string, varName: string) =>
-          request<{ method: string; variable: string; usages: any[] }>(
+          request<{ method: string; variable: string; usages: VarUsage[] }>(
             `/api/repos/${repoId}/analysis/joern/method/${encodeURIComponent(methodName)}/variable/${encodeURIComponent(varName)}/track`
           ),
-        taint: (repoId: string, source: string, sink: string) =>
+        taint: (repoId: string, source: string, sink: string, mode: "cooccur" | "absence" = "cooccur") =>
           request<{ paths: TaintPath[] }>(`/api/repos/${repoId}/analysis/joern/taint`, {
             method: "POST",
-            body: JSON.stringify({ source, sink }),
+            body: JSON.stringify({ source, sink, mode }),
           }),
       },
 

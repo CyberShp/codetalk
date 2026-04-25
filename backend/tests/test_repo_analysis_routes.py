@@ -45,7 +45,7 @@ class _FakeJoern:
         return None
 
     async def method_list(self):
-        return [{"name": "main", "filename": "iscsi.c", "line": 10}]
+        return [{"name": "main", "filename": "iscsi.c", "line": 10, "lineEnd": 50, "paramCount": 2, "complexity": 5}]
 
     async def query_custom(self, query):
         return [{"query": query, "result": "ok"}]
@@ -61,6 +61,11 @@ class _FakeJoern:
 
     async def taint_analysis(self, _source, _sink):
         return [[("input", "iscsi.c", 10), ("sink", "iscsi.c", 20)]]
+
+    async def absence_analysis(self, _source, _sink):
+        return [{"method": "read_data", "file": "io.c", "elements": [
+            {"code": "open(path)", "file": "io.c", "line": "15", "role": "source"}
+        ]}]
 
 
 class RepoAnalysisRouteContractTests(unittest.IsolatedAsyncioTestCase):
@@ -119,10 +124,12 @@ class RepoAnalysisRouteContractTests(unittest.IsolatedAsyncioTestCase):
             )
 
         self.assertEqual(response.status_code, 200)
-        self.assertEqual(
-            response.json(),
-            {"methods": [{"name": "main", "filename": "iscsi.c", "line": 10}]},
-        )
+        body = response.json()
+        self.assertEqual(len(body["methods"]), 1)
+        m = body["methods"][0]
+        self.assertEqual(m["name"], "main")
+        self.assertEqual(m["filename"], "iscsi.c")
+        self.assertEqual(m["complexity"], 5)
 
     async def test_joern_custom_query_contract(self) -> None:
         repo_id = uuid.uuid4()
@@ -298,6 +305,31 @@ class RepoAnalysisRouteContractTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(body["sink"], "sink")
         self.assertEqual(body["paths"][0]["elements"][0]["code"], "input")
         self.assertEqual(body["paths"][0]["elements"][1]["line_number"], 20)
+
+    async def test_joern_taint_absence_mode_contract(self) -> None:
+        repo_id = uuid.uuid4()
+        repo = SimpleNamespace(
+            id=repo_id,
+            name="open-iscsi",
+            local_path="/Volumes/Media/codetalk/.repos/open-iscsi",
+        )
+        self.holder["db"] = _FakeDB(get_map={repo_id: repo})
+
+        with patch.object(
+            repo_analysis_api, "_joern", return_value=_FakeJoern()
+        ):
+            response = await self.client.post(
+                f"/api/repos/{repo_id}/analysis/joern/taint",
+                json={"source": "open", "sink": "close", "mode": "absence"},
+            )
+
+        self.assertEqual(response.status_code, 200)
+        body = response.json()
+        self.assertEqual(body["mode"], "absence")
+        self.assertEqual(len(body["paths"]), 1)
+        self.assertEqual(body["paths"][0]["method"], "read_data")
+        self.assertEqual(body["paths"][0]["elements"][0]["code"], "open(path)")
+        self.assertTrue(body["paths"][0]["elements"][0]["is_source"])
 
     async def test_generate_test_points_contract(self) -> None:
         repo_id = uuid.uuid4()

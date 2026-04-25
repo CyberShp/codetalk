@@ -68,3 +68,33 @@ class JoernAdapterPrepareTests(unittest.IsolatedAsyncioTestCase):
             ]
         )
         self.assertEqual(adapter._imported_project, "open-iscsi")
+
+
+class JoernAdapterAbsenceAnalysisTests(unittest.IsolatedAsyncioTestCase):
+    async def test_absence_analysis_builds_correct_query(self) -> None:
+        adapter = JoernAdapter(base_url="http://joern:8080")
+        fake_result = [{"method": "read_data", "file": "io.c", "elements": []}]
+
+        with patch.object(
+            adapter, "_query", AsyncMock(return_value=fake_result)
+        ) as mock_query:
+            result = await adapter.absence_analysis("open", "close")
+
+        # Verify the query filters for source-present + sink-absent
+        query_sent = mock_query.call_args[0][0]
+        self.assertIn('val srcPat = "open"', query_sent)
+        self.assertIn('val sinkPat = "close"', query_sent)
+        self.assertIn("name(srcPat).nonEmpty", query_sent)
+        self.assertIn("name(sinkPat).isEmpty", query_sent)
+        self.assertEqual(result, fake_result)
+
+    async def test_method_list_includes_complexity(self) -> None:
+        adapter = JoernAdapter(base_url="http://joern:8080")
+        fake_methods = [{"name": "main", "filename": "test.c", "line": 1, "lineEnd": 50, "paramCount": 2, "complexity": 8}]
+
+        with patch.object(
+            adapter, "_query", AsyncMock(return_value=fake_methods)
+        ):
+            result = await adapter.method_list()
+
+        self.assertEqual(result[0]["complexity"], 8)

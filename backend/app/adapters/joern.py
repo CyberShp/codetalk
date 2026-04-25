@@ -256,6 +256,30 @@ class JoernAdapter(BaseToolAdapter):
         )
         return await self._query(query)
 
+    async def absence_analysis(
+        self, source_pattern: str, sink_pattern: str
+    ) -> Any:
+        """Find methods where source is present but sink is MISSING.
+
+        Used for resource leak detection: methods that acquire a resource
+        (open/malloc) but never release it (close/free) in the same scope.
+        """
+        query = (
+            f'val srcPat = "{source_pattern}"\n'
+            f'val sinkPat = "{sink_pattern}"\n'
+            'cpg.method.nameNot("<global>").filter(m =>\n'
+            "  m.ast.isCall.name(srcPat).nonEmpty &&\n"
+            "  m.ast.isCall.name(sinkPat).isEmpty\n"
+            ").l.take(30).map(m => {\n"
+            "  val srcEls = m.ast.isCall.name(srcPat).sortBy(_.lineNumber.getOrElse(0)).l\n"
+            '    .map(c => Map("code" -> c.code, "file" -> c.file.name.headOption.getOrElse(""),\n'
+            '      "line" -> c.lineNumber.getOrElse(-1).toString, "role" -> "source"))\n'
+            '  Map("method" -> m.name, "file" -> m.filename,\n'
+            '    "elements" -> srcEls)\n'
+            "}).toJson"
+        )
+        return await self._query(query)
+
     async def function_branches(self, method_name: str) -> Any:
         """Get all branches within a specific function."""
         query = (
@@ -451,7 +475,8 @@ class JoernAdapter(BaseToolAdapter):
             '"filename" -> m.filename, '
             '"line" -> m.lineNumber.getOrElse(-1), '
             '"lineEnd" -> m.lineNumberEnd.getOrElse(-1), '
-            '"paramCount" -> m.parameter.size'
+            '"paramCount" -> m.parameter.size, '
+            '"complexity" -> m.controlStructure.size'
             ")).l.toJson"
         )
         return await self._query(query)

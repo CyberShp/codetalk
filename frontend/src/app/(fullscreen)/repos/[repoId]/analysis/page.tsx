@@ -15,6 +15,8 @@ import type {
   JoernBoundaryValue,
   JoernCallContext,
   JoernCalleeImpact,
+  JoernMethod,
+  VarUsage,
 } from "@/lib/types";
 import {
   ArrowLeft,
@@ -58,7 +60,6 @@ function SourceViewerModal({
   const [loading, setLoading] = useState(true);
 
   useEffect(() => {
-    setLoading(true);
     api.repos
       .file(repoId, filePath, line ? Math.max(1, line - 20) : undefined, line ? line + 20 : undefined)
       .then((res) => setCode(res.content))
@@ -121,12 +122,10 @@ function SourceViewerModal({
 }
 
 function CodeLink({
-  repoId,
   filePath,
   line,
   onOpen,
 }: {
-  repoId: string;
   filePath: string;
   line?: number;
   onOpen: (path: string, l?: number) => void;
@@ -177,11 +176,10 @@ function VariableTrackerModal({
   onClose: () => void;
   onOpenSource: (path: string, line?: number) => void;
 }) {
-  const [usages, setUsages] = useState<any[]>([]);
+  const [usages, setUsages] = useState<VarUsage[]>([]);
   const [loading, setLoading] = useState(true);
 
   useEffect(() => {
-    setLoading(true);
     api.repos.analysis.joern
       .variableTracking(repoId, methodName, varName)
       .then((res) => setUsages(res.usages))
@@ -247,7 +245,7 @@ function VariableTrackerModal({
                       {u.code}
                     </code>
                   </div>
-                  <CodeLink repoId={repoId} filePath={u.filename ?? ""} line={u.line_number ?? undefined} onOpen={onOpenSource} />
+                  <CodeLink filePath={u.filename ?? ""} line={u.line_number ?? undefined} onOpen={onOpenSource} />
                 </div>
               ))}
             </div>
@@ -336,8 +334,245 @@ const NAV_ITEMS = [
   { id: "branches", label: "分支分析", icon: GitBranch },
   { id: "testpoints", label: "测试点", icon: FlaskConical },
   { id: "taint", label: "数据追踪", icon: Network },
+  { id: "complexity", label: "复杂度", icon: Maximize2 },
 ] as const;
 type NavId = (typeof NAV_ITEMS)[number]["id"];
+
+// ── Complexity sub-view ───────────────────────────────────────────────────
+/** Synthetic Joern nodes that represent file-level scope, not real functions */
+const SYNTHETIC_NAMES = new Set(["<global>", "<clinit>", "<init>", "<meta>"]);
+
+function ComplexityView({
+  repoId,
+  onOpenSource,
+}: {
+  repoId: string;
+  onOpenSource: (p: string, l?: number) => void;
+}) {
+  const [rawMethods, setRawMethods] = useState<JoernMethod[]>([]);
+  const [loading, setLoading] = useState(true);
+  const [err, setErr] = useState("");
+
+  useEffect(() => {
+    api.repos.analysis.joern.methods(repoId)
+      .then((res) => setRawMethods((res.methods || []) as JoernMethod[]))
+      .catch((e) => setErr(e.message))
+      .finally(() => setLoading(false));
+  }, [repoId]);
+
+  // Filter out synthetic nodes — they're not real functions
+  const methods = useMemo(
+    () => rawMethods.filter(m => !SYNTHETIC_NAMES.has(m.name)),
+    [rawMethods],
+  );
+  const syntheticCount = rawMethods.length - methods.length;
+
+  // Density = complexity / lines (how concentrated the branching is)
+  const withDensity = useMemo(
+    () => methods.map(m => {
+      const lines = Math.max((m.lineEnd ?? m.line) - m.line + 1, 1);
+      const comp = m.complexity ?? 0;
+      return { ...m, density: comp / lines, lines };
+    }),
+    [methods],
+  );
+
+  const stats = useMemo(() => {
+    if (!withDensity.length) return null;
+    const comps = withDensity.map(m => m.complexity ?? 0);
+    const maxComp = Math.max(...comps, 0);
+    const avgComp = comps.reduce((a, b) => a + b, 0) / comps.length;
+    const highRisk = comps.filter(c => c > 15).length;
+    const maxDensity = Math.max(...withDensity.map(m => m.density), 0);
+    return { maxComp, avgComp, highRisk, total: withDensity.length, maxDensity };
+  }, [withDensity]);
+
+  // Top 10 by raw complexity
+  const topByComplexity = useMemo(
+    () => [...withDensity].sort((a, b) => (b.complexity ?? 0) - (a.complexity ?? 0)).slice(0, 10),
+    [withDensity],
+  );
+
+  // Top 10 by density (only functions with complexity >= 3 to avoid trivial noise)
+  const topByDensity = useMemo(
+    () => [...withDensity]
+      .filter(m => (m.complexity ?? 0) >= 3)
+      .sort((a, b) => b.density - a.density)
+      .slice(0, 10),
+    [withDensity],
+  );
+
+  const [rankMode, setRankMode] = useState<"absolute" | "density">("absolute");
+
+  if (loading) return (
+    <div className="flex flex-col items-center justify-center h-64 gap-3 text-on-surface-variant/40">
+      <Loader2 className="animate-spin text-primary" />
+      <span className="text-[10px] font-data uppercase tracking-widest">正在加载函数控制结构数据...</span>
+    </div>
+  );
+
+  if (err) return (
+    <div className="flex flex-col items-center justify-center h-64 gap-3 text-on-surface-variant/40">
+      <ShieldAlert className="w-8 h-8 text-tertiary/60" />
+      <span className="text-xs text-tertiary/80">{err}</span>
+    </div>
+  );
+
+  const topList = rankMode === "absolute" ? topByComplexity : topByDensity;
+
+  return (
+    <div className="space-y-8 animate-in fade-in duration-500">
+      {/* Metric explanation */}
+      <div className="px-1 py-2 border-l-2 border-primary/30 pl-4">
+        <p className="text-[11px] text-on-surface-variant/60 leading-relaxed">
+          统计每个函数内 <span className="text-primary font-data">if / for / while / switch / try</span> 等控制结构的数量。
+          数值越高表示分支逻辑越多，但不等同于圈复杂度 (Cyclomatic Complexity)。
+          {syntheticCount > 0 && (
+            <span className="text-on-surface-variant/40"> 已过滤 {syntheticCount} 个文件级合成节点。</span>
+          )}
+        </p>
+      </div>
+
+      {/* Stats Cards */}
+      <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
+        <div className="rounded-xl border border-outline-variant/10 bg-surface-container-low p-5 space-y-2">
+          <span className="text-[9px] font-data uppercase tracking-widest text-on-surface-variant/40">函数总数</span>
+          <p className="text-2xl font-display font-bold text-on-surface">{stats?.total}</p>
+        </div>
+        <div className="rounded-xl border border-outline-variant/10 bg-surface-container-low p-5 space-y-2">
+          <span className="text-[9px] font-data uppercase tracking-widest text-on-surface-variant/40">最高控制结构数</span>
+          <p className="text-2xl font-display font-bold text-tertiary">{stats?.maxComp}</p>
+        </div>
+        <div className="rounded-xl border border-outline-variant/10 bg-surface-container-low p-5 space-y-2">
+          <span className="text-[9px] font-data uppercase tracking-widest text-on-surface-variant/40">平均控制结构数</span>
+          <p className="text-2xl font-display font-bold text-primary">{stats?.avgComp.toFixed(1)}</p>
+        </div>
+        <div className="rounded-xl border border-outline-variant/10 bg-surface-container-low p-5 space-y-2">
+          <span className="text-[9px] font-data uppercase tracking-widest text-on-surface-variant/40">高风险 (&gt;15)</span>
+          <p className="text-2xl font-display font-bold text-amber-400">{stats?.highRisk}</p>
+        </div>
+      </div>
+
+      {/* Distribution Histogram */}
+      <div className="rounded-2xl border border-outline-variant/10 bg-surface-container-lowest p-6 space-y-6">
+        <div className="flex items-center justify-between">
+          <h3 className="text-[10px] font-data uppercase tracking-[0.3em] text-on-surface-variant/40">控制结构分布 (Distribution)</h3>
+          <span className="text-[9px] font-data text-on-surface-variant/20 uppercase tracking-widest">仅含真实函数</span>
+        </div>
+
+        {(() => {
+          const buckets = [
+            { label: "0", min: 0, max: 0 },
+            { label: "1–5", min: 1, max: 5 },
+            { label: "6–10", min: 6, max: 10 },
+            { label: "11–15", min: 11, max: 15 },
+            { label: "16–30", min: 16, max: 30 },
+            { label: "31–50", min: 31, max: 50 },
+            { label: "51+", min: 51, max: Infinity },
+          ];
+          const counts = buckets.map(b => ({
+            ...b,
+            count: methods.filter(m => {
+              const c = m.complexity ?? 0;
+              return c >= b.min && c <= b.max;
+            }).length,
+          }));
+          const maxCount = Math.max(...counts.map(c => c.count), 1);
+          const barMaxH = 200;
+
+          return (
+            <div className="flex items-end gap-3 px-8 pt-4 pb-2">
+              {counts.map((b, i) => {
+                const h = Math.max((b.count / maxCount) * barMaxH, 4);
+                const isHighRisk = b.min > 15;
+                const pct = stats ? ((b.count / stats.total) * 100).toFixed(0) : "0";
+                return (
+                  <div key={i} className="flex-1 flex flex-col items-center gap-1.5 group">
+                    <span className="text-[10px] font-data font-bold text-on-surface-variant/50 group-hover:text-on-surface transition-colors">
+                      {b.count}
+                    </span>
+                    <div
+                      className={`w-full rounded-t-lg transition-all duration-500 ${
+                        isHighRisk
+                          ? "bg-tertiary/40 group-hover:bg-tertiary/70"
+                          : "bg-primary/30 group-hover:bg-primary/60"
+                      }`}
+                      style={{ height: `${h}px` }}
+                    />
+                    <span className={`text-[9px] font-data ${isHighRisk ? "text-tertiary/60" : "text-on-surface-variant/40"}`}>
+                      {b.label}
+                    </span>
+                    <span className="text-[8px] font-data text-on-surface-variant/20">
+                      {pct}%
+                    </span>
+                  </div>
+                );
+              })}
+            </div>
+          );
+        })()}
+      </div>
+
+      {/* Top 10 — switchable between absolute and density */}
+      <div className="space-y-4">
+        <div className="flex items-center justify-between px-2">
+          <h3 className="text-[10px] font-data uppercase tracking-[0.3em] text-on-surface-variant/40">
+            {rankMode === "absolute" ? "控制结构最多 Top 10" : "分支密度最高 Top 10"}
+          </h3>
+          <div className="flex bg-surface-container-low/40 p-0.5 rounded-full border border-white/5">
+            <button
+              onClick={() => setRankMode("absolute")}
+              className={`px-3 py-1 text-[9px] font-data rounded-full transition-all ${
+                rankMode === "absolute"
+                  ? "bg-primary/20 text-primary"
+                  : "text-on-surface-variant/40 hover:text-on-surface-variant"
+              }`}
+            >
+              绝对数量
+            </button>
+            <button
+              onClick={() => setRankMode("density")}
+              className={`px-3 py-1 text-[9px] font-data rounded-full transition-all ${
+                rankMode === "density"
+                  ? "bg-secondary/20 text-secondary"
+                  : "text-on-surface-variant/40 hover:text-on-surface-variant"
+              }`}
+            >
+              密度 (结构/行)
+            </button>
+          </div>
+        </div>
+        <div className="grid gap-3">
+          {topList.map((m, i) => (
+            <div key={`${rankMode}-${i}`} className="group flex items-center justify-between p-4 rounded-xl border border-outline-variant/10 bg-surface-container-low hover:border-tertiary/20 transition-all">
+              <div className="flex items-center gap-4">
+                <span className="text-[10px] font-data text-on-surface-variant/20 w-4 font-bold">#{i + 1}</span>
+                <div className="flex flex-col">
+                  <span className="text-sm font-data font-bold text-on-surface group-hover:text-tertiary transition-colors">{m.name}</span>
+                  <span className="text-[10px] font-data text-on-surface-variant/40">
+                    {shortPath(m.filename)}:{m.line}
+                    <span className="ml-2 text-on-surface-variant/25">{m.lines} 行</span>
+                  </span>
+                </div>
+              </div>
+              <div className="flex items-center gap-6">
+                <div className="flex flex-col items-end">
+                  <span className="text-[8px] font-data uppercase tracking-widest text-on-surface-variant/30">控制结构</span>
+                  <span className={`text-sm font-data font-bold ${(m.complexity ?? 0) > 15 ? 'text-tertiary' : 'text-primary'}`}>{m.complexity ?? 0}</span>
+                </div>
+                <div className="flex flex-col items-end">
+                  <span className="text-[8px] font-data uppercase tracking-widest text-on-surface-variant/30">密度</span>
+                  <span className={`text-sm font-data font-bold ${m.density > 0.3 ? 'text-tertiary' : 'text-secondary'}`}>{m.density.toFixed(2)}</span>
+                </div>
+                <CodeLink filePath={m.filename} line={m.line} onOpen={onOpenSource} />
+              </div>
+            </div>
+          ))}
+        </div>
+      </div>
+    </div>
+  );
+}
 
 /** Show last 2 path segments for disambiguation (e.g. "handlers/request.c") */
 function shortPath(filepath: string | undefined): string {
@@ -420,12 +655,10 @@ function OverviewView({
 // ── Structured renderers for Joern results ───────────────────────────────
 
 function CallContextCards({
-  repoId,
   items,
   onOpenSource,
   onMethodClick,
 }: {
-  repoId: string;
   items: JoernCallContext[];
   onOpenSource: (p: string, l?: number) => void;
   onMethodClick: (n: string) => void;
@@ -445,7 +678,7 @@ function CallContextCards({
           >
             <div className="flex items-center justify-between">
               <MethodLink name={ctx.caller} onClick={onMethodClick} />
-              <CodeLink repoId={repoId} filePath={ctx.callerFile ?? ""} line={ctx.callerLine ?? undefined} onOpen={onOpenSource} />
+              <CodeLink filePath={ctx.callerFile ?? ""} line={ctx.callerLine ?? undefined} onOpen={onOpenSource} />
             </div>
             {ctx.callSites?.length > 0 && (
               <div className="space-y-1">
@@ -479,12 +712,10 @@ function CallContextCards({
 }
 
 function CalleeImpactCards({
-  repoId,
   items,
   onOpenSource,
   onMethodClick,
 }: {
-  repoId: string;
   items: JoernCalleeImpact[];
   onOpenSource: (p: string, l?: number) => void;
   onMethodClick: (n: string) => void;
@@ -504,7 +735,7 @@ function CalleeImpactCards({
           >
             <div className="flex items-center justify-between">
               <MethodLink name={imp.callee} onClick={onMethodClick} />
-              <CodeLink repoId={repoId} filePath={imp.calleeFile ?? ""} line={imp.calleeLine ?? undefined} onOpen={onOpenSource} />
+              <CodeLink filePath={imp.calleeFile ?? ""} line={imp.calleeLine ?? undefined} onOpen={onOpenSource} />
             </div>
             {imp.callSitesInTarget?.length > 0 && (
               <div className="space-y-1">
@@ -542,11 +773,9 @@ function CalleeImpactCards({
 }
 
 function BranchCards({
-  repoId,
   items,
   onOpenSource,
 }: {
-  repoId: string;
   items: JoernMethodBranch[];
   onOpenSource: (p: string, l?: number) => void;
 }) {
@@ -568,7 +797,7 @@ function BranchCards({
               <span className="text-[9px] font-data font-bold uppercase tracking-widest px-2 py-0.5 rounded-full bg-primary/10 text-primary border border-primary/20">
                 {TYPE_LABEL[br.control_structure_type] ?? br.control_structure_type}
               </span>
-              <CodeLink repoId={repoId} filePath={br.filename ?? ""} line={br.line_number ?? undefined} onOpen={onOpenSource} />
+              <CodeLink filePath={br.filename ?? ""} line={br.line_number ?? undefined} onOpen={onOpenSource} />
             </div>
             {br.condition && (
               <code className="block text-[12px] font-data text-on-surface/80 pl-3 border-l-2 border-primary/20 py-1">{br.condition}</code>
@@ -592,11 +821,9 @@ function BranchCards({
 }
 
 function ErrorPathCards({
-  repoId,
   items,
   onOpenSource,
 }: {
-  repoId: string;
   items: JoernErrorPath[];
   onOpenSource: (p: string, l?: number) => void;
 }) {
@@ -624,7 +851,7 @@ function ErrorPathCards({
               {ep.kind}
             </span>
             <code className="text-[12px] font-data text-on-surface/80 break-words flex-1 py-0.5">{ep.code}</code>
-            <CodeLink repoId={repoId} filePath={ep.filename ?? ""} line={ep.line_number ?? undefined} onOpen={onOpenSource} />
+            <CodeLink filePath={ep.filename ?? ""} line={ep.line_number ?? undefined} onOpen={onOpenSource} />
           </motion.div>
         ))}
       </AnimatePresence>
@@ -634,13 +861,11 @@ function ErrorPathCards({
 }
 
 function BoundaryCards({
-  repoId,
   methodName,
   items,
   onOpenSource,
   onVarClick,
 }: {
-  repoId: string;
   methodName: string;
   items: JoernBoundaryValue[];
   onOpenSource: (p: string, l?: number) => void;
@@ -661,7 +886,7 @@ function BoundaryCards({
           >
             <div className="flex items-center justify-between">
               <code className="text-[12px] font-data text-on-surface/80 bg-surface-container-high px-2 py-1 rounded">{bv.code}</code>
-              <CodeLink repoId={repoId} filePath={bv.filename ?? ""} line={bv.line_number ?? undefined} onOpen={onOpenSource} />
+              <CodeLink filePath={bv.filename ?? ""} line={bv.line_number ?? undefined} onOpen={onOpenSource} />
             </div>
             {bv.operands?.length > 0 && (
               <div className="flex gap-2 flex-wrap pt-1">
@@ -783,7 +1008,6 @@ function BranchesView({
             <CfgViewer
               repoId={repoId}
               methodName={queriedMethod}
-              onOpenSource={onOpenSource}
               onMethodClick={handleQuery}
             />
           </Section>
@@ -795,7 +1019,6 @@ function BranchesView({
                 <p className="text-xs text-on-surface-variant/40 italic">无调用上下文 — 该函数可能是入口函数</p>
               ) : (
                 <CallContextCards
-                  repoId={repoId}
                   items={callContext}
                   onOpenSource={onOpenSource}
                   onMethodClick={handleQuery}
@@ -807,7 +1030,6 @@ function BranchesView({
                 <p className="text-xs text-on-surface-variant/40 italic">无被调用函数 — 该函数是叶子函数</p>
               ) : (
                 <CalleeImpactCards
-                  repoId={repoId}
                   items={calleeImpact}
                   onOpenSource={onOpenSource}
                   onMethodClick={handleQuery}
@@ -822,14 +1044,14 @@ function BranchesView({
               {branches.length === 0 ? (
                 <p className="text-xs text-on-surface-variant/40 italic">无控制流分支数据</p>
               ) : (
-                <BranchCards repoId={repoId} items={branches} onOpenSource={onOpenSource} />
+                <BranchCards items={branches} onOpenSource={onOpenSource} />
               )}
             </Section>
             <Section title="异常处理路径" count={errors.length} accent="tertiary">
               {errors.length === 0 ? (
                 <p className="text-xs text-on-surface-variant/40 italic">无异常处理路径</p>
               ) : (
-                <ErrorPathCards repoId={repoId} items={errors} onOpenSource={onOpenSource} />
+                <ErrorPathCards items={errors} onOpenSource={onOpenSource} />
               )}
             </Section>
             <Section title="边界值比较" count={boundaries.length} accent="amber">
@@ -837,7 +1059,6 @@ function BranchesView({
                 <p className="text-xs text-on-surface-variant/40 italic">无边界值比较</p>
               ) : (
                 <BoundaryCards
-                  repoId={repoId}
                   methodName={queriedMethod}
                   items={boundaries}
                   onOpenSource={onOpenSource}
@@ -913,12 +1134,10 @@ function Section({
 function CfgViewer({
   repoId,
   methodName,
-  onOpenSource,
   onMethodClick,
 }: {
   repoId: string;
   methodName: string;
-  onOpenSource: (p: string, l?: number) => void;
   onMethodClick: (n: string) => void;
 }) {
   const containerRef = useRef<HTMLDivElement>(null);
@@ -1340,6 +1559,33 @@ function TestPointCards({ testPoints }: { testPoints: TestPoint[] }) {
   );
 }
 
+// ── Confidence scoring for taint results ──────────────────────────────────
+/** Compute proximity score for a taint path (lower = higher confidence).
+ *  Measures minimum line distance between any source and sink element. */
+function computeProximity(path: TaintPath): number {
+  const els = path.elements ?? [];
+  const sources = els.filter(e => e.is_source === true);
+  const sinks = els.filter(e => e.is_source === false);
+  if (!sources.length || !sinks.length) return 9999;
+  let minDist = Infinity;
+  for (const src of sources) {
+    for (const snk of sinks) {
+      const sl = src.line_number ?? 0;
+      const skl = snk.line_number ?? 0;
+      // Prefer source before sink (positive distance)
+      const dist = skl - sl;
+      if (dist > 0 && dist < minDist) minDist = dist;
+    }
+  }
+  return minDist === Infinity ? 9999 : minDist;
+}
+
+function confidenceLabel(proximity: number): { text: string; color: string } {
+  if (proximity <= 10) return { text: "HIGH", color: "text-secondary bg-secondary/10 border-secondary/20" };
+  if (proximity <= 30) return { text: "MED", color: "text-amber-400 bg-amber-400/10 border-amber-400/20" };
+  return { text: "LOW", color: "text-on-surface-variant/40 bg-surface-container-high/30 border-outline-variant/10" };
+}
+
 // ── Taint sub-view ─────────────────────────────────────────────────────────
 function TaintView({
   repoId,
@@ -1350,6 +1596,7 @@ function TaintView({
 }) {
   const [source, setSource] = useState("");
   const [sink, setSink] = useState("");
+  const [activeMode, setActiveMode] = useState<"cooccur" | "absence">("cooccur");
   const [loading, setLoading] = useState(false);
   const [paths, setPaths] = useState<TaintPath[]>([]);
   const [queried, setQueried] = useState(false);
@@ -1362,8 +1609,12 @@ function TaintView({
     setLoading(true);
     setErr("");
     try {
-      const resp = await api.repos.analysis.joern.taint(repoId, s, sk);
-      setPaths(resp.paths ?? []);
+      const resp = await api.repos.analysis.joern.taint(repoId, s, sk, activeMode);
+      // Sort by confidence: proximity between source and sink lines
+      const sorted = [...(resp.paths ?? [])].sort((a, b) => {
+        return computeProximity(a) - computeProximity(b);
+      });
+      setPaths(sorted);
       setQueried(true);
     } catch (e) {
       setErr(e instanceof Error ? e.message : "分析失败");
@@ -1372,12 +1623,40 @@ function TaintView({
     }
   };
 
-  const PRESETS = [
-    { label: "数值溢出", source: ".*read.*|.*recv.*|.*scanf.*|.*fgets.*|.*input.*", sink: ".*<operator>\\.addition.*|.*<operator>\\.multiplication.*|.*<operator>\\.shiftLeft.*|.*atoi.*|.*strtol.*" },
-    { label: "空指针", source: ".*malloc.*|.*calloc.*|.*realloc.*|.*strdup.*", sink: ".*<operator>\\.indirection.*|.*memcpy.*|.*strcpy.*|.*strcat.*|.*memset.*|.*free.*" },
-    { label: "边界越界", source: ".*read.*|.*recv.*|.*fread.*|.*strlen.*|.*fgets.*", sink: ".*<operator>\\.indexAccess.*|.*memcpy.*|.*strncpy.*|.*memmove.*|.*sprintf.*" },
-    { label: "资源泄漏", source: ".*open.*|.*fopen.*|.*socket.*|.*accept.*|.*dup.*", sink: ".*close.*|.*fclose.*|.*shutdown.*|.*free.*" },
-    { label: "数值翻转", source: ".*read.*|.*recv.*|.*scanf.*|.*fgets.*|.*input.*|.*atoi.*|.*strtol.*|.*strtoul.*", sink: ".*<operator>\\.cast.*|.*<operator>\\.minus.*|.*<operator>\\.not.*" },
+  type Preset = { label: string; source: string; sink: string; mode?: "cooccur" | "absence"; hint: string };
+
+  const PRESETS: Preset[] = [
+    {
+      label: "数值溢出",
+      source: ".*scanf.*|.*fgets.*|.*recv.*|.*atoi.*|.*strtol.*|.*strtoul.*",
+      sink: ".*<operator>.addition.*|.*<operator>.multiplication.*|.*<operator>.shiftLeft.*",
+      hint: "外部输入参与算术运算，可能溢出",
+    },
+    {
+      label: "空指针",
+      source: ".*malloc.*|.*calloc.*|.*realloc.*|.*strdup.*",
+      sink: ".*<operator>.indirection.*|.*memcpy.*|.*strcpy.*|.*memset.*",
+      hint: "分配返回值未检查即解引用",
+    },
+    {
+      label: "边界越界",
+      source: ".*recv.*|.*fread.*|.*fgets.*|.*strlen.*",
+      sink: ".*<operator>.indexAccess.*|.*memcpy.*|.*strncpy.*|.*sprintf.*",
+      hint: "外部输入控制数组索引或拷贝长度",
+    },
+    {
+      label: "资源泄漏",
+      source: "(open|fopen|fdopen|opendir|socket|accept|dup|dup2|pipe|malloc|calloc|realloc|mmap)",
+      sink: "(close|fclose|closedir|shutdown|free|munmap)",
+      mode: "absence",
+      hint: "疑似获取资源但函数作用域内未见对应释放（可能经调用方释放）",
+    },
+    {
+      label: "数值翻转",
+      source: ".*atoi.*|.*strtol.*|.*strtoul.*|.*scanf.*|.*recv.*",
+      sink: ".*<operator>.minus.*|.*<operator>.not.*|.*<operator>.negation.*",
+      hint: "外部数值经取反/符号翻转操作",
+    },
   ];
 
   return (
@@ -1394,7 +1673,7 @@ function TaintView({
           {PRESETS.map((p) => (
             <button
               key={p.label}
-              onClick={() => { setSource(p.source); setSink(p.sink); }}
+              onClick={() => { setSource(p.source); setSink(p.sink); setActiveMode(p.mode ?? "cooccur"); }}
               className="group/preset text-[10px] font-data px-3 py-1.5 rounded-full border border-outline-variant/20 text-on-surface-variant/50 hover:border-primary/40 hover:text-primary transition-all bg-surface-container/50 hover:bg-primary/5 active:scale-95"
             >
               <span className="tracking-widest uppercase">{p.label}</span>
@@ -1429,8 +1708,11 @@ function TaintView({
             className="inline-flex items-center gap-2 rounded-xl bg-primary/5 border border-primary/20 px-8 py-3 text-[11px] font-bold uppercase tracking-[0.2em] text-primary hover:bg-primary/10 transition-all disabled:opacity-40 active:scale-95"
           >
             {loading ? <Loader2 size={14} className="animate-spin" /> : <Network size={14} />}
-            追踪数据流
+            {activeMode === "absence" ? "检测缺失" : "追踪数据流"}
           </button>
+          {activeMode === "absence" && (
+            <span className="text-[9px] font-data text-amber-400/60 uppercase tracking-widest">缺失检测模式：查找有源无汇的函数</span>
+          )}
           {err && <span className="text-xs text-tertiary font-data">{err}</span>}
         </div>
       </div>
@@ -1438,17 +1720,29 @@ function TaintView({
       {/* Results */}
       {queried && (
         <div className="space-y-4 animate-in fade-in duration-700">
-          <div className="flex items-center gap-2 px-2">
+          <div className="flex items-center gap-3 px-2">
             <span className="text-xl font-display font-bold text-on-surface">{paths.length}</span>
-            <span className="text-[10px] font-data uppercase tracking-[0.2em] text-on-surface-variant/40 mt-1">条可达路径</span>
+            <span className="text-[10px] font-data uppercase tracking-[0.2em] text-on-surface-variant/40 mt-1">
+              {activeMode === "absence" ? "个疑似泄漏点（需人工确认）" : "条共现路径（按置信度排序）"}
+            </span>
           </div>
+          {activeMode === "cooccur" && paths.length > 0 && (
+            <p className="text-[10px] text-on-surface-variant/40 px-2 -mt-2">
+              基于方法共现检测，非真实数据流。置信度由 source→sink 行距计算：HIGH &le;10行, MED &le;30行, LOW &gt;30行。
+            </p>
+          )}
+          {activeMode === "absence" && paths.length > 0 && (
+            <p className="text-[10px] text-on-surface-variant/40 px-2 -mt-2">
+              基于函数作用域内缺失检测：发现 source 调用但未发现对应 sink。资源可能经返回值或参数转交调用方释放，请结合上下文人工确认。
+            </p>
+          )}
           {paths.length === 0 ? (
             <div className="flex flex-col items-center justify-center h-48 gap-3 text-on-surface-variant/20 rounded-2xl border border-dashed border-outline-variant/10">
               <CheckCircle2 size={32} className="opacity-30 text-secondary" />
               <p className="text-[10px] font-data uppercase tracking-[0.2em]">未检测到异常传播</p>
             </div>
           ) : (
-            <TaintPathCards repoId={repoId} paths={paths} onOpenSource={onOpenSource} />
+            <TaintPathCards paths={paths} onOpenSource={onOpenSource} />
           )}
         </div>
       )}
@@ -1465,11 +1759,9 @@ function TaintView({
 
 // ── Taint Path Cards with pagination ──────────────────────────────────────
 function TaintPathCards({
-  repoId,
   paths,
   onOpenSource,
 }: {
-  repoId: string;
   paths: TaintPath[];
   onOpenSource: (p: string, l?: number) => void;
 }) {
@@ -1478,6 +1770,8 @@ function TaintPathCards({
     <div className="grid gap-4">
       {paged.map((path, i) => {
         const globalIdx = (page - 1) * PAGE_SIZE + i;
+        const prox = computeProximity(path);
+        const conf = confidenceLabel(prox);
         return (
           <motion.div
             layout
@@ -1493,8 +1787,14 @@ function TaintPathCards({
                 {path.method && (
                   <span className="text-[10px] font-data text-primary/60 tracking-tight">{path.method}()</span>
                 )}
+                {prox < 9999 && (
+                  <span className={`text-[8px] font-data font-bold px-2 py-0.5 rounded-full border ${conf.color}`}>
+                    {conf.text}
+                  </span>
+                )}
               </div>
               <div className="flex items-center gap-3">
+                {prox < 9999 && <span className="text-[9px] font-data text-on-surface-variant/20">{prox}行距</span>}
                 {path.file && <span className="text-[9px] font-data text-on-surface-variant/20 tracking-tight">{shortPath(path.file)}</span>}
                 <span className="text-[10px] font-data text-on-surface-variant/20 tracking-widest">{path.elements?.length} 个节点</span>
               </div>
@@ -1532,7 +1832,7 @@ function TaintPathCards({
                         {el.code}
                       </span>
                       <div className="flex items-center gap-2">
-                        <CodeLink repoId={repoId} filePath={el.filename ?? ""} line={el.line_number ?? undefined} onOpen={onOpenSource} />
+                        <CodeLink filePath={el.filename ?? ""} line={el.line_number ?? undefined} onOpen={onOpenSource} />
                       </div>
                     </div>
                   </motion.div>
@@ -1586,7 +1886,7 @@ export default function AnalysisPage() {
   }, [repoId]);
 
   return (
-    <main className="min-h-screen bg-surface-container-lowest text-on-surface flex flex-col selection:bg-primary/20">
+    <main className="h-full bg-surface-container-lowest text-on-surface flex flex-col selection:bg-primary/20">
       <AnimatePresence>
         {sourceModal && (
           <SourceViewerModal
@@ -1674,6 +1974,9 @@ export default function AnalysisPage() {
               {activeNav === "testpoints" && <TestPointsView repoId={repoId} />}
               {activeNav === "taint" && (
                 <TaintView repoId={repoId} onOpenSource={(path, line) => setSourceModal({ path, line })} />
+              )}
+              {activeNav === "complexity" && (
+                <ComplexityView repoId={repoId} onOpenSource={(path, line) => setSourceModal({ path, line })} />
               )}
             </motion.div>
           </div>

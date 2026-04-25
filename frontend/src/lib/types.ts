@@ -401,6 +401,15 @@ export interface SemgrepFinding {
   };
 }
 
+export interface JoernMethod {
+  name: string;
+  filename: string;
+  line: number;
+  lineEnd: number;
+  paramCount: number;
+  complexity?: number;
+}
+
 /** Returned by GET /api/repos/{id}/analysis/summary */
 export interface AnalysisSummary {
   repo_id: string;
@@ -457,6 +466,12 @@ export interface JoernCalleeImpact {
   calleeLine: number;
   errorReturns: Array<{ code: string; line: number }>;
   callSitesInTarget: Array<{ line: number; code: string }>;
+}
+
+export interface VarUsage {
+  code: string;
+  filename?: string;
+  line_number?: number;
 }
 
 export interface TaintPath {

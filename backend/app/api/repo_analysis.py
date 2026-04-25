@@ -332,6 +332,7 @@ async def method_cfg(
 class _TaintRequest(BaseModel):
     source: str
     sink: str
+    mode: str = "cooccur"  # "cooccur" = both present, "absence" = source present but sink missing
 
 
 @router.post("/{repo_id}/analysis/joern/taint")
@@ -350,11 +351,14 @@ async def taint_analysis(
 
     try:
         await joern.prepare(AnalysisRequest(repo_local_path=tool_path))
-        raw_paths = await joern.taint_analysis(body.source, body.sink)
+        if body.mode == "absence":
+            raw_paths = await joern.absence_analysis(body.source, body.sink)
+        else:
+            raw_paths = await joern.taint_analysis(body.source, body.sink)
         # Reshape Joern raw tuples into TaintPath[] for frontend:
         # Joern returns [[("code","file",line), ...], ...] → [{elements: [{code,filename,line_number}]}]
         paths = _reshape_taint_paths(raw_paths)
-        return {"source": body.source, "sink": body.sink, "paths": paths}
+        return {"source": body.source, "sink": body.sink, "mode": body.mode, "paths": paths}
     except httpx.ConnectError:
         raise HTTPException(503, "Joern service unavailable")
     finally:

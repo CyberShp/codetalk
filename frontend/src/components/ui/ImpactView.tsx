@@ -185,27 +185,28 @@ export default function ImpactView({
   repo,
 }: ImpactViewProps) {
   const [data, setData] = useState<ImpactData | null | undefined>(undefined);
+  const [dataFor, setDataFor] = useState<string | undefined>();
   const [loadingDeeper, setLoadingDeeper] = useState(false);
 
   const name = node.properties.name;
   const nodeColor =
     { Function: "#10B981", Method: "#F59E0B", Class: "#8B5CF6" }[node.label] ??
     "#6B7280";
-  const loading = data === undefined;
-  const hasError = data === null;
+  const dataKey = `${name}\0${repo}`;
+  const loading = dataFor !== dataKey;
+  const hasError = data === null && dataFor === dataKey;
 
   // Load depth 1 immediately (fast — just 2 queries)
   useEffect(() => {
     if (!name) return;
     let cancelled = false;
-    setData(undefined);
     api.gitnexus
       .impact(name, "both", 1, repo)
       .then((res) => {
-        if (!cancelled) setData(res);
+        if (!cancelled) { setData(res); setDataFor(`${name}\0${repo}`); }
       })
       .catch(() => {
-        if (!cancelled) setData(null);
+        if (!cancelled) { setData(null); setDataFor(`${name}\0${repo}`); }
       });
     return () => {
       cancelled = true;

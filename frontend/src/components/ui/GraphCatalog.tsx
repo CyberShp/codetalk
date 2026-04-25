@@ -34,11 +34,12 @@ export default function GraphCatalog({ repo, nodeMap, onNodeClick }: Props) {
   const [searchQuery, setSearchQuery] = useState("");
   const [processes, setProcesses] = useState<ProcessItem[]>([]);
   const [clusters, setClusters] = useState<ClusterItem[]>([]);
-  const [loading, setLoading] = useState(true);
+  const [fetchDone, setFetchDone] = useState(false);
+  const [loadedRepo, setLoadedRepo] = useState<string | undefined>();
 
   useEffect(() => {
+    if (!repo) return; // Don't send unscoped requests while repo is resolving
     let cancelled = false;
-    setLoading(true);
 
     Promise.allSettled([
       api.gitnexus.processes(repo),
@@ -53,11 +54,14 @@ export default function GraphCatalog({ repo, nodeMap, onNodeClick }: Props) {
         const raw = clusterResult.value;
         setClusters(Array.isArray(raw.clusters) ? (raw.clusters as ClusterItem[]) : []);
       }
-      setLoading(false);
+      setFetchDone(true);
+      setLoadedRepo(repo);
     });
 
     return () => { cancelled = true; };
   }, [repo]);
+
+  const loading = !fetchDone || loadedRepo !== repo;
 
   const filteredItems = useMemo(() => {
     const q = searchQuery.toLowerCase();
