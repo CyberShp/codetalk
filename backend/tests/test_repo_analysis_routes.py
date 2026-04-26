@@ -17,11 +17,27 @@ class _FakeResult:
     def scalar_one_or_none(self):
         return self._scalar_value
 
+    def scalars(self):
+        """Support result.scalars().all() for list queries."""
+        if isinstance(self._scalar_value, _FakeScalarsResult):
+            return self._scalar_value
+        return _FakeScalarsResult([self._scalar_value] if self._scalar_value else [])
+
+
+class _FakeScalarsResult:
+    """Wraps a list to satisfy .scalars().all() chain."""
+    def __init__(self, items):
+        self._items = items
+
+    def all(self):
+        return self._items
+
 
 class _FakeDB:
     def __init__(self, *, execute_results=None, get_map=None):
         self._execute_results = list(execute_results or [])
         self._get_map = dict(get_map or {})
+        self._added = []
 
     async def execute(self, _query):
         assert self._execute_results, "unexpected execute() call"
@@ -29,6 +45,21 @@ class _FakeDB:
 
     async def get(self, _model, key):
         return self._get_map.get(key)
+
+    def add(self, obj):
+        self._added.append(obj)
+
+    async def commit(self):
+        pass
+
+    async def refresh(self, obj):
+        # Simulate DB-generated fields
+        import uuid as _uuid
+        from datetime import datetime, timezone
+        if not getattr(obj, "id", None):
+            obj.id = _uuid.uuid4()
+        if not getattr(obj, "created_at", None):
+            obj.created_at = datetime.now(timezone.utc)
 
 
 class _FakeJoern:
@@ -66,6 +97,14 @@ class _FakeJoern:
         return [{"method": "read_data", "file": "io.c", "elements": [
             {"code": "open(path)", "file": "io.c", "line": "15", "role": "source"}
         ]}]
+
+    async def scoped_taint_verify(self, method_name, source, sink):
+        return [[{"code": source, "file": "iscsi.c", "line": "10"},
+                 {"code": sink, "file": "iscsi.c", "line": "20"}]]
+
+    async def call_context(self, method_name):
+        return [{"caller": "init", "callerFile": "main.c", "callerLine": 5,
+                 "callSites": [{"line": 15}], "callerBranches": []}]
 
 
 class RepoAnalysisRouteContractTests(unittest.IsolatedAsyncioTestCase):
@@ -366,6 +405,116 @@ class RepoAnalysisRouteContractTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(
             kwargs["llm_config"], {"provider": "openai", "model": "mimo-v2-pro"}
         )
+
+    async def test_taint_verify_contract(self) -> None:
+        repo_id = uuid.uuid4()
+        repo = SimpleNamespace(
+            id=repo_id,
+            name="open-iscsi",
+            local_path="/Volumes/Media/codetalk/.repos/open-iscsi",
+        )
+        self.holder["db"] = _FakeDB(get_map={repo_id: repo})
+
+        with patch.object(
+            repo_analysis_api, "_joern", return_value=_FakeJoern()
+        ):
+            response = await self.client.post(
+                f"/api/repos/{repo_id}/analysis/joern/taint-verify",
+                json={"method": "main", "source": "getParameter", "sink": "executeQuery"},
+            )
+
+        self.assertEqual(response.status_code, 200)
+        body = response.json()
+        self.assertTrue(body["verified"])
+        self.assertEqual(len(body["flows"]), 1)
+        self.assertEqual(body["flows"][0]["elements"][0]["code"], "getParameter")
+
+    async def test_taint_verify_timeout_contract(self) -> None:
+        repo_id = uuid.uuid4()
+        repo = SimpleNamespace(
+            id=repo_id,
+            name="open-iscsi",
+            local_path="/Volumes/Media/codetalk/.repos/open-iscsi",
+        )
+        self.holder["db"] = _FakeDB(get_map={repo_id: repo})
+
+        fake_joern = _FakeJoern()
+        fake_joern.scoped_taint_verify = AsyncMock(side_effect=httpx.ReadTimeout("timeout"))
+
+        with patch.object(
+            repo_analysis_api, "_joern", return_value=fake_joern
+        ):
+            response = await self.client.post(
+                f"/api/repos/{repo_id}/analysis/joern/taint-verify",
+                json={"method": "main", "source": "src", "sink": "snk"},
+            )
+
+        self.assertEqual(response.status_code, 200)
+        body = response.json()
+        self.assertFalse(body["verified"])
+        self.assertEqual(body["fallback"], "timeout")
+
+    async def test_snapshot_save_and_list_contract(self) -> None:
+        repo_id = uuid.uuid4()
+        repo = SimpleNamespace(
+            id=repo_id,
+            name="open-iscsi",
+            local_path="/Volumes/Media/codetalk/.repos/open-iscsi",
+        )
+        db = _FakeDB(
+            get_map={repo_id: repo},
+            execute_results=[_FakeResult(_FakeScalarsResult([]))],
+        )
+        self.holder["db"] = db
+
+        # Save snapshot
+        response = await self.client.post(
+            f"/api/repos/{repo_id}/analysis/snapshots",
+            json={
+                "risk_matrix": [{"name": "main", "risk": "HIGH"}],
+                "summary": {"total": 10, "high": 3, "med": 2, "avgComplexity": 8.5},
+            },
+        )
+        self.assertEqual(response.status_code, 201)
+        body = response.json()
+        self.assertIn("id", body)
+        self.assertEqual(body["repository_id"], str(repo_id))
+
+        # List snapshots — re-set db since execute_results was consumed
+        self.holder["db"] = _FakeDB(
+            get_map={repo_id: repo},
+            execute_results=[_FakeResult(_FakeScalarsResult([]))],
+        )
+        response = await self.client.get(
+            f"/api/repos/{repo_id}/analysis/snapshots"
+        )
+        self.assertEqual(response.status_code, 200)
+        self.assertIn("snapshots", response.json())
+
+    async def test_impact_radius_contract(self) -> None:
+        repo_id = uuid.uuid4()
+        repo = SimpleNamespace(
+            id=repo_id,
+            name="open-iscsi",
+            local_path="/Volumes/Media/codetalk/.repos/open-iscsi",
+        )
+        self.holder["db"] = _FakeDB(get_map={repo_id: repo})
+
+        with patch.object(
+            repo_analysis_api, "_joern", return_value=_FakeJoern()
+        ), patch(
+            "app.adapters.gitnexus.GitNexusAdapter", side_effect=Exception("unavailable")
+        ):
+            response = await self.client.get(
+                f"/api/repos/{repo_id}/analysis/impact-radius/main"
+            )
+
+        self.assertEqual(response.status_code, 200)
+        body = response.json()
+        self.assertEqual(body["method"], "main")
+        self.assertEqual(body["caller_count"], 1)
+        self.assertIn("main.c", body["caller_files"])
+
 
 if __name__ == "__main__":
     unittest.main()

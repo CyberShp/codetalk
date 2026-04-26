@@ -624,14 +624,18 @@ function RiskDashboardView({
   summary,
   onNavigate,
   onExport,
+  refreshKey = 0,
 }: {
   repoId: string;
   summary: AnalysisSummary | null;
   onNavigate: (method: string) => void;
   onExport: (data: EnrichedMethod[]) => void;
+  refreshKey?: number;
 }) {
   const [rawMethods, setRawMethods] = useState<JoernMethod[]>([]);
-  const [loading, setLoading] = useState(true);
+  const [loadedFor, setLoadedFor] = useState<string | null>(null);
+  const fetchKey = `${repoId}:${refreshKey}`;
+  const loading = loadedFor !== fetchKey;
   const [sortKey, setSortKey] = useState<"riskScore" | "complexity" | "density" | "lines">("riskScore");
   const [sortAsc, setSortAsc] = useState(false);
   const [filterLevel, setFilterLevel] = useState<RiskLevel | "ALL">("ALL");
@@ -643,14 +647,14 @@ function RiskDashboardView({
     api.repos.analysis.joern.methods(repoId)
       .then((res) => setRawMethods((res.methods || []) as JoernMethod[]))
       .catch(() => {})
-      .finally(() => setLoading(false));
-  }, [repoId]);
+      .finally(() => setLoadedFor(fetchKey));
+  }, [repoId, refreshKey, fetchKey]);
 
   const enriched = useMemo<EnrichedMethod[]>(() => {
     return rawMethods
       .filter(m => !SYNTHETIC_NAMES.has(m.name))
       .map(m => {
-        const lines = Math.max(1, (m.lineEnd || m.line) - m.line);
+        const lines = Math.max(1, (m.lineEnd || m.line) - m.line + 1);
         const c = m.complexity ?? 0;
         const density = c / lines;
         const rl = riskLevel(c, density);
@@ -659,18 +663,21 @@ function RiskDashboardView({
   }, [rawMethods]);
 
   // Snapshot persistence + trend calculation
-  const snapshotSavedRef = useRef(false);
+  // Only save when the underlying data actually changed (dedup by summary fingerprint).
+  const lastSummaryFpRef = useRef("");
   useEffect(() => {
-    if (enriched.length === 0 || snapshotSavedRef.current) return;
-    snapshotSavedRef.current = true;
+    if (enriched.length === 0) return;
     const hc = enriched.filter(m => m.riskLevel === "HIGH").length;
     const mc = enriched.filter(m => m.riskLevel === "MED").length;
     const ac = enriched.length > 0
       ? Math.round(enriched.reduce((s, m) => s + (m.complexity ?? 0), 0) / enriched.length * 10) / 10
       : 0;
     const currentSummary = { total: enriched.length, high: hc, med: mc, avgComplexity: ac };
+    const fp = `${repoId}:${currentSummary.total}:${currentSummary.high}:${currentSummary.med}:${currentSummary.avgComplexity}`;
+    if (fp === lastSummaryFpRef.current) return;
+    lastSummaryFpRef.current = fp;
 
-    // Fetch previous snapshot for trend, then save current
+    // Fetch previous snapshot for trend, only save if summary changed
     api.repos.analysis.snapshots.list(repoId)
       .then((res) => {
         const prev = res.snapshots?.[0]?.summary;
@@ -681,13 +688,14 @@ function RiskDashboardView({
             med: currentSummary.med - (prev.med ?? 0),
             avgComplexity: Math.round((currentSummary.avgComplexity - (prev.avgComplexity ?? 0)) * 10) / 10,
           });
+          // Skip save if summary is identical to the latest snapshot
+          const prevFp = `${repoId}:${prev.total ?? 0}:${prev.high ?? 0}:${prev.med ?? 0}:${prev.avgComplexity ?? 0}`;
+          if (prevFp === fp) return;
         }
-      })
-      .catch(() => {})
-      .finally(() => {
-        // Save new snapshot
+        // Save new snapshot — data actually changed
         api.repos.analysis.snapshots.save(repoId, enriched, currentSummary).catch(() => {});
-      });
+      })
+      .catch(() => {});
   }, [enriched, repoId]);
 
   const filtered = useMemo(() => {
@@ -1295,7 +1303,7 @@ function BranchesView({
             </div>
             <div className="grid grid-cols-4 gap-4">
               {[
-                { label: "圈复杂度", value: methodMeta.complexity ?? 0, icon: BarChart3 },
+                { label: "控制结构数", value: methodMeta.complexity ?? 0, icon: BarChart3 },
                 { label: "代码行数", value: lines, icon: FileText },
                 { label: "复杂度密度", value: density.toFixed(3), icon: TrendingUp },
                 { label: "风险评分", value: score.toFixed(1), icon: AlertTriangle },
@@ -2407,6 +2415,7 @@ export default function AnalysisPage() {
   const [rebuilding, setRebuilding] = useState(false);
   const [loadError, setLoadError] = useState("");
   const [repoName, setRepoName] = useState("");
+  const [refreshKey, setRefreshKey] = useState(0);
   const [initialMethod, setInitialMethod] = useState("");
 
   // Source viewer state
@@ -2449,6 +2458,8 @@ export default function AnalysisPage() {
       await api.repos.analysis.joern.rebuild(repoId);
       const s = await api.repos.analysis.summary(repoId);
       setSummary(s);
+      // Bump refreshKey so RiskDashboardView re-fetches methods
+      setRefreshKey((k) => k + 1);
     } catch (e) {
       setLoadError(e instanceof Error ? e.message : "CPG 重建失败");
     } finally {
@@ -2539,7 +2550,7 @@ export default function AnalysisPage() {
               transition={{ duration: 0.4, ease: "easeOut" }}
             >
               {activeNav === "overview" && (
-                <RiskDashboardView repoId={repoId} summary={summary} onNavigate={navigateToMethod} onExport={exportCsv} />
+                <RiskDashboardView repoId={repoId} summary={summary} onNavigate={navigateToMethod} onExport={exportCsv} refreshKey={refreshKey} />
               )}
               {activeNav === "branches" && (
                 <BranchesView repoId={repoId} initialMethod={initialMethod} onOpenSource={(path, line) => setSourceModal({ path, line })} />
