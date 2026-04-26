@@ -280,6 +280,28 @@ class JoernAdapter(BaseToolAdapter):
         )
         return await self._query(query)
 
+    async def scoped_taint_verify(
+        self, method_name: str, source_pattern: str, sink_pattern: str
+    ) -> Any:
+        """Verify a taint path using real reachableByFlows, scoped to one method.
+
+        This is the precise check: does data actually flow from source to sink
+        inside the given method?  Scoping to a single method keeps the CPG
+        slice small enough to avoid timeouts that plague whole-project flows.
+        """
+        query = (
+            f'val m = cpg.method.name("{method_name}").head\n'
+            f'val src = m.ast.isCall.name("{source_pattern}").l\n'
+            f'val snk = m.ast.isCall.name("{sink_pattern}").l\n'
+            "val flows = snk.reachableByFlows(src).l\n"
+            "flows.take(5).map(f => {\n"
+            '  f.elements.map(e => Map("code" -> e.code,\n'
+            '    "file" -> e.location.filename,\n'
+            '    "line" -> e.location.lineNumber.getOrElse(-1).toString))\n'
+            "}).toJson"
+        )
+        return await self._query(query, timeout=30)
+
     async def function_branches(self, method_name: str) -> Any:
         """Get all branches within a specific function."""
         query = (

@@ -13,3 +13,4 @@ from app.models.llm_config import LLMConfig  # noqa: E402, F401
 from app.models.component_config import ComponentConfig  # noqa: E402, F401
 from app.models.wiki_cache_meta import WikiCacheMeta  # noqa: E402, F401
 from app.models.chat_session import ChatSession  # noqa: E402, F401
+from app.models.analysis_snapshot import AnalysisSnapshot  # noqa: E402, F401

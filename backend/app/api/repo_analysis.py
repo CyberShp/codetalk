@@ -18,6 +18,7 @@ from app.adapters.base import AnalysisRequest
 from app.adapters.joern import JoernAdapter
 from app.config import settings
 from app.database import get_db
+from app.models.analysis_snapshot import AnalysisSnapshot
 from app.models.llm_config import LLMConfig
 from app.models.repository import Repository
 from app.utils.repo_paths import to_tool_repo_path
@@ -365,6 +366,69 @@ async def taint_analysis(
         await joern.cleanup(AnalysisRequest(repo_local_path=tool_path))
 
 
+class _TaintVerifyRequest(BaseModel):
+    method: str
+    source: str
+    sink: str
+
+
+@router.post("/{repo_id}/analysis/joern/taint-verify")
+async def taint_verify(
+    repo_id: uuid.UUID,
+    body: _TaintVerifyRequest,
+    db: AsyncSession = Depends(get_db),
+):
+    """Verify a taint path using scoped reachableByFlows.
+
+    Scoped to a single method to avoid full-project timeouts.
+    """
+    repo = await _get_repo_or_404(repo_id, db)
+    joern = _joern()
+    tool_path = _tool_path(repo)
+
+    try:
+        await joern.prepare(AnalysisRequest(repo_local_path=tool_path))
+        raw_flows = await joern.scoped_taint_verify(
+            body.method, body.source, body.sink
+        )
+        # raw_flows is a list of flow paths, each is a list of step dicts
+        flows = []
+        if isinstance(raw_flows, list):
+            for flow in raw_flows:
+                if isinstance(flow, list):
+                    steps = [
+                        {
+                            "code": s.get("code", ""),
+                            "filename": s.get("file", ""),
+                            "line_number": int(s.get("line", -1)),
+                        }
+                        for s in flow
+                        if isinstance(s, dict)
+                    ]
+                    if steps:
+                        flows.append({"elements": steps})
+        return {
+            "method": body.method,
+            "source": body.source,
+            "sink": body.sink,
+            "verified": len(flows) > 0,
+            "flows": flows,
+        }
+    except httpx.ReadTimeout:
+        return {
+            "method": body.method,
+            "source": body.source,
+            "sink": body.sink,
+            "verified": False,
+            "flows": [],
+            "fallback": "timeout",
+        }
+    except httpx.ConnectError:
+        raise HTTPException(503, "Joern service unavailable")
+    finally:
+        await joern.cleanup(AnalysisRequest(repo_local_path=tool_path))
+
+
 def _reshape_taint_paths(raw: object) -> list[dict]:
     """Convert Joern taint co-occurrence result to TaintPath[] shape.
 
@@ -478,3 +542,188 @@ async def generate_test_points(
     except Exception as exc:
         logger.exception("Test point generation failed")
         raise HTTPException(500, f"Test point generation failed: {exc}")
+
+
+# ── Snapshot persistence (Phase D) ──
+
+
+class _SnapshotSave(BaseModel):
+    risk_matrix: list[dict]
+    summary: dict
+
+
+@router.post("/{repo_id}/analysis/snapshots", status_code=201)
+async def save_snapshot(
+    repo_id: uuid.UUID,
+    body: _SnapshotSave,
+    db: AsyncSession = Depends(get_db),
+):
+    """Persist a risk-matrix snapshot for historical comparison."""
+    await _get_repo_or_404(repo_id, db)
+    snap = AnalysisSnapshot(
+        repository_id=repo_id,
+        risk_matrix=body.risk_matrix,  # type: ignore[arg-type]
+        summary=body.summary,  # type: ignore[arg-type]
+    )
+    db.add(snap)
+    await db.commit()
+    await db.refresh(snap)
+    return {
+        "id": str(snap.id),
+        "repository_id": str(snap.repository_id),
+        "summary": snap.summary,
+        "created_at": snap.created_at.isoformat() if snap.created_at else None,
+    }
+
+
+@router.get("/{repo_id}/analysis/snapshots")
+async def list_snapshots(
+    repo_id: uuid.UUID,
+    limit: int = Query(default=20, le=100),
+    db: AsyncSession = Depends(get_db),
+):
+    """List recent snapshots for a repo, newest first."""
+    await _get_repo_or_404(repo_id, db)
+    result = await db.execute(
+        select(AnalysisSnapshot)
+        .where(AnalysisSnapshot.repository_id == repo_id)
+        .order_by(AnalysisSnapshot.created_at.desc())
+        .limit(limit)
+    )
+    snaps = result.scalars().all()
+    return {
+        "snapshots": [
+            {
+                "id": str(s.id),
+                "summary": s.summary,
+                "created_at": s.created_at.isoformat() if s.created_at else None,
+            }
+            for s in snaps
+        ]
+    }
+
+
+@router.get("/{repo_id}/analysis/snapshots/{snapshot_id}")
+async def get_snapshot(
+    repo_id: uuid.UUID,
+    snapshot_id: uuid.UUID,
+    db: AsyncSession = Depends(get_db),
+):
+    """Retrieve full risk matrix from a specific snapshot."""
+    snap = await db.get(AnalysisSnapshot, snapshot_id)
+    if not snap or snap.repository_id != repo_id:
+        raise HTTPException(404, "Snapshot not found")
+    return {
+        "id": str(snap.id),
+        "repository_id": str(snap.repository_id),
+        "risk_matrix": snap.risk_matrix,
+        "summary": snap.summary,
+        "created_at": snap.created_at.isoformat() if snap.created_at else None,
+    }
+
+
+@router.get("/{repo_id}/analysis/snapshots/diff")
+async def diff_snapshots(
+    repo_id: uuid.UUID,
+    from_id: uuid.UUID = Query(..., alias="from"),
+    to_id: uuid.UUID = Query(..., alias="to"),
+    db: AsyncSession = Depends(get_db),
+):
+    """Compare two snapshots: delta in high-risk count and method-level changes."""
+    snap_from = await db.get(AnalysisSnapshot, from_id)
+    snap_to = await db.get(AnalysisSnapshot, to_id)
+    if not snap_from or snap_from.repository_id != repo_id:
+        raise HTTPException(404, "Source snapshot not found")
+    if not snap_to or snap_to.repository_id != repo_id:
+        raise HTTPException(404, "Target snapshot not found")
+
+    sum_from = snap_from.summary or {}
+    sum_to = snap_to.summary or {}
+    return {
+        "from_id": str(from_id),
+        "to_id": str(to_id),
+        "delta": {
+            "total_methods": (sum_to.get("total", 0) - sum_from.get("total", 0)),
+            "high_risk": (sum_to.get("high", 0) - sum_from.get("high", 0)),
+            "med_risk": (sum_to.get("med", 0) - sum_from.get("med", 0)),
+            "avg_complexity": round(
+                (sum_to.get("avgComplexity", 0) - sum_from.get("avgComplexity", 0)), 2
+            ),
+        },
+        "from_created": snap_from.created_at.isoformat() if snap_from.created_at else None,
+        "to_created": snap_to.created_at.isoformat() if snap_to.created_at else None,
+    }
+
+
+# ── Cross-tool impact radius (Phase F) ──
+
+
+@router.get("/{repo_id}/analysis/impact-radius/{method_name}")
+async def impact_radius(
+    repo_id: uuid.UUID,
+    method_name: str,
+    db: AsyncSession = Depends(get_db),
+):
+    """Aggregate Joern callers + GitNexus dependencies for impact radius.
+
+    Pure orchestration: calls two tools, merges results.
+    """
+    repo = await _get_repo_or_404(repo_id, db)
+    tool_path = _tool_path(repo)
+
+    # 1. Joern: who calls this method
+    joern = _joern()
+    callers = []
+    callee_files: list[str] = []
+    try:
+        await joern.prepare(AnalysisRequest(repo_local_path=tool_path))
+        callers = await joern.call_context(method_name)
+        # Collect unique files touched by callers
+        for ctx in callers:
+            f = ctx.get("callerFile", "")
+            if f and f not in callee_files:
+                callee_files.append(f)
+    except httpx.ConnectError:
+        logger.warning("Joern unavailable for impact-radius")
+    except Exception as exc:
+        logger.warning("joern call_context failed: %s", exc)
+    finally:
+        try:
+            await joern.cleanup(AnalysisRequest(repo_local_path=tool_path))
+        except Exception:
+            pass
+
+    # 2. GitNexus: module-level dependencies (best-effort)
+    module_deps: list[dict] = []
+    try:
+        from app.adapters.gitnexus import GitNexusAdapter
+        gn = GitNexusAdapter(base_url=settings.gitnexus_url)
+        await gn.prepare(AnalysisRequest(repo_local_path=tool_path))
+        graph_result = await gn.analyze(AnalysisRequest(repo_local_path=tool_path))
+        # Extract relationships where source or target files overlap with caller files
+        rels = graph_result.data.get("relationships", []) if graph_result.data else []
+        seen = set()
+        for rel in rels:
+            src = rel.get("source", "")
+            tgt = rel.get("target", "")
+            rel_type = rel.get("type", "")
+            # Find module-level deps linked to caller files
+            for cf in callee_files:
+                cf_base = cf.rsplit("/", 1)[-1].rsplit(".", 1)[0] if "/" in cf else cf
+                if cf_base and (cf_base in src or cf_base in tgt):
+                    key = (src, tgt, rel_type)
+                    if key not in seen:
+                        seen.add(key)
+                        module_deps.append({"source": src, "target": tgt, "type": rel_type})
+        await gn.cleanup(AnalysisRequest(repo_local_path=tool_path))
+    except Exception as exc:
+        logger.warning("GitNexus unavailable for impact-radius: %s", exc)
+
+    return {
+        "method": method_name,
+        "callers": callers,
+        "caller_files": callee_files,
+        "module_dependencies": module_deps,
+        "caller_count": len(callers),
+        "module_dep_count": len(module_deps),
+    }

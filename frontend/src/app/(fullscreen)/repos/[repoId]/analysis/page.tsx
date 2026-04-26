@@ -25,7 +25,6 @@ import {
   GitBranch,
   FlaskConical,
   Network,
-  LayoutDashboard,
   ChevronDown,
   ChevronRight,
   ChevronLeft,
@@ -41,6 +40,13 @@ import {
   ExternalLink,
   Search,
   ShieldAlert,
+  AlertTriangle,
+  TrendingUp,
+  ArrowUpDown,
+  FileText,
+  BarChart3,
+  FileDown,
+  Filter,
 } from "lucide-react";
 
 // ── Shared Interactive Components ─────────────────────────────────────────
@@ -330,11 +336,12 @@ function usePagination<T>(items: T[], pageSize = PAGE_SIZE) {
 
 // ── Nav items ──────────────────────────────────────────────────────────────
 const NAV_ITEMS = [
-  { id: "overview", label: "概览", icon: LayoutDashboard },
-  { id: "branches", label: "分支分析", icon: GitBranch },
-  { id: "testpoints", label: "测试点", icon: FlaskConical },
+  { id: "overview", label: "风险总览", icon: ShieldAlert },
+  { id: "branches", label: "深度分析", icon: GitBranch },
+  { id: "testpoints", label: "测试计划", icon: FlaskConical },
   { id: "taint", label: "数据追踪", icon: Network },
   { id: "complexity", label: "复杂度", icon: Maximize2 },
+  { id: "search", label: "模式搜索", icon: Search },
 ] as const;
 type NavId = (typeof NAV_ITEMS)[number]["id"];
 
@@ -592,61 +599,302 @@ function ToolStatusDot({ healthy, label }: { healthy: boolean; label: string }) 
   );
 }
 
-function OverviewView({
+type RiskLevel = "HIGH" | "MED" | "LOW";
+interface EnrichedMethod extends JoernMethod {
+  lines: number;
+  density: number;
+  riskScore: number;
+  riskLevel: RiskLevel;
+}
+
+function riskLevel(complexity: number, density: number): RiskLevel {
+  if (complexity > 15 || density > 0.5) return "HIGH";
+  if (complexity > 8 || density > 0.2) return "MED";
+  return "LOW";
+}
+
+const RISK_COLORS: Record<RiskLevel, string> = {
+  HIGH: "text-tertiary bg-tertiary/10 border-tertiary/20",
+  MED: "text-amber-400 bg-amber-400/10 border-amber-400/20",
+  LOW: "text-secondary bg-secondary/10 border-secondary/20",
+};
+
+function RiskDashboardView({
+  repoId,
   summary,
+  onNavigate,
+  onExport,
 }: {
+  repoId: string;
   summary: AnalysisSummary | null;
+  onNavigate: (method: string) => void;
+  onExport: (data: EnrichedMethod[]) => void;
 }) {
+  const [rawMethods, setRawMethods] = useState<JoernMethod[]>([]);
+  const [loading, setLoading] = useState(true);
+  const [sortKey, setSortKey] = useState<"riskScore" | "complexity" | "density" | "lines">("riskScore");
+  const [sortAsc, setSortAsc] = useState(false);
+  const [filterLevel, setFilterLevel] = useState<RiskLevel | "ALL">("ALL");
+  const PAGE = 20;
+  const [page, setPage] = useState(0);
+  const [trend, setTrend] = useState<Record<string, number> | null>(null);
+
+  useEffect(() => {
+    api.repos.analysis.joern.methods(repoId)
+      .then((res) => setRawMethods((res.methods || []) as JoernMethod[]))
+      .catch(() => {})
+      .finally(() => setLoading(false));
+  }, [repoId]);
+
+  const enriched = useMemo<EnrichedMethod[]>(() => {
+    return rawMethods
+      .filter(m => !SYNTHETIC_NAMES.has(m.name))
+      .map(m => {
+        const lines = Math.max(1, (m.lineEnd || m.line) - m.line);
+        const c = m.complexity ?? 0;
+        const density = c / lines;
+        const rl = riskLevel(c, density);
+        return { ...m, lines, density, riskScore: c * (1 + density), riskLevel: rl };
+      });
+  }, [rawMethods]);
+
+  // Snapshot persistence + trend calculation
+  const snapshotSavedRef = useRef(false);
+  useEffect(() => {
+    if (enriched.length === 0 || snapshotSavedRef.current) return;
+    snapshotSavedRef.current = true;
+    const hc = enriched.filter(m => m.riskLevel === "HIGH").length;
+    const mc = enriched.filter(m => m.riskLevel === "MED").length;
+    const ac = enriched.length > 0
+      ? Math.round(enriched.reduce((s, m) => s + (m.complexity ?? 0), 0) / enriched.length * 10) / 10
+      : 0;
+    const currentSummary = { total: enriched.length, high: hc, med: mc, avgComplexity: ac };
+
+    // Fetch previous snapshot for trend, then save current
+    api.repos.analysis.snapshots.list(repoId)
+      .then((res) => {
+        const prev = res.snapshots?.[0]?.summary;
+        if (prev) {
+          setTrend({
+            total: currentSummary.total - (prev.total ?? 0),
+            high: currentSummary.high - (prev.high ?? 0),
+            med: currentSummary.med - (prev.med ?? 0),
+            avgComplexity: Math.round((currentSummary.avgComplexity - (prev.avgComplexity ?? 0)) * 10) / 10,
+          });
+        }
+      })
+      .catch(() => {})
+      .finally(() => {
+        // Save new snapshot
+        api.repos.analysis.snapshots.save(repoId, enriched, currentSummary).catch(() => {});
+      });
+  }, [enriched, repoId]);
+
+  const filtered = useMemo(() => {
+    if (filterLevel === "ALL") return enriched;
+    return enriched.filter(m => m.riskLevel === filterLevel);
+  }, [enriched, filterLevel]);
+
+  const sorted = useMemo(() => {
+    return [...filtered].sort((a, b) => {
+      const av = sortKey === "complexity" ? (a.complexity ?? 0) : a[sortKey];
+      const bv = sortKey === "complexity" ? (b.complexity ?? 0) : b[sortKey];
+      return sortAsc ? av - bv : bv - av;
+    });
+  }, [filtered, sortKey, sortAsc]);
+
+  const paged = sorted.slice(page * PAGE, (page + 1) * PAGE);
+  const totalPages = Math.ceil(sorted.length / PAGE);
+
+  const highCount = enriched.filter(m => m.riskLevel === "HIGH").length;
+  const medCount = enriched.filter(m => m.riskLevel === "MED").length;
+  const avgC = enriched.length > 0
+    ? Math.round(enriched.reduce((s, m) => s + (m.complexity ?? 0), 0) / enriched.length * 10) / 10
+    : 0;
+  const maxMethod = enriched.length > 0
+    ? enriched.reduce((mx, m) => m.riskScore > mx.riskScore ? m : mx, enriched[0])
+    : null;
+
+  const toggleSort = (key: typeof sortKey) => {
+    if (sortKey === key) setSortAsc(!sortAsc);
+    else { setSortKey(key); setSortAsc(false); }
+    setPage(0);
+  };
+
   const joernHealthy = summary?.tools.joern.healthy ?? false;
 
+  if (loading) {
+    return (
+      <div className="flex flex-col items-center justify-center h-64 gap-3 text-on-surface-variant/40">
+        <Loader2 className="animate-spin text-primary" />
+        <span className="text-[10px] font-data uppercase tracking-widest">加载风险矩阵...</span>
+      </div>
+    );
+  }
+
   return (
-    <div className="space-y-8 animate-in fade-in duration-500">
-      {/* Tool status bar */}
-      <div className="flex items-center gap-3 rounded-xl border border-outline-variant/10 bg-surface-container-low px-4 py-3">
-        <ToolStatusDot healthy={joernHealthy} label="Joern CPG" />
+    <div className="space-y-6 animate-in fade-in duration-500">
+      {/* Tool status */}
+      <div className="flex items-center justify-between">
+        <div className="flex items-center gap-3 rounded-xl border border-outline-variant/10 bg-surface-container-low px-4 py-2">
+          <ToolStatusDot healthy={joernHealthy} label="Joern CPG" />
+        </div>
+        <button
+          onClick={() => onExport(sorted)}
+          className="flex items-center gap-2 px-3 py-1.5 rounded-lg border border-outline-variant/15 text-[10px] font-data uppercase tracking-widest text-on-surface-variant/50 hover:border-primary/30 hover:text-primary transition-all"
+        >
+          <FileDown size={12} />
+          导出 CSV
+        </button>
       </div>
 
-      {/* Joern CPG engine card */}
-      <div className="relative group rounded-2xl border border-outline-variant/10 bg-surface-container-lowest p-6 overflow-hidden">
-        <div className="absolute right-0 top-0 p-8 opacity-[0.03] group-hover:opacity-[0.06] transition-opacity pointer-events-none">
-          <GitBranch size={120} />
-        </div>
-        <h3 className="text-[10px] font-data uppercase tracking-[0.3em] text-on-surface-variant/40 mb-5">CPG 智能引擎</h3>
-        <div className="grid grid-cols-2 gap-8">
-          <div className="space-y-1">
-            <span className="text-on-surface-variant/40 text-[10px] font-data uppercase tracking-wider">引擎状态</span>
-            <p className={`font-data text-sm font-bold ${joernHealthy ? "text-secondary" : "text-tertiary"}`}>
-              {joernHealthy ? "在线" : "离线"}
-            </p>
-          </div>
-          <div className="space-y-1">
-            <span className="text-on-surface-variant/40 text-[10px] font-data uppercase tracking-wider">分析能力</span>
-            <p className="font-data text-xs text-on-surface-variant/60 leading-relaxed">
-              {summary?.tools.joern.capabilities.join(", ") ?? "—"}
-            </p>
-          </div>
-        </div>
-        <p className="mt-4 text-[10px] font-ui text-on-surface-variant/30">
-          使用「分支分析」查询跨函数控制流 · 使用「数据追踪」追踪异常数据传播
-        </p>
-      </div>
-
-      {/* Analysis guide */}
-      <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
-        {([
-          { icon: GitBranch, title: "分支分析", desc: "输入函数名，跨函数分析调用链上下文、异常分支、边界值。查看上游调用者如何影响下游分支走向。", hoverBorder: "hover:border-primary/20", iconColor: "text-primary/60" },
-          { icon: FlaskConical, title: "测试点生成", desc: "联合 Joern CPG 分析 + AI 生成运行时风险测试点。覆盖边界值、异常输入、极端场景。", hoverBorder: "hover:border-secondary/20", iconColor: "text-secondary/60" },
-          { icon: Network, title: "数据追踪", desc: "追踪跨函数异常数据传播。预设模式：数值溢出、空指针、边界越界、资源泄漏。", hoverBorder: "hover:border-primary/20", iconColor: "text-primary/60" },
-        ] as const).map(({ icon: Icon, title, desc, hoverBorder, iconColor }) => (
-          <div key={title} className={`rounded-xl border border-outline-variant/10 bg-surface-container-low p-5 space-y-3 ${hoverBorder} transition-all`}>
-            <div className="flex items-center gap-2">
-              <Icon size={14} className={iconColor} />
-              <span className="text-[11px] font-data font-bold uppercase tracking-wider text-on-surface">{title}</span>
+      {/* Stats cards */}
+      <div className="grid grid-cols-2 lg:grid-cols-4 gap-4">
+        {[
+          { label: "总函数", value: enriched.length, icon: BarChart3, color: "text-primary", trendKey: "total" },
+          { label: "高风险", value: highCount, icon: AlertTriangle, color: "text-tertiary", trendKey: "high" },
+          { label: "中风险", value: medCount, icon: ShieldAlert, color: "text-amber-400", trendKey: "med" },
+          { label: "平均复杂度", value: avgC, icon: TrendingUp, color: "text-secondary", trendKey: "avgComplexity" },
+        ].map(({ label, value, icon: Ic, color, trendKey }) => {
+          const delta = trend?.[trendKey];
+          return (
+            <div key={label} className="rounded-xl border border-outline-variant/10 bg-surface-container-low/50 p-4 space-y-2">
+              <div className="flex items-center gap-2">
+                <Ic size={12} className={`${color} opacity-60`} />
+                <span className="text-[10px] font-data uppercase tracking-[0.2em] text-on-surface-variant/40">{label}</span>
+              </div>
+              <div className="flex items-baseline gap-2">
+                <p className={`text-2xl font-display font-bold ${color}`}>{value}</p>
+                {delta != null && delta !== 0 && (
+                  <span className={`text-[10px] font-data font-bold ${delta > 0 ? "text-tertiary" : "text-secondary"}`}>
+                    {delta > 0 ? `+${delta}` : delta}
+                  </span>
+                )}
+              </div>
             </div>
-            <p className="text-[12px] font-ui text-on-surface-variant/60 leading-relaxed">{desc}</p>
+          );
+        })}
+      </div>
+
+      {/* Hottest function callout */}
+      {maxMethod && maxMethod.riskLevel === "HIGH" && (
+        <button
+          onClick={() => onNavigate(maxMethod.name)}
+          className="w-full group rounded-xl border border-tertiary/20 bg-tertiary/5 p-4 flex items-center justify-between hover:bg-tertiary/10 transition-all text-left"
+        >
+          <div className="flex items-center gap-3">
+            <AlertTriangle size={16} className="text-tertiary" />
+            <div>
+              <p className="text-xs font-data font-bold text-on-surface">
+                最高风险: <code className="text-tertiary">{maxMethod.name}()</code>
+              </p>
+              <p className="text-[10px] font-data text-on-surface-variant/40 mt-0.5">
+                复杂度 {maxMethod.complexity ?? 0} · 密度 {maxMethod.density.toFixed(2)} · {shortPath(maxMethod.filename)}
+              </p>
+            </div>
           </div>
+          <ChevronRight size={14} className="text-on-surface-variant/30 group-hover:text-tertiary transition-colors" />
+        </button>
+      )}
+
+      {/* Filter row */}
+      <div className="flex items-center gap-2">
+        <Filter size={12} className="text-on-surface-variant/30" />
+        {(["ALL", "HIGH", "MED", "LOW"] as const).map(level => (
+          <button
+            key={level}
+            onClick={() => { setFilterLevel(level); setPage(0); }}
+            className={`text-[10px] font-data px-3 py-1 rounded-full border transition-all uppercase tracking-widest ${
+              filterLevel === level
+                ? "border-primary/40 bg-primary/10 text-primary"
+                : "border-outline-variant/15 text-on-surface-variant/40 hover:border-outline-variant/30"
+            }`}
+          >
+            {level === "ALL" ? `全部 (${enriched.length})` : `${level} (${enriched.filter(m => m.riskLevel === level).length})`}
+          </button>
         ))}
       </div>
+
+      {/* Risk table */}
+      <div className="rounded-2xl border border-outline-variant/10 overflow-hidden">
+        <table className="w-full">
+          <thead>
+            <tr className="bg-surface-container-low/50 border-b border-outline-variant/10">
+              {([
+                { key: "riskScore" as const, label: "风险" },
+                { key: null, label: "函数" },
+                { key: "complexity" as const, label: "复杂度" },
+                { key: "density" as const, label: "密度" },
+                { key: "lines" as const, label: "行数" },
+              ] as const).map(({ key, label }) => (
+                <th
+                  key={label}
+                  className={`px-4 py-3 text-left text-[10px] font-data uppercase tracking-[0.2em] text-on-surface-variant/40 ${key ? "cursor-pointer hover:text-on-surface-variant/60 select-none" : ""}`}
+                  onClick={() => key && toggleSort(key)}
+                >
+                  <span className="flex items-center gap-1">
+                    {label}
+                    {key && sortKey === key && <ArrowUpDown size={10} className="text-primary" />}
+                  </span>
+                </th>
+              ))}
+            </tr>
+          </thead>
+          <tbody>
+            {paged.map((m, i) => (
+              <tr
+                key={`${m.name}-${m.filename}-${i}`}
+                className="border-b border-outline-variant/5 hover:bg-surface-container-low/30 transition-colors cursor-pointer group"
+                onClick={() => onNavigate(m.name)}
+              >
+                <td className="px-4 py-3">
+                  <span className={`inline-flex px-2 py-0.5 rounded-full text-[9px] font-data font-bold uppercase tracking-wider border ${RISK_COLORS[m.riskLevel]}`}>
+                    {m.riskLevel}
+                  </span>
+                </td>
+                <td className="px-4 py-3">
+                  <div className="flex flex-col">
+                    <code className="text-xs font-data text-on-surface group-hover:text-primary transition-colors">{m.name}()</code>
+                    <span className="text-[10px] font-data text-on-surface-variant/30 mt-0.5">{shortPath(m.filename)}</span>
+                  </div>
+                </td>
+                <td className="px-4 py-3">
+                  <span className={`text-sm font-data font-bold ${(m.complexity ?? 0) > 15 ? "text-tertiary" : (m.complexity ?? 0) > 8 ? "text-amber-400" : "text-on-surface-variant/60"}`}>
+                    {m.complexity ?? 0}
+                  </span>
+                </td>
+                <td className="px-4 py-3">
+                  <div className="flex items-center gap-2">
+                    <div className="w-16 h-1.5 rounded-full bg-surface-container-high overflow-hidden">
+                      <div
+                        className={`h-full rounded-full ${m.density > 0.5 ? "bg-tertiary" : m.density > 0.2 ? "bg-amber-400" : "bg-secondary"}`}
+                        style={{ width: `${Math.min(100, m.density * 200)}%` }}
+                      />
+                    </div>
+                    <span className="text-[10px] font-data text-on-surface-variant/40">{m.density.toFixed(2)}</span>
+                  </div>
+                </td>
+                <td className="px-4 py-3 text-xs font-data text-on-surface-variant/40">{m.lines}</td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      </div>
+
+      {/* Pagination */}
+      {totalPages > 1 && (
+        <div className="flex items-center justify-center gap-2">
+          <button onClick={() => setPage(Math.max(0, page - 1))} disabled={page === 0} className="p-1.5 rounded-lg border border-outline-variant/15 disabled:opacity-20">
+            <ChevronLeft size={14} />
+          </button>
+          <span className="text-[10px] font-data text-on-surface-variant/40 uppercase tracking-widest">
+            {page + 1} / {totalPages}
+          </span>
+          <button onClick={() => setPage(Math.min(totalPages - 1, page + 1))} disabled={page >= totalPages - 1} className="p-1.5 rounded-lg border border-outline-variant/15 disabled:opacity-20">
+            <ChevronRight size={14} />
+          </button>
+        </div>
+      )}
     </div>
   );
 }
@@ -915,9 +1163,11 @@ function BoundaryCards({
 // ── Branches sub-view ──────────────────────────────────────────────────────
 function BranchesView({
   repoId,
+  initialMethod,
   onOpenSource,
 }: {
   repoId: string;
+  initialMethod?: string;
   onOpenSource: (p: string, l?: number) => void;
 }) {
   const [methodName, setMethodName] = useState("");
@@ -930,6 +1180,8 @@ function BranchesView({
   const [queriedMethod, setQueriedMethod] = useState("");
   const [queried, setQueried] = useState(false);
   const [err, setErr] = useState("");
+  const [methodMeta, setMethodMeta] = useState<JoernMethod | null>(null);
+  const [impactRadius, setImpactRadius] = useState<{ callerFiles: string[]; moduleDeps: Array<{ source: string; target: string; type: string }>; callerCount: number } | null>(null);
 
   // Variable tracker state
   const [varTracker, setVarTracker] = useState<{ methodName: string; varName: string } | null>(null);
@@ -943,14 +1195,30 @@ function BranchesView({
       setLoading(true);
       setErr("");
       try {
-        const result = await api.repos.analysis.joern.allForMethod(repoId, name);
+        const [result, methodsRes] = await Promise.all([
+          api.repos.analysis.joern.allForMethod(repoId, name),
+          api.repos.analysis.joern.methods(repoId),
+        ]);
         setBranches(Array.isArray(result.branches) ? result.branches : []);
         setErrors(Array.isArray(result.errors) ? result.errors : []);
         setBoundaries(Array.isArray(result.boundaries) ? result.boundaries : []);
         setCallContext(Array.isArray(result.callContext) ? result.callContext : []);
         setCalleeImpact(Array.isArray(result.calleeImpact) ? result.calleeImpact : []);
+        // Find this method's complexity metadata
+        const allMethods = (methodsRes.methods || []) as JoernMethod[];
+        const match = allMethods.find(m => m.name === name);
+        setMethodMeta(match ?? null);
         setQueriedMethod(name);
         setQueried(true);
+        // Fetch impact radius in background (best-effort)
+        setImpactRadius(null);
+        api.repos.analysis.impactRadius(repoId, name)
+          .then((ir) => setImpactRadius({
+            callerFiles: ir.caller_files,
+            moduleDeps: ir.module_dependencies,
+            callerCount: ir.caller_count,
+          }))
+          .catch(() => {});
       } catch (e) {
         setErr(e instanceof Error ? e.message : "查询失败");
       } finally {
@@ -959,6 +1227,15 @@ function BranchesView({
     },
     [repoId, methodName]
   );
+
+  // Auto-query when navigated from risk dashboard
+  const lastInitialRef = useRef("");
+  useEffect(() => {
+    if (initialMethod && initialMethod !== lastInitialRef.current) {
+      lastInitialRef.current = initialMethod;
+      handleQuery(initialMethod);
+    }
+  }, [initialMethod, handleQuery]);
 
   return (
     <div className="space-y-5">
@@ -1001,6 +1278,41 @@ function BranchesView({
         {err && <p className="mt-2 text-xs text-tertiary">{err}</p>}
       </div>
 
+      {/* ── Method Risk Summary Card (Phase B) ── */}
+      {queried && methodMeta && (() => {
+        const lines = Math.max(1, (methodMeta.lineEnd || methodMeta.line) - methodMeta.line + 1);
+        const density = lines > 0 ? (methodMeta.complexity ?? 0) / lines : 0;
+        const rl = riskLevel(methodMeta.complexity ?? 0, density);
+        const score = (methodMeta.complexity ?? 0) * (1 + density);
+        return (
+          <div className={`rounded-xl border p-4 ${RISK_COLORS[rl]}`}>
+            <div className="flex items-center gap-3 mb-3">
+              <ShieldAlert size={16} />
+              <span className="text-xs font-bold uppercase tracking-widest">{queriedMethod} — 风险概览</span>
+              <span className={`ml-auto inline-flex px-2 py-0.5 rounded-full text-[9px] font-data font-bold uppercase tracking-wider border ${RISK_COLORS[rl]}`}>
+                {rl}
+              </span>
+            </div>
+            <div className="grid grid-cols-4 gap-4">
+              {[
+                { label: "圈复杂度", value: methodMeta.complexity ?? 0, icon: BarChart3 },
+                { label: "代码行数", value: lines, icon: FileText },
+                { label: "复杂度密度", value: density.toFixed(3), icon: TrendingUp },
+                { label: "风险评分", value: score.toFixed(1), icon: AlertTriangle },
+              ].map(({ label, value, icon: Icon }) => (
+                <div key={label} className="flex items-center gap-2">
+                  <Icon size={12} className="opacity-60" />
+                  <div>
+                    <p className="text-[9px] uppercase tracking-wider opacity-60">{label}</p>
+                    <p className="text-sm font-mono font-bold">{value}</p>
+                  </div>
+                </div>
+              ))}
+            </div>
+          </div>
+        );
+      })()}
+
       {queried && (
         <div className="space-y-6">
           {/* ── 控制流图 ── */}
@@ -1037,6 +1349,53 @@ function BranchesView({
               )}
             </Section>
           </div>
+
+          {/* ── 模块影响面 (Phase F) ── */}
+          {impactRadius && (impactRadius.callerFiles.length > 0 || impactRadius.moduleDeps.length > 0) && (
+            <Section
+              title={`模块影响面 — ${impactRadius.callerCount} 个调用者, ${impactRadius.moduleDeps.length} 条模块依赖`}
+              count={impactRadius.callerFiles.length + impactRadius.moduleDeps.length}
+              accent="primary"
+            >
+              <div className="space-y-3">
+                {impactRadius.callerFiles.length > 0 && (
+                  <div>
+                    <p className="text-[10px] font-data uppercase tracking-widest text-on-surface-variant/50 mb-2">涉及文件</p>
+                    <div className="flex flex-wrap gap-1.5">
+                      {impactRadius.callerFiles.map((f) => (
+                        <button
+                          key={f}
+                          onClick={() => onOpenSource(f)}
+                          className="px-2 py-1 rounded-md bg-surface-container-high border border-outline-variant/10 text-[10px] font-mono text-on-surface-variant hover:border-primary/30 hover:text-primary transition-all"
+                        >
+                          {f.split("/").pop()}
+                        </button>
+                      ))}
+                    </div>
+                  </div>
+                )}
+                {impactRadius.moduleDeps.length > 0 && (
+                  <div>
+                    <p className="text-[10px] font-data uppercase tracking-widest text-on-surface-variant/50 mb-2">模块级依赖链</p>
+                    <div className="space-y-1">
+                      {impactRadius.moduleDeps.slice(0, 10).map((dep, i) => (
+                        <div key={i} className="flex items-center gap-2 text-[11px] font-mono text-on-surface-variant/70">
+                          <span className="text-primary">{dep.source}</span>
+                          <span className="text-on-surface-variant/30">--{dep.type}--&gt;</span>
+                          <span className="text-secondary">{dep.target}</span>
+                        </div>
+                      ))}
+                      {impactRadius.moduleDeps.length > 10 && (
+                        <p className="text-[10px] text-on-surface-variant/40 italic">
+                          ... 及其余 {impactRadius.moduleDeps.length - 10} 条依赖
+                        </p>
+                      )}
+                    </div>
+                  </div>
+                )}
+              </div>
+            </Section>
+          )}
 
           {/* ── 函数内部分析 ── */}
           <div className="grid grid-cols-1 lg:grid-cols-2 xl:grid-cols-3 gap-5">
@@ -1742,7 +2101,7 @@ function TaintView({
               <p className="text-[10px] font-data uppercase tracking-[0.2em]">未检测到异常传播</p>
             </div>
           ) : (
-            <TaintPathCards paths={paths} onOpenSource={onOpenSource} />
+            <TaintPathCards repoId={repoId} paths={paths} source={source} sink={sink} activeMode={activeMode} onOpenSource={onOpenSource} />
           )}
         </div>
       )}
@@ -1757,21 +2116,47 @@ function TaintView({
   );
 }
 
-// ── Taint Path Cards with pagination ──────────────────────────────────────
+// ── Taint Path Cards with pagination + verify ────────────────────────────
 function TaintPathCards({
+  repoId,
   paths,
+  source,
+  sink,
+  activeMode,
   onOpenSource,
 }: {
+  repoId: string;
   paths: TaintPath[];
+  source: string;
+  sink: string;
+  activeMode: "cooccur" | "absence";
   onOpenSource: (p: string, l?: number) => void;
 }) {
   const { page, setPage, totalPages, paged } = usePagination(paths);
+  const [verifyState, setVerifyState] = useState<Record<string, "pending" | "verified" | "unverified" | "timeout">>({});
+  const [verifyingKey, setVerifyingKey] = useState<string | null>(null);
+
+  const handleVerify = async (path: TaintPath, key: string) => {
+    if (!path.method || verifyState[key]) return;
+    setVerifyingKey(key);
+    try {
+      const res = await api.repos.analysis.joern.taintVerify(repoId, path.method, source, sink);
+      setVerifyState(prev => ({ ...prev, [key]: res.verified ? "verified" : res.fallback === "timeout" ? "timeout" : "unverified" }));
+    } catch {
+      setVerifyState(prev => ({ ...prev, [key]: "unverified" }));
+    } finally {
+      setVerifyingKey(null);
+    }
+  };
+
   return (
     <div className="grid gap-4">
       {paged.map((path, i) => {
         const globalIdx = (page - 1) * PAGE_SIZE + i;
+        const pathKey = `${path.method}-${globalIdx}`;
         const prox = computeProximity(path);
         const conf = confidenceLabel(prox);
+        const vs = verifyState[pathKey];
         return (
           <motion.div
             layout
@@ -1792,8 +2177,28 @@ function TaintPathCards({
                     {conf.text}
                   </span>
                 )}
+                {/* Verify badge */}
+                {vs === "verified" && (
+                  <span className="text-[8px] font-data font-bold px-2 py-0.5 rounded-full border border-secondary/30 bg-secondary/10 text-secondary">✓ 已验证</span>
+                )}
+                {vs === "unverified" && (
+                  <span className="text-[8px] font-data font-bold px-2 py-0.5 rounded-full border border-outline-variant/20 bg-surface-container-high/30 text-on-surface-variant/40">✗ 未验证</span>
+                )}
+                {vs === "timeout" && (
+                  <span className="text-[8px] font-data font-bold px-2 py-0.5 rounded-full border border-amber-400/20 bg-amber-400/10 text-amber-400">⏱ 超时</span>
+                )}
               </div>
               <div className="flex items-center gap-3">
+                {/* Verify button — only for co-occur mode, when method is known */}
+                {activeMode === "cooccur" && path.method && !vs && (
+                  <button
+                    onClick={(e) => { e.stopPropagation(); handleVerify(path, pathKey); }}
+                    disabled={verifyingKey === pathKey}
+                    className="text-[9px] font-data px-2 py-1 rounded-lg border border-primary/20 text-primary/60 hover:bg-primary/5 hover:text-primary transition-all disabled:opacity-40"
+                  >
+                    {verifyingKey === pathKey ? <Loader2 size={10} className="animate-spin inline" /> : "验证数据流"}
+                  </button>
+                )}
                 {prox < 9999 && <span className="text-[9px] font-data text-on-surface-variant/20">{prox}行距</span>}
                 {path.file && <span className="text-[9px] font-data text-on-surface-variant/20 tracking-tight">{shortPath(path.file)}</span>}
                 <span className="text-[10px] font-data text-on-surface-variant/20 tracking-widest">{path.elements?.length} 个节点</span>
@@ -1847,6 +2252,151 @@ function TaintPathCards({
   );
 }
 
+// ── Zoekt Pattern Search ──────────────────────────────────────────────────
+type SearchResult = { file: string; matches: { line_number: number; line_content: string }[] };
+
+const SEARCH_PRESETS = [
+  { label: "未检查的 malloc", query: "malloc\\(.*(?!.*if.*NULL)", hint: "分配内存后可能未做空指针检查" },
+  { label: "硬编码凭证", query: "(password|secret|token|key)\\s*=\\s*[\"']", hint: "代码中可能存在硬编码的敏感信息" },
+  { label: "危险字符串函数", query: "\\b(strcpy|strcat|sprintf|gets)\\s*\\(", hint: "无长度限制的字符串操作，可能导致缓冲区溢出" },
+  { label: "未处理的返回值", query: "^\\s+(open|fopen|malloc|socket)\\(", hint: "行首调用资源获取函数但可能未赋值检查" },
+  { label: "TODO/FIXME", query: "(TODO|FIXME|HACK|XXX|BUG)", hint: "开发者标记的待修复问题" },
+];
+
+function PatternSearchView({
+  repoId,
+  onOpenSource,
+}: {
+  repoId: string;
+  onOpenSource: (p: string, l?: number) => void;
+}) {
+  const [query, setQuery] = useState("");
+  const [loading, setLoading] = useState(false);
+  const [results, setResults] = useState<SearchResult[]>([]);
+  const [totalMatches, setTotalMatches] = useState(0);
+  const [searched, setSearched] = useState(false);
+  const [err, setErr] = useState("");
+
+  const handleSearch = async (q?: string) => {
+    const searchQuery = (q || query).trim();
+    if (!searchQuery) return;
+    if (q) setQuery(searchQuery);
+    setLoading(true);
+    setErr("");
+    try {
+      const res = await api.repos.search(repoId, searchQuery);
+      setResults(res.results ?? []);
+      setTotalMatches(res.total_matches ?? 0);
+      setSearched(true);
+    } catch (e) {
+      setErr(e instanceof Error ? e.message : "搜索失败");
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  return (
+    <div className="space-y-6 animate-in fade-in slide-in-from-bottom-4 duration-500">
+      {/* Search input */}
+      <div className="group rounded-2xl border border-outline-variant/15 bg-surface-container-low p-6 space-y-5 transition-all hover:border-outline-variant/30">
+        <div className="flex items-center gap-2">
+          <Search size={14} className="text-primary/60" />
+          <h3 className="text-[10px] font-data uppercase tracking-[0.3em] text-on-surface-variant/40">代码模式搜索 (Zoekt)</h3>
+        </div>
+
+        {/* Presets */}
+        <div className="flex gap-2 flex-wrap">
+          {SEARCH_PRESETS.map(p => (
+            <button
+              key={p.label}
+              onClick={() => handleSearch(p.query)}
+              title={p.hint}
+              className="group/preset text-[10px] font-data px-3 py-1.5 rounded-full border border-outline-variant/20 text-on-surface-variant/50 hover:border-primary/40 hover:text-primary transition-all bg-surface-container/50 hover:bg-primary/5 active:scale-95"
+            >
+              <span className="tracking-widest uppercase">{p.label}</span>
+            </button>
+          ))}
+        </div>
+
+        {/* Input + button */}
+        <div className="flex gap-3">
+          <input
+            value={query}
+            onChange={(e) => setQuery(e.target.value)}
+            onKeyDown={(e) => e.key === "Enter" && handleSearch()}
+            placeholder="正则表达式搜索..."
+            className="flex-1 rounded-xl bg-surface-container border border-primary/10 px-4 py-3 text-sm text-on-surface placeholder:text-on-surface-variant/20 focus:outline-none focus:border-primary/40 focus:ring-1 focus:ring-primary/10 transition-all font-data shadow-inner"
+          />
+          <button
+            onClick={() => handleSearch()}
+            disabled={loading || !query.trim()}
+            className="inline-flex items-center gap-2 rounded-xl bg-primary/5 border border-primary/20 px-6 py-3 text-[11px] font-bold uppercase tracking-[0.2em] text-primary hover:bg-primary/10 transition-all disabled:opacity-40 active:scale-95"
+          >
+            {loading ? <Loader2 size={14} className="animate-spin" /> : <Search size={14} />}
+            搜索
+          </button>
+        </div>
+        {err && <span className="text-xs text-tertiary font-data">{err}</span>}
+      </div>
+
+      {/* Results */}
+      {searched && (
+        <div className="space-y-4 animate-in fade-in duration-700">
+          <div className="flex items-center gap-3 px-2">
+            <span className="text-xl font-display font-bold text-on-surface">{totalMatches}</span>
+            <span className="text-[10px] font-data uppercase tracking-[0.2em] text-on-surface-variant/40 mt-1">
+              处匹配 · {results.length} 个文件
+            </span>
+          </div>
+
+          {results.length === 0 ? (
+            <div className="flex flex-col items-center justify-center h-48 gap-3 text-on-surface-variant/20 rounded-2xl border border-dashed border-outline-variant/10">
+              <CheckCircle2 size={32} className="opacity-30 text-secondary" />
+              <p className="text-[10px] font-data uppercase tracking-[0.2em]">未找到匹配</p>
+            </div>
+          ) : (
+            <div className="space-y-3">
+              {results.slice(0, 20).map((file) => (
+                <div key={file.file} className="rounded-xl border border-outline-variant/10 bg-surface-container-low overflow-hidden">
+                  <div className="px-4 py-2 bg-surface-container-low/80 border-b border-outline-variant/5 flex items-center justify-between">
+                    <span className="text-[11px] font-data text-on-surface/80 tracking-tight">{shortPath(file.file)}</span>
+                    <span className="text-[9px] font-data text-on-surface-variant/30 uppercase tracking-widest">{file.matches.length} 处</span>
+                  </div>
+                  <div className="divide-y divide-outline-variant/5">
+                    {file.matches.slice(0, 10).map((m, mi) => (
+                      <div key={mi} className="px-4 py-2 flex items-center gap-3 hover:bg-surface-container-high/20 transition-colors">
+                        <button
+                          onClick={() => onOpenSource(file.file, m.line_number)}
+                          className="text-[10px] font-data text-primary/50 hover:text-primary transition-colors min-w-[3rem] text-right"
+                        >
+                          :{m.line_number}
+                        </button>
+                        <code className="text-[11px] font-data text-on-surface-variant/70 truncate flex-1">{m.line_content}</code>
+                      </div>
+                    ))}
+                    {file.matches.length > 10 && (
+                      <div className="px-4 py-2 text-[9px] font-data text-on-surface-variant/30 uppercase tracking-widest">
+                        ... 还有 {file.matches.length - 10} 处匹配
+                      </div>
+                    )}
+                  </div>
+                </div>
+              ))}
+            </div>
+          )}
+        </div>
+      )}
+
+      {!searched && (
+        <div className="flex flex-col items-center justify-center h-64 gap-3 text-on-surface-variant/20">
+          <Search size={32} className="opacity-20" />
+          <p className="text-[10px] font-data uppercase tracking-[0.2em]">使用正则表达式搜索代码模式</p>
+        </div>
+      )}
+    </div>
+  );
+}
+
 // ── Main page ──────────────────────────────────────────────────────────────
 export default function AnalysisPage() {
   const params = useParams();
@@ -1857,9 +2407,30 @@ export default function AnalysisPage() {
   const [rebuilding, setRebuilding] = useState(false);
   const [loadError, setLoadError] = useState("");
   const [repoName, setRepoName] = useState("");
+  const [initialMethod, setInitialMethod] = useState("");
 
   // Source viewer state
   const [sourceModal, setSourceModal] = useState<{ path: string; line?: number } | null>(null);
+
+  const navigateToMethod = useCallback((method: string) => {
+    setInitialMethod(method);
+    setActiveNav("branches");
+  }, []);
+
+  const exportCsv = useCallback((data: EnrichedMethod[]) => {
+    const header = "函数,文件,行,复杂度,密度,行数,风险等级,风险分";
+    const rows = data.map(m =>
+      `"${m.name}","${m.filename}",${m.line},${m.complexity ?? 0},${m.density.toFixed(3)},${m.lines},${m.riskLevel},${m.riskScore.toFixed(2)}`
+    );
+    const csv = [header, ...rows].join("\n");
+    const blob = new Blob(["\uFEFF" + csv], { type: "text/csv;charset=utf-8" });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement("a");
+    a.href = url;
+    a.download = `risk-matrix-${repoName || repoId}.csv`;
+    a.click();
+    URL.revokeObjectURL(url);
+  }, [repoName, repoId]);
 
   useEffect(() => {
     api.repos.get(repoId).then((d) => setRepoName(d.repo.name)).catch(() => {});
@@ -1967,9 +2538,11 @@ export default function AnalysisPage() {
               animate={{ opacity: 1, x: 0 }}
               transition={{ duration: 0.4, ease: "easeOut" }}
             >
-              {activeNav === "overview" && <OverviewView summary={summary} />}
+              {activeNav === "overview" && (
+                <RiskDashboardView repoId={repoId} summary={summary} onNavigate={navigateToMethod} onExport={exportCsv} />
+              )}
               {activeNav === "branches" && (
-                <BranchesView repoId={repoId} onOpenSource={(path, line) => setSourceModal({ path, line })} />
+                <BranchesView repoId={repoId} initialMethod={initialMethod} onOpenSource={(path, line) => setSourceModal({ path, line })} />
               )}
               {activeNav === "testpoints" && <TestPointsView repoId={repoId} />}
               {activeNav === "taint" && (
@@ -1977,6 +2550,9 @@ export default function AnalysisPage() {
               )}
               {activeNav === "complexity" && (
                 <ComplexityView repoId={repoId} onOpenSource={(path, line) => setSourceModal({ path, line })} />
+              )}
+              {activeNav === "search" && (
+                <PatternSearchView repoId={repoId} onOpenSource={(path, line) => setSourceModal({ path, line })} />
               )}
             </motion.div>
           </div>

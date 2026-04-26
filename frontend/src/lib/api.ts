@@ -246,6 +246,11 @@ export const api = {
             method: "POST",
             body: JSON.stringify({ source, sink, mode }),
           }),
+        taintVerify: (repoId: string, method: string, source: string, sink: string) =>
+          request<{ verified: boolean; flows: Array<{ elements: Array<{ code: string; filename: string; line_number: number }> }>; fallback?: string }>(
+            `/api/repos/${repoId}/analysis/joern/taint-verify`,
+            { method: "POST", body: JSON.stringify({ method, source, sink }) },
+          ),
       },
 
       semgrep: {
@@ -291,6 +296,28 @@ export const api = {
             }
           ),
       },
+
+      snapshots: {
+        save: (repoId: string, riskMatrix: unknown[], summary: Record<string, number>) =>
+          request<{ id: string; created_at: string }>(
+            `/api/repos/${repoId}/analysis/snapshots`,
+            { method: "POST", body: JSON.stringify({ risk_matrix: riskMatrix, summary }) },
+          ),
+        list: (repoId: string) =>
+          request<{ snapshots: Array<{ id: string; summary: Record<string, number>; created_at: string }> }>(
+            `/api/repos/${repoId}/analysis/snapshots`,
+          ),
+      },
+
+      impactRadius: (repoId: string, methodName: string) =>
+        request<{
+          method: string;
+          callers: Array<{ caller: string; callerFile: string; callerLine: number; callSites: unknown[]; callerBranches: unknown[] }>;
+          caller_files: string[];
+          module_dependencies: Array<{ source: string; target: string; type: string }>;
+          caller_count: number;
+          module_dep_count: number;
+        }>(`/api/repos/${repoId}/analysis/impact-radius/${encodeURIComponent(methodName)}`),
     },
 
     chat: {
