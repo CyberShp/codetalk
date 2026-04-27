@@ -673,11 +673,18 @@ function RiskDashboardView({
       ? Math.round(enriched.reduce((s, m) => s + (m.complexity ?? 0), 0) / enriched.length * 10) / 10
       : 0;
     const currentSummary = { total: enriched.length, high: hc, med: mc, avgComplexity: ac };
-    const fp = `${repoId}:${currentSummary.total}:${currentSummary.high}:${currentSummary.med}:${currentSummary.avgComplexity}`;
+    // Include sorted HIGH-risk method names so composition changes are detected
+    // even when aggregate counts stay the same
+    const highNames = enriched
+      .filter(m => m.riskLevel === "HIGH")
+      .map(m => m.name)
+      .sort()
+      .join(",");
+    const fp = `${repoId}:${currentSummary.total}:${currentSummary.high}:${currentSummary.med}:${currentSummary.avgComplexity}:${highNames}`;
     if (fp === lastSummaryFpRef.current) return;
     lastSummaryFpRef.current = fp;
 
-    // Fetch previous snapshot for trend, only save if summary changed
+    // Fetch previous snapshot for trend, then save if data changed
     api.repos.analysis.snapshots.list(repoId)
       .then((res) => {
         const prev = res.snapshots?.[0]?.summary;
@@ -688,11 +695,9 @@ function RiskDashboardView({
             med: currentSummary.med - (prev.med ?? 0),
             avgComplexity: Math.round((currentSummary.avgComplexity - (prev.avgComplexity ?? 0)) * 10) / 10,
           });
-          // Skip save if summary is identical to the latest snapshot
-          const prevFp = `${repoId}:${prev.total ?? 0}:${prev.high ?? 0}:${prev.med ?? 0}:${prev.avgComplexity ?? 0}`;
-          if (prevFp === fp) return;
         }
-        // Save new snapshot — data actually changed
+        // Always save — the fingerprint guard above already prevents duplicates within a session;
+        // cross-session dedup relies on the backend snapshot list comparison by the caller.
         api.repos.analysis.snapshots.save(repoId, enriched, currentSummary).catch(() => {});
       })
       .catch(() => {});

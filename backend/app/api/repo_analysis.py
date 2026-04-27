@@ -697,7 +697,7 @@ async def impact_radius(
     module_deps: list[dict] = []
     try:
         from app.adapters.gitnexus import GitNexusAdapter
-        gn = GitNexusAdapter(base_url=settings.gitnexus_url)
+        gn = GitNexusAdapter(base_url=settings.gitnexus_base_url)
         await gn.prepare(AnalysisRequest(repo_local_path=tool_path))
         graph_result = await gn.analyze(AnalysisRequest(repo_local_path=tool_path))
         # Extract relationships where source or target files overlap with caller files
