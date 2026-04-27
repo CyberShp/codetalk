@@ -12,6 +12,9 @@ from collections.abc import AsyncIterator
 
 import httpx
 
+from app.config import settings
+from app.utils.repo_paths import to_tool_repo_path
+
 from .base import (
     AnalysisRequest,
     BaseToolAdapter,
@@ -92,7 +95,12 @@ class CodeCompassAdapter(BaseToolAdapter):
         This is a heavy operation (several minutes for large projects).
         Uses docker exec to invoke the parser inside the container.
         """
-        project_name = request.repo_local_path.rstrip("/").split("/")[-1]
+        tool_repo_path = to_tool_repo_path(
+            request.repo_local_path,
+            host_base_path=settings.repos_base_path,
+            tool_base_path=settings.tool_repos_base_path,
+        )
+        project_name = tool_repo_path.rstrip("/").split("/")[-1]
 
         async with self._prepare_lock_for(self.base_url):
             # Check if already parsed
@@ -101,16 +109,14 @@ class CodeCompassAdapter(BaseToolAdapter):
                 self._current_workspace = project_name
                 return
 
-            # Check if repo has supported files
+            # Check if repo has supported files (use local path, not tool path)
             if not self._has_supported_files(request.repo_local_path):
                 logger.info("codecompass: no supported files in %s, skipping parse", project_name)
                 self._current_workspace = None
                 return
 
-            # Invoke parser via HTTP endpoint (if available) or mark as ready
-            # CodeCompass_parser is typically run as a separate process;
-            # the web server queries the pre-built database.
-            # For orchestration, we POST a parse request to our wrapper endpoint.
+            # Invoke parser via wrapper endpoint inside the container.
+            # tool_repo_path is the container-visible path (e.g. /data/repos/<uuid>).
             try:
                 async with httpx.AsyncClient(
                     base_url=self.base_url,
@@ -120,7 +126,7 @@ class CodeCompassAdapter(BaseToolAdapter):
                         "/api/parse",
                         json={
                             "project_name": project_name,
-                            "source_path": request.repo_local_path,
+                            "source_path": tool_repo_path,
                         },
                     )
                     resp.raise_for_status()

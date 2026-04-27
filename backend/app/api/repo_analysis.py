@@ -15,6 +15,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.adapters import create_adapter
 from app.adapters.base import AnalysisRequest
+from app.adapters.codecompass import CodeCompassAdapter
 from app.adapters.joern import JoernAdapter
 from app.config import settings
 from app.database import get_db
@@ -64,6 +65,16 @@ def _joern() -> JoernAdapter:
         _joern_instance = create_adapter("joern")  # type: ignore[assignment]
     return _joern_instance
 
+
+
+_codecompass_instance: CodeCompassAdapter | None = None
+
+
+def _codecompass() -> CodeCompassAdapter:
+    global _codecompass_instance
+    if _codecompass_instance is None:
+        _codecompass_instance = create_adapter("codecompass")  # type: ignore[assignment]
+    return _codecompass_instance
 
 
 # ── Combined analysis ──
@@ -124,6 +135,35 @@ async def joern_rebuild(
         raise HTTPException(503, "Joern service unavailable")
     except httpx.HTTPStatusError as exc:
         raise HTTPException(503, f"Joern error: {exc.response.status_code}")
+
+
+# ── CodeCompass endpoints ──
+
+
+@router.post("/{repo_id}/analysis/codecompass/rebuild")
+async def codecompass_rebuild(
+    repo_id: uuid.UUID, db: AsyncSession = Depends(get_db)
+):
+    """Force re-parse of repo in CodeCompass.
+
+    Clears the cached project so prepare() will invoke CodeCompass_parser
+    even if the same repo was previously parsed.
+    Use after code changes (git pull) or container restart.
+    """
+    repo = await _get_repo_or_404(repo_id, db)
+    cc = _codecompass()
+    tool_path = _tool_path(repo)
+
+    cc._current_workspace = None
+    CodeCompassAdapter.clear_cached_project(cc.base_url)
+
+    try:
+        await cc.prepare(AnalysisRequest(repo_local_path=tool_path))
+        return {"status": "rebuilt", "repo_id": str(repo_id)}
+    except httpx.ConnectError:
+        raise HTTPException(503, "CodeCompass service unavailable")
+    except httpx.HTTPStatusError as exc:
+        raise HTTPException(503, f"CodeCompass error: {exc.response.status_code}")
 
 
 class _CpgqlRequest(BaseModel):

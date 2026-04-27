@@ -10,6 +10,7 @@ import json
 import os
 import subprocess
 import sys
+import threading
 import urllib.error
 import urllib.request
 
@@ -22,6 +23,15 @@ DB_CONNECTION = os.environ.get(
 )
 # Parser timeout: 30 minutes (large C++ projects)
 PARSE_TIMEOUT = int(os.environ.get("CC_PARSE_TIMEOUT", "1800"))
+
+
+class ThreadingHTTPServer(http.server.ThreadingHTTPServer):
+    """Thread-per-request so long parse jobs don't starve health probes."""
+    daemon_threads = True
+
+
+# Serialize parse invocations — only one CodeCompass_parser at a time
+_parse_lock = threading.Lock()
 
 
 class Handler(http.server.BaseHTTPRequestHandler):
@@ -59,6 +69,9 @@ class Handler(http.server.BaseHTTPRequestHandler):
         ]
 
         self.log_message("Starting parse: %s", " ".join(cmd))
+        if not _parse_lock.acquire(blocking=False):
+            self._respond(409, {"error": "another parse is already running"})
+            return
         try:
             result = subprocess.run(
                 cmd, capture_output=True, text=True, timeout=PARSE_TIMEOUT,
@@ -77,6 +90,8 @@ class Handler(http.server.BaseHTTPRequestHandler):
             self._respond(500, {"error": "CodeCompass_parser not found in PATH"})
         except Exception as exc:
             self._respond(500, {"error": str(exc)})
+        finally:
+            _parse_lock.release()
 
     def _proxy(self):
         url = f"http://localhost:{WEBSERVER_PORT}{self.path}"
@@ -131,7 +146,7 @@ def main():
         flush=True,
     )
 
-    server = http.server.HTTPServer(("0.0.0.0", LISTEN_PORT), Handler)
+    server = ThreadingHTTPServer(("0.0.0.0", LISTEN_PORT), Handler)
     try:
         server.serve_forever()
     except KeyboardInterrupt:
