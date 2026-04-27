@@ -44,6 +44,17 @@ class CodeCompassAdapter(BaseToolAdapter):
             cls._prepare_locks[key] = lock
         return lock
 
+    @classmethod
+    def clear_cached_project(cls, base_url: str | None = None) -> None:
+        """Invalidate parse cache so next prepare() re-runs the parser.
+
+        Called after git pull or repo update to ensure fresh analysis.
+        """
+        if base_url:
+            cls._parsed_projects.pop(base_url, None)
+        else:
+            cls._parsed_projects.clear()
+
     def name(self) -> str:
         return "codecompass"
 
@@ -273,20 +284,27 @@ class CodeCompassAdapter(BaseToolAdapter):
         pass
 
     @staticmethod
-    def _has_supported_files(repo_path: str) -> bool:
+    def _has_supported_files(repo_path: str, max_depth: int = 5) -> bool:
         """Check if repository contains files with supported extensions.
 
-        Only checks top-level and one level deep to avoid expensive traversal.
+        Uses os.walk with depth limit for broad coverage without full traversal.
         """
+        import os
         from pathlib import Path
+
         root = Path(repo_path)
         if not root.exists():
             return False
-        for p in root.iterdir():
-            if p.is_file() and p.suffix in _SUPPORTED_EXTENSIONS:
-                return True
-            if p.is_dir():
-                for child in p.iterdir():
-                    if child.is_file() and child.suffix in _SUPPORTED_EXTENSIONS:
-                        return True
+
+        root_depth = len(root.parts)
+        for dirpath, dirnames, filenames in os.walk(root):
+            current_depth = len(Path(dirpath).parts) - root_depth
+            if current_depth >= max_depth:
+                dirnames.clear()
+                continue
+            # Skip hidden/vendor directories early
+            dirnames[:] = [d for d in dirnames if not d.startswith(".")]
+            for fname in filenames:
+                if Path(fname).suffix in _SUPPORTED_EXTENSIONS:
+                    return True
         return False

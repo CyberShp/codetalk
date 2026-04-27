@@ -99,7 +99,7 @@ services:
       postgres:
         condition: service_healthy
     environment:
-      CC_DATABASE: "pgsql:host=postgres;port=5432;user=${POSTGRES_USER:-codetalks};password=${POSTGRES_PASSWORD:-changeme};database=codecompass"
+      CC_DATABASE: "pgsql:host=postgres;port=5432;user=${POSTGRES_USER:-codetalks};password=${POSTGRES_PASSWORD:-changeme};database=${POSTGRES_DB:-codetalks}"
     deploy:
       resources:
         limits:

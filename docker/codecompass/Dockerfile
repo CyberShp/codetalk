@@ -16,6 +16,7 @@ RUN apt-get update && apt-get install -y \
     npm \
     postgresql-client libpq-dev \
     thrift-compiler libthrift-dev \
+    python3 \
     curl \
     && rm -rf /var/lib/apt/lists/*
 
@@ -38,8 +39,11 @@ RUN mkdir -p /data/workspaces /data/repos
 
 EXPOSE 6251
 
+# Wrapper script: starts webserver on internal port, adds POST /api/parse
+COPY wrapper.py /opt/codecompass-install/bin/wrapper.py
+RUN chmod +x /opt/codecompass-install/bin/wrapper.py
+
 HEALTHCHECK --interval=15s --timeout=5s --retries=3 \
     CMD curl -sf http://localhost:6251/ || exit 1
 
-ENTRYPOINT ["CodeCompass_webserver"]
-CMD ["-w", "/data/workspaces", "-p", "6251"]
+ENTRYPOINT ["python3", "/opt/codecompass-install/bin/wrapper.py"]

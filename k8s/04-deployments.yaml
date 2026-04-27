@@ -547,8 +547,13 @@ spec:
           ports:
             - containerPort: 6251
           env:
+            - name: POSTGRES_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: codetalk-secret
+                  key: POSTGRES_PASSWORD
             - name: CC_DATABASE
-              value: "pgsql:host=postgres;port=5432;user=codetalks;password=$(POSTGRES_PASSWORD);database=codecompass"
+              value: "pgsql:host=postgres;port=5432;user=codetalks;password=$(POSTGRES_PASSWORD);database=codetalks"
           volumeMounts:
             - name: code-volume
               mountPath: /data/repos
