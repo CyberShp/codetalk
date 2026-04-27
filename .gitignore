@@ -37,3 +37,34 @@ data/
 .codex/
 .gemini/
 .kimi/
+.obsidian/
+AGENTS.md
+CLAUDE.md
+GEMINI.md
+KIMI.md
+BACKLOG.md
+PLAN_V2.md
+frontend/AGENTS.md
+frontend/CLAUDE.md
+frontend/README.md
+verify_ux.py
+
+# Dev task files (not for deployment)
+tasks/
+
+# Dev-only docs
+docs/decisions/
+docs/discussions/
+docs/features/
+docs/CODETALK_REPO_CENTRIC_MIGRATION.md
+docs/PHASE_A_RESEARCH.md
+docs/SOP.md
+docs/deepwiki-api-actual.md
+
+# Pasted screenshots / dev images
+Pasted image *.png
+frontend/step*.png
+
+# Test artifacts
+output/
+test-results/
