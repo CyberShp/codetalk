@@ -673,12 +673,12 @@ function RiskDashboardView({
       ? Math.round(enriched.reduce((s, m) => s + (m.complexity ?? 0), 0) / enriched.length * 10) / 10
       : 0;
     const currentSummary = { total: enriched.length, high: hc, med: mc, avgComplexity: ac };
-    // Fingerprint = aggregates (catches within-band complexity drift) + method identities (catches structural changes)
+    // Per-method identity includes all mutable numeric fields — any real matrix change triggers a save
     const methodIdentities = enriched
-      .map(m => `${m.filename}:${m.line}:${m.riskLevel}`)
+      .map(m => `${m.filename}:${m.line}:${m.lineEnd}:${m.complexity ?? 0}:${m.riskLevel}`)
       .sort()
       .join("|");
-    const fp = `${repoId}:${currentSummary.total}:${currentSummary.high}:${currentSummary.med}:${currentSummary.avgComplexity}:${methodIdentities}`;
+    const fp = `${repoId}:${methodIdentities}`;
     if (fp === lastSummaryFpRef.current) return;
     lastSummaryFpRef.current = fp;
 
