@@ -987,4 +987,4 @@ echo "后端地址: http://$NODE_IP:30800"
 
 ---
 
-*本手册覆盖 CodeTalks 5 个核心服务（PostgreSQL、Backend、DeepWiki、GitNexus、Frontend）的部署。Joern、Semgrep、Zoekt 的 K8s 部署清单尚未包含在 `k8s/` 目录中，待后续补充。*
+*本手册覆盖 CodeTalks 7 个核心服务（PostgreSQL、Backend、DeepWiki、GitNexus、Frontend、Joern、Zoekt）的部署。K8s 部署清单已包含在 `k8s/` 目录中（`04-deployments.yaml` 含全部 7 个 Deployment）。内网镜像导入流程见 `INTRANET_DEPLOY.md` 或 `k8s/DEPLOY.md`。*

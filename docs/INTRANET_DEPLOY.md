@@ -45,21 +45,23 @@
       │
       ├── deepwiki:8001  (HTTP, ClusterIP)
       ├── gitnexus:7100  (HTTP, ClusterIP)
-      ├── zoekt:6070     (如已部署，本文档暂不覆盖)
-      ├── codecompass:6251 (同上)
-      └── joern:8080     (同上)
+      ├── zoekt:6070     (HTTP, ClusterIP)
+      ├── joern:8080     (HTTP, ClusterIP)
+      └── codecompass:6251 (待集成，本文档暂不覆盖)
 
-  /data/repos  ← RWX PVC，三个 Pod 共享
+  /data/repos  ← RWX PVC，五个 Pod 共享
       ├── backend     (ReadWrite — 写入 clone/upload 的源码)
       ├── deepwiki    (ReadOnly  — 读取源码建索引)
-      └── gitnexus    (ReadWrite — 读取源码构建知识图谱)
+      ├── gitnexus    (ReadWrite — 读取源码构建知识图谱)
+      ├── zoekt       (ReadOnly  — 读取源码建搜索索引)
+      └── joern       (ReadOnly  — 读取源码构建 CPG)
 ```
 
 ### 2.2 关键设计约束（来自代码审查）
 
 | 约束 | 来源 | K8s 处置方式 |
 |------|------|-------------|
-| `/data/repos` 必须是 **RWX 共享卷** | `source_manager.py:50`、`deepwiki.py:89`、`gitnexus.py:75` — 三个服务通过绝对路径共享源码 | 使用 RWX PVC；无 RWX 则参考 [FAQ 1](#81-集群没有-readwritemany-storageclass-怎么办) |
+| `/data/repos` 必须是 **RWX 共享卷** | `source_manager.py:50`、`deepwiki.py:89`、`gitnexus.py:75`、`zoekt`、`joern` — 五个服务通过绝对路径共享源码 | 使用 RWX PVC；无 RWX 则参考 [FAQ 1](#81-集群没有-readwritemany-storageclass-怎么办) |
 | **docker.sock 挂载必须删除** | `component_manager.py:311` 有真实 Docker Engine API 调用（Unix socket），写 `override.yml` 并重启容器 | K8s 中无此语义；对应的「在线改配置并重启组件」UI 功能须明确告知用户**在 K8s 版中不可用** |
 | **docker-compose.override.yml 语义消失** | `component_manager.py:292` 写 override 文件，依赖 `/project` bind mount | 删除 `/project` 挂载；配置变更改为修改 ConfigMap/Secret + `kubectl rollout restart` |
 | **`git_url` 源类型需要内网 Git** | `source_manager.py:68` — 运行时执行 `git clone/pull` | Q2 为"有"则直接用内网 Git URL；Q2 为"无"则只能走预置共享卷 + `local_path` |
@@ -136,7 +138,7 @@ backend Pod  --git clone-->  /data/repos/<repo-uuid>/
 | 要求 | 说明 |
 |------|------|
 | Docker ≥ 20.10 | 能访问外网所有 registry |
-| 磁盘空间 ≥ 20 GB | 4 个镜像 tar 文件合计约 5–10 GB |
+| 磁盘空间 ≥ 30 GB | 7 个镜像 tar 文件合计约 8–15 GB（Joern 含 JVM 约 1.5 GB） |
 | 平台 | 建议 linux/amd64；Mac 执行时脚本已加 `--platform linux/amd64` |
 
 > **特别说明**：PC 安全机不能执行 Docker 命令，也不能访问本地文件系统，**不要在 PC 安全机上执行本节操作**。外网构建必须在有 Docker 权限的专用机器上进行。
@@ -181,6 +183,8 @@ VERSION=v1.0.0 bash scripts/build-images.sh
 3. 拉取 `ghcr.io/asyncfuncai/deepwiki-open:latest` → `deepwiki-v1.0.0.tar`
 4. 构建 gitnexus（node:20-slim + Debian Trixie libstdc++ + npm gitnexus） → `gitnexus-v1.0.0.tar`
 5. 构建 frontend（Next.js standalone，含运行时 URL 替换） → `frontend-v1.0.0.tar`
+6. 拉取 `ghcr.io/joernio/joern:nightly`（JVM，约 1.5 GB） → `joern-v1.0.0.tar`
+7. 拉取 `ghcr.io/sourcegraph/zoekt:latest` → `zoekt-v1.0.0.tar`
 
 完成后验证：
 
@@ -191,6 +195,8 @@ ls -lh image-export/
 # deepwiki-v1.0.0.tar   ~2GB
 # gitnexus-v1.0.0.tar   ~800MB
 # frontend-v1.0.0.tar   ~400MB
+# joern-v1.0.0.tar      ~1.5GB
+# zoekt-v1.0.0.tar      ~200MB
 ```
 
 > **为什么 gitnexus 不能在内网构建？** `docker/gitnexus/Dockerfile` 依赖：① `deb.debian.org/debian trixie` 安装 libstdc++（GLIBCXX_3.4.31），② `registry.npmjs.org` 安装 gitnexus 包。内网均无法访问，必须在外网预构建成最终镜像。
@@ -231,12 +237,14 @@ IMPORT_DIR=./image-export \
 
 ### 5.3 验证 Harbor
 
-浏览器打开 `https://harbor.company.com`，确认 `codetalk` 项目下有 5 个镜像：
+浏览器打开 `https://harbor.company.com`，确认 `codetalk` 项目下有 7 个镜像：
 - `codetalk/postgres:v1.0.0`
 - `codetalk/backend:v1.0.0`
 - `codetalk/deepwiki:v1.0.0`
 - `codetalk/gitnexus:v1.0.0`
 - `codetalk/frontend:v1.0.0`
+- `codetalk/joern:v1.0.0`
+- `codetalk/zoekt:v1.0.0`
 
 ---
 
@@ -319,7 +327,7 @@ kubectl apply -f 05-services.yaml
 
 ```bash
 kubectl get pods -n codetalk -w
-# 预期：postgres → ~15s，backend → ~30s，gitnexus → ~30s，deepwiki → ~60s
+# 预期：postgres → ~15s，backend → ~30s，gitnexus → ~30s，deepwiki → ~60s，zoekt → ~10s，joern → ~60s（JVM 启动较慢）
 ```
 
 ### 6.8 执行数据库迁移
@@ -345,6 +353,8 @@ kubectl edit secret codetalk-secret -n codetalk
 # 2. 滚动重启受影响的 Deployment
 kubectl rollout restart deployment/deepwiki -n codetalk
 kubectl rollout restart deployment/backend -n codetalk
+kubectl rollout restart deployment/joern -n codetalk
+kubectl rollout restart deployment/zoekt -n codetalk
 ```
 
 ---
@@ -366,6 +376,10 @@ BACKEND_POD=$(kubectl get pod -n codetalk -l app=backend \
 
 kubectl exec -n codetalk $BACKEND_POD -- curl -s http://deepwiki:8001/api/health
 kubectl exec -n codetalk $BACKEND_POD -- curl -s http://gitnexus:7100/health
+kubectl exec -n codetalk $BACKEND_POD -- curl -s http://zoekt:6070/healthz
+kubectl exec -n codetalk $BACKEND_POD -- \
+  curl -sf -X POST -H 'Content-Type: application/json' \
+  -d '{"query":"version"}' http://joern:8080/query-sync
 ```
 
 ### 7.2 查看日志
@@ -374,6 +388,8 @@ kubectl exec -n codetalk $BACKEND_POD -- curl -s http://gitnexus:7100/health
 kubectl logs -n codetalk -l app=backend  --tail=100 -f
 kubectl logs -n codetalk -l app=deepwiki --tail=100 -f
 kubectl logs -n codetalk -l app=gitnexus --tail=100 -f
+kubectl logs -n codetalk -l app=zoekt    --tail=100 -f
+kubectl logs -n codetalk -l app=joern    --tail=100 -f
 ```
 
 ### 7.3 功能冒烟测试
@@ -381,7 +397,7 @@ kubectl logs -n codetalk -l app=gitnexus --tail=100 -f
 1. **前端访问**：浏览器打开 `http://<node-ip>:30003`，确认页面正常加载
 2. **API 连通**：在前端页面打开浏览器 DevTools → Network，确认对 `<node-ip>:30800` 的请求成功（非 CORS 错误）
 3. **源码入库**：按第 3 节选择的方案，将一个测试仓库导入系统
-4. **触发分析任务**：通过 UI 选择 gitnexus + deepwiki 工具
+4. **触发分析任务**：通过 UI 选择 gitnexus + deepwiki + joern 工具
 5. **确认任务完成**：`kubectl exec $BACKEND_POD -- curl -s http://localhost:8000/api/tasks/<task-id>`
 
 ---
@@ -401,7 +417,7 @@ helm install nfs-provisioner nfs-subdir/nfs-subdir-external-provisioner \
 ```
 然后在 `01-pvc.yaml` 的 `code-volume` 中填 `storageClassName: nfs-rwx`。
 
-**方案 B（单节点 workaround）**：如果集群只有 1 个工作节点，可以把 `code-volume` 改为 `ReadWriteOnce`，并给 backend / deepwiki / gitnexus 三个 Deployment 加相同的 `nodeSelector`，强制调度到同一节点：
+**方案 B（单节点 workaround）**：如果集群只有 1 个工作节点，可以把 `code-volume` 改为 `ReadWriteOnce`，并给 backend / deepwiki / gitnexus / zoekt / joern 五个 Deployment 加相同的 `nodeSelector`，强制调度到同一节点：
 ```yaml
 nodeSelector:
   kubernetes.io/hostname: <single-node-name>
@@ -493,6 +509,10 @@ kubectl set image deployment/deepwiki \
   deepwiki=harbor.company.com/codetalk/deepwiki:v1.1.0 -n codetalk
 kubectl set image deployment/frontend \
   frontend=harbor.company.com/codetalk/frontend:v1.1.0 -n codetalk
+kubectl set image deployment/joern \
+  joern=harbor.company.com/codetalk/joern:v1.1.0 -n codetalk
+kubectl set image deployment/zoekt \
+  zoekt=harbor.company.com/codetalk/zoekt:v1.1.0 -n codetalk
 # postgres StatefulSet 更新：
 kubectl set image statefulset/postgres \
   postgres=harbor.company.com/codetalk/postgres:v1.1.0 -n codetalk
@@ -517,4 +537,4 @@ kubectl rollout restart deployment/frontend -n codetalk
 
 ---
 
-*文档版本：v1.2 | 2026-04-16 | 布偶猫/宪宪 整理，缅因猫/砚砚 审查意见已纳入，含前端部署*
+*文档版本：v1.3 | 2026-04-27 | 布偶猫/宪宪 整理，新增 Joern + Zoekt 内网部署全覆盖*
