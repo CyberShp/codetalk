@@ -152,13 +152,14 @@ async def codecompass_rebuild(
     """
     repo = await _get_repo_or_404(repo_id, db)
     cc = _codecompass()
-    tool_path = _tool_path(repo)
 
     cc._current_workspace = None
     CodeCompassAdapter.clear_cached_project(cc.base_url)
 
     try:
-        await cc.prepare(AnalysisRequest(repo_local_path=tool_path))
+        # Pass raw local_path — prepare() does its own to_tool_repo_path()
+        # translation internally (unlike Joern which expects pre-translated).
+        await cc.prepare(AnalysisRequest(repo_local_path=repo.local_path))
         return {"status": "rebuilt", "repo_id": str(repo_id)}
     except httpx.ConnectError:
         raise HTTPException(503, "CodeCompass service unavailable")

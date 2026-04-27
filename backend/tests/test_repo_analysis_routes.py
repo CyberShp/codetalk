@@ -565,6 +565,50 @@ class RepoAnalysisRouteContractTests(unittest.IsolatedAsyncioTestCase):
         caps = {c.value for c in adapter.capabilities()}
         self.assertEqual(caps, {"call_graph", "pointer_analysis", "dependency_graph", "architecture_diagram"})
 
+    async def test_codecompass_rebuild_passes_raw_local_path(self) -> None:
+        """Regression: rebuild must pass raw local_path, not pre-translated tool path.
+
+        CodeCompassAdapter.prepare() does its own to_tool_repo_path() internally.
+        If rebuild pre-translates, _has_supported_files() gets a container path
+        that doesn't exist on the host, silently skipping parse.
+        """
+        repo_id = uuid.uuid4()
+        host_path = "/Volumes/Media/codetalk/.repos/some-project"
+        repo = SimpleNamespace(
+            id=repo_id,
+            name="some-project",
+            local_path=host_path,
+        )
+        self.holder["db"] = _FakeDB(get_map={repo_id: repo})
+
+        fake_cc = AsyncMock()
+        fake_cc.base_url = "http://codecompass:6251"
+        fake_cc._current_workspace = "old-project"
+        fake_cc.prepare = AsyncMock()
+
+        with patch.object(
+            repo_analysis_api, "_codecompass", return_value=fake_cc
+        ), patch.object(
+            repo_analysis_api.CodeCompassAdapter, "clear_cached_project"
+        ) as clear_mock:
+            response = await self.client.post(
+                f"/api/repos/{repo_id}/analysis/codecompass/rebuild"
+            )
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.json()["status"], "rebuilt")
+
+        # Critical assertion: prepare() must receive the RAW host path,
+        # NOT the tool-translated /data/repos/... path
+        call_args = fake_cc.prepare.await_args
+        actual_path = call_args[0][0].repo_local_path
+        self.assertEqual(actual_path, host_path)
+        self.assertNotIn("/data/repos", actual_path)
+
+        # Verify cache was cleared
+        clear_mock.assert_called_once_with(fake_cc.base_url)
+        self.assertIsNone(fake_cc._current_workspace)
+
 
 if __name__ == "__main__":
     unittest.main()
