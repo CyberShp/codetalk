@@ -673,14 +673,12 @@ function RiskDashboardView({
       ? Math.round(enriched.reduce((s, m) => s + (m.complexity ?? 0), 0) / enriched.length * 10) / 10
       : 0;
     const currentSummary = { total: enriched.length, high: hc, med: mc, avgComplexity: ac };
-    // Include sorted HIGH-risk method names so composition changes are detected
-    // even when aggregate counts stay the same
-    const highNames = enriched
-      .filter(m => m.riskLevel === "HIGH")
-      .map(m => m.name)
+    // Full method identity fingerprint: any change in method set, position, or risk level triggers a save
+    const methodIdentities = enriched
+      .map(m => `${m.filename}:${m.line}:${m.riskLevel}`)
       .sort()
-      .join(",");
-    const fp = `${repoId}:${currentSummary.total}:${currentSummary.high}:${currentSummary.med}:${currentSummary.avgComplexity}:${highNames}`;
+      .join("|");
+    const fp = `${repoId}:${methodIdentities}`;
     if (fp === lastSummaryFpRef.current) return;
     lastSummaryFpRef.current = fp;
 

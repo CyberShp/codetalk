@@ -491,7 +491,8 @@ class RepoAnalysisRouteContractTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(response.status_code, 200)
         self.assertIn("snapshots", response.json())
 
-    async def test_impact_radius_contract(self) -> None:
+    async def test_impact_radius_degraded_contract(self) -> None:
+        """GitNexus unavailable — endpoint still returns 200 with empty module_deps."""
         repo_id = uuid.uuid4()
         repo = SimpleNamespace(
             id=repo_id,
@@ -514,6 +515,48 @@ class RepoAnalysisRouteContractTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(body["method"], "main")
         self.assertEqual(body["caller_count"], 1)
         self.assertIn("main.c", body["caller_files"])
+        self.assertEqual(body["module_dep_count"], 0)
+
+    async def test_impact_radius_happy_path_contract(self) -> None:
+        """GitNexus available — endpoint returns Joern callers + GitNexus module deps."""
+        repo_id = uuid.uuid4()
+        repo = SimpleNamespace(
+            id=repo_id,
+            name="open-iscsi",
+            local_path="/Volumes/Media/codetalk/.repos/open-iscsi",
+        )
+        self.holder["db"] = _FakeDB(get_map={repo_id: repo})
+
+        # Build a fake GitNexus adapter that returns relationship data
+        fake_gn = AsyncMock()
+        fake_gn.prepare = AsyncMock()
+        fake_gn.cleanup = AsyncMock()
+        fake_gn.analyze = AsyncMock(return_value=SimpleNamespace(data={
+            "relationships": [
+                {"source": "main.c", "target": "util.c", "type": "IMPORTS"},
+                {"source": "config.h", "target": "unrelated.c", "type": "IMPORTS"},
+            ]
+        }))
+
+        with patch.object(
+            repo_analysis_api, "_joern", return_value=_FakeJoern()
+        ), patch(
+            "app.adapters.gitnexus.GitNexusAdapter", return_value=fake_gn
+        ):
+            response = await self.client.get(
+                f"/api/repos/{repo_id}/analysis/impact-radius/main"
+            )
+
+        self.assertEqual(response.status_code, 200)
+        body = response.json()
+        self.assertEqual(body["method"], "main")
+        self.assertEqual(body["caller_count"], 1)
+        self.assertIn("main.c", body["caller_files"])
+        # GitNexus returned a relationship matching a caller file → module deps populated
+        self.assertGreater(body["module_dep_count"], 0)
+        self.assertTrue(
+            any(d["source"] == "main.c" for d in body["module_dependencies"])
+        )
 
 
 if __name__ == "__main__":
