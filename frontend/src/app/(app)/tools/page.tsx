@@ -27,6 +27,7 @@ const placeholderTools: ToolInfo[] = [
   { name: "gitnexus", capabilities: ["knowledge_graph", "ast_analysis", "dependency_graph"], healthy: false, container_status: "checking", message: "检测中" },
   { name: "zoekt", capabilities: ["code_search"], healthy: false, container_status: "checking", message: "检测中" },
   { name: "joern", capabilities: ["call_graph", "taint_analysis", "security_scan", "ast_analysis"], healthy: false, container_status: "checking", message: "检测中" },
+  { name: "codecompass", capabilities: ["call_graph", "pointer_analysis", "dependency_graph", "architecture_diagram"], healthy: false, container_status: "checking", message: "检测中" },
 ];
 
 const comingSoonTools: ToolInfo[] = [

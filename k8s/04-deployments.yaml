@@ -518,3 +518,67 @@ spec:
         - name: zoekt-index
           persistentVolumeClaim:
             claimName: zoekt-index
+
+# ─────────────────────────────────────────────
+# codecompass — C/C++ 代码理解引擎（指针分析、调用图）
+# ─────────────────────────────────────────────
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: codecompass
+  namespace: codetalk
+  labels:
+    app: codecompass
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: codecompass
+  template:
+    metadata:
+      labels:
+        app: codecompass
+    spec:
+      containers:
+        - name: codecompass
+          image: HARBOR_HOST/codetalk/codecompass:VERSION
+          imagePullPolicy: IfNotPresent
+          ports:
+            - containerPort: 6251
+          env:
+            - name: CC_DATABASE
+              value: "pgsql:host=postgres;port=5432;user=codetalks;password=$(POSTGRES_PASSWORD);database=codecompass"
+          volumeMounts:
+            - name: code-volume
+              mountPath: /data/repos
+              readOnly: true
+            - name: codecompass-data
+              mountPath: /data/workspaces
+          readinessProbe:
+            httpGet:
+              path: /
+              port: 6251
+            initialDelaySeconds: 30
+            periodSeconds: 15
+          livenessProbe:
+            httpGet:
+              path: /
+              port: 6251
+            initialDelaySeconds: 60
+            periodSeconds: 30
+            failureThreshold: 3
+          resources:
+            requests:
+              cpu: 500m
+              memory: 2Gi
+            limits:
+              cpu: 2000m
+              memory: 4Gi
+      volumes:
+        - name: code-volume
+          persistentVolumeClaim:
+            claimName: code-volume
+        - name: codecompass-data
+          persistentVolumeClaim:
+            claimName: codecompass-data

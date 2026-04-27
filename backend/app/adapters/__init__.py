@@ -37,6 +37,7 @@ def get_all_adapters() -> list[BaseToolAdapter]:
 
 
 def _register_defaults() -> None:
+    from app.adapters.codecompass import CodeCompassAdapter
     from app.adapters.deepwiki import DeepwikiAdapter
     from app.adapters.gitnexus import GitNexusAdapter
     from app.adapters.joern import JoernAdapter
@@ -57,10 +58,14 @@ def _register_defaults() -> None:
     def joern_factory() -> JoernAdapter:
         return JoernAdapter(base_url=settings.joern_base_url)
 
+    def codecompass_factory() -> CodeCompassAdapter:
+        return CodeCompassAdapter(base_url=settings.codecompass_base_url)
+
     register_adapter(deepwiki_factory(), factory=deepwiki_factory)
     register_adapter(gitnexus_factory(), factory=gitnexus_factory)
     register_adapter(zoekt_factory(), factory=zoekt_factory)
     register_adapter(joern_factory(), factory=joern_factory)
+    register_adapter(codecompass_factory(), factory=codecompass_factory)
 
 
 _register_defaults()

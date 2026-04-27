@@ -101,6 +101,19 @@ spec:
 apiVersion: v1
 kind: Service
 metadata:
+  name: codecompass
+  namespace: codetalk
+spec:
+  selector:
+    app: codecompass
+  ports:
+    - port: 6251
+      targetPort: 6251
+  type: ClusterIP
+---
+apiVersion: v1
+kind: Service
+metadata:
   name: zoekt
   namespace: codetalk
 spec:

@@ -47,7 +47,7 @@
       ├── gitnexus:7100  (HTTP, ClusterIP)
       ├── zoekt:6070     (HTTP, ClusterIP)
       ├── joern:8080     (HTTP, ClusterIP)
-      └── codecompass:6251 (待集成，本文档暂不覆盖)
+      └── codecompass:6251 (HTTP, ClusterIP)
 
   /data/repos  ← RWX PVC，五个 Pod 共享
       ├── backend     (ReadWrite — 写入 clone/upload 的源码)
@@ -138,7 +138,7 @@ backend Pod  --git clone-->  /data/repos/<repo-uuid>/
 | 要求 | 说明 |
 |------|------|
 | Docker ≥ 20.10 | 能访问外网所有 registry |
-| 磁盘空间 ≥ 30 GB | 7 个镜像 tar 文件合计约 8–15 GB（Joern 含 JVM 约 1.5 GB） |
+| 磁盘空间 ≥ 40 GB | 8 个镜像 tar 文件合计约 10–20 GB（Joern 含 JVM 约 1.5 GB，CodeCompass 从源码构建约 2–3 GB） |
 | 平台 | 建议 linux/amd64；Mac 执行时脚本已加 `--platform linux/amd64` |
 
 > **特别说明**：PC 安全机不能执行 Docker 命令，也不能访问本地文件系统，**不要在 PC 安全机上执行本节操作**。外网构建必须在有 Docker 权限的专用机器上进行。
@@ -185,18 +185,20 @@ VERSION=v1.0.0 bash scripts/build-images.sh
 5. 构建 frontend（Next.js standalone，含运行时 URL 替换） → `frontend-v1.0.0.tar`
 6. 拉取 `ghcr.io/joernio/joern:nightly`（JVM，约 1.5 GB） → `joern-v1.0.0.tar`
 7. 拉取 `ghcr.io/sourcegraph/zoekt:latest` → `zoekt-v1.0.0.tar`
+8. 从源码构建 CodeCompass（ubuntu:22.04 + LLVM/Clang + CMake，构建时间较长） → `codecompass-v1.0.0.tar`
 
 完成后验证：
 
 ```bash
 ls -lh image-export/
-# postgres-v1.0.0.tar   ~400MB
-# backend-v1.0.0.tar    ~500MB
-# deepwiki-v1.0.0.tar   ~2GB
-# gitnexus-v1.0.0.tar   ~800MB
-# frontend-v1.0.0.tar   ~400MB
-# joern-v1.0.0.tar      ~1.5GB
-# zoekt-v1.0.0.tar      ~200MB
+# postgres-v1.0.0.tar      ~400MB
+# backend-v1.0.0.tar       ~500MB
+# deepwiki-v1.0.0.tar      ~2GB
+# gitnexus-v1.0.0.tar      ~800MB
+# frontend-v1.0.0.tar      ~400MB
+# joern-v1.0.0.tar         ~1.5GB
+# zoekt-v1.0.0.tar         ~200MB
+# codecompass-v1.0.0.tar   ~2-3GB
 ```
 
 > **为什么 gitnexus 不能在内网构建？** `docker/gitnexus/Dockerfile` 依赖：① `deb.debian.org/debian trixie` 安装 libstdc++（GLIBCXX_3.4.31），② `registry.npmjs.org` 安装 gitnexus 包。内网均无法访问，必须在外网预构建成最终镜像。
@@ -237,7 +239,7 @@ IMPORT_DIR=./image-export \
 
 ### 5.3 验证 Harbor
 
-浏览器打开 `https://harbor.company.com`，确认 `codetalk` 项目下有 7 个镜像：
+浏览器打开 `https://harbor.company.com`，确认 `codetalk` 项目下有 8 个镜像：
 - `codetalk/postgres:v1.0.0`
 - `codetalk/backend:v1.0.0`
 - `codetalk/deepwiki:v1.0.0`
@@ -245,6 +247,7 @@ IMPORT_DIR=./image-export \
 - `codetalk/frontend:v1.0.0`
 - `codetalk/joern:v1.0.0`
 - `codetalk/zoekt:v1.0.0`
+- `codetalk/codecompass:v1.0.0`
 
 ---
 

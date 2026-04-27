@@ -26,7 +26,7 @@ if ! docker info 2>/dev/null | grep -q "$HARBOR_HOST"; then
   warn "请确认已登录 Harbor: docker login $HARBOR_HOST"
 fi
 
-for IMAGE in postgres backend deepwiki gitnexus frontend joern zoekt; do
+for IMAGE in postgres backend deepwiki gitnexus frontend joern zoekt codecompass; do
   TAR="$IMPORT_DIR/$IMAGE-$VERSION.tar"
   if [[ ! -f "$TAR" ]]; then
     echo -e "\033[0;31m[SKIP]\033[0m $TAR 不存在，跳过"

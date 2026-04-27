@@ -558,6 +558,13 @@ class RepoAnalysisRouteContractTests(unittest.IsolatedAsyncioTestCase):
             any(d["source"] == "main.c" for d in body["module_dependencies"])
         )
 
+    async def test_codecompass_adapter_contract(self) -> None:
+        from app.adapters.codecompass import CodeCompassAdapter
+        adapter = CodeCompassAdapter(base_url="http://localhost:6251")
+        self.assertEqual(adapter.name(), "codecompass")
+        caps = {c.value for c in adapter.capabilities()}
+        self.assertEqual(caps, {"call_graph", "pointer_analysis", "dependency_graph", "architecture_diagram"})
+
 
 if __name__ == "__main__":
     unittest.main()

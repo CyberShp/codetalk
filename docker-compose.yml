@@ -36,6 +36,7 @@ services:
       GITNEXUS_BASE_URL: http://gitnexus:7100
       ZOEKT_BASE_URL: http://zoekt:6070
       JOERN_BASE_URL: http://joern:8080
+      CODECOMPASS_BASE_URL: http://codecompass:6251
 
   deepwiki:
     image: ghcr.io/asyncfuncai/deepwiki-open:latest
@@ -87,6 +88,29 @@ services:
       start_period: 30s
     restart: unless-stopped
 
+  codecompass:
+    build: ./docker/codecompass
+    ports:
+      - "6251:6251"
+    volumes:
+      - ./.repos:/data/repos:ro
+      - codecompass_data:/data/workspaces
+    depends_on:
+      postgres:
+        condition: service_healthy
+    environment:
+      CC_DATABASE: "pgsql:host=postgres;port=5432;user=${POSTGRES_USER:-codetalks};password=${POSTGRES_PASSWORD:-changeme};database=codecompass"
+    deploy:
+      resources:
+        limits:
+          memory: 4G
+    healthcheck:
+      test: ["CMD-SHELL", "curl -sf http://localhost:6251/ || exit 1"]
+      interval: 15s
+      timeout: 5s
+      retries: 3
+      start_period: 60s
+    restart: unless-stopped
 
   zoekt:
     image: ghcr.io/sourcegraph/zoekt:latest
@@ -111,3 +135,4 @@ volumes:
   gitnexus_data:
   zoekt_index:
   joern_data:
+  codecompass_data:

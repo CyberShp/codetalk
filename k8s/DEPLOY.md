@@ -11,7 +11,7 @@
 | `HARBOR_HOST` | 内网 Harbor 地址 | `harbor.yourcompany.com/codetalk` |
 | `VERSION` | 镜像版本标签 | `v1.0.0` |
 
-涉及的镜像共 7 个：
+涉及的镜像共 8 个：
 
 ```
 HARBOR_HOST/codetalk/postgres:VERSION      ← 基础镜像 postgres:16
@@ -21,6 +21,7 @@ HARBOR_HOST/codetalk/gitnexus:VERSION      ← 本项目 docker/gitnexus/ 构建
 HARBOR_HOST/codetalk/frontend:VERSION      ← 本项目 frontend/ 构建
 HARBOR_HOST/codetalk/joern:VERSION         ← 基础镜像 ghcr.io/joernio/joern:nightly
 HARBOR_HOST/codetalk/zoekt:VERSION         ← 基础镜像 ghcr.io/sourcegraph/zoekt:latest
+HARBOR_HOST/codetalk/codecompass:VERSION   ← 本项目 docker/codecompass/ 构建（源码编译，耗时较长）
 ```
 
 ### 2. 网络地址（02-configmap.yaml）
@@ -95,6 +96,10 @@ docker push $HARBOR/frontend:$VER
 
 docker build -t $HARBOR/gitnexus:$VER ./docker/gitnexus
 docker push $HARBOR/gitnexus:$VER
+
+# CodeCompass: 源码构建，耗时较长（30-60分钟）
+docker build -t $HARBOR/codecompass:$VER ./docker/codecompass
+docker push $HARBOR/codecompass:$VER
 ```
 
 ### Step 2: 替换清单占位符
