@@ -253,6 +253,30 @@ export const api = {
           ),
       },
 
+      codecompass: {
+        rebuild: (repoId: string) =>
+          request<{ status: string; repo_id: string }>(`/api/repos/${repoId}/analysis/codecompass/rebuild`, {
+            method: "POST",
+          }),
+        callGraph: (repoId: string, functionName: string) =>
+          request<{ function: string; call_graph: unknown }>(
+            `/api/repos/${repoId}/analysis/codecompass/call-graph/${encodeURIComponent(functionName)}`
+          ),
+        pointerAnalysis: (repoId: string, functionName: string) =>
+          request<{ function: string; pointer_analysis: unknown }>(
+            `/api/repos/${repoId}/analysis/codecompass/pointer-analysis/${encodeURIComponent(functionName)}`
+          ),
+        indirectCalls: (repoId: string, functionName: string) =>
+          request<{ function: string; indirect_calls: unknown }>(
+            `/api/repos/${repoId}/analysis/codecompass/indirect-calls/${encodeURIComponent(functionName)}`
+          ),
+        alias: (repoId: string, variable: string, filePath: string, line: number) =>
+          request<{ variable: string; file: string; line: number; aliases: unknown }>(
+            `/api/repos/${repoId}/analysis/codecompass/alias`,
+            { method: "POST", body: JSON.stringify({ variable, file_path: filePath, line }) },
+          ),
+      },
+
       semgrep: {
         findings: (
           repoId: string,

@@ -84,15 +84,17 @@ def _codecompass() -> CodeCompassAdapter:
 async def get_analysis_summary(
     repo_id: uuid.UUID, db: AsyncSession = Depends(get_db)
 ):
-    """Get analysis summary from Joern CPG engine.
+    """Get analysis summary from all analysis engines.
 
-    Runs a lightweight health probe and returns availability
-    plus capabilities.
+    Runs lightweight health probes and returns availability
+    plus capabilities for each tool.
     """
     repo = await _get_repo_or_404(repo_id, db)
     joern = _joern()
+    cc = _codecompass()
 
     joern_health = await joern.health_check()
+    cc_health = await cc.health_check()
 
     return {
         "repo_id": str(repo_id),
@@ -102,6 +104,11 @@ async def get_analysis_summary(
                 "healthy": joern_health.is_healthy,
                 "status": joern_health.container_status,
                 "capabilities": [c.value for c in joern.capabilities()],
+            },
+            "codecompass": {
+                "healthy": cc_health.is_healthy,
+                "status": cc_health.container_status,
+                "capabilities": [c.value for c in cc.capabilities()],
             },
         },
     }

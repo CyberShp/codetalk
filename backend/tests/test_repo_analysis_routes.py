@@ -133,8 +133,14 @@ class RepoAnalysisRouteContractTests(unittest.IsolatedAsyncioTestCase):
         )
         self.holder["db"] = _FakeDB(get_map={repo_id: repo})
 
+        fake_cc = AsyncMock()
+        fake_cc.health_check = AsyncMock(return_value=ToolHealth(False, "error", last_check="connect refused"))
+        fake_cc.capabilities = lambda: [ToolCapability.CALL_GRAPH, ToolCapability.POINTER_ANALYSIS, ToolCapability.DEPENDENCY_GRAPH, ToolCapability.ARCHITECTURE_DIAGRAM]
+
         with patch.object(
             repo_analysis_api, "_joern", return_value=_FakeJoern()
+        ), patch.object(
+            repo_analysis_api, "_codecompass", return_value=fake_cc
         ):
             response = await self.client.get(
                 f"/api/repos/{repo_id}/analysis/summary"
@@ -145,6 +151,9 @@ class RepoAnalysisRouteContractTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(body["repo_id"], str(repo_id))
         self.assertEqual(body["repo_name"], "open-iscsi")
         self.assertTrue(body["tools"]["joern"]["healthy"])
+        # CodeCompass returns unhealthy but still appears in summary
+        self.assertFalse(body["tools"]["codecompass"]["healthy"])
+        self.assertIn("pointer_analysis", body["tools"]["codecompass"]["capabilities"])
 
     async def test_joern_methods_contract(self) -> None:
         repo_id = uuid.uuid4()

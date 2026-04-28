@@ -420,6 +420,11 @@ export interface AnalysisSummary {
       status: string | null;
       capabilities: string[];
     };
+    codecompass?: {
+      healthy: boolean;
+      status: string | null;
+      capabilities: string[];
+    };
   };
 }
 

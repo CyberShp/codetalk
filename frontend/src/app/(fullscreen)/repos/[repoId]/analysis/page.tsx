@@ -733,6 +733,7 @@ function RiskDashboardView({
   };
 
   const joernHealthy = summary?.tools.joern.healthy ?? false;
+  const ccHealthy = summary?.tools.codecompass?.healthy ?? false;
 
   if (loading) {
     return (
@@ -749,6 +750,7 @@ function RiskDashboardView({
       <div className="flex items-center justify-between">
         <div className="flex items-center gap-3 rounded-xl border border-outline-variant/10 bg-surface-container-low px-4 py-2">
           <ToolStatusDot healthy={joernHealthy} label="Joern CPG" />
+          <ToolStatusDot healthy={ccHealthy} label="CodeCompass" />
         </div>
         <button
           onClick={() => onExport(sorted)}
@@ -2458,7 +2460,11 @@ export default function AnalysisPage() {
     setRebuilding(true);
     setLoadError("");
     try {
-      await api.repos.analysis.joern.rebuild(repoId);
+      // Rebuild both Joern CPG and CodeCompass in parallel
+      await Promise.allSettled([
+        api.repos.analysis.joern.rebuild(repoId),
+        api.repos.analysis.codecompass.rebuild(repoId),
+      ]);
       const s = await api.repos.analysis.summary(repoId);
       setSummary(s);
       // Bump refreshKey so RiskDashboardView re-fetches methods
@@ -2502,7 +2508,7 @@ export default function AnalysisPage() {
             className="flex items-center gap-2 px-4 py-2 rounded-xl bg-primary/5 border border-primary/20 text-[11px] font-bold uppercase tracking-widest text-primary hover:bg-primary/10 transition-all disabled:opacity-40"
           >
             <RefreshCw size={14} className={rebuilding ? "animate-spin" : ""} />
-            {rebuilding ? "重建 CPG..." : "重新构建索引"}
+            {rebuilding ? "重建分析引擎..." : "重新构建索引"}
           </button>
         </div>
       </header>
