@@ -167,6 +167,109 @@ async def codecompass_rebuild(
         raise HTTPException(503, f"CodeCompass error: {exc.response.status_code}")
 
 
+@router.get("/{repo_id}/analysis/codecompass/call-graph/{function_name}")
+async def codecompass_call_graph(
+    repo_id: uuid.UUID,
+    function_name: str,
+    db: AsyncSession = Depends(get_db),
+):
+    """Get call graph for a specific function via CodeCompass."""
+    repo = await _get_repo_or_404(repo_id, db)
+    cc = _codecompass()
+
+    try:
+        await cc.prepare(AnalysisRequest(repo_local_path=repo.local_path))
+        result = await cc.function_call_graph(function_name)
+        return {"function": function_name, "call_graph": result}
+    except httpx.ConnectError:
+        raise HTTPException(503, "CodeCompass service unavailable")
+    except httpx.HTTPStatusError as exc:
+        raise HTTPException(503, f"CodeCompass error: {exc.response.status_code}")
+
+
+@router.get("/{repo_id}/analysis/codecompass/pointer-analysis/{function_name}")
+async def codecompass_pointer_analysis(
+    repo_id: uuid.UUID,
+    function_name: str,
+    db: AsyncSession = Depends(get_db),
+):
+    """Get pointer analysis results for a specific function.
+
+    Returns alias sets, points-to information, and pointer dereference paths.
+    Critical for SFMEA: identifies hidden coupling through shared memory.
+    """
+    repo = await _get_repo_or_404(repo_id, db)
+    cc = _codecompass()
+
+    try:
+        await cc.prepare(AnalysisRequest(repo_local_path=repo.local_path))
+        result = await cc.pointer_analysis_for(function_name)
+        return {"function": function_name, "pointer_analysis": result}
+    except httpx.ConnectError:
+        raise HTTPException(503, "CodeCompass service unavailable")
+    except httpx.HTTPStatusError as exc:
+        raise HTTPException(503, f"CodeCompass error: {exc.response.status_code}")
+
+
+@router.get("/{repo_id}/analysis/codecompass/indirect-calls/{function_name}")
+async def codecompass_indirect_calls(
+    repo_id: uuid.UUID,
+    function_name: str,
+    db: AsyncSession = Depends(get_db),
+):
+    """Resolve indirect call targets (function pointers, virtual dispatch).
+
+    Returns concrete functions that a function pointer or virtual call
+    may resolve to. Critical for SFMEA: uncovers untested dispatch branches.
+    """
+    repo = await _get_repo_or_404(repo_id, db)
+    cc = _codecompass()
+
+    try:
+        await cc.prepare(AnalysisRequest(repo_local_path=repo.local_path))
+        result = await cc.indirect_calls(function_name)
+        return {"function": function_name, "indirect_calls": result}
+    except httpx.ConnectError:
+        raise HTTPException(503, "CodeCompass service unavailable")
+    except httpx.HTTPStatusError as exc:
+        raise HTTPException(503, f"CodeCompass error: {exc.response.status_code}")
+
+
+class _AliasRequest(BaseModel):
+    variable: str
+    file_path: str
+    line: int
+
+
+@router.post("/{repo_id}/analysis/codecompass/alias")
+async def codecompass_alias_analysis(
+    repo_id: uuid.UUID,
+    body: _AliasRequest,
+    db: AsyncSession = Depends(get_db),
+):
+    """Get pointer alias set for a variable at a specific location.
+
+    Answers: "what other pointers could point to the same memory as this variable?"
+    Critical for SFMEA: quantifies hidden state mutation risk.
+    """
+    repo = await _get_repo_or_404(repo_id, db)
+    cc = _codecompass()
+
+    try:
+        await cc.prepare(AnalysisRequest(repo_local_path=repo.local_path))
+        result = await cc.alias_analysis(body.variable, body.file_path, body.line)
+        return {
+            "variable": body.variable,
+            "file": body.file_path,
+            "line": body.line,
+            "aliases": result,
+        }
+    except httpx.ConnectError:
+        raise HTTPException(503, "CodeCompass service unavailable")
+    except httpx.HTTPStatusError as exc:
+        raise HTTPException(503, f"CodeCompass error: {exc.response.status_code}")
+
+
 class _CpgqlRequest(BaseModel):
     query: str
 

@@ -610,5 +610,146 @@ class RepoAnalysisRouteContractTests(unittest.IsolatedAsyncioTestCase):
         self.assertIsNone(fake_cc._current_workspace)
 
 
+    async def test_codecompass_call_graph_route(self) -> None:
+        repo_id = uuid.uuid4()
+        repo = SimpleNamespace(
+            id=repo_id, name="linux-driver",
+            local_path="/Volumes/Media/codetalk/.repos/linux-driver",
+        )
+        self.holder["db"] = _FakeDB(get_map={repo_id: repo})
+
+        fake_cc = AsyncMock()
+        fake_cc.prepare = AsyncMock()
+        fake_cc.function_call_graph = AsyncMock(return_value={
+            "callers": [{"name": "init_module", "file": "main.c", "line": 10}],
+            "callees": [{"name": "alloc_buffer", "file": "mem.c", "line": 45}],
+        })
+
+        with patch.object(repo_analysis_api, "_codecompass", return_value=fake_cc):
+            response = await self.client.get(
+                f"/api/repos/{repo_id}/analysis/codecompass/call-graph/process_packet"
+            )
+
+        self.assertEqual(response.status_code, 200)
+        body = response.json()
+        self.assertEqual(body["function"], "process_packet")
+        self.assertIn("callers", body["call_graph"])
+        self.assertIn("callees", body["call_graph"])
+        fake_cc.function_call_graph.assert_awaited_once_with("process_packet")
+
+    async def test_codecompass_pointer_analysis_route(self) -> None:
+        repo_id = uuid.uuid4()
+        repo = SimpleNamespace(
+            id=repo_id, name="linux-driver",
+            local_path="/Volumes/Media/codetalk/.repos/linux-driver",
+        )
+        self.holder["db"] = _FakeDB(get_map={repo_id: repo})
+
+        fake_cc = AsyncMock()
+        fake_cc.prepare = AsyncMock()
+        fake_cc.pointer_analysis_for = AsyncMock(return_value={
+            "aliases": [{"ptr": "buf", "may_alias": ["shared_buf", "temp_buf"]}],
+        })
+
+        with patch.object(repo_analysis_api, "_codecompass", return_value=fake_cc):
+            response = await self.client.get(
+                f"/api/repos/{repo_id}/analysis/codecompass/pointer-analysis/write_data"
+            )
+
+        self.assertEqual(response.status_code, 200)
+        body = response.json()
+        self.assertEqual(body["function"], "write_data")
+        self.assertIn("aliases", body["pointer_analysis"])
+        fake_cc.pointer_analysis_for.assert_awaited_once_with("write_data")
+
+    async def test_codecompass_indirect_calls_route(self) -> None:
+        repo_id = uuid.uuid4()
+        repo = SimpleNamespace(
+            id=repo_id, name="linux-driver",
+            local_path="/Volumes/Media/codetalk/.repos/linux-driver",
+        )
+        self.holder["db"] = _FakeDB(get_map={repo_id: repo})
+
+        fake_cc = AsyncMock()
+        fake_cc.prepare = AsyncMock()
+        fake_cc.indirect_calls = AsyncMock(return_value={
+            "targets": [
+                {"name": "usb_reset", "file": "usb.c", "line": 120},
+                {"name": "pci_reset", "file": "pci.c", "line": 88},
+            ],
+        })
+
+        with patch.object(repo_analysis_api, "_codecompass", return_value=fake_cc):
+            response = await self.client.get(
+                f"/api/repos/{repo_id}/analysis/codecompass/indirect-calls/dispatch_reset"
+            )
+
+        self.assertEqual(response.status_code, 200)
+        body = response.json()
+        self.assertEqual(body["function"], "dispatch_reset")
+        self.assertEqual(len(body["indirect_calls"]["targets"]), 2)
+
+    async def test_codecompass_alias_analysis_route(self) -> None:
+        repo_id = uuid.uuid4()
+        repo = SimpleNamespace(
+            id=repo_id, name="linux-driver",
+            local_path="/Volumes/Media/codetalk/.repos/linux-driver",
+        )
+        self.holder["db"] = _FakeDB(get_map={repo_id: repo})
+
+        fake_cc = AsyncMock()
+        fake_cc.prepare = AsyncMock()
+        fake_cc.alias_analysis = AsyncMock(return_value={
+            "alias_set": ["ctx->buf", "shared_buffer", "dma_region"],
+            "confidence": "may",
+        })
+
+        with patch.object(repo_analysis_api, "_codecompass", return_value=fake_cc):
+            response = await self.client.post(
+                f"/api/repos/{repo_id}/analysis/codecompass/alias",
+                json={"variable": "buf", "file_path": "driver.c", "line": 42},
+            )
+
+        self.assertEqual(response.status_code, 200)
+        body = response.json()
+        self.assertEqual(body["variable"], "buf")
+        self.assertEqual(body["file"], "driver.c")
+        self.assertEqual(body["line"], 42)
+        self.assertIn("dma_region", body["aliases"]["alias_set"])
+        fake_cc.alias_analysis.assert_awaited_once_with("buf", "driver.c", 42)
+
+    async def test_codecompass_routes_pass_raw_local_path(self) -> None:
+        """All CodeCompass routes must pass raw local_path to prepare()."""
+        repo_id = uuid.uuid4()
+        host_path = "/Volumes/Media/codetalk/.repos/test-project"
+        repo = SimpleNamespace(
+            id=repo_id, name="test-project", local_path=host_path,
+        )
+        self.holder["db"] = _FakeDB(get_map={repo_id: repo})
+
+        fake_cc = AsyncMock()
+        fake_cc.prepare = AsyncMock()
+        fake_cc.function_call_graph = AsyncMock(return_value={})
+        fake_cc.pointer_analysis_for = AsyncMock(return_value={})
+        fake_cc.indirect_calls = AsyncMock(return_value={})
+
+        with patch.object(repo_analysis_api, "_codecompass", return_value=fake_cc):
+            await self.client.get(
+                f"/api/repos/{repo_id}/analysis/codecompass/call-graph/fn1"
+            )
+            await self.client.get(
+                f"/api/repos/{repo_id}/analysis/codecompass/pointer-analysis/fn2"
+            )
+            await self.client.get(
+                f"/api/repos/{repo_id}/analysis/codecompass/indirect-calls/fn3"
+            )
+
+        # Every prepare() call must receive the raw host path
+        for call in fake_cc.prepare.await_args_list:
+            actual_path = call[0][0].repo_local_path
+            self.assertEqual(actual_path, host_path,
+                f"prepare() got '{actual_path}' instead of raw host path")
+
+
 if __name__ == "__main__":
     unittest.main()
