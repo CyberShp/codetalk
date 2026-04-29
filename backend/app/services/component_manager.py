@@ -25,7 +25,10 @@ from app.utils.crypto import decrypt_key, encrypt_key
 logger = logging.getLogger(__name__)
 
 DOCKER_SOCKET = "/var/run/docker.sock"
-PROJECT_DIR = Path("/project")
+# /project is the Docker-mount of the repo root; on host-run, fall back to
+# the actual repo root (two levels up from backend/app/services/).
+_DOCKER_PROJECT = Path("/project")
+PROJECT_DIR = _DOCKER_PROJECT if _DOCKER_PROJECT.is_dir() else Path(__file__).resolve().parents[3]
 COMPOSE_PROJECT = "codetalk"
 
 # ── Config contracts: what each component accepts ──────────────────
@@ -243,6 +246,18 @@ def _resolve_env_vars(
         if config_key in secret_fields:
             value = decrypt_key(value)
         env_vars[env_name] = value
+
+    # Deepwiki's embedder clients read provider-specific env vars that
+    # differ from our generic DEEPWIKI_EMBEDDING_* names.  Bridge the gap.
+    if cfg.component == "deepwiki" and cfg.domain == "embedding":
+        etype = cfg.config.get("embedder_type", "")
+        emb_key = env_vars.get("DEEPWIKI_EMBEDDING_API_KEY", "")
+        emb_url = env_vars.get("DEEPWIKI_EMBEDDING_BASE_URL", "")
+        if etype == "google" and emb_key:
+            env_vars["GOOGLE_API_KEY"] = emb_key
+        elif etype == "ollama" and emb_url:
+            env_vars["OLLAMA_BASE_URL"] = emb_url
+            env_vars["OLLAMA_HOST"] = emb_url
 
     return env_vars
 

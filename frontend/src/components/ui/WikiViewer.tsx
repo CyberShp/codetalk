@@ -39,10 +39,18 @@ interface FilePanel {
   error: string | null;
 }
 
+// sessionStorage key for persisting "generating" state across tab switches
+function wikiGenKey(taskId?: string, repoId?: string) {
+  return `wiki_generating_${taskId ?? repoId ?? ""}`;
+}
+
 export default function WikiViewer({ taskId, repoId, repoName, standalone = false, onPageChange }: WikiViewerProps) {
   const isRepoMode = !taskId && !!repoId;
   const [wiki, setWiki] = useState<WikiData | null>(null);
-  const [status, setStatus] = useState<"loading" | "not_generated" | "generating" | "ready" | "error">("loading");
+  const [status, setStatus] = useState<"loading" | "not_generated" | "generating" | "ready" | "error">(() => {
+    if (typeof window !== "undefined" && sessionStorage.getItem(wikiGenKey(taskId, repoId))) return "generating";
+    return "loading";
+  });
   const [stale, setStale] = useState(false);
   const [currentPageId, setCurrentPageId] = useState<string | undefined>();
   const [genStatus, setGenStatus] = useState<WikiStatus | null>(null);
@@ -66,6 +74,7 @@ export default function WikiViewer({ taskId, repoId, repoName, standalone = fals
         setWiki(resp.wiki);
         setStale(resp.stale);
         setStatus("ready");
+        sessionStorage.removeItem(wikiGenKey(taskId, repoId));
         const pages = resp.wiki.wiki_structure.pages;
         setCurrentPageId((prev) => {
           if (prev) return prev;
@@ -89,11 +98,13 @@ export default function WikiViewer({ taskId, repoId, repoName, standalone = fals
           setGenStatus(gs);
         } else {
           setStatus("not_generated");
+          sessionStorage.removeItem(wikiGenKey(taskId, repoId));
         }
       }
     } catch (e) {
       setError(e instanceof Error ? e.message : "Failed to load wiki");
       setStatus("error");
+      sessionStorage.removeItem(wikiGenKey(taskId, repoId));
     }
   }, [taskId, repoId, isRepoMode, standalone]);
 
@@ -120,6 +131,7 @@ export default function WikiViewer({ taskId, repoId, repoName, standalone = fals
           if (gs.error) {
             setError(gs.error);
             setStatus("error");
+            sessionStorage.removeItem(wikiGenKey(taskId, repoId));
           } else {
             loadWiki();
           }
@@ -139,6 +151,7 @@ export default function WikiViewer({ taskId, repoId, repoName, standalone = fals
     try {
       setStatus("generating");
       setGenStatus({ running: true, current: 0, total: 0, page_title: "", error: null });
+      sessionStorage.setItem(wikiGenKey(taskId, repoId), "1");
       if (isRepoMode) {
         await api.repos.wiki.generate(repoId!, true, forceRefresh);
       } else {

@@ -9,6 +9,7 @@ from app.config import settings as app_settings
 from app.database import get_db
 from app.models.llm_config import LLMConfig
 from app.schemas.llm_config import LLMConfigCreate, LLMConfigResponse, LLMConfigUpdate
+from app.services.component_manager import save_config as save_component_config
 from app.utils.crypto import decrypt_key, encrypt_key
 
 router = APIRouter(prefix="/api/settings", tags=["settings"])
@@ -44,6 +45,14 @@ async def save_llm_config(data: LLMConfigCreate, db: AsyncSession = Depends(get_
     db.add(config)
     await db.commit()
     await db.refresh(config)
+
+    # Auto-sync new default LLM to DeepWiki chat config
+    if config.is_default:
+        await save_component_config(db, "deepwiki", "chat", {
+            "base_url": data.base_url or "",
+            "api_key": data.api_key or "",
+        })
+
     return _to_response(config)
 
 
@@ -66,6 +75,15 @@ async def update_llm_config(
         config.proxy_mode = data.proxy_mode
     await db.commit()
     await db.refresh(config)
+
+    # Auto-sync: if this is the default LLM, propagate changes to DeepWiki chat
+    if config.is_default:
+        api_key = decrypt_key(config.api_key_encrypted) if config.api_key_encrypted else ""
+        await save_component_config(db, "deepwiki", "chat", {
+            "base_url": config.base_url or "",
+            "api_key": api_key,
+        })
+
     return _to_response(config)
 
 
@@ -82,6 +100,15 @@ async def set_default_llm_config(
     config.is_default = True
     await db.commit()
     await db.refresh(config)
+
+    # Auto-sync: propagate default LLM credentials to DeepWiki chat config
+    # so the two config layers stay consistent.
+    api_key = decrypt_key(config.api_key_encrypted) if config.api_key_encrypted else ""
+    await save_component_config(db, "deepwiki", "chat", {
+        "base_url": config.base_url or "",
+        "api_key": api_key,
+    })
+
     return _to_response(config)
 
 

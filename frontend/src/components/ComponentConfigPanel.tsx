@@ -96,6 +96,29 @@ export default function ComponentConfigPanel() {
     }
   };
 
+  // Poll component health after restart until healthy or timeout
+  const pollUntilHealthy = useCallback(
+    (comp: string, maxAttempts = 8, interval = 3000) => {
+      let attempt = 0;
+      const tick = async () => {
+        attempt++;
+        await load();
+        const s = await api.components.health(comp);
+        if (s.health.healthy) {
+          setFeedback({ key: comp, ok: true, msg: "重启成功，服务已恢复在线" });
+          return;
+        }
+        if (attempt >= maxAttempts) {
+          setFeedback({ key: comp, ok: false, msg: "健康检查超时，服务可能仍在启动中" });
+          return;
+        }
+        setTimeout(tick, interval);
+      };
+      setTimeout(tick, interval);
+    },
+    [load],
+  );
+
   const handleApplyRestart = async (comp: string) => {
     setApplying(comp);
     setFeedback(null);
@@ -104,10 +127,10 @@ export default function ComponentConfigPanel() {
       setFeedback({
         key: comp,
         ok: result.success,
-        msg: result.message,
+        msg: result.success ? `${result.message}，等待健康检查...` : result.message,
       });
       if (result.success) {
-        setTimeout(load, 3000);
+        pollUntilHealthy(comp);
       }
     } catch (e) {
       setFeedback({
@@ -128,10 +151,10 @@ export default function ComponentConfigPanel() {
       setFeedback({
         key: comp,
         ok: result.success,
-        msg: result.message,
+        msg: result.success ? `${result.message}，等待健康检查...` : result.message,
       });
       if (result.success) {
-        setTimeout(load, 3000);
+        pollUntilHealthy(comp);
       }
     } catch (e) {
       setFeedback({

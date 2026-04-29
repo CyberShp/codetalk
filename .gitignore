@@ -65,6 +65,12 @@ docs/deepwiki-api-actual.md
 Pasted image *.png
 frontend/step*.png
 
+# Local database files
+*.db
+
+# Duplicate lock files (repo uses npm/package-lock.json)
+frontend/pnpm-lock.yaml
+
 # Test artifacts
 output/
 test-results/

@@ -144,17 +144,20 @@ class SettingsRouteContractTests(unittest.IsolatedAsyncioTestCase):
     async def test_save_llm_config_contract(self) -> None:
         self.holder["db"] = _FakeDB(execute_results=[_FakeResult(items=[])])
 
-        response = await self.client.post(
-            "/api/settings/llm",
-            json={
-                "provider": "custom",
-                "model_name": "mimo-v2-pro",
-                "api_key": "sk-test",
-                "base_url": "https://llm.example/v1",
-                "proxy_mode": "direct",
-                "is_default": True,
-            },
-        )
+        with patch.object(
+            settings_api, "save_component_config", return_value=SimpleNamespace()
+        ):
+            response = await self.client.post(
+                "/api/settings/llm",
+                json={
+                    "provider": "custom",
+                    "model_name": "mimo-v2-pro",
+                    "api_key": "sk-test",
+                    "base_url": "https://llm.example/v1",
+                    "proxy_mode": "direct",
+                    "is_default": True,
+                },
+            )
 
         self.assertEqual(response.status_code, 201)
         body = response.json()
@@ -232,7 +235,12 @@ class SettingsRouteContractTests(unittest.IsolatedAsyncioTestCase):
             get_map={target_id: config},
         )
 
-        response = await self.client.patch(f"/api/settings/llm/{target_id}/default")
+        with patch.object(
+            settings_api, "decrypt_key", return_value="sk-decrypted"
+        ), patch.object(
+            settings_api, "save_component_config", return_value=SimpleNamespace()
+        ):
+            response = await self.client.patch(f"/api/settings/llm/{target_id}/default")
 
         self.assertEqual(response.status_code, 200)
         self.assertTrue(response.json()["is_default"])
