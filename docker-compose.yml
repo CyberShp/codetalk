@@ -31,17 +31,86 @@ services:
     environment:
       DATABASE_URL: postgresql+asyncpg://${POSTGRES_USER:-codetalks}:${POSTGRES_PASSWORD:-changeme}@postgres:5432/${POSTGRES_DB:-codetalks}
       REPOS_BASE_PATH: ${REPOS_BASE_PATH:-/data/repos}
-      # Local tool (still in this compose)
+      # Override .env.local localhost values — container must use Docker DNS
+      DEEPWIKI_BASE_URL: http://deepwiki:8001
+      GITNEXUS_BASE_URL: http://gitnexus:7100
       ZOEKT_BASE_URL: http://zoekt:6070
-      # Remote tools on Windows (192.168.50.195)
-      DEEPWIKI_BASE_URL: http://192.168.50.195:18001
-      GITNEXUS_BASE_URL: http://192.168.50.195:7100
-      JOERN_BASE_URL: http://192.168.50.195:8080
-      CODECOMPASS_BASE_URL: http://192.168.50.195:6251
+      JOERN_BASE_URL: http://joern:8080
+      CODECOMPASS_BASE_URL: http://codecompass:6251
 
-  # --- deepwiki, gitnexus, joern, codecompass moved to Windows ---
-  # See deploy/windows/docker-compose.yml
-  # Windows IP: 192.168.50.195
+  deepwiki:
+    image: ghcr.io/asyncfuncai/deepwiki-open:latest
+    ports:
+      - "8001:8001"
+      - "3001:3000"
+    volumes:
+      - deepwiki_data:/root/.adalflow
+      - ./.repos:/data/repos:ro
+      - ./docker/deepwiki/embedder.json:/app/api/config/embedder.json:ro
+    environment:
+      OPENAI_API_KEY: ${OPENAI_API_KEY:-}
+      OPENAI_BASE_URL: ${OPENAI_BASE_URL:-}
+      DEEPWIKI_EMBEDDING_BASE_URL: ${DEEPWIKI_EMBEDDING_BASE_URL:-}
+      DEEPWIKI_EMBEDDING_API_KEY: ${DEEPWIKI_EMBEDDING_API_KEY:-${OPENAI_API_KEY:-}}
+      ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY:-}
+      GOOGLE_API_KEY: ${GOOGLE_API_KEY:-}
+      DEEPWIKI_EMBEDDER_TYPE: ${DEEPWIKI_EMBEDDER_TYPE:-openai}
+      OLLAMA_BASE_URL: ${OLLAMA_BASE_URL:-http://host.docker.internal:11434}
+      OLLAMA_HOST: ${OLLAMA_HOST:-http://host.docker.internal:11434}
+
+  gitnexus:
+    build: ./docker/gitnexus
+    ports:
+      - "7100:7100"
+    volumes:
+      - gitnexus_data:/root/.gitnexus
+      - ./.repos:/data/repos
+
+  joern:
+    image: ghcr.io/joernio/joern:nightly
+    ports:
+      - "8080:8080"
+    volumes:
+      - ./.repos:/data/repos:ro
+      - joern_data:/root/.joern
+    environment:
+      JAVA_TOOL_OPTIONS: "-Xmx6g"
+    command: ["joern", "--server", "--server-host", "0.0.0.0", "--server-port", "8080"]
+    deploy:
+      resources:
+        limits:
+          memory: 8G
+    healthcheck:
+      test: ["CMD-SHELL", "curl -sf -o /dev/null -w '' -X POST -H 'Content-Type: application/json' -d '{\"query\": \"version\"}' http://localhost:8080/query-sync || exit 1"]
+      interval: 15s
+      timeout: 10s
+      retries: 5
+      start_period: 30s
+    restart: unless-stopped
+
+  codecompass:
+    build: ./docker/codecompass
+    ports:
+      - "6251:6251"
+    volumes:
+      - ./.repos:/data/repos:ro
+      - codecompass_data:/data/workspaces
+    depends_on:
+      postgres:
+        condition: service_healthy
+    environment:
+      CC_DATABASE: "pgsql:host=postgres;port=5432;user=${POSTGRES_USER:-codetalks};password=${POSTGRES_PASSWORD:-changeme};database=${POSTGRES_DB:-codetalks}"
+    deploy:
+      resources:
+        limits:
+          memory: 4G
+    healthcheck:
+      test: ["CMD-SHELL", "curl -sf http://localhost:6251/ || exit 1"]
+      interval: 15s
+      timeout: 5s
+      retries: 3
+      start_period: 60s
+    restart: unless-stopped
 
   zoekt:
     image: ghcr.io/sourcegraph/zoekt:latest
@@ -62,4 +131,8 @@ services:
 
 volumes:
   pg_data:
+  deepwiki_data:
+  gitnexus_data:
   zoekt_index:
+  joern_data:
+  codecompass_data:
