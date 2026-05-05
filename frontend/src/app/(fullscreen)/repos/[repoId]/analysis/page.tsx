@@ -31,7 +31,6 @@ import {
   Play,
   Loader2,
   CheckCircle2,
-  Maximize2,
   ZoomIn,
   ZoomOut,
   Maximize,
@@ -334,14 +333,11 @@ function usePagination<T>(items: T[], pageSize = PAGE_SIZE) {
   return { page: safePage, setPage, totalPages, paged };
 }
 
-// ── Nav items ──────────────────────────────────────────────────────────────
+// ── Nav items (Diagnostic Funnel: 3 layers) ─────────────────────────────────
 const NAV_ITEMS = [
-  { id: "overview", label: "风险总览", icon: ShieldAlert },
-  { id: "branches", label: "深度分析", icon: GitBranch },
-  { id: "testpoints", label: "测试计划", icon: FlaskConical },
-  { id: "taint", label: "数据追踪", icon: Network },
-  { id: "complexity", label: "复杂度", icon: Maximize2 },
-  { id: "search", label: "模式搜索", icon: Search },
+  { id: "pulse", label: "Pulse", icon: ShieldAlert },
+  { id: "triage", label: "Triage", icon: GitBranch },
+  { id: "lab", label: "Lab", icon: FlaskConical },
 ] as const;
 type NavId = (typeof NAV_ITEMS)[number]["id"];
 
@@ -352,9 +348,11 @@ const SYNTHETIC_NAMES = new Set(["<global>", "<clinit>", "<init>", "<meta>"]);
 function ComplexityView({
   repoId,
   onOpenSource,
+  focusMethod,
 }: {
   repoId: string;
   onOpenSource: (p: string, l?: number) => void;
+  focusMethod?: string;
 }) {
   const [rawMethods, setRawMethods] = useState<JoernMethod[]>([]);
   const [loading, setLoading] = useState(true);
@@ -411,6 +409,23 @@ function ComplexityView({
 
   const [rankMode, setRankMode] = useState<"absolute" | "density">("absolute");
 
+  const focusedMethodData = useMemo(() => {
+    if (!focusMethod) return null;
+    return withDensity.find(m => m.name === focusMethod) ?? null;
+  }, [withDensity, focusMethod]);
+
+  const focusedPercentile = useMemo(() => {
+    if (!focusedMethodData || !withDensity.length) return null;
+    const fc = focusedMethodData.complexity ?? 0;
+    const below = withDensity.filter(m => (m.complexity ?? 0) < fc).length;
+    return Math.round((below / withDensity.length) * 100);
+  }, [focusedMethodData, withDensity]);
+
+  // Tracks which focusMethod the user has expanded to full distribution.
+  // If focusMethod changes, showFullDistribution auto-derives to false — no effect needed.
+  const [expandedForMethod, setExpandedForMethod] = useState<string | null>(null);
+  const showFullDistribution = expandedForMethod === focusMethod;
+
   if (loading) return (
     <div className="flex flex-col items-center justify-center h-64 gap-3 text-on-surface-variant/40">
       <Loader2 className="animate-spin text-primary" />
@@ -427,8 +442,110 @@ function ComplexityView({
 
   const topList = rankMode === "absolute" ? topByComplexity : topByDensity;
 
+  // ── Compact single-function mode (default when focusMethod is set) ──
+  if (focusMethod && !showFullDistribution) {
+    return (
+      <div className="space-y-4 animate-in fade-in duration-500">
+        {focusedMethodData ? (
+          <div className={`rounded-xl border p-5 ${RISK_COLORS[riskLevel(focusedMethodData.complexity ?? 0, focusedMethodData.density)]}`}>
+            <div className="flex items-center gap-2 mb-4">
+              <BarChart3 size={14} />
+              <span className="text-xs font-bold uppercase tracking-widest">{focusMethod} — 复杂度指标</span>
+              <span className={`ml-auto inline-flex px-2 py-0.5 rounded-full text-[9px] font-data font-bold uppercase tracking-wider border ${RISK_COLORS[riskLevel(focusedMethodData.complexity ?? 0, focusedMethodData.density)]}`}>
+                {riskLevel(focusedMethodData.complexity ?? 0, focusedMethodData.density)}
+              </span>
+            </div>
+            <div className="grid grid-cols-4 gap-4 mb-4">
+              {([
+                { label: "控制结构数", value: String(focusedMethodData.complexity ?? 0) },
+                { label: "代码行数", value: String(focusedMethodData.lines) },
+                { label: "复杂度密度", value: focusedMethodData.density.toFixed(3) },
+                { label: "百分位 (复杂度)", value: focusedPercentile !== null ? `Top ${100 - focusedPercentile}%` : "—" },
+              ] as { label: string; value: string }[]).map(({ label, value }) => (
+                <div key={label}>
+                  <p className="text-[9px] uppercase tracking-wider opacity-60">{label}</p>
+                  <p className="text-sm font-data font-bold">{value}</p>
+                </div>
+              ))}
+            </div>
+            {focusedPercentile !== null && (
+              <div>
+                <div className="flex justify-between text-[9px] font-data text-on-surface-variant/40 mb-1">
+                  <span>复杂度百分位 (高于此值的函数比例)</span>
+                  <span>前 {100 - focusedPercentile}%</span>
+                </div>
+                <div className="h-1.5 rounded-full bg-surface-container-high overflow-hidden">
+                  <div
+                    className={`h-full rounded-full transition-all duration-700 ${focusedPercentile > 85 ? "bg-tertiary" : focusedPercentile > 60 ? "bg-amber-400" : "bg-primary"}`}
+                    style={{ width: `${focusedPercentile}%` }}
+                  />
+                </div>
+              </div>
+            )}
+          </div>
+        ) : (
+          <div className="rounded-xl border border-outline-variant/20 p-5 text-on-surface-variant/60">
+            <p className="text-[11px] font-data">
+              函数 <code className="text-primary">{focusMethod}</code> 未在分析结果中找到（可能需要先构建 CPG 索引）
+            </p>
+          </div>
+        )}
+        <button
+          onClick={() => setExpandedForMethod(focusMethod ?? null)}
+          className="flex items-center gap-1.5 text-[10px] font-data text-on-surface-variant/40 hover:text-primary/70 transition-colors group"
+        >
+          <ChevronRight size={12} className="group-hover:translate-x-0.5 transition-transform" />
+          查看全仓库复杂度分布
+        </button>
+      </div>
+    );
+  }
+
   return (
     <div className="space-y-8 animate-in fade-in duration-500">
+      {/* Focused method card — shown when navigated from Triage */}
+      {focusMethod && (
+        <div className={`rounded-xl border p-4 ${focusedMethodData ? RISK_COLORS[riskLevel(focusedMethodData.complexity ?? 0, focusedMethodData.density)] : "border-outline-variant/20 text-on-surface-variant/60"}`}>
+          {focusedMethodData ? (
+            <>
+              <div className="flex items-center gap-2 mb-3">
+                <BarChart3 size={14} />
+                <span className="text-xs font-bold uppercase tracking-widest">{focusMethod} — 复杂度指标</span>
+                <span className={`ml-auto inline-flex px-2 py-0.5 rounded-full text-[9px] font-data font-bold uppercase tracking-wider border ${RISK_COLORS[riskLevel(focusedMethodData.complexity ?? 0, focusedMethodData.density)]}`}>
+                  {riskLevel(focusedMethodData.complexity ?? 0, focusedMethodData.density)}
+                </span>
+              </div>
+              <div className="grid grid-cols-4 gap-4">
+                {[
+                  { label: "控制结构数", value: focusedMethodData.complexity ?? 0 },
+                  { label: "代码行数", value: focusedMethodData.lines },
+                  { label: "复杂度密度", value: focusedMethodData.density.toFixed(3) },
+                  { label: "文件位置", value: shortPath(focusedMethodData.filename) },
+                ].map(({ label, value }) => (
+                  <div key={label}>
+                    <p className="text-[9px] uppercase tracking-wider opacity-60">{label}</p>
+                    <p className="text-sm font-data font-bold">{value}</p>
+                  </div>
+                ))}
+              </div>
+            </>
+          ) : (
+            <p className="text-[11px] font-data">
+              函数 <code className="text-primary">{focusMethod}</code> 未在分析结果中找到（可能需要先构建 CPG 索引）
+            </p>
+          )}
+        </div>
+      )}
+      {/* Collapse back to function view — only shown in expanded distribution mode */}
+      {focusMethod && showFullDistribution && (
+        <button
+          onClick={() => setExpandedForMethod(null)}
+          className="flex items-center gap-1.5 text-[10px] font-data text-on-surface-variant/40 hover:text-primary/70 transition-colors group"
+        >
+          <ChevronLeft size={12} className="group-hover:-translate-x-0.5 transition-transform" />
+          收起分布，回到函数视图
+        </button>
+      )}
       {/* Metric explanation */}
       <div className="px-1 py-2 border-l-2 border-primary/30 pl-4">
         <p className="text-[11px] text-on-surface-variant/60 leading-relaxed">
@@ -732,6 +849,20 @@ function RiskDashboardView({
     setPage(0);
   };
 
+  // Per-column max values for percentile background shading
+  const colMax = useMemo(() => ({
+    complexity: Math.max(...enriched.map(m => m.complexity ?? 0), 1),
+    density: Math.max(...enriched.map(m => m.density), 0.01),
+    riskScore: Math.max(...enriched.map(m => m.riskScore), 1),
+  }), [enriched]);
+
+  // Color bar accent per sortable column header
+  const COL_HEADER_BAR: Partial<Record<string, string>> = {
+    "风险": "bg-gradient-to-r from-tertiary/50 via-amber-400/30 to-secondary/50",
+    "复杂度": "bg-primary/50",
+    "密度": "bg-amber-400/50",
+  };
+
   const joernHealthy = summary?.tools.joern.healthy ?? false;
   const ccHealthy = summary?.tools.codecompass?.healthy ?? false;
 
@@ -845,10 +976,15 @@ function RiskDashboardView({
                   className={`px-4 py-3 text-left text-[10px] font-data uppercase tracking-[0.2em] text-on-surface-variant/40 ${key ? "cursor-pointer hover:text-on-surface-variant/60 select-none" : ""}`}
                   onClick={() => key && toggleSort(key)}
                 >
-                  <span className="flex items-center gap-1">
-                    {label}
-                    {key && sortKey === key && <ArrowUpDown size={10} className="text-primary" />}
-                  </span>
+                  <div className="flex flex-col gap-1">
+                    <span className="flex items-center gap-1">
+                      {label}
+                      {key && sortKey === key && <ArrowUpDown size={10} className="text-primary" />}
+                    </span>
+                    {COL_HEADER_BAR[label] && (
+                      <div className={`h-0.5 w-8 rounded-full ${COL_HEADER_BAR[label]}`} />
+                    )}
+                  </div>
                 </th>
               ))}
             </tr>
@@ -860,7 +996,11 @@ function RiskDashboardView({
                 className="border-b border-outline-variant/5 hover:bg-surface-container-low/30 transition-colors cursor-pointer group"
                 onClick={() => onNavigate(m.name)}
               >
-                <td className="px-4 py-3">
+                <td
+                  className="px-4 py-3"
+                  title={`风险评分: ${m.riskScore.toFixed(1)}（列内占比 ${Math.round((m.riskScore / colMax.riskScore) * 100)}%）`}
+                  style={{ background: `rgba(255,209,205,${Math.min(0.12, (m.riskScore / colMax.riskScore) * 0.12)})` }}
+                >
                   <span className={`inline-flex px-2 py-0.5 rounded-full text-[9px] font-data font-bold uppercase tracking-wider border ${RISK_COLORS[m.riskLevel]}`}>
                     {m.riskLevel}
                   </span>
@@ -871,12 +1011,20 @@ function RiskDashboardView({
                     <span className="text-[10px] font-data text-on-surface-variant/30 mt-0.5">{shortPath(m.filename)}</span>
                   </div>
                 </td>
-                <td className="px-4 py-3">
+                <td
+                  className="px-4 py-3"
+                  title={`复杂度: ${m.complexity ?? 0}（列内占比 ${Math.round(((m.complexity ?? 0) / colMax.complexity) * 100)}%）`}
+                  style={{ background: `rgba(164,230,255,${Math.min(0.12, ((m.complexity ?? 0) / colMax.complexity) * 0.12)})` }}
+                >
                   <span className={`text-sm font-data font-bold ${(m.complexity ?? 0) > 15 ? "text-tertiary" : (m.complexity ?? 0) > 8 ? "text-amber-400" : "text-on-surface-variant/60"}`}>
                     {m.complexity ?? 0}
                   </span>
                 </td>
-                <td className="px-4 py-3">
+                <td
+                  className="px-4 py-3"
+                  title={`密度: ${m.density.toFixed(3)}（列内占比 ${Math.round((m.density / colMax.density) * 100)}%）`}
+                  style={{ background: `rgba(251,191,36,${Math.min(0.10, (m.density / colMax.density) * 0.10)})` }}
+                >
                   <div className="flex items-center gap-2">
                     <div className="w-16 h-1.5 rounded-full bg-surface-container-high overflow-hidden">
                       <div
@@ -1178,10 +1326,12 @@ function BranchesView({
   repoId,
   initialMethod,
   onOpenSource,
+  onMethodQueried,
 }: {
   repoId: string;
   initialMethod?: string;
   onOpenSource: (p: string, l?: number) => void;
+  onMethodQueried?: (name: string) => void;
 }) {
   const [methodName, setMethodName] = useState("");
   const [loading, setLoading] = useState(false);
@@ -1207,6 +1357,7 @@ function BranchesView({
 
       setLoading(true);
       setErr("");
+      onMethodQueried?.("");
       try {
         const [result, methodsRes] = await Promise.all([
           api.repos.analysis.joern.allForMethod(repoId, name),
@@ -1223,6 +1374,7 @@ function BranchesView({
         setMethodMeta(match ?? null);
         setQueriedMethod(name);
         setQueried(true);
+        onMethodQueried?.(name);
         // Fetch impact radius in background (best-effort)
         setImpactRadius(null);
         api.repos.analysis.impactRadius(repoId, name)
@@ -1238,7 +1390,7 @@ function BranchesView({
         setLoading(false);
       }
     },
-    [repoId, methodName]
+    [repoId, methodName, onMethodQueried]
   );
 
   // Auto-query when navigated from risk dashboard
@@ -1494,6 +1646,59 @@ function Section({
               {/* Kinetic depth background */}
               <div className="absolute inset-0 bg-gradient-to-b from-black/5 to-transparent pointer-events-none" />
               <div className="relative z-10">{children}</div>
+            </div>
+          </motion.div>
+        )}
+      </AnimatePresence>
+    </div>
+  );
+}
+
+// ── Triage accordion wrapper for sub-views ───────────────────────────────
+function TriageSection({
+  title,
+  icon: Icon,
+  defaultOpen = false,
+  accentColor = "text-on-surface-variant/50",
+  children,
+}: {
+  title: string;
+  icon: React.ElementType;
+  defaultOpen?: boolean;
+  accentColor?: string;
+  children: React.ReactNode;
+}) {
+  const [open, setOpen] = useState(defaultOpen);
+
+  const panelId = `triage-panel-${title.replace(/[\s()]/g, "-").toLowerCase()}`;
+  return (
+    <div className="rounded-xl border border-outline-variant/10 bg-surface-container overflow-hidden hover:border-outline-variant/20 transition-colors">
+      <button
+        onClick={() => setOpen((v) => !v)}
+        aria-expanded={open}
+        aria-controls={panelId}
+        className="w-full flex items-center gap-3 px-5 py-4 hover:bg-surface-container-high/30 transition-colors"
+      >
+        <motion.div animate={{ rotate: open ? 0 : -90 }} transition={{ duration: 0.2 }}>
+          <ChevronDown size={14} className="text-on-surface-variant/40" />
+        </motion.div>
+        <Icon size={14} className={accentColor} />
+        <span className="text-xs font-display font-bold uppercase tracking-[0.15em] text-on-surface">{title}</span>
+      </button>
+      <AnimatePresence initial={false}>
+        {open && (
+          <motion.div
+            id={panelId}
+            role="region"
+            aria-label={title}
+            initial={{ height: 0, opacity: 0 }}
+            animate={{ height: "auto", opacity: 1 }}
+            exit={{ height: 0, opacity: 0 }}
+            transition={{ duration: 0.3, ease: "easeInOut" }}
+            className="overflow-hidden"
+          >
+            <div className="border-t border-outline-variant/10 p-5 bg-surface-container-lowest/20">
+              {children}
             </div>
           </motion.div>
         )}
@@ -1962,9 +2167,11 @@ function confidenceLabel(proximity: number): { text: string; color: string } {
 function TaintView({
   repoId,
   onOpenSource,
+  contextMethod,
 }: {
   repoId: string;
   onOpenSource: (p: string, l?: number) => void;
+  contextMethod?: string;
 }) {
   const [source, setSource] = useState("");
   const [sink, setSink] = useState("");
@@ -2033,6 +2240,14 @@ function TaintView({
 
   return (
     <div className="space-y-6 animate-in fade-in slide-in-from-bottom-4 duration-500">
+      {/* Context banner — shown when navigated from Triage with an active function */}
+      {contextMethod && (
+        <div className="flex items-center gap-2 px-4 py-2.5 rounded-lg border border-primary/15 bg-primary/5 text-[10px] font-data text-on-surface-variant/60">
+          <Network size={11} className="text-primary/50 shrink-0" />
+          <span>聚焦函数: <code className="text-primary font-bold">{contextMethod}()</code></span>
+          <span className="ml-auto opacity-60">结果将过滤至该函数</span>
+        </div>
+      )}
       {/* Input panel */}
       <div className="group rounded-2xl border border-outline-variant/15 bg-surface-container-low p-6 space-y-6 transition-all hover:border-outline-variant/30">
         <div className="flex items-center gap-2">
@@ -2114,7 +2329,7 @@ function TaintView({
               <p className="text-[10px] font-data uppercase tracking-[0.2em]">未检测到异常传播</p>
             </div>
           ) : (
-            <TaintPathCards repoId={repoId} paths={paths} source={source} sink={sink} activeMode={activeMode} onOpenSource={onOpenSource} />
+            <TaintPathCards repoId={repoId} paths={paths} source={source} sink={sink} activeMode={activeMode} onOpenSource={onOpenSource} filterMethod={contextMethod} />
           )}
         </div>
       )}
@@ -2137,6 +2352,7 @@ function TaintPathCards({
   sink,
   activeMode,
   onOpenSource,
+  filterMethod,
 }: {
   repoId: string;
   paths: TaintPath[];
@@ -2144,8 +2360,13 @@ function TaintPathCards({
   sink: string;
   activeMode: "cooccur" | "absence";
   onOpenSource: (p: string, l?: number) => void;
+  filterMethod?: string;
 }) {
-  const { page, setPage, totalPages, paged } = usePagination(paths);
+  // Filter to the focused function when set. Paths without a method field are kept as fallback.
+  const displayPaths = filterMethod
+    ? paths.filter(p => !p.method || p.method === filterMethod)
+    : paths;
+  const { page, setPage, totalPages, paged } = usePagination(displayPaths);
   const [verifyState, setVerifyState] = useState<Record<string, "pending" | "verified" | "unverified" | "timeout">>({});
   const [verifyingKey, setVerifyingKey] = useState<string | null>(null);
 
@@ -2164,6 +2385,16 @@ function TaintPathCards({
 
   return (
     <div className="grid gap-4">
+      {/* Filter indicator */}
+      {filterMethod && displayPaths.length !== paths.length && (
+        <div className="flex items-center gap-2 text-[10px] font-data text-on-surface-variant/40 px-1">
+          <Network size={10} className="text-primary/40" />
+          已过滤至函数 <code className="text-primary">{filterMethod}</code>：{displayPaths.length}/{paths.length} 条路径
+          {displayPaths.length === 0 && (
+            <span className="text-amber-400/60 ml-1">（该函数无匹配路径）</span>
+          )}
+        </div>
+      )}
       {paged.map((path, i) => {
         const globalIdx = (page - 1) * PAGE_SIZE + i;
         const pathKey = `${path.method}-${globalIdx}`;
@@ -2410,25 +2641,99 @@ function PatternSearchView({
   );
 }
 
+// ── Lab View: Test Generation + Pattern Search with pill tabs ─────────────
+function LabView({
+  repoId,
+  onOpenSource,
+}: {
+  repoId: string;
+  onOpenSource: (path: string, line?: number) => void;
+}) {
+  const [subTab, setSubTab] = useState<"test" | "search">("test");
+
+  return (
+    <div className="space-y-6 animate-in fade-in duration-500">
+      {/* Pill tabs */}
+      <div
+        role="tablist"
+        aria-label="Lab 工具"
+        className="flex items-center gap-1 p-1 rounded-full bg-surface-container-low/60 border border-outline-variant/10 w-fit"
+      >
+        {(
+          [
+            { id: "test" as const, label: "测试生成", icon: FlaskConical },
+            { id: "search" as const, label: "模式搜索", icon: Search },
+          ] as const
+        ).map(({ id, label, icon: Icon }) => (
+          <button
+            key={id}
+            role="tab"
+            id={`lab-tab-${id}`}
+            aria-selected={subTab === id}
+            aria-controls={`lab-panel-${id}`}
+            onClick={() => setSubTab(id)}
+            className={`relative flex items-center gap-2 px-4 py-1.5 rounded-full text-[11px] font-data font-bold uppercase tracking-widest transition-all ${
+              subTab === id
+                ? "bg-primary/15 text-primary"
+                : "text-on-surface-variant/40 hover:text-on-surface-variant/70"
+            }`}
+          >
+            {subTab === id && (
+              <motion.div
+                layoutId="lab-tab-indicator"
+                className="absolute inset-0 rounded-full border border-primary/20"
+                transition={{ type: "spring", bounce: 0.2, duration: 0.4 }}
+              />
+            )}
+            <Icon size={12} />
+            <span className="relative z-10">{label}</span>
+          </button>
+        ))}
+      </div>
+
+      {/* Both sub-views stay mounted to preserve state when switching */}
+      <div
+        id="lab-panel-test"
+        role="tabpanel"
+        aria-labelledby="lab-tab-test"
+        className={subTab === "test" ? "" : "hidden"}
+      >
+        <TestPointsView repoId={repoId} />
+      </div>
+      <div
+        id="lab-panel-search"
+        role="tabpanel"
+        aria-labelledby="lab-tab-search"
+        className={subTab === "search" ? "" : "hidden"}
+      >
+        <PatternSearchView repoId={repoId} onOpenSource={onOpenSource} />
+      </div>
+    </div>
+  );
+}
+
 // ── Main page ──────────────────────────────────────────────────────────────
 export default function AnalysisPage() {
   const params = useParams();
   const repoId = params.repoId as string;
 
-  const [activeNav, setActiveNav] = useState<NavId>("overview");
+  const [activeNav, setActiveNav] = useState<NavId>("pulse");
   const [summary, setSummary] = useState<AnalysisSummary | null>(null);
   const [rebuilding, setRebuilding] = useState(false);
   const [loadError, setLoadError] = useState("");
   const [repoName, setRepoName] = useState("");
   const [refreshKey, setRefreshKey] = useState(0);
   const [initialMethod, setInitialMethod] = useState("");
+  // The method currently queried in Triage — syncs TaintView and ComplexityView to the same function
+  const [triagedMethod, setTriagedMethod] = useState("");
 
   // Source viewer state
   const [sourceModal, setSourceModal] = useState<{ path: string; line?: number } | null>(null);
 
   const navigateToMethod = useCallback((method: string) => {
+    setTriagedMethod("");
     setInitialMethod(method);
-    setActiveNav("branches");
+    setActiveNav("triage");
   }, []);
 
   const exportCsv = useCallback((data: EnrichedMethod[]) => {
@@ -2558,21 +2863,51 @@ export default function AnalysisPage() {
               animate={{ opacity: 1, x: 0 }}
               transition={{ duration: 0.4, ease: "easeOut" }}
             >
-              {activeNav === "overview" && (
+              {/* Pulse: Risk overview — "where is the fire spreading?" */}
+              {activeNav === "pulse" && (
                 <RiskDashboardView repoId={repoId} summary={summary} onNavigate={navigateToMethod} onExport={exportCsv} refreshKey={refreshKey} />
               )}
-              {activeNav === "branches" && (
-                <BranchesView repoId={repoId} initialMethod={initialMethod} onOpenSource={(path, line) => setSourceModal({ path, line })} />
+
+              {/* Triage: Deep per-function analysis — BranchesView + accordion sub-sections */}
+              {activeNav === "triage" && (
+                <div className="space-y-4 animate-in fade-in duration-500">
+                  <BranchesView
+                    repoId={repoId}
+                    initialMethod={initialMethod}
+                    onOpenSource={(path, line) => setSourceModal({ path, line })}
+                    onMethodQueried={setTriagedMethod}
+                  />
+                  <TriageSection
+                    title="数据追踪 (Taint Analysis)"
+                    icon={Network}
+                    accentColor="text-primary/60"
+                  >
+                    <TaintView
+                      repoId={repoId}
+                      onOpenSource={(path, line) => setSourceModal({ path, line })}
+                      contextMethod={triagedMethod || undefined}
+                    />
+                  </TriageSection>
+                  <TriageSection
+                    title="复杂度分布 (Complexity)"
+                    icon={BarChart3}
+                    accentColor="text-amber-400/60"
+                  >
+                    <ComplexityView
+                      repoId={repoId}
+                      onOpenSource={(path, line) => setSourceModal({ path, line })}
+                      focusMethod={triagedMethod || undefined}
+                    />
+                  </TriageSection>
+                </div>
               )}
-              {activeNav === "testpoints" && <TestPointsView repoId={repoId} />}
-              {activeNav === "taint" && (
-                <TaintView repoId={repoId} onOpenSource={(path, line) => setSourceModal({ path, line })} />
-              )}
-              {activeNav === "complexity" && (
-                <ComplexityView repoId={repoId} onOpenSource={(path, line) => setSourceModal({ path, line })} />
-              )}
-              {activeNav === "search" && (
-                <PatternSearchView repoId={repoId} onOpenSource={(path, line) => setSourceModal({ path, line })} />
+
+              {/* Lab: Test generation + pattern search with pill tabs */}
+              {activeNav === "lab" && (
+                <LabView
+                  repoId={repoId}
+                  onOpenSource={(path, line) => setSourceModal({ path, line })}
+                />
               )}
             </motion.div>
           </div>
