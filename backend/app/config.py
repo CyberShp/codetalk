@@ -38,6 +38,7 @@ class Settings(BaseSettings):
     codecompass_base_url: str = "http://codecompass:6251"
     repos_base_path: str = _default_repos_base_path
     tool_repos_base_path: str = "/data/repos"
+    cors_origins: str = "http://localhost:3000,http://localhost:3003,http://localhost:3004,http://localhost:3005"
 
     model_config = SettingsConfigDict(
         # Load order: repo-root .env first (Docker-network defaults),
