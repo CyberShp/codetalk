@@ -346,24 +346,21 @@ type NavId = (typeof NAV_ITEMS)[number]["id"];
 const SYNTHETIC_NAMES = new Set(["<global>", "<clinit>", "<init>", "<meta>"]);
 
 function ComplexityView({
-  repoId,
   onOpenSource,
   focusMethod,
+  allMethods,
+  methodsLoading,
+  methodsError,
 }: {
-  repoId: string;
   onOpenSource: (p: string, l?: number) => void;
   focusMethod?: string;
+  allMethods: JoernMethod[];
+  methodsLoading: boolean;
+  methodsError: string;
 }) {
-  const [rawMethods, setRawMethods] = useState<JoernMethod[]>([]);
-  const [loading, setLoading] = useState(true);
-  const [err, setErr] = useState("");
-
-  useEffect(() => {
-    api.repos.analysis.joern.methods(repoId)
-      .then((res) => setRawMethods((res.methods || []) as JoernMethod[]))
-      .catch((e) => setErr(e.message))
-      .finally(() => setLoading(false));
-  }, [repoId]);
+  const rawMethods = allMethods;
+  const loading = methodsLoading;
+  const err = methodsError;
 
   // Filter out synthetic nodes — they're not real functions
   const methods = useMemo(
@@ -425,6 +422,26 @@ function ComplexityView({
   // If focusMethod changes, showFullDistribution auto-derives to false — no effect needed.
   const [expandedForMethod, setExpandedForMethod] = useState<string | null>(null);
   const showFullDistribution = expandedForMethod === focusMethod;
+
+  // Pre-compute histogram buckets — memoized to avoid 7×O(n) filter on every render
+  const bucketCounts = useMemo(() => {
+    const buckets = [
+      { label: "0", min: 0, max: 0 },
+      { label: "1–5", min: 1, max: 5 },
+      { label: "6–10", min: 6, max: 10 },
+      { label: "11–15", min: 11, max: 15 },
+      { label: "16–30", min: 16, max: 30 },
+      { label: "31–50", min: 31, max: 50 },
+      { label: "51+", min: 51, max: Infinity },
+    ];
+    return buckets.map(b => ({
+      ...b,
+      count: methods.filter(m => {
+        const c = m.complexity ?? 0;
+        return c >= b.min && c <= b.max;
+      }).length,
+    }));
+  }, [methods]);
 
   if (loading) return (
     <div className="flex flex-col items-center justify-center h-64 gap-3 text-on-surface-variant/40">
@@ -585,22 +602,7 @@ function ComplexityView({
         </div>
 
         {(() => {
-          const buckets = [
-            { label: "0", min: 0, max: 0 },
-            { label: "1–5", min: 1, max: 5 },
-            { label: "6–10", min: 6, max: 10 },
-            { label: "11–15", min: 11, max: 15 },
-            { label: "16–30", min: 16, max: 30 },
-            { label: "31–50", min: 31, max: 50 },
-            { label: "51+", min: 51, max: Infinity },
-          ];
-          const counts = buckets.map(b => ({
-            ...b,
-            count: methods.filter(m => {
-              const c = m.complexity ?? 0;
-              return c >= b.min && c <= b.max;
-            }).length,
-          }));
+          const counts = bucketCounts;
           const maxCount = Math.max(...counts.map(c => c.count), 1);
           const barMaxH = 200;
 
@@ -741,31 +743,24 @@ function RiskDashboardView({
   summary,
   onNavigate,
   onExport,
-  refreshKey = 0,
+  allMethods,
+  methodsLoading,
 }: {
   repoId: string;
   summary: AnalysisSummary | null;
   onNavigate: (method: string) => void;
   onExport: (data: EnrichedMethod[]) => void;
-  refreshKey?: number;
+  allMethods: JoernMethod[];
+  methodsLoading: boolean;
 }) {
-  const [rawMethods, setRawMethods] = useState<JoernMethod[]>([]);
-  const [loadedFor, setLoadedFor] = useState<string | null>(null);
-  const fetchKey = `${repoId}:${refreshKey}`;
-  const loading = loadedFor !== fetchKey;
+  const rawMethods = allMethods;
+  const loading = methodsLoading;
   const [sortKey, setSortKey] = useState<"riskScore" | "complexity" | "density" | "lines">("riskScore");
   const [sortAsc, setSortAsc] = useState(false);
   const [filterLevel, setFilterLevel] = useState<RiskLevel | "ALL">("ALL");
   const PAGE = 20;
   const [page, setPage] = useState(0);
   const [trend, setTrend] = useState<Record<string, number> | null>(null);
-
-  useEffect(() => {
-    api.repos.analysis.joern.methods(repoId)
-      .then((res) => setRawMethods((res.methods || []) as JoernMethod[]))
-      .catch(() => {})
-      .finally(() => setLoadedFor(fetchKey));
-  }, [repoId, refreshKey, fetchKey]);
 
   const enriched = useMemo<EnrichedMethod[]>(() => {
     return rawMethods
@@ -831,17 +826,22 @@ function RiskDashboardView({
     });
   }, [filtered, sortKey, sortAsc]);
 
-  const paged = sorted.slice(page * PAGE, (page + 1) * PAGE);
-  const totalPages = Math.ceil(sorted.length / PAGE);
+  const { paged, totalPages } = useMemo(() => ({
+    paged: sorted.slice(page * PAGE, (page + 1) * PAGE),
+    totalPages: Math.ceil(sorted.length / PAGE),
+  }), [sorted, page]);
 
-  const highCount = enriched.filter(m => m.riskLevel === "HIGH").length;
-  const medCount = enriched.filter(m => m.riskLevel === "MED").length;
-  const avgC = enriched.length > 0
-    ? Math.round(enriched.reduce((s, m) => s + (m.complexity ?? 0), 0) / enriched.length * 10) / 10
-    : 0;
-  const maxMethod = enriched.length > 0
-    ? enriched.reduce((mx, m) => m.riskScore > mx.riskScore ? m : mx, enriched[0])
-    : null;
+  const { highCount, medCount, avgC, maxMethod } = useMemo(() => {
+    const highCount = enriched.filter(m => m.riskLevel === "HIGH").length;
+    const medCount = enriched.filter(m => m.riskLevel === "MED").length;
+    const avgC = enriched.length > 0
+      ? Math.round(enriched.reduce((s, m) => s + (m.complexity ?? 0), 0) / enriched.length * 10) / 10
+      : 0;
+    const maxMethod = enriched.length > 0
+      ? enriched.reduce((mx, m) => m.riskScore > mx.riskScore ? m : mx, enriched[0])
+      : null;
+    return { highCount, medCount, avgC, maxMethod };
+  }, [enriched]);
 
   const toggleSort = (key: typeof sortKey) => {
     if (sortKey === key) setSortAsc(!sortAsc);
@@ -1327,11 +1327,13 @@ function BranchesView({
   initialMethod,
   onOpenSource,
   onMethodQueried,
+  allMethods,
 }: {
   repoId: string;
   initialMethod?: string;
   onOpenSource: (p: string, l?: number) => void;
   onMethodQueried?: (name: string) => void;
+  allMethods: JoernMethod[];
 }) {
   const [methodName, setMethodName] = useState("");
   const [loading, setLoading] = useState(false);
@@ -1359,17 +1361,13 @@ function BranchesView({
       setErr("");
       onMethodQueried?.("");
       try {
-        const [result, methodsRes] = await Promise.all([
-          api.repos.analysis.joern.allForMethod(repoId, name),
-          api.repos.analysis.joern.methods(repoId),
-        ]);
+        const result = await api.repos.analysis.joern.allForMethod(repoId, name);
         setBranches(Array.isArray(result.branches) ? result.branches : []);
         setErrors(Array.isArray(result.errors) ? result.errors : []);
         setBoundaries(Array.isArray(result.boundaries) ? result.boundaries : []);
         setCallContext(Array.isArray(result.callContext) ? result.callContext : []);
         setCalleeImpact(Array.isArray(result.calleeImpact) ? result.calleeImpact : []);
-        // Find this method's complexity metadata
-        const allMethods = (methodsRes.methods || []) as JoernMethod[];
+        // Find this method's complexity metadata from the shared methods list (no extra fetch)
         const match = allMethods.find(m => m.name === name);
         setMethodMeta(match ?? null);
         setQueriedMethod(name);
@@ -1390,7 +1388,7 @@ function BranchesView({
         setLoading(false);
       }
     },
-    [repoId, methodName, onMethodQueried]
+    [repoId, methodName, onMethodQueried, allMethods]
   );
 
   // Auto-query when navigated from risk dashboard
@@ -2727,6 +2725,21 @@ export default function AnalysisPage() {
   // The method currently queried in Triage — syncs TaintView and ComplexityView to the same function
   const [triagedMethod, setTriagedMethod] = useState("");
 
+  // Shared methods list — fetched once here and passed to child views to avoid
+  // redundant API calls from RiskDashboardView, ComplexityView, and BranchesView.
+  const [allMethods, setAllMethods] = useState<JoernMethod[]>([]);
+  const [methodsLoading, setMethodsLoading] = useState(true);
+  const [methodsError, setMethodsError] = useState("");
+
+  useEffect(() => {
+    setMethodsLoading(true);
+    setMethodsError("");
+    api.repos.analysis.joern.methods(repoId)
+      .then((res) => setAllMethods((res.methods || []) as JoernMethod[]))
+      .catch((e) => setMethodsError(e instanceof Error ? e.message : "方法数据加载失败"))
+      .finally(() => setMethodsLoading(false));
+  }, [repoId, refreshKey]);
+
   // Source viewer state
   const [sourceModal, setSourceModal] = useState<{ path: string; line?: number } | null>(null);
 
@@ -2865,7 +2878,7 @@ export default function AnalysisPage() {
             >
               {/* Pulse: Risk overview — "where is the fire spreading?" */}
               {activeNav === "pulse" && (
-                <RiskDashboardView repoId={repoId} summary={summary} onNavigate={navigateToMethod} onExport={exportCsv} refreshKey={refreshKey} />
+                <RiskDashboardView repoId={repoId} summary={summary} onNavigate={navigateToMethod} onExport={exportCsv} allMethods={allMethods} methodsLoading={methodsLoading} />
               )}
 
               {/* Triage: Deep per-function analysis — BranchesView + accordion sub-sections */}
@@ -2876,6 +2889,7 @@ export default function AnalysisPage() {
                     initialMethod={initialMethod}
                     onOpenSource={(path, line) => setSourceModal({ path, line })}
                     onMethodQueried={setTriagedMethod}
+                    allMethods={allMethods}
                   />
                   <TriageSection
                     title="数据追踪 (Taint Analysis)"
@@ -2894,9 +2908,11 @@ export default function AnalysisPage() {
                     accentColor="text-amber-400/60"
                   >
                     <ComplexityView
-                      repoId={repoId}
                       onOpenSource={(path, line) => setSourceModal({ path, line })}
                       focusMethod={triagedMethod || undefined}
+                      allMethods={allMethods}
+                      methodsLoading={methodsLoading}
+                      methodsError={methodsError}
                     />
                   </TriageSection>
                 </div>
