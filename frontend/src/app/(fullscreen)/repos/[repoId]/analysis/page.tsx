@@ -2853,7 +2853,7 @@ export default function AnalysisPage() {
         api.repos.analysis.codecompass.rebuild(repoId),
       ]);
       // Wait for each task to complete via WebSocket progress stream
-      await Promise.allSettled(
+      const wsResults = await Promise.allSettled(
         results
           .filter((r) => r.status === "fulfilled")
           .map((r) =>
@@ -2862,6 +2862,11 @@ export default function AnalysisPage() {
             )
           )
       );
+      // Surface any rebuild failure so the catch block can show it
+      const wsFailure = wsResults.find((r) => r.status === "rejected");
+      if (wsFailure) {
+        throw (wsFailure as PromiseRejectedResult).reason;
+      }
       const s = await api.repos.analysis.summary(repoId);
       setSummary(s);
       // Bump refreshKey so RiskDashboardView re-fetches methods

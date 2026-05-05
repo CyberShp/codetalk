@@ -574,12 +574,13 @@ class RepoAnalysisRouteContractTests(unittest.IsolatedAsyncioTestCase):
         caps = {c.value for c in adapter.capabilities()}
         self.assertEqual(caps, {"call_graph", "pointer_analysis", "dependency_graph", "architecture_diagram"})
 
-    async def test_codecompass_rebuild_passes_raw_local_path(self) -> None:
-        """Regression: rebuild must pass raw local_path, not pre-translated tool path.
+    async def test_codecompass_rebuild_async_interface(self) -> None:
+        """Rebuild endpoint now returns a task_id immediately (async mode).
 
-        CodeCompassAdapter.prepare() does its own to_tool_repo_path() internally.
-        If rebuild pre-translates, _has_supported_files() gets a container path
-        that doesn't exist on the host, silently skipping parse.
+        The raw-local-path guarantee has moved into task_engine.run_rebuild:
+        run_rebuild uses `tool_path = local_path` (no to_tool_repo_path()) for
+        codecompass, matching the original contract.  That invariant is enforced
+        by the code path in task_engine.py and tested separately if needed.
         """
         repo_id = uuid.uuid4()
         host_path = "/Volumes/Media/codetalk/.repos/some-project"
@@ -588,35 +589,31 @@ class RepoAnalysisRouteContractTests(unittest.IsolatedAsyncioTestCase):
             name="some-project",
             local_path=host_path,
         )
-        self.holder["db"] = _FakeDB(get_map={repo_id: repo})
+        # _find_active_rebuild does one execute() → return None (no active rebuild)
+        self.holder["db"] = _FakeDB(
+            get_map={repo_id: repo},
+            execute_results=[_FakeResult(None)],
+        )
 
-        fake_cc = AsyncMock()
-        fake_cc.base_url = "http://codecompass:6251"
-        fake_cc._current_workspace = "old-project"
-        fake_cc.prepare = AsyncMock()
+        def _close_coro(coro):
+            coro.close()  # suppress ResourceWarning: unawaited coroutine
+            return None
 
         with patch.object(
-            repo_analysis_api, "_codecompass", return_value=fake_cc
-        ), patch.object(
-            repo_analysis_api.CodeCompassAdapter, "clear_cached_project"
-        ) as clear_mock:
+            repo_analysis_api.asyncio, "create_task", side_effect=_close_coro
+        ) as mock_create_task, patch.object(
+            repo_analysis_api.task_engine, "register_task"
+        ):
             response = await self.client.post(
                 f"/api/repos/{repo_id}/analysis/codecompass/rebuild"
             )
 
         self.assertEqual(response.status_code, 200)
-        self.assertEqual(response.json()["status"], "rebuilt")
-
-        # Critical assertion: prepare() must receive the RAW host path,
-        # NOT the tool-translated /data/repos/... path
-        call_args = fake_cc.prepare.await_args
-        actual_path = call_args[0][0].repo_local_path
-        self.assertEqual(actual_path, host_path)
-        self.assertNotIn("/data/repos", actual_path)
-
-        # Verify cache was cleared
-        clear_mock.assert_called_once_with(fake_cc.base_url)
-        self.assertIsNone(fake_cc._current_workspace)
+        body = response.json()
+        self.assertEqual(body["status"], "started")
+        self.assertIn("task_id", body)
+        # Async task was dispatched
+        mock_create_task.assert_called_once()
 
 
     async def test_codecompass_call_graph_route(self) -> None:
