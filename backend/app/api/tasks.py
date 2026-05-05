@@ -4,7 +4,7 @@ import uuid
 from datetime import datetime, timezone
 from pathlib import Path
 
-from fastapi import APIRouter, Depends, HTTPException, Query
+from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
@@ -44,13 +44,15 @@ async def list_tasks(
 
 
 @router.post("", response_model=TaskResponse, status_code=201)
-async def create_task(data: TaskCreate, db: AsyncSession = Depends(get_db)):
+async def create_task(data: TaskCreate, request: Request, db: AsyncSession = Depends(get_db)):
+    session_id = getattr(request.state, "session_id", None)
     task = AnalysisTask(
         repository_id=data.repository_id,
         task_type=data.task_type.value,
         tools=data.tools,
         ai_enabled=data.ai_enabled,
         target_spec=data.target_spec,
+        session_id=str(session_id) if session_id else None,
     )
     db.add(task)
     await db.commit()

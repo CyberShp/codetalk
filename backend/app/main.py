@@ -7,6 +7,7 @@ from sqlalchemy import text
 
 from app.api.router import api_router
 from app.database import engine
+from app.middleware.session import AnonymousSessionMiddleware
 
 logging.basicConfig(level=logging.INFO, format="%(name)s %(levelname)s: %(message)s")
 
@@ -35,6 +36,7 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+app.add_middleware(AnonymousSessionMiddleware)
 
 app.include_router(api_router)
 

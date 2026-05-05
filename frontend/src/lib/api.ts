@@ -95,6 +95,7 @@ export interface ChatSession {
 
 async function request<T>(path: string, init?: RequestInit): Promise<T> {
   const res = await fetch(`${BASE}${path}`, {
+    credentials: "include",
     headers: { "Content-Type": "application/json", ...init?.headers },
     ...init,
   });
