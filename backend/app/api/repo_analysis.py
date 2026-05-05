@@ -4,11 +4,12 @@ Wraps Joern adapter for repo-centric CPG access.
 Follows the same pattern as repo_graph.py and repos.py.
 """
 
+import asyncio
 import logging
 import uuid
 
 import httpx
-from fastapi import APIRouter, Depends, HTTPException, Query
+from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from pydantic import BaseModel
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -22,6 +23,8 @@ from app.database import get_db
 from app.models.analysis_snapshot import AnalysisSnapshot
 from app.models.llm_config import LLMConfig
 from app.models.repository import Repository
+from app.models.task import AnalysisTask
+from app.services import task_engine
 from app.utils.repo_paths import to_tool_repo_path
 
 logger = logging.getLogger(__name__)
@@ -77,6 +80,24 @@ def _codecompass() -> CodeCompassAdapter:
     return _codecompass_instance
 
 
+async def _find_active_rebuild(
+    db: AsyncSession, repo_id: uuid.UUID, task_type: str
+) -> AnalysisTask | None:
+    """Return the most recent pending/running rebuild task for this repo, if any."""
+    stmt = (
+        select(AnalysisTask)
+        .where(
+            AnalysisTask.repository_id == repo_id,
+            AnalysisTask.task_type == task_type,
+            AnalysisTask.status.in_(["pending", "running"]),
+        )
+        .order_by(AnalysisTask.created_at.desc())
+        .limit(1)
+    )
+    result = await db.execute(stmt)
+    return result.scalar_one_or_none()
+
+
 # ── Combined analysis ──
 
 
@@ -119,29 +140,37 @@ async def get_analysis_summary(
 
 @router.post("/{repo_id}/analysis/joern/rebuild")
 async def joern_rebuild(
-    repo_id: uuid.UUID, db: AsyncSession = Depends(get_db)
+    repo_id: uuid.UUID, request: Request, db: AsyncSession = Depends(get_db)
 ):
-    """Force re-import of repo into Joern CPG.
+    """Async re-import of repo into Joern CPG.
 
-    Clears the cached project name so prepare() will run a fresh
-    importCode() even if the same repo was previously loaded.
-    Use after code changes or Joern container restart.
+    Returns immediately with a task_id. Use the WebSocket endpoint
+    /ws/tasks/{task_id}/logs to receive progress events.
+    If a rebuild is already running, returns the existing task_id.
     """
-    repo = await _get_repo_or_404(repo_id, db)
-    joern = _joern()
-    tool_path = _tool_path(repo)
+    await _get_repo_or_404(repo_id, db)
+    session_id = getattr(request.state, "session_id", None)
 
-    # Clear cached project so prepare() won't skip re-import
-    joern._imported_project = None
-    JoernAdapter.clear_cached_project(joern.base_url)
+    existing = await _find_active_rebuild(db, repo_id, "joern_rebuild")
+    if existing:
+        return {"status": "reused", "task_id": str(existing.id), "message": "已有重建任务在运行"}
 
-    try:
-        await joern.prepare(AnalysisRequest(repo_local_path=tool_path))
-        return {"status": "rebuilt", "repo_id": str(repo_id)}
-    except httpx.ConnectError:
-        raise HTTPException(503, "Joern service unavailable")
-    except httpx.HTTPStatusError as exc:
-        raise HTTPException(503, f"Joern error: {exc.response.status_code}")
+    task = AnalysisTask(
+        repository_id=repo_id,
+        task_type="joern_rebuild",
+        tools=["joern"],
+        status="pending",
+        target_spec={},
+        session_id=str(session_id) if session_id else None,
+    )
+    db.add(task)
+    await db.commit()
+    await db.refresh(task)
+
+    handle = asyncio.create_task(task_engine.run_rebuild(task.id, "joern"))
+    task_engine.register_task(task.id, handle)
+
+    return {"status": "started", "task_id": str(task.id)}
 
 
 # ── CodeCompass endpoints ──
@@ -149,29 +178,37 @@ async def joern_rebuild(
 
 @router.post("/{repo_id}/analysis/codecompass/rebuild")
 async def codecompass_rebuild(
-    repo_id: uuid.UUID, db: AsyncSession = Depends(get_db)
+    repo_id: uuid.UUID, request: Request, db: AsyncSession = Depends(get_db)
 ):
-    """Force re-parse of repo in CodeCompass.
+    """Async re-parse of repo in CodeCompass.
 
-    Clears the cached project so prepare() will invoke CodeCompass_parser
-    even if the same repo was previously parsed.
-    Use after code changes (git pull) or container restart.
+    Returns immediately with a task_id. Use the WebSocket endpoint
+    /ws/tasks/{task_id}/logs to receive progress events.
+    If a rebuild is already running, returns the existing task_id.
     """
-    repo = await _get_repo_or_404(repo_id, db)
-    cc = _codecompass()
+    await _get_repo_or_404(repo_id, db)
+    session_id = getattr(request.state, "session_id", None)
 
-    cc._current_workspace = None
-    CodeCompassAdapter.clear_cached_project(cc.base_url)
+    existing = await _find_active_rebuild(db, repo_id, "codecompass_rebuild")
+    if existing:
+        return {"status": "reused", "task_id": str(existing.id), "message": "已有重建任务在运行"}
 
-    try:
-        # Pass raw local_path — prepare() does its own to_tool_repo_path()
-        # translation internally (unlike Joern which expects pre-translated).
-        await cc.prepare(AnalysisRequest(repo_local_path=repo.local_path))
-        return {"status": "rebuilt", "repo_id": str(repo_id)}
-    except httpx.ConnectError:
-        raise HTTPException(503, "CodeCompass service unavailable")
-    except httpx.HTTPStatusError as exc:
-        raise HTTPException(503, f"CodeCompass error: {exc.response.status_code}")
+    task = AnalysisTask(
+        repository_id=repo_id,
+        task_type="codecompass_rebuild",
+        tools=["codecompass"],
+        status="pending",
+        target_spec={},
+        session_id=str(session_id) if session_id else None,
+    )
+    db.add(task)
+    await db.commit()
+    await db.refresh(task)
+
+    handle = asyncio.create_task(task_engine.run_rebuild(task.id, "codecompass"))
+    task_engine.register_task(task.id, handle)
+
+    return {"status": "started", "task_id": str(task.id)}
 
 
 @router.get("/{repo_id}/analysis/codecompass/call-graph/{function_name}")

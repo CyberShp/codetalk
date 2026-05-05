@@ -2743,6 +2743,42 @@ function LabView({
   );
 }
 
+// ── Rebuild helpers ────────────────────────────────────────────────────────
+
+const _API_BASE = process.env.NEXT_PUBLIC_API_URL || "http://localhost:8000";
+
+function waitForTaskCompletion(taskId: string): Promise<void> {
+  const wsUrl =
+    _API_BASE.replace(/^http/, "ws") + `/api/ws/tasks/${taskId}/logs`;
+  return new Promise((resolve, reject) => {
+    const ws = new WebSocket(wsUrl);
+    ws.onmessage = (e) => {
+      const data = JSON.parse(e.data) as {
+        status?: string;
+        message?: string;
+        type?: string;
+      };
+      if (data.status === "completed") {
+        ws.close();
+        resolve();
+      } else if (data.status === "failed") {
+        ws.close();
+        reject(new Error(data.message ?? "rebuild failed"));
+      }
+    };
+    // Degrade gracefully if WS fails — rebuild continues in backend
+    ws.onerror = () => {
+      ws.close();
+      resolve();
+    };
+    // Safety timeout: 3 minutes
+    setTimeout(() => {
+      ws.close();
+      resolve();
+    }, 180_000);
+  });
+}
+
 // ── Main page ──────────────────────────────────────────────────────────────
 export default function AnalysisPage() {
   const params = useParams();
@@ -2811,11 +2847,21 @@ export default function AnalysisPage() {
     setRebuilding(true);
     setLoadError("");
     try {
-      // Rebuild both Joern CPG and CodeCompass in parallel
-      await Promise.allSettled([
+      // Kick off async rebuild tasks in parallel; server deduplicates concurrent requests
+      const results = await Promise.allSettled([
         api.repos.analysis.joern.rebuild(repoId),
         api.repos.analysis.codecompass.rebuild(repoId),
       ]);
+      // Wait for each task to complete via WebSocket progress stream
+      await Promise.allSettled(
+        results
+          .filter((r) => r.status === "fulfilled")
+          .map((r) =>
+            waitForTaskCompletion(
+              (r as PromiseFulfilledResult<{ task_id: string }>).value.task_id
+            )
+          )
+      );
       const s = await api.repos.analysis.summary(repoId);
       setSummary(s);
       // Bump refreshKey so RiskDashboardView re-fetches methods

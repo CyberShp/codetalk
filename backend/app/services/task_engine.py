@@ -11,15 +11,23 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.adapters import create_adapter
 from app.adapters.base import AnalysisRequest, UnifiedResult
+from app.config import settings
 from app.database import async_session
 from app.models.llm_config import LLMConfig
 from app.models.repository import Repository
 from app.models.task import AnalysisTask, ToolRun
 from app.services import source_manager
+from app.utils.repo_paths import to_tool_repo_path
 
 logger = logging.getLogger(__name__)
 
 _running_tasks: dict[UUID, asyncio.Task] = {}
+
+
+def _broadcast_progress(task_id: UUID, progress: int, status: str, message: str) -> None:
+    """Non-blocking progress broadcast — fire and forget."""
+    from app.api.ws import broadcast_task_progress
+    asyncio.create_task(broadcast_task_progress(str(task_id), progress, status, message))
 
 
 def register_task(task_id: UUID, handle: asyncio.Task) -> None:
@@ -236,6 +244,71 @@ async def _build_summary(results: list[UnifiedResult], options: dict) -> str:
     except Exception as exc:
         logger.warning("LLM summary failed (%s), falling back to plaintext", exc)
         return plaintext
+
+
+async def run_rebuild(task_id: UUID, tool_name: str) -> None:
+    """Execute index rebuild task (only calls prepare, not analyze)."""
+    from app.adapters.joern import JoernAdapter
+    from app.adapters.codecompass import CodeCompassAdapter
+
+    async with async_session() as db:
+        task = await db.get(AnalysisTask, task_id)
+        if not task:
+            return
+
+        task.status = "running"
+        task.started_at = datetime.now(timezone.utc)
+        task.progress = 0
+        await db.commit()
+        _broadcast_progress(task_id, 0, "running", "开始重建索引...")
+
+        try:
+            repo = await db.get(Repository, task.repository_id)
+            if not repo:
+                raise RuntimeError(f"Repository {task.repository_id} not found")
+
+            local_path = await source_manager.resolve_source(repo)
+
+            if tool_name == "joern":
+                tool_path = to_tool_repo_path(
+                    local_path,
+                    host_base_path=settings.repos_base_path,
+                    tool_base_path=settings.tool_repos_base_path,
+                )
+            else:
+                tool_path = local_path  # codecompass uses raw local_path
+
+            adapter = create_adapter(tool_name)
+
+            # Clear class-level cache so prepare() forces a fresh import
+            if tool_name == "joern":
+                JoernAdapter.clear_cached_project(adapter.base_url)
+            elif tool_name == "codecompass":
+                CodeCompassAdapter.clear_cached_project(adapter.base_url)
+
+            _broadcast_progress(task_id, 30, "running", f"正在导入 {tool_name} 索引...")
+
+            await adapter.prepare(AnalysisRequest(repo_local_path=tool_path))
+
+            task.status = "completed"
+            task.progress = 100
+            task.completed_at = datetime.now(timezone.utc)
+            await db.commit()
+            _broadcast_progress(task_id, 100, "completed", "索引重建完成")
+
+        except asyncio.CancelledError:
+            logger.info("Rebuild task %s cancelled", task_id)
+            task.status = "cancelled"
+            task.completed_at = datetime.now(timezone.utc)
+            await db.commit()
+        except Exception as exc:
+            task.status = "failed"
+            task.error = str(exc)
+            task.completed_at = datetime.now(timezone.utc)
+            await db.commit()
+            _broadcast_progress(task_id, -1, "failed", str(exc))
+        finally:
+            _running_tasks.pop(task_id, None)
 
 
 def _plaintext_summary(results: list[UnifiedResult]) -> str:

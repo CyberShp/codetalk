@@ -200,7 +200,7 @@ export const api = {
 
       joern: {
         rebuild: (repoId: string) =>
-          request<{ status: string; repo_id: string }>(`/api/repos/${repoId}/analysis/joern/rebuild`, {
+          request<{ status: "started" | "reused"; task_id: string }>(`/api/repos/${repoId}/analysis/joern/rebuild`, {
             method: "POST",
           }),
         query: (repoId: string, cpgql: string) =>
@@ -256,7 +256,7 @@ export const api = {
 
       codecompass: {
         rebuild: (repoId: string) =>
-          request<{ status: string; repo_id: string }>(`/api/repos/${repoId}/analysis/codecompass/rebuild`, {
+          request<{ status: "started" | "reused"; task_id: string }>(`/api/repos/${repoId}/analysis/codecompass/rebuild`, {
             method: "POST",
           }),
         callGraph: (repoId: string, functionName: string) =>
