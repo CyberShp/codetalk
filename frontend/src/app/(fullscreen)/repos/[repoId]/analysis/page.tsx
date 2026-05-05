@@ -18,6 +18,7 @@ import type {
   JoernMethod,
   VarUsage,
 } from "@/lib/types";
+import type { Graphviz as GraphvizType } from "@hpcc-js/wasm-graphviz";
 import {
   ArrowLeft,
   RefreshCw,
@@ -382,10 +383,10 @@ function ComplexityView({
   const stats = useMemo(() => {
     if (!withDensity.length) return null;
     const comps = withDensity.map(m => m.complexity ?? 0);
-    const maxComp = Math.max(...comps, 0);
+    const maxComp = comps.reduce((mx, v) => v > mx ? v : mx, 0);
     const avgComp = comps.reduce((a, b) => a + b, 0) / comps.length;
     const highRisk = comps.filter(c => c > 15).length;
-    const maxDensity = Math.max(...withDensity.map(m => m.density), 0);
+    const maxDensity = withDensity.reduce((mx, m) => m.density > mx ? m.density : mx, 0);
     return { maxComp, avgComp, highRisk, total: withDensity.length, maxDensity };
   }, [withDensity]);
 
@@ -603,7 +604,7 @@ function ComplexityView({
 
         {(() => {
           const counts = bucketCounts;
-          const maxCount = Math.max(...counts.map(c => c.count), 1);
+          const maxCount = counts.reduce((mx, c) => c.count > mx ? c.count : mx, 1);
           const barMaxH = 200;
 
           return (
@@ -775,42 +776,52 @@ function RiskDashboardView({
   }, [rawMethods]);
 
   // Snapshot persistence + trend calculation
-  // Only save when the underlying data actually changed (dedup by summary fingerprint).
+  // Deferred to idle time so it never blocks first-paint.
   const lastSummaryFpRef = useRef("");
   useEffect(() => {
     if (enriched.length === 0) return;
-    const hc = enriched.filter(m => m.riskLevel === "HIGH").length;
-    const mc = enriched.filter(m => m.riskLevel === "MED").length;
-    const ac = enriched.length > 0
-      ? Math.round(enriched.reduce((s, m) => s + (m.complexity ?? 0), 0) / enriched.length * 10) / 10
-      : 0;
-    const currentSummary = { total: enriched.length, high: hc, med: mc, avgComplexity: ac };
-    // Per-method identity includes all mutable numeric fields — any real matrix change triggers a save
-    const methodIdentities = enriched
-      .map(m => `${m.filename}:${m.line}:${m.lineEnd}:${m.complexity ?? 0}:${m.riskLevel}`)
-      .sort()
-      .join("|");
-    const fp = `${repoId}:${methodIdentities}`;
-    if (fp === lastSummaryFpRef.current) return;
-    lastSummaryFpRef.current = fp;
 
-    // Fetch previous snapshot for trend, then save if data changed
-    api.repos.analysis.snapshots.list(repoId)
-      .then((res) => {
-        const prev = res.snapshots?.[0]?.summary;
-        if (prev) {
-          setTrend({
-            total: currentSummary.total - (prev.total ?? 0),
-            high: currentSummary.high - (prev.high ?? 0),
-            med: currentSummary.med - (prev.med ?? 0),
-            avgComplexity: Math.round((currentSummary.avgComplexity - (prev.avgComplexity ?? 0)) * 10) / 10,
-          });
-        }
-        // Always save — the fingerprint guard above already prevents duplicates within a session;
-        // cross-session dedup relies on the backend snapshot list comparison by the caller.
-        api.repos.analysis.snapshots.save(repoId, enriched, currentSummary).catch(() => {});
-      })
-      .catch(() => {});
+    const schedule = typeof requestIdleCallback === "function"
+      ? requestIdleCallback
+      : (cb: () => void) => setTimeout(cb, 300);
+    const cancel = typeof cancelIdleCallback === "function"
+      ? cancelIdleCallback
+      : clearTimeout;
+
+    const handle = schedule(() => {
+      const hc = enriched.filter(m => m.riskLevel === "HIGH").length;
+      const mc = enriched.filter(m => m.riskLevel === "MED").length;
+      const ac = enriched.length > 0
+        ? Math.round(enriched.reduce((s, m) => s + (m.complexity ?? 0), 0) / enriched.length * 10) / 10
+        : 0;
+      const currentSummary = { total: enriched.length, high: hc, med: mc, avgComplexity: ac };
+
+      // Full method-level fingerprint — preserves data correctness
+      const methodIdentities = enriched
+        .map(m => `${m.filename}:${m.line}:${m.lineEnd}:${m.complexity ?? 0}:${m.riskLevel}`)
+        .sort()
+        .join("|");
+      const fp = `${repoId}:${methodIdentities}`;
+      if (fp === lastSummaryFpRef.current) return;
+      lastSummaryFpRef.current = fp;
+
+      api.repos.analysis.snapshots.list(repoId)
+        .then((res) => {
+          const prev = res.snapshots?.[0]?.summary;
+          if (prev) {
+            setTrend({
+              total: currentSummary.total - (prev.total ?? 0),
+              high: currentSummary.high - (prev.high ?? 0),
+              med: currentSummary.med - (prev.med ?? 0),
+              avgComplexity: Math.round((currentSummary.avgComplexity - (prev.avgComplexity ?? 0)) * 10) / 10,
+            });
+          }
+          api.repos.analysis.snapshots.save(repoId, enriched, currentSummary).catch(() => {});
+        })
+        .catch(() => {});
+    });
+
+    return () => { cancel(handle as number); };
   }, [enriched, repoId]);
 
   const filtered = useMemo(() => {
@@ -851,9 +862,9 @@ function RiskDashboardView({
 
   // Per-column max values for percentile background shading
   const colMax = useMemo(() => ({
-    complexity: Math.max(...enriched.map(m => m.complexity ?? 0), 1),
-    density: Math.max(...enriched.map(m => m.density), 0.01),
-    riskScore: Math.max(...enriched.map(m => m.riskScore), 1),
+    complexity: enriched.reduce((mx, m) => (m.complexity ?? 0) > mx ? (m.complexity ?? 0) : mx, 1),
+    density: enriched.reduce((mx, m) => m.density > mx ? m.density : mx, 0.01),
+    riskScore: enriched.reduce((mx, m) => m.riskScore > mx ? m.riskScore : mx, 1),
   }), [enriched]);
 
   // Color bar accent per sortable column header
@@ -1075,10 +1086,9 @@ function CallContextCards({
   const { page, setPage, totalPages, paged } = usePagination(items);
   return (
     <div className="space-y-3">
-      <AnimatePresence mode="popLayout">
+      <AnimatePresence mode="wait">
         {paged.map((ctx, i) => (
           <motion.div
-            layout
             initial={{ opacity: 0, y: 10 }}
             animate={{ opacity: 1, y: 0 }}
             exit={{ opacity: 0, scale: 0.95 }}
@@ -1132,10 +1142,9 @@ function CalleeImpactCards({
   const { page, setPage, totalPages, paged } = usePagination(items);
   return (
     <div className="space-y-3">
-      <AnimatePresence mode="popLayout">
+      <AnimatePresence mode="wait">
         {paged.map((imp, i) => (
           <motion.div
-            layout
             initial={{ opacity: 0, y: 10 }}
             animate={{ opacity: 1, y: 0 }}
             exit={{ opacity: 0, scale: 0.95 }}
@@ -1192,10 +1201,9 @@ function BranchCards({
   const TYPE_LABEL: Record<string, string> = { IfStatement: "IF", ElseStatement: "ELSE", SwitchStatement: "SWITCH", ForStatement: "FOR", WhileStatement: "WHILE", DoStatement: "DO", TryStatement: "TRY" };
   return (
     <div className="space-y-3">
-      <AnimatePresence mode="popLayout">
+      <AnimatePresence mode="wait">
         {paged.map((br, i) => (
           <motion.div
-            layout
             initial={{ opacity: 0, y: 10 }}
             animate={{ opacity: 1, y: 0 }}
             exit={{ opacity: 0 }}
@@ -1246,10 +1254,9 @@ function ErrorPathCards({
   };
   return (
     <div className="space-y-3">
-      <AnimatePresence mode="popLayout">
+      <AnimatePresence mode="wait">
         {paged.map((ep, i) => (
           <motion.div
-            layout
             initial={{ opacity: 0, y: 10 }}
             animate={{ opacity: 1, y: 0 }}
             exit={{ opacity: 0 }}
@@ -1283,10 +1290,9 @@ function BoundaryCards({
   const { page, setPage, totalPages, paged } = usePagination(items);
   return (
     <div className="space-y-3">
-      <AnimatePresence mode="popLayout">
+      <AnimatePresence mode="wait">
         {paged.map((bv, i) => (
           <motion.div
-            layout
             initial={{ opacity: 0, y: 10 }}
             animate={{ opacity: 1, y: 0 }}
             exit={{ opacity: 0 }}
@@ -1705,6 +1711,28 @@ function TriageSection({
   );
 }
 
+// ── Graphviz WASM singleton — loaded once, reused per session ────────────
+let _graphvizInstance: GraphvizType | null = null;
+let _graphvizLoading: Promise<GraphvizType> | null = null;
+
+async function getGraphviz(): Promise<GraphvizType> {
+  if (_graphvizInstance) return _graphvizInstance;
+  if (!_graphvizLoading) {
+    _graphvizLoading = import("@hpcc-js/wasm-graphviz")
+      .then(({ Graphviz }) => Graphviz.load())
+      .then(instance => {
+        _graphvizInstance = instance;
+        return instance;
+      })
+      .catch(err => {
+        // Clear cache on failure — allow retry on next call
+        _graphvizLoading = null;
+        throw err;
+      });
+  }
+  return _graphvizLoading;
+}
+
 // ── CFG Viewer ───────────────────────────────────────────────────────────
 function CfgViewer({
   repoId,
@@ -1716,6 +1744,8 @@ function CfgViewer({
   onMethodClick: (n: string) => void;
 }) {
   const containerRef = useRef<HTMLDivElement>(null);
+  const onMethodClickRef = useRef(onMethodClick);
+  onMethodClickRef.current = onMethodClick;
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState("");
   const [svgHtml, setSvgHtml] = useState("");
@@ -1731,8 +1761,7 @@ function CfgViewer({
         setError("No CFG data returned");
         return;
       }
-      const { Graphviz } = await import("@hpcc-js/wasm-graphviz");
-      const graphviz = await Graphviz.load();
+      const graphviz = await getGraphviz();
       const svg = graphviz.dot(dot, "svg");
       setSvgHtml(svg);
     } catch (e) {
@@ -1772,6 +1801,7 @@ function CfgViewer({
     `;
 
     // Style nodes
+    const cleanups: (() => void)[] = [];
     svg.querySelectorAll(".node").forEach((node) => {
       const g = node as SVGGElement;
       const rect = g.querySelector("polygon, ellipse, rect") as SVGElement | null;
@@ -1799,34 +1829,37 @@ function CfgViewer({
 
       // Interactivity
       g.style.cursor = "pointer";
-      g.addEventListener("mouseenter", () => {
+      const onEnter = () => {
         if (rect) {
           rect.setAttribute("stroke", "var(--primary)");
           rect.setAttribute("stroke-width", "1.5");
           rect.setAttribute("fill", "rgba(164, 230, 255, 0.08)");
         }
-      });
-      g.addEventListener("mouseleave", () => {
+      };
+      const onLeave = () => {
         if (rect) {
           const isSpecial = title.includes("METHOD") || title.includes("RETURN");
           rect.setAttribute("stroke", isSpecial ? "var(--primary)" : "rgba(164, 230, 255, 0.2)");
           rect.setAttribute("stroke-width", isSpecial ? "2" : "1");
           rect.setAttribute("fill", isSpecial ? "rgba(164, 230, 255, 0.1)" : "rgba(164, 230, 255, 0.03)");
         }
-      });
-
-      g.addEventListener("click", (e) => {
+      };
+      const onClick = (e: Event) => {
         e.stopPropagation();
         // Try to find method call pattern: CALL, name(...)
         const codeText = text?.textContent || "";
         const callMatch = codeText.match(/^([a-zA-Z_][a-zA-Z0-9_]*)\(/);
         if (callMatch) {
-          onMethodClick(callMatch[1]);
-        } else {
-          // Fallback: search for filename and line in title (Joern often puts node IDs or info there)
-          // For now, if we can't find a method, we try to open current file (we don't have filename in node usually)
-          // But we can use the method's own filename if we had it.
+          onMethodClickRef.current(callMatch[1]);
         }
+      };
+      g.addEventListener("mouseenter", onEnter);
+      g.addEventListener("mouseleave", onLeave);
+      g.addEventListener("click", onClick);
+      cleanups.push(() => {
+        g.removeEventListener("mouseenter", onEnter);
+        g.removeEventListener("mouseleave", onLeave);
+        g.removeEventListener("click", onClick);
       });
     });
 
@@ -1865,7 +1898,8 @@ function CfgViewer({
         rect.setAttribute("stroke-width", "2");
       }
     });
-  }, [svgHtml, onMethodClick]);
+    return () => { cleanups.forEach(fn => fn()); };
+  }, [svgHtml]);
 
   if (loading) {
     return (
@@ -2401,7 +2435,6 @@ function TaintPathCards({
         const vs = verifyState[pathKey];
         return (
           <motion.div
-            layout
             initial={{ opacity: 0, x: -20 }}
             animate={{ opacity: 1, x: 0 }}
             key={globalIdx}
