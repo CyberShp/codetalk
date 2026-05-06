@@ -208,6 +208,7 @@ export interface ConfigField {
 export interface ConfigDomain {
   domain: string;
   label: string;
+  target: string; // "backend" (hot-update runtime) | "container" (needs apply+restart)
   fields: ConfigField[];
   env_map: Record<string, string>;
 }

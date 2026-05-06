@@ -184,31 +184,6 @@ CONTRACTS: dict[str, ComponentContract] = {
             ),
         ],
     ),
-    "semgrep": ComponentContract(
-        component="semgrep",
-        label="Semgrep (规则扫描)",
-        domains=[],
-    ),
-    "platform": ComponentContract(
-        component="platform",
-        label="平台设置",
-        domains=[
-            ConfigDomain(
-                domain="docker",
-                label="Docker 管理",
-                target="backend",
-                env_map={},
-                fields=[
-                    ConfigField(
-                        name="docker_host",
-                        label="Docker Host",
-                        field_type="url",
-                        placeholder="unix:///var/run/docker.sock 或 tcp://192.168.50.195:2375",
-                    ),
-                ],
-            ),
-        ],
-    ),
 }
 
 
@@ -220,7 +195,6 @@ _BACKEND_CONFIG_MAP: dict[tuple[str, str], dict[str, str]] = {
     ("zoekt", "connection"): {"base_url": "zoekt_base_url"},
     ("joern", "connection"): {"base_url": "joern_base_url"},
     ("codecompass", "connection"): {"base_url": "codecompass_base_url"},
-    ("platform", "docker"): {"docker_host": "docker_host"},
 }
 
 # Snapshot of settings values as resolved at process startup (from env files + env vars).

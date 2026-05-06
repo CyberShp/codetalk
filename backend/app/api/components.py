@@ -1,3 +1,5 @@
+import asyncio
+
 from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -30,27 +32,40 @@ async def list_components(db: AsyncSession = Depends(get_db)):
     adapters = {a.name(): a for a in get_all_adapters()}
     all_configs = await cm.get_all_configs(db)
 
-    statuses = []
-    for contract in contracts:
-        # Health from adapter
+    # Parallel health checks
+    async def check_health(contract):
         adapter = adapters.get(contract.component)
         if adapter:
             health = await adapter.health_check()
-            comp_health = ComponentHealth(
+            return ComponentHealth(
                 component=contract.component,
                 healthy=health.is_healthy,
                 container_status=health.container_status,
                 version=health.version,
             )
         else:
-            running, status = await cm.get_container_status(
-                contract.component
-            )
-            comp_health = ComponentHealth(
+            running, status = await cm.get_container_status(contract.component)
+            return ComponentHealth(
                 component=contract.component,
                 healthy=running,
                 container_status=status,
             )
+
+    healths = await asyncio.gather(
+        *(check_health(c) for c in contracts),
+        return_exceptions=True,
+    )
+
+    statuses = []
+    for contract, health_result in zip(contracts, healths):
+        if isinstance(health_result, Exception):
+            comp_health = ComponentHealth(
+                component=contract.component,
+                healthy=False,
+                container_status="error",
+            )
+        else:
+            comp_health = health_result
 
         # Config domains
         domains = []
