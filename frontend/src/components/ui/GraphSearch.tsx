@@ -70,6 +70,8 @@ export default function GraphSearch({ repo, onNodeSelect, selectedNodeId, classN
   const [error, setError] = useState("");
   const [hasSearched, setHasSearched] = useState(false);
   const [isCollapsed, setIsCollapsed] = useState(false);
+  // Panel is hidden by default — toggled by the floating pill button
+  const [isOpen, setIsOpen] = useState(false);
 
   const handleSearch = useCallback(
     async (e?: React.FormEvent) => {
@@ -97,6 +99,22 @@ export default function GraphSearch({ repo, onNodeSelect, selectedNodeId, classN
   const showResults = hasSearched && !isSearching && results.length > 0;
   const showEmpty = hasSearched && !isSearching && lastQuery && results.length === 0 && !error;
 
+  // Collapsed pill — always visible, opens the full panel
+  if (!isOpen) {
+    return (
+      <button
+        onClick={() => setIsOpen(true)}
+        title="Symbol Search"
+        className="absolute top-4 left-4 z-50 flex items-center gap-1.5 px-3 py-1.5 backdrop-blur-md bg-surface/80 border border-outline-variant/15 rounded-full shadow-lg shadow-black/30 text-on-surface-variant/60 hover:text-primary hover:border-primary/30 transition-all"
+      >
+        <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round">
+          <circle cx="11" cy="11" r="8" /><line x1="21" y1="21" x2="16.65" y2="16.65" />
+        </svg>
+        <span className="text-[10px] font-bold uppercase tracking-widest font-display">Search</span>
+      </button>
+    );
+  }
+
   return (
     <div className={className ?? "absolute top-4 left-4 z-50 w-[360px] backdrop-blur-md bg-surface/80 border border-outline-variant/15 rounded-xl shadow-2xl shadow-black/40 overflow-hidden"}>
       {/* Header */}
@@ -117,14 +135,13 @@ export default function GraphSearch({ repo, onNodeSelect, selectedNodeId, classN
               {isCollapsed ? "▲" : "▼"}
             </button>
           )}
-          {hasSearched && (
-            <button
-              onClick={() => { setResults([]); setHasSearched(false); setQuery(""); }}
-              className="text-[10px] text-on-surface-variant/30 hover:text-on-surface-variant transition-colors px-1"
-            >
-              ✕
-            </button>
-          )}
+          <button
+            onClick={() => setIsOpen(false)}
+            className="text-[10px] text-on-surface-variant/30 hover:text-on-surface-variant transition-colors px-1"
+            title="Close search"
+          >
+            ✕
+          </button>
         </div>
 
         {/* Search input */}
@@ -207,7 +224,7 @@ export default function GraphSearch({ repo, onNodeSelect, selectedNodeId, classN
               return (
                 <div
                   key={`${r.id}-${idx}`}
-                  onClick={() => { onNodeSelect(r.id); setIsCollapsed(true); }}
+                  onClick={() => { onNodeSelect(r.id); setIsOpen(false); }}
                   className={`group relative flex items-start gap-3 p-4 cursor-pointer transition-colors ${
                     isSelected
                       ? "bg-primary/10"
@@ -265,7 +282,7 @@ export default function GraphSearch({ repo, onNodeSelect, selectedNodeId, classN
                   {/* Locate button (hover only) */}
                   <div className="shrink-0 opacity-0 group-hover:opacity-100 transition-opacity self-start mt-0.5">
                     <button
-                      onClick={(e) => { e.stopPropagation(); onNodeSelect(r.id); setIsCollapsed(true); }}
+                      onClick={(e) => { e.stopPropagation(); onNodeSelect(r.id); setIsOpen(false); }}
                       className="text-[9px] px-1.5 py-0.5 rounded bg-primary/20 text-primary hover:bg-primary/30 transition-colors font-bold"
                       title="Jump to node"
                     >

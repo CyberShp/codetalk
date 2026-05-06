@@ -52,6 +52,9 @@ export default function RepoDetailPage() {
   const [graphError, setGraphError] = useState("");
   const [selectedNode, setSelectedNode] = useState<GraphNode | null>(null);
   const [previousProcess, setPreviousProcess] = useState<GraphNode | null>(null);
+  // Transient highlight: set by step-focus clicks so graph highlights a node
+  // without changing the sidebar selection (keeps IntelligencePanel in view).
+  const [graphHighlightId, setGraphHighlightId] = useState<string | null>(null);
 
   // Search
   const [searchQuery, setSearchQuery] = useState("");
@@ -97,6 +100,7 @@ export default function RepoDetailPage() {
   }, [graphData]);
 
   const handleNodeClick = useCallback((node: GraphNode | null) => {
+    setGraphHighlightId(null); // direct click clears transient highlight
     if (!node) { setSelectedNode(null); setPreviousProcess(null); return; }
     if (selectedNode?.label === "Process" && !INTELLIGENCE_LABELS.has(node.label)) {
       setPreviousProcess(selectedNode);
@@ -331,7 +335,7 @@ export default function RepoDetailPage() {
                   <GraphViewer
                     nodes={graphData.nodes}
                     edges={graphData.edges}
-                    selectedNodeId={selectedNode?.id ?? null}
+                    selectedNodeId={graphHighlightId ?? selectedNode?.id ?? null}
                     onNodeClick={handleNodeClick}
                     repo={gitnexusRepoKey || undefined}
                   />
@@ -466,8 +470,17 @@ export default function RepoDetailPage() {
                     <span className="truncate">返回：{previousProcess.properties.name}</span>
                   </button>
                 )}
+                {isIntelligenceNode && (
+                  <button
+                    onClick={() => { setSelectedNode(null); setPreviousProcess(null); }}
+                    className="flex items-center gap-2 w-full px-3 py-2.5 text-xs text-on-surface-variant hover:text-primary transition-all rounded-lg bg-surface-container-low hover:bg-surface-container-high border border-outline-variant/20 group"
+                  >
+                    <span className="group-hover:-translate-x-0.5 transition-transform inline-block shrink-0 text-base leading-none">&larr;</span>
+                    <span className="truncate">返回列表</span>
+                  </button>
+                )}
                 {isIntelligenceNode ? (
-                  <IntelligencePanel node={selectedNode} nodeMap={nodeMap} edges={graphData?.edges ?? []} onNodeClick={handleNodeClick} repo={gitnexusRepoKey || undefined} />
+                  <IntelligencePanel node={selectedNode} nodeMap={nodeMap} edges={graphData?.edges ?? []} onNodeClick={handleNodeClick} onStepFocus={(nodeId: string) => setGraphHighlightId(nodeId)} repo={gitnexusRepoKey || undefined} />
                 ) : (
                   <CodePanel node={selectedNode} repoName={gitnexusRepoKey} />
                 )}

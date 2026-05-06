@@ -11,12 +11,13 @@ interface Props {
   nodeMap: Map<string, GraphNode>;
   edges: GraphEdge[];
   onNodeClick: (node: GraphNode) => void;
+  onStepFocus?: (nodeId: string) => void;
   repo?: string;
 }
 
-export default function IntelligencePanel({ node, nodeMap, edges, onNodeClick, repo }: Props) {
+export default function IntelligencePanel({ node, nodeMap, edges, onNodeClick, onStepFocus, repo }: Props) {
   if (node.label === "Process") {
-    return <ProcessView key={node.id} node={node} nodeMap={nodeMap} onNodeClick={onNodeClick} repo={repo} />;
+    return <ProcessView key={node.id} node={node} nodeMap={nodeMap} onNodeClick={onNodeClick} onStepFocus={onStepFocus} repo={repo} />;
   }
   if (node.label === "Community") {
     return <CommunityView key={node.id} node={node} nodeMap={nodeMap} edges={edges} onNodeClick={onNodeClick} repo={repo} />;
@@ -31,11 +32,13 @@ function ProcessView({
   node,
   nodeMap,
   onNodeClick,
+  onStepFocus,
   repo,
 }: {
   node: GraphNode;
   nodeMap: Map<string, GraphNode>;
   onNodeClick: (node: GraphNode) => void;
+  onStepFocus?: (nodeId: string) => void;
   repo?: string;
 }) {
   const isCross = node.properties.processType === "cross_community";
@@ -135,7 +138,7 @@ function ProcessView({
 
             {resolvedSteps.map((s, i) => {
               const resolved = s.node;
-              const isClickable = resolved && resolved.properties.filePath;
+              const isClickable = !!resolved;
               return (
                 <div
                   key={i}
@@ -145,7 +148,12 @@ function ProcessView({
                       : ""
                   }`}
                   onClick={() => {
-                    if (resolved && isClickable) onNodeClick(resolved);
+                    if (!resolved) return;
+                    if (onStepFocus) {
+                      onStepFocus(resolved.id);
+                    } else {
+                      onNodeClick(resolved);
+                    }
                   }}
                 >
                   {/* Step number circle */}

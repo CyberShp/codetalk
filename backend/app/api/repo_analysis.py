@@ -408,9 +408,16 @@ async def joern_methods(
     async with _joern_lock:
         try:
             await joern.prepare(AnalysisRequest(repo_local_path=tool_path))
-            all_methods: list[dict] = list(await joern.method_list())
+            raw = await joern.method_list()
+            # Joern returns error string when CPG is not loaded (e.g. fresh container).
+            # Guard: only accept list[dict]; anything else → helpful 503.
+            if not isinstance(raw, list) or (raw and not isinstance(raw[0], dict)):
+                raise HTTPException(503, "Joern CPG 未加载，请先点击「重新构建索引」导入代码")
+            all_methods: list[dict] = raw
         except httpx.ConnectError:
             raise HTTPException(503, "Joern service unavailable")
+        except HTTPException:
+            raise
         finally:
             await joern.cleanup(AnalysisRequest(repo_local_path=tool_path))
 
@@ -492,9 +499,14 @@ async def analysis_stats(
     async with _joern_lock:
         try:
             await joern.prepare(AnalysisRequest(repo_local_path=tool_path))
-            all_methods: list[dict] = list(await joern.method_list())
+            raw = await joern.method_list()
+            if not isinstance(raw, list) or (raw and not isinstance(raw[0], dict)):
+                raise HTTPException(503, "Joern CPG 未加载，请先点击「重新构建索引」导入代码")
+            all_methods: list[dict] = raw
         except httpx.ConnectError:
             raise HTTPException(503, "Joern service unavailable")
+        except HTTPException:
+            raise
         finally:
             await joern.cleanup(AnalysisRequest(repo_local_path=tool_path))
 
