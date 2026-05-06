@@ -2,6 +2,7 @@
 
 import { useMemo, useState, useRef, useEffect, useCallback } from "react";
 import type { GraphNode, GraphEdge } from "@/lib/types";
+import GraphSearch from "@/components/ui/GraphSearch";
 
 /* ── Color map per node type ── */
 const NODE_COLORS: Record<string, string> = {
@@ -56,6 +57,8 @@ interface Props {
   edges: GraphEdge[];
   selectedNodeId: string | null;
   onNodeClick: (node: GraphNode | null) => void;
+  /** Repo key for the integrated symbol search overlay. If omitted, search is hidden. */
+  repo?: string;
 }
 
 interface LayoutNode {
@@ -268,10 +271,23 @@ function buildColumnLayout(
   };
 }
 
-export default function GraphViewer({ nodes, edges, selectedNodeId, onNodeClick }: Props) {
+export default function GraphViewer({ nodes, edges, selectedNodeId, onNodeClick, repo }: Props) {
   const [hoveredId, setHoveredId] = useState<string | null>(null);
   const [activeFilter, setActiveFilter] = useState<string | null>(null);
+  const [jumpedNodeId, setJumpedNodeId] = useState<string | null>(null);
   const containerRef = useRef<HTMLDivElement>(null);
+
+  // Build node map for search → click bridging
+  const nodeMap = useMemo(() => new Map(nodes.map((n) => [n.id, n])), [nodes]);
+
+  const handleSearchSelect = useCallback((nodeId: string) => {
+    const node = nodeMap.get(nodeId);
+    if (!node) return;
+    onNodeClick(node);
+    setJumpedNodeId(nodeId);
+    // Clear jump animation after 2s
+    setTimeout(() => setJumpedNodeId(null), 2000);
+  }, [nodeMap, onNodeClick]);
 
   // Auto-clear filter when a NEW node is selected that wouldn't be visible
   // (React-endorsed render-time state adjustment — not in useEffect)
@@ -426,7 +442,16 @@ export default function GraphViewer({ nodes, edges, selectedNodeId, onNodeClick 
   }
 
   return (
-    <div className="flex flex-col h-full">
+    <div className="flex flex-col h-full relative">
+      {/* ── Integrated symbol search overlay ── */}
+      {repo && (
+        <GraphSearch
+          repo={repo}
+          onNodeSelect={handleSearchSelect}
+          selectedNodeId={selectedNodeId}
+        />
+      )}
+
       {/* ── Filter bar ── */}
       <div className="flex items-center gap-1.5 px-3 py-2 border-b border-outline-variant/10 bg-surface-container-low/50 flex-shrink-0 overflow-x-auto">
         <button
@@ -474,14 +499,16 @@ export default function GraphViewer({ nodes, edges, selectedNodeId, onNodeClick 
             onClick={() => onNodeClick(null)}
           />
 
-          {/* Edge arrows (tree mode only) */}
-          {activeFilter && (
-            <defs>
+          <defs>
+            {activeFilter && (
               <marker id="arrow" viewBox="0 0 10 6" refX="10" refY="3" markerWidth="8" markerHeight="6" orient="auto-start-reverse">
                 <path d="M 0 0 L 10 3 L 0 6 z" fill="#A4E6FF" opacity="0.4" />
               </marker>
-            </defs>
-          )}
+            )}
+            <filter id="jump-glow" x="-50%" y="-50%" width="200%" height="200%">
+              <feDropShadow dx="0" dy="0" stdDeviation="6" floodColor="#A4E6FF" floodOpacity="0.9" />
+            </filter>
+          </defs>
 
           {/* Edges */}
           <g>
@@ -541,6 +568,9 @@ export default function GraphViewer({ nodes, edges, selectedNodeId, onNodeClick 
               const isDimmed = !!selectedNodeId && !isConnected;
               const isCodeNode = CODE_LABELS.has(node.label);
               const color = NODE_COLORS[node.label] || "#6B7280";
+              const isJumped = node.id === jumpedNodeId;
+              const cx = NODE_W / 2;
+              const cy = NODE_H / 2;
 
               return (
                 <g
@@ -552,9 +582,31 @@ export default function GraphViewer({ nodes, edges, selectedNodeId, onNodeClick 
                   }}
                   onMouseEnter={() => setHoveredId(node.id)}
                   onMouseLeave={() => setHoveredId(null)}
-                  style={{ opacity: isDimmed ? 0.15 : 1, transition: "opacity 300ms" }}
+                  style={{
+                    opacity: isDimmed ? 0.15 : 1,
+                    transition: "opacity 300ms",
+                    filter: isJumped ? "url(#jump-glow)" : undefined,
+                  }}
                   className={isCodeNode || node.label === "Process" || node.label === "Community" ? "cursor-pointer" : "cursor-default"}
                 >
+                  {/* Jump animation: three expanding pulse rings */}
+                  {isJumped && (
+                    <>
+                      <circle cx={cx} cy={cy} r={20} fill="none" stroke="#A4E6FF" strokeWidth={1.5} opacity={0.7}>
+                        <animate attributeName="r" values="20;50" dur="0.8s" repeatCount="2" />
+                        <animate attributeName="opacity" values="0.7;0" dur="0.8s" repeatCount="2" />
+                      </circle>
+                      <circle cx={cx} cy={cy} r={20} fill="none" stroke="#A4E6FF" strokeWidth={1} opacity={0.5}>
+                        <animate attributeName="r" values="20;70" dur="1.1s" begin="0.15s" repeatCount="2" />
+                        <animate attributeName="opacity" values="0.5;0" dur="1.1s" begin="0.15s" repeatCount="2" />
+                      </circle>
+                      <circle cx={cx} cy={cy} r={20} fill="none" stroke="#A4E6FF" strokeWidth={0.8} opacity={0.3}>
+                        <animate attributeName="r" values="20;90" dur="1.4s" begin="0.3s" repeatCount="2" />
+                        <animate attributeName="opacity" values="0.3;0" dur="1.4s" begin="0.3s" repeatCount="2" />
+                      </circle>
+                    </>
+                  )}
+
                   {isSelected && (
                     <rect
                       width={NODE_W + 14}
@@ -575,8 +627,8 @@ export default function GraphViewer({ nodes, edges, selectedNodeId, onNodeClick 
                     height={NODE_H}
                     rx={6}
                     fill={isSelected ? color : "#1A1E24"}
-                    stroke={isSelected ? color : isHovered ? color : "#2A2E34"}
-                    strokeWidth={isSelected ? 2 : 1}
+                    stroke={isSelected ? color : isHovered ? color : isJumped ? "#A4E6FF" : "#2A2E34"}
+                    strokeWidth={isSelected ? 2 : isJumped ? 2 : 1}
                     opacity={isSelected || isHovered ? 1 : 0.85}
                   />
                   <rect width={4} height={NODE_H - 8} x={4} y={4} rx={2} fill={color} opacity={0.8} />

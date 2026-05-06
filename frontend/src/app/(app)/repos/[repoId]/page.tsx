@@ -5,7 +5,6 @@ import Link from "next/link";
 import { useParams } from "next/navigation";
 import GlassPanel from "@/components/ui/GlassPanel";
 import GraphViewer from "@/components/ui/GraphViewer";
-import GraphSearch from "@/components/ui/GraphSearch";
 import CodePanel from "@/components/ui/CodePanel";
 import IntelligencePanel from "@/components/ui/IntelligencePanel";
 import GraphCatalog from "@/components/ui/GraphCatalog";
@@ -327,13 +326,6 @@ export default function RepoDetailPage() {
           {/* Graph */}
           {tab === "graph" && (
             <div className="space-y-3">
-              {/* Symbol search — normal flow above graph */}
-              <GraphSearch
-                repo={gitnexusRepoKey || undefined}
-                onNodeSelect={(nodeId) => { const node = nodeMap.get(nodeId); if (node) handleNodeClick(node); }}
-                selectedNodeId={selectedNode?.id ?? null}
-                className="relative w-full backdrop-blur-md bg-surface/80 border border-outline-variant/15 rounded-xl shadow-lg shadow-black/20 overflow-hidden"
-              />
               {graphData ? (
                 <div className="h-[calc(100vh-16rem)]">
                   <GraphViewer
@@ -341,6 +333,7 @@ export default function RepoDetailPage() {
                     edges={graphData.edges}
                     selectedNodeId={selectedNode?.id ?? null}
                     onNodeClick={handleNodeClick}
+                    repo={gitnexusRepoKey || undefined}
                   />
                 </div>
               ) : graphError ? (
