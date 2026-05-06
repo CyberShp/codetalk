@@ -7,6 +7,12 @@ import { usePageRestoreRefresh } from "@/hooks/usePageRestoreRefresh";
 import { api } from "@/lib/api";
 import type { ToolInfo } from "@/lib/types";
 
+// Module-level cache: health checks are expensive (pings all remote tools).
+// Re-use the last result for 60 s so navigating away and back is instant.
+const CACHE_TTL = 60_000;
+let _cachedTools: ToolInfo[] | null = null;
+let _cacheAt = 0;
+
 const toolDescriptions: Record<string, string> = {
   deepwiki:
     "基于 RAG 的 AI 驱动仓库文档与知识图谱生成。",
@@ -42,11 +48,19 @@ export default function ToolsPage() {
   const [loading, setLoading] = useState(true);
   const [loadError, setLoadError] = useState("");
 
-  const loadTools = useCallback(async () => {
+  const loadTools = useCallback(async (force = false) => {
+    // Serve from cache if fresh and not explicitly forced (e.g. manual retry)
+    if (!force && _cachedTools && Date.now() - _cacheAt < CACHE_TTL) {
+      setTools(_cachedTools);
+      setLoading(false);
+      return;
+    }
     setLoading(true);
     setLoadError("");
     try {
       const data = await api.tools.list();
+      _cachedTools = data;
+      _cacheAt = Date.now();
       setTools(data);
     } catch (e) {
       setLoadError(e instanceof Error ? e.message : "工具状态加载失败");
@@ -89,7 +103,7 @@ export default function ToolsPage() {
           <GlassPanel className="py-8 flex flex-col items-center gap-4">
             <p className="text-sm text-tertiary">{loadError}</p>
             <button
-              onClick={() => { void loadTools(); }}
+              onClick={() => { void loadTools(true); }}
               className="px-4 py-2 rounded-lg border border-primary/20 bg-primary/10 text-primary text-xs font-bold uppercase tracking-widest hover:bg-primary/15 transition-colors"
             >
               重试
@@ -113,7 +127,7 @@ export default function ToolsPage() {
                 healthy={tool.healthy}
                 containerStatus={tool.container_status}
                 loading={loading}
-                onStatusChange={() => { void loadTools(); }}
+                onStatusChange={() => { void loadTools(true); }}
               />
             ))}
             {upcoming.map((tool) => (
