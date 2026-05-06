@@ -472,7 +472,9 @@ class RepoAnalysisRouteContractTests(unittest.IsolatedAsyncioTestCase):
         )
         db = _FakeDB(
             get_map={repo_id: repo},
-            execute_results=[_FakeResult(_FakeScalarsResult([]))],
+            # Phase 4: save_snapshot now runs a dedup-check execute() before saving.
+            # First result: dedup query returns None (no recent duplicate).
+            execute_results=[_FakeResult(None)],
         )
         self.holder["db"] = db
 

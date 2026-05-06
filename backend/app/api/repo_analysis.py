@@ -7,6 +7,7 @@ Follows the same pattern as repo_graph.py and repos.py.
 import asyncio
 import logging
 import uuid
+from datetime import datetime, timedelta, timezone
 
 import httpx
 from fastapi import APIRouter, Depends, HTTPException, Query, Request
@@ -61,6 +62,11 @@ def _tool_path(repo: Repository) -> str:
 # is already loaded.
 _joern_instance: JoernAdapter | None = None
 
+# Joern is a single-instance CPG server; concurrent prepare/query/cleanup
+# sequences on different repos would corrupt shared state.
+# Semaphore(1) serialises all Joern operations without requiring a DB lock.
+_joern_lock = asyncio.Semaphore(1)
+
 
 def _joern() -> JoernAdapter:
     global _joern_instance
@@ -69,6 +75,8 @@ def _joern() -> JoernAdapter:
     return _joern_instance
 
 
+# Same single-instance concern for CodeCompass.
+_codecompass_lock = asyncio.Semaphore(1)
 
 _codecompass_instance: CodeCompassAdapter | None = None
 
@@ -221,14 +229,15 @@ async def codecompass_call_graph(
     repo = await _get_repo_or_404(repo_id, db)
     cc = _codecompass()
 
-    try:
-        await cc.prepare(AnalysisRequest(repo_local_path=repo.local_path))
-        result = await cc.function_call_graph(function_name)
-        return {"function": function_name, "call_graph": result}
-    except httpx.ConnectError:
-        raise HTTPException(503, "CodeCompass service unavailable")
-    except httpx.HTTPStatusError as exc:
-        raise HTTPException(503, f"CodeCompass error: {exc.response.status_code}")
+    async with _codecompass_lock:
+        try:
+            await cc.prepare(AnalysisRequest(repo_local_path=repo.local_path))
+            result = await cc.function_call_graph(function_name)
+            return {"function": function_name, "call_graph": result}
+        except httpx.ConnectError:
+            raise HTTPException(503, "CodeCompass service unavailable")
+        except httpx.HTTPStatusError as exc:
+            raise HTTPException(503, f"CodeCompass error: {exc.response.status_code}")
 
 
 @router.get("/{repo_id}/analysis/codecompass/pointer-analysis/{function_name}")
@@ -245,14 +254,15 @@ async def codecompass_pointer_analysis(
     repo = await _get_repo_or_404(repo_id, db)
     cc = _codecompass()
 
-    try:
-        await cc.prepare(AnalysisRequest(repo_local_path=repo.local_path))
-        result = await cc.pointer_analysis_for(function_name)
-        return {"function": function_name, "pointer_analysis": result}
-    except httpx.ConnectError:
-        raise HTTPException(503, "CodeCompass service unavailable")
-    except httpx.HTTPStatusError as exc:
-        raise HTTPException(503, f"CodeCompass error: {exc.response.status_code}")
+    async with _codecompass_lock:
+        try:
+            await cc.prepare(AnalysisRequest(repo_local_path=repo.local_path))
+            result = await cc.pointer_analysis_for(function_name)
+            return {"function": function_name, "pointer_analysis": result}
+        except httpx.ConnectError:
+            raise HTTPException(503, "CodeCompass service unavailable")
+        except httpx.HTTPStatusError as exc:
+            raise HTTPException(503, f"CodeCompass error: {exc.response.status_code}")
 
 
 @router.get("/{repo_id}/analysis/codecompass/indirect-calls/{function_name}")
@@ -269,14 +279,15 @@ async def codecompass_indirect_calls(
     repo = await _get_repo_or_404(repo_id, db)
     cc = _codecompass()
 
-    try:
-        await cc.prepare(AnalysisRequest(repo_local_path=repo.local_path))
-        result = await cc.indirect_calls(function_name)
-        return {"function": function_name, "indirect_calls": result}
-    except httpx.ConnectError:
-        raise HTTPException(503, "CodeCompass service unavailable")
-    except httpx.HTTPStatusError as exc:
-        raise HTTPException(503, f"CodeCompass error: {exc.response.status_code}")
+    async with _codecompass_lock:
+        try:
+            await cc.prepare(AnalysisRequest(repo_local_path=repo.local_path))
+            result = await cc.indirect_calls(function_name)
+            return {"function": function_name, "indirect_calls": result}
+        except httpx.ConnectError:
+            raise HTTPException(503, "CodeCompass service unavailable")
+        except httpx.HTTPStatusError as exc:
+            raise HTTPException(503, f"CodeCompass error: {exc.response.status_code}")
 
 
 class _AliasRequest(BaseModel):
@@ -299,19 +310,20 @@ async def codecompass_alias_analysis(
     repo = await _get_repo_or_404(repo_id, db)
     cc = _codecompass()
 
-    try:
-        await cc.prepare(AnalysisRequest(repo_local_path=repo.local_path))
-        result = await cc.alias_analysis(body.variable, body.file_path, body.line)
-        return {
-            "variable": body.variable,
-            "file": body.file_path,
-            "line": body.line,
-            "aliases": result,
-        }
-    except httpx.ConnectError:
-        raise HTTPException(503, "CodeCompass service unavailable")
-    except httpx.HTTPStatusError as exc:
-        raise HTTPException(503, f"CodeCompass error: {exc.response.status_code}")
+    async with _codecompass_lock:
+        try:
+            await cc.prepare(AnalysisRequest(repo_local_path=repo.local_path))
+            result = await cc.alias_analysis(body.variable, body.file_path, body.line)
+            return {
+                "variable": body.variable,
+                "file": body.file_path,
+                "line": body.line,
+                "aliases": result,
+            }
+        except httpx.ConnectError:
+            raise HTTPException(503, "CodeCompass service unavailable")
+        except httpx.HTTPStatusError as exc:
+            raise HTTPException(503, f"CodeCompass error: {exc.response.status_code}")
 
 
 class _CpgqlRequest(BaseModel):
@@ -332,16 +344,17 @@ async def joern_custom_query(
     joern = _joern()
     tool_path = _tool_path(repo)
 
-    try:
-        await joern.prepare(AnalysisRequest(repo_local_path=tool_path))
-        result = await joern.query_custom(body.query)
-        return {"result": result}
-    except httpx.ConnectError:
-        raise HTTPException(503, "Joern service unavailable")
-    except httpx.HTTPStatusError as exc:
-        raise HTTPException(503, f"Joern error: {exc.response.status_code}")
-    finally:
-        await joern.cleanup(AnalysisRequest(repo_local_path=tool_path))
+    async with _joern_lock:
+        try:
+            await joern.prepare(AnalysisRequest(repo_local_path=tool_path))
+            result = await joern.query_custom(body.query)
+            return {"result": result}
+        except httpx.ConnectError:
+            raise HTTPException(503, "Joern service unavailable")
+        except httpx.HTTPStatusError as exc:
+            raise HTTPException(503, f"Joern error: {exc.response.status_code}")
+        finally:
+            await joern.cleanup(AnalysisRequest(repo_local_path=tool_path))
 
 
 def _method_lines(m: dict) -> int:
@@ -392,13 +405,14 @@ async def joern_methods(
     joern = _joern()
     tool_path = _tool_path(repo)
 
-    try:
-        await joern.prepare(AnalysisRequest(repo_local_path=tool_path))
-        all_methods: list[dict] = list(await joern.method_list())
-    except httpx.ConnectError:
-        raise HTTPException(503, "Joern service unavailable")
-    finally:
-        await joern.cleanup(AnalysisRequest(repo_local_path=tool_path))
+    async with _joern_lock:
+        try:
+            await joern.prepare(AnalysisRequest(repo_local_path=tool_path))
+            all_methods: list[dict] = list(await joern.method_list())
+        except httpx.ConnectError:
+            raise HTTPException(503, "Joern service unavailable")
+        finally:
+            await joern.cleanup(AnalysisRequest(repo_local_path=tool_path))
 
     # Scope filter
     if scope:
@@ -475,13 +489,14 @@ async def analysis_stats(
     joern = _joern()
     tool_path = _tool_path(repo)
 
-    try:
-        await joern.prepare(AnalysisRequest(repo_local_path=tool_path))
-        all_methods: list[dict] = list(await joern.method_list())
-    except httpx.ConnectError:
-        raise HTTPException(503, "Joern service unavailable")
-    finally:
-        await joern.cleanup(AnalysisRequest(repo_local_path=tool_path))
+    async with _joern_lock:
+        try:
+            await joern.prepare(AnalysisRequest(repo_local_path=tool_path))
+            all_methods: list[dict] = list(await joern.method_list())
+        except httpx.ConnectError:
+            raise HTTPException(503, "Joern service unavailable")
+        finally:
+            await joern.cleanup(AnalysisRequest(repo_local_path=tool_path))
 
     if scope:
         all_methods = [m for m in all_methods if str(m.get("filename", "")).startswith(scope)]
@@ -515,34 +530,35 @@ async def method_all_analysis(
     joern = _joern()
     tool_path = _tool_path(repo)
 
-    try:
-        await joern.prepare(AnalysisRequest(repo_local_path=tool_path))
-        branches = await joern.function_branches(method_name)
-        errors = await joern.error_paths(method_name)
-        boundaries = await joern.boundary_values(method_name)
-        # Cross-function context — catch errors individually so partial results still return
-        call_ctx = []
-        callee_imp = []
+    async with _joern_lock:
         try:
-            call_ctx = await joern.call_context(method_name)
-        except Exception as exc:
-            logger.warning("joern: call_context failed for %s: %s", method_name, exc)
-        try:
-            callee_imp = await joern.callee_impact(method_name)
-        except Exception as exc:
-            logger.warning("joern: callee_impact failed for %s: %s", method_name, exc)
-        return {
-            "method": method_name,
-            "branches": branches,
-            "errors": errors,
-            "boundaries": boundaries,
-            "callContext": call_ctx,
-            "calleeImpact": callee_imp,
-        }
-    except httpx.ConnectError:
-        raise HTTPException(503, "Joern service unavailable")
-    finally:
-        await joern.cleanup(AnalysisRequest(repo_local_path=tool_path))
+            await joern.prepare(AnalysisRequest(repo_local_path=tool_path))
+            branches = await joern.function_branches(method_name)
+            errors = await joern.error_paths(method_name)
+            boundaries = await joern.boundary_values(method_name)
+            # Cross-function context — catch errors individually so partial results still return
+            call_ctx = []
+            callee_imp = []
+            try:
+                call_ctx = await joern.call_context(method_name)
+            except Exception as exc:
+                logger.warning("joern: call_context failed for %s: %s", method_name, exc)
+            try:
+                callee_imp = await joern.callee_impact(method_name)
+            except Exception as exc:
+                logger.warning("joern: callee_impact failed for %s: %s", method_name, exc)
+            return {
+                "method": method_name,
+                "branches": branches,
+                "errors": errors,
+                "boundaries": boundaries,
+                "callContext": call_ctx,
+                "calleeImpact": callee_imp,
+            }
+        except httpx.ConnectError:
+            raise HTTPException(503, "Joern service unavailable")
+        finally:
+            await joern.cleanup(AnalysisRequest(repo_local_path=tool_path))
 
 
 @router.get("/{repo_id}/analysis/joern/method/{method_name}/branches")
@@ -556,14 +572,15 @@ async def method_branches(
     joern = _joern()
     tool_path = _tool_path(repo)
 
-    try:
-        await joern.prepare(AnalysisRequest(repo_local_path=tool_path))
-        result = await joern.function_branches(method_name)
-        return {"method": method_name, "branches": result}
-    except httpx.ConnectError:
-        raise HTTPException(503, "Joern service unavailable")
-    finally:
-        await joern.cleanup(AnalysisRequest(repo_local_path=tool_path))
+    async with _joern_lock:
+        try:
+            await joern.prepare(AnalysisRequest(repo_local_path=tool_path))
+            result = await joern.function_branches(method_name)
+            return {"method": method_name, "branches": result}
+        except httpx.ConnectError:
+            raise HTTPException(503, "Joern service unavailable")
+        finally:
+            await joern.cleanup(AnalysisRequest(repo_local_path=tool_path))
 
 
 @router.get("/{repo_id}/analysis/joern/method/{method_name}/errors")
@@ -577,14 +594,15 @@ async def method_error_paths(
     joern = _joern()
     tool_path = _tool_path(repo)
 
-    try:
-        await joern.prepare(AnalysisRequest(repo_local_path=tool_path))
-        result = await joern.error_paths(method_name)
-        return {"method": method_name, "errors": result}
-    except httpx.ConnectError:
-        raise HTTPException(503, "Joern service unavailable")
-    finally:
-        await joern.cleanup(AnalysisRequest(repo_local_path=tool_path))
+    async with _joern_lock:
+        try:
+            await joern.prepare(AnalysisRequest(repo_local_path=tool_path))
+            result = await joern.error_paths(method_name)
+            return {"method": method_name, "errors": result}
+        except httpx.ConnectError:
+            raise HTTPException(503, "Joern service unavailable")
+        finally:
+            await joern.cleanup(AnalysisRequest(repo_local_path=tool_path))
 
 
 @router.get("/{repo_id}/analysis/joern/method/{method_name}/boundaries")
@@ -598,14 +616,15 @@ async def method_boundaries(
     joern = _joern()
     tool_path = _tool_path(repo)
 
-    try:
-        await joern.prepare(AnalysisRequest(repo_local_path=tool_path))
-        result = await joern.boundary_values(method_name)
-        return {"method": method_name, "boundaries": result}
-    except httpx.ConnectError:
-        raise HTTPException(503, "Joern service unavailable")
-    finally:
-        await joern.cleanup(AnalysisRequest(repo_local_path=tool_path))
+    async with _joern_lock:
+        try:
+            await joern.prepare(AnalysisRequest(repo_local_path=tool_path))
+            result = await joern.boundary_values(method_name)
+            return {"method": method_name, "boundaries": result}
+        except httpx.ConnectError:
+            raise HTTPException(503, "Joern service unavailable")
+        finally:
+            await joern.cleanup(AnalysisRequest(repo_local_path=tool_path))
 
 
 @router.get("/{repo_id}/analysis/joern/method/{method_name}/variable/{var_name}/track")
@@ -620,14 +639,15 @@ async def variable_tracking(
     joern = _joern()
     tool_path = _tool_path(repo)
 
-    try:
-        await joern.prepare(AnalysisRequest(repo_local_path=tool_path))
-        result = await joern.variable_tracking(method_name, var_name)
-        return {"method": method_name, "variable": var_name, "usages": result}
-    except httpx.ConnectError:
-        raise HTTPException(503, "Joern service unavailable")
-    finally:
-        await joern.cleanup(AnalysisRequest(repo_local_path=tool_path))
+    async with _joern_lock:
+        try:
+            await joern.prepare(AnalysisRequest(repo_local_path=tool_path))
+            result = await joern.variable_tracking(method_name, var_name)
+            return {"method": method_name, "variable": var_name, "usages": result}
+        except httpx.ConnectError:
+            raise HTTPException(503, "Joern service unavailable")
+        finally:
+            await joern.cleanup(AnalysisRequest(repo_local_path=tool_path))
 
 
 @router.get("/{repo_id}/analysis/joern/method/{method_name}/cfg")
@@ -641,14 +661,15 @@ async def method_cfg(
     joern = _joern()
     tool_path = _tool_path(repo)
 
-    try:
-        await joern.prepare(AnalysisRequest(repo_local_path=tool_path))
-        dot = await joern.cfg_dot(method_name)
-        return {"method": method_name, "dot": dot}
-    except httpx.ConnectError:
-        raise HTTPException(503, "Joern service unavailable")
-    finally:
-        await joern.cleanup(AnalysisRequest(repo_local_path=tool_path))
+    async with _joern_lock:
+        try:
+            await joern.prepare(AnalysisRequest(repo_local_path=tool_path))
+            dot = await joern.cfg_dot(method_name)
+            return {"method": method_name, "dot": dot}
+        except httpx.ConnectError:
+            raise HTTPException(503, "Joern service unavailable")
+        finally:
+            await joern.cleanup(AnalysisRequest(repo_local_path=tool_path))
 
 
 class _TaintRequest(BaseModel):
@@ -671,20 +692,21 @@ async def taint_analysis(
     joern = _joern()
     tool_path = _tool_path(repo)
 
-    try:
-        await joern.prepare(AnalysisRequest(repo_local_path=tool_path))
-        if body.mode == "absence":
-            raw_paths = await joern.absence_analysis(body.source, body.sink)
-        else:
-            raw_paths = await joern.taint_analysis(body.source, body.sink)
-        # Reshape Joern raw tuples into TaintPath[] for frontend:
-        # Joern returns [[("code","file",line), ...], ...] → [{elements: [{code,filename,line_number}]}]
-        paths = _reshape_taint_paths(raw_paths)
-        return {"source": body.source, "sink": body.sink, "mode": body.mode, "paths": paths}
-    except httpx.ConnectError:
-        raise HTTPException(503, "Joern service unavailable")
-    finally:
-        await joern.cleanup(AnalysisRequest(repo_local_path=tool_path))
+    async with _joern_lock:
+        try:
+            await joern.prepare(AnalysisRequest(repo_local_path=tool_path))
+            if body.mode == "absence":
+                raw_paths = await joern.absence_analysis(body.source, body.sink)
+            else:
+                raw_paths = await joern.taint_analysis(body.source, body.sink)
+            # Reshape Joern raw tuples into TaintPath[] for frontend:
+            # Joern returns [[("code","file",line), ...], ...] → [{elements: [{code,filename,line_number}]}]
+            paths = _reshape_taint_paths(raw_paths)
+            return {"source": body.source, "sink": body.sink, "mode": body.mode, "paths": paths}
+        except httpx.ConnectError:
+            raise HTTPException(503, "Joern service unavailable")
+        finally:
+            await joern.cleanup(AnalysisRequest(repo_local_path=tool_path))
 
 
 class _TaintVerifyRequest(BaseModel):
@@ -707,47 +729,48 @@ async def taint_verify(
     joern = _joern()
     tool_path = _tool_path(repo)
 
-    try:
-        await joern.prepare(AnalysisRequest(repo_local_path=tool_path))
-        raw_flows = await joern.scoped_taint_verify(
-            body.method, body.source, body.sink
-        )
-        # raw_flows is a list of flow paths, each is a list of step dicts
-        flows = []
-        if isinstance(raw_flows, list):
-            for flow in raw_flows:
-                if isinstance(flow, list):
-                    steps = [
-                        {
-                            "code": s.get("code", ""),
-                            "filename": s.get("file", ""),
-                            "line_number": int(s.get("line", -1)),
-                        }
-                        for s in flow
-                        if isinstance(s, dict)
-                    ]
-                    if steps:
-                        flows.append({"elements": steps})
-        return {
-            "method": body.method,
-            "source": body.source,
-            "sink": body.sink,
-            "verified": len(flows) > 0,
-            "flows": flows,
-        }
-    except httpx.ReadTimeout:
-        return {
-            "method": body.method,
-            "source": body.source,
-            "sink": body.sink,
-            "verified": False,
-            "flows": [],
-            "fallback": "timeout",
-        }
-    except httpx.ConnectError:
-        raise HTTPException(503, "Joern service unavailable")
-    finally:
-        await joern.cleanup(AnalysisRequest(repo_local_path=tool_path))
+    async with _joern_lock:
+        try:
+            await joern.prepare(AnalysisRequest(repo_local_path=tool_path))
+            raw_flows = await joern.scoped_taint_verify(
+                body.method, body.source, body.sink
+            )
+            # raw_flows is a list of flow paths, each is a list of step dicts
+            flows = []
+            if isinstance(raw_flows, list):
+                for flow in raw_flows:
+                    if isinstance(flow, list):
+                        steps = [
+                            {
+                                "code": s.get("code", ""),
+                                "filename": s.get("file", ""),
+                                "line_number": int(s.get("line", -1)),
+                            }
+                            for s in flow
+                            if isinstance(s, dict)
+                        ]
+                        if steps:
+                            flows.append({"elements": steps})
+            return {
+                "method": body.method,
+                "source": body.source,
+                "sink": body.sink,
+                "verified": len(flows) > 0,
+                "flows": flows,
+            }
+        except httpx.ReadTimeout:
+            return {
+                "method": body.method,
+                "source": body.source,
+                "sink": body.sink,
+                "verified": False,
+                "flows": [],
+                "fallback": "timeout",
+            }
+        except httpx.ConnectError:
+            raise HTTPException(503, "Joern service unavailable")
+        finally:
+            await joern.cleanup(AnalysisRequest(repo_local_path=tool_path))
 
 
 def _reshape_taint_paths(raw: object) -> list[dict]:
@@ -879,8 +902,48 @@ async def save_snapshot(
     body: _SnapshotSave,
     db: AsyncSession = Depends(get_db),
 ):
-    """Persist a risk-matrix snapshot for historical comparison."""
+    """Persist a risk-matrix snapshot for historical comparison.
+
+    Idempotent within a 30-second window: if a snapshot with an identical
+    summary (total, high, med, avgComplexity, sample_size) already exists
+    for this repo in the last 30 s, returns the existing one instead of
+    creating a duplicate.
+    """
     await _get_repo_or_404(repo_id, db)
+
+    # Deduplication window — protects against concurrent tab writes.
+    # Key covers all summary fields that distinguish one snapshot from another:
+    # total + high + med captures the full risk distribution;
+    # avgComplexity detects complexity drift even when counts are equal;
+    # sample_size distinguishes sampled vs complete snapshots of the same size.
+    cutoff = datetime.now(timezone.utc) - timedelta(seconds=30)
+    total_val = body.summary.get("total")
+    high_val = body.summary.get("high")
+    if total_val is not None and high_val is not None:
+        dedup_result = await db.execute(
+            select(AnalysisSnapshot)
+            .where(
+                AnalysisSnapshot.repository_id == repo_id,
+                AnalysisSnapshot.created_at >= cutoff,
+            )
+            .order_by(AnalysisSnapshot.created_at.desc())
+            .limit(1)
+        )
+        recent = dedup_result.scalar_one_or_none()
+        if recent and recent.summary:
+            if (recent.summary.get("total") == total_val
+                    and recent.summary.get("high") == high_val
+                    and recent.summary.get("med") == body.summary.get("med")
+                    and recent.summary.get("avgComplexity") == body.summary.get("avgComplexity")
+                    and recent.summary.get("sample_size") == body.summary.get("sample_size")):
+                return {
+                    "id": str(recent.id),
+                    "repository_id": str(recent.repository_id),
+                    "summary": recent.summary,
+                    "created_at": recent.created_at.isoformat() if recent.created_at else None,
+                    "deduplicated": True,
+                }
+
     snap = AnalysisSnapshot(
         repository_id=repo_id,
         risk_matrix=body.risk_matrix,  # type: ignore[arg-type]
@@ -1005,23 +1068,24 @@ async def impact_radius(
     joern = _joern()
     callers = []
     callee_files: list[str] = []
-    try:
-        await joern.prepare(AnalysisRequest(repo_local_path=tool_path))
-        callers = await joern.call_context(method_name)
-        # Collect unique files touched by callers
-        for ctx in callers:
-            f = ctx.get("callerFile", "")
-            if f and f not in callee_files:
-                callee_files.append(f)
-    except httpx.ConnectError:
-        logger.warning("Joern unavailable for impact-radius")
-    except Exception as exc:
-        logger.warning("joern call_context failed: %s", exc)
-    finally:
+    async with _joern_lock:
         try:
-            await joern.cleanup(AnalysisRequest(repo_local_path=tool_path))
-        except Exception:
-            pass
+            await joern.prepare(AnalysisRequest(repo_local_path=tool_path))
+            callers = await joern.call_context(method_name)
+            # Collect unique files touched by callers
+            for ctx in callers:
+                f = ctx.get("callerFile", "")
+                if f and f not in callee_files:
+                    callee_files.append(f)
+        except httpx.ConnectError:
+            logger.warning("Joern unavailable for impact-radius")
+        except Exception as exc:
+            logger.warning("joern call_context failed: %s", exc)
+        finally:
+            try:
+                await joern.cleanup(AnalysisRequest(repo_local_path=tool_path))
+            except Exception:
+                pass
 
     # 2. GitNexus: module-level dependencies (best-effort)
     module_deps: list[dict] = []
