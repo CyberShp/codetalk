@@ -38,6 +38,9 @@ import type {
   VarUsage,
   TestPoint,
   SeverityLevel,
+  AnalysisScopes,
+  MethodsPageResponse,
+  AnalysisStats,
 } from "./types";
 
 const BASE = process.env.NEXT_PUBLIC_API_URL || "http://localhost:8000";
@@ -208,8 +211,20 @@ export const api = {
             method: "POST",
             body: JSON.stringify({ query: cpgql }),
           }),
-        methods: (repoId: string) =>
-          request<{ methods: unknown[] }>(`/api/repos/${repoId}/analysis/joern/methods`),
+        methods: (
+          repoId: string,
+          params?: { scope?: string; page?: number; size?: number; sort?: string },
+        ) => {
+          const q = new URLSearchParams();
+          if (params?.scope) q.set("scope", params.scope);
+          if (params?.page) q.set("page", String(params.page));
+          if (params?.size) q.set("size", String(params.size));
+          if (params?.sort) q.set("sort", params.sort);
+          const qs = q.toString();
+          return request<MethodsPageResponse>(
+            `/api/repos/${repoId}/analysis/joern/methods${qs ? `?${qs}` : ""}`,
+          );
+        },
         /** Batch: branches + errors + boundaries + cross-function context in ONE CPG import. */
         allForMethod: (repoId: string, methodName: string) =>
           request<{
@@ -323,7 +338,7 @@ export const api = {
       },
 
       snapshots: {
-        save: (repoId: string, riskMatrix: unknown[], summary: Record<string, number>) =>
+        save: (repoId: string, riskMatrix: unknown[], summary: Record<string, number | boolean | undefined>) =>
           request<{ id: string; created_at: string }>(
             `/api/repos/${repoId}/analysis/snapshots`,
             { method: "POST", body: JSON.stringify({ risk_matrix: riskMatrix, summary }) },
@@ -332,6 +347,11 @@ export const api = {
           request<{ snapshots: Array<{ id: string; summary: Record<string, number>; created_at: string }> }>(
             `/api/repos/${repoId}/analysis/snapshots`,
           ),
+      },
+
+      stats: (repoId: string, scope?: string) => {
+        const q = scope ? `?scope=${encodeURIComponent(scope)}` : "";
+        return request<AnalysisStats>(`/api/repos/${repoId}/analysis/stats${q}`);
       },
 
       impactRadius: (repoId: string, methodName: string) =>
@@ -604,6 +624,10 @@ export const api = {
         body: JSON.stringify({ task_id: taskId, query }),
         signal,
       }),
+  },
+
+  analysis: {
+    scopes: () => request<AnalysisScopes>("/api/analysis/scopes"),
   },
 
   components: {

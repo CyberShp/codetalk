@@ -485,6 +485,44 @@ export interface TaintPath {
   file?: string;
 }
 
+/* ── Global Analysis Dashboard types ── */
+
+export interface AnalysisScope {
+  repo_id: string;
+  repo_name: string;
+  branch: string;
+  scope_path: string;
+  tools_completed: string[];
+  risk_summary: { total: number; high: number; med: number } | null;
+  last_analyzed_at: string | null;
+  parent_scope: string | null;
+}
+
+export interface AnalysisScopes {
+  scopes: AnalysisScope[];
+}
+
+export interface MethodsPageResponse {
+  methods: Array<Record<string, unknown>>;
+  total: number;
+  page: number;
+  size: number;
+  aggregation: {
+    high_risk: number;
+    med_risk: number;
+    low_risk: number;
+    avg_complexity: number;
+  };
+}
+
+export interface AnalysisStats {
+  total: number;
+  high: number;
+  med: number;
+  low: number;
+  avgComplexity: number;
+}
+
 /** Matches _normalize_test_point() output in test_point_generator.py */
 export interface TestPoint {
   id?: string;

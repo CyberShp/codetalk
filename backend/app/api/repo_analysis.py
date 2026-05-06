@@ -344,23 +344,156 @@ async def joern_custom_query(
         await joern.cleanup(AnalysisRequest(repo_local_path=tool_path))
 
 
+def _method_lines(m: dict) -> int:
+    """Extract line count from a Joern method dict."""
+    line = int(m.get("line", 0) or 0)
+    line_end = int(m.get("lineEnd", line) or line)
+    return max(1, line_end - line + 1)
+
+
+def _risk_level(complexity: int, lines: int = 1) -> str:
+    """Match frontend riskLevel(): HIGH if complexity>15 OR density>0.5, MED if >8 OR >0.2."""
+    density = complexity / max(1, lines)
+    if complexity > 15 or density > 0.5:
+        return "HIGH"
+    if complexity > 8 or density > 0.2:
+        return "MED"
+    return "LOW"
+
+
+def _aggregate_methods(methods: list[dict]) -> dict:
+    """Compute aggregation stats over a list of method dicts."""
+    total = len(methods)
+    high = sum(1 for m in methods if _risk_level(int(m.get("complexity") or 0), _method_lines(m)) == "HIGH")
+    med = sum(1 for m in methods if _risk_level(int(m.get("complexity") or 0), _method_lines(m)) == "MED")
+    low = total - high - med
+    avg_c = (
+        round(sum(int(m.get("complexity") or 0) for m in methods) / total, 2)
+        if total > 0
+        else 0.0
+    )
+    return {"high_risk": high, "med_risk": med, "low_risk": low, "avg_complexity": avg_c}
+
+
 @router.get("/{repo_id}/analysis/joern/methods")
 async def joern_methods(
-    repo_id: uuid.UUID, db: AsyncSession = Depends(get_db)
+    repo_id: uuid.UUID,
+    scope: str | None = Query(default=None, description="Path prefix filter, e.g. 'net/tcp/'"),
+    page: int = Query(default=1, ge=1),
+    size: int = Query(default=50, ge=1, le=200),
+    sort: str = Query(default="complexity", pattern="^(name|complexity|line|risk|density)$"),
+    db: AsyncSession = Depends(get_db),
 ):
-    """Get all methods/functions in the repo."""
+    """Get paginated methods/functions in the repo.
+
+    Joern has no native pagination, so filtering/sorting/slicing is done in Python.
+    """
     repo = await _get_repo_or_404(repo_id, db)
     joern = _joern()
     tool_path = _tool_path(repo)
 
     try:
         await joern.prepare(AnalysisRequest(repo_local_path=tool_path))
-        result = await joern.method_list()
-        return {"methods": result}
+        all_methods: list[dict] = list(await joern.method_list())
     except httpx.ConnectError:
         raise HTTPException(503, "Joern service unavailable")
     finally:
         await joern.cleanup(AnalysisRequest(repo_local_path=tool_path))
+
+    # Scope filter
+    if scope:
+        all_methods = [m for m in all_methods if str(m.get("filename", "")).startswith(scope)]
+
+    # Sort — risk and density are computed in Python since Joern has no native support
+    if sort == "name":
+        all_methods.sort(key=lambda m: str(m.get("name", "")))
+    elif sort == "complexity":
+        all_methods.sort(key=lambda m: int(m.get("complexity") or 0), reverse=True)
+    elif sort == "risk":
+        def _risk_key(m: dict) -> float:
+            c = int(m.get("complexity") or 0)
+            d = c / _method_lines(m)
+            return c * (1 + d)
+        all_methods.sort(key=_risk_key, reverse=True)
+    elif sort == "density":
+        all_methods.sort(
+            key=lambda m: int(m.get("complexity") or 0) / _method_lines(m),
+            reverse=True,
+        )
+    else:  # line
+        all_methods.sort(key=lambda m: int(m.get("line") or 0))
+
+    total = len(all_methods)
+    aggregation = _aggregate_methods(all_methods)
+
+    offset = (page - 1) * size
+    page_methods = all_methods[offset: offset + size]
+
+    return {
+        "methods": page_methods,
+        "total": total,
+        "page": page,
+        "size": size,
+        "aggregation": aggregation,
+    }
+
+
+@router.get("/{repo_id}/analysis/stats")
+async def analysis_stats(
+    repo_id: uuid.UUID,
+    scope: str | None = Query(default=None),
+    db: AsyncSession = Depends(get_db),
+):
+    """Fast aggregated stats for the Pulse panel.
+
+    When scope is None, reads from the latest AnalysisSnapshot first.
+    Falls back to calling Joern if no snapshot exists or scope is set.
+    """
+    await _get_repo_or_404(repo_id, db)
+
+    # Snapshot fast-path: only for full-repo (no scope)
+    if not scope:
+        snap_result = await db.execute(
+            select(AnalysisSnapshot)
+            .where(AnalysisSnapshot.repository_id == repo_id)
+            .order_by(AnalysisSnapshot.created_at.desc())
+            .limit(1)
+        )
+        snap = snap_result.scalar_one_or_none()
+        if snap and snap.summary:
+            s = snap.summary
+            return {
+                "total": s.get("total", 0),
+                "high": s.get("high", 0),
+                "med": s.get("med", 0),
+                "low": s.get("total", 0) - s.get("high", 0) - s.get("med", 0),
+                "avgComplexity": s.get("avgComplexity", 0),
+            }
+
+    # No snapshot or scope is set — query Joern
+    repo = await _get_repo_or_404(repo_id, db)
+    joern = _joern()
+    tool_path = _tool_path(repo)
+
+    try:
+        await joern.prepare(AnalysisRequest(repo_local_path=tool_path))
+        all_methods: list[dict] = list(await joern.method_list())
+    except httpx.ConnectError:
+        raise HTTPException(503, "Joern service unavailable")
+    finally:
+        await joern.cleanup(AnalysisRequest(repo_local_path=tool_path))
+
+    if scope:
+        all_methods = [m for m in all_methods if str(m.get("filename", "")).startswith(scope)]
+
+    agg = _aggregate_methods(all_methods)
+    return {
+        "total": len(all_methods),
+        "high": agg["high_risk"],
+        "med": agg["med_risk"],
+        "low": agg["low_risk"],
+        "avgComplexity": agg["avg_complexity"],
+    }
 
 
 @router.get("/{repo_id}/analysis/joern/method/{method_name}/all")
@@ -801,11 +934,16 @@ async def get_snapshot(
     snap = await db.get(AnalysisSnapshot, snapshot_id)
     if not snap or snap.repository_id != repo_id:
         raise HTTPException(404, "Snapshot not found")
+    summary = snap.summary or {}
     return {
         "id": str(snap.id),
         "repository_id": str(snap.repository_id),
         "risk_matrix": snap.risk_matrix,
-        "summary": snap.summary,
+        # is_sampled=True means risk_matrix is a paginated batch, not the complete repo set.
+        # summary stats (total/high/med) are always complete — sourced from /stats endpoint.
+        "is_sampled": bool(summary.get("is_sampled", False)),
+        "sample_size": summary.get("sample_size"),
+        "summary": summary,
         "created_at": snap.created_at.isoformat() if snap.created_at else None,
     }
 
@@ -830,6 +968,8 @@ async def diff_snapshots(
     return {
         "from_id": str(from_id),
         "to_id": str(to_id),
+        # delta is always summary-level (total/high/med/avgComplexity); method-level diff
+        # is only meaningful when is_sampled=False on both snapshots.
         "delta": {
             "total_methods": (sum_to.get("total", 0) - sum_from.get("total", 0)),
             "high_risk": (sum_to.get("high", 0) - sum_from.get("high", 0)),
@@ -838,6 +978,8 @@ async def diff_snapshots(
                 (sum_to.get("avgComplexity", 0) - sum_from.get("avgComplexity", 0)), 2
             ),
         },
+        "from_is_sampled": bool(sum_from.get("is_sampled", False)),
+        "to_is_sampled": bool(sum_to.get("is_sampled", False)),
         "from_created": snap_from.created_at.isoformat() if snap_from.created_at else None,
         "to_created": snap_to.created_at.isoformat() if snap_to.created_at else None,
     }

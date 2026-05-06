@@ -2,12 +2,14 @@
 
 import { useState, useEffect, useCallback, useRef, useMemo } from "react";
 import Link from "next/link";
-import { useParams } from "next/navigation";
+import { useParams, useSearchParams } from "next/navigation";
 import { api } from "@/lib/api";
 import { motion, AnimatePresence } from "framer-motion";
 import { TransformWrapper, TransformComponent } from "react-zoom-pan-pinch";
 import type {
   AnalysisSummary,
+  AnalysisStats,
+  MethodsPageResponse,
   TestPoint,
   TaintPath,
   JoernMethodBranch,
@@ -744,24 +746,54 @@ function RiskDashboardView({
   summary,
   onNavigate,
   onExport,
-  allMethods,
-  methodsLoading,
+  scope,
+  stats,
+  statsLoading,
 }: {
   repoId: string;
   summary: AnalysisSummary | null;
   onNavigate: (method: string) => void;
   onExport: (data: EnrichedMethod[]) => void;
-  allMethods: JoernMethod[];
-  methodsLoading: boolean;
+  scope?: string;
+  stats: AnalysisStats | null;
+  statsLoading: boolean;
 }) {
-  const rawMethods = allMethods;
-  const loading = methodsLoading;
+  // Server-side paginated methods state
+  const [rawMethods, setRawMethods] = useState<JoernMethod[]>([]);
+  const [serverTotal, setServerTotal] = useState(0);
+  const [loading, setLoading] = useState(true);
+  const [serverPage, setServerPage] = useState(1);
+  const SERVER_PAGE_SIZE = 50;
   const [sortKey, setSortKey] = useState<"riskScore" | "complexity" | "density" | "lines">("riskScore");
   const [sortAsc, setSortAsc] = useState(false);
   const [filterLevel, setFilterLevel] = useState<RiskLevel | "ALL">("ALL");
+  const [trend, setTrend] = useState<Record<string, number> | null>(null);
+
+  // Map client sort key to backend sort parameter
+  const backendSort =
+    sortKey === "complexity" ? "complexity" :
+    sortKey === "lines" ? "line" :
+    sortKey === "riskScore" ? "risk" :
+    "density";
+
+  // Fetch paginated methods from server on mount, page change, or sort change
+  useEffect(() => {
+    // eslint-disable-next-line react-hooks/set-state-in-effect
+    setLoading(true);
+    setRawMethods([]);
+    api.repos.analysis.joern
+      .methods(repoId, { scope, page: serverPage, size: SERVER_PAGE_SIZE, sort: backendSort })
+      .then((res: MethodsPageResponse) => {
+        setRawMethods((res.methods ?? []) as unknown as JoernMethod[]);
+        setServerTotal(res.total ?? 0);
+      })
+      .catch(() => {})
+      .finally(() => setLoading(false));
+  }, [repoId, scope, serverPage, backendSort]);
+
+  // Client-side pagination (within current 50-method page)
   const PAGE = 20;
   const [page, setPage] = useState(0);
-  const [trend, setTrend] = useState<Record<string, number> | null>(null);
 
   const enriched = useMemo<EnrichedMethod[]>(() => {
     return rawMethods
@@ -775,11 +807,18 @@ function RiskDashboardView({
       });
   }, [rawMethods]);
 
-  // Snapshot persistence + trend calculation
+  // Track latest enriched batch in a ref so the snapshot effect always reads fresh data
+  // (updated in an effect to satisfy react-hooks/refs — idle callback fires after this)
+  const enrichedRef = useRef<EnrichedMethod[]>([]);
+  useEffect(() => {
+    enrichedRef.current = enriched;
+  }, [enriched]);
+
+  // Snapshot persistence + trend calculation using stats-based fingerprint.
   // Deferred to idle time so it never blocks first-paint.
   const lastSummaryFpRef = useRef("");
   useEffect(() => {
-    if (enriched.length === 0) return;
+    if (!stats || stats.total === 0) return;
 
     const schedule = typeof requestIdleCallback === "function"
       ? requestIdleCallback
@@ -789,21 +828,21 @@ function RiskDashboardView({
       : clearTimeout;
 
     const handle = schedule(() => {
-      const hc = enriched.filter(m => m.riskLevel === "HIGH").length;
-      const mc = enriched.filter(m => m.riskLevel === "MED").length;
-      const ac = enriched.length > 0
-        ? Math.round(enriched.reduce((s, m) => s + (m.complexity ?? 0), 0) / enriched.length * 10) / 10
-        : 0;
-      const currentSummary = { total: enriched.length, high: hc, med: mc, avgComplexity: ac };
-
-      // Full method-level fingerprint — preserves data correctness
-      const methodIdentities = enriched
-        .map(m => `${m.filename}:${m.line}:${m.lineEnd}:${m.complexity ?? 0}:${m.riskLevel}`)
-        .sort()
-        .join("|");
-      const fp = `${repoId}:${methodIdentities}`;
+      // Stats-based fingerprint (total+high+med+avgComplexity sufficient to detect change)
+      const fp = `${repoId}:${stats.total}:${stats.high}:${stats.med}:${Math.round(stats.avgComplexity * 10)}`;
       if (fp === lastSummaryFpRef.current) return;
       lastSummaryFpRef.current = fp;
+
+      const currentSummary = {
+        total: stats.total,
+        high: stats.high,
+        med: stats.med,
+        avgComplexity: stats.avgComplexity,
+        // Pagination means we can't fetch all methods client-side; mark snapshot as sampled
+        // so GET /snapshots/{id} callers know risk_matrix is not the complete set
+        is_sampled: true,
+        sample_size: enrichedRef.current.length,
+      };
 
       api.repos.analysis.snapshots.list(repoId)
         .then((res) => {
@@ -816,13 +855,14 @@ function RiskDashboardView({
               avgComplexity: Math.round((currentSummary.avgComplexity - (prev.avgComplexity ?? 0)) * 10) / 10,
             });
           }
-          api.repos.analysis.snapshots.save(repoId, enriched, currentSummary).catch(() => {});
+          // Save current enriched batch as sampled snapshot (pagination means we can't save all methods)
+          api.repos.analysis.snapshots.save(repoId, enrichedRef.current, currentSummary).catch(() => {});
         })
         .catch(() => {});
     });
 
     return () => { cancel(handle as number); };
-  }, [enriched, repoId]);
+  }, [stats, repoId]);
 
   const filtered = useMemo(() => {
     if (filterLevel === "ALL") return enriched;
@@ -842,22 +882,23 @@ function RiskDashboardView({
     totalPages: Math.ceil(sorted.length / PAGE),
   }), [sorted, page]);
 
-  const { highCount, medCount, avgC, maxMethod } = useMemo(() => {
-    const highCount = enriched.filter(m => m.riskLevel === "HIGH").length;
-    const medCount = enriched.filter(m => m.riskLevel === "MED").length;
-    const avgC = enriched.length > 0
-      ? Math.round(enriched.reduce((s, m) => s + (m.complexity ?? 0), 0) / enriched.length * 10) / 10
-      : 0;
-    const maxMethod = enriched.length > 0
-      ? enriched.reduce((mx, m) => m.riskScore > mx.riskScore ? m : mx, enriched[0])
-      : null;
-    return { highCount, medCount, avgC, maxMethod };
+  // Pulse stats from the /stats endpoint (accurate across all pages)
+  const highCount = stats?.high ?? 0;
+  const medCount = stats?.med ?? 0;
+  const avgC = stats?.avgComplexity ?? 0;
+  const totalCount = stats?.total ?? serverTotal;
+
+  // Hottest method from current page only
+  const maxMethod = useMemo(() => {
+    if (enriched.length === 0) return null;
+    return enriched.reduce((mx, m) => m.riskScore > mx.riskScore ? m : mx, enriched[0]);
   }, [enriched]);
 
   const toggleSort = (key: typeof sortKey) => {
     if (sortKey === key) setSortAsc(!sortAsc);
     else { setSortKey(key); setSortAsc(false); }
     setPage(0);
+    setServerPage(1);  // re-fetch from first server page on sort change
   };
 
   // Per-column max values for percentile background shading
@@ -903,13 +944,13 @@ function RiskDashboardView({
         </button>
       </div>
 
-      {/* Stats cards */}
+      {/* Stats cards — sourced from /stats endpoint for accuracy across all pages */}
       <div className="grid grid-cols-2 lg:grid-cols-4 gap-4">
         {[
-          { label: "总函数", value: enriched.length, icon: BarChart3, color: "text-primary", trendKey: "total" },
-          { label: "高风险", value: highCount, icon: AlertTriangle, color: "text-tertiary", trendKey: "high" },
-          { label: "中风险", value: medCount, icon: ShieldAlert, color: "text-amber-400", trendKey: "med" },
-          { label: "平均复杂度", value: avgC, icon: TrendingUp, color: "text-secondary", trendKey: "avgComplexity" },
+          { label: "总函数", value: statsLoading ? "…" : totalCount, icon: BarChart3, color: "text-primary", trendKey: "total" },
+          { label: "高风险", value: statsLoading ? "…" : highCount, icon: AlertTriangle, color: "text-tertiary", trendKey: "high" },
+          { label: "中风险", value: statsLoading ? "…" : medCount, icon: ShieldAlert, color: "text-amber-400", trendKey: "med" },
+          { label: "平均复杂度", value: statsLoading ? "…" : avgC, icon: TrendingUp, color: "text-secondary", trendKey: "avgComplexity" },
         ].map(({ label, value, icon: Ic, color, trendKey }) => {
           const delta = trend?.[trendKey];
           return (
@@ -1053,7 +1094,7 @@ function RiskDashboardView({
         </table>
       </div>
 
-      {/* Pagination */}
+      {/* Client pagination (within current server page) */}
       {totalPages > 1 && (
         <div className="flex items-center justify-center gap-2">
           <button onClick={() => setPage(Math.max(0, page - 1))} disabled={page === 0} className="p-1.5 rounded-lg border border-outline-variant/15 disabled:opacity-20">
@@ -1063,6 +1104,30 @@ function RiskDashboardView({
             {page + 1} / {totalPages}
           </span>
           <button onClick={() => setPage(Math.min(totalPages - 1, page + 1))} disabled={page >= totalPages - 1} className="p-1.5 rounded-lg border border-outline-variant/15 disabled:opacity-20">
+            <ChevronRight size={14} />
+          </button>
+        </div>
+      )}
+
+      {/* Server pagination */}
+      {serverTotal > SERVER_PAGE_SIZE && (
+        <div className="flex items-center justify-center gap-3 pt-2 border-t border-outline-variant/5">
+          <button
+            onClick={() => { setServerPage(Math.max(1, serverPage - 1)); setPage(0); }}
+            disabled={serverPage === 1}
+            className="p-1.5 rounded-lg border border-outline-variant/15 text-on-surface-variant/50 disabled:opacity-20 hover:border-primary/30 hover:text-primary transition-all"
+          >
+            <ChevronLeft size={14} />
+          </button>
+          <span className="text-[10px] font-data text-on-surface-variant/40 uppercase tracking-widest">
+            批次 {serverPage} / {Math.ceil(serverTotal / SERVER_PAGE_SIZE)}
+            <span className="ml-2 text-on-surface-variant/20">共 {serverTotal} 个方法</span>
+          </span>
+          <button
+            onClick={() => { setServerPage(Math.min(Math.ceil(serverTotal / SERVER_PAGE_SIZE), serverPage + 1)); setPage(0); }}
+            disabled={serverPage >= Math.ceil(serverTotal / SERVER_PAGE_SIZE)}
+            className="p-1.5 rounded-lg border border-outline-variant/15 text-on-surface-variant/50 disabled:opacity-20 hover:border-primary/30 hover:text-primary transition-all"
+          >
             <ChevronRight size={14} />
           </button>
         </div>
@@ -2780,9 +2845,11 @@ function waitForTaskCompletion(taskId: string): Promise<void> {
 }
 
 // ── Main page ──────────────────────────────────────────────────────────────
-export default function AnalysisPage() {
+function AnalysisPageInner() {
   const params = useParams();
+  const searchParams = useSearchParams();
   const repoId = params.repoId as string;
+  const scope = searchParams.get("scope") ?? undefined;
 
   const [activeNav, setActiveNav] = useState<NavId>("pulse");
   const [summary, setSummary] = useState<AnalysisSummary | null>(null);
@@ -2794,8 +2861,19 @@ export default function AnalysisPage() {
   // The method currently queried in Triage — syncs TaintView and ComplexityView to the same function
   const [triagedMethod, setTriagedMethod] = useState("");
 
-  // Shared methods list — fetched once here and passed to child views to avoid
-  // redundant API calls from RiskDashboardView, ComplexityView, and BranchesView.
+  // Aggregated stats for the Pulse panel (full-accuracy across all methods)
+  const [stats, setStats] = useState<AnalysisStats | null>(null);
+  const [statsLoading, setStatsLoading] = useState(true);
+
+  useEffect(() => {
+    setStatsLoading(true);
+    api.repos.analysis.stats(repoId, scope)
+      .then(setStats)
+      .catch(() => {})
+      .finally(() => setStatsLoading(false));
+  }, [repoId, scope, refreshKey]);
+
+  // First page of methods — shared with BranchesView + ComplexityView
   const [allMethods, setAllMethods] = useState<JoernMethod[]>([]);
   const [methodsLoading, setMethodsLoading] = useState(true);
   const [methodsError, setMethodsError] = useState("");
@@ -2803,11 +2881,11 @@ export default function AnalysisPage() {
   useEffect(() => {
     setMethodsLoading(true);
     setMethodsError("");
-    api.repos.analysis.joern.methods(repoId)
-      .then((res) => setAllMethods((res.methods || []) as JoernMethod[]))
+    api.repos.analysis.joern.methods(repoId, { scope, page: 1, size: 50, sort: "complexity" })
+      .then((res) => setAllMethods((res.methods ?? []) as unknown as JoernMethod[]))
       .catch((e) => setMethodsError(e instanceof Error ? e.message : "方法数据加载失败"))
       .finally(() => setMethodsLoading(false));
-  }, [repoId, refreshKey]);
+  }, [repoId, scope, refreshKey]);
 
   // Source viewer state
   const [sourceModal, setSourceModal] = useState<{ path: string; line?: number } | null>(null);
@@ -2962,7 +3040,7 @@ export default function AnalysisPage() {
             >
               {/* Pulse: Risk overview — "where is the fire spreading?" */}
               {activeNav === "pulse" && (
-                <RiskDashboardView repoId={repoId} summary={summary} onNavigate={navigateToMethod} onExport={exportCsv} allMethods={allMethods} methodsLoading={methodsLoading} />
+                <RiskDashboardView repoId={repoId} summary={summary} onNavigate={navigateToMethod} onExport={exportCsv} scope={scope} stats={stats} statsLoading={statsLoading} />
               )}
 
               {/* Triage: Deep per-function analysis — BranchesView + accordion sub-sections */}
@@ -3014,5 +3092,15 @@ export default function AnalysisPage() {
         </div>
       </div>
     </main>
+  );
+}
+
+import { Suspense } from "react";
+
+export default function AnalysisPage() {
+  return (
+    <Suspense>
+      <AnalysisPageInner />
+    </Suspense>
   );
 }

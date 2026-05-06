@@ -241,11 +241,11 @@ export default function RepoDetailPage() {
 
         <div className="ml-auto flex items-center gap-2">
           <Link
-            href={`/repos/${repoId}/analysis`}
+            href={`/analysis?repo=${repoId}`}
             className="inline-flex items-center gap-2 rounded-full border border-tertiary/20 bg-tertiary/10 px-4 py-2 text-[11px] font-bold uppercase tracking-widest text-tertiary transition-colors hover:bg-tertiary/15"
           >
             <ShieldAlert size={12} />
-            静态分析
+            静态分析 →
           </Link>
           <Link
             href={`/repos/${repoId}/ask`}
