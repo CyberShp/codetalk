@@ -38,20 +38,6 @@ CONTRACTS: dict[str, ComponentContract] = {
         label="DeepWiki (文档引擎)",
         domains=[
             ConfigDomain(
-                domain="connection",
-                label="连接地址",
-                target="backend",
-                env_map={},
-                fields=[
-                    ConfigField(
-                        name="base_url",
-                        label="Base URL",
-                        field_type="url",
-                        placeholder="http://deepwiki:8001",
-                    ),
-                ],
-            ),
-            ConfigDomain(
                 domain="chat",
                 label="Chat 模型",
                 env_map={
@@ -190,7 +176,6 @@ CONTRACTS: dict[str, ComponentContract] = {
 # ── Backend config mapping (component, domain) → settings attributes ──
 
 _BACKEND_CONFIG_MAP: dict[tuple[str, str], dict[str, str]] = {
-    ("deepwiki", "connection"): {"base_url": "deepwiki_base_url"},
     ("gitnexus", "connection"): {"base_url": "gitnexus_base_url"},
     ("zoekt", "connection"): {"base_url": "zoekt_base_url"},
     ("joern", "connection"): {"base_url": "joern_base_url"},

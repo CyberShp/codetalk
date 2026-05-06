@@ -67,22 +67,18 @@ function ToolRow({
   value,
   dirty,
   saving,
-  restarting,
   feedback,
   onChange,
   onSave,
-  onRestart,
 }: {
   contract: ComponentContract;
   status: ComponentStatus | undefined;
   value: string;
   dirty: boolean;
   saving: boolean;
-  restarting: boolean;
   feedback: { ok: boolean; msg: string } | null;
   onChange: (v: string) => void;
   onSave: () => void;
-  onRestart: () => void;
 }) {
   const healthy = status?.health.healthy ?? false;
 
@@ -134,25 +130,6 @@ function ToolRow({
             <path d="M19 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11l5 5v11a2 2 0 0 1-2 2z" />
             <polyline points="17 21 17 13 7 13 7 21" />
             <polyline points="7 3 7 8 15 8" />
-          </svg>
-        )}
-      </IconButton>
-      {/* Restart icon */}
-      <IconButton
-        onClick={onRestart}
-        disabled={restarting}
-        active={true}
-        title="重启容器"
-      >
-        {restarting ? (
-          <svg className="w-3.5 h-3.5 animate-spin" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={2}>
-            <circle cx="12" cy="12" r="10" strokeOpacity={0.3} />
-            <path d="M12 2a10 10 0 0 1 10 10" />
-          </svg>
-        ) : (
-          <svg className="w-3.5 h-3.5" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={2}>
-            <polyline points="1 4 1 10 7 10" />
-            <path d="M3.51 15a9 9 0 1 0 .49-4.5" />
           </svg>
         )}
       </IconButton>
@@ -262,7 +239,6 @@ export default function ComponentConfigPanel() {
   const [connValues, setConnValues] = useState<Record<string, string>>({});
   const [connDirty, setConnDirty] = useState<Record<string, boolean>>({});
   const [connSaving, setConnSaving] = useState<Record<string, boolean>>({});
-  const [connRestarting, setConnRestarting] = useState<Record<string, boolean>>({});
   const [connFeedback, setConnFeedback] = useState<Record<string, { ok: boolean; msg: string } | null>>({});
 
   // Form state for Section B (container domains)
@@ -338,25 +314,6 @@ export default function ComponentConfigPanel() {
       }));
     } finally {
       setConnSaving((prev) => ({ ...prev, [comp]: false }));
-    }
-  };
-
-  const handleConnRestart = async (comp: string) => {
-    setConnRestarting((prev) => ({ ...prev, [comp]: true }));
-    setConnFeedback((prev) => ({ ...prev, [comp]: null }));
-    try {
-      const result = await api.components.restart(comp);
-      setConnFeedback((prev) => ({
-        ...prev,
-        [comp]: { ok: result.success, msg: result.message },
-      }));
-    } catch (e) {
-      setConnFeedback((prev) => ({
-        ...prev,
-        [comp]: { ok: false, msg: e instanceof Error ? e.message : "重启失败" },
-      }));
-    } finally {
-      setConnRestarting((prev) => ({ ...prev, [comp]: false }));
     }
   };
 
@@ -483,11 +440,9 @@ export default function ComponentConfigPanel() {
                   value={connValues[contract.component] ?? ""}
                   dirty={connDirty[contract.component] ?? false}
                   saving={connSaving[contract.component] ?? false}
-                  restarting={connRestarting[contract.component] ?? false}
                   feedback={connFeedback[contract.component] ?? null}
                   onChange={(v) => handleConnChange(contract.component, v)}
                   onSave={() => handleConnSave(contract.component)}
-                  onRestart={() => handleConnRestart(contract.component)}
                 />
               );
             })}
