@@ -79,10 +79,14 @@ async def list_components(db: AsyncSession = Depends(get_db)):
         else:
             comp_health = health_result
 
-        # Config domains
+        # Config domains — only include domains that still exist in the contract.
+        # Stale DB rows for deleted domains (e.g. removed deepwiki connection) are skipped.
+        valid_domains = {d.domain for d in contract.domains}
         domains = []
         for cfg in all_configs:
             if cfg.component != contract.component:
+                continue
+            if cfg.domain not in valid_domains:
                 continue
             display = cm.config_to_display(cfg, contract)
             domains.append(
@@ -114,7 +118,7 @@ async def save_config(
     data: ComponentConfigUpdate,
     db: AsyncSession = Depends(get_db),
 ):
-    """Save config to central store (does NOT apply to container)."""
+    """Save config to central store. Backend-target configs are hot-applied immediately."""
     try:
         cfg = await cm.save_config(db, component, domain, data.config)
     except ValueError as exc:
@@ -123,6 +127,22 @@ async def save_config(
     contract = cm.get_contract(component)
     if not contract:
         raise HTTPException(status_code=404, detail="Unknown component")
+
+    # Hot-apply backend-target configs (e.g. tool connection URLs) immediately.
+    # This updates runtime settings + refreshes the adapter singleton so health
+    # checks use the new URL without requiring a backend restart.
+    domain_contract = next(
+        (d for d in contract.domains if d.domain == domain), None
+    )
+    if domain_contract and domain_contract.target == "backend":
+        cm._apply_backend_config(cfg)
+        # Re-create adapter singleton from factory so it picks up the new
+        # settings.xxx_base_url value.
+        from app.adapters import ADAPTER_FACTORIES, register_adapter
+
+        if component in ADAPTER_FACTORIES:
+            factory = ADAPTER_FACTORIES[component]
+            register_adapter(factory(), factory=factory)
 
     display = cm.config_to_display(cfg, contract)
     return ComponentConfigResponse(
