@@ -3,11 +3,10 @@
 import { useState, useEffect, useCallback } from "react";
 import GlassPanel from "@/components/ui/GlassPanel";
 import CyberInput from "@/components/ui/CyberInput";
-import StatusBadge from "@/components/ui/StatusBadge";
 import ComponentConfigPanel from "@/components/ComponentConfigPanel";
 import { usePageRestoreRefresh } from "@/hooks/usePageRestoreRefresh";
 import { api } from "@/lib/api";
-import type { LLMConfig, ToolInfo, ProxyMode } from "@/lib/types";
+import type { LLMConfig, ProxyMode } from "@/lib/types";
 
 const LLM_PROVIDERS = [
   { value: "openai", label: "OpenAI" },
@@ -18,49 +17,9 @@ const LLM_PROVIDERS = [
   { value: "custom", label: "Custom (兼容 OpenAI)" },
 ] as const;
 
-const PROVIDER_EMBEDDER_MAP: Record<string, string> = {
-  openai: "openai",
-  google: "google",
-  ollama: "ollama",
-  bedrock: "bedrock",
-  openrouter: "openai",
-  custom: "openai",
-};
-
-function isRecord(value: unknown): value is Record<string, unknown> {
-  return typeof value === "object" && value !== null && !Array.isArray(value);
-}
-
-function readModelLabel(model: unknown): string {
-  if (typeof model === "string") return model;
-  if (!isRecord(model)) return JSON.stringify(model);
-  const candidate = model.displayName ?? model.name ?? model.id ?? model.model ?? model.value;
-  return typeof candidate === "string" ? candidate : JSON.stringify(model);
-}
-
-function normalizeDeepwikiProvider(value: unknown): {
-  models: string[];
-  supportsCustomModel: boolean;
-} {
-  const source = Array.isArray(value)
-    ? value
-    : isRecord(value) && Array.isArray(value.models)
-      ? value.models
-      : [];
-
-  return {
-    models: source.map(readModelLabel),
-    supportsCustomModel: isRecord(value) && value.supportsCustomModel === true,
-  };
-}
-
 export default function SettingsPage() {
   const [aiEnabled, setAiEnabled] = useState(true);
   const [configs, setConfigs] = useState<LLMConfig[]>([]);
-  const [tools, setTools] = useState<ToolInfo[]>([]);
-  const [toolsError, setToolsError] = useState("");
-  const [deepwikiModels, setDeepwikiModels] = useState<Record<string, unknown> | null>(null);
-  const [deepwikiModelsError, setDeepwikiModelsError] = useState(false);
   const [showApiKey, setShowApiKey] = useState(false);
   const [saving, setSaving] = useState(false);
   const [testingId, setTestingId] = useState<string | null>(null);
@@ -83,28 +42,13 @@ export default function SettingsPage() {
     }
   }, []);
 
-  const loadTools = useCallback(async () => {
-    setToolsError("");
-    try {
-      const data = await api.tools.list();
-      setTools(data);
-    } catch (e) {
-      setToolsError(e instanceof Error ? e.message : "工具状态加载失败");
-    }
-  }, []);
-
   useEffect(() => {
     void loadConfigs();
-    void loadTools();
-    api.settings.deepwikiModels()
-      .then((data) => setDeepwikiModels(data))
-      .catch(() => setDeepwikiModelsError(true));
     const stored = localStorage.getItem("codetalks_ai_enabled");
     if (stored !== null) setAiEnabled(stored === "true");
-  }, [loadConfigs, loadTools]);
+  }, [loadConfigs]);
   usePageRestoreRefresh(() => {
     void loadConfigs();
-    void loadTools();
   });
 
   const toggleAI = () => {
@@ -404,112 +348,8 @@ export default function SettingsPage() {
         </button>
       </GlassPanel>
 
-      {/* DeepWiki Available Models */}
-      <GlassPanel>
-        <h3 className="text-sm font-medium text-on-surface mb-4">
-          DeepWiki 可用模型
-        </h3>
-        {deepwikiModelsError ? (
-          <p className="text-xs text-tertiary">无法连接 deepwiki 服务</p>
-        ) : deepwikiModels === null ? (
-          <p className="text-xs text-on-surface-variant/50">加载中...</p>
-        ) : Object.keys(deepwikiModels).length === 0 ? (
-          <p className="text-xs text-on-surface-variant/50">暂无可用模型</p>
-        ) : (
-          <div className="space-y-3">
-            {Object.entries(deepwikiModels).map(([provider, models]) => (
-              <div key={provider} className="bg-surface-container-lowest/50 rounded-lg px-4 py-3">
-                {(() => {
-                  const normalized = normalizeDeepwikiProvider(models);
-                  return (
-                    <>
-                      <div className="flex items-center gap-2 mb-2 flex-wrap">
-                        <p className="text-xs font-medium text-primary-fixed-dim uppercase tracking-wide">
-                          {provider}
-                        </p>
-                        {normalized.supportsCustomModel && (
-                          <span className="font-data text-[10px] text-secondary-fixed-dim bg-secondary/10 px-2 py-0.5 rounded">
-                            supports custom model
-                          </span>
-                        )}
-                      </div>
-                      <div className="flex flex-wrap gap-2">
-                        {normalized.models.length > 0 ? (
-                          normalized.models.map((model) => (
-                            <span
-                              key={model}
-                              className="font-data text-[11px] text-on-surface-variant bg-surface-container-high px-2 py-0.5 rounded"
-                            >
-                              {model}
-                            </span>
-                          ))
-                        ) : (
-                          <span className="font-data text-[11px] text-on-surface-variant/60">
-                            暂无模型明细
-                          </span>
-                        )}
-                      </div>
-                    </>
-                  );
-                })()}
-              </div>
-            ))}
-          </div>
-        )}
-      </GlassPanel>
-
-      {/* Embedder Recommendation — based on live form provider state */}
-      {(() => {
-        const recEmbedder = provider ? PROVIDER_EMBEDDER_MAP[provider] : null;
-        if (!recEmbedder) return null;
-        return (
-          <div className="px-4 py-2.5 rounded-lg bg-primary/5 border border-primary/10">
-            <p className="text-xs text-on-surface-variant">
-              <span className="text-primary-fixed-dim font-medium">Embedder 推荐</span>
-              {" — "}
-              当前选择 provider 为{" "}
-              <span className="font-data text-on-surface">{provider}</span>
-              ，推荐使用{" "}
-              <span className="font-data text-secondary-fixed-dim">{recEmbedder}</span>
-              {" "}embedder（可在下方组件配置中调整）
-            </p>
-          </div>
-        );
-      })()}
-
       {/* Component Config */}
       <ComponentConfigPanel />
-
-      {/* System Health */}
-      <GlassPanel>
-        <h3 className="text-sm font-medium text-on-surface mb-4">
-          系统健康
-        </h3>
-        <div className="space-y-2">
-          {toolsError && (
-            <p className="text-sm text-tertiary">{toolsError}</p>
-          )}
-          {tools.map((tool) => (
-            <div
-              key={tool.name}
-              className="flex items-center justify-between py-2"
-            >
-              <div>
-                <p className="text-sm text-on-surface">{tool.name}</p>
-                <p className="text-xs text-on-surface-variant font-data">
-                  {tool.healthy ? "已连接" : "不可用"}
-                </p>
-              </div>
-              <StatusBadge status={tool.healthy ? "online" : "offline"} />
-            </div>
-          ))}
-          {tools.length === 0 && (
-            <p className="text-sm text-on-surface-variant/50">
-              加载工具中...
-            </p>
-          )}
-        </div>
-      </GlassPanel>
     </div>
   );
 }

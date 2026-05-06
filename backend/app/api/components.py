@@ -32,23 +32,35 @@ async def list_components(db: AsyncSession = Depends(get_db)):
     adapters = {a.name(): a for a in get_all_adapters()}
     all_configs = await cm.get_all_configs(db)
 
-    # Parallel health checks
-    async def check_health(contract):
-        adapter = adapters.get(contract.component)
-        if adapter:
-            health = await adapter.health_check()
+    # Parallel health checks with per-check 3s timeout (matches tools.py pattern).
+    # Prevents a single slow remote service from stalling the whole endpoint.
+    _HEALTH_TIMEOUT = 3.0
+
+    async def check_health(contract) -> ComponentHealth:
+        try:
+            adapter = adapters.get(contract.component)
+            if adapter:
+                health = await asyncio.wait_for(adapter.health_check(), _HEALTH_TIMEOUT)
+                return ComponentHealth(
+                    component=contract.component,
+                    healthy=health.is_healthy,
+                    container_status=health.container_status,
+                    version=health.version,
+                )
+            else:
+                running, status = await asyncio.wait_for(
+                    cm.get_container_status(contract.component), _HEALTH_TIMEOUT
+                )
+                return ComponentHealth(
+                    component=contract.component,
+                    healthy=running,
+                    container_status=status,
+                )
+        except asyncio.TimeoutError:
             return ComponentHealth(
                 component=contract.component,
-                healthy=health.is_healthy,
-                container_status=health.container_status,
-                version=health.version,
-            )
-        else:
-            running, status = await cm.get_container_status(contract.component)
-            return ComponentHealth(
-                component=contract.component,
-                healthy=running,
-                container_status=status,
+                healthy=False,
+                container_status="timeout",
             )
 
     healths = await asyncio.gather(

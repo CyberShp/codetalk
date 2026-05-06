@@ -273,33 +273,37 @@ export default function ComponentConfigPanel() {
 
   const [loadError, setLoadError] = useState("");
 
+  // Two-phase load:
+  // Phase 1 — contracts (instant, ~1ms): renders the form shell immediately.
+  // Phase 2 — statuses (health checks, up to 3s per tool): updates status dots
+  //            and seeds saved URL values, runs in background after phase 1.
   const load = useCallback(async () => {
     setLoadError("");
     try {
-      const [c, s] = await Promise.all([
-        api.components.contracts(),
-        api.components.list(),
-      ]);
+      // Phase 1: contracts only — show form immediately
+      const c = await api.components.contracts();
       setContracts(c);
-      setStatuses(s);
 
-      // Seed connection values from saved DB config (only if not dirty)
-      const newVals: Record<string, string> = {};
-      for (const contract of c) {
-        const connDomain = contract.domains.find((d) => d.domain === "connection");
-        if (!connDomain) continue;
-        const status = s.find((st) => st.component === contract.component);
-        const saved = status?.domains.find((d) => d.domain === "connection");
-        newVals[contract.component] = saved?.config?.base_url ?? "";
-      }
-      setConnValues((prev) => {
-        // Don't overwrite dirty fields
-        const merged = { ...newVals };
-        for (const [k, v] of Object.entries(prev)) {
-          if (connDirty[k]) merged[k] = v;
+      // Phase 2: statuses — health + saved config values (background)
+      api.components.list().then((s) => {
+        setStatuses(s);
+        // Seed connection values from saved DB config (only if not dirty)
+        const newVals: Record<string, string> = {};
+        for (const contract of c) {
+          const connDomain = contract.domains.find((d) => d.domain === "connection");
+          if (!connDomain) continue;
+          const status = s.find((st) => st.component === contract.component);
+          const saved = status?.domains.find((d) => d.domain === "connection");
+          newVals[contract.component] = saved?.config?.base_url ?? "";
         }
-        return merged;
-      });
+        setConnValues((prev) => {
+          const merged = { ...newVals };
+          for (const [k, v] of Object.entries(prev)) {
+            if (connDirty[k]) merged[k] = v;
+          }
+          return merged;
+        });
+      }).catch(() => {/* health checks failed — form still usable */});
     } catch (e) {
       setLoadError(e instanceof Error ? e.message : "组件配置加载失败");
     }
