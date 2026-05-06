@@ -3,7 +3,7 @@
 Responsibilities:
   - Define config contracts (what env vars each component needs)
   - Generate docker-compose.override.yml
-  - Restart containers via Docker Engine API (Unix socket + httpx)
+  - Restart containers via Docker Engine API (Unix socket or TCP)
 """
 
 import logging
@@ -14,6 +14,7 @@ import httpx
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.config import settings
 from app.models.component_config import ComponentConfig
 from app.schemas.component_config import (
     ComponentContract,
@@ -23,8 +24,6 @@ from app.schemas.component_config import (
 from app.utils.crypto import decrypt_key, encrypt_key
 
 logger = logging.getLogger(__name__)
-
-DOCKER_SOCKET = "/var/run/docker.sock"
 # /project is the Docker-mount of the repo root; on host-run, fall back to
 # the actual repo root (two levels up from backend/app/services/).
 _DOCKER_PROJECT = Path("/project")
@@ -38,6 +37,20 @@ CONTRACTS: dict[str, ComponentContract] = {
         component="deepwiki",
         label="DeepWiki (文档引擎)",
         domains=[
+            ConfigDomain(
+                domain="connection",
+                label="连接地址",
+                target="backend",
+                env_map={},
+                fields=[
+                    ConfigField(
+                        name="base_url",
+                        label="Base URL",
+                        field_type="url",
+                        placeholder="http://deepwiki:8001",
+                    ),
+                ],
+            ),
             ConfigDomain(
                 domain="chat",
                 label="Chat 模型",
@@ -94,24 +107,156 @@ CONTRACTS: dict[str, ComponentContract] = {
     "gitnexus": ComponentContract(
         component="gitnexus",
         label="GitNexus (代码图谱)",
-        domains=[],
+        domains=[
+            ConfigDomain(
+                domain="connection",
+                label="连接地址",
+                target="backend",
+                env_map={},
+                fields=[
+                    ConfigField(
+                        name="base_url",
+                        label="Base URL",
+                        field_type="url",
+                        placeholder="http://gitnexus:7100",
+                    ),
+                ],
+            ),
+        ],
     ),
     "zoekt": ComponentContract(
         component="zoekt",
         label="Zoekt (代码搜索)",
-        domains=[],
+        domains=[
+            ConfigDomain(
+                domain="connection",
+                label="连接地址",
+                target="backend",
+                env_map={},
+                fields=[
+                    ConfigField(
+                        name="base_url",
+                        label="Base URL",
+                        field_type="url",
+                        placeholder="http://zoekt:6070",
+                    ),
+                ],
+            ),
+        ],
     ),
     "joern": ComponentContract(
         component="joern",
         label="Joern (CPG分析)",
-        domains=[],
+        domains=[
+            ConfigDomain(
+                domain="connection",
+                label="连接地址",
+                target="backend",
+                env_map={},
+                fields=[
+                    ConfigField(
+                        name="base_url",
+                        label="Base URL",
+                        field_type="url",
+                        placeholder="http://joern:8080",
+                    ),
+                ],
+            ),
+        ],
+    ),
+    "codecompass": ComponentContract(
+        component="codecompass",
+        label="CodeCompass (调用图分析)",
+        domains=[
+            ConfigDomain(
+                domain="connection",
+                label="连接地址",
+                target="backend",
+                env_map={},
+                fields=[
+                    ConfigField(
+                        name="base_url",
+                        label="Base URL",
+                        field_type="url",
+                        placeholder="http://codecompass:6251",
+                    ),
+                ],
+            ),
+        ],
     ),
     "semgrep": ComponentContract(
         component="semgrep",
         label="Semgrep (规则扫描)",
         domains=[],
     ),
+    "platform": ComponentContract(
+        component="platform",
+        label="平台设置",
+        domains=[
+            ConfigDomain(
+                domain="docker",
+                label="Docker 管理",
+                target="backend",
+                env_map={},
+                fields=[
+                    ConfigField(
+                        name="docker_host",
+                        label="Docker Host",
+                        field_type="url",
+                        placeholder="unix:///var/run/docker.sock 或 tcp://192.168.50.195:2375",
+                    ),
+                ],
+            ),
+        ],
+    ),
 }
+
+
+# ── Backend config mapping (component, domain) → settings attributes ──
+
+_BACKEND_CONFIG_MAP: dict[tuple[str, str], dict[str, str]] = {
+    ("deepwiki", "connection"): {"base_url": "deepwiki_base_url"},
+    ("gitnexus", "connection"): {"base_url": "gitnexus_base_url"},
+    ("zoekt", "connection"): {"base_url": "zoekt_base_url"},
+    ("joern", "connection"): {"base_url": "joern_base_url"},
+    ("codecompass", "connection"): {"base_url": "codecompass_base_url"},
+    ("platform", "docker"): {"docker_host": "docker_host"},
+}
+
+# Snapshot of settings values as resolved at process startup (from env files + env vars).
+# This is the "environment baseline" — used to reset backend-target fields when the
+# user explicitly clears them in the UI.  We capture it here, after `settings` has been
+# fully initialised by pydantic-settings, so it reflects .env.local overrides rather
+# than the class-level code defaults.
+_BACKEND_STARTUP_BASELINE: dict[str, str] = {
+    settings_attr: getattr(settings, settings_attr, "")
+    for attrs in _BACKEND_CONFIG_MAP.values()
+    for settings_attr in attrs.values()
+}
+
+
+def _apply_backend_config(cfg: ComponentConfig) -> None:
+    """Update runtime settings from a backend-target config.
+
+    Three-state semantics per field:
+    - Key absent (None from .get): no-op — don't touch the existing runtime value.
+    - Explicit empty string: reset to _BACKEND_STARTUP_BASELINE (the env-file resolved
+      value from process startup), NOT the code-level class default.
+    - Non-empty string: hot-update settings to the new value.
+    """
+    mapping = _BACKEND_CONFIG_MAP.get((cfg.component, cfg.domain))
+    if not mapping:
+        return
+    for config_key, settings_attr in mapping.items():
+        value = cfg.config.get(config_key)
+        if value is None:
+            continue
+        if value == "":
+            # Reset to startup baseline (env-file resolved), not code default.
+            baseline = _BACKEND_STARTUP_BASELINE.get(settings_attr, "")
+            setattr(settings, settings_attr, baseline)
+        else:
+            setattr(settings, settings_attr, value)
 
 
 def get_contracts() -> list[ComponentContract]:
@@ -312,39 +457,97 @@ def generate_override(
 async def apply_config(
     db: AsyncSession, component: str
 ) -> tuple[bool, str, dict[str, str] | None]:
-    """Apply configs: write override file and mark as applied."""
+    """Apply configs: backend-target configs update runtime settings;
+    container-target configs write docker-compose.override.yml."""
     all_configs = await get_all_configs(db)
-    yaml_content, preview = generate_override(all_configs)
 
-    if not yaml_content:
-        return False, "没有可应用的配置", None
-
-    override_path = PROJECT_DIR / "docker-compose.override.yml"
-    try:
-        override_path.write_text(yaml_content)
-    except OSError as exc:
-        return False, f"写入 override 文件失败: {exc}", None
-
-    # Mark target component configs as applied
+    # Split configs by target
+    container_configs: list[ComponentConfig] = []
     for cfg in all_configs:
+        contract = CONTRACTS.get(cfg.component)
+        if not contract:
+            continue
+        domain_contract = next(
+            (d for d in contract.domains if d.domain == cfg.domain), None
+        )
+        if not domain_contract:
+            continue
+        if domain_contract.target == "backend":
+            # Apply backend configs: update runtime settings
+            if cfg.component == component:
+                _apply_backend_config(cfg)
+                cfg.applied_at = datetime.now(timezone.utc)
+        else:
+            container_configs.append(cfg)
+
+    yaml_content, preview = generate_override(container_configs)
+
+    # Write override file only when there are container configs
+    if yaml_content:
+        override_path = PROJECT_DIR / "docker-compose.override.yml"
+        try:
+            override_path.write_text(yaml_content)
+        except OSError as exc:
+            await db.commit()
+            return False, f"写入 override 文件失败: {exc}", None
+
+    # Mark target component container configs as applied
+    for cfg in container_configs:
         if cfg.component == component:
             cfg.applied_at = datetime.now(timezone.utc)
+
     await db.commit()
 
+    # If the component had only backend configs, report success
+    had_backend = any(
+        cfg.component == component
+        for cfg in all_configs
+        if CONTRACTS.get(cfg.component) and next(
+            (d for d in CONTRACTS[cfg.component].domains if d.domain == cfg.domain and d.target == "backend"),
+            None,
+        )
+    )
+    if not yaml_content and not had_backend:
+        return False, "没有可应用的配置", None
+
     component_preview = preview.get(component, {})
-    return True, "配置已写入 override 文件", component_preview
+    applied_message = "配置已应用" if had_backend and not yaml_content else "配置已写入 override 文件"
+    return True, applied_message, component_preview if component_preview else None
 
 
 # ── Docker Engine API (via Unix socket) ────────────────────────────
 
 
 def _docker_client() -> httpx.AsyncClient:
-    transport = httpx.AsyncHTTPTransport(uds=DOCKER_SOCKET)
-    return httpx.AsyncClient(
-        transport=transport,
-        base_url="http://localhost",
-        timeout=httpx.Timeout(60, connect=10),
-    )
+    """Create an httpx async client for the Docker Engine API.
+
+    Supports:
+      - unix:///path  → Unix domain socket (default, local Docker)
+      - tcp://host:port → Remote Docker Engine over TCP (no TLS)
+    """
+    host = settings.docker_host
+
+    if host.startswith("unix://"):
+        socket_path = host[len("unix://"):]
+        transport = httpx.AsyncHTTPTransport(uds=socket_path)
+        return httpx.AsyncClient(
+            transport=transport,
+            base_url="http://localhost",
+            timeout=httpx.Timeout(60, connect=10),
+        )
+    elif host.startswith("tcp://"):
+        # Remote Docker Engine: tcp://host:port → http://host:port
+        base = host.replace("tcp://", "http://", 1)
+        return httpx.AsyncClient(
+            base_url=base,
+            timeout=httpx.Timeout(60, connect=10),
+        )
+    else:
+        # Fallback: treat as URL directly
+        return httpx.AsyncClient(
+            base_url=host,
+            timeout=httpx.Timeout(60, connect=10),
+        )
 
 
 def _container_name(component: str) -> str:

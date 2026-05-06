@@ -36,6 +36,9 @@ logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/api/chat", tags=["chat"])
 
+# TODO(Phase 5B): This module-level cache captures zoekt_base_url at import
+# time and will NOT reflect hot-updates made via the Settings UI. Fix by
+# reading settings.zoekt_base_url inside each request handler instead.
 _ZOEKT_BASE = settings.zoekt_base_url
 _ZOEKT_CONTAINER = "codetalk-zoekt-1"
 _DOCKER_SOCKET = "/var/run/docker.sock"

@@ -350,6 +350,7 @@ class OpsRouteContractTests(unittest.IsolatedAsyncioTestCase):
                         {
                             "domain": "chat",
                             "label": "Chat 模型",
+                            "target": "container",
                             "fields": [
                                 {
                                     "name": "base_url",

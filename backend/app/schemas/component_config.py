@@ -15,7 +15,8 @@ class ConfigDomain(BaseModel):
     domain: str
     label: str
     fields: list[ConfigField]
-    env_map: dict[str, str]
+    env_map: dict[str, str] = {}
+    target: str = "container"  # "container" | "backend"
 
 
 class ComponentContract(BaseModel):
