@@ -276,6 +276,10 @@ export default function GraphViewer({ nodes, edges, selectedNodeId, onNodeClick,
   const [activeFilter, setActiveFilter] = useState<string | null>(null);
   const [jumpedNodeId, setJumpedNodeId] = useState<string | null>(null);
   const containerRef = useRef<HTMLDivElement>(null);
+  const jumpTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+
+  // Cleanup jump timer on unmount
+  useEffect(() => () => { if (jumpTimerRef.current) clearTimeout(jumpTimerRef.current); }, []);
 
   // Build node map for search → click bridging
   const nodeMap = useMemo(() => new Map(nodes.map((n) => [n.id, n])), [nodes]);
@@ -284,9 +288,13 @@ export default function GraphViewer({ nodes, edges, selectedNodeId, onNodeClick,
     const node = nodeMap.get(nodeId);
     if (!node) return;
     onNodeClick(node);
+    // Cancel any in-flight timer before starting a new 2s window
+    if (jumpTimerRef.current) clearTimeout(jumpTimerRef.current);
     setJumpedNodeId(nodeId);
-    // Clear jump animation after 2s
-    setTimeout(() => setJumpedNodeId(null), 2000);
+    jumpTimerRef.current = setTimeout(() => {
+      setJumpedNodeId(null);
+      jumpTimerRef.current = null;
+    }, 2000);
   }, [nodeMap, onNodeClick]);
 
   // Auto-clear filter when a NEW node is selected that wouldn't be visible
