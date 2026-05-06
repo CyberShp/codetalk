@@ -137,19 +137,16 @@ function ToolRow({
   );
 }
 
-// ── Section B: container-target domain card ─────────────────────────────────
+// ── Section B: one card per component, all its domains inside ───────────────
 
-function DomainCard({
+function DomainFields({
   component,
   domain,
   getFormValue,
   setFormValue,
   hasChanges,
   saving,
-  applying,
-  feedback,
   onSave,
-  onApplyRestart,
 }: {
   component: string;
   domain: ConfigDomain;
@@ -157,16 +154,22 @@ function DomainCard({
   setFormValue: (comp: string, dom: string, field: string, v: string) => void;
   hasChanges: boolean;
   saving: boolean;
-  applying: boolean;
-  feedback: { ok: boolean; msg: string } | null;
   onSave: () => void;
-  onApplyRestart: () => void;
 }) {
   return (
-    <div className="bg-surface-container-lowest/30 rounded-lg p-4 flex flex-col gap-3">
-      <h5 className="text-xs text-on-surface-variant uppercase tracking-wider">
-        {domain.label}
-      </h5>
+    <div className="flex flex-col gap-3">
+      <div className="flex items-center justify-between">
+        <h5 className="text-[10px] text-on-surface-variant/60 uppercase tracking-wider">
+          {domain.label}
+        </h5>
+        <button
+          onClick={onSave}
+          disabled={saving || !hasChanges}
+          className="px-2.5 py-1 text-[10px] rounded bg-surface-container-high text-on-surface-variant hover:text-on-surface transition-colors disabled:opacity-30"
+        >
+          {saving ? "保存中..." : "保存"}
+        </button>
+      </div>
       <div className="space-y-3">
         {domain.fields.map((field) => {
           if (field.field_type === "select") {
@@ -204,14 +207,55 @@ function DomainCard({
           );
         })}
       </div>
-      <div className="flex items-center gap-2 mt-1">
-        <button
-          onClick={onSave}
-          disabled={saving || !hasChanges}
-          className="px-3 py-1.5 text-xs rounded-md bg-surface-container-high text-on-surface-variant hover:text-on-surface transition-colors disabled:opacity-30"
-        >
-          {saving ? "保存中..." : "保存"}
-        </button>
+    </div>
+  );
+}
+
+function ComponentCard({
+  contract,
+  domains,
+  getFormValue,
+  setFormValue,
+  hasDomainChanges,
+  savingKey,
+  applying,
+  feedback,
+  onSaveDomain,
+  onApplyRestart,
+}: {
+  contract: ComponentContract;
+  domains: ConfigDomain[];
+  getFormValue: (comp: string, dom: string, field: string) => string;
+  setFormValue: (comp: string, dom: string, field: string, v: string) => void;
+  hasDomainChanges: (comp: string, dom: string) => boolean;
+  savingKey: string | null;
+  applying: boolean;
+  feedback: { ok: boolean; msg: string } | null;
+  onSaveDomain: (domain: ConfigDomain) => void;
+  onApplyRestart: () => void;
+}) {
+  return (
+    <div className="bg-surface-container-lowest/30 rounded-lg p-4 flex flex-col gap-4">
+      {/* Domain fields — side by side when multiple */}
+      <div className={domains.length > 1 ? "grid grid-cols-2 gap-4" : ""}>
+        {domains.map((domain) => {
+          const key = `${contract.component}:${domain.domain}`;
+          return (
+            <DomainFields
+              key={domain.domain}
+              component={contract.component}
+              domain={domain}
+              getFormValue={getFormValue}
+              setFormValue={setFormValue}
+              hasChanges={hasDomainChanges(contract.component, domain.domain)}
+              saving={savingKey === key}
+              onSave={() => onSaveDomain(domain)}
+            />
+          );
+        })}
+      </div>
+      {/* Single Apply & Restart for the whole component */}
+      <div className="flex items-center gap-2 pt-1 border-t border-outline-variant/10">
         <button
           onClick={onApplyRestart}
           disabled={applying}
@@ -392,15 +436,19 @@ export default function ComponentConfigPanel() {
     c.domains.some((d) => d.domain === "connection")
   );
 
-  // Section B: contracts that have container-target domains (excluding connection)
-  const containerDomains: { contract: ComponentContract; domain: ConfigDomain }[] = [];
+  // Section B: group container-target domains by component
+  const componentGroups: { contract: ComponentContract; domains: ConfigDomain[] }[] = [];
   for (const contract of contracts) {
-    for (const domain of contract.domains) {
-      if (domain.domain !== "connection" && domain.target !== "backend") {
-        containerDomains.push({ contract, domain });
-      }
-    }
+    const domains = contract.domains.filter(
+      (d) => d.domain !== "connection" && d.target !== "backend"
+    );
+    if (domains.length > 0) componentGroups.push({ contract, domains });
   }
+
+  const hasDomainChanges = (comp: string, dom: string) => {
+    const key = formKey(comp, dom);
+    return !!(forms[key] && Object.keys(forms[key]).length > 0);
+  };
 
   // ── Render ────────────────────────────────────────────────────────────────
 
@@ -450,35 +498,34 @@ export default function ComponentConfigPanel() {
         </GlassPanel>
       )}
 
-      {/* Section B: AI Model Config (container-target domains) */}
-      {containerDomains.length > 0 && (
+      {/* Section B: AI Model Config — one card per component */}
+      {componentGroups.length > 0 && (
         <GlassPanel>
           <div className="flex items-center gap-2 mb-4">
             <h3 className="text-sm font-medium text-on-surface">AI 模型配置</h3>
             <span className="font-mono text-[10px] text-on-surface-variant/30">// SYSTEM_COMPONENTS</span>
           </div>
-          <div className="grid grid-cols-2 gap-4">
-            {containerDomains.map(({ contract, domain }) => {
-              const key = formKey(contract.component, domain.domain);
-              return (
-                <DomainCard
-                  key={key}
-                  component={contract.component}
-                  domain={domain}
-                  getFormValue={getFormValue}
-                  setFormValue={setFormValue}
-                  hasChanges={!!(forms[key] && Object.keys(forms[key]).length > 0)}
-                  saving={saving === key}
-                  applying={applying === contract.component}
-                  feedback={feedback?.key === key || feedback?.key === contract.component
-                    ? { ok: feedback.ok, msg: feedback.msg }
-                    : null
-                  }
-                  onSave={() => handleSave(contract.component, domain)}
-                  onApplyRestart={() => handleApplyRestart(contract.component)}
-                />
-              );
-            })}
+          <div className="space-y-4">
+            {componentGroups.map(({ contract, domains }) => (
+              <ComponentCard
+                key={contract.component}
+                contract={contract}
+                domains={domains}
+                getFormValue={getFormValue}
+                setFormValue={setFormValue}
+                hasDomainChanges={hasDomainChanges}
+                savingKey={saving}
+                applying={applying === contract.component}
+                feedback={feedback?.key === contract.component || domains.some(
+                  (d) => feedback?.key === formKey(contract.component, d.domain)
+                )
+                  ? { ok: feedback!.ok, msg: feedback!.msg }
+                  : null
+                }
+                onSaveDomain={(domain) => handleSave(contract.component, domain)}
+                onApplyRestart={() => handleApplyRestart(contract.component)}
+              />
+            ))}
           </div>
         </GlassPanel>
       )}
