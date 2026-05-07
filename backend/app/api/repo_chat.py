@@ -275,8 +275,17 @@ async def repo_chat_stream(
                     async for chunk in response.aiter_text():
                         yield chunk
         except httpx.ConnectError:
-            yield "\n\n> ⚠️ 无法连接 deepwiki 服务。"
+            yield "\n\n> ⚠️ 无法连接 deepwiki 服务，请检查容器是否运行。"
+        except httpx.HTTPStatusError as exc:
+            body = ""
+            try:
+                body = exc.response.text[:500]
+            except Exception:
+                pass
+            logger.error("deepwiki returned %s: %s", exc.response.status_code, body)
+            yield f"\n\n> ⚠️ deepwiki 返回错误 {exc.response.status_code}。请检查 deepwiki 日志。"
         except Exception as exc:
+            logger.error("repo chat stream error: %s", exc)
             yield f"\n\n> ⚠️ 请求失败: {exc}"
 
     return StreamingResponse(

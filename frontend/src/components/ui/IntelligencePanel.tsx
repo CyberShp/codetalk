@@ -68,6 +68,16 @@ function ProcessView({
 
   const loadingSteps = !!name && apiSteps === undefined;
 
+  // Reverse index: properties.name → GraphNode (for steps that lack symbolId)
+  const nameToNode = useMemo(() => {
+    const m = new Map<string, GraphNode>();
+    for (const [, n] of nodeMap) {
+      const nm = n.properties.name as string | undefined;
+      if (nm && !m.has(nm)) m.set(nm, n);
+    }
+    return m;
+  }, [nodeMap]);
+
   // Resolve steps to full nodes — prefer API data, fall back to graph
   // API steps: { step, name, filePath }; graph steps: { symbolId, step }
   const resolvedSteps = useMemo(() => {
@@ -78,9 +88,12 @@ function ProcessView({
       ...s,
       displayName: s.name ?? s.symbolId ?? "",
       displayPath: s.filePath,
-      node: nodeMap.get(s.symbolId ?? "") ?? null,
+      node:
+        nodeMap.get(s.symbolId ?? "")
+        ?? (s.name ? nameToNode.get(s.name) : null)
+        ?? null,
     }));
-  }, [apiSteps, node.steps, nodeMap]);
+  }, [apiSteps, node.steps, nodeMap, nameToNode]);
 
   return (
     <GlassPanel>

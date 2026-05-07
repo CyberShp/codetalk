@@ -1,13 +1,17 @@
 """Resolve repository source to a local path accessible by tool containers."""
 
 import asyncio
+import logging
 import os
+import shutil
 from pathlib import Path
 from uuid import UUID
 
 from app.config import settings
 from app.models.repository import Repository
 from app.utils.repo_paths import ensure_repos_base_path
+
+logger = logging.getLogger(__name__)
 
 _running_syncs: dict[UUID, asyncio.subprocess.Process] = {}
 
@@ -67,6 +71,14 @@ async def _clone_or_pull(repo: Repository) -> str:
                 f"git pull failed for {repo.name}: {stderr.decode()}"
             )
         return dest
+
+    # If dest exists but is not a valid git repo (e.g. partial clone from
+    # a previous crash), remove it so git clone can succeed.
+    if os.path.isdir(dest):
+        logger.warning(
+            "Removing stale non-git directory for %s at %s", repo.name, dest
+        )
+        shutil.rmtree(dest)
 
     proc = await asyncio.create_subprocess_exec(
         "git", "clone", "--depth=1", "-b", repo.branch,

@@ -57,6 +57,8 @@ interface Props {
   edges: GraphEdge[];
   selectedNodeId: string | null;
   onNodeClick: (node: GraphNode | null) => void;
+  /** When set, triggers the pulse-ring jump animation on this node (e.g. step focus). */
+  jumpToNodeId?: string | null;
   /** Repo key for the integrated symbol search overlay. If omitted, search is hidden. */
   repo?: string;
 }
@@ -271,7 +273,7 @@ function buildColumnLayout(
   };
 }
 
-export default function GraphViewer({ nodes, edges, selectedNodeId, onNodeClick, repo }: Props) {
+export default function GraphViewer({ nodes, edges, selectedNodeId, onNodeClick, jumpToNodeId, repo }: Props) {
   const [hoveredId, setHoveredId] = useState<string | null>(null);
   const [activeFilter, setActiveFilter] = useState<string | null>(null);
   const [jumpedNodeId, setJumpedNodeId] = useState<string | null>(null);
@@ -280,6 +282,11 @@ export default function GraphViewer({ nodes, edges, selectedNodeId, onNodeClick,
 
   // Cleanup jump timer on unmount
   useEffect(() => () => { if (jumpTimerRef.current) clearTimeout(jumpTimerRef.current); }, []);
+
+  // Derive jump state: a node is "jumped" if it matches jumpToNodeId (step focus)
+  // OR if it was jumped via search (internal jumpedNodeId state).
+  // jumpToNodeId pulse relies on SVG animate repeatCount="2" to auto-stop.
+  const effectiveJumpId = jumpToNodeId || jumpedNodeId;
 
   // Build node map for search → click bridging
   const nodeMap = useMemo(() => new Map(nodes.map((n) => [n.id, n])), [nodes]);
@@ -576,7 +583,7 @@ export default function GraphViewer({ nodes, edges, selectedNodeId, onNodeClick,
               const isDimmed = !!selectedNodeId && !isConnected;
               const isCodeNode = CODE_LABELS.has(node.label);
               const color = NODE_COLORS[node.label] || "#6B7280";
-              const isJumped = node.id === jumpedNodeId;
+              const isJumped = node.id === effectiveJumpId;
               const cx = NODE_W / 2;
               const cy = NODE_H / 2;
 
@@ -597,9 +604,9 @@ export default function GraphViewer({ nodes, edges, selectedNodeId, onNodeClick,
                   }}
                   className={isCodeNode || node.label === "Process" || node.label === "Community" ? "cursor-pointer" : "cursor-default"}
                 >
-                  {/* Jump animation: three expanding pulse rings */}
+                  {/* Jump animation: three expanding pulse rings — key forces restart */}
                   {isJumped && (
-                    <>
+                    <g key={`pulse-${effectiveJumpId}`}>
                       <circle cx={cx} cy={cy} r={20} fill="none" stroke="#A4E6FF" strokeWidth={1.5} opacity={0.7}>
                         <animate attributeName="r" values="20;50" dur="0.8s" repeatCount="2" />
                         <animate attributeName="opacity" values="0.7;0" dur="0.8s" repeatCount="2" />
@@ -612,7 +619,7 @@ export default function GraphViewer({ nodes, edges, selectedNodeId, onNodeClick,
                         <animate attributeName="r" values="20;90" dur="1.4s" begin="0.3s" repeatCount="2" />
                         <animate attributeName="opacity" values="0.3;0" dur="1.4s" begin="0.3s" repeatCount="2" />
                       </circle>
-                    </>
+                    </g>
                   )}
 
                   {isSelected && (

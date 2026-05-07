@@ -1,9 +1,10 @@
 import logging
 from contextlib import asynccontextmanager
+from datetime import datetime, timezone
 
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
-from sqlalchemy import text
+from sqlalchemy import text, update
 
 from app.api.router import api_router
 from app.config import settings
@@ -38,11 +39,46 @@ async def _load_backend_configs() -> None:
         logger.warning("Could not load backend configs from DB at startup: %s", exc)
 
 
+async def _recover_orphaned_tasks() -> None:
+    """Mark any tasks stuck in 'running' as 'failed' on startup.
+
+    If the backend crashed or restarted while tasks were in-flight, their
+    DB rows stay 'running' forever because the in-memory handles are lost.
+    """
+    from app.models.task import AnalysisTask
+
+    try:
+        async for db in get_db():
+            result = await db.execute(
+                update(AnalysisTask)
+                .where(AnalysisTask.status == "running")
+                .values(
+                    status="failed",
+                    error="任务因服务重启而中断，请重新执行。",
+                    completed_at=datetime.now(timezone.utc),
+                )
+                .returning(AnalysisTask.id)
+            )
+            orphans = result.scalars().all()
+            if orphans:
+                await db.commit()
+                logger.warning(
+                    "Recovered %d orphaned running task(s): %s",
+                    len(orphans),
+                    [str(oid) for oid in orphans],
+                )
+            break
+    except Exception as exc:
+        logger.warning("Could not recover orphaned tasks: %s", exc)
+
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     # Startup: verify database connection
     async with engine.begin() as conn:
         await conn.execute(text("SELECT 1"))
+    # Recover orphaned tasks from previous crashes
+    await _recover_orphaned_tasks()
     # Load persisted backend-target configs (tool URLs, docker_host, etc.)
     await _load_backend_configs()
     yield

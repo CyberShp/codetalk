@@ -1,6 +1,6 @@
 "use client";
 
-import { useState, useEffect, useCallback } from "react";
+import { useState, useEffect, useCallback, useMemo, useRef } from "react";
 import GlassPanel from "@/components/ui/GlassPanel";
 import CyberInput from "@/components/ui/CyberInput";
 import { usePageRestoreRefresh } from "@/hooks/usePageRestoreRefresh";
@@ -282,6 +282,8 @@ export default function ComponentConfigPanel() {
   // Form state for Section A (connection rows): comp → url string
   const [connValues, setConnValues] = useState<Record<string, string>>({});
   const [connDirty, setConnDirty] = useState<Record<string, boolean>>({});
+  const connDirtyRef = useRef(connDirty);
+  connDirtyRef.current = connDirty;
   const [connSaving, setConnSaving] = useState<Record<string, boolean>>({});
   const [connFeedback, setConnFeedback] = useState<Record<string, { ok: boolean; msg: string } | null>>({});
 
@@ -317,9 +319,10 @@ export default function ComponentConfigPanel() {
           newVals[contract.component] = saved?.config?.base_url ?? "";
         }
         setConnValues((prev) => {
+          const dirty = connDirtyRef.current;
           const merged = { ...newVals };
           for (const [k, v] of Object.entries(prev)) {
-            if (connDirty[k]) merged[k] = v;
+            if (dirty[k]) merged[k] = v;
           }
           return merged;
         });
@@ -327,7 +330,7 @@ export default function ComponentConfigPanel() {
     } catch (e) {
       setLoadError(e instanceof Error ? e.message : "组件配置加载失败");
     }
-  }, [connDirty]);
+  }, []);
 
   useEffect(() => {
     void load();
@@ -336,10 +339,10 @@ export default function ComponentConfigPanel() {
 
   // ── Connection row handlers ───────────────────────────────────────────────
 
-  const handleConnChange = (comp: string, val: string) => {
+  const handleConnChange = useCallback((comp: string, val: string) => {
     setConnValues((prev) => ({ ...prev, [comp]: val }));
     setConnDirty((prev) => ({ ...prev, [comp]: true }));
-  };
+  }, []);
 
   const handleConnSave = async (comp: string) => {
     setConnSaving((prev) => ({ ...prev, [comp]: true }));
@@ -373,21 +376,23 @@ export default function ComponentConfigPanel() {
     return domainCfg?.config[field] ?? "";
   };
 
-  const setFormValue = (comp: string, domain: string, field: string, value: string) => {
+  const setFormValue = useCallback((comp: string, domain: string, field: string, value: string) => {
     const key = formKey(comp, domain);
     setForms((prev) => ({ ...prev, [key]: { ...prev[key], [field]: value } }));
-  };
+  }, []);
 
   const pollUntilHealthy = useCallback((comp: string, maxAttempts = 8, interval = 3000) => {
     let attempt = 0;
     const tick = async () => {
       attempt++;
-      await load();
-      const s = await api.components.health(comp);
-      if (s.health.healthy) {
-        setFeedback({ key: comp, ok: true, msg: "重启成功，服务已恢复在线" });
-        return;
-      }
+      try {
+        const s = await api.components.health(comp);
+        if (s.health.healthy) {
+          setFeedback({ key: comp, ok: true, msg: "重启成功，服务已恢复在线" });
+          void load(); // refresh statuses once healthy
+          return;
+        }
+      } catch { /* health check failed, keep polling */ }
       if (attempt >= maxAttempts) {
         setFeedback({ key: comp, ok: false, msg: "健康检查超时，服务可能仍在启动中" });
         return;
@@ -437,18 +442,21 @@ export default function ComponentConfigPanel() {
   );
 
   // Section B: group container-target domains by component
-  const componentGroups: { contract: ComponentContract; domains: ConfigDomain[] }[] = [];
-  for (const contract of contracts) {
-    const domains = contract.domains.filter(
-      (d) => d.domain !== "connection" && d.target !== "backend"
-    );
-    if (domains.length > 0) componentGroups.push({ contract, domains });
-  }
+  const componentGroups = useMemo(() => {
+    const groups: { contract: ComponentContract; domains: ConfigDomain[] }[] = [];
+    for (const contract of contracts) {
+      const domains = contract.domains.filter(
+        (d) => d.domain !== "connection" && d.target !== "backend"
+      );
+      if (domains.length > 0) groups.push({ contract, domains });
+    }
+    return groups;
+  }, [contracts]);
 
-  const hasDomainChanges = (comp: string, dom: string) => {
+  const hasDomainChanges = useCallback((comp: string, dom: string) => {
     const key = formKey(comp, dom);
     return !!(forms[key] && Object.keys(forms[key]).length > 0);
-  };
+  }, [forms]);
 
   // ── Render ────────────────────────────────────────────────────────────────
 

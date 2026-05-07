@@ -125,23 +125,33 @@ async def ws_chat(
         )
 
         full = ""
-        async with httpx.AsyncClient(
-            base_url=settings.deepwiki_base_url,
-            timeout=httpx.Timeout(300, connect=10),
-            trust_env=trust_env,
-        ) as client:
-            async with client.stream(
-                "POST",
-                "/chat/completions/stream",
-                json=payload,
-                timeout=300,
-            ) as response:
-                response.raise_for_status()
-                async for chunk in response.aiter_text():
-                    if stop_event.is_set():
-                        return full
-                    full += chunk
-                    await websocket.send_json({"type": "chunk", "content": chunk})
+        try:
+            async with httpx.AsyncClient(
+                base_url=settings.deepwiki_base_url,
+                timeout=httpx.Timeout(300, connect=10),
+                trust_env=trust_env,
+            ) as client:
+                async with client.stream(
+                    "POST",
+                    "/chat/completions/stream",
+                    json=payload,
+                    timeout=300,
+                ) as response:
+                    response.raise_for_status()
+                    async for chunk in response.aiter_text():
+                        if stop_event.is_set():
+                            return full
+                        full += chunk
+                        await websocket.send_json({"type": "chunk", "content": chunk})
+        except httpx.ConnectError:
+            err = "\n\n> ⚠️ 无法连接 deepwiki 服务，请检查容器是否运行。"
+            await websocket.send_json({"type": "chunk", "content": err})
+            return err
+        except httpx.HTTPStatusError as exc:
+            logger.error("deepwiki returned %s in WS stream", exc.response.status_code)
+            err = f"\n\n> ⚠️ deepwiki 返回错误 {exc.response.status_code}。请检查 deepwiki 日志。"
+            await websocket.send_json({"type": "chunk", "content": err})
+            return err
 
         return full
 

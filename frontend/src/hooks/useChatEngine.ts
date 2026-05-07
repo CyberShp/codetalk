@@ -99,6 +99,11 @@ export function useChatEngine({
     } else {
       abortRef.current?.abort();
     }
+    // Immediately clear streaming flags so UI stops showing spinners.
+    // The catch/onDone will also set these, but this avoids race conditions.
+    setIsStreaming(false);
+    setIsAutoResearching(false);
+    setResearchStatus("");
   }, []);
 
   const streamSingle = useCallback(

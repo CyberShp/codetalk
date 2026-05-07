@@ -59,6 +59,9 @@ export default function TaskDetailPage() {
   const [selectedNode, setSelectedNode] = useState<GraphNode | null>(null);
   const [showOtherProcesses, setShowOtherProcesses] = useState(false);
   const [previousProcess, setPreviousProcess] = useState<GraphNode | null>(null);
+  // Transient highlight: set by step-focus clicks so graph highlights a node
+  // without changing the sidebar selection (keeps IntelligencePanel in view).
+  const [graphHighlightId, setGraphHighlightId] = useState<string | null>(null);
 
   // Interactive search state (search tab)
   const [customSearchQuery, setCustomSearchQuery] = useState("");
@@ -100,9 +103,13 @@ export default function TaskDetailPage() {
   // Derive graph data — safe with task=null (useMemo must run unconditionally)
   const graphRun = task?.tool_runs.find((r) => r.tool_name === "gitnexus");
   const graphData = (graphRun?.result?.graph as GraphData) ?? null;
-  const repoName = task?.repository_name
-    ?? ((graphRun?.result?.metadata as Record<string, unknown>)?.repo_name as string | undefined)
-    ?? "Repository";
+  const repoName = task?.repository_name ?? "Repository";
+  // GitNexus indexes repos by UUID directory name, not human-readable name.
+  // Use metadata.repo_name (the UUID) for all GitNexus API calls.
+  const gitnexusRepoKey =
+    ((graphRun?.result?.metadata as Record<string, unknown>)?.repo_name as string | undefined)
+    ?? task?.repository_id
+    ?? "";
 
   // Zoekt search results
   const zoektRun = task?.tool_runs.find((r) => r.tool_name === "zoekt");
@@ -138,6 +145,7 @@ export default function TaskDetailPage() {
 
   // Track breadcrumb: sticky — only cleared on explicit return or new intelligence node
   const handleNodeClick = useCallback((node: GraphNode | null) => {
+    setGraphHighlightId(null); // direct click clears transient highlight
     if (!node) {
       setSelectedNode(null);
       setPreviousProcess(null);
@@ -206,7 +214,7 @@ export default function TaskDetailPage() {
     const executedQuery = customSearchQuery.trim();
     try {
       if (searchMode === "grep") {
-        const resp = await api.gitnexus.grep(executedQuery, repoName || undefined);
+        const resp = await api.gitnexus.grep(executedQuery, gitnexusRepoKey || undefined);
         setLastExecutedQuery(executedQuery);
         setInteractiveResults(groupGrepResults(resp.matches));
       } else {
@@ -376,18 +384,19 @@ export default function TaskDetailPage() {
                       <GraphViewer
                         nodes={graphData.nodes}
                         edges={graphData.edges}
-                        selectedNodeId={selectedNode?.id ?? null}
+                        selectedNodeId={graphHighlightId ?? selectedNode?.id ?? null}
+                        jumpToNodeId={graphHighlightId}
                         onNodeClick={handleNodeClick}
                       />
                     </div>
                     {/* GitNexus Symbol Search — floating overlay */}
                     <GraphSearch
-                      repo={repoName || undefined}
+                      repo={gitnexusRepoKey || undefined}
                       onNodeSelect={(nodeId) => {
                         const node = nodeMap.get(nodeId);
                         if (node) handleNodeClick(node);
                       }}
-                      selectedNodeId={selectedNode?.id ?? null}
+                      selectedNodeId={graphHighlightId ?? selectedNode?.id ?? null}
                     />
                   </div>
                 ) : (
@@ -727,10 +736,11 @@ export default function TaskDetailPage() {
                 nodeMap={nodeMap}
                 edges={graphData?.edges ?? []}
                 onNodeClick={handleNodeClick}
-                repo={repoName || undefined}
+                onStepFocus={(nodeId: string) => setGraphHighlightId(nodeId)}
+                repo={gitnexusRepoKey || undefined}
               />
             ) : (
-              <CodePanel node={selectedNode!} repoName={repoName} />
+              <CodePanel node={selectedNode!} repoName={gitnexusRepoKey} />
             )}
             {/* Graph → Chat bridge button */}
             <button

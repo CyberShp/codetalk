@@ -294,10 +294,14 @@ export default function ChatPanel({ engine, repoId, className = "" }: ChatPanelP
                     <div className="prose prose-invert prose-xs max-w-none [&_p]:my-1 [&_pre]:my-2 [&_ul]:my-1">
                       <MarkdownRenderer content={m.content} />
                     </div>
-                  ) : m.role === "assistant" && !m.content ? (
+                  ) : m.role === "assistant" && !m.content && busy ? (
                     <span className="flex items-center gap-2 text-on-surface-variant/50">
                       <Loader2 size={12} className="animate-spin" />
                       思考中...
+                    </span>
+                  ) : m.role === "assistant" && !m.content ? (
+                    <span className="text-on-surface-variant/30 text-[10px]">
+                      已停止生成
                     </span>
                   ) : (
                     m.content
