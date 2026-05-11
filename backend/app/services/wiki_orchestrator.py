@@ -281,64 +281,79 @@ class WikiOrchestrator:
             tool_base_path=settings.tool_repos_base_path,
         )
 
-        async with httpx.AsyncClient(
-            base_url=self.base_url,
-            timeout=httpx.Timeout(300, connect=10),
-            trust_env=trust_env,
-        ) as client:
-            # 1. Generate new content for the single page
-            page = WikiPage(
-                id=page_id,
-                title=page_title,
-                file_paths=file_paths,
-            )
-            new_content = await self._generate_page(
-                client, page, tool_repo_path, language, provider, model
-            )
-
-            # 2. GET existing cache
-            existing_cache = await self.get_cached_wiki(
-                owner=owner, repo=repo, language=language
-            )
-            if not existing_cache:
-                raise ValueError("No existing wiki cache to update")
-
-            # 3. Update the page in generated_pages
-            gen_pages = existing_cache.get("generated_pages", {})
-            if page_id not in gen_pages:
-                raise ValueError(f"Page {page_id} not found in wiki cache")
-
-            gen_pages[page_id]["content"] = new_content
-
-            # 4. Also update in wiki_structure.pages
-            ws_pages = existing_cache.get("wiki_structure", {}).get("pages", [])
-            for p in ws_pages:
-                if p.get("id") == page_id:
-                    p["content"] = new_content
-                    break
-
-            # 5. POST updated cache back to deepwiki
-            body = {
-                "repo": {"owner": owner, "repo": repo, "type": "local"},
-                "language": language,
-                "comprehensive": True,
-                "wiki_structure": existing_cache["wiki_structure"],
-                "generated_pages": gen_pages,
-                "provider": provider,
-                "model": model,
-            }
+        embedding_cleared = False
+        while True:
             try:
-                resp = await client.post("/api/wiki_cache", json=body)
-                if resp.status_code != 200:
-                    raise RuntimeError(
-                        f"wiki_cache write-back failed with HTTP {resp.status_code}"
+                async with httpx.AsyncClient(
+                    base_url=self.base_url,
+                    timeout=httpx.Timeout(300, connect=10),
+                    trust_env=trust_env,
+                ) as client:
+                    # 1. Generate new content for the single page
+                    page = WikiPage(
+                        id=page_id,
+                        title=page_title,
+                        file_paths=file_paths,
                     )
-            except RuntimeError:
-                raise
-            except Exception as exc:
-                raise RuntimeError(f"wiki_cache write-back error: {exc}") from exc
+                    new_content = await self._generate_page(
+                        client, page, tool_repo_path, language, provider, model
+                    )
 
-            return new_content
+                    # 2. GET existing cache
+                    existing_cache = await self.get_cached_wiki(
+                        owner=owner, repo=repo, language=language
+                    )
+                    if not existing_cache:
+                        raise ValueError("No existing wiki cache to update")
+
+                    # 3. Update the page in generated_pages
+                    gen_pages = existing_cache.get("generated_pages", {})
+                    if page_id not in gen_pages:
+                        raise ValueError(f"Page {page_id} not found in wiki cache")
+
+                    gen_pages[page_id]["content"] = new_content
+
+                    # 4. Also update in wiki_structure.pages
+                    ws_pages = existing_cache.get("wiki_structure", {}).get("pages", [])
+                    for p in ws_pages:
+                        if p.get("id") == page_id:
+                            p["content"] = new_content
+                            break
+
+                    # 5. POST updated cache back to deepwiki
+                    body = {
+                        "repo": {"owner": owner, "repo": repo, "type": "local"},
+                        "language": language,
+                        "comprehensive": True,
+                        "wiki_structure": existing_cache["wiki_structure"],
+                        "generated_pages": gen_pages,
+                        "provider": provider,
+                        "model": model,
+                    }
+                    try:
+                        resp = await client.post("/api/wiki_cache", json=body)
+                        if resp.status_code != 200:
+                            raise RuntimeError(
+                                f"wiki_cache write-back failed with HTTP {resp.status_code}"
+                            )
+                    except RuntimeError:
+                        raise
+                    except Exception as exc:
+                        raise RuntimeError(f"wiki_cache write-back error: {exc}") from exc
+
+                    return new_content
+
+            except EmptyEmbeddingError:
+                if embedding_cleared:
+                    raise RuntimeError(
+                        "Wiki 页面重生成失败：清理 embedding 数据库后仍检测到空向量错误。"
+                        "请确认 DEEPWIKI_EMBEDDING_API_KEY 已正确配置，然后重试。"
+                    )
+                logger.warning(
+                    "检测到 DeepWiki 空 embedding 数据库，正在清理并重试一次"
+                )
+                await self.clear_embedding_db()
+                embedding_cleared = True
 
     # ── internal methods ──
 
