@@ -32,6 +32,7 @@ _ADALFLOW_DB_PATH = "/root/.adalflow/databases"
 _EMPTY_EMBEDDING_PATTERNS = (
     "empty embedding vector",
     "No valid embeddings found",
+    "No valid document embeddings",
     "No valid documents with embeddings",
     "Cannot create retriever",
 )

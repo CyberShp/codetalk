@@ -1,7 +1,9 @@
 import unittest
-from unittest.mock import AsyncMock, patch
+from unittest.mock import AsyncMock, MagicMock, patch
 
-from app.services.wiki_orchestrator import WikiOrchestrator, WikiPage
+import httpx
+
+from app.services.wiki_orchestrator import EmptyEmbeddingError, WikiOrchestrator, WikiPage
 
 
 class WikiOrchestratorPayloadTests(unittest.IsolatedAsyncioTestCase):
@@ -52,6 +54,43 @@ class WikiOrchestratorPayloadTests(unittest.IsolatedAsyncioTestCase):
 
         self.assertEqual(captured["type"], "local")
         self.assertEqual(captured["included_files"], "lib/iscsi.c\nlib/login.c")
+
+
+class EmptyEmbeddingPatternTests(unittest.IsolatedAsyncioTestCase):
+    def _make_stream_client(self, body: str, status_code: int = 500) -> MagicMock:
+        response = MagicMock()
+        response.status_code = status_code
+        response.aread = AsyncMock(return_value=body.encode())
+        response.request = MagicMock()
+        response.aiter_text = AsyncMock(return_value=iter([]))
+
+        async_cm = MagicMock()
+        async_cm.__aenter__ = AsyncMock(return_value=response)
+        async_cm.__aexit__ = AsyncMock(return_value=False)
+
+        mock_client = MagicMock()
+        mock_client.stream = MagicMock(return_value=async_cm)
+        return mock_client
+
+    async def test_deepwiki_actual_error_message_raises_empty_embedding_error(self) -> None:
+        """DeepWiki's real 500 body triggers EmptyEmbeddingError (MAS-45)."""
+        actual_error = (
+            '{"detail":"No valid document embeddings found. This may be due to '
+            "embedding size inconsistencies or API errors during document processing.\"}"
+        )
+        orchestrator = WikiOrchestrator()
+        mock_client = self._make_stream_client(actual_error)
+
+        with self.assertRaises(EmptyEmbeddingError):
+            await orchestrator._stream_collect(mock_client, {"messages": []})
+
+    async def test_generic_500_does_not_raise_empty_embedding_error(self) -> None:
+        """A generic 500 body raises HTTPStatusError, not EmptyEmbeddingError."""
+        orchestrator = WikiOrchestrator()
+        mock_client = self._make_stream_client('{"detail":"Internal server error"}')
+
+        with self.assertRaises(httpx.HTTPStatusError):
+            await orchestrator._stream_collect(mock_client, {"messages": []})
 
 
 if __name__ == "__main__":
