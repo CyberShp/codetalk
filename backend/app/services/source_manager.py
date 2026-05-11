@@ -4,6 +4,7 @@ import asyncio
 import logging
 import os
 import shutil
+import subprocess
 from pathlib import Path
 from uuid import UUID
 
@@ -13,16 +14,19 @@ from app.utils.repo_paths import ensure_repos_base_path
 
 logger = logging.getLogger(__name__)
 
-_running_syncs: dict[UUID, asyncio.subprocess.Process] = {}
+_running_pids: dict[UUID, int] = {}
 
 
 async def cancel_sync(repo_id: UUID) -> bool:
     """Cancel a running sync operation. Returns True if process was found and terminated."""
-    proc = _running_syncs.pop(repo_id, None)
-    if proc and proc.returncode is None:
-        proc.terminate()
+    pid = _running_pids.pop(repo_id, None)
+    if pid is None:
+        return False
+    try:
+        os.kill(pid, 15)
         return True
-    return False
+    except OSError:
+        return False
 
 
 async def resolve_source(repo: Repository) -> str:
@@ -50,40 +54,32 @@ async def resolve_source(repo: Repository) -> str:
     raise ValueError(f"Unknown source type: {repo.source_type}")
 
 
+def _run_git_sync(args: list[str], repo_name: str, timeout: int) -> None:
+    """Run a git command synchronously (called via asyncio.to_thread)."""
+    try:
+        result = subprocess.run(
+            args,
+            capture_output=True,
+            timeout=timeout,
+        )
+    except subprocess.TimeoutExpired:
+        raise RuntimeError(
+            f"git timed out after {timeout}s for {repo_name}: {' '.join(args[:4])}"
+        )
+    if result.returncode != 0:
+        stderr_text = result.stderr.decode(errors="replace").strip()
+        logger.error(
+            "git failed for %s (exit %d): %s", repo_name, result.returncode, stderr_text
+        )
+        raise RuntimeError(
+            f"git {args[1]} failed for {repo_name} (exit {result.returncode}): {stderr_text}"
+        )
+
+
 async def _run_git(args: list[str], repo_name: str, repo_id: UUID) -> None:
     timeout = settings.git_sync_timeout_seconds
     logger.debug("git %s for %s (timeout=%ds)", " ".join(args[1:4]), repo_name, timeout)
-    proc = await asyncio.create_subprocess_exec(
-        *args,
-        stdout=asyncio.subprocess.PIPE,
-        stderr=asyncio.subprocess.PIPE,
-    )
-    _running_syncs[repo_id] = proc
-    try:
-        try:
-            _, stderr_bytes = await asyncio.wait_for(
-                proc.communicate(), timeout=float(timeout)
-            )
-        except asyncio.TimeoutError:
-            proc.terminate()
-            try:
-                await asyncio.wait_for(proc.wait(), timeout=10)
-            except asyncio.TimeoutError:
-                proc.kill()
-            raise RuntimeError(
-                f"git timed out after {timeout}s for {repo_name}: {' '.join(args[:4])}"
-            )
-    finally:
-        _running_syncs.pop(repo_id, None)
-
-    if proc.returncode != 0:
-        stderr_text = stderr_bytes.decode(errors="replace").strip()
-        logger.error(
-            "git failed for %s (exit %d): %s", repo_name, proc.returncode, stderr_text
-        )
-        raise RuntimeError(
-            f"git {args[1]} failed for {repo_name} (exit {proc.returncode}): {stderr_text}"
-        )
+    await asyncio.to_thread(_run_git_sync, args, repo_name, timeout)
 
 
 async def _clone_or_pull(repo: Repository) -> str:
