@@ -6,7 +6,12 @@ Responsibilities:
   - Restart containers via Docker Engine API (Unix socket or TCP)
 """
 
+import asyncio
+import json
 import logging
+import socket as _socket
+import subprocess
+import sys
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -366,6 +371,31 @@ def _resolve_env_vars(
     return env_vars
 
 
+def _bridge_deepwiki_embedding_creds(
+    services: dict[str, dict[str, str]],
+    preview: dict[str, dict[str, str]],
+) -> None:
+    """Propagate OpenAI chat credentials to embedding when not explicitly set.
+
+    Users typically configure the chat domain (OPENAI_API_KEY / OPENAI_BASE_URL)
+    but leave the embedding domain api_key blank, expecting shared credentials.
+    Without this bridge, DEEPWIKI_EMBEDDING_API_KEY stays empty in the container
+    and the OpenAI embedder fails to authenticate (500 on chat/completions/stream).
+    """
+    svc = services.get("deepwiki")
+    if not svc or svc.get("DEEPWIKI_EMBEDDER_TYPE") != "openai":
+        return
+    pv = preview.setdefault("deepwiki", {})
+    if not svc.get("DEEPWIKI_EMBEDDING_API_KEY") and svc.get("OPENAI_API_KEY"):
+        key = svc["OPENAI_API_KEY"]
+        svc["DEEPWIKI_EMBEDDING_API_KEY"] = key
+        pv["DEEPWIKI_EMBEDDING_API_KEY"] = (key[:4] + "••••") if len(key) > 4 else "••••"
+    if not svc.get("DEEPWIKI_EMBEDDING_BASE_URL") and svc.get("OPENAI_BASE_URL"):
+        url = svc["OPENAI_BASE_URL"]
+        svc["DEEPWIKI_EMBEDDING_BASE_URL"] = url
+        pv["DEEPWIKI_EMBEDDING_BASE_URL"] = url
+
+
 def generate_override(
     configs: list[ComponentConfig],
 ) -> tuple[str, dict[str, dict[str, str]]]:
@@ -395,6 +425,8 @@ def generate_override(
                 pv[k] = v[:4] + "••••" if len(v) > 4 else "••••"
             else:
                 pv[k] = v
+
+    _bridge_deepwiki_embedding_creds(services, preview)
 
     if not services:
         return "", {}
@@ -474,7 +506,86 @@ async def apply_config(
     return True, applied_message, component_preview if component_preview else None
 
 
-# ── Docker Engine API (via Unix socket) ────────────────────────────
+# ── Docker Engine API (Unix socket + Windows CLI fallback) ────────
+
+
+def _use_cli() -> bool:
+    return not hasattr(_socket, "AF_UNIX")
+
+
+def _run_docker_cli_sync(
+    cmd: list[str],
+    *,
+    cwd: str | None = None,
+    timeout: int = 120,
+) -> subprocess.CompletedProcess:
+    result = subprocess.run(
+        cmd,
+        capture_output=True,
+        timeout=timeout,
+        cwd=cwd,
+    )
+    if result.returncode != 0:
+        stderr = result.stderr.decode(errors="replace").strip()
+        raise RuntimeError(f"docker CLI failed (exit {result.returncode}): {stderr}")
+    return result
+
+
+async def _restart_via_cli(component: str) -> tuple[bool, str]:
+    name = _container_name(component)
+    try:
+        await asyncio.to_thread(
+            _run_docker_cli_sync,
+            ["docker", "restart", "-t", "30", name],
+        )
+        return True, f"容器 {name} 已重启"
+    except FileNotFoundError:
+        return False, "docker CLI 不可用 — 请安装 Docker Desktop"
+    except subprocess.TimeoutExpired:
+        return False, "重启操作超时"
+    except RuntimeError as exc:
+        return False, f"重启失败: {exc}"
+
+
+async def _recreate_via_cli(component: str) -> tuple[bool, str]:
+    # docker-compose.override.yml already written by apply_config() before this call
+    name = _container_name(component)
+    try:
+        await asyncio.to_thread(
+            _run_docker_cli_sync,
+            [
+                "docker", "compose",
+                "-p", COMPOSE_PROJECT,
+                "up", "-d", "--force-recreate", "--no-deps",
+                component,
+            ],
+            cwd=str(PROJECT_DIR),
+            timeout=120,
+        )
+        return True, f"容器 {name} 已重建并启动"
+    except FileNotFoundError:
+        return False, "docker CLI 不可用 — 请安装 Docker Desktop"
+    except subprocess.TimeoutExpired:
+        return False, "重建容器操作超时"
+    except RuntimeError as exc:
+        return False, f"重建容器异常: {exc}"
+
+
+async def _get_status_via_cli(component: str) -> tuple[bool, str]:
+    name = _container_name(component)
+    try:
+        result = await asyncio.to_thread(
+            _run_docker_cli_sync,
+            ["docker", "inspect", "--format", "{{json .State}}", name],
+        )
+        state = json.loads(result.stdout)
+        running = state.get("Running", False)
+        status = state.get("Status", "unknown")
+        return running, status
+    except FileNotFoundError:
+        return False, "docker_unavailable"
+    except (RuntimeError, json.JSONDecodeError):
+        return False, "not_found"
 
 
 def _docker_client() -> httpx.AsyncClient:
@@ -487,6 +598,11 @@ def _docker_client() -> httpx.AsyncClient:
     host = settings.docker_host
 
     if host.startswith("unix://"):
+        if not hasattr(_socket, "AF_UNIX"):
+            raise RuntimeError(
+                "Docker Unix socket not supported on this platform. "
+                "Set DOCKER_HOST=tcp://localhost:2375 or use Docker Desktop."
+            )
         socket_path = host[len("unix://"):]
         transport = httpx.AsyncHTTPTransport(uds=socket_path)
         return httpx.AsyncClient(
@@ -515,6 +631,8 @@ def _container_name(component: str) -> str:
 
 async def restart_container(component: str) -> tuple[bool, str]:
     """Restart a container via Docker Engine API."""
+    if _use_cli():
+        return await _restart_via_cli(component)
     name = _container_name(component)
     try:
         async with _docker_client() as client:
@@ -540,6 +658,8 @@ async def recreate_container(
     component: str, env_updates: dict[str, str]
 ) -> tuple[bool, str]:
     """Recreate container with updated env vars via Docker Engine API."""
+    if _use_cli():
+        return await _recreate_via_cli(component)
     name = _container_name(component)
     try:
         async with _docker_client() as client:
@@ -630,6 +750,8 @@ async def get_container_status(
     component: str,
 ) -> tuple[bool, str]:
     """Check container status via Docker Engine API."""
+    if _use_cli():
+        return await _get_status_via_cli(component)
     name = _container_name(component)
     try:
         async with _docker_client() as client:
