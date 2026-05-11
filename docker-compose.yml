@@ -30,6 +30,9 @@ services:
     env_file: .env
     environment:
       DATABASE_URL: postgresql+asyncpg://${POSTGRES_USER:-codetalks}:${POSTGRES_PASSWORD:-changeme}@postgres:5432/${POSTGRES_DB:-codetalks}
+      # On Windows hosts: set REPOS_BASE_PATH in .env to the Windows host path
+      # (e.g. D:\coworkers\codetalk\.repos) so stored Windows paths in the DB
+      # can be mapped to the /data/repos container mount. See .env.example.
       REPOS_BASE_PATH: ${REPOS_BASE_PATH:-/data/repos}
       # Override .env.local localhost values — container must use Docker DNS
       DEEPWIKI_BASE_URL: http://deepwiki:8001
@@ -91,7 +94,7 @@ services:
   codecompass:
     build: ./docker/codecompass
     ports:
-      - "6251:6251"
+      - "16251:6251"
     volumes:
       - ./.repos:/data/repos:ro
       - codecompass_data:/data/workspaces
