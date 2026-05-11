@@ -6,8 +6,10 @@ All RAG retrieval is done by deepwiki's FAISS retriever.
 CodeTalks owns the prompt templates (wiki_prompts.py).
 """
 
+import asyncio
 import logging
 import re
+import subprocess
 import xml.etree.ElementTree as ET
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
@@ -21,6 +23,27 @@ from app.services.chat_payload import DEFAULT_EXCLUDED_DIRS
 from app.services.wiki_prompts import build_page_prompt, build_structure_prompt
 
 logger = logging.getLogger(__name__)
+
+# DeepWiki container identity and ADALFlow database path (inside the container).
+_DEEPWIKI_CONTAINER = "codetalk-deepwiki-1"
+_ADALFLOW_DB_PATH = "/root/.adalflow/databases"
+
+# Substrings that identify an empty-embedding failure in DeepWiki's HTTP 500 body.
+_EMPTY_EMBEDDING_PATTERNS = (
+    "empty embedding vector",
+    "No valid embeddings found",
+    "No valid documents with embeddings",
+    "Cannot create retriever",
+)
+
+
+class EmptyEmbeddingError(Exception):
+    """DeepWiki returned 500 because its RAG database has empty embedding vectors.
+
+    This happens when a repo was indexed before valid embedding credentials were
+    configured.  The fix is to delete the stale *.pkl files and let DeepWiki
+    re-index with correct credentials.
+    """
 
 
 @dataclass
@@ -113,6 +136,10 @@ class WikiOrchestrator:
 
         Args:
             on_progress: Optional async callable(current, total, page_title) for progress updates.
+
+        Automatically detects and recovers from stale empty-embedding databases:
+        on the first EmptyEmbeddingError the stale *.pkl files are deleted and the
+        entire generation is retried once with a user-friendly error if it fails again.
         """
         trust_env = proxy_mode != "direct"
         tool_repo_path = to_tool_repo_path(
@@ -121,68 +148,86 @@ class WikiOrchestrator:
             tool_base_path=settings.tool_repos_base_path,
         )
 
-        async with httpx.AsyncClient(
-            base_url=self.base_url,
-            timeout=httpx.Timeout(300, connect=10),
-            trust_env=trust_env,
-        ) as client:
-            # Step 1: Fetch repo structure
-            file_tree, readme = await self._fetch_repo_structure(
-                client, tool_repo_path
-            )
+        embedding_cleared = False
+        while True:
+            try:
+                async with httpx.AsyncClient(
+                    base_url=self.base_url,
+                    timeout=httpx.Timeout(300, connect=10),
+                    trust_env=trust_env,
+                ) as client:
+                    # Step 1: Fetch repo structure
+                    file_tree, readme = await self._fetch_repo_structure(
+                        client, tool_repo_path
+                    )
 
-            # Step 2: Determine wiki structure
-            structure = await self._determine_structure(
-                client,
-                file_tree,
-                readme,
-                tool_repo_path,
-                language,
-                provider,
-                model,
-                comprehensive,
-            )
-
-            # Step 3: Generate pages (serial, MAX_CONCURRENT=1)
-            generated_pages: dict[str, WikiPage] = {}
-            total = len(structure.pages)
-            for i, page in enumerate(structure.pages):
-                logger.info(
-                    "Generating wiki page %d/%d: %s", i + 1, total, page.title
-                )
-                if on_progress:
-                    await on_progress(i, total, page.title)
-
-                try:
-                    content = await self._generate_page(
+                    # Step 2: Determine wiki structure
+                    structure = await self._determine_structure(
                         client,
-                        page,
+                        file_tree,
+                        readme,
                         tool_repo_path,
                         language,
                         provider,
                         model,
+                        comprehensive,
                     )
-                    page.content = content
-                    generated_pages[page.id] = page
-                except Exception as exc:
-                    logger.error(
-                        "Failed to generate page %s: %s", page.id, exc
+
+                    # Step 3: Generate pages (serial, MAX_CONCURRENT=1)
+                    generated_pages: dict[str, WikiPage] = {}
+                    total = len(structure.pages)
+                    for i, page in enumerate(structure.pages):
+                        logger.info(
+                            "Generating wiki page %d/%d: %s", i + 1, total, page.title
+                        )
+                        if on_progress:
+                            await on_progress(i, total, page.title)
+
+                        try:
+                            content = await self._generate_page(
+                                client,
+                                page,
+                                tool_repo_path,
+                                language,
+                                provider,
+                                model,
+                            )
+                            page.content = content
+                            generated_pages[page.id] = page
+                        except EmptyEmbeddingError:
+                            raise  # propagate to outer retry handler
+                        except Exception as exc:
+                            logger.error(
+                                "Failed to generate page %s: %s", page.id, exc
+                            )
+                            page.content = f"> Wiki page generation failed: {exc}"
+                            generated_pages[page.id] = page
+
+                    if on_progress:
+                        await on_progress(total, total, "done")
+
+                    # Step 4: Save to deepwiki cache
+                    await self._save_cache(
+                        client, owner, repo, "local", language, comprehensive,
+                        structure, generated_pages, provider, model,
                     )
-                    page.content = f"> Wiki page generation failed: {exc}"
-                    generated_pages[page.id] = page
 
-            if on_progress:
-                await on_progress(total, total, "done")
+                    return WikiResult(
+                        structure=structure, generated_pages=generated_pages
+                    )
 
-            # Step 4: Save to deepwiki cache
-            await self._save_cache(
-                client, owner, repo, "local", language, comprehensive,
-                structure, generated_pages, provider, model,
-            )
-
-            return WikiResult(
-                structure=structure, generated_pages=generated_pages
-            )
+            except EmptyEmbeddingError:
+                if embedding_cleared:
+                    raise RuntimeError(
+                        "Wiki 生成失败：清理 embedding 数据库后仍检测到空向量错误。"
+                        "请确认 DEEPWIKI_EMBEDDING_API_KEY 已正确配置，然后重试。"
+                    )
+                logger.warning(
+                    "检测到 DeepWiki 空 embedding 数据库（陈旧索引），"
+                    "正在清理并自动重试一次"
+                )
+                await self.clear_embedding_db()
+                embedding_cleared = True
 
     async def delete_cache(
         self,
@@ -373,15 +418,54 @@ class WikiOrchestrator:
     async def _stream_collect(
         self, client: httpx.AsyncClient, payload: dict
     ) -> str:
-        """POST /chat/completions/stream and collect full response."""
+        """POST /chat/completions/stream and collect full response.
+
+        Raises EmptyEmbeddingError when DeepWiki returns 500 with a known
+        empty-embedding message so callers can clear the stale DB and retry.
+        """
         content = ""
         async with client.stream(
             "POST", "/chat/completions/stream", json=payload, timeout=300
         ) as response:
+            if response.status_code == 500:
+                body = (await response.aread()).decode(errors="replace")
+                if any(p.lower() in body.lower() for p in _EMPTY_EMBEDDING_PATTERNS):
+                    raise EmptyEmbeddingError(
+                        f"DeepWiki 空 embedding 数据库: {body[:300]}"
+                    )
+                raise httpx.HTTPStatusError(
+                    f"HTTP 500: {body[:300]}",
+                    request=response.request,
+                    response=response,
+                )
             response.raise_for_status()
             async for chunk in response.aiter_text():
                 content += chunk
         return content
+
+    async def clear_embedding_db(self) -> None:
+        """Delete stale ADALFlow *.pkl files from the DeepWiki container.
+
+        Called automatically before a retry when EmptyEmbeddingError is detected.
+        Uses docker CLI (same pattern as component_manager.py) so it works on
+        both Linux and Windows Docker Desktop.
+        """
+        def _run_sync() -> None:
+            result = subprocess.run(
+                [
+                    "docker", "exec", _DEEPWIKI_CONTAINER,
+                    "sh", "-c", f"rm -f {_ADALFLOW_DB_PATH}/*.pkl",
+                ],
+                capture_output=True,
+                timeout=30,
+            )
+            if result.returncode != 0:
+                stderr = result.stderr.decode(errors="replace").strip()
+                logger.warning("clear_embedding_db: docker exec failed: %s", stderr)
+            else:
+                logger.info("clear_embedding_db: stale *.pkl files removed from %s", _DEEPWIKI_CONTAINER)
+
+        await asyncio.to_thread(_run_sync)
 
     async def _save_cache(
         self,
