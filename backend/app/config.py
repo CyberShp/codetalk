@@ -40,6 +40,7 @@ class Settings(BaseSettings):
     tool_repos_base_path: str = "/data/repos"
     cors_origins: str = "http://localhost:3000,http://localhost:3003,http://localhost:3004,http://localhost:3005"
     docker_host: str = "unix:///var/run/docker.sock"
+    git_sync_timeout_seconds: int = 1800
 
     model_config = SettingsConfigDict(
         # Load order: repo-root .env first (Docker-network defaults),

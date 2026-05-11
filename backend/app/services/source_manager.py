@@ -50,25 +50,69 @@ async def resolve_source(repo: Repository) -> str:
     raise ValueError(f"Unknown source type: {repo.source_type}")
 
 
+async def _run_git(args: list[str], repo_name: str, repo_id: UUID) -> None:
+    timeout = settings.git_sync_timeout_seconds
+    logger.debug("git %s for %s (timeout=%ds)", " ".join(args[1:4]), repo_name, timeout)
+    proc = await asyncio.create_subprocess_exec(
+        *args,
+        stdout=asyncio.subprocess.PIPE,
+        stderr=asyncio.subprocess.PIPE,
+    )
+    _running_syncs[repo_id] = proc
+    try:
+        try:
+            _, stderr_bytes = await asyncio.wait_for(
+                proc.communicate(), timeout=float(timeout)
+            )
+        except asyncio.TimeoutError:
+            proc.terminate()
+            try:
+                await asyncio.wait_for(proc.wait(), timeout=10)
+            except asyncio.TimeoutError:
+                proc.kill()
+            raise RuntimeError(
+                f"git timed out after {timeout}s for {repo_name}: {' '.join(args[:4])}"
+            )
+    finally:
+        _running_syncs.pop(repo_id, None)
+
+    if proc.returncode != 0:
+        stderr_text = stderr_bytes.decode(errors="replace").strip()
+        logger.error(
+            "git failed for %s (exit %d): %s", repo_name, proc.returncode, stderr_text
+        )
+        raise RuntimeError(
+            f"git {args[1]} failed for {repo_name} (exit {proc.returncode}): {stderr_text}"
+        )
+
+
 async def _clone_or_pull(repo: Repository) -> str:
     base_path = ensure_repos_base_path(settings.repos_base_path)
-
-    # Use repo UUID to avoid name collisions across projects
     dest = os.path.join(base_path, str(repo.id))
+
     if os.path.isdir(os.path.join(dest, ".git")):
-        proc = await asyncio.create_subprocess_exec(
-            "git", "-C", dest, "pull", "--ff-only",
-            stdout=asyncio.subprocess.PIPE,
-            stderr=asyncio.subprocess.PIPE,
-        )
-        _running_syncs[repo.id] = proc
         try:
-            _, stderr = await proc.communicate()
-        finally:
-            _running_syncs.pop(repo.id, None)
-        if proc.returncode != 0:
-            raise RuntimeError(
-                f"git pull failed for {repo.name}: {stderr.decode()}"
+            await _run_git(
+                ["git", "-C", dest, "pull", "--ff-only"],
+                repo.name,
+                repo.id,
+            )
+        except RuntimeError as exc:
+            if "timed out" in str(exc):
+                raise
+            logger.warning(
+                "ff-only pull failed for %s; retrying with fetch --depth=1 + reset",
+                repo.name,
+            )
+            await _run_git(
+                ["git", "-C", dest, "fetch", "--depth=1", "origin", repo.branch],
+                repo.name,
+                repo.id,
+            )
+            await _run_git(
+                ["git", "-C", dest, "reset", "--hard", f"origin/{repo.branch}"],
+                repo.name,
+                repo.id,
             )
         return dest
 
@@ -80,17 +124,9 @@ async def _clone_or_pull(repo: Repository) -> str:
         )
         shutil.rmtree(dest)
 
-    proc = await asyncio.create_subprocess_exec(
-        "git", "clone", "--depth=1", "-b", repo.branch,
-        repo.source_uri, dest,
-        stdout=asyncio.subprocess.PIPE,
-        stderr=asyncio.subprocess.PIPE,
+    await _run_git(
+        ["git", "clone", "--depth=1", "-b", repo.branch, repo.source_uri, dest],
+        repo.name,
+        repo.id,
     )
-    _running_syncs[repo.id] = proc
-    try:
-        _, stderr = await proc.communicate()
-    finally:
-        _running_syncs.pop(repo.id, None)
-    if proc.returncode != 0:
-        raise RuntimeError(f"git clone failed for {repo.name}: {stderr.decode()}")
     return dest
