@@ -6,9 +6,12 @@ IRON LAW: analyze() may ONLY do:
 No text search, regex matching, result ranking, or any analysis logic.
 """
 
+import asyncio
 import base64
 import logging
 import os
+import socket as _socket
+import subprocess
 from collections.abc import AsyncIterator
 
 import httpx
@@ -55,6 +58,11 @@ class ZoektAdapter(BaseToolAdapter):
 
         Mirrors the pattern already used in component_manager — no extra deps needed.
         """
+        if not hasattr(_socket, "AF_UNIX"):
+            raise RuntimeError(
+                "Docker Unix socket not supported on this platform. "
+                "Use _exec_index_via_cli() instead."
+            )
         transport = httpx.AsyncHTTPTransport(uds=DOCKER_SOCKET)
         return httpx.AsyncClient(
             transport=transport,
@@ -98,7 +106,7 @@ class ZoektAdapter(BaseToolAdapter):
             tool_base_path=settings.tool_repos_base_path,
         )
         # Zoekt uses the directory basename as the repo name — we must match this.
-        index_key = os.path.basename(repo_path.rstrip("/"))
+        index_key = os.path.basename(repo_path.rstrip("/\\"))
         display_name = request.options.get("repo_name") or index_key
 
         # Skip re-indexing if already indexed (unless caller sets force_reindex)
@@ -146,6 +154,23 @@ class ZoektAdapter(BaseToolAdapter):
         except Exception:
             return False
 
+    async def _exec_index_via_cli(self, repo_path: str) -> None:
+        """Run zoekt-index via docker exec CLI (Windows fallback)."""
+        cmd = [
+            "docker", "exec", self.container_name,
+            "zoekt-index", "-index", "/data/index", repo_path,
+        ]
+        result = await asyncio.to_thread(
+            subprocess.run, cmd,
+            capture_output=True, timeout=_INDEX_TIMEOUT,
+        )
+        if result.returncode != 0:
+            stderr = result.stderr.decode(errors="replace").strip()
+            raise RuntimeError(
+                f"zoekt-index failed with exit code {result.returncode} "
+                f"for repo path '{repo_path}': {stderr}"
+            )
+
     async def _exec_index(self, repo_path: str) -> None:
         """Run zoekt-index inside the running zoekt container via Docker Engine API.
 
@@ -153,6 +178,9 @@ class ZoektAdapter(BaseToolAdapter):
         the directory basename automatically.  Uses the same httpx-over-UDS pattern
         as component_manager — no extra dependencies needed.
         """
+        if not hasattr(_socket, "AF_UNIX"):
+            return await self._exec_index_via_cli(repo_path)
+
         cmd = ["zoekt-index", "-index", "/data/index", repo_path]
 
         async with self._docker_client() as docker:

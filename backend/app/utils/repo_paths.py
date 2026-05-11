@@ -1,5 +1,5 @@
 import os
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 from typing import Optional
 
 
@@ -46,4 +46,4 @@ def to_tool_repo_path(
     except ValueError:
         return str(resolved_repo)
 
-    return str((Path(tool_base_path) / relative).resolve())
+    return str(PurePosixPath(tool_base_path) / PurePosixPath(relative.as_posix()))
