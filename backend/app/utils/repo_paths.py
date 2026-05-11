@@ -1,6 +1,9 @@
 import os
-from pathlib import Path, PurePosixPath
+import re
+from pathlib import Path, PurePosixPath, PureWindowsPath
 from typing import Optional
+
+_WINDOWS_ABS_RE = re.compile(r"^[A-Za-z]:[/\\]")
 
 
 def running_in_container() -> bool:
@@ -33,6 +36,18 @@ def to_tool_repo_path(
     host_base_path: str,
     tool_base_path: str,
 ) -> str:
+    # When a Windows-style path is stored in the DB but this code runs in a Linux container,
+    # Path() on Linux won't treat "D:\..." as absolute and resolve() prepends the CWD.
+    # PureWindowsPath is filesystem-free and works cross-platform.
+    if _WINDOWS_ABS_RE.match(repo_path):
+        win_repo = PureWindowsPath(repo_path)
+        win_base = PureWindowsPath(host_base_path)
+        try:
+            relative = win_repo.relative_to(win_base)
+            return str(PurePosixPath(tool_base_path) / relative.as_posix())
+        except ValueError:
+            return repo_path
+
     resolved_repo = Path(repo_path).expanduser()
     if not resolved_repo.is_absolute():
         resolved_repo = resolved_repo.resolve()

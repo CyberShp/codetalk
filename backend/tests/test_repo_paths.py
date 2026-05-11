@@ -44,6 +44,24 @@ class RepoPathTests(unittest.TestCase):
 
         self.assertEqual(result, "/tmp/external-repo")
 
+    def test_to_tool_repo_path_handles_windows_host_path_in_linux_container(self) -> None:
+        result = repo_paths.to_tool_repo_path(
+            r"D:\coworkers\codetalk\.repos\7cf1a08b-abcd-1234-efgh-000000000000",
+            host_base_path=r"D:\coworkers\codetalk\.repos",
+            tool_base_path="/data/repos",
+        )
+
+        self.assertEqual(result, "/data/repos/7cf1a08b-abcd-1234-efgh-000000000000")
+
+    def test_to_tool_repo_path_windows_unmanaged_path_returned_unchanged(self) -> None:
+        result = repo_paths.to_tool_repo_path(
+            r"C:\other-location\some-repo",
+            host_base_path=r"D:\coworkers\codetalk\.repos",
+            tool_base_path="/data/repos",
+        )
+
+        self.assertEqual(result, r"C:\other-location\some-repo")
+
     def test_ensure_repos_base_path_creates_missing_directory(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             base = Path(tmp) / "repos"
