@@ -76,8 +76,6 @@ CodeTalks 是一个**代码分析编排与可视化平台**。它本身不执行
 | CodeTalks 前端 | 3000 | `http://your-server:3000` |
 | CodeTalks API | 8000 | `http://your-server:8000` |
 
-> K8s 部署时前端端口为 30003，API 端口为 30800。具体地址请咨询运维人员。
-
 ---
 
 ## 3. 界面总览
