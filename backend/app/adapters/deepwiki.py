@@ -87,15 +87,33 @@ class DeepwikiAdapter(BaseToolAdapter):
                 last_check=str(exc),
             )
 
-    async def prepare(self, request: AnalysisRequest) -> None:
-        tool_repo_path = to_tool_repo_path(
-            request.repo_local_path,
+    def _to_tool_path(self, repo_local_path: str) -> str:
+        return to_tool_repo_path(
+            repo_local_path,
             host_base_path=settings.repos_base_path,
             tool_base_path=settings.tool_repos_base_path,
+            local_host_path=settings.local_repos_host_path,
+            local_container_path=settings.local_repos_container_path,
         )
+
+    async def prepare(self, request: AnalysisRequest) -> None:
+        tool_repo_path = self._to_tool_path(request.repo_local_path)
         resp = await self.client.get(
             "/local_repo/structure", params={"path": tool_repo_path}
         )
+        if resp.status_code == 404:
+            if not settings.local_repos_host_path:
+                raise RuntimeError(
+                    f"Directory not found in deepwiki container: {tool_repo_path}. "
+                    "In Docker mode, set LOCAL_REPOS_HOST_PATH in .env to the host "
+                    "directory containing your local repos, then restart containers. "
+                    "See docs/LOCAL_DEPLOYMENT.md for details."
+                )
+            raise RuntimeError(
+                f"deepwiki cannot access repo at {tool_repo_path}: directory not found. "
+                f"Verify LOCAL_REPOS_HOST_PATH ({settings.local_repos_host_path!r}) is "
+                f"correct and docker-compose mounts it at {settings.local_repos_container_path!r}."
+            )
         if resp.status_code != 200:
             raise RuntimeError(
                 f"deepwiki cannot access repo at {tool_repo_path}: HTTP {resp.status_code}"
@@ -107,11 +125,7 @@ class DeepwikiAdapter(BaseToolAdapter):
     async def analyze(self, request: AnalysisRequest) -> UnifiedResult:
         proxy_mode = request.options.get("proxy_mode", "system")
         http_client = self._get_client(proxy_mode)
-        tool_repo_path = to_tool_repo_path(
-            request.repo_local_path,
-            host_base_path=settings.repos_base_path,
-            tool_base_path=settings.tool_repos_base_path,
-        )
+        tool_repo_path = self._to_tool_path(request.repo_local_path)
 
         logger.info(
             "deepwiki analyze: provider=%s model=%s proxy=%s has_key=%s base_url=%s",

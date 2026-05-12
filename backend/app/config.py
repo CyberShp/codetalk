@@ -38,6 +38,11 @@ class Settings(BaseSettings):
     codecompass_base_url: str = "http://codecompass:6251"
     repos_base_path: str = _default_repos_base_path
     tool_repos_base_path: str = "/data/repos"
+    # Local repos volume mount for Docker mode: set LOCAL_REPOS_HOST_PATH in .env to the host
+    # directory containing user-specified local repos (e.g. D:\projects or /home/user/projects).
+    # docker-compose.yml mounts this directory into tool containers at LOCAL_REPOS_CONTAINER_PATH.
+    local_repos_host_path: str = ""
+    local_repos_container_path: str = "/local_repos"
     cors_origins: str = "http://localhost:3000,http://localhost:3003,http://localhost:3004,http://localhost:3005"
     docker_host: str = "unix:///var/run/docker.sock"
     git_sync_timeout_seconds: int = 1800

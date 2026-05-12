@@ -24,6 +24,10 @@ services:
       - ./.repos:/data/repos
       - /var/run/docker.sock:/var/run/docker.sock:ro
       - .:/project:rw
+      # Optional: mount user local repos so deepwiki can access them.
+      # Set LOCAL_REPOS_HOST_PATH in .env (e.g. D:\projects or /home/user/projects).
+      # When not set, falls back to .repos (harmless — same dir as /data/repos).
+      - ${LOCAL_REPOS_HOST_PATH:-./.repos}:/local_repos:ro
     depends_on:
       postgres:
         condition: service_healthy
@@ -34,6 +38,9 @@ services:
       # (e.g. D:\coworkers\codetalk\.repos) so stored Windows paths in the DB
       # can be mapped to the /data/repos container mount. See .env.example.
       REPOS_BASE_PATH: ${REPOS_BASE_PATH:-/data/repos}
+      # Local repos volume mount: set LOCAL_REPOS_HOST_PATH in .env so path translation works.
+      LOCAL_REPOS_HOST_PATH: ${LOCAL_REPOS_HOST_PATH:-}
+      LOCAL_REPOS_CONTAINER_PATH: /local_repos
       # Override .env.local localhost values — container must use Docker DNS
       DEEPWIKI_BASE_URL: http://deepwiki:8001
       GITNEXUS_BASE_URL: http://gitnexus:7100
@@ -50,6 +57,9 @@ services:
       - deepwiki_data:/root/.adalflow
       - ./.repos:/data/repos:ro
       - ./docker/deepwiki/embedder.json:/app/api/config/embedder.json:ro
+      # Optional: mount user local repos so deepwiki can read them via /local_repo/structure.
+      # Set LOCAL_REPOS_HOST_PATH in .env to the host directory containing local repos.
+      - ${LOCAL_REPOS_HOST_PATH:-./.repos}:/local_repos:ro
     environment:
       OPENAI_API_KEY: ${OPENAI_API_KEY:-}
       OPENAI_BASE_URL: ${OPENAI_BASE_URL:-}
