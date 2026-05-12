@@ -18,7 +18,7 @@ services:
   backend:
     build: ./backend
     ports:
-      - "8000:8000"
+      - "8100:8000"
     volumes:
       - ./backend:/app
       - ./.repos:/data/repos
@@ -44,7 +44,7 @@ services:
   deepwiki:
     image: ghcr.io/asyncfuncai/deepwiki-open:latest
     ports:
-      - "8001:8001"
+      - "8091:8001"
       - "3001:3000"
     volumes:
       - deepwiki_data:/root/.adalflow
@@ -72,7 +72,7 @@ services:
   joern:
     image: ghcr.io/joernio/joern:nightly
     ports:
-      - "8080:8080"
+      - "8090:8080"
     volumes:
       - ./.repos:/data/repos:ro
       - joern_data:/root/.joern
