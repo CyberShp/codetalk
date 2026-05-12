@@ -71,6 +71,9 @@ frontend/step*.png
 # Duplicate lock files (repo uses npm/package-lock.json)
 frontend/pnpm-lock.yaml
 
+# Deployer secrets
+deployer/.deploy-config.json
+
 # Test artifacts
 output/
 test-results/
