@@ -6,7 +6,7 @@ import CyberInput from "@/components/ui/CyberInput";
 import ComponentConfigPanel from "@/components/ComponentConfigPanel";
 import { usePageRestoreRefresh } from "@/hooks/usePageRestoreRefresh";
 import { api } from "@/lib/api";
-import type { LLMConfig, ProxyMode } from "@/lib/types";
+import type { LLMConfig, ProxyMode, ConfigDomain } from "@/lib/types";
 
 const LLM_PROVIDERS = [
   { value: "openai", label: "OpenAI" },
@@ -25,6 +25,14 @@ export default function SettingsPage() {
   const [testingId, setTestingId] = useState<string | null>(null);
   const [testResult, setTestResult] = useState<{ id: string; success: boolean; message: string } | null>(null);
 
+  // Embedding config state
+  const [embeddingDomain, setEmbeddingDomain] = useState<ConfigDomain | null>(null);
+  const [embeddingValues, setEmbeddingValues] = useState<Record<string, string>>({});
+  const [embeddingDirty, setEmbeddingDirty] = useState(false);
+  const [embeddingSaving, setEmbeddingSaving] = useState(false);
+  const [embeddingApplying, setEmbeddingApplying] = useState(false);
+  const [embeddingFeedback, setEmbeddingFeedback] = useState<{ ok: boolean; msg: string } | null>(null);
+
   // Form state (shared by create and edit)
   const [editingId, setEditingId] = useState<string | null>(null);
   const [modelName, setModelName] = useState("");
@@ -42,13 +50,55 @@ export default function SettingsPage() {
     }
   }, []);
 
+  const loadEmbedding = useCallback(async () => {
+    try {
+      const [contracts, statuses] = await Promise.all([
+        api.components.contracts(),
+        api.components.list(),
+      ]);
+      const deepwiki = contracts.find((c) => c.component === "deepwiki");
+      const embDomain = deepwiki?.domains.find((d) => d.domain === "embedding");
+      if (!embDomain) return;
+      setEmbeddingDomain(embDomain);
+      const status = statuses.find((s) => s.component === "deepwiki");
+      const saved = status?.domains.find((d) => d.domain === "embedding");
+      if (saved?.config) {
+        setEmbeddingValues({ ...saved.config });
+      }
+    } catch {
+      // embedding section is optional — ignore errors silently
+    }
+  }, []);
+
+  const pollEmbeddingHealth = useCallback(() => {
+    let attempt = 0;
+    const tick = async () => {
+      attempt++;
+      try {
+        const s = await api.components.health("deepwiki");
+        if (s.health.healthy) {
+          setEmbeddingFeedback({ ok: true, msg: "重启成功，服务已恢复在线" });
+          return;
+        }
+      } catch { /* keep polling */ }
+      if (attempt >= 8) {
+        setEmbeddingFeedback({ ok: false, msg: "健康检查超时，服务可能仍在启动中" });
+        return;
+      }
+      setTimeout(tick, 3000);
+    };
+    setTimeout(tick, 3000);
+  }, []);
+
   useEffect(() => {
     void loadConfigs();
+    void loadEmbedding();
     const stored = localStorage.getItem("codetalks_ai_enabled");
     if (stored !== null) setAiEnabled(stored === "true");
-  }, [loadConfigs]);
+  }, [loadConfigs, loadEmbedding]);
   usePageRestoreRefresh(() => {
     void loadConfigs();
+    void loadEmbedding();
   });
 
   const toggleAI = () => {
@@ -140,6 +190,39 @@ export default function SettingsPage() {
     }
   };
 
+  const handleEmbeddingSave = async () => {
+    if (!embeddingDomain) return;
+    setEmbeddingSaving(true);
+    setEmbeddingFeedback(null);
+    try {
+      await api.components.saveConfig("deepwiki", "embedding", embeddingValues);
+      setEmbeddingDirty(false);
+      setEmbeddingFeedback({ ok: true, msg: "配置已保存" });
+      setTimeout(() => setEmbeddingFeedback(null), 3000);
+    } catch (e) {
+      setEmbeddingFeedback({ ok: false, msg: e instanceof Error ? e.message : "保存失败" });
+    } finally {
+      setEmbeddingSaving(false);
+    }
+  };
+
+  const handleEmbeddingApplyRestart = async () => {
+    setEmbeddingApplying(true);
+    setEmbeddingFeedback(null);
+    try {
+      const result = await api.components.applyRestart("deepwiki");
+      setEmbeddingFeedback({
+        ok: result.success,
+        msg: result.success ? `${result.message}，等待健康检查...` : result.message,
+      });
+      if (result.success) pollEmbeddingHealth();
+    } catch (e) {
+      setEmbeddingFeedback({ ok: false, msg: e instanceof Error ? e.message : "操作失败" });
+    } finally {
+      setEmbeddingApplying(false);
+    }
+  };
+
   return (
     <div className="space-y-6 max-w-3xl">
       <h2 className="font-display text-lg font-semibold text-on-surface">
@@ -176,11 +259,21 @@ export default function SettingsPage() {
         </div>
       </GlassPanel>
 
-      {/* LLM Configuration */}
+      {/* AI 助手 Configuration */}
       <GlassPanel>
         <h3 className="text-sm font-medium text-on-surface mb-4">
-          LLM 配置
+          AI 助手
         </h3>
+
+        {/* LLM Provider sub-section */}
+        <div className="mb-1">
+          <h4 className="text-[10px] font-medium text-on-surface-variant uppercase tracking-wider mb-1">
+            LLM Provider
+          </h4>
+          <p className="text-xs text-on-surface-variant/60 mb-4">
+            配置供 DeepWiki Chat 服务使用的 LLM 提供商
+          </p>
+        </div>
 
         {configs.map((cfg) => (
           <div
@@ -346,6 +439,77 @@ export default function SettingsPage() {
         >
           {saving ? "保存中..." : editingId ? "更新配置" : "新增配置"}
         </button>
+
+        {/* Embedding 配置 sub-section */}
+        {embeddingDomain && (
+          <div className="mt-6 pt-5 border-t border-outline-variant/20 space-y-3">
+            <h4 className="text-[10px] font-medium text-on-surface-variant uppercase tracking-wider">
+              Embedding 配置
+            </h4>
+            {embeddingDomain.fields.map((field) => {
+              if (field.field_type === "select") {
+                return (
+                  <div key={field.name}>
+                    <label className="block text-xs text-on-surface-variant mb-1.5">
+                      {field.label}
+                    </label>
+                    <select
+                      value={embeddingValues[field.name] ?? ""}
+                      onChange={(e) => {
+                        setEmbeddingValues((prev) => ({ ...prev, [field.name]: e.target.value }));
+                        setEmbeddingDirty(true);
+                      }}
+                      className="w-full bg-surface-container-lowest/50 text-on-surface font-data text-sm px-4 py-2 rounded-md outline-none focus:ring-1 focus:ring-primary-container"
+                    >
+                      <option value="">选择...</option>
+                      {field.options?.map((opt) => (
+                        <option key={opt} value={opt}>{opt}</option>
+                      ))}
+                    </select>
+                  </div>
+                );
+              }
+              return (
+                <div key={field.name}>
+                  <label className="block text-xs text-on-surface-variant mb-1.5 tracking-wide uppercase">
+                    {field.label}
+                  </label>
+                  <input
+                    type={field.field_type === "secret" ? "password" : "text"}
+                    placeholder={field.placeholder ?? ""}
+                    value={embeddingValues[field.name] ?? ""}
+                    onChange={(e) => {
+                      setEmbeddingValues((prev) => ({ ...prev, [field.name]: e.target.value }));
+                      setEmbeddingDirty(true);
+                    }}
+                    className="w-full bg-surface-container-lowest/50 text-on-surface font-data text-sm px-4 py-2 rounded-md outline-none placeholder:text-on-surface-variant/40 focus:ring-1 focus:ring-primary-container"
+                  />
+                </div>
+              );
+            })}
+            <div className="flex items-center gap-2 pt-1">
+              <button
+                onClick={handleEmbeddingSave}
+                disabled={embeddingSaving || !embeddingDirty}
+                className="px-3 py-1.5 text-xs font-medium rounded-md bg-surface-container-high text-on-surface hover:text-primary transition-colors disabled:opacity-40"
+              >
+                {embeddingSaving ? "保存中..." : "保存"}
+              </button>
+              <button
+                onClick={handleEmbeddingApplyRestart}
+                disabled={embeddingApplying}
+                className="px-3 py-1.5 text-xs font-medium rounded-md bg-primary-container/80 text-primary hover:bg-primary-container transition-colors disabled:opacity-40"
+              >
+                {embeddingApplying ? "应用中..." : "应用并重启"}
+              </button>
+              {embeddingFeedback && (
+                <span className={`text-[10px] ${embeddingFeedback.ok ? "text-secondary-fixed-dim" : "text-tertiary"}`}>
+                  {embeddingFeedback.msg}
+                </span>
+              )}
+            </div>
+          </div>
+        )}
       </GlassPanel>
 
       {/* Component Config */}

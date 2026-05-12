@@ -441,10 +441,11 @@ export default function ComponentConfigPanel() {
     c.domains.some((d) => d.domain === "connection")
   );
 
-  // Section B: group container-target domains by component
+  // Section B: group container-target domains by component (deepwiki handled in settings page)
   const componentGroups = useMemo(() => {
     const groups: { contract: ComponentContract; domains: ConfigDomain[] }[] = [];
     for (const contract of contracts) {
+      if (contract.component === "deepwiki") continue;
       const domains = contract.domains.filter(
         (d) => d.domain !== "connection" && d.target !== "backend"
       );
