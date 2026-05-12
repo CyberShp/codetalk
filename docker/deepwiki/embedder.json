@@ -15,7 +15,7 @@
   "embedder_ollama": {
     "client_class": "OllamaClient",
     "model_kwargs": {
-      "model": "nomic-embed-text"
+      "model": "qwen3-embedding:8b"
     }
   },
   "embedder_google": {

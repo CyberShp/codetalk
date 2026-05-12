@@ -28,6 +28,7 @@ export default function SettingsPage() {
   // Embedding config state
   const [embeddingDomain, setEmbeddingDomain] = useState<ConfigDomain | null>(null);
   const [embeddingValues, setEmbeddingValues] = useState<Record<string, string>>({});
+  const [embeddingOriginalValues, setEmbeddingOriginalValues] = useState<Record<string, string>>({});
   const [embeddingDirty, setEmbeddingDirty] = useState(false);
   const [embeddingSaving, setEmbeddingSaving] = useState(false);
   const [embeddingApplying, setEmbeddingApplying] = useState(false);
@@ -64,6 +65,7 @@ export default function SettingsPage() {
       const saved = status?.domains.find((d) => d.domain === "embedding");
       if (saved?.config) {
         setEmbeddingValues({ ...saved.config });
+        setEmbeddingOriginalValues({ ...saved.config });
       }
     } catch {
       // embedding section is optional — ignore errors silently
@@ -76,7 +78,7 @@ export default function SettingsPage() {
       attempt++;
       try {
         const s = await api.components.health("deepwiki");
-        if (s.health.healthy) {
+        if (s.healthy) {
           setEmbeddingFeedback({ ok: true, msg: "重启成功，服务已恢复在线" });
           return;
         }
@@ -195,7 +197,16 @@ export default function SettingsPage() {
     setEmbeddingSaving(true);
     setEmbeddingFeedback(null);
     try {
-      await api.components.saveConfig("deepwiki", "embedding", embeddingValues);
+      const secretFieldNames = new Set(
+        embeddingDomain.fields.filter((f) => f.field_type === "secret").map((f) => f.name)
+      );
+      const payload: Record<string, string> = {};
+      for (const [key, value] of Object.entries(embeddingValues)) {
+        if (secretFieldNames.has(key) && value === embeddingOriginalValues[key]) continue;
+        payload[key] = value;
+      }
+      await api.components.saveConfig("deepwiki", "embedding", payload);
+      await loadEmbedding();
       setEmbeddingDirty(false);
       setEmbeddingFeedback({ ok: true, msg: "配置已保存" });
       setTimeout(() => setEmbeddingFeedback(null), 3000);

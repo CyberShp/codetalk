@@ -10,7 +10,7 @@ from uuid import UUID
 
 from app.config import settings
 from app.models.repository import Repository
-from app.utils.repo_paths import ensure_repos_base_path
+from app.utils.repo_paths import _translate_path, ensure_repos_base_path, running_in_container
 
 logger = logging.getLogger(__name__)
 
@@ -32,16 +32,28 @@ async def cancel_sync(repo_id: UUID) -> bool:
 async def resolve_source(repo: Repository) -> str:
     if repo.source_type == "local_path":
         path = repo.source_uri
+
+        if running_in_container():
+            translated = _translate_path(
+                path,
+                settings.local_repos_host_path,
+                settings.local_repos_container_path,
+            )
+            if translated and os.path.isdir(translated):
+                return translated
+            hint = ""
+            if not settings.local_repos_host_path:
+                hint = (
+                    " Set LOCAL_REPOS_HOST_PATH to the parent directory "
+                    "containing your local repos and restart the containers."
+                )
+            raise FileNotFoundError(
+                f"Local path not reachable: {path}.{hint}"
+            )
+
         if not os.path.isdir(path):
             raise FileNotFoundError(f"Local path does not exist: {path}")
-        resolved = Path(path).resolve()
-        boundary = Path(settings.repos_base_path).resolve()
-        if not resolved.is_relative_to(boundary):
-            raise ValueError(
-                f"Local path must be under {settings.repos_base_path} "
-                f"(runtime shared repo boundary). Got: {path}"
-            )
-        return str(resolved)
+        return str(Path(path).resolve())
 
     if repo.source_type == "git_url":
         return await _clone_or_pull(repo)

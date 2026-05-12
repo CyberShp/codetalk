@@ -2,12 +2,13 @@ import unittest
 import uuid
 from datetime import datetime, timezone
 from types import SimpleNamespace
-from unittest.mock import patch
+from unittest.mock import AsyncMock, patch
 
 import httpx
 
 from app.api import settings as settings_api
 from app.main import app
+from app.services import component_manager as cm
 
 
 class _FakeScalars:
@@ -145,7 +146,9 @@ class SettingsRouteContractTests(unittest.IsolatedAsyncioTestCase):
         self.holder["db"] = _FakeDB(execute_results=[_FakeResult(items=[])])
 
         with patch.object(
-            settings_api, "save_component_config", return_value=SimpleNamespace()
+            cm, "save_config", new_callable=AsyncMock
+        ), patch.object(
+            settings_api, "_trigger_deepwiki_restart", new_callable=AsyncMock
         ):
             response = await self.client.post(
                 "/api/settings/llm",
@@ -238,7 +241,9 @@ class SettingsRouteContractTests(unittest.IsolatedAsyncioTestCase):
         with patch.object(
             settings_api, "decrypt_key", return_value="sk-decrypted"
         ), patch.object(
-            settings_api, "save_component_config", return_value=SimpleNamespace()
+            cm, "save_config", new_callable=AsyncMock
+        ), patch.object(
+            settings_api, "_trigger_deepwiki_restart", new_callable=AsyncMock
         ):
             response = await self.client.patch(f"/api/settings/llm/{target_id}/default")
 

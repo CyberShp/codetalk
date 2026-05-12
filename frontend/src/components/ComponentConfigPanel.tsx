@@ -387,7 +387,7 @@ export default function ComponentConfigPanel() {
       attempt++;
       try {
         const s = await api.components.health(comp);
-        if (s.health.healthy) {
+        if (s.healthy) {
           setFeedback({ key: comp, ok: true, msg: "重启成功，服务已恢复在线" });
           void load(); // refresh statuses once healthy
           return;

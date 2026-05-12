@@ -2810,7 +2810,7 @@ function LabView({
 
 // ── Rebuild helpers ────────────────────────────────────────────────────────
 
-const _API_BASE = process.env.NEXT_PUBLIC_API_URL || "http://localhost:8000";
+const _API_BASE = process.env.NEXT_PUBLIC_API_URL || "http://localhost:8100";
 
 function waitForTaskCompletion(taskId: string): Promise<void> {
   const wsUrl =

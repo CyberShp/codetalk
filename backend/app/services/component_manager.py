@@ -71,8 +71,21 @@ CONTRACTS: dict[str, ComponentContract] = {
                     "base_url": "DEEPWIKI_EMBEDDING_BASE_URL",
                     "api_key": "DEEPWIKI_EMBEDDING_API_KEY",
                     "embedder_type": "DEEPWIKI_EMBEDDER_TYPE",
+                    "model": "DEEPWIKI_EMBEDDING_MODEL",
                 },
                 fields=[
+                    ConfigField(
+                        name="embedder_type",
+                        label="Embedder 类型",
+                        field_type="select",
+                        options=["openai", "ollama", "google", "bedrock"],
+                    ),
+                    ConfigField(
+                        name="model",
+                        label="Embedding Model",
+                        field_type="text",
+                        placeholder="nomic-embed-text / text-embedding-3-small",
+                    ),
                     ConfigField(
                         name="base_url",
                         label="Base URL",
@@ -84,12 +97,6 @@ CONTRACTS: dict[str, ComponentContract] = {
                         label="API Key",
                         field_type="secret",
                         placeholder="sk-...",
-                    ),
-                    ConfigField(
-                        name="embedder_type",
-                        label="Embedder 类型",
-                        field_type="select",
-                        options=["openai", "ollama", "google", "bedrock"],
                     ),
                 ],
             ),
@@ -396,6 +403,34 @@ def _bridge_deepwiki_embedding_creds(
         pv["DEEPWIKI_EMBEDDING_BASE_URL"] = url
 
 
+_EMBEDDER_JSON_PATH = PROJECT_DIR / "docker" / "deepwiki" / "embedder.json"
+_EMBEDDER_SECTION_KEY = {
+    "openai": "embedder",
+    "ollama": "embedder_ollama",
+    "google": "embedder_google",
+    "bedrock": "embedder_bedrock",
+}
+
+
+def _update_deepwiki_embedder_model(embedder_type: str, model: str) -> None:
+    """Update model in embedder.json for the selected provider."""
+    if not model or not embedder_type:
+        return
+    section = _EMBEDDER_SECTION_KEY.get(embedder_type)
+    if not section:
+        return
+    try:
+        config = json.loads(_EMBEDDER_JSON_PATH.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return
+    if section not in config:
+        return
+    config[section].setdefault("model_kwargs", {})["model"] = model
+    _EMBEDDER_JSON_PATH.write_text(
+        json.dumps(config, indent=2, ensure_ascii=False) + "\n", encoding="utf-8"
+    )
+
+
 def generate_override(
     configs: list[ComponentConfig],
 ) -> tuple[str, dict[str, dict[str, str]]]:
@@ -472,6 +507,16 @@ async def apply_config(
             container_configs.append(cfg)
 
     yaml_content, preview = generate_override(container_configs)
+
+    # Update embedder.json when deepwiki embedding model is configured
+    if component == "deepwiki":
+        for cfg in container_configs:
+            if cfg.component == "deepwiki" and cfg.domain == "embedding":
+                _update_deepwiki_embedder_model(
+                    cfg.config.get("embedder_type", ""),
+                    cfg.config.get("model", ""),
+                )
+                break
 
     # Write override file only when there are container configs
     if yaml_content:

@@ -1,3 +1,4 @@
+import asyncio
 import logging
 import uuid
 
@@ -17,8 +18,19 @@ logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/api/settings", tags=["settings"])
 
 
+async def _restart_container_bg(component: str, env_updates: dict[str, str]) -> None:
+    try:
+        ok, msg = await cm.recreate_container(component, env_updates)
+        if ok:
+            logger.info("%s auto-restart: %s", component, msg)
+        else:
+            logger.warning("%s auto-restart failed: %s", component, msg)
+    except Exception:
+        logger.exception("%s auto-restart error", component)
+
+
 async def _trigger_deepwiki_restart(db: AsyncSession) -> None:
-    """Write override file and recreate DeepWiki container after default-LLM change."""
+    """Write override file and schedule DeepWiki container recreation in background."""
     contract = cm.get_contract("deepwiki")
     if not contract:
         return
@@ -31,11 +43,7 @@ async def _trigger_deepwiki_restart(db: AsyncSession) -> None:
         logger.warning("deepwiki: no env vars resolved, skipping auto-restart")
         return
     await cm.apply_config(db, "deepwiki")
-    ok, msg = await cm.recreate_container("deepwiki", env_updates)
-    if ok:
-        logger.info("deepwiki auto-restart: %s", msg)
-    else:
-        logger.warning("deepwiki auto-restart failed: %s", msg)
+    asyncio.create_task(_restart_container_bg("deepwiki", env_updates))
 
 
 def _to_response(c: LLMConfig) -> LLMConfigResponse:

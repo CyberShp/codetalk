@@ -15,6 +15,7 @@ import type {
   SyncResult,
   ComponentContract,
   ComponentStatus,
+  ComponentHealth,
   ComponentConfigResponse,
   ApplyResult,
   RestartResult,
@@ -43,7 +44,7 @@ import type {
   AnalysisStats,
 } from "./types";
 
-const BASE = process.env.NEXT_PUBLIC_API_URL || "http://localhost:8000";
+const BASE = process.env.NEXT_PUBLIC_API_URL || "http://localhost:8100";
 
 function collapseErrorText(text: string): string {
   return text.replace(/\s+/g, " ").trim();
@@ -645,6 +646,6 @@ export const api = {
     applyRestart: (component: string) =>
       request<RestartResult>(`/api/components/${component}/apply-restart`, { method: "POST" }),
     health: (component: string) =>
-      request<ComponentStatus>(`/api/components/${component}/health`),
+      request<ComponentHealth>(`/api/components/${component}/health`),
   },
 };
