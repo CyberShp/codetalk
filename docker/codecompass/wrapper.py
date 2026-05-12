@@ -134,26 +134,160 @@ class Handler(http.server.BaseHTTPRequestHandler):
 
 
 def main():
-    # Start CodeCompass_webserver on internal port
-    webserver_proc = subprocess.Popen(
-        ["CodeCompass_webserver", "-w", WORKSPACE_DIR, "-p", str(WEBSERVER_PORT)],
-        stdout=sys.stdout,
-        stderr=sys.stderr,
-    )
-    print(
-        f"CodeCompass wrapper: webserver pid={webserver_proc.pid} "
-        f"on :{WEBSERVER_PORT}, wrapper on :{LISTEN_PORT}",
-        flush=True,
-    )
+    webserver_proc = None
+
+    def start_webserver():
+        nonlocal webserver_proc
+        if webserver_proc and webserver_proc.poll() is None:
+            print("CodeCompass: webserver already running, stopping it first...")
+            webserver_proc.terminate()
+            try:
+                webserver_proc.wait(timeout=5)
+            except subprocess.TimeoutExpired:
+                webserver_proc.kill()
+
+        print(f"CodeCompass: starting webserver on :{WEBSERVER_PORT}...", flush=True)
+        webserver_proc = subprocess.Popen(
+            ["CodeCompass_webserver", "-w", WORKSPACE_DIR, "-p", str(WEBSERVER_PORT)],
+            stdout=sys.stdout,
+            stderr=sys.stderr,
+        )
+
+    # Initial start (may fail if no projects)
+    start_webserver()
+
+    class Handler(http.server.BaseHTTPRequestHandler):
+        def do_POST(self):
+            if self.path == "/api/parse":
+                self._handle_parse()
+            else:
+                self._proxy()
+
+        def do_GET(self):
+            if self.path == "/health":
+                self._handle_health()
+            else:
+                self._proxy()
+
+        def _handle_health(self):
+            # Check if webserver is actually running
+            is_webserver_up = webserver_proc and webserver_proc.poll() is None
+            status = "ready" if is_webserver_up else "initialized"
+            self._respond(200, {
+                "status": status,
+                "webserver_running": is_webserver_up,
+                "workspace": WORKSPACE_DIR
+            })
+
+        def _handle_parse(self):
+            content_length = int(self.headers.get("Content-Length", 0))
+            try:
+                body = json.loads(self.rfile.read(content_length)) if content_length else {}
+            except json.JSONDecodeError:
+                self._respond(400, {"error": "invalid JSON"})
+                return
+
+            project_name = body.get("project_name", "default")
+            source_path = body.get("source_path", "")
+
+            if not source_path:
+                self._respond(400, {"error": "source_path is required"})
+                return
+
+            workspace = f"{WORKSPACE_DIR}/{project_name}"
+            os.makedirs(workspace, exist_ok=True)
+
+            cmd = [
+                "CodeCompass_parser",
+                "-d", DB_CONNECTION,
+                "-w", workspace,
+                "-n", project_name,
+                "-i", source_path,
+            ]
+
+            self.log_message("Starting parse: %s", " ".join(cmd))
+            if not _parse_lock.acquire(blocking=False):
+                self._respond(409, {"error": "another parse is already running"})
+                return
+            try:
+                result = subprocess.run(
+                    cmd, capture_output=True, text=True, timeout=PARSE_TIMEOUT,
+                )
+                if result.returncode == 0:
+                    # Successfully parsed a project! Restart webserver so it picks it up.
+                    start_webserver()
+                    self._respond(200, {"status": "ok", "project": project_name})
+                else:
+                    self._respond(500, {
+                        "error": "parse failed",
+                        "returncode": result.returncode,
+                        "stderr": result.stderr[-1000:] if result.stderr else "",
+                    })
+            except subprocess.TimeoutExpired:
+                self._respond(504, {"error": "parse timed out", "timeout": PARSE_TIMEOUT})
+            except Exception as exc:
+                self._respond(500, {"error": str(exc)})
+            finally:
+                _parse_lock.release()
+
+        def _proxy(self):
+            if not webserver_proc or webserver_proc.poll() is not None:
+                # Webserver not running (likely no projects parsed yet)
+                if self.path == "/" or self.path == "":
+                    self._respond(200, {"status": "waiting_for_projects", "message": "No projects parsed yet. Please use /api/parse to add one."})
+                else:
+                    self._respond(503, {"error": "webserver not running (no projects parsed?)"})
+                return
+
+            url = f"http://localhost:{WEBSERVER_PORT}{self.path}"
+            try:
+                req = urllib.request.Request(url, method=self.command)
+                for key in ("Content-Type", "Accept"):
+                    val = self.headers.get(key)
+                    if val:
+                        req.add_header(key, val)
+
+                data = None
+                content_length = int(self.headers.get("Content-Length", 0))
+                if content_length:
+                    data = self.rfile.read(content_length)
+
+                with urllib.request.urlopen(req, data=data, timeout=60) as resp:
+                    body = resp.read()
+                    self.send_response(resp.status)
+                    for key, value in resp.headers.items():
+                        if key.lower() not in ("transfer-encoding", "connection"):
+                            self.send_header(key, value)
+                    self.end_headers()
+                    self.wfile.write(body)
+            except urllib.error.HTTPError as exc:
+                body = exc.read()
+                self.send_response(exc.code)
+                for key, value in exc.headers.items():
+                    self.send_header(key, value)
+                self.end_headers()
+                self.wfile.write(body)
+            except Exception as exc:
+                self._respond(502, {"error": f"proxy to webserver failed: {exc}"})
+
+        def _respond(self, code, data):
+            body = json.dumps(data).encode()
+            self.send_response(code)
+            self.send_header("Content-Type", "application/json")
+            self.send_header("Content-Length", str(len(body)))
+            self.end_headers()
+            self.wfile.write(body)
 
     server = ThreadingHTTPServer(("0.0.0.0", LISTEN_PORT), Handler)
+    print(f"CodeCompass wrapper: listening on :{LISTEN_PORT}", flush=True)
     try:
         server.serve_forever()
     except KeyboardInterrupt:
         pass
     finally:
-        webserver_proc.terminate()
-        webserver_proc.wait(timeout=10)
+        if webserver_proc:
+            webserver_proc.terminate()
+            webserver_proc.wait(timeout=10)
 
 
 if __name__ == "__main__":
