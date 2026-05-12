@@ -375,7 +375,7 @@ export default function GraphViewer({ nodes, edges, selectedNodeId, onNodeClick,
     }
 
     // Edge lines — in tree mode, only show edges that form the tree structure
-    const edgeLines = edges
+    const mappedEdges = edges
       .map((e) => {
         const s = posMap.get(e.sourceId);
         const t = posMap.get(e.targetId);
@@ -411,6 +411,15 @@ export default function GraphViewer({ nodes, edges, selectedNodeId, onNodeClick,
         strokeWidth: number;
         confidence: number;
       }>;
+
+    // Deduplicate edges by source-target-type to prevent React key warnings when backend returns duplicate edges
+    const seenEdgeKeys = new Set<string>();
+    const edgeLines = mappedEdges.filter((e) => {
+      const key = `${e.sourceId}|${e.targetId}|${e.type}`;
+      if (seenEdgeKeys.has(key)) return false;
+      seenEdgeKeys.add(key);
+      return true;
+    });
 
     return {
       layout,
