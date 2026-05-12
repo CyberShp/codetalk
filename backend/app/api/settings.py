@@ -1,3 +1,4 @@
+import logging
 import uuid
 
 import httpx
@@ -9,10 +10,32 @@ from app.config import settings as app_settings
 from app.database import get_db
 from app.models.llm_config import LLMConfig
 from app.schemas.llm_config import LLMConfigCreate, LLMConfigResponse, LLMConfigUpdate
-from app.services.component_manager import save_config as save_component_config
+from app.services import component_manager as cm
 from app.utils.crypto import decrypt_key, encrypt_key
 
+logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/api/settings", tags=["settings"])
+
+
+async def _trigger_deepwiki_restart(db: AsyncSession) -> None:
+    """Write override file and recreate DeepWiki container after default-LLM change."""
+    contract = cm.get_contract("deepwiki")
+    if not contract:
+        return
+    configs = await cm.get_configs(db, "deepwiki")
+    env_updates: dict[str, str] = {}
+    for cfg in configs:
+        env_vars = cm._resolve_env_vars(cfg, contract)
+        env_updates.update(env_vars)
+    if not env_updates:
+        logger.warning("deepwiki: no env vars resolved, skipping auto-restart")
+        return
+    await cm.apply_config(db, "deepwiki")
+    ok, msg = await cm.recreate_container("deepwiki", env_updates)
+    if ok:
+        logger.info("deepwiki auto-restart: %s", msg)
+    else:
+        logger.warning("deepwiki auto-restart failed: %s", msg)
 
 
 def _to_response(c: LLMConfig) -> LLMConfigResponse:
@@ -46,12 +69,13 @@ async def save_llm_config(data: LLMConfigCreate, db: AsyncSession = Depends(get_
     await db.commit()
     await db.refresh(config)
 
-    # Auto-sync new default LLM to DeepWiki chat config
+    # Auto-sync new default LLM to DeepWiki chat config and restart container
     if config.is_default:
-        await save_component_config(db, "deepwiki", "chat", {
+        await cm.save_config(db, "deepwiki", "chat", {
             "base_url": data.base_url or "",
             "api_key": data.api_key or "",
         })
+        await _trigger_deepwiki_restart(db)
 
     return _to_response(config)
 
@@ -76,13 +100,14 @@ async def update_llm_config(
     await db.commit()
     await db.refresh(config)
 
-    # Auto-sync: if this is the default LLM, propagate changes to DeepWiki chat
+    # Auto-sync: if this is the default LLM, propagate changes to DeepWiki chat and restart
     if config.is_default:
         api_key = decrypt_key(config.api_key_encrypted) if config.api_key_encrypted else ""
-        await save_component_config(db, "deepwiki", "chat", {
+        await cm.save_config(db, "deepwiki", "chat", {
             "base_url": config.base_url or "",
             "api_key": api_key,
         })
+        await _trigger_deepwiki_restart(db)
 
     return _to_response(config)
 
@@ -101,13 +126,13 @@ async def set_default_llm_config(
     await db.commit()
     await db.refresh(config)
 
-    # Auto-sync: propagate default LLM credentials to DeepWiki chat config
-    # so the two config layers stay consistent.
+    # Propagate default LLM credentials to DeepWiki chat config and restart container
     api_key = decrypt_key(config.api_key_encrypted) if config.api_key_encrypted else ""
-    await save_component_config(db, "deepwiki", "chat", {
+    await cm.save_config(db, "deepwiki", "chat", {
         "base_url": config.base_url or "",
         "api_key": api_key,
     })
+    await _trigger_deepwiki_restart(db)
 
     return _to_response(config)
 
