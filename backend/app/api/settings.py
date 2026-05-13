@@ -1,221 +1,178 @@
-import asyncio
-import logging
 import uuid
+from datetime import datetime, timezone
+from typing import Any
 
-import httpx
+import aiosqlite
 from fastapi import APIRouter, Depends, HTTPException
-from sqlalchemy import select
-from sqlalchemy.ext.asyncio import AsyncSession
+from pydantic import BaseModel
 
-from app.config import settings as app_settings
 from app.database import get_db
-from app.models.llm_config import LLMConfig
-from app.schemas.llm_config import LLMConfigCreate, LLMConfigResponse, LLMConfigUpdate
-from app.services import component_manager as cm
-from app.utils.crypto import decrypt_key, encrypt_key
 
-logger = logging.getLogger(__name__)
-router = APIRouter(prefix="/api/settings", tags=["settings"])
+router = APIRouter(prefix="/api/settings", tags=["设置管理"])
 
 
-async def _restart_container_bg(component: str, env_updates: dict[str, str]) -> None:
-    try:
-        ok, msg = await cm.recreate_container(component, env_updates)
-        if ok:
-            logger.info("%s auto-restart: %s", component, msg)
-        else:
-            logger.warning("%s auto-restart failed: %s", component, msg)
-    except Exception:
-        logger.exception("%s auto-restart error", component)
+# --- LLM Config schemas ---
+
+class LLMConfigCreate(BaseModel):
+    name: str
+    api_type: str                   # "anthropic" | "openai_compat"
+    base_url: str
+    api_key: str
+    model: str
+    max_tokens: int = 4096
+    temperature: float = 0.3
+    config_json: str | None = None  # raw JSON override from user
+    is_chat_model: bool = True
+    is_embedding_model: bool = False
 
 
-async def _trigger_deepwiki_restart(db: AsyncSession) -> None:
-    """Write override file and schedule DeepWiki container recreation in background."""
-    contract = cm.get_contract("deepwiki")
-    if not contract:
-        return
-    configs = await cm.get_configs(db, "deepwiki")
-    env_updates: dict[str, str] = {}
-    for cfg in configs:
-        env_vars = cm._resolve_env_vars(cfg, contract)
-        env_updates.update(env_vars)
-    if not env_updates:
-        logger.warning("deepwiki: no env vars resolved, skipping auto-restart")
-        return
-    await cm.apply_config(db, "deepwiki")
-    asyncio.create_task(_restart_container_bg("deepwiki", env_updates))
+class LLMConfigUpdate(BaseModel):
+    name: str | None = None
+    api_type: str | None = None
+    base_url: str | None = None
+    api_key: str | None = None
+    model: str | None = None
+    max_tokens: int | None = None
+    temperature: float | None = None
+    config_json: str | None = None
+    is_chat_model: bool | None = None
+    is_embedding_model: bool | None = None
 
 
-def _to_response(c: LLMConfig) -> LLMConfigResponse:
-    return LLMConfigResponse(
-        id=c.id, provider=c.provider, model_name=c.model_name,
-        has_api_key=bool(c.api_key_encrypted),
-        base_url=c.base_url, proxy_mode=c.proxy_mode,
-        is_default=c.is_default, created_at=c.created_at,
-    )
+class LLMConfigResponse(BaseModel):
+    id: str
+    name: str
+    api_type: str
+    base_url: str
+    model: str
+    max_tokens: int
+    temperature: float
+    config_json: str | None
+    is_chat_model: bool
+    is_embedding_model: bool
+    created_at: str
 
+
+def _row_to_llm(row: aiosqlite.Row) -> dict:
+    d = dict(row)
+    d["is_chat_model"] = bool(d.get("is_chat_model", 1))
+    d["is_embedding_model"] = bool(d.get("is_embedding_model", 0))
+    return d
+
+
+# --- General settings schemas ---
+
+class GeneralSettings(BaseModel):
+    proxy_mode: str = "none"        # "none" | "system" | "custom"
+    proxy_url: str = ""
+    ssl_cert_path: str = ""
+    active_chat_model_id: str = ""
+    active_embedding_model_id: str = ""
+
+
+# --- LLM Config endpoints ---
 
 @router.get("/llm", response_model=list[LLMConfigResponse])
-async def get_llm_configs(db: AsyncSession = Depends(get_db)):
-    result = await db.execute(select(LLMConfig).order_by(LLMConfig.created_at.desc()))
-    return [_to_response(c) for c in result.scalars().all()]
+async def list_llm_configs(db: aiosqlite.Connection = Depends(get_db)):
+    async with db.execute("SELECT * FROM llm_configs ORDER BY created_at DESC") as cur:
+        rows = await cur.fetchall()
+    return [_row_to_llm(r) for r in rows]
 
 
 @router.post("/llm", response_model=LLMConfigResponse, status_code=201)
-async def save_llm_config(data: LLMConfigCreate, db: AsyncSession = Depends(get_db)):
-    encrypted = encrypt_key(data.api_key) if data.api_key else None
-    config = LLMConfig(
-        provider=data.provider, model_name=data.model_name,
-        api_key_encrypted=encrypted, base_url=data.base_url,
-        proxy_mode=data.proxy_mode, is_default=data.is_default,
+async def create_llm_config(data: LLMConfigCreate, db: aiosqlite.Connection = Depends(get_db)):
+    if data.api_type not in ("anthropic", "openai_compat"):
+        raise HTTPException(status_code=422, detail="api_type 必须为 anthropic 或 openai_compat")
+
+    cfg_id = str(uuid.uuid4())
+    now = datetime.now(timezone.utc).isoformat()
+    await db.execute(
+        """INSERT INTO llm_configs
+           (id, name, api_type, base_url, api_key, model, max_tokens, temperature,
+            config_json, is_chat_model, is_embedding_model, created_at)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+        (cfg_id, data.name, data.api_type, data.base_url, data.api_key, data.model,
+         data.max_tokens, data.temperature, data.config_json,
+         int(data.is_chat_model), int(data.is_embedding_model), now),
     )
-    if data.is_default:
-        result = await db.execute(select(LLMConfig).where(LLMConfig.is_default.is_(True)))
-        for existing in result.scalars().all():
-            existing.is_default = False
-    db.add(config)
     await db.commit()
-    await db.refresh(config)
 
-    # Auto-sync new default LLM to DeepWiki chat config and restart container
-    if config.is_default:
-        await cm.save_config(db, "deepwiki", "chat", {
-            "base_url": data.base_url or "",
-            "api_key": data.api_key or "",
-        })
-        await _trigger_deepwiki_restart(db)
-
-    return _to_response(config)
+    async with db.execute("SELECT * FROM llm_configs WHERE id = ?", (cfg_id,)) as cur:
+        row = await cur.fetchone()
+    return _row_to_llm(row)
 
 
-@router.put("/llm/{config_id}", response_model=LLMConfigResponse)
+@router.put("/llm/{cfg_id}", response_model=LLMConfigResponse)
 async def update_llm_config(
-    config_id: uuid.UUID, data: LLMConfigUpdate, db: AsyncSession = Depends(get_db),
+    cfg_id: str, data: LLMConfigUpdate, db: aiosqlite.Connection = Depends(get_db)
 ):
-    config = await db.get(LLMConfig, config_id)
-    if not config:
-        raise HTTPException(status_code=404, detail="LLM config not found")
-    if data.provider is not None:
-        config.provider = data.provider
-    if data.model_name is not None:
-        config.model_name = data.model_name
-    if data.api_key is not None:
-        config.api_key_encrypted = encrypt_key(data.api_key) if data.api_key else None
-    if data.base_url is not None:
-        config.base_url = data.base_url or None
-    if data.proxy_mode is not None:
-        config.proxy_mode = data.proxy_mode
-    await db.commit()
-    await db.refresh(config)
+    async with db.execute("SELECT * FROM llm_configs WHERE id = ?", (cfg_id,)) as cur:
+        row = await cur.fetchone()
+    if not row:
+        raise HTTPException(status_code=404, detail="LLM 配置不存在")
 
-    # Auto-sync: if this is the default LLM, propagate changes to DeepWiki chat and restart
-    if config.is_default:
-        api_key = decrypt_key(config.api_key_encrypted) if config.api_key_encrypted else ""
-        await cm.save_config(db, "deepwiki", "chat", {
-            "base_url": config.base_url or "",
-            "api_key": api_key,
-        })
-        await _trigger_deepwiki_restart(db)
+    updates: dict[str, Any] = {k: v for k, v in data.model_dump(exclude_none=True).items()}
+    if "is_chat_model" in updates:
+        updates["is_chat_model"] = int(updates["is_chat_model"])
+    if "is_embedding_model" in updates:
+        updates["is_embedding_model"] = int(updates["is_embedding_model"])
 
-    return _to_response(config)
-
-
-@router.patch("/llm/{config_id}/default", response_model=LLMConfigResponse)
-async def set_default_llm_config(
-    config_id: uuid.UUID, db: AsyncSession = Depends(get_db),
-):
-    config = await db.get(LLMConfig, config_id)
-    if not config:
-        raise HTTPException(status_code=404, detail="LLM config not found")
-    result = await db.execute(select(LLMConfig).where(LLMConfig.is_default.is_(True)))
-    for existing in result.scalars().all():
-        existing.is_default = False
-    config.is_default = True
-    await db.commit()
-    await db.refresh(config)
-
-    # Propagate default LLM credentials to DeepWiki chat config and restart container
-    api_key = decrypt_key(config.api_key_encrypted) if config.api_key_encrypted else ""
-    await cm.save_config(db, "deepwiki", "chat", {
-        "base_url": config.base_url or "",
-        "api_key": api_key,
-    })
-    await _trigger_deepwiki_restart(db)
-
-    return _to_response(config)
-
-
-@router.post("/llm/{config_id}/test")
-async def test_llm_config(
-    config_id: uuid.UUID, db: AsyncSession = Depends(get_db),
-):
-    config = await db.get(LLMConfig, config_id)
-    if not config:
-        raise HTTPException(status_code=404, detail="LLM config not found")
-    if not config.api_key_encrypted:
-        return {"success": False, "message": "未设置 API Key"}
-    if not config.base_url:
-        return {"success": False, "message": "未设置 Base URL"}
-
-    api_key = decrypt_key(config.api_key_encrypted)
-    trust_env = config.proxy_mode != "direct"
-
-    try:
-        async with httpx.AsyncClient(
-            base_url=config.base_url,
-            timeout=httpx.Timeout(30, connect=10),
-            trust_env=trust_env,
-        ) as client:
-            resp = await client.post(
-                "/chat/completions",
-                headers={"Authorization": f"Bearer {api_key}"},
-                json={
-                    "model": config.model_name,
-                    "messages": [{"role": "user", "content": "Hello"}],
-                    "max_tokens": 32,
-                },
-            )
-            resp.raise_for_status()
-            data = resp.json()
-            content = data["choices"][0]["message"]["content"]
-            return {"success": True, "message": content[:100]}
-    except httpx.HTTPStatusError as exc:
-        body = exc.response.text[:300]
-        return {"success": False, "message": f"HTTP {exc.response.status_code}: {body}"}
-    except Exception as exc:
-        return {"success": False, "message": str(exc)[:300]}
-
-
-@router.delete("/llm/{config_id}", status_code=204)
-async def delete_llm_config(config_id: uuid.UUID, db: AsyncSession = Depends(get_db)):
-    config = await db.get(LLMConfig, config_id)
-    if not config:
-        raise HTTPException(status_code=404, detail="LLM config not found")
-    was_default = config.is_default
-    await db.delete(config)
-    await db.flush()
-    if was_default:
-        result = await db.execute(
-            select(LLMConfig).order_by(LLMConfig.created_at.asc()).limit(1)
+    if updates:
+        set_clause = ", ".join(f"{k} = ?" for k in updates)
+        await db.execute(
+            f"UPDATE llm_configs SET {set_clause} WHERE id = ?",
+            (*updates.values(), cfg_id),
         )
-        next_config = result.scalar_one_or_none()
-        if next_config:
-            next_config.is_default = True
+        await db.commit()
+
+    async with db.execute("SELECT * FROM llm_configs WHERE id = ?", (cfg_id,)) as cur:
+        row = await cur.fetchone()
+    return _row_to_llm(row)
+
+
+@router.delete("/llm/{cfg_id}", status_code=204)
+async def delete_llm_config(cfg_id: str, db: aiosqlite.Connection = Depends(get_db)):
+    async with db.execute("SELECT id FROM llm_configs WHERE id = ?", (cfg_id,)) as cur:
+        if not await cur.fetchone():
+            raise HTTPException(status_code=404, detail="LLM 配置不存在")
+    await db.execute("DELETE FROM llm_configs WHERE id = ?", (cfg_id,))
     await db.commit()
 
 
-@router.get("/deepwiki/models")
-async def get_deepwiki_models():
-    """Proxy deepwiki /models/config — returns available model providers."""
-    try:
-        async with httpx.AsyncClient(
-            base_url=app_settings.deepwiki_base_url,
-            timeout=httpx.Timeout(15, connect=5),
-        ) as client:
-            resp = await client.get("/models/config")
-            resp.raise_for_status()
-            return resp.json()
-    except httpx.ConnectError:
-        raise HTTPException(502, "Cannot connect to deepwiki service")
-    except httpx.HTTPStatusError as exc:
-        raise HTTPException(502, f"deepwiki error: HTTP {exc.response.status_code}")
+@router.post("/llm/test")
+async def test_llm_connection(data: LLMConfigCreate):
+    # Sprint 1 stub — real connectivity test added in Sprint 3
+    return {"success": True, "message": "连接测试将在 Sprint 3 实现，当前返回模拟成功"}
+
+
+# --- General settings endpoints ---
+
+_GENERAL_KEYS = ("proxy_mode", "proxy_url", "ssl_cert_path",
+                 "active_chat_model_id", "active_embedding_model_id")
+
+
+@router.get("/general", response_model=GeneralSettings)
+async def get_general_settings(db: aiosqlite.Connection = Depends(get_db)):
+    async with db.execute(
+        "SELECT key, value FROM settings WHERE key IN ({})".format(
+            ",".join("?" * len(_GENERAL_KEYS))
+        ),
+        _GENERAL_KEYS,
+    ) as cur:
+        rows = await cur.fetchall()
+
+    stored = {r["key"]: r["value"] for r in rows}
+    defaults = GeneralSettings().model_dump()
+    return {k: stored.get(k, defaults[k]) for k in defaults}
+
+
+@router.put("/general", response_model=GeneralSettings)
+async def update_general_settings(data: GeneralSettings, db: aiosqlite.Connection = Depends(get_db)):
+    for key, value in data.model_dump().items():
+        await db.execute(
+            "INSERT INTO settings (key, value) VALUES (?, ?) "
+            "ON CONFLICT(key) DO UPDATE SET value = excluded.value",
+            (key, str(value)),
+        )
+    await db.commit()
+    return data
