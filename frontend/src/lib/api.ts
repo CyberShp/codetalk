@@ -9,10 +9,9 @@ import type {
 } from "./types";
 
 const BASE =
-  process.env.NEXT_PUBLIC_API_URL ??
-  (typeof window !== "undefined"
+  typeof window !== "undefined"
     ? `${window.location.protocol}//${window.location.hostname}:8100`
-    : "http://localhost:8100");
+    : (process.env.NEXT_PUBLIC_API_URL ?? "http://localhost:8100");
 
 function extractErrorMessage(body: string): string {
   const text = body.trim();
