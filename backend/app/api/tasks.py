@@ -1,15 +1,19 @@
+import asyncio
 import json
+import logging
 import uuid
 from datetime import datetime, timezone
 from pathlib import Path
 
 import aiosqlite
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException
 from pydantic import BaseModel
 
+from app.config import settings
 from app.database import get_db
 
 router = APIRouter(prefix="/api/tasks", tags=["任务管理"])
+logger = logging.getLogger(__name__)
 
 
 # --- Schemas ---
@@ -34,6 +38,11 @@ class TaskResponse(BaseModel):
     error_message: str | None
     created_at: str
     updated_at: str
+
+
+class OutputFileInfo(BaseModel):
+    filename: str
+    size: int
 
 
 def _row_to_task(row: aiosqlite.Row) -> dict:
@@ -88,3 +97,85 @@ async def delete_task(task_id: str, db: aiosqlite.Connection = Depends(get_db)):
             raise HTTPException(status_code=404, detail="任务不存在")
     await db.execute("DELETE FROM tasks WHERE id = ?", (task_id,))
     await db.commit()
+
+
+# --- Sprint 3: Pipeline execution endpoints ---
+
+@router.post("/{task_id}/run")
+async def run_task(
+    task_id: str,
+    background_tasks: BackgroundTasks,
+    db: aiosqlite.Connection = Depends(get_db),
+):
+    """Trigger the analysis pipeline as a background task."""
+    async with db.execute("SELECT * FROM tasks WHERE id = ?", (task_id,)) as cur:
+        row = await cur.fetchone()
+    if not row:
+        raise HTTPException(status_code=404, detail="任务不存在")
+
+    task = dict(row)
+    if task["status"] == "running":
+        raise HTTPException(status_code=409, detail="任务正在运行中")
+
+    # Reset status
+    now = datetime.now(timezone.utc).isoformat()
+    await db.execute(
+        "UPDATE tasks SET status = 'running', progress = 0, error_message = NULL, "
+        "updated_at = ? WHERE id = ?",
+        (now, task_id),
+    )
+    await db.commit()
+
+    # Launch pipeline in background
+    from app.services.analysis_pipeline import AnalysisPipeline
+
+    pipeline = AnalysisPipeline(task_id=task_id)
+    background_tasks.add_task(pipeline.run, task_id)
+
+    return {"task_id": task_id, "status": "running", "message": "分析管道已启动"}
+
+
+@router.get("/{task_id}/output", response_model=list[OutputFileInfo])
+async def list_output_files(task_id: str, db: aiosqlite.Connection = Depends(get_db)):
+    """List output files for a completed task."""
+    async with db.execute("SELECT id FROM tasks WHERE id = ?", (task_id,)) as cur:
+        if not await cur.fetchone():
+            raise HTTPException(status_code=404, detail="任务不存在")
+
+    output_dir = settings.outputs_path / task_id
+    if not output_dir.exists():
+        return []
+
+    files: list[dict] = []
+    for f in sorted(output_dir.iterdir()):
+        if f.is_file():
+            files.append({"filename": f.name, "size": f.stat().st_size})
+
+    return files
+
+
+@router.get("/{task_id}/output/{filename}")
+async def read_output_file(
+    task_id: str,
+    filename: str,
+    db: aiosqlite.Connection = Depends(get_db),
+):
+    """Read a specific output file content."""
+    async with db.execute("SELECT id FROM tasks WHERE id = ?", (task_id,)) as cur:
+        if not await cur.fetchone():
+            raise HTTPException(status_code=404, detail="任务不存在")
+
+    output_dir = settings.outputs_path / task_id
+    filepath = output_dir / filename
+
+    # Prevent path traversal
+    try:
+        filepath.resolve().relative_to(output_dir.resolve())
+    except ValueError:
+        raise HTTPException(status_code=400, detail="非法文件路径")
+
+    if not filepath.exists():
+        raise HTTPException(status_code=404, detail=f"文件不存在: {filename}")
+
+    content = filepath.read_text(encoding="utf-8")
+    return {"filename": filename, "content": content}

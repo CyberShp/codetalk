@@ -2,60 +2,73 @@
 
 import Link from "next/link";
 import { usePathname } from "next/navigation";
+import {
+  LayoutDashboard,
+  FilePlus2,
+  Settings,
+  Wrench,
+} from "lucide-react";
+import type { ReactNode } from "react";
 
-const navItems = [
-  { label: "仪表盘", href: "/dashboard", icon: "⬡" },
-  { label: "分析", href: "/analysis", icon: "⬟" },
-  { label: "任务", href: "/tasks", icon: "◈" },
-  { label: "工具", href: "/tools", icon: "⬢" },
-  { label: "资产", href: "/assets", icon: "◇" },
-  { label: "设置", href: "/settings", icon: "⚙" },
+interface NavItem {
+  label: string;
+  href: string;
+  icon: ReactNode;
+}
+
+const navItems: NavItem[] = [
+  { label: "仪表盘", href: "/", icon: <LayoutDashboard size={18} /> },
+  { label: "新建分析", href: "/tasks/new", icon: <FilePlus2 size={18} /> },
+  { label: "工具状态", href: "/tools", icon: <Wrench size={18} /> },
+  { label: "设置", href: "/settings", icon: <Settings size={18} /> },
 ];
+
+function isActive(pathname: string, href: string): boolean {
+  if (href === "/") return pathname === "/";
+  return pathname.startsWith(href);
+}
 
 export default function Sidebar() {
   const pathname = usePathname();
 
   return (
-    <aside className="fixed left-0 top-0 h-screen w-64 bg-surface-container-low flex flex-col z-40">
+    <aside className="fixed left-0 top-0 h-screen w-56 bg-surface-container-low flex flex-col z-40 border-r border-outline-variant/30">
       {/* Logo */}
-      <div className="p-6 pb-4">
-        <h1 className="font-display text-xl font-bold text-primary tracking-wider">
-          CODETALKS
+      <div className="px-5 pt-6 pb-4">
+        <h1 className="font-display text-lg font-bold text-primary tracking-wider">
+          CODETALK
         </h1>
         <p className="text-xs text-on-surface-variant mt-1">
-          代码分析编排平台
+          轻量代码分析平台
         </p>
       </div>
 
       {/* Navigation */}
-      <nav className="flex-1 px-3 space-y-1">
+      <nav className="flex-1 px-3 space-y-0.5">
         {navItems.map((item) => {
-          const isActive = pathname?.startsWith(item.href);
+          const active = isActive(pathname, item.href);
           return (
             <Link
               key={item.href}
               href={item.href}
-              className={`flex items-center gap-3 px-4 py-2.5 rounded-md text-sm font-ui transition-colors ${
-                isActive
-                  ? "bg-surface-container-high text-primary border-l-2 border-primary"
+              className={`flex items-center gap-3 px-3 py-2.5 rounded-lg text-sm transition-colors ${
+                active
+                  ? "bg-primary/10 text-primary font-medium"
                   : "text-on-surface-variant hover:bg-surface-container hover:text-on-surface"
               }`}
             >
-              <span className="text-base">{item.icon}</span>
+              {item.icon}
               <span>{item.label}</span>
             </Link>
           );
         })}
       </nav>
 
-      {/* New Analysis Button */}
-      <div className="p-4">
-        <Link
-          href="/tasks?new=true"
-          className="block w-full py-2.5 text-center text-sm font-medium rounded-md bg-primary-container text-primary hover:shadow-[0_0_12px_rgba(164,230,255,0.2)] transition-shadow"
-        >
-          新建分析
-        </Link>
+      {/* Footer */}
+      <div className="px-5 py-4 border-t border-outline-variant/20">
+        <p className="text-[10px] text-on-surface-variant/50">
+          CodeTalk v1.0
+        </p>
       </div>
     </aside>
   );

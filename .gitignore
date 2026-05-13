@@ -50,7 +50,7 @@ frontend/README.md
 verify_ux.py
 
 # Dev task files (not for deployment)
-tasks/
+/tasks/
 
 # Dev-only docs
 docs/decisions/

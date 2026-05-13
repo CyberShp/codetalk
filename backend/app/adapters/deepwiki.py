@@ -1,220 +1,173 @@
-"""deepwiki-open adapter.
+"""DeepWiki-Open HTTP client adapter (Sprint 2 rewrite).
 
-IRON LAW: analyze() may ONLY do:
-  (a) HTTP calls to the deepwiki API
-  (b) Response format conversion
-No analysis logic (regex matching beyond format extraction, AST traversal, graph building).
+Provides wiki generation (streaming and non-streaming), wiki export,
+and health checking against the DeepWiki-Open API.
 """
 
 import logging
-import re
 from collections.abc import AsyncIterator
+from typing import Any
 
 import httpx
 
 from app.config import settings
-from app.utils.repo_paths import to_tool_repo_path
-
-from .base import (
-    AnalysisRequest,
-    BaseToolAdapter,
-    ToolCapability,
-    ToolHealth,
-    UnifiedResult,
-)
 
 logger = logging.getLogger(__name__)
 
+# Wiki generation can take a very long time for large repos
+_WIKI_TIMEOUT = 1800.0  # 30 minutes
+_DEFAULT_TIMEOUT = 30.0
 
-class DeepwikiAdapter(BaseToolAdapter):
-    def __init__(self, base_url: str = "http://deepwiki:8001"):
-        self.base_url = base_url
+# Default prompt sent to DeepWiki for wiki generation
+_DEFAULT_PROMPT = (
+    "Analyze the entire repository and generate comprehensive documentation. "
+    "Include: architecture overview, key components, data flow, "
+    "and Mermaid diagrams where appropriate."
+)
+
+
+class DeepWikiClient:
+    """HTTP client for the DeepWiki-Open wiki generation server."""
+
+    def __init__(self, base_url: str | None = None) -> None:
+        self._base_url = base_url or settings.deepwiki_api_url
         self._client: httpx.AsyncClient | None = None
-        self._client_proxy_mode: str | None = None
-        self._file_tree: str = ""
-        self._readme: str = ""
-
-    def _get_client(self, proxy_mode: str = "system") -> httpx.AsyncClient:
-        if (
-            self._client is not None
-            and not self._client.is_closed
-            and self._client_proxy_mode == proxy_mode
-        ):
-            return self._client
-        if self._client is not None and not self._client.is_closed:
-            # proxy_mode changed — close old client before creating new one
-            import asyncio
-            try:
-                loop = asyncio.get_running_loop()
-                loop.create_task(self._client.aclose())
-            except RuntimeError:
-                pass
-        trust_env = proxy_mode != "direct"
-        self._client = httpx.AsyncClient(
-            base_url=self.base_url,
-            timeout=httpx.Timeout(300, connect=10),
-            trust_env=trust_env,
-        )
-        self._client_proxy_mode = proxy_mode
-        return self._client
 
     @property
     def client(self) -> httpx.AsyncClient:
-        return self._get_client()
+        if self._client is None or self._client.is_closed:
+            self._client = httpx.AsyncClient(
+                base_url=self._base_url,
+                timeout=httpx.Timeout(_DEFAULT_TIMEOUT, connect=10),
+            )
+        return self._client
 
-    def name(self) -> str:
-        return "deepwiki"
+    async def close(self) -> None:
+        """Close the underlying HTTP client."""
+        if self._client is not None and not self._client.is_closed:
+            await self._client.aclose()
+            self._client = None
 
-    def capabilities(self) -> list[ToolCapability]:
-        return [
-            ToolCapability.DOCUMENTATION,
-            ToolCapability.ARCHITECTURE_DIAGRAM,
-            ToolCapability.KNOWLEDGE_GRAPH,
-        ]
+    # ------------------------------------------------------------------
+    # Public API
+    # ------------------------------------------------------------------
 
-    async def health_check(self) -> ToolHealth:
+    async def health(self) -> bool:
+        """Check if DeepWiki API is reachable and healthy.
+
+        GET /health
+        """
         try:
             resp = await self.client.get("/health")
-            data = resp.json()
-            return ToolHealth(
-                is_healthy=data.get("status") == "healthy",
-                container_status="running",
-            )
+            if resp.status_code < 400:
+                return True
+            logger.warning("DeepWikiClient: health check returned HTTP %d", resp.status_code)
+            return False
         except Exception as exc:
-            return ToolHealth(
-                is_healthy=False,
-                container_status="error",
-                last_check=str(exc),
-            )
+            logger.warning("DeepWikiClient: health check failed: %s", exc)
+            return False
 
-    def _to_tool_path(self, repo_local_path: str) -> str:
-        return to_tool_repo_path(
-            repo_local_path,
-            host_base_path=settings.repos_base_path,
-            tool_base_path=settings.tool_repos_base_path,
-            local_host_path=settings.local_repos_host_path,
-            local_container_path=settings.local_repos_container_path,
-        )
+    async def generate_wiki(
+        self,
+        repo_path: str,
+        prompt: str | None = None,
+    ) -> dict[str, Any]:
+        """Generate wiki documentation (non-streaming, waits for full response).
 
-    async def prepare(self, request: AnalysisRequest) -> None:
-        tool_repo_path = self._to_tool_path(request.repo_local_path)
-        resp = await self.client.get(
-            "/local_repo/structure", params={"path": tool_repo_path}
-        )
-        if resp.status_code == 404:
-            if not settings.local_repos_host_path:
-                raise RuntimeError(
-                    f"Directory not found in deepwiki container: {tool_repo_path}. "
-                    "In Docker mode, set LOCAL_REPOS_HOST_PATH in .env to the host "
-                    "directory containing your local repos, then restart containers. "
-                    "See docs/LOCAL_DEPLOYMENT.md for details."
-                )
-            raise RuntimeError(
-                f"deepwiki cannot access repo at {tool_repo_path}: directory not found. "
-                f"Verify LOCAL_REPOS_HOST_PATH ({settings.local_repos_host_path!r}) is "
-                f"correct and docker-compose mounts it at {settings.local_repos_container_path!r}."
-            )
-        if resp.status_code != 200:
-            raise RuntimeError(
-                f"deepwiki cannot access repo at {tool_repo_path}: HTTP {resp.status_code}"
-            )
-        body = resp.json()
-        self._file_tree = body.get("file_tree", "")
-        self._readme = body.get("readme", "")
+        POST /chat/completions  {"repo_url": path, "messages": [...]}
 
-    async def analyze(self, request: AnalysisRequest) -> UnifiedResult:
-        proxy_mode = request.options.get("proxy_mode", "system")
-        http_client = self._get_client(proxy_mode)
-        tool_repo_path = self._to_tool_path(request.repo_local_path)
-
-        logger.info(
-            "deepwiki analyze: provider=%s model=%s proxy=%s has_key=%s base_url=%s",
-            request.options.get("provider", "(none)"),
-            request.options.get("model", "(none)"),
-            proxy_mode,
-            bool(request.options.get("llm_api_key")),
-            request.options.get("llm_base_url", "(default)"),
-        )
-
-        language = request.options.get("language", "")
-
-        target_desc = "the entire repository"
-        if request.target_files:
-            target_desc = f"these files: {', '.join(request.target_files)}"
-
-        if language == "zh":
-            prompt = (
-                f"分析 {target_desc}，生成全面的中文技术文档。"
-                "包含：架构概览、核心组件、数据流，"
-                "以及适当的 Mermaid 图表。请全程使用中文撰写。"
-            )
-        else:
-            prompt = (
-                f"Analyze {target_desc} and generate comprehensive documentation. "
-                "Include: architecture overview, key components, data flow, "
-                "and Mermaid diagrams where appropriate."
-            )
-
-        chat_payload: dict = {
-            "repo_url": tool_repo_path,
-            "type": "local",
-            "messages": [{"role": "user", "content": prompt}],
-            "excluded_dirs": "\n".join([
-                "node_modules", ".git", "dist", "build", "__pycache__",
-                ".next", "vendor", "coverage", ".nyc_output",
-                ".venv", "venv", ".tox", "egg-info",
-            ]),
+        Returns the full response as a dict with at least a ``content`` key.
+        """
+        messages = [{"role": "user", "content": prompt or _DEFAULT_PROMPT}]
+        payload: dict[str, Any] = {
+            "repo_url": repo_path,
+            "messages": messages,
         }
 
-        if request.options.get("provider"):
-            chat_payload["provider"] = request.options["provider"]
-        if request.options.get("model"):
-            chat_payload["model"] = request.options["model"]
-        if request.options.get("language"):
-            chat_payload["language"] = request.options["language"]
-        if request.target_files:
-            chat_payload["included_files"] = ",".join(request.target_files)
+        try:
+            resp = await self.client.post(
+                "/chat/completions",
+                json=payload,
+                timeout=_WIKI_TIMEOUT,
+            )
+            resp.raise_for_status()
+            data: dict[str, Any] = resp.json()
+            logger.info("DeepWikiClient: wiki generated for %s", repo_path)
+            return data
+        except httpx.HTTPStatusError as exc:
+            logger.error(
+                "DeepWikiClient: generate_wiki HTTP %d: %s",
+                exc.response.status_code,
+                exc.response.text[:200],
+            )
+            raise
+        except Exception as exc:
+            logger.error("DeepWikiClient: generate_wiki failed: %s", exc)
+            raise
 
-        full_content = ""
-        async with http_client.stream(
-            "POST",
-            "/chat/completions/stream",
-            json=chat_payload,
-            timeout=300,
-        ) as response:
-            response.raise_for_status()
-            async for chunk in response.aiter_text():
-                full_content += chunk
+    async def stream_wiki(
+        self,
+        repo_path: str,
+        prompt: str | None = None,
+    ) -> AsyncIterator[str]:
+        """Generate wiki documentation via streaming.
 
-        diagrams = _extract_mermaid_blocks(full_content)
+        POST /chat/completions  {"repo_url": path, "messages": [...]}
 
-        return UnifiedResult(
-            tool_name="deepwiki",
-            capability=ToolCapability.DOCUMENTATION,
-            data={
-                "documentation": full_content,
-                "file_tree": self._file_tree,
-            },
-            raw_output=full_content,
-            diagrams=diagrams,
-            metadata={
-                "provider": chat_payload.get("provider"),
-                "model": chat_payload.get("model"),
-            },
-        )
+        Yields text chunks as they arrive from the server.
+        """
+        messages = [{"role": "user", "content": prompt or _DEFAULT_PROMPT}]
+        payload: dict[str, Any] = {
+            "repo_url": repo_path,
+            "messages": messages,
+        }
 
-    async def stream_logs(self, run_id: str) -> AsyncIterator[str]:
-        yield "deepwiki: analysis started"
-        yield "deepwiki: generating documentation via RAG..."
-        yield "deepwiki: completed"
+        try:
+            async with self.client.stream(
+                "POST",
+                "/chat/completions",
+                json=payload,
+                timeout=_WIKI_TIMEOUT,
+            ) as response:
+                response.raise_for_status()
+                async for chunk in response.aiter_text():
+                    if chunk:
+                        yield chunk
+        except httpx.HTTPStatusError as exc:
+            logger.error(
+                "DeepWikiClient: stream_wiki HTTP %d: %s",
+                exc.response.status_code,
+                exc.response.text[:200],
+            )
+            raise
+        except Exception as exc:
+            logger.error("DeepWikiClient: stream_wiki failed: %s", exc)
+            raise
 
-    async def cleanup(self, request: AnalysisRequest) -> None:
-        self._file_tree = ""
-        self._readme = ""
+    async def get_wiki_structure(self, repo_path: str) -> dict[str, Any]:
+        """Export wiki as structured JSON.
 
+        POST /export/wiki  {"repo_url": path}
+        """
+        payload: dict[str, Any] = {"repo_url": repo_path}
 
-def _extract_mermaid_blocks(markdown: str) -> list[dict]:
-    """Extract ```mermaid code blocks from markdown. Response format conversion only."""
-    pattern = r"```mermaid\s*\n(.*?)\n```"
-    blocks = re.findall(pattern, markdown, re.DOTALL)
-    return [{"type": "mermaid", "content": block.strip()} for block in blocks]
+        try:
+            resp = await self.client.post(
+                "/export/wiki",
+                json=payload,
+                timeout=_WIKI_TIMEOUT,
+            )
+            resp.raise_for_status()
+            data: dict[str, Any] = resp.json()
+            logger.info("DeepWikiClient: wiki structure exported for %s", repo_path)
+            return data
+        except httpx.HTTPStatusError as exc:
+            logger.error(
+                "DeepWikiClient: get_wiki_structure HTTP %d: %s",
+                exc.response.status_code,
+                exc.response.text[:200],
+            )
+            raise
+        except Exception as exc:
+            logger.error("DeepWikiClient: get_wiki_structure failed: %s", exc)
+            raise

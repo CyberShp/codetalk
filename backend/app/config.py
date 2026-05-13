@@ -17,6 +17,14 @@ class Settings(BaseSettings):
     deepwiki_api_url: str = "http://localhost:8001"
     deepwiki_ui_url: str = "http://localhost:3000"
 
+    # Tool process management
+    gitnexus_port: int = 7100
+    deepwiki_api_port: int = 8001
+    deepwiki_ui_port: int = 3000
+    deepwiki_path: str = ""          # path to deepwiki-open installation
+    gitnexus_bin: str = "gitnexus"   # path to gitnexus binary
+    tool_health_interval: int = 30   # seconds between health checks
+
     # CORS — comma-separated origins allowed to call the API
     cors_origins: str = "http://localhost:3005,http://127.0.0.1:3005"
 

@@ -141,8 +141,35 @@ async def delete_llm_config(cfg_id: str, db: aiosqlite.Connection = Depends(get_
 
 @router.post("/llm/test")
 async def test_llm_connection(data: LLMConfigCreate):
-    # Sprint 1 stub — real connectivity test added in Sprint 3
-    return {"success": True, "message": "连接测试将在 Sprint 3 实现，当前返回模拟成功"}
+    """Test LLM connectivity with a minimal request."""
+    from app.llm.anthropic import AnthropicClient
+    from app.llm.openai_compat import OpenAICompatClient
+
+    try:
+        if data.api_type == "anthropic":
+            client = AnthropicClient(
+                base_url=data.base_url,
+                api_key=data.api_key,
+                model=data.model,
+            )
+        elif data.api_type == "openai_compat":
+            client = OpenAICompatClient(
+                base_url=data.base_url,
+                api_key=data.api_key,
+                model=data.model,
+            )
+        else:
+            return {"success": False, "message": f"未知的 api_type: {data.api_type}"}
+
+        healthy = await client.health_check()
+        await client.close()
+
+        if healthy:
+            return {"success": True, "message": "连接成功"}
+        return {"success": False, "message": "连接失败: 端点无响应或认证失败"}
+
+    except Exception as exc:
+        return {"success": False, "message": f"连接失败: {exc}"}
 
 
 # --- General settings endpoints ---
