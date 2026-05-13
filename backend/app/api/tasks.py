@@ -129,7 +129,7 @@ async def run_task(
     # Launch pipeline in background
     from app.services.analysis_pipeline import AnalysisPipeline
 
-    pipeline = AnalysisPipeline(task_id=task_id)
+    pipeline = AnalysisPipeline()
     background_tasks.add_task(pipeline.run, task_id)
 
     return {"task_id": task_id, "status": "running", "message": "分析管道已启动"}
