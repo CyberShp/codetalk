@@ -48,6 +48,7 @@ export default function TaskDetailPage() {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [deleting, setDeleting] = useState(false);
+  const [running, setRunning] = useState(false);
 
   const loadTask = useCallback(async () => {
     if (!taskId) return;
@@ -73,6 +74,19 @@ export default function TaskDetailPage() {
     const timer = setInterval(loadTask, 5000);
     return () => clearInterval(timer);
   }, [task?.status, loadTask]);
+
+  const handleRun = useCallback(async () => {
+    if (!taskId) return;
+    setRunning(true);
+    try {
+      await api.tasks.run(taskId);
+      await loadTask();
+    } catch (err: unknown) {
+      setError(err instanceof Error ? err.message : "启动失败");
+    } finally {
+      setRunning(false);
+    }
+  }, [taskId, loadTask]);
 
   const handleDelete = useCallback(async () => {
     if (!taskId || !confirm("确定要删除此任务吗？")) return;
@@ -230,6 +244,27 @@ export default function TaskDetailPage() {
       )}
 
       {/* Action Buttons */}
+      {(task.status === "pending" || task.status === "failed") && (
+        <div className="flex gap-3">
+          <button
+            onClick={handleRun}
+            disabled={running}
+            className="flex-1 flex items-center justify-center gap-2 px-4 py-3 bg-primary text-on-primary font-medium rounded-lg hover:opacity-90 transition-opacity disabled:opacity-50 disabled:cursor-not-allowed"
+          >
+            {running ? (
+              <>
+                <Loader2 size={16} className="animate-spin" />
+                启动中...
+              </>
+            ) : (
+              <>
+                <PlayCircle size={16} />
+                开始分析
+              </>
+            )}
+          </button>
+        </div>
+      )}
       {task.status === "completed" && (
         <div className="flex gap-3">
           <Link

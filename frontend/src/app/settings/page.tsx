@@ -102,7 +102,12 @@ export default function SettingsPage() {
       setSaving(true);
       setError(null);
       try {
-        await api.settings.createLLM(form);
+        const newConfig = await api.settings.createLLM(form);
+        if (!general.active_chat_model_id && form.is_chat_model) {
+          const updated = { ...general, active_chat_model_id: newConfig.id };
+          await api.settings.updateGeneral(updated);
+          setGeneral(updated);
+        }
         setForm({ ...EMPTY_LLM_FORM });
         setShowForm(false);
         await loadData();
@@ -112,7 +117,7 @@ export default function SettingsPage() {
         setSaving(false);
       }
     },
-    [form, loadData],
+    [form, general, loadData],
   );
 
   const handleTestLLM = useCallback(async () => {
@@ -487,6 +492,31 @@ export default function SettingsPage() {
                 placeholder="/path/to/cert.pem"
                 className="w-full px-3 py-2 bg-surface border border-outline-variant/30 rounded-lg text-sm text-on-surface placeholder:text-on-surface-variant/50 focus:outline-none focus:border-primary/50 transition-colors font-data"
               />
+            </div>
+
+            <div>
+              <label className="block text-xs font-medium text-on-surface-variant mb-1">
+                活跃聊天模型
+              </label>
+              <select
+                value={general.active_chat_model_id}
+                onChange={(e) =>
+                  setGeneral((prev) => ({
+                    ...prev,
+                    active_chat_model_id: e.target.value,
+                  }))
+                }
+                className="w-full px-3 py-2 bg-surface border border-outline-variant/30 rounded-lg text-sm text-on-surface focus:outline-none focus:border-primary/50 transition-colors"
+              >
+                <option value="">请选择活跃的聊天模型</option>
+                {configs
+                  .filter((c) => c.is_chat_model)
+                  .map((c) => (
+                    <option key={c.id} value={c.id}>
+                      {c.name} ({c.model})
+                    </option>
+                  ))}
+              </select>
             </div>
 
             <div className="pt-1">

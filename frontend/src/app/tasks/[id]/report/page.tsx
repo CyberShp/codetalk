@@ -25,11 +25,17 @@ export default function ReportPage() {
     setLoading(true);
     setError(null);
     try {
-      const data = await api.tasks.output(taskId);
-      setOutputs(data);
-      const keys = Object.keys(data);
-      if (keys.length > 0 && !activeTab) {
-        setActiveTab(keys[0]);
+      const files = await api.tasks.output(taskId);
+      const entries = await Promise.all(
+        files.map((f) => api.tasks.outputFile(taskId, f.filename)),
+      );
+      const record: Record<string, string> = {};
+      entries.forEach((e) => {
+        record[e.filename] = e.content;
+      });
+      setOutputs(record);
+      if (!activeTab && entries.length > 0) {
+        setActiveTab(entries[0].filename);
       }
     } catch (err: unknown) {
       setError(err instanceof Error ? err.message : "加载报告失败");

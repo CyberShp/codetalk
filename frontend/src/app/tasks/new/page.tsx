@@ -99,6 +99,7 @@ export default function NewTaskPage() {
         }
 
         const task = await api.tasks.create(payload);
+        await api.tasks.run(task.id);
         router.push(`/tasks/${task.id}`);
       } catch (err: unknown) {
         const message =

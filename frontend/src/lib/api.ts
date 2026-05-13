@@ -68,11 +68,22 @@ export const api = {
 
     get: (id: string) => request<Task>(`/api/tasks/${id}`),
 
+    run: (id: string) =>
+      request<{ task_id: string; status: string; message: string }>(
+        `/api/tasks/${id}/run`,
+        { method: "POST" },
+      ),
+
     delete: (id: string) =>
       request<void>(`/api/tasks/${id}`, { method: "DELETE" }),
 
     output: (id: string) =>
-      request<Record<string, string>>(`/api/tasks/${id}/output`),
+      request<{ filename: string; size: number }[]>(`/api/tasks/${id}/output`),
+
+    outputFile: (id: string, filename: string) =>
+      request<{ filename: string; content: string }>(
+        `/api/tasks/${id}/output/${encodeURIComponent(filename)}`,
+      ),
 
     exportUrl: (id: string, format: string) =>
       `${BASE}/api/tasks/${id}/export?format=${format}`,
