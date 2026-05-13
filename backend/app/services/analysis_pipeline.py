@@ -35,8 +35,7 @@ SUMMARY_MAX_WORDS = 200
 class AnalysisPipeline:
     """Stateless pipeline that runs the full analysis for a task."""
 
-    def __init__(self, task_id: str) -> None:
-        self._task_id = task_id
+    def __init__(self) -> None:
         self._gitnexus_data: dict = {}
         self._deepwiki_data: dict = {}
         self._module_summaries: list[dict] = []
