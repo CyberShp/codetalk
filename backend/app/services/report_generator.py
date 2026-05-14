@@ -57,9 +57,14 @@ class ReportGenerator:
         """Generate all applicable reports and return list of filenames."""
         summaries_text = self._format_summaries(module_summaries)
 
-        focus_prefix = ""
-        if analysis_focus:
-            focus_prefix = (
+        content_prefix = ""
+        if prompt_content:
+            content_prefix = (
+                f"## 用户自定义分析提示词\n{prompt_content[:4000]}\n\n"
+                "请参考以上分析方法论和要求展开分析。\n\n"
+            )
+        elif analysis_focus:
+            content_prefix = (
                 f"## 用户分析目标\n{analysis_focus}\n\n"
                 "请围绕此目标重点展开分析。\n\n"
             )
@@ -67,7 +72,7 @@ class ReportGenerator:
         # Always generate the four core reports
         await self._generate_report(
             report_type="module_map",
-            prompt=focus_prefix + MODULE_MAP_PROMPT.format(
+            prompt=content_prefix + MODULE_MAP_PROMPT.format(
                 project_overview=self._build_project_overview(gitnexus_data, deepwiki_data),
                 module_summaries=summaries_text,
                 inter_module_deps=self._build_inter_module_deps(gitnexus_data),
@@ -76,7 +81,7 @@ class ReportGenerator:
 
         await self._generate_report(
             report_type="business_flow",
-            prompt=focus_prefix + BUSINESS_FLOW_PROMPT.format(
+            prompt=content_prefix + BUSINESS_FLOW_PROMPT.format(
                 module_summaries=summaries_text,
                 process_data=self._build_process_data(gitnexus_data),
                 cross_module_calls=self._build_cross_module_calls(gitnexus_data),
@@ -85,7 +90,7 @@ class ReportGenerator:
 
         await self._generate_report(
             report_type="source_reading",
-            prompt=focus_prefix + SOURCE_READING_PROMPT.format(
+            prompt=content_prefix + SOURCE_READING_PROMPT.format(
                 module_summaries=summaries_text,
                 key_files=self._build_key_files(gitnexus_data),
                 call_graph=self._build_call_graph(gitnexus_data),
@@ -94,7 +99,7 @@ class ReportGenerator:
 
         await self._generate_report(
             report_type="test_design",
-            prompt=focus_prefix + TEST_DESIGN_PROMPT.format(
+            prompt=content_prefix + TEST_DESIGN_PROMPT.format(
                 module_summaries=summaries_text,
                 business_flows=self._build_process_data(gitnexus_data),
                 api_interfaces=self._build_api_interfaces(gitnexus_data),
@@ -105,7 +110,7 @@ class ReportGenerator:
         if requirements_doc:
             await self._generate_report(
                 report_type="requirements",
-                prompt=focus_prefix + REQUIREMENTS_PROMPT.format(
+                prompt=content_prefix + REQUIREMENTS_PROMPT.format(
                     requirements_doc=self._truncate(requirements_doc, 5000),
                     design_doc=self._truncate(design_doc or "（未提供设计文档）", 5000),
                     module_summaries=summaries_text,
@@ -115,7 +120,7 @@ class ReportGenerator:
         if requirements_doc and design_doc:
             await self._generate_report(
                 report_type="traceability",
-                prompt=focus_prefix + TRACEABILITY_PROMPT.format(
+                prompt=content_prefix + TRACEABILITY_PROMPT.format(
                     requirements_items=self._truncate(requirements_doc, 3000),
                     design_modules=self._truncate(design_doc, 3000),
                     module_summaries=summaries_text,

@@ -62,7 +62,7 @@ class PromptTemplateCreate(BaseModel):
 
 class PromptTemplateUpdate(BaseModel):
     name: str | None = Field(default=None, max_length=200)
-    content: str | None = Field(default=None, max_length=32_000)
+    content: str | None = Field(default=None, min_length=1, max_length=32_000)
 
 
 class PromptTemplateResponse(BaseModel):
@@ -164,6 +164,10 @@ async def update_template(
         updates["name"] = updates["name"].strip()
         if not updates["name"]:
             raise HTTPException(status_code=422, detail="模板名称不能为空")
+    if "content" in updates:
+        updates["content"] = updates["content"].strip()
+        if not updates["content"]:
+            raise HTTPException(status_code=422, detail="模板内容不能为空")
 
     if updates:
         set_clause = ", ".join(f"{k} = ?" for k in updates)

@@ -333,7 +333,13 @@ class AnalysisPipeline:
             wiki_content=wiki_content or "（无 Wiki 文档）",
         )
 
-        if self._analysis_focus:
+        if self._prompt_content:
+            prompt = (
+                f"## 用户自定义分析提示词\n{self._prompt_content[:4000]}\n\n"
+                "请参考以上分析方法论和要求展开模块分析。\n\n"
+                + prompt
+            )
+        elif self._analysis_focus:
             prompt = (
                 f"## 用户分析目标\n{self._analysis_focus}\n"
                 "请在模块分析时重点关注与此目标相关的内容。\n\n"
