@@ -43,12 +43,13 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-from app.api import tasks, settings as settings_router, tools, export  # noqa: E402
+from app.api import tasks, settings as settings_router, tools, export, prompts  # noqa: E402
 
 app.include_router(tasks.router)
 app.include_router(settings_router.router)
 app.include_router(tools.router)
 app.include_router(export.router)
+app.include_router(prompts.router)
 
 
 @app.get("/health")

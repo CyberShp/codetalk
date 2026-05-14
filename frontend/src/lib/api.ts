@@ -6,6 +6,9 @@ import type {
   LLMConfigUpdate,
   GeneralSettings,
   ToolInfo,
+  PromptTemplate,
+  PromptTemplateCreate,
+  PromptTemplateUpdate,
 } from "./types";
 
 const BASE =
@@ -121,6 +124,28 @@ export const api = {
         method: "PUT",
         body: JSON.stringify(data),
       }),
+  },
+
+  // ── 提示词模板 ──
+  prompts: {
+    list: () => request<PromptTemplate[]>("/api/prompts"),
+
+    get: (id: string) => request<PromptTemplate>(`/api/prompts/${id}`),
+
+    create: (data: PromptTemplateCreate) =>
+      request<PromptTemplate>("/api/prompts", {
+        method: "POST",
+        body: JSON.stringify(data),
+      }),
+
+    update: (id: string, data: PromptTemplateUpdate) =>
+      request<PromptTemplate>(`/api/prompts/${id}`, {
+        method: "PUT",
+        body: JSON.stringify(data),
+      }),
+
+    delete: (id: string) =>
+      request<void>(`/api/prompts/${id}`, { method: "DELETE" }),
   },
 
   // ── 工具状态 ──

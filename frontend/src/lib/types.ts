@@ -10,6 +10,8 @@ export interface Task {
   tools: string[];
   requirements_doc: string | null;
   design_doc: string | null;
+  analysis_focus: string | null;
+  prompt_content: string | null;
   progress: number;
   error_message: string | null;
   created_at: string;
@@ -22,6 +24,26 @@ export interface TaskCreate {
   tools: string[];
   requirements_doc?: string;
   design_doc?: string;
+  analysis_focus?: string;
+  prompt_content?: string;
+}
+
+export interface PromptTemplate {
+  id: string;
+  name: string;
+  content: string;
+  is_system: boolean;
+  created_at: string;
+}
+
+export interface PromptTemplateCreate {
+  name: string;
+  content: string;
+}
+
+export interface PromptTemplateUpdate {
+  name?: string;
+  content?: string;
 }
 
 export type ApiType = "anthropic" | "openai_compat";

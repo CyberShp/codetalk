@@ -12,6 +12,8 @@ CREATE TABLE IF NOT EXISTS tasks (
     tools TEXT DEFAULT '[]',
     requirements_doc TEXT,
     design_doc TEXT,
+    analysis_focus TEXT,
+    prompt_content TEXT,
     progress INTEGER DEFAULT 0,
     error_message TEXT,
     created_at TEXT,
@@ -33,17 +35,44 @@ CREATE TABLE IF NOT EXISTS llm_configs (
     created_at TEXT
 );
 
+CREATE TABLE IF NOT EXISTS prompt_templates (
+    id TEXT PRIMARY KEY,
+    name TEXT NOT NULL,
+    content TEXT NOT NULL,
+    is_system INTEGER DEFAULT 0,
+    created_at TEXT
+);
+
 CREATE TABLE IF NOT EXISTS settings (
     key TEXT PRIMARY KEY,
     value TEXT NOT NULL
 );
 """
 
+_MIGRATIONS = [
+    "ALTER TABLE tasks ADD COLUMN analysis_focus TEXT",
+    "ALTER TABLE tasks ADD COLUMN prompt_content TEXT",
+]
+
 
 async def init_db() -> None:
     async with aiosqlite.connect(settings.sqlite_db) as db:
         await db.executescript(_SCHEMA)
+
+        for stmt in _MIGRATIONS:
+            try:
+                await db.execute(stmt)
+            except aiosqlite.OperationalError as exc:
+                if "duplicate column" not in str(exc).lower():
+                    raise
+
         await db.commit()
+
+    from app.api.prompts import seed_default_template
+
+    async with aiosqlite.connect(settings.sqlite_db) as db:
+        db.row_factory = aiosqlite.Row
+        await seed_default_template(db)
 
 
 async def get_db():

@@ -1,16 +1,20 @@
 "use client";
 
-import { useState, useCallback } from "react";
+import { useState, useCallback, useEffect } from "react";
 import { useRouter } from "next/navigation";
 import {
   ArrowLeft,
   FolderSearch,
   Loader2,
   Upload,
+  Save,
+  FilePlus,
+  ChevronDown,
+  ChevronUp,
 } from "lucide-react";
 import Link from "next/link";
 import { api } from "@/lib/api";
-import type { TaskCreate } from "@/lib/types";
+import type { TaskCreate, PromptTemplate } from "@/lib/types";
 
 const AVAILABLE_TOOLS = [
   { id: "gitnexus", label: "GitNexus", desc: "知识图谱与代码搜索" },
@@ -25,10 +29,83 @@ export default function NewTaskPage() {
     repo_path: "",
     tools: ["gitnexus", "deepwiki"],
   });
-  const [requirementsFile, setRequirementsFile] = useState<string>("");
-  const [designFile, setDesignFile] = useState<string>("");
+  const [analysisFocus, setAnalysisFocus] = useState("");
+  const [requirementsFile, setRequirementsFile] = useState("");
+  const [designFile, setDesignFile] = useState("");
   const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState<string | null>(null);
+
+  const [templates, setTemplates] = useState<PromptTemplate[]>([]);
+  const [selectedTemplateId, setSelectedTemplateId] = useState("");
+  const [editedContent, setEditedContent] = useState("");
+  const [showSaveAs, setShowSaveAs] = useState(false);
+  const [saveAsName, setSaveAsName] = useState("");
+  const [saving, setSaving] = useState(false);
+  const [docsExpanded, setDocsExpanded] = useState(false);
+
+  useEffect(() => {
+    api.prompts.list().then((list) => {
+      setTemplates(list);
+      const system = list.find((t) => t.is_system);
+      if (system) {
+        setSelectedTemplateId(system.id);
+        setEditedContent(system.content);
+      } else if (list.length > 0) {
+        setSelectedTemplateId(list[0].id);
+        setEditedContent(list[0].content);
+      }
+    }).catch(() => {
+      setError("提示词模板加载失败，请刷新页面重试");
+    });
+  }, []);
+
+  const handleTemplateChange = useCallback(
+    (id: string) => {
+      setSelectedTemplateId(id);
+      const tpl = templates.find((t) => t.id === id);
+      if (tpl) setEditedContent(tpl.content);
+    },
+    [templates],
+  );
+
+  const selectedTemplate = templates.find((t) => t.id === selectedTemplateId);
+  const isSystem = selectedTemplate?.is_system ?? false;
+
+  const handleSaveTemplate = useCallback(async () => {
+    if (isSystem || !selectedTemplateId) return;
+    setSaving(true);
+    try {
+      const updated = await api.prompts.update(selectedTemplateId, {
+        content: editedContent,
+      });
+      setTemplates((prev) =>
+        prev.map((t) => (t.id === updated.id ? updated : t)),
+      );
+    } catch (err: unknown) {
+      setError(err instanceof Error ? err.message : "保存模板失败");
+    } finally {
+      setSaving(false);
+    }
+  }, [isSystem, selectedTemplateId, editedContent]);
+
+  const handleSaveAsNew = useCallback(async () => {
+    if (!saveAsName.trim()) return;
+    setSaving(true);
+    try {
+      const created = await api.prompts.create({
+        name: saveAsName.trim(),
+        content: editedContent,
+      });
+      setTemplates((prev) => [...prev, created]);
+      setSelectedTemplateId(created.id);
+      setShowSaveAs(false);
+      setSaveAsName("");
+    } catch (err: unknown) {
+      setError(err instanceof Error ? err.message : "保存模板失败");
+    } finally {
+      setSaving(false);
+    }
+  }, [saveAsName, editedContent]);
 
   const updateField = useCallback(
     <K extends keyof TaskCreate>(key: K, value: TaskCreate[K]) => {
@@ -50,16 +127,11 @@ export default function NewTaskPage() {
   }, []);
 
   const handleFileRead = useCallback(
-    (
-      file: File,
-      setter: (value: string) => void,
-    ) => {
+    (file: File, setter: (value: string) => void) => {
       const reader = new FileReader();
       reader.onload = (e) => {
         const text = e.target?.result;
-        if (typeof text === "string") {
-          setter(text);
-        }
+        if (typeof text === "string") setter(text);
       };
       reader.readAsText(file);
     },
@@ -77,6 +149,10 @@ export default function NewTaskPage() {
         setError("请输入代码仓库路径");
         return;
       }
+      if (!analysisFocus.trim()) {
+        setError("请输入分析内容");
+        return;
+      }
       if (form.tools.length === 0) {
         setError("请至少选择一个分析工具");
         return;
@@ -86,17 +162,20 @@ export default function NewTaskPage() {
       setError(null);
 
       try {
+        const rendered = editedContent.replace(
+          /\{analysis_focus\}/g,
+          analysisFocus.trim(),
+        );
+
         const payload: TaskCreate = {
           ...form,
           name: form.name.trim(),
           repo_path: form.repo_path.trim(),
+          analysis_focus: analysisFocus.trim(),
+          prompt_content: rendered,
         };
-        if (requirementsFile) {
-          payload.requirements_doc = requirementsFile;
-        }
-        if (designFile) {
-          payload.design_doc = designFile;
-        }
+        if (requirementsFile) payload.requirements_doc = requirementsFile;
+        if (designFile) payload.design_doc = designFile;
 
         const task = await api.tasks.create(payload);
         await api.tasks.run(task.id);
@@ -109,7 +188,7 @@ export default function NewTaskPage() {
         setSubmitting(false);
       }
     },
-    [form, requirementsFile, designFile, router],
+    [form, analysisFocus, editedContent, requirementsFile, designFile, router],
   );
 
   return (
@@ -175,6 +254,113 @@ export default function NewTaskPage() {
           </div>
         </div>
 
+        {/* Analysis Focus (required) */}
+        <div>
+          <label className="block text-sm font-medium text-on-surface mb-1.5">
+            分析内容
+            <span className="text-red-400 ml-0.5">*</span>
+          </label>
+          <textarea
+            value={analysisFocus}
+            onChange={(e) => setAnalysisFocus(e.target.value)}
+            placeholder="描述你的分析目标，例如：针对 NVMe TCP TLS 模块进行安全性和性能分析"
+            rows={3}
+            className="w-full px-4 py-2.5 bg-surface-container border border-outline-variant/30 rounded-lg text-sm text-on-surface placeholder:text-on-surface-variant/50 focus:outline-none focus:border-primary/50 focus:ring-1 focus:ring-primary/20 transition-colors resize-y"
+          />
+          <p className="text-xs text-on-surface-variant/60 mt-1">
+            此内容将替换模板中的 {"{analysis_focus}"} 占位符
+          </p>
+        </div>
+
+        {/* Prompt Template */}
+        <div>
+          <label className="block text-sm font-medium text-on-surface mb-1.5">
+            提示词模板
+          </label>
+
+          {/* Template Selector */}
+          <select
+            value={selectedTemplateId}
+            onChange={(e) => handleTemplateChange(e.target.value)}
+            className="w-full px-4 py-2.5 bg-surface-container border border-outline-variant/30 rounded-lg text-sm text-on-surface focus:outline-none focus:border-primary/50 focus:ring-1 focus:ring-primary/20 transition-colors"
+          >
+            {templates.map((tpl) => (
+              <option key={tpl.id} value={tpl.id}>
+                {tpl.name}
+                {tpl.is_system ? "（系统默认）" : ""}
+              </option>
+            ))}
+          </select>
+
+          {/* Editable Template Content */}
+          <textarea
+            value={editedContent}
+            onChange={(e) => setEditedContent(e.target.value)}
+            rows={10}
+            className="w-full mt-2 px-4 py-2.5 bg-surface-container border border-outline-variant/30 rounded-lg text-xs text-on-surface font-data focus:outline-none focus:border-primary/50 focus:ring-1 focus:ring-primary/20 transition-colors resize-y leading-relaxed"
+          />
+
+          {/* Template Save Actions */}
+          <div className="flex items-center gap-2 mt-2">
+            {!isSystem && selectedTemplateId && (
+              <button
+                type="button"
+                onClick={handleSaveTemplate}
+                disabled={saving}
+                className="flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium text-on-surface-variant hover:text-on-surface bg-surface-container-high rounded-lg border border-outline-variant/30 hover:border-outline-variant/60 transition-colors disabled:opacity-50"
+              >
+                <Save size={12} />
+                保存模板
+              </button>
+            )}
+            <button
+              type="button"
+              onClick={() => setShowSaveAs(!showSaveAs)}
+              className="flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium text-on-surface-variant hover:text-on-surface bg-surface-container-high rounded-lg border border-outline-variant/30 hover:border-outline-variant/60 transition-colors"
+            >
+              <FilePlus size={12} />
+              保存为新模板
+            </button>
+          </div>
+
+          {/* Save-As Dialog */}
+          {showSaveAs && (
+            <div className="flex items-center gap-2 mt-2">
+              <input
+                type="text"
+                value={saveAsName}
+                onChange={(e) => setSaveAsName(e.target.value)}
+                placeholder="输入新模板名称"
+                className="flex-1 px-3 py-1.5 bg-surface-container border border-outline-variant/30 rounded-lg text-xs text-on-surface placeholder:text-on-surface-variant/50 focus:outline-none focus:border-primary/50 focus:ring-1 focus:ring-primary/20 transition-colors"
+                onKeyDown={(e) => {
+                  if (e.key === "Enter") {
+                    e.preventDefault();
+                    handleSaveAsNew();
+                  }
+                }}
+              />
+              <button
+                type="button"
+                onClick={handleSaveAsNew}
+                disabled={saving || !saveAsName.trim()}
+                className="px-3 py-1.5 text-xs font-medium bg-primary text-on-primary rounded-lg hover:opacity-90 transition-opacity disabled:opacity-50"
+              >
+                {saving ? "保存中..." : "确定"}
+              </button>
+              <button
+                type="button"
+                onClick={() => {
+                  setShowSaveAs(false);
+                  setSaveAsName("");
+                }}
+                className="px-3 py-1.5 text-xs text-on-surface-variant hover:text-on-surface transition-colors"
+              >
+                取消
+              </button>
+            </div>
+          )}
+        </div>
+
         {/* Tool Selection */}
         <div>
           <label className="block text-sm font-medium text-on-surface mb-2">
@@ -204,54 +390,60 @@ export default function NewTaskPage() {
           </div>
         </div>
 
-        {/* File Uploads */}
-        <div className="grid grid-cols-2 gap-4">
-          <div>
-            <label className="block text-sm font-medium text-on-surface mb-1.5">
-              需求文档
-              <span className="text-on-surface-variant font-normal ml-1">
-                (可选)
-              </span>
-            </label>
-            <label className="flex items-center gap-2 px-4 py-2.5 bg-surface-container border border-outline-variant/30 rounded-lg cursor-pointer hover:border-outline-variant/60 transition-colors">
-              <Upload size={14} className="text-on-surface-variant" />
-              <span className="text-sm text-on-surface-variant truncate">
-                {requirementsFile ? "已上传" : "点击选择文件"}
-              </span>
-              <input
-                type="file"
-                accept=".txt,.md,.doc,.docx"
-                className="hidden"
-                onChange={(e) => {
-                  const file = e.target.files?.[0];
-                  if (file) handleFileRead(file, setRequirementsFile);
-                }}
-              />
-            </label>
-          </div>
-          <div>
-            <label className="block text-sm font-medium text-on-surface mb-1.5">
-              设计文档
-              <span className="text-on-surface-variant font-normal ml-1">
-                (可选)
-              </span>
-            </label>
-            <label className="flex items-center gap-2 px-4 py-2.5 bg-surface-container border border-outline-variant/30 rounded-lg cursor-pointer hover:border-outline-variant/60 transition-colors">
-              <Upload size={14} className="text-on-surface-variant" />
-              <span className="text-sm text-on-surface-variant truncate">
-                {designFile ? "已上传" : "点击选择文件"}
-              </span>
-              <input
-                type="file"
-                accept=".txt,.md,.doc,.docx"
-                className="hidden"
-                onChange={(e) => {
-                  const file = e.target.files?.[0];
-                  if (file) handleFileRead(file, setDesignFile);
-                }}
-              />
-            </label>
-          </div>
+        {/* Collapsible File Uploads */}
+        <div>
+          <button
+            type="button"
+            onClick={() => setDocsExpanded(!docsExpanded)}
+            className="flex items-center gap-2 text-sm font-medium text-on-surface-variant hover:text-on-surface transition-colors"
+          >
+            {docsExpanded ? <ChevronUp size={14} /> : <ChevronDown size={14} />}
+            附加文档（可选）
+          </button>
+          {docsExpanded && (
+            <div className="grid grid-cols-2 gap-4 mt-3">
+              <div>
+                <label className="block text-sm font-medium text-on-surface mb-1.5">
+                  需求文档
+                </label>
+                <label className="flex items-center gap-2 px-4 py-2.5 bg-surface-container border border-outline-variant/30 rounded-lg cursor-pointer hover:border-outline-variant/60 transition-colors">
+                  <Upload size={14} className="text-on-surface-variant" />
+                  <span className="text-sm text-on-surface-variant truncate">
+                    {requirementsFile ? "已上传" : "点击选择文件"}
+                  </span>
+                  <input
+                    type="file"
+                    accept=".txt,.md,.doc,.docx"
+                    className="hidden"
+                    onChange={(e) => {
+                      const file = e.target.files?.[0];
+                      if (file) handleFileRead(file, setRequirementsFile);
+                    }}
+                  />
+                </label>
+              </div>
+              <div>
+                <label className="block text-sm font-medium text-on-surface mb-1.5">
+                  设计文档
+                </label>
+                <label className="flex items-center gap-2 px-4 py-2.5 bg-surface-container border border-outline-variant/30 rounded-lg cursor-pointer hover:border-outline-variant/60 transition-colors">
+                  <Upload size={14} className="text-on-surface-variant" />
+                  <span className="text-sm text-on-surface-variant truncate">
+                    {designFile ? "已上传" : "点击选择文件"}
+                  </span>
+                  <input
+                    type="file"
+                    accept=".txt,.md,.doc,.docx"
+                    className="hidden"
+                    onChange={(e) => {
+                      const file = e.target.files?.[0];
+                      if (file) handleFileRead(file, setDesignFile);
+                    }}
+                  />
+                </label>
+              </div>
+            </div>
+          )}
         </div>
 
         {/* Submit */}
