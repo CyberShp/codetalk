@@ -121,13 +121,15 @@ async def create_template(
 ):
     if not data.name.strip():
         raise HTTPException(status_code=422, detail="模板名称不能为空")
+    if not data.content.strip():
+        raise HTTPException(status_code=422, detail="模板内容不能为空")
 
     tpl_id = str(uuid.uuid4())
     now = datetime.now(timezone.utc).isoformat()
     await db.execute(
         "INSERT INTO prompt_templates (id, name, content, is_system, created_at) "
         "VALUES (?, ?, ?, 0, ?)",
-        (tpl_id, data.name.strip(), data.content, now),
+        (tpl_id, data.name.strip(), data.content.strip(), now),
     )
     await db.commit()
 
