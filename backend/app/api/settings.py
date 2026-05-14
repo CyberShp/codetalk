@@ -136,37 +136,53 @@ async def delete_llm_config(cfg_id: str, db: aiosqlite.Connection = Depends(get_
         if not await cur.fetchone():
             raise HTTPException(status_code=404, detail="LLM 配置不存在")
     await db.execute("DELETE FROM llm_configs WHERE id = ?", (cfg_id,))
+    await db.execute(
+        "UPDATE settings SET value = '' "
+        "WHERE key IN ('active_chat_model_id', 'active_embedding_model_id') "
+        "AND value = ?",
+        (cfg_id,),
+    )
     await db.commit()
 
 
 @router.post("/llm/test")
-async def test_llm_connection(data: LLMConfigCreate):
-    """Test LLM connectivity with a minimal request."""
+async def test_llm_connection(
+    data: LLMConfigCreate, db: aiosqlite.Connection = Depends(get_db)
+):
+    """Test LLM connectivity using global proxy/SSL settings."""
     from app.llm.anthropic import AnthropicClient
+    from app.llm.factory import _resolve_proxy
     from app.llm.openai_compat import OpenAICompatClient
 
     try:
+        keys = ("proxy_mode", "proxy_url", "ssl_cert_path")
+        placeholders = ",".join("?" * len(keys))
+        async with db.execute(
+            f"SELECT key, value FROM settings WHERE key IN ({placeholders})", keys
+        ) as cur:
+            rows = await cur.fetchall()
+        general = {r["key"]: r["value"] for r in rows}
+        proxy_url, ssl_cert, force_direct = _resolve_proxy(general)
+
+        kwargs = {
+            "base_url": data.base_url,
+            "api_key": data.api_key,
+            "model": data.model,
+            "proxy_url": proxy_url,
+            "ssl_cert_path": ssl_cert,
+            "force_direct": force_direct,
+        }
+
         if data.api_type == "anthropic":
-            client = AnthropicClient(
-                base_url=data.base_url,
-                api_key=data.api_key,
-                model=data.model,
-            )
+            client = AnthropicClient(**kwargs)
         elif data.api_type == "openai_compat":
-            client = OpenAICompatClient(
-                base_url=data.base_url,
-                api_key=data.api_key,
-                model=data.model,
-            )
+            client = OpenAICompatClient(**kwargs)
         else:
             return {"success": False, "message": f"未知的 api_type: {data.api_type}"}
 
-        healthy = await client.health_check()
+        success, message = await client.health_check()
         await client.close()
-
-        if healthy:
-            return {"success": True, "message": "连接成功"}
-        return {"success": False, "message": "连接失败: 端点无响应或认证失败"}
+        return {"success": success, "message": message}
 
     except Exception as exc:
         return {"success": False, "message": f"连接失败: {exc}"}

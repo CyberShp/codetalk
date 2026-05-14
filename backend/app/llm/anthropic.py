@@ -22,21 +22,30 @@ class AnthropicClient(BaseLLMClient):
         *,
         proxy_url: str | None = None,
         ssl_cert_path: str | None = None,
+        force_direct: bool = False,
     ) -> None:
         self._base_url = base_url.rstrip("/")
         self._api_key = api_key
         self._model = model
 
-        transport_kwargs: dict = {}
-        if ssl_cert_path:
-            transport_kwargs["verify"] = ssl_cert_path
-
-        proxy = proxy_url if proxy_url else None
-        self._client = httpx.AsyncClient(
-            timeout=httpx.Timeout(120, connect=15),
-            proxy=proxy,
-            **transport_kwargs,
-        )
+        verify = ssl_cert_path if ssl_cert_path else True
+        if force_direct:
+            self._client = httpx.AsyncClient(
+                transport=httpx.AsyncHTTPTransport(verify=verify),
+                trust_env=False,
+                timeout=httpx.Timeout(120, connect=15),
+            )
+        elif proxy_url:
+            self._client = httpx.AsyncClient(
+                proxy=proxy_url,
+                verify=verify,
+                timeout=httpx.Timeout(120, connect=15),
+            )
+        else:
+            self._client = httpx.AsyncClient(
+                verify=verify,
+                timeout=httpx.Timeout(120, connect=15),
+            )
 
     async def complete(
         self,
@@ -46,6 +55,7 @@ class AnthropicClient(BaseLLMClient):
     ) -> LLMResponse:
         headers = {
             "x-api-key": self._api_key,
+            "Authorization": f"Bearer {self._api_key}",
             "anthropic-version": _ANTHROPIC_VERSION,
             "content-type": "application/json",
         }
@@ -83,11 +93,16 @@ class AnthropicClient(BaseLLMClient):
             usage=usage,
         )
 
-    async def health_check(self) -> bool:
-        """Check Anthropic endpoint reachability with a minimal request."""
+    async def health_check(self) -> tuple[bool, str]:
+        """Check Anthropic endpoint reachability with a minimal request.
+
+        Returns (success, message) where success distinguishes reachable+authenticated
+        from reachable-but-rejected or unreachable.
+        """
         try:
             headers = {
                 "x-api-key": self._api_key,
+                "Authorization": f"Bearer {self._api_key}",
                 "anthropic-version": _ANTHROPIC_VERSION,
                 "content-type": "application/json",
             }
@@ -98,12 +113,16 @@ class AnthropicClient(BaseLLMClient):
             }
             url = f"{self._base_url}/v1/messages"
             resp = await self._client.post(
-                url, headers=headers, json=payload, timeout=15
+                url, headers=headers, json=payload, timeout=60
             )
-            return resp.status_code == 200
+            if resp.status_code < 400:
+                return True, "连接成功"
+            if resp.status_code < 500:
+                return False, f"服务可达，但认证或接口失败 (HTTP {resp.status_code})"
+            return False, f"服务端错误 (HTTP {resp.status_code})"
         except Exception as exc:
             logger.warning("Anthropic health check failed: %s", exc)
-            return False
+            return False, f"连接失败: {exc}"
 
     async def close(self) -> None:
         """Close the underlying HTTP client."""

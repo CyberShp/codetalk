@@ -2,6 +2,7 @@
 
 import { useEffect, useState, useCallback } from "react";
 import Link from "next/link";
+import { useRouter } from "next/navigation";
 import {
   Plus,
   Loader2,
@@ -11,6 +12,7 @@ import {
   PlayCircle,
   Wrench,
   RefreshCw,
+  Trash2,
 } from "lucide-react";
 import { api } from "@/lib/api";
 import type { Task, ToolInfo, TaskStatus } from "@/lib/types";
@@ -56,6 +58,7 @@ function formatTime(iso: string): string {
 }
 
 export default function DashboardPage() {
+  const router = useRouter();
   const [tasks, setTasks] = useState<Task[]>([]);
   const [tools, setTools] = useState<ToolInfo[]>([]);
   const [loading, setLoading] = useState(true);
@@ -83,6 +86,21 @@ export default function DashboardPage() {
   useEffect(() => {
     loadData();
   }, [loadData]);
+
+  const handleDeleteTask = useCallback(
+    async (e: React.MouseEvent, id: string) => {
+      e.preventDefault();
+      e.stopPropagation();
+      if (!confirm("确定要删除此任务吗？")) return;
+      try {
+        await api.tasks.delete(id);
+        await loadData();
+      } catch (err: unknown) {
+        setError(err instanceof Error ? err.message : "删除失败");
+      }
+    },
+    [loadData],
+  );
 
   const stats = {
     total: tasks.length,
@@ -216,10 +234,18 @@ export default function DashboardPage() {
               const cfg = STATUS_CONFIG[task.status];
               const Icon = cfg.icon;
               return (
-                <Link
+                <div
                   key={task.id}
-                  href={`/tasks/${task.id}`}
-                  className="flex items-center gap-4 bg-surface-container hover:bg-surface-container-high rounded-xl px-5 py-4 border border-outline-variant/20 transition-colors group"
+                  role="link"
+                  tabIndex={0}
+                  className="flex items-center gap-4 bg-surface-container hover:bg-surface-container-high rounded-xl px-5 py-4 border border-outline-variant/20 transition-colors group cursor-pointer focus:outline-none focus:ring-2 focus:ring-primary/50"
+                  onClick={() => router.push(`/tasks/${task.id}`)}
+                  onKeyDown={(e) => {
+                    if (e.key === "Enter" || e.key === " ") {
+                      e.preventDefault();
+                      router.push(`/tasks/${task.id}`);
+                    }
+                  }}
                 >
                   <Icon size={18} className={cfg.color} />
                   <div className="flex-1 min-w-0">
@@ -252,8 +278,15 @@ export default function DashboardPage() {
                     <span className="text-xs text-on-surface-variant/60">
                       {formatTime(task.created_at)}
                     </span>
+                    <button
+                      onClick={(e) => handleDeleteTask(e, task.id)}
+                      className="p-1.5 rounded-lg text-on-surface-variant/40 hover:text-red-400 hover:bg-red-400/10 transition-colors opacity-0 group-hover:opacity-100"
+                      title="删除任务"
+                    >
+                      <Trash2 size={14} />
+                    </button>
                   </div>
-                </Link>
+                </div>
               );
             })}
           </div>

@@ -25,13 +25,23 @@ async def _load_general_settings(db: aiosqlite.Connection) -> dict[str, str]:
     return {r["key"]: r["value"] for r in rows}
 
 
-def _resolve_proxy(general: dict[str, str]) -> str | None:
-    """Determine the proxy URL from general settings."""
+def _resolve_proxy(
+    general: dict[str, str],
+) -> tuple[str | None, str | None, bool]:
+    """Determine proxy/SSL/direct-connect from general settings.
+
+    Returns (proxy_url, ssl_cert_path, force_direct).
+    force_direct=True → httpx uses trust_env=False to bypass system proxy.
+    """
+    ssl_cert = general.get("ssl_cert_path") or None
     mode = general.get("proxy_mode", "none")
+    if mode == "none":
+        return None, ssl_cert, True
     if mode == "custom":
         url = general.get("proxy_url", "")
-        return url if url else None
-    return None
+        return (url or None), ssl_cert, False
+    # "system" — let httpx discover system proxy via environment
+    return None, ssl_cert, False
 
 
 async def create_llm_client(config_id: str) -> BaseLLMClient:
@@ -73,8 +83,7 @@ async def create_llm_client(config_id: str) -> BaseLLMClient:
         except json.JSONDecodeError:
             logger.warning("无法解析 config_json，使用默认配置")
 
-    proxy_url = _resolve_proxy(general)
-    ssl_cert = general.get("ssl_cert_path") or None
+    proxy_url, ssl_cert, force_direct = _resolve_proxy(general)
 
     if api_type == "anthropic":
         return AnthropicClient(
@@ -83,6 +92,7 @@ async def create_llm_client(config_id: str) -> BaseLLMClient:
             model=model,
             proxy_url=proxy_url,
             ssl_cert_path=ssl_cert,
+            force_direct=force_direct,
         )
     if api_type == "openai_compat":
         return OpenAICompatClient(
@@ -91,6 +101,7 @@ async def create_llm_client(config_id: str) -> BaseLLMClient:
             model=model,
             proxy_url=proxy_url,
             ssl_cert_path=ssl_cert,
+            force_direct=force_direct,
         )
 
     raise ValueError(f"未知的 api_type: {api_type}")

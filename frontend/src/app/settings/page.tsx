@@ -4,6 +4,7 @@ import { useEffect, useState, useCallback } from "react";
 import {
   Plus,
   Trash2,
+  Pencil,
   Loader2,
   Save,
   TestTube2,
@@ -54,6 +55,7 @@ export default function SettingsPage() {
   const [showApiKey, setShowApiKey] = useState(false);
   const [savingGeneral, setSavingGeneral] = useState(false);
   const [showGeneral, setShowGeneral] = useState(false);
+  const [editingId, setEditingId] = useState<string | null>(null);
 
   const loadData = useCallback(async () => {
     setLoading(true);
@@ -102,13 +104,20 @@ export default function SettingsPage() {
       setSaving(true);
       setError(null);
       try {
-        const newConfig = await api.settings.createLLM(form);
-        if (!general.active_chat_model_id && form.is_chat_model) {
-          const updated = { ...general, active_chat_model_id: newConfig.id };
-          await api.settings.updateGeneral(updated);
-          setGeneral(updated);
+        if (editingId) {
+          const payload = { ...form };
+          if (!payload.api_key) delete (payload as Record<string, unknown>).api_key;
+          await api.settings.updateLLM(editingId, payload);
+        } else {
+          const newConfig = await api.settings.createLLM(form);
+          if (!general.active_chat_model_id && form.is_chat_model) {
+            const updated = { ...general, active_chat_model_id: newConfig.id };
+            await api.settings.updateGeneral(updated);
+            setGeneral(updated);
+          }
         }
         setForm({ ...EMPTY_LLM_FORM });
+        setEditingId(null);
         setShowForm(false);
         await loadData();
       } catch (err: unknown) {
@@ -117,7 +126,27 @@ export default function SettingsPage() {
         setSaving(false);
       }
     },
-    [form, general, loadData],
+    [form, editingId, general, loadData],
+  );
+
+  const handleEditLLM = useCallback(
+    (cfg: LLMConfig) => {
+      setForm({
+        name: cfg.name,
+        api_type: cfg.api_type,
+        base_url: cfg.base_url,
+        api_key: "",
+        model: cfg.model,
+        max_tokens: cfg.max_tokens,
+        temperature: cfg.temperature,
+        is_chat_model: cfg.is_chat_model,
+        is_embedding_model: cfg.is_embedding_model,
+      });
+      setEditingId(cfg.id);
+      setShowForm(true);
+      setTestResult(null);
+    },
+    [],
   );
 
   const handleTestLLM = useCallback(async () => {
@@ -189,7 +218,17 @@ export default function SettingsPage() {
             LLM 配置
           </h2>
           <button
-            onClick={() => setShowForm(!showForm)}
+            onClick={() => {
+              if (showForm) {
+                setShowForm(false);
+                setEditingId(null);
+                setForm({ ...EMPTY_LLM_FORM });
+              } else {
+                setEditingId(null);
+                setForm({ ...EMPTY_LLM_FORM });
+                setShowForm(true);
+              }
+            }}
             className="flex items-center gap-2 px-3 py-1.5 text-sm bg-primary text-on-primary rounded-lg hover:opacity-90 transition-opacity"
           >
             <Plus size={14} />
@@ -254,7 +293,7 @@ export default function SettingsPage() {
                   type={showApiKey ? "text" : "password"}
                   value={form.api_key}
                   onChange={(e) => updateForm("api_key", e.target.value)}
-                  placeholder="sk-..."
+                  placeholder={editingId ? "留空则保持原密钥不变" : "sk-..."}
                   className="w-full px-3 py-2 pr-10 bg-surface border border-outline-variant/30 rounded-lg text-sm text-on-surface placeholder:text-on-surface-variant/50 focus:outline-none focus:border-primary/50 transition-colors font-data"
                 />
                 <button
@@ -364,7 +403,7 @@ export default function SettingsPage() {
                 ) : (
                   <Save size={14} />
                 )}
-                保存配置
+                {editingId ? "更新配置" : "保存配置"}
               </button>
             </div>
           </form>
@@ -408,6 +447,13 @@ export default function SettingsPage() {
                   </p>
                 </div>
                 <button
+                  onClick={() => handleEditLLM(cfg)}
+                  className="p-2 rounded-lg text-on-surface-variant hover:bg-primary/10 hover:text-primary transition-colors"
+                  title="编辑"
+                >
+                  <Pencil size={14} />
+                </button>
+                <button
                   onClick={() => handleDeleteLLM(cfg.id)}
                   className="p-2 rounded-lg text-red-400 hover:bg-red-400/10 transition-colors"
                   title="删除"
@@ -419,6 +465,41 @@ export default function SettingsPage() {
           </div>
         )}
       </div>
+
+      {/* Active model selector — always visible */}
+      {configs.filter((c) => c.is_chat_model).length > 0 && (
+        <div className="mb-8 bg-surface-container rounded-xl border border-outline-variant/20 px-5 py-4">
+          <label className="block text-xs font-medium text-on-surface-variant mb-2">
+            活跃聊天模型
+          </label>
+          <div className="flex items-center gap-3">
+            <select
+              value={general.active_chat_model_id}
+              onChange={async (e) => {
+                const prev = general;
+                const updated = { ...general, active_chat_model_id: e.target.value };
+                setGeneral(updated);
+                try {
+                  await api.settings.updateGeneral(updated);
+                } catch {
+                  setGeneral(prev);
+                  setError("保存活跃模型失败");
+                }
+              }}
+              className="flex-1 px-3 py-2 bg-surface border border-outline-variant/30 rounded-lg text-sm text-on-surface focus:outline-none focus:border-primary/50 transition-colors"
+            >
+              <option value="">请选择活跃的聊天模型</option>
+              {configs
+                .filter((c) => c.is_chat_model)
+                .map((c) => (
+                  <option key={c.id} value={c.id}>
+                    {c.name} ({c.model})
+                  </option>
+                ))}
+            </select>
+          </div>
+        </div>
+      )}
 
       <div>
         <button

@@ -27,6 +27,9 @@ class BaseLLMClient(ABC):
         ...
 
     @abstractmethod
-    async def health_check(self) -> bool:
-        """Return True if the LLM endpoint is reachable."""
+    async def health_check(self) -> tuple[bool, str]:
+        """Check LLM endpoint reachability.
+
+        Returns (success, message) for diagnostic feedback.
+        """
         ...
