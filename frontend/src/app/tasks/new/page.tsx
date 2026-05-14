@@ -162,10 +162,13 @@ export default function NewTaskPage() {
       setError(null);
 
       try {
-        const rendered = editedContent.replace(
+        let rendered = editedContent.replace(
           /\{analysis_focus\}/g,
           analysisFocus.trim(),
         );
+        if (!rendered.includes(analysisFocus.trim())) {
+          rendered = `## 分析目标\n${analysisFocus.trim()}\n\n${rendered}`;
+        }
 
         const payload: TaskCreate = {
           ...form,

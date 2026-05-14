@@ -57,7 +57,7 @@ DEFAULT_TEMPLATE_CONTENT = """\
 
 class PromptTemplateCreate(BaseModel):
     name: str = Field(min_length=1, max_length=200)
-    content: str = Field(max_length=32_000)
+    content: str = Field(min_length=1, max_length=32_000)
 
 
 class PromptTemplateUpdate(BaseModel):

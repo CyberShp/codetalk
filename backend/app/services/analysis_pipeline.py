@@ -39,6 +39,8 @@ class AnalysisPipeline:
         self._gitnexus_data: dict = {}
         self._deepwiki_data: dict = {}
         self._module_summaries: list[dict] = []
+        self._analysis_focus: str = ""
+        self._prompt_content: str = ""
 
     # ------------------------------------------------------------------
     # Public entry point
@@ -52,6 +54,8 @@ class AnalysisPipeline:
             task = await self._load_task(task_id)
             repo_path = task["repo_path"]
             tools = json.loads(task.get("tools") or "[]")
+            self._analysis_focus = task.get("analysis_focus") or ""
+            self._prompt_content = task.get("prompt_content") or ""
 
             await self._update_progress(task_id, 0, "running", None)
 
@@ -84,6 +88,8 @@ class AnalysisPipeline:
                     deepwiki_data=self._deepwiki_data,
                     requirements_doc=task.get("requirements_doc"),
                     design_doc=task.get("design_doc"),
+                    analysis_focus=self._analysis_focus,
+                    prompt_content=self._prompt_content,
                 )
                 await self._update_progress(task_id, 90, "running", None)
 
@@ -191,17 +197,23 @@ class AnalysisPipeline:
             base_url=base_url,
             timeout=httpx.Timeout(1800, connect=10),
         ) as client:
+            if self._analysis_focus:
+                deepwiki_message = (
+                    f"针对以下分析目标，生成全面的中文技术文档：\n"
+                    f"{self._analysis_focus}\n\n"
+                    f"包含：架构概览、核心组件、数据流。"
+                )
+            else:
+                deepwiki_message = (
+                    "分析整个仓库，生成全面的中文技术文档。"
+                    "包含：架构概览、核心组件、数据流。"
+                )
+
             payload = {
                 "repo_url": repo_path,
                 "type": "local",
                 "messages": [
-                    {
-                        "role": "user",
-                        "content": (
-                            "分析整个仓库，生成全面的中文技术文档。"
-                            "包含：架构概览、核心组件、数据流。"
-                        ),
-                    }
+                    {"role": "user", "content": deepwiki_message}
                 ],
                 "excluded_dirs": "\n".join([
                     "node_modules", ".git", "dist", "build", "__pycache__",
@@ -320,6 +332,13 @@ class AnalysisPipeline:
             call_relations=call_relations or "（无调用关系信息）",
             wiki_content=wiki_content or "（无 Wiki 文档）",
         )
+
+        if self._analysis_focus:
+            prompt = (
+                f"## 用户分析目标\n{self._analysis_focus}\n"
+                "请在模块分析时重点关注与此目标相关的内容。\n\n"
+                + prompt
+            )
 
         messages = [{"role": "user", "content": prompt}]
         response: LLMResponse = await llm_client.complete(
