@@ -83,6 +83,7 @@ class AnalysisPipeline:
                     llm_client=llm_client,
                     output_dir=output_dir,
                     task_id=task_id,
+                    debug_callback=self._save_llm_debug,
                 )
                 await generator.generate_all(
                     module_summaries=self._module_summaries,
