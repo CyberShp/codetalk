@@ -37,6 +37,8 @@ def _build_registry() -> dict[str, dict[str, Any]]:
                 "--host", "0.0.0.0",
             ],
             "health_url": f"http://localhost:{settings.gitnexus_port}/api/info",
+            # /api/info returns 500 on some versions; /api/analyze (POST) proves reachable
+            "health_fallback_url": f"http://localhost:{settings.gitnexus_port}/api/analyze",
             "cwd": None,
             "env": {},
         },
@@ -271,13 +273,21 @@ class ProcessManager:
     # ------------------------------------------------------------------
 
     async def health_check(self, name: str) -> dict[str, Any]:
-        """Check a single tool's health via its HTTP endpoint."""
+        """Check a single tool's health via its HTTP endpoint.
+
+        If the primary health_url returns 5xx (or throws a non-connection error),
+        and a health_fallback_url is configured, a POST probe is attempted against
+        the fallback URL.  A 4xx response on the fallback still proves the service
+        is reachable and is treated as healthy.  ConnectError on the primary is
+        never retried via the fallback (the service is genuinely unreachable).
+        """
         mp = self._processes.get(name)
         if mp is None:
             return {"name": name, "healthy": False, "error": "unknown tool"}
 
         cfg = mp._config
         health_url: str = cfg.get("health_url", "")
+        fallback_url: str = cfg.get("health_fallback_url", "")
 
         # Detect already-exited subprocess
         if mp.process is not None and mp.process.returncode is not None:
@@ -289,23 +299,51 @@ class ProcessManager:
         if not health_url or mp.status == "stopped":
             return mp.to_dict()
 
+        need_fallback = False
+        last_error = ""
         try:
             resp = await self.http_client.get(health_url)
             if resp.status_code < 400:
                 mp.status = "running"
                 mp.last_error = None
                 return {**mp.to_dict(), "healthy": True}
-            mp.status = "error"
-            mp.last_error = f"Health check returned HTTP {resp.status_code}"
-            return {**mp.to_dict(), "healthy": False}
+            if resp.status_code >= 500:
+                # 5xx: endpoint broken, but service may still be up — try fallback
+                need_fallback = True
+                last_error = f"Health check HTTP {resp.status_code}"
+            else:
+                # 4xx: real client error, no point retrying
+                mp.status = "error"
+                mp.last_error = f"Health check returned HTTP {resp.status_code}"
+                return {**mp.to_dict(), "healthy": False}
         except httpx.ConnectError:
+            # Service is genuinely unreachable — no fallback
             if mp.status == "running":
                 mp.status = "error"
                 mp.last_error = "Health endpoint unreachable"
             return {**mp.to_dict(), "healthy": False}
         except Exception as exc:
-            mp.last_error = str(exc)
-            return {**mp.to_dict(), "healthy": False}
+            need_fallback = True
+            last_error = str(exc)
+
+        if need_fallback and fallback_url:
+            try:
+                resp = await self.http_client.post(fallback_url, json={})
+                if resp.status_code < 500:
+                    mp.status = "running"
+                    mp.last_error = None
+                    logger.info(
+                        "ProcessManager: '%s' fallback probe healthy (HTTP %d)",
+                        name, resp.status_code,
+                    )
+                    return {**mp.to_dict(), "healthy": True}
+                last_error = f"Fallback probe HTTP {resp.status_code}"
+            except Exception as exc:
+                last_error = str(exc)
+
+        mp.status = "error"
+        mp.last_error = last_error
+        return {**mp.to_dict(), "healthy": False}
 
     async def get_all_status(self) -> list[dict[str, Any]]:
         """Return status of all registered tools with live health checks."""
