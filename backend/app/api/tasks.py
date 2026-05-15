@@ -184,3 +184,47 @@ async def read_output_file(
 
     content = filepath.read_text(encoding="utf-8")
     return {"filename": filename, "content": content}
+
+
+@router.get("/{task_id}/debug", response_model=list[OutputFileInfo])
+async def list_debug_files(task_id: str, db: aiosqlite.Connection = Depends(get_db)):
+    """List LLM debug snapshot files for a task."""
+    async with db.execute("SELECT id FROM tasks WHERE id = ?", (task_id,)) as cur:
+        if not await cur.fetchone():
+            raise HTTPException(status_code=404, detail="任务不存在")
+
+    debug_dir = settings.outputs_path / task_id / "debug"
+    if not debug_dir.exists():
+        return []
+
+    files: list[dict] = []
+    for f in sorted(debug_dir.iterdir()):
+        if f.is_file():
+            files.append({"filename": f.name, "size": f.stat().st_size})
+    return files
+
+
+@router.get("/{task_id}/debug/{filename}")
+async def read_debug_file(
+    task_id: str,
+    filename: str,
+    db: aiosqlite.Connection = Depends(get_db),
+):
+    """Read a specific LLM debug snapshot file."""
+    async with db.execute("SELECT id FROM tasks WHERE id = ?", (task_id,)) as cur:
+        if not await cur.fetchone():
+            raise HTTPException(status_code=404, detail="任务不存在")
+
+    debug_dir = settings.outputs_path / task_id / "debug"
+    filepath = debug_dir / filename
+
+    try:
+        filepath.resolve().relative_to(debug_dir.resolve())
+    except ValueError:
+        raise HTTPException(status_code=400, detail="非法文件路径")
+
+    if not filepath.exists():
+        raise HTTPException(status_code=404, detail=f"文件不存在: {filename}")
+
+    content = filepath.read_text(encoding="utf-8")
+    return {"filename": filename, "content": content}

@@ -41,6 +41,7 @@ class AnalysisPipeline:
         self._module_summaries: list[dict] = []
         self._analysis_focus: str = ""
         self._prompt_content: str = ""
+        self._task_id: str = ""
 
     # ------------------------------------------------------------------
     # Public entry point
@@ -49,6 +50,7 @@ class AnalysisPipeline:
     async def run(self, task_id: str) -> None:
         """Execute the full pipeline, updating task progress in the DB."""
         logger.info("Pipeline started for task %s", task_id)
+        self._task_id = task_id
 
         try:
             task = await self._load_task(task_id)
@@ -363,6 +365,9 @@ class AnalysisPipeline:
             community["name"],
             response.usage.get("total_tokens", 0),
         )
+        asyncio.ensure_future(
+            self._save_llm_debug("module_analysis", community["name"], prompt, response.content)
+        )
         return response.content
 
     def _extract_module_wiki(self, module_name: str) -> str:
@@ -415,6 +420,30 @@ class AnalysisPipeline:
                 self._deepwiki_data.get("documentation", ""),
                 encoding="utf-8",
             )
+
+    async def _save_llm_debug(
+        self, phase: str, label: str, prompt: str, response: str
+    ) -> None:
+        """Save LLM input/output as a timestamped JSON snapshot for debugging."""
+        if not self._task_id:
+            return
+        debug_dir = settings.outputs_path / self._task_id / "debug"
+        debug_dir.mkdir(parents=True, exist_ok=True)
+        ts = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%S%f")[:17]
+        safe_label = label.replace("/", "_").replace("\\", "_")[:50]
+        data = {
+            "phase": phase,
+            "label": label,
+            "timestamp": ts,
+            "prompt": prompt,
+            "response": response,
+        }
+        try:
+            (debug_dir / f"{phase}_{safe_label}_{ts}.json").write_text(
+                json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8"
+            )
+        except Exception as exc:
+            logger.warning("LLM debug save failed for %s/%s: %s", phase, label, exc)
 
     async def _try_create_llm_client(self) -> BaseLLMClient | None:
         """Attempt to create an LLM client; return None if not configured."""
