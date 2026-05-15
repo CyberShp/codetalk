@@ -8,6 +8,7 @@ import logging
 import uuid
 from datetime import datetime, timezone
 
+import httpx
 from fastapi import APIRouter, Depends, HTTPException
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
@@ -15,8 +16,8 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.config import settings
-
 from app.database import get_db
+from app.utils.local_client import local_http_client
 from app.models.repository import Repository
 from app.models.wiki_cache_meta import WikiCacheMeta
 from app.api.wiki import (
@@ -267,12 +268,7 @@ async def export_repo_wiki(
         "format": body.format,
     }
 
-    import httpx
-
-    async with httpx.AsyncClient(
-        base_url=settings.deepwiki_base_url,
-        timeout=httpx.Timeout(60, connect=10),
-    ) as client:
+    async with local_http_client(settings.deepwiki_base_url, 60, 10) as client:
         resp = await client.post("/export/wiki", json=export_payload)
         if resp.status_code != 200:
             raise HTTPException(502, f"deepwiki export failed: HTTP {resp.status_code}")

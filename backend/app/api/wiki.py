@@ -15,6 +15,8 @@ from pydantic import BaseModel
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+import httpx
+
 from app.config import settings
 from app.database import get_db
 from app.models.llm_config import LLMConfig
@@ -22,6 +24,7 @@ from app.models.repository import Repository
 from app.models.task import AnalysisTask
 from app.models.wiki_cache_meta import WikiCacheMeta
 from app.services.wiki_orchestrator import WikiOrchestrator
+from app.utils.local_client import local_http_client
 
 logger = logging.getLogger(__name__)
 
@@ -337,12 +340,7 @@ async def export_wiki(
         "format": body.format,
     }
 
-    import httpx
-
-    async with httpx.AsyncClient(
-        base_url=settings.deepwiki_base_url,
-        timeout=httpx.Timeout(60, connect=10),
-    ) as client:
+    async with local_http_client(settings.deepwiki_base_url, 60, 10) as client:
         resp = await client.post("/export/wiki", json=export_payload)
         if resp.status_code != 200:
             raise HTTPException(502, f"deepwiki export failed: HTTP {resp.status_code}")

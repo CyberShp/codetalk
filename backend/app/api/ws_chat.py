@@ -28,6 +28,7 @@ from app.database import get_db
 from app.models.llm_config import LLMConfig
 from app.models.repository import Repository
 from app.services.chat_payload import ChatMessage, build_deepwiki_payload
+from app.utils.local_client import local_http_client
 
 logger = logging.getLogger(__name__)
 
@@ -113,7 +114,7 @@ async def ws_chat(
         Raises on connection or streaming errors (callers must NOT continue
         Deep Research on failure).
         """
-        payload, trust_env = build_deepwiki_payload(
+        payload = build_deepwiki_payload(
             repo,
             messages,
             llm_config,
@@ -126,11 +127,7 @@ async def ws_chat(
 
         full = ""
         try:
-            async with httpx.AsyncClient(
-                base_url=settings.deepwiki_base_url,
-                timeout=httpx.Timeout(300, connect=10),
-                trust_env=trust_env,
-            ) as client:
+            async with local_http_client(settings.deepwiki_base_url, 300, 10) as client:
                 async with client.stream(
                     "POST",
                     "/chat/completions/stream",

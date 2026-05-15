@@ -29,11 +29,8 @@ def build_deepwiki_payload(
     included_files: list[str] | None = None,
     excluded_dirs: list[str] | None = None,
     deep_research: bool = False,
-) -> tuple[dict, bool]:
-    """Build deepwiki request payload.
-
-    Returns (payload, trust_env).
-    """
+) -> dict:
+    """Build deepwiki request payload."""
     repo_path = to_tool_repo_path(
         repo.local_path,
         host_base_path=settings.repos_base_path,
@@ -71,7 +68,4 @@ def build_deepwiki_payload(
         payload["provider"] = provider
         payload["model"] = llm_config.model_name
 
-    proxy_mode = llm_config.proxy_mode if llm_config else "system"
-    trust_env = proxy_mode != "direct"
-
-    return payload, trust_env
+    return payload

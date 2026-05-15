@@ -31,6 +31,7 @@ from app.models.repository import Repository
 from app.models.task import AnalysisTask
 from app.utils.repo_paths import to_tool_repo_path
 from app.services.chat_payload import DEFAULT_EXCLUDED_DIRS, ChatMessage
+from app.utils.local_client import local_http_client
 
 logger = logging.getLogger(__name__)
 
@@ -135,9 +136,7 @@ async def _zoekt_is_indexed(repo_key: str) -> bool:
     IRON LAW: HTTP call to Zoekt /api/list only.
     """
     try:
-        async with httpx.AsyncClient(
-            base_url=_ZOEKT_BASE, timeout=httpx.Timeout(5, connect=3)
-        ) as client:
+        async with local_http_client(_ZOEKT_BASE, 5, 3) as client:
             r = await client.post("/api/list", json={"Q": f"repo:{repo_key}"})
             r.raise_for_status()
             repos = (r.json().get("List", {}).get("Repos") or [])
@@ -200,10 +199,7 @@ async def _zoekt_search_context(query: str, repo_path: str) -> str:
     # Phase 2: repo is indexed — search
     scoped_query = f"repo:{repo_key} {query}"
     try:
-        async with httpx.AsyncClient(
-            base_url=_ZOEKT_BASE,
-            timeout=httpx.Timeout(8, connect=3),
-        ) as client:
+        async with local_http_client(_ZOEKT_BASE, 8, 3) as client:
             resp = await client.post(
                 "/api/search",
                 json={"Q": scoped_query, "Num": _ZOEKT_CONTEXT_NUM},
@@ -407,10 +403,7 @@ async def _zoekt_search_evidence(query: str, repo_path: str, repo_key: str) -> l
     merged_hits: dict[str, tuple[dict, int, int]] = {}
 
     try:
-        async with httpx.AsyncClient(
-            base_url=_ZOEKT_BASE,
-            timeout=httpx.Timeout(8, connect=3),
-        ) as client:
+        async with local_http_client(_ZOEKT_BASE, 8, 3) as client:
             for scoped_query in scoped_queries:
                 resp = await client.post(
                     "/api/search",
@@ -607,16 +600,12 @@ async def chat_stream(body: ChatRequest, db: AsyncSession = Depends(get_db)):
         "excluded_dirs": "\n".join(DEFAULT_EXCLUDED_DIRS),
     }
 
-    proxy_mode = "system"
     if llm_config:
         provider = llm_config.provider
         if provider == "custom":
             provider = "openai"
         payload["provider"] = provider
         payload["model"] = llm_config.model_name
-        proxy_mode = llm_config.proxy_mode
-
-    trust_env = proxy_mode != "direct"
 
     await db.close()
 
@@ -630,11 +619,7 @@ async def chat_stream(body: ChatRequest, db: AsyncSession = Depends(get_db)):
 
     async def generate():
         try:
-            async with httpx.AsyncClient(
-                base_url=settings.deepwiki_base_url,
-                timeout=httpx.Timeout(300, connect=10),
-                trust_env=trust_env,
-            ) as client:
+            async with local_http_client(settings.deepwiki_base_url, 300, 10) as client:
                 async with client.stream(
                     "POST",
                     "/chat/completions/stream",

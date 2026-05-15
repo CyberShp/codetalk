@@ -14,6 +14,8 @@ from typing import Any
 
 import httpx
 
+from app.utils.local_client import local_http_client
+
 from app.adapters import create_adapter
 from app.adapters.base import AnalysisRequest
 from app.adapters.gitnexus import GitNexusAdapter
@@ -155,10 +157,7 @@ async def _get_gitnexus_context(
             if processes:
                 process_flow = json.dumps(processes[:10], ensure_ascii=False)
 
-        async with httpx.AsyncClient(
-            base_url=settings.gitnexus_base_url,
-            timeout=30,
-        ) as client:
+        async with local_http_client(settings.gitnexus_base_url, 30) as client:
             if target:
                 resp = await client.post(
                     "/api/search",
@@ -211,10 +210,7 @@ async def _call_deepwiki_chat(
         payload.update(llm_config)
 
     content = ""
-    async with httpx.AsyncClient(
-        base_url=settings.deepwiki_base_url,
-        timeout=httpx.Timeout(300, connect=10),
-    ) as client:
+    async with local_http_client(settings.deepwiki_base_url, 300, 10) as client:
         async with client.stream(
             "POST",
             "/chat/completions/stream",

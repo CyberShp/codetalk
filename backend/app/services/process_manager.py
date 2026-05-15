@@ -303,19 +303,14 @@ class ProcessManager:
         last_error = ""
         try:
             resp = await self.http_client.get(health_url)
-            if resp.status_code < 400:
+            if resp.status_code < 300:
                 mp.status = "running"
                 mp.last_error = None
                 return {**mp.to_dict(), "healthy": True}
-            if resp.status_code >= 500:
-                # 5xx: endpoint broken, but service may still be up — try fallback
-                need_fallback = True
-                last_error = f"Health check HTTP {resp.status_code}"
-            else:
-                # 4xx: real client error, no point retrying
-                mp.status = "error"
-                mp.last_error = f"Health check returned HTTP {resp.status_code}"
-                return {**mp.to_dict(), "healthy": False}
+            # Any non-2xx (4xx, 5xx) → try fallback; some GitNexus versions return
+            # 404/405 on /api/info even when the service is running.
+            need_fallback = True
+            last_error = f"Health check HTTP {resp.status_code}"
         except httpx.ConnectError:
             # Service is genuinely unreachable — no fallback
             if mp.status == "running":

@@ -22,6 +22,7 @@ from app.models.llm_config import LLMConfig
 from app.models.repository import Repository
 from app.models.chat_session import ChatSession
 from app.services.chat_payload import ChatMessage, build_deepwiki_payload
+from app.utils.local_client import local_http_client
 from app.utils.repo_paths import to_tool_repo_path
 
 logger = logging.getLogger(__name__)
@@ -45,9 +46,7 @@ async def _gitnexus_search_context(query: str, repo_name: str) -> str:
         return ""
 
     try:
-        async with httpx.AsyncClient(
-            base_url=settings.gitnexus_base_url, timeout=10
-        ) as client:
+        async with local_http_client(settings.gitnexus_base_url, 10) as client:
             # B3: skip if repo not indexed by GitNexus (/api/repos is Phase 5 endpoint)
             repos_resp = await client.get("/api/repos", params={"repo": repo_name})
             if repos_resp.status_code != 200:
@@ -246,7 +245,7 @@ async def repo_chat_stream(
                 content=user_text + "\n\n" + "\n\n".join(extra_ctx_parts),
             )
 
-    payload, trust_env = build_deepwiki_payload(
+    payload = build_deepwiki_payload(
         repo,
         messages,
         llm_config,
@@ -260,11 +259,7 @@ async def repo_chat_stream(
 
     async def generate():
         try:
-            async with httpx.AsyncClient(
-                base_url=settings.deepwiki_base_url,
-                timeout=httpx.Timeout(300, connect=10),
-                trust_env=trust_env,
-            ) as client:
+            async with local_http_client(settings.deepwiki_base_url, 300, 10) as client:
                 async with client.stream(
                     "POST",
                     "/chat/completions/stream",
