@@ -43,9 +43,9 @@ class AnthropicClient(BaseLLMClient):
                 timeout=httpx.Timeout(300, connect=15),
             )
         else:
+            # system proxy mode: trust_env=True (default) lets httpx read env vars
             self._client = httpx.AsyncClient(
                 verify=verify,
-                trust_env=False,
                 timeout=httpx.Timeout(300, connect=15),
             )
 
