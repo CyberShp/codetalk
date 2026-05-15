@@ -85,12 +85,25 @@ class GitNexusAdapter(BaseToolAdapter):
     async def health_check(self) -> ToolHealth:
         try:
             resp = await self.client.get("/api/info")
-            resp.raise_for_status()
-            data = resp.json()
+            if resp.status_code < 500:
+                data = resp.json() if resp.status_code < 400 else {}
+                return ToolHealth(
+                    is_healthy=True,
+                    container_status="running",
+                    version=data.get("version"),
+                )
+        except Exception:
+            pass
+
+        # Fallback: probe /api/analyze — even a 4xx proves GitNexus is reachable
+        try:
+            resp = await self.client.post("/api/analyze", json={})
+            if resp.status_code < 500:
+                return ToolHealth(is_healthy=True, container_status="running")
             return ToolHealth(
-                is_healthy=True,
-                container_status="running",
-                version=data.get("version"),
+                is_healthy=False,
+                container_status="unhealthy",
+                last_check=f"HTTP {resp.status_code}",
             )
         except Exception as exc:
             return ToolHealth(
