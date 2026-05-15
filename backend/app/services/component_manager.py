@@ -654,6 +654,7 @@ def _docker_client() -> httpx.AsyncClient:
             transport=transport,
             base_url="http://localhost",
             timeout=httpx.Timeout(60, connect=10),
+            trust_env=False,
         )
     elif host.startswith("tcp://"):
         # Remote Docker Engine: tcp://host:port → http://host:port
@@ -661,12 +662,14 @@ def _docker_client() -> httpx.AsyncClient:
         return httpx.AsyncClient(
             base_url=base,
             timeout=httpx.Timeout(60, connect=10),
+            trust_env=False,
         )
     else:
         # Fallback: treat as URL directly
         return httpx.AsyncClient(
             base_url=host,
             timeout=httpx.Timeout(60, connect=10),
+            trust_env=False,
         )
 
 

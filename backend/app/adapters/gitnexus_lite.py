@@ -35,6 +35,7 @@ class GitNexusClient:
             self._client = httpx.AsyncClient(
                 base_url=self._base_url,
                 timeout=httpx.Timeout(_QUERY_TIMEOUT, connect=10),
+                trust_env=False,
             )
         return self._client
 

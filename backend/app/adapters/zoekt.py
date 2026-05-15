@@ -50,6 +50,7 @@ class ZoektAdapter(BaseToolAdapter):
             self._client = httpx.AsyncClient(
                 base_url=self.base_url,
                 timeout=httpx.Timeout(30, connect=10),
+                trust_env=False,
             )
         return self._client
 
@@ -68,6 +69,7 @@ class ZoektAdapter(BaseToolAdapter):
             transport=transport,
             base_url="http://localhost",
             timeout=httpx.Timeout(_INDEX_TIMEOUT, connect=10),
+            trust_env=False,
         )
 
     def name(self) -> str:

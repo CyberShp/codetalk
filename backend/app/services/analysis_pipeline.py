@@ -156,6 +156,7 @@ class AnalysisPipeline:
         async with httpx.AsyncClient(
             base_url=base_url,
             timeout=httpx.Timeout(600, connect=10),
+            trust_env=False,
         ) as client:
             resp = await client.post("/api/analyze", json={"path": repo_path})
             resp.raise_for_status()
@@ -196,6 +197,7 @@ class AnalysisPipeline:
         async with httpx.AsyncClient(
             base_url=base_url,
             timeout=httpx.Timeout(1800, connect=10),
+            trust_env=False,
         ) as client:
             if self._analysis_focus:
                 deepwiki_message = (

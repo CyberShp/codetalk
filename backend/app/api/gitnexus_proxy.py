@@ -121,6 +121,7 @@ async def get_file_content(
         async with httpx.AsyncClient(
             base_url=settings.gitnexus_base_url,
             timeout=30,
+            trust_env=False,
         ) as client:
             resp = await client.get("/api/file", params=params)
             if resp.status_code == 404:
@@ -165,6 +166,7 @@ async def search_knowledge_graph(body: SearchRequest):
         async with httpx.AsyncClient(
             base_url=settings.gitnexus_base_url,
             timeout=30,
+            trust_env=False,
         ) as client:
             resp = await client.post("/api/search", params=params, json=payload)
             resp.raise_for_status()
@@ -349,7 +351,9 @@ async def analyze_impact(body: ImpactRequest):
     results: dict[str, list] = {d: [] for d in directions}
     try:
         async with httpx.AsyncClient(
-            base_url=settings.gitnexus_base_url, timeout=60
+            base_url=settings.gitnexus_base_url,
+            timeout=60,
+            trust_env=False,
         ) as client:
             for direction, d, cypher in tasks:
                 resp = await client.post(
