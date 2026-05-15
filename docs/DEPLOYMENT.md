@@ -1,6 +1,6 @@
 # CodeTalk Lightweight — 部署文档
 
-> 版本: 2.0 | 分支: feat
+> 版本: 2.1 | 分支: feat | Sprint 4
 
 ## 1. 系统要求
 
@@ -29,7 +29,7 @@
 ### 3.1 克隆代码
 
 ```bash
-git clone https://github.com/sr1shepard/codetalk.git
+git clone https://github.com/CyberShp/codetalk.git
 cd codetalk
 git checkout feat
 ```
@@ -223,6 +223,32 @@ TIKTOKEN_CACHE_DIR=data/tiktoken_cache
 
 **API 端点**: `GET/POST/PUT/DELETE /api/prompts`
 
+### 7.2 内网代理隔离
+
+内网环境中系统代理变量（`HTTP_PROXY`/`HTTPS_PROXY`）可能干扰后端与本地工具（GitNexus、DeepWiki）之间的通信。Sprint 4 引入了统一的 `local_http_client` 工厂函数，所有本地服务连接强制 `trust_env=False`，不受系统代理影响。
+
+- **LLM 外部调用**仍尊重代理设置（"系统代理"模式保持 `trust_env=True`）
+- **本地服务调用**（GitNexus、DeepWiki、Joern、Zoekt 等）一律绕过代理
+- 如遇 504/连接超时，检查代理变量是否误干扰了 localhost 请求
+
+### 7.3 LLM 调试快照
+
+分析过程中每次 LLM 调用的输入/输出会自动保存为 JSON 快照，便于排查 AI 分析质量问题。
+
+- **快照目录**: `data/outputs/{task_id}/debug/`
+- **文件命名**: `{phase}_{report_type}_{timestamp}.json`，每次分析生成独立文件，重跑不覆盖
+- **API 端点**:
+  - `GET /api/tasks/{task_id}/debug` — 列出该任务的所有调试文件
+  - `GET /api/tasks/{task_id}/debug/{filename}` — 读取单个调试文件内容
+
+### 7.4 并行模块分析
+
+模块分析阶段（Phase 2）使用 `asyncio.Semaphore(3)` 并行执行，最多 3 个模块同时进行 LLM 分析，显著缩短大型项目的分析时间。
+
+### 7.5 健康检查容错
+
+GitNexus 健康检查在 `/api/info` 返回 5xx 时，自动降级到 `POST /api/analyze` 探测。只要探测成功即视为在线，避免因 info 接口异常导致工具误判为离线。
+
 ## 8. 生成的报告
 
 | 序号 | 报告 | 说明 |
@@ -261,5 +287,12 @@ pip list | findstr fastapi
 ### AI 分析报错
 - 确认 LLM 配置正确（API Key、Base URL）
 - 测试连接功能验证配置
-- 检查网络代理设置
-- 小模型可能超时，增加 `MAX_TOKENS_PER_CALL` 阈值
+- 检查网络代理设置（LLM 调用尊重系统代理，本地服务调用不走代理）
+- LLM 读取超时已调至 300 秒，连接超时 15 秒
+- 查看调试快照：`GET /api/tasks/{task_id}/debug` 查看每次 LLM 调用的输入输出
+- 若使用"不走代理"模式仍超时，检查 Base URL 是否可达
+
+### GitNexus 显示离线但实际可用
+- 后端健康检查会先尝试 `/api/info`，失败后降级到 `POST /api/analyze` 探测
+- 若两个端点都失败，检查 GitNexus 进程是否存活及端口 7100 是否监听
+- 检查系统代理变量是否干扰 localhost 请求（本地服务连接已强制绕过代理）
