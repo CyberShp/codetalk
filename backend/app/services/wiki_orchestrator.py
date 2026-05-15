@@ -17,6 +17,7 @@ from datetime import datetime, timezone
 import httpx
 
 from app.config import settings
+from app.utils.local_client import local_http_client
 from app.utils.repo_paths import to_tool_repo_path
 
 from app.services.chat_payload import DEFAULT_EXCLUDED_DIRS
@@ -103,9 +104,7 @@ class WikiOrchestrator:
         language: str = "zh",
     ) -> dict | None:
         """Check deepwiki cache. Returns raw cache data or None."""
-        async with httpx.AsyncClient(
-            base_url=self.base_url, timeout=httpx.Timeout(30, connect=10)
-        ) as client:
+        async with local_http_client(self.base_url, 30, 10) as client:
             resp = await client.get(
                 "/api/wiki_cache",
                 params={
@@ -142,7 +141,6 @@ class WikiOrchestrator:
         on the first EmptyEmbeddingError the stale *.pkl files are deleted and the
         entire generation is retried once with a user-friendly error if it fails again.
         """
-        trust_env = proxy_mode != "direct"
         tool_repo_path = to_tool_repo_path(
             repo_local_path,
             host_base_path=settings.repos_base_path,
@@ -152,11 +150,7 @@ class WikiOrchestrator:
         embedding_cleared = False
         while True:
             try:
-                async with httpx.AsyncClient(
-                    base_url=self.base_url,
-                    timeout=httpx.Timeout(300, connect=10),
-                    trust_env=trust_env,
-                ) as client:
+                async with local_http_client(self.base_url, 300, 10) as client:
                     # Step 1: Fetch repo structure
                     file_tree, readme = await self._fetch_repo_structure(
                         client, tool_repo_path
@@ -238,9 +232,7 @@ class WikiOrchestrator:
         language: str = "zh",
     ) -> bool:
         """Delete deepwiki cache for a repo."""
-        async with httpx.AsyncClient(
-            base_url=self.base_url, timeout=httpx.Timeout(30, connect=10)
-        ) as client:
+        async with local_http_client(self.base_url, 30, 10) as client:
             resp = await client.request(
                 "DELETE",
                 "/api/wiki_cache",
@@ -275,7 +267,6 @@ class WikiOrchestrator:
         4. POST updated cache back to deepwiki
         5. Return new page content
         """
-        trust_env = proxy_mode != "direct"
         tool_repo_path = to_tool_repo_path(
             repo_local_path,
             host_base_path=settings.repos_base_path,
@@ -285,11 +276,7 @@ class WikiOrchestrator:
         embedding_cleared = False
         while True:
             try:
-                async with httpx.AsyncClient(
-                    base_url=self.base_url,
-                    timeout=httpx.Timeout(300, connect=10),
-                    trust_env=trust_env,
-                ) as client:
+                async with local_http_client(self.base_url, 300, 10) as client:
                     # 1. Generate new content for the single page
                     page = WikiPage(
                         id=page_id,

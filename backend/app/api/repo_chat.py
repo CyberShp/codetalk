@@ -124,9 +124,7 @@ async def _joern_code_context(query: str, repo_local_path: str) -> str:
             '"line" -> m.lineNumber.getOrElse(-1).toString, '
             '"lineEnd" -> m.lineNumberEnd.getOrElse(-1).toString)).toJson'
         )
-        async with httpx.AsyncClient(
-            base_url=settings.joern_base_url, timeout=10
-        ) as client:
+        async with local_http_client(settings.joern_base_url, 10) as client:
             resp = await client.post("/query-sync", json={"query": cpgql})
             if resp.status_code != 200:
                 return ""

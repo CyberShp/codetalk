@@ -19,6 +19,8 @@ from typing import Any
 
 import httpx
 
+from app.utils.local_client import local_http_client
+
 from .base import (
     AnalysisRequest,
     BaseToolAdapter,
@@ -530,10 +532,7 @@ class JoernAdapter(BaseToolAdapter):
         Queries using .toJson produce: val resN: String = "..."
         where the inner string is valid JSON.
         """
-        async with httpx.AsyncClient(
-            base_url=self.base_url,
-            timeout=httpx.Timeout(timeout, connect=10),
-        ) as client:
+        async with local_http_client(self.base_url, timeout, 10) as client:
             resp = await client.post(
                 "/query-sync",
                 json={"query": cpgql},
