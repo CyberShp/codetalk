@@ -191,7 +191,9 @@ async def cypher_query(body: CypherRequest):
 
     try:
         async with httpx.AsyncClient(
-            base_url=settings.gitnexus_base_url, timeout=30
+            base_url=settings.gitnexus_base_url,
+            timeout=30,
+            trust_env=False,
         ) as client:
             resp = await client.post("/api/query", params=params, json={"cypher": body.cypher})
             resp.raise_for_status()
@@ -211,7 +213,9 @@ async def list_processes(repo: str | None = Query(None)):
 
     try:
         async with httpx.AsyncClient(
-            base_url=settings.gitnexus_base_url, timeout=30
+            base_url=settings.gitnexus_base_url,
+            timeout=30,
+            trust_env=False,
         ) as client:
             resp = await client.get("/api/processes", params=params)
             resp.raise_for_status()
@@ -234,7 +238,9 @@ async def get_process(
 
     try:
         async with httpx.AsyncClient(
-            base_url=settings.gitnexus_base_url, timeout=30
+            base_url=settings.gitnexus_base_url,
+            timeout=30,
+            trust_env=False,
         ) as client:
             resp = await client.get("/api/process", params=params)
             resp.raise_for_status()
@@ -254,7 +260,9 @@ async def list_clusters(repo: str | None = Query(None)):
 
     try:
         async with httpx.AsyncClient(
-            base_url=settings.gitnexus_base_url, timeout=30
+            base_url=settings.gitnexus_base_url,
+            timeout=30,
+            trust_env=False,
         ) as client:
             resp = await client.get("/api/clusters", params=params)
             resp.raise_for_status()
@@ -277,7 +285,9 @@ async def get_cluster(
 
     try:
         async with httpx.AsyncClient(
-            base_url=settings.gitnexus_base_url, timeout=30
+            base_url=settings.gitnexus_base_url,
+            timeout=30,
+            trust_env=False,
         ) as client:
             resp = await client.get("/api/cluster", params=params)
             resp.raise_for_status()
@@ -399,7 +409,9 @@ async def grep_code(
 
     try:
         async with httpx.AsyncClient(
-            base_url=settings.gitnexus_base_url, timeout=30
+            base_url=settings.gitnexus_base_url,
+            timeout=30,
+            trust_env=False,
         ) as client:
             resp = await client.get("/api/grep", params=params)
             resp.raise_for_status()
@@ -421,7 +433,9 @@ async def list_repos(repo: str | None = Query(None)):
 
     try:
         async with httpx.AsyncClient(
-            base_url=settings.gitnexus_base_url, timeout=30
+            base_url=settings.gitnexus_base_url,
+            timeout=30,
+            trust_env=False,
         ) as client:
             resp = await client.get("/api/repos", params=params)
             resp.raise_for_status()
