@@ -35,18 +35,20 @@ class OpenAICompatClient(BaseLLMClient):
             self._client = httpx.AsyncClient(
                 transport=httpx.AsyncHTTPTransport(verify=verify),
                 trust_env=False,
-                timeout=httpx.Timeout(120, connect=15),
+                timeout=httpx.Timeout(300, connect=15),
             )
         elif proxy_url:
             self._client = httpx.AsyncClient(
                 proxy=proxy_url,
                 verify=verify,
-                timeout=httpx.Timeout(120, connect=15),
+                trust_env=False,
+                timeout=httpx.Timeout(300, connect=15),
             )
         else:
             self._client = httpx.AsyncClient(
                 verify=verify,
-                timeout=httpx.Timeout(120, connect=15),
+                trust_env=False,
+                timeout=httpx.Timeout(300, connect=15),
             )
 
     async def complete(
