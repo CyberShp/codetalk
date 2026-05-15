@@ -239,31 +239,34 @@ class AnalysisPipeline:
     # ------------------------------------------------------------------
 
     async def _phase_module_analysis(self, llm_client: BaseLLMClient) -> None:
-        """Analyze each community/module via LLM."""
+        """Analyze each community/module via LLM (bounded parallel)."""
         communities = self._extract_communities()
         if not communities:
             logger.warning("No communities found, treating entire repo as single module")
             communities = [self._build_single_module()]
 
-        for community in communities:
-            try:
-                summary = await self._analyze_module(llm_client, community)
-                self._module_summaries.append({
+        sem = asyncio.Semaphore(3)
+
+        async def analyze_one(community: dict) -> dict:
+            async with sem:
+                try:
+                    summary = await self._analyze_module(llm_client, community)
+                except Exception as exc:
+                    logger.error(
+                        "Module analysis failed for %s: %s",
+                        community["name"],
+                        exc,
+                    )
+                    summary = f"（分析失败: {exc}）"
+                return {
                     "module_name": community["name"],
                     "summary": summary,
                     "files": community.get("files", []),
-                })
-            except Exception as exc:
-                logger.error(
-                    "Module analysis failed for %s: %s",
-                    community["name"],
-                    exc,
-                )
-                self._module_summaries.append({
-                    "module_name": community["name"],
-                    "summary": f"（分析失败: {exc}）",
-                    "files": community.get("files", []),
-                })
+                }
+
+        self._module_summaries = list(
+            await asyncio.gather(*(analyze_one(c) for c in communities))
+        )
 
     def _extract_communities(self) -> list[dict]:
         """Extract community/module groups from GitNexus data."""
