@@ -6,7 +6,7 @@ import logging
 import uuid
 
 import aiosqlite
-from fastapi import APIRouter, File, HTTPException, UploadFile
+from fastapi import APIRouter, BackgroundTasks, File, HTTPException, UploadFile
 from pydantic import BaseModel
 
 from app.config import settings
@@ -98,8 +98,8 @@ async def get_analysis(analysis_id: str):
 
 
 @router.post("/{analysis_id}/analyze")
-async def trigger_analysis(analysis_id: str):
-    """Run AI analysis on parsed coverage data."""
+async def trigger_analysis(analysis_id: str, background_tasks: BackgroundTasks):
+    """Enqueue AI analysis on parsed coverage data and return immediately."""
     record = await _get_analysis_detail(analysis_id)
 
     if record.status not in ("parsed", "analyzed"):
@@ -108,16 +108,12 @@ async def trigger_analysis(analysis_id: str):
             detail=f"当前状态「{record.status}」不支持分析",
         )
 
-    try:
-        results = await _analyzer.run_analysis(analysis_id)
-    except ValueError as exc:
-        raise HTTPException(status_code=400, detail=str(exc))
+    background_tasks.add_task(_analyzer.run_analysis, analysis_id)
 
     return {
         "analysis_id": analysis_id,
-        "status": "analyzed",
-        "module_results": len(results),
-        "results": results,
+        "status": "analyzing",
+        "message": "AI 分析已启动，请稍后查看结果",
     }
 
 

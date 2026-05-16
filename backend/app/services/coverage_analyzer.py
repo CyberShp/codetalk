@@ -123,7 +123,10 @@ class CoverageAnalyzer:
         for filename, content in files:
             lower = filename.lower()
             if lower.endswith(".xml"):
-                report = detect_and_parse_xml(content)
+                try:
+                    report = detect_and_parse_xml(content)
+                except Exception as exc:
+                    raise ValueError(f"文件 {filename} XML 格式无效: {exc}") from exc
             elif lower.endswith((".html", ".htm")):
                 report = parse_html_coverage(content)
             else:
@@ -187,19 +190,30 @@ class CoverageAnalyzer:
 
     async def run_analysis(self, analysis_id: str) -> list[dict]:
         """Run AI analysis on a parsed coverage report."""
+        # Atomic status transition: only one concurrent caller will see rowcount==1.
+        # This eliminates the TOCTOU window between the status-check and the UPDATE.
+        async with aiosqlite.connect(settings.sqlite_db) as db:
+            now = datetime.now(timezone.utc).isoformat()
+            cursor = await db.execute(
+                "UPDATE coverage_analyses SET status = 'analyzing', updated_at = ? "
+                "WHERE id = ? AND status IN ('parsed', 'analyzed')",
+                (now, analysis_id),
+            )
+            await db.commit()
+            if cursor.rowcount == 0:
+                raise ValueError("分析已在进行中或状态不允许，请勿重复触发")
+
+        # Fetch modules data after the atomic status transition is committed.
         async with aiosqlite.connect(settings.sqlite_db) as db:
             db.row_factory = aiosqlite.Row
             row = await db.execute_fetchall(
-                "SELECT * FROM coverage_analyses WHERE id = ?", (analysis_id,)
+                "SELECT modules_json FROM coverage_analyses WHERE id = ?", (analysis_id,)
             )
             if not row:
                 raise ValueError(f"覆盖率分析 {analysis_id} 不存在")
-            record = dict(row[0])
+            modules_json = dict(row[0])["modules_json"]
 
-        if record["status"] not in ("parsed", "analyzed"):
-            raise ValueError(f"当前状态 {record['status']} 不支持分析")
-
-        modules_data: list[dict] = json.loads(record["modules_json"])
+        modules_data: list[dict] = json.loads(modules_json)
         modules = [_dict_to_module(d) for d in modules_data]
 
         low_coverage = [
@@ -207,13 +221,6 @@ class CoverageAnalyzer:
             if m.line_rate < 0.8 or m.branch_rate < 0.6 or m.function_rate < 0.8
         ]
         targets = low_coverage or modules[:5]
-
-        async with aiosqlite.connect(settings.sqlite_db) as db:
-            await db.execute(
-                "UPDATE coverage_analyses SET status = 'analyzing', updated_at = ? WHERE id = ?",
-                (datetime.now(timezone.utc).isoformat(), analysis_id),
-            )
-            await db.commit()
 
         llm = await create_llm_client_from_active()
         results: list[dict] = []

@@ -14,7 +14,7 @@ import logging
 import re
 from dataclasses import dataclass, field
 from typing import Protocol
-from xml.etree import ElementTree as ET
+import defusedxml.ElementTree as ET
 
 logger = logging.getLogger(__name__)
 
