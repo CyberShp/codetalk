@@ -568,7 +568,7 @@ function updateServiceUrls() {
 
   const COMPOSE_URLS = {
     frontend:    'http://localhost:' + (cfg.portFrontend || '3005'),
-    backend:     'http://localhost:' + (cfg.portBackend  || '8000'),
+    backend:     'http://localhost:' + (cfg.portBackend  || '8100'),
     deepwiki:    'http://localhost:' + getDeepWikiApiPort(mode, cfg),
     gitnexus:    'http://localhost:' + (cfg.portGitnexus || '7100'),
     codecompass: 'http://localhost:16251',
