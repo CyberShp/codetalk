@@ -2,7 +2,7 @@
 __pycache__/
 *.py[cod]
 *.egg-info/
-.venv/
+.venv*/
 venv/
 
 # Node
@@ -61,9 +61,11 @@ docs/PHASE_A_RESEARCH.md
 docs/SOP.md
 docs/deepwiki-api-actual.md
 
-# Pasted screenshots / dev images
+# Pasted screenshots / dev images / E2E evidence
 Pasted image *.png
 frontend/step*.png
+deployer-*.png
+fix-*.png
 
 # Local database files
 *.db
@@ -80,3 +82,13 @@ deployer/vendor/
 # Test artifacts
 output/
 test-results/
+
+# Browser automation artifacts
+.playwright-mcp/
+
+# Runtime logs
+*.stderr.log
+*.stdout.log
+
+# Auto-generated planning docs (ECC superpowers)
+docs/superpowers/
