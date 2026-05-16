@@ -15,7 +15,9 @@ _KEY_MAP = {
     "reposPath": "repos_path",
     "portFrontend": "frontend_port",
     "portBackend": "backend_port",
-    "portDeepwiki": "deepwiki_port",
+    "portDeepwiki": "deepwiki_api_port",
+    "deepwikiPath": "deepwiki_path",
+    "deepwikiUiPort": "deepwiki_ui_port",
     "portDb": "postgres_port",
     "portGitnexus": "gitnexus_port",
     "llmProvider": "llm_provider",
@@ -29,11 +31,16 @@ def _normalize_to_snake(cfg: dict) -> dict:
     out = {}
     for k, v in cfg.items():
         out[_KEY_MAP.get(k, k)] = v
+    if "deepwiki_port" in out and "deepwiki_api_port" not in out:
+        out["deepwiki_api_port"] = out.pop("deepwiki_port")
     return out
 
 
 def _normalize_to_camel(cfg: dict) -> dict:
     """Convert snake_case backend keys to camelCase for frontend consumption."""
+    cfg = dict(cfg)
+    if "deepwiki_port" in cfg and "deepwiki_api_port" not in cfg:
+        cfg["deepwiki_api_port"] = cfg["deepwiki_port"]
     out = {}
     for k, v in cfg.items():
         out[_KEY_MAP_REV.get(k, k)] = v
@@ -106,6 +113,7 @@ def get_default_config(mode: str) -> dict:
         "openai_api_key": "",
         "anthropic_api_key": "",
         "google_api_key": "",
+        "deepwiki_path": "",
         "repos_path": "./.repos",
         "frontend_port": 3005,
         "gitnexus_port": 7100,
@@ -113,9 +121,13 @@ def get_default_config(mode: str) -> dict:
     }
     if mode == "native":
         base["backend_port"] = 8100
+        base["deepwiki_api_port"] = 8091
+        base["deepwiki_ui_port"] = 3001
         base["ollama_base_url"] = "http://localhost:11434"
     else:
         base["backend_port"] = 8000
+        base["deepwiki_api_port"] = 8001
+        base["deepwiki_ui_port"] = 3000
         base["ollama_base_url"] = "http://host.docker.internal:11434"
         base["postgres_user"] = "codetalks"
         base["postgres_password"] = "changeme"

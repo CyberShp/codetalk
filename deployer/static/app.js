@@ -3,6 +3,12 @@
  * Vanilla JS ES module, zero dependencies.
  */
 
+const {
+  getDeepWikiApiPort,
+  getDeepWikiUiPort,
+  normalizeHealthServices,
+} = window.CodeTalkAppHelpers;
+
 // ---------------------------------------------------------------------------
 // State
 // ---------------------------------------------------------------------------
@@ -16,6 +22,7 @@ const state = {
   deployJobId: null,
   deployEventSource: null,
   deployDone: false,
+  deepwikiInstalled: false,
 };
 
 // Provider label map
@@ -139,6 +146,7 @@ function initModeCards() {
         c.classList.toggle('selected', c === card);
         c.setAttribute('aria-checked', c === card ? 'true' : 'false');
       });
+      syncModeDefaultPorts();
       updatePortsVisibility();
       updateNavButtons();
     });
@@ -237,6 +245,8 @@ function initConfigForm() {
     .then(r => r.ok ? r.json() : null)
     .then(cfg => {
       if (!cfg || !cfg.llmProvider) return;
+      state.config = { ...state.config, ...cfg };
+      state.deepwikiInstalled = Boolean(cfg.deepwikiPath);
       providerSel.value = cfg.llmProvider;
       providerSel.dispatchEvent(new Event('change'));
       if (cfg.apiKey)       apiKeyInput.value           = cfg.apiKey;
@@ -250,6 +260,8 @@ function initConfigForm() {
       if (cfg.portDb)       $('#port-db').value           = cfg.portDb;
       if (cfg.portGitnexus) $('#port-gitnexus').value      = cfg.portGitnexus;
       if (cfg.corsOrigins)  $('#cors-origins').value      = cfg.corsOrigins;
+      if (cfg.deepwikiPath && $('#deepwiki-path')) $('#deepwiki-path').value = cfg.deepwikiPath;
+      syncDeepWikiSupplementState();
     })
     .catch(() => {});
 }
@@ -276,6 +288,19 @@ function updatePortsVisibility() {
     const modes = pill.dataset.modes || '';
     pill.style.display = modes.includes(state.selectedMode) ? '' : 'none';
   });
+}
+
+function syncModeDefaultPorts() {
+  const deepwikiInput = $('#port-deepwiki');
+  if (!deepwikiInput) return;
+
+  const current = (deepwikiInput.value || '').trim();
+  if (state.selectedMode === 'native' && (current === '' || current === '8001')) {
+    deepwikiInput.value = '8091';
+  }
+  if (state.selectedMode === 'compose' && (current === '' || current === '8091')) {
+    deepwikiInput.value = '8001';
+  }
 }
 
 function collectConfig() {
@@ -352,7 +377,7 @@ function renderReview() {
     rows.push(null,
       { label: 'Frontend port',    value: cfg.portFrontend || '3005',  mono: true },
       { label: 'Backend API port', value: cfg.portBackend  || '8100',  mono: true },
-      { label: 'DeepWiki port',    value: cfg.portDeepwiki || '18001', mono: true },
+      { label: 'DeepWiki port',    value: getDeepWikiApiPort(state.selectedMode, cfg), mono: true },
       { label: 'PostgreSQL port',  value: cfg.portDb       || '5433',  mono: true },
       { label: 'GitNexus port',    value: cfg.portGitnexus || '7100',  mono: true },
     );
@@ -531,12 +556,11 @@ function updateServiceUrls() {
   const cfg = state.config;
   const mode = state.selectedMode;
 
-  const deepwikiInstalled = $('#deepwiki-success') && $('#deepwiki-success').style.display !== 'none';
   const NATIVE_URLS = {
     frontend:    'http://localhost:' + (cfg.portFrontend  || '3005'),
     backend:     'http://localhost:' + (cfg.portBackend   || '8100'),
     gitnexus:    'http://localhost:' + (cfg.portGitnexus  || '7100'),
-    deepwiki:    deepwikiInstalled ? 'http://localhost:' + (cfg.portDeepwiki || '8091') : null,
+    deepwiki:    state.deepwikiInstalled ? 'http://localhost:' + getDeepWikiUiPort(mode, cfg) : null,
     codecompass: null,
     joern:       null,
     zoekt:       null,
@@ -545,7 +569,7 @@ function updateServiceUrls() {
   const COMPOSE_URLS = {
     frontend:    'http://localhost:' + (cfg.portFrontend || '3005'),
     backend:     'http://localhost:' + (cfg.portBackend  || '8000'),
-    deepwiki:    'http://localhost:' + (cfg.portDeepwiki || '8001'),
+    deepwiki:    'http://localhost:' + getDeepWikiApiPort(mode, cfg),
     gitnexus:    'http://localhost:' + (cfg.portGitnexus || '7100'),
     codecompass: 'http://localhost:16251',
     joern:       'http://localhost:8080',
@@ -602,7 +626,7 @@ async function runHealthCheck() {
 
 function renderHealthResult(services) {
   const resultEl = $('#health-result');
-  const entries = Object.entries(services);
+  const entries = normalizeHealthServices(services);
   if (!entries.length) {
     resultEl.innerHTML = '<p class="text-muted">No service data returned.</p>';
     return;
@@ -700,6 +724,7 @@ function initDeepWikiSupplement() {
   if (!section || !btn) return;
 
   btn.addEventListener('click', () => startDeepWikiInstall());
+  syncDeepWikiSupplementState();
 }
 
 function showDeepWikiSection() {
@@ -707,6 +732,33 @@ function showDeepWikiSection() {
   if (section && state.selectedMode === 'native') {
     section.style.display = '';
   }
+  syncDeepWikiSupplementState();
+}
+
+function syncDeepWikiSupplementState() {
+  const form = $('#deepwiki-form');
+  const successEl = $('#deepwiki-success');
+  const successMsg = $('#deepwiki-success-msg');
+  if (!form || !successEl || !successMsg) return;
+
+  if (state.deepwikiInstalled) {
+    hide(form);
+    successEl.style.display = '';
+    successMsg.textContent = `DeepWiki installed on localhost:${getDeepWikiUiPort('native', state.config)}`;
+  } else {
+    show(form);
+    hide(successEl);
+  }
+}
+
+async function refreshConfigState() {
+  const res = await fetch('/api/config');
+  if (!res.ok) throw new Error(`HTTP ${res.status}`);
+  const cfg = await res.json();
+  state.config = { ...state.config, ...cfg };
+  state.deepwikiInstalled = Boolean(cfg.deepwikiPath);
+  if (cfg.deepwikiPath && $('#deepwiki-path')) $('#deepwiki-path').value = cfg.deepwikiPath;
+  return cfg;
 }
 
 async function startDeepWikiInstall() {
@@ -745,16 +797,28 @@ async function startDeepWikiInstall() {
     }
 
     const es = new EventSource('/api/deploy/stream');
-    es.onmessage = evt => {
+    es.onmessage = async evt => {
       let payload;
       try { payload = JSON.parse(evt.data); } catch { return; }
 
       if (payload.step === 'done' && payload.status === 'done') {
         es.close();
-        hide(form);
+        try {
+          await refreshConfigState();
+        } catch {
+          state.config = {
+            ...state.config,
+            deepwikiPath,
+            portDeepwiki: state.config.portDeepwiki || '8091',
+            deepwikiUiPort: state.config.deepwikiUiPort || '3001',
+          };
+          state.deepwikiInstalled = true;
+        }
         hide(logWrap);
         successEl.style.display = '';
-        $('#deepwiki-success-msg').textContent = 'DeepWiki installed and running';
+        btn.disabled = false;
+        btn.textContent = 'Install DeepWiki';
+        syncDeepWikiSupplementState();
         updateServiceUrls();
         return;
       }
