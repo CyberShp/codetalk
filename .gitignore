@@ -74,6 +74,9 @@ frontend/pnpm-lock.yaml
 # Deployer secrets
 deployer/.deploy-config.json
 
+# Deployer vendor bundles (offline GitNexus + tiktoken, ~1 GB)
+deployer/vendor/
+
 # Test artifacts
 output/
 test-results/
