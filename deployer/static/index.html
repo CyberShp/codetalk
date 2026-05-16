@@ -442,6 +442,45 @@
             </a>
           </div>
 
+          <div id="deepwiki-supplement" class="supplement-section" style="display:none">
+            <div class="supplement-card">
+              <div class="supplement-header">
+                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true" class="supplement-icon">
+                  <path d="M12 2L2 7l10 5 10-5-10-5zM2 17l10 5 10-5M2 12l10 5 10-5"/>
+                </svg>
+                <div>
+                  <h3 class="supplement-title">Install DeepWiki (Optional)</h3>
+                  <p class="supplement-desc">AI-powered code documentation. Provide the path to your local DeepWiki-Open source directory.</p>
+                </div>
+              </div>
+              <div class="supplement-form" id="deepwiki-form">
+                <div class="supplement-input-row">
+                  <input type="text" id="deepwiki-path" class="form-input font-mono" placeholder="C:\deepwiki-open" />
+                  <button id="deepwiki-install-btn" class="btn btn-secondary" type="button">Install DeepWiki</button>
+                </div>
+              </div>
+              <div id="deepwiki-install-log" style="display:none">
+                <div class="terminal-wrap terminal-wrap-sm">
+                  <div class="terminal-header">
+                    <div class="terminal-dots" aria-hidden="true">
+                      <span class="t-dot t-red"></span>
+                      <span class="t-dot t-yellow"></span>
+                      <span class="t-dot t-green"></span>
+                    </div>
+                    <span class="terminal-title">DeepWiki installation</span>
+                  </div>
+                  <div class="terminal-body" id="deepwiki-log" role="log" aria-live="polite"></div>
+                </div>
+              </div>
+              <div id="deepwiki-success" class="supplement-success" style="display:none">
+                <svg class="check-icon check-icon-sm" viewBox="0 0 20 20" fill="currentColor" aria-hidden="true">
+                  <path fill-rule="evenodd" d="M10 18a8 8 0 100-16 8 8 0 000 16zm3.707-9.293a1 1 0 00-1.414-1.414L9 10.586 7.707 9.293a1 1 0 00-1.414 1.414l2 2a1 1 0 001.414 0l4-4z" clip-rule="evenodd"/>
+                </svg>
+                <span id="deepwiki-success-msg">DeepWiki installed successfully</span>
+              </div>
+            </div>
+          </div>
+
           <div class="complete-actions">
             <a href="http://localhost:3005" target="_blank" rel="noopener noreferrer" class="btn btn-primary btn-lg">
               <svg class="btn-icon" viewBox="0 0 20 20" fill="currentColor" aria-hidden="true"><path d="M11 3a1 1 0 100 2h2.586l-6.293 6.293a1 1 0 101.414 1.414L15 6.414V9a1 1 0 102 0V4a1 1 0 00-1-1h-5z"/><path d="M5 5a2 2 0 00-2 2v8a2 2 0 002 2h8a2 2 0 002-2v-3a1 1 0 10-2 0v3H5V7h3a1 1 0 000-2H5z"/></svg>

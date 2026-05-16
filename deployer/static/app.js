@@ -569,6 +569,8 @@ function updateServiceUrls() {
   // Update the "Open CodeTalk" hero button
   const heroBtn = document.querySelector('.complete-actions .btn-primary');
   if (heroBtn) heroBtn.href = urls.frontend;
+
+  showDeepWikiSection();
 }
 
 async function runHealthCheck() {
@@ -677,6 +679,105 @@ function attachDeployHandlers() {
 
 function attachStep6Handlers() {
   $('#health-check-btn').addEventListener('click', () => runHealthCheck());
+  initDeepWikiSupplement();
+}
+
+function initDeepWikiSupplement() {
+  const section = $('#deepwiki-supplement');
+  const btn = $('#deepwiki-install-btn');
+  if (!section || !btn) return;
+
+  btn.addEventListener('click', () => startDeepWikiInstall());
+}
+
+function showDeepWikiSection() {
+  const section = $('#deepwiki-supplement');
+  if (section && state.selectedMode === 'native') {
+    section.style.display = '';
+  }
+}
+
+async function startDeepWikiInstall() {
+  const pathInput = $('#deepwiki-path');
+  const deepwikiPath = (pathInput.value || '').trim();
+  if (!deepwikiPath) {
+    pathInput.focus();
+    return;
+  }
+
+  const btn = $('#deepwiki-install-btn');
+  const logWrap = $('#deepwiki-install-log');
+  const logEl = $('#deepwiki-log');
+  const form = $('#deepwiki-form');
+  const successEl = $('#deepwiki-success');
+
+  btn.disabled = true;
+  btn.textContent = 'Installing...';
+  logWrap.style.display = '';
+  logEl.innerHTML = '';
+  hide(successEl);
+
+  try {
+    const res = await fetch('/api/deploy/supplement/deepwiki', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ deepwikiPath: deepwikiPath }),
+    });
+
+    if (!res.ok) {
+      const err = await res.json().catch(() => ({ detail: res.statusText }));
+      dwAppendLog('error', err.detail || 'Failed to start DeepWiki install');
+      btn.disabled = false;
+      btn.textContent = 'Install DeepWiki';
+      return;
+    }
+
+    const es = new EventSource('/api/deploy/stream');
+    es.onmessage = evt => {
+      let payload;
+      try { payload = JSON.parse(evt.data); } catch { return; }
+
+      if (payload.step === 'done' && payload.status === 'done') {
+        es.close();
+        hide(form);
+        hide(logWrap);
+        successEl.style.display = '';
+        $('#deepwiki-success-msg').textContent = 'DeepWiki installed and running';
+        updateServiceUrls();
+        return;
+      }
+
+      if (payload.message) {
+        dwAppendLog(payload.status === 'error' ? 'error' : payload.status === 'done' ? 'success' : 'info', payload.message);
+      }
+      if (payload.status === 'error') {
+        btn.disabled = false;
+        btn.textContent = 'Retry Install';
+        es.close();
+      }
+    };
+    es.onerror = () => {
+      dwAppendLog('error', 'Connection lost');
+      btn.disabled = false;
+      btn.textContent = 'Retry Install';
+      es.close();
+    };
+  } catch (err) {
+    dwAppendLog('error', err.message);
+    btn.disabled = false;
+    btn.textContent = 'Install DeepWiki';
+  }
+}
+
+function dwAppendLog(type, message) {
+  const logEl = $('#deepwiki-log');
+  if (!logEl) return;
+  const line = document.createElement('div');
+  line.className = `log-line log-${type}`;
+  const ts = new Date().toLocaleTimeString('en-US', { hour12: false });
+  line.innerHTML = `<span class="log-ts">${escHtml(ts)}</span><span class="log-msg">${escHtml(message)}</span>`;
+  logEl.appendChild(line);
+  logEl.scrollTop = logEl.scrollHeight;
 }
 
 function attachRecheckHandler() {

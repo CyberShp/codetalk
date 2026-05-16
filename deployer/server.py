@@ -161,6 +161,57 @@ async def api_deploy_stop():
     return {"ok": True, "message": "Deployment stopped"}
 
 
+@app.post("/api/deploy/supplement/deepwiki")
+async def api_supplement_deepwiki(body: dict):
+    """Install DeepWiki-Open as a supplementary service after native deployment."""
+    if _deploy_state["running"]:
+        raise HTTPException(status_code=409, detail="A deployment is already running")
+
+    deepwiki_path = body.get("deepwikiPath", "").strip()
+    if not deepwiki_path:
+        raise HTTPException(status_code=400, detail="deepwikiPath is required")
+
+    cfg = config_store.load_config()
+    cfg["deepwiki_path"] = deepwiki_path
+
+    event_queue: asyncio.Queue = asyncio.Queue()
+    deployer = NativeDeployer(cfg, event_queue)
+
+    _deploy_state.update({
+        "job_id": str(uuid.uuid4()),
+        "running": True,
+        "deployer": deployer,
+        "event_queue": event_queue,
+    })
+
+    loop = asyncio.get_event_loop()
+
+    def _run_in_thread():
+        future = asyncio.run_coroutine_threadsafe(_run_supplement(deployer, deepwiki_path, cfg), loop)
+        future.result()
+
+    thread = threading.Thread(target=_run_in_thread, daemon=True)
+    thread.start()
+
+    return {"job_id": _deploy_state["job_id"]}
+
+
+async def _run_supplement(deployer: NativeDeployer, deepwiki_path: str, cfg: dict) -> None:
+    try:
+        await deployer.supplement_deepwiki(deepwiki_path)
+        cfg["deepwiki_path"] = deepwiki_path
+        config_store.save_config(cfg)
+    except Exception as exc:
+        q = _deploy_state.get("event_queue")
+        if q is not None:
+            await q.put({"step": "deepwiki_install", "status": "error", "message": str(exc), "progress": {"current": 0, "total": 5}})
+    finally:
+        _deploy_state["running"] = False
+        q = _deploy_state.get("event_queue")
+        if q is not None:
+            await q.put(None)
+
+
 @app.get("/api/services/health")
 async def api_services_health():
     """Check health of all deployed services."""

@@ -904,6 +904,83 @@ input, select, textarea {
 }
 
 /* ============================================================
+   DeepWiki Supplement Install (Step 6)
+   ============================================================ */
+
+.supplement-section {
+  margin: 32px 0;
+}
+
+.supplement-card {
+  background: var(--bg-glass);
+  backdrop-filter: blur(var(--blur));
+  border: 1px solid var(--border);
+  border-radius: var(--radius-lg);
+  padding: 24px;
+}
+
+.supplement-header {
+  display: flex;
+  align-items: flex-start;
+  gap: 16px;
+  margin-bottom: 20px;
+}
+
+.supplement-icon {
+  width: 32px;
+  height: 32px;
+  flex-shrink: 0;
+  color: var(--accent);
+}
+
+.supplement-title {
+  font-size: 1rem;
+  font-weight: 700;
+  color: var(--text-primary);
+  margin: 0 0 4px;
+}
+
+.supplement-desc {
+  font-size: 0.85rem;
+  color: var(--text-muted);
+  margin: 0;
+}
+
+.supplement-input-row {
+  display: flex;
+  gap: 12px;
+  align-items: center;
+}
+
+.supplement-input-row .form-input {
+  flex: 1;
+}
+
+.supplement-success {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 12px 0 0;
+  color: var(--success);
+  font-weight: 600;
+  font-size: 0.9rem;
+}
+
+.check-icon-sm {
+  width: 20px;
+  height: 20px;
+  flex-shrink: 0;
+}
+
+.terminal-wrap-sm {
+  margin-top: 16px;
+}
+
+.terminal-wrap-sm .terminal-body {
+  max-height: 200px;
+}
+
+/* ============================================================
    Responsive
    ============================================================ */
 

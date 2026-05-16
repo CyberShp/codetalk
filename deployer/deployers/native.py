@@ -82,17 +82,129 @@ class NativeDeployer:
                 except Exception as exc:
                     results.append({"name": name, "healthy": False, "message": str(exc)})
 
-        deepwiki_path = self._config.get("deepwiki_path", "")
-        if deepwiki_path:
-            port = self._config.get("deepwiki_api_port", 8091)
-            try:
-                resp = await client.get(f"http://localhost:{port}/health")
-                healthy = resp.status_code < 500
-                results.append({"name": "deepwiki", "healthy": healthy, "message": f"HTTP {resp.status_code}"})
-            except Exception as exc:
-                results.append({"name": "deepwiki", "healthy": False, "message": str(exc)})
+            deepwiki_path = self._config.get("deepwiki_path", "")
+            if deepwiki_path:
+                port = self._config.get("deepwiki_api_port", 8091)
+                try:
+                    resp = await client.get(f"http://localhost:{port}/health")
+                    healthy = resp.status_code < 500
+                    results.append({"name": "deepwiki", "healthy": healthy, "message": f"HTTP {resp.status_code}"})
+                except Exception as exc:
+                    results.append({"name": "deepwiki", "healthy": False, "message": str(exc)})
 
         return results
+
+    # ------------------------------------------------------------------
+    # Supplementary: DeepWiki install
+    # ------------------------------------------------------------------
+
+    async def supplement_deepwiki(self, deepwiki_path: str) -> None:
+        dw_dir = Path(deepwiki_path)
+        total = 5
+
+        await self._emit_sup("deepwiki_validate", "running", "Validating DeepWiki-Open path...", 1, total)
+        if not dw_dir.exists():
+            await self._emit_sup("deepwiki_validate", "error", f"Path not found: {deepwiki_path}", 1, total)
+            raise RuntimeError(f"DeepWiki-Open path not found: {deepwiki_path}")
+
+        has_requirements = (dw_dir / "requirements.txt").exists()
+        has_package_json = (dw_dir / "package.json").exists()
+        if not has_requirements and not has_package_json:
+            await self._emit_sup("deepwiki_validate", "error", "Not a valid DeepWiki-Open directory (no requirements.txt or package.json)", 1, total)
+            raise RuntimeError("Not a valid DeepWiki-Open directory")
+        await self._emit_sup("deepwiki_validate", "done", "Path validated", 1, total)
+
+        if has_requirements:
+            await self._emit_sup("deepwiki_python", "running", "Installing Python dependencies...", 2, total)
+            venv_dir = dw_dir / ".venv"
+            if sys.platform == "win32":
+                venv_python = venv_dir / "Scripts" / "python.exe"
+                venv_pip = venv_dir / "Scripts" / "pip.exe"
+            else:
+                venv_python = venv_dir / "bin" / "python"
+                venv_pip = venv_dir / "bin" / "pip"
+
+            if not venv_python.exists():
+                await self._emit_sup("deepwiki_python", "running", "Creating venv...", 2, total)
+                rc = await self._run_stream("deepwiki_python", 2, "python", "-m", "venv", str(venv_dir))
+                if rc != 0:
+                    await self._emit_sup("deepwiki_python", "error", "Failed to create venv", 2, total)
+                    raise RuntimeError("DeepWiki venv creation failed")
+
+            rc = await self._run_stream("deepwiki_python", 2, str(venv_pip), "install", "-r", str(dw_dir / "requirements.txt"))
+            if rc != 0:
+                await self._emit_sup("deepwiki_python", "error", "pip install failed", 2, total)
+                raise RuntimeError("DeepWiki pip install failed")
+            await self._emit_sup("deepwiki_python", "done", "Python dependencies installed", 2, total)
+        else:
+            await self._emit_sup("deepwiki_python", "done", "No Python dependencies needed", 2, total)
+
+        if has_package_json and not (dw_dir / "node_modules").exists():
+            await self._emit_sup("deepwiki_node", "running", "Installing Node dependencies...", 3, total)
+            npm_cmd = "npm.cmd" if sys.platform == "win32" else "npm"
+            rc = await self._run_stream("deepwiki_node", 3, npm_cmd, "install", cwd=str(dw_dir))
+            if rc != 0:
+                await self._emit_sup("deepwiki_node", "error", "npm install failed", 3, total)
+                raise RuntimeError("DeepWiki npm install failed")
+            await self._emit_sup("deepwiki_node", "done", "Node dependencies installed", 3, total)
+        else:
+            await self._emit_sup("deepwiki_node", "done", "Node dependencies already present", 3, total)
+
+        await self._emit_sup("deepwiki_start", "running", "Starting DeepWiki services...", 4, total)
+        api_port = self._config_port("deepwiki_api_port", 8091)
+        ui_port = self._config_port("deepwiki_ui_port", 3001)
+
+        if has_requirements:
+            venv_dir = dw_dir / ".venv"
+            venv_python = (venv_dir / "Scripts" / "python.exe") if sys.platform == "win32" else (venv_dir / "bin" / "python")
+            api_cwd = str(dw_dir / "api") if (dw_dir / "api").exists() else str(dw_dir)
+            await self._start_process(
+                "deepwiki-api",
+                [str(venv_python), "-m", "uvicorn", "main:app", "--host", "0.0.0.0", "--port", str(api_port)],
+                cwd=api_cwd,
+                step_name="deepwiki_start",
+                step_index=4,
+            )
+
+        if has_package_json:
+            npm_cmd = "npm.cmd" if sys.platform == "win32" else "npm"
+            await self._start_process(
+                "deepwiki-ui",
+                [npm_cmd, "run", "start"],
+                cwd=str(dw_dir),
+                step_name="deepwiki_start",
+                step_index=4,
+                env_extra={"PORT": str(ui_port)},
+            )
+
+        await self._emit_sup("deepwiki_start", "done", "DeepWiki services started", 4, total)
+
+        self._config["deepwiki_path"] = deepwiki_path
+        self._config["deepwiki_api_port"] = api_port
+        self._config["deepwiki_ui_port"] = ui_port
+        await self._step_generate_config()
+
+        await self._emit_sup("deepwiki_health", "running", "Checking DeepWiki health...", 5, total)
+        await asyncio.sleep(5)
+
+        import httpx
+        try:
+            async with httpx.AsyncClient(timeout=5, trust_env=False) as client:
+                resp = await client.get(f"http://localhost:{api_port}/health")
+                if resp.status_code < 500:
+                    await self._emit_sup("deepwiki_health", "done", f"DeepWiki healthy (API:{api_port} UI:{ui_port})", 5, total)
+                else:
+                    await self._emit_sup("deepwiki_health", "done", f"DeepWiki started — health returned HTTP {resp.status_code}", 5, total)
+        except Exception:
+            await self._emit_sup("deepwiki_health", "done", f"DeepWiki started (API:{api_port} UI:{ui_port}) — health check pending", 5, total)
+
+    async def _emit_sup(self, step: str, status: str, message: str, current: int, total: int) -> None:
+        await self._queue.put({
+            "step": step,
+            "status": status,
+            "message": message,
+            "progress": {"current": current, "total": total},
+        })
 
     # ------------------------------------------------------------------
     # Step 1: Check environment
