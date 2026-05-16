@@ -137,6 +137,8 @@ export default function ToolsPage() {
                       className={`w-3 h-3 rounded-full ${
                         tool.healthy ? "bg-green-400" : "bg-red-400"
                       }`}
+                      role="status"
+                      aria-label={tool.healthy ? "运行正常" : "服务异常"}
                     />
                     <div>
                       <h3 className="text-base font-medium text-on-surface">

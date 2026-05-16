@@ -32,6 +32,9 @@ class Settings(BaseSettings):
     # Analysis tuning
     analysis_concurrency: int = 3    # max parallel module analyses
     deepwiki_timeout: int = 1800     # wiki generation timeout in seconds
+    health_check_timeout: int = 5    # seconds for tool health probes
+    gitnexus_poll_timeout: int = 600 # max seconds to wait for GitNexus indexing
+    coverage_max_upload_mb: int = 100 # max single file size for coverage upload
 
     # CORS — comma-separated origins allowed to call the API
     cors_origins: str = "http://localhost:3005,http://127.0.0.1:3005"

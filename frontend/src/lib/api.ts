@@ -59,29 +59,52 @@ function friendlyErrorMessage(status: number, detail: string): string {
   return detail ? `${friendly}\n[详情] ${detail}` : friendly;
 }
 
+const MAX_RETRIES = 2;
+const RETRY_DELAYS = [1000, 2000];
+
+function isRetryable(status: number): boolean {
+  return status >= 500 && status <= 599;
+}
+
 async function request<T>(path: string, init?: RequestInit): Promise<T> {
-  let res: Response;
-  try {
-    res = await fetch(`${BASE}${path}`, {
-      credentials: "include",
-      headers: { "Content-Type": "application/json", ...init?.headers },
-      ...init,
-    });
-  } catch {
-    throw new Error("网络连接失败，请检查后端服务是否运行");
+  let lastError: Error | null = null;
+
+  for (let attempt = 0; attempt <= MAX_RETRIES; attempt++) {
+    let res: Response;
+    try {
+      res = await fetch(`${BASE}${path}`, {
+        credentials: "include",
+        headers: { "Content-Type": "application/json", ...init?.headers },
+        ...init,
+      });
+    } catch {
+      lastError = new Error("网络连接失败，请检查后端服务是否运行");
+      if (attempt < MAX_RETRIES) {
+        await new Promise((r) => setTimeout(r, RETRY_DELAYS[attempt]));
+        continue;
+      }
+      throw lastError;
+    }
+
+    if (!res.ok) {
+      const body = await res.text().catch(() => "");
+      const detail = extractErrorMessage(body);
+      lastError = new Error(friendlyErrorMessage(res.status, detail));
+      if (isRetryable(res.status) && attempt < MAX_RETRIES) {
+        await new Promise((r) => setTimeout(r, RETRY_DELAYS[attempt]));
+        continue;
+      }
+      throw lastError;
+    }
+
+    if (res.status === 204) {
+      return undefined as T;
+    }
+
+    return res.json();
   }
 
-  if (!res.ok) {
-    const body = await res.text().catch(() => "");
-    const detail = extractErrorMessage(body);
-    throw new Error(friendlyErrorMessage(res.status, detail));
-  }
-
-  if (res.status === 204) {
-    return undefined as T;
-  }
-
-  return res.json();
+  throw lastError ?? new Error("请求失败");
 }
 
 export const api = {

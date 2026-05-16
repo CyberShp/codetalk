@@ -89,7 +89,7 @@ export default function TaskDetailPage() {
   }, [taskId, loadTask]);
 
   const handleDelete = useCallback(async () => {
-    if (!taskId || !confirm("确定要删除此任务吗？")) return;
+    if (!taskId || !confirm(`确定要删除任务「${task?.name ?? taskId}」吗？此操作不可撤销。`)) return;
     setDeleting(true);
     try {
       await api.tasks.delete(taskId);

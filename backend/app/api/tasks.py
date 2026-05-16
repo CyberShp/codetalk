@@ -20,9 +20,9 @@ logger = logging.getLogger(__name__)
 # --- Schemas ---
 
 class TaskCreate(BaseModel):
-    name: str
-    repo_path: str
-    tools: list[str] = ["gitnexus", "deepwiki"]
+    name: str = Field(min_length=1, max_length=200)
+    repo_path: str = Field(min_length=1, max_length=1000)
+    tools: list[str] = Field(default=["gitnexus", "deepwiki"], max_length=10)
     requirements_doc: str | None = None
     design_doc: str | None = None
     analysis_focus: str = Field(min_length=1, max_length=4_000)
@@ -74,6 +74,7 @@ async def create_task(data: TaskCreate, db: aiosqlite.Connection = Depends(get_d
          data.analysis_focus, data.prompt_content, now, now),
     )
     await db.commit()
+    logger.info("Task created: id=%s, name=%s", task_id, data.name)
 
     async with db.execute("SELECT * FROM tasks WHERE id = ?", (task_id,)) as cur:
         row = await cur.fetchone()
@@ -103,6 +104,7 @@ async def delete_task(task_id: str, db: aiosqlite.Connection = Depends(get_db)):
             raise HTTPException(status_code=404, detail="任务不存在")
     await db.execute("DELETE FROM tasks WHERE id = ?", (task_id,))
     await db.commit()
+    logger.info("Task deleted: id=%s", task_id)
 
 
 # --- Sprint 3: Pipeline execution endpoints ---
@@ -127,7 +129,7 @@ async def run_task(
     tools = json.loads(task.get("tools") or "[]")
     if "gitnexus" in tools:
         try:
-            async with httpx.AsyncClient(timeout=httpx.Timeout(5)) as hc_client:
+            async with httpx.AsyncClient(timeout=httpx.Timeout(settings.health_check_timeout)) as hc_client:
                 hc_resp = await hc_client.get(f"{settings.gitnexus_base_url}/api/health")
                 hc_resp.raise_for_status()
         except Exception as exc:
@@ -167,10 +169,12 @@ async def list_output_files(task_id: str, db: aiosqlite.Connection = Depends(get
         return []
 
     files: list[dict] = []
-    for f in sorted(output_dir.iterdir()):
-        if f.is_file():
-            files.append({"filename": f.name, "size": f.stat().st_size})
-
+    try:
+        for f in sorted(output_dir.iterdir()):
+            if f.is_file():
+                files.append({"filename": f.name, "size": f.stat().st_size})
+    except OSError:
+        logger.exception("Failed to list output dir: %s", output_dir)
     return files
 
 
@@ -197,7 +201,7 @@ async def read_output_file(
     if not filepath.exists():
         raise HTTPException(status_code=404, detail=f"文件不存在: {filename}")
 
-    content = filepath.read_text(encoding="utf-8")
+    content = await asyncio.to_thread(filepath.read_text, "utf-8")
     return {"filename": filename, "content": content}
 
 
@@ -213,9 +217,12 @@ async def list_debug_files(task_id: str, db: aiosqlite.Connection = Depends(get_
         return []
 
     files: list[dict] = []
-    for f in sorted(debug_dir.iterdir()):
-        if f.is_file():
-            files.append({"filename": f.name, "size": f.stat().st_size})
+    try:
+        for f in sorted(debug_dir.iterdir()):
+            if f.is_file():
+                files.append({"filename": f.name, "size": f.stat().st_size})
+    except OSError:
+        logger.exception("Failed to list debug dir: %s", debug_dir)
     return files
 
 
@@ -241,5 +248,5 @@ async def read_debug_file(
     if not filepath.exists():
         raise HTTPException(status_code=404, detail=f"文件不存在: {filename}")
 
-    content = filepath.read_text(encoding="utf-8")
+    content = await asyncio.to_thread(filepath.read_text, "utf-8")
     return {"filename": filename, "content": content}

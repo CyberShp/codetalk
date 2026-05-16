@@ -133,6 +133,9 @@ export default function NewTaskPage() {
         const text = e.target?.result;
         if (typeof text === "string") setter(text);
       };
+      reader.onerror = () => {
+        setError(`文件「${file.name}」读取失败，请重试`);
+      };
       reader.readAsText(file);
     },
     [],

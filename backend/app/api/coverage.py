@@ -46,6 +46,8 @@ async def upload_coverage(
     if not files:
         raise HTTPException(status_code=400, detail="请至少上传一个覆盖率文件")
 
+    max_bytes = settings.coverage_max_upload_mb * 1024 * 1024
+
     parsed_files: list[tuple[str, str]] = []
     for f in files:
         if not f.filename:
@@ -57,6 +59,11 @@ async def upload_coverage(
                 detail=f"不支持的文件格式: {f.filename}（仅支持 XML、HTML）",
             )
         content = await f.read()
+        if len(content) > max_bytes:
+            raise HTTPException(
+                status_code=400,
+                detail=f"文件 {f.filename} 超过 {settings.coverage_max_upload_mb}MB 限制",
+            )
         parsed_files.append((f.filename, content.decode("utf-8", errors="replace")))
 
     if not parsed_files:
@@ -69,6 +76,7 @@ async def upload_coverage(
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc))
 
+    logger.info("Coverage uploaded: id=%s, files=%d", analysis_id, len(parsed_files))
     return await _get_analysis(analysis_id)
 
 

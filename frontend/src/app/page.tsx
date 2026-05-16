@@ -91,7 +91,8 @@ export default function DashboardPage() {
     async (e: React.MouseEvent, id: string) => {
       e.preventDefault();
       e.stopPropagation();
-      if (!confirm("确定要删除此任务吗？")) return;
+      const target = tasks.find((t) => t.id === id);
+      if (!confirm(`确定要删除任务「${target?.name ?? id}」吗？此操作不可撤销。`)) return;
       try {
         await api.tasks.delete(id);
         await loadData();
