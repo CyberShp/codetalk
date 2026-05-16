@@ -6,6 +6,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 import aiosqlite
+import httpx
 from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException
 from pydantic import BaseModel, Field
 
@@ -121,6 +122,20 @@ async def run_task(
     task = dict(row)
     if task["status"] == "running":
         raise HTTPException(status_code=409, detail="任务正在运行中")
+
+    # Health check: verify GitNexus is reachable before starting pipeline
+    tools = json.loads(task.get("tools") or "[]")
+    if "gitnexus" in tools:
+        try:
+            async with httpx.AsyncClient(timeout=httpx.Timeout(5)) as hc_client:
+                hc_resp = await hc_client.get(f"{settings.gitnexus_base_url}/api/health")
+                hc_resp.raise_for_status()
+        except Exception as exc:
+            logger.warning("GitNexus health check failed: %s", exc)
+            raise HTTPException(
+                status_code=503,
+                detail="GitNexus service is not available",
+            )
 
     # Reset status
     now = datetime.now(timezone.utc).isoformat()

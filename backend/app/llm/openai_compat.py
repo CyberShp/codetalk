@@ -8,7 +8,7 @@ import logging
 
 import httpx
 
-from app.llm.base import BaseLLMClient, LLMResponse
+from app.llm.base import BaseLLMClient, LLMResponse, async_retry
 
 logger = logging.getLogger(__name__)
 
@@ -57,6 +57,18 @@ class OpenAICompatClient(BaseLLMClient):
         max_tokens: int = 4096,
         temperature: float = 0.3,
     ) -> LLMResponse:
+        return await async_retry(
+            self._do_complete, messages, max_tokens, temperature,
+            max_retries=3,
+        )
+
+    async def _do_complete(
+        self,
+        messages: list[dict],
+        max_tokens: int,
+        temperature: float,
+    ) -> LLMResponse:
+        """Execute a single OpenAI-compatible chat completion (called via retry)."""
         headers = {
             "Authorization": f"Bearer {self._api_key}",
             "Content-Type": "application/json",
@@ -80,7 +92,21 @@ class OpenAICompatClient(BaseLLMClient):
         data = resp.json()
 
         choices = data.get("choices", [])
+        finish_reasons = [c.get("finish_reason", "unknown") for c in choices]
+        logger.debug("OpenAI-compat response: %d choices, finish_reasons=%s", len(choices), finish_reasons)
+
         content = choices[0]["message"]["content"] if choices else ""
+
+        if not content or len(content.strip()) < 10:
+            logger.warning(
+                "OpenAI-compat returned empty/too-short content (len=%d, model=%s)",
+                len(content),
+                self._model,
+            )
+            raise ValueError(
+                f"LLM returned empty or too-short response "
+                f"(len={len(content.strip())}, model={self._model})"
+            )
 
         raw_usage = data.get("usage", {})
         usage = {

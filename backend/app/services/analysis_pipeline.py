@@ -42,6 +42,7 @@ class AnalysisPipeline:
         self._analysis_focus: str = ""
         self._prompt_content: str = ""
         self._task_id: str = ""
+        self._data_quality: str = "good"  # "good" | "degraded" | "poor"
 
     # ------------------------------------------------------------------
     # Public entry point
@@ -98,14 +99,21 @@ class AnalysisPipeline:
 
                 # Phase 4: Cross-enhancement (optional, best-effort)
                 await self._phase_cross_enhance()
+
+                # Honour status override from report generator
+                if generator.status_override:
+                    final_status = generator.status_override
+                else:
+                    final_status = "completed"
             else:
                 logger.warning("No LLM client available, skipping AI phases")
                 output_dir = settings.outputs_path / task_id
                 output_dir.mkdir(parents=True, exist_ok=True)
                 await self._save_raw_data(output_dir)
+                final_status = "completed"
 
-            await self._update_progress(task_id, 100, "completed", None)
-            logger.info("Pipeline completed for task %s", task_id)
+            await self._update_progress(task_id, 100, final_status, None)
+            logger.info("Pipeline completed for task %s (status=%s)", task_id, final_status)
 
         except Exception as exc:
             logger.exception("Pipeline failed for task %s", task_id)
@@ -151,7 +159,31 @@ class AnalysisPipeline:
             results = await asyncio.gather(*coros, return_exceptions=True)
             for result in results:
                 if isinstance(result, Exception):
-                    logger.error("Data collection error: %s", result)
+                    logger.exception("Data collection error: %s", result)
+
+        # Validate data quality after collection
+        has_gitnexus = bool(self._gitnexus_data and self._gitnexus_data.get("nodes"))
+        has_deepwiki = bool(self._deepwiki_data and self._deepwiki_data.get("documentation"))
+
+        if not has_gitnexus and not has_deepwiki:
+            self._data_quality = "poor"
+            logger.warning("Data quality: poor -- both GitNexus and DeepWiki data missing")
+            await self._update_progress(
+                self._task_id, 35, "running",
+                "WARNING: GitNexus and DeepWiki data missing; analysis will be limited",
+            )
+        elif not has_gitnexus:
+            self._data_quality = "degraded"
+            logger.warning("Data quality: degraded -- GitNexus data missing, continuing with DeepWiki only")
+            await self._update_progress(
+                self._task_id, 35, "running",
+                "WARNING: GitNexus data unavailable; continuing in degraded mode",
+            )
+        elif not has_deepwiki:
+            self._data_quality = "degraded"
+            logger.warning("Data quality: degraded -- DeepWiki data missing, continuing with GitNexus only")
+        else:
+            self._data_quality = "good"
 
     async def _collect_gitnexus(self, repo_path: str) -> None:
         """Call GitNexus to get the knowledge graph."""
@@ -249,13 +281,26 @@ class AnalysisPipeline:
             communities = [self._build_single_module()]
 
         sem = asyncio.Semaphore(3)
+        data_quality_note = ""
+        if self._data_quality == "poor":
+            data_quality_note = (
+                "\n\n> **Note**: Data quality is poor -- both GitNexus and DeepWiki "
+                "data were unavailable.  Analysis is based on limited information.\n"
+            )
+        elif self._data_quality == "degraded":
+            data_quality_note = (
+                "\n\n> **Note**: Data quality is degraded -- some data sources were "
+                "unavailable.  Analysis may be incomplete.\n"
+            )
 
         async def analyze_one(community: dict) -> dict:
             async with sem:
                 try:
                     summary = await self._analyze_module(llm_client, community)
+                    if data_quality_note:
+                        summary += data_quality_note
                 except Exception as exc:
-                    logger.error(
+                    logger.exception(
                         "Module analysis failed for %s: %s",
                         community["name"],
                         exc,

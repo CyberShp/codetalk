@@ -206,7 +206,7 @@ export default function SettingsPage() {
       </p>
 
       {error && (
-        <div className="mb-6 px-4 py-3 bg-red-500/10 border border-red-500/20 rounded-lg text-sm text-red-400">
+        <div id="settings-error" role="alert" className="mb-6 px-4 py-3 bg-red-500/10 border border-red-500/20 rounded-lg text-sm text-red-400">
           {error}
         </div>
       )}
@@ -239,6 +239,7 @@ export default function SettingsPage() {
         {showForm && (
           <form
             onSubmit={handleSaveLLM}
+            aria-describedby={error ? "settings-error" : undefined}
             className="bg-surface-container rounded-xl border border-outline-variant/20 p-5 mb-4 space-y-4"
           >
             <div className="grid grid-cols-2 gap-4">
@@ -299,6 +300,7 @@ export default function SettingsPage() {
                 <button
                   type="button"
                   onClick={() => setShowApiKey(!showApiKey)}
+                  aria-label={showApiKey ? "隐藏 API 密钥" : "显示 API 密钥"}
                   className="absolute right-2 top-1/2 -translate-y-1/2 p-1 text-on-surface-variant hover:text-on-surface"
                 >
                   {showApiKey ? <EyeOff size={14} /> : <Eye size={14} />}
@@ -573,31 +575,6 @@ export default function SettingsPage() {
                 placeholder="/path/to/cert.pem"
                 className="w-full px-3 py-2 bg-surface border border-outline-variant/30 rounded-lg text-sm text-on-surface placeholder:text-on-surface-variant/50 focus:outline-none focus:border-primary/50 transition-colors font-data"
               />
-            </div>
-
-            <div>
-              <label className="block text-xs font-medium text-on-surface-variant mb-1">
-                活跃聊天模型
-              </label>
-              <select
-                value={general.active_chat_model_id}
-                onChange={(e) =>
-                  setGeneral((prev) => ({
-                    ...prev,
-                    active_chat_model_id: e.target.value,
-                  }))
-                }
-                className="w-full px-3 py-2 bg-surface border border-outline-variant/30 rounded-lg text-sm text-on-surface focus:outline-none focus:border-primary/50 transition-colors"
-              >
-                <option value="">请选择活跃的聊天模型</option>
-                {configs
-                  .filter((c) => c.is_chat_model)
-                  .map((c) => (
-                    <option key={c.id} value={c.id}>
-                      {c.name} ({c.model})
-                    </option>
-                  ))}
-              </select>
             </div>
 
             <div className="pt-1">

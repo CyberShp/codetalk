@@ -4,7 +4,7 @@ import logging
 
 import httpx
 
-from app.llm.base import BaseLLMClient, LLMResponse
+from app.llm.base import BaseLLMClient, LLMResponse, async_retry
 
 logger = logging.getLogger(__name__)
 
@@ -55,6 +55,18 @@ class AnthropicClient(BaseLLMClient):
         max_tokens: int = 4096,
         temperature: float = 0.3,
     ) -> LLMResponse:
+        return await async_retry(
+            self._do_complete, messages, max_tokens, temperature,
+            max_retries=3,
+        )
+
+    async def _do_complete(
+        self,
+        messages: list[dict],
+        max_tokens: int,
+        temperature: float,
+    ) -> LLMResponse:
+        """Execute a single Anthropic Messages API call (called via retry)."""
         headers = {
             "x-api-key": self._api_key,
             "Authorization": f"Bearer {self._api_key}",
@@ -75,10 +87,24 @@ class AnthropicClient(BaseLLMClient):
         resp.raise_for_status()
         data = resp.json()
 
+        block_types = [block.get("type", "unknown") for block in data.get("content", [])]
+        logger.debug("Anthropic response block types: %s", block_types)
+
         content = ""
         for block in data.get("content", []):
             if block.get("type") == "text":
                 content += block["text"]
+
+        if not content or len(content.strip()) < 10:
+            logger.warning(
+                "Anthropic returned empty/too-short content (len=%d, model=%s)",
+                len(content),
+                self._model,
+            )
+            raise ValueError(
+                f"LLM returned empty or too-short response "
+                f"(len={len(content.strip())}, model={self._model})"
+            )
 
         raw_usage = data.get("usage", {})
         usage = {

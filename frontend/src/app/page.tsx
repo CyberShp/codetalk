@@ -124,6 +124,7 @@ export default function DashboardPage() {
         <div className="flex items-center gap-3">
           <button
             onClick={loadData}
+            aria-label="刷新数据"
             className="flex items-center gap-2 px-3 py-2 text-sm text-on-surface-variant hover:text-on-surface bg-surface-container rounded-lg transition-colors"
           >
             <RefreshCw size={14} />
@@ -211,7 +212,7 @@ export default function DashboardPage() {
         </h2>
 
         {loading ? (
-          <div className="flex items-center justify-center py-16 text-on-surface-variant">
+          <div role="status" aria-live="polite" className="flex items-center justify-center py-16 text-on-surface-variant">
             <Loader2 size={20} className="animate-spin mr-2" />
             加载中...
           </div>
@@ -238,6 +239,7 @@ export default function DashboardPage() {
                   key={task.id}
                   role="link"
                   tabIndex={0}
+                  aria-label={`任务: ${task.name}, 状态: ${cfg.label}`}
                   className="flex items-center gap-4 bg-surface-container hover:bg-surface-container-high rounded-xl px-5 py-4 border border-outline-variant/20 transition-colors group cursor-pointer focus:outline-none focus:ring-2 focus:ring-primary/50"
                   onClick={() => router.push(`/tasks/${task.id}`)}
                   onKeyDown={(e) => {
@@ -280,6 +282,7 @@ export default function DashboardPage() {
                     </span>
                     <button
                       onClick={(e) => handleDeleteTask(e, task.id)}
+                      aria-label={`删除任务: ${task.name}`}
                       className="p-1.5 rounded-lg text-on-surface-variant/40 hover:text-red-400 hover:bg-red-400/10 transition-colors opacity-0 group-hover:opacity-100"
                       title="删除任务"
                     >

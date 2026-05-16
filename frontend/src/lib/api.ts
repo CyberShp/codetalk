@@ -39,16 +39,39 @@ function extractErrorMessage(body: string): string {
   return firstLine ?? text;
 }
 
+const HTTP_STATUS_MESSAGES: Record<number, string> = {
+  400: "请求参数有误，请检查输入",
+  401: "认证失败，请检查 API Key 设置",
+  403: "认证失败，请检查 API Key 设置",
+  404: "请求的资源不存在",
+  409: "操作冲突，请稍后重试",
+  429: "请求过于频繁，请稍后重试",
+  500: "服务器内部错误，请稍后重试",
+  502: "服务暂时不可用，请检查后端服务是否启动",
+  503: "服务暂时不可用，请检查后端服务是否启动",
+};
+
+function friendlyErrorMessage(status: number, detail: string): string {
+  const friendly = HTTP_STATUS_MESSAGES[status] ?? `请求失败 (${status})`;
+  return detail ? `${friendly}\n[详情] ${detail}` : friendly;
+}
+
 async function request<T>(path: string, init?: RequestInit): Promise<T> {
-  const res = await fetch(`${BASE}${path}`, {
-    credentials: "include",
-    headers: { "Content-Type": "application/json", ...init?.headers },
-    ...init,
-  });
+  let res: Response;
+  try {
+    res = await fetch(`${BASE}${path}`, {
+      credentials: "include",
+      headers: { "Content-Type": "application/json", ...init?.headers },
+      ...init,
+    });
+  } catch {
+    throw new Error("网络连接失败，请检查后端服务是否运行");
+  }
 
   if (!res.ok) {
     const body = await res.text().catch(() => "");
-    throw new Error(`API ${res.status}: ${extractErrorMessage(body)}`);
+    const detail = extractErrorMessage(body);
+    throw new Error(friendlyErrorMessage(res.status, detail));
   }
 
   if (res.status === 204) {

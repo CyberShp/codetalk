@@ -42,10 +42,16 @@ class ReportGenerator:
         self._task_id = task_id
         self._debug_callback = debug_callback
         self._generated_files: list[str] = []
+        self._status_override: str | None = None
 
     @property
     def generated_files(self) -> list[str]:
         return list(self._generated_files)
+
+    @property
+    def status_override(self) -> str | None:
+        """Non-None when report generation decided to alter the final task status."""
+        return self._status_override
 
     async def generate_all(
         self,
@@ -58,6 +64,15 @@ class ReportGenerator:
         prompt_content: str = "",
     ) -> list[str]:
         """Generate all applicable reports and return list of filenames."""
+        if not module_summaries:
+            logger.warning(
+                "No module summaries available for task %s -- "
+                "skipping report generation (completed_with_warnings)",
+                self._task_id,
+            )
+            self._status_override = "completed_with_warnings"
+            return self._generated_files
+
         summaries_text = self._format_summaries(module_summaries)
 
         content_prefix = ""
@@ -177,7 +192,7 @@ class ReportGenerator:
             )
 
         except Exception as exc:
-            logger.error("Report generation failed for %s: %s", report_type, exc)
+            logger.exception("Report generation failed for %s: %s", report_type, exc)
 
     # ------------------------------------------------------------------
     # Context builders -- extract relevant data for each prompt

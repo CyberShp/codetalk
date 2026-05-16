@@ -9,6 +9,7 @@ import {
   Loader2,
 } from "lucide-react";
 import { api } from "@/lib/api";
+import type { TaskStatus } from "@/lib/types";
 import MarkdownRenderer from "@/components/ui/MarkdownRenderer";
 
 export default function ReportPage() {
@@ -19,12 +20,15 @@ export default function ReportPage() {
   const [activeTab, setActiveTab] = useState<string>("");
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
+  const [taskStatus, setTaskStatus] = useState<TaskStatus | null>(null);
 
   const loadOutputs = useCallback(async () => {
     if (!taskId) return;
     setLoading(true);
     setError(null);
     try {
+      const task = await api.tasks.get(taskId);
+      setTaskStatus(task.status);
       const files = await api.tasks.output(taskId);
       const entries = await Promise.all(
         files.map((f) => api.tasks.outputFile(taskId, f.filename)),
@@ -136,7 +140,23 @@ export default function ReportPage() {
 
       {tabKeys.length === 0 ? (
         <div className="text-center py-16 bg-surface-container rounded-xl border border-outline-variant/20">
-          <p className="text-on-surface-variant">暂无报告数据</p>
+          <p className="text-on-surface-variant mb-2">暂无报告数据</p>
+          <p className="text-sm text-on-surface-variant/70 mb-4">
+            {taskStatus === "running"
+              ? "分析任务正在进行中，报告将在完成后自动显示"
+              : taskStatus === "failed"
+                ? "分析任务执行失败，请查看任务详情了解原因"
+                : taskStatus === "completed"
+                  ? "分析已完成但未生成报告，可能是因为数据不足"
+                  : "任务尚未开始运行"}
+          </p>
+          <Link
+            href={`/tasks/${taskId}`}
+            className="inline-flex items-center gap-2 text-sm text-primary hover:underline"
+          >
+            <ArrowLeft size={14} />
+            返回任务详情
+          </Link>
         </div>
       ) : (
         <div className="bg-surface-container rounded-xl border border-outline-variant/20 p-6">
