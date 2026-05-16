@@ -110,3 +110,37 @@ export interface ToolInfo {
 }
 
 export type ExportFormat = "md" | "docx" | "xml";
+
+/* ── Coverage analysis types ── */
+
+export type CoverageStatus = "parsed" | "analyzing" | "analyzed";
+
+export interface CoverageAnalysis {
+  id: string;
+  name: string;
+  source_type: string;
+  status: CoverageStatus;
+  overall_line_rate: number;
+  overall_branch_rate: number;
+  overall_function_rate: number;
+  module_count: number;
+  source_format: string;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface CoverageDetail extends CoverageAnalysis {
+  modules_json: string | null;
+  analysis_results_json: string | null;
+}
+
+export interface CoverageModuleResult {
+  module_path: string;
+  line_rate: number;
+  branch_rate: number;
+  function_rate: number;
+  analysis?: string;
+  error?: string;
+  uncovered_function_count?: number;
+  uncovered_branch_count?: number;
+}

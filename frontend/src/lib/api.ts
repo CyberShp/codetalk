@@ -9,6 +9,9 @@ import type {
   PromptTemplate,
   PromptTemplateCreate,
   PromptTemplateUpdate,
+  CoverageAnalysis,
+  CoverageDetail,
+  CoverageModuleResult,
 } from "./types";
 
 const BASE =
@@ -180,5 +183,44 @@ export const api = {
         `/api/tools/${name}/restart`,
         { method: "POST" },
       ),
+  },
+
+  // ── 覆盖率分析 ──
+  coverage: {
+    list: () => request<CoverageAnalysis[]>("/api/coverage/list"),
+
+    get: (id: string) => request<CoverageDetail>(`/api/coverage/${id}`),
+
+    upload: async (files: File[], name?: string): Promise<CoverageAnalysis> => {
+      const formData = new FormData();
+      for (const f of files) {
+        formData.append("files", f);
+      }
+      if (name) {
+        formData.append("name", name);
+      }
+      const res = await fetch(`${BASE}/api/coverage/upload`, {
+        method: "POST",
+        credentials: "include",
+        body: formData,
+      });
+      if (!res.ok) {
+        const body = await res.text().catch(() => "");
+        const detail = extractErrorMessage(body);
+        throw new Error(friendlyErrorMessage(res.status, detail));
+      }
+      return res.json();
+    },
+
+    analyze: (id: string) =>
+      request<{
+        analysis_id: string;
+        status: string;
+        module_results: number;
+        results: CoverageModuleResult[];
+      }>(`/api/coverage/${id}/analyze`, { method: "POST" }),
+
+    delete: (id: string) =>
+      request<void>(`/api/coverage/${id}`, { method: "DELETE" }),
   },
 };

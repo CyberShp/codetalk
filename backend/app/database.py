@@ -47,6 +47,22 @@ CREATE TABLE IF NOT EXISTS settings (
     key TEXT PRIMARY KEY,
     value TEXT NOT NULL
 );
+
+CREATE TABLE IF NOT EXISTS coverage_analyses (
+    id TEXT PRIMARY KEY,
+    name TEXT NOT NULL,
+    source_type TEXT DEFAULT 'upload',
+    status TEXT DEFAULT 'parsed',
+    overall_line_rate REAL DEFAULT 0,
+    overall_branch_rate REAL DEFAULT 0,
+    overall_function_rate REAL DEFAULT 0,
+    module_count INTEGER DEFAULT 0,
+    modules_json TEXT,
+    analysis_results_json TEXT,
+    source_format TEXT DEFAULT 'unknown',
+    created_at TEXT,
+    updated_at TEXT
+);
 """
 
 _MIGRATIONS = [
