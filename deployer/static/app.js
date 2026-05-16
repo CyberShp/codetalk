@@ -465,8 +465,18 @@ function handleDeployEvent(evt) {
   if (status === 'error') showDeployError(message || 'An error occurred during deployment');
 }
 
+const STEP_NAMES = {
+  check_env: 'Checking prerequisites',
+  install_backend: 'Installing backend',
+  install_frontend: 'Installing frontend',
+  install_gitnexus: 'Installing GitNexus',
+  generate_config: 'Generating config',
+  start_services: 'Starting services',
+  health_check: 'Health check',
+};
+
 function formatStepName(step) {
-  return step.replace(/[-_]/g, ' ').replace(/\b\w/g, c => c.toUpperCase());
+  return STEP_NAMES[step] || step.replace(/[-_]/g, ' ').replace(/\b\w/g, c => c.toUpperCase());
 }
 
 function setProgress(current, total) {
@@ -481,12 +491,13 @@ function setProgress(current, total) {
 
 function appendLog(type, message) {
   const log  = $('#terminal-log');
+  const nearBottom = log.scrollHeight - log.scrollTop - log.clientHeight < 50;
   const line = document.createElement('div');
   line.className = `log-line log-${type}`;
   const ts = new Date().toLocaleTimeString('en-US', { hour12: false });
   line.innerHTML = `<span class="log-ts">${escHtml(ts)}</span><span class="log-msg">${escHtml(message)}</span>`;
   log.appendChild(line);
-  log.scrollTop = log.scrollHeight;
+  if (nearBottom) log.scrollTop = log.scrollHeight;
 }
 
 function updateServicePill(stepName, status) {
@@ -520,11 +531,12 @@ function updateServiceUrls() {
   const cfg = state.config;
   const mode = state.selectedMode;
 
+  const deepwikiInstalled = $('#deepwiki-success') && $('#deepwiki-success').style.display !== 'none';
   const NATIVE_URLS = {
     frontend:    'http://localhost:' + (cfg.portFrontend  || '3005'),
     backend:     'http://localhost:' + (cfg.portBackend   || '8100'),
     gitnexus:    'http://localhost:' + (cfg.portGitnexus  || '7100'),
-    deepwiki:    null,
+    deepwiki:    deepwikiInstalled ? 'http://localhost:' + (cfg.portDeepwiki || '8091') : null,
     codecompass: null,
     joern:       null,
     zoekt:       null,
@@ -772,12 +784,13 @@ async function startDeepWikiInstall() {
 function dwAppendLog(type, message) {
   const logEl = $('#deepwiki-log');
   if (!logEl) return;
+  const nearBottom = logEl.scrollHeight - logEl.scrollTop - logEl.clientHeight < 50;
   const line = document.createElement('div');
   line.className = `log-line log-${type}`;
   const ts = new Date().toLocaleTimeString('en-US', { hour12: false });
   line.innerHTML = `<span class="log-ts">${escHtml(ts)}</span><span class="log-msg">${escHtml(message)}</span>`;
   logEl.appendChild(line);
-  logEl.scrollTop = logEl.scrollHeight;
+  if (nearBottom) logEl.scrollTop = logEl.scrollHeight;
 }
 
 function attachRecheckHandler() {

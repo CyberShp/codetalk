@@ -558,7 +558,12 @@ class NativeDeployer:
     # Helpers
     # ------------------------------------------------------------------
 
-    async def _run_stream(self, step_name: str, step_index: int, *cmd: str, cwd: str | None = None) -> int:
+    async def _run_stream(
+        self, step_name: str, step_index: int, *cmd: str,
+        cwd: str | None = None, timeout_seconds: int = 600,
+    ) -> int:
+        import time
+
         try:
             proc = await asyncio.create_subprocess_exec(
                 *cmd,
@@ -570,11 +575,25 @@ class NativeDeployer:
             await self._emit(step_name, "error", f"Command not found: {cmd[0]}", step_index)
             return 1
 
+        start_time = time.monotonic()
+
         assert proc.stdout is not None
         async for raw_line in proc.stdout:
             if self._stopped:
                 proc.terminate()
                 break
+            if time.monotonic() - start_time > timeout_seconds:
+                proc.terminate()
+                try:
+                    await asyncio.wait_for(proc.wait(), timeout=5)
+                except asyncio.TimeoutError:
+                    proc.kill()
+                await self._emit(
+                    step_name, "error",
+                    f"Process timed out after {timeout_seconds}s: {cmd[0]}",
+                    step_index,
+                )
+                return 1
             line = raw_line.decode(errors="replace").rstrip()
             if line:
                 await self._queue.put({

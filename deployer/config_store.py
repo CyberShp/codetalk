@@ -102,18 +102,22 @@ def get_default_config(mode: str) -> dict:
     """Return a default config dict for the given deployment mode."""
     base = {
         "mode": mode,
-        "postgres_user": "codetalks",
-        "postgres_password": "changeme",
-        "postgres_db": "codetalks",
         "llm_provider": "openai",
         "openai_api_key": "",
         "anthropic_api_key": "",
         "google_api_key": "",
-        "ollama_base_url": "http://host.docker.internal:11434",
         "repos_path": "./.repos",
         "frontend_port": 3005,
-        "backend_port": 8000,
         "gitnexus_port": 7100,
         "cors_origins": "http://localhost:3000,http://localhost:3005",
     }
+    if mode == "native":
+        base["backend_port"] = 8100
+        base["ollama_base_url"] = "http://localhost:11434"
+    else:
+        base["backend_port"] = 8000
+        base["ollama_base_url"] = "http://host.docker.internal:11434"
+        base["postgres_user"] = "codetalks"
+        base["postgres_password"] = "changeme"
+        base["postgres_db"] = "codetalks"
     return base

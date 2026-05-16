@@ -29,6 +29,10 @@ class Settings(BaseSettings):
     gitnexus_bin: str = "gitnexus"   # path to gitnexus binary
     tool_health_interval: int = 30   # seconds between health checks
 
+    # Analysis tuning
+    analysis_concurrency: int = 3    # max parallel module analyses
+    deepwiki_timeout: int = 1800     # wiki generation timeout in seconds
+
     # CORS — comma-separated origins allowed to call the API
     cors_origins: str = "http://localhost:3005,http://127.0.0.1:3005"
 

@@ -11,6 +11,13 @@ import logging
 from datetime import datetime, timezone
 from pathlib import Path
 
+try:
+    import tiktoken
+
+    _tiktoken_enc = tiktoken.get_encoding("cl100k_base")
+except Exception:  # ImportError or encoding download failure
+    _tiktoken_enc = None
+
 from app.llm.base import BaseLLMClient, LLMResponse
 from app.prompts.schemas import REPORT_FILE_MAP
 from app.prompts.templates import (
@@ -69,6 +76,7 @@ class ReportGenerator:
                 "No module summaries available for task %s -- "
                 "skipping report generation (completed_with_warnings)",
                 self._task_id,
+                extra={"task_id": self._task_id},
             )
             self._status_override = "completed_with_warnings"
             return self._generated_files
@@ -189,10 +197,11 @@ class ReportGenerator:
                 report_type,
                 filename,
                 response.usage.get("total_tokens", 0),
+                extra={"task_id": self._task_id},
             )
 
         except Exception as exc:
-            logger.exception("Report generation failed for %s: %s", report_type, exc)
+            logger.exception("Report generation failed for %s: %s", report_type, exc, extra={"task_id": self._task_id})
 
     # ------------------------------------------------------------------
     # Context builders -- extract relevant data for each prompt
@@ -348,7 +357,35 @@ class ReportGenerator:
 
     @staticmethod
     def _truncate(text: str, max_chars: int) -> str:
-        """Truncate text to max_chars to stay within token budget."""
-        if len(text) <= max_chars:
+        """Truncate text to stay within token budget.
+
+        When tiktoken is available, *max_chars* is treated as a **token** limit
+        and the text is truncated at a token boundary.  Otherwise we fall back
+        to approximating tokens as ``len(text) // 4`` and cutting by character
+        count.
+        """
+        if _tiktoken_enc is not None:
+            tokens = _tiktoken_enc.encode(text)
+            if len(tokens) <= max_chars:
+                return text
+            truncated_tokens = tokens[:max_chars]
+            result = _tiktoken_enc.decode(truncated_tokens)
+            logger.info(
+                "Truncated context: %d -> %d tokens",
+                len(tokens),
+                len(truncated_tokens),
+            )
+            return result + "\n...（已截断）"
+
+        # Fallback: approximate tokens as chars / 4
+        approx_tokens = len(text) // 4
+        if approx_tokens <= max_chars:
             return text
-        return text[:max_chars] + "\n...（已截断）"
+        char_limit = max_chars * 4
+        result = text[:char_limit]
+        logger.info(
+            "Truncated context (char approx): ~%d -> ~%d tokens",
+            approx_tokens,
+            max_chars,
+        )
+        return result + "\n...（已截断）"

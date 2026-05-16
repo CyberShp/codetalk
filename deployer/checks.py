@@ -168,6 +168,24 @@ async def _check_git() -> dict:
     )
 
 
+def _identify_port_user(port: int) -> str:
+    """Best-effort: identify which process is using a port (Windows only)."""
+    if sys.platform != "win32":
+        return ""
+    try:
+        output = subprocess.check_output(
+            f"netstat -ano | findstr :{port}",
+            shell=True, text=True, timeout=5,
+        ).strip()
+        for line in output.splitlines():
+            parts = line.split()
+            if len(parts) >= 5 and f":{port}" in parts[1]:
+                return f" (PID {parts[-1]})"
+        return ""
+    except Exception:
+        return ""
+
+
 def _check_ports(ports: list[int] | None = None, mode: str = "compose") -> list[dict]:
     if ports is None:
         ports = [5433, 8000, 3005, 8001, 7100, 8080, 16251, 6070]
@@ -183,11 +201,12 @@ def _check_ports(ports: list[int] | None = None, mode: str = "compose") -> list[
                 _make_result(f"Port {port}", "pass", f"Port {port} is available")
             )
         else:
+            pid_info = _identify_port_user(port)
             results.append(
                 _make_result(
                     f"Port {port}",
                     "fail",
-                    f"Port {port} is already in use",
+                    f"Port {port} is already in use{pid_info}",
                     fix=f"{hint} (port {port})",
                 )
             )

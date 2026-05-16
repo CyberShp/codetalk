@@ -12,6 +12,7 @@ Phases:
 import asyncio
 import json
 import logging
+import re
 import subprocess
 from datetime import datetime, timezone
 from pathlib import Path
@@ -50,7 +51,7 @@ class AnalysisPipeline:
 
     async def run(self, task_id: str) -> None:
         """Execute the full pipeline, updating task progress in the DB."""
-        logger.info("Pipeline started for task %s", task_id)
+        logger.info("Pipeline started for task %s", task_id, extra={"task_id": task_id})
         self._task_id = task_id
 
         try:
@@ -106,17 +107,17 @@ class AnalysisPipeline:
                 else:
                     final_status = "completed"
             else:
-                logger.warning("No LLM client available, skipping AI phases")
+                logger.warning("No LLM client available, skipping AI phases", extra={"task_id": task_id})
                 output_dir = settings.outputs_path / task_id
                 output_dir.mkdir(parents=True, exist_ok=True)
                 await self._save_raw_data(output_dir)
                 final_status = "completed"
 
             await self._update_progress(task_id, 100, final_status, None)
-            logger.info("Pipeline completed for task %s (status=%s)", task_id, final_status)
+            logger.info("Pipeline completed for task %s (status=%s)", task_id, final_status, extra={"task_id": task_id})
 
         except Exception as exc:
-            logger.exception("Pipeline failed for task %s", task_id)
+            logger.exception("Pipeline failed for task %s", task_id, extra={"task_id": task_id})
             await self._update_progress(task_id, -1, "failed", str(exc))
 
     # ------------------------------------------------------------------
@@ -280,7 +281,7 @@ class AnalysisPipeline:
             logger.warning("No communities found, treating entire repo as single module")
             communities = [self._build_single_module()]
 
-        sem = asyncio.Semaphore(3)
+        sem = asyncio.Semaphore(settings.analysis_concurrency)
         data_quality_note = ""
         if self._data_quality == "poor":
             data_quality_note = (
@@ -417,16 +418,19 @@ class AnalysisPipeline:
         return response.content
 
     def _extract_module_wiki(self, module_name: str) -> str:
-        """Extract relevant wiki content for a module (substring match)."""
+        """Extract relevant wiki content for a module (word-boundary match)."""
         doc = self._deepwiki_data.get("documentation", "")
         if not doc:
             return ""
+
+        # Use word-boundary regex to avoid false positives for short names
+        pattern = re.compile(r"\b" + re.escape(module_name) + r"\b", re.IGNORECASE)
 
         lines = doc.split("\n")
         relevant: list[str] = []
         capturing = False
         for line in lines:
-            if module_name.lower() in line.lower():
+            if pattern.search(line):
                 capturing = True
             if capturing:
                 relevant.append(line)
@@ -436,8 +440,24 @@ class AnalysisPipeline:
                 capturing = False
 
         result = "\n".join(relevant)
-        if len(result) > 3000:
-            result = result[:3000] + "\n...（已截断）"
+        max_chars = 3000
+        if len(result) > max_chars:
+            # Preserve sentence boundary: find last period or newline before limit
+            truncated = result[:max_chars]
+            last_period = truncated.rfind(".")
+            last_newline = truncated.rfind("\n")
+            cut_at = max(last_period, last_newline)
+            if cut_at > max_chars // 2:
+                result = result[: cut_at + 1]
+            else:
+                result = truncated
+            logger.info(
+                "Wiki content for module %s truncated from %d to %d chars",
+                module_name,
+                len("\n".join(relevant)),
+                len(result),
+            )
+            result += "\n...（已截断）"
         return result
 
     # ------------------------------------------------------------------

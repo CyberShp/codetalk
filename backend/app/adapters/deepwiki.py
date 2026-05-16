@@ -15,7 +15,7 @@ from app.config import settings
 logger = logging.getLogger(__name__)
 
 # Wiki generation can take a very long time for large repos
-_WIKI_TIMEOUT = 1800.0  # 30 minutes
+_WIKI_TIMEOUT: float = float(settings.deepwiki_timeout)
 _DEFAULT_TIMEOUT = 30.0
 
 # Default prompt sent to DeepWiki for wiki generation
