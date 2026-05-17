@@ -30,7 +30,7 @@ from app.prompts.templates import (
 
 logger = logging.getLogger(__name__)
 
-MAX_OUTPUT_TOKENS = 4096
+MAX_OUTPUT_TOKENS = 8192
 
 
 class ReportGenerator:
