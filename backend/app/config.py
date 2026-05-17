@@ -18,8 +18,8 @@ class Settings(BaseSettings):
 
     # Tool process endpoints
     gitnexus_base_url: str = "http://localhost:7100"
-    deepwiki_api_url: str = "http://localhost:8001"
-    deepwiki_ui_url: str = "http://localhost:3000"
+    deepwiki_api_url: str = "http://localhost:8091"
+    deepwiki_ui_url: str = "http://localhost:3001"
     zoekt_base_url: str = "http://localhost:6070"
     zoekt_container_name: str = "codetalk-zoekt"
     joern_base_url: str = "http://localhost:8090"
@@ -27,8 +27,8 @@ class Settings(BaseSettings):
 
     # Tool process management
     gitnexus_port: int = 7100
-    deepwiki_api_port: int = 8001
-    deepwiki_ui_port: int = 3000
+    deepwiki_api_port: int = 8091
+    deepwiki_ui_port: int = 3001
     deepwiki_path: str = ""          # path to deepwiki-open installation
     gitnexus_bin: str = "gitnexus"   # path to gitnexus binary
     tool_health_interval: int = 30   # seconds between health checks
