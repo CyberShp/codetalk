@@ -53,6 +53,7 @@ class NativeDeployer:
             await self._step_health_check()
         except Exception as exc:
             await self._emit("error", "error", f"Deployment failed: {exc}", 0)
+            raise
 
     async def stop(self) -> None:
         self._stopped = True
