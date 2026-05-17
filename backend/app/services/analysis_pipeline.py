@@ -86,6 +86,21 @@ class AnalysisPipeline:
                     output_dir=output_dir,
                     task_id=task_id,
                 )
+                _REPORT_LABELS: dict[str, str] = {
+                    "module_map": "项目与模块地图",
+                    "business_flow": "关键业务流程分析",
+                    "source_reading": "源码定向阅读记录",
+                    "test_design": "测试设计输入",
+                    "requirements": "需求与设计理解",
+                    "traceability": "需求-设计-代码追踪",
+                }
+
+                async def _on_report_done(rtype: str, _fname: str, tokens: int) -> None:
+                    label = _REPORT_LABELS.get(rtype, rtype)
+                    await self._log_step(
+                        task_id, 80, f"✅ {label} 已生成（{tokens:,} tokens）"
+                    )
+
                 await generator.generate_all(
                     module_summaries=self._module_summaries,
                     gitnexus_data=self._gitnexus_data,
@@ -94,6 +109,7 @@ class AnalysisPipeline:
                     design_doc=task.get("design_doc"),
                     analysis_focus=self._analysis_focus,
                     prompt_content=self._prompt_content,
+                    on_report_done=_on_report_done,
                 )
                 await self._update_progress(task_id, 90, "running", None, "报告生成完成，收尾处理…")
 

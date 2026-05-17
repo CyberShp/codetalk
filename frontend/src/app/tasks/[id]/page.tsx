@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useState, useCallback } from "react";
+import { useEffect, useState, useCallback, useRef } from "react";
 import { useParams } from "next/navigation";
 import Link from "next/link";
 import {
@@ -51,13 +51,20 @@ export default function TaskDetailPage() {
   const [running, setRunning] = useState(false);
   const [steps, setSteps] = useState<TaskStep[]>([]);
 
+  // Only show the full-page spinner on the very first fetch.
+  const hasLoadedOnce = useRef(false);
+  // Scroll anchor for the step log so new entries scroll into view within the
+  // container rather than jumping the whole page.
+  const stepsEndRef = useRef<HTMLDivElement>(null);
+
   const loadTask = useCallback(async () => {
     if (!taskId) return;
-    setLoading(true);
+    if (!hasLoadedOnce.current) setLoading(true);
     setError(null);
     try {
       const data = await api.tasks.get(taskId);
       setTask(data);
+      hasLoadedOnce.current = true;
     } catch (err: unknown) {
       setError(err instanceof Error ? err.message : "加载任务失败");
     } finally {
@@ -79,17 +86,22 @@ export default function TaskDetailPage() {
     loadTask();
   }, [loadTask]);
 
-  // Auto-refresh task + steps while running
+  // Auto-refresh task + steps while running (steps poll at 5 s, task at 8 s)
   useEffect(() => {
     if (task?.status !== "running") return;
-    const taskTimer = setInterval(loadTask, 5000);
-    const stepsTimer = setInterval(loadSteps, 3000);
+    const taskTimer = setInterval(loadTask, 8000);
+    const stepsTimer = setInterval(loadSteps, 5000);
     loadSteps();
     return () => {
       clearInterval(taskTimer);
       clearInterval(stepsTimer);
     };
   }, [task?.status, loadTask, loadSteps]);
+
+  // Auto-scroll step log to the latest entry within its container
+  useEffect(() => {
+    stepsEndRef.current?.scrollIntoView({ block: "nearest", behavior: "smooth" });
+  }, [steps]);
 
   // Load steps once when task completes
   useEffect(() => {
@@ -239,7 +251,7 @@ export default function TaskDetailPage() {
       {steps.length > 0 && (
         <div className="bg-surface-container rounded-xl border border-outline-variant/20 p-5 mb-6">
           <h2 className="text-sm font-medium text-on-surface mb-3">分析进度日志</h2>
-          <div className="space-y-1 max-h-60 overflow-y-auto">
+          <div className="space-y-1 max-h-64 overflow-y-auto pr-1">
             {steps.map((s, i) => (
               <div key={i} className="flex items-start gap-3 text-xs">
                 <span className="shrink-0 text-on-surface-variant font-data tabular-nums">
@@ -251,6 +263,7 @@ export default function TaskDetailPage() {
                 <span className="text-on-surface-variant">{s.step}</span>
               </div>
             ))}
+            <div ref={stepsEndRef} />
           </div>
         </div>
       )}
