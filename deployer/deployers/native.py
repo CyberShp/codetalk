@@ -45,6 +45,10 @@ class NativeDeployer:
                 await self._step_install_gitnexus()
                 if self._stopped:
                     return
+            if self._config.get("install_deepwiki", False):
+                await self.supplement_deepwiki(self._config.get("deepwiki_path", ""))
+                if self._stopped:
+                    return
             await self._step_generate_config()
             if self._stopped:
                 return
@@ -53,7 +57,7 @@ class NativeDeployer:
                 return
             await self._step_health_check()
         except Exception as exc:
-            await self._emit("error", "error", f"Deployment failed: {exc}", 0)
+            await self._emit("error", "error", f"部署失败：{exc}", 0)
             raise
 
     async def stop(self) -> None:
@@ -213,29 +217,29 @@ class NativeDeployer:
 
     async def _step_check_env(self) -> None:
         step = 1
-        await self._emit("check_env", "running", "Checking prerequisites...", step)
+        await self._emit("check_env", "running", "检查运行环境...", step)
 
         py_ok = await self._check_command("python", ["--version"], "3.10")
         if not py_ok:
             py_ok = await self._check_command("python3", ["--version"], "3.10")
         if not py_ok:
-            await self._emit("check_env", "error", "Python 3.10+ not found on PATH", step)
+            await self._emit("check_env", "error", "PATH 中未找到 Python 3.10+", step)
             raise RuntimeError("Python 3.10+ required")
-        await self._emit("check_env", "running", "Python OK", step)
+        await self._emit("check_env", "running", "Python 检查通过", step)
 
         node_ok = await self._check_command("node", ["--version"], "18")
         if not node_ok:
-            await self._emit("check_env", "error", "Node.js 18+ not found on PATH", step)
+            await self._emit("check_env", "error", "PATH 中未找到 Node.js 18+", step)
             raise RuntimeError("Node.js 18+ required")
-        await self._emit("check_env", "running", "Node.js OK", step)
+        await self._emit("check_env", "running", "Node.js 检查通过", step)
 
         git_ok = await self._check_command("git", ["--version"], None)
         if not git_ok:
-            await self._emit("check_env", "error", "Git not found on PATH", step)
+            await self._emit("check_env", "error", "PATH 中未找到 Git", step)
             raise RuntimeError("Git required")
-        await self._emit("check_env", "running", "Git OK", step)
+        await self._emit("check_env", "running", "Git 检查通过", step)
 
-        await self._emit("check_env", "done", "All prerequisites met", step)
+        await self._emit("check_env", "done", "运行环境检查完成", step)
 
     async def _check_command(self, cmd: str, args: list, min_version: Optional[str]) -> bool:
         try:
@@ -270,7 +274,7 @@ class NativeDeployer:
         step = 2
         backend_dir = PROJECT_ROOT / "backend"
         venv_dir = backend_dir / ".venv311"
-        await self._emit("install_backend", "running", "Setting up backend...", step)
+        await self._emit("install_backend", "running", "配置后端...", step)
 
         if sys.platform == "win32":
             venv_python = venv_dir / "Scripts" / "python.exe"
@@ -280,13 +284,13 @@ class NativeDeployer:
             venv_pip = venv_dir / "bin" / "pip"
 
         if not venv_python.exists():
-            await self._emit("install_backend", "running", "Creating virtual environment...", step)
+            await self._emit("install_backend", "running", "创建虚拟环境...", step)
             rc = await self._run_stream("install_backend", step, "python", "-m", "venv", str(venv_dir))
             if rc != 0:
-                await self._emit("install_backend", "error", "Failed to create venv", step)
+                await self._emit("install_backend", "error", "虚拟环境创建失败", step)
                 raise RuntimeError("venv creation failed")
 
-        await self._emit("install_backend", "running", "Installing Python dependencies...", step)
+        await self._emit("install_backend", "running", "安装 Python 依赖...", step)
 
         pip_args = [str(venv_pip), "install", "-r", str(backend_dir / "requirements.txt")]
 
@@ -296,13 +300,13 @@ class NativeDeployer:
 
         rc = await self._run_stream("install_backend", step, *pip_args)
         if rc != 0:
-            await self._emit("install_backend", "error", "pip install failed", step)
+            await self._emit("install_backend", "error", "pip install 失败", step)
             raise RuntimeError("Backend dependency installation failed")
 
         data_dir = backend_dir / "data" / "outputs"
         data_dir.mkdir(parents=True, exist_ok=True)
 
-        await self._emit("install_backend", "done", "Backend dependencies installed", step)
+        await self._emit("install_backend", "done", "后端依赖安装完成", step)
 
     # ------------------------------------------------------------------
     # Step 3: Install frontend dependencies
@@ -311,11 +315,11 @@ class NativeDeployer:
     async def _step_install_frontend(self) -> None:
         step = 3
         frontend_dir = PROJECT_ROOT / "frontend"
-        await self._emit("install_frontend", "running", "Installing frontend dependencies...", step)
+        await self._emit("install_frontend", "running", "安装前端依赖...", step)
 
         node_modules = frontend_dir / "node_modules"
         if node_modules.exists() and (node_modules / ".package-lock.json").exists():
-            await self._emit("install_frontend", "done", "Frontend dependencies already installed", step)
+            await self._emit("install_frontend", "done", "前端依赖已安装，跳过", step)
             return
 
         npm_cmd = "npm.cmd" if sys.platform == "win32" else "npm"
@@ -325,10 +329,10 @@ class NativeDeployer:
             cwd=str(frontend_dir),
         )
         if rc != 0:
-            await self._emit("install_frontend", "error", "npm install failed", step)
+            await self._emit("install_frontend", "error", "npm install 失败", step)
             raise RuntimeError("Frontend dependency installation failed")
 
-        await self._emit("install_frontend", "done", "Frontend dependencies installed", step)
+        await self._emit("install_frontend", "done", "前端依赖安装完成", step)
 
     # ------------------------------------------------------------------
     # Step 4: Install GitNexus
@@ -336,21 +340,21 @@ class NativeDeployer:
 
     async def _step_install_gitnexus(self) -> None:
         step = 4
-        await self._emit("install_gitnexus", "running", "Setting up GitNexus...", step)
+        await self._emit("install_gitnexus", "running", "配置 GitNexus...", step)
 
         rc, stdout, _ = await self._run_capture("gitnexus", "--version")
         if rc == 0 and stdout.strip():
-            await self._emit("install_gitnexus", "done", f"GitNexus already installed (v{stdout.strip()})", step)
+            await self._emit("install_gitnexus", "done", f"GitNexus 已安装 (v{stdout.strip()})，跳过", step)
             self._config["_gitnexus_cmd"] = ["gitnexus"]
             return
 
-        await self._emit("install_gitnexus", "running", "Trying npm install -g gitnexus...", step)
+        await self._emit("install_gitnexus", "running", "尝试 npm install -g gitnexus...", step)
         npm_cmd = "npm.cmd" if sys.platform == "win32" else "npm"
         rc = await self._run_stream("install_gitnexus", step, npm_cmd, "install", "-g", "gitnexus")
         if rc == 0:
             rc2, stdout2, _ = await self._run_capture("gitnexus", "--version")
             if rc2 == 0:
-                await self._emit("install_gitnexus", "done", f"GitNexus installed via npm (v{stdout2.strip()})", step)
+                await self._emit("install_gitnexus", "done", f"GitNexus 已通过 npm 安装 (v{stdout2.strip()})", step)
                 self._config["_gitnexus_cmd"] = ["gitnexus"]
                 return
 
@@ -360,14 +364,14 @@ class NativeDeployer:
             if rc3 == 0:
                 await self._emit(
                     "install_gitnexus", "done",
-                    f"GitNexus loaded from vendor (v{stdout3.strip()})", step,
+                    f"GitNexus 已从 vendor 加载 (v{stdout3.strip()})", step,
                 )
                 self._config["_gitnexus_cmd"] = ["node", str(vendor_entry)]
                 return
 
         await self._emit(
             "install_gitnexus", "error",
-            "GitNexus not available: npm install failed and vendor/gitnexus not found", step,
+            "GitNexus 不可用：npm 安装失败且 vendor/gitnexus 未找到", step,
         )
         raise RuntimeError("GitNexus installation failed")
 
@@ -377,7 +381,7 @@ class NativeDeployer:
 
     async def _step_generate_config(self) -> None:
         step = 5
-        await self._emit("generate_config", "running", "Generating configuration files...", step)
+        await self._emit("generate_config", "running", "生成配置文件...", step)
 
         cfg = self._config
         backend_port = cfg.get("backend_port", 8100)
@@ -408,11 +412,11 @@ class NativeDeployer:
         llm_base_url = cfg.get("llm_base_url", "")
         if llm_base_url:
             env_lines.extend([
-                f"LLM_BASE_URL={llm_base_url}",
-                f"LLM_API_KEY={cfg.get('llm_api_key', '')}",
+                f"OPENAI_BASE_URL={llm_base_url}",
+                f"OPENAI_API_KEY={cfg.get('llm_api_key', '')}",
                 f"LLM_MODEL={cfg.get('llm_model', '')}",
-                "LLM_FORCE_DIRECT=true",
-                "LLM_TRUST_ENV=false",
+                "FORCE_DIRECT=true",
+                "TRUST_ENV=false",
             ])
 
         tiktoken_cache = VENDOR_DIR / "tiktoken_cache"
@@ -421,16 +425,16 @@ class NativeDeployer:
 
         backend_env = PROJECT_ROOT / "backend" / ".env"
         backend_env.write_text("\n".join(env_lines) + "\n", encoding="utf-8")
-        await self._emit("generate_config", "running", f"Written {backend_env}", step)
+        await self._emit("generate_config", "running", f"已写入 {backend_env}", step)
 
         frontend_env = PROJECT_ROOT / "frontend" / ".env.local"
         frontend_env.write_text(
             f"NEXT_PUBLIC_API_URL=http://localhost:{backend_port}\n",
             encoding="utf-8",
         )
-        await self._emit("generate_config", "running", f"Written {frontend_env}", step)
+        await self._emit("generate_config", "running", f"已写入 {frontend_env}", step)
 
-        await self._emit("generate_config", "done", "Configuration files generated", step)
+        await self._emit("generate_config", "done", "配置文件生成完成", step)
 
     # ------------------------------------------------------------------
     # Step 6: Start services
@@ -438,7 +442,7 @@ class NativeDeployer:
 
     async def _step_start_services(self) -> None:
         step = 6
-        await self._emit("start_services", "running", "Starting services...", step)
+        await self._emit("start_services", "running", "启动服务...", step)
 
         cfg = self._config
         backend_port = cfg.get("backend_port", 8100)
@@ -487,7 +491,7 @@ class NativeDeployer:
         )
 
         await asyncio.sleep(3)
-        await self._emit("start_services", "done", "All core services started", step)
+        await self._emit("start_services", "done", "所有核心服务已启动", step)
 
     async def _start_process(
         self,
@@ -498,7 +502,7 @@ class NativeDeployer:
         step_index: int,
         env_extra: Optional[dict] = None,
     ) -> None:
-        await self._emit(step_name, "running", f"Starting {name}...", step_index)
+        await self._emit(step_name, "running", f"正在启动 {name}...", step_index)
 
         env = os.environ.copy()
         if env_extra:
@@ -514,7 +518,7 @@ class NativeDeployer:
         self._processes[name] = proc
 
         asyncio.ensure_future(self._drain_output(name, proc, step_name, step_index))
-        await self._emit(step_name, "running", f"{name} started (PID {proc.pid})", step_index)
+        await self._emit(step_name, "running", f"{name} 已启动（PID {proc.pid}）", step_index)
 
     async def _drain_output(
         self, name: str, proc: asyncio.subprocess.Process, step_name: str, step_index: int
@@ -536,7 +540,7 @@ class NativeDeployer:
 
     async def _step_health_check(self) -> None:
         step = 7
-        await self._emit("health_check", "running", "Waiting for services to become healthy...", step)
+        await self._emit("health_check", "running", "等待服务就绪...", step)
 
         import httpx
         max_wait = 60
@@ -557,14 +561,14 @@ class NativeDeployer:
                     all_ok = False
 
             if all_ok:
-                await self._emit("health_check", "done", "All services healthy!", step)
+                await self._emit("health_check", "done", "所有服务健康运行！", step)
                 return
 
-            await self._emit("health_check", "running", f"Waiting... ({elapsed}s / {max_wait}s)", step)
+            await self._emit("health_check", "running", f"等待中...（{elapsed}s / {max_wait}s）", step)
             await asyncio.sleep(interval)
             elapsed += interval
 
-        await self._emit("health_check", "error", "Some services did not become healthy in time", step)
+        await self._emit("health_check", "error", "部分服务未能在规定时间内就绪", step)
         raise RuntimeError("Some services did not become healthy in time")
 
     # ------------------------------------------------------------------
@@ -585,7 +589,7 @@ class NativeDeployer:
                 cwd=cwd,
             )
         except FileNotFoundError:
-            await self._emit(step_name, "error", f"Command not found: {cmd[0]}", step_index)
+            await self._emit(step_name, "error", f"命令未找到：{cmd[0]}", step_index)
             return 1
 
         start_time = time.monotonic()
@@ -603,7 +607,7 @@ class NativeDeployer:
                     proc.kill()
                 await self._emit(
                     step_name, "error",
-                    f"Process timed out after {timeout_seconds}s: {cmd[0]}",
+                    f"进程超时（{timeout_seconds}s）：{cmd[0]}",
                     step_index,
                 )
                 return 1
