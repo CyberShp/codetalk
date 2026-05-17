@@ -29,8 +29,7 @@ from app.services.report_generator import ReportGenerator
 logger = logging.getLogger(__name__)
 
 MAX_TOKENS_PER_CALL = 40000
-MAX_OUTPUT_TOKENS = 4096
-SUMMARY_MAX_WORDS = 200
+MAX_OUTPUT_TOKENS = 8192  # per-module summary; matches report generator budget
 
 
 class AnalysisPipeline:
