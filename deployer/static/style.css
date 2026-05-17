@@ -1311,6 +1311,7 @@ input, select, textarea {
 
 .deploy-progress-text {
   font-size: 0.8125rem;
+  font-family: var(--font-mono);
   color: var(--text-muted);
   white-space: nowrap;
   min-width: 3rem;
@@ -1401,6 +1402,7 @@ input, select, textarea {
   display: flex;
   flex-direction: column;
   gap: 2rem;
+  text-align: center;
 }
 
 .success-icon {
@@ -1459,7 +1461,7 @@ input, select, textarea {
 
 .service-url-grid {
   display: grid;
-  grid-template-columns: repeat(auto-fill, minmax(220px, 1fr));
+  grid-template-columns: repeat(2, 1fr);
   gap: 1rem;
 }
 
@@ -1513,7 +1515,7 @@ input, select, textarea {
 
 .url-card-url {
   font-size: 0.875rem;
-  color: var(--accent);
+  color: var(--text-muted);
   font-family: var(--font-mono);
   white-space: nowrap;
   overflow: hidden;
