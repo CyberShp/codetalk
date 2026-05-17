@@ -5,6 +5,7 @@ Works with any endpoint that implements the /v1/chat/completions interface
 """
 
 import logging
+import time
 
 import httpx
 
@@ -57,10 +58,13 @@ class OpenAICompatClient(BaseLLMClient):
         max_tokens: int = 4096,
         temperature: float = 0.3,
     ) -> LLMResponse:
-        return await async_retry(
+        t0 = time.monotonic()
+        result = await async_retry(
             self._do_complete, messages, max_tokens, temperature,
             max_retries=3,
         )
+        await self._write_debug_snapshot(messages, result, (time.monotonic() - t0) * 1000)
+        return result
 
     async def _do_complete(
         self,

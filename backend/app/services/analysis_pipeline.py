@@ -21,7 +21,7 @@ import aiosqlite
 import httpx
 
 from app.config import settings
-from app.llm.base import BaseLLMClient, LLMResponse
+from app.llm.base import BaseLLMClient, LLMResponse, current_task_id
 from app.llm.factory import create_llm_client_from_active
 from app.prompts.templates import MODULE_SUMMARY_PROMPT
 from app.services.report_generator import ReportGenerator
@@ -53,6 +53,7 @@ class AnalysisPipeline:
         """Execute the full pipeline, updating task progress in the DB."""
         logger.info("Pipeline started for task %s", task_id, extra={"task_id": task_id})
         self._task_id = task_id
+        _ctx_token = current_task_id.set(task_id)
 
         try:
             task = await self._load_task(task_id)
@@ -119,6 +120,9 @@ class AnalysisPipeline:
         except Exception as exc:
             logger.exception("Pipeline failed for task %s", task_id, extra={"task_id": task_id})
             await self._update_progress(task_id, -1, "failed", str(exc))
+
+        finally:
+            current_task_id.reset(_ctx_token)
 
     # ------------------------------------------------------------------
     # Phase 0: Preparation
