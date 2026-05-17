@@ -211,7 +211,7 @@ function initConfigForm() {
     apiKeyInput.type = visible ? 'password' : 'text';
     eyeOpen.style.display   = visible ? ''     : 'none';
     eyeClosed.style.display = visible ? 'none' : '';
-    apiKeyToggle.setAttribute('aria-label', visible ? '显示 API Key' : '隐藏 API Key');
+    apiKeyToggle.setAttribute('aria-label', visible ? '显示密钥' : '隐藏密钥');
   });
 
   // Show/hide component port panels based on checkbox state
