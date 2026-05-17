@@ -9,6 +9,8 @@ import {
   XCircle,
   AlertTriangle,
   HelpCircle,
+  Rocket,
+  ExternalLink,
 } from "lucide-react";
 import { api } from "@/lib/api";
 import type { ToolInfo } from "@/lib/types";
@@ -109,6 +111,44 @@ export default function ToolsPage() {
         </div>
       )}
 
+      {/* Deployment guide — shown when any tool is not running */}
+      {!loading && tools.some((t) => !t.healthy) && (
+        <div className="mb-6 bg-surface-container rounded-xl border border-outline-variant/20 p-5">
+          <div className="flex items-start gap-3">
+            <Rocket size={18} className="text-primary mt-0.5 shrink-0" />
+            <div className="flex-1 min-w-0">
+              <p className="text-sm font-medium text-on-surface mb-1">
+                有工具尚未运行
+              </p>
+              <p className="text-xs text-on-surface-variant mb-3">
+                DeepWiki-Open 和 GitNexus 需要单独部署后才能使用。可通过部署系统向导完成一键安装，或手动按文档配置。
+              </p>
+              <div className="flex flex-wrap gap-2">
+                <a
+                  href="http://localhost:9000"
+                  target="_blank"
+                  rel="noopener noreferrer"
+                  className="inline-flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium bg-primary text-on-primary rounded-lg hover:opacity-90 transition-opacity"
+                >
+                  <Rocket size={12} />
+                  打开部署向导
+                  <ExternalLink size={11} className="opacity-70" />
+                </a>
+                <a
+                  href="https://github.com/AsyncFuncAI/deepwiki-open"
+                  target="_blank"
+                  rel="noopener noreferrer"
+                  className="inline-flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium bg-surface-container-high text-on-surface rounded-lg border border-outline-variant/30 hover:bg-surface-container transition-colors"
+                >
+                  DeepWiki-Open
+                  <ExternalLink size={11} className="opacity-50" />
+                </a>
+              </div>
+            </div>
+          </div>
+        </div>
+      )}
+
       {loading ? (
         <div className="flex items-center justify-center py-24 text-on-surface-variant">
           <Loader2 size={20} className="animate-spin mr-2" />
@@ -116,7 +156,16 @@ export default function ToolsPage() {
         </div>
       ) : tools.length === 0 ? (
         <div className="text-center py-16 bg-surface-container rounded-xl border border-outline-variant/20">
-          <p className="text-on-surface-variant">未检测到工具</p>
+          <p className="text-sm text-on-surface-variant mb-3">未检测到工具</p>
+          <a
+            href="http://localhost:9000"
+            target="_blank"
+            rel="noopener noreferrer"
+            className="inline-flex items-center gap-1.5 px-4 py-2 text-sm font-medium bg-primary text-on-primary rounded-lg hover:opacity-90 transition-opacity"
+          >
+            <Rocket size={14} />
+            前往部署系统
+          </a>
         </div>
       ) : (
         <div className="space-y-4">
@@ -200,18 +249,31 @@ export default function ToolsPage() {
                   </div>
                 )}
 
-                <button
-                  onClick={() => handleRestart(tool.name)}
-                  disabled={isRestarting}
-                  className="flex items-center gap-2 px-4 py-2 text-sm bg-surface-container-high text-on-surface rounded-lg border border-outline-variant/30 hover:bg-surface-container transition-colors disabled:opacity-50"
-                >
-                  {isRestarting ? (
-                    <Loader2 size={14} className="animate-spin" />
-                  ) : (
-                    <Power size={14} />
+                <div className="flex items-center gap-2">
+                  <button
+                    onClick={() => handleRestart(tool.name)}
+                    disabled={isRestarting}
+                    className="flex items-center gap-2 px-4 py-2 text-sm bg-surface-container-high text-on-surface rounded-lg border border-outline-variant/30 hover:bg-surface-container transition-colors disabled:opacity-50"
+                  >
+                    {isRestarting ? (
+                      <Loader2 size={14} className="animate-spin" />
+                    ) : (
+                      <Power size={14} />
+                    )}
+                    {isRestarting ? "重启中..." : "重启"}
+                  </button>
+                  {!tool.healthy && (
+                    <a
+                      href="http://localhost:9000"
+                      target="_blank"
+                      rel="noopener noreferrer"
+                      className="flex items-center gap-1.5 px-4 py-2 text-sm text-primary hover:opacity-80 transition-opacity"
+                    >
+                      <Rocket size={14} />
+                      部署向导
+                    </a>
                   )}
-                  {isRestarting ? "重启中..." : "重启"}
-                </button>
+                </div>
               </div>
             );
           })}
