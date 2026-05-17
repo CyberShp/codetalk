@@ -110,6 +110,17 @@ export default function MarkdownRenderer({
           </h3>
         );
       },
+      h4: ({ children }) => {
+        const id = slugify(extractText(children)) || undefined;
+        return (
+          <h4
+            id={id}
+            className="font-display text-base font-medium text-on-surface/90 mb-1.5 mt-3 scroll-mt-6"
+          >
+            {children}
+          </h4>
+        );
+      },
       p: ({ children }) => (
         <p className="text-on-surface/90 leading-relaxed mb-3">{children}</p>
       ),
@@ -135,27 +146,41 @@ export default function MarkdownRenderer({
         );
       },
       ul: ({ children }) => (
-        <ul className="list-disc list-inside text-on-surface/90 mb-3 space-y-1">
+        <ul className="pl-5 list-disc list-outside text-on-surface/90 mb-3 space-y-1.5 marker:text-primary/50">
           {children}
         </ul>
       ),
       ol: ({ children }) => (
-        <ol className="list-decimal list-inside text-on-surface/90 mb-3 space-y-1">
+        <ol className="pl-5 list-decimal list-outside text-on-surface/90 mb-3 space-y-1.5 marker:text-primary/60 marker:font-medium">
           {children}
         </ol>
       ),
+      li: ({ children }) => (
+        <li className="leading-relaxed">{children}</li>
+      ),
       table: ({ children }) => (
-        <div className="overflow-x-auto mb-4">
-          <table className="w-full text-sm">{children}</table>
+        <div className="overflow-x-auto mb-4 rounded-lg border border-outline-variant/25">
+          <table className="w-full text-sm border-collapse">{children}</table>
         </div>
       ),
+      thead: ({ children }) => (
+        <thead>{children}</thead>
+      ),
+      tbody: ({ children }) => (
+        <tbody>{children}</tbody>
+      ),
+      tr: ({ children }) => (
+        <tr className="border-b border-outline-variant/15 last:border-0 hover:bg-surface-container-high/30 transition-colors">
+          {children}
+        </tr>
+      ),
       th: ({ children }) => (
-        <th className="text-left text-xs text-on-surface-variant/60 uppercase tracking-wider pb-2 pr-4">
+        <th className="text-left text-xs font-semibold text-on-surface-variant/70 uppercase tracking-wide py-2.5 px-3 bg-surface-container-highest/40 border-b border-outline-variant/25">
           {children}
         </th>
       ),
       td: ({ children }) => (
-        <td className="py-1.5 pr-4 text-on-surface/80">{children}</td>
+        <td className="py-2 px-3 text-on-surface/80">{children}</td>
       ),
       blockquote: ({ children }) => (
         <blockquote className="border-l-2 border-primary-container pl-4 text-on-surface-variant italic mb-3">

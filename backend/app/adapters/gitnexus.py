@@ -10,6 +10,7 @@ import asyncio
 import logging
 from collections import Counter
 from collections.abc import AsyncIterator
+from pathlib import Path
 
 import httpx
 
@@ -151,9 +152,13 @@ class GitNexusAdapter(BaseToolAdapter):
                 status = status_resp.json()
 
                 if status["status"] == "complete":
-                    self._repo_name = status.get("repoName", "")
-                    if self._repo_name:
-                        self._indexed_repo_by_path[cache_key] = self._repo_name
+                    self._repo_name = status.get("repoName", "") or Path(tool_repo_path).name
+                    if not status.get("repoName"):
+                        logger.warning(
+                            "gitnexus: status missing repoName; falling back to dir name: %s",
+                            self._repo_name,
+                        )
+                    self._indexed_repo_by_path[cache_key] = self._repo_name
                     logger.info("gitnexus: indexing complete for %s", self._repo_name)
                     # Fire-and-forget embedding so semantic search can upgrade from BM25
                     asyncio.ensure_future(self._trigger_embed())

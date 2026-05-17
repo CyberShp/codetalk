@@ -219,10 +219,15 @@ class AnalysisPipeline:
             else:
                 raise RuntimeError("GitNexus indexing timed out")
 
-            # Fetch graph
-            repo_name = status.get("repoName", "")
-            params = {"repo": repo_name} if repo_name else {}
-            graph_resp = await client.get("/api/graph", params=params, timeout=120)
+            # Fetch graph — always pass repo; fall back to directory name when
+            # the status response omits repoName (observed with some GitNexus builds).
+            repo_name = status.get("repoName", "") or Path(repo_path).name
+            if not status.get("repoName"):
+                logger.warning(
+                    "GitNexus status missing repoName; falling back to dir name: %s",
+                    repo_name,
+                )
+            graph_resp = await client.get("/api/graph", params={"repo": repo_name}, timeout=120)
             graph_resp.raise_for_status()
             self._gitnexus_data = graph_resp.json()
             logger.info(
