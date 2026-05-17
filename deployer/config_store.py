@@ -16,11 +16,18 @@ _KEY_MAP = {
     "portFrontend": "frontend_port",
     "portBackend": "backend_port",
     "portDeepwiki": "deepwiki_api_port",
+    "portDeepwikiApi": "deepwiki_api_port",
+    "portDeepwikiUi": "deepwiki_ui_port",
     "deepwikiPath": "deepwiki_path",
     "deepwikiUiPort": "deepwiki_ui_port",
     "portDb": "postgres_port",
     "portGitnexus": "gitnexus_port",
     "llmProvider": "llm_provider",
+    "llmBaseUrl": "llm_base_url",
+    "llmApiKey": "llm_api_key",
+    "llmModel": "llm_model",
+    "installDeepwiki": "install_deepwiki",
+    "installGitnexus": "install_gitnexus",
     "corsOrigins": "cors_origins",
 }
 _KEY_MAP_REV = {v: k for k, v in _KEY_MAP.items()}
