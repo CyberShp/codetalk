@@ -41,9 +41,10 @@ class NativeDeployer:
             await self._step_install_frontend()
             if self._stopped:
                 return
-            await self._step_install_gitnexus()
-            if self._stopped:
-                return
+            if self._config.get("install_gitnexus", True):
+                await self._step_install_gitnexus()
+                if self._stopped:
+                    return
             await self._step_generate_config()
             if self._stopped:
                 return
@@ -83,8 +84,7 @@ class NativeDeployer:
                 except Exception as exc:
                     results.append({"name": name, "healthy": False, "message": str(exc)})
 
-            deepwiki_path = self._config.get("deepwiki_path", "")
-            if deepwiki_path:
+            if self._config.get("install_deepwiki", True):
                 port = self._config.get("deepwiki_api_port", 8091)
                 try:
                     resp = await client.get(f"http://localhost:{port}/health")
@@ -405,6 +405,16 @@ class NativeDeployer:
                 f"DEEPWIKI_PATH={deepwiki_path}",
             ])
 
+        llm_base_url = cfg.get("llm_base_url", "")
+        if llm_base_url:
+            env_lines.extend([
+                f"LLM_BASE_URL={llm_base_url}",
+                f"LLM_API_KEY={cfg.get('llm_api_key', '')}",
+                f"LLM_MODEL={cfg.get('llm_model', '')}",
+                "LLM_FORCE_DIRECT=true",
+                "LLM_TRUST_ENV=false",
+            ])
+
         tiktoken_cache = VENDOR_DIR / "tiktoken_cache"
         if tiktoken_cache.exists():
             env_lines.append(f"TIKTOKEN_CACHE_DIR={tiktoken_cache}")
@@ -456,14 +466,15 @@ class NativeDeployer:
             step_index=step,
         )
 
-        gitnexus_cmd = cfg.get("_gitnexus_cmd", ["gitnexus"])
-        await self._start_process(
-            "gitnexus",
-            [*gitnexus_cmd, "serve", "--port", str(gitnexus_port), "--host", "0.0.0.0"],
-            cwd=str(PROJECT_ROOT),
-            step_name="start_services",
-            step_index=step,
-        )
+        if cfg.get("install_gitnexus", True):
+            gitnexus_cmd = cfg.get("_gitnexus_cmd", ["gitnexus"])
+            await self._start_process(
+                "gitnexus",
+                [*gitnexus_cmd, "serve", "--port", str(gitnexus_port), "--host", "0.0.0.0"],
+                cwd=str(PROJECT_ROOT),
+                step_name="start_services",
+                step_index=step,
+            )
 
         npm_cmd = "npm.cmd" if sys.platform == "win32" else "npm"
         await self._start_process(
@@ -622,6 +633,8 @@ class NativeDeployer:
     def _service_targets(self) -> list[tuple[str, int, str, str]]:
         services: list[tuple[str, int, str, str]] = []
         for name, port_key, default_port, kind, path in SERVICE_DEFAULTS:
+            if name == "gitnexus" and not self._config.get("install_gitnexus", True):
+                continue
             services.append((name, self._config_port(port_key, default_port), kind, path))
         return services
 

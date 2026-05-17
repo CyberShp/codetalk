@@ -4,8 +4,6 @@
  */
 
 const {
-  getDeepWikiApiPort,
-  getDeepWikiUiPort,
   normalizeHealthServices,
 } = window.CodeTalkAppHelpers;
 
@@ -23,19 +21,10 @@ const state = {
   deployEventSource: null,
   deployDone: false,
   hasDeployError: false,
-  deepwikiInstalled: false,
-};
-
-// Provider label map
-const PROVIDER_LABELS = {
-  openai:    { label: 'OpenAI API Key',    placeholder: 'sk-…',              hint: 'Your OpenAI API key — stored locally, never sent to third parties' },
-  anthropic: { label: 'Anthropic API Key', placeholder: 'sk-ant-…',          hint: 'Your Anthropic API key — stored locally, never sent to third parties' },
-  google:    { label: 'Google API Key',    placeholder: 'AIza…',             hint: 'Your Google AI Studio API key — stored locally, never sent to third parties' },
-  ollama:    { label: 'Ollama Base URL',   placeholder: 'http://localhost:11434',  hint: 'Local Ollama server URL — no API key required' },
 };
 
 // Step metadata
-const STEP_LABELS = ['Choose Mode', 'Prerequisites', 'Configuration', 'Review', 'Deploy', 'Complete'];
+const STEP_LABELS = ['选择模式', '环境检查', '参数配置', '确认配置', '部署', '完成'];
 
 // Service -> SSE step keyword mapping (partial match)
 const SERVICE_STEP_MAP = {
@@ -78,7 +67,7 @@ function updateStepVisibility() {
 
   const headerLabel = $('#header-step-label');
   if (headerLabel) {
-    headerLabel.textContent = `Step ${state.currentStep} of ${state.totalSteps} — ${STEP_LABELS[state.currentStep - 1]}`;
+    headerLabel.textContent = `第 ${state.currentStep} 步 / 共 ${state.totalSteps} 步 — ${STEP_LABELS[state.currentStep - 1]}`;
   }
 
   updateNavButtons();
@@ -89,9 +78,9 @@ function updateNavButtons() {
   const btnNext = $('#btn-next');
 
   // Relabel Next button
-  let nextLabel = 'Next';
-  if (state.currentStep === 4) nextLabel = 'Deploy';
-  if (state.currentStep === 6) nextLabel = 'Open CodeTalk';
+  let nextLabel = '下一步';
+  if (state.currentStep === 4) nextLabel = '开始部署';
+  if (state.currentStep === 6) nextLabel = '打开 CodeTalk';
   const nextArrow = btnNext.querySelector('svg');
   btnNext.textContent = nextLabel + ' ';
   if (nextArrow) btnNext.appendChild(nextArrow);
@@ -147,7 +136,6 @@ function initModeCards() {
         c.classList.toggle('selected', c === card);
         c.setAttribute('aria-checked', c === card ? 'true' : 'false');
       });
-      syncModeDefaultPorts();
       updatePortsVisibility();
       updateNavButtons();
     });
@@ -160,7 +148,7 @@ function initModeCards() {
 
 async function runChecks() {
   const list = $('#checks-list');
-  list.innerHTML = '<div class="checks-loading"><div class="spinner" aria-hidden="true"></div><span>Running checks…</span></div>';
+  list.innerHTML = '<div class="checks-loading"><div class="spinner" aria-hidden="true"></div><span>正在运行检查&hellip;</span></div>';
   state.checksHasFail = true;
   updateNavButtons();
 
@@ -170,7 +158,7 @@ async function runChecks() {
     const data = await res.json();
     renderChecks(data.checks || []);
   } catch (err) {
-    list.innerHTML = `<div class="check-error">Failed to run checks: ${escHtml(err.message)}</div>`;
+    list.innerHTML = `<div class="check-error">检查运行失败：${escHtml(err.message)}</div>`;
   }
 }
 
@@ -178,7 +166,7 @@ function renderChecks(checks) {
   const list = $('#checks-list');
 
   if (!checks.length) {
-    list.innerHTML = '<p class="text-muted">No checks to run.</p>';
+    list.innerHTML = '<p class="text-muted">暂无检查项。</p>';
     state.checksHasFail = false;
     updateNavButtons();
     return;
@@ -213,31 +201,34 @@ function renderChecks(checks) {
 // ---------------------------------------------------------------------------
 
 function initConfigForm() {
-  const providerSel  = $('#llm-provider');
-  const apiKeyInput  = $('#api-key');
-  const apiKeyLabel  = $('#api-key-label');
-  const apiKeyHint   = $('#api-key-hint');
-  const apiKeyToggle = $('#api-key-toggle');
+  const apiKeyInput  = $('#llm-api-key');
+  const apiKeyToggle = $('#llm-api-key-toggle');
   const eyeOpen      = apiKeyToggle.querySelector('.eye-open');
   const eyeClosed    = apiKeyToggle.querySelector('.eye-closed');
-
-  providerSel.addEventListener('change', () => {
-    const info = PROVIDER_LABELS[providerSel.value] || PROVIDER_LABELS.openai;
-    apiKeyLabel.textContent  = info.label;
-    apiKeyInput.placeholder  = info.placeholder;
-    apiKeyHint.textContent   = info.hint;
-    const apiKeyGroup = $('#api-key-group');
-    apiKeyGroup.style.opacity = providerSel.value === 'ollama' ? '0.5' : '1';
-    apiKeyInput.required = providerSel.value !== 'ollama';
-  });
 
   apiKeyToggle.addEventListener('click', () => {
     const visible = apiKeyInput.type === 'text';
     apiKeyInput.type = visible ? 'password' : 'text';
     eyeOpen.style.display   = visible ? ''     : 'none';
     eyeClosed.style.display = visible ? 'none' : '';
-    apiKeyToggle.setAttribute('aria-label', visible ? 'Show key' : 'Hide key');
+    apiKeyToggle.setAttribute('aria-label', visible ? '显示 API Key' : '隐藏 API Key');
   });
+
+  // Dim port inputs when component is unchecked
+  const installDeepwikiCb = $('#install-deepwiki');
+  const installGitnexusCb = $('#install-gitnexus');
+  if (installDeepwikiCb) {
+    installDeepwikiCb.addEventListener('change', () => {
+      const ports = $('#deepwiki-ports');
+      if (ports) ports.style.opacity = installDeepwikiCb.checked ? '1' : '0.4';
+    });
+  }
+  if (installGitnexusCb) {
+    installGitnexusCb.addEventListener('change', () => {
+      const ports = $('#gitnexus-ports');
+      if (ports) ports.style.opacity = installGitnexusCb.checked ? '1' : '0.4';
+    });
+  }
 
   updatePortsVisibility();
 
@@ -245,24 +236,24 @@ function initConfigForm() {
   fetch('/api/config')
     .then(r => r.ok ? r.json() : null)
     .then(cfg => {
-      if (!cfg || !cfg.llmProvider) return;
+      if (!cfg) return;
       state.config = { ...state.config, ...cfg };
-      state.deepwikiInstalled = Boolean(cfg.deepwikiPath);
-      providerSel.value = cfg.llmProvider;
-      providerSel.dispatchEvent(new Event('change'));
-      if (cfg.apiKey)       apiKeyInput.value           = cfg.apiKey;
-      if (cfg.dbUser)       $('#db-user').value          = cfg.dbUser;
-      if (cfg.dbPassword)   $('#db-password').value      = cfg.dbPassword;
-      if (cfg.dbName)       $('#db-name').value           = cfg.dbName;
-      if (cfg.reposPath)    $('#repos-path').value        = cfg.reposPath;
-      if (cfg.portFrontend) $('#port-frontend').value     = cfg.portFrontend;
-      if (cfg.portBackend)  $('#port-backend').value      = cfg.portBackend;
-      if (cfg.portDeepwiki) $('#port-deepwiki').value     = cfg.portDeepwiki;
-      if (cfg.portDb)       $('#port-db').value           = cfg.portDb;
-      if (cfg.portGitnexus) $('#port-gitnexus').value      = cfg.portGitnexus;
-      if (cfg.corsOrigins)  $('#cors-origins').value      = cfg.corsOrigins;
-      if (cfg.deepwikiPath && $('#deepwiki-path')) $('#deepwiki-path').value = cfg.deepwikiPath;
-      syncDeepWikiSupplementState();
+      if (cfg.llmBaseUrl)      ($('#llm-base-url') || {}).value      = cfg.llmBaseUrl;
+      if (cfg.llmModel)        ($('#llm-model')     || {}).value      = cfg.llmModel;
+      if (cfg.llmApiKey)       apiKeyInput.value                      = cfg.llmApiKey;
+      if (cfg.installDeepwiki === false && installDeepwikiCb) installDeepwikiCb.checked = false;
+      if (cfg.installGitnexus === false && installGitnexusCb) installGitnexusCb.checked = false;
+      if (cfg.portDeepwikiApi) ($('#port-deepwiki-api') || {}).value  = cfg.portDeepwikiApi;
+      if (cfg.portDeepwikiUi)  ($('#port-deepwiki-ui')  || {}).value  = cfg.portDeepwikiUi;
+      if (cfg.portGitnexus)    ($('#port-gitnexus')     || {}).value  = cfg.portGitnexus;
+      if (cfg.dbUser)          ($('#db-user')            || {}).value  = cfg.dbUser;
+      if (cfg.dbPassword)      ($('#db-password')        || {}).value  = cfg.dbPassword;
+      if (cfg.dbName)          ($('#db-name')            || {}).value  = cfg.dbName;
+      if (cfg.reposPath)       ($('#repos-path')         || {}).value  = cfg.reposPath;
+      if (cfg.portFrontend)    ($('#port-frontend')      || {}).value  = cfg.portFrontend;
+      if (cfg.portBackend)     ($('#port-backend')       || {}).value  = cfg.portBackend;
+      if (cfg.portDb)          ($('#port-db')            || {}).value  = cfg.portDb;
+      if (cfg.corsOrigins)     ($('#cors-origins')       || {}).value  = cfg.corsOrigins;
     })
     .catch(() => {});
 }
@@ -280,10 +271,6 @@ function updatePortsVisibility() {
   if (portDbGroup) {
     portDbGroup.style.display = state.selectedMode === 'native' ? 'none' : '';
   }
-  const portGitnexusGroup = $('#port-gitnexus-group');
-  if (portGitnexusGroup) {
-    portGitnexusGroup.style.display = (state.selectedMode === 'native' || state.selectedMode === 'compose') ? '' : 'none';
-  }
 
   $$('.service-pill[data-modes]').forEach(pill => {
     const modes = pill.dataset.modes || '';
@@ -291,36 +278,29 @@ function updatePortsVisibility() {
   });
 }
 
-function syncModeDefaultPorts() {
-  const deepwikiInput = $('#port-deepwiki');
-  if (!deepwikiInput) return;
-
-  const current = (deepwikiInput.value || '').trim();
-  if (state.selectedMode === 'native' && (current === '' || current === '8001')) {
-    deepwikiInput.value = '8091';
-  }
-  if (state.selectedMode === 'compose' && (current === '' || current === '8091')) {
-    deepwikiInput.value = '8001';
-  }
-}
-
 function collectConfig() {
+  const installDeepwikiCb = $('#install-deepwiki');
+  const installGitnexusCb = $('#install-gitnexus');
   const cfg = {
-    mode:          state.selectedMode,
-    llmProvider:   $('#llm-provider').value,
-    apiKey:        $('#api-key').value,
-    reposPath:     $('#repos-path').value,
-    portFrontend:  $('#port-frontend').value,
-    portBackend:   $('#port-backend').value,
-    portDeepwiki:  $('#port-deepwiki').value,
-    portGitnexus:  $('#port-gitnexus').value,
-    corsOrigins:   $('#cors-origins').value,
+    mode:            state.selectedMode,
+    llmBaseUrl:      (($('#llm-base-url') || {}).value || '').trim(),
+    llmModel:        (($('#llm-model')    || {}).value || '').trim(),
+    llmApiKey:       (($('#llm-api-key')  || {}).value || '').trim(),
+    installDeepwiki: installDeepwikiCb ? installDeepwikiCb.checked : true,
+    installGitnexus: installGitnexusCb ? installGitnexusCb.checked : true,
+    portDeepwikiApi: (($('#port-deepwiki-api') || {}).value || '8091').trim(),
+    portDeepwikiUi:  (($('#port-deepwiki-ui')  || {}).value || '3001').trim(),
+    portGitnexus:    (($('#port-gitnexus')     || {}).value || '7100').trim(),
+    reposPath:       (($('#repos-path')        || {}).value || './.repos'),
+    portFrontend:    (($('#port-frontend')     || {}).value || '3005'),
+    portBackend:     (($('#port-backend')      || {}).value || '8100'),
+    corsOrigins:     (($('#cors-origins')      || {}).value || ''),
   };
   if (state.selectedMode !== 'native') {
-    cfg.dbUser     = $('#db-user').value;
-    cfg.dbPassword = $('#db-password').value;
-    cfg.dbName     = $('#db-name').value;
-    cfg.portDb     = $('#port-db').value;
+    cfg.dbUser     = (($('#db-user')     || {}).value || '');
+    cfg.dbPassword = (($('#db-password') || {}).value || '');
+    cfg.dbName     = (($('#db-name')     || {}).value || '');
+    cfg.portDb     = (($('#port-db')     || {}).value || '5433');
   }
   return cfg;
 }
@@ -349,47 +329,49 @@ function maskKey(val) {
 
 function renderReview() {
   const cfg = state.config;
-  const providerInfo = PROVIDER_LABELS[cfg.llmProvider] || PROVIDER_LABELS.openai;
+  const MODE_LABELS = { native: '本地原生部署', compose: 'Docker Compose', k8s: 'Kubernetes' };
 
-  const MODE_LABELS = { native: 'Native (Local)', compose: 'Docker Compose', k8s: 'Kubernetes' };
   const rows = [
-    { label: 'Deployment mode', value: MODE_LABELS[cfg.mode] || cfg.mode },
-    { label: 'LLM Provider',    value: ((cfg.llmProvider || 'openai')[0].toUpperCase() + (cfg.llmProvider || 'openai').slice(1)) },
-    { label: providerInfo.label, value: cfg.apiKey ? maskKey(cfg.apiKey) : '(not set)', mono: true, sensitive: true },
+    { label: '部署模式',  value: MODE_LABELS[cfg.mode] || cfg.mode },
+    null,
+    { label: 'Base URL',  value: cfg.llmBaseUrl || '（未设置）', mono: true },
+    { label: '模型名称',  value: cfg.llmModel   || '（未设置）' },
+    { label: 'API Key',   value: cfg.llmApiKey ? maskKey(cfg.llmApiKey) : '（未设置）', mono: true, sensitive: true },
+    null,
   ];
+
+  const components = [];
+  if (cfg.installDeepwiki !== false) {
+    components.push(`DeepWiki-Open（API :${cfg.portDeepwikiApi || '8091'}，UI :${cfg.portDeepwikiUi || '3001'}）`);
+  }
+  if (cfg.installGitnexus !== false) {
+    components.push(`GitNexus（:${cfg.portGitnexus || '7100'}）`);
+  }
+  rows.push({ label: '安装组件', value: components.length ? components.join('，') : '（无）' });
 
   if (cfg.mode !== 'native') {
     rows.push(null,
-      { label: 'DB Username',     value: cfg.dbUser     || 'codetalks' },
-      { label: 'DB Password',     value: maskKey(cfg.dbPassword), mono: true, sensitive: true },
-      { label: 'DB Name',         value: cfg.dbName     || 'codetalks' },
+      { label: '数据库用户名', value: cfg.dbUser     || 'codetalks' },
+      { label: '数据库密码',   value: maskKey(cfg.dbPassword), mono: true, sensitive: true },
+      { label: '数据库名',     value: cfg.dbName     || 'codetalks' },
     );
   }
 
-  rows.push(null, { label: 'Repositories path', value: cfg.reposPath || './.repos', mono: true });
+  rows.push(null, { label: '仓库存储路径', value: cfg.reposPath || './.repos', mono: true });
 
-  if (cfg.mode === 'native') {
+  if (cfg.mode !== 'k8s') {
     rows.push(null,
-      { label: 'Frontend port',    value: cfg.portFrontend  || '3005', mono: true },
-      { label: 'Backend API port', value: cfg.portBackend   || '8100', mono: true },
-      { label: 'GitNexus port',    value: cfg.portGitnexus  || '7100', mono: true },
-    );
-  } else if (cfg.mode !== 'k8s') {
-    rows.push(null,
-      { label: 'Frontend port',    value: cfg.portFrontend || '3005',  mono: true },
-      { label: 'Backend API port', value: cfg.portBackend  || '8100',  mono: true },
-      { label: 'DeepWiki port',    value: getDeepWikiApiPort(state.selectedMode, cfg), mono: true },
-      { label: 'PostgreSQL port',  value: cfg.portDb       || '5433',  mono: true },
-      { label: 'GitNexus port',    value: cfg.portGitnexus || '7100',  mono: true },
+      { label: '前端端口',      value: cfg.portFrontend || '3005', mono: true },
+      { label: '后端 API 端口', value: cfg.portBackend  || '8100', mono: true },
     );
   }
 
   if (cfg.corsOrigins) {
-    rows.push(null, { label: 'CORS origins', value: cfg.corsOrigins, mono: true });
+    rows.push(null, { label: 'CORS 允许来源', value: cfg.corsOrigins, mono: true });
   }
 
   $('#review-content').innerHTML = `
-    <table class="review-table" aria-label="Configuration summary">
+    <table class="review-table" aria-label="配置摘要">
       <tbody>
         ${rows.map(row => {
           if (!row) return '<tr class="review-divider"><td colspan="2"></td></tr>';
@@ -402,7 +384,7 @@ function renderReview() {
     </table>
     <p class="review-notice">
       <svg viewBox="0 0 20 20" fill="currentColor" class="review-notice-icon" aria-hidden="true"><path fill-rule="evenodd" d="M5 9V7a5 5 0 0110 0v2a2 2 0 012 2v5a2 2 0 01-2 2H5a2 2 0 01-2-2v-5a2 2 0 012-2zm8-2v2H7V7a3 3 0 016 0z" clip-rule="evenodd"/></svg>
-      Sensitive values are masked. Credentials are stored locally in <code>deployer-config.json</code>.
+      敏感信息已脱敏显示。凭证仅保存在本地 <code>deployer-config.json</code>。
     </p>`;
 }
 
@@ -411,14 +393,22 @@ function renderReview() {
 // ---------------------------------------------------------------------------
 
 function resetDeployUI() {
-  $('#deploy-step-name').textContent = 'Initializing…';
+  $('#deploy-step-name').textContent = '初始化中…';
   setProgress(0, 0);
   $('#terminal-log').innerHTML = '';
   hide($('#deploy-error-banner'));
+
+  const installDeepwiki = state.config.installDeepwiki !== false;
+  const installGitnexus = state.config.installGitnexus !== false;
+
   $$('.service-pill').forEach(p => {
     p.className = 'service-pill pill-pending';
     const modes = p.dataset.modes || '';
-    p.style.display = modes.includes(state.selectedMode) ? '' : 'none';
+    const svc   = p.dataset.service;
+    let visible = modes.includes(state.selectedMode);
+    if (svc === 'deepwiki' && !installDeepwiki) visible = false;
+    if (svc === 'gitnexus' && !installGitnexus) visible = false;
+    p.style.display = visible ? '' : 'none';
   });
 }
 
@@ -441,7 +431,7 @@ async function startDeploy() {
 
     if (!res.ok) {
       const err = await res.json().catch(() => ({ detail: res.statusText }));
-      showDeployError(err.detail || 'Failed to start deployment');
+      showDeployError(err.detail || '启动部署失败');
       return;
     }
 
@@ -465,7 +455,7 @@ function openEventStream() {
 
   es.onerror = () => {
     if (!state.deployDone) {
-      showDeployError('Connection to deployment stream lost');
+      showDeployError('与部署流的连接已断开');
     }
     es.close();
   };
@@ -481,7 +471,7 @@ function handleDeployEvent(evt) {
       state.deployEventSource.close();
       state.deployEventSource = null;
     }
-    appendLog('success', 'Deployment complete!');
+    appendLog('success', '部署完成！');
     setTimeout(() => goToStep(6), 800);
     return;
   }
@@ -491,7 +481,7 @@ function handleDeployEvent(evt) {
       state.deployEventSource.close();
       state.deployEventSource = null;
     }
-    showDeployError(message || 'Deployment failed');
+    showDeployError(message || '部署失败');
     return;
   }
 
@@ -501,18 +491,19 @@ function handleDeployEvent(evt) {
   if (step && status) updateServicePill(step, status);
   if (status === 'error') {
     state.hasDeployError = true;
-    showDeployError(message || 'An error occurred during deployment');
+    showDeployError(message || '部署过程中发生错误');
   }
 }
 
 const STEP_NAMES = {
-  check_env: 'Checking prerequisites',
-  install_backend: 'Installing backend',
-  install_frontend: 'Installing frontend',
-  install_gitnexus: 'Installing GitNexus',
-  generate_config: 'Generating config',
-  start_services: 'Starting services',
-  health_check: 'Health check',
+  check_env:        '检查环境',
+  install_backend:  '安装后端',
+  install_frontend: '安装前端',
+  install_gitnexus: '安装 GitNexus',
+  install_deepwiki: '安装 DeepWiki',
+  generate_config:  '生成配置文件',
+  start_services:   '启动服务',
+  health_check:     '健康检查',
 };
 
 function formatStepName(step) {
@@ -534,7 +525,7 @@ function appendLog(type, message) {
   const nearBottom = log.scrollHeight - log.scrollTop - log.clientHeight < 50;
   const line = document.createElement('div');
   line.className = `log-line log-${type}`;
-  const ts = new Date().toLocaleTimeString('en-US', { hour12: false });
+  const ts = new Date().toLocaleTimeString('zh-CN', { hour12: false });
   line.innerHTML = `<span class="log-ts">${escHtml(ts)}</span><span class="log-msg">${escHtml(message)}</span>`;
   log.appendChild(line);
   if (nearBottom) log.scrollTop = log.scrollHeight;
@@ -570,12 +561,17 @@ function showDeployError(msg) {
 function updateServiceUrls() {
   const cfg = state.config;
   const mode = state.selectedMode;
+  const installDeepwiki = cfg.installDeepwiki !== false;
+  const installGitnexus = cfg.installGitnexus !== false;
+
+  const deepwikiUiPort = cfg.portDeepwikiUi || '3001';
+  const gitnexusPort   = cfg.portGitnexus   || '7100';
 
   const NATIVE_URLS = {
     frontend:    'http://localhost:' + (cfg.portFrontend  || '3005'),
     backend:     'http://localhost:' + (cfg.portBackend   || '8100'),
-    gitnexus:    'http://localhost:' + (cfg.portGitnexus  || '7100'),
-    deepwiki:    state.deepwikiInstalled ? 'http://localhost:' + getDeepWikiUiPort(mode, cfg) : null,
+    deepwiki:    installDeepwiki ? 'http://localhost:' + deepwikiUiPort : null,
+    gitnexus:    installGitnexus ? 'http://localhost:' + gitnexusPort   : null,
     codecompass: null,
     joern:       null,
     zoekt:       null,
@@ -584,8 +580,8 @@ function updateServiceUrls() {
   const COMPOSE_URLS = {
     frontend:    'http://localhost:' + (cfg.portFrontend || '3005'),
     backend:     'http://localhost:' + (cfg.portBackend  || '8100'),
-    deepwiki:    'http://localhost:' + getDeepWikiApiPort(mode, cfg),
-    gitnexus:    'http://localhost:' + (cfg.portGitnexus || '7100'),
+    deepwiki:    installDeepwiki ? 'http://localhost:' + deepwikiUiPort : null,
+    gitnexus:    installGitnexus ? 'http://localhost:' + gitnexusPort   : null,
     codecompass: 'http://localhost:16251',
     joern:       'http://localhost:8080',
     zoekt:       'http://localhost:6070',
@@ -608,7 +604,7 @@ function updateServiceUrls() {
     const svc = card.getAttribute('data-service');
     const url = urls[svc];
     if (!url) {
-      card.style.display = 'none';  // hide inaccessible services in K8s
+      card.style.display = 'none';
       return;
     }
     card.style.display = '';
@@ -620,14 +616,12 @@ function updateServiceUrls() {
   // Update the "Open CodeTalk" hero button
   const heroBtn = document.querySelector('.complete-actions .btn-primary');
   if (heroBtn) heroBtn.href = urls.frontend;
-
-  showDeepWikiSection();
 }
 
 async function runHealthCheck() {
   const resultEl = $('#health-result');
   resultEl.style.display = '';
-  resultEl.innerHTML = '<div class="health-loading"><div class="spinner" aria-hidden="true"></div>Checking services…</div>';
+  resultEl.innerHTML = '<div class="health-loading"><div class="spinner" aria-hidden="true"></div>正在检查服务&hellip;</div>';
 
   try {
     const res = await fetch('/api/services/health');
@@ -635,7 +629,7 @@ async function runHealthCheck() {
     const data = await res.json();
     renderHealthResult(data.services || {});
   } catch (err) {
-    resultEl.innerHTML = `<div class="health-error">Health check failed: ${escHtml(err.message)}</div>`;
+    resultEl.innerHTML = `<div class="health-error">健康检查失败：${escHtml(err.message)}</div>`;
   }
 }
 
@@ -643,7 +637,7 @@ function renderHealthResult(services) {
   const resultEl = $('#health-result');
   const entries = normalizeHealthServices(services);
   if (!entries.length) {
-    resultEl.innerHTML = '<p class="text-muted">No service data returned.</p>';
+    resultEl.innerHTML = '<p class="text-muted">未返回任何服务数据。</p>';
     return;
   }
 
@@ -655,7 +649,7 @@ function renderHealthResult(services) {
           <div class="health-item ${ok ? 'health-ok' : 'health-bad'}">
             <span class="health-dot"></span>
             <span class="health-name">${escHtml(name)}</span>
-            <span class="health-status">${ok ? 'Healthy' : 'Unhealthy'}</span>
+            <span class="health-status">${ok ? '正常' : '异常'}</span>
           </div>`;
       }).join('')}
     </div>`;
@@ -714,8 +708,8 @@ function attachDeployHandlers() {
       state.deployEventSource = null;
     }
     try { await fetch('/api/deploy/stop', { method: 'POST' }); } catch {}
-    appendLog('error', 'Deployment stopped by user.');
-    showDeployError('Deployment was stopped.');
+    appendLog('error', '用户已手动停止部署。');
+    showDeployError('部署已被停止。');
   });
 
   $('#retry-btn').addEventListener('click', async () => {
@@ -730,146 +724,6 @@ function attachDeployHandlers() {
 
 function attachStep6Handlers() {
   $('#health-check-btn').addEventListener('click', () => runHealthCheck());
-  initDeepWikiSupplement();
-}
-
-function initDeepWikiSupplement() {
-  const section = $('#deepwiki-supplement');
-  const btn = $('#deepwiki-install-btn');
-  if (!section || !btn) return;
-
-  btn.addEventListener('click', () => startDeepWikiInstall());
-  syncDeepWikiSupplementState();
-}
-
-function showDeepWikiSection() {
-  const section = $('#deepwiki-supplement');
-  if (section && state.selectedMode === 'native') {
-    section.style.display = '';
-  }
-  syncDeepWikiSupplementState();
-}
-
-function syncDeepWikiSupplementState() {
-  const form = $('#deepwiki-form');
-  const successEl = $('#deepwiki-success');
-  const successMsg = $('#deepwiki-success-msg');
-  if (!form || !successEl || !successMsg) return;
-
-  if (state.deepwikiInstalled) {
-    hide(form);
-    successEl.style.display = '';
-    successMsg.textContent = `DeepWiki installed on localhost:${getDeepWikiUiPort('native', state.config)}`;
-  } else {
-    show(form);
-    hide(successEl);
-  }
-}
-
-async function refreshConfigState() {
-  const res = await fetch('/api/config');
-  if (!res.ok) throw new Error(`HTTP ${res.status}`);
-  const cfg = await res.json();
-  state.config = { ...state.config, ...cfg };
-  state.deepwikiInstalled = Boolean(cfg.deepwikiPath);
-  if (cfg.deepwikiPath && $('#deepwiki-path')) $('#deepwiki-path').value = cfg.deepwikiPath;
-  return cfg;
-}
-
-async function startDeepWikiInstall() {
-  const pathInput = $('#deepwiki-path');
-  const deepwikiPath = (pathInput.value || '').trim();
-  if (!deepwikiPath) {
-    pathInput.focus();
-    return;
-  }
-
-  const btn = $('#deepwiki-install-btn');
-  const logWrap = $('#deepwiki-install-log');
-  const logEl = $('#deepwiki-log');
-  const form = $('#deepwiki-form');
-  const successEl = $('#deepwiki-success');
-
-  btn.disabled = true;
-  btn.textContent = 'Installing...';
-  logWrap.style.display = '';
-  logEl.innerHTML = '';
-  hide(successEl);
-
-  try {
-    const res = await fetch('/api/deploy/supplement/deepwiki', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ deepwikiPath: deepwikiPath }),
-    });
-
-    if (!res.ok) {
-      const err = await res.json().catch(() => ({ detail: res.statusText }));
-      dwAppendLog('error', err.detail || 'Failed to start DeepWiki install');
-      btn.disabled = false;
-      btn.textContent = 'Install DeepWiki';
-      return;
-    }
-
-    const es = new EventSource('/api/deploy/stream');
-    es.onmessage = async evt => {
-      let payload;
-      try { payload = JSON.parse(evt.data); } catch { return; }
-
-      if (payload.step === 'done' && payload.status === 'done') {
-        es.close();
-        try {
-          await refreshConfigState();
-        } catch {
-          state.config = {
-            ...state.config,
-            deepwikiPath,
-            portDeepwiki: state.config.portDeepwiki || '8091',
-            deepwikiUiPort: state.config.deepwikiUiPort || '3001',
-          };
-          state.deepwikiInstalled = true;
-        }
-        hide(logWrap);
-        successEl.style.display = '';
-        btn.disabled = false;
-        btn.textContent = 'Install DeepWiki';
-        syncDeepWikiSupplementState();
-        updateServiceUrls();
-        return;
-      }
-
-      if (payload.message) {
-        dwAppendLog(payload.status === 'error' ? 'error' : payload.status === 'done' ? 'success' : 'info', payload.message);
-      }
-      if (payload.status === 'error') {
-        btn.disabled = false;
-        btn.textContent = 'Retry Install';
-        es.close();
-      }
-    };
-    es.onerror = () => {
-      dwAppendLog('error', 'Connection lost');
-      btn.disabled = false;
-      btn.textContent = 'Retry Install';
-      es.close();
-    };
-  } catch (err) {
-    dwAppendLog('error', err.message);
-    btn.disabled = false;
-    btn.textContent = 'Install DeepWiki';
-  }
-}
-
-function dwAppendLog(type, message) {
-  const logEl = $('#deepwiki-log');
-  if (!logEl) return;
-  const nearBottom = logEl.scrollHeight - logEl.scrollTop - logEl.clientHeight < 50;
-  const line = document.createElement('div');
-  line.className = `log-line log-${type}`;
-  const ts = new Date().toLocaleTimeString('en-US', { hour12: false });
-  line.innerHTML = `<span class="log-ts">${escHtml(ts)}</span><span class="log-msg">${escHtml(message)}</span>`;
-  logEl.appendChild(line);
-  if (nearBottom) logEl.scrollTop = logEl.scrollHeight;
 }
 
 function attachRecheckHandler() {
