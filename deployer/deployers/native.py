@@ -238,9 +238,9 @@ class NativeDeployer:
                 if resp.status_code < 500:
                     await self._emit_sup("deepwiki_health", "done", f"DeepWiki 健康运行（API:{api_port} UI:{ui_port}）", 5, total)
                 else:
-                    await self._emit_sup("deepwiki_health", "done", f"DeepWiki 已启动 — 健康检查返回 HTTP {resp.status_code}", 5, total)
+                    await self._emit_sup("deepwiki_health", "done", f"⚠ DeepWiki 已安装，但健康检查返回 HTTP {resp.status_code}，请在 CodeTalk 页面确认最终状态", 5, total)
         except Exception:
-            await self._emit_sup("deepwiki_health", "done", f"DeepWiki 已启动（API:{api_port} UI:{ui_port}）— 健康检查待确认", 5, total)
+            await self._emit_sup("deepwiki_health", "done", f"⚠ DeepWiki 已安装，健康检查暂未响应（API:{api_port}），服务可能仍在启动", 5, total)
 
     async def _emit_sup(self, step: str, status: str, message: str, current: int, total: int) -> None:
         await self._queue.put({

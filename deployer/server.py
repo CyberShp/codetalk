@@ -181,6 +181,9 @@ async def api_supplement_deepwiki(body: dict):
 
     event_queue: asyncio.Queue = asyncio.Queue()
     deployer = NativeDeployer(cfg, event_queue)
+    old_deployer = _deploy_state.get("deployer")
+    if old_deployer is not None and hasattr(old_deployer, "_processes"):
+        deployer._processes.update(old_deployer._processes)
 
     _deploy_state.update({
         "job_id": str(uuid.uuid4()),
