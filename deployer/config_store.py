@@ -132,9 +132,9 @@ def get_default_config(mode: str) -> dict:
         base["deepwiki_ui_port"] = 3001
         base["ollama_base_url"] = "http://localhost:11434"
     else:
-        base["backend_port"] = 8000
-        base["deepwiki_api_port"] = 8001
-        base["deepwiki_ui_port"] = 3000
+        base["backend_port"] = 8100
+        base["deepwiki_api_port"] = 8091
+        base["deepwiki_ui_port"] = 3001
         base["ollama_base_url"] = "http://host.docker.internal:11434"
         base["postgres_user"] = "codetalks"
         base["postgres_password"] = "changeme"
