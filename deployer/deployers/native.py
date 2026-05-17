@@ -354,20 +354,24 @@ class NativeDeployer:
         step = 4
         await self._emit("install_gitnexus", "running", "配置 GitNexus...", step)
 
-        rc, stdout, _ = await self._run_capture("gitnexus", "--version")
+        # On Windows asyncio.create_subprocess_exec cannot resolve .cmd shims;
+        # use the explicit .cmd extension, same pattern as npm.cmd handling.
+        gitnexus_cli = "gitnexus.cmd" if sys.platform == "win32" else "gitnexus"
+
+        rc, stdout, _ = await self._run_capture(gitnexus_cli, "--version")
         if rc == 0 and stdout.strip():
             await self._emit("install_gitnexus", "done", f"GitNexus 已安装 (v{stdout.strip()})，跳过", step)
-            self._config["_gitnexus_cmd"] = ["gitnexus"]
+            self._config["_gitnexus_cmd"] = [gitnexus_cli]
             return
 
         await self._emit("install_gitnexus", "running", "尝试 npm install -g gitnexus...", step)
         npm_cmd = "npm.cmd" if sys.platform == "win32" else "npm"
         rc = await self._run_stream("install_gitnexus", step, npm_cmd, "install", "-g", "gitnexus")
         if rc == 0:
-            rc2, stdout2, _ = await self._run_capture("gitnexus", "--version")
+            rc2, stdout2, _ = await self._run_capture(gitnexus_cli, "--version")
             if rc2 == 0:
                 await self._emit("install_gitnexus", "done", f"GitNexus 已通过 npm 安装 (v{stdout2.strip()})", step)
-                self._config["_gitnexus_cmd"] = ["gitnexus"]
+                self._config["_gitnexus_cmd"] = [gitnexus_cli]
                 return
 
         vendor_entry = VENDOR_DIR / "gitnexus" / "dist" / "cli" / "index.js"
@@ -483,7 +487,8 @@ class NativeDeployer:
         )
 
         if cfg.get("install_gitnexus", True):
-            gitnexus_cmd = cfg.get("_gitnexus_cmd", ["gitnexus"])
+            _gn_default = ["gitnexus.cmd" if sys.platform == "win32" else "gitnexus"]
+            gitnexus_cmd = cfg.get("_gitnexus_cmd", _gn_default)
             await self._start_process(
                 "gitnexus",
                 [*gitnexus_cmd, "serve", "--port", str(gitnexus_port), "--host", "0.0.0.0"],

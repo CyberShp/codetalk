@@ -11,6 +11,13 @@ from typing import Any
 import httpx
 
 from app.config import settings
+from app.adapters.base import (
+    AnalysisRequest,
+    BaseToolAdapter,
+    ToolCapability,
+    ToolHealth,
+    UnifiedResult,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -172,3 +179,39 @@ class DeepWikiClient:
         except Exception as exc:
             logger.error("DeepWikiClient: get_wiki_structure failed: %s", exc)
             raise
+
+
+class DeepwikiAdapter(BaseToolAdapter):
+    """BaseToolAdapter wrapper around DeepWikiClient for the adapter registry."""
+
+    def __init__(self, base_url: str | None = None) -> None:
+        self._client = DeepWikiClient(base_url=base_url)
+
+    def name(self) -> str:
+        return "deepwiki"
+
+    def capabilities(self) -> list[ToolCapability]:
+        return [ToolCapability.DOCUMENTATION, ToolCapability.KNOWLEDGE_GRAPH]
+
+    async def health_check(self) -> ToolHealth:
+        is_healthy = await self._client.health()
+        return ToolHealth(
+            is_healthy=is_healthy,
+            container_status="running" if is_healthy else "unreachable",
+        )
+
+    async def prepare(self, request: AnalysisRequest) -> None:
+        pass  # DeepWiki indexes on-demand per request
+
+    async def analyze(self, request: AnalysisRequest) -> UnifiedResult:
+        data = await self._client.generate_wiki(request.repo_local_path)
+        return UnifiedResult(
+            tool_name=self.name(),
+            capability=ToolCapability.DOCUMENTATION,
+            data=data,
+            raw_output=str(data.get("content", "")),
+        )
+
+    async def stream_logs(self, run_id: str) -> AsyncIterator[str]:
+        return
+        yield  # make this an async generator

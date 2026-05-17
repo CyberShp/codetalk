@@ -44,7 +44,7 @@ def _register_defaults() -> None:
     from app.adapters.zoekt import ZoektAdapter
 
     def deepwiki_factory() -> DeepwikiAdapter:
-        return DeepwikiAdapter(base_url=settings.deepwiki_base_url)
+        return DeepwikiAdapter(base_url=settings.deepwiki_api_url)
 
     def gitnexus_factory() -> GitNexusAdapter:
         return GitNexusAdapter(base_url=settings.gitnexus_base_url)

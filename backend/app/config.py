@@ -20,6 +20,10 @@ class Settings(BaseSettings):
     gitnexus_base_url: str = "http://localhost:7100"
     deepwiki_api_url: str = "http://localhost:8001"
     deepwiki_ui_url: str = "http://localhost:3000"
+    zoekt_base_url: str = "http://localhost:6070"
+    zoekt_container_name: str = "codetalk-zoekt"
+    joern_base_url: str = "http://localhost:8090"
+    codecompass_base_url: str = "http://localhost:16251"
 
     # Tool process management
     gitnexus_port: int = 7100
