@@ -171,13 +171,13 @@
           <p class="step-subtitle">配置您的部署参数</p>
           <form id="config-form" class="config-form" novalidate>
 
-            <!-- LLM 内网模型配置 -->
+            <!-- DeepWiki LLM 模型配置 -->
             <fieldset class="form-section">
-              <legend class="form-section-title">内网 AI 大模型配置</legend>
-              <p class="form-section-desc">使用 OpenAI 兼容接口，强制直连（不走代理），Bearer Token 认证</p>
+              <legend class="form-section-title">DeepWiki AI 模型配置</legend>
+              <p class="form-section-desc">仅用于 DeepWiki 知识库生成。使用 OpenAI 兼容接口，强制直连（不走代理）</p>
               <div class="form-row">
                 <div class="form-group" style="flex:2">
-                  <label class="form-label" for="llm-base-url">模型服务地址（Base URL）</label>
+                  <label class="form-label" for="llm-base-url">模型服务地址</label>
                   <input type="text" id="llm-base-url" name="llmBaseUrl" class="form-input font-mono"
                          placeholder="http://your-llm-server/v1" autocomplete="off" />
                 </div>
@@ -189,7 +189,7 @@
               </div>
               <div class="form-row">
                 <div class="form-group" style="flex:2">
-                  <label class="form-label" for="llm-api-key">API Key</label>
+                  <label class="form-label" for="llm-api-key">API 密钥</label>
                   <div class="input-with-toggle">
                     <input type="password" id="llm-api-key" name="llmApiKey" class="form-input"
                            placeholder="sk-&hellip;" autocomplete="off" />
@@ -209,12 +209,12 @@
               <p class="form-section-desc">选择需要安装的可选组件</p>
               <div class="component-list">
                 <label class="component-item">
-                  <input type="checkbox" id="install-deepwiki" name="installDeepwiki" checked />
+                  <input type="checkbox" id="install-deepwiki" name="installDeepwiki" />
                   <div class="component-info">
                     <span class="component-name">DeepWiki-Open</span>
                     <span class="component-desc">代码知识库 &mdash; AI 驱动的代码文档生成</span>
                   </div>
-                  <div class="component-ports" id="deepwiki-ports">
+                  <div class="component-ports" id="deepwiki-ports" style="display:none">
                     <span class="port-label">API 端口</span>
                     <input type="number" id="port-deepwiki-api" name="portDeepwikiApi" class="form-input form-input-sm font-mono" value="8091" min="1024" max="65535" />
                     <span class="port-label">UI 端口</span>

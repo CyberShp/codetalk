@@ -214,14 +214,16 @@ function initConfigForm() {
     apiKeyToggle.setAttribute('aria-label', visible ? '显示 API Key' : '隐藏 API Key');
   });
 
-  // Dim port inputs when component is unchecked
+  // Show/hide component port panels based on checkbox state
   const installDeepwikiCb = $('#install-deepwiki');
   const installGitnexusCb = $('#install-gitnexus');
   if (installDeepwikiCb) {
-    installDeepwikiCb.addEventListener('change', () => {
+    const syncDeepwikiPorts = () => {
       const ports = $('#deepwiki-ports');
-      if (ports) ports.style.opacity = installDeepwikiCb.checked ? '1' : '0.4';
-    });
+      if (ports) ports.style.display = installDeepwikiCb.checked ? '' : 'none';
+    };
+    installDeepwikiCb.addEventListener('change', syncDeepwikiPorts);
+    syncDeepwikiPorts();
   }
   if (installGitnexusCb) {
     installGitnexusCb.addEventListener('change', () => {
@@ -241,7 +243,11 @@ function initConfigForm() {
       if (cfg.llmBaseUrl)      ($('#llm-base-url') || {}).value      = cfg.llmBaseUrl;
       if (cfg.llmModel)        ($('#llm-model')     || {}).value      = cfg.llmModel;
       if (cfg.llmApiKey)       apiKeyInput.value                      = cfg.llmApiKey;
-      if (cfg.installDeepwiki === false && installDeepwikiCb) installDeepwikiCb.checked = false;
+      if (installDeepwikiCb && cfg.installDeepwiki !== undefined) {
+        installDeepwikiCb.checked = !!cfg.installDeepwiki;
+        const ports = $('#deepwiki-ports');
+        if (ports) ports.style.display = installDeepwikiCb.checked ? '' : 'none';
+      }
       if (cfg.installGitnexus === false && installGitnexusCb) installGitnexusCb.checked = false;
       if (cfg.portDeepwikiApi) ($('#port-deepwiki-api') || {}).value  = cfg.portDeepwikiApi;
       if (cfg.portDeepwikiUi)  ($('#port-deepwiki-ui')  || {}).value  = cfg.portDeepwikiUi;
@@ -336,9 +342,9 @@ function renderReview() {
   const rows = [
     { label: '部署模式',  value: MODE_LABELS[cfg.mode] || cfg.mode },
     null,
-    { label: 'Base URL',  value: cfg.llmBaseUrl || '（未设置）', mono: true },
-    { label: '模型名称',  value: cfg.llmModel   || '（未设置）' },
-    { label: 'API Key',   value: cfg.llmApiKey ? maskKey(cfg.llmApiKey) : '（未设置）', mono: true, sensitive: true },
+    { label: '模型服务地址', value: cfg.llmBaseUrl || '（未设置）', mono: true },
+    { label: '模型名称',    value: cfg.llmModel   || '（未设置）' },
+    { label: 'API 密钥',   value: cfg.llmApiKey ? maskKey(cfg.llmApiKey) : '（未设置）', mono: true, sensitive: true },
     null,
   ];
 
@@ -676,7 +682,17 @@ function escHtml(str) {
 
 function attachNavHandlers() {
   $('#btn-next').addEventListener('click', async () => {
-    if (state.currentStep === 3) await saveConfig();
+    if (state.currentStep === 3) {
+      const dwCb = $('#install-deepwiki');
+      const dwPath = $('#deepwiki-path');
+      if (dwCb && dwCb.checked && dwPath && !dwPath.value.trim()) {
+        dwPath.setCustomValidity('请填写 DeepWiki-Open 源码路径');
+        dwPath.reportValidity();
+        return;
+      }
+      if (dwPath) dwPath.setCustomValidity('');
+      await saveConfig();
+    }
     if (state.currentStep === 6) {
       const frontendUrl = state.selectedMode === 'k8s' ? 'http://localhost/' : 'http://localhost:' + (state.config.portFrontend || '3005');
       window.open(frontendUrl, '_blank', 'noopener,noreferrer');
