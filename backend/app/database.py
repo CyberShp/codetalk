@@ -63,6 +63,17 @@ CREATE TABLE IF NOT EXISTS coverage_analyses (
     created_at TEXT,
     updated_at TEXT
 );
+
+CREATE TABLE IF NOT EXISTS task_chats (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    task_id TEXT NOT NULL,
+    role TEXT NOT NULL,
+    content TEXT NOT NULL,
+    created_at TEXT NOT NULL,
+    FOREIGN KEY (task_id) REFERENCES tasks(id)
+);
+
+CREATE INDEX IF NOT EXISTS idx_task_chats_task ON task_chats(task_id);
 """
 
 _MIGRATIONS = [

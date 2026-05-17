@@ -4,8 +4,10 @@ Works with any endpoint that implements the /v1/chat/completions interface
 (OpenAI, vLLM, Ollama, LM Studio, Together AI, etc.).
 """
 
+import json
 import logging
 import time
+from collections.abc import AsyncIterator
 
 import httpx
 
@@ -65,6 +67,43 @@ class OpenAICompatClient(BaseLLMClient):
         )
         await self._write_debug_snapshot(messages, result, (time.monotonic() - t0) * 1000)
         return result
+
+    async def stream_complete(
+        self,
+        messages: list[dict],
+        max_tokens: int = 4096,
+        temperature: float = 0.3,
+    ) -> AsyncIterator[str]:
+        """True streaming via OpenAI SSE — yields content deltas as they arrive."""
+        headers = {
+            "Authorization": f"Bearer {self._api_key}",
+            "Content-Type": "application/json",
+        }
+        payload = {
+            "model": self._model,
+            "max_tokens": max_tokens,
+            "temperature": temperature,
+            "messages": messages,
+            "stream": True,
+        }
+        url = f"{self._base_url}/v1/chat/completions"
+        logger.info("OpenAI-compat streaming call: model=%s", self._model)
+
+        async with self._client.stream("POST", url, headers=headers, json=payload) as resp:
+            resp.raise_for_status()
+            async for line in resp.aiter_lines():
+                if not line.startswith("data: "):
+                    continue
+                data = line[6:]
+                if data == "[DONE]":
+                    break
+                try:
+                    chunk = json.loads(data)
+                    delta = chunk["choices"][0].get("delta", {}).get("content", "")
+                    if delta:
+                        yield delta
+                except (KeyError, IndexError, json.JSONDecodeError):
+                    continue
 
     async def _do_complete(
         self,

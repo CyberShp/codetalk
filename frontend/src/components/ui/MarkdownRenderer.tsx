@@ -93,7 +93,7 @@ export default function MarkdownRenderer({
         return (
           <h2
             id={id}
-            className="font-display text-xl font-semibold text-on-surface mb-3 mt-5 scroll-mt-6"
+            className="font-display text-xl font-semibold text-on-surface mb-3 mt-5 scroll-mt-6 border-l-[3px] border-primary pl-3"
           >
             {children}
           </h2>
@@ -104,7 +104,7 @@ export default function MarkdownRenderer({
         return (
           <h3
             id={id}
-            className="font-display text-lg font-medium text-on-surface mb-2 mt-4 scroll-mt-6"
+            className="font-display text-lg font-medium text-on-surface mb-2 mt-4 scroll-mt-6 border-l-2 border-primary/40 pl-2.5"
           >
             {children}
           </h3>
@@ -131,12 +131,20 @@ export default function MarkdownRenderer({
           return <MermaidRenderer chart={chart} />;
         }
         if (isBlock) {
+          const lang = className?.replace("language-", "");
           return (
-            <pre className="bg-surface-container-lowest rounded-lg p-4 overflow-x-auto mb-4">
-              <code className="font-data text-xs text-on-surface/80">
-                {children}
-              </code>
-            </pre>
+            <div className="relative mb-4">
+              {lang && (
+                <span className="absolute top-0 right-0 text-[10px] font-mono text-[#8b949e] bg-[#161b22] px-2.5 py-1 rounded-bl-lg rounded-tr-xl border-b border-l border-[#30363d] select-none z-10">
+                  {lang}
+                </span>
+              )}
+              <pre className="bg-[#0d1117] rounded-xl p-4 overflow-x-auto">
+                <code className="font-data text-xs text-[#c9d1d9]">
+                  {children}
+                </code>
+              </pre>
+            </div>
           );
         }
         return (
@@ -167,7 +175,7 @@ export default function MarkdownRenderer({
         <thead>{children}</thead>
       ),
       tbody: ({ children }) => (
-        <tbody>{children}</tbody>
+        <tbody className="[&>tr:nth-child(even)]:bg-surface-container-high/20">{children}</tbody>
       ),
       tr: ({ children }) => (
         <tr className="border-b border-outline-variant/15 last:border-0 hover:bg-surface-container-high/30 transition-colors">
@@ -183,7 +191,7 @@ export default function MarkdownRenderer({
         <td className="py-2 px-3 text-on-surface/80">{children}</td>
       ),
       blockquote: ({ children }) => (
-        <blockquote className="border-l-2 border-primary-container pl-4 text-on-surface-variant italic mb-3">
+        <blockquote className="bg-primary/5 border-l-4 border-primary/40 rounded-r-lg py-2.5 px-4 text-on-surface-variant mb-3">
           {children}
         </blockquote>
       ),

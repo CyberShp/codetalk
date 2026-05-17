@@ -5,6 +5,7 @@ import hashlib
 import json
 import logging
 from abc import ABC, abstractmethod
+from collections.abc import AsyncIterator
 from contextvars import ContextVar
 from dataclasses import dataclass
 from datetime import datetime, timezone
@@ -92,6 +93,16 @@ class BaseLLMClient(ABC):
     ) -> LLMResponse:
         """Send messages to the LLM and return a response."""
         ...
+
+    async def stream_complete(
+        self,
+        messages: list[dict],
+        max_tokens: int = 4096,
+        temperature: float = 0.3,
+    ) -> AsyncIterator[str]:
+        """Stream completion tokens. Default: fallback to complete() and yield once."""
+        resp = await self.complete(messages, max_tokens, temperature)
+        yield resp.content
 
     @abstractmethod
     async def health_check(self) -> tuple[bool, str]:

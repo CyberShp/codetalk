@@ -1,7 +1,9 @@
 """Anthropic Messages API client."""
 
+import json
 import logging
 import time
+from collections.abc import AsyncIterator
 
 import httpx
 
@@ -63,6 +65,48 @@ class AnthropicClient(BaseLLMClient):
         )
         await self._write_debug_snapshot(messages, result, (time.monotonic() - t0) * 1000)
         return result
+
+    async def stream_complete(
+        self,
+        messages: list[dict],
+        max_tokens: int = 4096,
+        temperature: float = 0.3,
+    ) -> AsyncIterator[str]:
+        """True streaming via Anthropic SSE — yields text deltas as they arrive."""
+        headers = {
+            "x-api-key": self._api_key,
+            "Authorization": f"Bearer {self._api_key}",
+            "anthropic-version": _ANTHROPIC_VERSION,
+            "content-type": "application/json",
+        }
+        payload = {
+            "model": self._model,
+            "max_tokens": max_tokens,
+            "temperature": temperature,
+            "messages": messages,
+            "stream": True,
+        }
+        url = f"{self._base_url}/v1/messages"
+        logger.info("Anthropic streaming call: model=%s", self._model)
+
+        async with self._client.stream("POST", url, headers=headers, json=payload) as resp:
+            resp.raise_for_status()
+            current_event: str | None = None
+            async for line in resp.aiter_lines():
+                if line.startswith("event: "):
+                    current_event = line[7:].strip()
+                elif line.startswith("data: ") and current_event == "content_block_delta":
+                    try:
+                        data = json.loads(line[6:])
+                        delta = data.get("delta", {})
+                        if delta.get("type") == "text_delta":
+                            text = delta.get("text", "")
+                            if text:
+                                yield text
+                    except json.JSONDecodeError:
+                        continue
+                elif not line:
+                    current_event = None
 
     async def _do_complete(
         self,

@@ -186,9 +186,15 @@ def _identify_port_user(port: int) -> str:
         return ""
 
 
-def _check_ports(ports: list[int] | None = None, mode: str = "compose") -> list[dict]:
+def _check_ports(
+    ports: list[int] | None = None,
+    mode: str = "compose",
+    own_ports: set[int] | None = None,
+) -> list[dict]:
     if ports is None:
         ports = [5433, 8000, 3005, 8001, 7100, 8080, 16251, 6070]
+    if own_ports is None:
+        own_ports = set()
     hint = (
         "Stop the process using the port or change the port in the deployer config"
         if mode == "native"
@@ -199,6 +205,10 @@ def _check_ports(ports: list[int] | None = None, mode: str = "compose") -> list[
         if _check_port_free(port):
             results.append(
                 _make_result(f"Port {port}", "pass", f"Port {port} is available")
+            )
+        elif port in own_ports:
+            results.append(
+                _make_result(f"Port {port}", "pass", f"Port {port} 已被 CodeTalk 服务占用（正常运行中）")
             )
         else:
             pid_info = _identify_port_user(port)
@@ -254,6 +264,24 @@ def _check_memory() -> dict:
     )
 
 
+def _detect_own_running_ports(candidate_ports: set[int]) -> set[int]:
+    """Check which candidate ports are occupied by processes matching CodeTalk service names."""
+    own: set[int] = set()
+    try:
+        for conn in psutil.net_connections(kind="inet"):
+            if conn.status == "LISTEN" and conn.laddr.port in candidate_ports:
+                try:
+                    proc = psutil.Process(conn.pid)
+                    cmdline = " ".join(proc.cmdline()).lower()
+                    if any(kw in cmdline for kw in ("uvicorn", "next", "gitnexus", "node", "python")):
+                        own.add(conn.laddr.port)
+                except (psutil.NoSuchProcess, psutil.AccessDenied):
+                    pass
+    except (psutil.AccessDenied, OSError):
+        pass
+    return own
+
+
 async def run_checks(mode: str) -> list[dict]:
     """Run prerequisite checks for the given deployment mode.
 
@@ -280,7 +308,8 @@ async def run_checks(mode: str) -> list[dict]:
             int(saved.get("backend_port", 8100)),
             int(saved.get("gitnexus_port", 7100)),
         ]
-        results.extend(_check_ports(ports=native_ports, mode="native"))
+        own_ports = _detect_own_running_ports(set(native_ports))
+        results.extend(_check_ports(ports=native_ports, mode="native", own_ports=own_ports))
     elif mode == "k8s":
         docker_result = await _check_docker()
         results.append(docker_result)

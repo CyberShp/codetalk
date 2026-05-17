@@ -53,8 +53,8 @@
           ▼                 ▼                           │
    ┌────────────┐   ┌─────────────┐  ┌──────────────┐  │
    │ 内网 AI API │   │GitNexus:7100│  │DeepWiki-Open │  │
-   │ (LLM)      │   │(本地进程)    │  │:8001(API)    │  │
-   └────────────┘   └─────────────┘  │:3000(UI)     │  │
+   │ (LLM)      │   │(本地进程)    │  │:8091(API)    │  │
+   └────────────┘   └─────────────┘  │:3001(UI)     │  │
                                      └──────────────┘  │
 ```
 
@@ -65,8 +65,8 @@
 | 前端 | 3005 | Next.js dev server |
 | 后端 API | 8100 | FastAPI |
 | GitNexus | 7100 | gitnexus serve |
-| DeepWiki-Open API | 8001 | Python API server |
-| DeepWiki-Open UI | 3000 | Next.js (DeepWiki 自带) |
+| DeepWiki-Open API | 8091 | Python API server |
+| DeepWiki-Open UI | 3001 | Next.js (DeepWiki 自带) |
 | **禁用** | 3003, 3004 | Cat Cafe 保留端口 |
 
 ### 2.2 数据存储
@@ -216,7 +216,7 @@ Phase 4: 交叉增强
 
 ```
 MAX_TOKENS_PER_CALL = 40000
-MAX_OUTPUT_TOKENS = 4096
+MAX_OUTPUT_TOKENS = 8192
 SUMMARY_MAX_WORDS = 200
 ```
 
@@ -259,13 +259,13 @@ TOOL_REGISTRY = {
     },
     "deepwiki-api": {
         "command": ["python", "-m", "api.main"],
-        "health_url": "http://localhost:8001/health",
+        "health_url": "http://localhost:8091/health",
         "cwd": "{DEEPWIKI_PATH}/api",
         "env": {"TIKTOKEN_CACHE_DIR": "{DATA_DIR}/tiktoken_cache"},
     },
     "deepwiki-ui": {
         "command": ["npm", "run", "start"],
-        "health_url": "http://localhost:3000",
+        "health_url": "http://localhost:3001",
         "cwd": "{DEEPWIKI_PATH}",
     },
 }
@@ -346,21 +346,125 @@ codetalk/
 
 ## 10. Sprint 规划
 
-### Sprint 1: 骨架 + 基础 CRUD
+### Sprint 1: 骨架 + 基础 CRUD ✅
 - 后端: FastAPI 入口、SQLite、任务 CRUD、设置 API
 - 前端: 项目初始化、仪表盘、新建分析、设置页
 
-### Sprint 2: 工具集成
+### Sprint 2: 工具集成 ✅
 - GitNexus adapter + 进程管理
 - DeepWiki adapter + 进程管理
 
-### Sprint 3: AI Pipeline
-- LLM Client 双协议
-- 分析编排引擎
-- Prompt 模板（中文）
-- 报告生成
+### Sprint 3: AI Pipeline ✅
+- LLM Client 双协议（Anthropic + OpenAI 兼容）
+- 分析编排引擎（AnalysisPipeline）
+- Prompt 模板（中文 7 步分析法）
+- 报告生成（6 份 Markdown）
 
-### Sprint 4: 前端对接 + 导出
-- 任务详情页、结果查看
+### Sprint 4: 前端对接 + 导出 ✅
+- 任务详情页、结果查看（含 Tab 切换）
 - 导出功能
 - 端到端测试
+
+### 当前: 部署向导 + 产品化打磨 ✅
+- 内置 Deployer 向导（7 步 SSE 流式部署，:9000）
+- 补充部署（独立安装 DeepWiki / GitNexus，热重启 backend）
+- 真实流式聊天（stream_complete，SSE 逐 token 推送）
+- 报告内嵌 AI 问答面板（ReportChatPanel）
+- DeepWiki 端口修正（8091/3001）、健康检查覆盖
+
+---
+
+## 11. 部署向导（Deployer）
+
+独立 FastAPI 服务，端口 9000，为零基础用户提供 GUI 一键部署体验。
+
+### 11.1 组件结构
+
+```
+deployer/
+├── start.py          # 入口：启动 uvicorn + 打开浏览器
+├── start.bat         # Windows 快捷启动脚本
+├── server.py         # FastAPI API + SSE 流式部署
+├── config_store.py   # .deploy-config.json 配置持久化
+├── checks.py         # 前置端口检查（psutil）
+├── deployers/
+│   └── native.py     # NativeDeployer：7 步原生部署器
+└── static/           # 前端静态页面（纯 HTML/JS）
+    ├── index.html    # 配置表单页
+    ├── deploy.html   # 部署进度页（SSE 消费）
+    └── start.html    # 启动管理页
+```
+
+### 11.2 SSE 流式部署
+
+部署全程通过 SSE（`/api/deploy/stream`）实时推送进度，每个步骤输出格式：
+
+```json
+{
+  "step": "install_backend",
+  "status": "running | done | error",
+  "message": "正在安装依赖...",
+  "progress": { "current": 2, "total": 7 }
+}
+```
+
+### 11.3 配置持久化
+
+配置存储于 `deployer/.deploy-config.json`，支持 camelCase（前端）↔ snake_case（后端）自动转换：
+
+| 前端 key | 后端 key |
+|----------|----------|
+| portBackend | backend_port |
+| portDeepwiki | deepwiki_api_port |
+| deepwikiPath | deepwiki_path |
+| installGitnexus | install_gitnexus |
+
+### 11.4 补充部署
+
+`POST /api/deploy/supplement/deepwiki` 调用链：
+1. 从 `_deploy_state` 取旧 deployer，将其 `_processes` 复制到新 deployer
+2. `supplement_deepwiki()` 检查 `_processes["backend"]` 进程句柄
+3. 写入新 `.env` → 终止旧 backend → 重启 backend → 等待 5 秒
+4. 健康检查 `http://localhost:{deepwiki_api_port}/health`
+
+---
+
+## 12. 报告问答（ReportChatPanel）
+
+报告页面（`/tasks/{id}/report`）右侧内嵌 AI 对话面板，基于当前分析报告内容回答问题。
+
+### 12.1 架构
+
+```
+ReportChatPanel (React)
+  └── POST /api/tasks/{id}/chat   → StreamingResponse (SSE)
+        ├── 加载报告文件（≤3000 chars/文件）作为 system prompt 上下文
+        ├── 加载历史消息（task_chats 表）实现多轮对话
+        └── llm.stream_complete() 真实流式推送
+```
+
+### 12.2 数据持久化
+
+历史消息存储于 `task_chats` 表：
+
+```sql
+CREATE TABLE task_chats (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    task_id TEXT NOT NULL,
+    role TEXT NOT NULL,        -- 'user' | 'assistant'
+    content TEXT NOT NULL,
+    created_at TEXT NOT NULL
+);
+```
+
+### 12.3 流式协议
+
+SSE 数据格式（与部署向导复用同一约定）：
+
+```json
+{ "content": "token chunk", "done": false }
+{ "content": "", "done": true }
+{ "content": "", "done": true, "error": "生成失败，请重试" }
+```
+
+助手回复通过 `finally` 块保证在流结束或客户端断连时写入数据库，不丢失内容。

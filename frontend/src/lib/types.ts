@@ -118,6 +118,14 @@ export interface ToolInfo {
 
 export type ExportFormat = "md" | "docx" | "xml";
 
+export interface ChatMessage {
+  id: number;
+  task_id: string;
+  role: "user" | "assistant";
+  content: string;
+  created_at: string;
+}
+
 /* ── Coverage analysis types ── */
 
 export type CoverageStatus = "parsed" | "analyzing" | "analyzed";

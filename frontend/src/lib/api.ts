@@ -2,6 +2,7 @@ import type {
   Task,
   TaskCreate,
   TaskStep,
+  ChatMessage,
   LLMConfig,
   LLMConfigCreate,
   LLMConfigUpdate,
@@ -15,7 +16,7 @@ import type {
   CoverageModuleResult,
 } from "./types";
 
-const BASE =
+export const BASE =
   typeof window !== "undefined"
     ? `${window.location.protocol}//${window.location.hostname}:8100`
     : (process.env.NEXT_PUBLIC_API_URL ?? "http://localhost:8100");
@@ -143,6 +144,11 @@ export const api = {
 
     exportUrl: (id: string, format: string) =>
       `${BASE}/api/tasks/${id}/export?format=${format}`,
+
+    chatHistory: (id: string) =>
+      request<ChatMessage[]>(`/api/tasks/${id}/chat`),
+
+    chatUrl: (id: string) => `${BASE}/api/tasks/${id}/chat`,
   },
 
   // ── LLM 配置 ──

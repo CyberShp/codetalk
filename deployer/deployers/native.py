@@ -350,28 +350,31 @@ class NativeDeployer:
     # Step 4: Install GitNexus
     # ------------------------------------------------------------------
 
+    def _workspace_path(self) -> Path:
+        ws = self._config.get("workspace_path", "./workspace")
+        p = Path(ws)
+        if not p.is_absolute():
+            p = (PROJECT_ROOT / p).resolve()
+        return p
+
     async def _step_install_gitnexus(self) -> None:
         step = 4
         await self._emit("install_gitnexus", "running", "配置 GitNexus...", step)
 
-        # On Windows asyncio.create_subprocess_exec cannot resolve .cmd shims;
-        # use the explicit .cmd extension, same pattern as npm.cmd handling.
-        gitnexus_cli = "gitnexus.cmd" if sys.platform == "win32" else "gitnexus"
-
-        rc, stdout, _ = await self._run_capture(gitnexus_cli, "--version")
-        if rc == 0 and stdout.strip():
-            await self._emit("install_gitnexus", "done", f"GitNexus 已安装 (v{stdout.strip()})，跳过", step)
-            self._config["_gitnexus_cmd"] = [gitnexus_cli]
-            return
-
-        await self._emit("install_gitnexus", "running", "尝试 npm install -g gitnexus...", step)
+        workspace = self._workspace_path()
+        gn_dir = workspace / "gitnexus"
         npm_cmd = "npm.cmd" if sys.platform == "win32" else "npm"
-        rc = await self._run_stream("install_gitnexus", step, npm_cmd, "install", "-g", "gitnexus")
-        if rc == 0:
-            rc2, stdout2, _ = await self._run_capture(gitnexus_cli, "--version")
-            if rc2 == 0:
-                await self._emit("install_gitnexus", "done", f"GitNexus 已通过 npm 安装 (v{stdout2.strip()})", step)
-                self._config["_gitnexus_cmd"] = [gitnexus_cli]
+
+        if sys.platform == "win32":
+            local_bin = gn_dir / "node_modules" / ".bin" / "gitnexus.cmd"
+        else:
+            local_bin = gn_dir / "node_modules" / ".bin" / "gitnexus"
+
+        if local_bin.exists():
+            rc, stdout, _ = await self._run_capture(str(local_bin), "--version")
+            if rc == 0 and stdout.strip():
+                await self._emit("install_gitnexus", "done", f"GitNexus 已安装于工作目录 (v{stdout.strip()})，跳过", step)
+                self._config["_gitnexus_cmd"] = [str(local_bin)]
                 return
 
         vendor_entry = VENDOR_DIR / "gitnexus" / "dist" / "cli" / "index.js"
@@ -385,9 +388,19 @@ class NativeDeployer:
                 self._config["_gitnexus_cmd"] = ["node", str(vendor_entry)]
                 return
 
+        gn_dir.mkdir(parents=True, exist_ok=True)
+        await self._emit("install_gitnexus", "running", f"安装 GitNexus 到 {gn_dir}...", step)
+        rc = await self._run_stream("install_gitnexus", step, npm_cmd, "install", "--prefix", str(gn_dir), "gitnexus")
+        if rc == 0 and local_bin.exists():
+            rc2, stdout2, _ = await self._run_capture(str(local_bin), "--version")
+            if rc2 == 0:
+                await self._emit("install_gitnexus", "done", f"GitNexus 已安装到工作目录 (v{stdout2.strip()})", step)
+                self._config["_gitnexus_cmd"] = [str(local_bin)]
+                return
+
         await self._emit(
             "install_gitnexus", "error",
-            "GitNexus 不可用：npm 安装失败且 vendor/gitnexus 未找到", step,
+            "GitNexus 不可用：本地安装失败且 vendor/gitnexus 未找到", step,
         )
         raise RuntimeError("GitNexus installation failed")
 
@@ -400,6 +413,13 @@ class NativeDeployer:
         await self._emit("generate_config", "running", "生成配置文件...", step)
 
         cfg = self._config
+        workspace = self._workspace_path()
+        workspace.mkdir(parents=True, exist_ok=True)
+
+        repos_dir = workspace / "repos"
+        repos_dir.mkdir(parents=True, exist_ok=True)
+        cfg["repos_path"] = str(repos_dir)
+
         backend_port = cfg.get("backend_port", 8100)
         frontend_port = cfg.get("frontend_port", 3005)
         gitnexus_port = cfg.get("gitnexus_port", 7100)
@@ -410,6 +430,7 @@ class NativeDeployer:
         env_lines = [
             "DATA_DIR=data",
             "SQLITE_DB=data/codetalk.db",
+            f"REPOS_BASE_PATH={repos_dir}",
             f"GITNEXUS_BASE_URL=http://localhost:{gitnexus_port}",
             f"GITNEXUS_PORT={gitnexus_port}",
             "GITNEXUS_BIN=gitnexus",

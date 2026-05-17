@@ -1,0 +1,450 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>CodeTalk 服务启动</title>
+  <link rel="icon" type="image/svg+xml" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>🚀</text></svg>" />
+  <link rel="stylesheet" href="style.css" />
+  <style>
+    html, body { overflow: auto; }
+
+    .start-shell {
+      max-width: 960px;
+      margin: 0 auto;
+      padding: 32px 24px 64px;
+      position: relative;
+      z-index: 1;
+    }
+
+    /* ---- Top Bar ---- */
+    .start-topbar {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      padding: 20px 0 32px;
+    }
+
+    .topbar-left {
+      display: flex;
+      align-items: center;
+      gap: 16px;
+    }
+
+    .topbar-left .logo-icon {
+      width: 28px;
+      height: 28px;
+      filter: drop-shadow(0 0 8px var(--accent-glow));
+    }
+
+    .topbar-title {
+      font-size: 1.25rem;
+      font-weight: 700;
+    }
+
+    .back-link {
+      display: inline-flex;
+      align-items: center;
+      gap: 6px;
+      font-size: 0.85rem;
+      color: var(--text-muted);
+      text-decoration: none;
+      transition: color var(--transition);
+    }
+
+    .back-link:hover { color: var(--accent); }
+
+    .back-link svg {
+      width: 16px;
+      height: 16px;
+    }
+
+    /* ---- Page Header ---- */
+    .start-header {
+      margin-bottom: 32px;
+    }
+
+    .start-header h1 {
+      font-size: 2.25rem;
+      font-weight: 800;
+      letter-spacing: -0.04em;
+      background: linear-gradient(to bottom right, #fff, #94a3b8);
+      -webkit-background-clip: text;
+      -webkit-text-fill-color: transparent;
+      margin-bottom: 8px;
+    }
+
+    .start-header p {
+      color: var(--text-secondary);
+      font-size: 1.05rem;
+    }
+
+    /* ---- Action Buttons Row ---- */
+    .start-actions {
+      display: flex;
+      align-items: center;
+      gap: 12px;
+      margin-bottom: 32px;
+      flex-wrap: wrap;
+    }
+
+    .btn-start-all {
+      background: linear-gradient(135deg, var(--accent), #06b6d4);
+      color: var(--bg-space);
+      box-shadow: 0 0 20px var(--accent-glow);
+    }
+
+    .btn-start-all:hover:not(:disabled) {
+      background: #fff;
+      transform: translateY(-2px);
+      box-shadow: 0 0 30px var(--accent-glow);
+    }
+
+    .btn-stop-all {
+      background: rgba(248, 113, 113, 0.12);
+      border: 1px solid rgba(248, 113, 113, 0.35);
+      color: var(--error);
+    }
+
+    .btn-stop-all:hover:not(:disabled) {
+      background: rgba(248, 113, 113, 0.22);
+      border-color: rgba(248, 113, 113, 0.6);
+      box-shadow: 0 0 12px rgba(248, 113, 113, 0.3);
+    }
+
+    .open-codetalk-link {
+      margin-left: auto;
+    }
+
+    .btn-open-ct {
+      background: rgba(74, 222, 128, 0.12);
+      border: 1px solid rgba(74, 222, 128, 0.35);
+      color: var(--success);
+    }
+
+    .btn-open-ct:hover:not(:disabled) {
+      background: rgba(74, 222, 128, 0.22);
+      border-color: rgba(74, 222, 128, 0.6);
+      box-shadow: 0 0 12px rgba(74, 222, 128, 0.3);
+    }
+
+    /* ---- Service Cards Grid ---- */
+    .service-grid {
+      display: grid;
+      grid-template-columns: repeat(auto-fill, minmax(210px, 1fr));
+      gap: 16px;
+      margin-bottom: 32px;
+    }
+
+    .svc-card {
+      background: var(--bg-card);
+      border: 1px solid var(--border);
+      border-radius: var(--radius-md);
+      padding: 20px;
+      display: flex;
+      flex-direction: column;
+      gap: 12px;
+      transition: all var(--transition);
+    }
+
+    .svc-card:hover {
+      background: var(--bg-card-hover);
+      border-color: rgba(255,255,255,0.15);
+    }
+
+    .svc-card-header {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+    }
+
+    .svc-name {
+      font-weight: 700;
+      font-size: 0.95rem;
+      color: var(--text-primary);
+    }
+
+    .svc-status-dot {
+      width: 10px;
+      height: 10px;
+      border-radius: 50%;
+      flex-shrink: 0;
+      transition: all var(--transition);
+    }
+
+    .dot-stopped  { background: var(--text-muted); }
+    .dot-running  { background: var(--success); box-shadow: 0 0 8px var(--success-glow); }
+    .dot-error    { background: var(--error); box-shadow: 0 0 8px var(--error-glow); }
+    .dot-starting { background: var(--warning); animation: pulse-aura 1.5s infinite; }
+
+    .svc-port {
+      font-family: var(--font-mono);
+      font-size: 0.8rem;
+      color: var(--text-muted);
+    }
+
+    .svc-status-label {
+      font-size: 0.8rem;
+      font-weight: 600;
+    }
+
+    .label-stopped  { color: var(--text-muted); }
+    .label-running  { color: var(--success); }
+    .label-error    { color: var(--error); }
+    .label-starting { color: var(--warning); }
+
+    /* ---- Terminal ---- */
+    .start-terminal-section {
+      margin-bottom: 32px;
+    }
+
+    .start-terminal-section .terminal-body {
+      height: 320px;
+    }
+
+    /* ---- Success Banner ---- */
+    .success-banner {
+      display: none;
+      align-items: center;
+      gap: 12px;
+      background: rgba(74, 222, 128, 0.08);
+      border: 1px solid rgba(74, 222, 128, 0.25);
+      border-radius: var(--radius-md);
+      padding: 16px 20px;
+      margin-bottom: 24px;
+      animation: fadeIn 0.3s ease;
+    }
+
+    .success-banner.visible { display: flex; }
+
+    .success-banner-icon {
+      width: 22px;
+      height: 22px;
+      color: var(--success);
+      flex-shrink: 0;
+    }
+
+    .success-banner-text {
+      flex: 1;
+      font-size: 0.95rem;
+      font-weight: 600;
+      color: var(--success);
+    }
+
+    .success-banner-link {
+      font-size: 0.9rem;
+      color: var(--accent);
+      text-decoration: none;
+      font-weight: 600;
+    }
+
+    .success-banner-link:hover {
+      text-decoration: underline;
+    }
+
+    /* ---- Config Info Bar ---- */
+    .config-info-bar {
+      display: none;
+      background: var(--bg-card);
+      border: 1px solid var(--border);
+      border-radius: var(--radius-md);
+      padding: 16px 20px;
+      margin-bottom: 24px;
+      gap: 20px 32px;
+      flex-wrap: wrap;
+    }
+
+    .config-info-bar.visible {
+      display: flex;
+    }
+
+    .config-info-item {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      font-size: 0.85rem;
+    }
+
+    .config-info-label {
+      color: var(--text-muted);
+      white-space: nowrap;
+    }
+
+    .config-info-value {
+      font-family: var(--font-mono);
+      font-size: 0.8rem;
+      color: var(--text-primary);
+      background: rgba(255,255,255,0.05);
+      padding: 2px 8px;
+      border-radius: 4px;
+      word-break: break-all;
+    }
+
+    .config-info-value a {
+      color: var(--accent);
+      text-decoration: none;
+    }
+
+    .config-info-value a:hover {
+      text-decoration: underline;
+    }
+
+    @media (max-width: 640px) {
+      .service-grid {
+        grid-template-columns: 1fr 1fr;
+      }
+      .start-header h1 {
+        font-size: 1.75rem;
+      }
+      .open-codetalk-link {
+        margin-left: 0;
+        width: 100%;
+      }
+    }
+  </style>
+</head>
+<body>
+  <!-- Nebula Background -->
+  <div class="nebula-container" aria-hidden="true">
+    <div class="nebula-orb orb-1"></div>
+    <div class="nebula-orb orb-2"></div>
+    <div class="nebula-orb orb-3"></div>
+    <div class="nebula-grid"></div>
+  </div>
+
+  <div class="start-shell">
+
+    <!-- Top Bar -->
+    <div class="start-topbar">
+      <div class="topbar-left">
+        <svg class="logo-icon" viewBox="0 0 32 32" fill="none" xmlns="http://www.w3.org/2000/svg" aria-hidden="true">
+          <path d="M16 3C16 3 22 8 22 16C22 20.4 19.8 23.8 17 25.8L16 26.5L15 25.8C12.2 23.8 10 20.4 10 16C10 8 16 3 16 3Z" fill="var(--accent)" opacity="0.9"/>
+          <path d="M16 26.5L14 30H18L16 26.5Z" fill="var(--accent)" opacity="0.7"/>
+          <circle cx="16" cy="15" r="3" fill="var(--bg-space)"/>
+        </svg>
+        <span class="topbar-title">CodeTalk <span class="logo-sub">服务启动</span></span>
+      </div>
+      <a href="/" class="back-link">
+        <svg viewBox="0 0 20 20" fill="currentColor" aria-hidden="true"><path fill-rule="evenodd" d="M12.707 5.293a1 1 0 010 1.414L9.414 10l3.293 3.293a1 1 0 01-1.414 1.414l-4-4a1 1 0 010-1.414l4-4a1 1 0 011.414 0z" clip-rule="evenodd"/></svg>
+        返回控制中心
+      </a>
+    </div>
+
+    <!-- Header -->
+    <div class="start-header">
+      <h1>服务管理</h1>
+      <p>查看状态、启动或停止 CodeTalk 服务</p>
+    </div>
+
+    <!-- Config Info (populated by JS from /api/config) -->
+    <div id="config-info-bar" class="config-info-bar">
+      <div class="config-info-item">
+        <span class="config-info-label">工作目录</span>
+        <span class="config-info-value" id="cfg-workspace">—</span>
+      </div>
+      <div class="config-info-item">
+        <span class="config-info-label">前端</span>
+        <span class="config-info-value" id="cfg-frontend-url">—</span>
+      </div>
+      <div class="config-info-item">
+        <span class="config-info-label">后端 API</span>
+        <span class="config-info-value" id="cfg-backend-url">—</span>
+      </div>
+      <div class="config-info-item">
+        <span class="config-info-label">GitNexus</span>
+        <span class="config-info-value" id="cfg-gitnexus-url">—</span>
+      </div>
+      <div class="config-info-item">
+        <span class="config-info-label">DeepWiki</span>
+        <span class="config-info-value" id="cfg-deepwiki-url">—</span>
+      </div>
+      <div class="config-info-item">
+        <span class="config-info-label">LLM</span>
+        <span class="config-info-value" id="cfg-llm-info">—</span>
+      </div>
+    </div>
+
+    <!-- Success Banner (hidden by default) -->
+    <div id="success-banner" class="success-banner" role="status" aria-live="polite">
+      <svg class="success-banner-icon" viewBox="0 0 20 20" fill="currentColor" aria-hidden="true"><path fill-rule="evenodd" d="M10 18a8 8 0 100-16 8 8 0 000 16zm3.707-9.293a1 1 0 00-1.414-1.414L9 10.586 7.707 9.293a1 1 0 00-1.414 1.414l2 2a1 1 0 001.414 0l4-4z" clip-rule="evenodd"/></svg>
+      <span class="success-banner-text">所有服务已成功启动</span>
+      <a href="http://localhost:3005" target="_blank" rel="noopener noreferrer" class="success-banner-link" id="success-ct-link">打开 CodeTalk &rarr;</a>
+    </div>
+
+    <!-- Action Buttons -->
+    <div class="start-actions">
+      <button id="btn-start-all" class="btn btn-start-all btn-lg" type="button">
+        <svg class="btn-icon" viewBox="0 0 20 20" fill="currentColor" aria-hidden="true"><path fill-rule="evenodd" d="M10 18a8 8 0 100-16 8 8 0 000 16zM9.555 7.168A1 1 0 008 8v4a1 1 0 001.555.832l3-2a1 1 0 000-1.664l-3-2z" clip-rule="evenodd"/></svg>
+        一键启动全部
+      </button>
+      <button id="btn-stop-all" class="btn btn-stop-all btn-lg" type="button">
+        <svg class="btn-icon" viewBox="0 0 20 20" fill="currentColor" aria-hidden="true"><rect x="6" y="6" width="8" height="8" rx="1"/></svg>
+        全部停止
+      </button>
+      <div class="open-codetalk-link">
+        <a id="open-ct-link" href="http://localhost:3005" target="_blank" rel="noopener noreferrer" class="btn btn-open-ct btn-lg" style="display:none">
+          <svg class="btn-icon" viewBox="0 0 20 20" fill="currentColor" aria-hidden="true"><path d="M11 3a1 1 0 100 2h2.586l-6.293 6.293a1 1 0 101.414 1.414L15 6.414V9a1 1 0 102 0V4a1 1 0 00-1-1h-5z"/><path d="M5 5a2 2 0 00-2 2v8a2 2 0 002 2h8a2 2 0 002-2v-3a1 1 0 10-2 0v3H5V7h3a1 1 0 000-2H5z"/></svg>
+          打开 CodeTalk
+        </a>
+      </div>
+    </div>
+
+    <!-- Service Cards -->
+    <div class="service-grid" id="service-grid">
+      <div class="svc-card" data-svc="backend">
+        <div class="svc-card-header">
+          <span class="svc-name">后端 API</span>
+          <span class="svc-status-dot dot-stopped" id="dot-backend"></span>
+        </div>
+        <span class="svc-port" id="port-backend">:8100</span>
+        <span class="svc-status-label label-stopped" id="label-backend">已停止</span>
+      </div>
+      <div class="svc-card" data-svc="frontend">
+        <div class="svc-card-header">
+          <span class="svc-name">前端</span>
+          <span class="svc-status-dot dot-stopped" id="dot-frontend"></span>
+        </div>
+        <span class="svc-port" id="port-frontend">:3005</span>
+        <span class="svc-status-label label-stopped" id="label-frontend">已停止</span>
+      </div>
+      <div class="svc-card" data-svc="gitnexus">
+        <div class="svc-card-header">
+          <span class="svc-name">GitNexus</span>
+          <span class="svc-status-dot dot-stopped" id="dot-gitnexus"></span>
+        </div>
+        <span class="svc-port" id="port-gitnexus">:7100</span>
+        <span class="svc-status-label label-stopped" id="label-gitnexus">已停止</span>
+      </div>
+      <div class="svc-card" data-svc="deepwiki">
+        <div class="svc-card-header">
+          <span class="svc-name">DeepWiki</span>
+          <span class="svc-status-dot dot-stopped" id="dot-deepwiki"></span>
+        </div>
+        <span class="svc-port" id="port-deepwiki">API :8091 / UI :3001</span>
+        <span class="svc-status-label label-stopped" id="label-deepwiki">已停止</span>
+      </div>
+    </div>
+
+    <!-- Terminal -->
+    <div class="start-terminal-section">
+      <div class="terminal-wrap">
+        <div class="terminal-header">
+          <div class="terminal-dots" aria-hidden="true">
+            <span class="t-dot t-red"></span>
+            <span class="t-dot t-yellow"></span>
+            <span class="t-dot t-green"></span>
+          </div>
+          <span class="terminal-title">启动日志</span>
+          <button class="terminal-clear" id="clear-log-btn" type="button" title="清空日志" aria-label="清空日志">
+            <svg viewBox="0 0 20 20" fill="currentColor" aria-hidden="true"><path fill-rule="evenodd" d="M9 2a1 1 0 00-.894.553L7.382 4H4a1 1 0 000 2v10a2 2 0 002 2h8a2 2 0 002-2V6a1 1 0 100-2h-3.382l-.724-1.447A1 1 0 0011 2H9zM7 8a1 1 0 012 0v6a1 1 0 11-2 0V8zm5-1a1 1 0 00-1 1v6a1 1 0 102 0V8a1 1 0 00-1-1z" clip-rule="evenodd"/></svg>
+          </button>
+        </div>
+        <div class="terminal-body" id="terminal-log" role="log" aria-live="polite" aria-label="启动日志"></div>
+      </div>
+    </div>
+
+  </div>
+
+  <script src="start-app.js"></script>
+</body>
+</html>

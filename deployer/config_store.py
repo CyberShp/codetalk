@@ -29,6 +29,7 @@ _KEY_MAP = {
     "installDeepwiki": "install_deepwiki",
     "installGitnexus": "install_gitnexus",
     "corsOrigins": "cors_origins",
+    "workspacePath": "workspace_path",
 }
 _KEY_MAP_REV = {v: k for k, v in _KEY_MAP.items()}
 
@@ -116,12 +117,13 @@ def get_default_config(mode: str) -> dict:
     """Return a default config dict for the given deployment mode."""
     base = {
         "mode": mode,
+        "workspace_path": "./workspace",
         "llm_provider": "openai",
         "openai_api_key": "",
         "anthropic_api_key": "",
         "google_api_key": "",
         "deepwiki_path": "",
-        "repos_path": "./.repos",
+        "repos_path": "./workspace/repos",
         "frontend_port": 3005,
         "gitnexus_port": 7100,
         "cors_origins": "http://localhost:3000,http://localhost:3005",

@@ -16,7 +16,7 @@ import {
   RefreshCw,
 } from "lucide-react";
 import { api } from "@/lib/api";
-import type { Task, TaskStatus, TaskStep } from "@/lib/types";
+import type { Task, TaskStatus } from "@/lib/types";
 import ProgressBar from "@/components/ui/ProgressBar";
 
 const STATUS_CONFIG: Record<
@@ -49,13 +49,9 @@ export default function TaskDetailPage() {
   const [error, setError] = useState<string | null>(null);
   const [deleting, setDeleting] = useState(false);
   const [running, setRunning] = useState(false);
-  const [steps, setSteps] = useState<TaskStep[]>([]);
 
   // Only show the full-page spinner on the very first fetch.
   const hasLoadedOnce = useRef(false);
-  // Scroll anchor for the step log so new entries scroll into view within the
-  // container rather than jumping the whole page.
-  const stepsEndRef = useRef<HTMLDivElement>(null);
 
   const loadTask = useCallback(async () => {
     if (!taskId) return;
@@ -72,43 +68,16 @@ export default function TaskDetailPage() {
     }
   }, [taskId]);
 
-  const loadSteps = useCallback(async () => {
-    if (!taskId) return;
-    try {
-      const data = await api.tasks.steps(taskId);
-      setSteps(data);
-    } catch {
-      // steps are best-effort — don't surface errors
-    }
-  }, [taskId]);
-
   useEffect(() => {
     loadTask();
   }, [loadTask]);
 
-  // Auto-refresh task + steps while running (steps poll at 5 s, task at 8 s)
+  // Auto-refresh task while running (poll at 8 s)
   useEffect(() => {
     if (task?.status !== "running") return;
     const taskTimer = setInterval(loadTask, 8000);
-    const stepsTimer = setInterval(loadSteps, 5000);
-    loadSteps();
-    return () => {
-      clearInterval(taskTimer);
-      clearInterval(stepsTimer);
-    };
-  }, [task?.status, loadTask, loadSteps]);
-
-  // Auto-scroll step log to the latest entry within its container
-  useEffect(() => {
-    stepsEndRef.current?.scrollIntoView({ block: "nearest", behavior: "smooth" });
-  }, [steps]);
-
-  // Load steps once when task completes
-  useEffect(() => {
-    if (task?.status === "completed" || task?.status === "failed") {
-      loadSteps();
-    }
-  }, [task?.status, loadSteps]);
+    return () => clearInterval(taskTimer);
+  }, [task?.status, loadTask]);
 
   const handleRun = useCallback(async () => {
     if (!taskId) return;
@@ -246,27 +215,6 @@ export default function TaskDetailPage() {
           </p>
         </div>
       </div>
-
-      {/* Step log */}
-      {steps.length > 0 && (
-        <div className="bg-surface-container rounded-xl border border-outline-variant/20 p-5 mb-6">
-          <h2 className="text-sm font-medium text-on-surface mb-3">分析进度日志</h2>
-          <div className="space-y-1 max-h-64 overflow-y-auto pr-1">
-            {steps.map((s, i) => (
-              <div key={i} className="flex items-start gap-3 text-xs">
-                <span className="shrink-0 text-on-surface-variant font-data tabular-nums">
-                  {new Date(s.timestamp).toLocaleTimeString("zh-CN")}
-                </span>
-                <span className="shrink-0 w-8 text-right text-primary tabular-nums">
-                  {s.progress}%
-                </span>
-                <span className="text-on-surface-variant">{s.step}</span>
-              </div>
-            ))}
-            <div ref={stepsEndRef} />
-          </div>
-        </div>
-      )}
 
       {/* Tools */}
       <div className="bg-surface-container rounded-xl border border-outline-variant/20 p-5 mb-6">

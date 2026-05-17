@@ -7,10 +7,11 @@ import uuid
 from pathlib import Path
 from typing import AsyncGenerator
 
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import StreamingResponse
 from fastapi.staticfiles import StaticFiles
+from starlette.middleware.base import BaseHTTPMiddleware
 
 import checks as checks_module
 import config_store
@@ -31,6 +32,21 @@ _deploy_state: dict = {
 }
 
 app = FastAPI(title="CodeTalk Deployer", version="1.0.0")
+
+
+class NoCacheHTMLMiddleware(BaseHTTPMiddleware):
+    """Prevent browsers from caching HTML pages so stale JS never runs."""
+
+    async def dispatch(self, request: Request, call_next):
+        response = await call_next(request)
+        ct = response.headers.get("content-type", "")
+        if "text/html" in ct:
+            response.headers["Cache-Control"] = "no-cache, no-store, must-revalidate"
+            response.headers["Pragma"] = "no-cache"
+        return response
+
+
+app.add_middleware(NoCacheHTMLMiddleware)
 
 app.add_middleware(
     CORSMiddleware,
@@ -215,6 +231,133 @@ async def _run_supplement(deployer: NativeDeployer, deepwiki_path: str, cfg: dic
         q = _deploy_state.get("event_queue")
         if q is not None:
             await q.put(None)
+
+
+@app.post("/api/deploy/supplement/gitnexus")
+async def api_supplement_gitnexus():
+    """Install GitNexus as a supplementary service after native deployment."""
+    if _deploy_state["running"]:
+        raise HTTPException(status_code=409, detail="A deployment is already running")
+
+    cfg = config_store.load_config()
+    event_queue: asyncio.Queue = asyncio.Queue()
+    deployer = NativeDeployer(cfg, event_queue)
+
+    _deploy_state.update({
+        "job_id": str(uuid.uuid4()),
+        "running": True,
+        "deployer": deployer,
+        "event_queue": event_queue,
+    })
+
+    loop = asyncio.get_event_loop()
+
+    def _run_in_thread():
+        future = asyncio.run_coroutine_threadsafe(_run_supplement_gitnexus(deployer, cfg), loop)
+        future.result()
+
+    thread = threading.Thread(target=_run_in_thread, daemon=True)
+    thread.start()
+
+    return {"job_id": _deploy_state["job_id"]}
+
+
+async def _run_supplement_gitnexus(deployer: NativeDeployer, cfg: dict) -> None:
+    try:
+        await deployer._step_install_gitnexus()
+        await deployer._step_generate_config()
+        config_store.save_config(cfg)
+    except Exception as exc:
+        q = _deploy_state.get("event_queue")
+        if q is not None:
+            await q.put({"step": "install_gitnexus", "status": "error", "message": str(exc)})
+    finally:
+        _deploy_state["running"] = False
+        q = _deploy_state.get("event_queue")
+        if q is not None:
+            await q.put({"step": "done", "status": "done", "message": "GitNexus installed"})
+            await q.put(None)
+
+
+@app.post("/api/quickstart")
+async def api_quickstart():
+    """Quick-start services using saved config (no install/check steps)."""
+    if _deploy_state["running"]:
+        raise HTTPException(status_code=409, detail="A deployment is already running")
+
+    cfg = config_store.load_config()
+    event_queue: asyncio.Queue = asyncio.Queue()
+    deployer = NativeDeployer(cfg, event_queue)
+
+    _deploy_state.update({
+        "job_id": str(uuid.uuid4()),
+        "running": True,
+        "deployer": deployer,
+        "event_queue": event_queue,
+    })
+
+    loop = asyncio.get_event_loop()
+
+    def _run_in_thread():
+        future = asyncio.run_coroutine_threadsafe(_run_quickstart(deployer), loop)
+        future.result()
+
+    thread = threading.Thread(target=_run_in_thread, daemon=True)
+    thread.start()
+
+    return {"job_id": _deploy_state["job_id"]}
+
+
+async def _run_quickstart(deployer: NativeDeployer) -> None:
+    """Start services only -- skip install/check steps."""
+    error_occurred = False
+    try:
+        await deployer._step_generate_config()
+        await deployer._step_start_services()
+        await deployer._step_health_check()
+    except Exception:
+        error_occurred = True
+    finally:
+        _deploy_state["running"] = False
+        q = _deploy_state.get("event_queue")
+        if q is not None:
+            if error_occurred:
+                await q.put({"step": "done", "status": "error", "message": "Quickstart failed"})
+            else:
+                await q.put({"step": "done", "status": "done", "message": "All services started"})
+            await q.put(None)
+
+
+@app.post("/api/services/stop")
+async def api_services_stop():
+    """Stop all running service processes."""
+    deployer = _deploy_state.get("deployer")
+    if deployer is None:
+        return {"ok": True, "message": "No services running"}
+    await deployer.stop()
+    _deploy_state["running"] = False
+    return {"ok": True, "message": "All services stopped"}
+
+
+@app.get("/api/deploy/status")
+async def api_deploy_status_compat():
+    """Compatibility shim for cached old pages that poll this endpoint."""
+    return await api_services_status()
+
+
+@app.get("/api/services/status")
+async def api_services_status():
+    """Quick status of all known services."""
+    deployer = _deploy_state.get("deployer")
+    running = _deploy_state.get("running", False)
+    processes: dict = {}
+    if deployer and hasattr(deployer, "_processes"):
+        for name, proc in deployer._processes.items():
+            processes[name] = {
+                "pid": proc.pid if proc.returncode is None else None,
+                "running": proc.returncode is None,
+            }
+    return {"running": running, "processes": processes}
 
 
 @app.get("/api/services/health")

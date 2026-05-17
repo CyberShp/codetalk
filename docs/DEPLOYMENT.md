@@ -19,10 +19,42 @@
 | 前端 (Next.js) | 3005 | 用户界面 |
 | 后端 API (FastAPI) | 8100 | REST API |
 | GitNexus | 7100 | 代码图谱服务 |
-| DeepWiki-Open API | 8001 | Wiki 生成 API |
-| DeepWiki-Open UI | 3000 | DeepWiki 自带界面 |
+| DeepWiki-Open API | 8091 | Wiki 生成 API |
+| DeepWiki-Open UI | 3001 | DeepWiki 自带界面 |
 
 > **禁用端口**: 3003, 3004 (Cat Cafe 保留)
+
+## 2.5 一键部署向导
+
+对于全新安装，推荐使用内置的**部署向导**（Deployer），无需手动配置：
+
+```bash
+cd deployer
+# Windows
+start.bat
+# Linux/macOS
+python start.py
+```
+
+浏览器打开 http://localhost:9000，向导将自动完成 7 步流程：
+
+| 步骤 | 内容 |
+|------|------|
+| 1 | 运行环境检查（Python 3.11+、Node.js 18+、Git） |
+| 2 | 后端依赖安装（创建 .venv311 虚拟环境） |
+| 3 | 前端依赖安装（npm install） |
+| 4 | GitNexus 安装（可选） |
+| 5 | 配置文件生成（自动写入 backend/.env） |
+| 6 | 服务启动（backend、frontend、gitnexus） |
+| 7 | 健康检查（等待所有服务就绪） |
+
+部署向导支持自定义：
+- **端口配置**：前端、后端、GitNexus、DeepWiki 端口
+- **工作目录**：代码仓库存储路径
+- **LLM 配置**：API 地址、密钥、模型名称
+- **组件选择**：是否安装 GitNexus 和 DeepWiki
+
+部署完成后，页面自动跳转至「启动管理页」，可查看服务状态并管理服务生命周期。
 
 ## 3. 快速部署
 
@@ -97,13 +129,13 @@ SQLITE_DB=data/codetalk.db
 
 # 工具地址
 GITNEXUS_BASE_URL=http://localhost:7100
-DEEPWIKI_API_URL=http://localhost:8001
-DEEPWIKI_UI_URL=http://localhost:3000
+DEEPWIKI_API_URL=http://localhost:8091
+DEEPWIKI_UI_URL=http://localhost:3001
 
 # 工具管理
 GITNEXUS_PORT=7100
-DEEPWIKI_API_PORT=8001
-DEEPWIKI_UI_PORT=3000
+DEEPWIKI_API_PORT=8091
+DEEPWIKI_UI_PORT=3001
 DEEPWIKI_PATH=                   # DeepWiki-Open 安装目录
 GITNEXUS_BIN=gitnexus            # GitNexus 二进制路径
 TOOL_HEALTH_INTERVAL=30          # 健康检查间隔(秒)
@@ -168,6 +200,28 @@ python -c "import tiktoken; tiktoken.encoding_for_model('gpt-4')"
 # 确保环境变量设置
 TIKTOKEN_CACHE_DIR=data/tiktoken_cache
 ```
+
+### 5.4 补充部署
+
+已完成初始部署后，可通过 deployer UI 单独安装 DeepWiki 或 GitNexus，无需重新走全流程：
+
+1. 打开 http://localhost:9000，进入「启动管理页」
+2. 找到对应组件，点击「补充安装」，填写路径后启动
+3. 向导自动完成依赖安装、进程启动、配置更新
+
+**API 端点：**
+
+| 方法 | 路径 | 说明 |
+|------|------|------|
+| POST | /api/deploy/supplement/deepwiki | 安装并启动 DeepWiki |
+| POST | /api/deploy/supplement/gitnexus | 安装并启动 GitNexus |
+
+补充部署会自动：
+1. 安装工具依赖（pip / npm）
+2. 启动工具进程
+3. 更新 `backend/.env` 写入新端口配置
+4. 重启后端进程，使其热加载新配置
+5. 执行健康检查，通过 SSE 实时推送进度
 
 ## 6. AI 配置
 

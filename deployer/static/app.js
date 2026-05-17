@@ -214,6 +214,21 @@ function initConfigForm() {
     apiKeyToggle.setAttribute('aria-label', visible ? '显示密钥' : '隐藏密钥');
   });
 
+  // Workspace path auto-derives repos-path and deepwiki-path
+  const workspaceInput = $('#workspace-path');
+  const reposPathInput = $('#repos-path');
+  const deepwikiPathInput = $('#deepwiki-path');
+  if (workspaceInput) {
+    workspaceInput.addEventListener('input', () => {
+      const ws = workspaceInput.value.replace(/[/\\]+$/, '');
+      if (reposPathInput) reposPathInput.value = ws + '/repos';
+      if (deepwikiPathInput && !deepwikiPathInput.dataset.userEdited) deepwikiPathInput.value = ws + '/deepwiki-open';
+    });
+  }
+  if (deepwikiPathInput) {
+    deepwikiPathInput.addEventListener('input', () => { deepwikiPathInput.dataset.userEdited = '1'; });
+  }
+
   // Show/hide component port panels based on checkbox state
   const installDeepwikiCb = $('#install-deepwiki');
   const installGitnexusCb = $('#install-gitnexus');
@@ -240,6 +255,10 @@ function initConfigForm() {
     .then(cfg => {
       if (!cfg) return;
       state.config = { ...state.config, ...cfg };
+      if (cfg.workspacePath) {
+        ($('#workspace-path') || {}).value = cfg.workspacePath;
+        if ($('#repos-path')) $('#repos-path').value = cfg.workspacePath.replace(/[/\\]+$/, '') + '/repos';
+      }
       if (cfg.llmBaseUrl)      ($('#llm-base-url') || {}).value      = cfg.llmBaseUrl;
       if (cfg.llmModel)        ($('#llm-model')     || {}).value      = cfg.llmModel;
       if (cfg.llmApiKey)       apiKeyInput.value                      = cfg.llmApiKey;
@@ -290,6 +309,7 @@ function collectConfig() {
   const installGitnexusCb = $('#install-gitnexus');
   const cfg = {
     mode:            state.selectedMode,
+    workspacePath:   (($('#workspace-path') || {}).value || './workspace').trim(),
     llmBaseUrl:      (($('#llm-base-url') || {}).value || '').trim(),
     llmModel:        (($('#llm-model')    || {}).value || '').trim(),
     llmApiKey:       (($('#llm-api-key')  || {}).value || '').trim(),
@@ -341,6 +361,7 @@ function renderReview() {
 
   const rows = [
     { label: '部署模式',  value: MODE_LABELS[cfg.mode] || cfg.mode },
+    { label: '工作目录',  value: cfg.workspacePath || './workspace', mono: true },
     null,
     { label: '模型服务地址', value: cfg.llmBaseUrl || '（未设置）', mono: true },
     { label: '模型名称',    value: cfg.llmModel   || '（未设置）' },

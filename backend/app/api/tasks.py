@@ -8,6 +8,7 @@ from pathlib import Path
 import aiosqlite
 import httpx
 from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException
+from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, Field
 
 from app.config import settings
@@ -49,6 +50,18 @@ class TaskResponse(BaseModel):
 class OutputFileInfo(BaseModel):
     filename: str
     size: int
+
+
+class ChatRequest(BaseModel):
+    message: str = Field(min_length=1, max_length=8000)
+
+
+class ChatMessageResponse(BaseModel):
+    id: int
+    task_id: str
+    role: str
+    content: str
+    created_at: str
 
 
 def _row_to_task(row: aiosqlite.Row) -> dict:
@@ -172,7 +185,7 @@ async def list_output_files(task_id: str, db: aiosqlite.Connection = Depends(get
     files: list[dict] = []
     try:
         for f in sorted(output_dir.iterdir()):
-            if f.is_file():
+            if f.is_file() and f.suffix == ".md":
                 files.append({"filename": f.name, "size": f.stat().st_size})
     except OSError:
         logger.exception("Failed to list output dir: %s", output_dir)
@@ -204,6 +217,122 @@ async def read_output_file(
 
     content = await asyncio.to_thread(filepath.read_text, "utf-8")
     return {"filename": filename, "content": content}
+
+
+# --- Chat endpoints ---
+
+@router.get("/{task_id}/chat", response_model=list[ChatMessageResponse])
+async def get_chat_history(task_id: str, db: aiosqlite.Connection = Depends(get_db)):
+    """Return the full chat history for a task."""
+    async with db.execute("SELECT id FROM tasks WHERE id = ?", (task_id,)) as cur:
+        if not await cur.fetchone():
+            raise HTTPException(status_code=404, detail="任务不存在")
+    async with db.execute(
+        "SELECT id, task_id, role, content, created_at FROM task_chats "
+        "WHERE task_id = ? ORDER BY id ASC",
+        (task_id,),
+    ) as cur:
+        rows = await cur.fetchall()
+    return [dict(r) for r in rows]
+
+
+@router.post("/{task_id}/chat")
+async def send_chat_message(
+    task_id: str,
+    body: ChatRequest,
+    db: aiosqlite.Connection = Depends(get_db),
+):
+    """Send a user message and stream back an AI reply via SSE."""
+    async with db.execute("SELECT * FROM tasks WHERE id = ?", (task_id,)) as cur:
+        row = await cur.fetchone()
+    if not row:
+        raise HTTPException(status_code=404, detail="任务不存在")
+
+    task = dict(row)
+
+    # Load report files for context (cap each file at 3000 chars)
+    output_dir = settings.outputs_path / task_id
+    report_context = ""
+    md_files: list[Path] = []
+    if output_dir.exists():
+        for f in sorted(output_dir.iterdir()):
+            if f.is_file() and f.suffix == ".md":
+                md_files.append(f)
+                try:
+                    text = await asyncio.to_thread(f.read_text, "utf-8")
+                    report_context += f"\n\n## {f.name}\n{text[:3000]}"
+                except OSError:
+                    pass
+
+    # Guard: refuse chat when no reports exist yet
+    if not md_files:
+        raise HTTPException(status_code=400, detail="该任务尚无分析报告，无法进行追问")
+
+    # Load prior history for multi-turn
+    async with db.execute(
+        "SELECT role, content FROM task_chats WHERE task_id = ? ORDER BY id ASC",
+        (task_id,),
+    ) as cur:
+        history_rows = await cur.fetchall()
+
+    # Persist user message before starting stream
+    now = datetime.now(timezone.utc).isoformat()
+    await db.execute(
+        "INSERT INTO task_chats (task_id, role, content, created_at) VALUES (?, ?, ?, ?)",
+        (task_id, "user", body.message, now),
+    )
+    await db.commit()
+
+    # Build LLM message list
+    system_prompt = (
+        f"你是 CodeTalk 代码分析助手。当前任务：「{task['name']}」，"
+        f"代码仓库：{task['repo_path']}。"
+        "以下是对该仓库的分析报告，请根据报告内容回答用户的问题，"
+        "如报告中没有相关信息请如实说明。"
+        f"{report_context}"
+    )
+    messages: list[dict] = [{"role": "system", "content": system_prompt}]
+    for h in history_rows:
+        messages.append({"role": h["role"], "content": h["content"]})
+    messages.append({"role": "user", "content": body.message})
+
+    # Acquire LLM client before streaming (fail fast with a proper HTTP error)
+    try:
+        from app.llm.factory import create_llm_client_from_active
+        llm = await create_llm_client_from_active()
+    except Exception as exc:
+        logger.error("Failed to get LLM client for chat: %s", exc)
+        raise HTTPException(status_code=503, detail=f"LLM 不可用：{exc}")
+
+    async def _generate():
+        chunks: list[str] = []
+        had_error = False
+        try:
+            async for delta in llm.stream_complete(messages, max_tokens=2048, temperature=0.5):
+                chunks.append(delta)
+                yield f"data: {json.dumps({'content': delta, 'done': False}, ensure_ascii=False)}\n\n"
+        except Exception as exc:
+            logger.error("Chat stream error: %s", exc)
+            had_error = True
+            yield f"data: {json.dumps({'content': '', 'done': True, 'error': '生成失败，请重试'}, ensure_ascii=False)}\n\n"
+        finally:
+            # Persist whatever was accumulated — runs on success, error, and client disconnect
+            reply = "".join(chunks)
+            if reply:
+                try:
+                    now2 = datetime.now(timezone.utc).isoformat()
+                    await db.execute(
+                        "INSERT INTO task_chats (task_id, role, content, created_at) VALUES (?, ?, ?, ?)",
+                        (task_id, "assistant", reply, now2),
+                    )
+                    await db.commit()
+                except Exception as db_exc:
+                    logger.error("Failed to persist assistant reply: %s", db_exc)
+
+        if not had_error:
+            yield f"data: {json.dumps({'content': '', 'done': True}, ensure_ascii=False)}\n\n"
+
+    return StreamingResponse(_generate(), media_type="text/event-stream")
 
 
 @router.get("/{task_id}/debug", response_model=list[OutputFileInfo])
