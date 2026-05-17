@@ -344,12 +344,13 @@ class ProcessManager:
         return {**mp.to_dict(), "healthy": False}
 
     async def get_all_status(self) -> list[dict[str, Any]]:
-        """Return status of all registered tools with live health checks."""
-        results: list[dict[str, Any]] = []
-        for name in self._processes:
-            status = await self.health_check(name)
-            results.append(status)
-        return results
+        """Return status of all registered tools with parallel health checks."""
+        if not self._processes:
+            return []
+        results = await asyncio.gather(
+            *(self.health_check(name) for name in self._processes)
+        )
+        return list(results)
 
     # ------------------------------------------------------------------
     # Background health loop

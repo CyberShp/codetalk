@@ -16,7 +16,7 @@ import {
   RefreshCw,
 } from "lucide-react";
 import { api } from "@/lib/api";
-import type { Task, TaskStatus } from "@/lib/types";
+import type { Task, TaskStatus, TaskStep } from "@/lib/types";
 import ProgressBar from "@/components/ui/ProgressBar";
 
 const STATUS_CONFIG: Record<
@@ -49,6 +49,7 @@ export default function TaskDetailPage() {
   const [error, setError] = useState<string | null>(null);
   const [deleting, setDeleting] = useState(false);
   const [running, setRunning] = useState(false);
+  const [steps, setSteps] = useState<TaskStep[]>([]);
 
   const loadTask = useCallback(async () => {
     if (!taskId) return;
@@ -64,16 +65,38 @@ export default function TaskDetailPage() {
     }
   }, [taskId]);
 
+  const loadSteps = useCallback(async () => {
+    if (!taskId) return;
+    try {
+      const data = await api.tasks.steps(taskId);
+      setSteps(data);
+    } catch {
+      // steps are best-effort — don't surface errors
+    }
+  }, [taskId]);
+
   useEffect(() => {
     loadTask();
   }, [loadTask]);
 
-  // Auto-refresh for running tasks
+  // Auto-refresh task + steps while running
   useEffect(() => {
     if (task?.status !== "running") return;
-    const timer = setInterval(loadTask, 5000);
-    return () => clearInterval(timer);
-  }, [task?.status, loadTask]);
+    const taskTimer = setInterval(loadTask, 5000);
+    const stepsTimer = setInterval(loadSteps, 3000);
+    loadSteps();
+    return () => {
+      clearInterval(taskTimer);
+      clearInterval(stepsTimer);
+    };
+  }, [task?.status, loadTask, loadSteps]);
+
+  // Load steps once when task completes
+  useEffect(() => {
+    if (task?.status === "completed" || task?.status === "failed") {
+      loadSteps();
+    }
+  }, [task?.status, loadSteps]);
 
   const handleRun = useCallback(async () => {
     if (!taskId) return;
@@ -180,6 +203,15 @@ export default function TaskDetailPage() {
         </div>
         <ProgressBar value={task.progress} />
 
+        {task.current_step && (
+          <div className="mt-3 flex items-center gap-2 text-xs text-on-surface-variant">
+            {task.status === "running" && (
+              <Loader2 size={12} className="animate-spin shrink-0" />
+            )}
+            <span className="font-data">{task.current_step}</span>
+          </div>
+        )}
+
         {task.error_message && (
           <div className="mt-4 px-3 py-2 bg-red-500/10 border border-red-500/20 rounded-lg text-xs text-red-400 font-data">
             {task.error_message}
@@ -202,6 +234,26 @@ export default function TaskDetailPage() {
           </p>
         </div>
       </div>
+
+      {/* Step log */}
+      {steps.length > 0 && (
+        <div className="bg-surface-container rounded-xl border border-outline-variant/20 p-5 mb-6">
+          <h2 className="text-sm font-medium text-on-surface mb-3">分析进度日志</h2>
+          <div className="space-y-1 max-h-60 overflow-y-auto">
+            {steps.map((s, i) => (
+              <div key={i} className="flex items-start gap-3 text-xs">
+                <span className="shrink-0 text-on-surface-variant font-data tabular-nums">
+                  {new Date(s.timestamp).toLocaleTimeString("zh-CN")}
+                </span>
+                <span className="shrink-0 w-8 text-right text-primary tabular-nums">
+                  {s.progress}%
+                </span>
+                <span className="text-on-surface-variant">{s.step}</span>
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
 
       {/* Tools */}
       <div className="bg-surface-container rounded-xl border border-outline-variant/20 p-5 mb-6">

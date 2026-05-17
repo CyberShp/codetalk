@@ -62,26 +62,38 @@ export default function DashboardPage() {
   const [tasks, setTasks] = useState<Task[]>([]);
   const [tools, setTools] = useState<ToolInfo[]>([]);
   const [loading, setLoading] = useState(true);
+  const [toolsLoading, setToolsLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
 
-  const loadData = useCallback(async () => {
+  const loadTasks = useCallback(async () => {
     setLoading(true);
     setError(null);
     try {
-      const [taskList, toolList] = await Promise.all([
-        api.tasks.list(),
-        api.tools.status().catch(() => [] as ToolInfo[]),
-      ]);
+      const taskList = await api.tasks.list();
       setTasks(taskList);
-      setTools(toolList);
     } catch (err: unknown) {
-      const message =
-        err instanceof Error ? err.message : "加载数据失败";
-      setError(message);
+      setError(err instanceof Error ? err.message : "加载任务失败");
     } finally {
       setLoading(false);
     }
   }, []);
+
+  const loadTools = useCallback(async () => {
+    setToolsLoading(true);
+    try {
+      const toolList = await api.tools.status();
+      setTools(toolList);
+    } catch {
+      setTools([]);
+    } finally {
+      setToolsLoading(false);
+    }
+  }, []);
+
+  const loadData = useCallback(() => {
+    loadTasks();
+    loadTools();
+  }, [loadTasks, loadTools]);
 
   useEffect(() => {
     loadData();
@@ -169,12 +181,22 @@ export default function DashboardPage() {
       </div>
 
       {/* Tool Status */}
-      {tools.length > 0 && (
-        <div className="mb-6">
-          <h2 className="text-sm font-medium text-on-surface-variant mb-3 flex items-center gap-2">
-            <Wrench size={14} />
-            工具状态
-          </h2>
+      <div className="mb-6">
+        <h2 className="text-sm font-medium text-on-surface-variant mb-3 flex items-center gap-2">
+          <Wrench size={14} />
+          工具状态
+          {toolsLoading && <Loader2 size={12} className="animate-spin" />}
+        </h2>
+        {toolsLoading ? (
+          <div className="grid grid-cols-2 gap-3">
+            {[1, 2].map((i) => (
+              <div
+                key={i}
+                className="h-12 bg-surface-container rounded-lg border border-outline-variant/20 animate-pulse"
+              />
+            ))}
+          </div>
+        ) : tools.length > 0 ? (
           <div className="grid grid-cols-2 gap-3">
             {tools.map((tool) => (
               <div
@@ -203,8 +225,8 @@ export default function DashboardPage() {
               </div>
             ))}
           </div>
-        </div>
-      )}
+        ) : null}
+      </div>
 
       {/* Task List */}
       <div>

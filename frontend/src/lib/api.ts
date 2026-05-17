@@ -1,6 +1,7 @@
 import type {
   Task,
   TaskCreate,
+  TaskStep,
   LLMConfig,
   LLMConfigCreate,
   LLMConfigUpdate,
@@ -136,6 +137,9 @@ export const api = {
       request<{ filename: string; content: string }>(
         `/api/tasks/${id}/output/${encodeURIComponent(filename)}`,
       ),
+
+    steps: (id: string) =>
+      request<TaskStep[]>(`/api/tasks/${id}/steps`),
 
     exportUrl: (id: string, format: string) =>
       `${BASE}/api/tasks/${id}/export?format=${format}`,

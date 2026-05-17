@@ -14,8 +14,15 @@ export interface Task {
   prompt_content: string | null;
   progress: number;
   error_message: string | null;
+  current_step: string | null;
   created_at: string;
   updated_at: string;
+}
+
+export interface TaskStep {
+  timestamp: string;
+  progress: number;
+  step: string;
 }
 
 export interface TaskCreate {
