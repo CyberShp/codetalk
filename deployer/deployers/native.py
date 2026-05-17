@@ -88,7 +88,7 @@ class NativeDeployer:
                 except Exception as exc:
                     results.append({"name": name, "healthy": False, "message": str(exc)})
 
-            if self._config.get("install_deepwiki", False):
+            if self._config.get("install_deepwiki", False) or bool(self._config.get("deepwiki_path", "")):
                 port = self._config.get("deepwiki_api_port", 8091)
                 try:
                     resp = await client.get(f"http://localhost:{port}/health")
@@ -200,6 +200,33 @@ class NativeDeployer:
         self._config["deepwiki_api_port"] = api_port
         self._config["deepwiki_ui_port"] = ui_port
         await self._step_generate_config()
+
+        # Restart backend so it reloads .env with the new DeepWiki port settings.
+        backend_proc = self._processes.get("backend")
+        if backend_proc is not None and backend_proc.returncode is None:
+            await self._emit_sup("deepwiki_start", "running", "重启后端以加载新 DeepWiki 配置...", 4, total)
+            try:
+                backend_proc.terminate()
+                await asyncio.wait_for(backend_proc.wait(), timeout=10)
+            except asyncio.TimeoutError:
+                backend_proc.kill()
+            backend_dir = PROJECT_ROOT / "backend"
+            backend_port = self._config.get("backend_port", 8100)
+            venv_python = (
+                backend_dir / ".venv311" / "Scripts" / "python.exe"
+                if sys.platform == "win32"
+                else backend_dir / ".venv311" / "bin" / "python"
+            )
+            await self._start_process(
+                "backend",
+                [str(venv_python), "-m", "uvicorn", "app.main:app",
+                 "--host", "0.0.0.0", "--port", str(backend_port)],
+                cwd=str(backend_dir),
+                step_name="deepwiki_start",
+                step_index=4,
+            )
+            await asyncio.sleep(5)
+            await self._emit_sup("deepwiki_start", "running", "后端已重启并加载新配置", 4, total)
 
         await self._emit_sup("deepwiki_health", "running", "检查 DeepWiki 健康状态...", 5, total)
         await asyncio.sleep(5)
@@ -572,6 +599,16 @@ class NativeDeployer:
                 try:
                     async with httpx.AsyncClient(timeout=3, trust_env=False) as client:
                         resp = await client.get(f"http://localhost:{port}{path}")
+                        if resp.status_code >= 500:
+                            all_ok = False
+                except Exception:
+                    all_ok = False
+
+            if self._config.get("install_deepwiki", False):
+                dw_port = self._config_port("deepwiki_api_port", 8091)
+                try:
+                    async with httpx.AsyncClient(timeout=3, trust_env=False) as client:
+                        resp = await client.get(f"http://localhost:{dw_port}/health")
                         if resp.status_code >= 500:
                             all_ok = False
                 except Exception:
