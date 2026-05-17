@@ -295,8 +295,8 @@ class ProcessManager:
             mp.last_error = f"Process exited with code {mp.process.returncode}"
             return {**mp.to_dict(), "healthy": False}
 
-        # No health URL or process not started
-        if not health_url or mp.status == "stopped":
+        # No health URL configured — nothing to probe
+        if not health_url:
             return mp.to_dict()
 
         need_fallback = False
@@ -336,7 +336,10 @@ class ProcessManager:
             except Exception as exc:
                 last_error = str(exc)
 
-        mp.status = "error"
+        # Only promote to "error" for processes we spawned; externally-started
+        # processes that aren't reachable stay "stopped" rather than "error".
+        if mp.status != "stopped":
+            mp.status = "error"
         mp.last_error = last_error
         return {**mp.to_dict(), "healthy": False}
 
