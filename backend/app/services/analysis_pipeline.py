@@ -164,19 +164,25 @@ class AnalysisPipeline:
                 if isinstance(result, Exception):
                     logger.exception("Data collection error: %s", result)
 
-        # Validate data quality after collection
+        # Validate data quality — only report failures for tools that were selected.
+        # An unselected tool naturally produces no data; that is expected, not a failure.
+        want_gitnexus = "gitnexus" in tools
+        want_deepwiki = "deepwiki" in tools
         has_gitnexus = bool(self._gitnexus_data and self._gitnexus_data.get("nodes"))
         has_deepwiki = bool(self._deepwiki_data and self._deepwiki_data.get("documentation"))
 
-        if not has_gitnexus and not has_deepwiki:
+        gitnexus_failed = want_gitnexus and not has_gitnexus
+        deepwiki_failed = want_deepwiki and not has_deepwiki
+
+        if gitnexus_failed and deepwiki_failed:
             self._data_quality = "poor"
-            logger.warning("Data quality: poor -- both GitNexus and DeepWiki data missing")
+            logger.warning("Data quality: poor -- GitNexus and DeepWiki both selected but data missing")
             await self._update_progress(
                 self._task_id, 35, "running",
                 "WARNING: GitNexus and DeepWiki data missing; analysis will be limited",
                 "⚠️ 数据采集不完整（GitNexus + DeepWiki 均失败），分析将受限",
             )
-        elif not has_gitnexus:
+        elif gitnexus_failed:
             self._data_quality = "degraded"
             logger.warning("Data quality: degraded -- GitNexus data missing, continuing with DeepWiki only")
             await self._update_progress(
@@ -184,7 +190,7 @@ class AnalysisPipeline:
                 "WARNING: GitNexus data unavailable; continuing in degraded mode",
                 "⚠️ GitNexus 数据不可用，仅使用 DeepWiki 数据继续",
             )
-        elif not has_deepwiki:
+        elif deepwiki_failed:
             self._data_quality = "degraded"
             logger.warning("Data quality: degraded -- DeepWiki data missing, continuing with GitNexus only")
         else:
