@@ -22,6 +22,7 @@ const state = {
   deployJobId: null,
   deployEventSource: null,
   deployDone: false,
+  hasDeployError: false,
   deepwikiInstalled: false,
 };
 
@@ -424,6 +425,7 @@ function resetDeployUI() {
 async function startDeploy() {
   resetDeployUI();
   state.deployDone = false;
+  state.hasDeployError = false;
 
   if (state.deployEventSource) {
     state.deployEventSource.close();
@@ -473,6 +475,7 @@ function handleDeployEvent(evt) {
   const { step, status, message, progress } = evt;
 
   if (step === 'done' && status === 'done') {
+    if (state.hasDeployError) return;  // suppress false Complete when prior errors exist
     state.deployDone = true;
     if (state.deployEventSource) {
       state.deployEventSource.close();
@@ -483,11 +486,23 @@ function handleDeployEvent(evt) {
     return;
   }
 
+  if (step === 'done' && status === 'error') {
+    if (state.deployEventSource) {
+      state.deployEventSource.close();
+      state.deployEventSource = null;
+    }
+    showDeployError(message || 'Deployment failed');
+    return;
+  }
+
   if (step)    $('#deploy-step-name').textContent = formatStepName(step);
   if (progress && typeof progress.current === 'number') setProgress(progress.current, progress.total || 0);
   if (message) appendLog(status === 'error' ? 'error' : status === 'done' ? 'success' : 'info', message);
   if (step && status) updateServicePill(step, status);
-  if (status === 'error') showDeployError(message || 'An error occurred during deployment');
+  if (status === 'error') {
+    state.hasDeployError = true;
+    showDeployError(message || 'An error occurred during deployment');
+  }
 }
 
 const STEP_NAMES = {

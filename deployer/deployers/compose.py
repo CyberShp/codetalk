@@ -116,8 +116,9 @@ class ComposeDeployer:
         poll_interval = 3
         if not _AIOHTTP:
             await self._emit("health", "error", "aiohttp not installed -- cannot check health", 4)
-            return
+            raise RuntimeError("aiohttp not installed -- cannot check health")
         import aiohttp as _ah
+        failed: list[str] = []
         async with _ah.ClientSession(timeout=_ah.ClientTimeout(total=5)) as session:
             for idx, (name, port, kind, path) in enumerate(SERVICES):
                 step_num = 4 + idx
@@ -136,9 +137,12 @@ class ComposeDeployer:
                             f"{name} did not become healthy within {timeout_s}s: {msg}",
                             step_num,
                         )
+                        failed.append(name)
                         break
                     await self._emit(f"health_{name}", "running", f"Waiting for {name}... ({msg})", step_num)
                     await asyncio.sleep(poll_interval)
+        if failed:
+            raise RuntimeError(f"Services did not become healthy: {', '.join(failed)}")
         await self._emit("health", "done", "Health checks complete -- deployment finished!", TOTAL_STEPS)
     def _render_env(self) -> str:
         cfg = dict(self._config)
