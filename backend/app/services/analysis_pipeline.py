@@ -62,21 +62,21 @@ class AnalysisPipeline:
             self._analysis_focus = task.get("analysis_focus") or ""
             self._prompt_content = task.get("prompt_content") or ""
 
-            await self._update_progress(task_id, 0, "running", None)
+            await self._update_progress(task_id, 0, "running", None, "启动分析管道…")
 
             # Phase 0: Preparation
             await self._phase_prepare(repo_path, tools)
-            await self._update_progress(task_id, 10, "running", None)
+            await self._update_progress(task_id, 10, "running", None, "环境准备完成，开始采集数据…")
 
             # Phase 1: Data Collection
             await self._phase_collect(repo_path, tools)
-            await self._update_progress(task_id, 40, "running", None)
+            await self._update_progress(task_id, 40, "running", None, "数据采集完成，开始 AI 模块分析…")
 
             # Phase 2: Per-module Analysis (MapReduce)
             llm_client = await self._try_create_llm_client()
             if llm_client:
                 await self._phase_module_analysis(llm_client)
-                await self._update_progress(task_id, 70, "running", None)
+                await self._update_progress(task_id, 70, "running", None, "模块分析完成，生成报告中…")
 
                 # Phase 3: Report Generation
                 output_dir = settings.outputs_path / task_id
@@ -96,7 +96,7 @@ class AnalysisPipeline:
                     analysis_focus=self._analysis_focus,
                     prompt_content=self._prompt_content,
                 )
-                await self._update_progress(task_id, 90, "running", None)
+                await self._update_progress(task_id, 90, "running", None, "报告生成完成，收尾处理…")
 
                 # Phase 4: Cross-enhancement (optional, best-effort)
                 await self._phase_cross_enhance()
@@ -113,12 +113,12 @@ class AnalysisPipeline:
                 await self._save_raw_data(output_dir)
                 final_status = "completed"
 
-            await self._update_progress(task_id, 100, final_status, None)
+            await self._update_progress(task_id, 100, final_status, None, "分析完成")
             logger.info("Pipeline completed for task %s (status=%s)", task_id, final_status, extra={"task_id": task_id})
 
         except Exception as exc:
             logger.exception("Pipeline failed for task %s", task_id, extra={"task_id": task_id})
-            await self._update_progress(task_id, -1, "failed", str(exc))
+            await self._update_progress(task_id, -1, "failed", str(exc), f"分析失败：{exc}")
 
         finally:
             current_task_id.reset(_ctx_token)
@@ -175,6 +175,7 @@ class AnalysisPipeline:
             await self._update_progress(
                 self._task_id, 35, "running",
                 "WARNING: GitNexus and DeepWiki data missing; analysis will be limited",
+                "⚠️ 数据采集不完整（GitNexus + DeepWiki 均失败），分析将受限",
             )
         elif not has_gitnexus:
             self._data_quality = "degraded"
@@ -182,6 +183,7 @@ class AnalysisPipeline:
             await self._update_progress(
                 self._task_id, 35, "running",
                 "WARNING: GitNexus data unavailable; continuing in degraded mode",
+                "⚠️ GitNexus 数据不可用，仅使用 DeepWiki 数据继续",
             )
         elif not has_deepwiki:
             self._data_quality = "degraded"
@@ -297,12 +299,18 @@ class AnalysisPipeline:
                 "unavailable.  Analysis may be incomplete.\n"
             )
 
+        total = len(communities)
+
         async def analyze_one(community: dict) -> dict:
             async with sem:
                 try:
                     summary = await self._analyze_module(llm_client, community)
                     if data_quality_note:
                         summary += data_quality_note
+                    await AnalysisPipeline._log_step(
+                        self._task_id, 55,
+                        f"模块分析完成：{community['name']}（共 {total} 个模块）",
+                    )
                 except Exception as exc:
                     logger.exception(
                         "Module analysis failed for %s: %s",
@@ -310,6 +318,10 @@ class AnalysisPipeline:
                         exc,
                     )
                     summary = f"（分析失败: {exc}）"
+                    await AnalysisPipeline._log_step(
+                        self._task_id, 55,
+                        f"模块分析失败：{community['name']} — {exc}",
+                    )
                 return {
                     "module_name": community["name"],
                     "summary": summary,
@@ -514,20 +526,44 @@ class AnalysisPipeline:
         progress: int,
         status: str,
         error_message: str | None,
+        current_step: str | None = None,
     ) -> None:
-        """Update task progress and status in SQLite."""
+        """Update task progress, status, and current step in SQLite."""
         now = datetime.now(timezone.utc).isoformat()
         async with aiosqlite.connect(settings.sqlite_db) as db:
             if error_message is not None:
                 await db.execute(
                     "UPDATE tasks SET progress = ?, status = ?, error_message = ?, "
-                    "updated_at = ? WHERE id = ?",
-                    (progress, status, error_message, now, task_id),
+                    "updated_at = ?, current_step = COALESCE(?, current_step) WHERE id = ?",
+                    (progress, status, error_message, now, current_step, task_id),
                 )
             else:
                 await db.execute(
-                    "UPDATE tasks SET progress = ?, status = ?, updated_at = ? "
-                    "WHERE id = ?",
-                    (progress, status, now, task_id),
+                    "UPDATE tasks SET progress = ?, status = ?, updated_at = ?, "
+                    "current_step = COALESCE(?, current_step) WHERE id = ?",
+                    (progress, status, now, current_step, task_id),
                 )
             await db.commit()
+
+        if current_step is not None:
+            await AnalysisPipeline._log_step(task_id, progress, current_step)
+
+    @staticmethod
+    async def _log_step(task_id: str, progress: int, step: str) -> None:
+        """Append a timestamped step entry to outputs/{task_id}/steps.jsonl."""
+        ts = datetime.now(timezone.utc).isoformat()
+        entry = json.dumps(
+            {"timestamp": ts, "progress": progress, "step": step},
+            ensure_ascii=False,
+        )
+
+        def _write() -> None:
+            step_file = settings.outputs_path / task_id / "steps.jsonl"
+            step_file.parent.mkdir(parents=True, exist_ok=True)
+            with step_file.open("a", encoding="utf-8") as f:
+                f.write(entry + "\n")
+
+        try:
+            await asyncio.to_thread(_write)
+        except Exception as exc:
+            logger.warning("Step log write failed for %s: %s", task_id, exc)

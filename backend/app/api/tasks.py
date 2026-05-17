@@ -41,6 +41,7 @@ class TaskResponse(BaseModel):
     prompt_content: str | None
     progress: int
     error_message: str | None
+    current_step: str | None
     created_at: str
     updated_at: str
 
@@ -224,6 +225,25 @@ async def list_debug_files(task_id: str, db: aiosqlite.Connection = Depends(get_
     except OSError:
         logger.exception("Failed to list debug dir: %s", debug_dir)
     return files
+
+
+@router.get("/{task_id}/steps")
+async def get_task_steps(task_id: str, db: aiosqlite.Connection = Depends(get_db)):
+    """Return step-log entries for a running/completed task (from steps.jsonl)."""
+    async with db.execute("SELECT id FROM tasks WHERE id = ?", (task_id,)) as cur:
+        if not await cur.fetchone():
+            raise HTTPException(status_code=404, detail="任务不存在")
+
+    step_file = settings.outputs_path / task_id / "steps.jsonl"
+    if not step_file.exists():
+        return []
+
+    try:
+        content = await asyncio.to_thread(step_file.read_text, "utf-8")
+        return [json.loads(line) for line in content.splitlines() if line.strip()]
+    except Exception:
+        logger.exception("Failed to read steps file for task %s", task_id)
+        return []
 
 
 @router.get("/{task_id}/debug/{filename}")

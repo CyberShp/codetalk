@@ -68,6 +68,7 @@ CREATE TABLE IF NOT EXISTS coverage_analyses (
 _MIGRATIONS = [
     "ALTER TABLE tasks ADD COLUMN analysis_focus TEXT",
     "ALTER TABLE tasks ADD COLUMN prompt_content TEXT",
+    "ALTER TABLE tasks ADD COLUMN current_step TEXT",
 ]
 
 
