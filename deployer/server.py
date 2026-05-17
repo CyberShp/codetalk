@@ -110,13 +110,20 @@ async def api_deploy(body: dict):
 
 
 async def _run_deployment(deployer) -> None:
+    error_occurred = False
     try:
         await deployer.deploy()
+    except Exception:
+        error_occurred = True
     finally:
         _deploy_state["running"] = False
         q = _deploy_state.get("event_queue")
         if q is not None:
-            await q.put(None)  # sentinel -- signals SSE stream end
+            if error_occurred:
+                await q.put({"step": "done", "status": "error", "message": "Deployment failed"})
+            else:
+                await q.put({"step": "done", "status": "done", "message": "Deployment complete"})
+            await q.put(None)  # sentinel -- signals SSE stream end (no event injected)
 
 
 @app.get("/api/deploy/stream")
@@ -135,9 +142,7 @@ async def api_deploy_stream():
                 yield ": keep-alive\n\n"
                 continue
             if event is None:
-                payload = {"step": "done", "status": "done", "message": "Deployment complete"}
-                yield "data: " + json.dumps(payload) + "\n\n"
-                break
+                break  # stream closed; done/error already sent by _run_deployment
             yield "data: " + json.dumps(event) + "\n\n"
 
     return StreamingResponse(

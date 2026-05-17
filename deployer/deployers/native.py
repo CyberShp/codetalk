@@ -553,6 +553,7 @@ class NativeDeployer:
             elapsed += interval
 
         await self._emit("health_check", "error", "Some services did not become healthy in time", step)
+        raise RuntimeError("Some services did not become healthy in time")
 
     # ------------------------------------------------------------------
     # Helpers
