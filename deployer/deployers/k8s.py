@@ -129,6 +129,7 @@ class K8sDeployer:
             await self._step_create_ingress()
         except Exception as exc:
             await self._emit("error", "error", f"Deployment failed: {exc}", 0)
+            raise
 
     async def stop(self) -> None:
         self._stopped = True
