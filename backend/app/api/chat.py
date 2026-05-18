@@ -99,6 +99,7 @@ async def _zoekt_index_background(repo_path: str, repo_key: str) -> None:
             transport=transport,
             base_url="http://localhost",
             timeout=httpx.Timeout(300, connect=10),
+            trust_env=False,
         ) as docker:
             cmd = ["zoekt-index", "-index", "/data/index", repo_path]
             create_resp = await docker.post(

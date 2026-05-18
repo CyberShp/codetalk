@@ -34,7 +34,7 @@ class Settings(BaseSettings):
     tool_health_interval: int = 30   # seconds between health checks
 
     # Analysis tuning
-    analysis_concurrency: int = 3    # max parallel module analyses
+    analysis_concurrency: int = 10   # max parallel module analyses
     deepwiki_timeout: int = 1800     # wiki generation timeout in seconds
     health_check_timeout: int = 5    # seconds for tool health probes
     gitnexus_poll_timeout: int = 600 # max seconds to wait for GitNexus indexing

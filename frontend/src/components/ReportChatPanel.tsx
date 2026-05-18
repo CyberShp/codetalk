@@ -11,14 +11,16 @@ export default function ReportChatPanel({ taskId }: { taskId: string }) {
   const [input, setInput] = useState("");
   const [streaming, setStreaming] = useState(false);
   const [streamContent, setStreamContent] = useState("");
-  const bottomRef = useRef<HTMLDivElement>(null);
+  const chatContainerRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
     api.tasks.chatHistory(taskId).then(setMessages).catch(() => {});
   }, [taskId]);
 
   useEffect(() => {
-    bottomRef.current?.scrollIntoView({ behavior: "smooth" });
+    if (chatContainerRef.current) {
+      chatContainerRef.current.scrollTop = chatContainerRef.current.scrollHeight;
+    }
   }, [messages, streamContent]);
 
   const sendMessage = useCallback(async () => {
@@ -59,21 +61,35 @@ export default function ReportChatPanel({ taskId }: { taskId: string }) {
         for (const line of lines) {
           if (!line.startsWith("data: ")) continue;
           try {
-            const payload = JSON.parse(line.slice(6)) as { content: string; done: boolean };
+            const payload = JSON.parse(line.slice(6)) as { content?: string; done: boolean; error?: string };
             if (payload.done) {
-              setMessages((prev) => [
-                ...prev,
-                {
-                  id: Date.now() + 1,
-                  task_id: taskId,
-                  role: "assistant",
-                  content: accumulated,
-                  created_at: new Date().toISOString(),
-                },
-              ]);
-              setStreamContent("");
+              if (payload.error) {
+                setMessages((prev) => [
+                  ...prev,
+                  {
+                    id: Date.now() + 1,
+                    task_id: taskId,
+                    role: "assistant",
+                    content: `> ⚠ ${payload.error}`,
+                    created_at: new Date().toISOString(),
+                  },
+                ]);
+                setStreamContent("");
+              } else {
+                setMessages((prev) => [
+                  ...prev,
+                  {
+                    id: Date.now() + 1,
+                    task_id: taskId,
+                    role: "assistant",
+                    content: accumulated,
+                    created_at: new Date().toISOString(),
+                  },
+                ]);
+                setStreamContent("");
+              }
             } else {
-              accumulated += payload.content;
+              accumulated += payload.content ?? "";
               setStreamContent(accumulated);
             }
           } catch {
@@ -105,6 +121,12 @@ export default function ReportChatPanel({ taskId }: { taskId: string }) {
     }
   };
 
+  const sanitizeContent = (content: string) =>
+    content.replace(
+      /^#{1,6}\s+(.*(?:Error|Exception|Traceback|error|exception|failed|Failed).*)$/gm,
+      "**$1**",
+    );
+
   return (
     <div className="flex flex-col h-full bg-surface-container rounded-xl border border-outline-variant/20">
       {/* Header */}
@@ -114,7 +136,7 @@ export default function ReportChatPanel({ taskId }: { taskId: string }) {
       </div>
 
       {/* Messages */}
-      <div className="flex-1 overflow-y-auto px-4 py-3 space-y-4 min-h-0">
+      <div ref={chatContainerRef} className="flex-1 overflow-y-auto px-4 py-3 space-y-4 min-h-0">
         {messages.length === 0 && !streaming && (
           <div className="flex flex-col items-center justify-center h-full text-center py-8">
             <Bot size={32} className="text-on-surface-variant/40 mb-3" />
@@ -133,7 +155,7 @@ export default function ReportChatPanel({ taskId }: { taskId: string }) {
               </div>
             ) : (
               <div className="max-w-[95%] px-3 py-2 bg-surface-container-high rounded-xl rounded-tl-sm text-sm">
-                <MarkdownRenderer content={msg.content} enableNumericCitations={false} />
+                <MarkdownRenderer content={sanitizeContent(msg.content)} enableNumericCitations={false} />
               </div>
             )}
           </div>
@@ -144,7 +166,7 @@ export default function ReportChatPanel({ taskId }: { taskId: string }) {
           <div className="flex justify-start">
             <div className="max-w-[95%] px-3 py-2 bg-surface-container-high rounded-xl rounded-tl-sm text-sm">
               {streamContent ? (
-                <MarkdownRenderer content={streamContent} enableNumericCitations={false} />
+                <MarkdownRenderer content={sanitizeContent(streamContent)} enableNumericCitations={false} />
               ) : (
                 <div className="flex items-center gap-1 py-1">
                   <span className="w-1.5 h-1.5 bg-on-surface-variant/60 rounded-full animate-bounce [animation-delay:0ms]" />
@@ -156,7 +178,6 @@ export default function ReportChatPanel({ taskId }: { taskId: string }) {
           </div>
         )}
 
-        <div ref={bottomRef} />
       </div>
 
       {/* Input */}
