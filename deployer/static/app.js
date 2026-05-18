@@ -201,19 +201,6 @@ function renderChecks(checks) {
 // ---------------------------------------------------------------------------
 
 function initConfigForm() {
-  const apiKeyInput  = $('#llm-api-key');
-  const apiKeyToggle = $('#llm-api-key-toggle');
-  const eyeOpen      = apiKeyToggle.querySelector('.eye-open');
-  const eyeClosed    = apiKeyToggle.querySelector('.eye-closed');
-
-  apiKeyToggle.addEventListener('click', () => {
-    const visible = apiKeyInput.type === 'text';
-    apiKeyInput.type = visible ? 'password' : 'text';
-    eyeOpen.style.display   = visible ? ''     : 'none';
-    eyeClosed.style.display = visible ? 'none' : '';
-    apiKeyToggle.setAttribute('aria-label', visible ? '显示密钥' : '隐藏密钥');
-  });
-
   // Workspace path auto-derives repos-path and deepwiki-path
   const workspaceInput = $('#workspace-path');
   const reposPathInput = $('#repos-path');
@@ -259,9 +246,6 @@ function initConfigForm() {
         ($('#workspace-path') || {}).value = cfg.workspacePath;
         if ($('#repos-path')) $('#repos-path').value = cfg.workspacePath.replace(/[/\\]+$/, '') + '/repos';
       }
-      if (cfg.llmBaseUrl)      ($('#llm-base-url') || {}).value      = cfg.llmBaseUrl;
-      if (cfg.llmModel)        ($('#llm-model')     || {}).value      = cfg.llmModel;
-      if (cfg.llmApiKey)       apiKeyInput.value                      = cfg.llmApiKey;
       if (installDeepwikiCb && cfg.installDeepwiki !== undefined) {
         installDeepwikiCb.checked = !!cfg.installDeepwiki;
         const ports = $('#deepwiki-ports');
@@ -310,9 +294,6 @@ function collectConfig() {
   const cfg = {
     mode:            state.selectedMode,
     workspacePath:   (($('#workspace-path') || {}).value || './workspace').trim(),
-    llmBaseUrl:      (($('#llm-base-url') || {}).value || '').trim(),
-    llmModel:        (($('#llm-model')    || {}).value || '').trim(),
-    llmApiKey:       (($('#llm-api-key')  || {}).value || '').trim(),
     installDeepwiki: installDeepwikiCb ? installDeepwikiCb.checked : true,
     installGitnexus: installGitnexusCb ? installGitnexusCb.checked : true,
     portDeepwikiApi: (($('#port-deepwiki-api') || {}).value || '8091').trim(),
@@ -362,11 +343,6 @@ function renderReview() {
   const rows = [
     { label: '部署模式',  value: MODE_LABELS[cfg.mode] || cfg.mode },
     { label: '工作目录',  value: cfg.workspacePath || './workspace', mono: true },
-    null,
-    { label: '模型服务地址', value: cfg.llmBaseUrl || '（未设置）', mono: true },
-    { label: '模型名称',    value: cfg.llmModel   || '（未设置）' },
-    { label: 'API 密钥',   value: cfg.llmApiKey ? maskKey(cfg.llmApiKey) : '（未设置）', mono: true, sensitive: true },
-    null,
   ];
 
   const components = [];

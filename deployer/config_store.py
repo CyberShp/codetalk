@@ -106,11 +106,23 @@ def _pick_api_key_for_frontend(cfg: dict) -> dict:
 
 
 def save_config(config: dict) -> None:
-    """Normalize to snake_case, distribute api_key by provider, and persist."""
+    """Normalize to snake_case, distribute api_key by provider, and persist.
+
+    Merges into the existing config so fields absent from the new payload
+    (e.g. llm_* keys after the LLM wizard section was removed) are preserved.
+    """
     normalized = _normalize_to_snake(config)
     normalized = _distribute_api_key(normalized)
+    existing: dict = {}
+    if CONFIG_PATH.exists():
+        try:
+            with open(CONFIG_PATH, "r", encoding="utf-8") as f:
+                existing = _normalize_to_snake(json.load(f))
+        except (json.JSONDecodeError, OSError):
+            pass
+    existing.update(normalized)
     with open(CONFIG_PATH, "w", encoding="utf-8") as f:
-        json.dump(normalized, f, indent=2)
+        json.dump(existing, f, indent=2)
 
 
 def get_default_config(mode: str) -> dict:

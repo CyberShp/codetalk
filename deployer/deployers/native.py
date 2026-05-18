@@ -473,16 +473,6 @@ class NativeDeployer:
                 f"DEEPWIKI_PATH={deepwiki_path}",
             ])
 
-        llm_base_url = cfg.get("llm_base_url", "")
-        if llm_base_url:
-            env_lines.extend([
-                f"OPENAI_BASE_URL={llm_base_url}",
-                f"OPENAI_API_KEY={cfg.get('llm_api_key', '')}",
-                f"LLM_MODEL={cfg.get('llm_model', '')}",
-                "FORCE_DIRECT=true",
-                "TRUST_ENV=false",
-            ])
-
         tiktoken_cache = VENDOR_DIR / "tiktoken_cache"
         if tiktoken_cache.exists():
             env_lines.append(f"TIKTOKEN_CACHE_DIR={tiktoken_cache}")
@@ -504,6 +494,75 @@ class NativeDeployer:
     # Step 6: Start services
     # ------------------------------------------------------------------
 
+    async def _kill_port_processes(self, ports: list[int], step: int) -> None:
+        """Kill any processes listening on the given ports before starting services."""
+        own_pid = os.getpid()
+        for port in ports:
+            if sys.platform == "win32":
+                try:
+                    proc = await asyncio.create_subprocess_exec(
+                        "netstat", "-ano", "-p", "TCP",
+                        stdout=asyncio.subprocess.PIPE,
+                        stderr=asyncio.subprocess.DEVNULL,
+                    )
+                    stdout, _ = await asyncio.wait_for(proc.communicate(), timeout=10)
+                    for line in stdout.decode(errors="replace").splitlines():
+                        if f":{port} " in line and "LISTENING" in line:
+                            parts = line.split()
+                            pid_str = parts[-1]
+                            if pid_str.isdigit() and int(pid_str) != own_pid:
+                                proc_name = pid_str
+                                try:
+                                    name_proc = await asyncio.create_subprocess_exec(
+                                        "tasklist", "/FI", f"PID eq {pid_str}", "/FO", "CSV", "/NH",
+                                        stdout=asyncio.subprocess.PIPE,
+                                        stderr=asyncio.subprocess.DEVNULL,
+                                    )
+                                    name_out, _ = await asyncio.wait_for(name_proc.communicate(), timeout=5)
+                                    first_line = name_out.decode(errors="replace").strip().splitlines()[0]
+                                    proc_name = first_line.split(",")[0].strip('"') or pid_str
+                                except Exception:
+                                    pass
+                                kill_proc = await asyncio.create_subprocess_exec(
+                                    "taskkill", "/F", "/PID", pid_str,
+                                    stdout=asyncio.subprocess.DEVNULL,
+                                    stderr=asyncio.subprocess.DEVNULL,
+                                )
+                                await asyncio.wait_for(kill_proc.wait(), timeout=5)
+                                await self._emit("start_services", "running", f"已释放端口 {port}（PID {pid_str}, {proc_name}）", step)
+                except (asyncio.TimeoutError, Exception):
+                    pass
+            else:
+                try:
+                    proc = await asyncio.create_subprocess_exec(
+                        "lsof", "-ti", f":{port}",
+                        stdout=asyncio.subprocess.PIPE,
+                        stderr=asyncio.subprocess.DEVNULL,
+                    )
+                    stdout, _ = await asyncio.wait_for(proc.communicate(), timeout=10)
+                    for pid_str in stdout.decode(errors="replace").split():
+                        if pid_str.isdigit() and int(pid_str) != own_pid:
+                            proc_name = pid_str
+                            try:
+                                name_proc = await asyncio.create_subprocess_exec(
+                                    "ps", "-p", pid_str, "-o", "comm=",
+                                    stdout=asyncio.subprocess.PIPE,
+                                    stderr=asyncio.subprocess.DEVNULL,
+                                )
+                                name_out, _ = await asyncio.wait_for(name_proc.communicate(), timeout=5)
+                                proc_name = name_out.decode(errors="replace").strip() or pid_str
+                            except Exception:
+                                pass
+                            kill_proc = await asyncio.create_subprocess_exec(
+                                "kill", "-9", pid_str,
+                                stdout=asyncio.subprocess.DEVNULL,
+                                stderr=asyncio.subprocess.DEVNULL,
+                            )
+                            await asyncio.wait_for(kill_proc.wait(), timeout=5)
+                            await self._emit("start_services", "running", f"已释放端口 {port}（PID {pid_str}, {proc_name}）", step)
+                except (asyncio.TimeoutError, Exception):
+                    pass
+
     async def _step_start_services(self) -> None:
         step = 6
         await self._emit("start_services", "running", "启动服务...", step)
@@ -512,6 +571,13 @@ class NativeDeployer:
         backend_port = cfg.get("backend_port", 8100)
         frontend_port = cfg.get("frontend_port", 3005)
         gitnexus_port = cfg.get("gitnexus_port", 7100)
+
+        ports_to_clear = [backend_port, frontend_port]
+        if cfg.get("install_gitnexus", True):
+            ports_to_clear.append(gitnexus_port)
+        await self._emit("start_services", "running", f"清理占用端口 {ports_to_clear}...", step)
+        await self._kill_port_processes(ports_to_clear, step)
+        await asyncio.sleep(1)
 
         backend_dir = PROJECT_ROOT / "backend"
         frontend_dir = PROJECT_ROOT / "frontend"
