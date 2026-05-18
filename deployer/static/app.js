@@ -343,7 +343,6 @@ function renderReview() {
   const rows = [
     { label: '部署模式',  value: MODE_LABELS[cfg.mode] || cfg.mode },
     { label: '工作目录',  value: cfg.workspacePath || './workspace', mono: true },
-    null,
   ];
 
   const components = [];

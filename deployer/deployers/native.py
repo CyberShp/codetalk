@@ -511,13 +511,25 @@ class NativeDeployer:
                             parts = line.split()
                             pid_str = parts[-1]
                             if pid_str.isdigit() and int(pid_str) != own_pid:
+                                proc_name = pid_str
+                                try:
+                                    name_proc = await asyncio.create_subprocess_exec(
+                                        "tasklist", "/FI", f"PID eq {pid_str}", "/FO", "CSV", "/NH",
+                                        stdout=asyncio.subprocess.PIPE,
+                                        stderr=asyncio.subprocess.DEVNULL,
+                                    )
+                                    name_out, _ = await asyncio.wait_for(name_proc.communicate(), timeout=5)
+                                    first_line = name_out.decode(errors="replace").strip().splitlines()[0]
+                                    proc_name = first_line.split(",")[0].strip('"') or pid_str
+                                except Exception:
+                                    pass
                                 kill_proc = await asyncio.create_subprocess_exec(
                                     "taskkill", "/F", "/PID", pid_str,
                                     stdout=asyncio.subprocess.DEVNULL,
                                     stderr=asyncio.subprocess.DEVNULL,
                                 )
                                 await asyncio.wait_for(kill_proc.wait(), timeout=5)
-                                await self._emit("start_services", "running", f"已释放端口 {port}（PID {pid_str}）", step)
+                                await self._emit("start_services", "running", f"已释放端口 {port}（PID {pid_str}, {proc_name}）", step)
                 except (asyncio.TimeoutError, Exception):
                     pass
             else:
@@ -530,13 +542,24 @@ class NativeDeployer:
                     stdout, _ = await asyncio.wait_for(proc.communicate(), timeout=10)
                     for pid_str in stdout.decode(errors="replace").split():
                         if pid_str.isdigit() and int(pid_str) != own_pid:
+                            proc_name = pid_str
+                            try:
+                                name_proc = await asyncio.create_subprocess_exec(
+                                    "ps", "-p", pid_str, "-o", "comm=",
+                                    stdout=asyncio.subprocess.PIPE,
+                                    stderr=asyncio.subprocess.DEVNULL,
+                                )
+                                name_out, _ = await asyncio.wait_for(name_proc.communicate(), timeout=5)
+                                proc_name = name_out.decode(errors="replace").strip() or pid_str
+                            except Exception:
+                                pass
                             kill_proc = await asyncio.create_subprocess_exec(
                                 "kill", "-9", pid_str,
                                 stdout=asyncio.subprocess.DEVNULL,
                                 stderr=asyncio.subprocess.DEVNULL,
                             )
                             await asyncio.wait_for(kill_proc.wait(), timeout=5)
-                            await self._emit("start_services", "running", f"已释放端口 {port}（PID {pid_str}）", step)
+                            await self._emit("start_services", "running", f"已释放端口 {port}（PID {pid_str}, {proc_name}）", step)
                 except (asyncio.TimeoutError, Exception):
                     pass
 
