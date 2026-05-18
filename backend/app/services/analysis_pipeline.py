@@ -848,13 +848,8 @@ class AnalysisPipeline:
         path_hash = hashlib.md5(str(Path(repo_path).resolve()).encode()).hexdigest()[:8]
         return f"{path_hash}_{commit}"
 
-    def _build_module_cache_key(self, commit: str) -> str:
-        """Build module-summary cache key: commit + hash of task intent + data quality.
-
-        Different analysis_focus / prompt_content / tool combinations / data
-        quality levels produce separate cache entries so task intent and actual
-        data-source availability are never silently swallowed.
-        """
+    def _compute_intent_hash(self) -> str:
+        """8-char hash of task intent + data quality for cache keying."""
         import hashlib
         intent_parts = [
             self._analysis_focus or "",
@@ -863,8 +858,11 @@ class AnalysisPipeline:
             json.dumps(sorted(self._tools)) if hasattr(self, "_tools") else "",
             self._data_quality or "good",
         ]
-        intent_hash = hashlib.sha256("|".join(intent_parts).encode()).hexdigest()[:8]
-        return f"{commit}_{intent_hash}"
+        return hashlib.sha256("|".join(intent_parts).encode()).hexdigest()[:8]
+
+    def _build_module_cache_key(self, commit: str) -> str:
+        """Build module-summary cache key: commit + intent/quality hash."""
+        return f"{commit}_{self._compute_intent_hash()}"
 
     def _cache_dir(self) -> Path:
         """Return (and create) the .cache directory under outputs."""
@@ -933,11 +931,12 @@ class AnalysisPipeline:
 
     async def _load_latest_module_summaries_cache(self) -> tuple[list[dict] | None, str]:
         """
-        Task 15: find the most recently written modules_*.json cache file.
+        Task 15: find the most recently written modules_*.json cache file
+        whose intent hash matches the current task.
         Returns (summaries, commit_hash) or (None, '').
-        The commit hash is the last segment of the stem after splitting on '_',
-        provided it is a 40-character hex SHA-1.
         """
+        current_intent = self._compute_intent_hash()
+
         def _find() -> tuple[list[dict] | None, str]:
             cache_dir = self._cache_dir()
             candidates = sorted(
@@ -947,12 +946,18 @@ class AnalysisPipeline:
             )
             for candidate in candidates:
                 try:
-                    data = json.loads(candidate.read_text(encoding="utf-8"))
                     # stem format: modules_{40-char-commit}_{8-char-intent-hash}
                     parts = candidate.stem.split("_")
-                    commit_part = parts[1] if len(parts) >= 3 else ""
-                    if re.fullmatch(r"[0-9a-f]{40}", commit_part):
-                        return data, commit_part
+                    if len(parts) < 3:
+                        continue
+                    commit_part = parts[1]
+                    intent_part = parts[2]
+                    if not re.fullmatch(r"[0-9a-f]{40}", commit_part):
+                        continue
+                    if intent_part != current_intent:
+                        continue
+                    data = json.loads(candidate.read_text(encoding="utf-8"))
+                    return data, commit_part
                 except Exception as exc:
                     logger.warning("Failed reading cache candidate %s: %s", candidate, exc)
             return None, ""
