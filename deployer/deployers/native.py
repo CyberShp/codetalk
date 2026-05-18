@@ -175,6 +175,15 @@ class NativeDeployer:
                 if rc != 0:
                     await self._emit_sup("deepwiki_python", "error", "pip install 失败", 2, total)
                     raise RuntimeError("DeepWiki pip install failed")
+            compat_file = dw_dir / "api" / "api.py"
+            if compat_file.exists():
+                _content = compat_file.read_text(encoding="utf-8")
+                if "add_websocket_route" in _content and "add_api_websocket_route" not in _content:
+                    compat_file.write_text(
+                        _content.replace("add_websocket_route", "add_api_websocket_route"),
+                        encoding="utf-8",
+                    )
+                    await self._emit_sup("deepwiki_python", "running", "已修补 FastAPI 兼容性（add_websocket_route → add_api_websocket_route）", 2, total)
             await self._emit_sup("deepwiki_python", "done", "Python 依赖安装完成", 2, total)
         else:
             await self._emit_sup("deepwiki_python", "done", "无需 Python 依赖", 2, total)
