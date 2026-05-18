@@ -422,8 +422,8 @@ class AnalysisPipeline:
         # Task 15: check for previous-commit cached summaries for incremental analysis
         prev_summaries, prev_commit = await self._load_latest_module_summaries_cache()
         changed_files: set[str] = set()
-        if prev_summaries and prev_commit and cache_key and prev_commit != cache_key:
-            changed_files = await self._get_changed_files(repo_path, prev_commit, cache_key)
+        if prev_summaries and prev_commit and commit_hash and prev_commit != commit_hash:
+            changed_files = await self._get_changed_files(repo_path, prev_commit, commit_hash)
             logger.info(
                 "Incremental analysis: %d changed files since %s",
                 len(changed_files),
@@ -849,10 +849,11 @@ class AnalysisPipeline:
         return f"{path_hash}_{commit}"
 
     def _build_module_cache_key(self, commit: str) -> str:
-        """Build module-summary cache key: commit + hash of task intent.
+        """Build module-summary cache key: commit + hash of task intent + data quality.
 
-        Different analysis_focus / prompt_content / tool combinations produce
-        separate cache entries so task intent is never silently swallowed.
+        Different analysis_focus / prompt_content / tool combinations / data
+        quality levels produce separate cache entries so task intent and actual
+        data-source availability are never silently swallowed.
         """
         import hashlib
         intent_parts = [
@@ -860,6 +861,7 @@ class AnalysisPipeline:
             self._prompt_content or "",
             self._deepwiki_depth or "",
             json.dumps(sorted(self._tools)) if hasattr(self, "_tools") else "",
+            self._data_quality or "good",
         ]
         intent_hash = hashlib.sha256("|".join(intent_parts).encode()).hexdigest()[:8]
         return f"{commit}_{intent_hash}"
@@ -946,11 +948,11 @@ class AnalysisPipeline:
             for candidate in candidates:
                 try:
                     data = json.loads(candidate.read_text(encoding="utf-8"))
-                    # stem format: modules_{basename}_{sha1}
+                    # stem format: modules_{40-char-commit}_{8-char-intent-hash}
                     parts = candidate.stem.split("_")
-                    last = parts[-1] if parts else ""
-                    if re.fullmatch(r"[0-9a-f]{40}", last):
-                        return data, last
+                    commit_part = parts[1] if len(parts) >= 3 else ""
+                    if re.fullmatch(r"[0-9a-f]{40}", commit_part):
+                        return data, commit_part
                 except Exception as exc:
                     logger.warning("Failed reading cache candidate %s: %s", candidate, exc)
             return None, ""
