@@ -225,7 +225,7 @@ async def _build_summary(results: list[UnifiedResult], options: dict) -> str:
         async with httpx.AsyncClient(
             base_url=base_url,
             timeout=httpx.Timeout(60, connect=10),
-            trust_env=trust_env,
+            trust_env=False,
         ) as client:
             resp = await client.post(
                 "/chat/completions",

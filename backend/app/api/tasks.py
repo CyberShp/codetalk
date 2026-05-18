@@ -143,7 +143,7 @@ async def run_task(
     tools = json.loads(task.get("tools") or "[]")
     if "gitnexus" in tools:
         try:
-            async with httpx.AsyncClient(timeout=httpx.Timeout(settings.health_check_timeout)) as hc_client:
+            async with httpx.AsyncClient(timeout=httpx.Timeout(settings.health_check_timeout), trust_env=False) as hc_client:
                 hc_resp = await hc_client.get(f"{settings.gitnexus_base_url}/api/health")
                 hc_resp.raise_for_status()
         except Exception as exc:

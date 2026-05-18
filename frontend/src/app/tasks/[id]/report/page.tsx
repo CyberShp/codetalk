@@ -177,7 +177,7 @@ export default function ReportPage() {
       {/* Right: AI chat panel — only shown when reports are loaded */}
       {tabKeys.length > 0 && (
         <div
-          className="w-[380px] shrink-0 sticky top-4"
+          className="flex-1 sticky top-4"
           style={{ height: "calc(100vh - 8rem)" }}
         >
           <ReportChatPanel taskId={taskId} />

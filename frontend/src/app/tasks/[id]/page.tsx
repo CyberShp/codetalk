@@ -16,7 +16,7 @@ import {
   RefreshCw,
 } from "lucide-react";
 import { api } from "@/lib/api";
-import type { Task, TaskStatus } from "@/lib/types";
+import type { Task, TaskStatus, TaskStep } from "@/lib/types";
 import ProgressBar from "@/components/ui/ProgressBar";
 
 const STATUS_CONFIG: Record<
@@ -49,9 +49,11 @@ export default function TaskDetailPage() {
   const [error, setError] = useState<string | null>(null);
   const [deleting, setDeleting] = useState(false);
   const [running, setRunning] = useState(false);
+  const [steps, setSteps] = useState<TaskStep[]>([]);
 
   // Only show the full-page spinner on the very first fetch.
   const hasLoadedOnce = useRef(false);
+  const stepsEndRef = useRef<HTMLDivElement>(null);
 
   const loadTask = useCallback(async () => {
     if (!taskId) return;
@@ -103,6 +105,30 @@ export default function TaskDetailPage() {
       setDeleting(false);
     }
   }, [taskId]);
+
+  const loadSteps = useCallback(async () => {
+    if (!taskId) return;
+    try {
+      const data = await api.tasks.steps(taskId);
+      setSteps(data);
+    } catch {
+      // ignore step load errors
+    }
+  }, [taskId]);
+
+  // Load steps on mount and poll every 5 s while running
+  useEffect(() => {
+    if (!taskId) return;
+    loadSteps();
+    if (task?.status !== "running") return;
+    const timer = setInterval(loadSteps, 5000);
+    return () => clearInterval(timer);
+  }, [taskId, task?.status, loadSteps]);
+
+  // Auto-scroll steps terminal to bottom
+  useEffect(() => {
+    stepsEndRef.current?.scrollIntoView({ behavior: "smooth" });
+  }, [steps]);
 
   if (loading) {
     return (
@@ -232,6 +258,27 @@ export default function TaskDetailPage() {
           ))}
         </div>
       </div>
+
+      {/* Analysis Progress Log */}
+      {steps.length > 0 && (
+        <div className="bg-surface-container rounded-xl border border-outline-variant/20 p-5 mb-6">
+          <h2 className="text-sm font-medium text-on-surface mb-3">分析进度日志</h2>
+          <div className="bg-[#0d1117] rounded-lg p-3 max-h-64 overflow-y-auto font-mono">
+            {steps.map((s, i) => (
+              <div key={i} className="flex items-start gap-2 text-xs leading-5 mb-0.5">
+                <span className="text-on-surface-variant/40 shrink-0 tabular-nums">
+                  {new Date(s.timestamp).toLocaleTimeString("zh-CN", { hour12: false })}
+                </span>
+                <span className="text-amber-400/70 shrink-0 tabular-nums w-8 text-right">
+                  {s.progress}%
+                </span>
+                <span className="text-green-400/90 break-all">{s.step}</span>
+              </div>
+            ))}
+            <div ref={stepsEndRef} />
+          </div>
+        </div>
+      )}
 
       {/* Documents */}
       {(task.requirements_doc || task.design_doc) && (

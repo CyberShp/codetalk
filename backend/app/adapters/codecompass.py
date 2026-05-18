@@ -72,7 +72,7 @@ class CodeCompassAdapter(BaseToolAdapter):
     async def health_check(self) -> ToolHealth:
         try:
             async with httpx.AsyncClient(
-                base_url=self.base_url, timeout=httpx.Timeout(5, connect=3)
+                base_url=self.base_url, timeout=httpx.Timeout(5, connect=3), trust_env=False
             ) as client:
                 resp = await client.get("/")
                 if resp.status_code < 500:
@@ -121,6 +121,7 @@ class CodeCompassAdapter(BaseToolAdapter):
                 async with httpx.AsyncClient(
                     base_url=self.base_url,
                     timeout=httpx.Timeout(600, connect=10),
+                    trust_env=False,
                 ) as client:
                     resp = await client.post(
                         "/api/parse",
@@ -159,6 +160,7 @@ class CodeCompassAdapter(BaseToolAdapter):
         async with httpx.AsyncClient(
             base_url=self.base_url,
             timeout=httpx.Timeout(60, connect=10),
+            trust_env=False,
         ) as client:
             # 1. File list
             try:
@@ -231,7 +233,7 @@ class CodeCompassAdapter(BaseToolAdapter):
         if not self._current_workspace:
             return {"error": "no project loaded"}
         async with httpx.AsyncClient(
-            base_url=self.base_url, timeout=httpx.Timeout(30, connect=5)
+            base_url=self.base_url, timeout=httpx.Timeout(30, connect=5), trust_env=False
         ) as client:
             resp = await client.get(
                 f"/api/{self._current_workspace}/call-graph/{function_name}"
@@ -244,7 +246,7 @@ class CodeCompassAdapter(BaseToolAdapter):
         if not self._current_workspace:
             return {"error": "no project loaded"}
         async with httpx.AsyncClient(
-            base_url=self.base_url, timeout=httpx.Timeout(30, connect=5)
+            base_url=self.base_url, timeout=httpx.Timeout(30, connect=5), trust_env=False
         ) as client:
             resp = await client.get(
                 f"/api/{self._current_workspace}/pointer-analysis/{function_name}"
@@ -257,7 +259,7 @@ class CodeCompassAdapter(BaseToolAdapter):
         if not self._current_workspace:
             return {"error": "no project loaded"}
         async with httpx.AsyncClient(
-            base_url=self.base_url, timeout=httpx.Timeout(30, connect=5)
+            base_url=self.base_url, timeout=httpx.Timeout(30, connect=5), trust_env=False
         ) as client:
             resp = await client.get(
                 f"/api/{self._current_workspace}/indirect-calls/{function_name}"
@@ -270,7 +272,7 @@ class CodeCompassAdapter(BaseToolAdapter):
         if not self._current_workspace:
             return {"error": "no project loaded"}
         async with httpx.AsyncClient(
-            base_url=self.base_url, timeout=httpx.Timeout(30, connect=5)
+            base_url=self.base_url, timeout=httpx.Timeout(30, connect=5), trust_env=False
         ) as client:
             resp = await client.get(
                 f"/api/{self._current_workspace}/alias",
