@@ -150,11 +150,28 @@ class NativeDeployer:
 
             if has_requirements:
                 rc = await self._run_stream("deepwiki_python", 2, str(venv_pip), "install", "-r", str(dw_dir / "requirements.txt"))
+                if rc != 0:
+                    await self._emit_sup("deepwiki_python", "error", "pip install 失败", 2, total)
+                    raise RuntimeError("DeepWiki pip install failed")
             else:
-                rc = await self._run_stream("deepwiki_python", 2, str(venv_pip), "install", str(dw_dir / "api"))
-            if rc != 0:
-                await self._emit_sup("deepwiki_python", "error", "pip install 失败", 2, total)
-                raise RuntimeError("DeepWiki pip install failed")
+                await self._emit_sup("deepwiki_python", "running", "安装 Poetry...", 2, total)
+                rc = await self._run_stream("deepwiki_python", 2, str(venv_pip), "install", "poetry")
+                if rc != 0:
+                    await self._emit_sup("deepwiki_python", "error", "Poetry 安装失败", 2, total)
+                    raise RuntimeError("DeepWiki Poetry install failed")
+                poetry_env = {
+                    "POETRY_VIRTUALENVS_CREATE": "false",
+                    "VIRTUAL_ENV": str(venv_dir),
+                }
+                rc = await self._run_stream(
+                    "deepwiki_python", 2,
+                    str(venv_python), "-m", "poetry", "install", "--no-root",
+                    "--directory", str(dw_dir / "api"),
+                    env_extra=poetry_env,
+                )
+                if rc != 0:
+                    await self._emit_sup("deepwiki_python", "error", "poetry install 失败", 2, total)
+                    raise RuntimeError("DeepWiki poetry install failed")
             await self._emit_sup("deepwiki_python", "done", "Python 依赖安装完成", 2, total)
         else:
             await self._emit_sup("deepwiki_python", "done", "无需 Python 依赖", 2, total)
@@ -750,8 +767,14 @@ class NativeDeployer:
     async def _run_stream(
         self, step_name: str, step_index: int, *cmd: str,
         cwd: str | None = None, timeout_seconds: int = 600,
+        env_extra: dict | None = None,
     ) -> int:
         import time
+
+        env = None
+        if env_extra:
+            env = os.environ.copy()
+            env.update(env_extra)
 
         try:
             proc = await asyncio.create_subprocess_exec(
@@ -759,6 +782,7 @@ class NativeDeployer:
                 stdout=asyncio.subprocess.PIPE,
                 stderr=asyncio.subprocess.STDOUT,
                 cwd=cwd,
+                env=env,
             )
         except FileNotFoundError:
             await self._emit(step_name, "error", f"命令未找到：{cmd[0]}", step_index)
