@@ -205,14 +205,19 @@ class NativeDeployer:
             )
 
         if has_package_json:
-            npm_cmd = "npm.cmd" if sys.platform == "win32" else "npm"
+            standalone_server = dw_dir / ".next" / "standalone" / "server.js"
+            if standalone_server.exists():
+                ui_cmd = ["node", str(standalone_server)]
+            else:
+                npm_cmd = "npm.cmd" if sys.platform == "win32" else "npm"
+                ui_cmd = [npm_cmd, "run", "start"]
             await self._start_process(
                 "deepwiki-ui",
-                [npm_cmd, "run", "start"],
+                ui_cmd,
                 cwd=str(dw_dir),
                 step_name="deepwiki_start",
                 step_index=5,
-                env_extra={"PORT": str(ui_port), **llm_env},
+                env_extra={"PORT": str(ui_port), "SERVER_BASE_URL": f"http://localhost:{api_port}", **llm_env},
             )
 
         await self._emit_sup("deepwiki_start", "done", "DeepWiki 服务已启动", 5, total)
