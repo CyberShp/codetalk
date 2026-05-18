@@ -91,10 +91,6 @@
     setInfoLink('cfg-gitnexus-url', 'http://localhost:' + gitnexusPort);
     setInfoLink('cfg-deepwiki-url', 'http://localhost:' + deepwikiApi + '  (UI ' + deepwikiUi + ')');
 
-    var llmModel = cfg.llmModel || '—';
-    var llmBase  = cfg.llmBaseUrl || '';
-    var llmText  = llmModel + (llmBase ? ' @ ' + llmBase : '');
-    setInfoLink('cfg-llm-info', null, llmText);
   }
 
   function setInfoLink(id, url, text) {
