@@ -660,7 +660,10 @@ class NativeDeployer:
         deepwiki_path = self._config.get("deepwiki_path", "")
         if self._config.get("install_deepwiki", False) or deepwiki_path:
             dw_dir = Path(deepwiki_path) if deepwiki_path else None
-            if dw_dir and dw_dir.exists():
+            _existing_api = self._processes.get("deepwiki-api")
+            if _existing_api is not None and _existing_api.returncode is None:
+                await self._emit("start_services", "running", "DeepWiki 已在运行，跳过重复启动", step)
+            elif dw_dir and dw_dir.exists():
                 dw_api_port = self._config_port("deepwiki_api_port", 8091)
                 dw_ui_port = self._config_port("deepwiki_ui_port", 3001)
                 llm_env: dict[str, str] = {}
@@ -675,6 +678,9 @@ class NativeDeployer:
                     }
                 await self._kill_port_processes([dw_api_port, dw_ui_port], step)
                 await self._start_deepwiki_processes(dw_dir, dw_api_port, dw_ui_port, llm_env, "start_services", step)
+            elif dw_dir:
+                await self._emit("start_services", "error", f"DeepWiki 路径无效：{dw_dir} 不存在", step)
+                raise RuntimeError(f"DeepWiki path does not exist: {dw_dir}")
 
         await self._emit("start_services", "done", "所有核心服务已启动", step)
 
