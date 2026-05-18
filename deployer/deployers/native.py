@@ -123,13 +123,15 @@ class NativeDeployer:
             await self._emit_sup("deepwiki_validate", "done", "DeepWiki-Open 克隆完成", 1, total)
 
         has_requirements = (dw_dir / "requirements.txt").exists()
+        has_pyproject = (dw_dir / "api" / "pyproject.toml").exists()
+        has_python_api = has_requirements or has_pyproject
         has_package_json = (dw_dir / "package.json").exists()
-        if not has_requirements and not has_package_json:
-            await self._emit_sup("deepwiki_validate", "error", "无效的 DeepWiki-Open 目录（缺少 requirements.txt 或 package.json）", 1, total)
+        if not has_python_api and not has_package_json:
+            await self._emit_sup("deepwiki_validate", "error", "无效的 DeepWiki-Open 目录（缺少 requirements.txt/pyproject.toml 或 package.json）", 1, total)
             raise RuntimeError("Not a valid DeepWiki-Open directory")
         await self._emit_sup("deepwiki_validate", "done", "路径验证通过", 1, total)
 
-        if has_requirements:
+        if has_python_api:
             await self._emit_sup("deepwiki_python", "running", "安装 Python 依赖...", 2, total)
             venv_dir = dw_dir / ".venv"
             if sys.platform == "win32":
@@ -146,7 +148,10 @@ class NativeDeployer:
                     await self._emit_sup("deepwiki_python", "error", "虚拟环境创建失败", 2, total)
                     raise RuntimeError("DeepWiki venv creation failed")
 
-            rc = await self._run_stream("deepwiki_python", 2, str(venv_pip), "install", "-r", str(dw_dir / "requirements.txt"))
+            if has_requirements:
+                rc = await self._run_stream("deepwiki_python", 2, str(venv_pip), "install", "-r", str(dw_dir / "requirements.txt"))
+            else:
+                rc = await self._run_stream("deepwiki_python", 2, str(venv_pip), "install", str(dw_dir / "api"))
             if rc != 0:
                 await self._emit_sup("deepwiki_python", "error", "pip install 失败", 2, total)
                 raise RuntimeError("DeepWiki pip install failed")
@@ -191,7 +196,7 @@ class NativeDeployer:
                 "TRUST_ENV": "false",
             }
 
-        if has_requirements:
+        if has_python_api:
             venv_dir = dw_dir / ".venv"
             venv_python = (venv_dir / "Scripts" / "python.exe") if sys.platform == "win32" else (venv_dir / "bin" / "python")
             api_cwd = str(dw_dir / "api") if (dw_dir / "api").exists() else str(dw_dir)
