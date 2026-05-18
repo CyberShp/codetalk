@@ -216,33 +216,13 @@ class NativeDeployer:
                 "TRUST_ENV": "false",
             }
 
-        if has_python_api:
-            venv_dir = dw_dir / ".venv"
-            venv_python = (venv_dir / "Scripts" / "python.exe") if sys.platform == "win32" else (venv_dir / "bin" / "python")
-            await self._start_process(
-                "deepwiki-api",
-                [str(venv_python), "-m", "uvicorn", "api.main:app", "--host", "0.0.0.0", "--port", str(api_port)],
-                cwd=str(dw_dir),
-                step_name="deepwiki_start",
-                step_index=5,
-                env_extra=llm_env or None,
-            )
+        for _proc_name in ("deepwiki-api", "deepwiki-ui"):
+            _old = self._processes.get(_proc_name)
+            if _old is not None and _old.returncode is None:
+                _old.terminate()
+        await self._kill_port_processes([api_port, ui_port], 5)
 
-        if has_package_json:
-            standalone_server = dw_dir / ".next" / "standalone" / "server.js"
-            if standalone_server.exists():
-                ui_cmd = ["node", str(standalone_server)]
-            else:
-                npm_cmd = "npm.cmd" if sys.platform == "win32" else "npm"
-                ui_cmd = [npm_cmd, "run", "start"]
-            await self._start_process(
-                "deepwiki-ui",
-                ui_cmd,
-                cwd=str(dw_dir),
-                step_name="deepwiki_start",
-                step_index=5,
-                env_extra={"PORT": str(ui_port), "SERVER_BASE_URL": f"http://localhost:{api_port}", **llm_env},
-            )
+        await self._start_deepwiki_processes(dw_dir, api_port, ui_port, llm_env, "deepwiki_start", 5)
 
         await self._emit_sup("deepwiki_start", "done", "DeepWiki 服务已启动", 5, total)
 
@@ -288,9 +268,13 @@ class NativeDeployer:
                 if resp.status_code < 500:
                     await self._emit_sup("deepwiki_health", "done", f"DeepWiki 健康运行（API:{api_port} UI:{ui_port}）", 6, total)
                 else:
-                    await self._emit_sup("deepwiki_health", "done", f"⚠ DeepWiki 已安装，但健康检查返回 HTTP {resp.status_code}，请在 CodeTalk 页面确认最终状态", 6, total)
+                    await self._emit_sup("deepwiki_health", "error", f"DeepWiki API 健康检查失败（HTTP {resp.status_code}）", 6, total)
+                    raise RuntimeError(f"DeepWiki API unhealthy: HTTP {resp.status_code}")
+        except RuntimeError:
+            raise
         except Exception:
-            await self._emit_sup("deepwiki_health", "done", f"⚠ DeepWiki 已安装，健康检查暂未响应（API:{api_port}），服务可能仍在启动", 6, total)
+            await self._emit_sup("deepwiki_health", "error", f"DeepWiki API 未响应（端口 {api_port}），请检查日志", 6, total)
+            raise RuntimeError(f"DeepWiki API health check failed: no response on port {api_port}")
 
     async def _emit_sup(self, step: str, status: str, message: str, current: int, total: int) -> None:
         await self._queue.put({
@@ -672,7 +656,67 @@ class NativeDeployer:
         )
 
         await asyncio.sleep(3)
+
+        deepwiki_path = self._config.get("deepwiki_path", "")
+        if self._config.get("install_deepwiki", False) or deepwiki_path:
+            dw_dir = Path(deepwiki_path) if deepwiki_path else None
+            if dw_dir and dw_dir.exists():
+                dw_api_port = self._config_port("deepwiki_api_port", 8091)
+                dw_ui_port = self._config_port("deepwiki_ui_port", 3001)
+                llm_env: dict[str, str] = {}
+                llm_base_url = self._config.get("llm_base_url", "")
+                if llm_base_url:
+                    llm_env = {
+                        "OPENAI_BASE_URL": llm_base_url,
+                        "OPENAI_API_KEY": self._config.get("llm_api_key", ""),
+                        "LLM_MODEL": self._config.get("llm_model", ""),
+                        "FORCE_DIRECT": "true",
+                        "TRUST_ENV": "false",
+                    }
+                await self._kill_port_processes([dw_api_port, dw_ui_port], step)
+                await self._start_deepwiki_processes(dw_dir, dw_api_port, dw_ui_port, llm_env, "start_services", step)
+
         await self._emit("start_services", "done", "所有核心服务已启动", step)
+
+    async def _start_deepwiki_processes(
+        self,
+        dw_dir: "Path",
+        api_port: int,
+        ui_port: int,
+        llm_env: dict,
+        step_name: str,
+        step_index: int,
+    ) -> None:
+        has_python_api = (dw_dir / "api" / "pyproject.toml").exists() or (dw_dir / "requirements.txt").exists()
+        has_package_json = (dw_dir / "package.json").exists()
+
+        if has_python_api:
+            venv_dir = dw_dir / ".venv"
+            venv_python = (venv_dir / "Scripts" / "python.exe") if sys.platform == "win32" else (venv_dir / "bin" / "python")
+            await self._start_process(
+                "deepwiki-api",
+                [str(venv_python), "-m", "uvicorn", "api.main:app", "--host", "0.0.0.0", "--port", str(api_port)],
+                cwd=str(dw_dir),
+                step_name=step_name,
+                step_index=step_index,
+                env_extra=llm_env or None,
+            )
+
+        if has_package_json:
+            standalone_server = dw_dir / ".next" / "standalone" / "server.js"
+            if standalone_server.exists():
+                ui_cmd = ["node", str(standalone_server)]
+            else:
+                npm_cmd = "npm.cmd" if sys.platform == "win32" else "npm"
+                ui_cmd = [npm_cmd, "run", "start"]
+            await self._start_process(
+                "deepwiki-ui",
+                ui_cmd,
+                cwd=str(dw_dir),
+                step_name=step_name,
+                step_index=step_index,
+                env_extra={"PORT": str(ui_port), "SERVER_BASE_URL": f"http://localhost:{api_port}", **llm_env},
+            )
 
     async def _start_process(
         self,
@@ -700,6 +744,10 @@ class NativeDeployer:
 
         asyncio.ensure_future(self._drain_output(name, proc, step_name, step_index))
         await self._emit(step_name, "running", f"{name} 已启动（PID {proc.pid}）", step_index)
+        await asyncio.sleep(2)
+        if proc.returncode is not None:
+            await self._emit(step_name, "error", f"{name} 启动后立即退出（退出码 {proc.returncode}）", step_index)
+            raise RuntimeError(f"{name} exited immediately with code {proc.returncode}")
 
     async def _drain_output(
         self, name: str, proc: asyncio.subprocess.Process, step_name: str, step_index: int
@@ -741,7 +789,7 @@ class NativeDeployer:
                 except Exception:
                     all_ok = False
 
-            if self._config.get("install_deepwiki", False):
+            if self._config.get("install_deepwiki", False) or bool(self._config.get("deepwiki_path", "")):
                 dw_port = self._config_port("deepwiki_api_port", 8091)
                 try:
                     async with httpx.AsyncClient(timeout=3, trust_env=False) as client:
