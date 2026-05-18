@@ -154,24 +154,27 @@ class NativeDeployer:
                     await self._emit_sup("deepwiki_python", "error", "pip install 失败", 2, total)
                     raise RuntimeError("DeepWiki pip install failed")
             else:
-                await self._emit_sup("deepwiki_python", "running", "安装 Poetry...", 2, total)
-                rc = await self._run_stream("deepwiki_python", 2, str(venv_pip), "install", "poetry")
+                import tomllib
+                with open(dw_dir / "api" / "pyproject.toml", "rb") as _f:
+                    _pyproject = tomllib.load(_f)
+                _deps = _pyproject.get("tool", {}).get("poetry", {}).get("dependencies", {})
+                _lines: list[str] = []
+                for _name, _spec in _deps.items():
+                    if _name == "python":
+                        continue
+                    if isinstance(_spec, str):
+                        _lines.append(f"{_name}{_spec}")
+                    elif isinstance(_spec, dict):
+                        _extras = _spec.get("extras", [])
+                        _version = _spec.get("version", "")
+                        _extra_str = "[" + ",".join(_extras) + "]" if _extras else ""
+                        _lines.append(f"{_name}{_extra_str}{_version}")
+                _req_file = dw_dir / "api" / ".requirements.txt"
+                _req_file.write_text("\n".join(_lines), encoding="utf-8")
+                rc = await self._run_stream("deepwiki_python", 2, str(venv_pip), "install", "-r", str(_req_file))
                 if rc != 0:
-                    await self._emit_sup("deepwiki_python", "error", "Poetry 安装失败", 2, total)
-                    raise RuntimeError("DeepWiki Poetry install failed")
-                poetry_env = {
-                    "POETRY_VIRTUALENVS_CREATE": "false",
-                    "VIRTUAL_ENV": str(venv_dir),
-                }
-                rc = await self._run_stream(
-                    "deepwiki_python", 2,
-                    str(venv_python), "-m", "poetry", "install", "--no-root",
-                    "--directory", str(dw_dir / "api"),
-                    env_extra=poetry_env,
-                )
-                if rc != 0:
-                    await self._emit_sup("deepwiki_python", "error", "poetry install 失败", 2, total)
-                    raise RuntimeError("DeepWiki poetry install failed")
+                    await self._emit_sup("deepwiki_python", "error", "pip install 失败", 2, total)
+                    raise RuntimeError("DeepWiki pip install failed")
             await self._emit_sup("deepwiki_python", "done", "Python 依赖安装完成", 2, total)
         else:
             await self._emit_sup("deepwiki_python", "done", "无需 Python 依赖", 2, total)
