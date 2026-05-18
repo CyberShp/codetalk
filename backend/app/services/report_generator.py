@@ -34,6 +34,11 @@ logger = logging.getLogger(__name__)
 
 MAX_OUTPUT_TOKENS = 8192
 
+_DATA_QUALITY_PREFIX: dict[str, str] = {
+    "degraded": "注意：部分数据源不可用，请基于已有信息尽量推断\n\n",
+    "poor": "注意：主要数据源均不可用，请基于模块摘要和常识进行推断分析\n\n",
+}
+
 
 class ReportGenerator:
     """Generates analysis report files from module summaries via LLM."""
@@ -69,6 +74,11 @@ class ReportGenerator:
         analysis_focus: str = "",
         prompt_content: str = "",
         on_report_done: Callable[[str, str, int], Awaitable[None]] | None = None,
+        on_report_start: Callable[[str, int, int], Awaitable[None]] | None = None,
+        on_report_failed: Callable[[str, str], Awaitable[None]] | None = None,
+        max_concurrency: int = 1,
+        data_quality: str = "good",
+        use_streaming: bool = False,
     ) -> list[str]:
         """Generate all applicable reports and return list of filenames."""
         if not module_summaries:
@@ -83,61 +93,83 @@ class ReportGenerator:
 
         summaries_text = self._format_summaries(module_summaries)
 
-        content_prefix = ""
+        content_prefix = _DATA_QUALITY_PREFIX.get(data_quality, "")
+
         if prompt_content:
-            content_prefix = (
+            content_prefix += (
                 f"## 用户自定义分析提示词\n{prompt_content[:4000]}\n\n"
                 "请参考以上分析方法论和要求展开分析。\n\n"
             )
         elif analysis_focus:
-            content_prefix = (
+            content_prefix += (
                 f"## 用户分析目标\n{analysis_focus}\n\n"
                 "请围绕此目标重点展开分析。\n\n"
             )
 
-        # Build all applicable report coroutines then run them in parallel
-        report_tasks = [
-            self._generate_report(
-                report_type="module_map",
-                prompt=content_prefix + MODULE_MAP_PROMPT.format(
-                    project_overview=self._build_project_overview(gitnexus_data, deepwiki_data),
-                    module_summaries=summaries_text,
-                    inter_module_deps=self._build_inter_module_deps(gitnexus_data),
+        # Build all applicable report coroutines then run them with concurrency control
+        report_tasks: list[tuple[str, Awaitable]] = [
+            (
+                "module_map",
+                self._generate_report(
+                    report_type="module_map",
+                    prompt=content_prefix + MODULE_MAP_PROMPT.format(
+                        project_overview=self._build_project_overview(gitnexus_data, deepwiki_data),
+                        module_summaries=summaries_text,
+                        inter_module_deps=self._build_inter_module_deps(gitnexus_data),
+                    ),
+                    on_report_done=on_report_done,
+
+                    use_streaming=use_streaming,
                 ),
-                on_report_done=on_report_done,
             ),
-            self._generate_report(
-                report_type="business_flow",
-                prompt=content_prefix + BUSINESS_FLOW_PROMPT.format(
-                    module_summaries=summaries_text,
-                    process_data=self._build_process_data(gitnexus_data),
-                    cross_module_calls=self._build_cross_module_calls(gitnexus_data),
+            (
+                "business_flow",
+                self._generate_report(
+                    report_type="business_flow",
+                    prompt=content_prefix + BUSINESS_FLOW_PROMPT.format(
+                        module_summaries=summaries_text,
+                        process_data=self._build_process_data(gitnexus_data, deepwiki_data),
+                        cross_module_calls=self._build_cross_module_calls(gitnexus_data, deepwiki_data),
+                    ),
+                    on_report_done=on_report_done,
+
+                    use_streaming=use_streaming,
                 ),
-                on_report_done=on_report_done,
             ),
-            self._generate_report(
-                report_type="source_reading",
-                prompt=content_prefix + SOURCE_READING_PROMPT.format(
-                    module_summaries=summaries_text,
-                    key_files=self._build_key_files(gitnexus_data),
-                    call_graph=self._build_call_graph(gitnexus_data),
+            (
+                "source_reading",
+                self._generate_report(
+                    report_type="source_reading",
+                    prompt=content_prefix + SOURCE_READING_PROMPT.format(
+                        module_summaries=summaries_text,
+                        key_files=self._build_key_files(gitnexus_data, deepwiki_data),
+                        call_graph=self._build_call_graph(gitnexus_data, deepwiki_data),
+                    ),
+                    on_report_done=on_report_done,
+
+                    use_streaming=use_streaming,
                 ),
-                on_report_done=on_report_done,
             ),
-            self._generate_report(
-                report_type="test_design",
-                prompt=content_prefix + TEST_DESIGN_PROMPT.format(
-                    module_summaries=summaries_text,
-                    business_flows=self._build_process_data(gitnexus_data),
-                    api_interfaces=self._build_api_interfaces(gitnexus_data),
+            (
+                "test_design",
+                self._generate_report(
+                    report_type="test_design",
+                    prompt=content_prefix + TEST_DESIGN_PROMPT.format(
+                        module_summaries=summaries_text,
+                        business_flows=self._build_process_data(gitnexus_data, deepwiki_data),
+                        api_interfaces=self._build_api_interfaces(gitnexus_data, deepwiki_data),
+                    ),
+                    on_report_done=on_report_done,
+
+                    use_streaming=use_streaming,
                 ),
-                on_report_done=on_report_done,
             ),
         ]
 
         # Optional reports: only if requirements/design docs provided
         if requirements_doc:
-            report_tasks.append(
+            report_tasks.append((
+                "requirements",
                 self._generate_report(
                     report_type="requirements",
                     prompt=content_prefix + REQUIREMENTS_PROMPT.format(
@@ -146,28 +178,55 @@ class ReportGenerator:
                         module_summaries=summaries_text,
                     ),
                     on_report_done=on_report_done,
-                )
-            )
+
+                    use_streaming=use_streaming,
+                ),
+            ))
 
         if requirements_doc and design_doc:
-            report_tasks.append(
+            report_tasks.append((
+                "traceability",
                 self._generate_report(
                     report_type="traceability",
                     prompt=content_prefix + TRACEABILITY_PROMPT.format(
                         requirements_items=self._truncate(requirements_doc, 3000),
                         design_modules=self._truncate(design_doc, 3000),
                         module_summaries=summaries_text,
-                        call_relations=self._build_call_graph(gitnexus_data),
+                        call_relations=self._build_call_graph(gitnexus_data, deepwiki_data),
                     ),
                     on_report_done=on_report_done,
-                )
-            )
 
-        results = await asyncio.gather(*report_tasks, return_exceptions=True)
-        for r in results:
+                    use_streaming=use_streaming,
+                ),
+            ))
+
+        sem = asyncio.Semaphore(max_concurrency)
+        total = len(report_tasks)
+
+        async def _guarded(idx: int, rtype: str, coro: Awaitable) -> None:
+            if on_report_start is not None:
+                await on_report_start(rtype, idx + 1, total)
+            async with sem:
+                return await coro
+
+        results = await asyncio.gather(
+            *[_guarded(i, rtype, coro) for i, (rtype, coro) in enumerate(report_tasks)],
+            return_exceptions=True,
+        )
+
+        for i, r in enumerate(results):
             if isinstance(r, BaseException):
-                logger.error("Report generation failed in parallel: %s", r, extra={"task_id": self._task_id})
+                report_type = report_tasks[i][0]
+                error_message = str(r)
+                logger.error(
+                    "Report generation failed in parallel: %s",
+                    r,
+                    extra={"task_id": self._task_id},
+                )
                 self._status_override = "completed_with_warnings"
+                if on_report_failed is not None:
+                    await on_report_failed(report_type, error_message)
+
         return self._generated_files
 
     async def _generate_report(
@@ -175,6 +234,7 @@ class ReportGenerator:
         report_type: str,
         prompt: str,
         on_report_done: Callable[[str, str, int], Awaitable[None]] | None = None,
+        use_streaming: bool = False,
     ) -> None:
         """Generate a single report and save to disk."""
         filename = REPORT_FILE_MAP.get(report_type)
@@ -184,39 +244,87 @@ class ReportGenerator:
 
         try:
             messages = [{"role": "user", "content": prompt}]
-            response: LLMResponse = await self._llm.complete(
-                messages=messages,
-                max_tokens=MAX_OUTPUT_TOKENS,
-                temperature=0.3,
+
+            # Use streaming when requested AND the client has a real stream_complete
+            # (not the base class fallback that just wraps complete()).
+            has_real_streaming = (
+                type(self._llm).stream_complete is not BaseLLMClient.stream_complete
             )
 
-            # Prepend metadata header
-            now = datetime.now(timezone.utc).isoformat()
-            header = (
-                f"---\n"
-                f"report_type: {report_type}\n"
-                f"task_id: {self._task_id}\n"
-                f"generated_at: {now}\n"
-                f"model: {response.model}\n"
-                f"tokens: {response.usage.get('total_tokens', 0)}\n"
-                f"---\n\n"
-            )
+            if use_streaming and has_real_streaming:
+                full_content = ""
+                async for chunk in self._llm.stream_complete(
+                    messages=messages,
+                    max_tokens=MAX_OUTPUT_TOKENS,
+                    temperature=0.3,
+                ):
+                    full_content += chunk
 
-            filepath = self._output_dir / filename
-            filepath.write_text(header + response.content, encoding="utf-8")
-            self._generated_files.append(filename)
+                total_tokens = BaseLLMClient.estimate_tokens(full_content)
+                # Use a placeholder model name since streaming doesn't return model info
+                model_name = type(self._llm).__name__
 
-            total_tokens = response.usage.get("total_tokens", 0)
-            if on_report_done is not None:
-                await on_report_done(report_type, filename, total_tokens)
+                now = datetime.now(timezone.utc).isoformat()
+                header = (
+                    f"---\n"
+                    f"report_type: {report_type}\n"
+                    f"task_id: {self._task_id}\n"
+                    f"generated_at: {now}\n"
+                    f"model: {model_name}\n"
+                    f"tokens: {total_tokens}\n"
+                    f"---\n\n"
+                )
 
-            logger.info(
-                "Report %s generated: %s (%d tokens)",
-                report_type,
-                filename,
-                response.usage.get("total_tokens", 0),
-                extra={"task_id": self._task_id},
-            )
+                filepath = self._output_dir / filename
+                content = header + full_content
+                await asyncio.to_thread(filepath.write_text, content, "utf-8")
+                self._generated_files.append(filename)
+
+                if on_report_done is not None:
+                    await on_report_done(report_type, filename, total_tokens)
+
+                logger.info(
+                    "Report %s generated (streaming): %s (~%d tokens)",
+                    report_type,
+                    filename,
+                    total_tokens,
+                    extra={"task_id": self._task_id},
+                )
+            else:
+                response: LLMResponse = await self._llm.complete(
+                    messages=messages,
+                    max_tokens=MAX_OUTPUT_TOKENS,
+                    temperature=0.3,
+                )
+
+                # Prepend metadata header
+                now = datetime.now(timezone.utc).isoformat()
+                header = (
+                    f"---\n"
+                    f"report_type: {report_type}\n"
+                    f"task_id: {self._task_id}\n"
+                    f"generated_at: {now}\n"
+                    f"model: {response.model}\n"
+                    f"tokens: {response.usage.get('total_tokens', 0)}\n"
+                    f"---\n\n"
+                )
+
+                filepath = self._output_dir / filename
+                content = header + response.content
+                await asyncio.to_thread(filepath.write_text, content, "utf-8")
+                self._generated_files.append(filename)
+
+                total_tokens = response.usage.get("total_tokens", 0)
+                if on_report_done is not None:
+                    await on_report_done(report_type, filename, total_tokens)
+
+                logger.info(
+                    "Report %s generated: %s (%d tokens)",
+                    report_type,
+                    filename,
+                    response.usage.get("total_tokens", 0),
+                    extra={"task_id": self._task_id},
+                )
 
         except Exception as exc:
             logger.exception("Report generation failed for %s: %s", report_type, exc, extra={"task_id": self._task_id})
@@ -274,26 +382,51 @@ class ReportGenerator:
         return "\n".join(unique_deps[:30]) if unique_deps else "（无跨模块依赖数据）"
 
     @staticmethod
-    def _build_process_data(gitnexus_data: dict) -> str:
-        """Extract process/flow data from GitNexus."""
-        nodes = gitnexus_data.get("nodes", [])
-        processes = [n for n in nodes if n.get("label") == "Process"]
-        if not processes:
-            return "（无流程数据）"
+    def _extract_wiki_section(deepwiki_data: dict, keywords: list[str], max_chars: int = 2000) -> str:
+        """Extract relevant sections from DeepWiki documentation by keyword matching."""
+        doc = deepwiki_data.get("documentation", "")
+        if not doc:
+            return ""
 
-        parts: list[str] = []
-        for proc in processes[:10]:
-            props = proc.get("properties", {})
-            name = props.get("name", proc["id"])
-            ptype = props.get("processType", "unknown")
-            steps = props.get("stepCount", 0)
-            parts.append(f"- {name} (类型: {ptype}, 步骤数: {steps})")
+        paragraphs = doc.split("\n\n")
+        matched: list[str] = []
+        for para in paragraphs:
+            lower = para.lower()
+            if any(kw.lower() in lower for kw in keywords):
+                matched.append(para)
 
-        return "\n".join(parts)
+        combined = "\n\n".join(matched)
+        if len(combined) > max_chars:
+            combined = combined[:max_chars] + "\n...（已截断）"
+        return combined
 
     @staticmethod
-    def _build_cross_module_calls(gitnexus_data: dict) -> str:
-        """Extract cross-module call relationships."""
+    def _build_process_data(gitnexus_data: dict, deepwiki_data: dict) -> str:
+        """Extract process/flow data from GitNexus, supplemented by DeepWiki."""
+        nodes = gitnexus_data.get("nodes", [])
+        processes = [n for n in nodes if n.get("label") == "Process"]
+
+        parts: list[str] = []
+        if processes:
+            for proc in processes[:10]:
+                props = proc.get("properties", {})
+                name = props.get("name", proc["id"])
+                ptype = props.get("processType", "unknown")
+                steps = props.get("stepCount", 0)
+                parts.append(f"- {name} (类型: {ptype}, 步骤数: {steps})")
+        else:
+            wiki_section = ReportGenerator._extract_wiki_section(
+                deepwiki_data,
+                keywords=["flow", "process", "workflow", "流程", "步骤", "pipeline"],
+            )
+            if wiki_section:
+                parts.append(f"[Wiki 流程信息]\n{wiki_section}")
+
+        return "\n".join(parts) if parts else "（无流程数据）"
+
+    @staticmethod
+    def _build_cross_module_calls(gitnexus_data: dict, deepwiki_data: dict) -> str:
+        """Extract cross-module call relationships, supplemented by DeepWiki."""
         relationships = gitnexus_data.get("relationships", [])
 
         member_to_community: dict[str, str] = {}
@@ -311,11 +444,20 @@ class ReportGenerator:
                         f"{edge['sourceId']} ({src_c}) -> {edge['targetId']} ({tgt_c})"
                     )
 
-        return "\n".join(cross_calls[:30]) if cross_calls else "（无跨模块调用数据）"
+        parts = cross_calls[:30]
+
+        wiki_section = ReportGenerator._extract_wiki_section(
+            deepwiki_data,
+            keywords=["module", "interaction", "integration", "模块", "集成", "交互"],
+        )
+        if wiki_section:
+            parts.append(f"\n[Wiki 模块交互信息]\n{wiki_section}")
+
+        return "\n".join(parts) if parts else "（无跨模块调用数据）"
 
     @staticmethod
-    def _build_key_files(gitnexus_data: dict) -> str:
-        """Identify key files by edge count (high connectivity = important)."""
+    def _build_key_files(gitnexus_data: dict, deepwiki_data: dict) -> str:
+        """Identify key files by edge count, noting DeepWiki availability when data is sparse."""
         nodes = gitnexus_data.get("nodes", [])
         relationships = gitnexus_data.get("relationships", [])
 
@@ -336,11 +478,14 @@ class ReportGenerator:
             count = edge_count.get(node["id"], 0)
             parts.append(f"- {name} (连接数: {count})")
 
+        if len(file_nodes) < 5 and deepwiki_data.get("documentation"):
+            parts.append("\n[注意: GitNexus 文件节点较少，DeepWiki 文档可供深入阅读参考]")
+
         return "\n".join(parts) if parts else "（无重点文件数据）"
 
     @staticmethod
-    def _build_call_graph(gitnexus_data: dict) -> str:
-        """Format call graph edges as text."""
+    def _build_call_graph(gitnexus_data: dict, deepwiki_data: dict) -> str:
+        """Format call graph edges as text, noting DeepWiki availability when data is sparse."""
         relationships = gitnexus_data.get("relationships", [])
         call_edges = [
             e for e in relationships if e.get("type") in ("CALLS", "IMPORTS")
@@ -350,11 +495,14 @@ class ReportGenerator:
         for edge in call_edges[:30]:
             parts.append(f"{edge['sourceId']} -> {edge['targetId']}")
 
+        if len(call_edges) < 5 and deepwiki_data.get("documentation"):
+            parts.append("\n[注意: 调用图数据较少，DeepWiki 文档可供深入阅读参考]")
+
         return "\n".join(parts) if parts else "（无调用图数据）"
 
     @staticmethod
-    def _build_api_interfaces(gitnexus_data: dict) -> str:
-        """Extract nodes that look like API endpoints or public interfaces."""
+    def _build_api_interfaces(gitnexus_data: dict, deepwiki_data: dict) -> str:
+        """Extract API endpoints from GitNexus, supplemented by DeepWiki API sections."""
         nodes = gitnexus_data.get("nodes", [])
 
         api_nodes: list[str] = []
@@ -368,9 +516,18 @@ class ReportGenerator:
             ):
                 api_nodes.append(f"- {name} ({label})")
 
+        parts = api_nodes[:20]
+
+        wiki_section = ReportGenerator._extract_wiki_section(
+            deepwiki_data,
+            keywords=["api", "endpoint", "interface", "接口", "路由", "route"],
+        )
+        if wiki_section:
+            parts.append(f"\n[Wiki API 信息]\n{wiki_section}")
+
         return (
-            "\n".join(api_nodes[:20])
-            if api_nodes
+            "\n".join(parts)
+            if parts
             else "（无接口数据，请参考模块摘要中的对外接口部分）"
         )
 

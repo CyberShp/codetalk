@@ -35,7 +35,9 @@ class Settings(BaseSettings):
 
     # Analysis tuning
     analysis_concurrency: int = 10   # max parallel module analyses
+    llm_max_concurrency: int = 1     # max parallel LLM report generation calls
     deepwiki_timeout: int = 1800     # wiki generation timeout in seconds
+    deepwiki_default_depth: str = "balanced"
     health_check_timeout: int = 5    # seconds for tool health probes
     gitnexus_poll_timeout: int = 600 # max seconds to wait for GitNexus indexing
     coverage_max_upload_mb: int = 100 # max single file size for coverage upload

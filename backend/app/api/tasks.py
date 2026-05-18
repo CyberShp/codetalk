@@ -28,6 +28,7 @@ class TaskCreate(BaseModel):
     design_doc: str | None = None
     analysis_focus: str = Field(min_length=1, max_length=4_000)
     prompt_content: str = Field(min_length=1, max_length=32_000)
+    deepwiki_depth: str = Field(default="balanced", pattern="^(fast|balanced|deep)$")
 
 
 class TaskResponse(BaseModel):
@@ -40,6 +41,7 @@ class TaskResponse(BaseModel):
     design_doc: str | None
     analysis_focus: str | None
     prompt_content: str | None
+    deepwiki_depth: str | None
     progress: int
     error_message: str | None
     current_step: str | None
@@ -81,11 +83,11 @@ async def create_task(data: TaskCreate, db: aiosqlite.Connection = Depends(get_d
     task_id = str(uuid.uuid4())
     await db.execute(
         """INSERT INTO tasks (id, name, repo_path, status, tools, requirements_doc, design_doc,
-           analysis_focus, prompt_content, progress, error_message, created_at, updated_at)
-           VALUES (?, ?, ?, 'pending', ?, ?, ?, ?, ?, 0, NULL, ?, ?)""",
+           analysis_focus, prompt_content, deepwiki_depth, progress, error_message, created_at, updated_at)
+           VALUES (?, ?, ?, 'pending', ?, ?, ?, ?, ?, ?, 0, NULL, ?, ?)""",
         (task_id, data.name, data.repo_path, json.dumps(data.tools),
          data.requirements_doc, data.design_doc,
-         data.analysis_focus, data.prompt_content, now, now),
+         data.analysis_focus, data.prompt_content, data.deepwiki_depth, now, now),
     )
     await db.commit()
     logger.info("Task created: id=%s, name=%s", task_id, data.name)

@@ -51,8 +51,29 @@ async def async_retry(
         try:
             return await fn(*args, **kwargs)
         except httpx.HTTPStatusError as exc:
-            if exc.response.status_code < 500:
-                raise  # 4xx errors are not retryable
+            status = exc.response.status_code
+            if status == 429:
+                last_exc = exc
+                if attempt < max_retries:
+                    retry_after = exc.response.headers.get("Retry-After")
+                    try:
+                        delay: float = float(retry_after) if retry_after else 0.0
+                    except (ValueError, TypeError):
+                        delay = 0.0
+                    if delay <= 0:
+                        delay = float(
+                            backoff_seconds[min(attempt, len(backoff_seconds) - 1)] * 2
+                        )
+                    logger.warning(
+                        "Rate limited (429), retrying in %.1fs (attempt %d/%d)",
+                        delay,
+                        attempt + 1,
+                        max_retries,
+                    )
+                    await asyncio.sleep(delay)
+                    continue
+            elif status < 500:
+                raise  # other 4xx errors are not retryable
             last_exc = exc
         except _RETRYABLE_EXCEPTIONS as exc:
             last_exc = exc
@@ -79,6 +100,7 @@ class LLMResponse:
     content: str
     model: str
     usage: dict  # {"prompt_tokens": int, "completion_tokens": int, "total_tokens": int}
+    truncated: bool = False
 
 
 class BaseLLMClient(ABC):
@@ -111,6 +133,16 @@ class BaseLLMClient(ABC):
         Returns (success, message) for diagnostic feedback.
         """
         ...
+
+    @staticmethod
+    def estimate_tokens(text: str) -> int:
+        """Rough token estimate. Uses tiktoken if available, else chars/4."""
+        try:
+            import tiktoken  # type: ignore[import-untyped]
+            enc = tiktoken.get_encoding("cl100k_base")
+            return len(enc.encode(text))
+        except Exception:
+            return len(text) // 4
 
     async def _write_debug_snapshot(
         self,

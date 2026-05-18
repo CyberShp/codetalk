@@ -12,6 +12,7 @@ export interface Task {
   design_doc: string | null;
   analysis_focus: string | null;
   prompt_content: string | null;
+  deepwiki_depth?: "fast" | "balanced" | "deep";
   progress: number;
   error_message: string | null;
   current_step: string | null;
@@ -33,6 +34,7 @@ export interface TaskCreate {
   design_doc?: string;
   analysis_focus?: string;
   prompt_content?: string;
+  deepwiki_depth?: "fast" | "balanced" | "deep";
 }
 
 export interface PromptTemplate {

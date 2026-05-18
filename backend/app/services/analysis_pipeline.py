@@ -12,6 +12,7 @@ Phases:
 import asyncio
 import json
 import logging
+import os
 import re
 import subprocess
 from datetime import datetime, timezone
@@ -31,6 +32,19 @@ logger = logging.getLogger(__name__)
 MAX_TOKENS_PER_CALL = 40000
 MAX_OUTPUT_TOKENS = 8192  # per-module summary; matches report generator budget
 
+# Directories to skip when doing directory-structure module discovery
+_DIR_SKIP = frozenset({
+    "node_modules", "__pycache__", ".git", ".venv", "venv", "dist",
+    "build", ".next", "vendor", "coverage", ".tox", ".mypy_cache",
+    ".pytest_cache", "target", "out", "bin", "obj",
+})
+
+# Source file extensions for directory-structure module discovery
+_SOURCE_EXTS = frozenset({
+    ".py", ".ts", ".tsx", ".js", ".jsx", ".java", ".go", ".rs",
+    ".c", ".cpp", ".cc", ".cxx", ".h", ".hpp",
+})
+
 
 class AnalysisPipeline:
     """Stateless pipeline that runs the full analysis for a task."""
@@ -43,6 +57,10 @@ class AnalysisPipeline:
         self._prompt_content: str = ""
         self._task_id: str = ""
         self._data_quality: str = "good"  # "good" | "degraded" | "poor"
+        self._repo_path: str = ""
+        self._output_dir: Path | None = None
+        self._llm_client: BaseLLMClient | None = None
+        self._deepwiki_depth: str = ""
 
     # ------------------------------------------------------------------
     # Public entry point
@@ -57,9 +75,11 @@ class AnalysisPipeline:
         try:
             task = await self._load_task(task_id)
             repo_path = task["repo_path"]
+            self._repo_path = repo_path  # store for use by new methods
             tools = json.loads(task.get("tools") or "[]")
             self._analysis_focus = task.get("analysis_focus") or ""
             self._prompt_content = task.get("prompt_content") or ""
+            self._deepwiki_depth = task.get("deepwiki_depth") or ""
 
             await self._update_progress(task_id, 0, "running", None, "启动分析管道…")
 
@@ -71,6 +91,11 @@ class AnalysisPipeline:
             await self._phase_collect(repo_path, tools)
             await self._update_progress(task_id, 40, "running", None, "数据采集完成，开始 AI 模块分析…")
 
+            # Task 5: Save DeepWiki documentation as independent output
+            output_dir = settings.outputs_path / task_id
+            output_dir.mkdir(parents=True, exist_ok=True)
+            await self._save_deepwiki_output(output_dir, task_id)
+
             # Phase 2: Per-module Analysis (MapReduce)
             llm_client = await self._try_create_llm_client()
             if llm_client:
@@ -78,9 +103,6 @@ class AnalysisPipeline:
                 await self._update_progress(task_id, 70, "running", None, "模块分析完成，生成报告中…")
 
                 # Phase 3: Report Generation
-                output_dir = settings.outputs_path / task_id
-                output_dir.mkdir(parents=True, exist_ok=True)
-
                 generator = ReportGenerator(
                     llm_client=llm_client,
                     output_dir=output_dir,
@@ -101,6 +123,14 @@ class AnalysisPipeline:
                         task_id, 80, f"✅ {label} 已生成（{tokens:,} tokens）"
                     )
 
+                async def _on_report_start(rtype: str, idx: int, total: int) -> None:
+                    label = _REPORT_LABELS.get(rtype, rtype)
+                    await self._log_step(task_id, 75, f"📝 正在生成：{label}")
+
+                async def _on_report_failed(rtype: str, error: str) -> None:
+                    label = _REPORT_LABELS.get(rtype, rtype)
+                    await self._log_step(task_id, 80, f"❌ {label} 生成失败：{error}")
+
                 await generator.generate_all(
                     module_summaries=self._module_summaries,
                     gitnexus_data=self._gitnexus_data,
@@ -110,10 +140,16 @@ class AnalysisPipeline:
                     analysis_focus=self._analysis_focus,
                     prompt_content=self._prompt_content,
                     on_report_done=_on_report_done,
+                    on_report_start=_on_report_start,
+                    on_report_failed=_on_report_failed,
+                    max_concurrency=settings.llm_max_concurrency,
+                    data_quality=self._data_quality,
                 )
                 await self._update_progress(task_id, 90, "running", None, "报告生成完成，收尾处理…")
 
                 # Phase 4: Cross-enhancement (optional, best-effort)
+                self._output_dir = output_dir
+                self._llm_client = llm_client
                 await self._phase_cross_enhance()
 
                 # Honour status override from report generator
@@ -123,8 +159,6 @@ class AnalysisPipeline:
                     final_status = "completed"
             else:
                 logger.warning("No LLM client available, skipping AI phases", extra={"task_id": task_id})
-                output_dir = settings.outputs_path / task_id
-                output_dir.mkdir(parents=True, exist_ok=True)
                 await self._save_raw_data(output_dir)
                 final_status = "completed"
 
@@ -213,7 +247,21 @@ class AnalysisPipeline:
             self._data_quality = "good"
 
     async def _collect_gitnexus(self, repo_path: str) -> None:
-        """Call GitNexus to get the knowledge graph."""
+        """Call GitNexus to get the knowledge graph, with commit-based caching."""
+        # Task 10: check cache before calling API
+        cache_key = await self._build_gitnexus_cache_key(repo_path)
+        if cache_key:
+            cached = await self._load_gitnexus_cache(cache_key)
+            if cached is not None:
+                self._gitnexus_data = cached
+                logger.info(
+                    "GitNexus cache hit (%s): %d nodes, %d edges",
+                    cache_key,
+                    len(cached.get("nodes", [])),
+                    len(cached.get("relationships", [])),
+                )
+                return
+
         base_url = settings.gitnexus_base_url
         async with httpx.AsyncClient(
             base_url=base_url,
@@ -258,6 +306,10 @@ class AnalysisPipeline:
                 len(self._gitnexus_data.get("relationships", [])),
             )
 
+        # Task 10: save to cache
+        if cache_key:
+            await self._save_gitnexus_cache(cache_key, self._gitnexus_data)
+
     async def _collect_deepwiki(self, repo_path: str) -> None:
         """Call DeepWiki to generate wiki content."""
         base_url = settings.deepwiki_api_url
@@ -266,16 +318,30 @@ class AnalysisPipeline:
             timeout=httpx.Timeout(1800, connect=10),
             trust_env=False,
         ) as client:
-            if self._analysis_focus:
+            depth = self._deepwiki_depth or settings.deepwiki_default_depth
+
+            if depth == "fast":
                 deepwiki_message = (
-                    f"针对以下分析目标，生成全面的中文技术文档：\n"
-                    f"{self._analysis_focus}\n\n"
-                    f"包含：架构概览、核心组件、数据流。"
+                    "快速分析仓库核心架构，生成精简的中文技术文档。"
+                    "仅覆盖：核心入口、主要模块概述。控制篇幅在2000字以内。"
                 )
-            else:
+            elif depth == "deep":
+                deepwiki_message = (
+                    "深度分析整个仓库，生成详尽的中文技术文档。"
+                    "包含：架构概览、核心组件、数据流、API接口、"
+                    "配置管理、错误处理、安全机制、部署架构。不限篇幅。"
+                )
+            else:  # balanced (default)
                 deepwiki_message = (
                     "分析整个仓库，生成全面的中文技术文档。"
                     "包含：架构概览、核心组件、数据流。"
+                )
+
+            if self._analysis_focus:
+                deepwiki_message = (
+                    f"针对以下分析目标，生成中文技术文档：\n"
+                    f"{self._analysis_focus}\n\n"
+                    + deepwiki_message
                 )
 
             payload = {
@@ -302,15 +368,72 @@ class AnalysisPipeline:
             logger.info("DeepWiki data collected: %d chars", len(full_content))
 
     # ------------------------------------------------------------------
+    # Task 5: DeepWiki independent output
+    # ------------------------------------------------------------------
+
+    async def _save_deepwiki_output(self, output_dir: Path, task_id: str) -> None:
+        """Save DeepWiki documentation as a standalone markdown file with YAML frontmatter."""
+        doc = self._deepwiki_data.get("documentation", "")
+        if not doc:
+            return
+
+        ts = datetime.now(timezone.utc).isoformat()
+        frontmatter = (
+            f"---\n"
+            f"source: deepwiki\n"
+            f"task_id: {task_id}\n"
+            f"generated_at: {ts}\n"
+            f"---\n\n"
+        )
+        content = frontmatter + doc
+
+        def _write() -> None:
+            out_path = output_dir / "00-知识库文档.md"
+            out_path.write_text(content, encoding="utf-8")
+
+        await asyncio.to_thread(_write)
+        logger.info("DeepWiki knowledge base saved: %d chars", len(doc))
+
+    # ------------------------------------------------------------------
     # Phase 2: Per-module Analysis (MapReduce)
     # ------------------------------------------------------------------
 
     async def _phase_module_analysis(self, llm_client: BaseLLMClient) -> None:
         """Analyze each community/module via LLM (bounded parallel)."""
-        communities = self._extract_communities()
+        repo_path = self._repo_path
+
+        # Task 13: check module summary cache before running LLM
+        cache_key = await self._get_repo_commit_hash(repo_path)
+        if cache_key:
+            cached_summaries = await self._load_module_summaries_cache(cache_key)
+            if cached_summaries is not None:
+                logger.info(
+                    "Module summaries cache hit (%s): %d modules",
+                    cache_key,
+                    len(cached_summaries),
+                )
+                self._module_summaries = cached_summaries
+                return
+
+        # Task 15: check for previous-commit cached summaries for incremental analysis
+        prev_summaries, prev_commit = await self._load_latest_module_summaries_cache()
+        changed_files: set[str] = set()
+        if prev_summaries and prev_commit and cache_key and prev_commit != cache_key:
+            changed_files = await self._get_changed_files(repo_path, prev_commit, cache_key)
+            logger.info(
+                "Incremental analysis: %d changed files since %s",
+                len(changed_files),
+                prev_commit,
+            )
+
+        # Task 6: module discovery with fallback chain
+        communities = self._extract_communities()  # GitNexus first
+        if not communities and self._deepwiki_data:
+            communities = self._extract_modules_from_wiki()  # DeepWiki fallback
         if not communities:
-            logger.warning("No communities found, treating entire repo as single module")
-            communities = [self._build_single_module()]
+            communities = self._extract_modules_from_dirs(repo_path)  # Directory fallback
+        if not communities:
+            communities = [self._build_single_module()]  # Last resort
 
         sem = asyncio.Semaphore(settings.analysis_concurrency)
         data_quality_note = ""
@@ -328,6 +451,21 @@ class AnalysisPipeline:
         total = len(communities)
 
         async def analyze_one(community: dict) -> dict:
+            # Task 15: reuse cached summary if module files are unchanged
+            if prev_summaries and changed_files:
+                module_files = set(community.get("files", []))
+                if not module_files.intersection(changed_files):
+                    cached_entry = next(
+                        (s for s in prev_summaries if s.get("module_name") == community["name"]),
+                        None,
+                    )
+                    if cached_entry:
+                        logger.info(
+                            "Reusing cached summary for unchanged module: %s",
+                            community["name"],
+                        )
+                        return cached_entry
+
             async with sem:
                 try:
                     summary = await self._analyze_module(llm_client, community)
@@ -357,6 +495,10 @@ class AnalysisPipeline:
         self._module_summaries = list(
             await asyncio.gather(*(analyze_one(c) for c in communities))
         )
+
+        # Task 13: persist module summaries to cache
+        if cache_key:
+            await self._save_module_summaries_cache(cache_key, self._module_summaries)
 
     def _extract_communities(self) -> list[dict]:
         """Extract community/module groups from GitNexus data."""
@@ -397,6 +539,74 @@ class AnalysisPipeline:
                     )
 
         return list(communities.values())
+
+    def _extract_modules_from_wiki(self) -> list[dict]:
+        """Task 6 fallback: derive modules from DeepWiki markdown headers (## or ###)."""
+        doc = self._deepwiki_data.get("documentation", "")
+        if not doc:
+            return []
+
+        header_pattern = re.compile(r"^#{2,3}\s+(.+)", re.MULTILINE)
+        matches = header_pattern.findall(doc)
+
+        modules: list[dict] = []
+        seen: set[str] = set()
+        for header in matches:
+            name = header.strip()
+            if name and name not in seen:
+                seen.add(name)
+                modules.append({
+                    "id": f"wiki_{len(modules)}",
+                    "name": name,
+                    "files": [],
+                    "calls": [],
+                })
+
+        logger.info("DeepWiki fallback: discovered %d modules from headers", len(modules))
+        return modules
+
+    def _extract_modules_from_dirs(self, repo_path: str) -> list[dict]:
+        """Task 6 fallback: derive modules from top-level directories containing source files."""
+        path = Path(repo_path)
+        if not path.is_dir():
+            return []
+
+        modules: list[dict] = []
+        try:
+            for entry in sorted(path.iterdir()):
+                if not entry.is_dir():
+                    continue
+                if entry.name.startswith(".") or entry.name in _DIR_SKIP:
+                    continue
+
+                # Collect source files in this directory (recursive, limited to 50)
+                source_files: list[str] = []
+                for root, dirs, files in os.walk(entry):
+                    # Prune skip dirs in-place to avoid descending into them
+                    dirs[:] = [
+                        d for d in dirs
+                        if not d.startswith(".") and d not in _DIR_SKIP
+                    ]
+                    for fname in files:
+                        if Path(fname).suffix in _SOURCE_EXTS:
+                            source_files.append(str(Path(root) / fname))
+                            if len(source_files) >= 50:
+                                break
+                    if len(source_files) >= 50:
+                        break
+
+                if source_files:
+                    modules.append({
+                        "id": f"dir_{entry.name}",
+                        "name": entry.name,
+                        "files": source_files,
+                        "calls": [],
+                    })
+        except PermissionError as exc:
+            logger.warning("Directory scan permission error: %s", exc)
+
+        logger.info("Directory fallback: discovered %d modules from top-level dirs", len(modules))
+        return modules
 
     def _build_single_module(self) -> dict:
         """Fallback: treat all nodes as a single module."""
@@ -503,8 +713,246 @@ class AnalysisPipeline:
     # ------------------------------------------------------------------
 
     async def _phase_cross_enhance(self) -> None:
-        """Best-effort cross-enhancement between tool outputs."""
-        logger.info("Cross-enhancement phase: skipped (not yet implemented)")
+        """Best-effort cross-enhancement: synthesise GitNexus + DeepWiki insights via LLM."""
+        has_gitnexus = bool(self._gitnexus_data and self._gitnexus_data.get("nodes"))
+        has_deepwiki = bool(self._deepwiki_data and self._deepwiki_data.get("documentation"))
+
+        if not (has_gitnexus and has_deepwiki):
+            logger.info("Cross-enhancement phase: skipping — single source")
+            return
+
+        if self._output_dir is None or self._llm_client is None:
+            logger.warning("Cross-enhancement phase: skipping — output_dir or llm_client not set")
+            return
+
+        try:
+            # Build module summary highlights (first 2000 chars of joined summaries)
+            joined_summaries = "\n\n".join(
+                f"### {ms['module_name']}\n{ms['summary']}"
+                for ms in self._module_summaries
+            )
+            summary_highlights = joined_summaries[:2000]
+
+            # Build GitNexus structural insights
+            nodes = self._gitnexus_data.get("nodes", [])
+            relationships = self._gitnexus_data.get("relationships", [])
+            node_count = len(nodes)
+            edge_count = len(relationships)
+
+            # Top cross-module deps: source_community -> target_community
+            member_to_community: dict[str, str] = {}
+            for edge in relationships:
+                if edge.get("type") == "MEMBER_OF":
+                    member_to_community[edge["sourceId"]] = edge["targetId"]
+
+            cross_dep_counts: dict[str, int] = {}
+            for edge in relationships:
+                if edge.get("type") in ("CALLS", "IMPORTS", "DEPENDS_ON"):
+                    src_c = member_to_community.get(edge["sourceId"])
+                    tgt_c = member_to_community.get(edge["targetId"])
+                    if src_c and tgt_c and src_c != tgt_c:
+                        key = f"{src_c} -> {tgt_c}"
+                        cross_dep_counts[key] = cross_dep_counts.get(key, 0) + 1
+
+            top_cross_deps = sorted(cross_dep_counts.items(), key=lambda x: x[1], reverse=True)[:10]
+            cross_deps_text = "\n".join(f"- {dep} ({count} 次)" for dep, count in top_cross_deps)
+
+            gitnexus_insights = (
+                f"节点数: {node_count}，边数: {edge_count}\n"
+                f"跨模块依赖（Top 10）:\n{cross_deps_text or '（无跨模块依赖）'}"
+            )
+
+            # Build DeepWiki documentation highlights (first 2000 chars)
+            deepwiki_doc = self._deepwiki_data.get("documentation", "")
+            deepwiki_highlights = deepwiki_doc[:2000]
+
+            prompt = (
+                "## 任务：交叉增强分析\n\n"
+                "你是一位资深软件架构师。请综合以下三个来源的信息，生成一份交叉增强分析报告。\n"
+                "报告应重点揭示：代码结构与文档描述之间的差异或一致性、潜在的架构风险、"
+                "以及可从多源数据交叉印证的关键洞察。\n\n"
+                "### 模块摘要亮点\n"
+                f"{summary_highlights}\n\n"
+                "### GitNexus 结构洞察\n"
+                f"{gitnexus_insights}\n\n"
+                "### DeepWiki 文档亮点\n"
+                f"{deepwiki_highlights}\n\n"
+                "请输出一份结构化的交叉增强分析，包含：\n"
+                "1. 代码结构与文档的一致性评估\n"
+                "2. 发现的主要矛盾或盲点\n"
+                "3. 跨工具综合洞察（架构风险、优化方向）\n"
+            )
+
+            messages = [{"role": "user", "content": prompt}]
+            response: LLMResponse = await self._llm_client.complete(
+                messages=messages,
+                max_tokens=MAX_OUTPUT_TOKENS,
+                temperature=0.3,
+            )
+
+            # Save with YAML frontmatter
+            now = datetime.now(timezone.utc).isoformat()
+            header = (
+                f"---\n"
+                f"report_type: cross_enhancement\n"
+                f"task_id: {self._task_id}\n"
+                f"generated_at: {now}\n"
+                f"model: {response.model}\n"
+                f"tokens: {response.usage.get('total_tokens', 0)}\n"
+                f"---\n\n"
+            )
+
+            out_path = self._output_dir / "05-交叉增强分析.md"
+
+            def _write() -> None:
+                out_path.write_text(header + response.content, encoding="utf-8")
+
+            await asyncio.to_thread(_write)
+            logger.info(
+                "Cross-enhancement analysis saved: %d tokens",
+                response.usage.get("total_tokens", 0),
+            )
+
+        except Exception as exc:
+            logger.warning("Cross-enhancement phase failed (best-effort): %s", exc)
+
+    # ------------------------------------------------------------------
+    # Task 10 & 13: Cache helpers
+    # ------------------------------------------------------------------
+
+    async def _get_repo_commit_hash(self, repo_path: str) -> str:
+        """Return the HEAD commit hash of the repo, or '' on failure."""
+        try:
+            proc = await asyncio.to_thread(
+                subprocess.run,
+                ["git", "-C", repo_path, "rev-parse", "HEAD"],
+                capture_output=True,
+                text=True,
+            )
+            if proc.returncode == 0:
+                return proc.stdout.strip()
+        except Exception as exc:
+            logger.warning("Failed to get commit hash for %s: %s", repo_path, exc)
+        return ""
+
+    async def _build_gitnexus_cache_key(self, repo_path: str) -> str:
+        """Build cache key: <path_hash>_<commit_hash>."""
+        commit = await self._get_repo_commit_hash(repo_path)
+        if not commit:
+            return ""
+        import hashlib
+        path_hash = hashlib.md5(str(Path(repo_path).resolve()).encode()).hexdigest()[:8]
+        return f"{path_hash}_{commit}"
+
+    def _cache_dir(self) -> Path:
+        """Return (and create) the .cache directory under outputs."""
+        cache_path = settings.outputs_path / ".cache"
+        cache_path.mkdir(parents=True, exist_ok=True)
+        return cache_path
+
+    async def _load_gitnexus_cache(self, cache_key: str) -> dict | None:
+        """Load cached GitNexus data if it exists."""
+        cache_file = self._cache_dir() / f"gitnexus_{cache_key}.json"
+
+        def _read() -> dict | None:
+            if cache_file.exists():
+                try:
+                    return json.loads(cache_file.read_text(encoding="utf-8"))
+                except Exception as exc:
+                    logger.warning("GitNexus cache read error (%s): %s", cache_key, exc)
+            return None
+
+        return await asyncio.to_thread(_read)
+
+    async def _save_gitnexus_cache(self, cache_key: str, data: dict) -> None:
+        """Persist GitNexus data to cache."""
+        cache_file = self._cache_dir() / f"gitnexus_{cache_key}.json"
+
+        def _write() -> None:
+            try:
+                cache_file.write_text(
+                    json.dumps(data, ensure_ascii=False, indent=2),
+                    encoding="utf-8",
+                )
+            except Exception as exc:
+                logger.warning("GitNexus cache write error (%s): %s", cache_key, exc)
+
+        await asyncio.to_thread(_write)
+
+    async def _load_module_summaries_cache(self, cache_key: str) -> list[dict] | None:
+        """Load cached module summaries if they exist for this commit."""
+        cache_file = self._cache_dir() / f"modules_{cache_key}.json"
+
+        def _read() -> list[dict] | None:
+            if cache_file.exists():
+                try:
+                    return json.loads(cache_file.read_text(encoding="utf-8"))
+                except Exception as exc:
+                    logger.warning("Module cache read error (%s): %s", cache_key, exc)
+            return None
+
+        return await asyncio.to_thread(_read)
+
+    async def _save_module_summaries_cache(self, cache_key: str, summaries: list[dict]) -> None:
+        """Persist module summaries to cache."""
+        cache_file = self._cache_dir() / f"modules_{cache_key}.json"
+
+        def _write() -> None:
+            try:
+                cache_file.write_text(
+                    json.dumps(summaries, ensure_ascii=False, indent=2),
+                    encoding="utf-8",
+                )
+            except Exception as exc:
+                logger.warning("Module cache write error (%s): %s", cache_key, exc)
+
+        await asyncio.to_thread(_write)
+        logger.info("Module summaries cached: %d modules (key=%s)", len(summaries), cache_key)
+
+    async def _load_latest_module_summaries_cache(self) -> tuple[list[dict] | None, str]:
+        """
+        Task 15: find the most recently written modules_*.json cache file.
+        Returns (summaries, commit_hash) or (None, '').
+        The commit hash is the last segment of the stem after splitting on '_',
+        provided it is a 40-character hex SHA-1.
+        """
+        def _find() -> tuple[list[dict] | None, str]:
+            cache_dir = self._cache_dir()
+            candidates = sorted(
+                cache_dir.glob("modules_*.json"),
+                key=lambda p: p.stat().st_mtime,
+                reverse=True,
+            )
+            for candidate in candidates:
+                try:
+                    data = json.loads(candidate.read_text(encoding="utf-8"))
+                    # stem format: modules_{basename}_{sha1}
+                    parts = candidate.stem.split("_")
+                    last = parts[-1] if parts else ""
+                    if re.fullmatch(r"[0-9a-f]{40}", last):
+                        return data, last
+                except Exception as exc:
+                    logger.warning("Failed reading cache candidate %s: %s", candidate, exc)
+            return None, ""
+
+        return await asyncio.to_thread(_find)
+
+    async def _get_changed_files(
+        self, repo_path: str, old_commit: str, new_commit: str
+    ) -> set[str]:
+        """Task 15: return set of files changed between two commits."""
+        try:
+            proc = await asyncio.to_thread(
+                subprocess.run,
+                ["git", "-C", repo_path, "diff", "--name-only", old_commit, new_commit],
+                capture_output=True,
+                text=True,
+            )
+            if proc.returncode == 0:
+                return {line.strip() for line in proc.stdout.splitlines() if line.strip()}
+        except Exception as exc:
+            logger.warning("Failed to get changed files (%s..%s): %s", old_commit, new_commit, exc)
+        return set()
 
     # ------------------------------------------------------------------
     # Helpers

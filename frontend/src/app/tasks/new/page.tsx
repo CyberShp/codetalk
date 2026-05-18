@@ -29,6 +29,7 @@ export default function NewTaskPage() {
     repo_path: "",
     tools: ["gitnexus", "deepwiki"],
   });
+  const [deepwikiDepth, setDeepwikiDepth] = useState<"fast" | "balanced" | "deep">("balanced");
   const [analysisFocus, setAnalysisFocus] = useState("");
   const [requirementsFile, setRequirementsFile] = useState("");
   const [designFile, setDesignFile] = useState("");
@@ -179,6 +180,7 @@ export default function NewTaskPage() {
           repo_path: form.repo_path.trim(),
           analysis_focus: analysisFocus.trim(),
           prompt_content: rendered,
+          deepwiki_depth: deepwikiDepth,
         };
         if (requirementsFile) payload.requirements_doc = requirementsFile;
         if (designFile) payload.design_doc = designFile;
@@ -194,7 +196,7 @@ export default function NewTaskPage() {
         setSubmitting(false);
       }
     },
-    [form, analysisFocus, editedContent, requirementsFile, designFile, router],
+    [form, analysisFocus, editedContent, requirementsFile, designFile, deepwikiDepth, router],
   );
 
   return (
@@ -395,6 +397,39 @@ export default function NewTaskPage() {
             })}
           </div>
         </div>
+
+        {/* DeepWiki Analysis Depth */}
+        {form.tools.includes("deepwiki") && (
+          <div>
+            <label className="block text-sm font-medium text-on-surface mb-2">
+              DeepWiki 分析深度
+            </label>
+            <div className="grid grid-cols-3 gap-3">
+              {(
+                [
+                  { value: "fast", label: "快速", desc: "核心架构概览" },
+                  { value: "balanced", label: "均衡", desc: "架构 + 组件 + 数据流" },
+                  { value: "deep", label: "深度", desc: "全面详尽文档" },
+                ] as const
+              ).map((opt) => (
+                <button
+                  key={opt.value}
+                  type="button"
+                  aria-pressed={deepwikiDepth === opt.value}
+                  onClick={() => setDeepwikiDepth(opt.value)}
+                  className={`flex flex-col items-start px-4 py-3 rounded-lg border text-left transition-colors ${
+                    deepwikiDepth === opt.value
+                      ? "bg-primary/10 border-primary/30 text-primary"
+                      : "bg-surface-container border-outline-variant/30 text-on-surface-variant hover:border-outline-variant/60"
+                  }`}
+                >
+                  <span className="text-sm font-medium">{opt.label}</span>
+                  <span className="text-xs mt-0.5 opacity-70">{opt.desc}</span>
+                </button>
+              ))}
+            </div>
+          </div>
+        )}
 
         {/* Collapsible File Uploads */}
         <div>

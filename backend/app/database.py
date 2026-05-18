@@ -14,6 +14,7 @@ CREATE TABLE IF NOT EXISTS tasks (
     design_doc TEXT,
     analysis_focus TEXT,
     prompt_content TEXT,
+    deepwiki_depth TEXT DEFAULT 'balanced',
     progress INTEGER DEFAULT 0,
     error_message TEXT,
     created_at TEXT,
@@ -80,6 +81,7 @@ _MIGRATIONS = [
     "ALTER TABLE tasks ADD COLUMN analysis_focus TEXT",
     "ALTER TABLE tasks ADD COLUMN prompt_content TEXT",
     "ALTER TABLE tasks ADD COLUMN current_step TEXT",
+    "ALTER TABLE tasks ADD COLUMN deepwiki_depth TEXT DEFAULT 'balanced'",
 ]
 
 

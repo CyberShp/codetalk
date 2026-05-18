@@ -151,6 +151,12 @@ class OpenAICompatClient(BaseLLMClient):
                 f"(len={len(content.strip())}, model={self._model})"
             )
 
+        truncated = choices[0].get("finish_reason") == "length" if choices else False
+        if truncated:
+            logger.warning(
+                "LLM response truncated (finish_reason=length), output may be incomplete"
+            )
+
         raw_usage = data.get("usage", {})
         usage = {
             "prompt_tokens": raw_usage.get("prompt_tokens", 0),
@@ -162,6 +168,7 @@ class OpenAICompatClient(BaseLLMClient):
             content=content,
             model=data.get("model", self._model),
             usage=usage,
+            truncated=truncated,
         )
 
     async def health_check(self) -> tuple[bool, str]:
