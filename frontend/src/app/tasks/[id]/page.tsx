@@ -5,6 +5,7 @@ import { useParams } from "next/navigation";
 import Link from "next/link";
 import {
   ArrowLeft,
+  AlertTriangle,
   CheckCircle2,
   XCircle,
   Clock,
@@ -26,6 +27,7 @@ const STATUS_CONFIG: Record<
   pending: { label: "等待中", icon: Clock, color: "text-amber-400", bg: "bg-amber-400/10" },
   running: { label: "运行中", icon: PlayCircle, color: "text-blue-400", bg: "bg-blue-400/10" },
   completed: { label: "已完成", icon: CheckCircle2, color: "text-green-400", bg: "bg-green-400/10" },
+  completed_with_warnings: { label: "部分完成", icon: AlertTriangle, color: "text-yellow-400", bg: "bg-yellow-400/10" },
   failed: { label: "失败", icon: XCircle, color: "text-red-400", bg: "bg-red-400/10" },
 };
 
@@ -325,7 +327,7 @@ export default function TaskDetailPage() {
           </button>
         </div>
       )}
-      {task.status === "completed" && (
+      {(task.status === "completed" || task.status === "completed_with_warnings") && (
         <div className="flex gap-3">
           <Link
             href={`/tasks/${task.id}/report`}
