@@ -77,6 +77,7 @@ class AnalysisPipeline:
             repo_path = task["repo_path"]
             self._repo_path = repo_path  # store for use by new methods
             tools = json.loads(task.get("tools") or "[]")
+            self._tools = tools
             self._analysis_focus = task.get("analysis_focus") or ""
             self._prompt_content = task.get("prompt_content") or ""
             self._deepwiki_depth = task.get("deepwiki_depth") or ""
@@ -403,7 +404,10 @@ class AnalysisPipeline:
         repo_path = self._repo_path
 
         # Task 13: check module summary cache before running LLM
-        cache_key = await self._get_repo_commit_hash(repo_path)
+        # Cache key includes commit + task intent hash so different analysis_focus /
+        # prompt_content / tool selections produce separate cache entries.
+        commit_hash = await self._get_repo_commit_hash(repo_path)
+        cache_key = self._build_module_cache_key(commit_hash) if commit_hash else ""
         if cache_key:
             cached_summaries = await self._load_module_summaries_cache(cache_key)
             if cached_summaries is not None:
@@ -843,6 +847,22 @@ class AnalysisPipeline:
         import hashlib
         path_hash = hashlib.md5(str(Path(repo_path).resolve()).encode()).hexdigest()[:8]
         return f"{path_hash}_{commit}"
+
+    def _build_module_cache_key(self, commit: str) -> str:
+        """Build module-summary cache key: commit + hash of task intent.
+
+        Different analysis_focus / prompt_content / tool combinations produce
+        separate cache entries so task intent is never silently swallowed.
+        """
+        import hashlib
+        intent_parts = [
+            self._analysis_focus or "",
+            self._prompt_content or "",
+            self._deepwiki_depth or "",
+            json.dumps(sorted(self._tools)) if hasattr(self, "_tools") else "",
+        ]
+        intent_hash = hashlib.sha256("|".join(intent_parts).encode()).hexdigest()[:8]
+        return f"{commit}_{intent_hash}"
 
     def _cache_dir(self) -> Path:
         """Return (and create) the .cache directory under outputs."""

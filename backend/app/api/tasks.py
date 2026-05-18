@@ -141,7 +141,7 @@ async def run_task(
     if task["status"] == "running":
         raise HTTPException(status_code=409, detail="任务正在运行中")
 
-    # Health check: verify GitNexus is reachable before starting pipeline
+    # Health check: verify selected tools are reachable before starting pipeline
     tools = json.loads(task.get("tools") or "[]")
     if "gitnexus" in tools:
         try:
@@ -153,6 +153,18 @@ async def run_task(
             raise HTTPException(
                 status_code=503,
                 detail="GitNexus service is not available",
+            )
+
+    if "deepwiki" in tools:
+        try:
+            async with httpx.AsyncClient(timeout=httpx.Timeout(settings.health_check_timeout), trust_env=False) as hc_client:
+                hc_resp = await hc_client.get(f"{settings.deepwiki_api_url}/health")
+                hc_resp.raise_for_status()
+        except Exception as exc:
+            logger.warning("DeepWiki health check failed: %s", exc)
+            raise HTTPException(
+                status_code=503,
+                detail="DeepWiki service is not available",
             )
 
     # Reset status

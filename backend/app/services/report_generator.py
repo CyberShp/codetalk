@@ -204,9 +204,9 @@ class ReportGenerator:
         total = len(report_tasks)
 
         async def _guarded(idx: int, rtype: str, coro: Awaitable) -> None:
-            if on_report_start is not None:
-                await on_report_start(rtype, idx + 1, total)
             async with sem:
+                if on_report_start is not None:
+                    await on_report_start(rtype, idx + 1, total)
                 return await coro
 
         results = await asyncio.gather(

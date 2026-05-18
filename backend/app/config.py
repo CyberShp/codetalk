@@ -35,7 +35,7 @@ class Settings(BaseSettings):
 
     # Analysis tuning
     analysis_concurrency: int = 10   # max parallel module analyses
-    llm_max_concurrency: int = 1     # max parallel LLM report generation calls
+    llm_max_concurrency: int = 1     # admin env var LLM_MAX_CONCURRENCY; controls report-gen parallelism
     deepwiki_timeout: int = 1800     # wiki generation timeout in seconds
     deepwiki_default_depth: str = "balanced"
     health_check_timeout: int = 5    # seconds for tool health probes
