@@ -163,7 +163,11 @@ class ReportGenerator:
                 )
             )
 
-        await asyncio.gather(*report_tasks, return_exceptions=True)
+        results = await asyncio.gather(*report_tasks, return_exceptions=True)
+        for r in results:
+            if isinstance(r, BaseException):
+                logger.error("Report generation failed in parallel: %s", r, extra={"task_id": self._task_id})
+                self._status_override = "completed_with_warnings"
         return self._generated_files
 
     async def _generate_report(
@@ -216,6 +220,7 @@ class ReportGenerator:
 
         except Exception as exc:
             logger.exception("Report generation failed for %s: %s", report_type, exc, extra={"task_id": self._task_id})
+            raise
 
     # ------------------------------------------------------------------
     # Context builders -- extract relevant data for each prompt

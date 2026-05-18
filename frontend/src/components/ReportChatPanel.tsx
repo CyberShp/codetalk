@@ -61,21 +61,35 @@ export default function ReportChatPanel({ taskId }: { taskId: string }) {
         for (const line of lines) {
           if (!line.startsWith("data: ")) continue;
           try {
-            const payload = JSON.parse(line.slice(6)) as { content: string; done: boolean };
+            const payload = JSON.parse(line.slice(6)) as { content?: string; done: boolean; error?: string };
             if (payload.done) {
-              setMessages((prev) => [
-                ...prev,
-                {
-                  id: Date.now() + 1,
-                  task_id: taskId,
-                  role: "assistant",
-                  content: accumulated,
-                  created_at: new Date().toISOString(),
-                },
-              ]);
-              setStreamContent("");
+              if (payload.error) {
+                setMessages((prev) => [
+                  ...prev,
+                  {
+                    id: Date.now() + 1,
+                    task_id: taskId,
+                    role: "assistant",
+                    content: `> ⚠ ${payload.error}`,
+                    created_at: new Date().toISOString(),
+                  },
+                ]);
+                setStreamContent("");
+              } else {
+                setMessages((prev) => [
+                  ...prev,
+                  {
+                    id: Date.now() + 1,
+                    task_id: taskId,
+                    role: "assistant",
+                    content: accumulated,
+                    created_at: new Date().toISOString(),
+                  },
+                ]);
+                setStreamContent("");
+              }
             } else {
-              accumulated += payload.content;
+              accumulated += payload.content ?? "";
               setStreamContent(accumulated);
             }
           } catch {
