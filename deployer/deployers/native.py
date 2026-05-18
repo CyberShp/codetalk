@@ -219,11 +219,10 @@ class NativeDeployer:
         if has_python_api:
             venv_dir = dw_dir / ".venv"
             venv_python = (venv_dir / "Scripts" / "python.exe") if sys.platform == "win32" else (venv_dir / "bin" / "python")
-            api_cwd = str(dw_dir / "api") if (dw_dir / "api").exists() else str(dw_dir)
             await self._start_process(
                 "deepwiki-api",
-                [str(venv_python), "-m", "uvicorn", "main:app", "--host", "0.0.0.0", "--port", str(api_port)],
-                cwd=api_cwd,
+                [str(venv_python), "-m", "uvicorn", "api.main:app", "--host", "0.0.0.0", "--port", str(api_port)],
+                cwd=str(dw_dir),
                 step_name="deepwiki_start",
                 step_index=5,
                 env_extra=llm_env or None,
