@@ -107,7 +107,7 @@ class NativeDeployer:
 
     async def supplement_deepwiki(self, deepwiki_path: str) -> None:
         dw_dir = Path(deepwiki_path)
-        total = 5
+        total = 6
 
         await self._emit_sup("deepwiki_validate", "running", "验证 DeepWiki-Open 路径...", 1, total)
         if not dw_dir.exists():
@@ -165,7 +165,18 @@ class NativeDeployer:
         else:
             await self._emit_sup("deepwiki_node", "done", "Node 依赖已存在，跳过", 3, total)
 
-        await self._emit_sup("deepwiki_start", "running", "启动 DeepWiki 服务...", 4, total)
+        if has_package_json and not (dw_dir / ".next").exists():
+            await self._emit_sup("deepwiki_build", "running", "构建 DeepWiki 前端（next build）...", 4, total)
+            npm_cmd = "npm.cmd" if sys.platform == "win32" else "npm"
+            rc = await self._run_stream("deepwiki_build", 4, npm_cmd, "run", "build", cwd=str(dw_dir))
+            if rc != 0:
+                await self._emit_sup("deepwiki_build", "error", "next build 失败", 4, total)
+                raise RuntimeError("DeepWiki next build failed")
+            await self._emit_sup("deepwiki_build", "done", "前端构建完成", 4, total)
+        else:
+            await self._emit_sup("deepwiki_build", "done", "前端已构建，跳过", 4, total)
+
+        await self._emit_sup("deepwiki_start", "running", "启动 DeepWiki 服务...", 5, total)
         api_port = self._config_port("deepwiki_api_port", 8091)
         ui_port = self._config_port("deepwiki_ui_port", 3001)
 
@@ -189,7 +200,7 @@ class NativeDeployer:
                 [str(venv_python), "-m", "uvicorn", "main:app", "--host", "0.0.0.0", "--port", str(api_port)],
                 cwd=api_cwd,
                 step_name="deepwiki_start",
-                step_index=4,
+                step_index=5,
                 env_extra=llm_env or None,
             )
 
@@ -200,11 +211,11 @@ class NativeDeployer:
                 [npm_cmd, "run", "start"],
                 cwd=str(dw_dir),
                 step_name="deepwiki_start",
-                step_index=4,
+                step_index=5,
                 env_extra={"PORT": str(ui_port), **llm_env},
             )
 
-        await self._emit_sup("deepwiki_start", "done", "DeepWiki 服务已启动", 4, total)
+        await self._emit_sup("deepwiki_start", "done", "DeepWiki 服务已启动", 5, total)
 
         self._config["deepwiki_path"] = deepwiki_path
         self._config["deepwiki_api_port"] = api_port
@@ -214,7 +225,7 @@ class NativeDeployer:
         # Restart backend so it reloads .env with the new DeepWiki port settings.
         backend_proc = self._processes.get("backend")
         if backend_proc is not None and backend_proc.returncode is None:
-            await self._emit_sup("deepwiki_start", "running", "重启后端以加载新 DeepWiki 配置...", 4, total)
+            await self._emit_sup("deepwiki_start", "running", "重启后端以加载新 DeepWiki 配置...", 5, total)
             try:
                 backend_proc.terminate()
                 await asyncio.wait_for(backend_proc.wait(), timeout=10)
@@ -233,12 +244,12 @@ class NativeDeployer:
                  "--host", "0.0.0.0", "--port", str(backend_port)],
                 cwd=str(backend_dir),
                 step_name="deepwiki_start",
-                step_index=4,
+                step_index=5,
             )
             await asyncio.sleep(5)
-            await self._emit_sup("deepwiki_start", "running", "后端已重启并加载新配置", 4, total)
+            await self._emit_sup("deepwiki_start", "running", "后端已重启并加载新配置", 5, total)
 
-        await self._emit_sup("deepwiki_health", "running", "检查 DeepWiki 健康状态...", 5, total)
+        await self._emit_sup("deepwiki_health", "running", "检查 DeepWiki 健康状态...", 6, total)
         await asyncio.sleep(5)
 
         import httpx
@@ -246,11 +257,11 @@ class NativeDeployer:
             async with httpx.AsyncClient(timeout=5, trust_env=False) as client:
                 resp = await client.get(f"http://localhost:{api_port}/health")
                 if resp.status_code < 500:
-                    await self._emit_sup("deepwiki_health", "done", f"DeepWiki 健康运行（API:{api_port} UI:{ui_port}）", 5, total)
+                    await self._emit_sup("deepwiki_health", "done", f"DeepWiki 健康运行（API:{api_port} UI:{ui_port}）", 6, total)
                 else:
-                    await self._emit_sup("deepwiki_health", "done", f"⚠ DeepWiki 已安装，但健康检查返回 HTTP {resp.status_code}，请在 CodeTalk 页面确认最终状态", 5, total)
+                    await self._emit_sup("deepwiki_health", "done", f"⚠ DeepWiki 已安装，但健康检查返回 HTTP {resp.status_code}，请在 CodeTalk 页面确认最终状态", 6, total)
         except Exception:
-            await self._emit_sup("deepwiki_health", "done", f"⚠ DeepWiki 已安装，健康检查暂未响应（API:{api_port}），服务可能仍在启动", 5, total)
+            await self._emit_sup("deepwiki_health", "done", f"⚠ DeepWiki 已安装，健康检查暂未响应（API:{api_port}），服务可能仍在启动", 6, total)
 
     async def _emit_sup(self, step: str, status: str, message: str, current: int, total: int) -> None:
         await self._queue.put({
