@@ -701,7 +701,7 @@ class NativeDeployer:
             venv_python = (venv_dir / "Scripts" / "python.exe") if sys.platform == "win32" else (venv_dir / "bin" / "python")
             await self._start_process(
                 "deepwiki-api",
-                [str(venv_python), "-m", "uvicorn", "api.main:app", "--host", "0.0.0.0", "--port", str(api_port)],
+                [str(venv_python), "-m", "uvicorn", "api.api:app", "--host", "0.0.0.0", "--port", str(api_port)],
                 cwd=str(dw_dir),
                 step_name=step_name,
                 step_index=step_index,
