@@ -5,6 +5,7 @@ import Link from "next/link";
 import { useRouter } from "next/navigation";
 import {
   Plus,
+  AlertTriangle,
   Loader2,
   CheckCircle2,
   XCircle,
@@ -38,6 +39,12 @@ const STATUS_CONFIG: Record<
     icon: CheckCircle2,
     color: "text-green-400",
     bg: "bg-green-400/10",
+  },
+  completed_with_warnings: {
+    label: "部分完成",
+    icon: AlertTriangle,
+    color: "text-yellow-400",
+    bg: "bg-yellow-400/10",
   },
   failed: {
     label: "失败",

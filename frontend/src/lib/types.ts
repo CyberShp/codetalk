@@ -1,6 +1,6 @@
 /* ── Lightweight CodeTalk types matching backend SQLite schemas ── */
 
-export type TaskStatus = "pending" | "running" | "completed" | "failed";
+export type TaskStatus = "pending" | "running" | "completed" | "completed_with_warnings" | "failed";
 
 export interface Task {
   id: string;
