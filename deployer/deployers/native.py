@@ -13,6 +13,8 @@ PROJECT_ROOT = Path(__file__).parent.parent.parent
 DEPLOYER_DIR = Path(__file__).parent.parent
 VENDOR_DIR = DEPLOYER_DIR / "vendor"
 
+DEEPWIKI_REPO = "https://github.com/AsyncFuncAI/deepwiki-open.git"
+
 TOTAL_STEPS = 7
 
 SERVICE_DEFAULTS = [
@@ -109,8 +111,16 @@ class NativeDeployer:
 
         await self._emit_sup("deepwiki_validate", "running", "验证 DeepWiki-Open 路径...", 1, total)
         if not dw_dir.exists():
-            await self._emit_sup("deepwiki_validate", "error", f"路径不存在：{deepwiki_path}", 1, total)
-            raise RuntimeError(f"DeepWiki-Open path not found: {deepwiki_path}")
+            await self._emit_sup("deepwiki_validate", "running", f"目录不存在，正在克隆 DeepWiki-Open 到 {deepwiki_path}...", 1, total)
+            dw_dir.parent.mkdir(parents=True, exist_ok=True)
+            rc = await self._run_stream(
+                "deepwiki_validate", 1,
+                "git", "clone", "--depth", "1", DEEPWIKI_REPO, str(dw_dir),
+            )
+            if rc != 0:
+                await self._emit_sup("deepwiki_validate", "error", "DeepWiki-Open 克隆失败，请检查网络或手动指定已克隆的目录", 1, total)
+                raise RuntimeError("git clone deepwiki-open failed")
+            await self._emit_sup("deepwiki_validate", "done", "DeepWiki-Open 克隆完成", 1, total)
 
         has_requirements = (dw_dir / "requirements.txt").exists()
         has_package_json = (dw_dir / "package.json").exists()
