@@ -860,9 +860,14 @@ class AnalysisPipeline:
         ]
         return hashlib.sha256("|".join(intent_parts).encode()).hexdigest()[:8]
 
+    def _repo_path_hash(self) -> str:
+        """8-char hash of repo absolute path for cache isolation."""
+        import hashlib
+        return hashlib.md5(str(Path(self._repo_path).resolve()).encode()).hexdigest()[:8]
+
     def _build_module_cache_key(self, commit: str) -> str:
-        """Build module-summary cache key: commit + intent/quality hash."""
-        return f"{commit}_{self._compute_intent_hash()}"
+        """Build module-summary cache key: path_hash + commit + intent/quality hash."""
+        return f"{self._repo_path_hash()}_{commit}_{self._compute_intent_hash()}"
 
     def _cache_dir(self) -> Path:
         """Return (and create) the .cache directory under outputs."""
@@ -932,9 +937,10 @@ class AnalysisPipeline:
     async def _load_latest_module_summaries_cache(self) -> tuple[list[dict] | None, str]:
         """
         Task 15: find the most recently written modules_*.json cache file
-        whose intent hash matches the current task.
+        whose repo path hash AND intent hash match the current task.
         Returns (summaries, commit_hash) or (None, '').
         """
+        current_repo = self._repo_path_hash()
         current_intent = self._compute_intent_hash()
 
         def _find() -> tuple[list[dict] | None, str]:
@@ -946,12 +952,15 @@ class AnalysisPipeline:
             )
             for candidate in candidates:
                 try:
-                    # stem format: modules_{40-char-commit}_{8-char-intent-hash}
+                    # stem: modules_{path_hash}_{commit}_{intent_hash}
                     parts = candidate.stem.split("_")
-                    if len(parts) < 3:
+                    if len(parts) < 4:
                         continue
-                    commit_part = parts[1]
-                    intent_part = parts[2]
+                    path_part = parts[1]
+                    commit_part = parts[2]
+                    intent_part = parts[3]
+                    if path_part != current_repo:
+                        continue
                     if not re.fullmatch(r"[0-9a-f]{40}", commit_part):
                         continue
                     if intent_part != current_intent:
