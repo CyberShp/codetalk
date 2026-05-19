@@ -19,7 +19,6 @@ As of 2026-04-17, the observed listeners are:
 | Frontend (Next.js) | `3005` | User explicitly requested `3005` instead of `3003` |
 | Backend (FastAPI) | `8000` | Host-run Python process |
 | PostgreSQL | `5433` | Docker `5432` exposed to host `5433` |
-| Zoekt | `6070` | Dockerized |
 | deepwiki-open | `8001` | Dockerized |
 | GitNexus | `7100` | Dockerized |
 | Joern | `8080` | Dockerized (CPG server, 8G memory limit) |
@@ -59,7 +58,6 @@ These values are for containers on the Docker network, not for host-run Python:
 
 - `postgres:5432`
 - `deepwiki:8001`
-- `zoekt:6070`
 - `/data/repos`
 
 If backend runs on the host, it must not rely on repo-root `.env` as-is.
@@ -70,7 +68,7 @@ Host-run repository clones should live under the repo-local `.repos/` directory 
 Compose mode:
 
 - backend can use `postgres:5432`
-- backend can resolve `deepwiki`, `zoekt`, `gitnexus`
+- backend can resolve `deepwiki`, `gitnexus`
 
 Host mode:
 
@@ -117,7 +115,7 @@ Invalid examples:
 Authoritative check:
 
 ```bash
-lsof -nP -iTCP -sTCP:LISTEN | rg ':(3005|8000|5433|6070|7100|8001|8080)\b'
+lsof -nP -iTCP -sTCP:LISTEN | rg ':(3005|8000|5433|7100|8001|8080)\b'
 ```
 
 This is the source of truth for "what is actually up".
@@ -141,9 +139,8 @@ This is the source of truth for "what is actually up".
 ### Database and tools
 
 1. PostgreSQL host port must be `5433`.
-2. Zoekt host port must be `6070`.
-3. deepwiki-open host port must be `8001`.
-4. GitNexus host port must be `7100`.
+2. deepwiki-open host port must be `8001`.
+3. GitNexus host port must be `7100`.
 
 ## Known Pitfalls
 
@@ -186,9 +183,9 @@ Root cause:
 
 Fix and rule:
 
-- Every `httpx.AsyncClient` that calls deepwiki, zoekt, or gitnexus **must** use
-  `settings.deepwiki_base_url`, `settings.zoekt_base_url`, or `settings.gitnexus_base_url`.
-- Never hard-code `http://deepwiki:*`, `http://zoekt:*`, or `http://gitnexus:*` in application code.
+- Every `httpx.AsyncClient` that calls deepwiki or gitnexus **must** use
+  `settings.deepwiki_base_url` or `settings.gitnexus_base_url`.
+- Never hard-code `http://deepwiki:*` or `http://gitnexus:*` in application code.
 
 ### Pitfall C: "service is up" is not the same as "browser can fetch it"
 

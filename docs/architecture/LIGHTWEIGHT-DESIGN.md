@@ -19,7 +19,6 @@
 |------|---------|------|
 | GitNexus | `gitnexus serve --port 7100` 本地进程 | 代码图谱、业务流程、社区发现 |
 | DeepWiki-Open | Python + Node 本地前后端 | RAG 代码知识库生成 |
-| Zoekt（可选） | 本地进程 | 代码搜索 |
 
 ### 1.3 移除的功能
 

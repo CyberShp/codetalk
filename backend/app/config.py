@@ -42,8 +42,6 @@ class Settings(BaseSettings):
     gitnexus_base_url: str = "http://localhost:7100"
     deepwiki_api_url: str = "http://localhost:8091"
     deepwiki_ui_url: str = "http://localhost:3001"
-    zoekt_base_url: str = "http://localhost:6070"
-    zoekt_container_name: str = "codetalk-zoekt"
     joern_base_url: str = "http://localhost:8090"
     codecompass_base_url: str = "http://localhost:16251"
 
@@ -53,10 +51,6 @@ class Settings(BaseSettings):
     deepwiki_ui_port: int = 3001
     deepwiki_path: str = ""          # path to deepwiki-open installation
     gitnexus_bin: str = "gitnexus"   # path to gitnexus binary
-    zoekt_enabled: bool = False      # enable Zoekt code-search integration
-    zoekt_port: int = 6070           # native deployer port; deployer derives ZOEKT_BASE_URL from this
-    zoekt_index_dir: str = ""        # index directory (defaults to data/zoekt-index)
-    zoekt_bin: str = ""              # zoekt-webserver binary path (auto-discovered if empty)
     tiktoken_cache_dir: str = ""     # override path for tiktoken BPE cache (TIKTOKEN_CACHE_DIR)
     tool_health_interval: int = 30   # seconds between health checks
 
@@ -105,11 +99,6 @@ class Settings(BaseSettings):
             if (p / _CL100K_BPE).exists():
                 return p
         return (self.data_path / "tiktoken_cache").resolve()
-
-    @property
-    def zoekt_index_path(self) -> Path:
-        return Path(self.zoekt_index_dir) if self.zoekt_index_dir else self.data_path / "zoekt-index"
-
 
 settings = Settings()
 os.environ.setdefault("TIKTOKEN_CACHE_DIR", str(settings.tiktoken_cache_path))

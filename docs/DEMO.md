@@ -17,8 +17,7 @@ CodeTalks 是一个**代码分析编排与可视化平台**。它不重新发明
 Browser → Next.js 前端 → FastAPI 后端 → 4 个分析引擎
                                           ├── DeepWiki（AI 文档生成）
                                           ├── GitNexus（知识图谱）
-                                          ├── Joern（CPG 运行时风险分析）
-                                          └── Zoekt（代码搜索）
+                                          └── Joern（CPG 运行时风险分析）
 ```
 
 ---
@@ -234,7 +233,6 @@ Browser → Next.js 前端 → FastAPI 后端 → 4 个分析引擎
 ## 后续规划
 
 - CodeCompass 集成（C/C++ 调用图 + 指针分析）
-- Zoekt 实时增量索引
 - 多人协作与权限管理
 - 分析报告导出（PDF/HTML）
 - CI/CD Pipeline 集成（GitLab CI / Jenkins）

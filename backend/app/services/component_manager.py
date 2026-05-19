@@ -122,26 +122,6 @@ CONTRACTS: dict[str, ComponentContract] = {
             ),
         ],
     ),
-    "zoekt": ComponentContract(
-        component="zoekt",
-        label="Zoekt (代码搜索)",
-        domains=[
-            ConfigDomain(
-                domain="connection",
-                label="连接地址",
-                target="backend",
-                env_map={},
-                fields=[
-                    ConfigField(
-                        name="base_url",
-                        label="Base URL",
-                        field_type="url",
-                        placeholder="http://zoekt:6070",
-                    ),
-                ],
-            ),
-        ],
-    ),
     "joern": ComponentContract(
         component="joern",
         label="Joern (CPG分析)",
@@ -189,7 +169,6 @@ CONTRACTS: dict[str, ComponentContract] = {
 
 _BACKEND_CONFIG_MAP: dict[tuple[str, str], dict[str, str]] = {
     ("gitnexus", "connection"): {"base_url": "gitnexus_base_url"},
-    ("zoekt", "connection"): {"base_url": "zoekt_base_url"},
     ("joern", "connection"): {"base_url": "joern_base_url"},
     ("codecompass", "connection"): {"base_url": "codecompass_base_url"},
 }

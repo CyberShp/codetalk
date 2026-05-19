@@ -216,17 +216,6 @@
                     <input type="number" id="port-gitnexus" name="portGitnexus" class="form-input form-input-sm font-mono" value="7100" min="1024" max="65535" />
                   </div>
                 </label>
-                <label class="component-item">
-                  <input type="checkbox" id="install-zoekt" name="installZoekt" />
-                  <div class="component-info">
-                    <span class="component-name">Zoekt</span>
-                    <span class="component-desc">代码精确搜索 &mdash; 三元组索引，减少 LLM 上下文用量</span>
-                  </div>
-                  <div class="component-ports" id="zoekt-ports" style="opacity:0.4">
-                    <span class="port-label">端口</span>
-                    <input type="number" id="port-zoekt" name="portZoekt" class="form-input form-input-sm font-mono" value="6070" min="1024" max="65535" />
-                  </div>
-                </label>
               </div>
             </fieldset>
 
@@ -348,9 +337,6 @@
             <div class="service-pill pill-pending" data-service="codecompass" data-modes="compose k8s" role="listitem">
               <span class="pill-dot"></span><span class="pill-name">CodeCompass</span>
             </div>
-            <div class="service-pill pill-pending" data-service="zoekt" data-modes="compose k8s native" role="listitem">
-              <span class="pill-dot"></span><span class="pill-name">Zoekt</span>
-            </div>
           </div>
 
           <div class="terminal-wrap">
@@ -449,16 +435,6 @@
               <div class="url-card-body">
                 <span class="url-card-name">CodeCompass</span>
                 <span class="url-card-url">localhost:16251</span>
-              </div>
-              <svg class="url-card-arrow" viewBox="0 0 20 20" fill="currentColor" aria-hidden="true"><path d="M11 3a1 1 0 100 2h2.586l-6.293 6.293a1 1 0 101.414 1.414L15 6.414V9a1 1 0 102 0V4a1 1 0 00-1-1h-5z"/><path d="M5 5a2 2 0 00-2 2v8a2 2 0 002 2h8a2 2 0 002-2v-3a1 1 0 10-2 0v3H5V7h3a1 1 0 000-2H5z"/></svg>
-            </a>
-            <a class="service-url-card" href="http://localhost:6070" target="_blank" rel="noopener noreferrer" data-service="zoekt">
-              <div class="url-card-icon">
-                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><circle cx="11" cy="11" r="8"/><path d="M21 21l-4.35-4.35M8 11h6"/></svg>
-              </div>
-              <div class="url-card-body">
-                <span class="url-card-name">Zoekt</span>
-                <span class="url-card-url">localhost:6070</span>
               </div>
               <svg class="url-card-arrow" viewBox="0 0 20 20" fill="currentColor" aria-hidden="true"><path d="M11 3a1 1 0 100 2h2.586l-6.293 6.293a1 1 0 101.414 1.414L15 6.414V9a1 1 0 102 0V4a1 1 0 00-1-1h-5z"/><path d="M5 5a2 2 0 00-2 2v8a2 2 0 002 2h8a2 2 0 002-2v-3a1 1 0 10-2 0v3H5V7h3a1 1 0 000-2H5z"/></svg>
             </a>

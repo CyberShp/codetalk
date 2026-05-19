@@ -29,7 +29,6 @@ SERVICES = [
     ("gitnexus",     7100,  "tcp",  None,       7100),
     ("joern",        8080,  "tcp",  None,       8080),
     ("codecompass",  6251,  "http", "/",        6251),
-    ("zoekt",        6070,  "http", "/healthz", 6070),
 ]
 
 # Services that need to be built from source
@@ -45,7 +44,6 @@ PREBUILT_IMAGES = {
     "postgres":    "postgres:16",
     "deepwiki":    "ghcr.io/asyncfuncai/deepwiki-open:latest",
     "joern":       "ghcr.io/joernio/joern:nightly",
-    "zoekt":       "ghcr.io/sourcegraph/zoekt:latest",
 }
 
 # Services that need PVCs: name -> (pvc_name, size, mount_path)
@@ -55,7 +53,6 @@ PVC_SERVICES = {
     "gitnexus":    ("gitnexus-data",    "5Gi",  "/root/.gitnexus"),
     "joern":       ("joern-data",       "10Gi", "/root/.joern"),
     "codecompass": ("codecompass-data", "10Gi", "/data/workspaces"),
-    "zoekt":       ("zoekt-index",      "10Gi", "/data/index"),
 }
 
 KIND_CONFIG = """kind: Cluster
@@ -526,9 +523,6 @@ class K8sDeployer:
         docs.append(self._deployment_codecompass(pg_user, pg_password, pg_db))
         docs.append(self._service_manifest("codecompass", 6251))
 
-        docs.append(self._deployment_zoekt())
-        docs.append(self._service_manifest("zoekt", 6070))
-
         return "---\n".join(yaml.dump(d, default_flow_style=False) for d in docs)
 
     def _configmap_manifest(
@@ -546,7 +540,6 @@ class K8sDeployer:
                 "REPOS_BASE_PATH": "/data/repos",
                 "DEEPWIKI_BASE_URL": "http://deepwiki:8001",
                 "GITNEXUS_BASE_URL": "http://gitnexus:7100",
-                "ZOEKT_BASE_URL": "http://zoekt:6070",
                 "JOERN_BASE_URL": "http://joern:8080",
                 "CODECOMPASS_BASE_URL": "http://codecompass:6251",
             },
@@ -665,7 +658,6 @@ class K8sDeployer:
                 {"name": "REPOS_BASE_PATH",     "value": "/data/repos"},
                 {"name": "DEEPWIKI_BASE_URL",    "value": "http://deepwiki:8001"},
                 {"name": "GITNEXUS_BASE_URL",    "value": "http://gitnexus:7100"},
-                {"name": "ZOEKT_BASE_URL",       "value": "http://zoekt:6070"},
                 {"name": "JOERN_BASE_URL",       "value": "http://joern:8080"},
                 {"name": "CODECOMPASS_BASE_URL", "value": "http://codecompass:6251"},
                 {
@@ -821,25 +813,6 @@ class K8sDeployer:
                 "requests": {"memory": "512Mi"},
             },
             image_pull_policy="Never",
-        )
-
-    def _deployment_zoekt(self) -> dict:
-        pvc_name, _size, _mount = PVC_SERVICES["zoekt"]
-        return self._base_deployment(
-            name="zoekt",
-            image="ghcr.io/sourcegraph/zoekt:latest",
-            port=6070,
-            env=[],
-            volume_mounts=[
-                {"name": "index", "mountPath": "/data/index"},
-                {"name": "repos", "mountPath": "/data/repos", "readOnly": True},
-            ],
-            volumes=[
-                {"name": "index", "persistentVolumeClaim": {"claimName": pvc_name}},
-                {"name": "repos", "persistentVolumeClaim": {"claimName": "shared-repos"}},
-            ],
-            command=["zoekt-webserver", "-index", "/data/index", "-listen", ":6070", "-rpc"],
-            image_pull_policy="Always",
         )
 
     # ------------------------------------------------------------------ #

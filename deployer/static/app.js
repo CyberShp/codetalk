@@ -35,7 +35,6 @@ const SERVICE_STEP_MAP = {
   deepwiki:    ['deepwiki', 'wiki'],
   gitnexus:    ['gitnexus', 'git'],
   codecompass: ['codecompass', 'compass'],
-  zoekt:       ['zoekt', 'search'],
 };
 
 // ---------------------------------------------------------------------------
@@ -219,7 +218,6 @@ function initConfigForm() {
   // Show/hide component port panels based on checkbox state
   const installDeepwikiCb = $('#install-deepwiki');
   const installGitnexusCb = $('#install-gitnexus');
-  const installZoektCb    = $('#install-zoekt');
   if (installDeepwikiCb) {
     const syncDeepwikiPorts = () => {
       const ports = $('#deepwiki-ports');
@@ -234,13 +232,6 @@ function initConfigForm() {
       if (ports) ports.style.opacity = installGitnexusCb.checked ? '1' : '0.4';
     });
   }
-  if (installZoektCb) {
-    installZoektCb.addEventListener('change', () => {
-      const ports = $('#zoekt-ports');
-      if (ports) ports.style.opacity = installZoektCb.checked ? '1' : '0.4';
-    });
-  }
-
   updatePortsVisibility();
 
   // Populate from saved config
@@ -259,16 +250,10 @@ function initConfigForm() {
         if (ports) ports.style.display = installDeepwikiCb.checked ? '' : 'none';
       }
       if (cfg.installGitnexus === false && installGitnexusCb) installGitnexusCb.checked = false;
-      if (cfg.installZoekt    && installZoektCb) {
-        installZoektCb.checked = true;
-        const zp = $('#zoekt-ports');
-        if (zp) zp.style.opacity = '1';
-      }
       if (cfg.portDeepwikiApi) ($('#port-deepwiki-api') || {}).value  = cfg.portDeepwikiApi;
       if (cfg.portDeepwikiUi)  ($('#port-deepwiki-ui')  || {}).value  = cfg.portDeepwikiUi;
       if (cfg.deepwikiPath)    ($('#deepwiki-path')     || {}).value  = cfg.deepwikiPath;
       if (cfg.portGitnexus)    ($('#port-gitnexus')     || {}).value  = cfg.portGitnexus;
-      if (cfg.portZoekt)       ($('#port-zoekt')        || {}).value  = cfg.portZoekt;
       if (cfg.dbUser)          ($('#db-user')            || {}).value  = cfg.dbUser;
       if (cfg.dbPassword)      ($('#db-password')        || {}).value  = cfg.dbPassword;
       if (cfg.dbName)          ($('#db-name')            || {}).value  = cfg.dbName;
@@ -304,18 +289,15 @@ function updatePortsVisibility() {
 function collectConfig() {
   const installDeepwikiCb = $('#install-deepwiki');
   const installGitnexusCb = $('#install-gitnexus');
-  const installZoektCb    = $('#install-zoekt');
   const cfg = {
     mode:            state.selectedMode,
     workspacePath:   (($('#workspace-path') || {}).value || './workspace').trim(),
     installDeepwiki: installDeepwikiCb ? installDeepwikiCb.checked : true,
     installGitnexus: installGitnexusCb ? installGitnexusCb.checked : true,
-    installZoekt:    installZoektCb    ? installZoektCb.checked    : false,
     portDeepwikiApi: (($('#port-deepwiki-api') || {}).value || '8091').trim(),
     portDeepwikiUi:  (($('#port-deepwiki-ui')  || {}).value || '3001').trim(),
     deepwikiPath:    (($('#deepwiki-path')     || {}).value || '').trim(),
     portGitnexus:    (($('#port-gitnexus')     || {}).value || '7100').trim(),
-    portZoekt:       (($('#port-zoekt')        || {}).value || '6070').trim(),
     reposPath:       (($('#repos-path')        || {}).value || './.repos'),
     portFrontend:    (($('#port-frontend')     || {}).value || '3005'),
     portBackend:     (($('#port-backend')      || {}).value || '8100'),
@@ -367,9 +349,6 @@ function renderReview() {
   }
   if (cfg.installGitnexus !== false) {
     components.push(`GitNexus（:${cfg.portGitnexus || '7100'}）`);
-  }
-  if (cfg.installZoekt) {
-    components.push(`Zoekt（:${cfg.portZoekt || '6070'}）`);
   }
   rows.push({ label: '安装组件', value: components.length ? components.join('，') : '（无）' });
 
@@ -424,7 +403,6 @@ function resetDeployUI() {
 
   const installDeepwiki = state.config.installDeepwiki !== false;
   const installGitnexus = state.config.installGitnexus !== false;
-  const installZoekt    = !!state.config.installZoekt;
 
   $$('.service-pill').forEach(p => {
     p.className = 'service-pill pill-pending';
@@ -433,7 +411,6 @@ function resetDeployUI() {
     let visible = modes.includes(state.selectedMode);
     if (svc === 'deepwiki' && !installDeepwiki) visible = false;
     if (svc === 'gitnexus' && !installGitnexus) visible = false;
-    if (svc === 'zoekt'    && !installZoekt)    visible = false;
     p.style.display = visible ? '' : 'none';
   });
 }
@@ -527,7 +504,6 @@ const STEP_NAMES = {
   install_frontend: '安装前端',
   install_gitnexus: '安装 GitNexus',
   install_deepwiki: '安装 DeepWiki',
-  install_zoekt:    '安装 Zoekt',
   generate_config:  '生成配置文件',
   start_services:   '启动服务',
   health_check:     '健康检查',
@@ -590,11 +566,9 @@ function updateServiceUrls() {
   const mode = state.selectedMode;
   const installDeepwiki = cfg.installDeepwiki !== false;
   const installGitnexus = cfg.installGitnexus !== false;
-  const installZoekt    = !!cfg.installZoekt;
 
   const deepwikiUiPort = cfg.portDeepwikiUi || '3001';
   const gitnexusPort   = cfg.portGitnexus   || '7100';
-  const zoektPort      = cfg.portZoekt       || '6070';
 
   const NATIVE_URLS = {
     frontend:    'http://localhost:' + (cfg.portFrontend  || '3005'),
@@ -603,7 +577,6 @@ function updateServiceUrls() {
     gitnexus:    installGitnexus ? 'http://localhost:' + gitnexusPort   : null,
     codecompass: null,
     joern:       null,
-    zoekt:       installZoekt ? 'http://localhost:' + zoektPort : null,
   };
 
   const COMPOSE_URLS = {
@@ -613,7 +586,6 @@ function updateServiceUrls() {
     gitnexus:    installGitnexus ? 'http://localhost:' + gitnexusPort   : null,
     codecompass: 'http://localhost:16251',
     joern:       'http://localhost:8080',
-    zoekt:       'http://localhost:6070',
   };
 
   const K8S_URLS = {
@@ -623,7 +595,6 @@ function updateServiceUrls() {
     gitnexus:    null,
     codecompass: null,
     joern:       null,
-    zoekt:       null,
   };
 
   const urls = mode === 'native' ? NATIVE_URLS : mode === 'k8s' ? K8S_URLS : COMPOSE_URLS;
