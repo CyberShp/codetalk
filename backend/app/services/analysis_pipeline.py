@@ -455,10 +455,12 @@ class AnalysisPipeline:
         total = len(communities)
 
         async def analyze_one(community: dict) -> dict:
-            # Task 15: reuse cached summary if module files are unchanged
-            if prev_summaries and changed_files:
+            # Task 15: reuse cached summary if module files are unchanged.
+            # Use `is not None` so an empty changed_files (zero-diff) still triggers full reuse.
+            if prev_summaries is not None:
                 module_files = set(community.get("files", []))
-                if not module_files.intersection(changed_files):
+                normalized = AnalysisPipeline._normalize_to_relative(module_files, repo_path)
+                if not changed_files or not normalized.intersection(changed_files):
                     cached_entry = next(
                         (s for s in prev_summaries if s.get("module_name") == community["name"]),
                         None,
@@ -989,6 +991,20 @@ class AnalysisPipeline:
         except Exception as exc:
             logger.warning("Failed to get changed files (%s..%s): %s", old_commit, new_commit, exc)
         return set()
+
+    @staticmethod
+    def _normalize_to_relative(paths: set[str], repo_root: str) -> set[str]:
+        """Normalize paths to repo-relative POSIX strings for intersection with git diff output."""
+        root = Path(repo_root).resolve()
+        result: set[str] = set()
+        for p in paths:
+            try:
+                rel = Path(p).resolve().relative_to(root)
+                result.add(rel.as_posix())
+            except ValueError:
+                # Already relative or outside repo — normalize separators only
+                result.add(Path(p).as_posix())
+        return result
 
     # ------------------------------------------------------------------
     # Helpers
