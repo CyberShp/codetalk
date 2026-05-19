@@ -46,8 +46,8 @@ echo [2/2] Packaging tiktoken cache...
 set "TK_CACHE=%LOCALAPPDATA%\tiktoken_v1"
 if not exist "!TK_CACHE!" (
     echo tiktoken cache not found at !TK_CACHE!
-    echo Downloading tiktoken encodings...
-    python -c "import tiktoken; tiktoken.encoding_for_model('gpt-4'); tiktoken.get_encoding('o200k_base')" 2>nul
+    echo Downloading all tiktoken encodings...
+    python -c "import tiktoken; [tiktoken.get_encoding(n) for n in tiktoken.list_encoding_names()]" 2>nul
 )
 
 if exist "!TK_CACHE!" (
