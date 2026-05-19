@@ -600,6 +600,8 @@ class NativeDeployer:
             ])
 
         tiktoken_cache = VENDOR_DIR / "tiktoken_cache"
+        if not tiktoken_cache.exists():
+            tiktoken_cache = PROJECT_ROOT / "docker" / "deepwiki" / "tiktoken"
         if tiktoken_cache.exists():
             env_lines.append(f"TIKTOKEN_CACHE_DIR={tiktoken_cache}")
 

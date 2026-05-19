@@ -1,3 +1,4 @@
+import os
 from pathlib import Path
 
 from pydantic import model_validator
@@ -91,6 +92,14 @@ class Settings(BaseSettings):
 
     @property
     def tiktoken_cache_path(self) -> Path:
+        from_env = os.environ.get("TIKTOKEN_CACHE_DIR")
+        if from_env:
+            p = Path(from_env)
+            if p.exists():
+                return p
+        repo_cache = Path(__file__).parent.parent.parent / "docker" / "deepwiki" / "tiktoken"
+        if repo_cache.exists():
+            return repo_cache
         return self.data_path / "tiktoken_cache"
 
     @property
