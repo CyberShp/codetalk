@@ -318,6 +318,8 @@ async def send_chat_message(
         logger.error("Failed to get LLM client for chat: %s", exc)
         raise HTTPException(status_code=503, detail=f"LLM 不可用：{exc}")
 
+    db_path = settings.sqlite_db
+
     async def _generate():
         chunks: list[str] = []
         had_error = False
@@ -330,16 +332,16 @@ async def send_chat_message(
             had_error = True
             yield f"data: {json.dumps({'content': '', 'done': True, 'error': '生成失败，请重试'}, ensure_ascii=False)}\n\n"
         finally:
-            # Persist whatever was accumulated — runs on success, error, and client disconnect
             reply = "".join(chunks)
             if reply:
                 try:
-                    now2 = datetime.now(timezone.utc).isoformat()
-                    await db.execute(
-                        "INSERT INTO task_chats (task_id, role, content, created_at) VALUES (?, ?, ?, ?)",
-                        (task_id, "assistant", reply, now2),
-                    )
-                    await db.commit()
+                    async with aiosqlite.connect(db_path) as own_db:
+                        now2 = datetime.now(timezone.utc).isoformat()
+                        await own_db.execute(
+                            "INSERT INTO task_chats (task_id, role, content, created_at) VALUES (?, ?, ?, ?)",
+                            (task_id, "assistant", reply, now2),
+                        )
+                        await own_db.commit()
                 except Exception as db_exc:
                     logger.error("Failed to persist assistant reply: %s", db_exc)
 
