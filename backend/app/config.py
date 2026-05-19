@@ -65,6 +65,7 @@ class Settings(BaseSettings):
     llm_max_concurrency: int = 1     # admin env var LLM_MAX_CONCURRENCY; controls report-gen parallelism
     deepwiki_timeout: int = 1800     # wiki generation timeout in seconds
     deepwiki_default_depth: str = "balanced"
+    deepwiki_provider: str = "openai"    # LLM provider for DeepWiki RAG (google, openai, ollama, etc.)
     health_check_timeout: int = 5    # seconds for tool health probes
     gitnexus_poll_timeout: int = 600 # max seconds to wait for GitNexus indexing
     coverage_max_upload_mb: int = 100 # max single file size for coverage upload

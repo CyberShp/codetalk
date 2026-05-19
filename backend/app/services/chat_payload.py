@@ -67,5 +67,7 @@ def build_deepwiki_payload(
             provider = "openai"
         payload["provider"] = provider
         payload["model"] = llm_config.model_name
+    else:
+        payload["provider"] = settings.deepwiki_provider
 
     return payload

@@ -607,6 +607,8 @@ async def chat_stream(body: ChatRequest, db: AsyncSession = Depends(get_db)):
             provider = "openai"
         payload["provider"] = provider
         payload["model"] = llm_config.model_name
+    else:
+        payload["provider"] = settings.deepwiki_provider
 
     await db.close()
 

@@ -359,6 +359,7 @@ class AnalysisPipeline:
             payload = {
                 "repo_url": repo_path,
                 "type": "local",
+                "provider": settings.deepwiki_provider,
                 "messages": [
                     {"role": "user", "content": deepwiki_message}
                 ],

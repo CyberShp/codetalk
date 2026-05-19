@@ -205,6 +205,7 @@ async def _call_deepwiki_chat(
         "type": "local",
         "messages": [{"role": "user", "content": prompt}],
         "language": "zh",
+        "provider": settings.deepwiki_provider,
     }
     if llm_config:
         payload.update(llm_config)
