@@ -31,6 +31,10 @@ class Settings(BaseSettings):
     deepwiki_ui_port: int = 3001
     deepwiki_path: str = ""          # path to deepwiki-open installation
     gitnexus_bin: str = "gitnexus"   # path to gitnexus binary
+    zoekt_enabled: bool = False      # enable Zoekt code-search integration
+    zoekt_port: int = 6070           # port for native zoekt-webserver process
+    zoekt_index_dir: str = ""        # index directory (defaults to data/zoekt-index)
+    zoekt_bin: str = ""              # zoekt-webserver binary path (auto-discovered if empty)
     tool_health_interval: int = 30   # seconds between health checks
 
     # Analysis tuning
@@ -60,6 +64,10 @@ class Settings(BaseSettings):
     @property
     def tiktoken_cache_path(self) -> Path:
         return self.data_path / "tiktoken_cache"
+
+    @property
+    def zoekt_index_path(self) -> Path:
+        return Path(self.zoekt_index_dir) if self.zoekt_index_dir else self.data_path / "zoekt-index"
 
 
 settings = Settings()
