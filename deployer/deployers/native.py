@@ -629,12 +629,17 @@ class NativeDeployer:
         await self._emit("generate_config", "running", f"已写入 {frontend_env}", step)
 
         if deepwiki_path and tiktoken_cache.exists():
-            dw_env = Path(deepwiki_path) / ".env"
-            existing = dw_env.read_text(encoding="utf-8").splitlines() if dw_env.exists() else []
-            kept = [ln for ln in existing if not ln.startswith("TIKTOKEN_CACHE_DIR=")]
-            kept.append(f"TIKTOKEN_CACHE_DIR={tiktoken_cache}")
-            dw_env.write_text("\n".join(kept) + "\n", encoding="utf-8")
-            await self._emit("generate_config", "running", f"已写入 {dw_env}", step)
+            dw_dir = Path(deepwiki_path)
+            if not dw_dir.is_dir():
+                await self._emit("generate_config", "running",
+                                 f"deepwiki_path 不存在，跳过写入 TIKTOKEN_CACHE_DIR：{deepwiki_path}", step)
+            else:
+                dw_env = dw_dir / ".env"
+                existing = dw_env.read_text(encoding="utf-8").splitlines() if dw_env.exists() else []
+                kept = [ln for ln in existing if not ln.startswith("TIKTOKEN_CACHE_DIR=")]
+                kept.append(f"TIKTOKEN_CACHE_DIR={tiktoken_cache}")
+                dw_env.write_text("\n".join(kept) + "\n", encoding="utf-8")
+                await self._emit("generate_config", "running", f"已写入 {dw_env}", step)
 
         await self._emit("generate_config", "done", "配置文件生成完成", step)
 
