@@ -70,7 +70,6 @@ if errorlevel 1 (
 )
 
 for /f "tokens=3" %%v in ('go version') do echo Found Go: %%v
-for /f "tokens=*" %%p in ('go env GOPATH') do set "GO_DEFAULT_PATH=%%p"
 
 REM Windows amd64 — native compile; GOBIN accepted by go install for same-platform targets
 echo Compiling Zoekt for Windows/amd64...
@@ -88,19 +87,27 @@ if exist "vendor\zoekt\win32\zoekt-webserver.exe" if exist "vendor\zoekt\win32\z
     echo WARNING: Zoekt Windows build incomplete. Check go output above.
 )
 
-REM Linux amd64 ^(cross-compile^) — go install refuses explicit GOBIN for cross targets;
-REM output lands in GOPATH/bin/linux_amd64/, then we copy to vendor.
+REM Linux amd64 ^(cross-compile^) — isolated temp GOPATH prevents stale-artifact false positives;
+REM exit codes are captured before copy so build failures are not silently ignored.
 echo Compiling Zoekt for Linux/amd64...
 if exist "vendor\zoekt\linux" rmdir /s /q "vendor\zoekt\linux"
 mkdir "vendor\zoekt\linux"
+set "ZOEKT_GOPATH=%TEMP%\zoekt-cross-%RANDOM%"
+mkdir "!ZOEKT_GOPATH!"
+set "GOPATH=!ZOEKT_GOPATH!"
 set "GOBIN="
 set "GOOS=linux"
+set "ZOEKT_LINUX_FAIL=0"
 go install github.com/sourcegraph/zoekt/cmd/zoekt-webserver@latest
+if errorlevel 1 set "ZOEKT_LINUX_FAIL=1"
 go install github.com/sourcegraph/zoekt/cmd/zoekt-index@latest
-if exist "!GO_DEFAULT_PATH!\bin\linux_amd64\zoekt-webserver" (
-    copy "!GO_DEFAULT_PATH!\bin\linux_amd64\zoekt-webserver" "vendor\zoekt\linux\zoekt-webserver" >nul
-    copy "!GO_DEFAULT_PATH!\bin\linux_amd64\zoekt-index" "vendor\zoekt\linux\zoekt-index" >nul 2>&1
+if errorlevel 1 set "ZOEKT_LINUX_FAIL=1"
+if "!ZOEKT_LINUX_FAIL!"=="0" (
+    copy "!ZOEKT_GOPATH!\bin\linux_amd64\zoekt-webserver" "vendor\zoekt\linux\zoekt-webserver" >nul
+    copy "!ZOEKT_GOPATH!\bin\linux_amd64\zoekt-index" "vendor\zoekt\linux\zoekt-index" >nul 2>&1
 )
+rmdir /s /q "!ZOEKT_GOPATH!"
+set "GOPATH="
 if exist "vendor\zoekt\linux\zoekt-webserver" if exist "vendor\zoekt\linux\zoekt-index" (
     echo Zoekt Linux binaries packaged: vendor\zoekt\linux\
 ) else (
