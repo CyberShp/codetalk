@@ -455,14 +455,25 @@ class ReportGenerator:
 
     @staticmethod
     def _build_key_files(gitnexus_data: dict, deepwiki_data: dict) -> str:
-        """Identify key files by edge count, noting DeepWiki availability when data is sparse."""
+        """Identify key files by edge count, enriched with DEFINES detail."""
         nodes = gitnexus_data.get("nodes", [])
         relationships = gitnexus_data.get("relationships", [])
+        nodes_by_id = {n["id"]: n for n in nodes}
 
         edge_count: dict[str, int] = {}
         for edge in relationships:
             edge_count[edge["sourceId"]] = edge_count.get(edge["sourceId"], 0) + 1
             edge_count[edge["targetId"]] = edge_count.get(edge["targetId"], 0) + 1
+
+        file_defines: dict[str, list[str]] = {}
+        for edge in relationships:
+            if edge.get("type") in ("DEFINES", "CONTAINS"):
+                src = edge["sourceId"]
+                tgt_node = nodes_by_id.get(edge["targetId"], {})
+                tgt_label = tgt_node.get("label", "")
+                tgt_name = tgt_node.get("properties", {}).get("name", edge["targetId"])
+                if tgt_label in ("Function", "Class", "Struct"):
+                    file_defines.setdefault(src, []).append(f"{tgt_label}:{tgt_name}")
 
         file_nodes = [n for n in nodes if n.get("label") in ("File", "Module")]
         ranked = sorted(
@@ -474,7 +485,9 @@ class ReportGenerator:
             props = node.get("properties", {})
             name = props.get("name", node["id"])
             count = edge_count.get(node["id"], 0)
-            parts.append(f"- {name} (连接数: {count})")
+            defines = file_defines.get(node["id"], [])
+            detail = f", 定义: {', '.join(defines[:5])}" if defines else ""
+            parts.append(f"- {name} (连接数: {count}{detail})")
 
         if len(file_nodes) < 5 and deepwiki_data.get("documentation"):
             parts.append("\n[注意: GitNexus 文件节点较少，DeepWiki 文档可供深入阅读参考]")
@@ -483,7 +496,7 @@ class ReportGenerator:
 
     @staticmethod
     def _build_call_graph(gitnexus_data: dict, deepwiki_data: dict) -> str:
-        """Format call graph edges as text, noting DeepWiki availability when data is sparse."""
+        """Format call graph edges as text, falling back to DEFINES when CALLS are absent."""
         relationships = gitnexus_data.get("relationships", [])
         call_edges = [
             e for e in relationships if e.get("type") in ("CALLS", "IMPORTS")
@@ -492,6 +505,20 @@ class ReportGenerator:
         parts: list[str] = []
         for edge in call_edges[:30]:
             parts.append(f"{edge['sourceId']} -> {edge['targetId']}")
+
+        if not call_edges:
+            nodes_by_id = {n["id"]: n for n in gitnexus_data.get("nodes", [])}
+            define_edges = [
+                e for e in relationships if e.get("type") in ("DEFINES", "CONTAINS")
+            ]
+            if define_edges:
+                parts.append("[定义关系（CALLS 数据不可用，以定义关系代替）]")
+                for edge in define_edges[:30]:
+                    src_name = nodes_by_id.get(edge["sourceId"], {}).get("properties", {}).get("name", edge["sourceId"])
+                    tgt_node = nodes_by_id.get(edge["targetId"], {})
+                    tgt_name = tgt_node.get("properties", {}).get("name", edge["targetId"])
+                    tgt_label = tgt_node.get("label", "")
+                    parts.append(f"{src_name} -[{edge['type']}]-> {tgt_label}:{tgt_name}")
 
         if len(call_edges) < 5 and deepwiki_data.get("documentation"):
             parts.append("\n[注意: 调用图数据较少，DeepWiki 文档可供深入阅读参考]")

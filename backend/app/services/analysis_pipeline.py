@@ -667,20 +667,108 @@ class AnalysisPipeline:
             "calls": [],
         }
 
+    def _build_structural_info(self, file_ids: list[str]) -> str:
+        """Build human-readable structural info from DEFINES/CONTAINS edges."""
+        relationships = self._gitnexus_data.get("relationships", [])
+        nodes_by_id = {n["id"]: n for n in self._gitnexus_data.get("nodes", [])}
+
+        file_defines: dict[str, list[str]] = {}
+        for edge in relationships:
+            if edge.get("type") in ("DEFINES", "CONTAINS"):
+                src = edge["sourceId"]
+                tgt = edge["targetId"]
+                tgt_node = nodes_by_id.get(tgt, {})
+                tgt_label = tgt_node.get("label", "")
+                tgt_name = tgt_node.get("properties", {}).get("name", tgt)
+                if tgt_label in ("Function", "Class", "Struct", "Variable", "Section"):
+                    file_defines.setdefault(src, []).append(f"{tgt_label}:{tgt_name}")
+
+        lines: list[str] = []
+        for fid in file_ids:
+            node = nodes_by_id.get(fid, {})
+            fname = node.get("properties", {}).get("name", fid)
+            defines = file_defines.get(fid, [])
+            if defines:
+                lines.append(f"- {fname} 定义了: {', '.join(defines)}")
+            else:
+                lines.append(f"- {fname}")
+        return "\n".join(lines) if lines else "（无结构数据）"
+
+    @staticmethod
+    def _read_source_files(
+        repo_path: str,
+        file_names: list[str],
+        max_total_bytes: int = 50_000,
+    ) -> str:
+        """Read actual source files from disk when data is sparse."""
+        repo = Path(repo_path)
+        collected: list[str] = []
+        total = 0
+
+        for name in file_names:
+            if Path(name).suffix not in _SOURCE_EXTS:
+                continue
+            candidate = repo / name
+            if not candidate.is_file():
+                for p in repo.rglob(name):
+                    if p.is_file():
+                        candidate = p
+                        break
+                else:
+                    continue
+            try:
+                size = candidate.stat().st_size
+                if total + size > max_total_bytes:
+                    break
+                content = candidate.read_text(encoding="utf-8", errors="replace")
+                collected.append(
+                    f"### {candidate.relative_to(repo)}\n```{candidate.suffix.lstrip('.')}\n{content}\n```"
+                )
+                total += size
+            except OSError:
+                continue
+
+        if not collected:
+            return ""
+        return "## 源代码内容（以下为实际文件内容，请据此分析）\n\n" + "\n\n".join(collected)
+
     async def _analyze_module(
         self, llm_client: BaseLLMClient, community: dict
     ) -> str:
         """Call LLM to summarize a single module."""
-        file_list = "\n".join(f"- {f}" for f in community.get("files", [])[:30])
+        files = community.get("files", [])[:30]
+        file_list = "\n".join(f"- {f}" for f in files)
         call_relations = "\n".join(community.get("calls", [])[:20])
 
         wiki_content = self._extract_module_wiki(community["name"])
 
+        structural_info = self._build_structural_info(files)
+
+        source_code_section = ""
+        if not community.get("calls"):
+            file_names = []
+            nodes_by_id = {n["id"]: n for n in self._gitnexus_data.get("nodes", [])}
+            for fid in files:
+                node = nodes_by_id.get(fid, {})
+                name = node.get("properties", {}).get("name", fid)
+                if name.startswith("File:"):
+                    name = name[5:]
+                file_names.append(name)
+
+            if not file_names:
+                file_names = [Path(fid).name for fid in files if Path(fid).suffix in _SOURCE_EXTS]
+
+            repo_path = self._repo_path or ""
+            if repo_path and file_names:
+                source_code_section = self._read_source_files(repo_path, file_names)
+
         prompt = MODULE_SUMMARY_PROMPT.format(
             module_name=community["name"],
             file_list=file_list or "（无文件信息）",
+            structural_info=structural_info,
             call_relations=call_relations or "（无调用关系信息）",
             wiki_content=wiki_content or "（无 Wiki 文档）",
+            source_code_section=source_code_section,
         )
 
         if self._prompt_content:
