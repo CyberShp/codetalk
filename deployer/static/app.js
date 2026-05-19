@@ -613,6 +613,12 @@ function updateServiceUrls() {
     if (urlSpan) urlSpan.textContent = url.replace('http://', '');
   });
 
+  // Hide restart buttons in modes that don't support per-service restart
+  const supportsRestart = mode !== 'k8s';
+  document.querySelectorAll('.restart-btn').forEach(btn => {
+    btn.style.display = supportsRestart ? '' : 'none';
+  });
+
   // Update the "Open CodeTalk" hero button
   const heroBtn = document.querySelector('.complete-actions .btn-primary');
   if (heroBtn) heroBtn.href = urls.frontend;

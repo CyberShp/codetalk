@@ -200,6 +200,8 @@ async def api_supplement_deepwiki(body: dict):
     old_deployer = _deploy_state.get("deployer")
     if old_deployer is not None and hasattr(old_deployer, "_processes"):
         deployer._processes.update(old_deployer._processes)
+    if old_deployer is not None and hasattr(old_deployer, "_start_args"):
+        deployer._start_args.update(old_deployer._start_args)
 
     _deploy_state.update({
         "job_id": str(uuid.uuid4()),
@@ -245,6 +247,11 @@ async def api_supplement_gitnexus():
     cfg = config_store.load_config()
     event_queue: asyncio.Queue = asyncio.Queue()
     deployer = NativeDeployer(cfg, event_queue)
+    old_deployer = _deploy_state.get("deployer")
+    if old_deployer is not None and hasattr(old_deployer, "_processes"):
+        deployer._processes.update(old_deployer._processes)
+    if old_deployer is not None and hasattr(old_deployer, "_start_args"):
+        deployer._start_args.update(old_deployer._start_args)
 
     _deploy_state.update({
         "job_id": str(uuid.uuid4()),
