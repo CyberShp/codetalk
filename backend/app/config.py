@@ -16,6 +16,14 @@ class Settings(BaseSettings):
     # SQLite database path
     sqlite_db: str = "data/codetalk.db"
 
+    # Repository path translation (Docker host ↔ tool container)
+    # Leave both empty for native mode or full-Docker mode (no translation needed).
+    # Set for mixed mode (host backend + dockerized tools):
+    #   REPOS_BASE_PATH  — host-side root where repos are stored
+    #   TOOL_REPOS_BASE_PATH — path those repos appear at inside tool containers
+    repos_base_path: str = ""
+    tool_repos_base_path: str = ""
+
     # Tool process endpoints
     gitnexus_base_url: str = "http://localhost:7100"
     deepwiki_api_url: str = "http://localhost:8091"
