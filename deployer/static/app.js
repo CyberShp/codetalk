@@ -618,6 +618,33 @@ function updateServiceUrls() {
   if (heroBtn) heroBtn.href = urls.frontend;
 }
 
+async function restartService(btn) {
+  const card = btn.closest('.service-url-card');
+  if (!card) return;
+  const service = card.getAttribute('data-service');
+  if (!service) return;
+
+  btn.disabled = true;
+  btn.classList.remove('success', 'error');
+  btn.classList.add('spinning');
+
+  try {
+    const resp = await fetch(`/api/services/${encodeURIComponent(service)}/restart`, { method: 'POST' });
+    btn.classList.remove('spinning');
+    if (resp.ok) {
+      btn.classList.add('success');
+    } else {
+      btn.classList.add('error');
+    }
+  } catch (_) {
+    btn.classList.remove('spinning');
+    btn.classList.add('error');
+  } finally {
+    btn.disabled = false;
+    setTimeout(() => btn.classList.remove('success', 'error'), 2500);
+  }
+}
+
 async function runHealthCheck() {
   const resultEl = $('#health-result');
   resultEl.style.display = '';

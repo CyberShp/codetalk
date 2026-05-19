@@ -331,6 +331,22 @@ async def _run_quickstart(deployer: NativeDeployer) -> None:
             await q.put(None)
 
 
+@app.post("/api/services/{service}/restart")
+async def api_service_restart(service: str):
+    """Restart a specific deployed service by name."""
+    deployer = _deploy_state.get("deployer")
+    if deployer is None:
+        raise HTTPException(status_code=400, detail="No deployer instance — run a deployment first")
+    if not hasattr(deployer, "restart_service"):
+        raise HTTPException(status_code=400, detail="Restart not supported in this deployment mode")
+    try:
+        return await deployer.restart_service(service)
+    except KeyError as exc:
+        raise HTTPException(status_code=404, detail=str(exc))
+    except RuntimeError as exc:
+        raise HTTPException(status_code=500, detail=str(exc))
+
+
 @app.post("/api/services/stop")
 async def api_services_stop():
     """Stop all running service processes."""

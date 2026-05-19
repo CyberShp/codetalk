@@ -71,6 +71,23 @@ class ComposeDeployer:
             except (ProcessLookupError, asyncio.TimeoutError):
                 pass
 
+    async def restart_service(self, name: str) -> dict:
+        """Restart a Docker Compose service by name."""
+        code = await self._run_compose_simple("restart", name)
+        if code != 0:
+            raise RuntimeError(f"docker compose restart {name} failed (exit {code})")
+        return {"ok": True, "service": name}
+
+    async def _run_compose_simple(self, *args: str) -> int:
+        proc = await asyncio.create_subprocess_exec(
+            "docker", "compose", *args,
+            stdout=asyncio.subprocess.DEVNULL,
+            stderr=asyncio.subprocess.DEVNULL,
+            cwd=str(PROJECT_ROOT),
+        )
+        await proc.wait()
+        return proc.returncode or 0
+
     async def check_health(self) -> list:
         if not _AIOHTTP:
             return [
