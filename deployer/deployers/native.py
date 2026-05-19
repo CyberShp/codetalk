@@ -52,6 +52,10 @@ class NativeDeployer:
                 await self.supplement_deepwiki(self._config.get("deepwiki_path", ""))
                 if self._stopped:
                     return
+            if self._config.get("zoekt_enabled", False):
+                await self._step_install_zoekt()
+                if self._stopped:
+                    return
             await self._step_generate_config()
             if self._stopped:
                 return
@@ -486,18 +490,17 @@ class NativeDeployer:
                 go_cmd, "install",
                 "github.com/sourcegraph/zoekt/cmd/zoekt-webserver@latest",
                 "github.com/sourcegraph/zoekt/cmd/zoekt-index@latest",
+                env_extra={"GOBIN": str(vendor_dir)},
             )
-            if rc == 0:
-                installed = shutil.which(bin_name)
-                if installed:
-                    await self._emit_sup("install_zoekt", "done", f"Zoekt 安装成功: {installed}", 3, total)
-                    self._config["zoekt_enabled"] = True
-                    self._config["_zoekt_bin"]    = installed
-                    self._config["zoekt_bin"]     = installed
-                    await self._emit_sup("install_zoekt", "running", "启动 Zoekt 服务...", 4, total)
-                    await self._start_zoekt_process(0)
-                    await self._emit_sup("install_zoekt", "done", "Zoekt 服务已启动", 4, total)
-                    return
+            if rc == 0 and webserver_bin.exists():
+                await self._emit_sup("install_zoekt", "done", f"Zoekt 安装成功: {webserver_bin}", 3, total)
+                self._config["zoekt_enabled"] = True
+                self._config["_zoekt_bin"]    = str(webserver_bin)
+                self._config["zoekt_bin"]     = str(webserver_bin)
+                await self._emit_sup("install_zoekt", "running", "启动 Zoekt 服务...", 4, total)
+                await self._start_zoekt_process(0)
+                await self._emit_sup("install_zoekt", "done", "Zoekt 服务已启动", 4, total)
+                return
 
         await self._emit_sup(
             "install_zoekt", "error",

@@ -293,12 +293,18 @@ async def api_supplement_zoekt(body: dict):
     cfg["zoekt_enabled"] = True
     cfg["zoekt_port"] = zoekt_port
 
-    _deploy_state["running"] = True
-    _deploy_state["job_id"] = _new_job_id()
-    q: asyncio.Queue = asyncio.Queue()
-    _deploy_state["event_queue"] = q
+    event_queue: asyncio.Queue = asyncio.Queue()
+    deployer = NativeDeployer(cfg, event_queue)
+    old_deployer = _deploy_state.get("deployer")
+    if old_deployer is not None and hasattr(old_deployer, "_processes"):
+        deployer._processes.update(old_deployer._processes)
 
-    deployer = NativeDeployer(cfg, q)
+    _deploy_state.update({
+        "job_id": str(uuid.uuid4()),
+        "running": True,
+        "deployer": deployer,
+        "event_queue": event_queue,
+    })
 
     loop = asyncio.get_event_loop()
 
