@@ -15,6 +15,7 @@ DEPLOYER_DIR = Path(__file__).parent.parent
 VENDOR_DIR = DEPLOYER_DIR / "vendor"
 
 DEEPWIKI_REPO = "https://github.com/AsyncFuncAI/deepwiki-open.git"
+_CL100K_BPE = "9b5ad71b2ce5302211f9c61530b329a4922fc6a4"
 
 TOTAL_STEPS = 7
 
@@ -600,10 +601,10 @@ class NativeDeployer:
             ])
 
         tiktoken_cache = VENDOR_DIR / "tiktoken_cache"
-        if not tiktoken_cache.exists():
+        if not (tiktoken_cache / _CL100K_BPE).exists():
             tiktoken_cache = PROJECT_ROOT / "docker" / "deepwiki" / "tiktoken"
-        if tiktoken_cache.exists():
-            env_lines.append(f"TIKTOKEN_CACHE_DIR={tiktoken_cache}")
+        if (tiktoken_cache / _CL100K_BPE).exists():
+            env_lines.append(f"TIKTOKEN_CACHE_DIR={tiktoken_cache.resolve()}")
 
         zoekt_enabled = cfg.get("zoekt_enabled", False)
         if zoekt_enabled:
@@ -628,7 +629,7 @@ class NativeDeployer:
         )
         await self._emit("generate_config", "running", f"已写入 {frontend_env}", step)
 
-        if deepwiki_path and tiktoken_cache.exists():
+        if deepwiki_path and (tiktoken_cache / _CL100K_BPE).exists():
             dw_dir = Path(deepwiki_path)
             if not dw_dir.is_dir():
                 await self._emit("generate_config", "running",
@@ -637,7 +638,7 @@ class NativeDeployer:
                 dw_env = dw_dir / ".env"
                 existing = dw_env.read_text(encoding="utf-8").splitlines() if dw_env.exists() else []
                 kept = [ln for ln in existing if not ln.startswith("TIKTOKEN_CACHE_DIR=")]
-                kept.append(f"TIKTOKEN_CACHE_DIR={tiktoken_cache}")
+                kept.append(f"TIKTOKEN_CACHE_DIR={tiktoken_cache.resolve()}")
                 dw_env.write_text("\n".join(kept) + "\n", encoding="utf-8")
                 await self._emit("generate_config", "running", f"已写入 {dw_env}", step)
 
@@ -820,10 +821,10 @@ class NativeDeployer:
         # Prefer gitignored vendor dir (user-populated offline bundle); fall back to
         # the BPE file committed in docker/deepwiki/tiktoken/ for zero-config deployments.
         tiktoken_cache = VENDOR_DIR / "tiktoken_cache"
-        if not tiktoken_cache.exists():
+        if not (tiktoken_cache / _CL100K_BPE).exists():
             tiktoken_cache = PROJECT_ROOT / "docker" / "deepwiki" / "tiktoken"
-        if tiktoken_cache.exists():
-            llm_env["TIKTOKEN_CACHE_DIR"] = str(tiktoken_cache)
+        if (tiktoken_cache / _CL100K_BPE).exists():
+            llm_env["TIKTOKEN_CACHE_DIR"] = str(tiktoken_cache.resolve())
         has_python_api = (dw_dir / "api" / "pyproject.toml").exists() or (dw_dir / "requirements.txt").exists()
         has_package_json = (dw_dir / "package.json").exists()
 

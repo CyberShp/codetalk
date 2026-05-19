@@ -4,6 +4,8 @@ from pathlib import Path
 from pydantic import model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
+_CL100K_BPE = "9b5ad71b2ce5302211f9c61530b329a4922fc6a4"
+
 
 class Settings(BaseSettings):
     model_config = SettingsConfigDict(
@@ -93,14 +95,16 @@ class Settings(BaseSettings):
 
     @property
     def tiktoken_cache_path(self) -> Path:
+        candidates = []
         if self.tiktoken_cache_dir:
-            p = Path(self.tiktoken_cache_dir)
-            if p.exists():
+            candidates.append(Path(self.tiktoken_cache_dir))
+        candidates.append(Path(__file__).parent.parent.parent / "docker" / "deepwiki" / "tiktoken")
+        candidates.append(self.data_path / "tiktoken_cache")
+        for p in candidates:
+            p = p.resolve()
+            if (p / _CL100K_BPE).exists():
                 return p
-        repo_cache = Path(__file__).parent.parent.parent / "docker" / "deepwiki" / "tiktoken"
-        if repo_cache.exists():
-            return repo_cache
-        return self.data_path / "tiktoken_cache"
+        return (self.data_path / "tiktoken_cache").resolve()
 
     @property
     def zoekt_index_path(self) -> Path:
