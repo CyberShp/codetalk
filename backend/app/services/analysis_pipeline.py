@@ -304,6 +304,12 @@ class AnalysisPipeline:
                     repo_name,
                 )
             graph_resp = await client.get("/api/graph", params={"repo": repo_name}, timeout=120)
+            if graph_resp.status_code == 404:
+                logger.warning(
+                    "GitNexus graph 404 for repo=%s; retrying without repo filter",
+                    repo_name,
+                )
+                graph_resp = await client.get("/api/graph", timeout=120)
             graph_resp.raise_for_status()
             self._gitnexus_data = graph_resp.json()
             logger.info(
