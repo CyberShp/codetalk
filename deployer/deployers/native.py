@@ -702,6 +702,13 @@ class NativeDeployer:
         step_name: str,
         step_index: int,
     ) -> None:
+        # Prefer gitignored vendor dir (user-populated offline bundle); fall back to
+        # the BPE file committed in docker/deepwiki/tiktoken/ for zero-config deployments.
+        tiktoken_cache = VENDOR_DIR / "tiktoken_cache"
+        if not tiktoken_cache.exists():
+            tiktoken_cache = PROJECT_ROOT / "docker" / "deepwiki" / "tiktoken"
+        if tiktoken_cache.exists():
+            llm_env["TIKTOKEN_CACHE_DIR"] = str(tiktoken_cache)
         has_python_api = (dw_dir / "api" / "pyproject.toml").exists() or (dw_dir / "requirements.txt").exists()
         has_package_json = (dw_dir / "package.json").exists()
 
