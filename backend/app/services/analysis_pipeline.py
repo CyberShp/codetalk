@@ -102,7 +102,18 @@ class AnalysisPipeline:
             llm_client = await self._try_create_llm_client()
             if llm_client:
                 await self._phase_module_analysis(llm_client)
-                await self._update_progress(task_id, 70, "running", None, "模块分析完成，生成报告中…")
+
+                all_modules_failed = bool(self._module_summaries) and all(
+                    s.get("summary", "").startswith("（分析失败")
+                    for s in self._module_summaries
+                )
+                if all_modules_failed:
+                    await self._update_progress(
+                        task_id, 70, "running", None,
+                        "⚠️ 所有模块分析均失败，尝试生成报告…",
+                    )
+                else:
+                    await self._update_progress(task_id, 70, "running", None, "模块分析完成，生成报告中…")
 
                 # Phase 3: Report Generation
                 generator = ReportGenerator(
@@ -155,9 +166,13 @@ class AnalysisPipeline:
                 self._llm_client = llm_client
                 await self._phase_cross_enhance()
 
-                # Honour status override from report generator
-                if generator.status_override:
+                no_reports = not generator.generated_files
+                if all_modules_failed and no_reports:
+                    final_status = "failed"
+                elif generator.status_override:
                     final_status = generator.status_override
+                elif all_modules_failed:
+                    final_status = "completed_with_warnings"
                 else:
                     final_status = "completed"
             else:
@@ -165,7 +180,13 @@ class AnalysisPipeline:
                 await self._save_raw_data(output_dir)
                 final_status = "completed"
 
-            await self._update_progress(task_id, 100, final_status, None, "分析完成")
+            if final_status == "failed":
+                done_msg = "分析失败：所有 AI 输出均未成功"
+            elif final_status == "completed_with_warnings":
+                done_msg = "分析完成（部分内容生成失败）"
+            else:
+                done_msg = "分析完成"
+            await self._update_progress(task_id, 100, final_status, None, done_msg)
             logger.info("Pipeline completed for task %s (status=%s)", task_id, final_status, extra={"task_id": task_id})
 
         except Exception as exc:
