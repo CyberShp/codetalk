@@ -1,4 +1,3 @@
-import os
 from pathlib import Path
 
 from pydantic import model_validator
@@ -55,6 +54,7 @@ class Settings(BaseSettings):
     zoekt_port: int = 6070           # native deployer port; deployer derives ZOEKT_BASE_URL from this
     zoekt_index_dir: str = ""        # index directory (defaults to data/zoekt-index)
     zoekt_bin: str = ""              # zoekt-webserver binary path (auto-discovered if empty)
+    tiktoken_cache_dir: str = ""     # override path for tiktoken BPE cache (TIKTOKEN_CACHE_DIR)
     tool_health_interval: int = 30   # seconds between health checks
 
     # Analysis tuning
@@ -92,9 +92,8 @@ class Settings(BaseSettings):
 
     @property
     def tiktoken_cache_path(self) -> Path:
-        from_env = os.environ.get("TIKTOKEN_CACHE_DIR")
-        if from_env:
-            p = Path(from_env)
+        if self.tiktoken_cache_dir:
+            p = Path(self.tiktoken_cache_dir)
             if p.exists():
                 return p
         repo_cache = Path(__file__).parent.parent.parent / "docker" / "deepwiki" / "tiktoken"
