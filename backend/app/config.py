@@ -32,7 +32,7 @@ class Settings(BaseSettings):
     deepwiki_path: str = ""          # path to deepwiki-open installation
     gitnexus_bin: str = "gitnexus"   # path to gitnexus binary
     zoekt_enabled: bool = False      # enable Zoekt code-search integration
-    zoekt_port: int = 6070           # port for native zoekt-webserver process
+    zoekt_port: int = 6070           # native deployer port; deployer derives ZOEKT_BASE_URL from this
     zoekt_index_dir: str = ""        # index directory (defaults to data/zoekt-index)
     zoekt_bin: str = ""              # zoekt-webserver binary path (auto-discovered if empty)
     tool_health_interval: int = 30   # seconds between health checks
