@@ -630,10 +630,10 @@ class NativeDeployer:
 
         if deepwiki_path and tiktoken_cache.exists():
             dw_env = Path(deepwiki_path) / ".env"
-            dw_env.write_text(
-                f"TIKTOKEN_CACHE_DIR={tiktoken_cache}\n",
-                encoding="utf-8",
-            )
+            existing = dw_env.read_text(encoding="utf-8").splitlines() if dw_env.exists() else []
+            kept = [ln for ln in existing if not ln.startswith("TIKTOKEN_CACHE_DIR=")]
+            kept.append(f"TIKTOKEN_CACHE_DIR={tiktoken_cache}")
+            dw_env.write_text("\n".join(kept) + "\n", encoding="utf-8")
             await self._emit("generate_config", "running", f"已写入 {dw_env}", step)
 
         await self._emit("generate_config", "done", "配置文件生成完成", step)
