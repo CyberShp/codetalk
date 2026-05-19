@@ -628,6 +628,14 @@ class NativeDeployer:
         )
         await self._emit("generate_config", "running", f"已写入 {frontend_env}", step)
 
+        if deepwiki_path and tiktoken_cache.exists():
+            dw_env = Path(deepwiki_path) / ".env"
+            dw_env.write_text(
+                f"TIKTOKEN_CACHE_DIR={tiktoken_cache}\n",
+                encoding="utf-8",
+            )
+            await self._emit("generate_config", "running", f"已写入 {dw_env}", step)
+
         await self._emit("generate_config", "done", "配置文件生成完成", step)
 
     # ------------------------------------------------------------------
