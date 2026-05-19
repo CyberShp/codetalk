@@ -1,5 +1,6 @@
 from pathlib import Path
 
+from pydantic import model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
@@ -56,6 +57,16 @@ class Settings(BaseSettings):
 
     # CORS — comma-separated origins allowed to call the API
     cors_origins: str = "http://localhost:3005,http://127.0.0.1:3005"
+
+    @model_validator(mode="after")
+    def _resolve_repos_paths(self) -> "Settings":
+        if not self.repos_base_path:
+            from app.utils.repo_paths import default_repos_base_path
+            default = default_repos_base_path(Path(__file__).parent.parent.parent)
+            self.repos_base_path = default
+            if not self.tool_repos_base_path:
+                self.tool_repos_base_path = default
+        return self
 
     @property
     def cors_origins_list(self) -> list[str]:
