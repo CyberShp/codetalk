@@ -96,37 +96,6 @@ class RepoRouteContractTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(repo.local_path, "/data/repos/open-iscsi")
         self.assertEqual(self.holder["db"].commits, 1)
 
-    async def test_search_repository_rejects_empty_query(self) -> None:
-        repo_id = uuid.uuid4()
-        self.holder["db"] = _FakeDB()
-
-        response = await self.client.post(
-            f"/api/repos/{repo_id}/search",
-            json={"query": "   ", "num": 50},
-        )
-
-        self.assertEqual(response.status_code, 400)
-        self.assertEqual(response.json(), {"detail": "query 不能为空"})
-
-    async def test_search_repository_rejects_unsynced_repo(self) -> None:
-        repo_id = uuid.uuid4()
-        repo = SimpleNamespace(
-            id=repo_id,
-            name="open-iscsi",
-            local_path=None,
-        )
-        self.holder["db"] = _FakeDB(get_map={repo_id: repo})
-
-        response = await self.client.post(
-            f"/api/repos/{repo_id}/search",
-            json={"query": "main", "num": 20},
-        )
-
-        self.assertEqual(response.status_code, 400)
-        self.assertEqual(
-            response.json(),
-            {"detail": "仓库尚未同步，请先执行 sync 再搜索"},
-        )
 
     async def test_cancel_sync_conflict_contract(self) -> None:
         with patch.object(

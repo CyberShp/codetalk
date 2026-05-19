@@ -314,35 +314,11 @@ async def run_rebuild(task_id: UUID, tool_name: str) -> None:
 def _plaintext_summary(results: list[UnifiedResult]) -> str:
     parts = []
     for r in results:
-        if r.tool_name == "zoekt":
-            query = r.data.get("query", "")
-            if r.metadata.get("skipped") == "no_query":
-                parts.append(
-                    f"zoekt: 代码指纹索引已建立（仓库 {r.metadata.get('display_name', '')}），"
-                    "本次任务未下达检索指令"
-                )
-            else:
-                hits = r.data.get("search_results", [])
-                total_matches = sum(len(f.get("matches", [])) for f in hits)
-                snippet_lines = [
-                    f"  {f['file']}:{m['line_number']}: {m['line_content'].strip()}"
-                    for f in hits[:5]
-                    for m in f.get("matches", [])[:3]
-                ]
-                snippets_text = "\n".join(snippet_lines)
-                # Guard against extremely long snippets blowing up the prompt
-                if len(snippets_text) > 2000:
-                    snippets_text = snippets_text[:2000] + "\n  ...(truncated)"
-                parts.append(
-                    f"zoekt: searched '{query}', found {len(hits)} files "
-                    f"({total_matches} total matches).\nTop code hits:\n{snippets_text}"
-                )
-        else:
-            doc = r.data.get("documentation", "")
-            n_diagrams = len(r.diagrams)
-            preview = doc[:200] + "..." if len(doc) > 200 else doc
-            parts.append(
-                f"{r.tool_name}: generated documentation ({len(doc)} chars, "
-                f"{n_diagrams} diagrams). Preview: {preview}"
-            )
+        doc = r.data.get("documentation", "")
+        n_diagrams = len(r.diagrams)
+        preview = doc[:200] + "..." if len(doc) > 200 else doc
+        parts.append(
+            f"{r.tool_name}: generated documentation ({len(doc)} chars, "
+            f"{n_diagrams} diagrams). Preview: {preview}"
+        )
     return " | ".join(parts)

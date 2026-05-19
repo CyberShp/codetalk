@@ -282,59 +282,6 @@ async def _run_supplement_gitnexus(deployer: NativeDeployer, cfg: dict) -> None:
             await q.put(None)
 
 
-@app.post("/api/deploy/supplement/zoekt")
-async def api_supplement_zoekt(body: dict):
-    """Install and start Zoekt as a supplementary service after native deployment."""
-    if _deploy_state["running"]:
-        raise HTTPException(status_code=409, detail="A deployment is already running")
-
-    cfg = config_store.load_config()
-    zoekt_port = int(body.get("portZoekt", cfg.get("zoekt_port", 6070)))
-    cfg["zoekt_enabled"] = True
-    cfg["zoekt_port"] = zoekt_port
-
-    event_queue: asyncio.Queue = asyncio.Queue()
-    deployer = NativeDeployer(cfg, event_queue)
-    old_deployer = _deploy_state.get("deployer")
-    if old_deployer is not None and hasattr(old_deployer, "_processes"):
-        deployer._processes.update(old_deployer._processes)
-
-    _deploy_state.update({
-        "job_id": str(uuid.uuid4()),
-        "running": True,
-        "deployer": deployer,
-        "event_queue": event_queue,
-    })
-
-    loop = asyncio.get_event_loop()
-
-    def _run_in_thread():
-        future = asyncio.run_coroutine_threadsafe(_run_supplement_zoekt(deployer, cfg), loop)
-        future.result()
-
-    thread = threading.Thread(target=_run_in_thread, daemon=True)
-    thread.start()
-
-    return {"job_id": _deploy_state["job_id"]}
-
-
-async def _run_supplement_zoekt(deployer: NativeDeployer, cfg: dict) -> None:
-    try:
-        await deployer._step_install_zoekt()
-        await deployer._step_generate_config()
-        config_store.save_config(cfg)
-    except Exception as exc:
-        q = _deploy_state.get("event_queue")
-        if q is not None:
-            await q.put({"step": "install_zoekt", "status": "error", "message": str(exc)})
-    finally:
-        _deploy_state["running"] = False
-        q = _deploy_state.get("event_queue")
-        if q is not None:
-            await q.put({"step": "done", "status": "done", "message": "Zoekt installed"})
-            await q.put(None)
-
-
 @app.post("/api/quickstart")
 async def api_quickstart():
     """Quick-start services using saved config (no install/check steps)."""

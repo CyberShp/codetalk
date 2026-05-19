@@ -41,19 +41,12 @@ def _register_defaults() -> None:
     from app.adapters.deepwiki import DeepwikiAdapter
     from app.adapters.gitnexus import GitNexusAdapter
     from app.adapters.joern import JoernAdapter
-    from app.adapters.zoekt import ZoektAdapter
 
     def deepwiki_factory() -> DeepwikiAdapter:
         return DeepwikiAdapter(base_url=settings.deepwiki_api_url)
 
     def gitnexus_factory() -> GitNexusAdapter:
         return GitNexusAdapter(base_url=settings.gitnexus_base_url)
-
-    def zoekt_factory() -> ZoektAdapter:
-        return ZoektAdapter(
-            base_url=settings.zoekt_base_url,
-            container_name=settings.zoekt_container_name,
-        )
 
     def joern_factory() -> JoernAdapter:
         return JoernAdapter(base_url=settings.joern_base_url)
@@ -63,7 +56,6 @@ def _register_defaults() -> None:
 
     register_adapter(deepwiki_factory(), factory=deepwiki_factory)
     register_adapter(gitnexus_factory(), factory=gitnexus_factory)
-    register_adapter(zoekt_factory(), factory=zoekt_factory)
     register_adapter(joern_factory(), factory=joern_factory)
     register_adapter(codecompass_factory(), factory=codecompass_factory)
 

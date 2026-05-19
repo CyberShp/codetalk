@@ -44,7 +44,6 @@ services:
       # Override .env.local localhost values — container must use Docker DNS
       DEEPWIKI_BASE_URL: http://deepwiki:8001
       GITNEXUS_BASE_URL: http://gitnexus:7100
-      ZOEKT_BASE_URL: http://zoekt:6070
       JOERN_BASE_URL: http://joern:8080
       CODECOMPASS_BASE_URL: http://codecompass:6251
 
@@ -127,27 +126,9 @@ services:
       start_period: 60s
     restart: unless-stopped
 
-  zoekt:
-    image: ghcr.io/sourcegraph/zoekt:latest
-    platform: linux/amd64
-    ports:
-      - "6070:6070"
-    volumes:
-      - zoekt_index:/data/index
-      - ./.repos:/data/repos:ro
-    entrypoint: ["zoekt-webserver"]
-    command: ["-index", "/data/index", "-listen", ":6070", "-rpc"]
-    healthcheck:
-      test: ["CMD-SHELL", "wget --spider -q http://localhost:6070/healthz || exit 1"]
-      interval: 10s
-      timeout: 5s
-      retries: 3
-    restart: unless-stopped
-
 volumes:
   pg_data:
   deepwiki_data:
   gitnexus_data:
-  zoekt_index:
   joern_data:
   codecompass_data:

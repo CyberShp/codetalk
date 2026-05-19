@@ -27,7 +27,6 @@ SERVICES = [
     ("gitnexus", 7100, "tcp", None),
     ("joern", 8080, "tcp", None),
     ("codecompass", 16251, "http", "/"),
-    ("zoekt", 6070, "http", "/healthz"),
 ]
 TOTAL_STEPS = 8  # env(1) + build(2) + up(3) + health(4-8)
 

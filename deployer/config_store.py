@@ -28,8 +28,6 @@ _KEY_MAP = {
     "llmModel": "llm_model",
     "installDeepwiki": "install_deepwiki",
     "installGitnexus": "install_gitnexus",
-    "installZoekt":    "zoekt_enabled",
-    "portZoekt":       "zoekt_port",
     "corsOrigins": "cors_origins",
     "workspacePath": "workspace_path",
 }

@@ -201,40 +201,7 @@ python -c "import tiktoken; tiktoken.encoding_for_model('gpt-4')"
 TIKTOKEN_CACHE_DIR=data/tiktoken_cache
 ```
 
-### 5.4 Zoekt（代码全文搜索）
-
-Zoekt 是用 Go 编写的代码索引引擎，内网部署需要预编译二进制文件。
-
-**在有 Go 环境的开发机上打包：**
-
-```bat
-cd deployer\scripts
-package-vendor.bat
-```
-
-脚本自动编译并输出：
-
-| 平台 | 目录 | 内容 |
-|------|------|------|
-| Windows/amd64 | `deployer\vendor\zoekt\win32\` | `zoekt-webserver.exe`, `zoekt-index.exe` |
-| Linux/amd64 | `deployer\vendor\zoekt\linux\` | `zoekt-webserver`, `zoekt-index` |
-
-打包完成后，将整个 `deployer\vendor\` 一并带入内网，deployer 会自动在上述路径搜索 Zoekt 二进制。
-
-**手动编译（无 package-vendor.bat 时）：**
-
-```bash
-# 要求 Go 1.17+，CGO_ENABLED=0 避免 C 依赖
-CGO_ENABLED=0 GOOS=windows GOARCH=amd64 \
-  go install github.com/sourcegraph/zoekt/cmd/zoekt-webserver@latest
-CGO_ENABLED=0 GOOS=windows GOARCH=amd64 \
-  go install github.com/sourcegraph/zoekt/cmd/zoekt-index@latest
-# 将生成的 exe 复制到 deployer/vendor/zoekt/win32/
-```
-
-> Zoekt 为可选组件，不影响 GitNexus 和 DeepWiki 的正常使用。
-
-### 5.5 补充部署
+### 5.4 补充部署
 
 已完成初始部署后，可通过 deployer UI 单独安装 DeepWiki 或 GitNexus，无需重新走全流程：
 
@@ -315,7 +282,7 @@ CGO_ENABLED=0 GOOS=windows GOARCH=amd64 \
 内网环境中系统代理变量（`HTTP_PROXY`/`HTTPS_PROXY`）可能干扰后端与本地工具（GitNexus、DeepWiki）之间的通信。Sprint 4 引入了统一的 `local_http_client` 工厂函数，所有本地服务连接强制 `trust_env=False`，不受系统代理影响。
 
 - **LLM 外部调用**仍尊重代理设置（"系统代理"模式保持 `trust_env=True`）
-- **本地服务调用**（GitNexus、DeepWiki、Joern、Zoekt 等）一律绕过代理
+- **本地服务调用**（GitNexus、DeepWiki、Joern 等）一律绕过代理
 - 如遇 504/连接超时，检查代理变量是否误干扰了 localhost 请求
 
 ### 7.3 LLM 调试快照
