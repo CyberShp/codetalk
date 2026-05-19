@@ -34,11 +34,13 @@ class OpenAICompatClient(BaseLLMClient):
         self._model = model
 
         verify = ssl_cert_path if ssl_cert_path else True
+        pool_limits = httpx.Limits(keepalive_expiry=30)
         if force_direct:
             self._client = httpx.AsyncClient(
                 transport=httpx.AsyncHTTPTransport(verify=verify),
                 trust_env=False,
                 timeout=httpx.Timeout(300, connect=15),
+                limits=pool_limits,
             )
         elif proxy_url:
             self._client = httpx.AsyncClient(
@@ -46,12 +48,13 @@ class OpenAICompatClient(BaseLLMClient):
                 verify=verify,
                 trust_env=False,
                 timeout=httpx.Timeout(300, connect=15),
+                limits=pool_limits,
             )
         else:
-            # system proxy mode: trust_env=True (default) lets httpx read env vars
             self._client = httpx.AsyncClient(
                 verify=verify,
                 timeout=httpx.Timeout(300, connect=15),
+                limits=pool_limits,
             )
 
     async def complete(

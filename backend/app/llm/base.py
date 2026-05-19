@@ -24,6 +24,7 @@ current_task_id: ContextVar[str | None] = ContextVar("current_task_id", default=
 _RETRYABLE_EXCEPTIONS = (
     httpx.ConnectError,
     httpx.TimeoutException,
+    httpx.RemoteProtocolError,
 )
 
 _DEFAULT_BACKOFF_SECONDS = (1, 2, 4)
