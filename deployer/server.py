@@ -200,6 +200,8 @@ async def api_supplement_deepwiki(body: dict):
     old_deployer = _deploy_state.get("deployer")
     if old_deployer is not None and hasattr(old_deployer, "_processes"):
         deployer._processes.update(old_deployer._processes)
+    if old_deployer is not None and hasattr(old_deployer, "_start_args"):
+        deployer._start_args.update(old_deployer._start_args)
 
     _deploy_state.update({
         "job_id": str(uuid.uuid4()),
@@ -245,6 +247,11 @@ async def api_supplement_gitnexus():
     cfg = config_store.load_config()
     event_queue: asyncio.Queue = asyncio.Queue()
     deployer = NativeDeployer(cfg, event_queue)
+    old_deployer = _deploy_state.get("deployer")
+    if old_deployer is not None and hasattr(old_deployer, "_processes"):
+        deployer._processes.update(old_deployer._processes)
+    if old_deployer is not None and hasattr(old_deployer, "_start_args"):
+        deployer._start_args.update(old_deployer._start_args)
 
     _deploy_state.update({
         "job_id": str(uuid.uuid4()),
@@ -329,6 +336,22 @@ async def _run_quickstart(deployer: NativeDeployer) -> None:
             else:
                 await q.put({"step": "done", "status": "done", "message": "All services started"})
             await q.put(None)
+
+
+@app.post("/api/services/{service}/restart")
+async def api_service_restart(service: str):
+    """Restart a specific deployed service by name."""
+    deployer = _deploy_state.get("deployer")
+    if deployer is None:
+        raise HTTPException(status_code=400, detail="No deployer instance — run a deployment first")
+    if not hasattr(deployer, "restart_service"):
+        raise HTTPException(status_code=400, detail="Restart not supported in this deployment mode")
+    try:
+        return await deployer.restart_service(service)
+    except KeyError as exc:
+        raise HTTPException(status_code=404, detail=str(exc))
+    except RuntimeError as exc:
+        raise HTTPException(status_code=500, detail=str(exc))
 
 
 @app.post("/api/services/stop")

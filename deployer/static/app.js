@@ -613,9 +613,42 @@ function updateServiceUrls() {
     if (urlSpan) urlSpan.textContent = url.replace('http://', '');
   });
 
+  // Hide restart buttons in modes that don't support per-service restart
+  const supportsRestart = mode !== 'k8s';
+  document.querySelectorAll('.restart-btn').forEach(btn => {
+    btn.style.display = supportsRestart ? '' : 'none';
+  });
+
   // Update the "Open CodeTalk" hero button
   const heroBtn = document.querySelector('.complete-actions .btn-primary');
   if (heroBtn) heroBtn.href = urls.frontend;
+}
+
+async function restartService(btn) {
+  const card = btn.closest('.service-url-card');
+  if (!card) return;
+  const service = card.getAttribute('data-service');
+  if (!service) return;
+
+  btn.disabled = true;
+  btn.classList.remove('success', 'error');
+  btn.classList.add('spinning');
+
+  try {
+    const resp = await fetch(`/api/services/${encodeURIComponent(service)}/restart`, { method: 'POST' });
+    btn.classList.remove('spinning');
+    if (resp.ok) {
+      btn.classList.add('success');
+    } else {
+      btn.classList.add('error');
+    }
+  } catch (_) {
+    btn.classList.remove('spinning');
+    btn.classList.add('error');
+  } finally {
+    btn.disabled = false;
+    setTimeout(() => btn.classList.remove('success', 'error'), 2500);
+  }
 }
 
 async function runHealthCheck() {

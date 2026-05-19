@@ -31,6 +31,7 @@ class NativeDeployer:
         self._config = config
         self._queue = event_queue
         self._processes: dict[str, asyncio.subprocess.Process] = {}
+        self._start_args: dict[str, dict] = {}
         self._stopped = False
 
     async def deploy(self) -> None:
@@ -782,6 +783,7 @@ class NativeDeployer:
             env=env,
         )
         self._processes[name] = proc
+        self._start_args[name] = {"cmd": cmd, "cwd": cwd, "env_extra": env_extra}
 
         asyncio.ensure_future(self._drain_output(name, proc, step_name, step_index))
         await self._emit(step_name, "running", f"{name} 已启动（PID {proc.pid}）", step_index)
@@ -789,6 +791,47 @@ class NativeDeployer:
         if proc.returncode is not None:
             await self._emit(step_name, "error", f"{name} 启动后立即退出（退出码 {proc.returncode}）", step_index)
             raise RuntimeError(f"{name} exited immediately with code {proc.returncode}")
+
+    async def restart_service(self, name: str) -> dict:
+        """Restart a named service (or deepwiki pair) using stored startup args."""
+        targets = ["deepwiki-api", "deepwiki-ui"] if name == "deepwiki" else [name]
+        missing = [t for t in targets if t not in self._start_args]
+        if missing:
+            raise KeyError(f"Service not started by this deployer: {', '.join(missing)}")
+
+        for target in targets:
+            proc = self._processes.get(target)
+            if proc is not None and proc.returncode is None:
+                try:
+                    proc.terminate()
+                    await asyncio.wait_for(proc.wait(), timeout=5)
+                except asyncio.TimeoutError:
+                    try:
+                        proc.kill()
+                    except ProcessLookupError:
+                        pass
+
+        for target in targets:
+            args = self._start_args[target]
+            env = os.environ.copy()
+            if args.get("env_extra"):
+                env.update(args["env_extra"])
+            proc = await asyncio.create_subprocess_exec(
+                *args["cmd"],
+                stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.STDOUT,
+                cwd=args["cwd"],
+                env=env,
+            )
+            self._processes[target] = proc
+            asyncio.ensure_future(self._drain_output(target, proc, "restart", 0))
+            await asyncio.sleep(2)
+            if proc.returncode is not None:
+                raise RuntimeError(
+                    f"{target} exited immediately after restart (code {proc.returncode})"
+                )
+
+        return {"ok": True, "service": name}
 
     async def _drain_output(
         self, name: str, proc: asyncio.subprocess.Process, step_name: str, step_index: int
