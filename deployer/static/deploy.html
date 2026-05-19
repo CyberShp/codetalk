@@ -216,6 +216,17 @@
                     <input type="number" id="port-gitnexus" name="portGitnexus" class="form-input form-input-sm font-mono" value="7100" min="1024" max="65535" />
                   </div>
                 </label>
+                <label class="component-item">
+                  <input type="checkbox" id="install-zoekt" name="installZoekt" />
+                  <div class="component-info">
+                    <span class="component-name">Zoekt</span>
+                    <span class="component-desc">代码精确搜索 &mdash; 三元组索引，减少 LLM 上下文用量</span>
+                  </div>
+                  <div class="component-ports" id="zoekt-ports" style="opacity:0.4">
+                    <span class="port-label">端口</span>
+                    <input type="number" id="port-zoekt" name="portZoekt" class="form-input form-input-sm font-mono" value="6070" min="1024" max="65535" />
+                  </div>
+                </label>
               </div>
             </fieldset>
 
@@ -337,7 +348,7 @@
             <div class="service-pill pill-pending" data-service="codecompass" data-modes="compose k8s" role="listitem">
               <span class="pill-dot"></span><span class="pill-name">CodeCompass</span>
             </div>
-            <div class="service-pill pill-pending" data-service="zoekt" data-modes="compose k8s" role="listitem">
+            <div class="service-pill pill-pending" data-service="zoekt" data-modes="compose k8s native" role="listitem">
               <span class="pill-dot"></span><span class="pill-name">Zoekt</span>
             </div>
           </div>

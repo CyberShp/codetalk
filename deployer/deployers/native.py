@@ -437,6 +437,76 @@ class NativeDeployer:
             p = (PROJECT_ROOT / p).resolve()
         return p
 
+    async def _step_install_zoekt(self) -> None:
+        """Discover or install Zoekt binaries, then start zoekt-webserver.
+
+        Search order:
+        1. deployer/vendor/zoekt/{platform}/ — bundled binary
+        2. System PATH
+        3. go install github.com/sourcegraph/zoekt/cmd/...@latest
+        """
+        total = 4
+        bin_name = "zoekt-webserver.exe" if sys.platform == "win32" else "zoekt-webserver"
+        idx_name = "zoekt-index.exe"     if sys.platform == "win32" else "zoekt-index"
+
+        await self._emit_sup("install_zoekt", "running", "检查 Zoekt 二进制文件...", 1, total)
+
+        vendor_dir    = VENDOR_DIR / "zoekt" / sys.platform
+        webserver_bin = vendor_dir / bin_name
+        index_bin     = vendor_dir / idx_name
+
+        if webserver_bin.exists() and index_bin.exists():
+            await self._emit_sup("install_zoekt", "done", "Zoekt 已在 vendor 目录找到，跳过下载", 1, total)
+            self._config["zoekt_enabled"] = True
+            self._config["_zoekt_bin"]    = str(webserver_bin)
+            self._config["zoekt_bin"]     = str(webserver_bin)
+            await self._emit_sup("install_zoekt", "running", "启动 Zoekt 服务...", 4, total)
+            await self._start_zoekt_process(0)
+            await self._emit_sup("install_zoekt", "done", "Zoekt 服务已启动", 4, total)
+            return
+
+        await self._emit_sup("install_zoekt", "running", "在 PATH 中查找 Zoekt...", 2, total)
+        path_bin = shutil.which(bin_name)
+        if path_bin:
+            await self._emit_sup("install_zoekt", "done", f"Zoekt 已在 PATH 中找到: {path_bin}", 2, total)
+            self._config["zoekt_enabled"] = True
+            self._config["_zoekt_bin"]    = path_bin
+            self._config["zoekt_bin"]     = path_bin
+            await self._emit_sup("install_zoekt", "running", "启动 Zoekt 服务...", 4, total)
+            await self._start_zoekt_process(0)
+            await self._emit_sup("install_zoekt", "done", "Zoekt 服务已启动", 4, total)
+            return
+
+        await self._emit_sup("install_zoekt", "running", "尝试通过 go install 安装 Zoekt...", 3, total)
+        go_cmd = shutil.which("go")
+        if go_cmd:
+            vendor_dir.mkdir(parents=True, exist_ok=True)
+            rc = await self._run_stream(
+                "install_zoekt", 3,
+                go_cmd, "install",
+                "github.com/sourcegraph/zoekt/cmd/zoekt-webserver@latest",
+                "github.com/sourcegraph/zoekt/cmd/zoekt-index@latest",
+            )
+            if rc == 0:
+                installed = shutil.which(bin_name)
+                if installed:
+                    await self._emit_sup("install_zoekt", "done", f"Zoekt 安装成功: {installed}", 3, total)
+                    self._config["zoekt_enabled"] = True
+                    self._config["_zoekt_bin"]    = installed
+                    self._config["zoekt_bin"]     = installed
+                    await self._emit_sup("install_zoekt", "running", "启动 Zoekt 服务...", 4, total)
+                    await self._start_zoekt_process(0)
+                    await self._emit_sup("install_zoekt", "done", "Zoekt 服务已启动", 4, total)
+                    return
+
+        await self._emit_sup(
+            "install_zoekt", "error",
+            f"未找到 Zoekt 二进制文件。请手动将 zoekt-webserver 放入"
+            f" deployer/vendor/zoekt/{sys.platform}/ 或安装 Go 后重试。",
+            4, total,
+        )
+        raise RuntimeError("Zoekt binaries not found and go install failed")
+
     async def _step_install_gitnexus(self) -> None:
         step = 4
         await self._emit("install_gitnexus", "running", "配置 GitNexus...", step)

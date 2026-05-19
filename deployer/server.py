@@ -282,6 +282,53 @@ async def _run_supplement_gitnexus(deployer: NativeDeployer, cfg: dict) -> None:
             await q.put(None)
 
 
+@app.post("/api/deploy/supplement/zoekt")
+async def api_supplement_zoekt(body: dict):
+    """Install and start Zoekt as a supplementary service after native deployment."""
+    if _deploy_state["running"]:
+        raise HTTPException(status_code=409, detail="A deployment is already running")
+
+    cfg = config_store.load_config()
+    zoekt_port = int(body.get("portZoekt", cfg.get("zoekt_port", 6070)))
+    cfg["zoekt_enabled"] = True
+    cfg["zoekt_port"] = zoekt_port
+
+    _deploy_state["running"] = True
+    _deploy_state["job_id"] = _new_job_id()
+    q: asyncio.Queue = asyncio.Queue()
+    _deploy_state["event_queue"] = q
+
+    deployer = NativeDeployer(cfg, q)
+
+    loop = asyncio.get_event_loop()
+
+    def _run_in_thread():
+        future = asyncio.run_coroutine_threadsafe(_run_supplement_zoekt(deployer, cfg), loop)
+        future.result()
+
+    thread = threading.Thread(target=_run_in_thread, daemon=True)
+    thread.start()
+
+    return {"job_id": _deploy_state["job_id"]}
+
+
+async def _run_supplement_zoekt(deployer: NativeDeployer, cfg: dict) -> None:
+    try:
+        await deployer._step_install_zoekt()
+        await deployer._step_generate_config()
+        config_store.save_config(cfg)
+    except Exception as exc:
+        q = _deploy_state.get("event_queue")
+        if q is not None:
+            await q.put({"step": "install_zoekt", "status": "error", "message": str(exc)})
+    finally:
+        _deploy_state["running"] = False
+        q = _deploy_state.get("event_queue")
+        if q is not None:
+            await q.put({"step": "done", "status": "done", "message": "Zoekt installed"})
+            await q.put(None)
+
+
 @app.post("/api/quickstart")
 async def api_quickstart():
     """Quick-start services using saved config (no install/check steps)."""
