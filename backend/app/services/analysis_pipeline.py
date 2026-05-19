@@ -702,13 +702,11 @@ class AnalysisPipeline:
             type(llm_client).stream_complete is not BaseLLMClient.stream_complete
         )
         if has_real_streaming:
-            content = ""
-            async for chunk in llm_client.stream_complete(
+            content = await llm_client.stream_complete_collected(
                 messages=messages,
                 max_tokens=MAX_OUTPUT_TOKENS,
                 temperature=0.3,
-            ):
-                content += chunk
+            )
             tokens = BaseLLMClient.estimate_tokens(content)
         else:
             response: LLMResponse = await llm_client.complete(
@@ -851,13 +849,11 @@ class AnalysisPipeline:
                 is not BaseLLMClient.stream_complete
             )
             if has_real_streaming:
-                cross_content = ""
-                async for chunk in self._llm_client.stream_complete(
+                cross_content = await self._llm_client.stream_complete_collected(
                     messages=messages,
                     max_tokens=MAX_OUTPUT_TOKENS,
                     temperature=0.3,
-                ):
-                    cross_content += chunk
+                )
                 cross_tokens = BaseLLMClient.estimate_tokens(cross_content)
                 model_name = type(self._llm_client).__name__
             else:

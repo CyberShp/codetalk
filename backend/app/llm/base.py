@@ -127,6 +127,42 @@ class BaseLLMClient(ABC):
         resp = await self.complete(messages, max_tokens, temperature)
         yield resp.content
 
+    async def stream_complete_collected(
+        self,
+        messages: list[dict],
+        max_tokens: int = 4096,
+        temperature: float = 0.3,
+        max_retries: int = 3,
+    ) -> str:
+        """Stream with retry — collect all chunks and return the full text."""
+        last_exc: BaseException | None = None
+        for attempt in range(max_retries + 1):
+            try:
+                content = ""
+                async for chunk in self.stream_complete(
+                    messages, max_tokens, temperature,
+                ):
+                    content += chunk
+                return content
+            except (*_RETRYABLE_EXCEPTIONS, httpx.HTTPStatusError) as exc:
+                if isinstance(exc, httpx.HTTPStatusError) and exc.response.status_code < 500:
+                    raise
+                last_exc = exc
+                if attempt < max_retries:
+                    delay = _DEFAULT_BACKOFF_SECONDS[
+                        min(attempt, len(_DEFAULT_BACKOFF_SECONDS) - 1)
+                    ]
+                    logger.warning(
+                        "Stream retry %d/%d after %.1fs — %s: %s",
+                        attempt + 1,
+                        max_retries,
+                        delay,
+                        type(exc).__name__,
+                        exc,
+                    )
+                    await asyncio.sleep(delay)
+        raise last_exc  # type: ignore[misc]
+
     @abstractmethod
     async def health_check(self) -> tuple[bool, str]:
         """Check LLM endpoint reachability.

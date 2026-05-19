@@ -252,13 +252,11 @@ class ReportGenerator:
             )
 
             if use_streaming and has_real_streaming:
-                full_content = ""
-                async for chunk in self._llm.stream_complete(
+                full_content = await self._llm.stream_complete_collected(
                     messages=messages,
                     max_tokens=MAX_OUTPUT_TOKENS,
                     temperature=0.3,
-                ):
-                    full_content += chunk
+                )
 
                 total_tokens = BaseLLMClient.estimate_tokens(full_content)
                 # Use a placeholder model name since streaming doesn't return model info
