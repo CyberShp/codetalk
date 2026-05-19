@@ -10,9 +10,12 @@ import asyncio
 import base64
 import logging
 import os
+import shutil
 import socket as _socket
 import subprocess
+import sys
 from collections.abc import AsyncIterator
+from pathlib import Path
 
 import httpx
 
@@ -156,6 +159,43 @@ class ZoektAdapter(BaseToolAdapter):
         except Exception:
             return False
 
+    def _find_zoekt_index_bin(self) -> str | None:
+        """Find the zoekt-index binary for native (non-Docker) indexing.
+
+        Search order:
+          1. Sibling of settings.zoekt_bin in the same directory
+          2. System PATH
+        Returns the resolved path string, or None if not found (Docker fallback applies).
+        """
+        bin_name = "zoekt-index.exe" if sys.platform == "win32" else "zoekt-index"
+
+        if settings.zoekt_bin:
+            sibling = Path(settings.zoekt_bin).parent / bin_name
+            if sibling.exists():
+                return str(sibling)
+
+        found = shutil.which(bin_name)
+        if found:
+            return found
+
+        return None
+
+    async def _exec_index_via_native(self, index_bin: str, repo_path: str) -> None:
+        """Run zoekt-index as a local subprocess with a local index directory."""
+        index_dir = str(settings.zoekt_index_path)
+        os.makedirs(index_dir, exist_ok=True)
+        cmd = [index_bin, "-index", index_dir, repo_path]
+        result = await asyncio.to_thread(
+            subprocess.run, cmd,
+            capture_output=True, timeout=_INDEX_TIMEOUT,
+        )
+        if result.returncode != 0:
+            stderr = result.stderr.decode(errors="replace").strip()
+            raise RuntimeError(
+                f"zoekt-index failed with exit code {result.returncode} "
+                f"for repo path '{repo_path}': {stderr}"
+            )
+
     async def _exec_index_via_cli(self, repo_path: str) -> None:
         """Run zoekt-index via docker exec CLI (Windows fallback)."""
         cmd = [
@@ -174,12 +214,17 @@ class ZoektAdapter(BaseToolAdapter):
             )
 
     async def _exec_index(self, repo_path: str) -> None:
-        """Run zoekt-index inside the running zoekt container via Docker Engine API.
+        """Run zoekt-index, preferring a native binary over Docker.
 
-        zoekt-index does not accept a -name flag; it derives the repo name from
-        the directory basename automatically.  Uses the same httpx-over-UDS pattern
-        as component_manager — no extra dependencies needed.
+        Search order:
+          1. Native binary (settings.zoekt_bin sibling or PATH) → local index dir
+          2. Docker Engine API (Unix socket, Linux/macOS)
+          3. docker exec CLI (Windows Docker fallback)
         """
+        index_bin = self._find_zoekt_index_bin()
+        if index_bin:
+            return await self._exec_index_via_native(index_bin, repo_path)
+
         if not hasattr(_socket, "AF_UNIX"):
             return await self._exec_index_via_cli(repo_path)
 
