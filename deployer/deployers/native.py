@@ -791,16 +791,18 @@ class NativeDeployer:
             elif dw_dir and dw_dir.exists():
                 dw_api_port = self._config_port("deepwiki_api_port", 8091)
                 dw_ui_port = self._config_port("deepwiki_ui_port", 3001)
-                llm_env: dict[str, str] = {}
+                llm_env: dict[str, str] = {
+                    "DEEPWIKI_EMBEDDER_TYPE": self._config.get("deepwiki_embedder_type", "openai"),
+                }
                 llm_base_url = self._config.get("llm_base_url", "")
                 if llm_base_url:
-                    llm_env = {
+                    llm_env.update({
                         "OPENAI_BASE_URL": llm_base_url,
                         "OPENAI_API_KEY": self._config.get("llm_api_key", ""),
                         "LLM_MODEL": self._config.get("llm_model", ""),
                         "FORCE_DIRECT": "true",
                         "TRUST_ENV": "false",
-                    }
+                    })
                 await self._kill_port_processes([dw_api_port, dw_ui_port], step)
                 await self._start_deepwiki_processes(dw_dir, dw_api_port, dw_ui_port, llm_env, "start_services", step)
             elif dw_dir:
