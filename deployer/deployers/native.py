@@ -5,6 +5,7 @@ No Docker required. Targets Windows intranet environments for black-box testers.
 
 import asyncio
 import os
+import shutil
 import sys
 from pathlib import Path
 from typing import Optional
@@ -98,6 +99,15 @@ class NativeDeployer:
                     results.append({"name": "deepwiki", "healthy": healthy, "message": f"HTTP {resp.status_code}"})
                 except Exception as exc:
                     results.append({"name": "deepwiki", "healthy": False, "message": str(exc)})
+
+            if self._config.get("zoekt_enabled", False):
+                port = self._config_port("zoekt_port", 6070)
+                try:
+                    resp = await client.get(f"http://localhost:{port}/healthz")
+                    healthy = resp.status_code == 200
+                    results.append({"name": "zoekt", "healthy": healthy, "message": f"HTTP {resp.status_code}"})
+                except Exception as exc:
+                    results.append({"name": "zoekt", "healthy": False, "message": str(exc)})
 
         return results
 
@@ -520,6 +530,18 @@ class NativeDeployer:
         if tiktoken_cache.exists():
             env_lines.append(f"TIKTOKEN_CACHE_DIR={tiktoken_cache}")
 
+        zoekt_enabled = cfg.get("zoekt_enabled", False)
+        if zoekt_enabled:
+            zoekt_port = self._config_port("zoekt_port", 6070)
+            env_lines.append("ZOEKT_ENABLED=true")
+            env_lines.append(f"ZOEKT_BASE_URL=http://localhost:{zoekt_port}")
+            zoekt_bin = cfg.get("_zoekt_bin", "")
+            if zoekt_bin:
+                env_lines.append(f"ZOEKT_BIN={zoekt_bin}")
+            zoekt_index_dir = cfg.get("zoekt_index_dir", "")
+            if zoekt_index_dir:
+                env_lines.append(f"ZOEKT_INDEX_DIR={zoekt_index_dir}")
+
         backend_env = PROJECT_ROOT / "backend" / ".env"
         backend_env.write_text("\n".join(env_lines) + "\n", encoding="utf-8")
         await self._emit("generate_config", "running", f"已写入 {backend_env}", step)
@@ -654,6 +676,11 @@ class NativeDeployer:
                 step_index=step,
             )
 
+        if self._config.get("zoekt_enabled", False):
+            zoekt_bin = await self._start_zoekt_process(step)
+            if zoekt_bin:
+                self._config["_zoekt_bin"] = zoekt_bin
+
         npm_cmd = "npm.cmd" if sys.platform == "win32" else "npm"
         await self._start_process(
             "frontend",
@@ -740,6 +767,69 @@ class NativeDeployer:
                 env_extra={"PORT": str(ui_port), "SERVER_BASE_URL": f"http://localhost:{api_port}", **llm_env},
             )
 
+    def _find_zoekt_bin(self) -> "str | None":
+        """Discover the zoekt-webserver binary.
+
+        Search order:
+          1. config["zoekt_bin"] — user-specified absolute path
+          2. deployer/vendor/zoekt/{platform}/zoekt-webserver[.exe]
+          3. System PATH
+        Returns path string or None (caller skips Zoekt start with a warning).
+        """
+        bin_name = "zoekt-webserver.exe" if sys.platform == "win32" else "zoekt-webserver"
+
+        configured = self._config.get("zoekt_bin", "")
+        if configured and Path(configured).is_file():
+            return configured
+
+        vendor_bin = VENDOR_DIR / "zoekt" / sys.platform / bin_name
+        if vendor_bin.exists():
+            return str(vendor_bin)
+
+        found = shutil.which(bin_name)
+        if found:
+            return found
+
+        return None
+
+    async def _start_zoekt_process(self, step: int) -> "str | None":
+        """Start zoekt-webserver if zoekt_enabled is set in config.
+
+        Returns the resolved binary path if started, None if skipped or binary not found.
+        """
+        if not self._config.get("zoekt_enabled", False):
+            return None
+
+        zoekt_bin = self._find_zoekt_bin()
+        if not zoekt_bin:
+            await self._emit(
+                "start_services", "running",
+                "Zoekt：未找到 zoekt-webserver 二进制文件，跳过启动"
+                "（已搜索 vendor/zoekt、PATH — 请设置 ZOEKT_BIN 或将二进制放入 deployer/vendor/zoekt/{平台}/）",
+                step,
+            )
+            return None
+
+        zoekt_port = self._config_port("zoekt_port", 6070)
+        workspace = self._workspace_path()
+        index_dir = self._config.get("zoekt_index_dir", "") or str(workspace / "zoekt-index")
+        Path(index_dir).mkdir(parents=True, exist_ok=True)
+
+        _existing = self._processes.get("zoekt")
+        if _existing is not None and _existing.returncode is None:
+            await self._emit("start_services", "running", "Zoekt 已在运行，跳过重复启动", step)
+            return zoekt_bin
+
+        await self._kill_port_processes([zoekt_port], step)
+        await self._start_process(
+            "zoekt",
+            [zoekt_bin, "-index", index_dir, "-listen", f":{zoekt_port}", "-rpc"],
+            cwd=str(PROJECT_ROOT),
+            step_name="start_services",
+            step_index=step,
+        )
+        return zoekt_bin
+
     async def _start_process(
         self,
         name: str,
@@ -817,6 +907,16 @@ class NativeDeployer:
                     async with httpx.AsyncClient(timeout=3, trust_env=False) as client:
                         resp = await client.get(f"http://localhost:{dw_port}/health")
                         if resp.status_code >= 500:
+                            all_ok = False
+                except Exception:
+                    all_ok = False
+
+            if self._config.get("zoekt_enabled", False):
+                zoekt_port = self._config_port("zoekt_port", 6070)
+                try:
+                    async with httpx.AsyncClient(timeout=3, trust_env=False) as client:
+                        resp = await client.get(f"http://localhost:{zoekt_port}/healthz")
+                        if resp.status_code != 200:
                             all_ok = False
                 except Exception:
                     all_ok = False
