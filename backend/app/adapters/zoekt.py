@@ -163,17 +163,27 @@ class ZoektAdapter(BaseToolAdapter):
         """Find the zoekt-index binary for native (non-Docker) indexing.
 
         Search order:
-          1. Sibling of settings.zoekt_bin in the same directory
-          2. System PATH
+          1. Sibling of settings.zoekt_bin (T3 native deployer writes ZOEKT_BIN to backend .env)
+          2. deployer/vendor/zoekt/{platform}/ (user-placed offline bundle)
+          3. System PATH
         Returns the resolved path string, or None if not found (Docker fallback applies).
         """
         bin_name = "zoekt-index.exe" if sys.platform == "win32" else "zoekt-index"
 
+        # 1. Sibling of the configured zoekt-webserver binary
         if settings.zoekt_bin:
             sibling = Path(settings.zoekt_bin).parent / bin_name
             if sibling.exists():
                 return str(sibling)
 
+        # 2. Vendor bundle: deployer/vendor/zoekt/{platform}/zoekt-index[.exe]
+        # This file lives at backend/app/adapters/zoekt.py → 4 levels up = project root
+        _project_root = Path(__file__).parent.parent.parent.parent
+        vendor_bin = _project_root / "deployer" / "vendor" / "zoekt" / sys.platform / bin_name
+        if vendor_bin.exists():
+            return str(vendor_bin)
+
+        # 3. System PATH
         found = shutil.which(bin_name)
         if found:
             return found
