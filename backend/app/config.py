@@ -62,10 +62,9 @@ class Settings(BaseSettings):
     def _resolve_repos_paths(self) -> "Settings":
         if not self.repos_base_path:
             from app.utils.repo_paths import default_repos_base_path
-            default = default_repos_base_path(Path(__file__).parent.parent.parent)
-            self.repos_base_path = default
-            if not self.tool_repos_base_path:
-                self.tool_repos_base_path = default
+            self.repos_base_path = default_repos_base_path(Path(__file__).parent.parent.parent)
+        if not self.tool_repos_base_path:
+            self.tool_repos_base_path = self.repos_base_path
         return self
 
     @property
