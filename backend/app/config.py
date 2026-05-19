@@ -25,6 +25,16 @@ class Settings(BaseSettings):
     repos_base_path: str = ""
     tool_repos_base_path: str = ""
 
+    # Local repos directory (Docker mode only — for analysing user-specified local folders).
+    # Set LOCAL_REPOS_HOST_PATH to the host directory that contains your local projects.
+    # LOCAL_REPOS_CONTAINER_PATH is auto-set by docker-compose to /local_repos; override only
+    # if using a non-standard mount point.
+    local_repos_host_path: str = ""
+    local_repos_container_path: str = "/local_repos"
+
+    # Git operation timeout in seconds (clone + pull)
+    git_sync_timeout_seconds: int = 300
+
     # Tool process endpoints
     gitnexus_base_url: str = "http://localhost:7100"
     deepwiki_api_url: str = "http://localhost:8091"
