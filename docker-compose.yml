@@ -60,7 +60,9 @@ services:
       # Optional: mount user local repos so deepwiki can read them via /local_repo/structure.
       # Set LOCAL_REPOS_HOST_PATH in .env to the host directory containing local repos.
       - ${LOCAL_REPOS_HOST_PATH:-./.repos}:/local_repos:ro
+      - ./docker/deepwiki/tiktoken:/tiktoken-cache:ro
     environment:
+      TIKTOKEN_CACHE_DIR: /tiktoken-cache
       OPENAI_API_KEY: ${OPENAI_API_KEY:-}
       OPENAI_BASE_URL: ${OPENAI_BASE_URL:-}
       DEEPWIKI_EMBEDDING_BASE_URL: ${DEEPWIKI_EMBEDDING_BASE_URL:-}
