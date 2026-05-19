@@ -21,6 +21,8 @@ from pathlib import Path
 import aiosqlite
 import httpx
 
+from app.adapters.base import AnalysisRequest
+from app.adapters.zoekt import ZoektAdapter
 from app.config import settings
 from app.llm.base import BaseLLMClient, LLMResponse, current_task_id
 from app.llm.factory import create_llm_client_from_active
@@ -61,6 +63,7 @@ class AnalysisPipeline:
         self._output_dir: Path | None = None
         self._llm_client: BaseLLMClient | None = None
         self._deepwiki_depth: str = ""
+        self._zoekt_adapter: ZoektAdapter | None = None
 
     # ------------------------------------------------------------------
     # Public entry point
@@ -208,6 +211,8 @@ class AnalysisPipeline:
             coros.append(self._collect_gitnexus(repo_path))
         if "deepwiki" in tools:
             coros.append(self._collect_deepwiki(repo_path))
+        if settings.zoekt_enabled:
+            coros.append(self._collect_zoekt(repo_path))
 
         if coros:
             results = await asyncio.gather(*coros, return_exceptions=True)
@@ -367,6 +372,62 @@ class AnalysisPipeline:
 
             self._deepwiki_data = {"documentation": full_content}
             logger.info("DeepWiki data collected: %d chars", len(full_content))
+
+    async def _collect_zoekt(self, repo_path: str) -> None:
+        """Index the repository with Zoekt for per-module code search.
+
+        Layer 1 (config switch): caller gates on settings.zoekt_enabled.
+        Layer 2 (health check): skip with warning if server unreachable.
+        Layer 3 (exception gate): any error degrades silently.
+        """
+        try:
+            adapter = ZoektAdapter(
+                base_url=settings.zoekt_base_url,
+                container_name=settings.zoekt_container_name,
+            )
+            health = await adapter.health_check()
+            if not health.is_healthy:
+                logger.warning(
+                    "Zoekt health check failed (%s) — skipping code-search indexing",
+                    health.last_check,
+                )
+                return
+            request = AnalysisRequest(
+                repo_local_path=repo_path,
+                options={"repo_name": Path(repo_path).name},
+            )
+            await adapter.prepare(request)
+            self._zoekt_adapter = adapter
+            logger.info("Zoekt: repo '%s' indexed", Path(repo_path).name)
+        except Exception as exc:
+            logger.warning("Zoekt indexing failed (non-fatal): %s", exc)
+
+    async def _search_zoekt_for_module(self, module_name: str, files: list[str]) -> str:
+        """Return formatted code snippets from Zoekt for this module, or '' if unavailable."""
+        if self._zoekt_adapter is None:
+            return ""
+        try:
+            request = AnalysisRequest(
+                repo_local_path=self._repo_path,
+                options={"query": module_name, "num": 20},
+                target_files=[Path(f).name for f in files[:10]] if files else None,
+            )
+            result = await self._zoekt_adapter.analyze(request)
+            search_results = result.data.get("search_results", [])
+            if not search_results:
+                return ""
+            lines: list[str] = []
+            for file_result in search_results[:5]:
+                fname = file_result.get("file", "")
+                for match in file_result.get("matches", [])[:5]:
+                    lineno = match.get("line_number", 0)
+                    content = match.get("line_content", "").strip()
+                    if content:
+                        lines.append(f"{fname}:{lineno}: {content}")
+            return "\n".join(lines)
+        except Exception as exc:
+            logger.warning("Zoekt search failed for module %s (non-fatal): %s", module_name, exc)
+            return ""
 
     # ------------------------------------------------------------------
     # Task 5: DeepWiki independent output
@@ -645,6 +706,9 @@ class AnalysisPipeline:
         call_relations = "\n".join(community.get("calls", [])[:20])
 
         wiki_content = self._extract_module_wiki(community["name"])
+        zoekt_snippets = await self._search_zoekt_for_module(
+            community["name"], community.get("files", [])
+        )
 
         prompt = MODULE_SUMMARY_PROMPT.format(
             module_name=community["name"],
@@ -664,6 +728,13 @@ class AnalysisPipeline:
                 f"## 用户分析目标\n{self._analysis_focus}\n"
                 "请在模块分析时重点关注与此目标相关的内容。\n\n"
                 + prompt
+            )
+
+        if zoekt_snippets:
+            prompt += (
+                "\n\n## 代码精确片段（Zoekt）\n"
+                "以下是从代码库精确检索到的相关代码行，供辅助参考：\n"
+                f"```\n{zoekt_snippets}\n```"
             )
 
         messages = [{"role": "user", "content": prompt}]
