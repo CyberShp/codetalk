@@ -148,6 +148,7 @@ class AnalysisPipeline:
                     on_report_failed=_on_report_failed,
                     max_concurrency=settings.llm_max_concurrency,
                     data_quality=self._data_quality,
+                    use_streaming=True,
                 )
                 await self._update_progress(task_id, 90, "running", None, "报告生成完成，收尾处理…")
 
@@ -745,18 +746,34 @@ class AnalysisPipeline:
             )
 
         messages = [{"role": "user", "content": prompt}]
-        response: LLMResponse = await llm_client.complete(
-            messages=messages,
-            max_tokens=MAX_OUTPUT_TOKENS,
-            temperature=0.3,
+
+        has_real_streaming = (
+            type(llm_client).stream_complete is not BaseLLMClient.stream_complete
         )
+        if has_real_streaming:
+            content = ""
+            async for chunk in llm_client.stream_complete(
+                messages=messages,
+                max_tokens=MAX_OUTPUT_TOKENS,
+                temperature=0.3,
+            ):
+                content += chunk
+            tokens = BaseLLMClient.estimate_tokens(content)
+        else:
+            response: LLMResponse = await llm_client.complete(
+                messages=messages,
+                max_tokens=MAX_OUTPUT_TOKENS,
+                temperature=0.3,
+            )
+            content = response.content
+            tokens = response.usage.get("total_tokens", 0)
 
         logger.info(
             "Module %s analyzed: %d tokens used",
             community["name"],
-            response.usage.get("total_tokens", 0),
+            tokens,
         )
-        return response.content
+        return content
 
     def _extract_module_wiki(self, module_name: str) -> str:
         """Extract relevant wiki content for a module (word-boundary match)."""
@@ -877,11 +894,30 @@ class AnalysisPipeline:
             )
 
             messages = [{"role": "user", "content": prompt}]
-            response: LLMResponse = await self._llm_client.complete(
-                messages=messages,
-                max_tokens=MAX_OUTPUT_TOKENS,
-                temperature=0.3,
+
+            has_real_streaming = (
+                type(self._llm_client).stream_complete
+                is not BaseLLMClient.stream_complete
             )
+            if has_real_streaming:
+                cross_content = ""
+                async for chunk in self._llm_client.stream_complete(
+                    messages=messages,
+                    max_tokens=MAX_OUTPUT_TOKENS,
+                    temperature=0.3,
+                ):
+                    cross_content += chunk
+                cross_tokens = BaseLLMClient.estimate_tokens(cross_content)
+                model_name = type(self._llm_client).__name__
+            else:
+                response: LLMResponse = await self._llm_client.complete(
+                    messages=messages,
+                    max_tokens=MAX_OUTPUT_TOKENS,
+                    temperature=0.3,
+                )
+                cross_content = response.content
+                cross_tokens = response.usage.get("total_tokens", 0)
+                model_name = response.model
 
             # Save with YAML frontmatter
             now = datetime.now(timezone.utc).isoformat()
@@ -890,20 +926,20 @@ class AnalysisPipeline:
                 f"report_type: cross_enhancement\n"
                 f"task_id: {self._task_id}\n"
                 f"generated_at: {now}\n"
-                f"model: {response.model}\n"
-                f"tokens: {response.usage.get('total_tokens', 0)}\n"
+                f"model: {model_name}\n"
+                f"tokens: {cross_tokens}\n"
                 f"---\n\n"
             )
 
             out_path = self._output_dir / "05-交叉增强分析.md"
 
             def _write() -> None:
-                out_path.write_text(header + response.content, encoding="utf-8")
+                out_path.write_text(header + cross_content, encoding="utf-8")
 
             await asyncio.to_thread(_write)
             logger.info(
                 "Cross-enhancement analysis saved: %d tokens",
-                response.usage.get("total_tokens", 0),
+                cross_tokens,
             )
 
         except Exception as exc:
