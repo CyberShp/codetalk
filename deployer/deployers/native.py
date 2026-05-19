@@ -100,7 +100,7 @@ class NativeDeployer:
                 except Exception as exc:
                     results.append({"name": "deepwiki", "healthy": False, "message": str(exc)})
 
-            if self._config.get("zoekt_enabled", False):
+            if bool(self._config.get("_zoekt_bin", "")):
                 port = self._config_port("zoekt_port", 6070)
                 try:
                     resp = await client.get(f"http://localhost:{port}/healthz")
@@ -533,14 +533,14 @@ class NativeDeployer:
         zoekt_enabled = cfg.get("zoekt_enabled", False)
         if zoekt_enabled:
             zoekt_port = self._config_port("zoekt_port", 6070)
+            workspace = self._workspace_path()
+            zoekt_index_dir = cfg.get("zoekt_index_dir", "") or str(workspace / "zoekt-index")
             env_lines.append("ZOEKT_ENABLED=true")
             env_lines.append(f"ZOEKT_BASE_URL=http://localhost:{zoekt_port}")
-            zoekt_bin = cfg.get("_zoekt_bin", "")
+            env_lines.append(f"ZOEKT_INDEX_DIR={zoekt_index_dir}")
+            zoekt_bin = self._find_zoekt_bin()
             if zoekt_bin:
                 env_lines.append(f"ZOEKT_BIN={zoekt_bin}")
-            zoekt_index_dir = cfg.get("zoekt_index_dir", "")
-            if zoekt_index_dir:
-                env_lines.append(f"ZOEKT_INDEX_DIR={zoekt_index_dir}")
 
         backend_env = PROJECT_ROOT / "backend" / ".env"
         backend_env.write_text("\n".join(env_lines) + "\n", encoding="utf-8")
@@ -911,7 +911,7 @@ class NativeDeployer:
                 except Exception:
                     all_ok = False
 
-            if self._config.get("zoekt_enabled", False):
+            if bool(self._config.get("_zoekt_bin", "")):
                 zoekt_port = self._config_port("zoekt_port", 6070)
                 try:
                     async with httpx.AsyncClient(timeout=3, trust_env=False) as client:
