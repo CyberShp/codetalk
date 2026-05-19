@@ -421,14 +421,21 @@ class AnalysisPipeline:
 
         # Task 15: check for previous-commit cached summaries for incremental analysis
         prev_summaries, prev_commit = await self._load_latest_module_summaries_cache()
-        changed_files: set[str] = set()
+        # None = diff unknown/failed; set() = confirmed zero-diff; set[...] = specific changes
+        changed_files: set[str] | None = None
         if prev_summaries and prev_commit and commit_hash and prev_commit != commit_hash:
             changed_files = await self._get_changed_files(repo_path, prev_commit, commit_hash)
-            logger.info(
-                "Incremental analysis: %d changed files since %s",
-                len(changed_files),
-                prev_commit,
-            )
+            if changed_files is not None:
+                logger.info(
+                    "Incremental analysis: %d changed files since %s",
+                    len(changed_files),
+                    prev_commit,
+                )
+            else:
+                logger.warning(
+                    "Could not determine changed files since %s; skipping incremental reuse",
+                    prev_commit,
+                )
 
         # Task 6: module discovery with fallback chain
         communities = self._extract_communities()  # GitNexus first
@@ -460,7 +467,9 @@ class AnalysisPipeline:
             if prev_summaries is not None:
                 module_files = set(community.get("files", []))
                 normalized = AnalysisPipeline._normalize_to_relative(module_files, repo_path)
-                if not changed_files or not normalized.intersection(changed_files):
+                if changed_files is not None and (
+                    not changed_files or not normalized.intersection(changed_files)
+                ):
                     cached_entry = next(
                         (s for s in prev_summaries if s.get("module_name") == community["name"]),
                         None,
@@ -977,8 +986,8 @@ class AnalysisPipeline:
 
     async def _get_changed_files(
         self, repo_path: str, old_commit: str, new_commit: str
-    ) -> set[str]:
-        """Task 15: return set of files changed between two commits."""
+    ) -> set[str] | None:
+        """Return repo-relative paths changed between two commits, or None if the diff fails."""
         try:
             proc = await asyncio.to_thread(
                 subprocess.run,
@@ -990,7 +999,7 @@ class AnalysisPipeline:
                 return {line.strip() for line in proc.stdout.splitlines() if line.strip()}
         except Exception as exc:
             logger.warning("Failed to get changed files (%s..%s): %s", old_commit, new_commit, exc)
-        return set()
+        return None
 
     @staticmethod
     def _normalize_to_relative(paths: set[str], repo_root: str) -> set[str]:
