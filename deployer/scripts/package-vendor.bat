@@ -70,33 +70,41 @@ if errorlevel 1 (
 )
 
 for /f "tokens=3" %%v in ('go version') do echo Found Go: %%v
+for /f "tokens=*" %%p in ('go env GOPATH') do set "GO_DEFAULT_PATH=%%p"
 
-REM Windows amd64
+REM Windows amd64 — native compile; GOBIN accepted by go install for same-platform targets
 echo Compiling Zoekt for Windows/amd64...
-if not exist "vendor\zoekt\win32" mkdir "vendor\zoekt\win32"
+if exist "vendor\zoekt\win32" rmdir /s /q "vendor\zoekt\win32"
+mkdir "vendor\zoekt\win32"
 set "GOBIN=%CD%\vendor\zoekt\win32"
 set "GOOS=windows"
 set "GOARCH=amd64"
 set "CGO_ENABLED=0"
 go install github.com/sourcegraph/zoekt/cmd/zoekt-webserver@latest
 go install github.com/sourcegraph/zoekt/cmd/zoekt-index@latest
-if exist "vendor\zoekt\win32\zoekt-webserver.exe" (
+if exist "vendor\zoekt\win32\zoekt-webserver.exe" if exist "vendor\zoekt\win32\zoekt-index.exe" (
     echo Zoekt Windows binaries packaged: vendor\zoekt\win32\
 ) else (
-    echo WARNING: Zoekt Windows build may have failed. Check output above.
+    echo WARNING: Zoekt Windows build incomplete. Check go output above.
 )
 
-REM Linux amd64 ^(cross-compile^)
+REM Linux amd64 ^(cross-compile^) — go install refuses explicit GOBIN for cross targets;
+REM output lands in GOPATH/bin/linux_amd64/, then we copy to vendor.
 echo Compiling Zoekt for Linux/amd64...
-if not exist "vendor\zoekt\linux" mkdir "vendor\zoekt\linux"
-set "GOBIN=%CD%\vendor\zoekt\linux"
+if exist "vendor\zoekt\linux" rmdir /s /q "vendor\zoekt\linux"
+mkdir "vendor\zoekt\linux"
+set "GOBIN="
 set "GOOS=linux"
 go install github.com/sourcegraph/zoekt/cmd/zoekt-webserver@latest
 go install github.com/sourcegraph/zoekt/cmd/zoekt-index@latest
-if exist "vendor\zoekt\linux\zoekt-webserver" (
+if exist "!GO_DEFAULT_PATH!\bin\linux_amd64\zoekt-webserver" (
+    copy "!GO_DEFAULT_PATH!\bin\linux_amd64\zoekt-webserver" "vendor\zoekt\linux\zoekt-webserver" >nul
+    copy "!GO_DEFAULT_PATH!\bin\linux_amd64\zoekt-index" "vendor\zoekt\linux\zoekt-index" >nul 2>&1
+)
+if exist "vendor\zoekt\linux\zoekt-webserver" if exist "vendor\zoekt\linux\zoekt-index" (
     echo Zoekt Linux binaries packaged: vendor\zoekt\linux\
 ) else (
-    echo WARNING: Zoekt Linux cross-compile may have failed. Check output above.
+    echo WARNING: Zoekt Linux cross-compile incomplete. Check go output above.
 )
 
 REM Restore Go env vars
