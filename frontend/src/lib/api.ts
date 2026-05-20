@@ -16,6 +16,8 @@ import type {
   CoverageModuleResult,
   Workspace,
   WorkspaceCreate,
+  DeepWikiRepo,
+  DeepWikiRepoCreate,
 } from "./types";
 
 export const BASE =
@@ -291,5 +293,30 @@ export const api = {
       request<void>(`/api/workspaces/${wsId}/materials/${matId}`, {
         method: "DELETE",
       }),
+  },
+
+  // ── DeepWiki (V2) ──
+  deepwiki: {
+    list: () =>
+      request<Omit<DeepWikiRepo, "wiki_data" | "pages">[]>("/api/deepwiki/repos"),
+
+    create: (data: DeepWikiRepoCreate) =>
+      request<DeepWikiRepo>("/api/deepwiki/repos", {
+        method: "POST",
+        body: JSON.stringify(data),
+      }),
+
+    get: (id: string) => request<DeepWikiRepo>(`/api/deepwiki/repos/${id}`),
+
+    generate: (id: string) =>
+      request<{ status: string; message: string }>(
+        `/api/deepwiki/repos/${id}/generate`,
+        { method: "POST" },
+      ),
+
+    status: (id: string) =>
+      request<{ running: boolean; progress: number; error: string | null }>(
+        `/api/deepwiki/repos/${id}/status`,
+      ),
   },
 };
