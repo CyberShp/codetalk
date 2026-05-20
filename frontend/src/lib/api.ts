@@ -14,6 +14,8 @@ import type {
   CoverageAnalysis,
   CoverageDetail,
   CoverageModuleResult,
+  Workspace,
+  WorkspaceCreate,
 } from "./types";
 
 export const BASE =
@@ -255,5 +257,39 @@ export const api = {
 
     delete: (id: string) =>
       request<void>(`/api/coverage/${id}`, { method: "DELETE" }),
+  },
+
+  // ── 工作空间 (V2) ──
+  workspaces: {
+    list: () => request<Workspace[]>("/api/workspaces"),
+
+    create: (data: WorkspaceCreate) =>
+      request<Workspace>("/api/workspaces", {
+        method: "POST",
+        body: JSON.stringify(data),
+      }),
+
+    get: (id: string) => request<Workspace>(`/api/workspaces/${id}`),
+
+    uploadMaterial: async (wsId: string, file: File): Promise<Workspace["materials"][number]> => {
+      const formData = new FormData();
+      formData.append("file", file);
+      const res = await fetch(`${BASE}/api/workspaces/${wsId}/materials`, {
+        method: "POST",
+        credentials: "include",
+        body: formData,
+      });
+      if (!res.ok) {
+        const body = await res.text().catch(() => "");
+        const detail = extractErrorMessage(body);
+        throw new Error(friendlyErrorMessage(res.status, detail));
+      }
+      return res.json();
+    },
+
+    deleteMaterial: (wsId: string, matId: string) =>
+      request<void>(`/api/workspaces/${wsId}/materials/${matId}`, {
+        method: "DELETE",
+      }),
   },
 };
