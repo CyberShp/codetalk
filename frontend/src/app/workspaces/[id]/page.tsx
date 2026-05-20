@@ -15,11 +15,16 @@ import {
   ChevronDown,
   ChevronRight,
   BarChart2,
+  MessageSquare,
+  Send,
+  Bot,
+  User,
 } from "lucide-react";
 import { api } from "@/lib/api";
-import type { Workspace, WorkspaceReportMeta } from "@/lib/types";
+import type { Workspace, WorkspaceReportMeta, WorkspaceChatMessage, ChatMode } from "@/lib/types";
+import MarkdownRenderer from "@/components/ui/MarkdownRenderer";
 
-type Tab = "reports" | "materials";
+type Tab = "reports" | "materials" | "chat";
 
 function IndexBadge({ indexed }: { indexed: number }) {
   if (indexed === 1) {
@@ -141,6 +146,220 @@ function ReportCard({ report, wsId }: { report: WorkspaceReportMeta; wsId: strin
           )}
         </div>
       )}
+    </div>
+  );
+}
+
+function ChatPanel({ wsId }: { wsId: string }) {
+  const [messages, setMessages] = useState<WorkspaceChatMessage[]>([]);
+  const [streamingContent, setStreamingContent] = useState("");
+  const [input, setInput] = useState("");
+  const [mode, setMode] = useState<ChatMode>("freeqa");
+  const [streaming, setStreaming] = useState(false);
+  const [loadingHistory, setLoadingHistory] = useState(true);
+  const bottomRef = useRef<HTMLDivElement>(null);
+
+  useEffect(() => {
+    api.workspaces
+      .chatHistory(wsId)
+      .then(setMessages)
+      .catch(() => {})
+      .finally(() => setLoadingHistory(false));
+  }, [wsId]);
+
+  useEffect(() => {
+    bottomRef.current?.scrollIntoView({ behavior: "smooth" });
+  }, [messages, streamingContent]);
+
+  const handleSend = async () => {
+    const text = input.trim();
+    if (!text || streaming) return;
+
+    setInput("");
+    setStreaming(true);
+    setStreamingContent("");
+
+    try {
+      const res = await api.workspaces.chatStream(wsId, text, mode);
+      if (!res.ok) {
+        const body = await res.text().catch(() => "");
+        throw new Error(body || `HTTP ${res.status}`);
+      }
+
+      const reader = res.body!.getReader();
+      const decoder = new TextDecoder();
+      let buf = "";
+      let accumulated = "";
+
+      while (true) {
+        const { done, value } = await reader.read();
+        if (done) break;
+        buf += decoder.decode(value, { stream: true });
+        const lines = buf.split("\n");
+        buf = lines.pop() ?? "";
+
+        for (const line of lines) {
+          if (!line.startsWith("data: ")) continue;
+          try {
+            const evt = JSON.parse(line.slice(6)) as { content: string; done: boolean; error?: string };
+            if (evt.error) {
+              setStreamingContent((p) => p + `\n\n⚠️ ${evt.error}`);
+              break;
+            }
+            if (evt.done) break;
+            if (evt.content) {
+              accumulated += evt.content;
+              setStreamingContent(accumulated);
+            }
+          } catch {
+            continue;
+          }
+        }
+      }
+
+      // Reload history to get persisted messages
+      const updated = await api.workspaces.chatHistory(wsId).catch(() => messages);
+      setMessages(updated);
+    } catch (e: unknown) {
+      setMessages((prev) => [
+        ...prev,
+        {
+          id: "err-" + Date.now(),
+          workspace_id: wsId,
+          mode,
+          role: "assistant",
+          content: `⚠️ ${e instanceof Error ? e.message : "发送失败"}`,
+          created_at: new Date().toISOString(),
+        },
+      ]);
+    } finally {
+      setStreaming(false);
+      setStreamingContent("");
+    }
+  };
+
+  const handleKeyDown = (e: React.KeyboardEvent<HTMLTextAreaElement>) => {
+    if (e.key === "Enter" && !e.shiftKey) {
+      e.preventDefault();
+      handleSend();
+    }
+  };
+
+  return (
+    <div className="flex flex-col h-[600px]">
+      {/* Mode toggle */}
+      <div className="flex items-center gap-2 mb-3">
+        <span className="text-xs text-on-surface-variant">模式：</span>
+        {(["freeqa", "targeted"] as ChatMode[]).map((m) => (
+          <button
+            key={m}
+            onClick={() => setMode(m)}
+            className={`px-3 py-1 text-xs rounded-full border transition-colors ${
+              mode === m
+                ? "bg-primary text-on-primary border-primary"
+                : "border-outline-variant/40 text-on-surface-variant hover:border-primary/40"
+            }`}
+          >
+            {m === "freeqa" ? "自由问答" : "结构化分析"}
+          </button>
+        ))}
+      </div>
+
+      {/* Message list */}
+      <div className="flex-1 overflow-y-auto rounded-xl border border-outline-variant/20 bg-surface-container-low p-4 space-y-4">
+        {loadingHistory ? (
+          <div className="flex justify-center py-8">
+            <Loader2 size={18} className="animate-spin text-primary" />
+          </div>
+        ) : messages.length === 0 && !streamingContent ? (
+          <div className="flex flex-col items-center justify-center h-full gap-3 text-on-surface-variant/50">
+            <MessageSquare size={32} />
+            <p className="text-sm">向代码库提问，获取智能分析</p>
+          </div>
+        ) : (
+          <>
+            {messages.map((msg) => (
+              <div
+                key={msg.id}
+                className={`flex gap-2.5 ${msg.role === "user" ? "justify-end" : "justify-start"}`}
+              >
+                {msg.role === "assistant" && (
+                  <div className="shrink-0 w-6 h-6 rounded-full bg-primary/10 flex items-center justify-center mt-0.5">
+                    <Bot size={13} className="text-primary" />
+                  </div>
+                )}
+                <div
+                  className={`max-w-[85%] rounded-2xl px-4 py-2.5 text-sm ${
+                    msg.role === "user"
+                      ? "bg-primary text-on-primary rounded-tr-sm"
+                      : "bg-surface-container rounded-tl-sm text-on-surface"
+                  }`}
+                >
+                  {msg.role === "assistant" ? (
+                    <div className="prose-sm">
+                      <MarkdownRenderer content={msg.content} enableNumericCitations={false} />
+                    </div>
+                  ) : (
+                    <p className="whitespace-pre-wrap">{msg.content}</p>
+                  )}
+                </div>
+                {msg.role === "user" && (
+                  <div className="shrink-0 w-6 h-6 rounded-full bg-primary/20 flex items-center justify-center mt-0.5">
+                    <User size={13} className="text-primary" />
+                  </div>
+                )}
+              </div>
+            ))}
+
+            {streamingContent && (
+              <div className="flex gap-2.5 justify-start">
+                <div className="shrink-0 w-6 h-6 rounded-full bg-primary/10 flex items-center justify-center mt-0.5">
+                  <Bot size={13} className="text-primary" />
+                </div>
+                <div className="max-w-[85%] rounded-2xl rounded-tl-sm px-4 py-2.5 text-sm bg-surface-container text-on-surface">
+                  <div className="prose-sm">
+                    <MarkdownRenderer content={streamingContent} enableNumericCitations={false} />
+                  </div>
+                  <span className="inline-block w-1.5 h-4 bg-primary animate-pulse ml-0.5 rounded-sm" />
+                </div>
+              </div>
+            )}
+
+            {streaming && !streamingContent && (
+              <div className="flex gap-2.5 justify-start">
+                <div className="shrink-0 w-6 h-6 rounded-full bg-primary/10 flex items-center justify-center mt-0.5">
+                  <Bot size={13} className="text-primary" />
+                </div>
+                <div className="rounded-2xl rounded-tl-sm px-4 py-2.5 bg-surface-container">
+                  <Loader2 size={14} className="animate-spin text-primary" />
+                </div>
+              </div>
+            )}
+          </>
+        )}
+        <div ref={bottomRef} />
+      </div>
+
+      {/* Input area */}
+      <div className="mt-3 flex gap-2">
+        <textarea
+          value={input}
+          onChange={(e) => setInput(e.target.value)}
+          onKeyDown={handleKeyDown}
+          placeholder="向代码库提问… (Enter 发送，Shift+Enter 换行)"
+          disabled={streaming}
+          rows={2}
+          className="flex-1 resize-none rounded-xl border border-outline-variant/30 bg-surface-container-low px-3 py-2 text-sm text-on-surface placeholder:text-on-surface-variant/40 focus:outline-none focus:border-primary/50 disabled:opacity-50"
+        />
+        <button
+          onClick={handleSend}
+          disabled={!input.trim() || streaming}
+          className="self-end flex items-center gap-1.5 px-4 py-2 text-sm rounded-xl bg-primary text-on-primary hover:opacity-90 disabled:opacity-40 disabled:cursor-not-allowed transition-opacity"
+        >
+          {streaming ? <Loader2 size={14} className="animate-spin" /> : <Send size={14} />}
+          发送
+        </button>
+      </div>
     </div>
   );
 }
@@ -365,7 +584,7 @@ export default function WorkspaceDetailPage() {
 
       {/* Tabs */}
       <div className="flex gap-1 mb-6 border-b border-outline-variant/20">
-        {(["reports", "materials"] as Tab[]).map((t) => (
+        {(["reports", "materials", "chat"] as Tab[]).map((t) => (
           <button
             key={t}
             onClick={() => setTab(t)}
@@ -375,10 +594,18 @@ export default function WorkspaceDetailPage() {
                 : "border-transparent text-on-surface-variant hover:text-on-surface"
             }`}
           >
-            {t === "reports" ? <FileText size={14} /> : <Paperclip size={14} />}
+            {t === "reports" ? (
+              <FileText size={14} />
+            ) : t === "materials" ? (
+              <Paperclip size={14} />
+            ) : (
+              <MessageSquare size={14} />
+            )}
             {t === "reports"
               ? `报告 (${workspace.reports.length})`
-              : `材料 (${workspace.materials.length})`}
+              : t === "materials"
+                ? `材料 (${workspace.materials.length})`
+                : "对话"}
           </button>
         ))}
       </div>
@@ -433,6 +660,9 @@ export default function WorkspaceDetailPage() {
           )}
         </div>
       )}
+
+      {/* Chat tab */}
+      {tab === "chat" && <ChatPanel wsId={wsId} />}
     </div>
   );
 }

@@ -1,4 +1,5 @@
 import asyncio
+import json
 import logging
 import shutil
 import uuid
@@ -6,7 +7,8 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 import aiosqlite
-from fastapi import APIRouter, Depends, HTTPException, UploadFile
+from fastapi import APIRouter, Depends, HTTPException, Query, UploadFile
+from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, Field
 
 from app.config import settings
@@ -346,3 +348,81 @@ def _guess_content_type(filename: str) -> str:
     if any(kw in name_lower for kw in ("design", "arch", "设计", "架构")):
         return "design"
     return "other"
+
+
+# --- T9: Workspace chat endpoints ---
+
+class WorkspaceChatRequest(BaseModel):
+    message: str = Field(min_length=1, max_length=8000)
+    mode: str = Field(default="freeqa", pattern="^(targeted|freeqa)$")
+
+
+class WorkspaceChatMessageResponse(BaseModel):
+    id: str
+    workspace_id: str
+    mode: str
+    role: str
+    content: str
+    created_at: str
+
+
+@router.post("/{ws_id}/chat/stream")
+async def workspace_chat_stream(
+    ws_id: str,
+    body: WorkspaceChatRequest,
+    db: aiosqlite.Connection = Depends(get_db),
+):
+    ws = await _get_workspace_or_404(ws_id, db)
+
+    try:
+        from app.llm.factory import create_llm_client_from_active
+        llm = await create_llm_client_from_active()
+    except Exception as exc:
+        raise HTTPException(status_code=503, detail=f"LLM 不可用：{exc}")
+
+    from app.services.workspace_chat import build_chat_messages, persist_chat
+
+    messages = await build_chat_messages(ws_id, ws["repo_path"], body.message, body.mode)
+
+    db_path = settings.sqlite_db
+    ws_mode = body.mode
+    user_msg = body.message
+
+    async def _generate():
+        chunks: list[str] = []
+        had_error = False
+        try:
+            async for delta in llm.stream_complete(messages, max_tokens=2048, temperature=0.5):
+                chunks.append(delta)
+                yield f"data: {json.dumps({'content': delta, 'done': False}, ensure_ascii=False)}\n\n"
+        except Exception as exc:
+            logger.error("Workspace chat stream error: %s", exc)
+            had_error = True
+            yield f"data: {json.dumps({'content': '', 'done': True, 'error': '生成失败，请重试'}, ensure_ascii=False)}\n\n"
+        finally:
+            reply = "".join(chunks)
+            if reply:
+                try:
+                    await persist_chat(ws_id, ws_mode, user_msg, reply)
+                except Exception as exc:
+                    logger.error("Failed to persist workspace chat: %s", exc)
+
+        if not had_error:
+            yield f"data: {json.dumps({'content': '', 'done': True}, ensure_ascii=False)}\n\n"
+
+    return StreamingResponse(_generate(), media_type="text/event-stream")
+
+
+@router.get("/{ws_id}/chat/history", response_model=list[WorkspaceChatMessageResponse])
+async def workspace_chat_history(
+    ws_id: str,
+    limit: int = Query(default=50, ge=1, le=200),
+    db: aiosqlite.Connection = Depends(get_db),
+):
+    await _get_workspace_or_404(ws_id, db)
+    async with db.execute(
+        "SELECT id, workspace_id, mode, role, content, created_at "
+        "FROM workspace_chats WHERE workspace_id = ? ORDER BY created_at ASC LIMIT ?",
+        (ws_id, limit),
+    ) as cur:
+        return [dict(r) for r in await cur.fetchall()]

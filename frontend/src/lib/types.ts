@@ -174,6 +174,22 @@ export interface WorkspaceCreate {
   repo_path: string;
 }
 
+export type ChatMode = "targeted" | "freeqa";
+
+export interface WorkspaceChatMessage {
+  id: string;
+  workspace_id: string;
+  mode: ChatMode;
+  role: "user" | "assistant";
+  content: string;
+  created_at: string;
+}
+
+export interface ChatRequest {
+  message: string;
+  mode: ChatMode;
+}
+
 /* ── DeepWiki types (V2) ── */
 
 export type DeepWikiStatus = "pending" | "running" | "completed" | "failed";
