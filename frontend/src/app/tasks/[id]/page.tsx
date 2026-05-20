@@ -13,7 +13,6 @@ import {
   FileText,
   Download,
   Loader2,
-  Trash2,
   RefreshCw,
 } from "lucide-react";
 import { api } from "@/lib/api";
@@ -49,7 +48,6 @@ export default function TaskDetailPage() {
   const [task, setTask] = useState<Task | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
-  const [deleting, setDeleting] = useState(false);
   const [running, setRunning] = useState(false);
   const [steps, setSteps] = useState<TaskStep[]>([]);
 
@@ -95,18 +93,6 @@ export default function TaskDetailPage() {
       setRunning(false);
     }
   }, [taskId, loadTask]);
-
-  const handleDelete = useCallback(async () => {
-    if (!taskId || !confirm(`确定要删除任务「${task?.name ?? taskId}」吗？此操作不可撤销。`)) return;
-    setDeleting(true);
-    try {
-      await api.tasks.delete(taskId);
-      window.location.href = "/";
-    } catch (err: unknown) {
-      setError(err instanceof Error ? err.message : "删除失败");
-      setDeleting(false);
-    }
-  }, [taskId]);
 
   const loadSteps = useCallback(async () => {
     if (!taskId) return;
@@ -185,14 +171,6 @@ export default function TaskDetailPage() {
             title="刷新"
           >
             <RefreshCw size={16} />
-          </button>
-          <button
-            onClick={handleDelete}
-            disabled={deleting}
-            className="p-2 rounded-lg text-red-400 hover:bg-red-400/10 transition-colors disabled:opacity-50"
-            title="删除任务"
-          >
-            <Trash2 size={16} />
           </button>
         </div>
       </div>
