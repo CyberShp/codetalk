@@ -78,12 +78,14 @@ export default function WorkspacesPage() {
                   <div className="flex items-center gap-2 mt-2">
                     <span
                       className={`text-xs px-2 py-0.5 rounded-full ${
-                        ws.indexed
+                        ws.indexed === 1
                           ? "bg-green-400/10 text-green-400"
-                          : "bg-amber-400/10 text-amber-400"
+                          : ws.indexed === -1
+                            ? "bg-red-400/10 text-red-400"
+                            : "bg-amber-400/10 text-amber-400"
                       }`}
                     >
-                      {ws.indexed ? "已索引" : "未索引"}
+                      {ws.indexed === 1 ? "已索引" : ws.indexed === -1 ? "索引失败" : "索引中"}
                     </span>
                     <span className="text-xs text-on-surface-variant">
                       {ws.reports.length} 份报告

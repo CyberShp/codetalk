@@ -99,7 +99,9 @@ async def create_task(data: TaskCreate, db: aiosqlite.Connection = Depends(get_d
 
 @router.get("", response_model=list[TaskResponse])
 async def list_tasks(db: aiosqlite.Connection = Depends(get_db)):
-    async with db.execute("SELECT * FROM tasks ORDER BY created_at DESC") as cur:
+    async with db.execute(
+        "SELECT * FROM tasks WHERE name NOT LIKE '__ws_%' ORDER BY created_at DESC"
+    ) as cur:
         rows = await cur.fetchall()
     return [_row_to_task(r) for r in rows]
 

@@ -1,3 +1,4 @@
+import asyncio
 import logging
 import shutil
 import uuid
@@ -5,6 +6,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 import aiosqlite
+import httpx
 from fastapi import APIRouter, Depends, HTTPException, UploadFile
 from pydantic import BaseModel, Field
 
@@ -14,7 +16,7 @@ from app.database import get_db
 router = APIRouter(prefix="/api/workspaces", tags=["工作空间"])
 logger = logging.getLogger(__name__)
 
-_MATERIALS_ROOT = Path(settings.output_dir) / "workspaces"
+_MATERIALS_ROOT = settings.data_path / "workspaces"
 
 
 # --- Schemas ---
@@ -47,8 +49,10 @@ class WorkspaceResponse(BaseModel):
     id: str
     name: str
     repo_path: str
-    indexed: bool
+    indexed: int
     index_job: str | None
+    analyze_status: str | None
+    analyze_progress: int
     created_at: str
     updated_at: str
     materials: list[WorkspaceMaterialResponse] = []
@@ -57,7 +61,8 @@ class WorkspaceResponse(BaseModel):
 
 def _row_to_workspace(row: aiosqlite.Row) -> dict:
     d = dict(row)
-    d["indexed"] = bool(d.get("indexed", 0))
+    d["indexed"] = int(d.get("indexed", 0))
+    d["analyze_progress"] = int(d.get("analyze_progress", 0))
     return d
 
 
@@ -67,6 +72,83 @@ async def _get_workspace_or_404(ws_id: str, db: aiosqlite.Connection) -> dict:
     if not row:
         raise HTTPException(status_code=404, detail=f"工作空间不存在：{ws_id}")
     return _row_to_workspace(row)
+
+
+# --- Background task: T6 GitNexus indexing ---
+
+async def _index_workspace(ws_id: str, repo_path: str) -> None:
+    """Index a workspace repo via GitNexus; updates indexed: 0=running, 1=done, -1=failed."""
+    async with aiosqlite.connect(settings.sqlite_db) as db:
+        await db.execute(
+            "UPDATE workspaces SET indexed = 0, index_job = NULL, updated_at = CURRENT_TIMESTAMP "
+            "WHERE id = ?",
+            (ws_id,),
+        )
+        await db.commit()
+
+    try:
+        async with httpx.AsyncClient(timeout=30.0, trust_env=False) as client:
+            resp = await client.post(
+                f"{settings.gitnexus_base_url}/api/analyze",
+                json={"path": repo_path},
+            )
+            resp.raise_for_status()
+            job_id: str = resp.json().get("jobId", "")
+
+        async with aiosqlite.connect(settings.sqlite_db) as db:
+            await db.execute(
+                "UPDATE workspaces SET index_job = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?",
+                (job_id, ws_id),
+            )
+            await db.commit()
+
+        deadline = asyncio.get_event_loop().time() + settings.gitnexus_poll_timeout
+        while asyncio.get_event_loop().time() < deadline:
+            await asyncio.sleep(5)
+            async with httpx.AsyncClient(timeout=10.0, trust_env=False) as client:
+                poll = await client.get(f"{settings.gitnexus_base_url}/api/analyze/{job_id}")
+                poll.raise_for_status()
+                status = poll.json().get("status", "")
+            if status == "complete":
+                break
+            if status == "failed":
+                raise RuntimeError("GitNexus reported indexing failure")
+        else:
+            raise TimeoutError("GitNexus indexing timed out")
+
+        async with aiosqlite.connect(settings.sqlite_db) as db:
+            await db.execute(
+                "UPDATE workspaces SET indexed = 1, updated_at = CURRENT_TIMESTAMP WHERE id = ?",
+                (ws_id,),
+            )
+            await db.commit()
+        logger.info("Workspace %s indexed successfully", ws_id)
+
+    except Exception as exc:
+        logger.error("Workspace indexing failed for %s: %s", ws_id, exc)
+        async with aiosqlite.connect(settings.sqlite_db) as db:
+            await db.execute(
+                "UPDATE workspaces SET indexed = -1, updated_at = CURRENT_TIMESTAMP WHERE id = ?",
+                (ws_id,),
+            )
+            await db.commit()
+
+
+async def _run_workspace_analysis(ws_id: str, repo_path: str) -> None:
+    """Background task: run WorkspacePipeline, update analyze_status on failure."""
+    from app.services.workspace_pipeline import WorkspacePipeline
+
+    try:
+        await WorkspacePipeline().run(ws_id, repo_path)
+    except Exception as exc:
+        logger.error("Workspace analysis failed for %s: %s", ws_id, exc)
+        async with aiosqlite.connect(settings.sqlite_db) as db:
+            await db.execute(
+                "UPDATE workspaces SET analyze_status = 'failed', "
+                "updated_at = CURRENT_TIMESTAMP WHERE id = ?",
+                (ws_id,),
+            )
+            await db.commit()
 
 
 # --- Endpoints ---
@@ -84,8 +166,11 @@ async def list_workspaces(db: aiosqlite.Connection = Depends(get_db)):
 async def create_workspace(
     data: WorkspaceCreate, db: aiosqlite.Connection = Depends(get_db)
 ):
-    if not Path(data.repo_path).exists():
+    repo = Path(data.repo_path)
+    if not repo.exists():
         raise HTTPException(status_code=422, detail=f"代码路径不存在：{data.repo_path}")
+    if not repo.is_dir():
+        raise HTTPException(status_code=422, detail=f"代码路径不是目录：{data.repo_path}")
 
     ws_id = str(uuid.uuid4())
     now = datetime.now(timezone.utc).isoformat()
@@ -95,6 +180,8 @@ async def create_workspace(
         (ws_id, data.name, data.repo_path, now, now),
     )
     await db.commit()
+
+    asyncio.create_task(_index_workspace(ws_id, data.repo_path))
 
     async with db.execute("SELECT * FROM workspaces WHERE id = ?", (ws_id,)) as cur:
         row = await cur.fetchone()
@@ -121,6 +208,82 @@ async def get_workspace(ws_id: str, db: aiosqlite.Connection = Depends(get_db)):
     ws["reports"] = reports
     return ws
 
+
+# --- T6: Index status endpoints ---
+
+@router.get("/{ws_id}/index-status")
+async def get_index_status(ws_id: str, db: aiosqlite.Connection = Depends(get_db)):
+    ws = await _get_workspace_or_404(ws_id, db)
+    return {"indexed": ws["indexed"], "index_job": ws.get("index_job")}
+
+
+@router.post("/{ws_id}/reindex", status_code=202)
+async def reindex_workspace(ws_id: str, db: aiosqlite.Connection = Depends(get_db)):
+    ws = await _get_workspace_or_404(ws_id, db)
+    asyncio.create_task(_index_workspace(ws_id, ws["repo_path"]))
+    return {"status": "indexing", "message": "重新索引已启动"}
+
+
+# --- T7: Analyze endpoints ---
+
+@router.post("/{ws_id}/analyze", status_code=202)
+async def analyze_workspace(ws_id: str, db: aiosqlite.Connection = Depends(get_db)):
+    ws = await _get_workspace_or_404(ws_id, db)
+    if ws["indexed"] != 1:
+        raise HTTPException(status_code=409, detail="工作空间尚未完成索引，请等待索引完成后再生成报告")
+    if ws.get("analyze_status") == "running":
+        raise HTTPException(status_code=409, detail="报告生成正在进行中")
+
+    await db.execute(
+        "UPDATE workspaces SET analyze_status = 'running', analyze_progress = 0, "
+        "updated_at = CURRENT_TIMESTAMP WHERE id = ?",
+        (ws_id,),
+    )
+    await db.commit()
+
+    asyncio.create_task(_run_workspace_analysis(ws_id, ws["repo_path"]))
+    return {"status": "running", "message": "工作空间分析已启动"}
+
+
+@router.get("/{ws_id}/analyze-status")
+async def get_analyze_status(ws_id: str, db: aiosqlite.Connection = Depends(get_db)):
+    ws = await _get_workspace_or_404(ws_id, db)
+
+    # While running, relay live progress from the shadow task
+    if ws.get("analyze_status") == "running":
+        async with db.execute(
+            "SELECT progress FROM tasks WHERE name = ?",
+            (f"__ws_{ws_id}",),
+        ) as cur:
+            task_row = await cur.fetchone()
+        if task_row:
+            return {
+                "analyze_status": "running",
+                "analyze_progress": int(task_row["progress"]),
+            }
+
+    return {
+        "analyze_status": ws.get("analyze_status"),
+        "analyze_progress": ws.get("analyze_progress", 0),
+    }
+
+
+@router.get("/{ws_id}/reports/{report_id}", response_model=WorkspaceReportResponse)
+async def get_report(
+    ws_id: str, report_id: str, db: aiosqlite.Connection = Depends(get_db)
+):
+    await _get_workspace_or_404(ws_id, db)
+    async with db.execute(
+        "SELECT * FROM workspace_reports WHERE id = ? AND workspace_id = ?",
+        (report_id, ws_id),
+    ) as cur:
+        row = await cur.fetchone()
+    if not row:
+        raise HTTPException(status_code=404, detail="报告不存在")
+    return dict(row)
+
+
+# --- Materials endpoints ---
 
 @router.post(
     "/{ws_id}/materials",

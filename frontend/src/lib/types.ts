@@ -156,8 +156,10 @@ export interface Workspace {
   id: string;
   name: string;
   repo_path: string;
-  indexed: boolean;
+  indexed: number;  // 0=indexing, 1=done, -1=failed
   index_job: string | null;
+  analyze_status: string | null;
+  analyze_progress: number;
   created_at: string;
   updated_at: string;
   materials: WorkspaceMaterial[];

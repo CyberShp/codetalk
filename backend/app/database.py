@@ -82,6 +82,8 @@ CREATE TABLE IF NOT EXISTS workspaces (
     repo_path TEXT NOT NULL,
     indexed INTEGER DEFAULT 0,
     index_job TEXT,
+    analyze_status TEXT,
+    analyze_progress INTEGER DEFAULT 0,
     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
     updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
 );
@@ -137,6 +139,8 @@ _MIGRATIONS = [
     "ALTER TABLE tasks ADD COLUMN prompt_content TEXT",
     "ALTER TABLE tasks ADD COLUMN current_step TEXT",
     "ALTER TABLE tasks ADD COLUMN deepwiki_depth TEXT DEFAULT 'balanced'",
+    "ALTER TABLE workspaces ADD COLUMN analyze_status TEXT",
+    "ALTER TABLE workspaces ADD COLUMN analyze_progress INTEGER DEFAULT 0",
 ]
 
 
