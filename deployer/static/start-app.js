@@ -321,8 +321,10 @@
       });
   }
 
-  function serviceAction(name, action) {
+  function serviceAction(btn, name, action) {
     var labels = { start: '启动', stop: '停止', restart: '重启' };
+    btn.disabled = true;
+    btn.classList.add('loading');
     appendLog('info', name + ' → ' + (labels[action] || action) + '...');
     fetch('/api/services/' + encodeURIComponent(name) + '/' + action, { method: 'POST' })
       .then(function (res) {
@@ -336,12 +338,18 @@
         return res.json();
       })
       .then(function () {
+        btn.classList.remove('loading');
+        btn.classList.add('action-success');
         appendLog('success', name + ' ' + (labels[action] || action) + '完成');
       })
       .catch(function (e) {
+        btn.classList.remove('loading');
+        btn.classList.add('action-error');
         appendLog('error', name + ' ' + (labels[action] || action) + '失败: ' + e.message);
       })
       .then(function () {
+        btn.disabled = false;
+        setTimeout(function () { btn.classList.remove('action-success', 'action-error'); }, 2500);
         fetchStatus();
       });
   }
@@ -392,7 +400,7 @@
       grid.addEventListener('click', function (e) {
         var btn = e.target.closest('.svc-btn');
         if (!btn || btn.disabled) return;
-        serviceAction(btn.dataset.svc, btn.dataset.action);
+        serviceAction(btn, btn.dataset.svc, btn.dataset.action);
       });
     }
 
