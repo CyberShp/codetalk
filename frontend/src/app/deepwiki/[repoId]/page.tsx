@@ -69,7 +69,10 @@ export default function DeepWikiRepoPage() {
   const [repo, setRepo] = useState<DeepWikiRepo | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
+  const [pageList, setPageList] = useState<{ id: string; title: string }[]>([]);
+  const [selectedPageIndex, setSelectedPageIndex] = useState<number | null>(null);
   const [selectedPage, setSelectedPage] = useState<DeepWikiPage | null>(null);
+  const [pageLoading, setPageLoading] = useState(false);
   const [generating, setGenerating] = useState(false);
   const pollRef = useRef<ReturnType<typeof setInterval> | null>(null);
 
@@ -80,7 +83,21 @@ export default function DeepWikiRepoPage() {
     }
   }
 
-  // Poll /status every 3s; only call full get() once generation finishes
+  async function loadPageList(id: string) {
+    const list = await api.deepwiki.pages(id);
+    setPageList(list);
+    if (list.length > 0) {
+      setSelectedPageIndex(0);
+      setPageLoading(true);
+      try {
+        const firstPage = await api.deepwiki.page(id, 0);
+        setSelectedPage(firstPage);
+      } finally {
+        setPageLoading(false);
+      }
+    }
+  }
+
   function startPolling() {
     if (pollRef.current) return;
     pollRef.current = setInterval(async () => {
@@ -93,8 +110,7 @@ export default function DeepWikiRepoPage() {
           stopPolling();
           const data = await api.deepwiki.get(repoId);
           setRepo(data);
-          const pages = data.pages ?? [];
-          if (pages.length > 0) setSelectedPage(pages[0]);
+          await loadPageList(repoId);
           setGenerating(false);
         }
       } catch {
@@ -106,11 +122,11 @@ export default function DeepWikiRepoPage() {
   useEffect(() => {
     api.deepwiki
       .get(repoId)
-      .then((data) => {
+      .then(async (data) => {
         setRepo(data);
-        const pages = data.pages ?? [];
-        if (pages.length > 0) setSelectedPage(pages[0]);
-        if (data.status === "running") {
+        if (data.status === "completed") {
+          await loadPageList(repoId);
+        } else if (data.status === "running") {
           setGenerating(true);
           startPolling();
         }
@@ -119,14 +135,31 @@ export default function DeepWikiRepoPage() {
       .finally(() => setLoading(false));
 
     return stopPolling;
-    // startPolling/stopPolling use refs only — stable, safe to omit from deps
+    // startPolling/stopPolling/loadPageList use refs or stable api — safe to omit from deps
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [repoId]);
+
+  async function selectPage(index: number) {
+    if (selectedPageIndex === index) return;
+    setSelectedPageIndex(index);
+    setPageLoading(true);
+    try {
+      const pageData = await api.deepwiki.page(repoId, index);
+      setSelectedPage(pageData);
+    } catch {
+      // silently ignore transient error
+    } finally {
+      setPageLoading(false);
+    }
+  }
 
   async function handleGenerate() {
     if (!repo) return;
     setGenerating(true);
     setError(null);
+    setPageList([]);
+    setSelectedPage(null);
+    setSelectedPageIndex(null);
     try {
       await api.deepwiki.generate(repoId);
       setRepo((prev) => prev ? { ...prev, status: "running", progress: 0 } : prev);
@@ -154,8 +187,6 @@ export default function DeepWikiRepoPage() {
       </div>
     );
   }
-
-  const pages: DeepWikiPage[] = repo.pages ?? [];
 
   return (
     <div className="flex flex-col h-full min-h-0">
@@ -193,32 +224,36 @@ export default function DeepWikiRepoPage() {
       </div>
 
       {/* 3-column layout */}
-      {repo.status === "completed" && pages.length > 0 ? (
+      {repo.status === "completed" && pageList.length > 0 ? (
         <div className="flex flex-1 min-h-0 gap-0 mt-4">
-          {/* Left: page list */}
+          {/* Left: page title list */}
           <div className="w-56 shrink-0 flex flex-col gap-0.5 overflow-y-auto pr-2 border-r border-outline-variant/20">
-            {pages.map((page) => (
+            {pageList.map((item, index) => (
               <button
-                key={page.id}
-                onClick={() => setSelectedPage(page)}
+                key={item.id}
+                onClick={() => void selectPage(index)}
                 className={`flex items-center gap-2 px-3 py-2 rounded-lg text-left w-full transition-colors text-sm ${
-                  selectedPage?.id === page.id
+                  selectedPageIndex === index
                     ? "bg-primary/10 text-primary"
                     : "text-on-surface-variant hover:bg-surface-container hover:text-on-surface"
                 }`}
               >
                 <FileText size={14} className="shrink-0" />
-                <span className="truncate">{page.title}</span>
-                {selectedPage?.id === page.id && (
+                <span className="truncate">{item.title}</span>
+                {selectedPageIndex === index && (
                   <ChevronRight size={12} className="shrink-0 ml-auto" />
                 )}
               </button>
             ))}
           </div>
 
-          {/* Center: page content */}
+          {/* Center: page content (lazy-loaded per selection) */}
           <div className="flex-1 min-w-0 overflow-y-auto px-6">
-            {selectedPage ? (
+            {pageLoading ? (
+              <div className="flex justify-center items-center h-full">
+                <Loader2 size={20} className="animate-spin text-primary" />
+              </div>
+            ) : selectedPage ? (
               <>
                 <h2 className="text-xl font-bold text-on-surface mb-4">
                   {selectedPage.title}
@@ -233,7 +268,7 @@ export default function DeepWikiRepoPage() {
           </div>
 
           {/* Right: metadata panel */}
-          {selectedPage && (
+          {selectedPage && !pageLoading && (
             <div className="w-52 shrink-0 flex flex-col gap-4 pl-4 border-l border-outline-variant/20 overflow-y-auto">
               {selectedPage.importance && (
                 <div>
@@ -278,14 +313,16 @@ export default function DeepWikiRepoPage() {
                   <p className="text-xs text-on-surface-variant mb-1.5">相关页面</p>
                   <ul className="flex flex-col gap-1">
                     {selectedPage.relatedPages.map((relId) => {
-                      const rel = pages.find((p) => p.id === relId);
+                      const relIdx = pageList.findIndex((p) => p.id === relId);
+                      const relTitle = relIdx !== -1 ? pageList[relIdx].title : relId;
                       return (
                         <li key={relId}>
                           <button
-                            onClick={() => rel && setSelectedPage(rel)}
-                            className="text-xs text-primary hover:underline text-left"
+                            onClick={() => relIdx !== -1 && void selectPage(relIdx)}
+                            disabled={relIdx === -1}
+                            className="text-xs text-primary hover:underline text-left disabled:opacity-50 disabled:cursor-not-allowed"
                           >
-                            {rel?.title ?? relId}
+                            {relTitle}
                           </button>
                         </li>
                       );
