@@ -327,7 +327,7 @@ async def send_chat_message(
         chunks: list[str] = []
         had_error = False
         try:
-            async for delta in llm.stream_complete(messages, max_tokens=2048, temperature=0.5):
+            async for delta in llm.stream_complete(messages, max_tokens=min(2048, settings.llm_max_output_tokens), temperature=0.5):
                 chunks.append(delta)
                 yield f"data: {json.dumps({'content': delta, 'done': False}, ensure_ascii=False)}\n\n"
         except Exception as exc:
