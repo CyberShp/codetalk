@@ -390,13 +390,14 @@ async def workspace_chat_stream(
         persist_assistant_reply,
     )
 
-    # Fix 3a: persist user message before stream starts so it's never lost
+    # Fix 3a: build context first so _load_history() excludes this turn's user message,
+    # then persist — message is still saved before streaming begins
+    messages = await build_chat_messages(ws_id, ws["repo_path"], body.message, body.mode)
+
     try:
         await persist_user_message(ws_id, body.mode, body.message)
     except Exception as exc:
         logger.error("Failed to persist user message: %s", exc)
-
-    messages = await build_chat_messages(ws_id, ws["repo_path"], body.message, body.mode)
 
     ws_mode = body.mode
 
