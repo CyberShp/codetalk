@@ -138,6 +138,16 @@ export default function DeepWikiPage() {
       .finally(() => setLoading(false));
   }, []);
 
+  // Auto-refresh list while any repo is generating
+  useEffect(() => {
+    const hasRunning = repos.some((r) => r.status === "running");
+    if (!hasRunning) return;
+    const id = setInterval(() => {
+      api.deepwiki.list().then(setRepos).catch(() => undefined);
+    }, 5000);
+    return () => clearInterval(id);
+  }, [repos]);
+
   function handleCreated(repo: RepoListItem) {
     setRepos((prev) => [repo, ...prev]);
   }

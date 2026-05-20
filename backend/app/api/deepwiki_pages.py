@@ -23,7 +23,9 @@ from app.adapters.deepwiki import DeepWikiClient
 router = APIRouter(prefix="/api/deepwiki", tags=["DeepWiki"])
 logger = logging.getLogger(__name__)
 
-# In-memory progress tracking keyed by repo_id
+# In-memory progress tracking keyed by repo_id; survives only within a process lifetime.
+# On startup, database.py resets any DB rows stuck in 'running' to 'failed', so the two
+# sources of truth (in-memory and DB) are always consistent after restart.
 _generation_status: dict[str, dict[str, Any]] = {}
 
 
@@ -50,6 +52,40 @@ async def _get_repo_or_404(repo_id: str, db: aiosqlite.Connection) -> dict[str, 
     return _row_to_repo(row)
 
 
+def _extract_pages(wiki_data_raw: str | None) -> list[dict[str, Any]]:
+    """Normalize wiki_data JSON to a stable page list.
+
+    Handles two shapes returned by different DeepWiki versions:
+    - {"pages": [...]}  — from adapter's get_wiki_structure direct response
+    - {"generated_pages": {id: {...}}}  — from legacy DeepWiki wiki.py flow
+    """
+    if not wiki_data_raw:
+        return []
+    try:
+        wiki = json.loads(wiki_data_raw)
+    except (json.JSONDecodeError, TypeError):
+        return []
+
+    if "pages" in wiki and isinstance(wiki["pages"], list):
+        return wiki["pages"]
+
+    generated = wiki.get("generated_pages", {})
+    if isinstance(generated, dict) and generated:
+        return [
+            {
+                "id": page_data.get("id", page_id),
+                "title": page_data.get("title", page_id),
+                "content": page_data.get("content", ""),
+                "filePaths": page_data.get("filePaths", []),
+                "importance": page_data.get("importance", "medium"),
+                "relatedPages": page_data.get("relatedPages", []),
+            }
+            for page_id, page_data in generated.items()
+        ]
+
+    return []
+
+
 # ── Endpoints ──
 
 @router.get("/repos")
@@ -68,9 +104,14 @@ async def create_repo(
     data: DeepWikiRepoCreate, db: aiosqlite.Connection = Depends(get_db)
 ):
     """Register a local repo path for DeepWiki indexing."""
-    if not Path(data.repo_path).exists():
+    repo_path = Path(data.repo_path)
+    if not repo_path.exists():
         raise HTTPException(
-            status_code=422, detail=f"仓库路径不存在：{data.repo_path}"
+            status_code=422, detail=f"路径不存在：{data.repo_path}"
+        )
+    if not repo_path.is_dir():
+        raise HTTPException(
+            status_code=422, detail=f"路径不是目录：{data.repo_path}"
         )
 
     repo_id = str(uuid.uuid4())
@@ -97,20 +138,30 @@ async def create_repo(
 
 @router.get("/repos/{repo_id}")
 async def get_repo(repo_id: str, db: aiosqlite.Connection = Depends(get_db)):
-    """Get repo detail including wiki_data (parsed page list)."""
+    """Get repo detail including normalized page list."""
     repo = await _get_repo_or_404(repo_id, db)
-
-    raw = repo.get("wiki_data")
-    if raw:
-        try:
-            wiki = json.loads(raw)
-            repo["pages"] = wiki.get("pages", [])
-        except (json.JSONDecodeError, TypeError):
-            repo["pages"] = []
-    else:
-        repo["pages"] = []
-
+    repo["pages"] = _extract_pages(repo.get("wiki_data"))
     return repo
+
+
+@router.get("/repos/{repo_id}/pages")
+async def list_pages(repo_id: str, db: aiosqlite.Connection = Depends(get_db)):
+    """List all pages for a repo (id + title only, no heavy content)."""
+    repo = await _get_repo_or_404(repo_id, db)
+    pages = _extract_pages(repo.get("wiki_data"))
+    return [{"id": p["id"], "title": p["title"]} for p in pages]
+
+
+@router.get("/repos/{repo_id}/pages/{page_index}")
+async def get_page(
+    repo_id: str, page_index: int, db: aiosqlite.Connection = Depends(get_db)
+):
+    """Get a single page by zero-based index."""
+    repo = await _get_repo_or_404(repo_id, db)
+    pages = _extract_pages(repo.get("wiki_data"))
+    if page_index < 0 or page_index >= len(pages):
+        raise HTTPException(status_code=404, detail="页面不存在")
+    return pages[page_index]
 
 
 @router.post("/repos/{repo_id}/generate")
@@ -132,12 +183,24 @@ async def generate_wiki(repo_id: str, db: aiosqlite.Connection = Depends(get_db)
 
     repo_path = repo["repo_path"]
 
+    async def _update_progress(pct: int) -> None:
+        _generation_status[repo_id] = {"running": True, "progress": pct, "error": None}
+        async with aiosqlite.connect(settings.sqlite_db) as db2:
+            db2.row_factory = aiosqlite.Row
+            await db2.execute(
+                "UPDATE deepwiki_repos SET progress = ?, updated_at = ? WHERE id = ?",
+                (pct, datetime.now(timezone.utc).isoformat(), repo_id),
+            )
+            await db2.commit()
+
     async def _run() -> None:
         client = DeepWikiClient()
         try:
+            await _update_progress(20)
             wiki_data = await client.get_wiki_structure(repo_path)
-            pages = wiki_data.get("pages", [])
-            page_count = len(pages) if isinstance(pages, list) else 0
+            await _update_progress(90)
+            pages = _extract_pages(json.dumps(wiki_data))
+            page_count = len(pages)
             done_at = datetime.now(timezone.utc).isoformat()
             async with aiosqlite.connect(settings.sqlite_db) as db2:
                 db2.row_factory = aiosqlite.Row
@@ -161,7 +224,8 @@ async def generate_wiki(repo_id: str, db: aiosqlite.Connection = Depends(get_db)
             async with aiosqlite.connect(settings.sqlite_db) as db2:
                 db2.row_factory = aiosqlite.Row
                 await db2.execute(
-                    "UPDATE deepwiki_repos SET status = 'failed', updated_at = ? WHERE id = ?",
+                    "UPDATE deepwiki_repos SET status = 'failed', progress = 0, updated_at = ?"
+                    " WHERE id = ?",
                     (error_at, repo_id),
                 )
                 await db2.commit()
@@ -177,9 +241,17 @@ async def generate_wiki(repo_id: str, db: aiosqlite.Connection = Depends(get_db)
 
 @router.get("/repos/{repo_id}/status")
 async def get_status(repo_id: str, db: aiosqlite.Connection = Depends(get_db)):
-    """Get live generation progress for a repo."""
-    await _get_repo_or_404(repo_id, db)
-    status = _generation_status.get(repo_id)
-    if not status:
-        return {"running": False, "progress": 0, "error": None}
-    return status
+    """Get live generation progress for a repo.
+
+    Returns in-memory status (updated during the active run) merged with DB status
+    as fallback, so the caller always gets a consistent answer even after restart.
+    """
+    repo = await _get_repo_or_404(repo_id, db)
+    mem = _generation_status.get(repo_id)
+    if mem:
+        return mem
+    return {
+        "running": repo["status"] == "running",
+        "progress": repo["progress"],
+        "error": None,
+    }
