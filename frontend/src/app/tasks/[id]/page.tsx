@@ -48,7 +48,6 @@ export default function TaskDetailPage() {
   const [task, setTask] = useState<Task | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
-  const [running, setRunning] = useState(false);
   const [steps, setSteps] = useState<TaskStep[]>([]);
 
   // Only show the full-page spinner on the very first fetch.
@@ -80,19 +79,6 @@ export default function TaskDetailPage() {
     const taskTimer = setInterval(loadTask, 8000);
     return () => clearInterval(taskTimer);
   }, [task?.status, loadTask]);
-
-  const handleRun = useCallback(async () => {
-    if (!taskId) return;
-    setRunning(true);
-    try {
-      await api.tasks.run(taskId);
-      await loadTask();
-    } catch (err: unknown) {
-      setError(err instanceof Error ? err.message : "启动失败");
-    } finally {
-      setRunning(false);
-    }
-  }, [taskId, loadTask]);
 
   const loadSteps = useCallback(async () => {
     if (!taskId) return;
@@ -283,28 +269,7 @@ export default function TaskDetailPage() {
         </div>
       )}
 
-      {/* Action Buttons */}
-      {(task.status === "pending" || task.status === "failed") && (
-        <div className="flex gap-3">
-          <button
-            onClick={handleRun}
-            disabled={running}
-            className="flex-1 flex items-center justify-center gap-2 px-4 py-3 bg-primary text-on-primary font-medium rounded-lg hover:opacity-90 transition-opacity disabled:opacity-50 disabled:cursor-not-allowed"
-          >
-            {running ? (
-              <>
-                <Loader2 size={16} className="animate-spin" />
-                启动中...
-              </>
-            ) : (
-              <>
-                <PlayCircle size={16} />
-                开始分析
-              </>
-            )}
-          </button>
-        </div>
-      )}
+      {/* Action Buttons — read-only: only show report/export for completed tasks */}
       {(task.status === "completed" || task.status === "completed_with_warnings") && (
         <div className="flex gap-3">
           <Link
