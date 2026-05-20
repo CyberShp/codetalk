@@ -158,12 +158,15 @@ async def _load_report_summaries(ws_id: str) -> list[str]:
 
 
 async def _load_history(ws_id: str) -> list[dict]:
-    """Load last _HISTORY_LIMIT chat turns for multi-turn context."""
+    """Load most-recent _HISTORY_LIMIT messages in chronological order for LLM context."""
     async with aiosqlite.connect(settings.sqlite_db) as db:
         db.row_factory = aiosqlite.Row
+        # Fix 2: DESC LIMIT gets newest N rows; outer ASC re-sorts for chronological context
         async with db.execute(
-            "SELECT role, content FROM workspace_chats "
-            "WHERE workspace_id = ? ORDER BY created_at ASC LIMIT ?",
+            "SELECT role, content FROM ("
+            "  SELECT role, content, created_at FROM workspace_chats"
+            "  WHERE workspace_id = ? ORDER BY created_at DESC LIMIT ?"
+            ") ORDER BY created_at ASC",
             (ws_id, _HISTORY_LIMIT),
         ) as cur:
             return [{"role": r["role"], "content": r["content"]} for r in await cur.fetchall()]
@@ -206,13 +209,8 @@ async def build_chat_messages(
     return messages
 
 
-async def persist_chat(
-    ws_id: str,
-    mode: str,
-    user_message: str,
-    assistant_reply: str,
-) -> None:
-    """Persist one conversation turn (user + assistant) to workspace_chats."""
+async def persist_user_message(ws_id: str, mode: str, user_message: str) -> None:
+    """Persist the user message before streaming starts — never lost even if stream fails."""
     now = datetime.now(timezone.utc).isoformat()
     async with aiosqlite.connect(settings.sqlite_db) as db:
         await db.execute(
@@ -220,9 +218,16 @@ async def persist_chat(
             "VALUES (?, ?, ?, 'user', ?, ?)",
             (str(uuid.uuid4()), ws_id, mode, user_message, now),
         )
+        await db.commit()
+
+
+async def persist_assistant_reply(ws_id: str, mode: str, reply: str) -> None:
+    """Persist the assistant reply after streaming completes."""
+    now = datetime.now(timezone.utc).isoformat()
+    async with aiosqlite.connect(settings.sqlite_db) as db:
         await db.execute(
             "INSERT INTO workspace_chats (id, workspace_id, mode, role, content, created_at) "
             "VALUES (?, ?, ?, 'assistant', ?, ?)",
-            (str(uuid.uuid4()), ws_id, mode, assistant_reply, now),
+            (str(uuid.uuid4()), ws_id, mode, reply, now),
         )
         await db.commit()

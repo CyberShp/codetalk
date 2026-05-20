@@ -150,7 +150,7 @@ function ReportCard({ report, wsId }: { report: WorkspaceReportMeta; wsId: strin
   );
 }
 
-function ChatPanel({ wsId }: { wsId: string }) {
+function ChatPanel({ wsId, indexed }: { wsId: string; indexed: number }) {
   const [messages, setMessages] = useState<WorkspaceChatMessage[]>([]);
   const [streamingContent, setStreamingContent] = useState("");
   const [input, setInput] = useState("");
@@ -158,6 +158,9 @@ function ChatPanel({ wsId }: { wsId: string }) {
   const [streaming, setStreaming] = useState(false);
   const [loadingHistory, setLoadingHistory] = useState(true);
   const bottomRef = useRef<HTMLDivElement>(null);
+
+  // Fix 1 (frontend): block chat until workspace is indexed
+  const canChat = indexed === 1;
 
   useEffect(() => {
     api.workspaces
@@ -173,11 +176,22 @@ function ChatPanel({ wsId }: { wsId: string }) {
 
   const handleSend = async () => {
     const text = input.trim();
-    if (!text || streaming) return;
+    if (!text || streaming || !canChat) return;
 
     setInput("");
     setStreaming(true);
     setStreamingContent("");
+
+    // Fix 3 (frontend): immediately show user bubble before waiting for SSE
+    const userBubble: WorkspaceChatMessage = {
+      id: `local-${Date.now()}`,
+      workspace_id: wsId,
+      mode,
+      role: "user",
+      content: text,
+      created_at: new Date().toISOString(),
+    };
+    setMessages((prev) => [...prev, userBubble]);
 
     try {
       const res = await api.workspaces.chatStream(wsId, text, mode);
@@ -340,20 +354,27 @@ function ChatPanel({ wsId }: { wsId: string }) {
         <div ref={bottomRef} />
       </div>
 
+      {/* Fix 1 (frontend): gate banner when not yet indexed */}
+      {!canChat && (
+        <div className="mt-3 px-4 py-2.5 rounded-xl bg-amber-400/10 border border-amber-400/20 text-xs text-amber-500">
+          {indexed === 0 ? "工作空间正在索引中，完成后可开始对话" : "工作空间索引失败，请重新索引后再对话"}
+        </div>
+      )}
+
       {/* Input area */}
       <div className="mt-3 flex gap-2">
         <textarea
           value={input}
           onChange={(e) => setInput(e.target.value)}
           onKeyDown={handleKeyDown}
-          placeholder="向代码库提问… (Enter 发送，Shift+Enter 换行)"
-          disabled={streaming}
+          placeholder={canChat ? "向代码库提问… (Enter 发送，Shift+Enter 换行)" : "等待索引完成后可对话…"}
+          disabled={streaming || !canChat}
           rows={2}
           className="flex-1 resize-none rounded-xl border border-outline-variant/30 bg-surface-container-low px-3 py-2 text-sm text-on-surface placeholder:text-on-surface-variant/40 focus:outline-none focus:border-primary/50 disabled:opacity-50"
         />
         <button
           onClick={handleSend}
-          disabled={!input.trim() || streaming}
+          disabled={!input.trim() || streaming || !canChat}
           className="self-end flex items-center gap-1.5 px-4 py-2 text-sm rounded-xl bg-primary text-on-primary hover:opacity-90 disabled:opacity-40 disabled:cursor-not-allowed transition-opacity"
         >
           {streaming ? <Loader2 size={14} className="animate-spin" /> : <Send size={14} />}
@@ -662,7 +683,7 @@ export default function WorkspaceDetailPage() {
       )}
 
       {/* Chat tab */}
-      {tab === "chat" && <ChatPanel wsId={wsId} />}
+      {tab === "chat" && <ChatPanel wsId={wsId} indexed={workspace.indexed} />}
     </div>
   );
 }

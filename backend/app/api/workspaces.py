@@ -374,19 +374,31 @@ async def workspace_chat_stream(
 ):
     ws = await _get_workspace_or_404(ws_id, db)
 
+    # Fix 1: indexed gate — chat requires a fully indexed workspace
+    if ws["indexed"] != 1:
+        raise HTTPException(status_code=409, detail="工作空间尚未完成索引，请等待索引完成后再对话")
+
     try:
         from app.llm.factory import create_llm_client_from_active
         llm = await create_llm_client_from_active()
     except Exception as exc:
         raise HTTPException(status_code=503, detail=f"LLM 不可用：{exc}")
 
-    from app.services.workspace_chat import build_chat_messages, persist_chat
+    from app.services.workspace_chat import (
+        build_chat_messages,
+        persist_user_message,
+        persist_assistant_reply,
+    )
+
+    # Fix 3a: persist user message before stream starts so it's never lost
+    try:
+        await persist_user_message(ws_id, body.mode, body.message)
+    except Exception as exc:
+        logger.error("Failed to persist user message: %s", exc)
 
     messages = await build_chat_messages(ws_id, ws["repo_path"], body.message, body.mode)
 
-    db_path = settings.sqlite_db
     ws_mode = body.mode
-    user_msg = body.message
 
     async def _generate():
         chunks: list[str] = []
@@ -400,12 +412,13 @@ async def workspace_chat_stream(
             had_error = True
             yield f"data: {json.dumps({'content': '', 'done': True, 'error': '生成失败，请重试'}, ensure_ascii=False)}\n\n"
         finally:
+            # Fix 3b: persist assistant reply independently after stream
             reply = "".join(chunks)
             if reply:
                 try:
-                    await persist_chat(ws_id, ws_mode, user_msg, reply)
+                    await persist_assistant_reply(ws_id, ws_mode, reply)
                 except Exception as exc:
-                    logger.error("Failed to persist workspace chat: %s", exc)
+                    logger.error("Failed to persist assistant reply: %s", exc)
 
         if not had_error:
             yield f"data: {json.dumps({'content': '', 'done': True}, ensure_ascii=False)}\n\n"
@@ -420,9 +433,13 @@ async def workspace_chat_history(
     db: aiosqlite.Connection = Depends(get_db),
 ):
     await _get_workspace_or_404(ws_id, db)
+    # Fix 2: return most-recent N messages in chronological order
     async with db.execute(
-        "SELECT id, workspace_id, mode, role, content, created_at "
-        "FROM workspace_chats WHERE workspace_id = ? ORDER BY created_at ASC LIMIT ?",
+        "SELECT id, workspace_id, mode, role, content, created_at FROM ("
+        "  SELECT id, workspace_id, mode, role, content, created_at"
+        "  FROM workspace_chats WHERE workspace_id = ?"
+        "  ORDER BY created_at DESC LIMIT ?"
+        ") ORDER BY created_at ASC",
         (ws_id, limit),
     ) as cur:
         return [dict(r) for r in await cur.fetchall()]
