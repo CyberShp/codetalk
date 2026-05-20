@@ -298,7 +298,7 @@ export const api = {
   // ── DeepWiki (V2) ──
   deepwiki: {
     list: () =>
-      request<Omit<DeepWikiRepo, "wiki_data" | "pages">[]>("/api/deepwiki/repos"),
+      request<DeepWikiRepo[]>("/api/deepwiki/repos"),
 
     create: (data: DeepWikiRepoCreate) =>
       request<DeepWikiRepo>("/api/deepwiki/repos", {

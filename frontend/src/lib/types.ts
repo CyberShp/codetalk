@@ -189,8 +189,6 @@ export interface DeepWikiRepo {
   page_count: number;
   status: DeepWikiStatus;
   progress: number;
-  wiki_data: string | null;
-  pages?: DeepWikiPage[];
   created_at: string;
   updated_at: string;
 }
