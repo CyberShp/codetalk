@@ -142,14 +142,17 @@ export interface WorkspaceMaterial {
   created_at: string;
 }
 
-export interface WorkspaceReport {
+export interface WorkspaceReportMeta {
   id: string;
   workspace_id: string;
   report_type: string;
   title: string | null;
-  content: string | null;
   status: WorkspaceReportStatus;
   created_at: string;
+}
+
+export interface WorkspaceReport extends WorkspaceReportMeta {
+  content: string | null;
 }
 
 export interface Workspace {
@@ -163,7 +166,7 @@ export interface Workspace {
   created_at: string;
   updated_at: string;
   materials: WorkspaceMaterial[];
-  reports: WorkspaceReport[];
+  reports: WorkspaceReportMeta[];
 }
 
 export interface WorkspaceCreate {

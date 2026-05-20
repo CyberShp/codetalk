@@ -161,6 +161,16 @@ async def init_db() -> None:
             " WHERE status = 'running'"
         )
 
+        # Reset workspaces stuck in background tasks from a prior crash
+        await db.execute(
+            "UPDATE workspaces SET indexed = -1, updated_at = CURRENT_TIMESTAMP"
+            " WHERE indexed = 0"
+        )
+        await db.execute(
+            "UPDATE workspaces SET analyze_status = 'failed', updated_at = CURRENT_TIMESTAMP"
+            " WHERE analyze_status = 'running'"
+        )
+
         await db.commit()
 
     from app.api.prompts import seed_default_template
