@@ -94,7 +94,7 @@ async def _analyze_module(
         file_details="\n".join(file_details_lines) or "无文件详情",
     )
 
-    resp = await llm.complete(prompt, max_tokens=4096)
+    resp = await llm.complete(prompt, max_tokens=min(4096, settings.llm_max_output_tokens))
 
     return {
         "module_path": module.module_path,
