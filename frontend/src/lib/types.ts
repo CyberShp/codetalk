@@ -169,6 +169,37 @@ export interface WorkspaceCreate {
   repo_path: string;
 }
 
+/* ── DeepWiki types (V2) ── */
+
+export type DeepWikiStatus = "pending" | "running" | "completed" | "failed";
+
+export interface DeepWikiPage {
+  id: string;
+  title: string;
+  content: string;
+  filePaths?: string[];
+  importance?: string;
+  relatedPages?: string[];
+}
+
+export interface DeepWikiRepo {
+  id: string;
+  repo_path: string;
+  name: string;
+  page_count: number;
+  status: DeepWikiStatus;
+  progress: number;
+  wiki_data: string | null;
+  pages?: DeepWikiPage[];
+  created_at: string;
+  updated_at: string;
+}
+
+export interface DeepWikiRepoCreate {
+  name: string;
+  repo_path: string;
+}
+
 /* ── Coverage analysis types ── */
 
 export type CoverageStatus = "parsed" | "analyzing" | "analyzed";

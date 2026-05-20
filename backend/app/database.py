@@ -118,6 +118,18 @@ CREATE TABLE IF NOT EXISTS workspace_chats (
 CREATE INDEX IF NOT EXISTS idx_workspace_materials_ws ON workspace_materials(workspace_id);
 CREATE INDEX IF NOT EXISTS idx_workspace_reports_ws ON workspace_reports(workspace_id);
 CREATE INDEX IF NOT EXISTS idx_workspace_chats_ws ON workspace_chats(workspace_id);
+
+CREATE TABLE IF NOT EXISTS deepwiki_repos (
+    id TEXT PRIMARY KEY,
+    repo_path TEXT NOT NULL UNIQUE,
+    name TEXT NOT NULL,
+    page_count INTEGER DEFAULT 0,
+    status TEXT DEFAULT 'pending',
+    progress INTEGER DEFAULT 0,
+    wiki_data TEXT,
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+);
 """
 
 _MIGRATIONS = [
