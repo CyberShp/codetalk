@@ -293,6 +293,33 @@ export const api = {
       request<void>(`/api/workspaces/${wsId}/materials/${matId}`, {
         method: "DELETE",
       }),
+
+    indexStatus: (id: string) =>
+      request<{ indexed: number; index_job: string | null }>(
+        `/api/workspaces/${id}/index-status`,
+      ),
+
+    reindex: (id: string) =>
+      request<{ status: string; message: string }>(
+        `/api/workspaces/${id}/reindex`,
+        { method: "POST" },
+      ),
+
+    analyze: (id: string) =>
+      request<{ status: string; message: string }>(
+        `/api/workspaces/${id}/analyze`,
+        { method: "POST" },
+      ),
+
+    analyzeStatus: (id: string) =>
+      request<{ analyze_status: string | null; analyze_progress: number }>(
+        `/api/workspaces/${id}/analyze-status`,
+      ),
+
+    report: (wsId: string, reportId: string) =>
+      request<import("./types").WorkspaceReport>(
+        `/api/workspaces/${wsId}/reports/${reportId}`,
+      ),
   },
 
   // ── DeepWiki (V2) ──
