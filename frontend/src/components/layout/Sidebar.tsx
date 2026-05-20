@@ -8,6 +8,8 @@ import {
   Settings,
   Wrench,
   Shield,
+  BookOpen,
+  FolderOpen,
 } from "lucide-react";
 import type { ReactNode } from "react";
 
@@ -19,6 +21,8 @@ interface NavItem {
 
 const navItems: NavItem[] = [
   { label: "仪表盘", href: "/", icon: <LayoutDashboard size={18} /> },
+  { label: "工作空间", href: "/workspaces", icon: <FolderOpen size={18} /> },
+  { label: "DeepWiki", href: "/deepwiki", icon: <BookOpen size={18} /> },
   { label: "新建分析", href: "/tasks/new", icon: <FilePlus2 size={18} /> },
   { label: "覆盖率分析", href: "/coverage", icon: <Shield size={18} /> },
   { label: "工具状态", href: "/tools", icon: <Wrench size={18} /> },

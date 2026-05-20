@@ -128,6 +128,47 @@ export interface ChatMessage {
   created_at: string;
 }
 
+/* ── Workspace types (V2) ── */
+
+export type WorkspaceMaterialType = "requirements" | "design" | "other";
+export type WorkspaceReportStatus = "pending" | "running" | "completed" | "failed";
+
+export interface WorkspaceMaterial {
+  id: string;
+  workspace_id: string;
+  filename: string;
+  content_type: WorkspaceMaterialType;
+  file_path: string;
+  created_at: string;
+}
+
+export interface WorkspaceReport {
+  id: string;
+  workspace_id: string;
+  report_type: string;
+  title: string | null;
+  content: string | null;
+  status: WorkspaceReportStatus;
+  created_at: string;
+}
+
+export interface Workspace {
+  id: string;
+  name: string;
+  repo_path: string;
+  indexed: boolean;
+  index_job: string | null;
+  created_at: string;
+  updated_at: string;
+  materials: WorkspaceMaterial[];
+  reports: WorkspaceReport[];
+}
+
+export interface WorkspaceCreate {
+  name: string;
+  repo_path: string;
+}
+
 /* ── Coverage analysis types ── */
 
 export type CoverageStatus = "parsed" | "analyzing" | "analyzed";
