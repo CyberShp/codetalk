@@ -318,5 +318,11 @@ export const api = {
       request<{ running: boolean; progress: number; error: string | null }>(
         `/api/deepwiki/repos/${id}/status`,
       ),
+
+    pages: (id: string) =>
+      request<{ id: string; title: string }[]>(`/api/deepwiki/repos/${id}/pages`),
+
+    page: (id: string, index: number) =>
+      request<import("./types").DeepWikiPage>(`/api/deepwiki/repos/${id}/pages/${index}`),
   },
 };

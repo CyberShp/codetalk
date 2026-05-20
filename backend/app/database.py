@@ -151,6 +151,12 @@ async def init_db() -> None:
                 if "duplicate column" not in str(exc).lower():
                     raise
 
+        # Reset any deepwiki_repos rows stuck in 'running' from a prior crash
+        await db.execute(
+            "UPDATE deepwiki_repos SET status = 'failed', updated_at = CURRENT_TIMESTAMP"
+            " WHERE status = 'running'"
+        )
+
         await db.commit()
 
     from app.api.prompts import seed_default_template

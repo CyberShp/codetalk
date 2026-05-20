@@ -1,6 +1,6 @@
 "use client";
 
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { useParams } from "next/navigation";
 import Link from "next/link";
 import {
@@ -73,47 +73,60 @@ export default function DeepWikiRepoPage() {
   const [generating, setGenerating] = useState(false);
   const pollRef = useRef<ReturnType<typeof setInterval> | null>(null);
 
-  const loadRepo = useCallback(async () => {
-    try {
-      const data = await api.deepwiki.get(repoId);
-      setRepo(data);
-      if (data.pages && data.pages.length > 0 && !selectedPage) {
-        setSelectedPage(data.pages[0]);
-      }
-      return data;
-    } catch (err: unknown) {
-      setError(err instanceof Error ? err.message : "加载失败");
-      return null;
+  function stopPolling() {
+    if (pollRef.current) {
+      clearInterval(pollRef.current);
+      pollRef.current = null;
     }
-  }, [repoId, selectedPage]);
+  }
 
-  useEffect(() => {
-    loadRepo().finally(() => setLoading(false));
-  }, [loadRepo]);
-
+  // Poll /status every 3s; only call full get() once generation finishes
   function startPolling() {
     if (pollRef.current) return;
     pollRef.current = setInterval(async () => {
-      const data = await loadRepo();
-      if (data && data.status !== "running") {
-        if (pollRef.current) {
-          clearInterval(pollRef.current);
-          pollRef.current = null;
+      try {
+        const status = await api.deepwiki.status(repoId);
+        setRepo((prev) =>
+          prev ? { ...prev, progress: status.progress } : prev
+        );
+        if (!status.running) {
+          stopPolling();
+          const data = await api.deepwiki.get(repoId);
+          setRepo(data);
+          const pages = data.pages ?? [];
+          if (pages.length > 0) setSelectedPage(pages[0]);
+          setGenerating(false);
         }
-        setGenerating(false);
+      } catch {
+        // transient network error — keep polling
       }
     }, 3000);
   }
 
   useEffect(() => {
-    return () => {
-      if (pollRef.current) clearInterval(pollRef.current);
-    };
-  }, []);
+    api.deepwiki
+      .get(repoId)
+      .then((data) => {
+        setRepo(data);
+        const pages = data.pages ?? [];
+        if (pages.length > 0) setSelectedPage(pages[0]);
+        if (data.status === "running") {
+          setGenerating(true);
+          startPolling();
+        }
+      })
+      .catch((e: unknown) => setError(e instanceof Error ? e.message : "加载失败"))
+      .finally(() => setLoading(false));
+
+    return stopPolling;
+    // startPolling/stopPolling use refs only — stable, safe to omit from deps
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [repoId]);
 
   async function handleGenerate() {
     if (!repo) return;
     setGenerating(true);
+    setError(null);
     try {
       await api.deepwiki.generate(repoId);
       setRepo((prev) => prev ? { ...prev, status: "running", progress: 0 } : prev);
@@ -289,7 +302,9 @@ export default function DeepWikiRepoPage() {
             <BookOpen size={48} className="text-on-surface-variant/30" />
             {repo.status === "running" ? (
               <>
-                <p className="text-on-surface-variant text-sm">Wiki 正在生成中，请稍候…</p>
+                <p className="text-on-surface-variant text-sm">
+                  Wiki 正在生成中 {repo.progress > 0 ? `(${repo.progress}%)` : ""}，请稍候…
+                </p>
                 <RefreshCw size={20} className="animate-spin text-primary" />
               </>
             ) : repo.status === "failed" ? (
