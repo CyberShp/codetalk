@@ -61,6 +61,7 @@ class Settings(BaseSettings):
     deepwiki_default_depth: str = "balanced"
     deepwiki_provider: str = "openai"    # LLM provider for DeepWiki RAG (google, openai, ollama, etc.)
     health_check_timeout: int = 5    # seconds for tool health probes
+    llm_max_output_tokens: int = 8192  # LLM_MAX_OUTPUT_TOKENS — cap per-call output; set lower for intranet models
     gitnexus_poll_timeout: int = 600 # max seconds to wait for GitNexus indexing
     coverage_max_upload_mb: int = 100 # max single file size for coverage upload
 

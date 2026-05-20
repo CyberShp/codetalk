@@ -19,6 +19,7 @@ try:
 except Exception:  # ImportError or encoding download failure
     _tiktoken_enc = None
 
+from app.config import settings
 from app.llm.base import BaseLLMClient, LLMResponse
 from app.prompts.schemas import REPORT_FILE_MAP
 from app.prompts.templates import (
@@ -254,7 +255,7 @@ class ReportGenerator:
             if use_streaming and has_real_streaming:
                 full_content = await self._llm.stream_complete_collected(
                     messages=messages,
-                    max_tokens=MAX_OUTPUT_TOKENS,
+                    max_tokens=min(MAX_OUTPUT_TOKENS, settings.llm_max_output_tokens),
                     temperature=0.3,
                 )
 
@@ -291,7 +292,7 @@ class ReportGenerator:
             else:
                 response: LLMResponse = await self._llm.complete(
                     messages=messages,
-                    max_tokens=MAX_OUTPUT_TOKENS,
+                    max_tokens=min(MAX_OUTPUT_TOKENS, settings.llm_max_output_tokens),
                     temperature=0.3,
                 )
 

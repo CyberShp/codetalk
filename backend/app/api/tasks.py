@@ -148,8 +148,9 @@ async def run_task(
     if "gitnexus" in tools:
         try:
             async with httpx.AsyncClient(timeout=httpx.Timeout(settings.health_check_timeout), trust_env=False) as hc_client:
-                hc_resp = await hc_client.get(f"{settings.gitnexus_base_url}/api/health")
-                hc_resp.raise_for_status()
+                hc_resp = await hc_client.get(f"{settings.gitnexus_base_url}/api/info")
+                if hc_resp.status_code >= 500:
+                    hc_resp.raise_for_status()
         except Exception as exc:
             logger.warning("GitNexus health check failed: %s", exc)
             raise HTTPException(

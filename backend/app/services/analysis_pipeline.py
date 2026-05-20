@@ -792,14 +792,14 @@ class AnalysisPipeline:
         if has_real_streaming:
             content = await llm_client.stream_complete_collected(
                 messages=messages,
-                max_tokens=MAX_OUTPUT_TOKENS,
+                max_tokens=min(MAX_OUTPUT_TOKENS, settings.llm_max_output_tokens),
                 temperature=0.3,
             )
             tokens = BaseLLMClient.estimate_tokens(content)
         else:
             response: LLMResponse = await llm_client.complete(
                 messages=messages,
-                max_tokens=MAX_OUTPUT_TOKENS,
+                max_tokens=min(MAX_OUTPUT_TOKENS, settings.llm_max_output_tokens),
                 temperature=0.3,
             )
             content = response.content
@@ -939,7 +939,7 @@ class AnalysisPipeline:
             if has_real_streaming:
                 cross_content = await self._llm_client.stream_complete_collected(
                     messages=messages,
-                    max_tokens=MAX_OUTPUT_TOKENS,
+                    max_tokens=min(MAX_OUTPUT_TOKENS, settings.llm_max_output_tokens),
                     temperature=0.3,
                 )
                 cross_tokens = BaseLLMClient.estimate_tokens(cross_content)
@@ -947,7 +947,7 @@ class AnalysisPipeline:
             else:
                 response: LLMResponse = await self._llm_client.complete(
                     messages=messages,
-                    max_tokens=MAX_OUTPUT_TOKENS,
+                    max_tokens=min(MAX_OUTPUT_TOKENS, settings.llm_max_output_tokens),
                     temperature=0.3,
                 )
                 cross_content = response.content
