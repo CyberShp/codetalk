@@ -320,19 +320,19 @@ async def api_quickstart():
 
 async def _run_quickstart(deployer: NativeDeployer) -> None:
     """Start services only -- skip install/check steps."""
-    error_occurred = False
+    error_msg = ""
     try:
         await deployer._step_generate_config()
         await deployer._step_start_services()
         await deployer._step_health_check()
-    except Exception:
-        error_occurred = True
+    except Exception as exc:
+        error_msg = str(exc) or type(exc).__name__
     finally:
         _deploy_state["running"] = False
         q = _deploy_state.get("event_queue")
         if q is not None:
-            if error_occurred:
-                await q.put({"step": "done", "status": "error", "message": "Quickstart failed"})
+            if error_msg:
+                await q.put({"step": "done", "status": "error", "message": f"Quickstart failed: {error_msg}"})
             else:
                 await q.put({"step": "done", "status": "done", "message": "All services started"})
             await q.put(None)
@@ -348,6 +348,38 @@ async def api_service_restart(service: str):
         raise HTTPException(status_code=400, detail="Restart not supported in this deployment mode")
     try:
         return await deployer.restart_service(service)
+    except KeyError as exc:
+        raise HTTPException(status_code=404, detail=str(exc))
+    except RuntimeError as exc:
+        raise HTTPException(status_code=500, detail=str(exc))
+
+
+@app.post("/api/services/{service}/stop")
+async def api_service_stop(service: str):
+    """Stop a specific deployed service by name."""
+    deployer = _deploy_state.get("deployer")
+    if deployer is None:
+        raise HTTPException(status_code=400, detail="No deployer instance — run a deployment first")
+    if not hasattr(deployer, "stop_service"):
+        raise HTTPException(status_code=400, detail="Individual stop not supported in this deployment mode")
+    try:
+        return await deployer.stop_service(service)
+    except KeyError as exc:
+        raise HTTPException(status_code=404, detail=str(exc))
+    except RuntimeError as exc:
+        raise HTTPException(status_code=500, detail=str(exc))
+
+
+@app.post("/api/services/{service}/start")
+async def api_service_start(service: str):
+    """Start a specific deployed service by name (must have been started at least once before)."""
+    deployer = _deploy_state.get("deployer")
+    if deployer is None:
+        raise HTTPException(status_code=400, detail="No deployer instance — run a deployment first")
+    if not hasattr(deployer, "start_service"):
+        raise HTTPException(status_code=400, detail="Individual start not supported in this deployment mode")
+    try:
+        return await deployer.start_service(service)
     except KeyError as exc:
         raise HTTPException(status_code=404, detail=str(exc))
     except RuntimeError as exc:

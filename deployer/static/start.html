@@ -193,6 +193,65 @@
     .label-error    { color: var(--error); }
     .label-starting { color: var(--warning); }
 
+    /* ---- Per-service Action Buttons ---- */
+    .svc-actions {
+      display: flex;
+      gap: 6px;
+      margin-top: 4px;
+    }
+
+    .svc-btn {
+      flex: 1;
+      padding: 5px 0;
+      font-size: 0.72rem;
+      font-weight: 600;
+      border: 1px solid transparent;
+      border-radius: 6px;
+      cursor: pointer;
+      transition: all var(--transition);
+      text-align: center;
+      background: transparent;
+      line-height: 1;
+    }
+
+    .svc-btn:disabled {
+      opacity: 0.35;
+      cursor: not-allowed;
+    }
+
+    .svc-btn-start {
+      color: var(--success);
+      border-color: rgba(74, 222, 128, 0.3);
+      background: rgba(74, 222, 128, 0.08);
+    }
+
+    .svc-btn-start:hover:not(:disabled) {
+      background: rgba(74, 222, 128, 0.18);
+      border-color: rgba(74, 222, 128, 0.5);
+    }
+
+    .svc-btn-stop {
+      color: var(--error);
+      border-color: rgba(248, 113, 113, 0.3);
+      background: rgba(248, 113, 113, 0.08);
+    }
+
+    .svc-btn-stop:hover:not(:disabled) {
+      background: rgba(248, 113, 113, 0.18);
+      border-color: rgba(248, 113, 113, 0.5);
+    }
+
+    .svc-btn-restart {
+      color: var(--accent);
+      border-color: rgba(96, 165, 250, 0.3);
+      background: rgba(96, 165, 250, 0.08);
+    }
+
+    .svc-btn-restart:hover:not(:disabled) {
+      background: rgba(96, 165, 250, 0.18);
+      border-color: rgba(96, 165, 250, 0.5);
+    }
+
     /* ---- Terminal ---- */
     .start-terminal-section {
       margin-bottom: 32px;
@@ -394,6 +453,11 @@
         </div>
         <span class="svc-port" id="port-backend">:8100</span>
         <span class="svc-status-label label-stopped" id="label-backend">已停止</span>
+        <div class="svc-actions">
+          <button class="svc-btn svc-btn-start" data-action="start" data-svc="backend" type="button">启动</button>
+          <button class="svc-btn svc-btn-stop" data-action="stop" data-svc="backend" type="button">停止</button>
+          <button class="svc-btn svc-btn-restart" data-action="restart" data-svc="backend" type="button">重启</button>
+        </div>
       </div>
       <div class="svc-card" data-svc="frontend">
         <div class="svc-card-header">
@@ -402,6 +466,11 @@
         </div>
         <span class="svc-port" id="port-frontend">:3005</span>
         <span class="svc-status-label label-stopped" id="label-frontend">已停止</span>
+        <div class="svc-actions">
+          <button class="svc-btn svc-btn-start" data-action="start" data-svc="frontend" type="button">启动</button>
+          <button class="svc-btn svc-btn-stop" data-action="stop" data-svc="frontend" type="button">停止</button>
+          <button class="svc-btn svc-btn-restart" data-action="restart" data-svc="frontend" type="button">重启</button>
+        </div>
       </div>
       <div class="svc-card" data-svc="gitnexus">
         <div class="svc-card-header">
@@ -410,6 +479,11 @@
         </div>
         <span class="svc-port" id="port-gitnexus">:7100</span>
         <span class="svc-status-label label-stopped" id="label-gitnexus">已停止</span>
+        <div class="svc-actions">
+          <button class="svc-btn svc-btn-start" data-action="start" data-svc="gitnexus" type="button">启动</button>
+          <button class="svc-btn svc-btn-stop" data-action="stop" data-svc="gitnexus" type="button">停止</button>
+          <button class="svc-btn svc-btn-restart" data-action="restart" data-svc="gitnexus" type="button">重启</button>
+        </div>
       </div>
       <div class="svc-card" data-svc="deepwiki">
         <div class="svc-card-header">
@@ -418,6 +492,11 @@
         </div>
         <span class="svc-port" id="port-deepwiki">API :8091 / UI :3001</span>
         <span class="svc-status-label label-stopped" id="label-deepwiki">已停止</span>
+        <div class="svc-actions">
+          <button class="svc-btn svc-btn-start" data-action="start" data-svc="deepwiki" type="button">启动</button>
+          <button class="svc-btn svc-btn-stop" data-action="stop" data-svc="deepwiki" type="button">停止</button>
+          <button class="svc-btn svc-btn-restart" data-action="restart" data-svc="deepwiki" type="button">重启</button>
+        </div>
       </div>
     </div>
 

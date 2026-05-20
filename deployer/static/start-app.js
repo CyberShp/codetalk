@@ -143,6 +143,13 @@
         label.className = 'svc-status-label label-' + state;
         label.textContent = STATUS_LABELS[state] || state;
       }
+
+      var startBtn = $('[data-svc="' + svc + '"][data-action="start"]');
+      var stopBtn = $('[data-svc="' + svc + '"][data-action="stop"]');
+      var restartBtn = $('[data-svc="' + svc + '"][data-action="restart"]');
+      if (startBtn) startBtn.disabled = (state === 'running' || state === 'starting');
+      if (stopBtn) stopBtn.disabled = (state === 'stopped');
+      if (restartBtn) restartBtn.disabled = (state !== 'running');
     });
 
     // Show "Open CodeTalk" button when any service is running
@@ -314,6 +321,31 @@
       });
   }
 
+  function serviceAction(name, action) {
+    var labels = { start: '启动', stop: '停止', restart: '重启' };
+    appendLog('info', name + ' → ' + (labels[action] || action) + '...');
+    fetch('/api/services/' + encodeURIComponent(name) + '/' + action, { method: 'POST' })
+      .then(function (res) {
+        if (!res.ok) {
+          return res.json()
+            .catch(function () { return {}; })
+            .then(function (err) {
+              throw new Error(err.detail || 'HTTP ' + res.status);
+            });
+        }
+        return res.json();
+      })
+      .then(function () {
+        appendLog('success', name + ' ' + (labels[action] || action) + '完成');
+      })
+      .catch(function (e) {
+        appendLog('error', name + ' ' + (labels[action] || action) + '失败: ' + e.message);
+      })
+      .then(function () {
+        fetchStatus();
+      });
+  }
+
   // ---------------------------------------------------------------------------
   // UI helpers
   // ---------------------------------------------------------------------------
@@ -352,6 +384,15 @@
       clearBtn.addEventListener('click', function () {
         var log = $('#terminal-log');
         if (log) log.innerHTML = '';
+      });
+    }
+
+    var grid = $('#service-grid');
+    if (grid) {
+      grid.addEventListener('click', function (e) {
+        var btn = e.target.closest('.svc-btn');
+        if (!btn || btn.disabled) return;
+        serviceAction(btn.dataset.svc, btn.dataset.action);
       });
     }
 
