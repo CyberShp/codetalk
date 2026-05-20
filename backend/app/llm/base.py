@@ -145,8 +145,32 @@ class BaseLLMClient(ABC):
                     content += chunk
                 return content
             except (*_RETRYABLE_EXCEPTIONS, httpx.HTTPStatusError) as exc:
-                if isinstance(exc, httpx.HTTPStatusError) and exc.response.status_code < 500:
-                    raise
+                if isinstance(exc, httpx.HTTPStatusError):
+                    status = exc.response.status_code
+                    if status == 429:
+                        last_exc = exc
+                        if attempt < max_retries:
+                            retry_after = exc.response.headers.get("Retry-After")
+                            try:
+                                delay: float = float(retry_after) if retry_after else 0.0
+                            except (ValueError, TypeError):
+                                delay = 0.0
+                            if delay <= 0:
+                                delay = float(
+                                    _DEFAULT_BACKOFF_SECONDS[
+                                        min(attempt, len(_DEFAULT_BACKOFF_SECONDS) - 1)
+                                    ] * 2
+                                )
+                            logger.warning(
+                                "Stream rate limited (429), retrying in %.1fs (attempt %d/%d)",
+                                delay,
+                                attempt + 1,
+                                max_retries,
+                            )
+                            await asyncio.sleep(delay)
+                            continue
+                    elif status < 500:
+                        raise
                 last_exc = exc
                 if attempt < max_retries:
                     delay = _DEFAULT_BACKOFF_SECONDS[
