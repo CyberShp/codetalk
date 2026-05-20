@@ -47,20 +47,31 @@ export default function WorkbenchPage() {
   const [tools, setTools] = useState<ToolInfo[]>([]);
   const [loading, setLoading] = useState(true);
   const [toolsLoading, setToolsLoading] = useState(true);
+  const [sectionErrors, setSectionErrors] = useState<{
+    workspaces?: string;
+    repos?: string;
+    tasks?: string;
+  }>({});
 
   const loadData = useCallback(async () => {
     setLoading(true);
     setToolsLoading(true);
+    setSectionErrors({});
     const [wsResult, dwResult, taskResult, toolResult] = await Promise.allSettled([
       api.workspaces.list(),
       api.deepwiki.list(),
       api.tasks.list(),
       api.tools.status(),
     ]);
+    const errs: { workspaces?: string; repos?: string; tasks?: string } = {};
     if (wsResult.status === "fulfilled") setWorkspaces(wsResult.value);
+    else errs.workspaces = "加载失败，请刷新重试";
     if (dwResult.status === "fulfilled") setRepos(dwResult.value);
+    else errs.repos = "加载失败，请刷新重试";
     if (taskResult.status === "fulfilled") setTasks(taskResult.value);
+    else errs.tasks = "加载失败，请刷新重试";
     if (toolResult.status === "fulfilled") setTools(toolResult.value);
+    setSectionErrors(errs);
     setLoading(false);
     setToolsLoading(false);
   }, []);
@@ -165,6 +176,10 @@ export default function WorkbenchPage() {
               />
             ))}
           </div>
+        ) : sectionErrors.workspaces ? (
+          <div className="px-4 py-3 bg-red-500/10 border border-red-500/20 rounded-lg text-sm text-red-400">
+            工作空间{sectionErrors.workspaces}
+          </div>
         ) : workspaces.length === 0 ? (
           <div className="flex flex-col items-center justify-center h-32 rounded-xl border border-outline-variant/30 bg-surface-container-low gap-3">
             <FolderOpen size={28} className="text-on-surface-variant/40" />
@@ -231,6 +246,10 @@ export default function WorkbenchPage() {
               />
             ))}
           </div>
+        ) : sectionErrors.repos ? (
+          <div className="px-4 py-3 bg-red-500/10 border border-red-500/20 rounded-lg text-sm text-red-400">
+            DeepWiki 知识库{sectionErrors.repos}
+          </div>
         ) : repos.length === 0 ? (
           <div className="flex flex-col items-center justify-center h-32 rounded-xl border border-outline-variant/30 bg-surface-container-low gap-3">
             <BookOpen size={28} className="text-on-surface-variant/40" />
@@ -278,8 +297,8 @@ export default function WorkbenchPage() {
         )}
       </div>
 
-      {/* Recent Tasks — only rendered when tasks exist */}
-      {!loading && recentTasks.length > 0 && (
+      {/* Recent Tasks — rendered when tasks exist or when there's a fetch error */}
+      {!loading && (recentTasks.length > 0 || sectionErrors.tasks) && (
         <div>
           <div className="flex items-center justify-between mb-3">
             <h2 className="text-sm font-medium text-on-surface-variant flex items-center gap-2">
@@ -293,6 +312,11 @@ export default function WorkbenchPage() {
               查看全部
             </Link>
           </div>
+          {sectionErrors.tasks ? (
+            <div className="px-4 py-3 bg-red-500/10 border border-red-500/20 rounded-lg text-sm text-red-400">
+              历史任务{sectionErrors.tasks}
+            </div>
+          ) : null}
           <div className="space-y-2">
             {recentTasks.map((task) => {
               const cfg = TASK_STATUS_CONFIG[task.status];
