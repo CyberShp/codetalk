@@ -70,7 +70,7 @@ class WorkspacePipeline:
                 await db.execute(
                     """INSERT INTO workspace_reports
                            (id, workspace_id, report_type, title, content, status, created_at)
-                       VALUES (?, ?, ?, ?, ?, 'done', ?)""",
+                       VALUES (?, ?, ?, ?, ?, 'completed', ?)""",
                     (str(uuid.uuid4()), ws_id, report_type, filename, content, now),
                 )
 

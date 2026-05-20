@@ -17,7 +17,7 @@ import {
   BarChart2,
 } from "lucide-react";
 import { api } from "@/lib/api";
-import type { Workspace, WorkspaceReport } from "@/lib/types";
+import type { Workspace, WorkspaceReportMeta } from "@/lib/types";
 
 type Tab = "reports" | "materials";
 
@@ -80,8 +80,11 @@ function AnalyzeBadge({
   return null;
 }
 
-function ReportCard({ report }: { report: WorkspaceReport }) {
+function ReportCard({ report, wsId }: { report: WorkspaceReportMeta; wsId: string }) {
   const [expanded, setExpanded] = useState(false);
+  const [content, setContent] = useState<string | null>(null);
+  const [loadingContent, setLoadingContent] = useState(false);
+
   const LABELS: Record<string, string> = {
     module_map: "项目与模块地图",
     business_flow: "关键业务流程分析",
@@ -91,10 +94,26 @@ function ReportCard({ report }: { report: WorkspaceReport }) {
     traceability: "需求-设计-代码追踪",
   };
 
+  const handleToggle = async () => {
+    const next = !expanded;
+    setExpanded(next);
+    if (next && content === null && !loadingContent) {
+      setLoadingContent(true);
+      try {
+        const full = await api.workspaces.report(wsId, report.id);
+        setContent(full.content);
+      } catch {
+        setContent("（内容加载失败）");
+      } finally {
+        setLoadingContent(false);
+      }
+    }
+  };
+
   return (
     <div className="rounded-lg border border-outline-variant/30 bg-surface-container-low overflow-hidden">
       <button
-        onClick={() => setExpanded((v) => !v)}
+        onClick={handleToggle}
         className="w-full flex items-center justify-between px-4 py-3 hover:bg-surface-container transition-colors text-left"
       >
         <div className="flex items-center gap-2">
@@ -109,11 +128,17 @@ function ReportCard({ report }: { report: WorkspaceReport }) {
           <ChevronRight size={16} className="text-on-surface-variant" />
         )}
       </button>
-      {expanded && report.content && (
+      {expanded && (
         <div className="px-4 pb-4 border-t border-outline-variant/20">
-          <pre className="mt-3 text-xs text-on-surface-variant whitespace-pre-wrap leading-relaxed font-mono overflow-auto max-h-[500px]">
-            {report.content}
-          </pre>
+          {loadingContent ? (
+            <div className="flex justify-center mt-3">
+              <Loader2 size={16} className="animate-spin text-primary" />
+            </div>
+          ) : (
+            <pre className="mt-3 text-xs text-on-surface-variant whitespace-pre-wrap leading-relaxed font-mono overflow-auto max-h-[500px]">
+              {content ?? "（暂无内容）"}
+            </pre>
+          )}
         </div>
       )}
     </div>
@@ -375,7 +400,7 @@ export default function WorkspaceDetailPage() {
           ) : (
             <div className="space-y-3">
               {workspace.reports.map((report) => (
-                <ReportCard key={report.id} report={report} />
+                <ReportCard key={report.id} report={report} wsId={wsId} />
               ))}
             </div>
           )}

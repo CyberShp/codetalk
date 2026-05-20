@@ -6,7 +6,6 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 import aiosqlite
-import httpx
 from fastapi import APIRouter, Depends, HTTPException, UploadFile
 from pydantic import BaseModel, Field
 
@@ -35,7 +34,18 @@ class WorkspaceMaterialResponse(BaseModel):
     created_at: str
 
 
+class WorkspaceReportListItem(BaseModel):
+    """Report metadata only — no content. Used in workspace list/detail responses."""
+    id: str
+    workspace_id: str
+    report_type: str
+    title: str | None
+    status: str
+    created_at: str
+
+
 class WorkspaceReportResponse(BaseModel):
+    """Full report including content. Used in single-report fetch."""
     id: str
     workspace_id: str
     report_type: str
@@ -56,7 +66,7 @@ class WorkspaceResponse(BaseModel):
     created_at: str
     updated_at: str
     materials: list[WorkspaceMaterialResponse] = []
-    reports: list[WorkspaceReportResponse] = []
+    reports: list[WorkspaceReportListItem] = []
 
 
 def _row_to_workspace(row: aiosqlite.Row) -> dict:
@@ -77,7 +87,10 @@ async def _get_workspace_or_404(ws_id: str, db: aiosqlite.Connection) -> dict:
 # --- Background task: T6 GitNexus indexing ---
 
 async def _index_workspace(ws_id: str, repo_path: str) -> None:
-    """Index a workspace repo via GitNexus; updates indexed: 0=running, 1=done, -1=failed."""
+    """Index a workspace repo via GitNexusAdapter; updates indexed: 0=running, 1=done, -1=failed."""
+    from app.adapters.base import AnalysisRequest
+    from app.adapters.gitnexus import GitNexusAdapter
+
     async with aiosqlite.connect(settings.sqlite_db) as db:
         await db.execute(
             "UPDATE workspaces SET indexed = 0, index_job = NULL, updated_at = CURRENT_TIMESTAMP "
@@ -87,34 +100,8 @@ async def _index_workspace(ws_id: str, repo_path: str) -> None:
         await db.commit()
 
     try:
-        async with httpx.AsyncClient(timeout=30.0, trust_env=False) as client:
-            resp = await client.post(
-                f"{settings.gitnexus_base_url}/api/analyze",
-                json={"path": repo_path},
-            )
-            resp.raise_for_status()
-            job_id: str = resp.json().get("jobId", "")
-
-        async with aiosqlite.connect(settings.sqlite_db) as db:
-            await db.execute(
-                "UPDATE workspaces SET index_job = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?",
-                (job_id, ws_id),
-            )
-            await db.commit()
-
-        deadline = asyncio.get_event_loop().time() + settings.gitnexus_poll_timeout
-        while asyncio.get_event_loop().time() < deadline:
-            await asyncio.sleep(5)
-            async with httpx.AsyncClient(timeout=10.0, trust_env=False) as client:
-                poll = await client.get(f"{settings.gitnexus_base_url}/api/analyze/{job_id}")
-                poll.raise_for_status()
-                status = poll.json().get("status", "")
-            if status == "complete":
-                break
-            if status == "failed":
-                raise RuntimeError("GitNexus reported indexing failure")
-        else:
-            raise TimeoutError("GitNexus indexing timed out")
+        adapter = GitNexusAdapter(base_url=settings.gitnexus_base_url)
+        await adapter.prepare(AnalysisRequest(repo_local_path=repo_path))
 
         async with aiosqlite.connect(settings.sqlite_db) as db:
             await db.execute(
@@ -199,7 +186,8 @@ async def get_workspace(ws_id: str, db: aiosqlite.Connection = Depends(get_db)):
         materials = [dict(r) for r in await cur.fetchall()]
 
     async with db.execute(
-        "SELECT * FROM workspace_reports WHERE workspace_id = ? ORDER BY created_at",
+        "SELECT id, workspace_id, report_type, title, status, created_at"
+        " FROM workspace_reports WHERE workspace_id = ? ORDER BY created_at",
         (ws_id,),
     ) as cur:
         reports = [dict(r) for r in await cur.fetchall()]
