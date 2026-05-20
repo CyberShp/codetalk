@@ -138,9 +138,9 @@ async def create_repo(
 
 @router.get("/repos/{repo_id}")
 async def get_repo(repo_id: str, db: aiosqlite.Connection = Depends(get_db)):
-    """Get repo detail including normalized page list."""
+    """Get repo metadata (wiki_data excluded — use /pages and /pages/{index} for content)."""
     repo = await _get_repo_or_404(repo_id, db)
-    repo["pages"] = _extract_pages(repo.get("wiki_data"))
+    repo.pop("wiki_data", None)
     return repo
 
 
