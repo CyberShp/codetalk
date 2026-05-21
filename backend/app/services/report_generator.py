@@ -41,6 +41,39 @@ _DATA_QUALITY_PREFIX: dict[str, str] = {
     "poor": "注意：主要数据源均不可用，请基于模块摘要和常识进行推断分析\n\n",
 }
 
+_TABLE_RE = re.compile(r"\|.+\|.+\|")
+_MERMAID_RE = re.compile(r"```mermaid\b")
+_MERMAID_REQUIRED_TYPES = frozenset({"module_map", "business_flow"})
+
+
+def _validate_report_structure(content: str, report_type: str) -> str:
+    """Check LLM output for required structural elements.
+
+    Returns the content with a warning appended if structure is incomplete.
+    Non-blocking: never raises.
+    """
+    missing: list[str] = []
+
+    if not _TABLE_RE.search(content):
+        missing.append("Markdown 表格")
+
+    if report_type in _MERMAID_REQUIRED_TYPES and not _MERMAID_RE.search(content):
+        missing.append("Mermaid 图")
+
+    if not missing:
+        return content
+
+    logger.warning(
+        "Report %s missing structural elements: %s",
+        report_type,
+        ", ".join(missing),
+    )
+    warning = (
+        "\n\n> ⚠ 本报告格式未完全符合规范，"
+        f"缺失: {', '.join(missing)}"
+    )
+    return content + warning
+
 
 class ReportGenerator:
     """Generates analysis report files from module summaries via LLM."""
@@ -276,6 +309,8 @@ class ReportGenerator:
                     f"---\n\n"
                 )
 
+                full_content = _validate_report_structure(full_content, report_type)
+
                 filepath = self._output_dir / filename
                 content = header + full_content
                 await asyncio.to_thread(filepath.write_text, content, "utf-8")
@@ -310,6 +345,8 @@ class ReportGenerator:
                     f"tokens: {response.usage.get('total_tokens', 0)}\n"
                     f"---\n\n"
                 )
+
+                validated_content = _validate_report_structure(response.content, report_type)
 
                 filepath = self._output_dir / filename
                 content = header + validated_content
