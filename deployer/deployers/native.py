@@ -439,6 +439,36 @@ class NativeDeployer:
     # Step 4: Install GitNexus
     # ------------------------------------------------------------------
 
+    def _resolve_gitnexus_cmd(self) -> list[str]:
+        """Resolve the gitnexus binary path by probing install locations."""
+        if cached := self._config.get("_gitnexus_cmd"):
+            if isinstance(cached, list) and cached:
+                return cached
+
+        workspace = self._workspace_path()
+        gn_dir = workspace / "gitnexus"
+        if sys.platform == "win32":
+            local_bin = gn_dir / "node_modules" / ".bin" / "gitnexus.cmd"
+        else:
+            local_bin = gn_dir / "node_modules" / ".bin" / "gitnexus"
+
+        if local_bin.exists():
+            cmd = [str(local_bin)]
+            self._config["_gitnexus_cmd"] = cmd
+            print(f"[deployer] Resolved gitnexus binary: {local_bin}")
+            return cmd
+
+        vendor_entry = VENDOR_DIR / "gitnexus" / "dist" / "cli" / "index.js"
+        if vendor_entry.exists():
+            cmd = ["node", str(vendor_entry)]
+            self._config["_gitnexus_cmd"] = cmd
+            print(f"[deployer] Resolved gitnexus binary: vendor ({vendor_entry})")
+            return cmd
+
+        fallback = "gitnexus.cmd" if sys.platform == "win32" else "gitnexus"
+        print(f"[deployer] WARNING: No local/vendor gitnexus found, falling back to PATH: {fallback}")
+        return [fallback]
+
     def _workspace_path(self) -> Path:
         ws = self._config.get("workspace_path", "./workspace")
         p = Path(ws)
@@ -676,8 +706,7 @@ class NativeDeployer:
         )
 
         if cfg.get("install_gitnexus", True):
-            _gn_default = ["gitnexus.cmd" if sys.platform == "win32" else "gitnexus"]
-            gitnexus_cmd = cfg.get("_gitnexus_cmd", _gn_default)
+            gitnexus_cmd = self._resolve_gitnexus_cmd()
             await self._start_process(
                 "gitnexus",
                 [*gitnexus_cmd, "serve", "--port", str(gitnexus_port), "--host", "0.0.0.0"],
@@ -907,7 +936,7 @@ class NativeDeployer:
                 "env_extra": {"PORT": str(cfg.get("frontend_port", 3005))},
             }
         if name == "gitnexus":
-            gn_cmd = cfg.get("_gitnexus_cmd", ["gitnexus.cmd" if sys.platform == "win32" else "gitnexus"])
+            gn_cmd = self._resolve_gitnexus_cmd()
             return {
                 "cmd": [*gn_cmd, "serve", "--port", str(cfg.get("gitnexus_port", 7100)), "--host", "0.0.0.0"],
                 "cwd": str(PROJECT_ROOT),
