@@ -412,6 +412,7 @@ export default function WorkspaceDetailPage() {
   const pollIndexRef = useRef<ReturnType<typeof setInterval> | null>(null);
   const pollAnalyzeRef = useRef<ReturnType<typeof setInterval> | null>(null);
   const hasLoadedRef = useRef(false);
+  const toggleVersion = useRef<Record<string, number>>({});
 
   const loadWorkspace = useCallback(async () => {
     try {
@@ -706,9 +707,10 @@ export default function WorkspaceDetailPage() {
                   <input
                     type="checkbox"
                     checked={mat.is_active}
-                    title={mat.is_active ? "已激活（参与对话/分析）" : "已停用"}
+                    title={mat.is_active ? "已激活（参与对话上下文）" : "已停用（不参与对话）"}
                     onChange={async (e) => {
                       const next = e.target.checked;
+                      const ver = (toggleVersion.current[mat.id] = (toggleVersion.current[mat.id] ?? 0) + 1);
                       setWorkspace((prev) =>
                         prev
                           ? { ...prev, materials: prev.materials.map((m) => m.id === mat.id ? { ...m, is_active: next } : m) }
@@ -717,6 +719,7 @@ export default function WorkspaceDetailPage() {
                       try {
                         await api.workspaces.toggleMaterial(wsId, mat.id, next);
                       } catch {
+                        if (toggleVersion.current[mat.id] !== ver) return;
                         setWorkspace((prev) =>
                           prev
                             ? { ...prev, materials: prev.materials.map((m) => m.id === mat.id ? { ...m, is_active: !next } : m) }
