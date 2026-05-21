@@ -10,6 +10,14 @@ import hljs from "highlight.js/lib/common";
 import "highlight.js/styles/github-dark.css";
 import MermaidRenderer from "./MermaidRenderer";
 
+function escapeHtml(s: string): string {
+  return s
+    .replace(/&/g, "&amp;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;")
+    .replace(/"/g, "&quot;");
+}
+
 /**
  * Slugify a heading for use as an id attribute.
  * Keeps Unicode characters (Chinese, Japanese, etc.) intact so that
@@ -142,7 +150,7 @@ export default function MarkdownRenderer({
                 ? hljs.highlight(raw, { language: lang }).value
                 : hljs.highlightAuto(raw).value;
           } catch {
-            highlighted = raw;
+            highlighted = escapeHtml(raw);
           }
           return (
             <div className="relative mb-4">
