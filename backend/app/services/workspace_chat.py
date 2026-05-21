@@ -111,7 +111,7 @@ async def _load_materials_text(ws_id: str) -> list[str]:
         db.row_factory = aiosqlite.Row
         async with db.execute(
             "SELECT filename, content_type, file_path FROM workspace_materials "
-            "WHERE workspace_id = ?",
+            "WHERE workspace_id = ? AND is_active = TRUE",
             (ws_id,),
         ) as cur:
             rows = [dict(r) for r in await cur.fetchall()]

@@ -94,6 +94,7 @@ CREATE TABLE IF NOT EXISTS workspace_materials (
     filename TEXT NOT NULL,
     content_type TEXT DEFAULT 'other',
     file_path TEXT NOT NULL,
+    is_active BOOLEAN NOT NULL DEFAULT TRUE,
     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
 );
 
@@ -141,6 +142,7 @@ _MIGRATIONS = [
     "ALTER TABLE tasks ADD COLUMN deepwiki_depth TEXT DEFAULT 'balanced'",
     "ALTER TABLE workspaces ADD COLUMN analyze_status TEXT",
     "ALTER TABLE workspaces ADD COLUMN analyze_progress INTEGER DEFAULT 0",
+    "ALTER TABLE workspace_materials ADD COLUMN is_active BOOLEAN NOT NULL DEFAULT TRUE",
 ]
 
 

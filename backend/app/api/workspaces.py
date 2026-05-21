@@ -33,7 +33,12 @@ class WorkspaceMaterialResponse(BaseModel):
     filename: str
     content_type: str
     file_path: str
+    is_active: bool = True
     created_at: str
+
+
+class ToggleMaterialBody(BaseModel):
+    is_active: bool
 
 
 class WorkspaceReportListItem(BaseModel):
@@ -300,8 +305,8 @@ async def upload_material(
     content_type = _guess_content_type(file.filename or "")
     await db.execute(
         """INSERT INTO workspace_materials
-               (id, workspace_id, filename, content_type, file_path, created_at)
-           VALUES (?, ?, ?, ?, ?, ?)""",
+               (id, workspace_id, filename, content_type, file_path, is_active, created_at)
+           VALUES (?, ?, ?, ?, ?, TRUE, ?)""",
         (mat_id, ws_id, file.filename or dest.name, content_type, str(dest), now),
     )
     await db.commit()
@@ -312,8 +317,31 @@ async def upload_material(
         "filename": file.filename or dest.name,
         "content_type": content_type,
         "file_path": str(dest),
+        "is_active": True,
         "created_at": now,
     }
+
+
+@router.patch("/{ws_id}/materials/{mat_id}", response_model=WorkspaceMaterialResponse)
+async def toggle_material(
+    ws_id: str, mat_id: str, body: ToggleMaterialBody, db: aiosqlite.Connection = Depends(get_db)
+):
+    await _get_workspace_or_404(ws_id, db)
+    async with db.execute(
+        "SELECT * FROM workspace_materials WHERE id = ? AND workspace_id = ?",
+        (mat_id, ws_id),
+    ) as cur:
+        row = await cur.fetchone()
+    if not row:
+        raise HTTPException(status_code=404, detail="材料不存在")
+    await db.execute(
+        "UPDATE workspace_materials SET is_active = ? WHERE id = ? AND workspace_id = ?",
+        (body.is_active, mat_id, ws_id),
+    )
+    await db.commit()
+    mat = dict(row)
+    mat["is_active"] = body.is_active
+    return mat
 
 
 @router.delete("/{ws_id}/materials/{mat_id}", status_code=204)
