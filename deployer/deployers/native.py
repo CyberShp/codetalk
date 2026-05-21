@@ -785,13 +785,23 @@ class NativeDeployer:
         if env_extra:
             env.update(env_extra)
 
-        proc = await asyncio.create_subprocess_exec(
-            *cmd,
-            stdout=asyncio.subprocess.PIPE,
-            stderr=asyncio.subprocess.STDOUT,
-            cwd=cwd,
-            env=env,
-        )
+        try:
+            proc = await asyncio.create_subprocess_exec(
+                *cmd,
+                stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.STDOUT,
+                cwd=cwd,
+                env=env,
+            )
+        except FileNotFoundError:
+            await self._emit(step_name, "error", f"命令未找到：{cmd[0]}（尝试 shell 模式）", step_index)
+            proc = await asyncio.create_subprocess_shell(
+                " ".join(cmd),
+                stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.STDOUT,
+                cwd=cwd,
+                env=env,
+            )
         self._processes[name] = proc
         self._start_args[name] = {"cmd": cmd, "cwd": cwd, "env_extra": env_extra}
 
@@ -805,6 +815,11 @@ class NativeDeployer:
     async def restart_service(self, name: str) -> dict:
         """Restart a named service (or deepwiki pair) using stored startup args."""
         targets = ["deepwiki-api", "deepwiki-ui"] if name == "deepwiki" else [name]
+        for t in targets:
+            if t not in self._start_args:
+                defaults = self._default_start_args(t)
+                if defaults:
+                    self._start_args[t] = defaults
         missing = [t for t in targets if t not in self._start_args]
         if missing:
             raise KeyError(f"Service not started by this deployer: {', '.join(missing)}")
@@ -826,13 +841,22 @@ class NativeDeployer:
             env = os.environ.copy()
             if args.get("env_extra"):
                 env.update(args["env_extra"])
-            proc = await asyncio.create_subprocess_exec(
-                *args["cmd"],
-                stdout=asyncio.subprocess.PIPE,
-                stderr=asyncio.subprocess.STDOUT,
-                cwd=args["cwd"],
-                env=env,
-            )
+            try:
+                proc = await asyncio.create_subprocess_exec(
+                    *args["cmd"],
+                    stdout=asyncio.subprocess.PIPE,
+                    stderr=asyncio.subprocess.STDOUT,
+                    cwd=args["cwd"],
+                    env=env,
+                )
+            except FileNotFoundError:
+                proc = await asyncio.create_subprocess_shell(
+                    " ".join(args["cmd"]),
+                    stdout=asyncio.subprocess.PIPE,
+                    stderr=asyncio.subprocess.STDOUT,
+                    cwd=args["cwd"],
+                    env=env,
+                )
             self._processes[target] = proc
             asyncio.ensure_future(self._drain_output(target, proc, "restart", 0))
             await asyncio.sleep(2)
@@ -864,9 +888,41 @@ class NativeDeployer:
 
         return {"ok": True, "service": name, "action": "stopped"}
 
+    def _default_start_args(self, name: str) -> dict | None:
+        """Reconstruct startup args for known services from config."""
+        cfg = self._config
+        if name == "backend":
+            backend_dir = PROJECT_ROOT / "backend"
+            venv_python = backend_dir / (".venv311/Scripts/python.exe" if sys.platform == "win32" else ".venv311/bin/python")
+            return {
+                "cmd": [str(venv_python), "-m", "uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", str(cfg.get("backend_port", 8100))],
+                "cwd": str(backend_dir),
+                "env_extra": None,
+            }
+        if name == "frontend":
+            npm_cmd = "npm.cmd" if sys.platform == "win32" else "npm"
+            return {
+                "cmd": [npm_cmd, "run", "dev"],
+                "cwd": str(PROJECT_ROOT / "frontend"),
+                "env_extra": {"PORT": str(cfg.get("frontend_port", 3005))},
+            }
+        if name == "gitnexus":
+            gn_cmd = cfg.get("_gitnexus_cmd", ["gitnexus.cmd" if sys.platform == "win32" else "gitnexus"])
+            return {
+                "cmd": [*gn_cmd, "serve", "--port", str(cfg.get("gitnexus_port", 7100)), "--host", "0.0.0.0"],
+                "cwd": str(PROJECT_ROOT),
+                "env_extra": None,
+            }
+        return None
+
     async def start_service(self, name: str) -> dict:
         """Start a previously-stopped service using stored startup args."""
         targets = ["deepwiki-api", "deepwiki-ui"] if name == "deepwiki" else [name]
+        for t in targets:
+            if t not in self._start_args:
+                defaults = self._default_start_args(t)
+                if defaults:
+                    self._start_args[t] = defaults
         missing = [t for t in targets if t not in self._start_args]
         if missing:
             raise KeyError(f"Service not started by this deployer: {', '.join(missing)}")
@@ -880,13 +936,22 @@ class NativeDeployer:
             env = os.environ.copy()
             if args.get("env_extra"):
                 env.update(args["env_extra"])
-            proc = await asyncio.create_subprocess_exec(
-                *args["cmd"],
-                stdout=asyncio.subprocess.PIPE,
-                stderr=asyncio.subprocess.STDOUT,
-                cwd=args["cwd"],
-                env=env,
-            )
+            try:
+                proc = await asyncio.create_subprocess_exec(
+                    *args["cmd"],
+                    stdout=asyncio.subprocess.PIPE,
+                    stderr=asyncio.subprocess.STDOUT,
+                    cwd=args["cwd"],
+                    env=env,
+                )
+            except FileNotFoundError:
+                proc = await asyncio.create_subprocess_shell(
+                    " ".join(args["cmd"]),
+                    stdout=asyncio.subprocess.PIPE,
+                    stderr=asyncio.subprocess.STDOUT,
+                    cwd=args["cwd"],
+                    env=env,
+                )
             self._processes[target] = proc
             asyncio.ensure_future(self._drain_output(target, proc, "start", 0))
             await asyncio.sleep(2)

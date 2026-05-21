@@ -19,6 +19,8 @@ import {
   Send,
   Bot,
   User,
+  Upload,
+  Trash2,
 } from "lucide-react";
 import { api } from "@/lib/api";
 import type { Workspace, WorkspaceReportMeta, WorkspaceChatMessage, ChatMode } from "@/lib/types";
@@ -157,6 +159,7 @@ function ChatPanel({ wsId, indexed }: { wsId: string; indexed: number }) {
   const [mode, setMode] = useState<ChatMode>("freeqa");
   const [streaming, setStreaming] = useState(false);
   const [loadingHistory, setLoadingHistory] = useState(true);
+  const userNearBottom = useRef(true);
   const bottomRef = useRef<HTMLDivElement>(null);
 
   // Fix 1 (frontend): block chat until workspace is indexed
@@ -170,8 +173,16 @@ function ChatPanel({ wsId, indexed }: { wsId: string; indexed: number }) {
       .finally(() => setLoadingHistory(false));
   }, [wsId]);
 
+  const handleChatScroll = useCallback((e: React.UIEvent<HTMLDivElement>) => {
+    const el = e.currentTarget;
+    userNearBottom.current =
+      el.scrollHeight - (el.scrollTop + el.clientHeight) < 80;
+  }, []);
+
   useEffect(() => {
-    bottomRef.current?.scrollIntoView({ behavior: "smooth" });
+    if (userNearBottom.current) {
+      bottomRef.current?.scrollIntoView({ behavior: "smooth" });
+    }
   }, [messages, streamingContent]);
 
   const handleSend = async () => {
@@ -280,7 +291,7 @@ function ChatPanel({ wsId, indexed }: { wsId: string; indexed: number }) {
       </div>
 
       {/* Message list */}
-      <div className="flex-1 overflow-y-auto rounded-xl border border-outline-variant/20 bg-surface-container-low p-4 space-y-4">
+      <div onScroll={handleChatScroll} className="flex-1 overflow-y-auto rounded-xl border border-outline-variant/20 bg-surface-container-low p-4 space-y-4">
         {loadingHistory ? (
           <div className="flex justify-center py-8">
             <Loader2 size={18} className="animate-spin text-primary" />
@@ -657,9 +668,31 @@ export default function WorkspaceDetailPage() {
 
       {/* Materials tab */}
       {tab === "materials" && (
-        <div>
+        <div className="space-y-4">
+          <label className="flex items-center justify-center gap-2 px-4 py-3 rounded-lg border-2 border-dashed border-outline-variant/40 bg-surface-container-low hover:border-primary/50 hover:bg-primary/5 cursor-pointer transition-colors">
+            <Upload size={18} className="text-primary" />
+            <span className="text-sm text-on-surface-variant">点击上传材料（需求文档、设计文档等）</span>
+            <input
+              type="file"
+              className="hidden"
+              onChange={async (e) => {
+                const file = e.target.files?.[0];
+                if (!file) return;
+                try {
+                  const mat = await api.workspaces.uploadMaterial(wsId, file);
+                  setWorkspace((prev) =>
+                    prev ? { ...prev, materials: [...prev.materials, mat] } : prev
+                  );
+                } catch {
+                  /* upload failed — silent for now */
+                }
+                e.target.value = "";
+              }}
+            />
+          </label>
+
           {workspace.materials.length === 0 ? (
-            <div className="flex flex-col items-center justify-center h-48 rounded-xl border border-outline-variant/30 bg-surface-container-low gap-3">
+            <div className="flex flex-col items-center justify-center h-36 rounded-xl border border-outline-variant/30 bg-surface-container-low gap-3">
               <Paperclip size={36} className="text-on-surface-variant/30" />
               <p className="text-on-surface-variant text-sm">尚未上传任何材料</p>
             </div>
@@ -668,13 +701,32 @@ export default function WorkspaceDetailPage() {
               {workspace.materials.map((mat) => (
                 <div
                   key={mat.id}
-                  className="flex items-center gap-3 px-4 py-3 rounded-lg border border-outline-variant/30 bg-surface-container-low"
+                  className="flex items-center gap-3 px-4 py-3 rounded-lg border border-outline-variant/30 bg-surface-container-low group"
                 >
                   <Paperclip size={16} className="text-primary shrink-0" />
-                  <div className="min-w-0">
+                  <div className="min-w-0 flex-1">
                     <p className="text-sm text-on-surface truncate">{mat.filename}</p>
                     <p className="text-xs text-on-surface-variant mt-0.5">{mat.content_type}</p>
                   </div>
+                  <button
+                    type="button"
+                    onClick={async () => {
+                      try {
+                        await api.workspaces.deleteMaterial(wsId, mat.id);
+                        setWorkspace((prev) =>
+                          prev
+                            ? { ...prev, materials: prev.materials.filter((m) => m.id !== mat.id) }
+                            : prev
+                        );
+                      } catch {
+                        /* delete failed */
+                      }
+                    }}
+                    className="p-1.5 rounded-md text-on-surface-variant/50 hover:text-error hover:bg-error/10 opacity-0 group-hover:opacity-100 transition-all"
+                    title="删除材料"
+                  >
+                    <Trash2 size={14} />
+                  </button>
                 </div>
               ))}
             </div>

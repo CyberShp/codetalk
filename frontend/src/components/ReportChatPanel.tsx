@@ -12,13 +12,21 @@ export default function ReportChatPanel({ taskId }: { taskId: string }) {
   const [streaming, setStreaming] = useState(false);
   const [streamContent, setStreamContent] = useState("");
   const chatContainerRef = useRef<HTMLDivElement>(null);
+  const userNearBottom = useRef(true);
 
   useEffect(() => {
     api.tasks.chatHistory(taskId).then(setMessages).catch(() => {});
   }, [taskId]);
 
+  const handleScroll = useCallback(() => {
+    const el = chatContainerRef.current;
+    if (!el) return;
+    userNearBottom.current =
+      el.scrollHeight - (el.scrollTop + el.clientHeight) < 80;
+  }, []);
+
   useEffect(() => {
-    if (chatContainerRef.current) {
+    if (userNearBottom.current && chatContainerRef.current) {
       chatContainerRef.current.scrollTop = chatContainerRef.current.scrollHeight;
     }
   }, [messages, streamContent]);
@@ -136,7 +144,7 @@ export default function ReportChatPanel({ taskId }: { taskId: string }) {
       </div>
 
       {/* Messages */}
-      <div ref={chatContainerRef} className="flex-1 overflow-y-auto px-4 py-3 space-y-4 min-h-0">
+      <div ref={chatContainerRef} onScroll={handleScroll} className="flex-1 overflow-y-auto px-4 py-3 space-y-4 min-h-0">
         {messages.length === 0 && !streaming && (
           <div className="flex flex-col items-center justify-center h-full text-center py-8">
             <Bot size={32} className="text-on-surface-variant/40 mb-3" />
