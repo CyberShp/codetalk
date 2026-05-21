@@ -293,7 +293,6 @@ class ReportGenerator:
                     temperature=0.3,
                 )
 
-                full_content = self._validate_report_structure(full_content, report_type)
                 total_tokens = BaseLLMClient.estimate_tokens(full_content)
                 # Use a placeholder model name since streaming doesn't return model info
                 model_name = type(self._llm).__name__
@@ -333,7 +332,6 @@ class ReportGenerator:
                     temperature=0.3,
                 )
 
-                validated_content = self._validate_report_structure(response.content, report_type)
                 # Prepend metadata header
                 now = datetime.now(timezone.utc).isoformat()
                 header = (
@@ -596,27 +594,6 @@ class ReportGenerator:
             if parts
             else "（无接口数据，请参考模块摘要中的对外接口部分）"
         )
-
-    @staticmethod
-    def _validate_report_structure(content: str, report_type: str) -> str:
-        """Append a warning line if required structural elements are missing."""
-        missing: list[str] = []
-
-        if not re.search(r"\|.+\|.+\|", content):
-            missing.append("Markdown表格")
-
-        if report_type in ("module_map", "business_flow") and "```mermaid" not in content:
-            missing.append("Mermaid图")
-
-        if missing:
-            logger.warning(
-                "Report %s is missing structural elements: %s",
-                report_type,
-                "、".join(missing),
-            )
-            return content + "\n\n> ⚠ 本报告格式未完全符合规范，部分结构化内容可能缺失"
-
-        return content
 
     @staticmethod
     def _truncate(text: str, max_chars: int) -> str:
