@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useRef, useState, useCallback } from "react";
+import React, { useEffect, useRef, useState, useCallback } from "react";
 import { useParams } from "next/navigation";
 import Link from "next/link";
 import {
@@ -21,6 +21,8 @@ import {
   User,
   Upload,
   Trash2,
+  Sparkles,
+  Crosshair,
 } from "lucide-react";
 import { api } from "@/lib/api";
 import type { Workspace, WorkspaceReportMeta, WorkspaceChatMessage, ChatMode } from "@/lib/types";
@@ -273,19 +275,27 @@ function ChatPanel({ wsId, indexed }: { wsId: string; indexed: number }) {
   return (
     <div className="flex flex-col h-[600px]">
       {/* Mode toggle */}
-      <div className="flex items-center gap-2 mb-3">
-        <span className="text-xs text-on-surface-variant">模式：</span>
-        {(["freeqa", "targeted"] as ChatMode[]).map((m) => (
+      <div className="flex gap-2 mb-3">
+        {([
+          { m: "freeqa" as ChatMode, Icon: Sparkles, label: "自由问答", desc: "基于代码库全局回答" },
+          { m: "targeted" as ChatMode, Icon: Crosshair, label: "结构化分析", desc: "按需检索代码片段" },
+        ]).map(({ m, Icon, label, desc }) => (
           <button
             key={m}
             onClick={() => setMode(m)}
-            className={`px-3 py-1 text-xs rounded-full border transition-colors ${
+            className={`flex-1 flex items-center gap-2.5 px-3 py-2 rounded-lg border transition-all text-left ${
               mode === m
-                ? "bg-primary text-on-primary border-primary"
-                : "border-outline-variant/40 text-on-surface-variant hover:border-primary/40"
+                ? "bg-primary/10 border-primary/40 shadow-sm"
+                : "border-outline-variant/30 hover:border-primary/20 hover:bg-surface-container-high/30"
             }`}
           >
-            {m === "freeqa" ? "自由问答" : "结构化分析"}
+            <Icon size={15} className={mode === m ? "text-primary" : "text-on-surface-variant/60"} />
+            <div>
+              <div className={`text-xs font-medium leading-tight ${mode === m ? "text-primary" : "text-on-surface-variant"}`}>
+                {label}
+              </div>
+              <div className="text-[10px] leading-tight text-on-surface-variant/50 mt-0.5">{desc}</div>
+            </div>
           </button>
         ))}
       </div>
@@ -304,36 +314,45 @@ function ChatPanel({ wsId, indexed }: { wsId: string; indexed: number }) {
         ) : (
           <>
             {messages.map((msg) => (
-              <div
-                key={msg.id}
-                className={`flex gap-2.5 ${msg.role === "user" ? "justify-end" : "justify-start"}`}
-              >
-                {msg.role === "assistant" && (
-                  <div className="shrink-0 w-6 h-6 rounded-full bg-primary/10 flex items-center justify-center mt-0.5">
-                    <Bot size={13} className="text-primary" />
-                  </div>
-                )}
+              <React.Fragment key={msg.id}>
                 <div
-                  className={`max-w-[85%] rounded-2xl px-4 py-2.5 text-sm ${
-                    msg.role === "user"
-                      ? "bg-primary text-on-primary rounded-tr-sm"
-                      : "bg-surface-container rounded-tl-sm text-on-surface"
-                  }`}
+                  className={`flex gap-2.5 ${msg.role === "user" ? "justify-end" : "justify-start"}`}
                 >
-                  {msg.role === "assistant" ? (
-                    <div className="prose-sm">
-                      <MarkdownRenderer content={msg.content} enableNumericCitations={false} />
+                  {msg.role === "assistant" && (
+                    <div className="shrink-0 w-6 h-6 rounded-full bg-primary/10 flex items-center justify-center mt-0.5">
+                      <Bot size={13} className="text-primary" />
                     </div>
-                  ) : (
-                    <p className="whitespace-pre-wrap">{msg.content}</p>
+                  )}
+                  <div
+                    className={`max-w-[85%] rounded-2xl px-4 py-2.5 text-sm ${
+                      msg.role === "user"
+                        ? "bg-primary text-on-primary rounded-tr-sm"
+                        : "bg-surface-container rounded-tl-sm text-on-surface"
+                    }`}
+                  >
+                    {msg.role === "assistant" ? (
+                      <div className="prose-sm">
+                        <MarkdownRenderer content={msg.content} enableNumericCitations={false} />
+                      </div>
+                    ) : (
+                      <p className="whitespace-pre-wrap">{msg.content}</p>
+                    )}
+                  </div>
+                  {msg.role === "user" && (
+                    <div className="shrink-0 w-6 h-6 rounded-full bg-primary/20 flex items-center justify-center mt-0.5">
+                      <User size={13} className="text-primary" />
+                    </div>
                   )}
                 </div>
                 {msg.role === "user" && (
-                  <div className="shrink-0 w-6 h-6 rounded-full bg-primary/20 flex items-center justify-center mt-0.5">
-                    <User size={13} className="text-primary" />
+                  <div className="flex justify-end mt-0.5 pr-8">
+                    <span className="inline-flex items-center gap-0.5 text-[10px] text-on-surface-variant/40">
+                      {msg.mode === "targeted" ? <Crosshair size={9} /> : <Sparkles size={9} />}
+                      {msg.mode === "targeted" ? "结构化" : "自由"}
+                    </span>
                   </div>
                 )}
-              </div>
+              </React.Fragment>
             ))}
 
             {streamingContent && (
@@ -378,7 +397,11 @@ function ChatPanel({ wsId, indexed }: { wsId: string; indexed: number }) {
           value={input}
           onChange={(e) => setInput(e.target.value)}
           onKeyDown={handleKeyDown}
-          placeholder={canChat ? "向代码库提问… (Enter 发送，Shift+Enter 换行)" : "等待索引完成后可对话…"}
+          placeholder={canChat
+            ? mode === "freeqa"
+              ? "自由提问，AI 基于全局上下文回答… (Enter 发送)"
+              : "结构化分析，AI 按需检索代码片段… (Enter 发送)"
+            : "等待索引完成后可对话…"}
           disabled={streaming || !canChat}
           rows={2}
           className="flex-1 resize-none rounded-xl border border-outline-variant/30 bg-surface-container-low px-3 py-2 text-sm text-on-surface placeholder:text-on-surface-variant/40 focus:outline-none focus:border-primary/50 disabled:opacity-50"
