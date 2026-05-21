@@ -1,0 +1,2 @@
+# tiktoken cache files are binary BPE data — no CRLF conversion
+docker/deepwiki/tiktoken/* binary
