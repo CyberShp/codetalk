@@ -7,6 +7,8 @@ import {
   ArrowLeft,
   Download,
   Loader2,
+  PanelRightClose,
+  PanelRightOpen,
 } from "lucide-react";
 import { api } from "@/lib/api";
 import type { TaskStatus } from "@/lib/types";
@@ -42,6 +44,7 @@ export default function ReportPage() {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [taskStatus, setTaskStatus] = useState<TaskStatus | null>(null);
+  const [chatCollapsed, setChatCollapsed] = useState(false);
 
   const loadOutputs = useCallback(async () => {
     if (!taskId) return;
@@ -120,13 +123,25 @@ export default function ReportPage() {
               </p>
             </div>
           </div>
-          <Link
-            href={`/tasks/${taskId}/export`}
-            className="flex items-center gap-2 px-4 py-2 text-sm font-medium bg-surface-container-high text-on-surface rounded-lg border border-outline-variant/30 hover:bg-surface-container transition-colors"
-          >
-            <Download size={14} />
-            导出
-          </Link>
+          <div className="flex items-center gap-2">
+            {tabKeys.length > 0 && (
+              <button
+                onClick={() => setChatCollapsed((prev) => !prev)}
+                className="flex items-center gap-2 px-3 py-2 text-sm font-medium bg-surface-container-high text-on-surface-variant rounded-lg border border-outline-variant/30 hover:bg-surface-container hover:text-on-surface transition-colors"
+                title={chatCollapsed ? "展开 AI 助手" : "收起 AI 助手"}
+              >
+                {chatCollapsed ? <PanelRightOpen size={14} /> : <PanelRightClose size={14} />}
+                <span className="hidden sm:inline">{chatCollapsed ? "展开助手" : "收起助手"}</span>
+              </button>
+            )}
+            <Link
+              href={`/tasks/${taskId}/export`}
+              className="flex items-center gap-2 px-4 py-2 text-sm font-medium bg-surface-container-high text-on-surface rounded-lg border border-outline-variant/30 hover:bg-surface-container transition-colors"
+            >
+              <Download size={14} />
+              导出
+            </Link>
+          </div>
         </div>
 
         {tabKeys.length > 1 && (
@@ -174,8 +189,8 @@ export default function ReportPage() {
         )}
       </div>
 
-      {/* Right: AI chat panel — only shown when reports are loaded */}
-      {tabKeys.length > 0 && (
+      {/* Right: AI chat panel — collapsible */}
+      {tabKeys.length > 0 && !chatCollapsed && (
         <div
           className="flex-1 sticky top-4"
           style={{ height: "calc(100vh - 8rem)" }}

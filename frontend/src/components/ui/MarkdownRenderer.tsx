@@ -6,6 +6,8 @@ import remarkGfm from "remark-gfm";
 import type { PluggableList } from "unified";
 import type { Components } from "react-markdown";
 import { FileCode, ExternalLink } from "lucide-react";
+import hljs from "highlight.js/lib/common";
+import "highlight.js/styles/github-dark.css";
 import MermaidRenderer from "./MermaidRenderer";
 
 /**
@@ -131,7 +133,17 @@ export default function MarkdownRenderer({
           return <MermaidRenderer chart={chart} />;
         }
         if (isBlock) {
-          const lang = className?.replace("language-", "");
+          const lang = className?.replace("language-", "") ?? "";
+          const raw = String(children).replace(/\n$/, "");
+          let highlighted: string;
+          try {
+            highlighted =
+              lang && hljs.getLanguage(lang)
+                ? hljs.highlight(raw, { language: lang }).value
+                : hljs.highlightAuto(raw).value;
+          } catch {
+            highlighted = raw;
+          }
           return (
             <div className="relative mb-4">
               {lang && (
@@ -140,9 +152,10 @@ export default function MarkdownRenderer({
                 </span>
               )}
               <pre className="bg-[#0d1117] rounded-xl p-4 overflow-x-auto">
-                <code className="font-data text-xs text-[#c9d1d9]">
-                  {children}
-                </code>
+                <code
+                  className="font-data text-xs hljs"
+                  dangerouslySetInnerHTML={{ __html: highlighted }}
+                />
               </pre>
             </div>
           );
@@ -312,7 +325,7 @@ export default function MarkdownRenderer({
   );
 
   return (
-    <div className="prose-kinetic">
+    <div className="prose-kinetic max-w-full overflow-hidden">
       <ReactMarkdown
         remarkPlugins={[remarkGfm]}
         rehypePlugins={rehypePlugins}
