@@ -19,6 +19,20 @@ _CL100K_BPE = "9b5ad71b2ce5302211f9c61530b329a4922fc6a4"
 
 TOTAL_STEPS = 7
 
+_TIKTOKEN_COMMITTED = PROJECT_ROOT / "docker" / "deepwiki" / "tiktoken"
+_TIKTOKEN_VENDOR = VENDOR_DIR / "tiktoken_cache"
+
+
+def _best_tiktoken_cache() -> Optional[Path]:
+    """Return the tiktoken cache dir with the most files, or None."""
+    committed = _TIKTOKEN_COMMITTED if _TIKTOKEN_COMMITTED.is_dir() else None
+    vendor = _TIKTOKEN_VENDOR if _TIKTOKEN_VENDOR.is_dir() else None
+    if committed and vendor:
+        c_count = sum(1 for _ in committed.iterdir())
+        v_count = sum(1 for _ in vendor.iterdir())
+        return vendor if v_count >= c_count else committed
+    return committed or vendor
+
 SERVICE_DEFAULTS = [
     ("backend", "backend_port", 8100, "http", "/health"),
     ("frontend", "frontend_port", 3005, "http", "/"),
@@ -54,6 +68,8 @@ class NativeDeployer:
                 await self.supplement_deepwiki(self._config.get("deepwiki_path", ""))
                 if self._stopped:
                     return
+            else:
+                self._config.pop("deepwiki_path", None)
             await self._step_generate_config()
             if self._stopped:
                 return
@@ -519,10 +535,8 @@ class NativeDeployer:
                 f"DEEPWIKI_PATH={deepwiki_path}",
             ])
 
-        tiktoken_cache = VENDOR_DIR / "tiktoken_cache"
-        if not (tiktoken_cache / _CL100K_BPE).exists():
-            tiktoken_cache = PROJECT_ROOT / "docker" / "deepwiki" / "tiktoken"
-        if (tiktoken_cache / _CL100K_BPE).exists():
+        tiktoken_cache = _best_tiktoken_cache()
+        if tiktoken_cache is not None:
             env_lines.append(f"TIKTOKEN_CACHE_DIR={tiktoken_cache.resolve()}")
 
         backend_env = PROJECT_ROOT / "backend" / ".env"
@@ -536,7 +550,7 @@ class NativeDeployer:
         )
         await self._emit("generate_config", "running", f"已写入 {frontend_env}", step)
 
-        if deepwiki_path and (tiktoken_cache / _CL100K_BPE).exists():
+        if deepwiki_path and tiktoken_cache is not None:
             dw_dir = Path(deepwiki_path)
             if not dw_dir.is_dir():
                 await self._emit("generate_config", "running",
@@ -722,12 +736,8 @@ class NativeDeployer:
         step_name: str,
         step_index: int,
     ) -> None:
-        # Prefer gitignored vendor dir (user-populated offline bundle); fall back to
-        # the BPE file committed in docker/deepwiki/tiktoken/ for zero-config deployments.
-        tiktoken_cache = VENDOR_DIR / "tiktoken_cache"
-        if not (tiktoken_cache / _CL100K_BPE).exists():
-            tiktoken_cache = PROJECT_ROOT / "docker" / "deepwiki" / "tiktoken"
-        if (tiktoken_cache / _CL100K_BPE).exists():
+        tiktoken_cache = _best_tiktoken_cache()
+        if tiktoken_cache is not None:
             llm_env["TIKTOKEN_CACHE_DIR"] = str(tiktoken_cache.resolve())
         has_python_api = (dw_dir / "api" / "pyproject.toml").exists() or (dw_dir / "requirements.txt").exists()
         has_package_json = (dw_dir / "package.json").exists()

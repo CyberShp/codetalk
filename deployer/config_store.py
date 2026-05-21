@@ -34,7 +34,7 @@ _KEY_MAP = {
 _KEY_MAP_REV = {v: k for k, v in _KEY_MAP.items()}
 
 
-def _normalize_to_snake(cfg: dict) -> dict:
+def normalize_to_snake(cfg: dict) -> dict:
     """Convert any camelCase frontend keys to snake_case backend keys."""
     out = {}
     for k, v in cfg.items():
@@ -60,7 +60,7 @@ def load_config() -> dict:
     if CONFIG_PATH.exists():
         try:
             with open(CONFIG_PATH, "r", encoding="utf-8") as f:
-                return _normalize_to_snake(json.load(f))
+                return normalize_to_snake(json.load(f))
         except (json.JSONDecodeError, OSError):
             pass
     return get_default_config("compose")
@@ -111,13 +111,13 @@ def save_config(config: dict) -> None:
     Merges into the existing config so fields absent from the new payload
     (e.g. llm_* keys after the LLM wizard section was removed) are preserved.
     """
-    normalized = _normalize_to_snake(config)
+    normalized = normalize_to_snake(config)
     normalized = _distribute_api_key(normalized)
     existing: dict = {}
     if CONFIG_PATH.exists():
         try:
             with open(CONFIG_PATH, "r", encoding="utf-8") as f:
-                existing = _normalize_to_snake(json.load(f))
+                existing = normalize_to_snake(json.load(f))
         except (json.JSONDecodeError, OSError):
             pass
     existing.update(normalized)

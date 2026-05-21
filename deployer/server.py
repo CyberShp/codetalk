@@ -93,7 +93,7 @@ async def api_deploy(body: dict):
         raise HTTPException(status_code=409, detail="A deployment is already running")
 
     cfg = config_store.load_config()
-    cfg.update(body)
+    cfg.update(config_store.normalize_to_snake(body))
 
     job_id = str(uuid.uuid4())
     event_queue: asyncio.Queue = asyncio.Queue()
