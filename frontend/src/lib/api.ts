@@ -16,6 +16,7 @@ import type {
   CoverageModuleResult,
   Workspace,
   WorkspaceCreate,
+  WorkspaceMaterial,
   DeepWikiRepo,
   DeepWikiRepoCreate,
 } from "./types";
@@ -288,6 +289,13 @@ export const api = {
       }
       return res.json();
     },
+
+    toggleMaterial: (wsId: string, matId: string, isActive: boolean) =>
+      request<WorkspaceMaterial>(`/api/workspaces/${wsId}/materials/${matId}`, {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ is_active: isActive }),
+      }),
 
     deleteMaterial: (wsId: string, matId: string) =>
       request<void>(`/api/workspaces/${wsId}/materials/${matId}`, {

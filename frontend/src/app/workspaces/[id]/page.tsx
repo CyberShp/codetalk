@@ -703,9 +703,32 @@ export default function WorkspaceDetailPage() {
                   key={mat.id}
                   className="flex items-center gap-3 px-4 py-3 rounded-lg border border-outline-variant/30 bg-surface-container-low group"
                 >
-                  <Paperclip size={16} className="text-primary shrink-0" />
+                  <input
+                    type="checkbox"
+                    checked={mat.is_active}
+                    title={mat.is_active ? "已激活（参与对话/分析）" : "已停用"}
+                    onChange={async (e) => {
+                      const next = e.target.checked;
+                      setWorkspace((prev) =>
+                        prev
+                          ? { ...prev, materials: prev.materials.map((m) => m.id === mat.id ? { ...m, is_active: next } : m) }
+                          : prev
+                      );
+                      try {
+                        await api.workspaces.toggleMaterial(wsId, mat.id, next);
+                      } catch {
+                        setWorkspace((prev) =>
+                          prev
+                            ? { ...prev, materials: prev.materials.map((m) => m.id === mat.id ? { ...m, is_active: !next } : m) }
+                            : prev
+                        );
+                      }
+                    }}
+                    className="w-4 h-4 accent-primary shrink-0 cursor-pointer"
+                  />
+                  <Paperclip size={16} className={mat.is_active ? "text-primary shrink-0" : "text-on-surface-variant/40 shrink-0"} />
                   <div className="min-w-0 flex-1">
-                    <p className="text-sm text-on-surface truncate">{mat.filename}</p>
+                    <p className={`text-sm truncate ${mat.is_active ? "text-on-surface" : "text-on-surface-variant/50"}`}>{mat.filename}</p>
                     <p className="text-xs text-on-surface-variant mt-0.5">{mat.content_type}</p>
                   </div>
                   <button

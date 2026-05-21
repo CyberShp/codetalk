@@ -139,6 +139,7 @@ export interface WorkspaceMaterial {
   filename: string;
   content_type: WorkspaceMaterialType;
   file_path: string;
+  is_active: boolean;
   created_at: string;
 }
 
