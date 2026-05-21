@@ -78,10 +78,9 @@ class OpenAICompatClient(BaseLLMClient):
         temperature: float = 0.3,
     ) -> AsyncIterator[str]:
         """True streaming via OpenAI SSE — yields content deltas as they arrive."""
-        headers = {
-            "Authorization": f"Bearer {self._api_key}",
-            "Content-Type": "application/json",
-        }
+        headers: dict[str, str] = {"Content-Type": "application/json"}
+        if self._api_key:
+            headers["Authorization"] = f"Bearer {self._api_key}"
         payload = {
             "model": self._model,
             "max_tokens": max_tokens,
@@ -115,10 +114,9 @@ class OpenAICompatClient(BaseLLMClient):
         temperature: float,
     ) -> LLMResponse:
         """Execute a single OpenAI-compatible chat completion (called via retry)."""
-        headers = {
-            "Authorization": f"Bearer {self._api_key}",
-            "Content-Type": "application/json",
-        }
+        headers: dict[str, str] = {"Content-Type": "application/json"}
+        if self._api_key:
+            headers["Authorization"] = f"Bearer {self._api_key}"
         payload = {
             "model": self._model,
             "max_tokens": max_tokens,
@@ -180,7 +178,9 @@ class OpenAICompatClient(BaseLLMClient):
         Returns (success, message) with diagnostic detail.
         """
         try:
-            headers = {"Authorization": f"Bearer {self._api_key}"}
+            headers: dict[str, str] = {}
+            if self._api_key:
+                headers["Authorization"] = f"Bearer {self._api_key}"
             url = f"{self._base_url}/v1/models"
             resp = await self._client.get(url, headers=headers, timeout=60)
             if resp.status_code < 400:

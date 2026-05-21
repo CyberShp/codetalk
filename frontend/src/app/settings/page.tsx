@@ -294,7 +294,7 @@ export default function SettingsPage() {
                   type={showApiKey ? "text" : "password"}
                   value={form.api_key}
                   onChange={(e) => updateForm("api_key", e.target.value)}
-                  placeholder={editingId ? "留空则保持原密钥不变" : "sk-..."}
+                  placeholder={editingId ? "留空则保持原密钥不变" : "sk-...（Ollama 等本地模型可留空）"}
                   className="w-full px-3 py-2 pr-10 bg-surface border border-outline-variant/30 rounded-lg text-sm text-on-surface placeholder:text-on-surface-variant/50 focus:outline-none focus:border-primary/50 transition-colors font-data"
                 />
                 <button
@@ -308,7 +308,7 @@ export default function SettingsPage() {
               </div>
             </div>
 
-            <div className="grid grid-cols-3 gap-4">
+            <div className={`grid ${form.is_embedding_model && !form.is_chat_model ? "" : "grid-cols-3"} gap-4`}>
               <div>
                 <label className="block text-xs font-medium text-on-surface-variant mb-1">
                   模型名称
@@ -317,39 +317,43 @@ export default function SettingsPage() {
                   type="text"
                   value={form.model}
                   onChange={(e) => updateForm("model", e.target.value)}
-                  placeholder="gpt-4o"
+                  placeholder={form.is_embedding_model && !form.is_chat_model ? "text-embedding-3-small" : "gpt-4o"}
                   className="w-full px-3 py-2 bg-surface border border-outline-variant/30 rounded-lg text-sm text-on-surface placeholder:text-on-surface-variant/50 focus:outline-none focus:border-primary/50 transition-colors font-data"
                 />
               </div>
-              <div>
-                <label className="block text-xs font-medium text-on-surface-variant mb-1">
-                  最大 Tokens
-                </label>
-                <input
-                  type="number"
-                  value={form.max_tokens}
-                  onChange={(e) =>
-                    updateForm("max_tokens", parseInt(e.target.value, 10) || 4096)
-                  }
-                  className="w-full px-3 py-2 bg-surface border border-outline-variant/30 rounded-lg text-sm text-on-surface focus:outline-none focus:border-primary/50 transition-colors font-data"
-                />
-              </div>
-              <div>
-                <label className="block text-xs font-medium text-on-surface-variant mb-1">
-                  温度
-                </label>
-                <input
-                  type="number"
-                  step="0.1"
-                  min="0"
-                  max="2"
-                  value={form.temperature}
-                  onChange={(e) =>
-                    updateForm("temperature", parseFloat(e.target.value) || 0.3)
-                  }
-                  className="w-full px-3 py-2 bg-surface border border-outline-variant/30 rounded-lg text-sm text-on-surface focus:outline-none focus:border-primary/50 transition-colors font-data"
-                />
-              </div>
+              {!(form.is_embedding_model && !form.is_chat_model) && (
+                <>
+                  <div>
+                    <label className="block text-xs font-medium text-on-surface-variant mb-1">
+                      最大 Tokens
+                    </label>
+                    <input
+                      type="number"
+                      value={form.max_tokens}
+                      onChange={(e) =>
+                        updateForm("max_tokens", parseInt(e.target.value, 10) || 4096)
+                      }
+                      className="w-full px-3 py-2 bg-surface border border-outline-variant/30 rounded-lg text-sm text-on-surface focus:outline-none focus:border-primary/50 transition-colors font-data"
+                    />
+                  </div>
+                  <div>
+                    <label className="block text-xs font-medium text-on-surface-variant mb-1">
+                      温度
+                    </label>
+                    <input
+                      type="number"
+                      step="0.1"
+                      min="0"
+                      max="2"
+                      value={form.temperature}
+                      onChange={(e) =>
+                        updateForm("temperature", parseFloat(e.target.value) || 0.3)
+                      }
+                      className="w-full px-3 py-2 bg-surface border border-outline-variant/30 rounded-lg text-sm text-on-surface focus:outline-none focus:border-primary/50 transition-colors font-data"
+                    />
+                  </div>
+                </>
+              )}
             </div>
 
             <div className="flex items-center gap-6">
