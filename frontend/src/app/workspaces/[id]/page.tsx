@@ -277,8 +277,8 @@ function ChatPanel({ wsId, indexed }: { wsId: string; indexed: number }) {
       {/* Mode toggle */}
       <div className="flex gap-2 mb-3">
         {([
-          { m: "freeqa" as ChatMode, Icon: Sparkles, label: "自由问答", desc: "基于代码库全局回答" },
-          { m: "targeted" as ChatMode, Icon: Crosshair, label: "结构化分析", desc: "按需检索代码片段" },
+          { m: "freeqa" as ChatMode, Icon: Sparkles, label: "自由问答", desc: "基于代码片段轻量问答" },
+          { m: "targeted" as ChatMode, Icon: Crosshair, label: "结构化分析", desc: "结合材料与报告深度分析" },
         ]).map(({ m, Icon, label, desc }) => (
           <button
             key={m}
@@ -399,8 +399,8 @@ function ChatPanel({ wsId, indexed }: { wsId: string; indexed: number }) {
           onKeyDown={handleKeyDown}
           placeholder={canChat
             ? mode === "freeqa"
-              ? "自由提问，AI 基于全局上下文回答… (Enter 发送)"
-              : "结构化分析，AI 按需检索代码片段… (Enter 发送)"
+              ? "轻量问答，基于代码片段回答… (Enter 发送)"
+              : "深度分析，结合材料与报告… (Enter 发送)"
             : "等待索引完成后可对话…"}
           disabled={streaming || !canChat}
           rows={2}
