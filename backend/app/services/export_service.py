@@ -228,6 +228,6 @@ def _export_xml(docs: list[_ReportDoc], prefix: str) -> tuple[bytes, str, str]:
         body_el.text = content
 
     tree = ET.ElementTree(root)
-    buf = io.BytesIO()
+    buf = io.StringIO()
     tree.write(buf, encoding="unicode", xml_declaration=True)
-    return buf.getvalue(), f"{prefix}.xml", "application/xml"
+    return buf.getvalue().encode("utf-8"), f"{prefix}.xml", "application/xml"

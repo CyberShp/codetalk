@@ -264,6 +264,31 @@ class TestMaterials:
         )
         assert resp.status_code == 404
 
+    async def test_toggle_to_active_schedules_embedding(
+        self, client_v2, sqlite_db, tmp_path, background_tasks
+    ):
+        await _seed_ws(sqlite_db, "ws-tga")
+        f = tmp_path / "doc.md"
+        f.write_text("content")
+        await _seed_material(sqlite_db, "ws-tga", "m-tga", str(f), is_active=False)
+
+        resp = await client_v2.patch(
+            "/api/workspaces/ws-tga/materials/m-tga",
+            json={"is_active": True},
+        )
+        assert resp.status_code == 200
+        assert resp.json()["is_active"] is True
+        assert any("_embed_material_background" in c for c in background_tasks)
+
+    async def test_trigger_embedding_schedules_task(
+        self, client_v2, sqlite_db, background_tasks
+    ):
+        await _seed_ws(sqlite_db, "ws-emb")
+        resp = await client_v2.post("/api/workspaces/ws-emb/materials/embed")
+        assert resp.status_code == 200
+        assert resp.json()["status"] == "embedding_started"
+        assert any("_run_embed" in c for c in background_tasks)
+
 
 # ---------------------------------------------------------------------------
 # Embedding status
