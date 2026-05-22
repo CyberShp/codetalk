@@ -456,14 +456,14 @@ async def get_embedding_status(
     if active_model_id:
         async with db.execute(
             "SELECT COUNT(DISTINCT material_id) as cnt FROM material_chunks "
-            "WHERE workspace_id = ? AND (embedding_model_id = ? OR embedding_model_id IS NULL)",
+            "WHERE workspace_id = ? AND embedding_model_id = ?",
             (ws_id, active_model_id),
         ) as cur:
             embedded_count = (await cur.fetchone())["cnt"]
 
         async with db.execute(
             "SELECT COUNT(*) as cnt FROM material_chunks "
-            "WHERE workspace_id = ? AND (embedding_model_id = ? OR embedding_model_id IS NULL)",
+            "WHERE workspace_id = ? AND embedding_model_id = ?",
             (ws_id, active_model_id),
         ) as cur:
             chunk_count = (await cur.fetchone())["cnt"]

@@ -303,7 +303,7 @@ async def retrieve_chunks(
             "FROM material_chunks mc "
             "JOIN workspace_materials wm ON mc.material_id = wm.id "
             "WHERE mc.workspace_id = ? AND wm.is_active = TRUE "
-            "AND (mc.embedding_model_id = ? OR mc.embedding_model_id IS NULL)",
+            "AND mc.embedding_model_id = ?",
             (ws_id, model_id),
         ) as cur:
             rows = await cur.fetchall()

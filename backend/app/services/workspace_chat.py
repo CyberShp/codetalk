@@ -162,7 +162,7 @@ async def _load_materials_context(ws_id: str, query: str) -> list[str]:
             "SELECT m.id, m.filename, m.content_type, m.file_path "
             "FROM workspace_materials m "
             "LEFT JOIN material_chunks mc ON m.id = mc.material_id "
-            "AND (mc.embedding_model_id = ? OR mc.embedding_model_id IS NULL) "
+            "AND mc.embedding_model_id = ? "
             "WHERE m.workspace_id = ? AND m.is_active = TRUE AND mc.id IS NULL",
             (active_model_id, ws_id),
         ) as cur:
