@@ -90,7 +90,14 @@ async def sqlite_db(tmp_path):
                     raise
         await conn.commit()
 
-    with patch("app.config.settings.sqlite_db", db_path):
+    data_dir = tmp_path / "data"
+    data_dir.mkdir()
+    materials_root = data_dir / "workspaces"
+    materials_root.mkdir()
+
+    with patch("app.config.settings.sqlite_db", db_path), \
+         patch("app.config.settings.data_path", data_dir), \
+         patch("app.api.workspaces._MATERIALS_ROOT", materials_root):
         yield db_path
 
 

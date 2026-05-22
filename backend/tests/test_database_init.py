@@ -1,11 +1,16 @@
 """Layer 0 tests: schema creation, migration idempotency, and crash recovery."""
 
+import re
 from unittest.mock import patch
 
 import aiosqlite
 import pytest
 
 from app.database import _MIGRATIONS, _SCHEMA, init_db
+
+_PRE_39_SCHEMA = re.sub(
+    r"embedding_model_id TEXT,\n\s*", "", _SCHEMA
+)
 
 
 @pytest.fixture
@@ -20,6 +25,16 @@ async def seeded_db(tmp_path):
     db_path = str(tmp_path / "seeded.db")
     async with aiosqlite.connect(db_path) as db:
         await db.executescript(_SCHEMA)
+        await db.commit()
+    yield db_path
+
+
+@pytest.fixture
+async def legacy_db(tmp_path):
+    """Pre-#39 database — material_chunks has no embedding_model_id column."""
+    db_path = str(tmp_path / "legacy.db")
+    async with aiosqlite.connect(db_path) as db:
+        await db.executescript(_PRE_39_SCHEMA)
         await db.commit()
     yield db_path
 
@@ -102,6 +117,57 @@ class TestMigrationIdempotency:
             async with db.execute("PRAGMA table_info(material_chunks)") as cur:
                 columns = {row[1] for row in await cur.fetchall()}
         assert "embedding_model_id" in columns
+
+
+# ---------------------------------------------------------------------------
+# Legacy DB upgrade (real pre-#39 → current)
+# ---------------------------------------------------------------------------
+
+
+class TestLegacyUpgrade:
+    @pytest.mark.asyncio
+    async def test_legacy_db_missing_embedding_model_id(self, legacy_db):
+        """Verify the legacy fixture actually lacks the column."""
+        async with aiosqlite.connect(legacy_db) as db:
+            async with db.execute("PRAGMA table_info(material_chunks)") as cur:
+                columns = {row[1] for row in await cur.fetchall()}
+        assert "embedding_model_id" not in columns
+
+    @pytest.mark.asyncio
+    async def test_init_db_adds_embedding_model_id_to_legacy(self, legacy_db):
+        """Running init_db on a pre-#39 DB must add embedding_model_id via migration."""
+        with patch("app.config.settings.sqlite_db", legacy_db), \
+             patch("app.api.prompts.seed_default_template", return_value=None):
+            await init_db()
+
+        async with aiosqlite.connect(legacy_db) as db:
+            async with db.execute("PRAGMA table_info(material_chunks)") as cur:
+                columns = {row[1] for row in await cur.fetchall()}
+        assert "embedding_model_id" in columns
+
+    @pytest.mark.asyncio
+    async def test_legacy_chunks_survive_upgrade(self, legacy_db):
+        """Pre-existing chunks must still be queryable after migration."""
+        async with aiosqlite.connect(legacy_db) as db:
+            await db.execute(
+                "INSERT INTO material_chunks (id, material_id, workspace_id, "
+                "chunk_index, content, embedding, token_count) "
+                "VALUES ('c1', 'm1', 'ws1', 0, 'test content', X'00000000', 10)"
+            )
+            await db.commit()
+
+        with patch("app.config.settings.sqlite_db", legacy_db), \
+             patch("app.api.prompts.seed_default_template", return_value=None):
+            await init_db()
+
+        async with aiosqlite.connect(legacy_db) as db:
+            async with db.execute(
+                "SELECT id, embedding_model_id FROM material_chunks WHERE id = 'c1'"
+            ) as cur:
+                row = await cur.fetchone()
+        assert row is not None
+        assert row[0] == "c1"
+        assert row[1] is None
 
 
 # ---------------------------------------------------------------------------
