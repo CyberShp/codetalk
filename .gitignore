@@ -82,6 +82,8 @@ deployer/vendor/
 # Test artifacts
 output/
 test-results/
+playwright-report/
+blob-report/
 
 # Browser automation artifacts
 .playwright-mcp/
