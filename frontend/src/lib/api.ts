@@ -17,6 +17,7 @@ import type {
   Workspace,
   WorkspaceCreate,
   WorkspaceMaterial,
+  EmbeddingStatus,
   DeepWikiRepo,
   DeepWikiRepoCreate,
 } from "./types";
@@ -300,6 +301,14 @@ export const api = {
     deleteMaterial: (wsId: string, matId: string) =>
       request<void>(`/api/workspaces/${wsId}/materials/${matId}`, {
         method: "DELETE",
+      }),
+
+    embeddingStatus: (wsId: string) =>
+      request<EmbeddingStatus>(`/api/workspaces/${wsId}/materials/embedding-status`),
+
+    triggerEmbedding: (wsId: string) =>
+      request<{ status: string }>(`/api/workspaces/${wsId}/materials/embed`, {
+        method: "POST",
       }),
 
     indexStatus: (id: string) =>

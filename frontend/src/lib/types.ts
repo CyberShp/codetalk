@@ -192,6 +192,13 @@ export interface ChatRequest {
   mode: ChatMode;
 }
 
+export interface EmbeddingStatus {
+  active_materials: number;
+  embedded_materials: number;
+  total_chunks: number;
+  rag_ready: boolean;
+}
+
 /* ── DeepWiki types (V2) ── */
 
 export type DeepWikiStatus = "pending" | "running" | "completed" | "failed";

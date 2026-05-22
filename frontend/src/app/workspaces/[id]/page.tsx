@@ -26,7 +26,7 @@ import {
   Download,
 } from "lucide-react";
 import { api } from "@/lib/api";
-import type { Workspace, WorkspaceReportMeta, WorkspaceChatMessage, ChatMode } from "@/lib/types";
+import type { Workspace, WorkspaceReportMeta, WorkspaceChatMessage, ChatMode, EmbeddingStatus } from "@/lib/types";
 import MarkdownRenderer from "@/components/ui/MarkdownRenderer";
 
 type Tab = "reports" | "materials" | "chat";
@@ -444,6 +444,7 @@ export default function WorkspaceDetailPage() {
   const [analyzeProgress, setAnalyzeProgress] = useState(0);
   const [analyzeStatus, setAnalyzeStatus] = useState<string | null>(null);
   const [reindexing, setReindexing] = useState(false);
+  const [embeddingStatus, setEmbeddingStatus] = useState<EmbeddingStatus | null>(null);
 
   const pollIndexRef = useRef<ReturnType<typeof setInterval> | null>(null);
   const pollAnalyzeRef = useRef<ReturnType<typeof setInterval> | null>(null);
@@ -523,6 +524,7 @@ export default function WorkspaceDetailPage() {
         startAnalyzePoll();
       }
     });
+    api.workspaces.embeddingStatus(wsId).then(setEmbeddingStatus).catch(() => {});
 
     return () => {
       if (pollIndexRef.current) clearInterval(pollIndexRef.current);
@@ -636,12 +638,37 @@ export default function WorkspaceDetailPage() {
           </div>
           {(() => {
             const activeCount = workspace.materials.filter((m) => m.is_active).length;
-            return activeCount > 0 ? (
-              <span className="text-xs text-on-surface-variant flex items-center gap-1">
-                <Paperclip size={11} />
-                {activeCount} 个活跃材料将参与分析
-              </span>
-            ) : null;
+            if (activeCount === 0) return null;
+            return (
+              <div className="flex items-center gap-3 flex-wrap">
+                <span className="text-xs text-on-surface-variant flex items-center gap-1">
+                  <Paperclip size={11} />
+                  {activeCount} 个活跃材料将参与分析
+                </span>
+                {embeddingStatus && (
+                  <span className={`text-xs flex items-center gap-1 ${embeddingStatus.rag_ready ? "text-green-400" : "text-on-surface-variant/60"}`}>
+                    <Sparkles size={11} />
+                    {embeddingStatus.rag_ready
+                      ? `RAG 就绪 (${embeddingStatus.total_chunks} 分块)`
+                      : "RAG 未启用"}
+                  </span>
+                )}
+                {activeCount > 0 && (!embeddingStatus || !embeddingStatus.rag_ready) && (
+                  <button
+                    type="button"
+                    onClick={async () => {
+                      await api.workspaces.triggerEmbedding(wsId);
+                      setTimeout(() => {
+                        api.workspaces.embeddingStatus(wsId).then(setEmbeddingStatus).catch(() => {});
+                      }, 3000);
+                    }}
+                    className="text-xs text-primary hover:underline"
+                  >
+                    嵌入材料
+                  </button>
+                )}
+              </div>
+            );
           })()}
         </div>
       </div>

@@ -347,7 +347,7 @@ async def upload_material(
     )
     await db.commit()
 
-    return {
+    result = {
         "id": mat_id,
         "workspace_id": ws_id,
         "filename": file.filename or dest.name,
@@ -356,6 +356,19 @@ async def upload_material(
         "is_active": True,
         "created_at": now,
     }
+
+    asyncio.create_task(_embed_material_background(mat_id, ws_id))
+
+    return result
+
+
+async def _embed_material_background(mat_id: str, ws_id: str) -> None:
+    """Fire-and-forget embedding of a single material."""
+    try:
+        from app.services.material_rag import embed_material
+        await embed_material(mat_id, ws_id)
+    except Exception as exc:
+        logger.warning("Background embedding failed for %s: %s", mat_id, exc)
 
 
 @router.patch("/{ws_id}/materials/{mat_id}", response_model=WorkspaceMaterialResponse)
@@ -377,6 +390,16 @@ async def toggle_material(
     await db.commit()
     mat = dict(row)
     mat["is_active"] = body.is_active
+
+    if body.is_active:
+        asyncio.create_task(_embed_material_background(mat_id, ws_id))
+    else:
+        try:
+            from app.services.material_rag import delete_material_chunks
+            await delete_material_chunks(mat_id)
+        except Exception as exc:
+            logger.warning("Chunk cleanup failed for %s: %s", mat_id, exc)
+
     return mat
 
 
@@ -394,6 +417,12 @@ async def delete_material(
     if not row:
         raise HTTPException(status_code=404, detail="材料不存在")
 
+    try:
+        from app.services.material_rag import delete_material_chunks
+        await delete_material_chunks(mat_id)
+    except Exception as exc:
+        logger.warning("Chunk cleanup failed for %s: %s", mat_id, exc)
+
     file_path = Path(row["file_path"])
     if file_path.exists():
         file_path.unlink()
@@ -403,6 +432,57 @@ async def delete_material(
         (mat_id, ws_id),
     )
     await db.commit()
+
+
+@router.get("/{ws_id}/materials/embedding-status")
+async def get_embedding_status(
+    ws_id: str, db: aiosqlite.Connection = Depends(get_db)
+):
+    await _get_workspace_or_404(ws_id, db)
+    async with db.execute(
+        "SELECT COUNT(*) as cnt FROM workspace_materials "
+        "WHERE workspace_id = ? AND is_active = TRUE",
+        (ws_id,),
+    ) as cur:
+        active_count = (await cur.fetchone())["cnt"]
+
+    async with db.execute(
+        "SELECT COUNT(DISTINCT material_id) as cnt FROM material_chunks "
+        "WHERE workspace_id = ?",
+        (ws_id,),
+    ) as cur:
+        embedded_count = (await cur.fetchone())["cnt"]
+
+    async with db.execute(
+        "SELECT COUNT(*) as cnt FROM material_chunks WHERE workspace_id = ?",
+        (ws_id,),
+    ) as cur:
+        chunk_count = (await cur.fetchone())["cnt"]
+
+    return {
+        "active_materials": active_count,
+        "embedded_materials": embedded_count,
+        "total_chunks": chunk_count,
+        "rag_ready": embedded_count > 0,
+    }
+
+
+@router.post("/{ws_id}/materials/embed")
+async def trigger_embedding(
+    ws_id: str, db: aiosqlite.Connection = Depends(get_db)
+):
+    await _get_workspace_or_404(ws_id, db)
+
+    async def _run_embed() -> None:
+        try:
+            from app.services.material_rag import embed_workspace_materials
+            total = await embed_workspace_materials(ws_id)
+            logger.info("Workspace %s: embedded %d total chunks", ws_id, total)
+        except Exception as exc:
+            logger.error("Workspace embedding failed: %s", exc)
+
+    asyncio.create_task(_run_embed())
+    return {"status": "embedding_started"}
 
 
 def _guess_content_type(filename: str) -> str:

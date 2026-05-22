@@ -118,9 +118,22 @@ CREATE TABLE IF NOT EXISTS workspace_chats (
     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
 );
 
+CREATE TABLE IF NOT EXISTS material_chunks (
+    id TEXT PRIMARY KEY,
+    material_id TEXT NOT NULL REFERENCES workspace_materials(id) ON DELETE CASCADE,
+    workspace_id TEXT NOT NULL,
+    chunk_index INTEGER NOT NULL,
+    content TEXT NOT NULL,
+    embedding BLOB NOT NULL,
+    token_count INTEGER DEFAULT 0,
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+);
+
 CREATE INDEX IF NOT EXISTS idx_workspace_materials_ws ON workspace_materials(workspace_id);
 CREATE INDEX IF NOT EXISTS idx_workspace_reports_ws ON workspace_reports(workspace_id);
 CREATE INDEX IF NOT EXISTS idx_workspace_chats_ws ON workspace_chats(workspace_id);
+CREATE INDEX IF NOT EXISTS idx_material_chunks_ws ON material_chunks(workspace_id);
+CREATE INDEX IF NOT EXISTS idx_material_chunks_mat ON material_chunks(material_id);
 
 CREATE TABLE IF NOT EXISTS deepwiki_repos (
     id TEXT PRIMARY KEY,

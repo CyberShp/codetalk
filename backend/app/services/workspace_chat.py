@@ -105,7 +105,7 @@ async def _search_gitnexus(repo_path: str, query: str) -> list[str]:
 
 
 async def _load_materials_text(ws_id: str) -> list[str]:
-    """Load material file excerpts from disk."""
+    """Load material file excerpts from disk (full-text fallback)."""
     rows: list[dict] = []
     async with aiosqlite.connect(settings.sqlite_db) as db:
         db.row_factory = aiosqlite.Row
@@ -131,6 +131,22 @@ async def _load_materials_text(ws_id: str) -> list[str]:
         except Exception as exc:
             logger.warning("Failed to read material %s: %s", row["file_path"], exc)
     return summaries
+
+
+async def _load_materials_context(ws_id: str, query: str) -> list[str]:
+    """Load material context via RAG retrieval, falling back to full-text."""
+    try:
+        from app.services.material_rag import retrieve_chunks
+        chunks = await retrieve_chunks(ws_id, query)
+        if chunks:
+            return [
+                f"**[{c['filename']}]** (相关度: {c['score']})\n{c['content']}"
+                for c in chunks
+            ]
+    except Exception as exc:
+        logger.warning("RAG retrieval failed, falling back to full-text: %s", exc)
+
+    return await _load_materials_text(ws_id)
 
 
 async def _load_report_summaries(ws_id: str) -> list[str]:
@@ -188,7 +204,7 @@ async def build_chat_messages(
 
     if mode == "targeted":
         materials, reports = await asyncio.gather(
-            _load_materials_text(ws_id),
+            _load_materials_context(ws_id, user_message),
             _load_report_summaries(ws_id),
         )
         system_prompt = _TARGETED_SYSTEM.format(
