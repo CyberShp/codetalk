@@ -158,6 +158,7 @@ _MIGRATIONS = [
     "ALTER TABLE workspaces ADD COLUMN analyze_status TEXT",
     "ALTER TABLE workspaces ADD COLUMN analyze_progress INTEGER DEFAULT 0",
     "ALTER TABLE workspace_materials ADD COLUMN is_active BOOLEAN NOT NULL DEFAULT TRUE",
+    "ALTER TABLE material_chunks ADD COLUMN embedding_model_id TEXT",
 ]
 
 

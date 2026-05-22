@@ -153,14 +153,18 @@ async def _load_materials_context(ws_id: str, query: str) -> list[str]:
 
     covered_material_ids = {c["material_id"] for c in rag_results}
 
+    from app.services.material_rag import _get_active_embedding_model_id
+    active_model_id = await _get_active_embedding_model_id()
+
     async with aiosqlite.connect(settings.sqlite_db) as db:
         db.row_factory = aiosqlite.Row
         async with db.execute(
             "SELECT m.id, m.filename, m.content_type, m.file_path "
             "FROM workspace_materials m "
             "LEFT JOIN material_chunks mc ON m.id = mc.material_id "
+            "AND (mc.embedding_model_id = ? OR mc.embedding_model_id IS NULL) "
             "WHERE m.workspace_id = ? AND m.is_active = TRUE AND mc.id IS NULL",
-            (ws_id,),
+            (active_model_id, ws_id),
         ) as cur:
             unembedded = [dict(r) for r in await cur.fetchall()]
 
