@@ -8,7 +8,7 @@ from pathlib import Path
 
 import aiosqlite
 from fastapi import APIRouter, Depends, HTTPException, Query, UploadFile
-from fastapi.responses import StreamingResponse
+from fastapi.responses import Response, StreamingResponse
 from pydantic import BaseModel, Field
 
 from app.config import settings
@@ -276,6 +276,42 @@ async def get_report(
     if not row:
         raise HTTPException(status_code=404, detail="报告不存在")
     return dict(row)
+
+
+@router.get("/{ws_id}/export")
+async def export_workspace_reports(
+    ws_id: str,
+    format: str = Query(default="md", pattern="^(md|docx|xml)$"),
+    db: aiosqlite.Connection = Depends(get_db),
+):
+    await _get_workspace_or_404(ws_id, db)
+    from app.services.export_service import export_workspace_reports as _export
+    try:
+        data, filename, content_type = await _export(ws_id, format, db)
+    except FileNotFoundError as exc:
+        raise HTTPException(status_code=404, detail=str(exc))
+    return Response(
+        content=data,
+        media_type=content_type,
+        headers={"Content-Disposition": f'attachment; filename="{filename}"'},
+    )
+
+
+@router.get("/{ws_id}/chat/export")
+async def export_workspace_chat(
+    ws_id: str, db: aiosqlite.Connection = Depends(get_db)
+):
+    ws = await _get_workspace_or_404(ws_id, db)
+    from app.services.export_service import export_workspace_chat as _export_chat
+    try:
+        data, filename, content_type = await _export_chat(ws_id, ws["name"], db)
+    except FileNotFoundError as exc:
+        raise HTTPException(status_code=404, detail=str(exc))
+    return Response(
+        content=data,
+        media_type=content_type,
+        headers={"Content-Disposition": f'attachment; filename="{filename}"'},
+    )
 
 
 # --- Materials endpoints ---

@@ -23,6 +23,7 @@ import {
   Trash2,
   Sparkles,
   Crosshair,
+  Download,
 } from "lucide-react";
 import { api } from "@/lib/api";
 import type { Workspace, WorkspaceReportMeta, WorkspaceChatMessage, ChatMode } from "@/lib/types";
@@ -274,6 +275,18 @@ function ChatPanel({ wsId, indexed }: { wsId: string; indexed: number }) {
 
   return (
     <div className="flex flex-col h-[600px]">
+      {/* Header row: mode toggle + chat export */}
+      <div className="flex items-center gap-2 mb-3">
+        <button
+          onClick={() => window.open(api.workspaces.chatExportUrl(wsId), "_blank")}
+          disabled={messages.length === 0}
+          title="导出对话记录（Markdown）"
+          className="ml-auto flex items-center gap-1 px-2.5 py-1.5 text-xs rounded-lg border border-outline-variant/30 text-on-surface-variant hover:bg-surface-container hover:text-on-surface disabled:opacity-30 disabled:cursor-not-allowed transition-colors shrink-0"
+        >
+          <Download size={12} />
+          导出
+        </button>
+      </div>
       {/* Mode toggle */}
       <div className="flex gap-2 mb-3">
         {([
@@ -669,6 +682,21 @@ export default function WorkspaceDetailPage() {
       {/* Reports tab */}
       {tab === "reports" && (
         <div>
+          {workspace.reports.some((r) => r.status === "completed") && (
+            <div className="flex items-center gap-2 mb-4">
+              <span className="text-xs text-on-surface-variant">导出报告：</span>
+              {(["md", "docx", "xml"] as const).map((fmt) => (
+                <button
+                  key={fmt}
+                  onClick={() => window.open(api.workspaces.exportUrl(wsId, fmt), "_blank")}
+                  className="flex items-center gap-1 px-2.5 py-1 text-xs rounded-lg border border-outline-variant/30 text-on-surface-variant hover:bg-surface-container hover:text-on-surface transition-colors uppercase"
+                >
+                  <Download size={11} />
+                  {fmt}
+                </button>
+              ))}
+            </div>
+          )}
           {workspace.reports.length === 0 ? (
             <div className="flex flex-col items-center justify-center h-48 rounded-xl border border-outline-variant/30 bg-surface-container-low gap-3">
               <FileText size={36} className="text-on-surface-variant/30" />

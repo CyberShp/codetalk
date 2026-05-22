@@ -3,19 +3,26 @@
 import io
 import logging
 import zipfile
+from datetime import datetime, timezone
 from pathlib import Path
+from typing import NamedTuple
 
 from app.config import settings
 
 logger = logging.getLogger(__name__)
 
 
+class _ReportDoc(NamedTuple):
+    name: str     # filename (e.g. "summary.md") — used in zip entry / xml filename attr
+    content: str  # raw text content
+
+
+# ---------------------------------------------------------------------------
+# Public: task export
+# ---------------------------------------------------------------------------
+
 async def export_reports(task_id: str, fmt: str) -> tuple[bytes, str, str]:
     """Export task reports in the requested format.
-
-    Args:
-        task_id: Task UUID.
-        fmt: Export format -- "md", "docx", or "xml".
 
     Returns:
         Tuple of (file_bytes, filename, content_type).
@@ -32,55 +39,142 @@ async def export_reports(task_id: str, fmt: str) -> tuple[bytes, str, str]:
     if not md_files:
         raise FileNotFoundError(f"任务无输出文件: {task_id}")
 
-    if fmt == "md":
-        return _export_md_zip(md_files, task_id)
-    if fmt == "docx":
-        return _export_docx(md_files, task_id)
-    if fmt == "xml":
-        return _export_xml(md_files, task_id)
+    docs = [_ReportDoc(name=f.name, content=f.read_text(encoding="utf-8")) for f in md_files]
+    return _dispatch(docs, f"codetalk-{task_id[:8]}", fmt)
 
+
+# ---------------------------------------------------------------------------
+# Public: workspace report export
+# ---------------------------------------------------------------------------
+
+async def export_workspace_reports(
+    ws_id: str, fmt: str, db: object
+) -> tuple[bytes, str, str]:
+    """Export completed workspace reports in the requested format.
+
+    Args:
+        ws_id: Workspace UUID.
+        fmt: Export format — "md", "docx", or "xml".
+        db: aiosqlite.Connection.
+
+    Raises:
+        FileNotFoundError: No completed reports for this workspace.
+        ValueError: Unsupported format.
+    """
+    async with db.execute(  # type: ignore[attr-defined]
+        "SELECT title, content FROM workspace_reports"
+        " WHERE workspace_id = ? AND status = 'completed'"
+        " ORDER BY created_at",
+        (ws_id,),
+    ) as cur:
+        rows = await cur.fetchall()
+
+    if not rows:
+        raise FileNotFoundError(f"无已完成的报告：{ws_id}")
+
+    docs = [
+        _ReportDoc(
+            name=f"{row['title'] or 'report'}.md",
+            content=row["content"] or "",
+        )
+        for row in rows
+    ]
+    return _dispatch(docs, f"workspace-{ws_id[:8]}", fmt)
+
+
+# ---------------------------------------------------------------------------
+# Public: workspace chat export
+# ---------------------------------------------------------------------------
+
+async def export_workspace_chat(
+    ws_id: str, ws_name: str, db: object
+) -> tuple[bytes, str, str]:
+    """Export workspace chat history as a Markdown file.
+
+    Raises:
+        FileNotFoundError: No chat messages for this workspace.
+    """
+    async with db.execute(  # type: ignore[attr-defined]
+        "SELECT mode, role, content, created_at FROM workspace_chats"
+        " WHERE workspace_id = ? ORDER BY created_at ASC",
+        (ws_id,),
+    ) as cur:
+        rows = await cur.fetchall()
+
+    if not rows:
+        raise FileNotFoundError(f"无对话记录：{ws_id}")
+
+    now = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M UTC")
+    lines = [
+        f"# 工作空间对话记录 — {ws_name}",
+        "",
+        f"导出时间：{now}",
+        "",
+        "---",
+        "",
+    ]
+
+    MODE_LABELS = {"targeted": "结构化分析", "freeqa": "自由问答"}
+    ROLE_LABELS = {"user": "用户", "assistant": "AI"}
+
+    for row in rows:
+        mode_label = MODE_LABELS.get(row["mode"], row["mode"])
+        role_label = ROLE_LABELS.get(row["role"], row["role"])
+        ts = row["created_at"][:16].replace("T", " ")
+        lines.append(f"## [{mode_label}] {role_label} ({ts})")
+        lines.append("")
+        lines.append(row["content"] or "")
+        lines.append("")
+        lines.append("---")
+        lines.append("")
+
+    md_text = "\n".join(lines)
+    filename = f"chat-{ws_id[:8]}.md"
+    return md_text.encode("utf-8"), filename, "text/markdown; charset=utf-8"
+
+
+# ---------------------------------------------------------------------------
+# Private helpers
+# ---------------------------------------------------------------------------
+
+def _dispatch(docs: list[_ReportDoc], prefix: str, fmt: str) -> tuple[bytes, str, str]:
+    if fmt == "md":
+        return _export_md_zip(docs, prefix)
+    if fmt == "docx":
+        return _export_docx(docs, prefix)
+    if fmt == "xml":
+        return _export_xml(docs, prefix)
     raise ValueError(f"不支持的导出格式: {fmt}")
 
 
-def _export_md_zip(md_files: list[Path], task_id: str) -> tuple[bytes, str, str]:
-    """Zip all markdown files."""
+def _export_md_zip(docs: list[_ReportDoc], prefix: str) -> tuple[bytes, str, str]:
     buf = io.BytesIO()
     with zipfile.ZipFile(buf, "w", zipfile.ZIP_DEFLATED) as zf:
-        for f in md_files:
-            zf.writestr(f.name, f.read_text(encoding="utf-8"))
-
-    filename = f"codetalk-{task_id[:8]}.zip"
-    return buf.getvalue(), filename, "application/zip"
+        for doc in docs:
+            zf.writestr(doc.name, doc.content)
+    return buf.getvalue(), f"{prefix}.zip", "application/zip"
 
 
-def _export_docx(md_files: list[Path], task_id: str) -> tuple[bytes, str, str]:
-    """Convert markdown files to a single docx document."""
+def _export_docx(docs: list[_ReportDoc], prefix: str) -> tuple[bytes, str, str]:
     try:
         from docx import Document
         from docx.shared import Pt
     except ImportError:
-        raise RuntimeError(
-            "python-docx 未安装，请运行: pip install python-docx"
-        )
+        raise RuntimeError("python-docx 未安装，请运行: pip install python-docx")
 
     doc = Document()
-
-    # Set default font
     style = doc.styles["Normal"]
     font = style.font
     font.name = "Microsoft YaHei"
     font.size = Pt(10.5)
 
-    for md_file in md_files:
-        content = md_file.read_text(encoding="utf-8")
-
-        # Strip YAML frontmatter
+    for report in docs:
+        content = report.content
         if content.startswith("---"):
             end_idx = content.find("---", 3)
             if end_idx != -1:
                 content = content[end_idx + 3:].strip()
 
-        # Simple markdown-to-docx: headings and paragraphs
         for line in content.split("\n"):
             stripped = line.strip()
             if not stripped:
@@ -92,46 +186,39 @@ def _export_docx(md_files: list[Path], task_id: str) -> tuple[bytes, str, str]:
             elif stripped.startswith("# "):
                 doc.add_heading(stripped[2:], level=1)
             elif stripped.startswith("- "):
-                para = doc.add_paragraph(stripped[2:], style="List Bullet")
+                doc.add_paragraph(stripped[2:], style="List Bullet")
             elif stripped.startswith("| "):
-                # Table rows -- add as plain text (simple approach)
                 doc.add_paragraph(stripped, style="Normal")
             else:
                 doc.add_paragraph(stripped)
 
-        # Page break between reports
         doc.add_page_break()
 
     buf = io.BytesIO()
     doc.save(buf)
-
-    filename = f"codetalk-{task_id[:8]}.docx"
     return (
         buf.getvalue(),
-        filename,
+        f"{prefix}.docx",
         "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
     )
 
 
-def _export_xml(md_files: list[Path], task_id: str) -> tuple[bytes, str, str]:
-    """Wrap reports in an XML structure."""
+def _export_xml(docs: list[_ReportDoc], prefix: str) -> tuple[bytes, str, str]:
     import xml.etree.ElementTree as ET
 
     root = ET.Element("codetalk-reports")
-    root.set("task_id", task_id)
+    root.set("prefix", prefix)
 
-    for md_file in md_files:
-        content = md_file.read_text(encoding="utf-8")
+    for doc in docs:
+        content = doc.content
         report_el = ET.SubElement(root, "report")
-        report_el.set("filename", md_file.name)
+        report_el.set("filename", doc.name)
 
-        # Extract frontmatter metadata
         if content.startswith("---"):
             end_idx = content.find("---", 3)
             if end_idx != -1:
                 frontmatter = content[3:end_idx].strip()
                 content = content[end_idx + 3:].strip()
-
                 meta_el = ET.SubElement(report_el, "metadata")
                 for line in frontmatter.split("\n"):
                     if ": " in line:
@@ -145,6 +232,4 @@ def _export_xml(md_files: list[Path], task_id: str) -> tuple[bytes, str, str]:
     tree = ET.ElementTree(root)
     buf = io.BytesIO()
     tree.write(buf, encoding="unicode", xml_declaration=True)
-
-    filename = f"codetalk-{task_id[:8]}.xml"
-    return buf.getvalue(), filename, "application/xml"
+    return buf.getvalue(), f"{prefix}.xml", "application/xml"

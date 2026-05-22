@@ -341,6 +341,12 @@ export const api = {
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ message, mode }),
       }),
+
+    exportUrl: (wsId: string, format: "md" | "docx" | "xml") =>
+      `${BASE}/api/workspaces/${wsId}/export?format=${format}`,
+
+    chatExportUrl: (wsId: string) =>
+      `${BASE}/api/workspaces/${wsId}/chat/export`,
   },
 
   // ── DeepWiki (V2) ──
