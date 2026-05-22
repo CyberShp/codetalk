@@ -4,6 +4,7 @@ Tests persist_*, _load_*, and build_chat_messages using the sqlite_db fixture
 (V2 services connect via aiosqlite.connect(settings.sqlite_db) directly).
 """
 
+import struct
 import uuid
 from datetime import datetime, timedelta, timezone
 from unittest.mock import AsyncMock, patch
@@ -278,6 +279,143 @@ class TestLoadMaterialsText:
         from app.services.workspace_chat import _load_materials_text
 
         assert await _load_materials_text(ws_id) == []
+
+
+# ---------------------------------------------------------------------------
+# _load_materials_context — exercises real RAG fallback/supplement branches
+# ---------------------------------------------------------------------------
+
+
+class TestLoadMaterialsContext:
+    async def test_rag_exception_falls_back_to_full_text(self, sqlite_db, tmp_path):
+        ws_id = await _seed_workspace(sqlite_db)
+        f = tmp_path / "doc.md"
+        f.write_text("Full text fallback content", encoding="utf-8")
+        await _seed_material(sqlite_db, ws_id, "doc.md", str(f))
+
+        with patch(
+            "app.services.material_rag.retrieve_chunks",
+            new_callable=AsyncMock,
+            side_effect=RuntimeError("embedding service down"),
+        ):
+            from app.services.workspace_chat import _load_materials_context
+
+            result = await _load_materials_context(ws_id, "query")
+
+        assert len(result) == 1
+        assert "doc.md" in result[0]
+        assert "Full text fallback content" in result[0]
+
+    async def test_empty_rag_falls_back_to_full_text(self, sqlite_db, tmp_path):
+        ws_id = await _seed_workspace(sqlite_db)
+        f = tmp_path / "doc.md"
+        f.write_text("Fallback content", encoding="utf-8")
+        await _seed_material(sqlite_db, ws_id, "doc.md", str(f))
+
+        with patch(
+            "app.services.material_rag.retrieve_chunks",
+            new_callable=AsyncMock,
+            return_value=[],
+        ):
+            from app.services.workspace_chat import _load_materials_context
+
+            result = await _load_materials_context(ws_id, "query")
+
+        assert len(result) == 1
+        assert "Fallback content" in result[0]
+
+    async def test_rag_results_formatted_with_score(self, sqlite_db):
+        ws_id = await _seed_workspace(sqlite_db)
+        mat_id = "mat-rag"
+        now = datetime.now(timezone.utc).isoformat()
+        blob = struct.pack("3f", 0.1, 0.2, 0.3)
+        async with aiosqlite.connect(sqlite_db) as db:
+            await db.execute(
+                "INSERT OR REPLACE INTO settings (key, value) "
+                "VALUES ('active_embedding_model_id', 'model-x')"
+            )
+            await db.execute(
+                "INSERT INTO workspace_materials "
+                "(id, workspace_id, filename, content_type, file_path, is_active, created_at) "
+                "VALUES (?, ?, 'doc.md', 'other', '/tmp/doc.md', TRUE, ?)",
+                (mat_id, ws_id, now),
+            )
+            await db.execute(
+                "INSERT INTO material_chunks "
+                "(id, material_id, workspace_id, embedding_model_id, "
+                "chunk_index, content, embedding, created_at) "
+                "VALUES ('c1', ?, ?, 'model-x', 0, 'chunk text', ?, ?)",
+                (mat_id, ws_id, blob, now),
+            )
+            await db.commit()
+
+        rag_hit = [{
+            "content": "chunk text",
+            "filename": "doc.md",
+            "material_id": mat_id,
+            "score": 0.85,
+        }]
+        with patch(
+            "app.services.material_rag.retrieve_chunks",
+            new_callable=AsyncMock,
+            return_value=rag_hit,
+        ):
+            from app.services.workspace_chat import _load_materials_context
+
+            result = await _load_materials_context(ws_id, "query")
+
+        assert len(result) == 1
+        assert "doc.md" in result[0]
+        assert "0.85" in result[0]
+        assert "chunk text" in result[0]
+
+    async def test_supplements_unembedded_materials(self, sqlite_db, tmp_path):
+        ws_id = await _seed_workspace(sqlite_db)
+        now = datetime.now(timezone.utc).isoformat()
+        blob = struct.pack("3f", 0.1, 0.2, 0.3)
+
+        async with aiosqlite.connect(sqlite_db) as db:
+            await db.execute(
+                "INSERT OR REPLACE INTO settings (key, value) "
+                "VALUES ('active_embedding_model_id', 'model-x')"
+            )
+            await db.execute(
+                "INSERT INTO workspace_materials "
+                "(id, workspace_id, filename, content_type, file_path, is_active, created_at) "
+                "VALUES ('mat-emb', ?, 'embedded.md', 'other', '/tmp/e.md', TRUE, ?)",
+                (ws_id, now),
+            )
+            await db.execute(
+                "INSERT INTO material_chunks "
+                "(id, material_id, workspace_id, embedding_model_id, "
+                "chunk_index, content, embedding, created_at) "
+                "VALUES ('c1', 'mat-emb', ?, 'model-x', 0, 'embedded chunk', ?, ?)",
+                (ws_id, blob, now),
+            )
+            await db.commit()
+
+        unemb_file = tmp_path / "unembedded.md"
+        unemb_file.write_text("Supplementary content", encoding="utf-8")
+        await _seed_material(sqlite_db, ws_id, "unembedded.md", str(unemb_file))
+
+        rag_hit = [{
+            "content": "embedded chunk",
+            "filename": "embedded.md",
+            "material_id": "mat-emb",
+            "score": 0.9,
+        }]
+        with patch(
+            "app.services.material_rag.retrieve_chunks",
+            new_callable=AsyncMock,
+            return_value=rag_hit,
+        ):
+            from app.services.workspace_chat import _load_materials_context
+
+            result = await _load_materials_context(ws_id, "query")
+
+        assert len(result) == 2
+        assert any("embedded chunk" in r and "0.9" in r for r in result)
+        assert any("Supplementary content" in r for r in result)
 
 
 # ---------------------------------------------------------------------------

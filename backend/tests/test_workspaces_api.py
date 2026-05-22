@@ -21,15 +21,19 @@ pytestmark = [pytest.mark.asyncio, pytest.mark.integration]
 
 
 @pytest.fixture(autouse=True)
-def _no_background_tasks(monkeypatch):
-    """Prevent asyncio.create_task from scheduling real coroutines."""
+def background_tasks(monkeypatch):
+    """Capture asyncio.create_task calls. Returns list of scheduled coroutine qualnames."""
     import asyncio
 
-    def _swallow(coro, *, name=None):
+    captured: list[str] = []
+
+    def _capture(coro, *, name=None):
+        captured.append(getattr(coro, "__qualname__", repr(coro)))
         if hasattr(coro, "close"):
             coro.close()
 
-    monkeypatch.setattr(asyncio, "create_task", _swallow)
+    monkeypatch.setattr(asyncio, "create_task", _capture)
+    return captured
 
 
 # ---------------------------------------------------------------------------
@@ -75,7 +79,7 @@ class TestWorkspaceCRUD:
         assert resp.status_code == 200
         assert resp.json() == []
 
-    async def test_create_with_valid_dir(self, client_v2, tmp_path):
+    async def test_create_with_valid_dir(self, client_v2, tmp_path, background_tasks):
         repo_dir = tmp_path / "my_repo"
         repo_dir.mkdir()
 
@@ -87,6 +91,7 @@ class TestWorkspaceCRUD:
         data = resp.json()
         assert data["name"] == "new-ws"
         assert data["indexed"] == 0
+        assert any("_index_workspace" in c for c in background_tasks)
 
     async def test_create_rejects_nonexistent_path(self, client_v2):
         resp = await client_v2.post(
@@ -156,20 +161,22 @@ class TestIndexAndAnalyze:
         assert resp.status_code == 200
         assert resp.json()["indexed"] == 1
 
-    async def test_reindex_202(self, client_v2, sqlite_db):
+    async def test_reindex_202(self, client_v2, sqlite_db, background_tasks):
         await _seed_ws(sqlite_db, "ws-ri", indexed=1)
         resp = await client_v2.post("/api/workspaces/ws-ri/reindex")
         assert resp.status_code == 202
+        assert any("_index_workspace" in c for c in background_tasks)
 
     async def test_analyze_requires_indexed(self, client_v2, sqlite_db):
         await _seed_ws(sqlite_db, "ws-noidx", indexed=0)
         resp = await client_v2.post("/api/workspaces/ws-noidx/analyze")
         assert resp.status_code == 409
 
-    async def test_analyze_ok_when_indexed(self, client_v2, sqlite_db):
+    async def test_analyze_ok_when_indexed(self, client_v2, sqlite_db, background_tasks):
         await _seed_ws(sqlite_db, "ws-az", indexed=1)
         resp = await client_v2.post("/api/workspaces/ws-az/analyze")
         assert resp.status_code == 202
+        assert any("_run_workspace_analysis" in c for c in background_tasks)
 
     async def test_analyze_blocks_when_already_running(self, client_v2, sqlite_db):
         now = datetime.now(timezone.utc).isoformat()
@@ -191,7 +198,7 @@ class TestIndexAndAnalyze:
 
 
 class TestMaterials:
-    async def test_upload(self, client_v2, sqlite_db):
+    async def test_upload(self, client_v2, sqlite_db, background_tasks):
         await _seed_ws(sqlite_db, "ws-up")
         resp = await client_v2.post(
             "/api/workspaces/ws-up/materials",
@@ -202,6 +209,7 @@ class TestMaterials:
         assert data["filename"] == "requirements.md"
         assert data["content_type"] == "requirements"
         assert data["is_active"] is True
+        assert any("_embed_material_background" in c for c in background_tasks)
 
     async def test_upload_design_content_type(self, client_v2, sqlite_db):
         await _seed_ws(sqlite_db, "ws-up2")
