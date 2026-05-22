@@ -72,13 +72,11 @@ async def export_workspace_reports(
     if not rows:
         raise FileNotFoundError(f"无已完成的报告：{ws_id}")
 
-    docs = [
-        _ReportDoc(
-            name=f"{row['title'] or 'report'}.md",
-            content=row["content"] or "",
-        )
-        for row in rows
-    ]
+    docs = []
+    for row in rows:
+        title = row["title"] or "report"
+        name = title if title.endswith(".md") else f"{title}.md"
+        docs.append(_ReportDoc(name=name, content=row["content"] or ""))
     return _dispatch(docs, f"workspace-{ws_id[:8]}", fmt)
 
 
