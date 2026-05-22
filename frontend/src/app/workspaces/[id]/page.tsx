@@ -610,28 +610,39 @@ export default function WorkspaceDetailPage() {
           </div>
         </div>
 
-        <div className="flex items-center gap-2 shrink-0">
-          <button
-            onClick={handleReindex}
-            disabled={reindexing || workspace.indexed === 0}
-            className="flex items-center gap-1.5 px-3 py-1.5 text-xs rounded-lg border border-outline-variant/40 text-on-surface-variant hover:bg-surface-container disabled:opacity-40 disabled:cursor-not-allowed transition-colors"
-          >
-            <RefreshCw size={13} className={reindexing ? "animate-spin" : ""} />
-            重新索引
-          </button>
+        <div className="flex flex-col items-end gap-1.5 shrink-0">
+          <div className="flex items-center gap-2">
+            <button
+              onClick={handleReindex}
+              disabled={reindexing || workspace.indexed === 0}
+              className="flex items-center gap-1.5 px-3 py-1.5 text-xs rounded-lg border border-outline-variant/40 text-on-surface-variant hover:bg-surface-container disabled:opacity-40 disabled:cursor-not-allowed transition-colors"
+            >
+              <RefreshCw size={13} className={reindexing ? "animate-spin" : ""} />
+              重新索引
+            </button>
 
-          <button
-            onClick={handleAnalyze}
-            disabled={!canAnalyze}
-            className="flex items-center gap-1.5 px-4 py-1.5 text-sm rounded-lg bg-primary text-on-primary hover:opacity-90 disabled:opacity-40 disabled:cursor-not-allowed transition-opacity font-medium"
-          >
-            {analyzing ? (
-              <Loader2 size={14} className="animate-spin" />
-            ) : (
-              <BarChart2 size={14} />
-            )}
-            生成报告
-          </button>
+            <button
+              onClick={handleAnalyze}
+              disabled={!canAnalyze}
+              className="flex items-center gap-1.5 px-4 py-1.5 text-sm rounded-lg bg-primary text-on-primary hover:opacity-90 disabled:opacity-40 disabled:cursor-not-allowed transition-opacity font-medium"
+            >
+              {analyzing ? (
+                <Loader2 size={14} className="animate-spin" />
+              ) : (
+                <BarChart2 size={14} />
+              )}
+              生成报告
+            </button>
+          </div>
+          {(() => {
+            const activeCount = workspace.materials.filter((m) => m.is_active).length;
+            return activeCount > 0 ? (
+              <span className="text-xs text-on-surface-variant flex items-center gap-1">
+                <Paperclip size={11} />
+                {activeCount} 个活跃材料将参与分析
+              </span>
+            ) : null;
+          })()}
         </div>
       </div>
 

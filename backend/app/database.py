@@ -140,6 +140,7 @@ _MIGRATIONS = [
     "ALTER TABLE tasks ADD COLUMN prompt_content TEXT",
     "ALTER TABLE tasks ADD COLUMN current_step TEXT",
     "ALTER TABLE tasks ADD COLUMN deepwiki_depth TEXT DEFAULT 'balanced'",
+    "ALTER TABLE tasks ADD COLUMN material_ids TEXT",
     "ALTER TABLE workspaces ADD COLUMN analyze_status TEXT",
     "ALTER TABLE workspaces ADD COLUMN analyze_progress INTEGER DEFAULT 0",
     "ALTER TABLE workspace_materials ADD COLUMN is_active BOOLEAN NOT NULL DEFAULT TRUE",
