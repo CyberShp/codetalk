@@ -1,7 +1,6 @@
 """Shared test fixtures for the CodeTalk Lightweight backend."""
 
 from contextlib import asynccontextmanager
-from unittest.mock import patch
 
 import aiosqlite
 import pytest
@@ -71,12 +70,15 @@ async def client(test_app: FastAPI, db: aiosqlite.Connection) -> AsyncClient:
 
 
 @pytest.fixture
-async def sqlite_db(tmp_path):
-    """Create an isolated SQLite DB and patch settings.sqlite_db to point to it.
+async def sqlite_db(tmp_path, monkeypatch):
+    """Create an isolated SQLite DB and patch settings to point to it.
 
     V2 services (material_rag, workspace_chat, etc.) connect directly via
     ``aiosqlite.connect(settings.sqlite_db)`` instead of FastAPI's get_db
     dependency, so we must monkeypatch the config value.
+
+    Uses monkeypatch instead of unittest.mock.patch because Pydantic v2
+    Settings blocks property set/delete via __setattr__/__delattr__.
     """
     db_path = str(tmp_path / "v2_test.db")
     async with aiosqlite.connect(db_path) as conn:
@@ -95,10 +97,14 @@ async def sqlite_db(tmp_path):
     materials_root = data_dir / "workspaces"
     materials_root.mkdir()
 
-    with patch("app.config.settings.sqlite_db", db_path), \
-         patch("app.config.settings.data_path", data_dir), \
-         patch("app.api.workspaces._MATERIALS_ROOT", materials_root):
-        yield db_path
+    from app.config import settings
+    from app.api import workspaces
+
+    monkeypatch.setattr(settings, "sqlite_db", db_path)
+    monkeypatch.setattr(settings, "data_dir", str(data_dir))
+    monkeypatch.setattr(workspaces, "_MATERIALS_ROOT", materials_root)
+
+    yield db_path
 
 
 @pytest.fixture
