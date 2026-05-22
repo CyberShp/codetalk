@@ -130,6 +130,9 @@ BUSINESS_FLOW_PROMPT = """\
 ## 跨模块调用关系
 {{cross_module_calls}}
 
+## 关键源代码
+{{source_code}}
+
 ## 输出要求
 
 ### 1. 核心业务流程清单
@@ -205,6 +208,9 @@ SOURCE_READING_PROMPT = """\
 
 ## 调用图数据
 {{call_graph}}
+
+## 关键源代码
+{{source_code}}
 
 ## 输出要求
 

@@ -158,6 +158,7 @@ class AnalysisPipeline:
                     max_concurrency=settings.llm_max_concurrency,
                     data_quality=self._data_quality,
                     use_streaming=True,
+                    repo_path=self._repo_path,
                 )
                 await self._update_progress(task_id, 90, "running", None, "报告生成完成，收尾处理…")
 
