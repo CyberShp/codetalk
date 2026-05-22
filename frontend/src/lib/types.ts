@@ -36,7 +36,6 @@ export interface TaskCreate {
   analysis_focus?: string;
   prompt_content?: string;
   deepwiki_depth?: "fast" | "balanced" | "deep";
-  material_ids?: string[];
 }
 
 export interface PromptTemplate {
