@@ -134,19 +134,53 @@ async def _load_materials_text(ws_id: str) -> list[str]:
 
 
 async def _load_materials_context(ws_id: str, query: str) -> list[str]:
-    """Load material context via RAG retrieval, falling back to full-text."""
+    """Load material context via RAG retrieval, supplementing unembedded materials with full-text."""
+    rag_results: list[dict] = []
     try:
         from app.services.material_rag import retrieve_chunks
-        chunks = await retrieve_chunks(ws_id, query)
-        if chunks:
-            return [
-                f"**[{c['filename']}]** (相关度: {c['score']})\n{c['content']}"
-                for c in chunks
-            ]
+        rag_results = await retrieve_chunks(ws_id, query)
     except Exception as exc:
         logger.warning("RAG retrieval failed, falling back to full-text: %s", exc)
+        return await _load_materials_text(ws_id)
 
-    return await _load_materials_text(ws_id)
+    if not rag_results:
+        return await _load_materials_text(ws_id)
+
+    context = [
+        f"**[{c['filename']}]** (相关度: {c['score']})\n{c['content']}"
+        for c in rag_results
+    ]
+
+    embedded_filenames = {c["filename"] for c in rag_results}
+
+    async with aiosqlite.connect(settings.sqlite_db) as db:
+        db.row_factory = aiosqlite.Row
+        async with db.execute(
+            "SELECT m.filename, m.content_type, m.file_path "
+            "FROM workspace_materials m "
+            "LEFT JOIN material_chunks mc ON m.id = mc.material_id "
+            "WHERE m.workspace_id = ? AND m.is_active = TRUE AND mc.id IS NULL",
+            (ws_id,),
+        ) as cur:
+            unembedded = [dict(r) for r in await cur.fetchall()]
+
+    for row in unembedded:
+        if row["filename"] in embedded_filenames:
+            continue
+        try:
+            content = await asyncio.to_thread(
+                Path(row["file_path"]).read_text, "utf-8", "ignore"
+            )
+            excerpt = content[:_MAX_MATERIAL_CHARS]
+            if len(content) > _MAX_MATERIAL_CHARS:
+                excerpt += "…"
+            context.append(
+                f"**[{row['filename']}]** ({row['content_type']})\n{excerpt}"
+            )
+        except Exception as exc:
+            logger.warning("Failed to read unembedded material %s: %s", row["file_path"], exc)
+
+    return context
 
 
 async def _load_report_summaries(ws_id: str) -> list[str]:

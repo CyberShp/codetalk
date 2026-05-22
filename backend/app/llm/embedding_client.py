@@ -17,14 +17,41 @@ _BATCH_SIZE = 64
 class EmbeddingClient:
     """Stateless embedding client for OpenAI-compatible /v1/embeddings endpoints."""
 
-    def __init__(self, base_url: str, api_key: str, model: str) -> None:
+    def __init__(
+        self,
+        base_url: str,
+        api_key: str,
+        model: str,
+        *,
+        proxy_url: str | None = None,
+        ssl_cert_path: str | None = None,
+        force_direct: bool = False,
+    ) -> None:
         self._base_url = base_url.rstrip("/")
         self._api_key = api_key
         self._model = model
-        self._client = httpx.AsyncClient(
-            timeout=httpx.Timeout(120, connect=15),
-            limits=httpx.Limits(keepalive_expiry=30),
-        )
+
+        verify = ssl_cert_path if ssl_cert_path else True
+        pool_limits = httpx.Limits(keepalive_expiry=30)
+        if force_direct:
+            self._client = httpx.AsyncClient(
+                transport=httpx.AsyncHTTPTransport(verify=verify),
+                timeout=httpx.Timeout(120, connect=15),
+                limits=pool_limits,
+            )
+        elif proxy_url:
+            self._client = httpx.AsyncClient(
+                proxy=proxy_url,
+                verify=verify,
+                timeout=httpx.Timeout(120, connect=15),
+                limits=pool_limits,
+            )
+        else:
+            self._client = httpx.AsyncClient(
+                verify=verify,
+                timeout=httpx.Timeout(120, connect=15),
+                limits=pool_limits,
+            )
 
     async def embed_batch(self, texts: list[str]) -> list[list[float]]:
         """Embed a list of texts, returning one embedding vector per text.

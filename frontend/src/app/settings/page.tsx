@@ -110,10 +110,19 @@ export default function SettingsPage() {
           await api.settings.updateLLM(editingId, payload);
         } else {
           const newConfig = await api.settings.createLLM(form);
+          let autoUpdated = { ...general };
+          let needsSave = false;
           if (!general.active_chat_model_id && form.is_chat_model) {
-            const updated = { ...general, active_chat_model_id: newConfig.id };
-            await api.settings.updateGeneral(updated);
-            setGeneral(updated);
+            autoUpdated = { ...autoUpdated, active_chat_model_id: newConfig.id };
+            needsSave = true;
+          }
+          if (!general.active_embedding_model_id && form.is_embedding_model) {
+            autoUpdated = { ...autoUpdated, active_embedding_model_id: newConfig.id };
+            needsSave = true;
+          }
+          if (needsSave) {
+            await api.settings.updateGeneral(autoUpdated);
+            setGeneral(autoUpdated);
           }
         }
         setForm({ ...EMPTY_LLM_FORM });
@@ -472,9 +481,9 @@ export default function SettingsPage() {
         )}
       </div>
 
-      {/* Active model selector — always visible */}
+      {/* Active model selectors — always visible */}
       {configs.filter((c) => c.is_chat_model).length > 0 && (
-        <div className="mb-8 bg-surface-container rounded-xl border border-outline-variant/20 px-5 py-4">
+        <div className="mb-4 bg-surface-container rounded-xl border border-outline-variant/20 px-5 py-4">
           <label className="block text-xs font-medium text-on-surface-variant mb-2">
             活跃聊天模型
           </label>
@@ -504,6 +513,43 @@ export default function SettingsPage() {
                 ))}
             </select>
           </div>
+        </div>
+      )}
+
+      {configs.filter((c) => c.is_embedding_model).length > 0 && (
+        <div className="mb-8 bg-surface-container rounded-xl border border-outline-variant/20 px-5 py-4">
+          <label className="block text-xs font-medium text-on-surface-variant mb-2">
+            活跃嵌入模型
+          </label>
+          <div className="flex items-center gap-3">
+            <select
+              value={general.active_embedding_model_id}
+              onChange={async (e) => {
+                const prev = general;
+                const updated = { ...general, active_embedding_model_id: e.target.value };
+                setGeneral(updated);
+                try {
+                  await api.settings.updateGeneral(updated);
+                } catch {
+                  setGeneral(prev);
+                  setError("保存活跃嵌入模型失败");
+                }
+              }}
+              className="flex-1 px-3 py-2 bg-surface border border-outline-variant/30 rounded-lg text-sm text-on-surface focus:outline-none focus:border-primary/50 transition-colors"
+            >
+              <option value="">请选择活跃的嵌入模型</option>
+              {configs
+                .filter((c) => c.is_embedding_model)
+                .map((c) => (
+                  <option key={c.id} value={c.id}>
+                    {c.name} ({c.model})
+                  </option>
+                ))}
+            </select>
+          </div>
+          <p className="text-[11px] text-on-surface-variant/60 mt-2">
+            用于工作空间材料 RAG 检索，选择后新上传的材料将自动分块嵌入
+          </p>
         </div>
       )}
 

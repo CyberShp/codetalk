@@ -132,6 +132,9 @@ async def _get_embedding_client():
     Returns None if no embedding model is configured.
     """
     try:
+        from app.llm.embedding_client import EmbeddingClient
+        from app.llm.factory import _load_general_settings, _resolve_proxy
+
         async with aiosqlite.connect(settings.sqlite_db) as db:
             db.row_factory = aiosqlite.Row
             async with db.execute(
@@ -152,12 +155,16 @@ async def _get_embedding_client():
                 return None
 
             cfg = dict(cfg_row)
+            general = await _load_general_settings(db)
 
-        from app.llm.embedding_client import EmbeddingClient
+        proxy_url, ssl_cert, force_direct = _resolve_proxy(general)
         return EmbeddingClient(
             base_url=cfg["base_url"],
             api_key=cfg["api_key"],
             model=cfg["model"],
+            proxy_url=proxy_url,
+            ssl_cert_path=ssl_cert,
+            force_direct=force_direct,
         )
     except Exception as exc:
         logger.warning("Failed to create embedding client: %s", exc)
