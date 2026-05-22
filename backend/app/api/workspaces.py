@@ -439,6 +439,13 @@ async def get_embedding_status(
     ws_id: str, db: aiosqlite.Connection = Depends(get_db)
 ):
     await _get_workspace_or_404(ws_id, db)
+
+    async with db.execute(
+        "SELECT value FROM settings WHERE key = 'active_embedding_model_id'"
+    ) as cur:
+        row = await cur.fetchone()
+    active_model_id = row["value"] if row and row["value"] else None
+
     async with db.execute(
         "SELECT COUNT(*) as cnt FROM workspace_materials "
         "WHERE workspace_id = ? AND is_active = TRUE",
@@ -446,24 +453,29 @@ async def get_embedding_status(
     ) as cur:
         active_count = (await cur.fetchone())["cnt"]
 
-    async with db.execute(
-        "SELECT COUNT(DISTINCT material_id) as cnt FROM material_chunks "
-        "WHERE workspace_id = ?",
-        (ws_id,),
-    ) as cur:
-        embedded_count = (await cur.fetchone())["cnt"]
+    if active_model_id:
+        async with db.execute(
+            "SELECT COUNT(DISTINCT material_id) as cnt FROM material_chunks "
+            "WHERE workspace_id = ? AND (embedding_model_id = ? OR embedding_model_id IS NULL)",
+            (ws_id, active_model_id),
+        ) as cur:
+            embedded_count = (await cur.fetchone())["cnt"]
 
-    async with db.execute(
-        "SELECT COUNT(*) as cnt FROM material_chunks WHERE workspace_id = ?",
-        (ws_id,),
-    ) as cur:
-        chunk_count = (await cur.fetchone())["cnt"]
+        async with db.execute(
+            "SELECT COUNT(*) as cnt FROM material_chunks "
+            "WHERE workspace_id = ? AND (embedding_model_id = ? OR embedding_model_id IS NULL)",
+            (ws_id, active_model_id),
+        ) as cur:
+            chunk_count = (await cur.fetchone())["cnt"]
+    else:
+        embedded_count = 0
+        chunk_count = 0
 
     return {
         "active_materials": active_count,
         "embedded_materials": embedded_count,
         "total_chunks": chunk_count,
-        "rag_ready": embedded_count > 0,
+        "rag_ready": active_model_id is not None and embedded_count > 0,
     }
 
 

@@ -122,6 +122,7 @@ CREATE TABLE IF NOT EXISTS material_chunks (
     id TEXT PRIMARY KEY,
     material_id TEXT NOT NULL REFERENCES workspace_materials(id) ON DELETE CASCADE,
     workspace_id TEXT NOT NULL,
+    embedding_model_id TEXT,
     chunk_index INTEGER NOT NULL,
     content TEXT NOT NULL,
     embedding BLOB NOT NULL,

@@ -151,12 +151,12 @@ async def _load_materials_context(ws_id: str, query: str) -> list[str]:
         for c in rag_results
     ]
 
-    embedded_filenames = {c["filename"] for c in rag_results}
+    covered_material_ids = {c["material_id"] for c in rag_results}
 
     async with aiosqlite.connect(settings.sqlite_db) as db:
         db.row_factory = aiosqlite.Row
         async with db.execute(
-            "SELECT m.filename, m.content_type, m.file_path "
+            "SELECT m.id, m.filename, m.content_type, m.file_path "
             "FROM workspace_materials m "
             "LEFT JOIN material_chunks mc ON m.id = mc.material_id "
             "WHERE m.workspace_id = ? AND m.is_active = TRUE AND mc.id IS NULL",
@@ -165,7 +165,7 @@ async def _load_materials_context(ws_id: str, query: str) -> list[str]:
             unembedded = [dict(r) for r in await cur.fetchall()]
 
     for row in unembedded:
-        if row["filename"] in embedded_filenames:
+        if row["id"] in covered_material_ids:
             continue
         try:
             content = await asyncio.to_thread(
