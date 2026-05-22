@@ -18,15 +18,17 @@ _DEFAULT_PROMPT = "请对该代码仓库进行全面的架构分析，包括模�
 _MAX_MATERIAL_BYTES = 100_000
 
 
-def _read_material_file(file_path: str) -> str:
+def _read_material_file(file_path: str, max_bytes: int = _MAX_MATERIAL_BYTES) -> str:
     p = Path(file_path)
     if not p.is_file():
         return ""
     try:
-        text = p.read_text(encoding="utf-8", errors="replace")
-        if len(text) > _MAX_MATERIAL_BYTES:
-            text = text[:_MAX_MATERIAL_BYTES] + "\n\n…（已截断）"
-        return text
+        size = p.stat().st_size
+        if size <= max_bytes:
+            return p.read_text(encoding="utf-8", errors="replace")
+        raw = p.read_bytes()[:max_bytes]
+        text = raw.decode("utf-8", errors="replace")
+        return text + "\n\n…（已截断）"
     except OSError:
         return ""
 

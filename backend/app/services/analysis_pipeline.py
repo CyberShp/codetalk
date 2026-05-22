@@ -83,6 +83,12 @@ class AnalysisPipeline:
             self._prompt_content = task.get("prompt_content") or ""
             self._deepwiki_depth = task.get("deepwiki_depth") or ""
 
+            material_ids = json.loads(task.get("material_ids") or "[]")
+            if material_ids and not task.get("requirements_doc") and not task.get("design_doc"):
+                req_doc, des_doc = await self._load_material_docs(material_ids)
+                task["requirements_doc"] = req_doc
+                task["design_doc"] = des_doc
+
             await self._update_progress(task_id, 0, "running", None, "启动分析管道…")
 
             # Phase 0: Preparation
@@ -1204,6 +1210,52 @@ class AnalysisPipeline:
             if not row:
                 raise ValueError(f"任务不存在: {task_id}")
             return dict(row)
+
+    @staticmethod
+    async def _load_material_docs(
+        material_ids: list[str],
+    ) -> tuple[str | None, str | None]:
+        """Resolve material_ids into (requirements_doc, design_doc) by reading files."""
+        if not material_ids:
+            return None, None
+
+        placeholders = ",".join("?" for _ in material_ids)
+        async with aiosqlite.connect(settings.sqlite_db) as db:
+            db.row_factory = aiosqlite.Row
+            async with db.execute(
+                f"SELECT filename, content_type, file_path FROM workspace_materials"
+                f" WHERE id IN ({placeholders})",
+                material_ids,
+            ) as cur:
+                rows = await cur.fetchall()
+
+        requirements_parts: list[str] = []
+        design_parts: list[str] = []
+        max_bytes = 100_000
+
+        for row in rows:
+            fp = Path(row["file_path"])
+            if not fp.is_file():
+                continue
+            try:
+                size = fp.stat().st_size
+                if size <= max_bytes:
+                    content = fp.read_text(encoding="utf-8", errors="replace")
+                else:
+                    raw = fp.read_bytes()[:max_bytes]
+                    content = raw.decode("utf-8", errors="replace") + "\n\n…（已截断）"
+            except OSError:
+                continue
+
+            section = f"### {row['filename']}\n{content}"
+            if row["content_type"] == "design":
+                design_parts.append(section)
+            else:
+                requirements_parts.append(section)
+
+        req = "\n\n".join(requirements_parts) if requirements_parts else None
+        des = "\n\n".join(design_parts) if design_parts else None
+        return req, des
 
     @staticmethod
     async def _update_progress(
