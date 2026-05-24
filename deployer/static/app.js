@@ -750,7 +750,10 @@ function attachNavHandlers() {
   });
 
   $('#btn-back').addEventListener('click', async () => {
-    if (state.currentStep > 1) await goToStep(state.currentStep - 1);
+    if (state.currentStep > 1) {
+      state.pendingForceTakeover = false;
+      await goToStep(state.currentStep - 1);
+    }
   });
 
   document.addEventListener('keydown', e => {
