@@ -288,10 +288,13 @@
       }
     });
 
+    var ft = forceTakeover;
+    forceTakeover = false;
+
     fetch('/api/quickstart', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ force_takeover: forceTakeover }),
+      body: JSON.stringify({ force_takeover: ft }),
     })
       .then(function (res) {
         if (!res.ok) {
