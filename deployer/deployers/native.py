@@ -83,16 +83,8 @@ class NativeDeployer:
 
     async def stop(self) -> None:
         self._stopped = True
-        for name, proc in list(self._processes.items()):
-            if proc.returncode is None:
-                try:
-                    proc.terminate()
-                    await asyncio.wait_for(proc.wait(), timeout=5)
-                except (ProcessLookupError, asyncio.TimeoutError):
-                    try:
-                        proc.kill()
-                    except ProcessLookupError:
-                        pass
+        for name in list(self._processes):
+            await self._terminate_process(name)
 
     async def check_health(self) -> list:
         import httpx
@@ -809,11 +801,20 @@ class NativeDeployer:
         env_extra: Optional[dict] = None,
     ) -> None:
         await self._emit(step_name, "running", f"正在启动 {name}...", step_index)
+        await self._spawn_process(name, cmd, cwd, step_name, step_index, env_extra)
 
+    async def _spawn_process(
+        self,
+        name: str,
+        cmd: list,
+        cwd: str,
+        step_name: str,
+        step_index: int,
+        env_extra: Optional[dict] = None,
+    ) -> None:
         env = os.environ.copy()
         if env_extra:
             env.update(env_extra)
-
         try:
             proc = await asyncio.create_subprocess_exec(
                 *cmd,
@@ -833,13 +834,25 @@ class NativeDeployer:
             )
         self._processes[name] = proc
         self._start_args[name] = {"cmd": cmd, "cwd": cwd, "env_extra": env_extra}
-
         asyncio.ensure_future(self._drain_output(name, proc, step_name, step_index))
         await self._emit(step_name, "running", f"{name} 已启动（PID {proc.pid}）", step_index)
         await asyncio.sleep(2)
         if proc.returncode is not None:
             await self._emit(step_name, "error", f"{name} 启动后立即退出（退出码 {proc.returncode}）", step_index)
             raise RuntimeError(f"{name} exited immediately with code {proc.returncode}")
+
+    async def _terminate_process(self, name: str, timeout: float = 5) -> None:
+        proc = self._processes.get(name)
+        if proc is None or proc.returncode is not None:
+            return
+        try:
+            proc.terminate()
+            await asyncio.wait_for(proc.wait(), timeout=timeout)
+        except (ProcessLookupError, asyncio.TimeoutError):
+            try:
+                proc.kill()
+            except ProcessLookupError:
+                pass
 
     async def restart_service(self, name: str) -> dict:
         """Restart a named service (or deepwiki pair) using stored startup args."""
@@ -854,45 +867,11 @@ class NativeDeployer:
             raise KeyError(f"Service not started by this deployer: {', '.join(missing)}")
 
         for target in targets:
-            proc = self._processes.get(target)
-            if proc is not None and proc.returncode is None:
-                try:
-                    proc.terminate()
-                    await asyncio.wait_for(proc.wait(), timeout=5)
-                except asyncio.TimeoutError:
-                    try:
-                        proc.kill()
-                    except ProcessLookupError:
-                        pass
+            await self._terminate_process(target)
 
         for target in targets:
             args = self._start_args[target]
-            env = os.environ.copy()
-            if args.get("env_extra"):
-                env.update(args["env_extra"])
-            try:
-                proc = await asyncio.create_subprocess_exec(
-                    *args["cmd"],
-                    stdout=asyncio.subprocess.PIPE,
-                    stderr=asyncio.subprocess.STDOUT,
-                    cwd=args["cwd"],
-                    env=env,
-                )
-            except FileNotFoundError:
-                proc = await asyncio.create_subprocess_shell(
-                    " ".join(args["cmd"]),
-                    stdout=asyncio.subprocess.PIPE,
-                    stderr=asyncio.subprocess.STDOUT,
-                    cwd=args["cwd"],
-                    env=env,
-                )
-            self._processes[target] = proc
-            asyncio.ensure_future(self._drain_output(target, proc, "restart", 0))
-            await asyncio.sleep(2)
-            if proc.returncode is not None:
-                raise RuntimeError(
-                    f"{target} exited immediately after restart (code {proc.returncode})"
-                )
+            await self._spawn_process(target, args["cmd"], args["cwd"], "restart", 0, args.get("env_extra"))
 
         return {"ok": True, "service": name}
 
@@ -904,16 +883,7 @@ class NativeDeployer:
             raise KeyError(f"Service not started by this deployer: {', '.join(missing)}")
 
         for target in targets:
-            proc = self._processes.get(target)
-            if proc is not None and proc.returncode is None:
-                try:
-                    proc.terminate()
-                    await asyncio.wait_for(proc.wait(), timeout=5)
-                except asyncio.TimeoutError:
-                    try:
-                        proc.kill()
-                    except ProcessLookupError:
-                        pass
+            await self._terminate_process(target)
 
         return {"ok": True, "service": name, "action": "stopped"}
 
@@ -962,32 +932,7 @@ class NativeDeployer:
                 continue
 
             args = self._start_args[target]
-            env = os.environ.copy()
-            if args.get("env_extra"):
-                env.update(args["env_extra"])
-            try:
-                proc = await asyncio.create_subprocess_exec(
-                    *args["cmd"],
-                    stdout=asyncio.subprocess.PIPE,
-                    stderr=asyncio.subprocess.STDOUT,
-                    cwd=args["cwd"],
-                    env=env,
-                )
-            except FileNotFoundError:
-                proc = await asyncio.create_subprocess_shell(
-                    " ".join(args["cmd"]),
-                    stdout=asyncio.subprocess.PIPE,
-                    stderr=asyncio.subprocess.STDOUT,
-                    cwd=args["cwd"],
-                    env=env,
-                )
-            self._processes[target] = proc
-            asyncio.ensure_future(self._drain_output(target, proc, "start", 0))
-            await asyncio.sleep(2)
-            if proc.returncode is not None:
-                raise RuntimeError(
-                    f"{target} exited immediately after start (code {proc.returncode})"
-                )
+            await self._spawn_process(target, args["cmd"], args["cwd"], "start", 0, args.get("env_extra"))
 
         return {"ok": True, "service": name, "action": "started"}
 
