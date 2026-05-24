@@ -21,6 +21,7 @@ const state = {
   deployEventSource: null,
   deployDone: false,
   hasDeployError: false,
+  pendingForceTakeover: false,
 };
 
 // Step metadata
@@ -425,16 +426,28 @@ async function startDeploy() {
     state.deployEventSource = null;
   }
 
+  const forceTakeover = state.pendingForceTakeover;
+  state.pendingForceTakeover = false;
+
   try {
     const res = await fetch('/api/deploy', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ mode: state.selectedMode }),
+      body: JSON.stringify({ mode: state.selectedMode, force_takeover: forceTakeover }),
     });
 
     if (!res.ok) {
       const err = await res.json().catch(() => ({ detail: res.statusText }));
-      showDeployError(err.detail || '启动部署失败');
+      const detail = err.detail;
+      if (detail && typeof detail === 'object' && detail.conflicts) {
+        state.pendingForceTakeover = true;
+        const lines = detail.conflicts.map(c =>
+          `端口 ${c.port} 被 ${escHtml(c.process_name)}(PID ${c.pid})${c.is_own ? '（本实例）' : ''} 占用`
+        );
+        showDeployError(`端口冲突 — ${lines.join('；')}。点击「重试」将强制接管。`);
+      } else {
+        showDeployError((typeof detail === 'string' ? detail : detail?.message) || '启动部署失败');
+      }
       return;
     }
 
@@ -476,6 +489,16 @@ function handleDeployEvent(evt) {
     }
     appendLog('success', '部署完成！');
     setTimeout(() => goToStep(6), 800);
+    return;
+  }
+
+  if (step === 'done' && status === 'cancelled') {
+    state.deployDone = true;
+    if (state.deployEventSource) {
+      state.deployEventSource.close();
+      state.deployEventSource = null;
+    }
+    appendLog('info', message || '部署已取消');
     return;
   }
 

@@ -30,6 +30,8 @@ _KEY_MAP = {
     "installGitnexus": "install_gitnexus",
     "corsOrigins": "cors_origins",
     "workspacePath": "workspace_path",
+    "forceTakeover": "force_takeover",
+    "devMode": "dev_mode",
 }
 _KEY_MAP_REV = {v: k for k, v in _KEY_MAP.items()}
 
