@@ -34,6 +34,7 @@ MAX_TOKENS_PER_CALL = 40000
 MAX_OUTPUT_TOKENS = 8192  # per-module summary; matches report generator budget
 MAX_DEP_FILES = 8
 DEP_BUDGET_BYTES = 15_000
+_PIPELINE_VERSION = "2"
 
 # Directories to skip when doing directory-structure module discovery
 _DIR_SKIP = frozenset({
@@ -745,13 +746,28 @@ class AnalysisPipeline:
         module_set = set(module_file_ids)
         nodes_by_id = {n["id"]: n for n in nodes}
 
+        # Build symbol→file reverse mapping from DEFINES/CONTAINS edges
+        symbol_to_file: dict[str, str] = {}
+        for edge in relationships:
+            if edge.get("type") in ("DEFINES", "CONTAINS"):
+                file_id = edge.get("sourceId", "")
+                symbol_id = edge.get("targetId", "")
+                if symbol_id and file_id:
+                    symbol_to_file[symbol_id] = file_id
+
         dep_ids: set[str] = set()
         for edge in relationships:
             if edge.get("type") not in ("CALLS", "IMPORTS", "DEPENDS_ON"):
                 continue
             src, tgt = edge.get("sourceId", ""), edge.get("targetId", "")
-            if src in module_set and tgt not in module_set:
-                dep_ids.add(tgt)
+            # Resolve source: if src is a symbol, check its parent file
+            src_file = symbol_to_file.get(src, src)
+            if src_file not in module_set:
+                continue
+            # Resolve target: if tgt is a symbol, find its parent file
+            tgt_file = symbol_to_file.get(tgt, tgt)
+            if tgt_file not in module_set:
+                dep_ids.add(tgt_file)
 
         dep_names: list[str] = []
         for did in dep_ids:
@@ -1068,6 +1084,7 @@ class AnalysisPipeline:
         """8-char hash of task intent + data quality for cache keying."""
         import hashlib
         intent_parts = [
+            _PIPELINE_VERSION,
             self._analysis_focus or "",
             self._prompt_content or "",
             self._deepwiki_depth or "",
