@@ -421,3 +421,180 @@ async def test_spdk_architectural_understanding():
         )
     finally:
         await client.close()
+
+
+# ---------------------------------------------------------------------------
+# Test 4: Robustness analysis — boundary values, fragile variables,
+#          exception branches, exception propagation
+# ---------------------------------------------------------------------------
+
+_ROBUSTNESS_ISSUES = [
+    {
+        "id": "silent_error_swallow",
+        "category": "exception_propagation",
+        "description": "nvme_ctrlr_identify_ns returns 0 when admin queue times out, swallowing error",
+        "keywords": [
+            "silent", "swallow", "timeout", "return 0",
+            "error.*lost", "error.*ignored", "error.*discard",
+            "completion.*ignored", "status.*not.*check",
+        ],
+        "min_matches": 1,
+        "severity": "high",
+    },
+    {
+        "id": "assert_in_release",
+        "category": "exception_branch",
+        "description": "assert(0) in default case of iocs_specific is no-op in release builds",
+        "keywords": [
+            "assert.*0", "assert.*release", "assert.*ndebug",
+            "no.?op", "unreachable", "default.*case.*assert",
+            "assert.*production", "assert.*disabled",
+        ],
+        "min_matches": 1,
+        "severity": "high",
+    },
+    {
+        "id": "id_desc_ambiguous_null",
+        "category": "exception_branch",
+        "description": "nvme_ns_find_id_desc returns NULL for both not-found and invalid descriptor",
+        "keywords": [
+            "null.*ambig", "null.*both", "null.*distinguish",
+            "find_id_desc.*null", "not.?found.*invalid",
+            "sentinel", "error.*same.*return",
+        ],
+        "min_matches": 1,
+        "severity": "medium",
+    },
+    {
+        "id": "fallthrough_nvm_default",
+        "category": "exception_branch",
+        "description": "NVM case falls through to default/assert(0) when elbas is false",
+        "keywords": [
+            "fall.?through", "nvm.*default", "elbas.*false",
+            "nvm.*case.*assert", "implicit.*fall",
+        ],
+        "min_matches": 1,
+        "severity": "medium",
+    },
+    {
+        "id": "format_index_no_bounds",
+        "category": "boundary_value",
+        "description": "spdk_nvme_ns_get_format_index returns index without bounds check",
+        "keywords": [
+            "bounds", "out.?of.?range", "format.*index.*check",
+            "nlbaf", "array.*bound", "index.*valid",
+            "overflow.*index", "unchecked.*index",
+        ],
+        "min_matches": 1,
+        "severity": "high",
+    },
+    {
+        "id": "sector_size_shift_overflow",
+        "category": "fragile_variable",
+        "description": "1 << lbads can overflow if lbads >= 32",
+        "keywords": [
+            "shift.*overflow", "lbads.*32", "1.*<<.*overflow",
+            "undefined.*behavior", "shift.*width",
+            "lbads.*large", "sector.*overflow",
+        ],
+        "min_matches": 1,
+        "severity": "high",
+    },
+    {
+        "id": "null_nsdata_nvm",
+        "category": "fragile_variable",
+        "description": "nsdata_nvm used without consistent NULL check across functions",
+        "keywords": [
+            "nsdata_nvm.*null", "null.*check.*missing",
+            "null.*dereference", "nsdata_nvm.*not.*check",
+            "inconsistent.*null", "optional.*null",
+        ],
+        "min_matches": 1,
+        "severity": "medium",
+    },
+]
+
+_ROBUSTNESS_SYSTEM_PROMPT = (
+    "You are a senior C code auditor specializing in systems software reliability. "
+    "Review the code for these specific categories of issues:\n"
+    "1. **Exception propagation**: errors silently swallowed, status codes ignored\n"
+    "2. **Exception branches**: unreachable code, assert() in release, ambiguous return values\n"
+    "3. **Boundary values**: unchecked array indices, integer overflow, shift overflow\n"
+    "4. **Fragile variables**: pointers used without NULL checks, inconsistent validation\n\n"
+    "For each issue found, state: category, location (function name), severity (high/medium/low), "
+    "and a brief explanation of why it is problematic."
+)
+
+
+@pytest.mark.skipif(not _NVME_NS_PATH.exists(), reason="SPDK source not found")
+async def test_spdk_robustness_analysis():
+    """LLM should identify real robustness issues in SPDK nvme_ns.c."""
+    source = _read_source(_NVME_NS_PATH)
+    client = await _create_client()
+    try:
+        resp = await client.complete(
+            [
+                {"role": "system", "content": _ROBUSTNESS_SYSTEM_PROMPT},
+                {"role": "user", "content": (
+                    "Audit this C source file for robustness issues. "
+                    "Focus on: silent error swallowing, assert() misuse, "
+                    "unchecked indices, shift overflow, NULL dereference risks, "
+                    "and ambiguous return values.\n\n"
+                    f"```c\n{source}\n```"
+                )},
+            ],
+            max_tokens=2048,
+            temperature=0.3,
+        )
+        text_lower = resp.content.lower()
+
+        results = []
+        high_found = 0
+        for issue in _ROBUSTNESS_ISSUES:
+            matched = []
+            for kw in issue["keywords"]:
+                if ".*" in kw or "|" in kw or ".?" in kw:
+                    if re.search(kw, text_lower):
+                        matched.append(kw)
+                elif kw.lower() in text_lower:
+                    matched.append(kw)
+            passed = len(matched) >= issue["min_matches"]
+            if passed and issue["severity"] == "high":
+                high_found += 1
+            results.append({
+                "id": issue["id"],
+                "category": issue["category"],
+                "severity": issue["severity"],
+                "passed": passed,
+                "matched": matched,
+            })
+
+        total = len(results)
+        passed_count = sum(1 for r in results if r["passed"])
+        score = passed_count / total
+
+        print(f"\n{'='*60}")
+        print(f"ROBUSTNESS ANALYSIS")
+        print(f"  Score: {score:.0%} ({passed_count}/{total} issues detected)")
+        print(f"  High-severity found: {high_found}")
+        print(f"{'='*60}")
+
+        by_cat = {}
+        for r in results:
+            by_cat.setdefault(r["category"], []).append(r)
+        for cat, items in by_cat.items():
+            print(f"\n  [{cat}]")
+            for r in items:
+                status = "PASS" if r["passed"] else "MISS"
+                print(f"    [{status}] {r['id']} ({r['severity']}): {r['matched']}")
+
+        if resp.usage:
+            print(f"\n  Tokens: {resp.usage}")
+        print(f"{'='*60}")
+
+        assert high_found >= 1, (
+            f"LLM found {high_found} high-severity issues, expected at least 1. "
+            f"Missed: {[r['id'] for r in results if not r['passed'] and r['severity'] == 'high']}"
+        )
+    finally:
+        await client.close()
