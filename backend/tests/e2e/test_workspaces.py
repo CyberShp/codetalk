@@ -1,0 +1,226 @@
+﻿"""E2E tests for /api/workspaces endpoints."""
+
+import os
+import uuid
+
+import pytest
+from httpx import AsyncClient
+
+HAS_DEEPSEEK = bool(os.environ.get("DEEPSEEK_API_KEY", ""))
+
+
+# -- List --
+
+async def test_list_workspaces_empty(e2e_client: AsyncClient):
+    resp = await e2e_client.get("/api/workspaces")
+    assert resp.status_code == 200
+    assert resp.json() == []
+
+
+# -- CRUD --
+
+async def test_create_workspace(e2e_client: AsyncClient, repo_path: str):
+    resp = await e2e_client.post(
+        "/api/workspaces",
+        json={"name": "Test Workspace", "repo_path": repo_path},
+    )
+    assert resp.status_code == 201
+    body = resp.json()
+    assert body["name"] == "Test Workspace"
+    assert body["repo_path"] == repo_path
+    assert body["id"]
+
+
+async def test_get_workspace_by_id(e2e_client: AsyncClient, repo_path: str):
+    create_resp = await e2e_client.post(
+        "/api/workspaces",
+        json={"name": "WS Detail", "repo_path": repo_path},
+    )
+    ws_id = create_resp.json()["id"]
+
+    resp = await e2e_client.get(f"/api/workspaces/{ws_id}")
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["id"] == ws_id
+    assert body["name"] == "WS Detail"
+    assert "materials" in body
+    assert "reports" in body
+
+
+async def test_get_nonexistent_workspace(e2e_client: AsyncClient):
+    resp = await e2e_client.get(f"/api/workspaces/{uuid.uuid4()}")
+    assert resp.status_code == 404
+
+
+async def test_create_workspace_invalid_path(e2e_client: AsyncClient):
+    resp = await e2e_client.post(
+        "/api/workspaces",
+        json={"name": "Bad WS", "repo_path": "/nonexistent/path"},
+    )
+    assert resp.status_code == 422
+
+
+async def test_workspace_missing_name(e2e_client: AsyncClient, repo_path: str):
+    """Omitting the name field should fail validation."""
+    resp = await e2e_client.post(
+        "/api/workspaces",
+        json={"repo_path": repo_path},
+    )
+    assert resp.status_code == 422
+
+
+# -- Materials --
+
+async def test_workspace_materials_empty(e2e_client: AsyncClient, repo_path: str):
+    create_resp = await e2e_client.post(
+        "/api/workspaces",
+        json={"name": "Mat WS", "repo_path": repo_path},
+    )
+    ws_id = create_resp.json()["id"]
+
+    resp = await e2e_client.get(f"/api/workspaces/{ws_id}")
+    assert resp.status_code == 200
+    assert resp.json()["materials"] == []
+
+
+async def test_upload_material(e2e_client: AsyncClient, repo_path: str, tmp_path):
+    create_resp = await e2e_client.post(
+        "/api/workspaces",
+        json={"name": "Upload WS", "repo_path": repo_path},
+    )
+    ws_id = create_resp.json()["id"]
+
+    test_file = tmp_path / "requirements.txt"
+    test_file.write_text("flask==3.0\nfastapi==0.115", encoding="utf-8")
+
+    with open(test_file, "rb") as f:
+        resp = await e2e_client.post(
+            f"/api/workspaces/{ws_id}/materials",
+            files={"file": ("requirements.txt", f, "text/plain")},
+        )
+    assert resp.status_code == 201
+    body = resp.json()
+    assert body["filename"] == "requirements.txt"
+    assert body["workspace_id"] == ws_id
+
+
+async def test_materials_appear_after_upload(e2e_client: AsyncClient, repo_path: str, tmp_path):
+    create_resp = await e2e_client.post(
+        "/api/workspaces",
+        json={"name": "Mat List WS", "repo_path": repo_path},
+    )
+    ws_id = create_resp.json()["id"]
+
+    test_file = tmp_path / "design.md"
+    test_file.write_text("# Design Doc\nArchitecture overview.", encoding="utf-8")
+
+    with open(test_file, "rb") as f:
+        await e2e_client.post(
+            f"/api/workspaces/{ws_id}/materials",
+            files={"file": ("design.md", f, "text/plain")},
+        )
+
+    resp = await e2e_client.get(f"/api/workspaces/{ws_id}")
+    assert resp.status_code == 200
+    materials = resp.json()["materials"]
+    assert len(materials) >= 1
+    assert any(m["filename"] == "design.md" for m in materials)
+
+
+async def test_delete_material(e2e_client: AsyncClient, repo_path: str, tmp_path):
+    create_resp = await e2e_client.post(
+        "/api/workspaces",
+        json={"name": "Del Mat WS", "repo_path": repo_path},
+    )
+    ws_id = create_resp.json()["id"]
+
+    test_file = tmp_path / "to_delete.txt"
+    test_file.write_text("temp content", encoding="utf-8")
+
+    with open(test_file, "rb") as f:
+        mat_resp = await e2e_client.post(
+            f"/api/workspaces/{ws_id}/materials",
+            files={"file": ("to_delete.txt", f, "text/plain")},
+        )
+    mat_id = mat_resp.json()["id"]
+
+    resp = await e2e_client.delete(f"/api/workspaces/{ws_id}/materials/{mat_id}")
+    assert resp.status_code == 204
+
+
+# -- Analyze --
+
+async def test_analyze_workspace_not_indexed(e2e_client: AsyncClient, repo_path: str):
+    """Analyze should fail if workspace is not fully indexed."""
+    create_resp = await e2e_client.post(
+        "/api/workspaces",
+        json={"name": "Analyze WS", "repo_path": repo_path},
+    )
+    ws_id = create_resp.json()["id"]
+
+    resp = await e2e_client.post(f"/api/workspaces/{ws_id}/analyze")
+    assert resp.status_code == 409
+
+
+# -- Reports --
+
+async def test_workspace_reports_empty(e2e_client: AsyncClient, repo_path: str):
+    create_resp = await e2e_client.post(
+        "/api/workspaces",
+        json={"name": "Report WS", "repo_path": repo_path},
+    )
+    ws_id = create_resp.json()["id"]
+
+    resp = await e2e_client.get(f"/api/workspaces/{ws_id}")
+    assert resp.status_code == 200
+    assert resp.json()["reports"] == []
+
+
+# -- Edge cases --
+
+async def test_workspace_name_very_long(e2e_client: AsyncClient, repo_path: str):
+    long_name = "A" * 200
+    resp = await e2e_client.post(
+        "/api/workspaces",
+        json={"name": long_name, "repo_path": repo_path},
+    )
+    assert resp.status_code == 201
+    assert resp.json()["name"] == long_name
+
+
+async def test_workspace_name_too_long(e2e_client: AsyncClient, repo_path: str):
+    too_long = "A" * 201
+    resp = await e2e_client.post(
+        "/api/workspaces",
+        json={"name": too_long, "repo_path": repo_path},
+    )
+    assert resp.status_code == 422
+
+
+@pytest.mark.skipif(not HAS_DEEPSEEK, reason="DEEPSEEK_API_KEY not set")
+async def test_workspace_chat_not_indexed(e2e_client: AsyncClient, repo_path: str):
+    """Chat should fail if workspace is not indexed."""
+    create_resp = await e2e_client.post(
+        "/api/workspaces",
+        json={"name": "Chat WS", "repo_path": repo_path},
+    )
+    ws_id = create_resp.json()["id"]
+
+    resp = await e2e_client.post(
+        f"/api/workspaces/{ws_id}/chat/stream",
+        json={"message": "What is this repo about?", "mode": "freeqa"},
+    )
+    assert resp.status_code == 409
+
+
+async def test_workspace_index_status(e2e_client: AsyncClient, repo_path: str):
+    create_resp = await e2e_client.post(
+        "/api/workspaces",
+        json={"name": "Index Status WS", "repo_path": repo_path},
+    )
+    ws_id = create_resp.json()["id"]
+
+    resp = await e2e_client.get(f"/api/workspaces/{ws_id}/index-status")
+    assert resp.status_code == 200
+    body = resp.json()
+    assert "indexed" in body
