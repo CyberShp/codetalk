@@ -32,6 +32,8 @@ logger = logging.getLogger(__name__)
 
 MAX_TOKENS_PER_CALL = 40000
 MAX_OUTPUT_TOKENS = 8192  # per-module summary; matches report generator budget
+MAX_DEP_FILES = 8
+DEP_BUDGET_BYTES = 15_000
 
 # Directories to skip when doing directory-structure module discovery
 _DIR_SKIP = frozenset({
@@ -733,6 +735,43 @@ class AnalysisPipeline:
             return ""
         return "## 源代码内容（以下为实际文件内容，请据此分析）\n\n" + "\n\n".join(collected)
 
+    def _find_cross_module_deps(self, module_file_ids: list[str]) -> list[str]:
+        """Find 1-hop dependency files from other modules via CALLS/IMPORTS/DEPENDS_ON edges."""
+        relationships = self._gitnexus_data.get("relationships", [])
+        nodes = self._gitnexus_data.get("nodes", [])
+        if not relationships:
+            return []
+
+        module_set = set(module_file_ids)
+        nodes_by_id = {n["id"]: n for n in nodes}
+
+        dep_ids: set[str] = set()
+        for edge in relationships:
+            if edge.get("type") not in ("CALLS", "IMPORTS", "DEPENDS_ON"):
+                continue
+            src, tgt = edge.get("sourceId", ""), edge.get("targetId", "")
+            if src in module_set and tgt not in module_set:
+                dep_ids.add(tgt)
+
+        dep_names: list[str] = []
+        for did in dep_ids:
+            node = nodes_by_id.get(did, {})
+            name = node.get("properties", {}).get("name", did)
+            if name.startswith("File:"):
+                name = name[5:]
+            if Path(name).suffix in _SOURCE_EXTS:
+                dep_names.append(name)
+            if len(dep_names) >= MAX_DEP_FILES:
+                break
+
+        if dep_names:
+            logger.info(
+                "Module deps: %d cross-module files found (from %d edges)",
+                len(dep_names),
+                len(dep_ids),
+            )
+        return dep_names
+
     async def _analyze_module(
         self, llm_client: BaseLLMClient, community: dict
     ) -> str:
@@ -763,13 +802,29 @@ class AnalysisPipeline:
             if repo_path and file_names:
                 source_code_section = self._read_source_files(repo_path, file_names)
 
+        dep_section = ""
+        dep_names = self._find_cross_module_deps(files)
+        if dep_names and self._repo_path:
+            dep_source = self._read_source_files(
+                self._repo_path, dep_names, max_total_bytes=DEP_BUDGET_BYTES
+            )
+            if dep_source:
+                dep_section = dep_source.replace(
+                    "## 源代码内容（以下为实际文件内容，请据此分析）",
+                    "## 跨模块依赖源码（以下为本模块直接调用的外部文件，仅供上下文参考）",
+                )
+
+        combined_source = source_code_section
+        if dep_section:
+            combined_source = (combined_source + "\n\n" + dep_section).strip()
+
         prompt = MODULE_SUMMARY_PROMPT.format(
             module_name=community["name"],
             file_list=file_list or "（无文件信息）",
             structural_info=structural_info,
             call_relations=call_relations or "（无调用关系信息）",
             wiki_content=wiki_content or "（无 Wiki 文档）",
-            source_code_section=source_code_section,
+            source_code_section=combined_source,
         )
 
         if self._prompt_content:
