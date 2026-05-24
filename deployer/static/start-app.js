@@ -28,6 +28,7 @@
   var isStarting = false;
   var eventSource = null;
   var statusTimer = null;
+  var forceTakeover = false;
 
   // Services we track — must match data-svc attrs in HTML
   var SERVICES = ['backend', 'frontend', 'gitnexus', 'deepwiki'];
@@ -237,6 +238,15 @@
       return;
     }
 
+    if (step === 'done' && status === 'cancelled') {
+      isStarting = false;
+      closeEventStream();
+      appendLog('info', message || '操作已取消');
+      fetchStatus();
+      setButtonsEnabled(true);
+      return;
+    }
+
     if (step === 'done' && status === 'error') {
       isStarting = false;
       closeEventStream();
@@ -278,16 +288,29 @@
       }
     });
 
-    fetch('/api/quickstart', { method: 'POST' })
+    fetch('/api/quickstart', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ force_takeover: forceTakeover }),
+    })
       .then(function (res) {
         if (!res.ok) {
           return res.json().then(function (err) {
-            throw new Error(err.detail || 'HTTP ' + res.status);
+            var detail = err.detail;
+            if (detail && typeof detail === 'object' && detail.conflicts) {
+              forceTakeover = true;
+              var lines = detail.conflicts.map(function (c) {
+                return '端口 ' + c.port + ' 被 ' + escHtml(c.process_name) + '(PID ' + c.pid + ')' + (c.is_own ? '（本实例）' : '') + ' 占用';
+              });
+              throw new Error('端口冲突：' + lines.join('；') + '。再次点击「启动」将强制接管。');
+            }
+            throw new Error(typeof detail === 'string' ? detail : (detail && detail.message) || 'HTTP ' + res.status);
           }).catch(function (e) {
             if (e.message) throw e;
             throw new Error('HTTP ' + res.status);
           });
         }
+        forceTakeover = false;
         // Connect to SSE for live logs
         openEventStream();
       })

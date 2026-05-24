@@ -108,11 +108,10 @@ async def api_deploy(body: dict):
         if _state.running:
             raise HTTPException(status_code=409, detail="A deployment is already running")
 
-        force_takeover: bool = bool(body.get("force_takeover", False))
-        dev_mode: bool = bool(body.get("dev_mode", False))
-
         cfg = config_store.load_config()
         cfg.update(config_store.normalize_to_snake(body))
+        force_takeover: bool = bool(cfg.get("force_takeover", False))
+        dev_mode: bool = bool(cfg.get("dev_mode", False))
         cfg["force_takeover"] = force_takeover
         cfg["dev_mode"] = dev_mode
 
@@ -345,8 +344,8 @@ async def api_quickstart(request: Request):
         if _state.running:
             raise HTTPException(status_code=409, detail="A deployment is already running")
 
-        force_takeover: bool = bool(body.get("force_takeover", False))
-        dev_mode: bool = bool(body.get("dev_mode", False))
+        force_takeover: bool = bool(body.get("force_takeover") or body.get("forceTakeover", False))
+        dev_mode: bool = bool(body.get("dev_mode") or body.get("devMode", False))
 
         cfg = config_store.load_config()
         cfg["force_takeover"] = force_takeover
