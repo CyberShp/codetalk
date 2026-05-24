@@ -15,8 +15,6 @@ from starlette.middleware.base import BaseHTTPMiddleware
 
 import checks as checks_module
 import config_store
-from deployers.compose import ComposeDeployer
-from deployers.k8s import K8sDeployer
 from deployers.native import NativeDeployer
 
 STATIC_DIR = Path(__file__).parent / "static"
@@ -116,7 +114,7 @@ async def api_deploy(body: dict):
         cfg["dev_mode"] = dev_mode
 
         event_queue: asyncio.Queue = asyncio.Queue()
-        mode = cfg.get("mode", "compose")
+        mode = cfg.get("mode", "native")
 
         if mode == "native":
             deployer = NativeDeployer(cfg, event_queue)
@@ -142,10 +140,11 @@ async def api_deploy(body: dict):
                             "hint": "retry with force_takeover=true",
                         },
                     )
-        elif mode == "k8s":
-            deployer = K8sDeployer(cfg, event_queue)
         else:
-            deployer = ComposeDeployer(cfg, event_queue)
+            raise HTTPException(
+                status_code=400,
+                detail=f"Deployment mode '{mode}' is not supported. Use 'native'.",
+            )
 
         _state.deployer = deployer
         _state.event_queue = event_queue
@@ -494,14 +493,12 @@ async def api_services_health():
     deployer = _state.deployer
     if deployer is None:
         cfg = config_store.load_config()
-        mode = cfg.get("mode", "compose")
+        mode = cfg.get("mode", "native")
         queue: asyncio.Queue = asyncio.Queue()
         if mode == "native":
             deployer = NativeDeployer(cfg, queue)
-        elif mode == "k8s":
-            deployer = K8sDeployer(cfg, queue)
         else:
-            deployer = ComposeDeployer(cfg, queue)
+            return {"services": {}, "error": f"Deployment mode '{mode}' is not supported"}
     results = await deployer.check_health()
     return {"services": results}
 
