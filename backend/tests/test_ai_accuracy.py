@@ -1,13 +1,14 @@
-"""AI generation accuracy evaluation using a real LLM (DeepSeek).
+"""AI generation accuracy evaluation using real SPDK source code.
 
-Uses CodeTalk's OpenAICompatClient to send C source code for analysis,
-then scores the LLM response against a hand-crafted ground truth.
+Reads actual C source from SPDK (Storage Performance Development Kit)
+and evaluates LLM analysis quality against hand-crafted ground truth.
+Uses open-ended prompts without leading the model.
 
 Requires DEEPSEEK_API_KEY environment variable.
 """
 
 import os
-import re
+from pathlib import Path
 
 import pytest
 
@@ -23,185 +24,8 @@ _BASE_URL = "https://api.deepseek.com"
 _MODEL = "deepseek-chat"
 _API_KEY = os.environ.get("DEEPSEEK_API_KEY", "")
 
-# ---------------------------------------------------------------------------
-# Test input — header-only SPSC ring buffer (public domain style)
-# ---------------------------------------------------------------------------
-
-_C_SOURCE = r"""
-/* ringbuf.h — lock-free single-producer single-consumer ring buffer */
-#ifndef RINGBUF_H
-#define RINGBUF_H
-
-#include <stdint.h>
-#include <stddef.h>
-#include <string.h>
-#include <stdlib.h>
-#include <stdatomic.h>
-
-typedef struct {
-    uint8_t        *buf;
-    size_t          capacity;   /* must be power of two */
-    atomic_size_t   head;       /* written by producer */
-    atomic_size_t   tail;       /* written by consumer */
-} ringbuf_t;
-
-static inline int ringbuf_init(ringbuf_t *rb, size_t cap) {
-    if (cap == 0 || (cap & (cap - 1)) != 0)   /* not power of two */
-        return -1;
-    rb->buf = (uint8_t *)malloc(cap);
-    if (!rb->buf) return -1;
-    rb->capacity = cap;
-    atomic_init(&rb->head, 0);
-    atomic_init(&rb->tail, 0);
-    return 0;
-}
-
-static inline void ringbuf_free(ringbuf_t *rb) {
-    free(rb->buf);
-    rb->buf = NULL;
-}
-
-static inline size_t ringbuf_avail_read(const ringbuf_t *rb) {
-    return atomic_load_explicit(&rb->head, memory_order_acquire)
-         - atomic_load_explicit(&rb->tail, memory_order_relaxed);
-}
-
-static inline size_t ringbuf_avail_write(const ringbuf_t *rb) {
-    return rb->capacity - ringbuf_avail_read(rb);
-}
-
-static inline size_t ringbuf_write(ringbuf_t *rb,
-                                   const uint8_t *data, size_t len) {
-    size_t avail = ringbuf_avail_write(rb);
-    if (len > avail) len = avail;
-    size_t head = atomic_load_explicit(&rb->head, memory_order_relaxed);
-    size_t pos  = head & (rb->capacity - 1);
-    size_t first = rb->capacity - pos;
-    if (first > len) first = len;
-    memcpy(rb->buf + pos, data, first);
-    memcpy(rb->buf, data + first, len - first);
-    atomic_store_explicit(&rb->head, head + len, memory_order_release);
-    return len;
-}
-
-static inline size_t ringbuf_read(ringbuf_t *rb,
-                                  uint8_t *out, size_t len) {
-    size_t avail = ringbuf_avail_read(rb);
-    if (len > avail) len = avail;
-    size_t tail = atomic_load_explicit(&rb->tail, memory_order_relaxed);
-    size_t pos  = tail & (rb->capacity - 1);
-    size_t first = rb->capacity - pos;
-    if (first > len) first = len;
-    memcpy(out, rb->buf + pos, first);
-    memcpy(out + first, rb->buf + pos + first, len - first);   /* BUG */
-    atomic_store_explicit(&rb->tail, tail + len, memory_order_release);
-    return len;
-}
-
-#endif
-"""
-
-# ---------------------------------------------------------------------------
-# Ground truth assertions
-# ---------------------------------------------------------------------------
-
-_GROUND_TRUTH = [
-    {
-        "id": "purpose",
-        "question": "What is the main purpose of this code?",
-        "keywords": ["ring buffer", "circular buffer", "queue"],
-        "required_any": True,
-    },
-    {
-        "id": "data_structure",
-        "question": "What core data structure is used?",
-        "keywords": ["struct", "ringbuf_t", "head", "tail", "buf"],
-        "required_any": False,
-        "min_matches": 3,
-    },
-    {
-        "id": "constraint",
-        "question": "What constraint exists on the capacity?",
-        "keywords": ["power of two", "power-of-two", "power of 2"],
-        "required_any": True,
-    },
-    {
-        "id": "algorithm",
-        "question": "How does the buffer handle wrap-around?",
-        "keywords": ["mask", "bitwise", "modulo", "& (capacity - 1)", "wrap"],
-        "required_any": True,
-    },
-    {
-        "id": "concurrency",
-        "question": "What concurrency model does this implement?",
-        "keywords": [
-            "lock-free", "lockfree", "atomic", "spsc",
-            "single-producer", "single-consumer",
-            "memory_order", "acquire", "release",
-        ],
-        "required_any": True,
-    },
-    {
-        "id": "function_count",
-        "question": "How many public functions are there?",
-        "keywords": ["6", "six", "init", "free", "read", "write", "avail"],
-        "required_any": True,
-    },
-    {
-        "id": "error_handling",
-        "question": "How does init handle errors?",
-        "keywords": ["return -1", "returns -1", "negative", "error code", "NULL", "malloc"],
-        "required_any": True,
-    },
-    {
-        "id": "header_only",
-        "question": "Is this a header-only library?",
-        "keywords": ["header-only", "header only", "inline", "static inline", ".h"],
-        "required_any": True,
-    },
-    {
-        "id": "memory",
-        "question": "How is memory managed?",
-        "keywords": ["malloc", "free", "dynamic", "heap"],
-        "required_any": True,
-    },
-    {
-        "id": "issue",
-        "question": "Are there any bugs?",
-        "keywords": [
-            "bug", "error", "incorrect", "wrong",
-            "ringbuf_read", "wrap", "memcpy",
-            "second memcpy", "pos + first",
-        ],
-        "required_any": True,
-    },
-]
-
-
-def _score_response(text: str, truths: list[dict]) -> dict:
-    """Score an LLM response against ground truth assertions."""
-    text_lower = text.lower()
-    results = []
-    for gt in truths:
-        kws = gt["keywords"]
-        matched = [k for k in kws if k.lower() in text_lower]
-        if gt.get("required_any"):
-            passed = len(matched) > 0
-        else:
-            passed = len(matched) >= gt.get("min_matches", 1)
-        results.append({
-            "id": gt["id"],
-            "passed": passed,
-            "matched": matched,
-            "total_keywords": len(kws),
-        })
-    passed_count = sum(1 for r in results if r["passed"])
-    return {
-        "score": passed_count / len(results) if results else 0,
-        "passed": passed_count,
-        "total": len(results),
-        "details": results,
-    }
+_SPDK_ROOT = Path(r"D:\coworkers\spdk")
+_NVME_NS_PATH = _SPDK_ROOT / "lib" / "nvme" / "nvme_ns.c"
 
 
 async def _create_client():
@@ -213,117 +37,319 @@ async def _create_client():
     )
 
 
+def _read_source(path: Path, max_lines: int = 800) -> str:
+    lines = path.read_text(encoding="utf-8", errors="replace").splitlines()
+    return "\n".join(lines[:max_lines])
+
+
+# ---------------------------------------------------------------------------
+# Ground truth for SPDK lib/nvme/nvme_ns.c
+#
+# Each assertion requires min_matches keywords to pass.
+# No "required_any: True" shortcuts — every assertion needs real evidence.
+# ---------------------------------------------------------------------------
+
+_GROUND_TRUTH = [
+    {
+        "id": "domain",
+        "description": "Identifies this as NVMe / storage driver code",
+        "keywords": ["nvme", "namespace", "storage", "driver", "block device", "ssd"],
+        "min_matches": 2,
+    },
+    {
+        "id": "project",
+        "description": "Recognizes this is from SPDK",
+        "keywords": ["spdk", "storage performance development kit"],
+        "min_matches": 1,
+    },
+    {
+        "id": "identify_pattern",
+        "description": "Understands the NVMe Identify command pattern",
+        "keywords": [
+            "identify", "admin command", "identify namespace",
+            "nvme_ctrlr_cmd_identify", "completion",
+        ],
+        "min_matches": 2,
+    },
+    {
+        "id": "lba_format",
+        "description": "Understands LBA format / sector size calculation",
+        "keywords": [
+            "lba", "sector size", "lbaf", "lbads", "extended lba",
+            "metadata", "format index",
+        ],
+        "min_matches": 2,
+    },
+    {
+        "id": "command_sets",
+        "description": "Identifies multiple IO command set support",
+        "keywords": ["zns", "kv", "nvm", "command set", "csi", "io command"],
+        "min_matches": 2,
+    },
+    {
+        "id": "memory_mgmt",
+        "description": "Explains dual memory allocation strategy",
+        "keywords": [
+            "calloc", "spdk_zmalloc", "spdk_free", "free",
+            "dma", "hugepage", "shared memory",
+        ],
+        "min_matches": 2,
+    },
+    {
+        "id": "error_handling",
+        "description": "Identifies errno-based error handling pattern",
+        "keywords": [
+            "enomem", "enxio", "einval", "errno", "error code",
+            "negative return", "return.*-",
+        ],
+        "min_matches": 2,
+    },
+    {
+        "id": "feature_flags",
+        "description": "Identifies capability flag bitmask pattern",
+        "keywords": [
+            "flag", "bitmask", "deallocate", "compare", "flush",
+            "write zeroes", "reservation", "protection information",
+        ],
+        "min_matches": 3,
+    },
+    {
+        "id": "quirks",
+        "description": "Notices hardware quirk/workaround mechanism",
+        "keywords": [
+            "quirk", "workaround", "vendor-specific", "intel",
+            "hardware-specific", "device-specific",
+        ],
+        "min_matches": 1,
+    },
+    {
+        "id": "lifecycle",
+        "description": "Understands namespace construct/destruct lifecycle",
+        "keywords": [
+            "construct", "destruct", "lifecycle", "initialization",
+            "cleanup", "teardown", "nvme_ns_construct", "nvme_ns_destruct",
+        ],
+        "min_matches": 2,
+    },
+    {
+        "id": "poll_completion",
+        "description": "Identifies synchronous poll-based completion model",
+        "keywords": [
+            "poll", "completion", "synchronous", "blocking",
+            "wait", "adminq", "admin queue",
+        ],
+        "min_matches": 2,
+    },
+    {
+        "id": "ns_id_descriptor",
+        "description": "Recognizes namespace ID descriptor list handling",
+        "keywords": [
+            "id descriptor", "uuid", "nguid", "nidt",
+            "descriptor list", "namespace identifier",
+        ],
+        "min_matches": 2,
+    },
+]
+
+# False claims that should NOT appear (penalty for hallucination)
+_FALSE_CLAIMS = [
+    "user.?space",       # this is kernel-adjacent, not userspace networking
+    "file.?system",      # not a filesystem
+    "network.?stack",    # not networking code
+    "tcp|udp|socket",    # no networking in nvme_ns.c
+    "encryption|crypto", # no crypto in this file
+    "thread.?pool",      # no thread pool
+]
+
+
+def _score_response(text: str, truths: list[dict], false_claims: list[str]) -> dict:
+    import re
+    text_lower = text.lower()
+    results = []
+    for gt in truths:
+        kws = gt["keywords"]
+        matched = []
+        for k in kws:
+            if ".*" in k or "|" in k:
+                if re.search(k, text_lower):
+                    matched.append(k)
+            elif k.lower() in text_lower:
+                matched.append(k)
+        min_req = gt.get("min_matches", 2)
+        passed = len(matched) >= min_req
+        results.append({
+            "id": gt["id"],
+            "passed": passed,
+            "matched": matched,
+            "required": min_req,
+            "total_keywords": len(kws),
+        })
+
+    hallucinations = []
+    for pattern in false_claims:
+        if re.search(pattern, text_lower):
+            hallucinations.append(pattern)
+
+    passed_count = sum(1 for r in results if r["passed"])
+    penalty = len(hallucinations)
+    raw_score = passed_count / len(results) if results else 0
+    adjusted_score = max(0, (passed_count - penalty) / len(results))
+
+    return {
+        "raw_score": raw_score,
+        "adjusted_score": adjusted_score,
+        "passed": passed_count,
+        "total": len(results),
+        "penalty": penalty,
+        "hallucinations": hallucinations,
+        "details": results,
+    }
+
+
 # ---------------------------------------------------------------------------
 # Tests
 # ---------------------------------------------------------------------------
 
 
-async def test_ai_analysis_accuracy():
-    """LLM should score >= 60% on ground truth assertions (minimax2.5 level)."""
+@pytest.mark.skipif(not _NVME_NS_PATH.exists(), reason="SPDK source not found")
+async def test_spdk_analysis_accuracy():
+    """Open-ended analysis of real SPDK code (no leading prompt)."""
+    source = _read_source(_NVME_NS_PATH)
     client = await _create_client()
     try:
-        prompt = (
-            "Analyze this C source code thoroughly. Cover:\n"
-            "1. Purpose and functionality\n"
-            "2. Data structures used\n"
-            "3. Algorithms and techniques\n"
-            "4. Concurrency model\n"
-            "5. Error handling\n"
-            "6. Memory management\n"
-            "7. Any bugs or issues\n\n"
-            f"```c\n{_C_SOURCE}\n```"
-        )
         resp = await client.complete(
-            [{"role": "user", "content": prompt}],
-            max_tokens=1024,
+            [{"role": "user", "content": f"Analyze this C source code.\n\n```c\n{source}\n```"}],
+            max_tokens=2048,
             temperature=0.3,
         )
-        result = _score_response(resp.content, _GROUND_TRUTH)
+        result = _score_response(resp.content, _GROUND_TRUTH, _FALSE_CLAIMS)
+
         print(f"\n{'='*60}")
-        print(f"AI Analysis Accuracy: {result['score']:.0%} "
+        print(f"SPDK Analysis Accuracy (raw):      {result['raw_score']:.0%} "
               f"({result['passed']}/{result['total']})")
+        print(f"SPDK Analysis Accuracy (adjusted): {result['adjusted_score']:.0%} "
+              f"(penalty: -{result['penalty']} hallucinations)")
         print(f"{'='*60}")
         for d in result["details"]:
             status = "PASS" if d["passed"] else "FAIL"
-            print(f"  [{status}] {d['id']}: matched {d['matched']}")
+            print(f"  [{status}] {d['id']}: "
+                  f"matched {len(d['matched'])}/{d['required']} required "
+                  f"— {d['matched']}")
+        if result["hallucinations"]:
+            print(f"  [PENALTY] hallucinations: {result['hallucinations']}")
         print(f"{'='*60}\n")
+        print(f"Token usage: {resp.usage}")
 
-        assert result["score"] >= 0.6, (
-            f"Accuracy {result['score']:.0%} below 60% threshold. "
-            f"Failed: {[d['id'] for d in result['details'] if not d['passed']]}"
+        assert result["adjusted_score"] >= 0.5, (
+            f"Adjusted accuracy {result['adjusted_score']:.0%} below 50%. "
+            f"Failed: {[d['id'] for d in result['details'] if not d['passed']]}. "
+            f"Hallucinations: {result['hallucinations']}"
         )
     finally:
         await client.close()
 
 
-async def test_ai_function_identification():
-    """LLM should correctly identify all public functions."""
+@pytest.mark.skipif(not _NVME_NS_PATH.exists(), reason="SPDK source not found")
+async def test_spdk_function_identification():
+    """LLM should identify public API functions in nvme_ns.c."""
+    source = _read_source(_NVME_NS_PATH)
     client = await _create_client()
     try:
-        prompt = (
-            "List ALL function names defined in this C header. "
-            "Output ONLY the function names, one per line.\n\n"
-            f"```c\n{_C_SOURCE}\n```"
-        )
         resp = await client.complete(
-            [{"role": "user", "content": prompt}],
-            max_tokens=256,
+            [{"role": "user", "content": (
+                "List all public API functions (non-static) in this file. "
+                "Output only function names, one per line.\n\n"
+                f"```c\n{source}\n```"
+            )}],
+            max_tokens=512,
             temperature=0.1,
         )
-        expected = [
-            "ringbuf_init", "ringbuf_free",
-            "ringbuf_avail_read", "ringbuf_avail_write",
-            "ringbuf_write", "ringbuf_read",
+        expected_public = [
+            "nvme_ns_set_identify_data",
+            "spdk_nvme_ns_get_id",
+            "spdk_nvme_ns_is_active",
+            "spdk_nvme_ns_get_ctrlr",
+            "spdk_nvme_ns_get_sector_size",
+            "spdk_nvme_ns_get_extended_sector_size",
+            "spdk_nvme_ns_get_num_sectors",
+            "spdk_nvme_ns_get_size",
+            "spdk_nvme_ns_get_flags",
+            "spdk_nvme_ns_get_data",
+            "spdk_nvme_ns_get_format_index",
+            "nvme_ns_construct",
+            "nvme_ns_destruct",
         ]
-        found = [fn for fn in expected if fn in resp.content]
-        accuracy = len(found) / len(expected)
-        print(f"\nFunction ID accuracy: {accuracy:.0%} "
-              f"({len(found)}/{len(expected)})")
-        print(f"  Found: {found}")
-        missing = set(expected) - set(found)
+        expected_static = [
+            "_nvme_ns_get_data",
+            "nvme_ctrlr_identify_ns",
+            "nvme_ns_find_id_desc",
+        ]
+        found_public = [fn for fn in expected_public if fn in resp.content]
+        false_static = [fn for fn in expected_static if fn in resp.content]
+
+        precision_penalty = len(false_static)
+        recall = len(found_public) / len(expected_public)
+        adjusted = max(0, (len(found_public) - precision_penalty)) / len(expected_public)
+
+        print(f"\nFunction ID recall: {recall:.0%} "
+              f"({len(found_public)}/{len(expected_public)})")
+        print(f"  Found public: {found_public}")
+        missing = set(expected_public) - set(found_public)
         if missing:
             print(f"  Missing: {missing}")
+        if false_static:
+            print(f"  [PENALTY] incorrectly listed static: {false_static}")
+        print(f"  Adjusted score: {adjusted:.0%}")
 
-        assert accuracy >= 0.8, (
-            f"Function identification {accuracy:.0%} below 80%. "
-            f"Missing: {missing}"
+        assert recall >= 0.6, (
+            f"Function recall {recall:.0%} below 60%. Missing: {missing}"
         )
     finally:
         await client.close()
 
 
-async def test_ai_bug_detection():
-    """LLM should detect the memcpy bug in ringbuf_read."""
+@pytest.mark.skipif(not _NVME_NS_PATH.exists(), reason="SPDK source not found")
+async def test_spdk_architectural_understanding():
+    """LLM should explain the relationship between namespace and controller."""
+    source = _read_source(_NVME_NS_PATH)
     client = await _create_client()
     try:
-        prompt = (
-            "This C code contains a bug. Find it and explain what's wrong. "
-            "Be specific about which function and which line.\n\n"
-            f"```c\n{_C_SOURCE}\n```"
-        )
         resp = await client.complete(
-            [{"role": "user", "content": prompt}],
+            [{"role": "user", "content": (
+                "What is the relationship between namespace and controller "
+                "in this code? Explain briefly.\n\n"
+                f"```c\n{source}\n```"
+            )}],
             max_tokens=512,
             temperature=0.3,
         )
         content_lower = resp.content.lower()
-        indicators = [
-            "ringbuf_read" in content_lower,
-            "memcpy" in content_lower,
-            any(w in content_lower for w in [
-                "wrap", "second", "pos + first", "bug",
-                "incorrect", "wrong", "error", "overflow",
+        checks = {
+            "ns_belongs_to_ctrlr": any(w in content_lower for w in [
+                "belongs to", "associated with", "attached to",
+                "owned by", "ns->ctrlr", "pointer to",
             ]),
-        ]
-        score = sum(indicators) / len(indicators)
-        print(f"\nBug detection score: {score:.0%}")
-        print(f"  Mentions ringbuf_read: {indicators[0]}")
-        print(f"  Mentions memcpy: {indicators[1]}")
-        print(f"  Identifies the issue: {indicators[2]}")
+            "ctrlr_provides_capabilities": any(w in content_lower for w in [
+                "capabilit", "feature", "oncs", "quirk",
+                "controller data", "cdata",
+            ]),
+            "ns_has_own_properties": any(w in content_lower for w in [
+                "sector size", "lba", "format", "metadata",
+                "namespace data", "nsdata",
+            ]),
+            "lifecycle_dependency": any(w in content_lower for w in [
+                "construct", "identify", "initialization",
+                "active", "lifecycle",
+            ]),
+        }
+        score = sum(checks.values()) / len(checks)
+        print(f"\nArchitectural understanding: {score:.0%}")
+        for name, passed in checks.items():
+            print(f"  [{'PASS' if passed else 'FAIL'}] {name}")
 
-        assert score >= 0.66, (
-            f"Bug detection {score:.0%} below 66% — LLM failed to "
-            f"identify the memcpy bug in ringbuf_read"
+        assert score >= 0.5, (
+            f"Architectural understanding {score:.0%} below 50%. "
+            f"Failed: {[k for k, v in checks.items() if not v]}"
         )
     finally:
         await client.close()
