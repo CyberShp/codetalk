@@ -65,7 +65,7 @@ def load_config() -> dict:
                 return normalize_to_snake(json.load(f))
         except (json.JSONDecodeError, OSError):
             pass
-    return get_default_config("compose")
+    return get_default_config("native")
 
 
 def load_config_for_frontend() -> dict:
