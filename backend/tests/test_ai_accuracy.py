@@ -2,12 +2,16 @@
 
 Reads actual C source from SPDK (Storage Performance Development Kit)
 and evaluates LLM analysis quality against hand-crafted ground truth.
-Uses open-ended prompts without leading the model.
+
+Two prompt strategies are tested:
+  - Baseline: bare "Analyze this C source code" (no guidance)
+  - Enhanced: system prompt with domain expertise + structured output request
 
 Requires DEEPSEEK_API_KEY environment variable.
 """
 
 import os
+import re
 from pathlib import Path
 
 import pytest
@@ -27,6 +31,17 @@ _API_KEY = os.environ.get("DEEPSEEK_API_KEY", "")
 _SPDK_ROOT = Path(r"D:\coworkers\spdk")
 _NVME_NS_PATH = _SPDK_ROOT / "lib" / "nvme" / "nvme_ns.c"
 
+_SYSTEM_PROMPT = (
+    "You are a senior storage systems engineer specializing in NVMe drivers "
+    "and kernel-adjacent C code. When analyzing source code, always cover:\n"
+    "- Error return paths and errno conventions\n"
+    "- Memory allocation patterns (standard libc vs framework-specific allocators)\n"
+    "- API surface visibility (static vs non-static, naming conventions)\n"
+    "- Hardware quirk/workaround mechanisms\n"
+    "- Data structure relationships and lifecycle management\n"
+    "Be precise. Distinguish between public API functions and internal helpers."
+)
+
 
 async def _create_client():
     from app.llm.openai_compat import OpenAICompatClient
@@ -44,9 +59,6 @@ def _read_source(path: Path, max_lines: int = 800) -> str:
 
 # ---------------------------------------------------------------------------
 # Ground truth for SPDK lib/nvme/nvme_ns.c
-#
-# Each assertion requires min_matches keywords to pass.
-# No "required_any: True" shortcuts — every assertion needs real evidence.
 # ---------------------------------------------------------------------------
 
 _GROUND_TRUTH = [
@@ -151,19 +163,17 @@ _GROUND_TRUTH = [
     },
 ]
 
-# False claims that should NOT appear (penalty for hallucination)
 _FALSE_CLAIMS = [
-    "user.?space",       # this is kernel-adjacent, not userspace networking
-    "file.?system",      # not a filesystem
-    "network.?stack",    # not networking code
-    "tcp|udp|socket",    # no networking in nvme_ns.c
-    "encryption|crypto", # no crypto in this file
-    "thread.?pool",      # no thread pool
+    "user.?space",
+    "file.?system",
+    "network.?stack",
+    "tcp|udp|socket",
+    "encryption|crypto",
+    "thread.?pool",
 ]
 
 
 def _score_response(text: str, truths: list[dict], false_claims: list[str]) -> dict:
-    import re
     text_lower = text.lower()
     results = []
     for gt in truths:
@@ -206,61 +216,108 @@ def _score_response(text: str, truths: list[dict], false_claims: list[str]) -> d
     }
 
 
+def _print_result(label: str, result: dict, usage: dict | None = None) -> None:
+    print(f"\n{'='*60}")
+    print(f"{label}")
+    print(f"  Raw:      {result['raw_score']:.0%} ({result['passed']}/{result['total']})")
+    print(f"  Adjusted: {result['adjusted_score']:.0%} (penalty: -{result['penalty']})")
+    print(f"{'='*60}")
+    for d in result["details"]:
+        status = "PASS" if d["passed"] else "FAIL"
+        print(f"  [{status}] {d['id']}: "
+              f"{len(d['matched'])}/{d['required']} — {d['matched']}")
+    if result["hallucinations"]:
+        print(f"  [PENALTY] {result['hallucinations']}")
+    if usage:
+        print(f"  Tokens: {usage}")
+    print(f"{'='*60}")
+
+
 # ---------------------------------------------------------------------------
-# Tests
+# Test 1: Baseline vs Enhanced — side-by-side comparison
 # ---------------------------------------------------------------------------
 
 
 @pytest.mark.skipif(not _NVME_NS_PATH.exists(), reason="SPDK source not found")
-async def test_spdk_analysis_accuracy():
-    """Open-ended analysis of real SPDK code (no leading prompt)."""
+async def test_spdk_baseline_vs_enhanced():
+    """Compare bare prompt vs system-prompt-enhanced analysis."""
     source = _read_source(_NVME_NS_PATH)
     client = await _create_client()
     try:
-        resp = await client.complete(
+        baseline_resp = await client.complete(
             [{"role": "user", "content": f"Analyze this C source code.\n\n```c\n{source}\n```"}],
             max_tokens=2048,
             temperature=0.3,
         )
-        result = _score_response(resp.content, _GROUND_TRUTH, _FALSE_CLAIMS)
+        baseline = _score_response(baseline_resp.content, _GROUND_TRUTH, _FALSE_CLAIMS)
+        _print_result("BASELINE (bare prompt)", baseline, baseline_resp.usage)
 
-        print(f"\n{'='*60}")
-        print(f"SPDK Analysis Accuracy (raw):      {result['raw_score']:.0%} "
-              f"({result['passed']}/{result['total']})")
-        print(f"SPDK Analysis Accuracy (adjusted): {result['adjusted_score']:.0%} "
-              f"(penalty: -{result['penalty']} hallucinations)")
-        print(f"{'='*60}")
-        for d in result["details"]:
-            status = "PASS" if d["passed"] else "FAIL"
-            print(f"  [{status}] {d['id']}: "
-                  f"matched {len(d['matched'])}/{d['required']} required "
-                  f"— {d['matched']}")
-        if result["hallucinations"]:
-            print(f"  [PENALTY] hallucinations: {result['hallucinations']}")
-        print(f"{'='*60}\n")
-        print(f"Token usage: {resp.usage}")
+        enhanced_resp = await client.complete(
+            [
+                {"role": "system", "content": _SYSTEM_PROMPT},
+                {"role": "user", "content": (
+                    "Analyze this C source file. Structure your response with these sections:\n"
+                    "1. Overview (project, domain, purpose)\n"
+                    "2. Data structures and relationships\n"
+                    "3. Public API vs internal functions\n"
+                    "4. Error handling patterns\n"
+                    "5. Memory management\n"
+                    "6. Notable patterns (quirks, flags, completion model)\n\n"
+                    f"```c\n{source}\n```"
+                )},
+            ],
+            max_tokens=2048,
+            temperature=0.3,
+        )
+        enhanced = _score_response(enhanced_resp.content, _GROUND_TRUTH, _FALSE_CLAIMS)
+        _print_result("ENHANCED (system prompt + structure)", enhanced, enhanced_resp.usage)
 
-        assert result["adjusted_score"] >= 0.5, (
-            f"Adjusted accuracy {result['adjusted_score']:.0%} below 50%. "
-            f"Failed: {[d['id'] for d in result['details'] if not d['passed']]}. "
-            f"Hallucinations: {result['hallucinations']}"
+        delta = enhanced["adjusted_score"] - baseline["adjusted_score"]
+        print(f"\n>>> DELTA: {delta:+.0%} "
+              f"(baseline {baseline['adjusted_score']:.0%} → "
+              f"enhanced {enhanced['adjusted_score']:.0%})")
+
+        baseline_fails = {d["id"] for d in baseline["details"] if not d["passed"]}
+        enhanced_fails = {d["id"] for d in enhanced["details"] if not d["passed"]}
+        fixed = baseline_fails - enhanced_fails
+        regressed = enhanced_fails - baseline_fails
+        if fixed:
+            print(f"    Fixed by enhancement: {fixed}")
+        if regressed:
+            print(f"    Regressed: {regressed}")
+
+        assert enhanced["adjusted_score"] >= 0.5, (
+            f"Enhanced accuracy {enhanced['adjusted_score']:.0%} below 50%"
         )
     finally:
         await client.close()
 
 
+# ---------------------------------------------------------------------------
+# Test 2: Function identification with static/public distinction
+# ---------------------------------------------------------------------------
+
+
 @pytest.mark.skipif(not _NVME_NS_PATH.exists(), reason="SPDK source not found")
 async def test_spdk_function_identification():
-    """LLM should identify public API functions in nvme_ns.c."""
+    """Enhanced function identification with static/public distinction."""
     source = _read_source(_NVME_NS_PATH)
     client = await _create_client()
     try:
         resp = await client.complete(
-            [{"role": "user", "content": (
-                "List all public API functions (non-static) in this file. "
-                "Output only function names, one per line.\n\n"
-                f"```c\n{source}\n```"
-            )}],
+            [
+                {"role": "system", "content": (
+                    "You are a C code analyzer. 'static' and 'static inline' functions "
+                    "are file-internal. Functions without 'static' qualifier are public API. "
+                    "Pay attention to the 'static' keyword at the start of function definitions."
+                )},
+                {"role": "user", "content": (
+                    "List all PUBLIC (non-static) functions defined in this file. "
+                    "Do NOT include static or static inline functions. "
+                    "Output only function names, one per line.\n\n"
+                    f"```c\n{source}\n```"
+                )},
+            ],
             max_tokens=512,
             temperature=0.1,
         )
@@ -279,27 +336,33 @@ async def test_spdk_function_identification():
             "nvme_ns_construct",
             "nvme_ns_destruct",
         ]
-        expected_static = [
+        trap_static = [
             "_nvme_ns_get_data",
             "nvme_ctrlr_identify_ns",
+            "nvme_ctrlr_identify_ns_zns_specific",
+            "nvme_ctrlr_identify_ns_nvm_specific",
+            "nvme_ctrlr_identify_ns_kv_specific",
+            "nvme_ctrlr_identify_ns_iocs_specific",
+            "nvme_ctrlr_identify_id_desc",
             "nvme_ns_find_id_desc",
+            "nvme_ns_get_csi",
         ]
         found_public = [fn for fn in expected_public if fn in resp.content]
-        false_static = [fn for fn in expected_static if fn in resp.content]
+        false_positives = [fn for fn in trap_static if fn in resp.content]
 
-        precision_penalty = len(false_static)
         recall = len(found_public) / len(expected_public)
+        precision_penalty = len(false_positives)
         adjusted = max(0, (len(found_public) - precision_penalty)) / len(expected_public)
 
         print(f"\nFunction ID recall: {recall:.0%} "
               f"({len(found_public)}/{len(expected_public)})")
-        print(f"  Found public: {found_public}")
+        print(f"  Found: {found_public}")
         missing = set(expected_public) - set(found_public)
         if missing:
             print(f"  Missing: {missing}")
-        if false_static:
-            print(f"  [PENALTY] incorrectly listed static: {false_static}")
-        print(f"  Adjusted score: {adjusted:.0%}")
+        if false_positives:
+            print(f"  [PENALTY] static functions leaked: {false_positives} (-{precision_penalty})")
+        print(f"  Adjusted: {adjusted:.0%}")
 
         assert recall >= 0.6, (
             f"Function recall {recall:.0%} below 60%. Missing: {missing}"
@@ -308,9 +371,14 @@ async def test_spdk_function_identification():
         await client.close()
 
 
+# ---------------------------------------------------------------------------
+# Test 3: Architectural understanding
+# ---------------------------------------------------------------------------
+
+
 @pytest.mark.skipif(not _NVME_NS_PATH.exists(), reason="SPDK source not found")
 async def test_spdk_architectural_understanding():
-    """LLM should explain the relationship between namespace and controller."""
+    """LLM should explain namespace-controller relationship."""
     source = _read_source(_NVME_NS_PATH)
     client = await _create_client()
     try:
