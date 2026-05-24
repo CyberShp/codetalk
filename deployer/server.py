@@ -2,8 +2,8 @@
 
 import asyncio
 import json
-import threading
 import uuid
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import AsyncGenerator
 
@@ -24,12 +24,26 @@ STATIC_DIR = Path(__file__).parent / "static"
 # ---------------------------------------------------------------------------
 # Module-level deployment state
 # ---------------------------------------------------------------------------
-_deploy_state: dict = {
-    "job_id": None,
-    "running": False,
-    "deployer": None,
-    "event_queue": None,
-}
+
+@dataclass
+class DeploymentState:
+    job_id: str | None = None
+    running: bool = False
+    deployer: object = None
+    event_queue: asyncio.Queue | None = None
+    lock: asyncio.Lock = field(default_factory=asyncio.Lock)
+
+
+_state = DeploymentState()
+
+
+def _launch_job(coro) -> str:
+    """Start a deployment coroutine as an asyncio task and return the job_id."""
+    job_id = str(uuid.uuid4())
+    _state.job_id = job_id
+    _state.running = True
+    asyncio.create_task(coro)
+    return job_id
 
 app = FastAPI(title="CodeTalk Deployer", version="1.0.0")
 
@@ -88,14 +102,13 @@ async def api_save_config(config: dict):
 
 @app.post("/api/deploy")
 async def api_deploy(body: dict):
-    """Start a deployment in a background thread and return a job_id."""
-    if _deploy_state["running"]:
+    """Start a deployment and return a job_id."""
+    if _state.running:
         raise HTTPException(status_code=409, detail="A deployment is already running")
 
     cfg = config_store.load_config()
     cfg.update(config_store.normalize_to_snake(body))
 
-    job_id = str(uuid.uuid4())
     event_queue: asyncio.Queue = asyncio.Queue()
     mode = cfg.get("mode", "compose")
 
@@ -106,22 +119,9 @@ async def api_deploy(body: dict):
     else:
         deployer = ComposeDeployer(cfg, event_queue)
 
-    _deploy_state.update({
-        "job_id": job_id,
-        "running": True,
-        "deployer": deployer,
-        "event_queue": event_queue,
-    })
-
-    loop = asyncio.get_event_loop()
-
-    def _run_in_thread():
-        future = asyncio.run_coroutine_threadsafe(_run_deployment(deployer), loop)
-        future.result()
-
-    thread = threading.Thread(target=_run_in_thread, daemon=True)
-    thread.start()
-
+    _state.deployer = deployer
+    _state.event_queue = event_queue
+    job_id = _launch_job(_run_deployment(deployer))
     return {"job_id": job_id}
 
 
@@ -132,14 +132,14 @@ async def _run_deployment(deployer) -> None:
     except Exception:
         error_occurred = True
     finally:
-        _deploy_state["running"] = False
-        q = _deploy_state.get("event_queue")
+        _state.running = False
+        q = _state.event_queue
         if q is not None:
             if error_occurred:
                 await q.put({"step": "done", "status": "error", "message": "Deployment failed"})
             else:
                 await q.put({"step": "done", "status": "done", "message": "Deployment complete"})
-            await q.put(None)  # sentinel -- signals SSE stream end (no event injected)
+            await q.put(None)  # sentinel -- signals SSE stream end
 
 
 @app.get("/api/deploy/stream")
@@ -147,7 +147,7 @@ async def api_deploy_stream():
     """SSE endpoint that streams deployment progress events."""
 
     async def event_generator() -> AsyncGenerator[str, None]:
-        queue = _deploy_state.get("event_queue")
+        queue = _state.event_queue
         if queue is None:
             yield "data: {}\n\n"
             return
@@ -174,18 +174,18 @@ async def api_deploy_stream():
 @app.post("/api/deploy/stop")
 async def api_deploy_stop():
     """Cancel the currently running deployment."""
-    deployer = _deploy_state.get("deployer")
-    if deployer is None or not _deploy_state["running"]:
+    deployer = _state.deployer
+    if deployer is None or not _state.running:
         return {"ok": True, "message": "No deployment running"}
     await deployer.stop()
-    _deploy_state["running"] = False
+    _state.running = False
     return {"ok": True, "message": "Deployment stopped"}
 
 
 @app.post("/api/deploy/supplement/deepwiki")
 async def api_supplement_deepwiki(body: dict):
     """Install DeepWiki-Open as a supplementary service after native deployment."""
-    if _deploy_state["running"]:
+    if _state.running:
         raise HTTPException(status_code=409, detail="A deployment is already running")
 
     deepwiki_path = body.get("deepwikiPath", "").strip()
@@ -197,29 +197,16 @@ async def api_supplement_deepwiki(body: dict):
 
     event_queue: asyncio.Queue = asyncio.Queue()
     deployer = NativeDeployer(cfg, event_queue)
-    old_deployer = _deploy_state.get("deployer")
+    old_deployer = _state.deployer
     if old_deployer is not None and hasattr(old_deployer, "_processes"):
         deployer._processes.update(old_deployer._processes)
     if old_deployer is not None and hasattr(old_deployer, "_start_args"):
         deployer._start_args.update(old_deployer._start_args)
 
-    _deploy_state.update({
-        "job_id": str(uuid.uuid4()),
-        "running": True,
-        "deployer": deployer,
-        "event_queue": event_queue,
-    })
-
-    loop = asyncio.get_event_loop()
-
-    def _run_in_thread():
-        future = asyncio.run_coroutine_threadsafe(_run_supplement(deployer, deepwiki_path, cfg), loop)
-        future.result()
-
-    thread = threading.Thread(target=_run_in_thread, daemon=True)
-    thread.start()
-
-    return {"job_id": _deploy_state["job_id"]}
+    _state.deployer = deployer
+    _state.event_queue = event_queue
+    job_id = _launch_job(_run_supplement(deployer, deepwiki_path, cfg))
+    return {"job_id": job_id}
 
 
 async def _run_supplement(deployer: NativeDeployer, deepwiki_path: str, cfg: dict) -> None:
@@ -228,12 +215,12 @@ async def _run_supplement(deployer: NativeDeployer, deepwiki_path: str, cfg: dic
         cfg["deepwiki_path"] = deepwiki_path
         config_store.save_config(cfg)
     except Exception as exc:
-        q = _deploy_state.get("event_queue")
+        q = _state.event_queue
         if q is not None:
             await q.put({"step": "deepwiki_install", "status": "error", "message": str(exc), "progress": {"current": 0, "total": 5}})
     finally:
-        _deploy_state["running"] = False
-        q = _deploy_state.get("event_queue")
+        _state.running = False
+        q = _state.event_queue
         if q is not None:
             await q.put(None)
 
@@ -241,35 +228,22 @@ async def _run_supplement(deployer: NativeDeployer, deepwiki_path: str, cfg: dic
 @app.post("/api/deploy/supplement/gitnexus")
 async def api_supplement_gitnexus():
     """Install GitNexus as a supplementary service after native deployment."""
-    if _deploy_state["running"]:
+    if _state.running:
         raise HTTPException(status_code=409, detail="A deployment is already running")
 
     cfg = config_store.load_config()
     event_queue: asyncio.Queue = asyncio.Queue()
     deployer = NativeDeployer(cfg, event_queue)
-    old_deployer = _deploy_state.get("deployer")
+    old_deployer = _state.deployer
     if old_deployer is not None and hasattr(old_deployer, "_processes"):
         deployer._processes.update(old_deployer._processes)
     if old_deployer is not None and hasattr(old_deployer, "_start_args"):
         deployer._start_args.update(old_deployer._start_args)
 
-    _deploy_state.update({
-        "job_id": str(uuid.uuid4()),
-        "running": True,
-        "deployer": deployer,
-        "event_queue": event_queue,
-    })
-
-    loop = asyncio.get_event_loop()
-
-    def _run_in_thread():
-        future = asyncio.run_coroutine_threadsafe(_run_supplement_gitnexus(deployer, cfg), loop)
-        future.result()
-
-    thread = threading.Thread(target=_run_in_thread, daemon=True)
-    thread.start()
-
-    return {"job_id": _deploy_state["job_id"]}
+    _state.deployer = deployer
+    _state.event_queue = event_queue
+    job_id = _launch_job(_run_supplement_gitnexus(deployer, cfg))
+    return {"job_id": job_id}
 
 
 async def _run_supplement_gitnexus(deployer: NativeDeployer, cfg: dict) -> None:
@@ -278,12 +252,12 @@ async def _run_supplement_gitnexus(deployer: NativeDeployer, cfg: dict) -> None:
         await deployer._step_generate_config()
         config_store.save_config(cfg)
     except Exception as exc:
-        q = _deploy_state.get("event_queue")
+        q = _state.event_queue
         if q is not None:
             await q.put({"step": "install_gitnexus", "status": "error", "message": str(exc)})
     finally:
-        _deploy_state["running"] = False
-        q = _deploy_state.get("event_queue")
+        _state.running = False
+        q = _state.event_queue
         if q is not None:
             await q.put({"step": "done", "status": "done", "message": "GitNexus installed"})
             await q.put(None)
@@ -292,30 +266,17 @@ async def _run_supplement_gitnexus(deployer: NativeDeployer, cfg: dict) -> None:
 @app.post("/api/quickstart")
 async def api_quickstart():
     """Quick-start services using saved config (no install/check steps)."""
-    if _deploy_state["running"]:
+    if _state.running:
         raise HTTPException(status_code=409, detail="A deployment is already running")
 
     cfg = config_store.load_config()
     event_queue: asyncio.Queue = asyncio.Queue()
     deployer = NativeDeployer(cfg, event_queue)
 
-    _deploy_state.update({
-        "job_id": str(uuid.uuid4()),
-        "running": True,
-        "deployer": deployer,
-        "event_queue": event_queue,
-    })
-
-    loop = asyncio.get_event_loop()
-
-    def _run_in_thread():
-        future = asyncio.run_coroutine_threadsafe(_run_quickstart(deployer), loop)
-        future.result()
-
-    thread = threading.Thread(target=_run_in_thread, daemon=True)
-    thread.start()
-
-    return {"job_id": _deploy_state["job_id"]}
+    _state.deployer = deployer
+    _state.event_queue = event_queue
+    job_id = _launch_job(_run_quickstart(deployer))
+    return {"job_id": job_id}
 
 
 async def _run_quickstart(deployer: NativeDeployer) -> None:
@@ -328,8 +289,8 @@ async def _run_quickstart(deployer: NativeDeployer) -> None:
     except Exception as exc:
         error_msg = str(exc) or type(exc).__name__
     finally:
-        _deploy_state["running"] = False
-        q = _deploy_state.get("event_queue")
+        _state.running = False
+        q = _state.event_queue
         if q is not None:
             if error_msg:
                 await q.put({"step": "done", "status": "error", "message": f"Quickstart failed: {error_msg}"})
@@ -341,7 +302,7 @@ async def _run_quickstart(deployer: NativeDeployer) -> None:
 @app.post("/api/services/{service}/restart")
 async def api_service_restart(service: str):
     """Restart a specific deployed service by name."""
-    deployer = _deploy_state.get("deployer")
+    deployer = _state.deployer
     if deployer is None:
         raise HTTPException(status_code=400, detail="No deployer instance — run a deployment first")
     if not hasattr(deployer, "restart_service"):
@@ -357,7 +318,7 @@ async def api_service_restart(service: str):
 @app.post("/api/services/{service}/stop")
 async def api_service_stop(service: str):
     """Stop a specific deployed service by name."""
-    deployer = _deploy_state.get("deployer")
+    deployer = _state.deployer
     if deployer is None:
         raise HTTPException(status_code=400, detail="No deployer instance — run a deployment first")
     if not hasattr(deployer, "stop_service"):
@@ -373,7 +334,7 @@ async def api_service_stop(service: str):
 @app.post("/api/services/{service}/start")
 async def api_service_start(service: str):
     """Start a specific deployed service by name (must have been started at least once before)."""
-    deployer = _deploy_state.get("deployer")
+    deployer = _state.deployer
     if deployer is None:
         raise HTTPException(status_code=400, detail="No deployer instance — run a deployment first")
     if not hasattr(deployer, "start_service"):
@@ -389,11 +350,11 @@ async def api_service_start(service: str):
 @app.post("/api/services/stop")
 async def api_services_stop():
     """Stop all running service processes."""
-    deployer = _deploy_state.get("deployer")
+    deployer = _state.deployer
     if deployer is None:
         return {"ok": True, "message": "No services running"}
     await deployer.stop()
-    _deploy_state["running"] = False
+    _state.running = False
     return {"ok": True, "message": "All services stopped"}
 
 
@@ -406,8 +367,8 @@ async def api_deploy_status_compat():
 @app.get("/api/services/status")
 async def api_services_status():
     """Quick status of all known services."""
-    deployer = _deploy_state.get("deployer")
-    running = _deploy_state.get("running", False)
+    deployer = _state.deployer
+    running = _state.running
     processes: dict = {}
     if deployer and hasattr(deployer, "_processes"):
         for name, proc in deployer._processes.items():
@@ -421,7 +382,7 @@ async def api_services_status():
 @app.get("/api/services/health")
 async def api_services_health():
     """Check health of all deployed services."""
-    deployer = _deploy_state.get("deployer")
+    deployer = _state.deployer
     if deployer is None:
         cfg = config_store.load_config()
         mode = cfg.get("mode", "compose")
