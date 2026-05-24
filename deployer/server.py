@@ -31,6 +31,7 @@ class DeploymentState:
     running: bool = False
     deployer: object = None
     event_queue: asyncio.Queue | None = None
+    task: asyncio.Task | None = None
     lock: asyncio.Lock = field(default_factory=asyncio.Lock)
 
 
@@ -42,7 +43,7 @@ def _launch_job(coro) -> str:
     job_id = str(uuid.uuid4())
     _state.job_id = job_id
     _state.running = True
-    asyncio.create_task(coro)
+    _state.task = asyncio.create_task(coro)
     return job_id
 
 app = FastAPI(title="CodeTalk Deployer", version="1.0.0")
@@ -106,14 +107,36 @@ async def api_deploy(body: dict):
     if _state.running:
         raise HTTPException(status_code=409, detail="A deployment is already running")
 
+    force_takeover: bool = bool(body.get("force_takeover", False))
+    dev_mode: bool = bool(body.get("dev_mode", False))
+
     cfg = config_store.load_config()
     cfg.update(config_store.normalize_to_snake(body))
+    cfg["force_takeover"] = force_takeover
+    cfg["dev_mode"] = dev_mode
 
     event_queue: asyncio.Queue = asyncio.Queue()
     mode = cfg.get("mode", "compose")
 
     if mode == "native":
         deployer = NativeDeployer(cfg, event_queue)
+        if not force_takeover:
+            backend_port = cfg.get("backend_port", 8100)
+            frontend_port = cfg.get("frontend_port", 3005)
+            gitnexus_port = cfg.get("gitnexus_port", 7100)
+            ports = [backend_port, frontend_port]
+            if cfg.get("install_gitnexus", True):
+                ports.append(gitnexus_port)
+            conflicts = await deployer._scan_port_conflicts(ports)
+            if conflicts:
+                raise HTTPException(
+                    status_code=409,
+                    detail={
+                        "message": "Port conflicts detected",
+                        "conflicts": conflicts,
+                        "hint": "retry with force_takeover=true",
+                    },
+                )
     elif mode == "k8s":
         deployer = K8sDeployer(cfg, event_queue)
     else:
@@ -127,15 +150,20 @@ async def api_deploy(body: dict):
 
 async def _run_deployment(deployer) -> None:
     error_occurred = False
+    cancelled = False
     try:
         await deployer.deploy()
+    except asyncio.CancelledError:
+        cancelled = True
     except Exception:
         error_occurred = True
     finally:
         _state.running = False
         q = _state.event_queue
         if q is not None:
-            if error_occurred:
+            if cancelled:
+                await q.put({"step": "done", "status": "cancelled", "message": "Deployment cancelled"})
+            elif error_occurred:
                 await q.put({"step": "done", "status": "error", "message": "Deployment failed"})
             else:
                 await q.put({"step": "done", "status": "done", "message": "Deployment complete"})
@@ -177,6 +205,13 @@ async def api_deploy_stop():
     deployer = _state.deployer
     if deployer is None or not _state.running:
         return {"ok": True, "message": "No deployment running"}
+    task = _state.task
+    if task is not None and not task.done():
+        task.cancel()
+        try:
+            await task
+        except (asyncio.CancelledError, Exception):
+            pass
     await deployer.stop()
     _state.running = False
     return {"ok": True, "message": "Deployment stopped"}
@@ -214,6 +249,10 @@ async def _run_supplement(deployer: NativeDeployer, deepwiki_path: str, cfg: dic
         await deployer.supplement_deepwiki(deepwiki_path)
         cfg["deepwiki_path"] = deepwiki_path
         config_store.save_config(cfg)
+    except asyncio.CancelledError:
+        q = _state.event_queue
+        if q is not None:
+            await q.put({"step": "deepwiki_install", "status": "cancelled", "message": "Cancelled"})
     except Exception as exc:
         q = _state.event_queue
         if q is not None:
@@ -247,10 +286,16 @@ async def api_supplement_gitnexus():
 
 
 async def _run_supplement_gitnexus(deployer: NativeDeployer, cfg: dict) -> None:
+    cancelled = False
     try:
         await deployer._step_install_gitnexus()
         await deployer._step_generate_config()
         config_store.save_config(cfg)
+    except asyncio.CancelledError:
+        cancelled = True
+        q = _state.event_queue
+        if q is not None:
+            await q.put({"step": "install_gitnexus", "status": "cancelled", "message": "Cancelled"})
     except Exception as exc:
         q = _state.event_queue
         if q is not None:
@@ -259,19 +304,50 @@ async def _run_supplement_gitnexus(deployer: NativeDeployer, cfg: dict) -> None:
         _state.running = False
         q = _state.event_queue
         if q is not None:
-            await q.put({"step": "done", "status": "done", "message": "GitNexus installed"})
+            if not cancelled:
+                await q.put({"step": "done", "status": "done", "message": "GitNexus installed"})
             await q.put(None)
 
 
 @app.post("/api/quickstart")
-async def api_quickstart():
+async def api_quickstart(request: Request):
     """Quick-start services using saved config (no install/check steps)."""
     if _state.running:
         raise HTTPException(status_code=409, detail="A deployment is already running")
 
+    try:
+        body = await request.json()
+        if not isinstance(body, dict):
+            body = {}
+    except Exception:
+        body = {}
+    force_takeover: bool = bool(body.get("force_takeover", False))
+    dev_mode: bool = bool(body.get("dev_mode", False))
+
     cfg = config_store.load_config()
+    cfg["force_takeover"] = force_takeover
+    cfg["dev_mode"] = dev_mode
+
     event_queue: asyncio.Queue = asyncio.Queue()
     deployer = NativeDeployer(cfg, event_queue)
+
+    if not force_takeover:
+        backend_port = cfg.get("backend_port", 8100)
+        frontend_port = cfg.get("frontend_port", 3005)
+        gitnexus_port = cfg.get("gitnexus_port", 7100)
+        ports = [backend_port, frontend_port]
+        if cfg.get("install_gitnexus", True):
+            ports.append(gitnexus_port)
+        conflicts = await deployer._scan_port_conflicts(ports)
+        if conflicts:
+            raise HTTPException(
+                status_code=409,
+                detail={
+                    "message": "Port conflicts detected",
+                    "conflicts": conflicts,
+                    "hint": "retry with force_takeover=true",
+                },
+            )
 
     _state.deployer = deployer
     _state.event_queue = event_queue
@@ -282,17 +358,22 @@ async def api_quickstart():
 async def _run_quickstart(deployer: NativeDeployer) -> None:
     """Start services only -- skip install/check steps."""
     error_msg = ""
+    cancelled = False
     try:
         await deployer._step_generate_config()
         await deployer._step_start_services()
         await deployer._step_health_check()
+    except asyncio.CancelledError:
+        cancelled = True
     except Exception as exc:
         error_msg = str(exc) or type(exc).__name__
     finally:
         _state.running = False
         q = _state.event_queue
         if q is not None:
-            if error_msg:
+            if cancelled:
+                await q.put({"step": "done", "status": "cancelled", "message": "Quickstart cancelled"})
+            elif error_msg:
                 await q.put({"step": "done", "status": "error", "message": f"Quickstart failed: {error_msg}"})
             else:
                 await q.put({"step": "done", "status": "done", "message": "All services started"})
