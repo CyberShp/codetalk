@@ -240,7 +240,7 @@ class NativeDeployer:
             _old = self._processes.get(_proc_name)
             if _old is not None and _old.returncode is None:
                 _old.terminate()
-        await self._kill_port_processes([api_port, ui_port], 5)
+        await self._release_ports([api_port, ui_port], 5)
 
         await self._start_deepwiki_processes(dw_dir, api_port, ui_port, llm_env, "deepwiki_start", 5)
 
@@ -591,72 +591,100 @@ class NativeDeployer:
     # Step 6: Start services
     # ------------------------------------------------------------------
 
-    async def _kill_port_processes(self, ports: list[int], step: int) -> None:
-        """Kill any processes listening on the given ports before starting services."""
+    async def _release_ports(self, ports: list[int], step: int, force_takeover: bool = False) -> None:
+        """Release ports before starting services.
+
+        Kills processes we own (tracked in _processes). Skips unknown processes
+        unless force_takeover=True, in which case any occupant is killed.
+        """
         own_pid = os.getpid()
+        own_pids: set[int] = {
+            proc.pid
+            for proc in self._processes.values()
+            if proc.returncode is None and proc.pid is not None
+        }
         for port in ports:
             if sys.platform == "win32":
                 try:
-                    proc = await asyncio.create_subprocess_exec(
+                    scan = await asyncio.create_subprocess_exec(
                         "netstat", "-ano", "-p", "TCP",
                         stdout=asyncio.subprocess.PIPE,
                         stderr=asyncio.subprocess.DEVNULL,
                     )
-                    stdout, _ = await asyncio.wait_for(proc.communicate(), timeout=10)
+                    stdout, _ = await asyncio.wait_for(scan.communicate(), timeout=10)
                     for line in stdout.decode(errors="replace").splitlines():
-                        if f":{port} " in line and "LISTENING" in line:
-                            parts = line.split()
-                            pid_str = parts[-1]
-                            if pid_str.isdigit() and int(pid_str) != own_pid:
-                                proc_name = pid_str
-                                try:
-                                    name_proc = await asyncio.create_subprocess_exec(
-                                        "tasklist", "/FI", f"PID eq {pid_str}", "/FO", "CSV", "/NH",
-                                        stdout=asyncio.subprocess.PIPE,
-                                        stderr=asyncio.subprocess.DEVNULL,
-                                    )
-                                    name_out, _ = await asyncio.wait_for(name_proc.communicate(), timeout=5)
-                                    first_line = name_out.decode(errors="replace").strip().splitlines()[0]
-                                    proc_name = first_line.split(",")[0].strip('"') or pid_str
-                                except Exception:
-                                    pass
-                                kill_proc = await asyncio.create_subprocess_exec(
-                                    "taskkill", "/F", "/PID", pid_str,
-                                    stdout=asyncio.subprocess.DEVNULL,
-                                    stderr=asyncio.subprocess.DEVNULL,
-                                )
-                                await asyncio.wait_for(kill_proc.wait(), timeout=5)
-                                await self._emit("start_services", "running", f"已释放端口 {port}（PID {pid_str}, {proc_name}）", step)
+                        if f":{port} " not in line or "LISTENING" not in line:
+                            continue
+                        parts = line.split()
+                        pid_str = parts[-1]
+                        if not pid_str.isdigit():
+                            continue
+                        pid = int(pid_str)
+                        if pid == own_pid:
+                            continue
+                        if pid not in own_pids and not force_takeover:
+                            await self._emit("start_services", "running",
+                                             f"端口 {port} 被未知进程占用（PID {pid}），跳过释放", step)
+                            continue
+                        proc_name = pid_str
+                        try:
+                            name_proc = await asyncio.create_subprocess_exec(
+                                "tasklist", "/FI", f"PID eq {pid_str}", "/FO", "CSV", "/NH",
+                                stdout=asyncio.subprocess.PIPE,
+                                stderr=asyncio.subprocess.DEVNULL,
+                            )
+                            name_out, _ = await asyncio.wait_for(name_proc.communicate(), timeout=5)
+                            first_line = name_out.decode(errors="replace").strip().splitlines()[0]
+                            proc_name = first_line.split(",")[0].strip('"') or pid_str
+                        except Exception:
+                            pass
+                        kill_proc = await asyncio.create_subprocess_exec(
+                            "taskkill", "/F", "/PID", pid_str,
+                            stdout=asyncio.subprocess.DEVNULL,
+                            stderr=asyncio.subprocess.DEVNULL,
+                        )
+                        await asyncio.wait_for(kill_proc.wait(), timeout=5)
+                        await self._emit("start_services", "running",
+                                         f"已释放端口 {port}（PID {pid_str}, {proc_name}）", step)
                 except (asyncio.TimeoutError, Exception):
                     pass
             else:
                 try:
-                    proc = await asyncio.create_subprocess_exec(
+                    scan = await asyncio.create_subprocess_exec(
                         "lsof", "-ti", f":{port}",
                         stdout=asyncio.subprocess.PIPE,
                         stderr=asyncio.subprocess.DEVNULL,
                     )
-                    stdout, _ = await asyncio.wait_for(proc.communicate(), timeout=10)
+                    stdout, _ = await asyncio.wait_for(scan.communicate(), timeout=10)
                     for pid_str in stdout.decode(errors="replace").split():
-                        if pid_str.isdigit() and int(pid_str) != own_pid:
-                            proc_name = pid_str
-                            try:
-                                name_proc = await asyncio.create_subprocess_exec(
-                                    "ps", "-p", pid_str, "-o", "comm=",
-                                    stdout=asyncio.subprocess.PIPE,
-                                    stderr=asyncio.subprocess.DEVNULL,
-                                )
-                                name_out, _ = await asyncio.wait_for(name_proc.communicate(), timeout=5)
-                                proc_name = name_out.decode(errors="replace").strip() or pid_str
-                            except Exception:
-                                pass
-                            kill_proc = await asyncio.create_subprocess_exec(
-                                "kill", "-9", pid_str,
-                                stdout=asyncio.subprocess.DEVNULL,
+                        if not pid_str.isdigit():
+                            continue
+                        pid = int(pid_str)
+                        if pid == own_pid:
+                            continue
+                        if pid not in own_pids and not force_takeover:
+                            await self._emit("start_services", "running",
+                                             f"端口 {port} 被未知进程占用（PID {pid}），跳过释放", step)
+                            continue
+                        proc_name = pid_str
+                        try:
+                            name_proc = await asyncio.create_subprocess_exec(
+                                "ps", "-p", pid_str, "-o", "comm=",
+                                stdout=asyncio.subprocess.PIPE,
                                 stderr=asyncio.subprocess.DEVNULL,
                             )
-                            await asyncio.wait_for(kill_proc.wait(), timeout=5)
-                            await self._emit("start_services", "running", f"已释放端口 {port}（PID {pid_str}, {proc_name}）", step)
+                            name_out, _ = await asyncio.wait_for(name_proc.communicate(), timeout=5)
+                            proc_name = name_out.decode(errors="replace").strip() or pid_str
+                        except Exception:
+                            pass
+                        kill_proc = await asyncio.create_subprocess_exec(
+                            "kill", "-9", pid_str,
+                            stdout=asyncio.subprocess.DEVNULL,
+                            stderr=asyncio.subprocess.DEVNULL,
+                        )
+                        await asyncio.wait_for(kill_proc.wait(), timeout=5)
+                        await self._emit("start_services", "running",
+                                         f"已释放端口 {port}（PID {pid_str}, {proc_name}）", step)
                 except (asyncio.TimeoutError, Exception):
                     pass
 
@@ -673,7 +701,7 @@ class NativeDeployer:
         if cfg.get("install_gitnexus", True):
             ports_to_clear.append(gitnexus_port)
         await self._emit("start_services", "running", f"清理占用端口 {ports_to_clear}...", step)
-        await self._kill_port_processes(ports_to_clear, step)
+        await self._release_ports(ports_to_clear, step)
         await asyncio.sleep(1)
 
         backend_dir = PROJECT_ROOT / "backend"
@@ -740,7 +768,7 @@ class NativeDeployer:
                         "FORCE_DIRECT": "true",
                         "TRUST_ENV": "false",
                     })
-                await self._kill_port_processes([dw_api_port, dw_ui_port], step)
+                await self._release_ports([dw_api_port, dw_ui_port], step)
                 await self._start_deepwiki_processes(dw_dir, dw_api_port, dw_ui_port, llm_env, "start_services", step)
             elif dw_dir:
                 await self._emit("start_services", "error", f"DeepWiki 路径无效：{dw_dir} 不存在", step)
