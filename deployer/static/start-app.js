@@ -303,7 +303,7 @@
             if (detail && typeof detail === 'object' && detail.conflicts) {
               forceTakeover = true;
               var lines = detail.conflicts.map(function (c) {
-                return '端口 ' + c.port + ' 被 ' + escHtml(c.process_name) + '(PID ' + c.pid + ')' + (c.is_own ? '（本实例）' : '') + ' 占用';
+                return '端口 ' + c.port + ' 被 ' + c.process_name + '(PID ' + c.pid + ')' + (c.is_own ? '（本实例）' : '') + ' 占用';
               });
               throw new Error('端口冲突：' + lines.join('；') + '。再次点击「启动」将强制接管。');
             }

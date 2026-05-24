@@ -442,7 +442,7 @@ async function startDeploy() {
       if (detail && typeof detail === 'object' && detail.conflicts) {
         state.pendingForceTakeover = true;
         const lines = detail.conflicts.map(c =>
-          `端口 ${c.port} 被 ${escHtml(c.process_name)}(PID ${c.pid})${c.is_own ? '（本实例）' : ''} 占用`
+          `端口 ${c.port} 被 ${c.process_name}(PID ${c.pid})${c.is_own ? '（本实例）' : ''} 占用`
         );
         showDeployError(`端口冲突 — ${lines.join('；')}。点击「重试」将强制接管。`);
       } else {
