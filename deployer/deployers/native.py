@@ -408,24 +408,29 @@ class NativeDeployer:
     async def _step_install_frontend(self) -> None:
         step = 3
         frontend_dir = PROJECT_ROOT / "frontend"
+        npm_cmd = "npm.cmd" if sys.platform == "win32" else "npm"
+
         await self._emit("install_frontend", "running", "安装前端依赖...", step)
 
         node_modules = frontend_dir / "node_modules"
-        if node_modules.exists() and (node_modules / ".package-lock.json").exists():
-            await self._emit("install_frontend", "done", "前端依赖已安装，跳过", step)
+        if not (node_modules.exists() and (node_modules / ".package-lock.json").exists()):
+            rc = await self._run_stream("install_frontend", step, npm_cmd, "install", cwd=str(frontend_dir))
+            if rc != 0:
+                await self._emit("install_frontend", "error", "npm install 失败", step)
+                raise RuntimeError("Frontend dependency installation failed")
+
+        next_build_dir = frontend_dir / ".next"
+        if next_build_dir.exists():
+            await self._emit("install_frontend", "done", "前端依赖已安装，构建产物存在，跳过构建", step)
             return
 
-        npm_cmd = "npm.cmd" if sys.platform == "win32" else "npm"
-        rc = await self._run_stream(
-            "install_frontend", step,
-            npm_cmd, "install",
-            cwd=str(frontend_dir),
-        )
+        await self._emit("install_frontend", "running", "构建前端（npm run build）...", step)
+        rc = await self._run_stream("install_frontend", step, npm_cmd, "run", "build", cwd=str(frontend_dir))
         if rc != 0:
-            await self._emit("install_frontend", "error", "npm install 失败", step)
-            raise RuntimeError("Frontend dependency installation failed")
+            await self._emit("install_frontend", "error", "npm run build 失败", step)
+            raise RuntimeError("Frontend build failed")
 
-        await self._emit("install_frontend", "done", "前端依赖安装完成", step)
+        await self._emit("install_frontend", "done", "前端依赖安装并构建完成", step)
 
     # ------------------------------------------------------------------
     # Step 4: Install GitNexus
@@ -736,9 +741,16 @@ class NativeDeployer:
             )
 
         npm_cmd = "npm.cmd" if sys.platform == "win32" else "npm"
+        next_build_dir = frontend_dir / ".next"
+        if next_build_dir.exists():
+            frontend_start_cmd = [npm_cmd, "run", "start"]
+        else:
+            await self._emit("start_services", "running",
+                             "未找到前端构建产物（.next/），以开发模式启动（npm run dev）", step)
+            frontend_start_cmd = [npm_cmd, "run", "dev"]
         await self._start_process(
             "frontend",
-            [npm_cmd, "run", "dev"],
+            frontend_start_cmd,
             cwd=str(frontend_dir),
             step_name="start_services",
             step_index=step,
@@ -929,7 +941,7 @@ class NativeDeployer:
         if name == "frontend":
             npm_cmd = "npm.cmd" if sys.platform == "win32" else "npm"
             return {
-                "cmd": [npm_cmd, "run", "dev"],
+                "cmd": [npm_cmd, "run", "start"],
                 "cwd": str(PROJECT_ROOT / "frontend"),
                 "env_extra": {"PORT": str(cfg.get("frontend_port", 3005))},
             }
