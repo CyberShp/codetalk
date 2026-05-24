@@ -107,14 +107,36 @@ async def api_deploy(body: dict):
     if _state.running:
         raise HTTPException(status_code=409, detail="A deployment is already running")
 
+    force_takeover: bool = bool(body.get("force_takeover", False))
+    dev_mode: bool = bool(body.get("dev_mode", False))
+
     cfg = config_store.load_config()
     cfg.update(config_store.normalize_to_snake(body))
+    cfg["force_takeover"] = force_takeover
+    cfg["dev_mode"] = dev_mode
 
     event_queue: asyncio.Queue = asyncio.Queue()
     mode = cfg.get("mode", "compose")
 
     if mode == "native":
         deployer = NativeDeployer(cfg, event_queue)
+        if not force_takeover:
+            backend_port = cfg.get("backend_port", 8100)
+            frontend_port = cfg.get("frontend_port", 3005)
+            gitnexus_port = cfg.get("gitnexus_port", 7100)
+            ports = [backend_port, frontend_port]
+            if cfg.get("install_gitnexus", True):
+                ports.append(gitnexus_port)
+            conflicts = await deployer._scan_port_conflicts(ports)
+            if conflicts:
+                raise HTTPException(
+                    status_code=409,
+                    detail={
+                        "message": "Port conflicts detected",
+                        "conflicts": conflicts,
+                        "hint": "retry with force_takeover=true",
+                    },
+                )
     elif mode == "k8s":
         deployer = K8sDeployer(cfg, event_queue)
     else:
@@ -288,14 +310,44 @@ async def _run_supplement_gitnexus(deployer: NativeDeployer, cfg: dict) -> None:
 
 
 @app.post("/api/quickstart")
-async def api_quickstart():
+async def api_quickstart(request: Request):
     """Quick-start services using saved config (no install/check steps)."""
     if _state.running:
         raise HTTPException(status_code=409, detail="A deployment is already running")
 
+    try:
+        body = await request.json()
+        if not isinstance(body, dict):
+            body = {}
+    except Exception:
+        body = {}
+    force_takeover: bool = bool(body.get("force_takeover", False))
+    dev_mode: bool = bool(body.get("dev_mode", False))
+
     cfg = config_store.load_config()
+    cfg["force_takeover"] = force_takeover
+    cfg["dev_mode"] = dev_mode
+
     event_queue: asyncio.Queue = asyncio.Queue()
     deployer = NativeDeployer(cfg, event_queue)
+
+    if not force_takeover:
+        backend_port = cfg.get("backend_port", 8100)
+        frontend_port = cfg.get("frontend_port", 3005)
+        gitnexus_port = cfg.get("gitnexus_port", 7100)
+        ports = [backend_port, frontend_port]
+        if cfg.get("install_gitnexus", True):
+            ports.append(gitnexus_port)
+        conflicts = await deployer._scan_port_conflicts(ports)
+        if conflicts:
+            raise HTTPException(
+                status_code=409,
+                detail={
+                    "message": "Port conflicts detected",
+                    "conflicts": conflicts,
+                    "hint": "retry with force_takeover=true",
+                },
+            )
 
     _state.deployer = deployer
     _state.event_queue = event_queue

@@ -596,6 +596,93 @@ class NativeDeployer:
     # Step 6: Start services
     # ------------------------------------------------------------------
 
+    async def _scan_port_conflicts(self, ports: list[int]) -> list[dict]:
+        """Scan ports for conflicts without killing anything.
+
+        Returns a list of dicts: {port, pid, process_name, is_own}.
+        is_own=True means the process is tracked in _processes (our child).
+        """
+        own_pids: set[int] = {
+            proc.pid
+            for proc in self._processes.values()
+            if proc.returncode is None and proc.pid is not None
+        }
+        conflicts: list[dict] = []
+        own_pid = os.getpid()
+        for port in ports:
+            if sys.platform == "win32":
+                try:
+                    scan = await asyncio.create_subprocess_exec(
+                        "netstat", "-ano", "-p", "TCP",
+                        stdout=asyncio.subprocess.PIPE,
+                        stderr=asyncio.subprocess.DEVNULL,
+                    )
+                    stdout, _ = await asyncio.wait_for(scan.communicate(), timeout=10)
+                    for line in stdout.decode(errors="replace").splitlines():
+                        if f":{port} " not in line or "LISTENING" not in line:
+                            continue
+                        parts = line.split()
+                        pid_str = parts[-1]
+                        if not pid_str.isdigit():
+                            continue
+                        pid = int(pid_str)
+                        if pid == own_pid:
+                            continue
+                        proc_name = pid_str
+                        try:
+                            name_proc = await asyncio.create_subprocess_exec(
+                                "tasklist", "/FI", f"PID eq {pid_str}", "/FO", "CSV", "/NH",
+                                stdout=asyncio.subprocess.PIPE,
+                                stderr=asyncio.subprocess.DEVNULL,
+                            )
+                            name_out, _ = await asyncio.wait_for(name_proc.communicate(), timeout=5)
+                            first_line = name_out.decode(errors="replace").strip().splitlines()[0]
+                            proc_name = first_line.split(",")[0].strip('"') or pid_str
+                        except Exception:
+                            pass
+                        conflicts.append({
+                            "port": port,
+                            "pid": pid,
+                            "process_name": proc_name,
+                            "is_own": pid in own_pids,
+                        })
+                except (asyncio.TimeoutError, Exception):
+                    pass
+            else:
+                try:
+                    scan = await asyncio.create_subprocess_exec(
+                        "lsof", "-ti", f":{port}",
+                        stdout=asyncio.subprocess.PIPE,
+                        stderr=asyncio.subprocess.DEVNULL,
+                    )
+                    stdout, _ = await asyncio.wait_for(scan.communicate(), timeout=10)
+                    for pid_str in stdout.decode(errors="replace").split():
+                        if not pid_str.isdigit():
+                            continue
+                        pid = int(pid_str)
+                        if pid == own_pid:
+                            continue
+                        proc_name = pid_str
+                        try:
+                            name_proc = await asyncio.create_subprocess_exec(
+                                "ps", "-p", pid_str, "-o", "comm=",
+                                stdout=asyncio.subprocess.PIPE,
+                                stderr=asyncio.subprocess.DEVNULL,
+                            )
+                            name_out, _ = await asyncio.wait_for(name_proc.communicate(), timeout=5)
+                            proc_name = name_out.decode(errors="replace").strip() or pid_str
+                        except Exception:
+                            pass
+                        conflicts.append({
+                            "port": port,
+                            "pid": pid,
+                            "process_name": proc_name,
+                            "is_own": pid in own_pids,
+                        })
+                except (asyncio.TimeoutError, Exception):
+                    pass
+        return conflicts
+
     async def _release_ports(self, ports: list[int], step: int, force_takeover: bool = False) -> None:
         """Release ports before starting services.
 
@@ -706,7 +793,8 @@ class NativeDeployer:
         if cfg.get("install_gitnexus", True):
             ports_to_clear.append(gitnexus_port)
         await self._emit("start_services", "running", f"清理占用端口 {ports_to_clear}...", step)
-        await self._release_ports(ports_to_clear, step)
+        force_takeover = bool(cfg.get("force_takeover", False))
+        await self._release_ports(ports_to_clear, step, force_takeover=force_takeover)
         await asyncio.sleep(1)
 
         backend_dir = PROJECT_ROOT / "backend"
@@ -742,12 +830,14 @@ class NativeDeployer:
 
         npm_cmd = "npm.cmd" if sys.platform == "win32" else "npm"
         next_build_dir = frontend_dir / ".next"
+        dev_mode = bool(cfg.get("dev_mode", False))
         if next_build_dir.exists():
             frontend_start_cmd = [npm_cmd, "run", "start"]
-        else:
-            await self._emit("start_services", "running",
-                             "未找到前端构建产物（.next/），以开发模式启动（npm run dev）", step)
+        elif dev_mode:
+            await self._emit("start_services", "running", "以开发模式启动前端（dev_mode=true）", step)
             frontend_start_cmd = [npm_cmd, "run", "dev"]
+        else:
+            raise RuntimeError("needs_build: 未找到前端构建产物（.next/），请先运行 npm run build")
         await self._start_process(
             "frontend",
             frontend_start_cmd,
