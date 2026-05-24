@@ -83,16 +83,8 @@ class NativeDeployer:
 
     async def stop(self) -> None:
         self._stopped = True
-        for name, proc in list(self._processes.items()):
-            if proc.returncode is None:
-                try:
-                    proc.terminate()
-                    await asyncio.wait_for(proc.wait(), timeout=5)
-                except (ProcessLookupError, asyncio.TimeoutError):
-                    try:
-                        proc.kill()
-                    except ProcessLookupError:
-                        pass
+        for name in list(self._processes):
+            await self._terminate_process(name)
 
     async def check_health(self) -> list:
         import httpx
@@ -248,7 +240,7 @@ class NativeDeployer:
             _old = self._processes.get(_proc_name)
             if _old is not None and _old.returncode is None:
                 _old.terminate()
-        await self._kill_port_processes([api_port, ui_port], 5)
+        await self._release_ports([api_port, ui_port], 5)
 
         await self._start_deepwiki_processes(dw_dir, api_port, ui_port, llm_env, "deepwiki_start", 5)
 
@@ -416,24 +408,29 @@ class NativeDeployer:
     async def _step_install_frontend(self) -> None:
         step = 3
         frontend_dir = PROJECT_ROOT / "frontend"
+        npm_cmd = "npm.cmd" if sys.platform == "win32" else "npm"
+
         await self._emit("install_frontend", "running", "安装前端依赖...", step)
 
         node_modules = frontend_dir / "node_modules"
-        if node_modules.exists() and (node_modules / ".package-lock.json").exists():
-            await self._emit("install_frontend", "done", "前端依赖已安装，跳过", step)
+        if not (node_modules.exists() and (node_modules / ".package-lock.json").exists()):
+            rc = await self._run_stream("install_frontend", step, npm_cmd, "install", cwd=str(frontend_dir))
+            if rc != 0:
+                await self._emit("install_frontend", "error", "npm install 失败", step)
+                raise RuntimeError("Frontend dependency installation failed")
+
+        next_build_dir = frontend_dir / ".next"
+        if next_build_dir.exists():
+            await self._emit("install_frontend", "done", "前端依赖已安装，构建产物存在，跳过构建", step)
             return
 
-        npm_cmd = "npm.cmd" if sys.platform == "win32" else "npm"
-        rc = await self._run_stream(
-            "install_frontend", step,
-            npm_cmd, "install",
-            cwd=str(frontend_dir),
-        )
+        await self._emit("install_frontend", "running", "构建前端（npm run build）...", step)
+        rc = await self._run_stream("install_frontend", step, npm_cmd, "run", "build", cwd=str(frontend_dir))
         if rc != 0:
-            await self._emit("install_frontend", "error", "npm install 失败", step)
-            raise RuntimeError("Frontend dependency installation failed")
+            await self._emit("install_frontend", "error", "npm run build 失败", step)
+            raise RuntimeError("Frontend build failed")
 
-        await self._emit("install_frontend", "done", "前端依赖安装完成", step)
+        await self._emit("install_frontend", "done", "前端依赖安装并构建完成", step)
 
     # ------------------------------------------------------------------
     # Step 4: Install GitNexus
@@ -599,72 +596,100 @@ class NativeDeployer:
     # Step 6: Start services
     # ------------------------------------------------------------------
 
-    async def _kill_port_processes(self, ports: list[int], step: int) -> None:
-        """Kill any processes listening on the given ports before starting services."""
+    async def _release_ports(self, ports: list[int], step: int, force_takeover: bool = False) -> None:
+        """Release ports before starting services.
+
+        Kills processes we own (tracked in _processes). Skips unknown processes
+        unless force_takeover=True, in which case any occupant is killed.
+        """
         own_pid = os.getpid()
+        own_pids: set[int] = {
+            proc.pid
+            for proc in self._processes.values()
+            if proc.returncode is None and proc.pid is not None
+        }
         for port in ports:
             if sys.platform == "win32":
                 try:
-                    proc = await asyncio.create_subprocess_exec(
+                    scan = await asyncio.create_subprocess_exec(
                         "netstat", "-ano", "-p", "TCP",
                         stdout=asyncio.subprocess.PIPE,
                         stderr=asyncio.subprocess.DEVNULL,
                     )
-                    stdout, _ = await asyncio.wait_for(proc.communicate(), timeout=10)
+                    stdout, _ = await asyncio.wait_for(scan.communicate(), timeout=10)
                     for line in stdout.decode(errors="replace").splitlines():
-                        if f":{port} " in line and "LISTENING" in line:
-                            parts = line.split()
-                            pid_str = parts[-1]
-                            if pid_str.isdigit() and int(pid_str) != own_pid:
-                                proc_name = pid_str
-                                try:
-                                    name_proc = await asyncio.create_subprocess_exec(
-                                        "tasklist", "/FI", f"PID eq {pid_str}", "/FO", "CSV", "/NH",
-                                        stdout=asyncio.subprocess.PIPE,
-                                        stderr=asyncio.subprocess.DEVNULL,
-                                    )
-                                    name_out, _ = await asyncio.wait_for(name_proc.communicate(), timeout=5)
-                                    first_line = name_out.decode(errors="replace").strip().splitlines()[0]
-                                    proc_name = first_line.split(",")[0].strip('"') or pid_str
-                                except Exception:
-                                    pass
-                                kill_proc = await asyncio.create_subprocess_exec(
-                                    "taskkill", "/F", "/PID", pid_str,
-                                    stdout=asyncio.subprocess.DEVNULL,
-                                    stderr=asyncio.subprocess.DEVNULL,
-                                )
-                                await asyncio.wait_for(kill_proc.wait(), timeout=5)
-                                await self._emit("start_services", "running", f"已释放端口 {port}（PID {pid_str}, {proc_name}）", step)
+                        if f":{port} " not in line or "LISTENING" not in line:
+                            continue
+                        parts = line.split()
+                        pid_str = parts[-1]
+                        if not pid_str.isdigit():
+                            continue
+                        pid = int(pid_str)
+                        if pid == own_pid:
+                            continue
+                        if pid not in own_pids and not force_takeover:
+                            await self._emit("start_services", "running",
+                                             f"端口 {port} 被未知进程占用（PID {pid}），跳过释放", step)
+                            continue
+                        proc_name = pid_str
+                        try:
+                            name_proc = await asyncio.create_subprocess_exec(
+                                "tasklist", "/FI", f"PID eq {pid_str}", "/FO", "CSV", "/NH",
+                                stdout=asyncio.subprocess.PIPE,
+                                stderr=asyncio.subprocess.DEVNULL,
+                            )
+                            name_out, _ = await asyncio.wait_for(name_proc.communicate(), timeout=5)
+                            first_line = name_out.decode(errors="replace").strip().splitlines()[0]
+                            proc_name = first_line.split(",")[0].strip('"') or pid_str
+                        except Exception:
+                            pass
+                        kill_proc = await asyncio.create_subprocess_exec(
+                            "taskkill", "/F", "/PID", pid_str,
+                            stdout=asyncio.subprocess.DEVNULL,
+                            stderr=asyncio.subprocess.DEVNULL,
+                        )
+                        await asyncio.wait_for(kill_proc.wait(), timeout=5)
+                        await self._emit("start_services", "running",
+                                         f"已释放端口 {port}（PID {pid_str}, {proc_name}）", step)
                 except (asyncio.TimeoutError, Exception):
                     pass
             else:
                 try:
-                    proc = await asyncio.create_subprocess_exec(
+                    scan = await asyncio.create_subprocess_exec(
                         "lsof", "-ti", f":{port}",
                         stdout=asyncio.subprocess.PIPE,
                         stderr=asyncio.subprocess.DEVNULL,
                     )
-                    stdout, _ = await asyncio.wait_for(proc.communicate(), timeout=10)
+                    stdout, _ = await asyncio.wait_for(scan.communicate(), timeout=10)
                     for pid_str in stdout.decode(errors="replace").split():
-                        if pid_str.isdigit() and int(pid_str) != own_pid:
-                            proc_name = pid_str
-                            try:
-                                name_proc = await asyncio.create_subprocess_exec(
-                                    "ps", "-p", pid_str, "-o", "comm=",
-                                    stdout=asyncio.subprocess.PIPE,
-                                    stderr=asyncio.subprocess.DEVNULL,
-                                )
-                                name_out, _ = await asyncio.wait_for(name_proc.communicate(), timeout=5)
-                                proc_name = name_out.decode(errors="replace").strip() or pid_str
-                            except Exception:
-                                pass
-                            kill_proc = await asyncio.create_subprocess_exec(
-                                "kill", "-9", pid_str,
-                                stdout=asyncio.subprocess.DEVNULL,
+                        if not pid_str.isdigit():
+                            continue
+                        pid = int(pid_str)
+                        if pid == own_pid:
+                            continue
+                        if pid not in own_pids and not force_takeover:
+                            await self._emit("start_services", "running",
+                                             f"端口 {port} 被未知进程占用（PID {pid}），跳过释放", step)
+                            continue
+                        proc_name = pid_str
+                        try:
+                            name_proc = await asyncio.create_subprocess_exec(
+                                "ps", "-p", pid_str, "-o", "comm=",
+                                stdout=asyncio.subprocess.PIPE,
                                 stderr=asyncio.subprocess.DEVNULL,
                             )
-                            await asyncio.wait_for(kill_proc.wait(), timeout=5)
-                            await self._emit("start_services", "running", f"已释放端口 {port}（PID {pid_str}, {proc_name}）", step)
+                            name_out, _ = await asyncio.wait_for(name_proc.communicate(), timeout=5)
+                            proc_name = name_out.decode(errors="replace").strip() or pid_str
+                        except Exception:
+                            pass
+                        kill_proc = await asyncio.create_subprocess_exec(
+                            "kill", "-9", pid_str,
+                            stdout=asyncio.subprocess.DEVNULL,
+                            stderr=asyncio.subprocess.DEVNULL,
+                        )
+                        await asyncio.wait_for(kill_proc.wait(), timeout=5)
+                        await self._emit("start_services", "running",
+                                         f"已释放端口 {port}（PID {pid_str}, {proc_name}）", step)
                 except (asyncio.TimeoutError, Exception):
                     pass
 
@@ -681,7 +706,7 @@ class NativeDeployer:
         if cfg.get("install_gitnexus", True):
             ports_to_clear.append(gitnexus_port)
         await self._emit("start_services", "running", f"清理占用端口 {ports_to_clear}...", step)
-        await self._kill_port_processes(ports_to_clear, step)
+        await self._release_ports(ports_to_clear, step)
         await asyncio.sleep(1)
 
         backend_dir = PROJECT_ROOT / "backend"
@@ -716,9 +741,16 @@ class NativeDeployer:
             )
 
         npm_cmd = "npm.cmd" if sys.platform == "win32" else "npm"
+        next_build_dir = frontend_dir / ".next"
+        if next_build_dir.exists():
+            frontend_start_cmd = [npm_cmd, "run", "start"]
+        else:
+            await self._emit("start_services", "running",
+                             "未找到前端构建产物（.next/），以开发模式启动（npm run dev）", step)
+            frontend_start_cmd = [npm_cmd, "run", "dev"]
         await self._start_process(
             "frontend",
-            [npm_cmd, "run", "dev"],
+            frontend_start_cmd,
             cwd=str(frontend_dir),
             step_name="start_services",
             step_index=step,
@@ -748,7 +780,7 @@ class NativeDeployer:
                         "FORCE_DIRECT": "true",
                         "TRUST_ENV": "false",
                     })
-                await self._kill_port_processes([dw_api_port, dw_ui_port], step)
+                await self._release_ports([dw_api_port, dw_ui_port], step)
                 await self._start_deepwiki_processes(dw_dir, dw_api_port, dw_ui_port, llm_env, "start_services", step)
             elif dw_dir:
                 await self._emit("start_services", "error", f"DeepWiki 路径无效：{dw_dir} 不存在", step)
@@ -809,11 +841,20 @@ class NativeDeployer:
         env_extra: Optional[dict] = None,
     ) -> None:
         await self._emit(step_name, "running", f"正在启动 {name}...", step_index)
+        await self._spawn_process(name, cmd, cwd, step_name, step_index, env_extra)
 
+    async def _spawn_process(
+        self,
+        name: str,
+        cmd: list,
+        cwd: str,
+        step_name: str,
+        step_index: int,
+        env_extra: Optional[dict] = None,
+    ) -> None:
         env = os.environ.copy()
         if env_extra:
             env.update(env_extra)
-
         try:
             proc = await asyncio.create_subprocess_exec(
                 *cmd,
@@ -833,13 +874,25 @@ class NativeDeployer:
             )
         self._processes[name] = proc
         self._start_args[name] = {"cmd": cmd, "cwd": cwd, "env_extra": env_extra}
-
         asyncio.ensure_future(self._drain_output(name, proc, step_name, step_index))
         await self._emit(step_name, "running", f"{name} 已启动（PID {proc.pid}）", step_index)
         await asyncio.sleep(2)
         if proc.returncode is not None:
             await self._emit(step_name, "error", f"{name} 启动后立即退出（退出码 {proc.returncode}）", step_index)
             raise RuntimeError(f"{name} exited immediately with code {proc.returncode}")
+
+    async def _terminate_process(self, name: str, timeout: float = 5) -> None:
+        proc = self._processes.get(name)
+        if proc is None or proc.returncode is not None:
+            return
+        try:
+            proc.terminate()
+            await asyncio.wait_for(proc.wait(), timeout=timeout)
+        except (ProcessLookupError, asyncio.TimeoutError):
+            try:
+                proc.kill()
+            except ProcessLookupError:
+                pass
 
     async def restart_service(self, name: str) -> dict:
         """Restart a named service (or deepwiki pair) using stored startup args."""
@@ -854,45 +907,11 @@ class NativeDeployer:
             raise KeyError(f"Service not started by this deployer: {', '.join(missing)}")
 
         for target in targets:
-            proc = self._processes.get(target)
-            if proc is not None and proc.returncode is None:
-                try:
-                    proc.terminate()
-                    await asyncio.wait_for(proc.wait(), timeout=5)
-                except asyncio.TimeoutError:
-                    try:
-                        proc.kill()
-                    except ProcessLookupError:
-                        pass
+            await self._terminate_process(target)
 
         for target in targets:
             args = self._start_args[target]
-            env = os.environ.copy()
-            if args.get("env_extra"):
-                env.update(args["env_extra"])
-            try:
-                proc = await asyncio.create_subprocess_exec(
-                    *args["cmd"],
-                    stdout=asyncio.subprocess.PIPE,
-                    stderr=asyncio.subprocess.STDOUT,
-                    cwd=args["cwd"],
-                    env=env,
-                )
-            except FileNotFoundError:
-                proc = await asyncio.create_subprocess_shell(
-                    " ".join(args["cmd"]),
-                    stdout=asyncio.subprocess.PIPE,
-                    stderr=asyncio.subprocess.STDOUT,
-                    cwd=args["cwd"],
-                    env=env,
-                )
-            self._processes[target] = proc
-            asyncio.ensure_future(self._drain_output(target, proc, "restart", 0))
-            await asyncio.sleep(2)
-            if proc.returncode is not None:
-                raise RuntimeError(
-                    f"{target} exited immediately after restart (code {proc.returncode})"
-                )
+            await self._spawn_process(target, args["cmd"], args["cwd"], "restart", 0, args.get("env_extra"))
 
         return {"ok": True, "service": name}
 
@@ -904,16 +923,7 @@ class NativeDeployer:
             raise KeyError(f"Service not started by this deployer: {', '.join(missing)}")
 
         for target in targets:
-            proc = self._processes.get(target)
-            if proc is not None and proc.returncode is None:
-                try:
-                    proc.terminate()
-                    await asyncio.wait_for(proc.wait(), timeout=5)
-                except asyncio.TimeoutError:
-                    try:
-                        proc.kill()
-                    except ProcessLookupError:
-                        pass
+            await self._terminate_process(target)
 
         return {"ok": True, "service": name, "action": "stopped"}
 
@@ -931,7 +941,7 @@ class NativeDeployer:
         if name == "frontend":
             npm_cmd = "npm.cmd" if sys.platform == "win32" else "npm"
             return {
-                "cmd": [npm_cmd, "run", "dev"],
+                "cmd": [npm_cmd, "run", "start"],
                 "cwd": str(PROJECT_ROOT / "frontend"),
                 "env_extra": {"PORT": str(cfg.get("frontend_port", 3005))},
             }
@@ -962,32 +972,7 @@ class NativeDeployer:
                 continue
 
             args = self._start_args[target]
-            env = os.environ.copy()
-            if args.get("env_extra"):
-                env.update(args["env_extra"])
-            try:
-                proc = await asyncio.create_subprocess_exec(
-                    *args["cmd"],
-                    stdout=asyncio.subprocess.PIPE,
-                    stderr=asyncio.subprocess.STDOUT,
-                    cwd=args["cwd"],
-                    env=env,
-                )
-            except FileNotFoundError:
-                proc = await asyncio.create_subprocess_shell(
-                    " ".join(args["cmd"]),
-                    stdout=asyncio.subprocess.PIPE,
-                    stderr=asyncio.subprocess.STDOUT,
-                    cwd=args["cwd"],
-                    env=env,
-                )
-            self._processes[target] = proc
-            asyncio.ensure_future(self._drain_output(target, proc, "start", 0))
-            await asyncio.sleep(2)
-            if proc.returncode is not None:
-                raise RuntimeError(
-                    f"{target} exited immediately after start (code {proc.returncode})"
-                )
+            await self._spawn_process(target, args["cmd"], args["cwd"], "start", 0, args.get("env_extra"))
 
         return {"ok": True, "service": name, "action": "started"}
 
