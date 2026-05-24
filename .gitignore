@@ -84,6 +84,14 @@ output/
 test-results/
 playwright-report/
 blob-report/
+backend/.coverage
+.coverage
+
+# Runtime workspace data (repos, downloads)
+workspace/
+
+# Screenshots at repo root
+/*.png
 
 # Browser automation artifacts
 .playwright-mcp/
