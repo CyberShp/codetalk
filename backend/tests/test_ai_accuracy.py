@@ -598,3 +598,172 @@ async def test_spdk_robustness_analysis():
         )
     finally:
         await client.close()
+
+
+# ---------------------------------------------------------------------------
+# Test 5: Two-pass robustness — broad scan then focused follow-up
+#          Designed for small-context/small-output LLMs (internal deployment)
+# ---------------------------------------------------------------------------
+
+_PASS2_PROMPTS = {
+    "exception_propagation": (
+        "Focus ONLY on error propagation in this code. "
+        "For each function that calls another function: "
+        "does the caller check the return value? "
+        "List any case where an error or timeout is silently ignored."
+    ),
+    "exception_branch": (
+        "Focus ONLY on problematic branch handling in this code. "
+        "Look for: (1) assert() used in default/error cases — these are no-ops in release builds. "
+        "(2) Functions that return NULL for multiple different failure reasons — "
+        "the caller cannot distinguish between them. "
+        "(3) Switch cases that fall through unexpectedly."
+    ),
+    "boundary_value": (
+        "Focus ONLY on array/index boundary issues in this code. "
+        "Look for: (1) Array indices used without bounds checking against array size. "
+        "(2) Bit shift operations where the shift amount could exceed 31 bits. "
+        "(3) Integer overflow in size calculations."
+    ),
+    "fragile_variable": (
+        "Focus ONLY on pointer safety in this code. "
+        "Look for: (1) Pointers that are dereferenced in some functions but not NULL-checked, "
+        "while other functions do check them. "
+        "(2) Variables that could be NULL based on initialization path but are used unconditionally."
+    ),
+}
+
+
+def _score_robustness(text: str, issues: list[dict]) -> list[dict]:
+    """Score LLM response against robustness ground truth."""
+    text_lower = text.lower()
+    results = []
+    for issue in issues:
+        matched = []
+        for kw in issue["keywords"]:
+            if ".*" in kw or "|" in kw or ".?" in kw:
+                if re.search(kw, text_lower):
+                    matched.append(kw)
+            elif kw.lower() in text_lower:
+                matched.append(kw)
+        passed = len(matched) >= issue.get("min_matches", 1)
+        results.append({
+            "id": issue["id"],
+            "category": issue["category"],
+            "severity": issue["severity"],
+            "passed": passed,
+            "matched": matched,
+        })
+    return results
+
+
+@pytest.mark.skipif(not _NVME_NS_PATH.exists(), reason="SPDK source not found")
+async def test_spdk_robustness_two_pass():
+    """Two-pass robustness: broad scan then focused follow-up on missed categories."""
+    source = _read_source(_NVME_NS_PATH)
+    client = await _create_client()
+    try:
+        # --- Pass 1: broad scan (same as single-pass) ---
+        pass1_resp = await client.complete(
+            [
+                {"role": "system", "content": _ROBUSTNESS_SYSTEM_PROMPT},
+                {"role": "user", "content": (
+                    "Audit this C source file for robustness issues. "
+                    "Focus on: silent error swallowing, assert() misuse, "
+                    "unchecked indices, shift overflow, NULL dereference risks, "
+                    "and ambiguous return values.\n\n"
+                    f"```c\n{source}\n```"
+                )},
+            ],
+            max_tokens=2048,
+            temperature=0.3,
+        )
+        pass1_results = _score_robustness(pass1_resp.content, _ROBUSTNESS_ISSUES)
+        pass1_usage = pass1_resp.usage or {}
+
+        missed_categories = {
+            r["category"] for r in pass1_results if not r["passed"]
+        }
+
+        print(f"\n{'='*60}")
+        print(f"TWO-PASS ROBUSTNESS ANALYSIS")
+        print(f"\n--- Pass 1 (broad scan) ---")
+        p1_passed = sum(1 for r in pass1_results if r["passed"])
+        print(f"  Score: {p1_passed}/{len(pass1_results)}")
+        print(f"  Missed categories: {missed_categories or 'none'}")
+        if pass1_usage:
+            print(f"  Tokens: {pass1_usage}")
+
+        # --- Pass 2: focused follow-up on missed categories ---
+        pass2_texts = []
+        pass2_total_tokens = 0
+        for cat in missed_categories:
+            if cat not in _PASS2_PROMPTS:
+                continue
+            follow_up = await client.complete(
+                [
+                    {"role": "system", "content": (
+                        "You are a C code auditor. Be extremely specific. "
+                        "Name exact function names and line-level issues."
+                    )},
+                    {"role": "user", "content": (
+                        f"{_PASS2_PROMPTS[cat]}\n\n```c\n{source}\n```"
+                    )},
+                ],
+                max_tokens=1024,
+                temperature=0.2,
+            )
+            pass2_texts.append(follow_up.content)
+            if follow_up.usage:
+                pass2_total_tokens += follow_up.usage.get("total_tokens", 0)
+
+        merged_text = pass1_resp.content + "\n".join(pass2_texts)
+        final_results = _score_robustness(merged_text, _ROBUSTNESS_ISSUES)
+
+        total = len(final_results)
+        final_passed = sum(1 for r in final_results if r["passed"])
+        high_found = sum(
+            1 for r in final_results if r["passed"] and r["severity"] == "high"
+        )
+        final_score = final_passed / total
+
+        print(f"\n--- Pass 2 ({len(missed_categories)} focused follow-ups) ---")
+        print(f"  Extra tokens: {pass2_total_tokens}")
+
+        newly_found = []
+        for p1, p2 in zip(pass1_results, final_results):
+            if not p1["passed"] and p2["passed"]:
+                newly_found.append(p2["id"])
+        if newly_found:
+            print(f"  Recovered by pass 2: {newly_found}")
+
+        print(f"\n--- Final (merged) ---")
+        print(f"  Score: {final_score:.0%} ({final_passed}/{total})")
+        print(f"  High-severity: {high_found}/4")
+        total_tokens = pass1_usage.get("total_tokens", 0) + pass2_total_tokens
+        print(f"  Total tokens: {total_tokens}")
+        print(f"{'='*60}")
+
+        by_cat = {}
+        for r in final_results:
+            by_cat.setdefault(r["category"], []).append(r)
+        for cat, items in by_cat.items():
+            print(f"\n  [{cat}]")
+            for r in items:
+                status = "PASS" if r["passed"] else "MISS"
+                print(f"    [{status}] {r['id']} ({r['severity']}): {r['matched']}")
+
+        print(f"\n>>> COMPARISON:")
+        print(f"    Single-pass:  86% (6/7), 4/4 high, ~8K tokens")
+        print(f"    Two-pass:     {final_score:.0%} ({final_passed}/{total}), "
+              f"{high_found}/4 high, ~{total_tokens//1000}K tokens")
+        delta = final_passed - p1_passed
+        print(f"    Pass 2 recovered: {delta} issue(s)")
+        print(f"{'='*60}")
+
+        assert final_passed >= p1_passed, "Two-pass should not regress"
+        assert high_found >= 1, (
+            f"Two-pass found {high_found} high-severity issues, expected at least 1"
+        )
+    finally:
+        await client.close()
