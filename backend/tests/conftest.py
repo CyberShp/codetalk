@@ -44,6 +44,12 @@ async def db(tmp_path) -> aiosqlite.Connection:
     conn = await aiosqlite.connect(str(tmp_path / "test.db"))
     conn.row_factory = aiosqlite.Row
     await conn.executescript(_SCHEMA)
+    for stmt in _MIGRATIONS:
+        try:
+            await conn.execute(stmt)
+        except aiosqlite.OperationalError as exc:
+            if "duplicate column" not in str(exc).lower():
+                raise
     await conn.commit()
     yield conn
     await conn.close()

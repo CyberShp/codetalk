@@ -1,4 +1,25 @@
-"""Tests for the /api/tasks CRUD endpoints."""
+"""Tests for the /api/tasks endpoints (CRUD + output/debug/steps/chat)."""
+
+import json
+from unittest.mock import AsyncMock, patch
+
+import pytest
+
+
+def _task_payload(tmp_path, **overrides):
+    base = {
+        "name": "my-task",
+        "repo_path": str(tmp_path),
+        "analysis_focus": "architecture overview",
+        "prompt_content": "Analyze the codebase structure",
+    }
+    base.update(overrides)
+    return base
+
+
+# ---------------------------------------------------------------------------
+# CRUD
+# ---------------------------------------------------------------------------
 
 
 async def test_list_tasks_empty(client):
@@ -8,10 +29,7 @@ async def test_list_tasks_empty(client):
 
 
 async def test_create_task(client, tmp_path):
-    response = await client.post(
-        "/api/tasks",
-        json={"name": "my-task", "repo_path": str(tmp_path)},
-    )
+    response = await client.post("/api/tasks", json=_task_payload(tmp_path))
     assert response.status_code == 201
     data = response.json()
     assert data["name"] == "my-task"
@@ -23,35 +41,88 @@ async def test_create_task(client, tmp_path):
 
 
 async def test_create_task_default_tools(client, tmp_path):
-    response = await client.post(
-        "/api/tasks",
-        json={"name": "t", "repo_path": str(tmp_path)},
-    )
+    response = await client.post("/api/tasks", json=_task_payload(tmp_path, name="t"))
     assert response.status_code == 201
     assert response.json()["tools"] == ["gitnexus", "deepwiki"]
+
+
+async def test_create_task_custom_tools(client, tmp_path):
+    response = await client.post(
+        "/api/tasks",
+        json=_task_payload(tmp_path, tools=["deepwiki"]),
+    )
+    assert response.status_code == 201
+    assert response.json()["tools"] == ["deepwiki"]
 
 
 async def test_create_task_nonexistent_path(client):
     response = await client.post(
         "/api/tasks",
-        json={"name": "bad", "repo_path": "/nonexistent/__xyz__"},
+        json={
+            "name": "bad",
+            "repo_path": "/nonexistent/__xyz__",
+            "analysis_focus": "x",
+            "prompt_content": "y",
+        },
     )
     assert response.status_code == 422
 
 
+async def test_create_task_missing_required_fields(client, tmp_path):
+    response = await client.post(
+        "/api/tasks",
+        json={"name": "bad", "repo_path": str(tmp_path)},
+    )
+    assert response.status_code == 422
+
+
+async def test_create_task_deepwiki_depth_values(client, tmp_path):
+    for depth in ("fast", "balanced", "deep"):
+        resp = await client.post(
+            "/api/tasks",
+            json=_task_payload(tmp_path, name=f"d-{depth}", deepwiki_depth=depth),
+        )
+        assert resp.status_code == 201
+        assert resp.json()["deepwiki_depth"] == depth
+
+
+async def test_create_task_invalid_deepwiki_depth(client, tmp_path):
+    resp = await client.post(
+        "/api/tasks",
+        json=_task_payload(tmp_path, deepwiki_depth="invalid"),
+    )
+    assert resp.status_code == 422
+
+
 async def test_list_tasks_after_create(client, tmp_path):
-    await client.post("/api/tasks", json={"name": "t1", "repo_path": str(tmp_path)})
-    await client.post("/api/tasks", json={"name": "t2", "repo_path": str(tmp_path)})
+    await client.post("/api/tasks", json=_task_payload(tmp_path, name="t1"))
+    await client.post("/api/tasks", json=_task_payload(tmp_path, name="t2"))
 
     response = await client.get("/api/tasks")
     assert response.status_code == 200
     assert len(response.json()) == 2
 
 
+async def test_list_tasks_excludes_workspace_shadow(client, tmp_path, db):
+    await client.post("/api/tasks", json=_task_payload(tmp_path, name="visible"))
+    await db.execute(
+        "INSERT INTO tasks (id, name, repo_path, status, tools, analysis_focus, "
+        "prompt_content, progress, created_at, updated_at) "
+        "VALUES ('ws-shadow', '__ws_hidden', ?, 'pending', '[]', 'x', 'y', 0, "
+        "'2026-01-01', '2026-01-01')",
+        (str(tmp_path),),
+    )
+    await db.commit()
+
+    response = await client.get("/api/tasks")
+    names = [t["name"] for t in response.json()]
+    assert "visible" in names
+    assert "__ws_hidden" not in names
+
+
 async def test_get_task(client, tmp_path):
     created = await client.post(
-        "/api/tasks",
-        json={"name": "get-me", "repo_path": str(tmp_path)},
+        "/api/tasks", json=_task_payload(tmp_path, name="get-me")
     )
     task_id = created.json()["id"]
 
@@ -68,8 +139,7 @@ async def test_get_task_not_found(client):
 
 async def test_delete_task(client, tmp_path):
     created = await client.post(
-        "/api/tasks",
-        json={"name": "delete-me", "repo_path": str(tmp_path)},
+        "/api/tasks", json=_task_payload(tmp_path, name="delete-me")
     )
     task_id = created.json()["id"]
 
@@ -83,3 +153,336 @@ async def test_delete_task(client, tmp_path):
 async def test_delete_task_not_found(client):
     response = await client.delete("/api/tasks/nonexistent-id")
     assert response.status_code == 404
+
+
+# ---------------------------------------------------------------------------
+# Output files
+# ---------------------------------------------------------------------------
+
+
+async def test_list_output_empty(client, tmp_path):
+    created = await client.post("/api/tasks", json=_task_payload(tmp_path))
+    task_id = created.json()["id"]
+
+    response = await client.get(f"/api/tasks/{task_id}/output")
+    assert response.status_code == 200
+    assert response.json() == []
+
+
+async def test_list_output_returns_md_files(client, tmp_path):
+    created = await client.post("/api/tasks", json=_task_payload(tmp_path))
+    task_id = created.json()["id"]
+
+    from app.config import settings
+    out_dir = settings.outputs_path / task_id
+    out_dir.mkdir(parents=True)
+    (out_dir / "report.md").write_text("# Report", encoding="utf-8")
+    (out_dir / "summary.md").write_text("# Summary", encoding="utf-8")
+    (out_dir / "data.json").write_text("{}", encoding="utf-8")
+
+    response = await client.get(f"/api/tasks/{task_id}/output")
+    assert response.status_code == 200
+    filenames = [f["filename"] for f in response.json()]
+    assert "report.md" in filenames
+    assert "summary.md" in filenames
+    assert "data.json" not in filenames
+
+
+async def test_list_output_task_not_found(client):
+    response = await client.get("/api/tasks/no-such-task/output")
+    assert response.status_code == 404
+
+
+async def test_read_output_file(client, tmp_path):
+    created = await client.post("/api/tasks", json=_task_payload(tmp_path))
+    task_id = created.json()["id"]
+
+    from app.config import settings
+    out_dir = settings.outputs_path / task_id
+    out_dir.mkdir(parents=True)
+    (out_dir / "report.md").write_text("hello world", encoding="utf-8")
+
+    response = await client.get(f"/api/tasks/{task_id}/output/report.md")
+    assert response.status_code == 200
+    assert response.json()["content"] == "hello world"
+    assert response.json()["filename"] == "report.md"
+
+
+async def test_read_output_file_not_found(client, tmp_path):
+    created = await client.post("/api/tasks", json=_task_payload(tmp_path))
+    task_id = created.json()["id"]
+
+    response = await client.get(f"/api/tasks/{task_id}/output/nonexistent.md")
+    assert response.status_code == 404
+
+
+async def test_read_output_path_traversal(client, tmp_path):
+    created = await client.post("/api/tasks", json=_task_payload(tmp_path))
+    task_id = created.json()["id"]
+
+    from app.config import settings
+    out_dir = settings.outputs_path / task_id
+    out_dir.mkdir(parents=True)
+
+    response = await client.get(f"/api/tasks/{task_id}/output/..%2F..%2Fetc%2Fpasswd")
+    assert response.status_code in (400, 404)
+
+
+# ---------------------------------------------------------------------------
+# Debug files
+# ---------------------------------------------------------------------------
+
+
+async def test_list_debug_empty(client, tmp_path):
+    created = await client.post("/api/tasks", json=_task_payload(tmp_path))
+    task_id = created.json()["id"]
+
+    response = await client.get(f"/api/tasks/{task_id}/debug")
+    assert response.status_code == 200
+    assert response.json() == []
+
+
+async def test_list_debug_returns_files(client, tmp_path):
+    created = await client.post("/api/tasks", json=_task_payload(tmp_path))
+    task_id = created.json()["id"]
+
+    from app.config import settings
+    debug_dir = settings.outputs_path / task_id / "debug"
+    debug_dir.mkdir(parents=True)
+    (debug_dir / "prompt_01.txt").write_text("prompt", encoding="utf-8")
+
+    response = await client.get(f"/api/tasks/{task_id}/debug")
+    assert response.status_code == 200
+    assert len(response.json()) == 1
+    assert response.json()[0]["filename"] == "prompt_01.txt"
+
+
+async def test_list_debug_task_not_found(client):
+    response = await client.get("/api/tasks/no-such-task/debug")
+    assert response.status_code == 404
+
+
+async def test_read_debug_file(client, tmp_path):
+    created = await client.post("/api/tasks", json=_task_payload(tmp_path))
+    task_id = created.json()["id"]
+
+    from app.config import settings
+    debug_dir = settings.outputs_path / task_id / "debug"
+    debug_dir.mkdir(parents=True)
+    (debug_dir / "snap.txt").write_text("debug content", encoding="utf-8")
+
+    response = await client.get(f"/api/tasks/{task_id}/debug/snap.txt")
+    assert response.status_code == 200
+    assert response.json()["content"] == "debug content"
+
+
+async def test_read_debug_file_not_found(client, tmp_path):
+    created = await client.post("/api/tasks", json=_task_payload(tmp_path))
+    task_id = created.json()["id"]
+
+    response = await client.get(f"/api/tasks/{task_id}/debug/nope.txt")
+    assert response.status_code == 404
+
+
+async def test_read_debug_path_traversal(client, tmp_path):
+    created = await client.post("/api/tasks", json=_task_payload(tmp_path))
+    task_id = created.json()["id"]
+
+    from app.config import settings
+    (settings.outputs_path / task_id / "debug").mkdir(parents=True)
+
+    response = await client.get(f"/api/tasks/{task_id}/debug/..%2F..%2Fetc%2Fpasswd")
+    assert response.status_code in (400, 404)
+
+
+# ---------------------------------------------------------------------------
+# Steps
+# ---------------------------------------------------------------------------
+
+
+async def test_get_steps_empty(client, tmp_path):
+    created = await client.post("/api/tasks", json=_task_payload(tmp_path))
+    task_id = created.json()["id"]
+
+    response = await client.get(f"/api/tasks/{task_id}/steps")
+    assert response.status_code == 200
+    assert response.json() == []
+
+
+async def test_get_steps_returns_entries(client, tmp_path):
+    created = await client.post("/api/tasks", json=_task_payload(tmp_path))
+    task_id = created.json()["id"]
+
+    from app.config import settings
+    out_dir = settings.outputs_path / task_id
+    out_dir.mkdir(parents=True)
+    lines = [
+        json.dumps({"step": "gitnexus", "status": "done"}),
+        json.dumps({"step": "deepwiki", "status": "running"}),
+    ]
+    (out_dir / "steps.jsonl").write_text("\n".join(lines), encoding="utf-8")
+
+    response = await client.get(f"/api/tasks/{task_id}/steps")
+    assert response.status_code == 200
+    data = response.json()
+    assert len(data) == 2
+    assert data[0]["step"] == "gitnexus"
+
+
+async def test_get_steps_task_not_found(client):
+    response = await client.get("/api/tasks/no-such-task/steps")
+    assert response.status_code == 404
+
+
+# ---------------------------------------------------------------------------
+# Run task
+# ---------------------------------------------------------------------------
+
+
+async def test_run_task_not_found(client):
+    response = await client.post("/api/tasks/nonexistent/run")
+    assert response.status_code == 404
+
+
+async def test_run_task_already_running(client, tmp_path, db):
+    created = await client.post("/api/tasks", json=_task_payload(tmp_path))
+    task_id = created.json()["id"]
+
+    await db.execute(
+        "UPDATE tasks SET status = 'running' WHERE id = ?", (task_id,)
+    )
+    await db.commit()
+
+    response = await client.post(f"/api/tasks/{task_id}/run")
+    assert response.status_code == 409
+
+
+async def test_run_task_gitnexus_health_fail(client, tmp_path):
+    created = await client.post("/api/tasks", json=_task_payload(tmp_path))
+    task_id = created.json()["id"]
+
+    with patch("app.api.tasks.httpx.AsyncClient") as mock_cls:
+        mock_client = AsyncMock()
+        mock_client.__aenter__ = AsyncMock(return_value=mock_client)
+        mock_client.__aexit__ = AsyncMock(return_value=False)
+        mock_client.get = AsyncMock(side_effect=ConnectionError("refused"))
+        mock_cls.return_value = mock_client
+
+        response = await client.post(f"/api/tasks/{task_id}/run")
+    assert response.status_code == 503
+    assert "GitNexus" in response.json()["detail"]
+
+
+async def test_run_task_success_launches_pipeline(client, tmp_path):
+    created = await client.post(
+        "/api/tasks",
+        json=_task_payload(tmp_path, tools=[]),
+    )
+    task_id = created.json()["id"]
+
+    with patch(
+        "app.services.analysis_pipeline.AnalysisPipeline.run",
+        new_callable=AsyncMock,
+    ):
+        response = await client.post(f"/api/tasks/{task_id}/run")
+
+    assert response.status_code == 200
+    data = response.json()
+    assert data["status"] == "running"
+    assert data["task_id"] == task_id
+
+
+# ---------------------------------------------------------------------------
+# Chat
+# ---------------------------------------------------------------------------
+
+
+async def test_get_chat_history_empty(client, tmp_path):
+    created = await client.post("/api/tasks", json=_task_payload(tmp_path))
+    task_id = created.json()["id"]
+
+    response = await client.get(f"/api/tasks/{task_id}/chat")
+    assert response.status_code == 200
+    assert response.json() == []
+
+
+async def test_get_chat_history_task_not_found(client):
+    response = await client.get("/api/tasks/no-such-task/chat")
+    assert response.status_code == 404
+
+
+async def test_send_chat_no_reports(client, tmp_path):
+    created = await client.post("/api/tasks", json=_task_payload(tmp_path))
+    task_id = created.json()["id"]
+
+    response = await client.post(
+        f"/api/tasks/{task_id}/chat",
+        json={"message": "hello"},
+    )
+    assert response.status_code == 400
+    assert "尚无分析报告" in response.json()["detail"]
+
+
+async def test_send_chat_task_not_found(client):
+    response = await client.post(
+        "/api/tasks/no-such-task/chat",
+        json={"message": "hello"},
+    )
+    assert response.status_code == 404
+
+
+async def test_send_chat_streams_response(client, tmp_path):
+    created = await client.post("/api/tasks", json=_task_payload(tmp_path))
+    task_id = created.json()["id"]
+
+    from app.config import settings
+    out_dir = settings.outputs_path / task_id
+    out_dir.mkdir(parents=True)
+    (out_dir / "report.md").write_text("# Analysis report", encoding="utf-8")
+
+    async def fake_stream(*args, **kwargs):
+        yield "Hello "
+        yield "world"
+
+    mock_llm = AsyncMock()
+    mock_llm.stream_complete = fake_stream
+
+    with patch(
+        "app.llm.factory.create_llm_client_from_active",
+        new_callable=AsyncMock,
+        return_value=mock_llm,
+    ):
+        response = await client.post(
+            f"/api/tasks/{task_id}/chat",
+            json={"message": "summarize"},
+        )
+
+    assert response.status_code == 200
+    assert "text/event-stream" in response.headers["content-type"]
+
+    body = response.text
+    assert "Hello " in body
+    assert "world" in body
+
+
+async def test_send_chat_llm_unavailable(client, tmp_path):
+    created = await client.post("/api/tasks", json=_task_payload(tmp_path))
+    task_id = created.json()["id"]
+
+    from app.config import settings
+    out_dir = settings.outputs_path / task_id
+    out_dir.mkdir(parents=True)
+    (out_dir / "report.md").write_text("# Report", encoding="utf-8")
+
+    with patch(
+        "app.llm.factory.create_llm_client_from_active",
+        new_callable=AsyncMock,
+        side_effect=RuntimeError("no active model"),
+    ):
+        response = await client.post(
+            f"/api/tasks/{task_id}/chat",
+            json={"message": "hello"},
+        )
+
+    assert response.status_code == 503
+    assert "LLM" in response.json()["detail"]
