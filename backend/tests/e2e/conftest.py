@@ -13,14 +13,12 @@ Strategy:
 import os
 from contextlib import asynccontextmanager
 
-import aiosqlite
 import pytest
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from httpx import ASGITransport, AsyncClient
 
 from app.config import settings
-from app.database import _MIGRATIONS, _SCHEMA
 
 # ------------------------------------------------------------------
 # Detect DEEPSEEK_API_KEY for LLM-dependent tests
@@ -76,28 +74,6 @@ def _build_e2e_app() -> FastAPI:
 
 
 # ------------------------------------------------------------------
-# DB bootstrap -- runs real schema + migrations + seed
-# ------------------------------------------------------------------
-async def _init_test_db(db_path: str) -> None:
-    """Create all tables, run migrations, and seed default prompt template."""
-    async with aiosqlite.connect(db_path) as db:
-        await db.executescript(_SCHEMA)
-        for stmt in _MIGRATIONS:
-            try:
-                await db.execute(stmt)
-            except aiosqlite.OperationalError as exc:
-                if "duplicate column" not in str(exc).lower():
-                    raise
-        await db.commit()
-
-    from app.api.prompts import seed_default_template
-
-    async with aiosqlite.connect(db_path) as db:
-        db.row_factory = aiosqlite.Row
-        await seed_default_template(db)
-
-
-# ------------------------------------------------------------------
 # Fixtures
 # ------------------------------------------------------------------
 @pytest.fixture
@@ -118,8 +94,9 @@ async def e2e_client(tmp_path, monkeypatch):
 
     monkeypatch.setattr(workspaces, "_MATERIALS_ROOT", ws_dir)
 
-    # Initialize real DB BEFORE creating the client
-    await _init_test_db(db_path)
+    # Call the real init_db() to cover database.py and get proper schema+seeds
+    from app.database import init_db
+    await init_db()
 
     app = _build_e2e_app()
 

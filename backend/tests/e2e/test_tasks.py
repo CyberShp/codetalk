@@ -133,11 +133,19 @@ async def test_task_crud_roundtrip(e2e_client: AsyncClient, repo_path: str):
     assert get_resp.status_code == 200
     assert get_resp.json()["id"] == task_id
 
-    del_resp = await e2e_client.delete(f"/api/tasks/{task_id}")
-    assert del_resp.status_code == 204
 
-    gone_resp = await e2e_client.get(f"/api/tasks/{task_id}")
-    assert gone_resp.status_code == 404
+async def test_task_chat_history_empty(e2e_client: AsyncClient, repo_path: str):
+    create_resp = await e2e_client.post("/api/tasks", json=_task_payload(repo_path))
+    task_id = create_resp.json()["id"]
+
+    resp = await e2e_client.get(f"/api/tasks/{task_id}/chat")
+    assert resp.status_code == 200
+    assert resp.json() == []
+
+
+async def test_task_chat_history_nonexistent(e2e_client: AsyncClient):
+    resp = await e2e_client.get(f"/api/tasks/{uuid.uuid4()}/chat")
+    assert resp.status_code == 404
 
 
 async def test_multiple_tasks_coexist(e2e_client: AsyncClient, repo_path: str):

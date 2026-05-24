@@ -224,3 +224,94 @@ async def test_workspace_index_status(e2e_client: AsyncClient, repo_path: str):
     assert resp.status_code == 200
     body = resp.json()
     assert "indexed" in body
+
+
+async def test_workspace_analyze_status(e2e_client: AsyncClient, repo_path: str):
+    create_resp = await e2e_client.post(
+        "/api/workspaces",
+        json={"name": "Analyze Status WS", "repo_path": repo_path},
+    )
+    ws_id = create_resp.json()["id"]
+
+    resp = await e2e_client.get(f"/api/workspaces/{ws_id}/analyze-status")
+    assert resp.status_code == 200
+    body = resp.json()
+    assert "analyze_status" in body
+    assert "analyze_progress" in body
+
+
+async def test_workspace_embedding_status(e2e_client: AsyncClient, repo_path: str):
+    create_resp = await e2e_client.post(
+        "/api/workspaces",
+        json={"name": "Embed Status WS", "repo_path": repo_path},
+    )
+    ws_id = create_resp.json()["id"]
+
+    resp = await e2e_client.get(f"/api/workspaces/{ws_id}/materials/embedding-status")
+    assert resp.status_code == 200
+    body = resp.json()
+    assert "active_materials" in body
+    assert "embedded_materials" in body
+    assert "rag_ready" in body
+
+
+async def test_workspace_reindex_accepted(e2e_client: AsyncClient, repo_path: str):
+    create_resp = await e2e_client.post(
+        "/api/workspaces",
+        json={"name": "Reindex WS", "repo_path": repo_path},
+    )
+    ws_id = create_resp.json()["id"]
+
+    resp = await e2e_client.post(f"/api/workspaces/{ws_id}/reindex")
+    assert resp.status_code == 202
+    assert resp.json().get("status") == "indexing"
+
+
+async def test_workspace_trigger_embed(e2e_client: AsyncClient, repo_path: str):
+    create_resp = await e2e_client.post(
+        "/api/workspaces",
+        json={"name": "Trigger Embed WS", "repo_path": repo_path},
+    )
+    ws_id = create_resp.json()["id"]
+
+    resp = await e2e_client.post(f"/api/workspaces/{ws_id}/materials/embed")
+    assert resp.status_code == 200
+    assert resp.json().get("status") == "embedding_started"
+
+
+async def test_workspace_chat_history_empty(e2e_client: AsyncClient, repo_path: str):
+    create_resp = await e2e_client.post(
+        "/api/workspaces",
+        json={"name": "Chat History WS", "repo_path": repo_path},
+    )
+    ws_id = create_resp.json()["id"]
+
+    resp = await e2e_client.get(f"/api/workspaces/{ws_id}/chat/history")
+    assert resp.status_code == 200
+    assert resp.json() == []
+
+
+async def test_toggle_material_active(e2e_client: AsyncClient, repo_path: str, tmp_path):
+    create_resp = await e2e_client.post(
+        "/api/workspaces",
+        json={"name": "Toggle Mat WS", "repo_path": repo_path},
+    )
+    ws_id = create_resp.json()["id"]
+
+    test_file = tmp_path / "toggle.txt"
+    test_file.write_text("content to toggle", encoding="utf-8")
+
+    with open(test_file, "rb") as f:
+        mat_resp = await e2e_client.post(
+            f"/api/workspaces/{ws_id}/materials",
+            files={"file": ("toggle.txt", f, "text/plain")},
+        )
+    assert mat_resp.status_code == 201
+    mat_id = mat_resp.json()["id"]
+
+    resp = await e2e_client.patch(
+        f"/api/workspaces/{ws_id}/materials/{mat_id}",
+        json={"is_active": False},
+    )
+    assert resp.status_code == 200
+    assert resp.json()["is_active"] is False
