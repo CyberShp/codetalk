@@ -104,47 +104,53 @@ async def api_save_config(config: dict):
 @app.post("/api/deploy")
 async def api_deploy(body: dict):
     """Start a deployment and return a job_id."""
-    if _state.running:
-        raise HTTPException(status_code=409, detail="A deployment is already running")
+    async with _state.lock:
+        if _state.running:
+            raise HTTPException(status_code=409, detail="A deployment is already running")
 
-    force_takeover: bool = bool(body.get("force_takeover", False))
-    dev_mode: bool = bool(body.get("dev_mode", False))
+        force_takeover: bool = bool(body.get("force_takeover", False))
+        dev_mode: bool = bool(body.get("dev_mode", False))
 
-    cfg = config_store.load_config()
-    cfg.update(config_store.normalize_to_snake(body))
-    cfg["force_takeover"] = force_takeover
-    cfg["dev_mode"] = dev_mode
+        cfg = config_store.load_config()
+        cfg.update(config_store.normalize_to_snake(body))
+        cfg["force_takeover"] = force_takeover
+        cfg["dev_mode"] = dev_mode
 
-    event_queue: asyncio.Queue = asyncio.Queue()
-    mode = cfg.get("mode", "compose")
+        event_queue: asyncio.Queue = asyncio.Queue()
+        mode = cfg.get("mode", "compose")
 
-    if mode == "native":
-        deployer = NativeDeployer(cfg, event_queue)
-        if not force_takeover:
-            backend_port = cfg.get("backend_port", 8100)
-            frontend_port = cfg.get("frontend_port", 3005)
-            gitnexus_port = cfg.get("gitnexus_port", 7100)
-            ports = [backend_port, frontend_port]
-            if cfg.get("install_gitnexus", True):
-                ports.append(gitnexus_port)
-            conflicts = await deployer._scan_port_conflicts(ports)
-            if conflicts:
-                raise HTTPException(
-                    status_code=409,
-                    detail={
-                        "message": "Port conflicts detected",
-                        "conflicts": conflicts,
-                        "hint": "retry with force_takeover=true",
-                    },
-                )
-    elif mode == "k8s":
-        deployer = K8sDeployer(cfg, event_queue)
-    else:
-        deployer = ComposeDeployer(cfg, event_queue)
+        if mode == "native":
+            deployer = NativeDeployer(cfg, event_queue)
+            old_deployer = _state.deployer
+            if old_deployer is not None and hasattr(old_deployer, "_processes"):
+                deployer._processes.update(old_deployer._processes)
+            if old_deployer is not None and hasattr(old_deployer, "_start_args"):
+                deployer._start_args.update(old_deployer._start_args)
+            if not force_takeover:
+                backend_port = cfg.get("backend_port", 8100)
+                frontend_port = cfg.get("frontend_port", 3005)
+                gitnexus_port = cfg.get("gitnexus_port", 7100)
+                ports = [backend_port, frontend_port]
+                if cfg.get("install_gitnexus", True):
+                    ports.append(gitnexus_port)
+                conflicts = await deployer._scan_port_conflicts(ports)
+                if conflicts:
+                    raise HTTPException(
+                        status_code=409,
+                        detail={
+                            "message": "Port conflicts detected",
+                            "conflicts": conflicts,
+                            "hint": "retry with force_takeover=true",
+                        },
+                    )
+        elif mode == "k8s":
+            deployer = K8sDeployer(cfg, event_queue)
+        else:
+            deployer = ComposeDeployer(cfg, event_queue)
 
-    _state.deployer = deployer
-    _state.event_queue = event_queue
-    job_id = _launch_job(_run_deployment(deployer))
+        _state.deployer = deployer
+        _state.event_queue = event_queue
+        job_id = _launch_job(_run_deployment(deployer))
     return {"job_id": job_id}
 
 
@@ -245,22 +251,32 @@ async def api_supplement_deepwiki(body: dict):
 
 
 async def _run_supplement(deployer: NativeDeployer, deepwiki_path: str, cfg: dict) -> None:
+    cancelled = False
+    error_msg = ""
     try:
         await deployer.supplement_deepwiki(deepwiki_path)
         cfg["deepwiki_path"] = deepwiki_path
         config_store.save_config(cfg)
     except asyncio.CancelledError:
+        cancelled = True
         q = _state.event_queue
         if q is not None:
             await q.put({"step": "deepwiki_install", "status": "cancelled", "message": "Cancelled"})
     except Exception as exc:
+        error_msg = str(exc)
         q = _state.event_queue
         if q is not None:
-            await q.put({"step": "deepwiki_install", "status": "error", "message": str(exc), "progress": {"current": 0, "total": 5}})
+            await q.put({"step": "deepwiki_install", "status": "error", "message": error_msg, "progress": {"current": 0, "total": 5}})
     finally:
         _state.running = False
         q = _state.event_queue
         if q is not None:
+            if cancelled:
+                await q.put({"step": "done", "status": "cancelled", "message": "DeepWiki install cancelled"})
+            elif error_msg:
+                await q.put({"step": "done", "status": "error", "message": "DeepWiki install failed"})
+            else:
+                await q.put({"step": "done", "status": "done", "message": "DeepWiki installed"})
             await q.put(None)
 
 
@@ -287,6 +303,7 @@ async def api_supplement_gitnexus():
 
 async def _run_supplement_gitnexus(deployer: NativeDeployer, cfg: dict) -> None:
     cancelled = False
+    error_msg = ""
     try:
         await deployer._step_install_gitnexus()
         await deployer._step_generate_config()
@@ -297,14 +314,19 @@ async def _run_supplement_gitnexus(deployer: NativeDeployer, cfg: dict) -> None:
         if q is not None:
             await q.put({"step": "install_gitnexus", "status": "cancelled", "message": "Cancelled"})
     except Exception as exc:
+        error_msg = str(exc)
         q = _state.event_queue
         if q is not None:
-            await q.put({"step": "install_gitnexus", "status": "error", "message": str(exc)})
+            await q.put({"step": "install_gitnexus", "status": "error", "message": error_msg})
     finally:
         _state.running = False
         q = _state.event_queue
         if q is not None:
-            if not cancelled:
+            if cancelled:
+                await q.put({"step": "done", "status": "cancelled", "message": "GitNexus install cancelled"})
+            elif error_msg:
+                await q.put({"step": "done", "status": "error", "message": "GitNexus install failed"})
+            else:
                 await q.put({"step": "done", "status": "done", "message": "GitNexus installed"})
             await q.put(None)
 
@@ -312,46 +334,53 @@ async def _run_supplement_gitnexus(deployer: NativeDeployer, cfg: dict) -> None:
 @app.post("/api/quickstart")
 async def api_quickstart(request: Request):
     """Quick-start services using saved config (no install/check steps)."""
-    if _state.running:
-        raise HTTPException(status_code=409, detail="A deployment is already running")
-
     try:
         body = await request.json()
         if not isinstance(body, dict):
             body = {}
     except Exception:
         body = {}
-    force_takeover: bool = bool(body.get("force_takeover", False))
-    dev_mode: bool = bool(body.get("dev_mode", False))
 
-    cfg = config_store.load_config()
-    cfg["force_takeover"] = force_takeover
-    cfg["dev_mode"] = dev_mode
+    async with _state.lock:
+        if _state.running:
+            raise HTTPException(status_code=409, detail="A deployment is already running")
 
-    event_queue: asyncio.Queue = asyncio.Queue()
-    deployer = NativeDeployer(cfg, event_queue)
+        force_takeover: bool = bool(body.get("force_takeover", False))
+        dev_mode: bool = bool(body.get("dev_mode", False))
 
-    if not force_takeover:
-        backend_port = cfg.get("backend_port", 8100)
-        frontend_port = cfg.get("frontend_port", 3005)
-        gitnexus_port = cfg.get("gitnexus_port", 7100)
-        ports = [backend_port, frontend_port]
-        if cfg.get("install_gitnexus", True):
-            ports.append(gitnexus_port)
-        conflicts = await deployer._scan_port_conflicts(ports)
-        if conflicts:
-            raise HTTPException(
-                status_code=409,
-                detail={
-                    "message": "Port conflicts detected",
-                    "conflicts": conflicts,
-                    "hint": "retry with force_takeover=true",
-                },
-            )
+        cfg = config_store.load_config()
+        cfg["force_takeover"] = force_takeover
+        cfg["dev_mode"] = dev_mode
 
-    _state.deployer = deployer
-    _state.event_queue = event_queue
-    job_id = _launch_job(_run_quickstart(deployer))
+        event_queue: asyncio.Queue = asyncio.Queue()
+        deployer = NativeDeployer(cfg, event_queue)
+        old_deployer = _state.deployer
+        if old_deployer is not None and hasattr(old_deployer, "_processes"):
+            deployer._processes.update(old_deployer._processes)
+        if old_deployer is not None and hasattr(old_deployer, "_start_args"):
+            deployer._start_args.update(old_deployer._start_args)
+
+        if not force_takeover:
+            backend_port = cfg.get("backend_port", 8100)
+            frontend_port = cfg.get("frontend_port", 3005)
+            gitnexus_port = cfg.get("gitnexus_port", 7100)
+            ports = [backend_port, frontend_port]
+            if cfg.get("install_gitnexus", True):
+                ports.append(gitnexus_port)
+            conflicts = await deployer._scan_port_conflicts(ports)
+            if conflicts:
+                raise HTTPException(
+                    status_code=409,
+                    detail={
+                        "message": "Port conflicts detected",
+                        "conflicts": conflicts,
+                        "hint": "retry with force_takeover=true",
+                    },
+                )
+
+        _state.deployer = deployer
+        _state.event_queue = event_queue
+        job_id = _launch_job(_run_quickstart(deployer))
     return {"job_id": job_id}
 
 
