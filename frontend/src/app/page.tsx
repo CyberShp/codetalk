@@ -10,6 +10,7 @@ import {
   Loader2,
   RefreshCw,
   Archive,
+  Trash2,
 } from "lucide-react";
 import { api } from "@/lib/api";
 import type { Workspace, Task, ToolInfo, TaskStatus, DeepWikiRepo, DeepWikiStatus } from "@/lib/types";
@@ -52,6 +53,21 @@ export default function WorkbenchPage() {
     repos?: string;
     tasks?: string;
   }>({});
+
+  const handleDeleteTask = useCallback(
+    async (e: React.MouseEvent, taskId: string) => {
+      e.preventDefault();
+      e.stopPropagation();
+      if (!confirm("确定要删除此任务吗？")) return;
+      try {
+        await api.tasks.delete(taskId);
+        setTasks((prev) => prev.filter((t) => t.id !== taskId));
+      } catch (err: unknown) {
+        console.error("删除任务失败:", err);
+      }
+    },
+    [],
+  );
 
   const loadData = useCallback(async () => {
     setLoading(true);
@@ -321,25 +337,54 @@ export default function WorkbenchPage() {
             {recentTasks.map((task) => {
               const cfg = TASK_STATUS_CONFIG[task.status];
               return (
-                <Link
+                <div
                   key={task.id}
-                  href={`/tasks/${task.id}`}
-                  className="flex items-center gap-4 bg-surface-container hover:bg-surface-container-high rounded-xl px-5 py-3 border border-outline-variant/20 transition-colors"
+                  className="flex items-center gap-2 bg-surface-container hover:bg-surface-container-high rounded-xl border border-outline-variant/20 transition-colors group"
                 >
-                  <div className="flex-1 min-w-0">
-                    <p className="text-sm font-medium text-on-surface truncate">
-                      {task.name}
-                    </p>
-                  </div>
-                  <div className="flex items-center gap-3 shrink-0">
-                    <span className={`text-xs px-2 py-0.5 rounded-full ${cfg.bg} ${cfg.color}`}>
-                      {cfg.label}
-                    </span>
-                    <span className="text-xs text-on-surface-variant/60">
-                      {formatTime(task.created_at)}
-                    </span>
-                  </div>
-                </Link>
+                  <Link
+                    href={`/tasks/${task.id}`}
+                    className="flex flex-1 items-center gap-4 px-5 py-4 min-w-0"
+                  >
+                    <div className="flex-1 min-w-0">
+                      <p className="text-sm font-medium text-on-surface group-hover:text-primary transition-colors truncate">
+                        {task.name}
+                      </p>
+                      <p className="text-xs text-on-surface-variant mt-0.5 truncate">
+                        {task.repo_path}
+                      </p>
+                    </div>
+                    <div className="flex items-center gap-3 shrink-0">
+                      <div className="flex gap-1">
+                        {task.tools.map((t) => (
+                          <span
+                            key={t}
+                            className="text-[10px] px-1.5 py-0.5 bg-surface-container-high rounded text-on-surface-variant"
+                          >
+                            {t}
+                          </span>
+                        ))}
+                      </div>
+                      <span className={`text-xs px-2 py-0.5 rounded-full ${cfg.bg} ${cfg.color}`}>
+                        {cfg.label}
+                      </span>
+                      {task.status === "running" && (
+                        <span className="text-xs text-on-surface-variant tabular-nums">
+                          {task.progress}%
+                        </span>
+                      )}
+                      <span className="text-xs text-on-surface-variant/60">
+                        {formatTime(task.created_at)}
+                      </span>
+                    </div>
+                  </Link>
+                  <button
+                    onClick={(e) => handleDeleteTask(e, task.id)}
+                    className="mr-3 p-2 rounded-lg text-on-surface-variant/40 hover:text-red-400 hover:bg-red-400/10 transition-colors shrink-0"
+                    title="删除任务"
+                  >
+                    <Trash2 size={14} />
+                  </button>
+                </div>
               );
             })}
           </div>

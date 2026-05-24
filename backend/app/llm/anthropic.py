@@ -179,6 +179,8 @@ class AnthropicClient(BaseLLMClient):
         from reachable-but-rejected or unreachable.
         """
         try:
+            # Send both x-api-key and Authorization: Bearer for compatibility
+            # with internal gateways that only accept the Bearer token form.
             headers = {
                 "x-api-key": self._api_key,
                 "Authorization": f"Bearer {self._api_key}",

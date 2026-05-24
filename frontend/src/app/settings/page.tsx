@@ -56,6 +56,7 @@ export default function SettingsPage() {
   const [savingGeneral, setSavingGeneral] = useState(false);
   const [showGeneral, setShowGeneral] = useState(false);
   const [editingId, setEditingId] = useState<string | null>(null);
+  const [savingActiveModel, setSavingActiveModel] = useState(false);
 
   const loadData = useCallback(async () => {
     setLoading(true);
@@ -128,6 +129,7 @@ export default function SettingsPage() {
         setForm({ ...EMPTY_LLM_FORM });
         setEditingId(null);
         setShowForm(false);
+        setEditingId(null);
         await loadData();
       } catch (err: unknown) {
         setError(err instanceof Error ? err.message : "保存配置失败");
@@ -156,6 +158,22 @@ export default function SettingsPage() {
       setTestResult(null);
     },
     [],
+  );
+
+  const handleSaveActiveModel = useCallback(
+    async (modelId: string) => {
+      setSavingActiveModel(true);
+      const updated = { ...general, active_chat_model_id: modelId };
+      setGeneral(updated);
+      try {
+        await api.settings.updateGeneral(updated);
+      } catch (err: unknown) {
+        setError(err instanceof Error ? err.message : "保存活跃模型失败");
+      } finally {
+        setSavingActiveModel(false);
+      }
+    },
+    [general],
   );
 
   const handleTestLLM = useCallback(async () => {
@@ -220,6 +238,38 @@ export default function SettingsPage() {
         </div>
       )}
 
+      {/* Active Model — always visible, above the LLM list */}
+      <div className="mb-6 bg-surface-container rounded-xl border border-outline-variant/20 p-4 flex items-center gap-4">
+        <Bot size={16} className="text-primary shrink-0" />
+        <div className="flex-1 min-w-0">
+          <p className="text-xs font-medium text-on-surface-variant mb-1.5">
+            活跃聊天模型
+          </p>
+          <select
+            value={general.active_chat_model_id}
+            onChange={(e) => handleSaveActiveModel(e.target.value)}
+            disabled={savingActiveModel || configs.filter((c) => c.is_chat_model).length === 0}
+            className="w-full px-3 py-1.5 bg-surface border border-outline-variant/30 rounded-lg text-sm text-on-surface focus:outline-none focus:border-primary/50 transition-colors disabled:opacity-50"
+          >
+            <option value="">
+              {configs.filter((c) => c.is_chat_model).length === 0
+                ? "暂无聊天模型，请先添加"
+                : "请选择活跃的聊天模型"}
+            </option>
+            {configs
+              .filter((c) => c.is_chat_model)
+              .map((c) => (
+                <option key={c.id} value={c.id}>
+                  {c.name} ({c.model})
+                </option>
+              ))}
+          </select>
+        </div>
+        {savingActiveModel && (
+          <Loader2 size={14} className="animate-spin text-on-surface-variant shrink-0" />
+        )}
+      </div>
+
       <div className="mb-8">
         <div className="flex items-center justify-between mb-4">
           <h2 className="text-base font-medium text-on-surface flex items-center gap-2">
@@ -251,6 +301,9 @@ export default function SettingsPage() {
             aria-describedby={error ? "settings-error" : undefined}
             className="bg-surface-container rounded-xl border border-outline-variant/20 p-5 mb-4 space-y-4"
           >
+            <p className="text-sm font-medium text-on-surface">
+              {editingId ? "编辑 LLM 配置" : "新增 LLM 配置"}
+            </p>
             <div className="grid grid-cols-2 gap-4">
               <div>
                 <label className="block text-xs font-medium text-on-surface-variant mb-1">
@@ -454,6 +507,11 @@ export default function SettingsPage() {
                     {cfg.is_embedding_model && (
                       <span className="text-[10px] px-1.5 py-0.5 bg-green-400/10 rounded text-green-400">
                         嵌入
+                      </span>
+                    )}
+                    {general.active_chat_model_id === cfg.id && (
+                      <span className="text-[10px] px-1.5 py-0.5 bg-primary/10 rounded text-primary">
+                        活跃
                       </span>
                     )}
                   </div>

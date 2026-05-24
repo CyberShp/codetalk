@@ -136,6 +136,7 @@ async def delete_llm_config(cfg_id: str, db: aiosqlite.Connection = Depends(get_
         if not await cur.fetchone():
             raise HTTPException(status_code=404, detail="LLM 配置不存在")
     await db.execute("DELETE FROM llm_configs WHERE id = ?", (cfg_id,))
+    # Clear any active model reference that pointed at the deleted config.
     await db.execute(
         "UPDATE settings SET value = '' "
         "WHERE key IN ('active_chat_model_id', 'active_embedding_model_id') "
@@ -151,17 +152,11 @@ async def test_llm_connection(
 ):
     """Test LLM connectivity using global proxy/SSL settings."""
     from app.llm.anthropic import AnthropicClient
-    from app.llm.factory import _resolve_proxy
+    from app.llm.factory import _load_general_settings, _resolve_proxy
     from app.llm.openai_compat import OpenAICompatClient
 
     try:
-        keys = ("proxy_mode", "proxy_url", "ssl_cert_path")
-        placeholders = ",".join("?" * len(keys))
-        async with db.execute(
-            f"SELECT key, value FROM settings WHERE key IN ({placeholders})", keys
-        ) as cur:
-            rows = await cur.fetchall()
-        general = {r["key"]: r["value"] for r in rows}
+        general = await _load_general_settings(db)
         proxy_url, ssl_cert, force_direct = _resolve_proxy(general)
 
         kwargs = {
