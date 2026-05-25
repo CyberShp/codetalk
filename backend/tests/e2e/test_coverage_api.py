@@ -194,3 +194,90 @@ async def test_upload_malformed_xml_returns_400(e2e_client: AsyncClient):
         files={"files": ("bad.xml", malformed_xml.encode(), "text/xml")},
     )
     assert resp.status_code == 400
+
+
+_COBERTURA_BRANCHES_METHODS_XML = """<?xml version="1.0" ?>
+<coverage line-rate="0.75" branch-rate="0.50" version="1.0">
+  <packages>
+    <package name="app" line-rate="0.75" branch-rate="0.50" complexity="0">
+      <classes>
+        <class name="calc.py" filename="app/calc.py" line-rate="0.75" branch-rate="0.50">
+          <methods>
+            <method name="add" signature="()" line-rate="1.0" branch-rate="1.0" complexity="1">
+              <lines>
+                <line number="10" hits="3"/>
+              </lines>
+            </method>
+            <method name="unused_method" signature="()" line-rate="0.0" branch-rate="0.0" complexity="1">
+              <lines>
+                <line number="20" hits="0"/>
+              </lines>
+            </method>
+          </methods>
+          <lines>
+            <line number="10" hits="1"/>
+            <line number="15" hits="1" branch="true" condition-coverage="50% (1/2)"/>
+            <line number="20" hits="0"/>
+          </lines>
+        </class>
+      </classes>
+    </package>
+  </packages>
+</coverage>"""
+
+
+_JACOCO_XML = """<?xml version="1.0" encoding="UTF-8"?>
+<report name="JaCoCo">
+  <package name="com/example">
+    <class name="com/example/Main" sourcefilename="Main.java">
+      <method name="main" desc="([Ljava/lang/String;)V" line="5">
+        <counter type="INSTRUCTION" missed="0" covered="5"/>
+        <counter type="LINE" missed="0" covered="2"/>
+      </method>
+      <method name="unused" desc="()V" line="20">
+        <counter type="LINE" missed="3" covered="0"/>
+      </method>
+      <counter type="LINE" missed="3" covered="8"/>
+      <counter type="BRANCH" missed="1" covered="3"/>
+      <counter type="METHOD" missed="1" covered="1"/>
+    </class>
+    <counter type="LINE" missed="3" covered="8"/>
+    <counter type="BRANCH" missed="1" covered="3"/>
+    <counter type="METHOD" missed="1" covered="1"/>
+  </package>
+  <counter type="LINE" missed="3" covered="8"/>
+  <counter type="BRANCH" missed="1" covered="3"/>
+  <counter type="METHOD" missed="1" covered="1"/>
+</report>"""
+
+
+async def test_upload_cobertura_with_branches_and_methods(e2e_client: AsyncClient):
+    """Upload Cobertura XML with branch coverage and method elements.
+
+    Covers parse_cobertura_xml branch handling (lines 135-146) and
+    method coverage loop (lines 148-159) in adapters/coverage.py.
+    """
+    resp = await e2e_client.post(
+        "/api/coverage/upload",
+        files={"files": ("cov_branches.xml", _COBERTURA_BRANCHES_METHODS_XML.encode(), "text/xml")},
+        data={"name": "branches-methods-test"},
+    )
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["source_format"] == "cobertura"
+    assert body["status"] == "parsed"
+
+
+async def test_upload_jacoco_xml(e2e_client: AsyncClient):
+    """Upload JaCoCo-format XML — exercises detect_and_parse_xml JaCoCo detection
+    and the entire parse_jacoco_xml function (adapters/coverage.py lines 204-270).
+    """
+    resp = await e2e_client.post(
+        "/api/coverage/upload",
+        files={"files": ("jacoco.xml", _JACOCO_XML.encode(), "text/xml")},
+        data={"name": "jacoco-test"},
+    )
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["source_format"] == "jacoco"
+    assert body["status"] == "parsed"
