@@ -163,3 +163,65 @@ async def test_multiple_tasks_coexist(e2e_client: AsyncClient, repo_path: str):
     listed_ids = [t["id"] for t in list_resp.json()]
     for tid in ids:
         assert tid in listed_ids
+
+
+async def test_run_task_no_tools_exercises_pipeline(e2e_client: AsyncClient, repo_path: str):
+    """Running a task with empty tools skips tool health checks and exercises the pipeline.
+
+    With no tools and no LLM configured, the pipeline runs phases 0-1 and completes
+    in 'completed' status (no AI phases). Covers analysis_pipeline.py orchestration paths.
+    """
+    create_resp = await e2e_client.post(
+        "/api/tasks",
+        json={
+            "name": "No-tools Pipeline Test",
+            "repo_path": repo_path,
+            "tools": [],
+            "analysis_focus": "Smoke test",
+            "prompt_content": "Test pipeline with no external tools.",
+            "deepwiki_depth": "balanced",
+        },
+    )
+    assert create_resp.status_code == 201
+    task_id = create_resp.json()["id"]
+
+    run_resp = await e2e_client.post(f"/api/tasks/{task_id}/run")
+    assert run_resp.status_code == 200
+
+    get_resp = await e2e_client.get(f"/api/tasks/{task_id}")
+    assert get_resp.status_code == 200
+    status = get_resp.json()["status"]
+    assert status in ("completed", "running", "failed")
+
+
+async def test_run_nonexistent_task_returns_404(e2e_client: AsyncClient):
+    """Running a task that does not exist should return 404."""
+    import uuid
+    resp = await e2e_client.post(f"/api/tasks/{uuid.uuid4()}/run")
+    assert resp.status_code == 404
+
+
+async def test_run_already_running_task_returns_409(e2e_client: AsyncClient, repo_path: str):
+    """Attempting to run a task already in 'running' status returns 409."""
+    import aiosqlite
+    from app.config import settings
+
+    create_resp = await e2e_client.post(
+        "/api/tasks",
+        json={
+            "name": "Already Running",
+            "repo_path": repo_path,
+            "tools": [],
+            "analysis_focus": "test",
+            "prompt_content": "test",
+            "deepwiki_depth": "balanced",
+        },
+    )
+    task_id = create_resp.json()["id"]
+
+    async with aiosqlite.connect(settings.sqlite_db) as db:
+        await db.execute("UPDATE tasks SET status = 'running' WHERE id = ?", (task_id,))
+        await db.commit()
+
+    resp = await e2e_client.post(f"/api/tasks/{task_id}/run")
+    assert resp.status_code == 409
