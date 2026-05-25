@@ -165,6 +165,7 @@ export interface Workspace {
   index_job: string | null;
   analyze_status: string | null;
   analyze_progress: number;
+  last_index_error: string | null;
   created_at: string;
   updated_at: string;
   materials: WorkspaceMaterial[];

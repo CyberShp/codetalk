@@ -31,7 +31,7 @@ import MarkdownRenderer from "@/components/ui/MarkdownRenderer";
 
 type Tab = "reports" | "materials" | "chat";
 
-function IndexBadge({ indexed }: { indexed: number }) {
+function IndexBadge({ indexed, lastIndexError }: { indexed: number; lastIndexError?: string | null }) {
   if (indexed === 1) {
     return (
       <span className="inline-flex items-center gap-1 text-xs px-2 py-0.5 rounded-full bg-green-400/10 text-green-400">
@@ -42,9 +42,12 @@ function IndexBadge({ indexed }: { indexed: number }) {
   }
   if (indexed === -1) {
     return (
-      <span className="inline-flex items-center gap-1 text-xs px-2 py-0.5 rounded-full bg-red-400/10 text-red-400">
+      <span
+        className="inline-flex items-center gap-1 text-xs px-2 py-0.5 rounded-full bg-red-400/10 text-red-400 cursor-help"
+        title={lastIndexError ?? "索引失败"}
+      >
         <XCircle size={12} />
-        索引失败
+        索引失败{lastIndexError ? " ⓘ" : ""}
       </span>
     );
   }
@@ -606,7 +609,7 @@ export default function WorkspaceDetailPage() {
             <h1 className="text-2xl font-bold text-on-surface">{workspace.name}</h1>
             <p className="text-sm text-on-surface-variant mt-0.5">{workspace.repo_path}</p>
             <div className="flex items-center gap-2 mt-2 flex-wrap">
-              <IndexBadge indexed={workspace.indexed} />
+              <IndexBadge indexed={workspace.indexed} lastIndexError={workspace.last_index_error} />
               <AnalyzeBadge status={analyzeStatus} progress={analyzeProgress} />
             </div>
           </div>

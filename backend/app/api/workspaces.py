@@ -70,6 +70,7 @@ class WorkspaceResponse(BaseModel):
     index_job: str | None
     analyze_status: str | None
     analyze_progress: int
+    last_index_error: str | None = None
     created_at: str
     updated_at: str
     materials: list[WorkspaceMaterialResponse] = []
@@ -93,6 +94,20 @@ async def _get_workspace_or_404(ws_id: str, db: aiosqlite.Connection) -> dict:
 
 # --- Background task: T6 GitNexus indexing ---
 
+def _classify_index_error(exc: Exception, base_url: str) -> str:
+    import httpx as _httpx
+    if isinstance(exc, _httpx.ConnectError):
+        return f"GitNexus 未启动或不可达（{base_url}）"
+    if isinstance(exc, _httpx.TimeoutException):
+        return "GitNexus 连接超时"
+    msg = str(exc)
+    if "timed out" in msg.lower():
+        return "GitNexus 索引超时（>10分钟），请检查 GitNexus 日志"
+    if "failed" in msg.lower():
+        return f"GitNexus 索引失败：{msg}"
+    return msg
+
+
 async def _index_workspace(ws_id: str, repo_path: str) -> None:
     """Index a workspace repo via GitNexusAdapter; updates indexed: 0=running, 1=done, -1=failed."""
     from app.adapters.base import AnalysisRequest
@@ -100,30 +115,49 @@ async def _index_workspace(ws_id: str, repo_path: str) -> None:
 
     async with aiosqlite.connect(settings.sqlite_db) as db:
         await db.execute(
-            "UPDATE workspaces SET indexed = 0, index_job = NULL, updated_at = CURRENT_TIMESTAMP "
-            "WHERE id = ?",
+            "UPDATE workspaces SET indexed = 0, index_job = NULL, last_index_error = NULL, "
+            "updated_at = CURRENT_TIMESTAMP WHERE id = ?",
             (ws_id,),
         )
         await db.commit()
 
     try:
         adapter = GitNexusAdapter(base_url=settings.gitnexus_base_url)
+
+        # T3: 健康预检 — 避免等待 connect timeout 才报错
+        health = await adapter.health_check()
+        if not health.is_healthy:
+            detail = health.last_check or health.container_status or "unreachable"
+            error_msg = f"GitNexus 服务未运行，请先启动 GitNexus（{detail}）"
+            async with aiosqlite.connect(settings.sqlite_db) as db:
+                await db.execute(
+                    "UPDATE workspaces SET indexed = -1, last_index_error = ?, "
+                    "updated_at = CURRENT_TIMESTAMP WHERE id = ?",
+                    (error_msg, ws_id),
+                )
+                await db.commit()
+            logger.error("Workspace indexing skipped for %s: %s", ws_id, error_msg)
+            return
+
         await adapter.prepare(AnalysisRequest(repo_local_path=repo_path))
 
         async with aiosqlite.connect(settings.sqlite_db) as db:
             await db.execute(
-                "UPDATE workspaces SET indexed = 1, updated_at = CURRENT_TIMESTAMP WHERE id = ?",
+                "UPDATE workspaces SET indexed = 1, last_index_error = NULL, "
+                "updated_at = CURRENT_TIMESTAMP WHERE id = ?",
                 (ws_id,),
             )
             await db.commit()
         logger.info("Workspace %s indexed successfully", ws_id)
 
     except Exception as exc:
-        logger.error("Workspace indexing failed for %s: %s", ws_id, exc)
+        error_msg = _classify_index_error(exc, settings.gitnexus_base_url)
+        logger.error("Workspace indexing failed for %s: %s", ws_id, error_msg)
         async with aiosqlite.connect(settings.sqlite_db) as db:
             await db.execute(
-                "UPDATE workspaces SET indexed = -1, updated_at = CURRENT_TIMESTAMP WHERE id = ?",
-                (ws_id,),
+                "UPDATE workspaces SET indexed = -1, last_index_error = ?, "
+                "updated_at = CURRENT_TIMESTAMP WHERE id = ?",
+                (error_msg, ws_id),
             )
             await db.commit()
 

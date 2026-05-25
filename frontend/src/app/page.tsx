@@ -229,11 +229,12 @@ export default function WorkbenchPage() {
                           ws.indexed === 1
                             ? "bg-green-400/10 text-green-400"
                             : ws.indexed === -1
-                              ? "bg-red-400/10 text-red-400"
+                              ? "bg-red-400/10 text-red-400 cursor-help"
                               : "bg-amber-400/10 text-amber-400"
                         }`}
+                        title={ws.indexed === -1 && ws.last_index_error ? ws.last_index_error : undefined}
                       >
-                        {ws.indexed === 1 ? "已索引" : ws.indexed === -1 ? "索引失败" : "索引中"}
+                        {ws.indexed === 1 ? "已索引" : ws.indexed === -1 ? `索引失败${ws.last_index_error ? " ⓘ" : ""}` : "索引中"}
                       </span>
                       <span className="text-xs text-on-surface-variant">
                         {ws.reports.length} 份报告
