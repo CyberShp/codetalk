@@ -7,7 +7,7 @@ Background tasks (indexing, embedding) are suppressed via autouse fixture.
 import struct
 import uuid
 from datetime import datetime, timedelta, timezone
-from unittest.mock import AsyncMock, patch
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import aiosqlite
 import pytest
@@ -191,6 +191,40 @@ class TestIndexAndAnalyze:
         resp = await client_v2.post("/api/workspaces/ws-dup/analyze")
         assert resp.status_code == 409
 
+    async def test_analyze_status_non_running_returns_stored(self, client_v2, sqlite_db):
+        """get_analyze_status: workspace not running → returns stored status (line 294 fallthrough)."""
+        await _seed_ws(sqlite_db, "ws-status-idle", indexed=1)
+        resp = await client_v2.get("/api/workspaces/ws-status-idle/analyze-status")
+        assert resp.status_code == 200
+        body = resp.json()
+        assert "analyze_status" in body
+        assert "analyze_progress" in body
+
+    async def test_analyze_status_shows_shadow_task_progress(self, client_v2, sqlite_db):
+        """get_analyze_status: shadow task record exists → returns its live progress (line 289)."""
+        ws_id = "ws-shadow-prog"
+        now = datetime.now(timezone.utc).isoformat()
+        async with aiosqlite.connect(sqlite_db) as db:
+            await db.execute(
+                "INSERT INTO workspaces "
+                "(id, name, repo_path, indexed, analyze_status, created_at, updated_at) "
+                "VALUES (?, 'ws', '/repo', 1, 'running', ?, ?)",
+                (ws_id, now, now),
+            )
+            await db.execute(
+                "INSERT INTO tasks (id, name, repo_path, status, tools, "
+                "analysis_focus, prompt_content, deepwiki_depth, progress, created_at, updated_at) "
+                "VALUES (?, ?, '/repo', 'running', '[]', 'focus', 'prompt', 'balanced', 42, ?, ?)",
+                (str(uuid.uuid4()), f"__ws_{ws_id}", now, now),
+            )
+            await db.commit()
+
+        resp = await client_v2.get(f"/api/workspaces/{ws_id}/analyze-status")
+        assert resp.status_code == 200
+        body = resp.json()
+        assert body["analyze_status"] == "running"
+        assert body["analyze_progress"] == 42
+
 
 # ---------------------------------------------------------------------------
 # Materials lifecycle
@@ -219,6 +253,16 @@ class TestMaterials:
         )
         assert resp.status_code == 201
         assert resp.json()["content_type"] == "design"
+
+    async def test_upload_other_content_type(self, client_v2, sqlite_db):
+        """_guess_content_type: filename with no keyword → 'other' (line 540)."""
+        await _seed_ws(sqlite_db, "ws-up3")
+        resp = await client_v2.post(
+            "/api/workspaces/ws-up3/materials",
+            files={"file": ("notes.txt", b"some notes", "text/plain")},
+        )
+        assert resp.status_code == 201
+        assert resp.json()["content_type"] == "other"
 
     async def test_toggle_to_inactive(self, client_v2, sqlite_db, tmp_path):
         await _seed_ws(sqlite_db, "ws-tg")
@@ -255,6 +299,41 @@ class TestMaterials:
         await _seed_ws(sqlite_db, "ws-d4")
         resp = await client_v2.delete("/api/workspaces/ws-d4/materials/no-such")
         assert resp.status_code == 404
+
+    async def test_toggle_inactive_cleanup_exception_swallowed(
+        self, client_v2, sqlite_db, tmp_path
+    ):
+        """toggle_material: delete_material_chunks raises → exception swallowed (lines 434-435)."""
+        await _seed_ws(sqlite_db, "ws-tg-exc")
+        f = tmp_path / "exc.md"
+        f.write_text("x")
+        await _seed_material(sqlite_db, "ws-tg-exc", "m-tg-exc", str(f))
+
+        with patch(
+            "app.services.material_rag.delete_material_chunks",
+            AsyncMock(side_effect=RuntimeError("cleanup failed")),
+        ):
+            resp = await client_v2.patch(
+                "/api/workspaces/ws-tg-exc/materials/m-tg-exc",
+                json={"is_active": False},
+            )
+        assert resp.status_code == 200
+
+    async def test_delete_material_cleanup_exception_swallowed(
+        self, client_v2, sqlite_db, tmp_path
+    ):
+        """delete_material: delete_material_chunks raises → exception swallowed (lines 457-458)."""
+        await _seed_ws(sqlite_db, "ws-dl-exc")
+        f = tmp_path / "del_exc.md"
+        f.write_text("x")
+        await _seed_material(sqlite_db, "ws-dl-exc", "m-dl-exc", str(f))
+
+        with patch(
+            "app.services.material_rag.delete_material_chunks",
+            AsyncMock(side_effect=RuntimeError("cleanup failed")),
+        ):
+            resp = await client_v2.delete("/api/workspaces/ws-dl-exc/materials/m-dl-exc")
+        assert resp.status_code == 204
 
     async def test_toggle_nonexistent_404(self, client_v2, sqlite_db):
         await _seed_ws(sqlite_db, "ws-t4")
@@ -384,6 +463,15 @@ class TestChatEndpoints:
         )
         assert resp.status_code == 409
 
+    async def test_stream_indexed_no_llm_returns_503(self, client_v2, sqlite_db):
+        """workspace_chat_stream: indexed=1 but LLM not configured → 503 (lines 574-575)."""
+        await _seed_ws(sqlite_db, "ws-ch0-503", indexed=1)
+        resp = await client_v2.post(
+            "/api/workspaces/ws-ch0-503/chat/stream",
+            json={"message": "hello", "mode": "freeqa"},
+        )
+        assert resp.status_code == 503
+
     async def test_history_chronological(self, client_v2, sqlite_db):
         ws_id = "ws-ch1"
         await _seed_ws(sqlite_db, ws_id)
@@ -433,3 +521,300 @@ class TestChatEndpoints:
     async def test_history_nonexistent_ws_404(self, client_v2):
         resp = await client_v2.get("/api/workspaces/no-such/chat/history")
         assert resp.status_code == 404
+
+
+# ---------------------------------------------------------------------------
+# _classify_index_error — pure function (lines 97-108)
+# ---------------------------------------------------------------------------
+
+
+class TestClassifyIndexError:
+    def _call(self, exc, base_url="http://localhost:8080"):
+        from app.api.workspaces import _classify_index_error
+        return _classify_index_error(exc, base_url)
+
+    def test_connect_error(self):
+        import httpx
+        exc = httpx.ConnectError("connection refused")
+        result = self._call(exc, "http://localhost:8080")
+        assert "localhost:8080" in result
+        assert "未启动" in result
+
+    def test_timeout_exception(self):
+        import httpx
+        exc = httpx.TimeoutException("read timed out")
+        result = self._call(exc)
+        assert "超时" in result
+
+    def test_message_contains_timed_out(self):
+        exc = RuntimeError("operation timed out after 10 minutes")
+        result = self._call(exc)
+        assert "超时" in result
+
+    def test_message_contains_failed(self):
+        exc = RuntimeError("indexing failed due to error")
+        result = self._call(exc)
+        assert "失败" in result
+
+    def test_generic_exception(self):
+        exc = RuntimeError("something unexpected")
+        result = self._call(exc)
+        assert result == "something unexpected"
+
+
+# ---------------------------------------------------------------------------
+# Background task functions — direct tests (lines 113-179, 401-405)
+# ---------------------------------------------------------------------------
+
+
+class TestBackgroundTasks:
+    async def test_index_workspace_success(self, sqlite_db):
+        """_index_workspace: healthy adapter + prepare() succeeds → indexed=1."""
+        ws_id = "ws-bg-ok"
+        await _seed_ws(sqlite_db, ws_id, indexed=0)
+
+        mock_health = MagicMock()
+        mock_health.is_healthy = True
+
+        mock_adapter = MagicMock()
+        mock_adapter.health_check = AsyncMock(return_value=mock_health)
+        mock_adapter.prepare = AsyncMock()
+
+        with patch("app.adapters.gitnexus.GitNexusAdapter", return_value=mock_adapter):
+            from app.api.workspaces import _index_workspace
+            await _index_workspace(ws_id, "/repo")
+
+        async with aiosqlite.connect(sqlite_db) as db:
+            db.row_factory = aiosqlite.Row
+            async with db.execute("SELECT indexed FROM workspaces WHERE id = ?", (ws_id,)) as cur:
+                row = await cur.fetchone()
+        assert row["indexed"] == 1
+
+    async def test_index_workspace_unhealthy(self, sqlite_db):
+        """_index_workspace: health.is_healthy=False → indexed=-1 with error set."""
+        ws_id = "ws-bg-unhealthy"
+        await _seed_ws(sqlite_db, ws_id, indexed=0)
+
+        mock_health = MagicMock()
+        mock_health.is_healthy = False
+        mock_health.last_check = "timeout"
+        mock_health.container_status = None
+
+        mock_adapter = MagicMock()
+        mock_adapter.health_check = AsyncMock(return_value=mock_health)
+
+        with patch("app.adapters.gitnexus.GitNexusAdapter", return_value=mock_adapter):
+            from app.api.workspaces import _index_workspace
+            await _index_workspace(ws_id, "/repo")
+
+        async with aiosqlite.connect(sqlite_db) as db:
+            db.row_factory = aiosqlite.Row
+            async with db.execute(
+                "SELECT indexed, last_index_error FROM workspaces WHERE id = ?", (ws_id,)
+            ) as cur:
+                row = await cur.fetchone()
+        assert row["indexed"] == -1
+        assert row["last_index_error"] is not None
+
+    async def test_index_workspace_exception(self, sqlite_db):
+        """_index_workspace: exception from adapter → indexed=-1 via _classify_index_error."""
+        ws_id = "ws-bg-exc"
+        await _seed_ws(sqlite_db, ws_id, indexed=0)
+
+        mock_adapter = MagicMock()
+        mock_adapter.health_check = AsyncMock(side_effect=RuntimeError("network error"))
+
+        with patch("app.adapters.gitnexus.GitNexusAdapter", return_value=mock_adapter):
+            from app.api.workspaces import _index_workspace
+            await _index_workspace(ws_id, "/repo")
+
+        async with aiosqlite.connect(sqlite_db) as db:
+            db.row_factory = aiosqlite.Row
+            async with db.execute(
+                "SELECT indexed, last_index_error FROM workspaces WHERE id = ?", (ws_id,)
+            ) as cur:
+                row = await cur.fetchone()
+        assert row["indexed"] == -1
+        assert row["last_index_error"] is not None
+
+    async def test_run_workspace_analysis_failure(self, sqlite_db):
+        """_run_workspace_analysis: exception → analyze_status='failed'."""
+        ws_id = "ws-bg-anal-fail"
+        await _seed_ws(sqlite_db, ws_id, indexed=1)
+
+        with patch(
+            "app.services.workspace_pipeline.WorkspacePipeline.run",
+            AsyncMock(side_effect=RuntimeError("pipeline boom")),
+        ):
+            from app.api.workspaces import _run_workspace_analysis
+            await _run_workspace_analysis(ws_id, "/repo")
+
+        async with aiosqlite.connect(sqlite_db) as db:
+            db.row_factory = aiosqlite.Row
+            async with db.execute(
+                "SELECT analyze_status FROM workspaces WHERE id = ?", (ws_id,)
+            ) as cur:
+                row = await cur.fetchone()
+        assert row["analyze_status"] == "failed"
+
+    async def test_embed_material_background_success(self):
+        """_embed_material_background: calls embed_material with correct args."""
+        from app.api.workspaces import _embed_material_background
+
+        mock_embed = AsyncMock()
+        with patch("app.services.material_rag.embed_material", mock_embed):
+            await _embed_material_background("mat-123", "ws-123")
+
+        mock_embed.assert_called_once_with("mat-123", "ws-123")
+
+    async def test_embed_material_background_exception_swallowed(self):
+        """_embed_material_background: exception is logged but not re-raised."""
+        from app.api.workspaces import _embed_material_background
+
+        with patch(
+            "app.services.material_rag.embed_material",
+            AsyncMock(side_effect=RuntimeError("embed failed")),
+        ):
+            await _embed_material_background("mat-err", "ws-err")
+
+
+# ---------------------------------------------------------------------------
+# workspace_chat_stream — streaming path (lines 577-617)
+# ---------------------------------------------------------------------------
+
+
+class TestChatStream:
+    async def test_stream_mocked_llm(self, client_v2, sqlite_db):
+        """workspace_chat_stream: mocked LLM yields tokens, SSE events stream back."""
+        ws_id = "ws-stream-ok"
+        await _seed_ws(sqlite_db, ws_id, indexed=1)
+
+        async def _mock_stream(messages, **kwargs):
+            yield "Hello"
+            yield " World"
+
+        mock_llm = MagicMock()
+        mock_llm.stream_complete = _mock_stream
+
+        with patch(
+            "app.llm.factory.create_llm_client_from_active",
+            AsyncMock(return_value=mock_llm),
+        ):
+            with patch(
+                "app.services.workspace_chat.build_chat_messages",
+                AsyncMock(return_value=[{"role": "user", "content": "hi"}]),
+            ):
+                with patch("app.services.workspace_chat.persist_user_message", AsyncMock()):
+                    with patch(
+                        "app.services.workspace_chat.persist_assistant_reply", AsyncMock()
+                    ):
+                        resp = await client_v2.post(
+                            f"/api/workspaces/{ws_id}/chat/stream",
+                            json={"message": "What is this?", "mode": "freeqa"},
+                        )
+
+        assert resp.status_code == 200
+        body = resp.content.decode("utf-8")
+        assert "Hello" in body
+        assert '"done": false' in body or '"done":false' in body
+
+    async def test_stream_llm_error_yields_error_event(self, client_v2, sqlite_db):
+        """workspace_chat_stream: stream error yields done+error SSE event."""
+        ws_id = "ws-stream-err"
+        await _seed_ws(sqlite_db, ws_id, indexed=1)
+
+        async def _failing_stream(messages, **kwargs):
+            raise RuntimeError("LLM exploded")
+            yield  # make it an async generator
+
+        mock_llm = MagicMock()
+        mock_llm.stream_complete = _failing_stream
+
+        with patch(
+            "app.llm.factory.create_llm_client_from_active",
+            AsyncMock(return_value=mock_llm),
+        ):
+            with patch(
+                "app.services.workspace_chat.build_chat_messages",
+                AsyncMock(return_value=[]),
+            ):
+                with patch("app.services.workspace_chat.persist_user_message", AsyncMock()):
+                    with patch(
+                        "app.services.workspace_chat.persist_assistant_reply", AsyncMock()
+                    ):
+                        resp = await client_v2.post(
+                            f"/api/workspaces/{ws_id}/chat/stream",
+                            json={"message": "hello?", "mode": "freeqa"},
+                        )
+
+        assert resp.status_code == 200
+        body = resp.content.decode("utf-8")
+        assert "error" in body
+
+    async def test_stream_persist_user_message_exception_swallowed(
+        self, client_v2, sqlite_db
+    ):
+        """workspace_chat_stream: persist_user_message raises → swallowed (lines 589-590)."""
+        ws_id = "ws-stream-persist-err"
+        await _seed_ws(sqlite_db, ws_id, indexed=1)
+
+        async def _ok_stream(messages, **kwargs):
+            yield "ok"
+
+        mock_llm = MagicMock()
+        mock_llm.stream_complete = _ok_stream
+
+        with patch(
+            "app.llm.factory.create_llm_client_from_active",
+            AsyncMock(return_value=mock_llm),
+        ):
+            with patch(
+                "app.services.workspace_chat.build_chat_messages",
+                AsyncMock(return_value=[]),
+            ):
+                with patch(
+                    "app.services.workspace_chat.persist_user_message",
+                    AsyncMock(side_effect=RuntimeError("persist failed")),
+                ):
+                    with patch(
+                        "app.services.workspace_chat.persist_assistant_reply", AsyncMock()
+                    ):
+                        resp = await client_v2.post(
+                            f"/api/workspaces/{ws_id}/chat/stream",
+                            json={"message": "hello?", "mode": "freeqa"},
+                        )
+
+        assert resp.status_code == 200
+
+    async def test_stream_persist_reply_exception_swallowed(self, client_v2, sqlite_db):
+        """workspace_chat_stream: persist_assistant_reply raises → swallowed (lines 611-612)."""
+        ws_id = "ws-stream-reply-err"
+        await _seed_ws(sqlite_db, ws_id, indexed=1)
+
+        async def _ok_stream(messages, **kwargs):
+            yield "Some text"
+
+        mock_llm = MagicMock()
+        mock_llm.stream_complete = _ok_stream
+
+        with patch(
+            "app.llm.factory.create_llm_client_from_active",
+            AsyncMock(return_value=mock_llm),
+        ):
+            with patch(
+                "app.services.workspace_chat.build_chat_messages",
+                AsyncMock(return_value=[]),
+            ):
+                with patch("app.services.workspace_chat.persist_user_message", AsyncMock()):
+                    with patch(
+                        "app.services.workspace_chat.persist_assistant_reply",
+                        AsyncMock(side_effect=RuntimeError("reply persist failed")),
+                    ):
+                        resp = await client_v2.post(
+                            f"/api/workspaces/{ws_id}/chat/stream",
+                            json={"message": "hello?", "mode": "freeqa"},
+                        )
+
+        assert resp.status_code == 200
+        body = resp.content.decode("utf-8")
+        assert "Some text" in body

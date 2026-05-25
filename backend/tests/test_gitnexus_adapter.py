@@ -9,6 +9,11 @@ class _FakeResponse:
     def __init__(self, status_code: int, payload: dict):
         self.status_code = status_code
         self._payload = payload
+        self.content = b"{}" if payload else b""
+
+    @property
+    def is_error(self) -> bool:
+        return self.status_code >= 400
 
     def json(self) -> dict:
         return self._payload
