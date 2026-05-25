@@ -100,9 +100,13 @@ def _classify_index_error(exc: Exception, base_url: str) -> str:
         return f"GitNexus 未启动或不可达（{base_url}）"
     if isinstance(exc, _httpx.TimeoutException):
         return "GitNexus 连接超时"
+    if isinstance(exc, _httpx.HTTPStatusError) and exc.response.status_code == 409:
+        return "GitNexus 正在分析父目录项目，请等待其完成后再试"
     msg = str(exc)
     if "timed out" in msg.lower():
-        return "GitNexus 索引超时（>10分钟），请检查 GitNexus 日志"
+        return "GitNexus 索引超时（>30分钟），请检查 GitNexus 日志"
+    if "父项目" in msg:
+        return msg
     if "failed" in msg.lower():
         return f"GitNexus 索引失败：{msg}"
     return msg
@@ -519,7 +523,7 @@ async def trigger_embedding(
 ):
     await _get_workspace_or_404(ws_id, db)
 
-    async def _run_embed() -> None:
+    async def _run_embed() -> None:  # pragma: no cover
         try:
             from app.services.material_rag import embed_workspace_materials
             total = await embed_workspace_materials(ws_id)

@@ -28,7 +28,7 @@ from .base import (
 logger = logging.getLogger(__name__)
 
 _POLL_INTERVAL = 2  # seconds between job status polls
-_POLL_TIMEOUT = 600  # max seconds to wait for analysis
+_POLL_TIMEOUT = 1800  # max seconds to wait for analysis (30 min for large repos)
 
 
 class GitNexusAdapter(BaseToolAdapter):
@@ -138,10 +138,36 @@ class GitNexusAdapter(BaseToolAdapter):
                 "/api/analyze",
                 json={"path": tool_repo_path},
             )
-            resp.raise_for_status()
-            job = resp.json()
-            job_id = job["jobId"]
-            logger.info("gitnexus: analysis job started: %s", job_id)
+
+            if resp.status_code == 409:
+                body = resp.json() if resp.content else {}
+                existing_job_id = body.get("jobId")
+                if existing_job_id:
+                    # A job is already running for this path — poll it
+                    logger.info(
+                        "gitnexus: 409 conflict — joining existing job %s", existing_job_id
+                    )
+                    job_id = existing_job_id
+                else:
+                    # Path may be covered by a parent-repo job already indexed
+                    repo_name = body.get("repoName") or body.get("repo")
+                    if repo_name:
+                        logger.info(
+                            "gitnexus: 409 conflict — repo already indexed as %s", repo_name
+                        )
+                        self._repo_name = repo_name
+                        self._indexed_repo_by_path[cache_key] = repo_name
+                        asyncio.ensure_future(self._trigger_embed())
+                        return
+                    raise RuntimeError(
+                        "GitNexus 正在分析一个包含此路径的父项目，请等待该任务完成后再试"
+                    )
+            elif resp.is_error:
+                resp.raise_for_status()
+            else:
+                job = resp.json()
+                job_id = job["jobId"]
+                logger.info("gitnexus: analysis job started: %s", job_id)
 
             elapsed = 0
             while elapsed < _POLL_TIMEOUT:
