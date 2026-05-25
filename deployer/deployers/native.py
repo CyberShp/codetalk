@@ -240,7 +240,10 @@ class NativeDeployer:
             _old = self._processes.get(_proc_name)
             if _old is not None and _old.returncode is None:
                 _old.terminate()
-        await self._release_ports([api_port, ui_port], 5)
+        # Force takeover on DeepWiki's dedicated ports — see comment at the
+        # matching call in _step_start_services for the rationale.
+        await self._release_ports([api_port, ui_port], 5, force_takeover=True)
+        await asyncio.sleep(2)
 
         await self._start_deepwiki_processes(dw_dir, api_port, ui_port, llm_env, "deepwiki_start", 5)
 
@@ -792,6 +795,12 @@ class NativeDeployer:
         ports_to_clear = [backend_port, frontend_port]
         if cfg.get("install_gitnexus", True):
             ports_to_clear.append(gitnexus_port)
+        # Pre-clear DeepWiki's dedicated ports too, so stale UI/API processes
+        # left over from a previous failed quickstart can't squat on them.
+        if cfg.get("install_deepwiki", False) or cfg.get("deepwiki_path", ""):
+            dw_api_port_clear = self._config_port("deepwiki_api_port", 8091)
+            dw_ui_port_clear = self._config_port("deepwiki_ui_port", 3001)
+            ports_to_clear.extend([dw_api_port_clear, dw_ui_port_clear])
         await self._emit("start_services", "running", f"清理占用端口 {ports_to_clear}...", step)
         force_takeover = bool(cfg.get("force_takeover", False))
         await self._release_ports(ports_to_clear, step, force_takeover=force_takeover)
@@ -830,11 +839,10 @@ class NativeDeployer:
 
         npm_cmd = "npm.cmd" if sys.platform == "win32" else "npm"
         next_build_dir = frontend_dir / ".next"
-        standalone_server = frontend_dir / ".next" / "standalone" / "server.js"
         dev_mode = bool(cfg.get("dev_mode", False))
-        if standalone_server.exists():
-            frontend_start_cmd = ["node", str(standalone_server)]
-        elif next_build_dir.exists():
+        # Standalone output mode was removed (see frontend/next.config.ts comment).
+        # Always run via `next start` from `.next/`, or `next dev` if explicitly requested.
+        if next_build_dir.exists():
             frontend_start_cmd = [npm_cmd, "run", "start"]
         elif dev_mode:
             await self._emit("start_services", "running", "以开发模式启动前端（dev_mode=true）", step)
@@ -873,7 +881,15 @@ class NativeDeployer:
                         "FORCE_DIRECT": "true",
                         "TRUST_ENV": "false",
                     })
-                await self._release_ports([dw_api_port, dw_ui_port], step)
+                # DeepWiki ports are dedicated to DeepWiki per the user's
+                # config — force_takeover so any orphaned process (e.g. from
+                # a previous failed run that left deepwiki-ui hanging on 3001)
+                # is reliably evicted instead of triggering EADDRINUSE later.
+                await self._release_ports([dw_api_port, dw_ui_port], step, force_takeover=True)
+                # Give the OS a moment to actually free the sockets before we
+                # try to bind again — without this, taskkill returns but the
+                # listening socket can linger long enough to fail a fresh bind.
+                await asyncio.sleep(2)
                 await self._start_deepwiki_processes(dw_dir, dw_api_port, dw_ui_port, llm_env, "start_services", step)
             elif dw_dir:
                 await self._emit("start_services", "error", f"DeepWiki 路径无效：{dw_dir} 不存在", step)
@@ -917,6 +933,12 @@ class NativeDeployer:
             else:
                 npm_cmd = "npm.cmd" if sys.platform == "win32" else "npm"
                 ui_cmd = [npm_cmd, "run", "start"]
+            # Last-mile check: between releasing the port and starting
+            # deepwiki-api, something else may have grabbed 3001 (e.g. another
+            # leftover process, or the OS hasn't finished tearing down the
+            # previous socket). Force-evict any squatter just before we bind.
+            await self._release_ports([ui_port], step_index, force_takeover=True)
+            await asyncio.sleep(1)
             await self._start_process(
                 "deepwiki-ui",
                 ui_cmd,
