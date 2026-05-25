@@ -1254,15 +1254,49 @@ class NativeDeployer:
         self, name: str, proc: asyncio.subprocess.Process, step_name: str, step_index: int
     ) -> None:
         assert proc.stdout is not None
-        async for raw_line in proc.stdout:
-            line = raw_line.decode(errors="replace").rstrip()
-            if line:
-                await self._queue.put({
-                    "step": step_name,
-                    "status": "running",
-                    "message": f"[{name}] {line}",
-                    "progress": {"current": step_index, "total": TOTAL_STEPS},
-                })
+        reader = proc.stdout
+        # asyncio.StreamReader.readline() has a default 64KB buffer cap and
+        # raises LimitOverrunError when a single line exceeds it. The
+        # default `async for line in stdout` re-raises that as ValueError
+        # and kills the drain task entirely — after which NO further output
+        # from this subprocess reaches the deploy panel (including the
+        # actual error message we wanted to see).
+        #
+        # Concretely seen with backend's wiki-generation logger emitting a
+        # very large single-line payload; the deepwiki failure that came
+        # right after was completely silent in the UI.
+        #
+        # Recover by falling back to a raw chunk read and continuing.
+        # We also wrap the whole loop in try/except so a totally unexpected
+        # failure surfaces one line and exits gracefully instead of
+        # producing an opaque "Task exception was never retrieved".
+        try:
+            while True:
+                try:
+                    raw_line = await reader.readline()
+                except ValueError:
+                    # Single line > 64KB. Drain a chunk's worth and resume.
+                    # Multiple iterations may be needed to walk past it.
+                    raw_line = await reader.read(65536)
+                    if not raw_line:
+                        break
+                if not raw_line:
+                    break
+                line = raw_line.decode(errors="replace").rstrip()
+                if line:
+                    await self._queue.put({
+                        "step": step_name,
+                        "status": "running",
+                        "message": f"[{name}] {line}",
+                        "progress": {"current": step_index, "total": TOTAL_STEPS},
+                    })
+        except Exception as exc:
+            await self._queue.put({
+                "step": step_name,
+                "status": "running",
+                "message": f"[{name}] (drain stopped: {exc!r})",
+                "progress": {"current": step_index, "total": TOTAL_STEPS},
+            })
 
     # ------------------------------------------------------------------
     # Step 7: Health check
