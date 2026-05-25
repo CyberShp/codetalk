@@ -19,19 +19,74 @@ _CL100K_BPE = "9b5ad71b2ce5302211f9c61530b329a4922fc6a4"
 
 TOTAL_STEPS = 7
 
-_TIKTOKEN_COMMITTED = PROJECT_ROOT / "docker" / "deepwiki" / "tiktoken"
-_TIKTOKEN_VENDOR = VENDOR_DIR / "tiktoken_cache"
+# Tiktoken BPE cache candidate paths, in priority order.
+# IMPORTANT: keep this list in sync with the same list inside
+# deployer/deepwiki_launcher.py. Both files do the lookup independently.
+#
+# The CL100K BPE was historically committed under docker/deepwiki/tiktoken/
+# and/or deployer/vendor/tiktoken_cache/, but the file actually shipped with
+# this repo lives at data/tiktoken_cache/ (matches backend/app/config.py's
+# `tiktoken_cache_path` candidate list). Before adding `data/` here, the
+# deployer's lookup never matched anything and TIKTOKEN_CACHE_DIR was never
+# set, so deepwiki silently fell back to HTTPS and died on intranet.
+_TIKTOKEN_CACHE_CANDIDATES = (
+    PROJECT_ROOT / "data" / "tiktoken_cache",
+    PROJECT_ROOT / "docker" / "deepwiki" / "tiktoken",
+    VENDOR_DIR / "tiktoken_cache",
+)
 
 
 def _best_tiktoken_cache() -> Optional[Path]:
-    """Return the tiktoken cache dir with the most files, or None."""
-    committed = _TIKTOKEN_COMMITTED if _TIKTOKEN_COMMITTED.is_dir() else None
-    vendor = _TIKTOKEN_VENDOR if _TIKTOKEN_VENDOR.is_dir() else None
-    if committed and vendor:
-        c_count = sum(1 for _ in committed.iterdir())
-        v_count = sum(1 for _ in vendor.iterdir())
-        return vendor if v_count >= c_count else committed
-    return committed or vendor
+    """Return the tiktoken cache dir with the most BPE files, or None.
+
+    Considers every candidate in _TIKTOKEN_CACHE_CANDIDATES that exists AND
+    contains at least one regular file. Picks the one with the most files
+    (i.e. the most complete cache).
+    """
+    valid: list[tuple[Path, int]] = []
+    for cand in _TIKTOKEN_CACHE_CANDIDATES:
+        if not cand.is_dir():
+            continue
+        try:
+            files = [p for p in cand.iterdir() if p.is_file() and not p.name.startswith('.')]
+        except OSError:
+            continue
+        if files:
+            valid.append((cand, len(files)))
+    if not valid:
+        return None
+    # Most files wins; ties broken by candidate order (earlier = higher priority).
+    valid.sort(key=lambda x: -x[1])
+    return valid[0][0]
+
+
+def _stage_tiktoken_into_deepwiki(cache_dir: Path, deepwiki_dir: Path) -> int:
+    """Copy every BPE file from cache_dir into {deepwiki_dir}/tiktoken/.
+
+    Belt-and-suspenders: some deepwiki forks have a .env that sets
+    TIKTOKEN_CACHE_DIR=./tiktoken (relative to deepwiki's cwd). If that .env
+    is loaded AFTER our process env is set, it could override our absolute
+    path with the relative one and miss the cache. By also staging the
+    files into deepwiki's own dir, BOTH the absolute and relative path
+    resolve to a valid cache.
+
+    Mirrors backend/app/services/process_manager.py:_ensure_deepwiki_tiktoken.
+
+    Returns: number of files copied (or already present and skipped).
+    """
+    target = deepwiki_dir / "tiktoken"
+    target.mkdir(exist_ok=True)
+    staged = 0
+    for src in cache_dir.iterdir():
+        if not src.is_file() or src.name.startswith('.'):
+            continue
+        dst = target / src.name
+        if dst.exists() and dst.stat().st_size == src.stat().st_size:
+            staged += 1
+            continue
+        shutil.copy2(src, dst)
+        staged += 1
+    return staged
 
 SERVICE_DEFAULTS = [
     ("backend", "backend_port", 8100, "http", "/health"),
@@ -908,7 +963,30 @@ class NativeDeployer:
     ) -> None:
         tiktoken_cache = _best_tiktoken_cache()
         if tiktoken_cache is not None:
-            llm_env["TIKTOKEN_CACHE_DIR"] = str(tiktoken_cache.resolve())
+            cache_abs = tiktoken_cache.resolve()
+            llm_env["TIKTOKEN_CACHE_DIR"] = str(cache_abs)
+            # Belt-and-suspenders: also copy files into {dw_dir}/tiktoken/.
+            # See _stage_tiktoken_into_deepwiki docstring for the rationale.
+            try:
+                copied = _stage_tiktoken_into_deepwiki(cache_abs, dw_dir)
+                await self._emit(
+                    step_name, "running",
+                    f"tiktoken: cache={cache_abs}, staged {copied} BPE file(s) into {dw_dir}/tiktoken/",
+                    step_index,
+                )
+            except OSError as exc:
+                await self._emit(
+                    step_name, "running",
+                    f"tiktoken: cache={cache_abs} (staging to deepwiki/tiktoken/ failed: {exc})",
+                    step_index,
+                )
+        else:
+            await self._emit(
+                step_name, "running",
+                f"tiktoken: NO local cache found in any of {[str(p) for p in _TIKTOKEN_CACHE_CANDIDATES]} — "
+                f"deepwiki will try HTTPS for BPE files and fail on intranet",
+                step_index,
+            )
         has_python_api = (dw_dir / "api" / "pyproject.toml").exists() or (dw_dir / "requirements.txt").exists()
         has_package_json = (dw_dir / "package.json").exists()
 
