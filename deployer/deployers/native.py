@@ -165,6 +165,19 @@ class NativeDeployer:
                 except Exception as exc:
                     results.append({"name": "deepwiki", "healthy": False, "message": str(exc)})
 
+                # Also probe the DeepWiki UI port. Without this, a UI process
+                # that crashed or never bound looks "healthy" because the
+                # panel only ever showed the API. Liveness check is GET / on
+                # the Next.js server — a stuck-loading page (wrong baked-in
+                # API URL) still 200s here, but a dead UI process won't.
+                ui_port = self._config_port("deepwiki_ui_port", 3001)
+                try:
+                    resp = await client.get(f"http://localhost:{ui_port}/")
+                    healthy = resp.status_code < 500
+                    results.append({"name": "deepwiki-ui", "healthy": healthy, "message": f"HTTP {resp.status_code}"})
+                except Exception as exc:
+                    results.append({"name": "deepwiki-ui", "healthy": False, "message": str(exc)})
+
         return results
 
     # ------------------------------------------------------------------
@@ -265,16 +278,61 @@ class NativeDeployer:
         else:
             await self._emit_sup("deepwiki_node", "done", "Node 依赖已存在，跳过", 3, total)
 
-        if has_package_json and not (dw_dir / ".next").exists():
-            await self._emit_sup("deepwiki_build", "running", "构建 DeepWiki 前端（next build）...", 4, total)
+        # next build bakes process.env.NEXT_PUBLIC_* into the client bundle at
+        # build time. If we don't pass the user's chosen DeepWiki API port
+        # here, the browser bundle uses upstream's default (e.g. 8001) and
+        # the UI hangs on "loading" forever because XHRs go to nothing.
+        # See "DeepWiki UI loading forever" bug investigation.
+        api_port_for_build = self._config_port("deepwiki_api_port", 8091)
+        ui_build_env = {
+            # DeepWiki-Open's server-side code reads SERVER_BASE_URL; the
+            # client-side bundle reads NEXT_PUBLIC_SERVER_BASE_URL. We set
+            # both so whichever the fork uses is correct.
+            "SERVER_BASE_URL": f"http://localhost:{api_port_for_build}",
+            "NEXT_PUBLIC_SERVER_BASE_URL": f"http://localhost:{api_port_for_build}",
+        }
+        # Detect stale builds: if .next/ was built with a different API port,
+        # the baked-in URL is wrong and we MUST rebuild. We record the port
+        # used into a marker file at the end of every successful build.
+        next_dir = dw_dir / ".next"
+        marker = next_dir / ".codetalk-api-port"
+        next_exists = next_dir.exists()
+        if next_exists:
+            try:
+                prev_port = marker.read_text(encoding="utf-8").strip() if marker.exists() else ""
+            except OSError:
+                prev_port = ""
+            if prev_port != str(api_port_for_build):
+                await self._emit_sup(
+                    "deepwiki_build", "running",
+                    f"检测到旧构建对应 API 端口 {prev_port or '未知'}，与当前 {api_port_for_build} 不一致，清理并重新构建...",
+                    4, total,
+                )
+                shutil.rmtree(next_dir, ignore_errors=True)
+                next_exists = False
+
+        if has_package_json and not next_exists:
+            await self._emit_sup("deepwiki_build", "running",
+                                 f"构建 DeepWiki 前端（next build，烘焙 API={api_port_for_build}）...", 4, total)
             npm_cmd = "npm.cmd" if sys.platform == "win32" else "npm"
-            rc = await self._run_stream("deepwiki_build", 4, npm_cmd, "run", "build", cwd=str(dw_dir))
+            rc = await self._run_stream(
+                "deepwiki_build", 4, npm_cmd, "run", "build",
+                cwd=str(dw_dir), env_extra=ui_build_env,
+            )
             if rc != 0:
                 await self._emit_sup("deepwiki_build", "error", "next build 失败", 4, total)
                 raise RuntimeError("DeepWiki next build failed")
+            try:
+                marker.parent.mkdir(parents=True, exist_ok=True)
+                marker.write_text(str(api_port_for_build), encoding="utf-8")
+            except OSError as exc:
+                # Marker is best-effort; failure just means next deploy will rebuild.
+                await self._emit_sup("deepwiki_build", "running",
+                                     f"（警告）写入构建端口标记失败：{exc}", 4, total)
             await self._emit_sup("deepwiki_build", "done", "前端构建完成", 4, total)
         else:
-            await self._emit_sup("deepwiki_build", "done", "前端已构建，跳过", 4, total)
+            await self._emit_sup("deepwiki_build", "done",
+                                 f"前端已构建（API={api_port_for_build}），跳过", 4, total)
 
         await self._emit_sup("deepwiki_start", "running", "启动 DeepWiki 服务...", 5, total)
         api_port = self._config_port("deepwiki_api_port", 8091)
@@ -852,10 +910,24 @@ class NativeDeployer:
             ports_to_clear.append(gitnexus_port)
         # Pre-clear DeepWiki's dedicated ports too, so stale UI/API processes
         # left over from a previous failed quickstart can't squat on them.
+        #
+        # EXCEPTION: if supplement_deepwiki just started these processes in
+        # the same deploy() call, do NOT pre-clear — _release_ports here would
+        # kill them, and the skip-restart logic below would then leave the
+        # killed-but-not-restarted side dead until timeout. (Concretely, the
+        # UI we just launched would get evicted, the API would be "unknown
+        # PID" / skipped, and then the deepwiki restart block sees api alive
+        # and never relaunches the UI. The new deepwiki-ui health check
+        # then blocks deploy completion until timeout.)
         if cfg.get("install_deepwiki", False) or cfg.get("deepwiki_path", ""):
-            dw_api_port_clear = self._config_port("deepwiki_api_port", 8091)
-            dw_ui_port_clear = self._config_port("deepwiki_ui_port", 3001)
-            ports_to_clear.extend([dw_api_port_clear, dw_ui_port_clear])
+            _existing_api = self._processes.get("deepwiki-api")
+            _existing_ui = self._processes.get("deepwiki-ui")
+            api_alive = _existing_api is not None and _existing_api.returncode is None
+            ui_alive = _existing_ui is not None and _existing_ui.returncode is None
+            if not (api_alive and ui_alive):
+                dw_api_port_clear = self._config_port("deepwiki_api_port", 8091)
+                dw_ui_port_clear = self._config_port("deepwiki_ui_port", 3001)
+                ports_to_clear.extend([dw_api_port_clear, dw_ui_port_clear])
         await self._emit("start_services", "running", f"清理占用端口 {ports_to_clear}...", step)
         force_takeover = bool(cfg.get("force_takeover", False))
         await self._release_ports(ports_to_clear, step, force_takeover=force_takeover)
@@ -918,8 +990,15 @@ class NativeDeployer:
         deepwiki_path = self._config.get("deepwiki_path", "")
         if self._config.get("install_deepwiki", False) or deepwiki_path:
             dw_dir = Path(deepwiki_path) if deepwiki_path else None
+            # Skip restart only if BOTH api AND ui are still alive. Previously
+            # this checked api only — but the pre-clear above could kill the
+            # ui (when api PID looked "unknown" and was skipped), leaving us
+            # with api alive / ui dead but the restart skipped.
             _existing_api = self._processes.get("deepwiki-api")
-            if _existing_api is not None and _existing_api.returncode is None:
+            _existing_ui = self._processes.get("deepwiki-ui")
+            api_alive = _existing_api is not None and _existing_api.returncode is None
+            ui_alive = _existing_ui is not None and _existing_ui.returncode is None
+            if api_alive and ui_alive:
                 await self._emit("start_services", "running", "DeepWiki 已在运行，跳过重复启动", step)
             elif dw_dir and dw_dir.exists():
                 dw_api_port = self._config_port("deepwiki_api_port", 8091)
@@ -1216,6 +1295,17 @@ class NativeDeployer:
                 try:
                     async with httpx.AsyncClient(timeout=3, trust_env=False) as client:
                         resp = await client.get(f"http://localhost:{dw_port}/health")
+                        if resp.status_code >= 500:
+                            all_ok = False
+                except Exception:
+                    all_ok = False
+
+                # UI liveness check — closes the blind spot where the Next.js
+                # process crashes on startup but only the API was being probed.
+                dw_ui_port = self._config_port("deepwiki_ui_port", 3001)
+                try:
+                    async with httpx.AsyncClient(timeout=3, trust_env=False) as client:
+                        resp = await client.get(f"http://localhost:{dw_ui_port}/")
                         if resp.status_code >= 500:
                             all_ok = False
                 except Exception:
