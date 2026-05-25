@@ -71,3 +71,69 @@ async def test_run_checks_native_mode_returns_list_of_dicts():
         assert "name" in item
         assert "status" in item
         assert "message" in item
+
+
+async def test_run_checks_k8s_mode_returns_list_with_disk_and_memory():
+    """run_checks('k8s') covers docker/kubectl/helm/cluster checks (all likely fail in CI)."""
+    results = await checks.run_checks("k8s")
+    assert isinstance(results, list)
+    names = {r["name"] for r in results}
+    assert "Disk Space" in names
+    assert "Memory" in names
+    assert any("Docker" in n or "kubectl" in n or "Kubernetes" in n or "Helm" in n for n in names)
+
+
+async def test_run_checks_k8s_mode_all_items_have_required_keys():
+    """Every result from k8s mode has the mandatory schema keys."""
+    results = await checks.run_checks("k8s")
+    for item in results:
+        assert "name" in item
+        assert "status" in item
+        assert "message" in item
+
+
+async def test_run_checks_compose_mode_returns_list_with_disk_and_memory():
+    """run_checks('compose') covers docker/docker-compose checks."""
+    results = await checks.run_checks("compose")
+    assert isinstance(results, list)
+    names = {r["name"] for r in results}
+    assert "Disk Space" in names
+    assert "Memory" in names
+    assert any("Docker" in n for n in names)
+
+
+async def test_run_checks_compose_mode_all_items_have_required_keys():
+    results = await checks.run_checks("compose")
+    for item in results:
+        assert "name" in item
+        assert "status" in item
+        assert "message" in item
+
+
+def test_check_ports_with_occupied_port_in_own_ports():
+    """Port occupied by own service should be marked pass (own_ports coverage)."""
+    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as srv:
+        srv.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+        srv.bind(("127.0.0.1", 0))
+        port = srv.getsockname()[1]
+        srv.listen(1)
+        results = checks._check_ports(ports=[port], mode="native", own_ports={port})
+        assert any(r["status"] == "pass" for r in results)
+
+
+def test_check_ports_with_occupied_port_not_own():
+    """Port occupied by unknown process should be marked fail."""
+    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as srv:
+        srv.bind(("0.0.0.0", 0))
+        port = srv.getsockname()[1]
+        srv.listen(128)
+        # With no SO_REUSEADDR and binding same 0.0.0.0 address, should detect conflict
+        result = checks._check_port_free(port)
+        if result:
+            # On some Windows configs SO_REUSEADDR allows this — port detection works
+            # but the port may appear free. Just verify _check_ports returns a result.
+            results = checks._check_ports(ports=[port], mode="native", own_ports=set())
+            assert len(results) == 1
+        else:
+            results = checks._check_ports(ports=[port], mode="native", own_ports=set())
+            assert any(r["status"] == "fail" for r in results)

@@ -42,15 +42,15 @@ async def client(deployer_app):
 
 @pytest.fixture(autouse=True)
 def reset_deploy_state():
-    """Reset module-level deployment state before and after every test."""
+    """Reset module-level deployment state before and after every test.
+
+    Recreates the entire DeploymentState (including the asyncio.Lock) so that
+    each test starts with a fresh lock bound to the current event loop.
+    """
     import server
 
     def _clear():
-        server._state.running = False
-        server._state.deployer = None
-        server._state.job_id = None
-        server._state.task = None
-        server._state.event_queue = None
+        server._state = server.DeploymentState()
 
     _clear()
     yield
