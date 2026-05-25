@@ -896,13 +896,15 @@ class NativeDeployer:
         if has_python_api:
             venv_dir = dw_dir / ".venv"
             venv_python = (venv_dir / "Scripts" / "python.exe") if sys.platform == "win32" else (venv_dir / "bin" / "python")
+            launcher = str(DEPLOYER_DIR / "deepwiki_launcher.py")
+            launch_env = {**(llm_env or {}), "DEEPWIKI_API_PORT": str(api_port)}
             await self._start_process(
                 "deepwiki-api",
-                [str(venv_python), "-m", "uvicorn", "api.api:app", "--host", "0.0.0.0", "--port", str(api_port)],
+                [str(venv_python), launcher],
                 cwd=str(dw_dir),
                 step_name=step_name,
                 step_index=step_index,
-                env_extra=llm_env or None,
+                env_extra=launch_env,
             )
 
         if has_package_json:
