@@ -157,7 +157,7 @@ async def _index_workspace(ws_id: str, repo_path: str) -> None:
 
         async with aiosqlite.connect(settings.sqlite_db) as db:
             await db.execute(
-                "UPDATE workspaces SET indexed = 1, last_index_error = NULL, "
+                "UPDATE workspaces SET indexed = 1, index_progress = 100, last_index_error = NULL, "
                 "updated_at = CURRENT_TIMESTAMP WHERE id = ?",
                 (ws_id,),
             )
@@ -169,7 +169,7 @@ async def _index_workspace(ws_id: str, repo_path: str) -> None:
         logger.error("Workspace indexing failed for %s: %s", ws_id, error_msg)
         async with aiosqlite.connect(settings.sqlite_db) as db:
             await db.execute(
-                "UPDATE workspaces SET indexed = -1, last_index_error = ?, "
+                "UPDATE workspaces SET indexed = -1, index_progress = 0, last_index_error = ?, "
                 "updated_at = CURRENT_TIMESTAMP WHERE id = ?",
                 (error_msg, ws_id),
             )

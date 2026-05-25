@@ -293,38 +293,52 @@ class AnalysisPipeline:
         base_url = settings.gitnexus_base_url
         async with httpx.AsyncClient(
             base_url=base_url,
-            timeout=httpx.Timeout(600, connect=10),
+            timeout=httpx.Timeout(1800, connect=10),
             trust_env=False,
         ) as client:
             resp = await client.post("/api/analyze", json={"path": repo_path})
-            resp.raise_for_status()
-            job = resp.json()
-            job_id = job.get("jobId", "")
-            logger.info("GitNexus indexing started: %s", job_id)
 
-            # Poll for completion
-            for _ in range(300):  # 10 min max
-                await asyncio.sleep(2)
-                status_resp = await client.get(f"/api/analyze/{job_id}")
-                status = status_resp.json()
-                if status["status"] == "complete":
-                    break
-                if status["status"] == "failed":
-                    raise RuntimeError(
-                        "GitNexus indexing failed: "
-                        + status.get("error", "unknown")
-                    )
+            job_id: str | None = None
+            repo_name: str | None = None
+            if resp.status_code == 409:
+                body = resp.json() if resp.content else {}
+                if body.get("jobId"):
+                    job_id = body["jobId"]
+                    logger.info("GitNexus 409 — joining existing job %s", job_id)
+                else:
+                    repo_name = body.get("repoName") or body.get("repo") or Path(repo_path).name
+                    logger.info("GitNexus 409 — repo already indexed as %s", repo_name)
+            elif resp.is_error:
+                resp.raise_for_status()
             else:
-                raise RuntimeError("GitNexus indexing timed out")
+                job = resp.json()
+                job_id = job.get("jobId", "")
+                logger.info("GitNexus indexing started: %s", job_id)
 
-            # Fetch graph — always pass repo; fall back to directory name when
-            # the status response omits repoName (observed with some GitNexus builds).
-            repo_name = status.get("repoName", "") or Path(repo_path).name
-            if not status.get("repoName"):
-                logger.warning(
-                    "GitNexus status missing repoName; falling back to dir name: %s",
-                    repo_name,
-                )
+            if job_id is not None:
+                # Poll for completion (30 min max)
+                for _ in range(900):
+                    await asyncio.sleep(2)
+                    status_resp = await client.get(f"/api/analyze/{job_id}")
+                    status = status_resp.json()
+                    if status["status"] == "complete":
+                        repo_name = status.get("repoName", "") or Path(repo_path).name
+                        if not status.get("repoName"):
+                            logger.warning(
+                                "GitNexus status missing repoName; falling back to dir name: %s",
+                                repo_name,
+                            )
+                        break
+                    if status["status"] == "failed":
+                        raise RuntimeError(
+                            "GitNexus indexing failed: "
+                            + status.get("error", "unknown")
+                        )
+                else:
+                    raise RuntimeError("GitNexus indexing timed out")
+
+            # repo_name is set from 409 body or poll status
+            repo_name = repo_name or Path(repo_path).name
             graph_resp = await client.get("/api/graph", params={"repo": repo_name}, timeout=120)
             if graph_resp.status_code == 404:
                 logger.warning(

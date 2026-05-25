@@ -577,6 +577,7 @@ export default function WorkspaceDetailPage() {
     setReindexing(true);
     try {
       await api.workspaces.reindex(wsId);
+      setIndexProgress(0);
       setWorkspace((prev) => (prev ? { ...prev, indexed: 0 } : prev));
       startIndexPoll({ ...workspace, indexed: 0 });
     } catch (e: unknown) {

@@ -182,7 +182,11 @@ class GitNexusAdapter(BaseToolAdapter):
                 status = status_resp.json()
 
                 if on_progress:
-                    raw = status.get("progress") or status.get("percentage") or status.get("percent")
+                    raw = next(
+                        (status[k] for k in ("progress", "percentage", "percent")
+                         if k in status and status[k] is not None),
+                        None,
+                    )
                     pct = min(99, int(raw)) if raw is not None else min(99, int(elapsed / _POLL_TIMEOUT * 100))
                     await on_progress(pct)
 
