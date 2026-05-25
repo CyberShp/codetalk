@@ -39,6 +39,9 @@ def _patch_tiktoken() -> None:
 
 
 if __name__ == "__main__":
+    # When run as a script, sys.path[0] is the script's directory (deployer/),
+    # not cwd (deepwiki-open/). Insert cwd so `import api` resolves correctly.
+    sys.path.insert(0, os.getcwd())
     _patch_tiktoken()
 
     port = int(os.environ.get("DEEPWIKI_API_PORT", "8001"))
