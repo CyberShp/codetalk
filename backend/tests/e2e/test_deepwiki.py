@@ -259,3 +259,26 @@ async def test_deepwiki_generate_status_in_memory(e2e_client: AsyncClient, repo_
     body = status_resp.json()
     assert "running" in body
     assert "progress" in body
+
+
+async def test_deepwiki_pages_invalid_wiki_data_returns_empty(e2e_client: AsyncClient, repo_path: str):
+    """GET /pages returns [] when wiki_data is malformed JSON (covers _extract_pages except branch)."""
+    import aiosqlite
+    from app.config import settings
+
+    create_resp = await e2e_client.post(
+        "/api/deepwiki/repos",
+        json={"name": "Bad JSON Repo", "repo_path": repo_path},
+    )
+    repo_id = create_resp.json()["id"]
+
+    async with aiosqlite.connect(settings.sqlite_db) as db:
+        await db.execute(
+            "UPDATE deepwiki_repos SET wiki_data = ? WHERE id = ?",
+            ("not valid json {{{", repo_id),
+        )
+        await db.commit()
+
+    resp = await e2e_client.get(f"/api/deepwiki/repos/{repo_id}/pages")
+    assert resp.status_code == 200
+    assert resp.json() == []

@@ -767,3 +767,112 @@ async def test_analyze_status_after_trigger_shows_running(e2e_client: AsyncClien
     assert status_resp.status_code == 200
     body = status_resp.json()
     assert "analyze_status" in body
+
+
+async def test_workspace_chat_history_empty(e2e_client: AsyncClient, repo_path: str):
+    """GET /chat/history on a workspace with no messages returns empty list."""
+    create_resp = await e2e_client.post(
+        "/api/workspaces",
+        json={"name": "History Empty WS", "repo_path": repo_path},
+    )
+    ws_id = create_resp.json()["id"]
+
+    resp = await e2e_client.get(f"/api/workspaces/{ws_id}/chat/history")
+    assert resp.status_code == 200
+    assert resp.json() == []
+
+
+async def test_workspace_chat_history_with_messages(e2e_client: AsyncClient, repo_path: str):
+    """GET /chat/history returns seeded messages in chronological order."""
+    import aiosqlite
+    from app.config import settings
+
+    create_resp = await e2e_client.post(
+        "/api/workspaces",
+        json={"name": "History With Msgs WS", "repo_path": repo_path},
+    )
+    ws_id = create_resp.json()["id"]
+
+    async with aiosqlite.connect(settings.sqlite_db) as db:
+        await db.execute(
+            "INSERT INTO workspace_chats (id, workspace_id, mode, role, content, created_at)"
+            " VALUES (?, ?, ?, ?, ?, ?)",
+            (str(uuid.uuid4()), ws_id, "freeqa", "user", "First question", "2024-01-01T00:00:00"),
+        )
+        await db.execute(
+            "INSERT INTO workspace_chats (id, workspace_id, mode, role, content, created_at)"
+            " VALUES (?, ?, ?, ?, ?, ?)",
+            (str(uuid.uuid4()), ws_id, "freeqa", "assistant", "First answer", "2024-01-01T00:00:01"),
+        )
+        await db.commit()
+
+    resp = await e2e_client.get(f"/api/workspaces/{ws_id}/chat/history")
+    assert resp.status_code == 200
+    messages = resp.json()
+    assert len(messages) == 2
+    assert messages[0]["role"] == "user"
+    assert messages[1]["role"] == "assistant"
+
+
+async def test_workspace_chat_history_limit_param(e2e_client: AsyncClient, repo_path: str):
+    """GET /chat/history with limit=1 returns only the most recent message."""
+    import aiosqlite
+    from app.config import settings
+
+    create_resp = await e2e_client.post(
+        "/api/workspaces",
+        json={"name": "History Limit WS", "repo_path": repo_path},
+    )
+    ws_id = create_resp.json()["id"]
+
+    async with aiosqlite.connect(settings.sqlite_db) as db:
+        for i in range(3):
+            await db.execute(
+                "INSERT INTO workspace_chats (id, workspace_id, mode, role, content, created_at)"
+                " VALUES (?, ?, ?, ?, ?, ?)",
+                (str(uuid.uuid4()), ws_id, "freeqa", "user", f"Message {i}", f"2024-01-01T00:0{i}:00"),
+            )
+        await db.commit()
+
+    resp = await e2e_client.get(f"/api/workspaces/{ws_id}/chat/history", params={"limit": 1})
+    assert resp.status_code == 200
+    assert len(resp.json()) == 1
+
+
+async def test_trigger_embedding_returns_started(e2e_client: AsyncClient, repo_path: str):
+    """POST /materials/embed starts background embedding and returns immediately."""
+    create_resp = await e2e_client.post(
+        "/api/workspaces",
+        json={"name": "Embed Trigger WS", "repo_path": repo_path},
+    )
+    ws_id = create_resp.json()["id"]
+
+    resp = await e2e_client.post(f"/api/workspaces/{ws_id}/materials/embed")
+    assert resp.status_code == 200
+    assert resp.json()["status"] == "embedding_started"
+
+
+async def test_trigger_embedding_nonexistent_workspace_returns_404(e2e_client: AsyncClient):
+    """POST /materials/embed on non-existent workspace returns 404."""
+    resp = await e2e_client.post(f"/api/workspaces/{uuid.uuid4()}/materials/embed")
+    assert resp.status_code == 404
+
+
+async def test_upload_design_material_content_type(e2e_client: AsyncClient, repo_path: str, tmp_path):
+    """Uploading a 'design*.md' file sets content_type='design' via _guess_content_type."""
+    create_resp = await e2e_client.post(
+        "/api/workspaces",
+        json={"name": "Design Upload WS", "repo_path": repo_path},
+    )
+    ws_id = create_resp.json()["id"]
+
+    design_file = tmp_path / "design.md"
+    design_file.write_text("# Architecture design doc", encoding="utf-8")
+
+    with open(design_file, "rb") as f:
+        resp = await e2e_client.post(
+            f"/api/workspaces/{ws_id}/materials",
+            files={"file": ("design.md", f, "text/markdown")},
+        )
+    assert resp.status_code == 201
+    assert resp.json()["content_type"] == "design"

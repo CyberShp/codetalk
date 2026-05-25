@@ -113,6 +113,16 @@ async def test_update_nonexistent_llm_config(e2e_client: AsyncClient):
     assert resp.status_code == 404
 
 
+async def test_llm_test_endpoint_unknown_api_type(e2e_client: AsyncClient):
+    """POST /llm/test with unknown api_type returns 200 with success=False (else branch)."""
+    payload = _llm_payload(api_type="unknown_provider")
+    resp = await e2e_client.post("/api/settings/llm/test", json=payload)
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["success"] is False
+    assert "unknown_provider" in body["message"]
+
+
 @pytest.mark.skipif(not HAS_DEEPSEEK, reason="DEEPSEEK_API_KEY not set")
 async def test_llm_connectivity_test(e2e_client: AsyncClient):
     """Test real LLM connectivity with DeepSeek API."""
