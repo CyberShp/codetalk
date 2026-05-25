@@ -27,6 +27,7 @@ from app.llm.base import BaseLLMClient, LLMResponse, current_task_id
 from app.llm.factory import create_llm_client_from_active
 from app.prompts.templates import MODULE_SUMMARY_PROMPT
 from app.services.report_generator import ReportGenerator
+from app.utils.repo_paths import to_tool_repo_path
 
 logger = logging.getLogger(__name__)
 
@@ -290,13 +291,25 @@ class AnalysisPipeline:
                 )
                 return
 
+        # Translate host path to the path GitNexus sees (matches prepare() in gitnexus.py).
+        # In Docker mode the host path and the container-visible path differ; sending the raw
+        # host path would cause GitNexus to return a 409 without repoName (unknown path) instead
+        # of the 409+repoName it returns for a path it actually indexed.
+        tool_repo_path = to_tool_repo_path(
+            repo_path,
+            host_base_path=settings.repos_base_path,
+            tool_base_path=settings.tool_repos_base_path,
+            local_host_path=settings.local_repos_host_path,
+            local_container_path=settings.local_repos_container_path,
+        )
+
         base_url = settings.gitnexus_base_url
         async with httpx.AsyncClient(
             base_url=base_url,
             timeout=httpx.Timeout(1800, connect=10),
             trust_env=False,
         ) as client:
-            resp = await client.post("/api/analyze", json={"path": repo_path})
+            resp = await client.post("/api/analyze", json={"path": tool_repo_path})
 
             job_id: str | None = None
             repo_name: str | None = None
@@ -327,7 +340,7 @@ class AnalysisPipeline:
                     status_resp = await client.get(f"/api/analyze/{job_id}")
                     status = status_resp.json()
                     if status["status"] == "complete":
-                        repo_name = status.get("repoName", "") or Path(repo_path).name
+                        repo_name = status.get("repoName", "") or Path(tool_repo_path).name
                         if not status.get("repoName"):
                             logger.warning(
                                 "GitNexus status missing repoName; falling back to dir name: %s",
@@ -343,7 +356,7 @@ class AnalysisPipeline:
                     raise RuntimeError("GitNexus indexing timed out")
 
             # repo_name is set from 409 body or poll status
-            repo_name = repo_name or Path(repo_path).name
+            repo_name = repo_name or Path(tool_repo_path).name
             graph_resp = await client.get("/api/graph", params={"repo": repo_name}, timeout=120)
             if graph_resp.status_code == 404:
                 logger.warning(

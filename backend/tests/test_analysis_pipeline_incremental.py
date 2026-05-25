@@ -6,7 +6,7 @@ Covers the `changed_files: set[str] | None` three-state semantics:
   None   (diff failed/unknown) -> all modules re-analysed via LLM
 """
 import unittest
-from unittest.mock import AsyncMock, MagicMock, patch
+from unittest.mock import ANY, AsyncMock, MagicMock, patch
 
 import httpx
 
@@ -100,6 +100,61 @@ class TestIncrementalReuse(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(len(pipeline._module_summaries), 1)
         analyze_mock.assert_called_once()
         self.assertEqual(pipeline._module_summaries[0]["summary"], "fresh summary")
+
+
+class TestCollectGitnexusPathTranslation(unittest.IsolatedAsyncioTestCase):
+    """_collect_gitnexus must translate the host path via to_tool_repo_path before calling GitNexus,
+    matching the behaviour of GitNexusAdapter.prepare()."""
+
+    def _make_pipeline(self) -> AnalysisPipeline:
+        p = AnalysisPipeline()
+        p._repo_path = "/host/repo"
+        return p
+
+    async def test_translated_path_sent_to_gitnexus(self):
+        """The path sent in the POST body must be the tool-translated path, not the raw host path."""
+        pipeline = self._make_pipeline()
+        fake_ok = MagicMock()
+        fake_ok.status_code = 200
+        fake_ok.is_error = False
+        fake_ok.json.return_value = {"jobId": "job-1"}
+
+        fake_complete = MagicMock()
+        fake_complete.json.return_value = {"status": "complete", "repoName": "repo"}
+
+        fake_graph = MagicMock()
+        fake_graph.status_code = 200
+        fake_graph.raise_for_status = MagicMock()
+        fake_graph.json.return_value = {"nodes": [], "relationships": []}
+
+        mock_client = AsyncMock()
+        mock_client.__aenter__ = AsyncMock(return_value=mock_client)
+        mock_client.__aexit__ = AsyncMock(return_value=None)
+        mock_client.post = AsyncMock(return_value=fake_ok)
+        mock_client.get = AsyncMock(side_effect=[fake_complete, fake_graph])
+
+        with (
+            patch("app.services.analysis_pipeline.httpx.AsyncClient", return_value=mock_client),
+            patch.object(pipeline, "_build_gitnexus_cache_key", new=AsyncMock(return_value=None)),
+            patch.object(pipeline, "_save_gitnexus_cache", new=AsyncMock()),
+            patch(
+                "app.services.analysis_pipeline.to_tool_repo_path",
+                return_value="/container/repo",
+            ) as mock_translate,
+        ):
+            await pipeline._collect_gitnexus("/host/repo")
+
+        mock_translate.assert_called_once_with(
+            "/host/repo",
+            host_base_path=ANY,
+            tool_base_path=ANY,
+            local_host_path=ANY,
+            local_container_path=ANY,
+        )
+        # The POST must use the translated path, not the host path
+        mock_client.post.assert_called_once_with(
+            "/api/analyze", json={"path": "/container/repo"}
+        )
 
 
 class TestCollectGitnexus409(unittest.IsolatedAsyncioTestCase):
