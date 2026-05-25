@@ -132,7 +132,12 @@ export interface ChatMessage {
 /* ── Workspace types (V2) ── */
 
 export type WorkspaceMaterialType = "requirements" | "design" | "other";
-export type WorkspaceReportStatus = "pending" | "running" | "completed" | "failed";
+export type WorkspaceReportStatus =
+  | "pending"
+  | "running"
+  | "completed"
+  | "partial"
+  | "failed";
 
 export interface WorkspaceMaterial {
   id: string;
@@ -192,6 +197,105 @@ export interface WorkspaceChatMessage {
 export interface WorkspaceModule {
   id: string;
   name: string;
+}
+
+/* ── Analysis plan / scope preview (workspace analysis modal) ── */
+
+export type AnalysisObjectKind =
+  | "topic"
+  | "module"
+  | "flow"
+  | "file"
+  | "function"
+  | "mixed";
+export type AnalysisObjectPriority = "high" | "medium" | "low";
+
+export interface AnalysisObject {
+  id: string;
+  text: string;
+  kind: AnalysisObjectKind;
+  priority: AnalysisObjectPriority;
+}
+
+export interface FocusOptions {
+  key_flows: boolean;
+  exception_branches: boolean;
+  exception_propagation: boolean;
+  boundary_values: boolean;
+  long_running_flip: boolean;
+  state_machine: boolean;
+  resource_cleanup: boolean;
+  concurrency: boolean;
+  observability: boolean;
+  sfmea: boolean;
+  cpp_implicit_logic: boolean;
+  security_risk: boolean;
+}
+
+export interface ReportSpec {
+  id: string;
+  title: string;
+  enabled: boolean;
+  template_id: string;
+  custom: boolean;
+  audience?: string | null;
+  questions: string[];
+  output_format?: string | null;
+  max_sections?: number | null;
+  max_length_chars?: number | null;
+}
+
+export interface LLMLimits {
+  max_evidence_cards: number;
+  max_files_per_object: number;
+  max_functions_per_object: number;
+  max_communities_per_object: number;
+  max_cards_per_report_section: number;
+  max_output_chars_per_section: number;
+  retry_empty_output: number;
+  max_analysis_units: number;
+}
+
+export interface AnalysisPlan {
+  version: "workspace-analysis-plan-v1";
+  analysis_objects: AnalysisObject[];
+  focus: FocusOptions;
+  reports: ReportSpec[];
+  user_guidance: string;
+  llm_limits: LLMLimits;
+}
+
+export type ScopeCandidateSource =
+  | "gitnexus"
+  | "repo_search"
+  | "material"
+  | "manual";
+export type ScopeCandidateConfidence = "high" | "medium" | "low";
+
+export interface ScopeCandidate {
+  path?: string | null;
+  symbol?: string | null;
+  source: ScopeCandidateSource;
+  confidence: ScopeCandidateConfidence;
+  reason: string;
+}
+
+export interface ResolvedAnalysisObject {
+  object_id: string;
+  text: string;
+  candidate_files: ScopeCandidate[];
+  candidate_symbols: ScopeCandidate[];
+  related_communities: string[];
+  warnings: string[];
+}
+
+export interface ScopePreview {
+  workspace_id: string;
+  resolved_objects: ResolvedAnalysisObject[];
+  estimated_analysis_units: number;
+  estimated_evidence_cards: number;
+  warnings: string[];
+  gitnexus_available: boolean;
 }
 
 export interface ChatRequest {

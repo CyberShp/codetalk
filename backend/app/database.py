@@ -161,6 +161,14 @@ _MIGRATIONS = [
     "ALTER TABLE material_chunks ADD COLUMN embedding_model_id TEXT",
     "ALTER TABLE workspaces ADD COLUMN last_index_error TEXT",
     "ALTER TABLE workspaces ADD COLUMN index_progress INTEGER DEFAULT 0",
+    # F-WORKSPACE-GITNEXUS-ANALYSIS-TASK-REDESIGN: persist plan & scope on the
+    # shadow task so the pipeline can drive bounded fan-out.
+    "ALTER TABLE tasks ADD COLUMN analysis_plan_json TEXT",
+    "ALTER TABLE tasks ADD COLUMN scope_preview_json TEXT",
+    "ALTER TABLE tasks ADD COLUMN report_plan_json TEXT",
+    "ALTER TABLE workspaces ADD COLUMN last_analysis_plan_json TEXT",
+    "ALTER TABLE workspace_reports ADD COLUMN error TEXT",
+    "ALTER TABLE workspace_reports ADD COLUMN metadata_json TEXT",
 ]
 
 

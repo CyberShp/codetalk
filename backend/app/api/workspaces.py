@@ -14,6 +14,11 @@ from pydantic import BaseModel, Field
 
 from app.config import settings
 from app.database import get_db
+from app.schemas.workspace_analysis import (
+    AnalysisPlan,
+    ScopePreview,
+    build_default_plan,
+)
 
 router = APIRouter(prefix="/api/workspaces", tags=["工作空间"])
 logger = logging.getLogger(__name__)
@@ -181,12 +186,19 @@ async def _index_workspace(ws_id: str, repo_path: str) -> None:
             await db.commit()
 
 
-async def _run_workspace_analysis(ws_id: str, repo_path: str) -> None:
+async def _run_workspace_analysis(
+    ws_id: str,
+    repo_path: str,
+    plan: AnalysisPlan | None = None,
+    scope_preview: ScopePreview | None = None,
+) -> None:
     """Background task: run WorkspacePipeline, update analyze_status on failure."""
     from app.services.workspace_pipeline import WorkspacePipeline
 
     try:
-        await WorkspacePipeline().run(ws_id, repo_path)
+        await WorkspacePipeline().run(
+            ws_id, repo_path, plan=plan, scope_preview=scope_preview,
+        )
     except Exception as exc:
         logger.error("Workspace analysis failed for %s: %s", ws_id, exc)
         async with aiosqlite.connect(settings.sqlite_db) as db:
@@ -278,23 +290,134 @@ async def reindex_workspace(ws_id: str, db: aiosqlite.Connection = Depends(get_d
 
 # --- T7: Analyze endpoints ---
 
+# F-WORKSPACE-GITNEXUS-ANALYSIS-TASK-REDESIGN: analyze accepts an
+# AnalysisPlan + ScopePreview body.  Legacy callers without a body still
+# work — we synthesize a bounded default plan in that path so we never
+# fall back to "one LLM call per GitNexus community".
+
+class AnalyzeRequest(BaseModel):
+    plan: AnalysisPlan | None = None
+    scope_preview: ScopePreview | None = None
+
+
+@router.get("/{ws_id}/analysis/default-plan", response_model=AnalysisPlan)
+async def get_default_analysis_plan(
+    ws_id: str, db: aiosqlite.Connection = Depends(get_db)
+):
+    """Return a starter AnalysisPlan tailored to the workspace."""
+    await _get_workspace_or_404(ws_id, db)
+    async with db.execute(
+        "SELECT COUNT(*) AS cnt FROM workspace_materials "
+        "WHERE workspace_id = ? AND is_active = TRUE AND content_type IN ('requirements', 'design')",
+        (ws_id,),
+    ) as cur:
+        row = await cur.fetchone()
+    has_reqs = bool(row and row["cnt"])
+    return build_default_plan(has_requirements=has_reqs, seed_examples=True)
+
+
+class PreviewScopeRequest(BaseModel):
+    plan: AnalysisPlan
+
+
+@router.post("/{ws_id}/analysis/preview", response_model=ScopePreview)
+async def preview_analysis_scope(
+    ws_id: str,
+    body: PreviewScopeRequest,
+    db: aiosqlite.Connection = Depends(get_db),
+):
+    """Resolve the submitted plan to a bounded scope preview.
+
+    Rules (per §10.2 of the spec):
+      * 404 if workspace missing
+      * 409 if not yet indexed
+      * 400 if plan has no analysis objects
+      * 200 with warnings otherwise
+    """
+    ws = await _get_workspace_or_404(ws_id, db)
+    if ws["indexed"] != 1:
+        raise HTTPException(
+            status_code=409,
+            detail="工作空间尚未完成索引，请等待索引完成后再预览分析范围",
+        )
+    if not body.plan.analysis_objects:
+        raise HTTPException(
+            status_code=400,
+            detail="请至少填写一条分析对象",
+        )
+
+    from app.services.workspace_scope_resolver import WorkspaceScopeResolver
+
+    resolver = WorkspaceScopeResolver()
+    return await resolver.resolve(
+        ws_id=ws_id,
+        repo_path=ws["repo_path"],
+        plan=body.plan,
+    )
+
+
 @router.post("/{ws_id}/analyze", status_code=202)
-async def analyze_workspace(ws_id: str, db: aiosqlite.Connection = Depends(get_db)):
+async def analyze_workspace(
+    ws_id: str,
+    body: AnalyzeRequest | None = None,
+    db: aiosqlite.Connection = Depends(get_db),
+):
     ws = await _get_workspace_or_404(ws_id, db)
     if ws["indexed"] != 1:
         raise HTTPException(status_code=409, detail="工作空间尚未完成索引，请等待索引完成后再生成报告")
     if ws.get("analyze_status") == "running":
         raise HTTPException(status_code=409, detail="报告生成正在进行中")
 
+    plan: AnalysisPlan | None = body.plan if body else None
+    scope_preview: ScopePreview | None = body.scope_preview if body else None
+
+    if plan is None:
+        # Backward-compatible default — still bounded by build_default_plan().
+        plan = build_default_plan(has_requirements=False, seed_examples=False)
+        if not plan.analysis_objects:
+            # Without explicit objects we synthesize a single coarse target so
+            # the pipeline still produces a bounded number of analysis units
+            # (NOT one-per-GitNexus-community).
+            from app.schemas.workspace_analysis import AnalysisObject
+
+            plan.analysis_objects.append(
+                AnalysisObject(
+                    id="obj_legacy_overview",
+                    text="整体架构与关键业务流程概览",
+                    kind="topic",
+                    priority="medium",
+                )
+            )
+    elif not plan.analysis_objects:
+        raise HTTPException(
+            status_code=400, detail="分析对象为空，请至少填写一条"
+        )
+
+    plan_json = plan.model_dump_json()
+    preview_json = scope_preview.model_dump_json() if scope_preview else None
+
     await db.execute(
         "UPDATE workspaces SET analyze_status = 'running', analyze_progress = 0, "
-        "updated_at = CURRENT_TIMESTAMP WHERE id = ?",
-        (ws_id,),
+        "last_analysis_plan_json = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?",
+        (plan_json, ws_id),
     )
     await db.commit()
 
-    asyncio.create_task(_run_workspace_analysis(ws_id, ws["repo_path"]))
-    return {"status": "running", "message": "工作空间分析已启动"}
+    asyncio.create_task(
+        _run_workspace_analysis(ws_id, ws["repo_path"], plan=plan, scope_preview=scope_preview)
+    )
+    return {
+        "status": "running",
+        "message": "工作空间分析已启动",
+        "analysis_units": (
+            scope_preview.estimated_analysis_units if scope_preview else None
+        ),
+        "evidence_cards": (
+            scope_preview.estimated_evidence_cards if scope_preview else None
+        ),
+        "plan_persisted": True,
+        "preview_persisted": preview_json is not None,
+    }
 
 
 @router.get("/{ws_id}/analyze-status")

@@ -27,6 +27,14 @@ _RETRYABLE_EXCEPTIONS = (
     httpx.RemoteProtocolError,
 )
 
+
+class LLMEmptyOutputError(RuntimeError):
+    """Raised when an LLM stream completed but produced no usable content.
+
+    The report generator catches this to mark a section as failed instead
+    of silently writing an empty file.
+    """
+
 _DEFAULT_BACKOFF_SECONDS = (1, 2, 4)
 
 # Truncation limits: keep snapshots small while still useful for debugging.
@@ -133,17 +141,51 @@ class BaseLLMClient(ABC):
         max_tokens: int = 4096,
         temperature: float = 0.3,
         max_retries: int = 3,
+        *,
+        min_chars: int = 0,
+        retry_on_empty: bool = True,
     ) -> str:
-        """Stream with retry — collect all chunks and return the full text."""
+        """Stream with retry — collect all chunks and return the full text.
+
+        Empty / suspiciously-short outputs raise ``LLMEmptyOutputError`` so
+        callers can mark the relevant report section as failed instead of
+        silently writing a blank file.  When ``retry_on_empty`` is True we
+        retry once (or up to ``max_retries``) before raising — providers
+        occasionally drop the first delta when overloaded.
+        """
         last_exc: BaseException | None = None
         for attempt in range(max_retries + 1):
             try:
                 content = ""
+                chunk_count = 0
                 async for chunk in self.stream_complete(
                     messages, max_tokens, temperature,
                 ):
-                    content += chunk
+                    if chunk:
+                        content += chunk
+                        chunk_count += 1
+                if (
+                    retry_on_empty
+                    and (chunk_count == 0 or len(content.strip()) < max(min_chars, 1))
+                ):
+                    raise LLMEmptyOutputError(
+                        f"streaming produced empty/too-short output "
+                        f"(chunks={chunk_count}, chars={len(content.strip())})"
+                    )
                 return content
+            except LLMEmptyOutputError as exc:
+                last_exc = exc
+                if attempt < max_retries:
+                    delay = _DEFAULT_BACKOFF_SECONDS[
+                        min(attempt, len(_DEFAULT_BACKOFF_SECONDS) - 1)
+                    ]
+                    logger.warning(
+                        "Stream returned empty output, retrying in %.1fs (attempt %d/%d)",
+                        delay, attempt + 1, max_retries,
+                    )
+                    await asyncio.sleep(delay)
+                    continue
+                raise
             except (*_RETRYABLE_EXCEPTIONS, httpx.HTTPStatusError) as exc:
                 if isinstance(exc, httpx.HTTPStatusError):
                     status = exc.response.status_code

@@ -20,6 +20,8 @@ import type {
   EmbeddingStatus,
   DeepWikiRepo,
   DeepWikiRepoCreate,
+  AnalysisPlan,
+  ScopePreview,
 } from "./types";
 
 export const BASE =
@@ -321,11 +323,30 @@ export const api = {
         { method: "POST" },
       ),
 
-    analyze: (id: string) =>
-      request<{ status: string; message: string }>(
-        `/api/workspaces/${id}/analyze`,
-        { method: "POST" },
-      ),
+    analyze: (
+      id: string,
+      body?: { plan?: AnalysisPlan; scope_preview?: ScopePreview | null },
+    ) =>
+      request<{
+        status: string;
+        message: string;
+        analysis_units?: number | null;
+        evidence_cards?: number | null;
+        plan_persisted?: boolean;
+        preview_persisted?: boolean;
+      }>(`/api/workspaces/${id}/analyze`, {
+        method: "POST",
+        body: body ? JSON.stringify(body) : undefined,
+      }),
+
+    defaultAnalysisPlan: (id: string) =>
+      request<AnalysisPlan>(`/api/workspaces/${id}/analysis/default-plan`),
+
+    previewScope: (id: string, plan: AnalysisPlan) =>
+      request<ScopePreview>(`/api/workspaces/${id}/analysis/preview`, {
+        method: "POST",
+        body: JSON.stringify({ plan }),
+      }),
 
     analyzeStatus: (id: string) =>
       request<{ analyze_status: string | null; analyze_progress: number }>(
