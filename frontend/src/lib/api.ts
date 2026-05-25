@@ -338,17 +338,20 @@ export const api = {
         `/api/workspaces/${wsId}/reports/${reportId}`,
       ),
 
+    modules: (wsId: string) =>
+      request<import("./types").WorkspaceModule[]>(`/api/workspaces/${wsId}/modules`),
+
     chatHistory: (wsId: string, limit = 50) =>
       request<import("./types").WorkspaceChatMessage[]>(
         `/api/workspaces/${wsId}/chat/history?limit=${limit}`,
       ),
 
-    chatStream: (wsId: string, message: string, mode: import("./types").ChatMode): Promise<Response> =>
+    chatStream: (wsId: string, message: string, mode: import("./types").ChatMode, module?: string): Promise<Response> =>
       fetch(`${BASE}/api/workspaces/${wsId}/chat/stream`, {
         method: "POST",
         credentials: "include",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ message, mode }),
+        body: JSON.stringify({ message, mode, ...(module ? { module } : {}) }),
       }),
 
     exportUrl: (wsId: string, format: "md" | "docx" | "xml") =>

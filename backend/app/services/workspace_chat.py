@@ -39,7 +39,7 @@ _TARGETED_SYSTEM = """\
 
 ## 代码仓库
 {repo_path}
-
+{module_context}
 ## 相关代码片段
 {code_snippets}
 
@@ -57,7 +57,7 @@ _FREEQA_SYSTEM = """\
 
 ## 代码仓库
 {repo_path}
-
+{module_context}
 ## 相关代码片段
 {code_snippets}
 
@@ -65,7 +65,7 @@ _FREEQA_SYSTEM = """\
 """
 
 
-async def _search_gitnexus(repo_path: str, query: str) -> list[str]:
+async def _search_gitnexus(repo_path: str, query: str, module: str | None = None) -> list[str]:
     """Return top-5 relevant code snippets from GitNexus. Empty list on any failure."""
     try:
         tool_path = to_tool_repo_path(
@@ -74,6 +74,7 @@ async def _search_gitnexus(repo_path: str, query: str) -> list[str]:
             tool_base_path=settings.tool_repos_base_path,
         )
         repo_name = Path(tool_path).name
+        effective_query = f"[{module}] {query}" if module else query
 
         async with httpx.AsyncClient(
             base_url=settings.gitnexus_base_url,
@@ -82,7 +83,7 @@ async def _search_gitnexus(repo_path: str, query: str) -> list[str]:
         ) as client:
             resp = await client.get(
                 "/api/search",
-                params={"q": query, "repo": repo_name, "limit": _SEARCH_LIMIT},
+                params={"q": effective_query, "repo": repo_name, "limit": _SEARCH_LIMIT},
             )
             resp.raise_for_status()
             data = resp.json()
@@ -231,14 +232,16 @@ async def build_chat_messages(
     repo_path: str,
     user_message: str,
     mode: str,
+    module: str | None = None,
 ) -> list[dict]:
     """Gather workspace context and build the full LLM message list."""
     snippets, history = await asyncio.gather(
-        _search_gitnexus(repo_path, user_message),
+        _search_gitnexus(repo_path, user_message, module),
         _load_history(ws_id),
     )
 
     code_text = "\n\n".join(snippets) if snippets else "（无相关代码片段）"
+    module_context = f"\n## 聚焦模块\n{module}\n" if module else ""
 
     if mode == "targeted":
         materials, reports = await asyncio.gather(
@@ -247,6 +250,7 @@ async def build_chat_messages(
         )
         system_prompt = _TARGETED_SYSTEM.format(
             repo_path=repo_path,
+            module_context=module_context,
             code_snippets=code_text,
             materials_summary="\n\n".join(materials) if materials else "（无）",
             reports_summary="\n\n".join(reports) if reports else "（尚未生成报告）",
@@ -254,6 +258,7 @@ async def build_chat_messages(
     else:
         system_prompt = _FREEQA_SYSTEM.format(
             repo_path=repo_path,
+            module_context=module_context,
             code_snippets=code_text,
         )
 

@@ -7,6 +7,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 import aiosqlite
+import httpx
 from fastapi import APIRouter, Depends, HTTPException, Query, UploadFile
 from fastapi.responses import Response, StreamingResponse
 from pydantic import BaseModel, Field
@@ -558,11 +559,56 @@ def _guess_content_type(filename: str) -> str:
     return "other"
 
 
+# --- T9: Workspace modules endpoint ---
+
+@router.get("/{ws_id}/modules")
+async def get_workspace_modules(
+    ws_id: str,
+    db: aiosqlite.Connection = Depends(get_db),
+):
+    """Return the list of GitNexus community/cluster modules for the workspace."""
+    ws = await _get_workspace_or_404(ws_id, db)
+    if ws["indexed"] != 1:
+        return []
+
+    from app.utils.repo_paths import to_tool_repo_path
+    tool_path = to_tool_repo_path(
+        ws["repo_path"],
+        host_base_path=settings.repos_base_path,
+        tool_base_path=settings.tool_repos_base_path,
+        local_host_path=settings.local_repos_host_path,
+        local_container_path=settings.local_repos_container_path,
+    )
+    repo_name = Path(tool_path).name
+
+    try:
+        async with httpx.AsyncClient(
+            base_url=settings.gitnexus_base_url,
+            timeout=15,
+            trust_env=False,
+        ) as client:
+            resp = await client.get("/api/clusters", params={"repo": repo_name})
+            resp.raise_for_status()
+            data = resp.json()
+    except Exception as exc:
+        logger.warning("Failed to fetch GitNexus clusters for workspace %s: %s", ws_id, exc)
+        return []
+
+    raw: list[dict] = data if isinstance(data, list) else data.get("clusters", data.get("communities", []))
+    modules = []
+    for item in raw:
+        name = item.get("name") or item.get("label") or item.get("id") or ""
+        if name:
+            modules.append({"id": str(name), "name": str(name)})
+    return modules
+
+
 # --- T9: Workspace chat endpoints ---
 
 class WorkspaceChatRequest(BaseModel):
     message: str = Field(min_length=1, max_length=8000)
     mode: str = Field(default="freeqa", pattern="^(targeted|freeqa)$")
+    module: str | None = None
 
 
 class WorkspaceChatMessageResponse(BaseModel):
@@ -600,7 +646,7 @@ async def workspace_chat_stream(
 
     # Fix 3a: build context first so _load_history() excludes this turn's user message,
     # then persist — message is still saved before streaming begins
-    messages = await build_chat_messages(ws_id, ws["repo_path"], body.message, body.mode)
+    messages = await build_chat_messages(ws_id, ws["repo_path"], body.message, body.mode, body.module)
 
     try:
         await persist_user_message(ws_id, body.mode, body.message)

@@ -26,7 +26,7 @@ import {
   Download,
 } from "lucide-react";
 import { api } from "@/lib/api";
-import type { Workspace, WorkspaceReportMeta, WorkspaceChatMessage, ChatMode, EmbeddingStatus } from "@/lib/types";
+import type { Workspace, WorkspaceReportMeta, WorkspaceChatMessage, ChatMode, EmbeddingStatus, WorkspaceModule } from "@/lib/types";
 import MarkdownRenderer from "@/components/ui/MarkdownRenderer";
 
 type Tab = "reports" | "materials" | "chat";
@@ -183,6 +183,8 @@ function ChatPanel({ wsId, indexed }: { wsId: string; indexed: number }) {
   const [mode, setMode] = useState<ChatMode>("freeqa");
   const [streaming, setStreaming] = useState(false);
   const [loadingHistory, setLoadingHistory] = useState(true);
+  const [modules, setModules] = useState<WorkspaceModule[]>([]);
+  const [selectedModule, setSelectedModule] = useState<string | null>(null);
   const userNearBottom = useRef(true);
   const bottomRef = useRef<HTMLDivElement>(null);
 
@@ -196,6 +198,12 @@ function ChatPanel({ wsId, indexed }: { wsId: string; indexed: number }) {
       .catch(() => {})
       .finally(() => setLoadingHistory(false));
   }, [wsId]);
+
+  useEffect(() => {
+    if (indexed === 1) {
+      api.workspaces.modules(wsId).then(setModules).catch(() => {});
+    }
+  }, [wsId, indexed]);
 
   const handleChatScroll = useCallback((e: React.UIEvent<HTMLDivElement>) => {
     const el = e.currentTarget;
@@ -229,7 +237,7 @@ function ChatPanel({ wsId, indexed }: { wsId: string; indexed: number }) {
     setMessages((prev) => [...prev, userBubble]);
 
     try {
-      const res = await api.workspaces.chatStream(wsId, text, mode);
+      const res = await api.workspaces.chatStream(wsId, text, mode, selectedModule ?? undefined);
       if (!res.ok) {
         const body = await res.text().catch(() => "");
         throw new Error(body || `HTTP ${res.status}`);
@@ -333,6 +341,36 @@ function ChatPanel({ wsId, indexed }: { wsId: string; indexed: number }) {
           </button>
         ))}
       </div>
+
+      {/* Module selector — shown when indexed and GitNexus clusters are available */}
+      {canChat && modules.length > 0 && (
+        <div className="flex flex-wrap items-center gap-1.5 mb-3">
+          <span className="text-[10px] text-on-surface-variant/50 shrink-0">聚焦模块：</span>
+          <button
+            onClick={() => setSelectedModule(null)}
+            className={`px-2 py-0.5 text-[11px] rounded-full border transition-colors ${
+              selectedModule === null
+                ? "bg-primary/10 border-primary/40 text-primary"
+                : "border-outline-variant/30 text-on-surface-variant/70 hover:border-primary/20"
+            }`}
+          >
+            全部
+          </button>
+          {modules.map((m) => (
+            <button
+              key={m.id}
+              onClick={() => setSelectedModule(selectedModule === m.id ? null : m.id)}
+              className={`px-2 py-0.5 text-[11px] rounded-full border transition-colors ${
+                selectedModule === m.id
+                  ? "bg-primary/10 border-primary/40 text-primary"
+                  : "border-outline-variant/30 text-on-surface-variant/70 hover:border-primary/20"
+              }`}
+            >
+              {m.name}
+            </button>
+          ))}
+        </div>
+      )}
 
       {/* Message list */}
       <div onScroll={handleChatScroll} className="flex-1 overflow-y-auto rounded-xl border border-outline-variant/20 bg-surface-container-low p-4 space-y-4">

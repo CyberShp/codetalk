@@ -189,9 +189,15 @@ export interface WorkspaceChatMessage {
   created_at: string;
 }
 
+export interface WorkspaceModule {
+  id: string;
+  name: string;
+}
+
 export interface ChatRequest {
   message: string;
   mode: ChatMode;
+  module?: string;
 }
 
 export interface EmbeddingStatus {
