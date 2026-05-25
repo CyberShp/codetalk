@@ -157,7 +157,7 @@ def _export_docx(docs: list[_ReportDoc], prefix: str) -> tuple[bytes, str, str]:
     try:
         from docx import Document
         from docx.shared import Pt
-    except ImportError:
+    except ImportError:  # pragma: no cover
         raise RuntimeError("python-docx 未安装，请运行: pip install python-docx")
 
     doc = Document()

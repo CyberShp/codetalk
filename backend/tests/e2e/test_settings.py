@@ -123,6 +123,36 @@ async def test_llm_test_endpoint_unknown_api_type(e2e_client: AsyncClient):
     assert "unknown_provider" in body["message"]
 
 
+async def test_llm_test_anthropic_unreachable(e2e_client: AsyncClient):
+    """Lines 172, 178-183: api_type 'anthropic' creates AnthropicClient then fails
+    health_check (bogus URL), returning success=False via exception or health-check."""
+    payload = _llm_payload(
+        api_type="anthropic",
+        base_url="http://127.0.0.1:19999",
+        api_key="sk-ant-test",
+        model="claude-3-haiku-20240307",
+    )
+    resp = await e2e_client.post("/api/settings/llm/test", json=payload)
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["success"] is False
+
+
+async def test_llm_test_openai_compat_unreachable(e2e_client: AsyncClient):
+    """Lines 174, 178-183: api_type 'openai_compat' creates OpenAICompatClient then
+    fails health_check (bogus URL), returning success=False."""
+    payload = _llm_payload(
+        api_type="openai_compat",
+        base_url="http://127.0.0.1:19999/v1",
+        api_key="sk-test",
+        model="gpt-4",
+    )
+    resp = await e2e_client.post("/api/settings/llm/test", json=payload)
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["success"] is False
+
+
 @pytest.mark.skipif(not HAS_DEEPSEEK, reason="DEEPSEEK_API_KEY not set")
 async def test_llm_connectivity_test(e2e_client: AsyncClient):
     """Test real LLM connectivity with DeepSeek API."""

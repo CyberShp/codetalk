@@ -1,7 +1,7 @@
 """Tests for the /api/tasks endpoints (CRUD + output/debug/steps/chat)."""
 
 import json
-from unittest.mock import AsyncMock, patch
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
@@ -486,3 +486,68 @@ async def test_send_chat_llm_unavailable(client, tmp_path):
 
     assert response.status_code == 503
     assert "LLM" in response.json()["detail"]
+
+
+async def test_send_chat_stream_error_yields_error_event(client, tmp_path):
+    created = await client.post("/api/tasks", json=_task_payload(tmp_path))
+    task_id = created.json()["id"]
+
+    from app.config import settings
+    out_dir = settings.outputs_path / task_id
+    out_dir.mkdir(parents=True)
+    (out_dir / "report.md").write_text("# Report", encoding="utf-8")
+
+    async def _failing_stream(messages, **kwargs):
+        raise RuntimeError("LLM stream failed")
+        yield  # makes it an async generator
+
+    mock_llm = MagicMock()
+    mock_llm.stream_complete = _failing_stream
+
+    with patch(
+        "app.llm.factory.create_llm_client_from_active",
+        new_callable=AsyncMock,
+        return_value=mock_llm,
+    ):
+        response = await client.post(
+            f"/api/tasks/{task_id}/chat",
+            json={"message": "hello"},
+        )
+
+    assert response.status_code == 200
+    assert "error" in response.text
+
+
+async def test_send_chat_db_persist_exception_swallowed(client, tmp_path):
+    created = await client.post("/api/tasks", json=_task_payload(tmp_path))
+    task_id = created.json()["id"]
+
+    from app.config import settings
+    out_dir = settings.outputs_path / task_id
+    out_dir.mkdir(parents=True)
+    (out_dir / "report.md").write_text("# Report", encoding="utf-8")
+
+    async def _ok_stream(messages, **kwargs):
+        yield "Hello"
+
+    mock_llm = MagicMock()
+    mock_llm.stream_complete = _ok_stream
+
+    import aiosqlite as _aiosqlite
+
+    with patch(
+        "app.llm.factory.create_llm_client_from_active",
+        new_callable=AsyncMock,
+        return_value=mock_llm,
+    ):
+        with patch(
+            "app.api.tasks.aiosqlite.connect",
+            side_effect=_aiosqlite.OperationalError("DB failed"),
+        ):
+            response = await client.post(
+                f"/api/tasks/{task_id}/chat",
+                json={"message": "hello"},
+            )
+
+    assert response.status_code == 200
+    assert "Hello" in response.text

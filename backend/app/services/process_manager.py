@@ -7,13 +7,18 @@ Health is checked periodically; crashed processes are auto-restarted.
 import asyncio
 import logging
 import os
+import shutil
 import time
 from dataclasses import dataclass, field
+from pathlib import Path
 from typing import Any
 
 import httpx
 
 from app.config import settings
+
+# Must match config._CL100K_BPE
+_CL100K_BPE = "9b5ad71b2ce5302211f9c61530b329a4922fc6a4"
 
 logger = logging.getLogger(__name__)
 
@@ -21,6 +26,33 @@ logger = logging.getLogger(__name__)
 # ---------------------------------------------------------------------------
 # Tool registry -- static definitions for each managed tool
 # ---------------------------------------------------------------------------
+
+async def _ensure_deepwiki_tiktoken(deepwiki_path: str) -> None:
+    """Copy the tiktoken BPE file into {deepwiki_path}/tiktoken/ before deepwiki starts.
+
+    Mirrors the colleague's approach of setting TIKTOKEN_CACHE_DIR=./tiktoken in deepwiki's
+    own .env.  By physically placing the file there we avoid internet downloads even when
+    deepwiki's .env overrides the env var we inject.
+    """
+    src = settings.tiktoken_cache_path / _CL100K_BPE
+    if not src.exists():
+        logger.warning(
+            "ProcessManager: tiktoken BPE file not found at %s; deepwiki may fail to start", src
+        )
+        return
+
+    dest_dir = Path(deepwiki_path) / "tiktoken"
+    dest = dest_dir / _CL100K_BPE
+    if dest.exists():
+        return
+
+    def _copy() -> None:
+        dest_dir.mkdir(parents=True, exist_ok=True)
+        shutil.copy2(src, dest)
+
+    await asyncio.to_thread(_copy)
+    logger.info("ProcessManager: tiktoken BPE file staged at %s", dest)
+
 
 def _build_registry() -> dict[str, dict[str, Any]]:
     """Build the tool registry from current settings.
@@ -47,7 +79,16 @@ def _build_registry() -> dict[str, dict[str, Any]]:
             "command": ["python", "-m", "api.main"],
             "health_url": f"http://localhost:{settings.deepwiki_api_port}/health",
             "cwd": settings.deepwiki_path or None,
-            "env": {"TIKTOKEN_CACHE_DIR": str(settings.tiktoken_cache_path)},
+            # Prefer the tiktoken subdir inside deepwiki's own working directory so that
+            # deepwiki's .env "TIKTOKEN_CACHE_DIR=./tiktoken" and our pre-copied file agree.
+            # Fall back to codetalk's vendor cache if deepwiki_path is not configured.
+            "env": {
+                "TIKTOKEN_CACHE_DIR": (
+                    str(Path(settings.deepwiki_path) / "tiktoken")
+                    if settings.deepwiki_path
+                    else str(settings.tiktoken_cache_path)
+                ),
+            },
         },
         "deepwiki-ui": {
             "display_name": "DeepWiki UI",
@@ -192,12 +233,27 @@ class ProcessManager:
         cmd: list[str] = cfg["command"]
         cwd: str | None = cfg.get("cwd") or None
 
+        # deepwiki-api requires a configured installation path to run
+        if name == "deepwiki-api" and cwd is None:
+            mp.status = "error"
+            mp.last_error = "DEEPWIKI_PATH not set; cannot start deepwiki-api"
+            logger.error(
+                "ProcessManager: cannot start 'deepwiki-api' — set DEEPWIKI_PATH in backend/.env "
+                "to the directory where DeepWiki is installed"
+            )
+            return False
+
         # Validate working directory when required
         if cwd is not None and not os.path.isdir(cwd):
             mp.status = "error"
             mp.last_error = f"Working directory does not exist: {cwd}"
             logger.error("ProcessManager: cannot start '%s' -- %s", name, mp.last_error)
             return False
+
+        # Pre-start: ensure tiktoken BPE file is in {deepwiki_path}/tiktoken/ so that deepwiki
+        # can start without downloading from the internet (mirrors the colleague's .env approach).
+        if name == "deepwiki-api" and cwd:
+            await _ensure_deepwiki_tiktoken(cwd)
 
         env = {**os.environ, **cfg.get("env", {})}
         mp.status = "starting"

@@ -15,6 +15,7 @@ import pytest
 from app.services.export_service import (
     _ReportDoc,
     _dispatch,
+    _export_docx,
     _export_md_zip,
     _export_xml,
     export_workspace_chat,
@@ -99,6 +100,31 @@ class TestExportXml:
 # ---------------------------------------------------------------------------
 
 
+class TestExportDocx:
+    def test_basic_headings_and_paragraphs(self):
+        docs = [_ReportDoc(name="r.md", content="# H1\n## H2\n### H3\n- bullet\n| table |\nParagraph.")]
+        data, filename, ct = _export_docx(docs, "basic")
+        assert filename == "basic.docx"
+        assert "wordprocessingml" in ct
+        assert len(data) > 0
+
+    def test_frontmatter_stripped_in_docx(self):
+        """Lines 172-174: content starting with '---' has frontmatter removed before rendering."""
+        content = "---\ntitle: My Report\ndate: 2024-01-01\n---\n# Body Heading\n\nBody content."
+        docs = [_ReportDoc(name="fm.md", content=content)]
+        data, filename, ct = _export_docx(docs, "fm-test")
+        assert filename == "fm-test.docx"
+        assert len(data) > 0
+
+    def test_frontmatter_no_closing_marker_not_stripped(self):
+        """Line 173: if '---' end marker is missing, content is not stripped."""
+        content = "---\ntitle: Unclosed\nno end marker here"
+        docs = [_ReportDoc(name="no-end.md", content=content)]
+        data, filename, ct = _export_docx(docs, "no-end")
+        assert filename == "no-end.docx"
+        assert len(data) > 0
+
+
 class TestDispatch:
     def test_md_format(self):
         docs = [_ReportDoc(name="x.md", content="c")]
@@ -109,6 +135,12 @@ class TestDispatch:
         docs = [_ReportDoc(name="x.md", content="c")]
         _, filename, _ = _dispatch(docs, "p", "xml")
         assert filename.endswith(".xml")
+
+    def test_docx_format(self):
+        """Line 142: _dispatch routes docx format to _export_docx."""
+        docs = [_ReportDoc(name="x.md", content="# Heading\n\nBody.")]
+        _, filename, _ = _dispatch(docs, "p", "docx")
+        assert filename.endswith(".docx")
 
     def test_unsupported_format_raises(self):
         with pytest.raises(ValueError, match="不支持"):

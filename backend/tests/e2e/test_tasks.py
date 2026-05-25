@@ -456,3 +456,20 @@ async def test_task_read_output_file_path_traversal_returns_400(e2e_client: Asyn
 
     resp = await e2e_client.get(f"/api/tasks/{task_id}/output/..%2F..%2Fetc%2Fpasswd")
     assert resp.status_code in (400, 404)
+
+
+async def test_task_steps_malformed_jsonl_returns_empty(e2e_client: AsyncClient, repo_path: str):
+    """Lines 392-397: GET /steps with a malformed steps.jsonl hits the exception handler
+    and returns an empty list instead of propagating the parse error."""
+    from app.config import settings
+
+    create_resp = await e2e_client.post("/api/tasks", json=_task_payload(repo_path))
+    task_id = create_resp.json()["id"]
+
+    output_dir = settings.outputs_path / task_id
+    output_dir.mkdir(parents=True, exist_ok=True)
+    (output_dir / "steps.jsonl").write_text("not valid json at all\n", encoding="utf-8")
+
+    resp = await e2e_client.get(f"/api/tasks/{task_id}/steps")
+    assert resp.status_code == 200
+    assert resp.json() == []

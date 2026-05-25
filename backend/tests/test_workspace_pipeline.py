@@ -53,6 +53,16 @@ class TestReadMaterialFile:
         assert result == "short"
         assert "截断" not in result
 
+    def test_oserror_returns_empty(self, tmp_path):
+        """Lines 32-33: OSError during file read returns empty string."""
+        from pathlib import Path as _Path
+
+        f = tmp_path / "error.md"
+        f.write_text("data", encoding="utf-8")
+        with patch.object(_Path, "read_text", side_effect=OSError("permission denied")):
+            result = _read_material_file(str(f))
+        assert result == ""
+
 
 # ---------------------------------------------------------------------------
 # _harvest_reports — DB integration
@@ -323,6 +333,97 @@ class TestPipelineRun:
             await pipeline.run(ws_id, "/repo")
 
         assert captured["material_ids"] is None
+
+    async def test_empty_content_material_skipped(self, sqlite_db, tmp_path):
+        """Line 61: material whose file doesn't exist gets an empty content string,
+        triggering the 'if not content: continue' skip — material_id is still tracked
+        but content doesn't appear in requirements_doc."""
+        ws_id = "ws-empty-content"
+        now = datetime.now(timezone.utc).isoformat()
+
+        async with aiosqlite.connect(sqlite_db) as db:
+            await db.execute(
+                "INSERT INTO workspaces (id, name, repo_path, indexed, created_at, updated_at) "
+                "VALUES (?, 'ec', '/repo', 1, ?, ?)",
+                (ws_id, now, now),
+            )
+            await db.execute(
+                "INSERT INTO workspace_materials "
+                "(id, workspace_id, filename, content_type, file_path, is_active, created_at) "
+                "VALUES ('m-missing', ?, 'ghost.md', 'requirements', ?, TRUE, ?)",
+                (ws_id, str(tmp_path / "does_not_exist.md"), now),
+            )
+            await db.commit()
+
+        captured = {}
+
+        async def mock_pipeline_run(self_inner, task_id):
+            async with aiosqlite.connect(sqlite_db) as db:
+                db.row_factory = aiosqlite.Row
+                async with db.execute(
+                    "SELECT requirements_doc, material_ids FROM tasks WHERE id = ?",
+                    (task_id,),
+                ) as cur:
+                    row = await cur.fetchone()
+                captured["requirements_doc"] = row["requirements_doc"]
+                captured["material_ids"] = row["material_ids"]
+
+        with patch(
+            "app.services.analysis_pipeline.AnalysisPipeline.run",
+            mock_pipeline_run,
+        ):
+            pipeline = WorkspacePipeline()
+            await pipeline.run(ws_id, "/repo")
+
+        assert captured["requirements_doc"] is None
+        ids = json.loads(captured["material_ids"])
+        assert "m-missing" in ids
+
+    async def test_other_content_type_goes_to_requirements(self, sqlite_db, tmp_path):
+        """Line 68: materials with content_type not in ('requirements', 'design')
+        fall through to the else branch and are appended to requirements_parts."""
+        ws_id = "ws-other-type"
+        now = datetime.now(timezone.utc).isoformat()
+
+        other_file = tmp_path / "other.md"
+        other_file.write_text("# Other Content", encoding="utf-8")
+
+        async with aiosqlite.connect(sqlite_db) as db:
+            await db.execute(
+                "INSERT INTO workspaces (id, name, repo_path, indexed, created_at, updated_at) "
+                "VALUES (?, 'ot', '/repo', 1, ?, ?)",
+                (ws_id, now, now),
+            )
+            await db.execute(
+                "INSERT INTO workspace_materials "
+                "(id, workspace_id, filename, content_type, file_path, is_active, created_at) "
+                "VALUES ('m-other', ?, 'other.md', 'changelog', ?, TRUE, ?)",
+                (ws_id, str(other_file), now),
+            )
+            await db.commit()
+
+        captured = {}
+
+        async def mock_pipeline_run(self_inner, task_id):
+            async with aiosqlite.connect(sqlite_db) as db:
+                db.row_factory = aiosqlite.Row
+                async with db.execute(
+                    "SELECT requirements_doc, design_doc FROM tasks WHERE id = ?",
+                    (task_id,),
+                ) as cur:
+                    row = await cur.fetchone()
+                captured["requirements_doc"] = row["requirements_doc"]
+                captured["design_doc"] = row["design_doc"]
+
+        with patch(
+            "app.services.analysis_pipeline.AnalysisPipeline.run",
+            mock_pipeline_run,
+        ):
+            pipeline = WorkspacePipeline()
+            await pipeline.run(ws_id, "/repo")
+
+        assert "# Other Content" in captured["requirements_doc"]
+        assert captured["design_doc"] is None
 
     async def test_cleanup_on_analysis_failure(self, sqlite_db):
         ws_id = "ws-fail"

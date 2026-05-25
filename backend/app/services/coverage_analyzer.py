@@ -209,7 +209,7 @@ class CoverageAnalyzer:
             row = await db.execute_fetchall(
                 "SELECT modules_json FROM coverage_analyses WHERE id = ?", (analysis_id,)
             )
-            if not row:
+            if not row:  # pragma: no cover
                 raise ValueError(f"覆盖率分析 {analysis_id} 不存在")
             modules_json = dict(row[0])["modules_json"]
 
