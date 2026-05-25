@@ -1,11 +1,22 @@
 """Shared deepwiki payload builder for HTTP and WebSocket chat endpoints."""
+from __future__ import annotations
+
+from typing import TYPE_CHECKING
 
 from pydantic import BaseModel
 
 from app.config import settings
-from app.models.llm_config import LLMConfig
-from app.models.repository import Repository
 from app.utils.repo_paths import to_tool_repo_path
+
+# Defer SQLAlchemy-backed model imports to TYPE_CHECKING so that consumers
+# which only need the runtime constants (DEFAULT_EXCLUDED_DIRS, ChatMessage)
+# don't transitively pull in sqlalchemy. This file is also imported by
+# wiki_orchestrator.py, which is in turn imported by deepwiki_pages.py — and
+# the native-mode backend venv has no sqlalchemy installed, so eager imports
+# would crash `app.main` at startup.
+if TYPE_CHECKING:
+    from app.models.llm_config import LLMConfig
+    from app.models.repository import Repository
 
 
 class ChatMessage(BaseModel):

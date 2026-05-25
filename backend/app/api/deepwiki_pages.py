@@ -18,7 +18,7 @@ from pydantic import BaseModel, Field
 
 from app.config import settings
 from app.database import get_db
-from app.adapters.deepwiki import DeepWikiClient
+from app.services.wiki_orchestrator import WikiOrchestrator
 
 router = APIRouter(prefix="/api/deepwiki", tags=["DeepWiki"])
 logger = logging.getLogger(__name__)
@@ -194,12 +194,79 @@ async def generate_wiki(repo_id: str, db: aiosqlite.Connection = Depends(get_db)
             await db2.commit()
 
     async def _run() -> None:
-        client = DeepWikiClient()
+        # POST /export/wiki was a dead end here: that endpoint is the wiki
+        # EXPORTER, not the generator — it requires already-generated pages
+        # in the payload ({repo_url, pages, format}). Previous implementation
+        # sent only {"repo_url": ...}, causing deepwiki-open to 422 and this
+        # background task to mark the repo "failed" with a confusing error.
+        #
+        # The actual generator is multi-step (structure determination + N
+        # streaming page-generation calls + cache save), implemented in
+        # WikiOrchestrator. We instantiate it locally against
+        # settings.deepwiki_api_url because the shared instance in
+        # app/api/wiki.py:33 references a non-existent settings field
+        # (deepwiki_base_url) — see config.py.
+        orchestrator = WikiOrchestrator(base_url=settings.deepwiki_api_url)
         try:
-            await _update_progress(20)
-            wiki_data = await client.get_wiki_structure(repo_path)
-            await _update_progress(90)
-            pages = _extract_pages(json.dumps(wiki_data))
+            await _update_progress(5)
+
+            async def on_progress(current: int, total: int, page_title: str) -> None:
+                # WikiOrchestrator yields (current_page_index, total_pages, title).
+                # Map into the 5–95% band; 0–5% is preamble, 95–100% is post-save.
+                if total > 0:
+                    pct = 5 + int(current / total * 90)
+                else:
+                    pct = 5
+                _generation_status[repo_id] = {
+                    "running": True,
+                    "progress": pct,
+                    "error": None,
+                    "page_title": page_title,
+                }
+                async with aiosqlite.connect(settings.sqlite_db) as db2:
+                    db2.row_factory = aiosqlite.Row
+                    await db2.execute(
+                        "UPDATE deepwiki_repos SET progress = ?, updated_at = ? WHERE id = ?",
+                        (pct, datetime.now(timezone.utc).isoformat(), repo_id),
+                    )
+                    await db2.commit()
+
+            result = await orchestrator.generate_wiki(
+                repo_local_path=repo_path,
+                # owner/repo are deepwiki's cache key. We use ("local", repo_id)
+                # so the cache stays stable across renames of repo.name.
+                owner="local",
+                repo=repo_id,
+                language="zh",
+                provider=settings.deepwiki_provider,
+                comprehensive=True,
+                on_progress=on_progress,
+            )
+
+            # Serialize WikiResult into the {"generated_pages": {...}} shape
+            # that _extract_pages already knows how to parse (see _extract_pages
+            # docstring). Note the camelCase keys — that's the API contract the
+            # frontend's DeepWikiPage type expects.
+            wiki_data: dict[str, Any] = {
+                "wiki_structure": {
+                    "title": result.structure.title,
+                    "description": result.structure.description,
+                },
+                "generated_pages": {
+                    page_id_key: {
+                        "id": page.id,
+                        "title": page.title,
+                        "content": page.content,
+                        "filePaths": page.file_paths,
+                        "importance": page.importance,
+                        "relatedPages": page.related_pages,
+                    }
+                    for page_id_key, page in result.generated_pages.items()
+                },
+            }
+            wiki_data_raw = json.dumps(wiki_data)
+
+            pages = _extract_pages(wiki_data_raw)
             page_count = len(pages)
             done_at = datetime.now(timezone.utc).isoformat()
             async with aiosqlite.connect(settings.sqlite_db) as db2:
@@ -209,7 +276,7 @@ async def generate_wiki(repo_id: str, db: aiosqlite.Connection = Depends(get_db)
                        SET status = 'completed', progress = 100, page_count = ?,
                            wiki_data = ?, updated_at = ?
                        WHERE id = ?""",
-                    (page_count, json.dumps(wiki_data), done_at, repo_id),
+                    (page_count, wiki_data_raw, done_at, repo_id),
                 )
                 await db2.commit()
             _generation_status[repo_id] = {
@@ -232,8 +299,6 @@ async def generate_wiki(repo_id: str, db: aiosqlite.Connection = Depends(get_db)
             _generation_status[repo_id] = {
                 "running": False, "progress": 0, "error": str(exc)
             }
-        finally:
-            await client.close()
 
     asyncio.create_task(_run())
     return {"status": "started", "message": "Wiki 生成已在后台启动"}
