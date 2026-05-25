@@ -858,6 +858,39 @@ async def test_trigger_embedding_nonexistent_workspace_returns_404(e2e_client: A
     assert resp.status_code == 404
 
 
+async def test_workspace_export_docx_rich_markdown(e2e_client: AsyncClient, repo_path: str):
+    """Export as docx with rich markdown exercises all heading levels, bullets, and table rows."""
+    import aiosqlite
+    from app.config import settings
+
+    create_resp = await e2e_client.post(
+        "/api/workspaces",
+        json={"name": "Rich Docx WS", "repo_path": repo_path},
+    )
+    ws_id = create_resp.json()["id"]
+
+    rich_content = (
+        "# H1 Heading\n\n"
+        "## H2 Section\n\n"
+        "### H3 Subsection\n\n"
+        "- First bullet item\n"
+        "- Second bullet item\n\n"
+        "| col1 | col2 | col3 |\n\n"
+        "Regular paragraph text.\n"
+    )
+    async with aiosqlite.connect(settings.sqlite_db) as db:
+        await db.execute(
+            "INSERT INTO workspace_reports (id, workspace_id, report_type, title, content, status)"
+            " VALUES (?, ?, ?, ?, ?, ?)",
+            (str(uuid.uuid4()), ws_id, "analysis", "Rich Report", rich_content, "completed"),
+        )
+        await db.commit()
+
+    resp = await e2e_client.get(f"/api/workspaces/{ws_id}/export", params={"format": "docx"})
+    assert resp.status_code == 200
+    assert "wordprocessingml" in resp.headers.get("content-type", "")
+
+
 async def test_upload_design_material_content_type(e2e_client: AsyncClient, repo_path: str, tmp_path):
     """Uploading a 'design*.md' file sets content_type='design' via _guess_content_type."""
     create_resp = await e2e_client.post(
