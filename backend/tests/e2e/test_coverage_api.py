@@ -184,3 +184,13 @@ async def test_trigger_analysis_wrong_status_returns_400(e2e_client: AsyncClient
     await e2e_client.post(f"/api/coverage/{analysis_id}/analyze")
     resp = await e2e_client.post(f"/api/coverage/{analysis_id}/analyze")
     assert resp.status_code in (200, 400)
+
+
+async def test_upload_malformed_xml_returns_400(e2e_client: AsyncClient):
+    """Uploading malformed (non-well-formed) XML triggers the parse exception path."""
+    malformed_xml = "<?xml version='1.0'?><coverage><unclosed_tag>"
+    resp = await e2e_client.post(
+        "/api/coverage/upload",
+        files={"files": ("bad.xml", malformed_xml.encode(), "text/xml")},
+    )
+    assert resp.status_code == 400

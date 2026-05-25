@@ -729,3 +729,41 @@ async def test_workspace_chat_indexed_no_llm_returns_503(e2e_client: AsyncClient
         json={"message": "What does this repo do?", "mode": "freeqa"},
     )
     assert resp.status_code == 503
+
+
+async def test_workspace_chat_not_indexed_returns_409(e2e_client: AsyncClient, repo_path: str):
+    """POST /chat/stream on a workspace with indexed=0 returns 409 immediately."""
+    create_resp = await e2e_client.post(
+        "/api/workspaces",
+        json={"name": "Chat Not Indexed WS", "repo_path": repo_path},
+    )
+    ws_id = create_resp.json()["id"]
+
+    resp = await e2e_client.post(
+        f"/api/workspaces/{ws_id}/chat/stream",
+        json={"message": "Hello?", "mode": "freeqa"},
+    )
+    assert resp.status_code == 409
+
+
+async def test_analyze_status_after_trigger_shows_running(e2e_client: AsyncClient, repo_path: str):
+    """GET /analyze-status after POST /analyze returns running status (exercises lines 249-255)."""
+    import aiosqlite
+    from app.config import settings
+
+    create_resp = await e2e_client.post(
+        "/api/workspaces",
+        json={"name": "Analyze Status Running WS", "repo_path": repo_path},
+    )
+    ws_id = create_resp.json()["id"]
+
+    async with aiosqlite.connect(settings.sqlite_db) as db:
+        await db.execute("UPDATE workspaces SET indexed = 1 WHERE id = ?", (ws_id,))
+        await db.commit()
+
+    await e2e_client.post(f"/api/workspaces/{ws_id}/analyze")
+
+    status_resp = await e2e_client.get(f"/api/workspaces/{ws_id}/analyze-status")
+    assert status_resp.status_code == 200
+    body = status_resp.json()
+    assert "analyze_status" in body
