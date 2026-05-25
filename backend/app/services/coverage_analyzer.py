@@ -222,7 +222,19 @@ class CoverageAnalyzer:
         ]
         targets = low_coverage or modules[:5]
 
-        llm = await create_llm_client_from_active()
+        try:
+            llm = await create_llm_client_from_active()
+        except ValueError as exc:
+            logger.warning("Coverage analysis skipped — no LLM configured: %s", exc)
+            now = datetime.now(timezone.utc).isoformat()
+            async with aiosqlite.connect(settings.sqlite_db) as db:
+                await db.execute(
+                    "UPDATE coverage_analyses SET status = 'parsed', updated_at = ? WHERE id = ?",
+                    (now, analysis_id),
+                )
+                await db.commit()
+            return []
+
         results: list[dict] = []
 
         for module in targets:
