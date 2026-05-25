@@ -232,11 +232,13 @@ class TestIndexAndAnalyze:
 
 
 class TestMaterials:
-    async def test_upload(self, client_v2, sqlite_db, background_tasks):
+    async def test_upload(self, client_v2, sqlite_db, background_tasks, tmp_path):
         await _seed_ws(sqlite_db, "ws-up")
+        f = tmp_path / "requirements.md"
+        f.write_text("# Req\nFeature A")
         resp = await client_v2.post(
             "/api/workspaces/ws-up/materials",
-            files={"file": ("requirements.md", b"# Req\nFeature A", "text/markdown")},
+            json={"file_path": str(f)},
         )
         assert resp.status_code == 201
         data = resp.json()
@@ -245,21 +247,25 @@ class TestMaterials:
         assert data["is_active"] is True
         assert any("_embed_material_background" in c for c in background_tasks)
 
-    async def test_upload_design_content_type(self, client_v2, sqlite_db):
+    async def test_upload_design_content_type(self, client_v2, sqlite_db, tmp_path):
         await _seed_ws(sqlite_db, "ws-up2")
+        f = tmp_path / "architecture_v2.pdf"
+        f.write_bytes(b"pdf-data")
         resp = await client_v2.post(
             "/api/workspaces/ws-up2/materials",
-            files={"file": ("architecture_v2.pdf", b"pdf-data", "application/pdf")},
+            json={"file_path": str(f)},
         )
         assert resp.status_code == 201
         assert resp.json()["content_type"] == "design"
 
-    async def test_upload_other_content_type(self, client_v2, sqlite_db):
-        """_guess_content_type: filename with no keyword → 'other' (line 540)."""
+    async def test_upload_other_content_type(self, client_v2, sqlite_db, tmp_path):
+        """_guess_content_type: filename with no keyword → 'other'."""
         await _seed_ws(sqlite_db, "ws-up3")
+        f = tmp_path / "notes.txt"
+        f.write_text("some notes")
         resp = await client_v2.post(
             "/api/workspaces/ws-up3/materials",
-            files={"file": ("notes.txt", b"some notes", "text/plain")},
+            json={"file_path": str(f)},
         )
         assert resp.status_code == 201
         assert resp.json()["content_type"] == "other"

@@ -275,13 +275,12 @@ export const api = {
 
     get: (id: string) => request<Workspace>(`/api/workspaces/${id}`),
 
-    uploadMaterial: async (wsId: string, file: File): Promise<Workspace["materials"][number]> => {
-      const formData = new FormData();
-      formData.append("file", file);
+    uploadMaterial: async (wsId: string, filePath: string): Promise<Workspace["materials"][number]> => {
       const res = await fetch(`${BASE}/api/workspaces/${wsId}/materials`, {
         method: "POST",
         credentials: "include",
-        body: formData,
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ file_path: filePath }),
       });
       if (!res.ok) {
         const body = await res.text().catch(() => "");

@@ -1,14 +1,14 @@
 import asyncio
 import json
 import logging
-import shutil
+
 import uuid
 from datetime import datetime, timezone
 from pathlib import Path
 
 import aiosqlite
 import httpx
-from fastapi import APIRouter, Depends, HTTPException, Query, UploadFile
+from fastapi import APIRouter, Depends, HTTPException, Query
 from fastapi.responses import Response, StreamingResponse
 from pydantic import BaseModel, Field
 
@@ -40,6 +40,10 @@ class WorkspaceMaterialResponse(BaseModel):
 
 class ToggleMaterialBody(BaseModel):
     is_active: bool
+
+
+class AddMaterialRequest(BaseModel):
+    file_path: str = Field(min_length=1, max_length=4096)
 
 
 class WorkspaceReportListItem(BaseModel):
@@ -376,36 +380,30 @@ async def export_workspace_chat(
 )
 async def upload_material(
     ws_id: str,
-    file: UploadFile,
+    body: AddMaterialRequest,
     db: aiosqlite.Connection = Depends(get_db),
 ):
     await _get_workspace_or_404(ws_id, db)
 
-    mat_dir = _MATERIALS_ROOT / ws_id / "materials"
-    mat_dir.mkdir(parents=True, exist_ok=True)
-
     mat_id = str(uuid.uuid4())
-    suffix = Path(file.filename or "upload").suffix
-    dest = mat_dir / f"{mat_id}{suffix}"
-    with dest.open("wb") as fh:
-        shutil.copyfileobj(file.file, fh)
-
+    filename = Path(body.file_path).name
     now = datetime.now(timezone.utc).isoformat()
-    content_type = _guess_content_type(file.filename or "")
+    content_type = _guess_content_type(filename)
+
     await db.execute(
         """INSERT INTO workspace_materials
                (id, workspace_id, filename, content_type, file_path, is_active, created_at)
            VALUES (?, ?, ?, ?, ?, TRUE, ?)""",
-        (mat_id, ws_id, file.filename or dest.name, content_type, str(dest), now),
+        (mat_id, ws_id, filename, content_type, body.file_path, now),
     )
     await db.commit()
 
     result = {
         "id": mat_id,
         "workspace_id": ws_id,
-        "filename": file.filename or dest.name,
+        "filename": filename,
         "content_type": content_type,
-        "file_path": str(dest),
+        "file_path": body.file_path,
         "is_active": True,
         "created_at": now,
     }

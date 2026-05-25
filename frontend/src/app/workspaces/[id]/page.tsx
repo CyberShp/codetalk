@@ -19,7 +19,7 @@ import {
   Send,
   Bot,
   User,
-  Upload,
+
   Trash2,
   Sparkles,
   Crosshair,
@@ -499,6 +499,7 @@ export default function WorkspaceDetailPage() {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [tab, setTab] = useState<Tab>("reports");
+  const [materialPath, setMaterialPath] = useState("");
   const [analyzing, setAnalyzing] = useState(false);
   const [analyzeProgress, setAnalyzeProgress] = useState(0);
   const [analyzeStatus, setAnalyzeStatus] = useState<string | null>(null);
@@ -823,27 +824,47 @@ export default function WorkspaceDetailPage() {
       {/* Materials tab */}
       {tab === "materials" && (
         <div className="space-y-4">
-          <label className="flex items-center justify-center gap-2 px-4 py-3 rounded-lg border-2 border-dashed border-outline-variant/40 bg-surface-container-low hover:border-primary/50 hover:bg-primary/5 cursor-pointer transition-colors">
-            <Upload size={18} className="text-primary" />
-            <span className="text-sm text-on-surface-variant">点击上传材料（需求文档、设计文档等）</span>
-            <input
-              type="file"
-              className="hidden"
-              onChange={async (e) => {
-                const file = e.target.files?.[0];
-                if (!file) return;
+          <div className="flex gap-2">
+            <div className="flex-1 flex items-center gap-2 px-3 py-2 rounded-lg border border-outline-variant/40 bg-surface-container-low focus-within:border-primary/50 transition-colors">
+              <Paperclip size={14} className="text-on-surface-variant/50 shrink-0" />
+              <input
+                type="text"
+                value={materialPath}
+                onChange={(e) => setMaterialPath(e.target.value)}
+                placeholder="输入文件绝对路径（需求文档、设计文档等）"
+                className="flex-1 bg-transparent text-sm text-on-surface outline-none placeholder:text-on-surface-variant/40"
+                onKeyDown={async (e) => {
+                  if (e.key !== "Enter") return;
+                  const path = materialPath.trim();
+                  if (!path) return;
+                  try {
+                    const mat = await api.workspaces.uploadMaterial(wsId, path);
+                    setWorkspace((prev) =>
+                      prev ? { ...prev, materials: [...prev.materials, mat] } : prev
+                    );
+                    setMaterialPath("");
+                  } catch { /* silent */ }
+                }}
+              />
+            </div>
+            <button
+              onClick={async () => {
+                const path = materialPath.trim();
+                if (!path) return;
                 try {
-                  const mat = await api.workspaces.uploadMaterial(wsId, file);
+                  const mat = await api.workspaces.uploadMaterial(wsId, path);
                   setWorkspace((prev) =>
                     prev ? { ...prev, materials: [...prev.materials, mat] } : prev
                   );
-                } catch {
-                  /* upload failed — silent for now */
-                }
-                e.target.value = "";
+                  setMaterialPath("");
+                } catch { /* silent */ }
               }}
-            />
-          </label>
+              disabled={!materialPath.trim()}
+              className="px-3 py-2 rounded-lg bg-primary/10 text-primary text-sm font-medium hover:bg-primary/20 disabled:opacity-30 disabled:cursor-not-allowed transition-colors"
+            >
+              添加
+            </button>
+          </div>
 
           {workspace.materials.length === 0 ? (
             <div className="flex flex-col items-center justify-center h-36 rounded-xl border border-outline-variant/30 bg-surface-container-low gap-3">
