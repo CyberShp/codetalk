@@ -9,7 +9,7 @@ No analysis logic (AST traversal, graph building, community detection).
 import asyncio
 import logging
 from collections import Counter
-from collections.abc import AsyncIterator
+from collections.abc import AsyncIterator, Awaitable, Callable
 from pathlib import Path
 
 import httpx
@@ -113,7 +113,11 @@ class GitNexusAdapter(BaseToolAdapter):
                 last_check=str(exc),
             )
 
-    async def prepare(self, request: AnalysisRequest) -> None:
+    async def prepare(
+        self,
+        request: AnalysisRequest,
+        on_progress: Callable[[int], Awaitable[None]] | None = None,
+    ) -> None:
         """Trigger GitNexus indexing for the repository."""
         tool_repo_path = to_tool_repo_path(
             request.repo_local_path,
@@ -176,6 +180,11 @@ class GitNexusAdapter(BaseToolAdapter):
 
                 status_resp = await self.client.get(f"/api/analyze/{job_id}")
                 status = status_resp.json()
+
+                if on_progress:
+                    raw = status.get("progress") or status.get("percentage") or status.get("percent")
+                    pct = min(99, int(raw)) if raw is not None else min(99, int(elapsed / _POLL_TIMEOUT * 100))
+                    await on_progress(pct)
 
                 if status["status"] == "complete":
                     self._repo_name = status.get("repoName", "") or Path(tool_repo_path).name

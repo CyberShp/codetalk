@@ -31,7 +31,15 @@ import MarkdownRenderer from "@/components/ui/MarkdownRenderer";
 
 type Tab = "reports" | "materials" | "chat";
 
-function IndexBadge({ indexed, lastIndexError }: { indexed: number; lastIndexError?: string | null }) {
+function IndexBadge({
+  indexed,
+  lastIndexError,
+  indexProgress = 0,
+}: {
+  indexed: number;
+  lastIndexError?: string | null;
+  indexProgress?: number;
+}) {
   if (indexed === 1) {
     return (
       <span className="inline-flex items-center gap-1 text-xs px-2 py-0.5 rounded-full bg-green-400/10 text-green-400">
@@ -52,10 +60,20 @@ function IndexBadge({ indexed, lastIndexError }: { indexed: number; lastIndexErr
     );
   }
   return (
-    <span className="inline-flex items-center gap-1 text-xs px-2 py-0.5 rounded-full bg-amber-400/10 text-amber-400">
-      <Loader2 size={12} className="animate-spin" />
-      索引中
-    </span>
+    <div className="flex items-center gap-2">
+      <span className="inline-flex items-center gap-1 text-xs px-2 py-0.5 rounded-full bg-amber-400/10 text-amber-400">
+        <Loader2 size={12} className="animate-spin" />
+        索引中{indexProgress > 0 ? ` ${indexProgress}%` : ""}
+      </span>
+      {indexProgress > 0 && (
+        <div className="w-24 h-1.5 bg-amber-400/20 rounded-full overflow-hidden">
+          <div
+            className="h-full bg-amber-400 rounded-full transition-all duration-500"
+            style={{ width: `${indexProgress}%` }}
+          />
+        </div>
+      )}
+    </div>
   );
 }
 
@@ -446,6 +464,7 @@ export default function WorkspaceDetailPage() {
   const [analyzing, setAnalyzing] = useState(false);
   const [analyzeProgress, setAnalyzeProgress] = useState(0);
   const [analyzeStatus, setAnalyzeStatus] = useState<string | null>(null);
+  const [indexProgress, setIndexProgress] = useState(0);
   const [reindexing, setReindexing] = useState(false);
   const [embeddingStatus, setEmbeddingStatus] = useState<EmbeddingStatus | null>(null);
 
@@ -460,6 +479,7 @@ export default function WorkspaceDetailPage() {
       setWorkspace(ws);
       setAnalyzeStatus(ws.analyze_status);
       setAnalyzeProgress(ws.analyze_progress);
+      setIndexProgress(ws.index_progress ?? 0);
       if (!hasLoadedRef.current) {
         hasLoadedRef.current = true;
         setLoading(false);
@@ -483,10 +503,12 @@ export default function WorkspaceDetailPage() {
           if (s.indexed !== 0) {
             clearInterval(pollIndexRef.current!);
             pollIndexRef.current = null;
+            setIndexProgress(0);
             await loadWorkspace();
           } else {
+            setIndexProgress(s.index_progress ?? 0);
             setWorkspace((prev) =>
-              prev ? { ...prev, indexed: s.indexed, index_job: s.index_job } : prev,
+              prev ? { ...prev, indexed: s.indexed, index_job: s.index_job, index_progress: s.index_progress ?? 0 } : prev,
             );
           }
         } catch {
@@ -609,7 +631,7 @@ export default function WorkspaceDetailPage() {
             <h1 className="text-2xl font-bold text-on-surface">{workspace.name}</h1>
             <p className="text-sm text-on-surface-variant mt-0.5">{workspace.repo_path}</p>
             <div className="flex items-center gap-2 mt-2 flex-wrap">
-              <IndexBadge indexed={workspace.indexed} lastIndexError={workspace.last_index_error} />
+              <IndexBadge indexed={workspace.indexed} lastIndexError={workspace.last_index_error} indexProgress={indexProgress} />
               <AnalyzeBadge status={analyzeStatus} progress={analyzeProgress} />
             </div>
           </div>

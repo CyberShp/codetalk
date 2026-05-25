@@ -68,6 +68,7 @@ class WorkspaceResponse(BaseModel):
     repo_path: str
     indexed: int
     index_job: str | None
+    index_progress: int = 0
     analyze_status: str | None
     analyze_progress: int
     last_index_error: str | None = None
@@ -81,6 +82,7 @@ def _row_to_workspace(row: aiosqlite.Row) -> dict:
     d = dict(row)
     d["indexed"] = int(d.get("indexed", 0))
     d["analyze_progress"] = int(d.get("analyze_progress", 0))
+    d["index_progress"] = int(d.get("index_progress") or 0)
     return d
 
 
@@ -119,11 +121,19 @@ async def _index_workspace(ws_id: str, repo_path: str) -> None:
 
     async with aiosqlite.connect(settings.sqlite_db) as db:
         await db.execute(
-            "UPDATE workspaces SET indexed = 0, index_job = NULL, last_index_error = NULL, "
-            "updated_at = CURRENT_TIMESTAMP WHERE id = ?",
+            "UPDATE workspaces SET indexed = 0, index_job = NULL, index_progress = 0, "
+            "last_index_error = NULL, updated_at = CURRENT_TIMESTAMP WHERE id = ?",
             (ws_id,),
         )
         await db.commit()
+
+    async def _on_index_progress(pct: int) -> None:
+        async with aiosqlite.connect(settings.sqlite_db) as _db:
+            await _db.execute(
+                "UPDATE workspaces SET index_progress = ? WHERE id = ?",
+                (pct, ws_id),
+            )
+            await _db.commit()
 
     try:
         adapter = GitNexusAdapter(base_url=settings.gitnexus_base_url)
@@ -143,7 +153,7 @@ async def _index_workspace(ws_id: str, repo_path: str) -> None:
             logger.error("Workspace indexing skipped for %s: %s", ws_id, error_msg)
             return
 
-        await adapter.prepare(AnalysisRequest(repo_local_path=repo_path))
+        await adapter.prepare(AnalysisRequest(repo_local_path=repo_path), on_progress=_on_index_progress)
 
         async with aiosqlite.connect(settings.sqlite_db) as db:
             await db.execute(
@@ -247,7 +257,11 @@ async def get_workspace(ws_id: str, db: aiosqlite.Connection = Depends(get_db)):
 @router.get("/{ws_id}/index-status")
 async def get_index_status(ws_id: str, db: aiosqlite.Connection = Depends(get_db)):
     ws = await _get_workspace_or_404(ws_id, db)
-    return {"indexed": ws["indexed"], "index_job": ws.get("index_job")}
+    return {
+        "indexed": ws["indexed"],
+        "index_job": ws.get("index_job"),
+        "index_progress": ws.get("index_progress", 0),
+    }
 
 
 @router.post("/{ws_id}/reindex", status_code=202)

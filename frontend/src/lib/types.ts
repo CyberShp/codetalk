@@ -163,6 +163,7 @@ export interface Workspace {
   repo_path: string;
   indexed: number;  // 0=indexing, 1=done, -1=failed
   index_job: string | null;
+  index_progress: number;  // 0-100 while indexed===0
   analyze_status: string | null;
   analyze_progress: number;
   last_index_error: string | null;

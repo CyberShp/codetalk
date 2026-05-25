@@ -312,7 +312,7 @@ export const api = {
       }),
 
     indexStatus: (id: string) =>
-      request<{ indexed: number; index_job: string | null }>(
+      request<{ indexed: number; index_job: string | null; index_progress: number }>(
         `/api/workspaces/${id}/index-status`,
       ),
 
