@@ -67,6 +67,21 @@ async def test_update_llm_config(e2e_client: AsyncClient):
     assert body["temperature"] == 0.7
 
 
+async def test_update_llm_config_model_flags(e2e_client: AsyncClient):
+    """Updating is_chat_model and is_embedding_model covers boolean-to-int conversion."""
+    create_resp = await e2e_client.post("/api/settings/llm", json=_llm_payload())
+    cfg_id = create_resp.json()["id"]
+
+    resp = await e2e_client.put(
+        f"/api/settings/llm/{cfg_id}",
+        json={"is_chat_model": True, "is_embedding_model": False},
+    )
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["is_chat_model"] is True
+    assert body["is_embedding_model"] is False
+
+
 async def test_delete_llm_config(e2e_client: AsyncClient):
     create_resp = await e2e_client.post("/api/settings/llm", json=_llm_payload())
     cfg_id = create_resp.json()["id"]

@@ -109,3 +109,31 @@ async def test_export_md_format(e2e_client: AsyncClient, repo_path: str, tmp_pat
         params={"format": "md"},
     )
     assert resp.status_code == 200
+
+
+async def test_export_unsupported_format_with_files_returns_422(e2e_client: AsyncClient, repo_path: str):
+    """Export with output files present but unsupported format returns 422."""
+    from app.config import settings
+
+    create_resp = await e2e_client.post(
+        "/api/tasks",
+        json={
+            "name": "Unsupported Fmt",
+            "repo_path": repo_path,
+            "tools": [],
+            "analysis_focus": "test",
+            "prompt_content": "test",
+            "deepwiki_depth": "balanced",
+        },
+    )
+    task_id = create_resp.json()["id"]
+
+    output_dir = settings.outputs_path / task_id
+    output_dir.mkdir(parents=True, exist_ok=True)
+    (output_dir / "report.md").write_text("# Report", encoding="utf-8")
+
+    resp = await e2e_client.get(
+        f"/api/tasks/{task_id}/export",
+        params={"format": "pdf"},
+    )
+    assert resp.status_code == 422

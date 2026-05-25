@@ -526,3 +526,206 @@ async def test_toggle_material_active(e2e_client: AsyncClient, repo_path: str, t
     )
     assert resp.status_code == 200
     assert resp.json()["is_active"] is False
+
+
+async def test_create_workspace_file_path_returns_422(e2e_client: AsyncClient, tmp_path):
+    """Creating a workspace with a file path (not directory) returns 422."""
+    file_path = tmp_path / "not_a_dir.txt"
+    file_path.write_text("content", encoding="utf-8")
+
+    resp = await e2e_client.post(
+        "/api/workspaces",
+        json={"name": "File Path WS", "repo_path": str(file_path)},
+    )
+    assert resp.status_code == 422
+
+
+async def test_analyze_indexed_workspace(e2e_client: AsyncClient, repo_path: str):
+    """POST /analyze on an indexed workspace starts analysis."""
+    import aiosqlite
+    from app.config import settings
+
+    create_resp = await e2e_client.post(
+        "/api/workspaces",
+        json={"name": "Indexed Analyze WS", "repo_path": repo_path},
+    )
+    ws_id = create_resp.json()["id"]
+
+    async with aiosqlite.connect(settings.sqlite_db) as db:
+        await db.execute("UPDATE workspaces SET indexed = 1 WHERE id = ?", (ws_id,))
+        await db.commit()
+
+    resp = await e2e_client.post(f"/api/workspaces/{ws_id}/analyze")
+    assert resp.status_code == 202
+    assert resp.json()["status"] == "running"
+
+
+async def test_analyze_already_running_returns_409(e2e_client: AsyncClient, repo_path: str):
+    """POST /analyze when analysis is already running returns 409."""
+    import aiosqlite
+    from app.config import settings
+
+    create_resp = await e2e_client.post(
+        "/api/workspaces",
+        json={"name": "Already Analyzing WS", "repo_path": repo_path},
+    )
+    ws_id = create_resp.json()["id"]
+
+    async with aiosqlite.connect(settings.sqlite_db) as db:
+        await db.execute(
+            "UPDATE workspaces SET indexed = 1, analyze_status = 'running' WHERE id = ?",
+            (ws_id,),
+        )
+        await db.commit()
+
+    resp = await e2e_client.post(f"/api/workspaces/{ws_id}/analyze")
+    assert resp.status_code == 409
+
+
+async def test_get_report_by_id(e2e_client: AsyncClient, repo_path: str):
+    """GET /{ws_id}/reports/{report_id} returns a specific report."""
+    import aiosqlite
+    from app.config import settings
+
+    create_resp = await e2e_client.post(
+        "/api/workspaces",
+        json={"name": "Get Report WS", "repo_path": repo_path},
+    )
+    ws_id = create_resp.json()["id"]
+
+    report_id = str(uuid.uuid4())
+    async with aiosqlite.connect(settings.sqlite_db) as db:
+        await db.execute(
+            "INSERT INTO workspace_reports (id, workspace_id, report_type, title, content, status)"
+            " VALUES (?, ?, ?, ?, ?, ?)",
+            (report_id, ws_id, "analysis", "Test Report", "# Report Content", "completed"),
+        )
+        await db.commit()
+
+    resp = await e2e_client.get(f"/api/workspaces/{ws_id}/reports/{report_id}")
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["id"] == report_id
+    assert body["title"] == "Test Report"
+
+
+async def test_get_report_not_found_returns_404(e2e_client: AsyncClient, repo_path: str):
+    """GET /{ws_id}/reports/{report_id} with missing report returns 404."""
+    create_resp = await e2e_client.post(
+        "/api/workspaces",
+        json={"name": "No Report WS", "repo_path": repo_path},
+    )
+    ws_id = create_resp.json()["id"]
+
+    resp = await e2e_client.get(f"/api/workspaces/{ws_id}/reports/{uuid.uuid4()}")
+    assert resp.status_code == 404
+
+
+async def test_toggle_material_to_active(e2e_client: AsyncClient, repo_path: str, tmp_path):
+    """PATCH material with is_active=True triggers background embedding."""
+    create_resp = await e2e_client.post(
+        "/api/workspaces",
+        json={"name": "Toggle Active WS", "repo_path": repo_path},
+    )
+    ws_id = create_resp.json()["id"]
+
+    test_file = tmp_path / "activate.txt"
+    test_file.write_text("content to activate", encoding="utf-8")
+
+    with open(test_file, "rb") as f:
+        mat_resp = await e2e_client.post(
+            f"/api/workspaces/{ws_id}/materials",
+            files={"file": ("activate.txt", f, "text/plain")},
+        )
+    mat_id = mat_resp.json()["id"]
+
+    # First deactivate
+    await e2e_client.patch(
+        f"/api/workspaces/{ws_id}/materials/{mat_id}",
+        json={"is_active": False},
+    )
+
+    # Then activate — triggers create_task(_embed_material_background)
+    resp = await e2e_client.patch(
+        f"/api/workspaces/{ws_id}/materials/{mat_id}",
+        json={"is_active": True},
+    )
+    assert resp.status_code == 200
+    assert resp.json()["is_active"] is True
+
+
+async def test_toggle_nonexistent_material_returns_404(e2e_client: AsyncClient, repo_path: str):
+    """PATCH non-existent material returns 404."""
+    create_resp = await e2e_client.post(
+        "/api/workspaces",
+        json={"name": "Toggle 404 WS", "repo_path": repo_path},
+    )
+    ws_id = create_resp.json()["id"]
+
+    resp = await e2e_client.patch(
+        f"/api/workspaces/{ws_id}/materials/{uuid.uuid4()}",
+        json={"is_active": True},
+    )
+    assert resp.status_code == 404
+
+
+async def test_delete_nonexistent_material_returns_404(e2e_client: AsyncClient, repo_path: str):
+    """DELETE non-existent material returns 404."""
+    create_resp = await e2e_client.post(
+        "/api/workspaces",
+        json={"name": "Delete 404 WS", "repo_path": repo_path},
+    )
+    ws_id = create_resp.json()["id"]
+
+    resp = await e2e_client.delete(
+        f"/api/workspaces/{ws_id}/materials/{uuid.uuid4()}"
+    )
+    assert resp.status_code == 404
+
+
+async def test_workspace_embedding_status_with_active_model(e2e_client: AsyncClient, repo_path: str):
+    """Embedding status with an active model configured returns chunk counts."""
+    import aiosqlite
+    from app.config import settings
+
+    create_resp = await e2e_client.post(
+        "/api/workspaces",
+        json={"name": "Embed Active Model WS", "repo_path": repo_path},
+    )
+    ws_id = create_resp.json()["id"]
+
+    async with aiosqlite.connect(settings.sqlite_db) as db:
+        await db.execute(
+            "INSERT OR REPLACE INTO settings (key, value) VALUES (?, ?)",
+            ("active_embedding_model_id", "test-embed-model"),
+        )
+        await db.commit()
+
+    resp = await e2e_client.get(f"/api/workspaces/{ws_id}/materials/embedding-status")
+    assert resp.status_code == 200
+    body = resp.json()
+    assert "active_materials" in body
+    assert "embedded_materials" in body
+    assert body["total_chunks"] == 0
+
+
+async def test_workspace_chat_indexed_no_llm_returns_503(e2e_client: AsyncClient, repo_path: str):
+    """POST /chat/stream on an indexed workspace with no LLM returns 503."""
+    import aiosqlite
+    from app.config import settings
+
+    create_resp = await e2e_client.post(
+        "/api/workspaces",
+        json={"name": "Chat LLM WS", "repo_path": repo_path},
+    )
+    ws_id = create_resp.json()["id"]
+
+    async with aiosqlite.connect(settings.sqlite_db) as db:
+        await db.execute("UPDATE workspaces SET indexed = 1 WHERE id = ?", (ws_id,))
+        await db.commit()
+
+    resp = await e2e_client.post(
+        f"/api/workspaces/{ws_id}/chat/stream",
+        json={"message": "What does this repo do?", "mode": "freeqa"},
+    )
+    assert resp.status_code == 503
