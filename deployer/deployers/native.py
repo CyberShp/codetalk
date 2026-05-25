@@ -830,8 +830,11 @@ class NativeDeployer:
 
         npm_cmd = "npm.cmd" if sys.platform == "win32" else "npm"
         next_build_dir = frontend_dir / ".next"
+        standalone_server = frontend_dir / ".next" / "standalone" / "server.js"
         dev_mode = bool(cfg.get("dev_mode", False))
-        if next_build_dir.exists():
+        if standalone_server.exists():
+            frontend_start_cmd = ["node", str(standalone_server)]
+        elif next_build_dir.exists():
             frontend_start_cmd = [npm_cmd, "run", "start"]
         elif dev_mode:
             await self._emit("start_services", "running", "以开发模式启动前端（dev_mode=true）", step)
