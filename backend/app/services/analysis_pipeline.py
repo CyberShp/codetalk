@@ -306,8 +306,13 @@ class AnalysisPipeline:
                     job_id = body["jobId"]
                     logger.info("GitNexus 409 — joining existing job %s", job_id)
                 else:
-                    repo_name = body.get("repoName") or body.get("repo") or Path(repo_path).name
-                    logger.info("GitNexus 409 — repo already indexed as %s", repo_name)
+                    repo_name = body.get("repoName") or body.get("repo")
+                    if repo_name:
+                        logger.info("GitNexus 409 — repo already indexed as %s", repo_name)
+                    else:
+                        raise RuntimeError(
+                            "GitNexus 正在分析一个包含此路径的父项目，请等待该任务完成后再试"
+                        )
             elif resp.is_error:
                 resp.raise_for_status()
             else:
