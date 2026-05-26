@@ -27,7 +27,7 @@ import {
 } from "lucide-react";
 import { api } from "@/lib/api";
 import type { Workspace, WorkspaceReportMeta, ChatMode, EmbeddingStatus, WorkspaceModule } from "@/lib/types";
-import { useChatStore } from "@/lib/chatStore";
+import { useWsChat } from "@/lib/chatContext";
 import MarkdownRenderer from "@/components/ui/MarkdownRenderer";
 import AnalysisTaskModal from "@/components/workspaces/AnalysisTaskModal";
 
@@ -188,7 +188,7 @@ function ReportCard({ report, wsId }: { report: WorkspaceReportMeta; wsId: strin
 
 function ChatPanel({ wsId, indexed }: { wsId: string; indexed: number }) {
   const { messages, streaming, streamingContent, loadingHistory, init, send } =
-    useChatStore();
+    useWsChat(wsId);
   const [input, setInput] = useState("");
   const [mode, setMode] = useState<ChatMode>("freeqa");
   const [modules, setModules] = useState<WorkspaceModule[]>([]);
@@ -198,7 +198,7 @@ function ChatPanel({ wsId, indexed }: { wsId: string; indexed: number }) {
 
   const canChat = indexed === 1;
 
-  useEffect(() => { init(wsId); }, [wsId, init]);
+  useEffect(() => { void init(); }, [init]);
 
   useEffect(() => {
     if (indexed === 1) {
@@ -222,7 +222,7 @@ function ChatPanel({ wsId, indexed }: { wsId: string; indexed: number }) {
     const text = input.trim();
     if (!text || streaming || !canChat) return;
     setInput("");
-    await send(wsId, text, mode, selectedModule ?? undefined);
+    await send(text, mode, selectedModule ?? undefined);
   };
 
   const handleKeyDown = (e: React.KeyboardEvent<HTMLTextAreaElement>) => {
