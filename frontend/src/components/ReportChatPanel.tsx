@@ -2,23 +2,17 @@
 
 import { useState, useEffect, useRef, useCallback } from "react";
 import { Send, MessageCircle, Bot } from "lucide-react";
-import { api } from "@/lib/api";
-import type { ChatMessage } from "@/lib/types";
+import { useTaskChat } from "@/lib/taskChatContext";
 import MarkdownRenderer from "@/components/ui/MarkdownRenderer";
 
 export default function ReportChatPanel({ taskId }: { taskId: string }) {
-  const [messages, setMessages] = useState<ChatMessage[]>([]);
+  const { messages, streaming, streamingContent, loadingHistory, init, send } =
+    useTaskChat(taskId);
   const [input, setInput] = useState("");
-  const [streaming, setStreaming] = useState(false);
-  const [streamContent, setStreamContent] = useState("");
   const chatContainerRef = useRef<HTMLDivElement>(null);
   const userNearBottom = useRef(true);
-  // AbortController only for explicit cancellation — not tied to unmount.
-  const abortRef = useRef<AbortController | null>(null);
 
-  useEffect(() => {
-    api.tasks.chatHistory(taskId).then(setMessages).catch(() => {});
-  }, [taskId]);
+  useEffect(() => { void init(); }, [init]);
 
   const handleScroll = useCallback(() => {
     const el = chatContainerRef.current;
@@ -31,109 +25,19 @@ export default function ReportChatPanel({ taskId }: { taskId: string }) {
     if (userNearBottom.current && chatContainerRef.current) {
       chatContainerRef.current.scrollTop = chatContainerRef.current.scrollHeight;
     }
-  }, [messages, streamContent]);
+  }, [messages, streamingContent]);
 
-  const sendMessage = useCallback(async () => {
+  const handleSend = useCallback(async () => {
     const text = input.trim();
     if (!text || streaming) return;
-
-    const userMsg: ChatMessage = {
-      id: Date.now(),
-      task_id: taskId,
-      role: "user",
-      content: text,
-      created_at: new Date().toISOString(),
-    };
-    setMessages((prev) => [...prev, userMsg]);
     setInput("");
-    setStreaming(true);
-    setStreamContent("");
-
-    const abort = new AbortController();
-    abortRef.current = abort;
-
-    try {
-      const res = await fetch(api.tasks.chatUrl(taskId), {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ message: text }),
-        signal: abort.signal,
-      });
-      if (!res.ok || !res.body) throw new Error("request failed");
-
-      const reader = res.body.getReader();
-      const decoder = new TextDecoder();
-      let accumulated = "";
-      let buffer = "";
-
-      while (!abort.signal.aborted) {
-        const { value, done } = await reader.read();
-        if (done) break;
-        buffer += decoder.decode(value, { stream: true });
-        const lines = buffer.split("\n");
-        buffer = lines.pop() ?? "";
-        for (const line of lines) {
-          if (!line.startsWith("data: ")) continue;
-          try {
-            const payload = JSON.parse(line.slice(6)) as { content?: string; done: boolean; error?: string };
-            if (payload.done) {
-              if (payload.error) {
-                setMessages((prev) => [
-                  ...prev,
-                  {
-                    id: Date.now() + 1,
-                    task_id: taskId,
-                    role: "assistant",
-                    content: `> ⚠ ${payload.error}`,
-                    created_at: new Date().toISOString(),
-                  },
-                ]);
-                setStreamContent("");
-              } else {
-                setMessages((prev) => [
-                  ...prev,
-                  {
-                    id: Date.now() + 1,
-                    task_id: taskId,
-                    role: "assistant",
-                    content: accumulated,
-                    created_at: new Date().toISOString(),
-                  },
-                ]);
-                setStreamContent("");
-              }
-            } else {
-              accumulated += payload.content ?? "";
-              setStreamContent(accumulated);
-            }
-          } catch {
-            // ignore malformed SSE lines
-          }
-        }
-      }
-    } catch (e) {
-      if (e instanceof Error && e.name === "AbortError") return;
-      setMessages((prev) => [
-        ...prev,
-        {
-          id: Date.now() + 1,
-          task_id: taskId,
-          role: "assistant",
-          content: "抱歉，发生了网络错误，请稍后重试。",
-          created_at: new Date().toISOString(),
-        },
-      ]);
-      setStreamContent("");
-    } finally {
-      abortRef.current = null;
-      setStreaming(false);
-    }
-  }, [input, streaming, taskId]);
+    await send(text);
+  }, [input, streaming, send]);
 
   const handleKeyDown = (e: React.KeyboardEvent<HTMLTextAreaElement>) => {
     if (e.key === "Enter" && !e.shiftKey) {
       e.preventDefault();
-      sendMessage();
+      void handleSend();
     }
   };
 
@@ -152,48 +56,63 @@ export default function ReportChatPanel({ taskId }: { taskId: string }) {
       </div>
 
       {/* Messages */}
-      <div ref={chatContainerRef} onScroll={handleScroll} className="flex-1 overflow-y-auto px-4 py-3 space-y-4 min-h-0">
-        {messages.length === 0 && !streaming && (
+      <div
+        ref={chatContainerRef}
+        onScroll={handleScroll}
+        className="flex-1 overflow-y-auto px-4 py-3 space-y-4 min-h-0"
+      >
+        {loadingHistory ? (
+          <div className="flex justify-center py-8">
+            <div className="w-4 h-4 border-2 border-primary border-t-transparent rounded-full animate-spin" />
+          </div>
+        ) : messages.length === 0 && !streaming ? (
           <div className="flex flex-col items-center justify-center h-full text-center py-8">
             <Bot size={32} className="text-on-surface-variant/40 mb-3" />
             <p className="text-sm text-on-surface-variant/70">有关此报告的问题，欢迎提问</p>
           </div>
-        )}
-
-        {messages.map((msg) => (
-          <div
-            key={msg.id}
-            className={`flex ${msg.role === "user" ? "justify-end" : "justify-start"}`}
-          >
-            {msg.role === "user" ? (
-              <div className="max-w-[85%] px-3 py-2 bg-primary text-on-primary rounded-xl rounded-tr-sm text-sm leading-relaxed">
-                {msg.content}
+        ) : (
+          <>
+            {messages.map((msg) => (
+              <div
+                key={msg.id}
+                className={`flex ${msg.role === "user" ? "justify-end" : "justify-start"}`}
+              >
+                {msg.role === "user" ? (
+                  <div className="max-w-[85%] px-3 py-2 bg-primary text-on-primary rounded-xl rounded-tr-sm text-sm leading-relaxed">
+                    {msg.content}
+                  </div>
+                ) : (
+                  <div className="max-w-[95%] px-3 py-2 bg-surface-container-high rounded-xl rounded-tl-sm text-sm">
+                    <MarkdownRenderer
+                      content={sanitizeContent(msg.content)}
+                      enableNumericCitations={false}
+                    />
+                  </div>
+                )}
               </div>
-            ) : (
-              <div className="max-w-[95%] px-3 py-2 bg-surface-container-high rounded-xl rounded-tl-sm text-sm">
-                <MarkdownRenderer content={sanitizeContent(msg.content)} enableNumericCitations={false} />
+            ))}
+
+            {/* Streaming indicator */}
+            {streaming && (
+              <div className="flex justify-start">
+                <div className="max-w-[95%] px-3 py-2 bg-surface-container-high rounded-xl rounded-tl-sm text-sm">
+                  {streamingContent ? (
+                    <MarkdownRenderer
+                      content={sanitizeContent(streamingContent)}
+                      enableNumericCitations={false}
+                    />
+                  ) : (
+                    <div className="flex items-center gap-1 py-1">
+                      <span className="w-1.5 h-1.5 bg-on-surface-variant/60 rounded-full animate-bounce [animation-delay:0ms]" />
+                      <span className="w-1.5 h-1.5 bg-on-surface-variant/60 rounded-full animate-bounce [animation-delay:150ms]" />
+                      <span className="w-1.5 h-1.5 bg-on-surface-variant/60 rounded-full animate-bounce [animation-delay:300ms]" />
+                    </div>
+                  )}
+                </div>
               </div>
             )}
-          </div>
-        ))}
-
-        {/* Streaming indicator */}
-        {streaming && (
-          <div className="flex justify-start">
-            <div className="max-w-[95%] px-3 py-2 bg-surface-container-high rounded-xl rounded-tl-sm text-sm">
-              {streamContent ? (
-                <MarkdownRenderer content={sanitizeContent(streamContent)} enableNumericCitations={false} />
-              ) : (
-                <div className="flex items-center gap-1 py-1">
-                  <span className="w-1.5 h-1.5 bg-on-surface-variant/60 rounded-full animate-bounce [animation-delay:0ms]" />
-                  <span className="w-1.5 h-1.5 bg-on-surface-variant/60 rounded-full animate-bounce [animation-delay:150ms]" />
-                  <span className="w-1.5 h-1.5 bg-on-surface-variant/60 rounded-full animate-bounce [animation-delay:300ms]" />
-                </div>
-              )}
-            </div>
-          </div>
+          </>
         )}
-
       </div>
 
       {/* Input */}
@@ -209,7 +128,7 @@ export default function ReportChatPanel({ taskId }: { taskId: string }) {
             className="flex-1 resize-none text-sm bg-surface-container-high rounded-lg px-3 py-2 text-on-surface placeholder:text-on-surface-variant/50 border border-outline-variant/20 focus:outline-none focus:ring-2 focus:ring-primary/30 focus:border-primary/40 disabled:opacity-60"
           />
           <button
-            onClick={sendMessage}
+            onClick={() => void handleSend()}
             disabled={!input.trim() || streaming}
             className="p-2.5 rounded-lg bg-primary text-on-primary hover:bg-primary/90 disabled:opacity-40 disabled:cursor-not-allowed transition-colors shrink-0"
           >

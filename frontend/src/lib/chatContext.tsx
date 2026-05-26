@@ -69,14 +69,13 @@ export function ChatProvider({ children }: { children: React.ReactNode }) {
       content: text,
       created_at: new Date().toISOString(),
     };
+    // Capture snapshot before dispatch so the error path always includes the user bubble,
+    // even if the render hasn't flushed yet when a fast failure hits the catch block.
+    const messagesWithUserBubble = [...(stateRef.current.get(wsId)?.messages ?? []), userBubble];
     dispatch({
       type: "patch",
       key: wsId,
-      patch: {
-        messages: [...(stateRef.current.get(wsId)?.messages ?? []), userBubble],
-        streaming: true,
-        streamingContent: "",
-      },
+      patch: { messages: messagesWithUserBubble, streaming: true, streamingContent: "" },
     });
     const abort = new AbortController();
     aborts.current.set(wsId, abort);
@@ -126,13 +125,12 @@ export function ChatProvider({ children }: { children: React.ReactNode }) {
         dispatch({ type: "patch", key: wsId, patch: { streaming: false, streamingContent: "" } });
         return;
       }
-      const currentMsgs = stateRef.current.get(wsId)?.messages ?? [];
       dispatch({
         type: "patch",
         key: wsId,
         patch: {
           messages: [
-            ...currentMsgs,
+            ...messagesWithUserBubble,
             {
               id: `err-${Date.now()}`,
               workspace_id: wsId,
