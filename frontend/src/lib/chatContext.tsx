@@ -1,5 +1,5 @@
 "use client";
-import React, { createContext, useCallback, useContext, useReducer, useRef } from "react";
+import React, { createContext, useCallback, useContext, useEffect, useReducer, useRef } from "react";
 import type { WorkspaceChatMessage, ChatMode } from "@/lib/types";
 import { api } from "@/lib/api";
 
@@ -20,10 +20,15 @@ const defaultSlice = (): ChatSlice => ({
 type State = Map<string, ChatSlice>;
 type Action =
   | { type: "patch"; key: string; patch: Partial<ChatSlice> }
-  | { type: "set_messages"; key: string; messages: WorkspaceChatMessage[] };
+  | { type: "set_messages"; key: string; messages: WorkspaceChatMessage[] }
+  | { type: "delete"; key: string };
 
 function reducer(state: State, action: Action): State {
   const next = new Map(state);
+  if (action.type === "delete") {
+    next.delete(action.key);
+    return next;
+  }
   const cur = next.get(action.key) ?? defaultSlice();
   if (action.type === "patch") {
     next.set(action.key, { ...cur, ...action.patch });
@@ -38,6 +43,7 @@ interface CtxValue {
   init: (wsId: string) => Promise<void>;
   send: (wsId: string, text: string, mode: ChatMode, module?: string) => Promise<void>;
   stop: (wsId: string) => void;
+  cleanup: (wsId: string) => void;
 }
 
 const ChatCtx = createContext<CtxValue | null>(null);
@@ -155,8 +161,13 @@ export function ChatProvider({ children }: { children: React.ReactNode }) {
     dispatch({ type: "patch", key: wsId, patch: { streaming: false, streamingContent: "" } });
   }, []);
 
+  const cleanup = useCallback((wsId: string) => {
+    if (stateRef.current.get(wsId)?.streaming) return;
+    dispatch({ type: "delete", key: wsId });
+  }, []);
+
   return (
-    <ChatCtx.Provider value={{ state, init, send, stop }}>
+    <ChatCtx.Provider value={{ state, init, send, stop, cleanup }}>
       {children}
     </ChatCtx.Provider>
   );
@@ -165,7 +176,12 @@ export function ChatProvider({ children }: { children: React.ReactNode }) {
 export function useWsChat(wsId: string) {
   const ctx = useContext(ChatCtx);
   if (!ctx) throw new Error("useWsChat must be used inside ChatProvider");
-  const { state, init, send, stop } = ctx;
+  const { state, init, send, stop, cleanup } = ctx;
+
+  useEffect(() => {
+    return () => { cleanup(wsId); };
+  }, [wsId, cleanup]);
+
   return {
     ...(state.get(wsId) ?? defaultSlice()),
     init: useCallback(() => init(wsId), [init, wsId]),

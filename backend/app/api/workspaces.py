@@ -797,6 +797,12 @@ async def workspace_chat_stream(
                     await persist_assistant_reply(ws_id, ws_mode, reply)
                 except Exception as exc:
                     logger.error("Failed to persist assistant reply: %s", exc)
+            elif had_error:
+                # No chunks produced — persist error so history reload shows it instead of vanishing.
+                try:
+                    await persist_assistant_reply(ws_id, ws_mode, "⚠️ 生成失败，请重试")
+                except Exception as exc:
+                    logger.error("Failed to persist error message: %s", exc)
 
         if not had_error:
             yield f"data: {json.dumps({'content': '', 'done': True}, ensure_ascii=False)}\n\n"

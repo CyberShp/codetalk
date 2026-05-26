@@ -339,13 +339,14 @@ async def send_chat_message(
             yield f"data: {json.dumps({'content': '', 'done': True, 'error': '生成失败，请重试'}, ensure_ascii=False)}\n\n"
         finally:
             reply = "".join(chunks)
-            if reply:
+            persist_content = reply if reply else ("⚠️ 生成失败，请重试" if had_error else None)
+            if persist_content:
                 try:
                     async with aiosqlite.connect(db_path) as own_db:
                         now2 = datetime.now(timezone.utc).isoformat()
                         await own_db.execute(
                             "INSERT INTO task_chats (task_id, role, content, created_at) VALUES (?, ?, ?, ?)",
-                            (task_id, "assistant", reply, now2),
+                            (task_id, "assistant", persist_content, now2),
                         )
                         await own_db.commit()
                 except Exception as db_exc:

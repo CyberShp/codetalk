@@ -1,5 +1,5 @@
 "use client";
-import React, { createContext, useCallback, useContext, useReducer, useRef } from "react";
+import React, { createContext, useCallback, useContext, useEffect, useReducer, useRef } from "react";
 import type { ChatMessage } from "@/lib/types";
 import { api } from "@/lib/api";
 
@@ -20,10 +20,15 @@ const defaultSlice = (): TaskChatSlice => ({
 type State = Map<string, TaskChatSlice>;
 type Action =
   | { type: "patch"; key: string; patch: Partial<TaskChatSlice> }
-  | { type: "set_messages"; key: string; messages: ChatMessage[] };
+  | { type: "set_messages"; key: string; messages: ChatMessage[] }
+  | { type: "delete"; key: string };
 
 function reducer(state: State, action: Action): State {
   const next = new Map(state);
+  if (action.type === "delete") {
+    next.delete(action.key);
+    return next;
+  }
   const cur = next.get(action.key) ?? defaultSlice();
   if (action.type === "patch") {
     next.set(action.key, { ...cur, ...action.patch });
@@ -38,6 +43,7 @@ interface CtxValue {
   init: (taskId: string) => Promise<void>;
   send: (taskId: string, text: string) => Promise<void>;
   stop: (taskId: string) => void;
+  cleanup: (taskId: string) => void;
 }
 
 const TaskChatCtx = createContext<CtxValue | null>(null);
@@ -157,8 +163,13 @@ export function TaskChatProvider({ children }: { children: React.ReactNode }) {
     dispatch({ type: "patch", key: taskId, patch: { streaming: false, streamingContent: "" } });
   }, []);
 
+  const cleanup = useCallback((taskId: string) => {
+    if (stateRef.current.get(taskId)?.streaming) return;
+    dispatch({ type: "delete", key: taskId });
+  }, []);
+
   return (
-    <TaskChatCtx.Provider value={{ state, init, send, stop }}>
+    <TaskChatCtx.Provider value={{ state, init, send, stop, cleanup }}>
       {children}
     </TaskChatCtx.Provider>
   );
@@ -167,7 +178,12 @@ export function TaskChatProvider({ children }: { children: React.ReactNode }) {
 export function useTaskChat(taskId: string) {
   const ctx = useContext(TaskChatCtx);
   if (!ctx) throw new Error("useTaskChat must be used inside TaskChatProvider");
-  const { state, init, send, stop } = ctx;
+  const { state, init, send, stop, cleanup } = ctx;
+
+  useEffect(() => {
+    return () => { cleanup(taskId); };
+  }, [taskId, cleanup]);
+
   return {
     ...(state.get(taskId) ?? defaultSlice()),
     init: useCallback(() => init(taskId), [init, taskId]),
