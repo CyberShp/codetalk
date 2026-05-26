@@ -126,55 +126,45 @@ def _force_set_cache_env(cache_dir: str) -> None:
         log.info("Set TIKTOKEN_CACHE_DIR=%s", cache_dir)
 
 
-def _install_read_file_observer(cache_dir: Optional[str]) -> None:
-    """Monkey-patch tiktoken.load.read_file to LOG every download attempt.
+def _install_read_file_interceptor(cache_dir: Optional[str]) -> None:
+    """Monkey-patch tiktoken.load.read_file to serve BPE from local cache.
 
-    Purpose is purely observational: if tiktoken's cache lookup misses,
-    read_file is the function that does the HTTPS GET. By the time we get
-    here we already know the cache lookup missed (otherwise read_file
-    wouldn't be called). We log:
-      - the URL that's about to be fetched
-      - the SHA1 of the URL (= cache filename tiktoken expects)
-      - whether a same-named file exists in our cache_dir (= cache_dir
-        misconfiguration vs. actually missing file)
-    so debugging "why is it still downloading" takes 5 seconds not 5 days.
+    Some tiktoken versions bundled with deepwiki skip TIKTOKEN_CACHE_DIR
+    entirely and call read_file (= HTTPS GET) unconditionally. This patch
+    intercepts that call: if the BPE file exists locally (keyed by sha1 of
+    the URL), return it directly without any network access. Only falls
+    through to the original read_file if no local copy exists.
     """
     try:
         import tiktoken.load as _tl
     except Exception as e:
-        log.warning("Could not import tiktoken.load to install observer: %s", e)
+        log.warning("Could not import tiktoken.load to install interceptor: %s", e)
         return
 
     _orig_read_file = _tl.read_file
 
-    def _observed_read_file(blobpath: str, *args, **kwargs):
+    def _intercepted_read_file(blobpath: str, *args, **kwargs):
         sha = hashlib.sha1(blobpath.encode()).hexdigest()
-        expected_path = (
-            os.path.join(cache_dir, sha) if cache_dir else "(no cache_dir set)"
-        )
-        log.warning(
-            "tiktoken cache MISS — about to HTTPS download:\n"
-            "  url      = %s\n"
-            "  sha1     = %s\n"
-            "  expected = %s",
-            blobpath, sha, expected_path,
-        )
         if cache_dir:
-            actually_there = os.path.exists(os.path.join(cache_dir, sha))
-            log.warning("  file at expected path exists? %s", actually_there)
-            if not actually_there:
-                files = _list_cache_files(cache_dir)
-                log.warning("  files currently in cache_dir: %s",
-                            files if files else "(empty)")
-                log.warning(
-                    "  >> Fix: download %s on a machine with internet, save it as "
-                    "%s, then restart deepwiki.",
-                    blobpath, os.path.join(cache_dir, sha),
-                )
+            local_path = os.path.join(cache_dir, sha)
+            if os.path.isfile(local_path):
+                log.info("tiktoken cache HIT — serving %s from %s", sha, local_path)
+                with open(local_path, "rb") as f:
+                    return f.read()
+            log.warning(
+                "tiktoken cache MISS — file not in local cache:\n"
+                "  url      = %s\n"
+                "  sha1     = %s\n"
+                "  expected = %s\n"
+                "  files    = %s",
+                blobpath, sha, local_path, _list_cache_files(cache_dir),
+            )
+        else:
+            log.warning("tiktoken: no cache_dir set, falling through to HTTPS for %s", blobpath)
         return _orig_read_file(blobpath, *args, **kwargs)
 
-    _tl.read_file = _observed_read_file
-    log.info("Installed tiktoken.load.read_file observer (logs URL on cache MISS)")
+    _tl.read_file = _intercepted_read_file
+    log.info("Installed tiktoken.load.read_file interceptor (serves local BPE, skips HTTPS)")
 
 
 def _patch_fastapi_websocket() -> None:
@@ -222,7 +212,7 @@ if __name__ == "__main__":
     cache_dir = _resolve_cache_dir()
     if cache_dir is not None:
         _force_set_cache_env(cache_dir)
-    _install_read_file_observer(cache_dir)
+    _install_read_file_interceptor(cache_dir)
 
     # FastAPI compat shim (must happen before api.api is imported).
     _patch_fastapi_websocket()
