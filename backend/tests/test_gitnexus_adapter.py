@@ -117,5 +117,71 @@ class GitNexusAdapterPrepareTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(adapter.current_repo_name, "open-iscsi")
 
 
+class GitNexusAdapterProgressParsingTests(unittest.IsolatedAsyncioTestCase):
+    """Verify on_progress handles all known GitNexus progress field shapes."""
+
+    def setUp(self) -> None:
+        GitNexusAdapter._indexed_repo_by_path.clear()
+        GitNexusAdapter._prepare_locks.clear()
+
+    tearDown = setUp
+
+    async def _run_with_progress(self, progress_value) -> list[int]:
+        """Run prepare() with a single pending poll followed by complete; collect progress callbacks."""
+        adapter = GitNexusAdapter(base_url="http://gitnexus:7100")
+        adapter._client = _FakeAsyncClient(
+            get_responses=[
+                _FakeResponse(200, {"status": "pending", "progress": progress_value}),
+                _FakeResponse(200, {"status": "complete", "repoName": "myrepo"}),
+            ],
+            post_responses=[
+                _FakeResponse(200, {"jobId": "job-x"}),
+            ],
+        )
+        recorded: list[int] = []
+
+        async def _cb(pct: int) -> None:
+            recorded.append(pct)
+
+        with (
+            patch("app.adapters.gitnexus.to_tool_repo_path", side_effect=lambda repo_local_path, **_: repo_local_path),
+            patch("app.adapters.gitnexus._POLL_INTERVAL", 0),
+        ):
+            from app.adapters.base import AnalysisRequest
+            await adapter.prepare(AnalysisRequest(repo_local_path="/tmp/repos/myrepo"), on_progress=_cb)
+        return recorded
+
+    async def test_progress_dict_current_key(self):
+        """dict with 'current' key must not crash and return current value."""
+        recorded = await self._run_with_progress({"current": 50, "total": 100})
+        self.assertEqual(len(recorded), 2)
+        self.assertEqual(recorded[0], 50)
+
+    async def test_progress_dict_percent_key(self):
+        """dict with only 'percent' key uses that value."""
+        recorded = await self._run_with_progress({"percent": 75})
+        self.assertEqual(recorded[0], 75)
+
+    async def test_progress_dict_all_zero_falls_back_to_elapsed(self):
+        """dict with all falsy values falls back to elapsed-based estimate (no crash)."""
+        recorded = await self._run_with_progress({"current": 0, "total": 0})
+        self.assertIsInstance(recorded[0], int)
+
+    async def test_progress_int(self):
+        """Plain int still works as before."""
+        recorded = await self._run_with_progress(42)
+        self.assertEqual(recorded[0], 42)
+
+    async def test_progress_string(self):
+        """String numeric value is parsed correctly."""
+        recorded = await self._run_with_progress("30")
+        self.assertEqual(recorded[0], 30)
+
+    async def test_progress_none_falls_back_to_elapsed(self):
+        """None progress field falls back to elapsed-based estimate."""
+        recorded = await self._run_with_progress(None)
+        self.assertIsInstance(recorded[0], int)
+
+
 if __name__ == "__main__":
     unittest.main()

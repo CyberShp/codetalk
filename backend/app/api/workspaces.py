@@ -369,7 +369,10 @@ async def analyze_workspace(
         raise HTTPException(status_code=409, detail="报告生成正在进行中")
 
     plan: AnalysisPlan | None = body.plan if body else None
-    scope_preview: ScopePreview | None = body.scope_preview if body else None
+    # Never trust client-supplied scope_preview: candidate_files[].path is
+    # unvalidated and could point to arbitrary host paths.  The pipeline
+    # re-resolves scope server-side when scope_preview is None.
+    scope_preview: ScopePreview | None = None
 
     if plan is None:
         # Backward-compatible default — still bounded by build_default_plan().
@@ -394,7 +397,6 @@ async def analyze_workspace(
         )
 
     plan_json = plan.model_dump_json()
-    preview_json = scope_preview.model_dump_json() if scope_preview else None
 
     await db.execute(
         "UPDATE workspaces SET analyze_status = 'running', analyze_progress = 0, "
@@ -416,7 +418,7 @@ async def analyze_workspace(
             scope_preview.estimated_evidence_cards if scope_preview else None
         ),
         "plan_persisted": True,
-        "preview_persisted": preview_json is not None,
+        "preview_persisted": False,
     }
 
 

@@ -100,6 +100,14 @@ function AnalyzeBadge({
       </span>
     );
   }
+  if (status === "partial") {
+    return (
+      <span className="inline-flex items-center gap-1 text-xs px-2 py-0.5 rounded-full bg-amber-400/10 text-amber-400">
+        <BarChart2 size={12} />
+        部分完成
+      </span>
+    );
+  }
   if (status === "failed") {
     return (
       <span className="inline-flex items-center gap-1 text-xs px-2 py-0.5 rounded-full bg-red-400/10 text-red-400">

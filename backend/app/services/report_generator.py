@@ -354,13 +354,19 @@ class ReportGenerator:
         # comes from the LLM prompt itself.
         relevant_cards = []
         card_cap = plan.llm_limits.max_cards_per_report_section
-        for unit in analysis_units:
-            for card in unit.get("cards", []):
+        unit_iters = [iter(u.get("cards", [])) for u in analysis_units]
+        while len(relevant_cards) < card_cap and unit_iters:
+            exhausted = []
+            for i, it in enumerate(unit_iters):
                 if len(relevant_cards) >= card_cap:
                     break
-                relevant_cards.append(card)
-            if len(relevant_cards) >= card_cap:
-                break
+                card = next(it, None)
+                if card is None:
+                    exhausted.append(i)
+                else:
+                    relevant_cards.append(card)
+            for i in reversed(exhausted):
+                unit_iters.pop(i)
 
         evidence_md = "\n\n".join(c.to_markdown() for c in relevant_cards) or "（未找到证据卡）"
         unit_summary = "\n".join(

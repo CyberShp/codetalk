@@ -421,7 +421,6 @@ class WorkspaceScopeResolver:
 
         resolved: list[ResolvedAnalysisObject] = []
         total_candidates = 0
-        seen_keys_global: set[tuple[str, str]] = set()
 
         for obj in plan.analysis_objects:
             resolved_obj = await self._resolve_object(
@@ -431,7 +430,6 @@ class WorkspaceScopeResolver:
                 index=index,
                 limits=limits,
                 gitnexus_available=gitnexus_available,
-                seen_keys_global=seen_keys_global,
             )
             resolved.append(resolved_obj)
             total_candidates += (
@@ -468,7 +466,6 @@ class WorkspaceScopeResolver:
         index: _GraphIndex,
         limits,
         gitnexus_available: bool,
-        seen_keys_global: set[tuple[str, str]],
     ) -> ResolvedAnalysisObject:
         keywords = _tokenize(obj.text)
         obj_warnings: list[str] = []
@@ -484,14 +481,15 @@ class WorkspaceScopeResolver:
         file_candidates: list[ScopeCandidate] = []
         symbol_candidates: list[ScopeCandidate] = []
         related_nodes: list[str] = []
+        seen_keys: set[tuple[str, str]] = set()
 
         if gitnexus_available:
             for node, hits in index.search_files(keywords, limits.max_files_per_object):
                 path = _node_path(node)
                 key = ("file", path)
-                if key in seen_keys_global:
+                if key in seen_keys:
                     continue
-                seen_keys_global.add(key)
+                seen_keys.add(key)
                 related_nodes.append(node.get("id", ""))
                 file_candidates.append(
                     ScopeCandidate(
@@ -504,9 +502,9 @@ class WorkspaceScopeResolver:
             for node, hits in index.search_symbols(keywords, limits.max_functions_per_object):
                 sym = node.get("properties", {}).get("name") or node.get("id")
                 key = ("symbol", sym)
-                if key in seen_keys_global:
+                if key in seen_keys:
                     continue
-                seen_keys_global.add(key)
+                seen_keys.add(key)
                 related_nodes.append(node.get("id", ""))
                 symbol_candidates.append(
                     ScopeCandidate(
@@ -525,9 +523,9 @@ class WorkspaceScopeResolver:
             )
             for hit in repo_hits:
                 key = ("file", hit)
-                if key in seen_keys_global:
+                if key in seen_keys:
                     continue
-                seen_keys_global.add(key)
+                seen_keys.add(key)
                 file_candidates.append(
                     ScopeCandidate(
                         path=hit,
@@ -543,9 +541,9 @@ class WorkspaceScopeResolver:
         )
         for cand in mat_candidates:
             key = ("material", cand.path or "")
-            if key in seen_keys_global:
+            if key in seen_keys:
                 continue
-            seen_keys_global.add(key)
+            seen_keys.add(key)
             file_candidates.append(cand)
 
         related_communities = (
