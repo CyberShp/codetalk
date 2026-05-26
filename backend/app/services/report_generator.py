@@ -135,11 +135,16 @@ class ReportGenerator:
         on_report_done: Callable[[str, str, int], Awaitable[None]] | None = None,
         on_report_start: Callable[[str, int, int], Awaitable[None]] | None = None,
         on_report_failed: Callable[[str, str], Awaitable[None]] | None = None,
-        max_concurrency: int = 1,
+        sem: asyncio.Semaphore | None = None,
         data_quality: str = "good",
         repo_path: str = "",
     ) -> list[dict]:
         """Generate every enabled report in *plan* using small LLM calls.
+
+        *sem* is the pipeline-owned global LLM semaphore.  All section-level
+        LLM calls share this budget so total concurrent calls never exceed
+        ``LLM_MAX_CONCURRENCY``.  If not provided a unit semaphore is used
+        (concurrency=1, safe fallback).
 
         Returns a list of manifest entries (also persisted as
         ``report_manifest.json`` in the output dir).
@@ -148,7 +153,7 @@ class ReportGenerator:
         if not enabled:
             return []
 
-        sem = asyncio.Semaphore(max(1, max_concurrency))
+        sem = sem if sem is not None else asyncio.Semaphore(1)
         total = len(enabled)
 
         # Context blob reused across reports (small — we cap each piece).
@@ -486,7 +491,7 @@ class ReportGenerator:
         on_report_done: Callable[[str, str, int], Awaitable[None]] | None = None,
         on_report_start: Callable[[str, int, int], Awaitable[None]] | None = None,
         on_report_failed: Callable[[str, str], Awaitable[None]] | None = None,
-        max_concurrency: int = 1,
+        sem: asyncio.Semaphore | None = None,
         data_quality: str = "good",
         use_streaming: bool = False,
         repo_path: str = "",
@@ -617,7 +622,7 @@ class ReportGenerator:
                 ),
             ))
 
-        sem = asyncio.Semaphore(max_concurrency)
+        sem = sem if sem is not None else asyncio.Semaphore(1)
         total = len(report_tasks)
 
         async def _guarded(idx: int, rtype: str, coro: Awaitable) -> None:

@@ -174,6 +174,11 @@ class AnalysisPipeline:
                     label = _REPORT_LABELS.get(rtype, rtype)
                     await self._log_step(task_id, 80, f"❌ {label} 生成失败：{error}")
 
+                # Single global semaphore owned by the pipeline — both report and
+                # section LLM calls compete for the same budget so total concurrent
+                # LLM calls never exceed LLM_MAX_CONCURRENCY.
+                llm_sem = asyncio.Semaphore(max(1, settings.llm_max_concurrency))
+
                 if self._analysis_plan is not None:
                     await generator.generate_from_plan(
                         plan=self._analysis_plan,
@@ -188,7 +193,7 @@ class AnalysisPipeline:
                         on_report_done=_on_report_done,
                         on_report_start=_on_report_start,
                         on_report_failed=_on_report_failed,
-                        max_concurrency=settings.llm_max_concurrency,
+                        sem=llm_sem,
                         data_quality=self._data_quality,
                         repo_path=self._repo_path,
                     )
@@ -204,7 +209,7 @@ class AnalysisPipeline:
                         on_report_done=_on_report_done,
                         on_report_start=_on_report_start,
                         on_report_failed=_on_report_failed,
-                        max_concurrency=settings.llm_max_concurrency,
+                        sem=llm_sem,
                         data_quality=self._data_quality,
                         use_streaming=True,
                         repo_path=self._repo_path,
