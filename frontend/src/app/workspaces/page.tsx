@@ -22,7 +22,7 @@ export default function WorkspacesPage() {
   }, []);
 
   return (
-    <div className="max-w-5xl mx-auto">
+    <div className="max-w-7xl mx-auto">
       <div className="flex items-center justify-between mb-8">
         <div>
           <h1 className="text-2xl font-bold text-on-surface">工作空间</h1>

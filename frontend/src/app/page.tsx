@@ -100,7 +100,7 @@ export default function WorkbenchPage() {
   const recentTasks = tasks.slice(0, 5);
 
   return (
-    <div className="max-w-6xl">
+    <div className="max-w-7xl">
       {/* Header */}
       <div className="flex items-center justify-between mb-6">
         <div>
