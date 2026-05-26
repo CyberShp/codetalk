@@ -537,14 +537,42 @@ class NativeDeployer:
 
         next_build_dir = frontend_dir / ".next"
         if next_build_dir.exists():
-            await self._emit("install_frontend", "done", "前端依赖已安装，构建产物存在，跳过构建", step)
-            return
+            current_hash = await self._get_git_hash(PROJECT_ROOT)
+            marker = next_build_dir / ".codetalk-git-hash"
+            try:
+                prev_hash = marker.read_text(encoding="utf-8").strip() if marker.exists() else ""
+            except OSError:
+                prev_hash = ""
+
+            if not current_hash:
+                # Can't verify git state; preserve existing skip behavior.
+                await self._emit("install_frontend", "done", "前端依赖已安装，构建产物存在，跳过构建", step)
+                return
+
+            if prev_hash == current_hash:
+                await self._emit("install_frontend", "done",
+                                 f"前端依赖已安装，构建产物与当前 commit 一致（{current_hash[:8]}），跳过构建", step)
+                return
+
+            await self._emit(
+                "install_frontend", "running",
+                f"检测到 git commit 已变更（{prev_hash[:8] or '未知'} → {current_hash[:8]}），清理旧构建...",
+                step,
+            )
+            shutil.rmtree(next_build_dir, ignore_errors=True)
 
         await self._emit("install_frontend", "running", "构建前端（npm run build）...", step)
         rc = await self._run_stream("install_frontend", step, npm_cmd, "run", "build", cwd=str(frontend_dir))
         if rc != 0:
             await self._emit("install_frontend", "error", "npm run build 失败", step)
             raise RuntimeError("Frontend build failed")
+
+        hash_for_marker = await self._get_git_hash(PROJECT_ROOT)
+        if hash_for_marker:
+            try:
+                (next_build_dir / ".codetalk-git-hash").write_text(hash_for_marker, encoding="utf-8")
+            except OSError as exc:
+                await self._emit("install_frontend", "running", f"（警告）写入 git hash 标记失败：{exc}", step)
 
         await self._emit("install_frontend", "done", "前端依赖安装并构建完成", step)
 
@@ -1359,6 +1387,22 @@ class NativeDeployer:
     # ------------------------------------------------------------------
     # Helpers
     # ------------------------------------------------------------------
+
+    async def _get_git_hash(self, cwd: Path) -> str:
+        """Return the current HEAD commit hash, or '' if git is unavailable."""
+        try:
+            proc = await asyncio.create_subprocess_exec(
+                "git", "rev-parse", "HEAD",
+                stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.DEVNULL,
+                cwd=str(cwd),
+            )
+            stdout, _ = await asyncio.wait_for(proc.communicate(), timeout=10)
+            if proc.returncode == 0:
+                return stdout.decode(errors="replace").strip()
+        except (FileNotFoundError, asyncio.TimeoutError):
+            pass
+        return ""
 
     async def _run_stream(
         self, step_name: str, step_index: int, *cmd: str,
