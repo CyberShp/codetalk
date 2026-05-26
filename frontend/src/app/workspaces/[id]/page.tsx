@@ -28,6 +28,7 @@ import {
 import { api } from "@/lib/api";
 import type { Workspace, WorkspaceReportMeta, WorkspaceChatMessage, ChatMode, EmbeddingStatus, WorkspaceModule } from "@/lib/types";
 import MarkdownRenderer from "@/components/ui/MarkdownRenderer";
+import AnalysisTaskModal from "@/components/workspaces/AnalysisTaskModal";
 
 type Tab = "reports" | "materials" | "chat";
 
@@ -514,6 +515,7 @@ export default function WorkspaceDetailPage() {
   const [indexProgress, setIndexProgress] = useState(0);
   const [reindexing, setReindexing] = useState(false);
   const [embeddingStatus, setEmbeddingStatus] = useState<EmbeddingStatus | null>(null);
+  const [showAnalysisModal, setShowAnalysisModal] = useState(false);
 
   const pollIndexRef = useRef<ReturnType<typeof setInterval> | null>(null);
   const pollAnalyzeRef = useRef<ReturnType<typeof setInterval> | null>(null);
@@ -604,19 +606,20 @@ export default function WorkspaceDetailPage() {
     };
   }, [wsId]); // eslint-disable-line react-hooks/exhaustive-deps
 
-  const handleAnalyze = async () => {
+  const handleAnalyze = () => {
     if (!workspace) return;
+    setShowAnalysisModal(true);
+  };
+
+  const handleAnalysisStarted = (info: {
+    analysis_units?: number | null;
+    evidence_cards?: number | null;
+  }) => {
+    setShowAnalysisModal(false);
     setAnalyzing(true);
     setAnalyzeStatus("running");
     setAnalyzeProgress(0);
-    try {
-      await api.workspaces.analyze(wsId);
-      startAnalyzePoll();
-    } catch (e: unknown) {
-      setAnalyzing(false);
-      setAnalyzeStatus(workspace.analyze_status);
-      alert(e instanceof Error ? e.message : "启动分析失败");
-    }
+    startAnalyzePoll();
   };
 
   const handleReindex = async () => {
@@ -944,6 +947,13 @@ export default function WorkspaceDetailPage() {
 
       {/* Chat tab */}
       {tab === "chat" && <ChatPanel wsId={wsId} indexed={workspace.indexed} />}
+
+      <AnalysisTaskModal
+        wsId={wsId}
+        open={showAnalysisModal}
+        onClose={() => setShowAnalysisModal(false)}
+        onStarted={handleAnalysisStarted}
+      />
     </div>
   );
 }

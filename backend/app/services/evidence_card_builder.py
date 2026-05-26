@@ -122,13 +122,12 @@ class EvidenceCardBuilder:
         resolved_objects: Iterable[ResolvedAnalysisObject],
     ) -> list[EvidenceCard]:
         cards: list[EvidenceCard] = []
-        seen: set[tuple[str, str]] = set()
         budget = self._limits.max_evidence_cards
 
         for resolved in resolved_objects:
             if len(cards) >= budget:
                 break
-            object_cards = await self._build_for_object(resolved, seen)
+            object_cards = await self._build_for_object(resolved)
             for card in object_cards:
                 if len(cards) >= budget:
                     break
@@ -139,8 +138,8 @@ class EvidenceCardBuilder:
     async def _build_for_object(
         self,
         resolved: ResolvedAnalysisObject,
-        seen: set[tuple[str, str]],
     ) -> list[EvidenceCard]:
+        seen: set[tuple[str, str]] = set()
         per_object_cap = max(2, self._limits.max_files_per_object // 2)
         cards: list[EvidenceCard] = []
 
