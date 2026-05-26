@@ -70,7 +70,10 @@ _TOKEN_RE = re.compile(r"[\w一-鿿]{2,}", re.UNICODE)
 
 
 def _tokenize(text: str) -> list[str]:
-    raw = [t for t in _TOKEN_RE.findall(text or "")]
+    # Insert spaces at CJK↔ASCII boundaries so "针对iscsi_tgt模块" splits correctly.
+    t = re.sub(r"([一-鿿])([a-zA-Z0-9_])", r"\1 \2", text or "")
+    t = re.sub(r"([a-zA-Z0-9_])([一-鿿])", r"\1 \2", t)
+    raw = [t2 for t2 in _TOKEN_RE.findall(t)]
     out: list[str] = []
     seen: set[str] = set()
     for tok in raw:
