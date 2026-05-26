@@ -53,6 +53,7 @@ export function TaskChatProvider({ children }: { children: React.ReactNode }) {
   const stateRef = useRef(state);
   stateRef.current = state;
   const aborts = useRef(new Map<string, AbortController>());
+  const pendingCleanup = useRef(new Set<string>());
 
   const init = useCallback(async (taskId: string) => {
     if (stateRef.current.get(taskId)?.messages.length) return;
@@ -164,9 +165,21 @@ export function TaskChatProvider({ children }: { children: React.ReactNode }) {
   }, []);
 
   const cleanup = useCallback((taskId: string) => {
-    if (stateRef.current.get(taskId)?.streaming) return;
-    dispatch({ type: "delete", key: taskId });
+    if (stateRef.current.get(taskId)?.streaming) {
+      pendingCleanup.current.add(taskId);
+    } else {
+      dispatch({ type: "delete", key: taskId });
+    }
   }, []);
+
+  useEffect(() => {
+    for (const taskId of [...pendingCleanup.current]) {
+      if (!state.get(taskId)?.streaming) {
+        pendingCleanup.current.delete(taskId);
+        dispatch({ type: "delete", key: taskId });
+      }
+    }
+  }, [state]);
 
   return (
     <TaskChatCtx.Provider value={{ state, init, send, stop, cleanup }}>

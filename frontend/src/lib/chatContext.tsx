@@ -53,6 +53,7 @@ export function ChatProvider({ children }: { children: React.ReactNode }) {
   const stateRef = useRef(state);
   stateRef.current = state;
   const aborts = useRef(new Map<string, AbortController>());
+  const pendingCleanup = useRef(new Set<string>());
 
   const init = useCallback(async (wsId: string) => {
     if (stateRef.current.get(wsId)?.messages.length) return;
@@ -162,9 +163,21 @@ export function ChatProvider({ children }: { children: React.ReactNode }) {
   }, []);
 
   const cleanup = useCallback((wsId: string) => {
-    if (stateRef.current.get(wsId)?.streaming) return;
-    dispatch({ type: "delete", key: wsId });
+    if (stateRef.current.get(wsId)?.streaming) {
+      pendingCleanup.current.add(wsId);
+    } else {
+      dispatch({ type: "delete", key: wsId });
+    }
   }, []);
+
+  useEffect(() => {
+    for (const wsId of [...pendingCleanup.current]) {
+      if (!state.get(wsId)?.streaming) {
+        pendingCleanup.current.delete(wsId);
+        dispatch({ type: "delete", key: wsId });
+      }
+    }
+  }, [state]);
 
   return (
     <ChatCtx.Provider value={{ state, init, send, stop, cleanup }}>

@@ -339,7 +339,10 @@ async def send_chat_message(
             yield f"data: {json.dumps({'content': '', 'done': True, 'error': '生成失败，请重试'}, ensure_ascii=False)}\n\n"
         finally:
             reply = "".join(chunks)
-            persist_content = reply if reply else ("⚠️ 生成失败，请重试" if had_error else None)
+            if had_error:
+                persist_content = (reply + "\n\n⚠️ 生成失败（响应不完整）") if reply else "⚠️ 生成失败，请重试"
+            else:
+                persist_content = reply or None
             if persist_content:
                 try:
                     async with aiosqlite.connect(db_path) as own_db:
