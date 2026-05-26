@@ -81,9 +81,15 @@ async def _search_gitnexus(repo_path: str, query: str, module: str | None = None
             timeout=httpx.Timeout(15, connect=5),
             trust_env=False,
         ) as client:
-            resp = await client.get(
+            resp = await client.post(
                 "/api/search",
-                params={"q": effective_query, "repo": repo_name, "limit": _SEARCH_LIMIT},
+                params={"repo": repo_name},
+                json={
+                    "query": effective_query,
+                    "mode": "hybrid",
+                    "limit": _SEARCH_LIMIT,
+                    "enrich": True,
+                },
             )
             resp.raise_for_status()
             data = resp.json()

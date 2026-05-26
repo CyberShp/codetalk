@@ -168,12 +168,13 @@ class GitNexusClient:
     async def search(self, repo_path: str, query: str) -> list[dict[str, Any]]:
         """Search code within a repository.
 
-        GET /api/search?repo={repo_path}&q={query}
+        POST /api/search with JSON body {query, mode, limit, enrich}.
         """
         try:
-            resp = await self.client.get(
+            resp = await self.client.post(
                 "/api/search",
-                params={"repo": repo_path, "q": query},
+                params={"repo": repo_path},
+                json={"query": query, "mode": "hybrid", "limit": 10, "enrich": True},
                 timeout=_QUERY_TIMEOUT,
             )
             resp.raise_for_status()

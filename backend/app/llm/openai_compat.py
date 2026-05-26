@@ -101,11 +101,42 @@ class OpenAICompatClient(BaseLLMClient):
                     break
                 try:
                     chunk = json.loads(data)
-                    delta = chunk["choices"][0].get("delta", {}).get("content", "")
-                    if delta:
-                        yield delta
-                except (KeyError, IndexError, json.JSONDecodeError):
+                except json.JSONDecodeError:
                     continue
+                # Try several shapes that internal OpenAI-compatible
+                # providers use in the wild.  We yield whichever
+                # non-empty string we find first.
+                try:
+                    choice = chunk["choices"][0]
+                except (KeyError, IndexError):
+                    continue
+                candidates = [
+                    (choice.get("delta") or {}).get("content"),
+                    (choice.get("delta") or {}).get("text"),
+                    (choice.get("delta") or {}).get("reasoning_content"),
+                    choice.get("text"),
+                    choice.get("content"),
+                    (choice.get("message") or {}).get("content"),
+                ]
+                # Accept the first non-empty string candidate, but tolerate
+                # providers that return content as a list of segment dicts.
+                delta: str = ""
+                for cand in candidates:
+                    if isinstance(cand, str) and cand:
+                        delta = cand
+                        break
+                    if isinstance(cand, list):
+                        parts = []
+                        for seg in cand:
+                            if isinstance(seg, dict):
+                                txt = seg.get("text") or seg.get("content")
+                                if txt:
+                                    parts.append(str(txt))
+                        if parts:
+                            delta = "".join(parts)
+                            break
+                if delta:
+                    yield delta
 
     async def _do_complete(
         self,

@@ -1,4 +1,5 @@
 import logging
+import logging.handlers
 from contextlib import asynccontextmanager
 
 from fastapi import FastAPI
@@ -9,6 +10,15 @@ from app.database import init_db
 from app.services.process_manager import ProcessManager
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s — %(message)s")
+
+_log_dir = settings.data_path / "logs"
+_log_dir.mkdir(parents=True, exist_ok=True)
+_fh = logging.handlers.RotatingFileHandler(
+    _log_dir / "backend.log", maxBytes=10 * 1024 * 1024, backupCount=3, encoding="utf-8",
+)
+_fh.setFormatter(logging.Formatter("%(asctime)s %(levelname)s %(name)s — %(message)s"))
+logging.getLogger().addHandler(_fh)
+
 logger = logging.getLogger(__name__)
 
 

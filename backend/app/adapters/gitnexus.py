@@ -187,7 +187,18 @@ class GitNexusAdapter(BaseToolAdapter):
                          if k in status and status[k] is not None),
                         None,
                     )
-                    pct = min(99, int(raw)) if raw is not None else min(99, int(elapsed / _POLL_TIMEOUT * 100))
+                    # GitNexus may return progress as dict e.g. {"current": 50, "total": 100}
+                    if isinstance(raw, dict):
+                        raw = raw.get("current") or raw.get("percent") or raw.get("value")
+                    if isinstance(raw, (int, float)):
+                        pct = min(99, int(raw))
+                    elif isinstance(raw, str):
+                        try:
+                            pct = min(99, int(raw))
+                        except ValueError:
+                            pct = min(99, int(elapsed / _POLL_TIMEOUT * 100))
+                    else:
+                        pct = min(99, int(elapsed / _POLL_TIMEOUT * 100))
                     await on_progress(pct)
 
                 if status["status"] == "complete":

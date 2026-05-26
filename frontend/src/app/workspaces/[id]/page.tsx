@@ -26,8 +26,10 @@ import {
   Download,
 } from "lucide-react";
 import { api } from "@/lib/api";
-import type { Workspace, WorkspaceReportMeta, WorkspaceChatMessage, ChatMode, EmbeddingStatus, WorkspaceModule } from "@/lib/types";
+import type { Workspace, WorkspaceReportMeta, ChatMode, EmbeddingStatus, WorkspaceModule } from "@/lib/types";
+import { useWsChat } from "@/lib/chatContext";
 import MarkdownRenderer from "@/components/ui/MarkdownRenderer";
+import AnalysisTaskModal from "@/components/workspaces/AnalysisTaskModal";
 
 type Tab = "reports" | "materials" | "chat";
 
@@ -97,6 +99,14 @@ function AnalyzeBadge({
       <span className="inline-flex items-center gap-1 text-xs px-2 py-0.5 rounded-full bg-indigo-400/10 text-indigo-400">
         <Loader2 size={12} className="animate-spin" />
         分析中 {progress}%
+      </span>
+    );
+  }
+  if (status === "partial") {
+    return (
+      <span className="inline-flex items-center gap-1 text-xs px-2 py-0.5 rounded-full bg-amber-400/10 text-amber-400">
+        <BarChart2 size={12} />
+        部分完成
       </span>
     );
   }
@@ -177,27 +187,18 @@ function ReportCard({ report, wsId }: { report: WorkspaceReportMeta; wsId: strin
 }
 
 function ChatPanel({ wsId, indexed }: { wsId: string; indexed: number }) {
-  const [messages, setMessages] = useState<WorkspaceChatMessage[]>([]);
-  const [streamingContent, setStreamingContent] = useState("");
+  const { messages, streaming, streamingContent, loadingHistory, init, send } =
+    useWsChat(wsId);
   const [input, setInput] = useState("");
   const [mode, setMode] = useState<ChatMode>("freeqa");
-  const [streaming, setStreaming] = useState(false);
-  const [loadingHistory, setLoadingHistory] = useState(true);
   const [modules, setModules] = useState<WorkspaceModule[]>([]);
   const [selectedModule, setSelectedModule] = useState<string | null>(null);
   const userNearBottom = useRef(true);
   const bottomRef = useRef<HTMLDivElement>(null);
 
-  // Fix 1 (frontend): block chat until workspace is indexed
   const canChat = indexed === 1;
 
-  useEffect(() => {
-    api.workspaces
-      .chatHistory(wsId)
-      .then(setMessages)
-      .catch(() => {})
-      .finally(() => setLoadingHistory(false));
-  }, [wsId]);
+  useEffect(() => { void init(); }, [init]);
 
   useEffect(() => {
     if (indexed === 1) {
@@ -220,79 +221,8 @@ function ChatPanel({ wsId, indexed }: { wsId: string; indexed: number }) {
   const handleSend = async () => {
     const text = input.trim();
     if (!text || streaming || !canChat) return;
-
     setInput("");
-    setStreaming(true);
-    setStreamingContent("");
-
-    // Fix 3 (frontend): immediately show user bubble before waiting for SSE
-    const userBubble: WorkspaceChatMessage = {
-      id: `local-${Date.now()}`,
-      workspace_id: wsId,
-      mode,
-      role: "user",
-      content: text,
-      created_at: new Date().toISOString(),
-    };
-    setMessages((prev) => [...prev, userBubble]);
-
-    try {
-      const res = await api.workspaces.chatStream(wsId, text, mode, selectedModule ?? undefined);
-      if (!res.ok) {
-        const body = await res.text().catch(() => "");
-        throw new Error(body || `HTTP ${res.status}`);
-      }
-
-      const reader = res.body!.getReader();
-      const decoder = new TextDecoder();
-      let buf = "";
-      let accumulated = "";
-
-      while (true) {
-        const { done, value } = await reader.read();
-        if (done) break;
-        buf += decoder.decode(value, { stream: true });
-        const lines = buf.split("\n");
-        buf = lines.pop() ?? "";
-
-        for (const line of lines) {
-          if (!line.startsWith("data: ")) continue;
-          try {
-            const evt = JSON.parse(line.slice(6)) as { content: string; done: boolean; error?: string };
-            if (evt.error) {
-              setStreamingContent((p) => p + `\n\n⚠️ ${evt.error}`);
-              break;
-            }
-            if (evt.done) break;
-            if (evt.content) {
-              accumulated += evt.content;
-              setStreamingContent(accumulated);
-            }
-          } catch {
-            continue;
-          }
-        }
-      }
-
-      // Reload history to get persisted messages
-      const updated = await api.workspaces.chatHistory(wsId).catch(() => messages);
-      setMessages(updated);
-    } catch (e: unknown) {
-      setMessages((prev) => [
-        ...prev,
-        {
-          id: "err-" + Date.now(),
-          workspace_id: wsId,
-          mode,
-          role: "assistant",
-          content: `⚠️ ${e instanceof Error ? e.message : "发送失败"}`,
-          created_at: new Date().toISOString(),
-        },
-      ]);
-    } finally {
-      setStreaming(false);
-      setStreamingContent("");
-    }
+    await send(text, mode, selectedModule ?? undefined);
   };
 
   const handleKeyDown = (e: React.KeyboardEvent<HTMLTextAreaElement>) => {
@@ -506,6 +436,7 @@ export default function WorkspaceDetailPage() {
   const [indexProgress, setIndexProgress] = useState(0);
   const [reindexing, setReindexing] = useState(false);
   const [embeddingStatus, setEmbeddingStatus] = useState<EmbeddingStatus | null>(null);
+  const [showAnalysisModal, setShowAnalysisModal] = useState(false);
 
   const pollIndexRef = useRef<ReturnType<typeof setInterval> | null>(null);
   const pollAnalyzeRef = useRef<ReturnType<typeof setInterval> | null>(null);
@@ -596,19 +527,20 @@ export default function WorkspaceDetailPage() {
     };
   }, [wsId]); // eslint-disable-line react-hooks/exhaustive-deps
 
-  const handleAnalyze = async () => {
+  const handleAnalyze = () => {
     if (!workspace) return;
+    setShowAnalysisModal(true);
+  };
+
+  const handleAnalysisStarted = (info: {
+    analysis_units?: number | null;
+    evidence_cards?: number | null;
+  }) => {
+    setShowAnalysisModal(false);
     setAnalyzing(true);
     setAnalyzeStatus("running");
     setAnalyzeProgress(0);
-    try {
-      await api.workspaces.analyze(wsId);
-      startAnalyzePoll();
-    } catch (e: unknown) {
-      setAnalyzing(false);
-      setAnalyzeStatus(workspace.analyze_status);
-      alert(e instanceof Error ? e.message : "启动分析失败");
-    }
+    startAnalyzePoll();
   };
 
   const handleReindex = async () => {
@@ -936,6 +868,13 @@ export default function WorkspaceDetailPage() {
 
       {/* Chat tab */}
       {tab === "chat" && <ChatPanel wsId={wsId} indexed={workspace.indexed} />}
+
+      <AnalysisTaskModal
+        wsId={wsId}
+        open={showAnalysisModal}
+        onClose={() => setShowAnalysisModal(false)}
+        onStarted={handleAnalysisStarted}
+      />
     </div>
   );
 }

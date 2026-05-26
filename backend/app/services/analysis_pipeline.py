@@ -26,6 +26,8 @@ from app.config import settings
 from app.llm.base import BaseLLMClient, LLMResponse, current_task_id
 from app.llm.factory import create_llm_client_from_active
 from app.prompts.templates import MODULE_SUMMARY_PROMPT
+from app.schemas.workspace_analysis import AnalysisPlan, ScopePreview
+from app.services.evidence_card_builder import EvidenceCard, EvidenceCardBuilder
 from app.services.report_generator import ReportGenerator
 from app.utils.repo_paths import to_tool_repo_path
 
@@ -66,6 +68,11 @@ class AnalysisPipeline:
         self._output_dir: Path | None = None
         self._llm_client: BaseLLMClient | None = None
         self._deepwiki_depth: str = ""
+        # F-WORKSPACE-GITNEXUS-ANALYSIS-TASK-REDESIGN
+        self._analysis_plan: AnalysisPlan | None = None
+        self._scope_preview: ScopePreview | None = None
+        self._evidence_cards: list[EvidenceCard] = []
+        self._analysis_units: list[dict] = []
 
     # ------------------------------------------------------------------
     # Public entry point
@@ -87,6 +94,22 @@ class AnalysisPipeline:
             self._prompt_content = task.get("prompt_content") or ""
             self._deepwiki_depth = task.get("deepwiki_depth") or ""
 
+            # Plan-driven path (F-WORKSPACE-GITNEXUS-ANALYSIS-TASK-REDESIGN).
+            plan_raw = task.get("analysis_plan_json")
+            preview_raw = task.get("scope_preview_json")
+            if plan_raw:
+                try:
+                    self._analysis_plan = AnalysisPlan.model_validate_json(plan_raw)
+                except Exception as exc:
+                    logger.warning("Could not parse analysis_plan_json: %s", exc)
+                    self._analysis_plan = None
+            if preview_raw:
+                try:
+                    self._scope_preview = ScopePreview.model_validate_json(preview_raw)
+                except Exception as exc:
+                    logger.warning("Could not parse scope_preview_json: %s", exc)
+                    self._scope_preview = None
+
             await self._update_progress(task_id, 0, "running", None, "启动分析管道…")
 
             # Phase 0: Preparation
@@ -105,7 +128,10 @@ class AnalysisPipeline:
             # Phase 2: Per-module Analysis (MapReduce)
             llm_client = await self._try_create_llm_client()
             if llm_client:
-                await self._phase_module_analysis(llm_client)
+                if self._analysis_plan is not None:
+                    await self._phase_plan_driven_analysis(llm_client)
+                else:
+                    await self._phase_module_analysis(llm_client)
 
                 all_modules_failed = bool(self._module_summaries) and all(
                     s.get("summary", "").startswith("（分析失败")
@@ -148,22 +174,46 @@ class AnalysisPipeline:
                     label = _REPORT_LABELS.get(rtype, rtype)
                     await self._log_step(task_id, 80, f"❌ {label} 生成失败：{error}")
 
-                await generator.generate_all(
-                    module_summaries=self._module_summaries,
-                    gitnexus_data=self._gitnexus_data,
-                    deepwiki_data=self._deepwiki_data,
-                    requirements_doc=task.get("requirements_doc"),
-                    design_doc=task.get("design_doc"),
-                    analysis_focus=self._analysis_focus,
-                    prompt_content=self._prompt_content,
-                    on_report_done=_on_report_done,
-                    on_report_start=_on_report_start,
-                    on_report_failed=_on_report_failed,
-                    max_concurrency=settings.llm_max_concurrency,
-                    data_quality=self._data_quality,
-                    use_streaming=True,
-                    repo_path=self._repo_path,
-                )
+                # Single global semaphore owned by the pipeline — both report and
+                # section LLM calls compete for the same budget so total concurrent
+                # LLM calls never exceed LLM_MAX_CONCURRENCY.
+                llm_sem = asyncio.Semaphore(max(1, settings.llm_max_concurrency))
+
+                if self._analysis_plan is not None:
+                    await generator.generate_from_plan(
+                        plan=self._analysis_plan,
+                        scope_preview=self._scope_preview,
+                        analysis_units=self._analysis_units,
+                        evidence_cards=self._evidence_cards,
+                        module_summaries=self._module_summaries,
+                        gitnexus_data=self._gitnexus_data,
+                        deepwiki_data=self._deepwiki_data,
+                        requirements_doc=task.get("requirements_doc"),
+                        design_doc=task.get("design_doc"),
+                        on_report_done=_on_report_done,
+                        on_report_start=_on_report_start,
+                        on_report_failed=_on_report_failed,
+                        sem=llm_sem,
+                        data_quality=self._data_quality,
+                        repo_path=self._repo_path,
+                    )
+                else:
+                    await generator.generate_all(
+                        module_summaries=self._module_summaries,
+                        gitnexus_data=self._gitnexus_data,
+                        deepwiki_data=self._deepwiki_data,
+                        requirements_doc=task.get("requirements_doc"),
+                        design_doc=task.get("design_doc"),
+                        analysis_focus=self._analysis_focus,
+                        prompt_content=self._prompt_content,
+                        on_report_done=_on_report_done,
+                        on_report_start=_on_report_start,
+                        on_report_failed=_on_report_failed,
+                        sem=llm_sem,
+                        data_quality=self._data_quality,
+                        use_streaming=True,
+                        repo_path=self._repo_path,
+                    )
                 await self._update_progress(task_id, 90, "running", None, "报告生成完成，收尾处理…")
 
                 # Phase 4: Cross-enhancement (optional, best-effort)
@@ -580,6 +630,205 @@ class AnalysisPipeline:
         # Task 13: persist module summaries to cache
         if cache_key:
             await self._save_module_summaries_cache(cache_key, self._module_summaries)
+
+    # ------------------------------------------------------------------
+    # F-WORKSPACE-GITNEXUS-ANALYSIS-TASK-REDESIGN
+    # Plan-driven analysis: bounded units derived from AnalysisPlan +
+    # ScopePreview rather than the GitNexus community count.
+    # ------------------------------------------------------------------
+
+    async def _phase_plan_driven_analysis(self, llm_client: BaseLLMClient) -> None:
+        """Build analysis units & evidence cards from the user's plan."""
+        plan = self._analysis_plan
+        if plan is None:
+            return
+
+        scope = self._scope_preview
+        if scope is None or not scope.resolved_objects:
+            # Resolver was skipped or failed — synthesise an empty scope so
+            # the rest of the pipeline still runs but produces clear warnings.
+            from app.schemas.workspace_analysis import (
+                ResolvedAnalysisObject,
+                ScopePreview as _Sp,
+            )
+            scope = _Sp(
+                workspace_id="",
+                resolved_objects=[
+                    ResolvedAnalysisObject(object_id=o.id, text=o.text)
+                    for o in plan.analysis_objects
+                ],
+                estimated_analysis_units=len(plan.analysis_objects),
+                estimated_evidence_cards=0,
+                warnings=["未提供 ScopePreview，已退回到最小解析模式"],
+                gitnexus_available=False,
+            )
+            self._scope_preview = scope
+
+        # 1. Build evidence cards (bounded by LLMLimits.max_evidence_cards).
+        builder = EvidenceCardBuilder(
+            repo_path=self._repo_path, limits=plan.llm_limits,
+        )
+        self._evidence_cards = await builder.build_cards(scope.resolved_objects)
+        await self._log_step(
+            self._task_id, 50,
+            f"📋 已构建 {len(self._evidence_cards)} 张证据卡（上限 {plan.llm_limits.max_evidence_cards}）",
+        )
+
+        # 2. Group objects into analysis units.  Closely related objects
+        #    (sharing files/symbols) collapse to the same unit.  Hard cap
+        #    via LLMLimits.max_analysis_units (AC-P2).
+        self._analysis_units = self._group_analysis_units(scope.resolved_objects, plan)
+        await self._log_step(
+            self._task_id, 55,
+            f"🧩 已规划 {len(self._analysis_units)} 个分析单元（GitNexus 社区数与之无关）",
+        )
+
+        # 3. Generate a small summary per unit for downstream report sections.
+        sem = asyncio.Semaphore(settings.analysis_concurrency)
+        out_chars = plan.llm_limits.max_output_chars_per_section
+
+        async def summarize_one(unit: dict) -> dict:
+            async with sem:
+                summary = await self._summarize_analysis_unit(
+                    llm_client, unit, out_chars,
+                )
+                await AnalysisPipeline._log_step(
+                    self._task_id, 60,
+                    f"单元分析完成：{unit['title']}",
+                )
+            return {
+                "module_name": unit["title"],
+                "summary": summary,
+                "files": [c.get("file_path") for c in unit["card_dicts"] if c.get("file_path")],
+                "unit_id": unit["id"],
+            }
+
+        results: list[dict] = []
+        for fut in asyncio.as_completed([summarize_one(u) for u in self._analysis_units]):
+            try:
+                results.append(await fut)
+            except Exception as exc:
+                logger.exception("Analysis-unit summary failed: %s", exc)
+                results.append(
+                    {"module_name": "(failed)", "summary": f"（分析失败: {exc}）", "files": []}
+                )
+
+        self._module_summaries = results
+
+    def _group_analysis_units(
+        self, resolved_objects, plan: AnalysisPlan,
+    ) -> list[dict]:
+        cards_by_object: dict[str, list[EvidenceCard]] = {}
+        for card in self._evidence_cards:
+            cards_by_object.setdefault(card.object_id, []).append(card)
+
+        # Simple grouping heuristic: union-find on shared file paths.
+        parent: dict[str, str] = {obj.object_id: obj.object_id for obj in resolved_objects}
+
+        def find(x: str) -> str:
+            while parent[x] != x:
+                parent[x] = parent[parent[x]]
+                x = parent[x]
+            return x
+
+        def union(a: str, b: str) -> None:
+            ra, rb = find(a), find(b)
+            if ra != rb:
+                parent[rb] = ra
+
+        file_owner: dict[str, str] = {}
+        for obj_id, cards in cards_by_object.items():
+            for card in cards:
+                if not card.file_path:
+                    continue
+                prev = file_owner.get(card.file_path)
+                if prev is None:
+                    file_owner[card.file_path] = obj_id
+                else:
+                    union(prev, obj_id)
+
+        groups: dict[str, list[str]] = {}
+        for obj_id in [o.object_id for o in resolved_objects]:
+            root = find(obj_id)
+            groups.setdefault(root, []).append(obj_id)
+
+        # Convert groups into analysis-unit dicts.
+        text_by_id = {o.object_id: o.text for o in resolved_objects}
+        units: list[dict] = []
+        for idx, (root, members) in enumerate(groups.items()):
+            unit_cards: list[EvidenceCard] = []
+            for mid in members:
+                unit_cards.extend(cards_by_object.get(mid, []))
+            titles = [text_by_id[m] for m in members if m in text_by_id]
+            title = "；".join(titles[:3]) or f"分析单元 {idx + 1}"
+            units.append({
+                "id": f"unit_{idx + 1}",
+                "title": title,
+                "object_ids": members,
+                "object_texts": titles,
+                "cards": unit_cards,
+                "card_dicts": [c.to_dict() for c in unit_cards],
+            })
+
+        # Hard cap on units — merge tail into last bucket if needed.
+        cap = plan.llm_limits.max_analysis_units
+        if len(units) > cap:
+            head = units[: cap - 1]
+            tail = units[cap - 1 :]
+            merged_cards: list[EvidenceCard] = []
+            merged_texts: list[str] = []
+            merged_object_ids: list[str] = []
+            for u in tail:
+                merged_cards.extend(u["cards"])
+                merged_texts.extend(u["object_texts"])
+                merged_object_ids.extend(u["object_ids"])
+            head.append({
+                "id": f"unit_{cap}",
+                "title": "其他分析对象合集",
+                "object_ids": merged_object_ids,
+                "object_texts": merged_texts,
+                "cards": merged_cards,
+                "card_dicts": [c.to_dict() for c in merged_cards],
+            })
+            units = head
+        return units
+
+    async def _summarize_analysis_unit(
+        self,
+        llm_client: BaseLLMClient,
+        unit: dict,
+        max_output_chars: int,
+    ) -> str:
+        """Tiny LLM call that condenses a unit's evidence into 600-1000 chars."""
+        cards_md = "\n\n".join(
+            card.to_markdown() for card in unit["cards"][:8]
+        ) or "（无证据卡）"
+        prompt = (
+            "你是资深代码分析与测试专家。请基于以下证据卡，为一个分析单元生成"
+            "结构化摘要。输出严格控制在 800 字以内，包含：核心职责、关键调用链、"
+            "异常分支与待验证项三个小节。无证据时明确写明“数据不足”而不要编造。\n\n"
+            f"## 分析单元\n{unit['title']}\n\n"
+            f"## 涉及的分析对象\n" + "\n".join(f"- {t}" for t in unit["object_texts"]) + "\n\n"
+            f"## 证据卡\n{cards_md}\n"
+        )
+        messages = [{"role": "user", "content": prompt}]
+        has_real_streaming = (
+            type(llm_client).stream_complete is not BaseLLMClient.stream_complete
+        )
+        budget = min(max_output_chars * 2, settings.llm_max_output_tokens)
+        try:
+            if has_real_streaming:
+                content = await llm_client.stream_complete_collected(
+                    messages=messages, max_tokens=budget, temperature=0.3,
+                )
+            else:
+                resp = await llm_client.complete(
+                    messages=messages, max_tokens=budget, temperature=0.3,
+                )
+                content = resp.content
+        except Exception as exc:
+            return f"（分析失败: {exc}）"
+        return content or "（LLM 未返回内容）"
 
     def _extract_communities(self) -> list[dict]:
         """Extract community/module groups from GitNexus data."""
