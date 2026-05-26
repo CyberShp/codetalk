@@ -189,11 +189,15 @@ class _GraphIndex:
     def is_empty(self) -> bool:
         return not self._nodes
 
-    def search_files(self, keywords: list[str], limit: int) -> list[tuple[dict, int]]:
-        return _rank_nodes_by_keywords(self._file_nodes, keywords, limit)
+    def search_files(
+        self, keywords: list[str], limit: int, focused_module: str | None = None
+    ) -> list[tuple[dict, float]]:
+        return _rank_nodes_by_keywords(self._file_nodes, keywords, limit, focused_module)
 
-    def search_symbols(self, keywords: list[str], limit: int) -> list[tuple[dict, int]]:
-        return _rank_nodes_by_keywords(self._symbol_nodes, keywords, limit)
+    def search_symbols(
+        self, keywords: list[str], limit: int, focused_module: str | None = None
+    ) -> list[tuple[dict, float]]:
+        return _rank_nodes_by_keywords(self._symbol_nodes, keywords, limit, focused_module)
 
     def communities_for_nodes(self, node_ids: Iterable[str], limit: int) -> list[str]:
         names: list[str] = []
@@ -223,23 +227,39 @@ def _node_text(node: dict) -> str:
 
 
 def _rank_nodes_by_keywords(
-    nodes: list[dict], keywords: list[str], limit: int
-) -> list[tuple[dict, int]]:
+    nodes: list[dict],
+    keywords: list[str],
+    limit: int,
+    focused_module: str | None = None,
+) -> list[tuple[dict, float]]:
     if not keywords:
         return []
     folded = [kw.lower() if kw.isascii() else kw for kw in keywords]
-    scored: list[tuple[dict, int]] = []
+    scored: list[tuple[dict, float]] = []
     for node in nodes:
         text = _node_text(node)
         if not text:
             continue
         lower = text.lower()
-        hits = 0
-        for kw in folded:
-            if kw in lower:
-                hits += 1
-        if hits:
-            scored.append((node, hits))
+        hits: float = sum(1 for kw in folded if kw in lower)
+        if not hits:
+            continue
+        # Path continuity: 2x when ≥ 2 keywords hit within 3 consecutive path segments.
+        # e.g. keywords ["nvme","tcp","tls"] on "nvme_tcp/trans/tls/x.c" → 2x.
+        path = _node_path(node).lower()
+        if path and len(folded) >= 2:
+            segments = [s for s in re.split(r"[/\\]", path) if s]
+            for start in range(len(segments)):
+                window = " ".join(segments[start : start + 3])
+                if sum(1 for kw in folded if kw in window) >= 2:
+                    hits *= 2.0
+                    break
+        # Focused-module bias: 2x for nodes inside the focused module path prefix.
+        if focused_module:
+            focused_lower = focused_module.lower()
+            if path.startswith(focused_lower) or focused_lower in path:
+                hits *= 2.0
+        scored.append((node, hits))
     scored.sort(key=lambda x: x[1], reverse=True)
     return scored[: max(limit, 0)]
 

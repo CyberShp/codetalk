@@ -13,6 +13,8 @@ export default function ReportChatPanel({ taskId }: { taskId: string }) {
   const [streamContent, setStreamContent] = useState("");
   const chatContainerRef = useRef<HTMLDivElement>(null);
   const userNearBottom = useRef(true);
+  // AbortController only for explicit cancellation — not tied to unmount.
+  const abortRef = useRef<AbortController | null>(null);
 
   useEffect(() => {
     api.tasks.chatHistory(taskId).then(setMessages).catch(() => {});
@@ -47,11 +49,15 @@ export default function ReportChatPanel({ taskId }: { taskId: string }) {
     setStreaming(true);
     setStreamContent("");
 
+    const abort = new AbortController();
+    abortRef.current = abort;
+
     try {
       const res = await fetch(api.tasks.chatUrl(taskId), {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ message: text }),
+        signal: abort.signal,
       });
       if (!res.ok || !res.body) throw new Error("request failed");
 
@@ -60,7 +66,7 @@ export default function ReportChatPanel({ taskId }: { taskId: string }) {
       let accumulated = "";
       let buffer = "";
 
-      while (true) {
+      while (!abort.signal.aborted) {
         const { value, done } = await reader.read();
         if (done) break;
         buffer += decoder.decode(value, { stream: true });
@@ -105,7 +111,8 @@ export default function ReportChatPanel({ taskId }: { taskId: string }) {
           }
         }
       }
-    } catch {
+    } catch (e) {
+      if (e instanceof Error && e.name === "AbortError") return;
       setMessages((prev) => [
         ...prev,
         {
@@ -118,6 +125,7 @@ export default function ReportChatPanel({ taskId }: { taskId: string }) {
       ]);
       setStreamContent("");
     } finally {
+      abortRef.current = null;
       setStreaming(false);
     }
   }, [input, streaming, taskId]);

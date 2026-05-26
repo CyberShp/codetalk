@@ -366,12 +366,13 @@ export const api = {
         `/api/workspaces/${wsId}/chat/history?limit=${limit}`,
       ),
 
-    chatStream: (wsId: string, message: string, mode: import("./types").ChatMode, module?: string): Promise<Response> =>
+    chatStream: (wsId: string, message: string, mode: import("./types").ChatMode, module?: string, signal?: AbortSignal): Promise<Response> =>
       fetch(`${BASE}/api/workspaces/${wsId}/chat/stream`, {
         method: "POST",
         credentials: "include",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ message, mode, ...(module ? { module } : {}) }),
+        signal,
       }),
 
     exportUrl: (wsId: string, format: "md" | "docx" | "xml") =>

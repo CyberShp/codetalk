@@ -175,29 +175,29 @@ class ReportGenerator:
         manifest_entries: list[dict] = []
 
         async def _run_one(idx: int, spec: ReportSpec) -> dict:
-            async with sem:
-                if on_report_start is not None:
-                    await on_report_start(spec.template_id, idx + 1, total)
-                entry = await self._generate_plan_report(
-                    spec=spec,
-                    plan=plan,
-                    common_context=common_context,
-                    analysis_units=analysis_units,
-                    evidence_cards=evidence_cards,
-                )
-                if entry["status"] == "completed":
-                    if on_report_done is not None:
-                        await on_report_done(
-                            spec.template_id,
-                            entry["filename"],
-                            entry["metadata"].get("char_count", 0),
-                        )
-                else:
-                    if on_report_failed is not None:
-                        await on_report_failed(
-                            spec.template_id, entry.get("error") or "(unknown)",
-                        )
-                return entry
+            if on_report_start is not None:
+                await on_report_start(spec.template_id, idx + 1, total)
+            entry = await self._generate_plan_report(
+                spec=spec,
+                plan=plan,
+                common_context=common_context,
+                analysis_units=analysis_units,
+                evidence_cards=evidence_cards,
+                sem=sem,
+            )
+            if entry["status"] == "completed":
+                if on_report_done is not None:
+                    await on_report_done(
+                        spec.template_id,
+                        entry["filename"],
+                        entry["metadata"].get("char_count", 0),
+                    )
+            else:
+                if on_report_failed is not None:
+                    await on_report_failed(
+                        spec.template_id, entry.get("error") or "(unknown)",
+                    )
+            return entry
 
         results = await asyncio.gather(
             *[_run_one(i, spec) for i, spec in enumerate(enabled)],
@@ -250,8 +250,9 @@ class ReportGenerator:
         common_context: dict,
         analysis_units: list[dict],
         evidence_cards: list,
+        sem: asyncio.Semaphore,
     ) -> dict:
-        """Build one report file from small section calls."""
+        """Build one report file from small section calls, sections run in parallel."""
         sections_blueprint = _SECTION_BLUEPRINTS.get(spec.template_id)
         if sections_blueprint is None:
             sections_blueprint = _default_sections_for(spec)
@@ -260,7 +261,7 @@ class ReportGenerator:
         section_outputs: list[tuple[str, str, str]] = []  # (heading, body, status)
         any_failure = False
 
-        for section_idx, section in enumerate(sections_blueprint):
+        async def _do_section(section_idx: int, section: dict) -> tuple[str, str, str]:
             body, status = await self._render_section(
                 spec=spec,
                 section=section,
@@ -269,10 +270,23 @@ class ReportGenerator:
                 analysis_units=analysis_units,
                 evidence_cards=evidence_cards,
                 section_idx=section_idx,
+                sem=sem,
             )
-            section_outputs.append((section["heading"], body, status))
-            if status != "completed":
+            return (section["heading"], body, status)
+
+        raw_results = await asyncio.gather(
+            *[_do_section(i, s) for i, s in enumerate(sections_blueprint)],
+            return_exceptions=True,
+        )
+        for r in raw_results:
+            if isinstance(r, BaseException):
+                logger.exception("Section generation failed: %s", r)
+                section_outputs.append(("(section error)", str(r), "failed"))
                 any_failure = True
+            else:
+                section_outputs.append(r)
+                if r[2] != "completed":
+                    any_failure = True
 
         # Assemble the file programmatically per §13.1.
         now = datetime.now(timezone.utc).isoformat()
@@ -344,6 +358,7 @@ class ReportGenerator:
         analysis_units: list[dict],
         evidence_cards: list,
         section_idx: int,
+        sem: asyncio.Semaphore,
     ) -> tuple[str, str]:
         """Call the LLM for a single section, retrying once on empty output.
 
@@ -423,20 +438,21 @@ class ReportGenerator:
         body = ""
         for attempt in range(retries):
             try:
-                if has_real_streaming:
-                    body = await self._llm.stream_complete_collected(
-                        messages=messages,
-                        max_tokens=budget_tokens,
-                        temperature=0.3,
-                        min_chars=min_chars,
-                        retry_on_empty=False,
-                        max_retries=0,
-                    )
-                else:
-                    resp = await self._llm.complete(
-                        messages=messages, max_tokens=budget_tokens, temperature=0.3,
-                    )
-                    body = resp.content
+                async with sem:
+                    if has_real_streaming:
+                        body = await self._llm.stream_complete_collected(
+                            messages=messages,
+                            max_tokens=budget_tokens,
+                            temperature=0.3,
+                            min_chars=min_chars,
+                            retry_on_empty=False,
+                            max_retries=0,
+                        )
+                    else:
+                        resp = await self._llm.complete(
+                            messages=messages, max_tokens=budget_tokens, temperature=0.3,
+                        )
+                        body = resp.content
                 if _section_is_invalid(body, min_chars=min_chars, section=section):
                     raise LLMEmptyOutputError("section content failed structural validation")
                 return body.strip(), "completed"
