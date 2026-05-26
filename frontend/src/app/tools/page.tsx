@@ -50,6 +50,8 @@ export default function ToolsPage() {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [restartingTool, setRestartingTool] = useState<string | null>(null);
+  const [startingTool, setStartingTool] = useState<string | null>(null);
+  const [stoppingTool, setStoppingTool] = useState<string | null>(null);
 
   const loadTools = useCallback(async () => {
     setLoading(true);
@@ -80,6 +82,36 @@ export default function ToolsPage() {
         setError(err instanceof Error ? err.message : "重启失败");
       } finally {
         setRestartingTool(null);
+      }
+    },
+    [loadTools],
+  );
+
+  const handleStart = useCallback(
+    async (name: string) => {
+      setStartingTool(name);
+      try {
+        await api.tools.start(name);
+        setTimeout(loadTools, 2000);
+      } catch (err: unknown) {
+        setError(err instanceof Error ? err.message : "启动失败");
+      } finally {
+        setStartingTool(null);
+      }
+    },
+    [loadTools],
+  );
+
+  const handleStop = useCallback(
+    async (name: string) => {
+      setStoppingTool(name);
+      try {
+        await api.tools.stop(name);
+        setTimeout(loadTools, 1000);
+      } catch (err: unknown) {
+        setError(err instanceof Error ? err.message : "停止失败");
+      } finally {
+        setStoppingTool(null);
       }
     },
     [loadTools],
@@ -174,6 +206,9 @@ export default function ToolsPage() {
             const display = STATUS_DISPLAY[statusKey] ?? STATUS_DISPLAY.unknown;
             const Icon = display.icon;
             const isRestarting = restartingTool === tool.name;
+            const isStarting = startingTool === tool.name;
+            const isStopping = stoppingTool === tool.name;
+            const isBusy = isRestarting || isStarting || isStopping;
 
             return (
               <div
@@ -250,28 +285,57 @@ export default function ToolsPage() {
                 )}
 
                 <div className="flex items-center gap-2">
-                  <button
-                    onClick={() => handleRestart(tool.name)}
-                    disabled={isRestarting}
-                    className="flex items-center gap-2 px-4 py-2 text-sm bg-surface-container-high text-on-surface rounded-lg border border-outline-variant/30 hover:bg-surface-container transition-colors disabled:opacity-50"
-                  >
-                    {isRestarting ? (
-                      <Loader2 size={14} className="animate-spin" />
-                    ) : (
-                      <Power size={14} />
-                    )}
-                    {isRestarting ? "重启中..." : "重启"}
-                  </button>
-                  {!tool.healthy && (
-                    <a
-                      href="http://localhost:9000"
-                      target="_blank"
-                      rel="noopener noreferrer"
-                      className="flex items-center gap-1.5 px-4 py-2 text-sm text-primary hover:opacity-80 transition-opacity"
-                    >
-                      <Rocket size={14} />
-                      部署向导
-                    </a>
+                  {tool.healthy ? (
+                    <>
+                      <button
+                        onClick={() => handleStop(tool.name)}
+                        disabled={isBusy}
+                        className="flex items-center gap-2 px-4 py-2 text-sm bg-surface-container-high text-red-400 rounded-lg border border-red-400/20 hover:bg-red-400/5 transition-colors disabled:opacity-50"
+                      >
+                        {isStopping ? (
+                          <Loader2 size={14} className="animate-spin" />
+                        ) : (
+                          <Power size={14} />
+                        )}
+                        {isStopping ? "停止中..." : "停止"}
+                      </button>
+                      <button
+                        onClick={() => handleRestart(tool.name)}
+                        disabled={isBusy}
+                        className="flex items-center gap-2 px-4 py-2 text-sm bg-surface-container-high text-on-surface rounded-lg border border-outline-variant/30 hover:bg-surface-container transition-colors disabled:opacity-50"
+                      >
+                        {isRestarting ? (
+                          <Loader2 size={14} className="animate-spin" />
+                        ) : (
+                          <Power size={14} />
+                        )}
+                        {isRestarting ? "重启中..." : "重启"}
+                      </button>
+                    </>
+                  ) : (
+                    <>
+                      <button
+                        onClick={() => handleStart(tool.name)}
+                        disabled={isBusy}
+                        className="flex items-center gap-2 px-4 py-2 text-sm bg-surface-container-high text-green-400 rounded-lg border border-green-400/20 hover:bg-green-400/5 transition-colors disabled:opacity-50"
+                      >
+                        {isStarting ? (
+                          <Loader2 size={14} className="animate-spin" />
+                        ) : (
+                          <Power size={14} />
+                        )}
+                        {isStarting ? "启动中..." : "启动"}
+                      </button>
+                      <a
+                        href="http://localhost:9000"
+                        target="_blank"
+                        rel="noopener noreferrer"
+                        className="flex items-center gap-1.5 px-4 py-2 text-sm text-primary hover:opacity-80 transition-opacity"
+                      >
+                        <Rocket size={14} />
+                        部署向导
+                      </a>
+                    </>
                   )}
                 </div>
               </div>

@@ -157,6 +157,11 @@ export const api = {
       request<ChatMessage[]>(`/api/tasks/${id}/chat`),
 
     chatUrl: (id: string) => `${BASE}/api/tasks/${id}/chat`,
+
+    cancel: (id: string) =>
+      request<{ task_id: string; status: string }>(`/api/tasks/${id}/cancel`, {
+        method: "POST",
+      }),
   },
 
   // ── LLM 配置 ──
@@ -218,6 +223,18 @@ export const api = {
   // ── 工具状态 ──
   tools: {
     status: () => request<ToolInfo[]>("/api/tools/status"),
+
+    start: (name: string) =>
+      request<{ success: boolean; message: string }>(
+        `/api/tools/${name}/start`,
+        { method: "POST" },
+      ),
+
+    stop: (name: string) =>
+      request<{ success: boolean; message: string }>(
+        `/api/tools/${name}/stop`,
+        { method: "POST" },
+      ),
 
     restart: (name: string) =>
       request<{ success: boolean; message: string }>(

@@ -17,6 +17,9 @@ from app.database import get_db
 router = APIRouter(prefix="/api/tasks", tags=["任务管理"])
 logger = logging.getLogger(__name__)
 
+# Maps task_id → cancel event for in-flight pipeline tasks.
+_cancel_events: dict[str, asyncio.Event] = {}
+
 
 # --- Schemas ---
 
@@ -185,10 +188,43 @@ async def run_task(
     # Launch pipeline in background
     from app.services.analysis_pipeline import AnalysisPipeline
 
-    pipeline = AnalysisPipeline()
-    background_tasks.add_task(pipeline.run, task_id)
+    cancel_event = asyncio.Event()
+    _cancel_events[task_id] = cancel_event
+
+    async def _run_and_cleanup() -> None:
+        try:
+            pipeline = AnalysisPipeline()
+            await pipeline.run(task_id, cancel_event=cancel_event)
+        finally:
+            _cancel_events.pop(task_id, None)
+
+    background_tasks.add_task(_run_and_cleanup)
 
     return {"task_id": task_id, "status": "running", "message": "分析管道已启动"}
+
+
+@router.post("/{task_id}/cancel")
+async def cancel_task(task_id: str, db: aiosqlite.Connection = Depends(get_db)):
+    """Cancel a running or pending task."""
+    async with db.execute("SELECT status FROM tasks WHERE id = ?", (task_id,)) as cur:
+        row = await cur.fetchone()
+    if not row:
+        raise HTTPException(status_code=404, detail="任务不存在")
+    if row["status"] not in ("running", "pending"):
+        raise HTTPException(status_code=409, detail="只有运行中或等待中的任务可取消")
+
+    event = _cancel_events.get(task_id)
+    if event:
+        event.set()
+
+    now = datetime.now(timezone.utc).isoformat()
+    await db.execute(
+        "UPDATE tasks SET status = 'cancelled', updated_at = ? WHERE id = ?",
+        (now, task_id),
+    )
+    await db.commit()
+    logger.info("Task cancelled: id=%s", task_id)
+    return {"task_id": task_id, "status": "cancelled"}
 
 
 @router.get("/{task_id}/output", response_model=list[OutputFileInfo])

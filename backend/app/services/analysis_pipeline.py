@@ -33,6 +33,11 @@ from app.utils.repo_paths import to_tool_repo_path
 
 logger = logging.getLogger(__name__)
 
+
+class _CancelledError(Exception):
+    """Raised inside the pipeline when the user cancels the task."""
+
+
 MAX_TOKENS_PER_CALL = 40000
 MAX_OUTPUT_TOKENS = 8192  # per-module summary; matches report generator budget
 MAX_DEP_FILES = 8
@@ -78,7 +83,11 @@ class AnalysisPipeline:
     # Public entry point
     # ------------------------------------------------------------------
 
-    async def run(self, task_id: str) -> None:
+    def _check_cancelled(self, cancel_event: asyncio.Event | None) -> None:
+        if cancel_event and cancel_event.is_set():
+            raise _CancelledError()
+
+    async def run(self, task_id: str, cancel_event: asyncio.Event | None = None) -> None:
         """Execute the full pipeline, updating task progress in the DB."""
         logger.info("Pipeline started for task %s", task_id, extra={"task_id": task_id})
         self._task_id = task_id
@@ -113,10 +122,12 @@ class AnalysisPipeline:
             await self._update_progress(task_id, 0, "running", None, "启动分析管道…")
 
             # Phase 0: Preparation
+            self._check_cancelled(cancel_event)
             await self._phase_prepare(repo_path, tools)
             await self._update_progress(task_id, 10, "running", None, "环境准备完成，开始采集数据…")
 
             # Phase 1: Data Collection
+            self._check_cancelled(cancel_event)
             await self._phase_collect(repo_path, tools)
             await self._update_progress(task_id, 40, "running", None, "数据采集完成，开始 AI 模块分析…")
 
@@ -128,6 +139,7 @@ class AnalysisPipeline:
             # Phase 2: Per-module Analysis (MapReduce)
             llm_client = await self._try_create_llm_client()
             if llm_client:
+                self._check_cancelled(cancel_event)
                 if self._analysis_plan is not None:
                     await self._phase_plan_driven_analysis(llm_client)
                 else:
@@ -146,6 +158,7 @@ class AnalysisPipeline:
                     await self._update_progress(task_id, 70, "running", None, "模块分析完成，生成报告中…")
 
                 # Phase 3: Report Generation
+                self._check_cancelled(cancel_event)
                 generator = ReportGenerator(
                     llm_client=llm_client,
                     output_dir=output_dir,
@@ -244,6 +257,8 @@ class AnalysisPipeline:
             await self._update_progress(task_id, 100, final_status, None, done_msg)
             logger.info("Pipeline completed for task %s (status=%s)", task_id, final_status, extra={"task_id": task_id})
 
+        except _CancelledError:
+            logger.info("Pipeline cancelled for task %s", task_id, extra={"task_id": task_id})
         except Exception as exc:
             logger.exception("Pipeline failed for task %s", task_id, extra={"task_id": task_id})
             await self._update_progress(task_id, -1, "failed", str(exc), f"分析失败：{exc}")

@@ -23,6 +23,7 @@ const TASK_STATUS_CONFIG: Record<TaskStatus, { label: string; color: string; bg:
   completed: { label: "已完成", color: "text-green-400", bg: "bg-green-400/10" },
   completed_with_warnings: { label: "部分完成", color: "text-yellow-400", bg: "bg-yellow-400/10" },
   failed: { label: "失败", color: "text-red-400", bg: "bg-red-400/10" },
+  cancelled: { label: "已取消", color: "text-on-surface-variant", bg: "bg-surface-container-high" },
 };
 
 const DEEPWIKI_BADGE: Record<DeepWikiStatus, { label: string; cls: string }> = {

@@ -24,6 +24,7 @@ const STATUS_CONFIG: Record<
   completed: { label: "已完成", icon: CheckCircle2, color: "text-green-400", bg: "bg-green-400/10" },
   completed_with_warnings: { label: "部分完成", icon: AlertTriangle, color: "text-yellow-400", bg: "bg-yellow-400/10" },
   failed: { label: "失败", icon: XCircle, color: "text-red-400", bg: "bg-red-400/10" },
+  cancelled: { label: "已取消", icon: XCircle, color: "text-on-surface-variant", bg: "bg-surface-container-high" },
 };
 
 function formatTime(iso: string): string {

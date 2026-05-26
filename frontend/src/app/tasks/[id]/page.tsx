@@ -28,6 +28,7 @@ const STATUS_CONFIG: Record<
   completed: { label: "已完成", icon: CheckCircle2, color: "text-green-400", bg: "bg-green-400/10" },
   completed_with_warnings: { label: "部分完成", icon: AlertTriangle, color: "text-yellow-400", bg: "bg-yellow-400/10" },
   failed: { label: "失败", icon: XCircle, color: "text-red-400", bg: "bg-red-400/10" },
+  cancelled: { label: "已取消", icon: XCircle, color: "text-on-surface-variant", bg: "bg-surface-container-high" },
 };
 
 function formatDateTime(iso: string): string {
@@ -49,6 +50,7 @@ export default function TaskDetailPage() {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [steps, setSteps] = useState<TaskStep[]>([]);
+  const [cancellingTask, setCancellingTask] = useState(false);
 
   // Only show the full-page spinner on the very first fetch.
   const hasLoadedOnce = useRef(false);
@@ -98,6 +100,19 @@ export default function TaskDetailPage() {
     const timer = setInterval(loadSteps, 5000);
     return () => clearInterval(timer);
   }, [taskId, task?.status, loadSteps]);
+
+  const handleCancel = useCallback(async () => {
+    if (!taskId) return;
+    setCancellingTask(true);
+    try {
+      await api.tasks.cancel(taskId);
+      await loadTask();
+    } catch (err: unknown) {
+      setError(err instanceof Error ? err.message : "取消失败");
+    } finally {
+      setCancellingTask(false);
+    }
+  }, [taskId, loadTask]);
 
   // Auto-scroll steps terminal to bottom
   useEffect(() => {
@@ -151,6 +166,20 @@ export default function TaskDetailPage() {
           </div>
         </div>
         <div className="flex items-center gap-2">
+          {(task.status === "running" || task.status === "pending") && (
+            <button
+              onClick={handleCancel}
+              disabled={cancellingTask}
+              className="flex items-center gap-1.5 px-3 py-1.5 text-sm text-red-400 bg-red-400/5 rounded-lg border border-red-400/20 hover:bg-red-400/10 transition-colors disabled:opacity-50"
+            >
+              {cancellingTask ? (
+                <Loader2 size={14} className="animate-spin" />
+              ) : (
+                <XCircle size={14} />
+              )}
+              {cancellingTask ? "取消中..." : "取消任务"}
+            </button>
+          )}
           <button
             onClick={loadTask}
             className="p-2 rounded-lg text-on-surface-variant hover:text-on-surface hover:bg-surface-container transition-colors"
