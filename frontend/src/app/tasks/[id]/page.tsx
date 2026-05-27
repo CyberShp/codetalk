@@ -155,10 +155,7 @@ export default function TaskDetailPage() {
 
   // Stopwatch — tick every second when task is running
   useEffect(() => {
-    if (task?.status !== "running") {
-      setElapsedSecs(0);
-      return;
-    }
+    if (task?.status !== "running") return;
     const timer = setInterval(() => {
       if (lastStepTimeRef.current !== null) {
         setElapsedSecs(Math.floor((Date.now() - lastStepTimeRef.current) / 1000));
