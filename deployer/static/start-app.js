@@ -229,7 +229,6 @@
       eventSource.close();
       eventSource = null;
     }
-    reconnectDelay = 1000;
   }
 
   function handleStreamEvent(evt) {
@@ -283,6 +282,7 @@
   function quickstart() {
     if (isStarting) return;
     isStarting = true;
+    reconnectDelay = 1000;
     setButtonsEnabled(false);
     hideSuccessBanner();
     appendLog('info', '正在启动全部服务...');
