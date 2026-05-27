@@ -547,51 +547,50 @@ export default function WorkspaceDetailPage() {
     };
   }, [wsId]); // eslint-disable-line react-hooks/exhaustive-deps
 
-  // F2: live execution-log stream — fetch history first, then open WS to avoid overwrite race
+  // F2: live execution-log stream.
+  // WS opens first so no events are dropped during the history HTTP fetch.
+  // History then merges into the already-accumulating live state via dedup+sort.
   useEffect(() => {
     if (analyzeStatus !== "running" || !currentAnalysisTaskId || typeof window === "undefined") return;
     let cancelled = false;
     const apiBase = process.env.NEXT_PUBLIC_API_URL ?? "http://localhost:8100";
 
-    const openWs = () => {
-      if (cancelled) return;
-      const ws = new WebSocket(apiBase.replace(/^http/, "ws") + `/ws/tasks/${currentAnalysisTaskId}/logs`);
-      wsLogRef.current = ws;
-      ws.onmessage = (evt) => {
-        try {
-          const msg = JSON.parse(evt.data as string);
-          if (msg.type === "event" && msg.timestamp && msg.step) {
-            lastLogStepTimeRef.current = Date.now();
-            setLogElapsedSecs(0);
-            setLogSteps((prev) => {
-              if (prev.some((s) => s.timestamp === msg.timestamp && s.step === msg.step)) return prev;
-              return [...prev, {
-                timestamp: msg.timestamp, progress: msg.progress, step: msg.step,
-                event_type: msg.event_type, phase: msg.phase, target: msg.target,
-                detail: msg.detail, level: msg.level,
-              }];
-            });
-          }
-        } catch { /* ignore malformed WS messages */ }
-      };
-      ws.onerror = () => ws.close();
+    const ws = new WebSocket(apiBase.replace(/^http/, "ws") + `/ws/tasks/${currentAnalysisTaskId}/logs`);
+    wsLogRef.current = ws;
+    ws.onmessage = (evt) => {
+      try {
+        const msg = JSON.parse(evt.data as string);
+        if (msg.type === "event" && msg.timestamp && msg.step) {
+          lastLogStepTimeRef.current = Date.now();
+          setLogElapsedSecs(0);
+          setLogSteps((prev) => {
+            if (prev.some((s) => s.timestamp === msg.timestamp && s.step === msg.step)) return prev;
+            return [...prev, {
+              timestamp: msg.timestamp, progress: msg.progress, step: msg.step,
+              event_type: msg.event_type, phase: msg.phase, target: msg.target,
+              detail: msg.detail, level: msg.level,
+            }];
+          });
+        }
+      } catch { /* ignore malformed WS messages */ }
     };
+    ws.onerror = () => ws.close();
 
+    // After WS is registered, backfill from steps.jsonl and merge with any
+    // live events already received while the fetch was in flight.
     api.tasks.steps(currentAnalysisTaskId)
       .then((history) => {
-        if (cancelled) return;
-        setLogSteps(history);
-        // Seed timer from last history timestamp so stopwatch reflects actual elapsed time
-        if (history.length > 0) {
-          lastLogStepTimeRef.current = new Date(history[history.length - 1].timestamp).getTime();
-        }
-        openWs();
+        if (cancelled || history.length === 0) return;
+        lastLogStepTimeRef.current = new Date(history[history.length - 1].timestamp).getTime();
+        setLogSteps((prev) => {
+          const merged = [...history];
+          for (const s of prev) {
+            if (!merged.some((h) => h.timestamp === s.timestamp && h.step === s.step)) merged.push(s);
+          }
+          return merged.sort((a, b) => a.timestamp.localeCompare(b.timestamp));
+        });
       })
-      .catch(() => {
-        if (cancelled) return;
-        setLogSteps([]);
-        openWs();
-      });
+      .catch(() => { /* history unavailable; live events continue unaffected */ });
 
     return () => {
       cancelled = true;
@@ -852,27 +851,32 @@ export default function WorkspaceDetailPage() {
               </select>
             </div>
           )}
-          {displayReports.some((r) => r.status === "completed") && (
-            <div className="flex items-center gap-2 mb-4">
-              <span
-                className="text-xs text-on-surface-variant"
-                title={versions.length > 1 ? "当前导出包含该工作空间所有版本的已完成报告" : undefined}
-              >
-                {versions.length > 1 ? "导出（全版本）：" : "导出报告："}
-              </span>
-              {(["md", "docx", "xml"] as const).map((fmt) => (
-                <button
-                  key={fmt}
-                  onClick={() => window.open(api.workspaces.exportUrl(wsId, fmt), "_blank")}
-                  title={versions.length > 1 ? `导出所有版本的已完成报告（${fmt.toUpperCase()}）` : undefined}
-                  className="flex items-center gap-1 px-2.5 py-1 text-xs rounded-lg border border-outline-variant/30 text-on-surface-variant hover:bg-surface-container hover:text-on-surface transition-colors uppercase"
-                >
-                  <Download size={11} />
-                  {fmt}
-                </button>
-              ))}
-            </div>
-          )}
+          {(() => {
+              // Export is always workspace-wide; label honestly when it spans multiple buckets
+              const exportsMultipleBuckets =
+                versions.length > 1 || (versions.length > 0 && legacyReports.length > 0);
+              return displayReports.some((r) => r.status === "completed") ? (
+                <div className="flex items-center gap-2 mb-4">
+                  <span
+                    className="text-xs text-on-surface-variant"
+                    title={exportsMultipleBuckets ? "当前导出包含该工作空间所有版本的已完成报告" : undefined}
+                  >
+                    {exportsMultipleBuckets ? "导出（全版本）：" : "导出报告："}
+                  </span>
+                  {(["md", "docx", "xml"] as const).map((fmt) => (
+                    <button
+                      key={fmt}
+                      onClick={() => window.open(api.workspaces.exportUrl(wsId, fmt), "_blank")}
+                      title={exportsMultipleBuckets ? `导出所有版本的已完成报告（${fmt.toUpperCase()}）` : undefined}
+                      className="flex items-center gap-1 px-2.5 py-1 text-xs rounded-lg border border-outline-variant/30 text-on-surface-variant hover:bg-surface-container hover:text-on-surface transition-colors uppercase"
+                    >
+                      <Download size={11} />
+                      {fmt}
+                    </button>
+                  ))}
+                </div>
+              ) : null;
+            })()}
           {displayReports.length === 0 ? (
             <div className="flex flex-col items-center justify-center h-48 rounded-xl border border-outline-variant/30 bg-surface-container-low gap-3">
               <FileText size={36} className="text-on-surface-variant/30" />
