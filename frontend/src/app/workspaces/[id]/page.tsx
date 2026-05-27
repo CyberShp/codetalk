@@ -550,10 +550,18 @@ export default function WorkspaceDetailPage() {
   // F2: live execution-log stream — subscribe to the running version's task WS
   useEffect(() => {
     if (analyzeStatus !== "running" || !currentAnalysisTaskId || typeof window === "undefined") return;
-    setLogSteps([]);
+    let cancelled = false;
     const apiBase = process.env.NEXT_PUBLIC_API_URL ?? "http://localhost:8100";
     const ws = new WebSocket(apiBase.replace(/^http/, "ws") + `/ws/tasks/${currentAnalysisTaskId}/logs`);
     wsLogRef.current = ws;
+    // Seed history first so a reload mid-run doesn't lose already-produced events
+    api.tasks.steps(currentAnalysisTaskId)
+      .then((history) => {
+        if (cancelled) return;
+        setLogSteps(history);
+        if (history.length > 0) lastLogStepTimeRef.current = Date.now();
+      })
+      .catch(() => { if (!cancelled) setLogSteps([]); });
     ws.onmessage = (evt) => {
       try {
         const msg = JSON.parse(evt.data as string);
@@ -572,7 +580,7 @@ export default function WorkspaceDetailPage() {
       } catch { /* ignore malformed WS messages */ }
     };
     ws.onerror = () => ws.close();
-    return () => { ws.close(); wsLogRef.current = null; };
+    return () => { cancelled = true; ws.close(); wsLogRef.current = null; };
   }, [analyzeStatus, currentAnalysisTaskId]);
 
   // F2: stopwatch — tick every second while running
@@ -606,7 +614,7 @@ export default function WorkspaceDetailPage() {
     setShowAnalysisModal(true);
   };
 
-  const handleAnalysisStarted = (info: {
+  const handleAnalysisStarted = (_info: {
     analysis_units?: number | null;
     evidence_cards?: number | null;
   }) => {
@@ -614,6 +622,9 @@ export default function WorkspaceDetailPage() {
     setAnalyzing(true);
     setAnalyzeStatus("running");
     setAnalyzeProgress(0);
+    setCurrentAnalysisTaskId(null);
+    setLogSteps([]);
+    setSelectedVersionTaskId(null);
     startAnalyzePoll();
   };
 
@@ -659,11 +670,15 @@ export default function WorkspaceDetailPage() {
 
   const canAnalyze = workspace.indexed === 1 && analyzeStatus !== "running";
 
-  // Version-filtered reports: show only the selected version's reports.
-  // Legacy workspaces (no versions / null task_id) fall back to all reports.
-  const displayReports = selectedVersionTaskId
-    ? workspace.reports.filter((r) => r.task_id === selectedVersionTaskId)
-    : workspace.reports;
+  // Reports with no task_id are pre-versioning legacy rows.
+  const legacyReports = workspace.reports.filter((r) => r.task_id === null);
+  // "__legacy__" sentinel → show only null-task_id reports (visible even when versioned reports exist).
+  const displayReports =
+    selectedVersionTaskId === "__legacy__"
+      ? legacyReports
+      : selectedVersionTaskId
+        ? workspace.reports.filter((r) => r.task_id === selectedVersionTaskId)
+        : workspace.reports;
 
   return (
     <div className="w-full px-4 xl:px-6">
@@ -801,7 +816,7 @@ export default function WorkspaceDetailPage() {
       {/* Reports tab */}
       {tab === "reports" && (
         <div>
-          {versions.length > 0 && (
+          {(versions.length > 0 || legacyReports.length > 0) && (
             <div className="flex items-center gap-2 mb-4">
               <span className="text-xs text-on-surface-variant shrink-0">版本：</span>
               <select
@@ -814,6 +829,9 @@ export default function WorkspaceDetailPage() {
                     {new Date(v.created_at).toLocaleString()} · {v.status}{i === 0 ? "（最新）" : ""}
                   </option>
                 ))}
+                {legacyReports.length > 0 && (
+                  <option value="__legacy__">早期报告（未版本化）</option>
+                )}
               </select>
             </div>
           )}
