@@ -160,8 +160,11 @@ def _install_read_file_interceptor(cache_dir: Optional[str]) -> None:
                 blobpath, sha, local_path, _list_cache_files(cache_dir),
             )
         else:
-            log.warning("tiktoken: no cache_dir set, falling through to HTTPS for %s", blobpath)
-        return _orig_read_file(blobpath, *args, **kwargs)
+            log.warning("tiktoken: no cache_dir set for %s", blobpath)
+        raise RuntimeError(
+            f"tiktoken cache miss for {blobpath}; "
+            f"expected sha={sha} under {cache_dir or 'unset cache dir'}"
+        )
 
     _tl.read_file = _intercepted_read_file
     log.info("Installed tiktoken.load.read_file interceptor (serves local BPE, skips HTTPS)")

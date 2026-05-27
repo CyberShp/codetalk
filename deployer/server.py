@@ -159,8 +159,9 @@ async def _run_deployment(deployer) -> None:
         await deployer.deploy()
     except asyncio.CancelledError:
         cancelled = True
-    except Exception:
+    except Exception as exc:
         error_occurred = True
+        error_msg = str(exc) or type(exc).__name__
     finally:
         _state.running = False
         q = _state.event_queue
@@ -168,7 +169,7 @@ async def _run_deployment(deployer) -> None:
             if cancelled:
                 await q.put({"step": "done", "status": "cancelled", "message": "Deployment cancelled"})
             elif error_occurred:
-                await q.put({"step": "done", "status": "error", "message": "Deployment failed"})
+                await q.put({"step": "done", "status": "error", "message": error_msg})
             else:
                 await q.put({"step": "done", "status": "done", "message": "Deployment complete"})
             await q.put(None)  # sentinel -- signals SSE stream end

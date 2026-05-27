@@ -109,6 +109,21 @@ def _pick_api_key_for_frontend(cfg: dict) -> dict:
     return cfg
 
 
+_PORT_KEYS = {"backend_port", "frontend_port", "gitnexus_port", "deepwiki_api_port", "deepwiki_ui_port", "postgres_port"}
+
+
+def _validate_ports(cfg: dict) -> dict:
+    for key in _PORT_KEYS:
+        if key in cfg:
+            val = cfg[key]
+            if isinstance(val, str) and val.isdigit():
+                val = int(val)
+            if not isinstance(val, int) or not (1024 <= val <= 65535):
+                raise ValueError(f"{key} must be integer port in [1024, 65535], got {cfg[key]!r}")
+            cfg[key] = val
+    return cfg
+
+
 def save_config(config: dict) -> None:
     """Normalize to snake_case, distribute api_key by provider, and persist.
 
@@ -117,6 +132,7 @@ def save_config(config: dict) -> None:
     """
     normalized = normalize_to_snake(config)
     normalized = _distribute_api_key(normalized)
+    normalized = _validate_ports(normalized)
     existing: dict = {}
     if CONFIG_PATH.exists():
         try:

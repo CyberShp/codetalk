@@ -149,7 +149,7 @@ class NativeDeployer:
                 try:
                     url = f"http://localhost:{port}{path}"
                     resp = await client.get(url)
-                    if resp.status_code < 500:
+                    if 200 <= resp.status_code < 400:
                         results.append({"name": name, "healthy": True, "message": f"HTTP {resp.status_code}"})
                     else:
                         results.append({"name": name, "healthy": False, "message": f"HTTP {resp.status_code}"})
@@ -160,7 +160,7 @@ class NativeDeployer:
                 port = self._config.get("deepwiki_api_port", 8091)
                 try:
                     resp = await client.get(f"http://localhost:{port}/health")
-                    healthy = resp.status_code < 500
+                    healthy = 200 <= resp.status_code < 400
                     results.append({"name": "deepwiki", "healthy": healthy, "message": f"HTTP {resp.status_code}"})
                 except Exception as exc:
                     results.append({"name": "deepwiki", "healthy": False, "message": str(exc)})
@@ -173,7 +173,7 @@ class NativeDeployer:
                 ui_port = self._config_port("deepwiki_ui_port", 3001)
                 try:
                     resp = await client.get(f"http://localhost:{ui_port}/")
-                    healthy = resp.status_code < 500
+                    healthy = 200 <= resp.status_code < 400
                     results.append({"name": "deepwiki-ui", "healthy": healthy, "message": f"HTTP {resp.status_code}"})
                 except Exception as exc:
                     results.append({"name": "deepwiki-ui", "healthy": False, "message": str(exc)})
@@ -403,7 +403,7 @@ class NativeDeployer:
         try:
             async with httpx.AsyncClient(timeout=5, trust_env=False) as client:
                 resp = await client.get(f"http://localhost:{api_port}/health")
-                if resp.status_code < 500:
+                if 200 <= resp.status_code < 400:
                     await self._emit_sup("deepwiki_health", "done", f"DeepWiki 健康运行（API:{api_port} UI:{ui_port}）", 6, total)
                 else:
                     await self._emit_sup("deepwiki_health", "error", f"DeepWiki API 健康检查失败（HTTP {resp.status_code}）", 6, total)
@@ -713,7 +713,10 @@ class NativeDeployer:
             env_lines.append(f"TIKTOKEN_CACHE_DIR={tiktoken_cache.resolve()}")
 
         backend_env = PROJECT_ROOT / "backend" / ".env"
-        backend_env.write_text("\n".join(env_lines) + "\n", encoding="utf-8")
+        known_keys = {ln.split("=", 1)[0] for ln in env_lines if "=" in ln}
+        existing_lines = backend_env.read_text(encoding="utf-8").splitlines() if backend_env.exists() else []
+        kept = [ln for ln in existing_lines if not ln.strip() or ln.startswith("#") or ln.split("=", 1)[0] not in known_keys]
+        backend_env.write_text("\n".join(kept + env_lines) + "\n", encoding="utf-8")
         await self._emit("generate_config", "running", f"已写入 {backend_env}", step)
 
         frontend_env = PROJECT_ROOT / "frontend" / ".env.local"
@@ -1167,15 +1170,9 @@ class NativeDeployer:
                 cwd=cwd,
                 env=env,
             )
-        except FileNotFoundError:
-            await self._emit(step_name, "error", f"命令未找到：{cmd[0]}（尝试 shell 模式）", step_index)
-            proc = await asyncio.create_subprocess_shell(
-                " ".join(cmd),
-                stdout=asyncio.subprocess.PIPE,
-                stderr=asyncio.subprocess.STDOUT,
-                cwd=cwd,
-                env=env,
-            )
+        except FileNotFoundError as exc:
+            await self._emit(step_name, "error", f"命令未找到：{cmd[0]}", step_index)
+            raise RuntimeError(f"Command not found: {cmd[0]}") from exc
         self._processes[name] = proc
         self._start_args[name] = {"cmd": cmd, "cwd": cwd, "env_extra": env_extra}
         asyncio.ensure_future(self._drain_output(name, proc, step_name, step_index))
@@ -1425,7 +1422,7 @@ class NativeDeployer:
                 try:
                     async with httpx.AsyncClient(timeout=3, trust_env=False) as client:
                         resp = await client.get(f"http://localhost:{port}{path}")
-                        if resp.status_code >= 500:
+                        if not (200 <= resp.status_code < 400):
                             all_ok = False
                 except Exception:
                     all_ok = False
@@ -1435,7 +1432,7 @@ class NativeDeployer:
                 try:
                     async with httpx.AsyncClient(timeout=3, trust_env=False) as client:
                         resp = await client.get(f"http://localhost:{dw_port}/health")
-                        if resp.status_code >= 500:
+                        if not (200 <= resp.status_code < 400):
                             all_ok = False
                 except Exception:
                     all_ok = False
@@ -1446,7 +1443,7 @@ class NativeDeployer:
                 try:
                     async with httpx.AsyncClient(timeout=3, trust_env=False) as client:
                         resp = await client.get(f"http://localhost:{dw_ui_port}/")
-                        if resp.status_code >= 500:
+                        if not (200 <= resp.status_code < 400):
                             all_ok = False
                 except Exception:
                     all_ok = False

@@ -207,11 +207,12 @@
     };
 
     es.onerror = function () {
-      if (isStarting) {
-        appendLog('error', 'SSE 连接断开');
-      }
       es.close();
       eventSource = null;
+      if (isStarting) {
+        appendLog('error', 'SSE 连接断开，尝试重连...');
+        setTimeout(openEventStream, 3000);
+      }
     };
   }
 
