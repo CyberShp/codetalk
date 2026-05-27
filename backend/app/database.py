@@ -169,6 +169,10 @@ _MIGRATIONS = [
     "ALTER TABLE workspaces ADD COLUMN last_analysis_plan_json TEXT",
     "ALTER TABLE workspace_reports ADD COLUMN error TEXT",
     "ALTER TABLE workspace_reports ADD COLUMN metadata_json TEXT",
+    # Workspace versioning: link tasks to workspace and tag reports by task
+    "ALTER TABLE tasks ADD COLUMN workspace_id TEXT",
+    "ALTER TABLE workspace_reports ADD COLUMN task_id TEXT",
+    "CREATE INDEX IF NOT EXISTS idx_tasks_workspace_id ON tasks(workspace_id)",
 ]
 
 

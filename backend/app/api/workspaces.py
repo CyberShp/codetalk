@@ -258,8 +258,8 @@ async def get_workspace(ws_id: str, db: aiosqlite.Connection = Depends(get_db)):
         materials = [dict(r) for r in await cur.fetchall()]
 
     async with db.execute(
-        "SELECT id, workspace_id, report_type, title, status, created_at"
-        " FROM workspace_reports WHERE workspace_id = ? ORDER BY created_at",
+        "SELECT id, workspace_id, task_id, report_type, title, status, created_at"
+        " FROM workspace_reports WHERE workspace_id = ? ORDER BY created_at DESC",
         (ws_id,),
     ) as cur:
         reports = [dict(r) for r in await cur.fetchall()]
@@ -426,23 +426,56 @@ async def analyze_workspace(
 async def get_analyze_status(ws_id: str, db: aiosqlite.Connection = Depends(get_db)):
     ws = await _get_workspace_or_404(ws_id, db)
 
-    # While running, relay live progress from the shadow task
+    # While running, relay live progress and expose task_id for WS log subscription
     if ws.get("analyze_status") == "running":
         async with db.execute(
-            "SELECT progress FROM tasks WHERE name = ?",
-            (f"__ws_{ws_id}",),
+            "SELECT id, progress FROM tasks WHERE workspace_id = ?"
+            " AND status IN ('running', 'pending') ORDER BY created_at DESC LIMIT 1",
+            (ws_id,),
         ) as cur:
             task_row = await cur.fetchone()
+        # Fallback: tasks created before workspace_id migration
+        if not task_row:
+            async with db.execute(
+                "SELECT id, progress FROM tasks WHERE name = ? ORDER BY created_at DESC LIMIT 1",
+                (f"__ws_{ws_id}",),
+            ) as cur:
+                task_row = await cur.fetchone()
         if task_row:
             return {
                 "analyze_status": "running",
                 "analyze_progress": int(task_row["progress"]),
+                "task_id": task_row["id"],
             }
 
     return {
         "analyze_status": ws.get("analyze_status"),
         "analyze_progress": ws.get("analyze_progress", 0),
+        "task_id": None,
     }
+
+
+@router.get("/{ws_id}/versions")
+async def list_workspace_versions(ws_id: str, db: aiosqlite.Connection = Depends(get_db)):
+    """Return all analysis versions (tasks) for a workspace, newest first."""
+    await _get_workspace_or_404(ws_id, db)
+    async with db.execute(
+        "SELECT id, status, progress, material_ids, created_at, updated_at"
+        " FROM tasks WHERE workspace_id = ? ORDER BY created_at DESC",
+        (ws_id,),
+    ) as cur:
+        rows = await cur.fetchall()
+    return [
+        {
+            "task_id": r["id"],
+            "status": r["status"],
+            "progress": r["progress"],
+            "material_ids": json.loads(r["material_ids"] or "[]"),
+            "created_at": r["created_at"],
+            "updated_at": r["updated_at"],
+        }
+        for r in rows
+    ]
 
 
 @router.get("/{ws_id}/reports/{report_id}", response_model=WorkspaceReportResponse)

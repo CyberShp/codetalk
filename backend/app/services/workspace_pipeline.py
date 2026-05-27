@@ -127,8 +127,9 @@ class WorkspacePipeline:
                         analysis_focus, prompt_content, deepwiki_depth,
                         requirements_doc, design_doc, material_ids,
                         analysis_plan_json, scope_preview_json, report_plan_json,
+                        workspace_id,
                         progress, error_message, created_at, updated_at)
-                   VALUES (?, ?, ?, 'pending', ?, ?, ?, 'balanced', ?, ?, ?, ?, ?, ?, 0, NULL, ?, ?)""",
+                   VALUES (?, ?, ?, 'pending', ?, ?, ?, 'balanced', ?, ?, ?, ?, ?, ?, ?, 0, NULL, ?, ?)""",
                 (
                     task_id,
                     f"__ws_{ws_id}",
@@ -142,22 +143,17 @@ class WorkspacePipeline:
                     plan_json,
                     preview_json,
                     report_plan_json,
+                    ws_id,
                     now,
                     now,
                 ),
             )
             await db.commit()
 
-        try:
-            from app.services.analysis_pipeline import AnalysisPipeline
+        from app.services.analysis_pipeline import AnalysisPipeline
 
-            await AnalysisPipeline().run(task_id)
-            await self._harvest_reports(ws_id, task_id)
-
-        finally:
-            async with aiosqlite.connect(settings.sqlite_db) as db:
-                await db.execute("DELETE FROM tasks WHERE id = ?", (task_id,))
-                await db.commit()
+        await AnalysisPipeline().run(task_id)
+        await self._harvest_reports(ws_id, task_id)
 
     async def _harvest_reports(self, ws_id: str, task_id: str) -> None:
         output_dir = settings.outputs_path / task_id
@@ -178,10 +174,6 @@ class WorkspacePipeline:
         entries = manifest.get("reports", []) if isinstance(manifest, dict) else []
 
         async with aiosqlite.connect(settings.sqlite_db) as db:
-            await db.execute(
-                "DELETE FROM workspace_reports WHERE workspace_id = ?", (ws_id,)
-            )
-
             written_keys: set[str] = set()
             any_completed = False
             any_failed = False
@@ -212,11 +204,12 @@ class WorkspacePipeline:
                         any_failed = True
                     await db.execute(
                         """INSERT INTO workspace_reports
-                               (id, workspace_id, report_type, title, content, status, error, metadata_json, created_at)
-                           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                               (id, workspace_id, task_id, report_type, title, content, status, error, metadata_json, created_at)
+                           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
                         (
                             str(uuid.uuid4()),
                             ws_id,
+                            task_id,
                             report_type,
                             title,
                             content,
@@ -243,9 +236,9 @@ class WorkspacePipeline:
                     any_failed = True
                 await db.execute(
                     """INSERT INTO workspace_reports
-                           (id, workspace_id, report_type, title, content, status, created_at)
-                       VALUES (?, ?, ?, ?, ?, ?, ?)""",
-                    (str(uuid.uuid4()), ws_id, report_type, filename, content, status, now),
+                           (id, workspace_id, task_id, report_type, title, content, status, created_at)
+                       VALUES (?, ?, ?, ?, ?, ?, ?, ?)""",
+                    (str(uuid.uuid4()), ws_id, task_id, report_type, filename, content, status, now),
                 )
 
             if any_completed and any_failed:

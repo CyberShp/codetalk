@@ -24,14 +24,15 @@ import {
   Sparkles,
   Crosshair,
   Download,
+  Terminal,
 } from "lucide-react";
 import { api } from "@/lib/api";
-import type { Workspace, WorkspaceReportMeta, ChatMode, EmbeddingStatus, WorkspaceModule } from "@/lib/types";
+import type { Workspace, WorkspaceReportMeta, WorkspaceVersion, TaskStep, ChatMode, EmbeddingStatus, WorkspaceModule } from "@/lib/types";
 import { useWsChat } from "@/lib/chatContext";
 import MarkdownRenderer from "@/components/ui/MarkdownRenderer";
 import AnalysisTaskModal from "@/components/workspaces/AnalysisTaskModal";
 
-type Tab = "reports" | "materials" | "chat";
+type Tab = "reports" | "materials" | "chat" | "logs";
 
 function IndexBadge({
   indexed,
@@ -233,7 +234,7 @@ function ChatPanel({ wsId, indexed }: { wsId: string; indexed: number }) {
   };
 
   return (
-    <div className="flex flex-col h-[600px]">
+    <div className="flex flex-col h-[calc(100vh-240px)] min-h-[520px]">
       {/* Header row: mode toggle + chat export */}
       <div className="flex items-center gap-2 mb-3">
         <button
@@ -437,11 +438,19 @@ export default function WorkspaceDetailPage() {
   const [reindexing, setReindexing] = useState(false);
   const [embeddingStatus, setEmbeddingStatus] = useState<EmbeddingStatus | null>(null);
   const [showAnalysisModal, setShowAnalysisModal] = useState(false);
+  const [versions, setVersions] = useState<WorkspaceVersion[]>([]);
+  const [selectedVersionTaskId, setSelectedVersionTaskId] = useState<string | null>(null);
+  const [logSteps, setLogSteps] = useState<TaskStep[]>([]);
+  const [logElapsedSecs, setLogElapsedSecs] = useState(0);
+  const [currentAnalysisTaskId, setCurrentAnalysisTaskId] = useState<string | null>(null);
 
   const pollIndexRef = useRef<ReturnType<typeof setInterval> | null>(null);
   const pollAnalyzeRef = useRef<ReturnType<typeof setInterval> | null>(null);
   const hasLoadedRef = useRef(false);
   const toggleVersion = useRef<Record<string, number>>({});
+  const wsLogRef = useRef<WebSocket | null>(null);
+  const lastLogStepTimeRef = useRef<number | null>(null);
+  const logEndRef = useRef<HTMLDivElement>(null);
 
   const loadWorkspace = useCallback(async () => {
     try {
@@ -489,6 +498,14 @@ export default function WorkspaceDetailPage() {
     [wsId, loadWorkspace],
   );
 
+  const loadVersions = useCallback(async () => {
+    try {
+      const v = await api.workspaces.versions(wsId);
+      setVersions(v);
+      setSelectedVersionTaskId((prev) => prev ?? v[0]?.task_id ?? null);
+    } catch { /* ignore */ }
+  }, [wsId]);
+
   const startAnalyzePoll = useCallback(() => {
     if (pollAnalyzeRef.current) return;
 
@@ -497,18 +514,20 @@ export default function WorkspaceDetailPage() {
         const s = await api.workspaces.analyzeStatus(wsId);
         setAnalyzeStatus(s.analyze_status);
         setAnalyzeProgress(s.analyze_progress);
+        if (s.task_id) setCurrentAnalysisTaskId(s.task_id);
 
         if (s.analyze_status !== "running") {
           clearInterval(pollAnalyzeRef.current!);
           pollAnalyzeRef.current = null;
           setAnalyzing(false);
           await loadWorkspace();
+          await loadVersions();
         }
       } catch {
         // ignore
       }
     }, 5000);
-  }, [wsId, loadWorkspace]);
+  }, [wsId, loadWorkspace, loadVersions]);
 
   useEffect(() => {
     loadWorkspace().then((ws) => {
@@ -520,12 +539,67 @@ export default function WorkspaceDetailPage() {
       }
     });
     api.workspaces.embeddingStatus(wsId).then(setEmbeddingStatus).catch(() => {});
+    loadVersions();
 
     return () => {
       if (pollIndexRef.current) clearInterval(pollIndexRef.current);
       if (pollAnalyzeRef.current) clearInterval(pollAnalyzeRef.current);
     };
   }, [wsId]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  // F2: live execution-log stream — subscribe to the running version's task WS
+  useEffect(() => {
+    if (analyzeStatus !== "running" || !currentAnalysisTaskId || typeof window === "undefined") return;
+    setLogSteps([]);
+    const apiBase = process.env.NEXT_PUBLIC_API_URL ?? "http://localhost:8100";
+    const ws = new WebSocket(apiBase.replace(/^http/, "ws") + `/ws/tasks/${currentAnalysisTaskId}/logs`);
+    wsLogRef.current = ws;
+    ws.onmessage = (evt) => {
+      try {
+        const msg = JSON.parse(evt.data as string);
+        if (msg.type === "event" && msg.timestamp && msg.step) {
+          lastLogStepTimeRef.current = Date.now();
+          setLogElapsedSecs(0);
+          setLogSteps((prev) => {
+            if (prev.some((s) => s.timestamp === msg.timestamp && s.step === msg.step)) return prev;
+            return [...prev, {
+              timestamp: msg.timestamp, progress: msg.progress, step: msg.step,
+              event_type: msg.event_type, phase: msg.phase, target: msg.target,
+              detail: msg.detail, level: msg.level,
+            }];
+          });
+        }
+      } catch { /* ignore malformed WS messages */ }
+    };
+    ws.onerror = () => ws.close();
+    return () => { ws.close(); wsLogRef.current = null; };
+  }, [analyzeStatus, currentAnalysisTaskId]);
+
+  // F2: stopwatch — tick every second while running
+  useEffect(() => {
+    if (analyzeStatus !== "running") return;
+    const timer = setInterval(() => {
+      if (lastLogStepTimeRef.current !== null) {
+        setLogElapsedSecs(Math.floor((Date.now() - lastLogStepTimeRef.current) / 1000));
+      }
+    }, 1000);
+    return () => clearInterval(timer);
+  }, [analyzeStatus]);
+
+  // F2: when viewing a historical version (not running), replay its steps.jsonl
+  useEffect(() => {
+    if (analyzeStatus === "running" || !selectedVersionTaskId) return;
+    let cancelled = false;
+    api.tasks.steps(selectedVersionTaskId)
+      .then((s) => { if (!cancelled) setLogSteps(s); })
+      .catch(() => { if (!cancelled) setLogSteps([]); });
+    return () => { cancelled = true; };
+  }, [analyzeStatus, selectedVersionTaskId]);
+
+  // F2: auto-scroll the log tab to the latest entry
+  useEffect(() => {
+    logEndRef.current?.scrollIntoView({ behavior: "smooth" });
+  }, [logSteps]);
 
   const handleAnalyze = () => {
     if (!workspace) return;
@@ -584,6 +658,12 @@ export default function WorkspaceDetailPage() {
   }
 
   const canAnalyze = workspace.indexed === 1 && analyzeStatus !== "running";
+
+  // Version-filtered reports: show only the selected version's reports.
+  // Legacy workspaces (no versions / null task_id) fall back to all reports.
+  const displayReports = selectedVersionTaskId
+    ? workspace.reports.filter((r) => r.task_id === selectedVersionTaskId)
+    : workspace.reports;
 
   return (
     <div className="w-full px-4 xl:px-6">
@@ -688,7 +768,7 @@ export default function WorkspaceDetailPage() {
 
       {/* Tabs */}
       <div className="flex gap-1 mb-6 border-b border-outline-variant/20">
-        {(["reports", "materials", "chat"] as Tab[]).map((t) => (
+        {(["reports", "materials", "chat", "logs"] as Tab[]).map((t) => (
           <button
             key={t}
             onClick={() => setTab(t)}
@@ -702,14 +782,18 @@ export default function WorkspaceDetailPage() {
               <FileText size={14} />
             ) : t === "materials" ? (
               <Paperclip size={14} />
-            ) : (
+            ) : t === "chat" ? (
               <MessageSquare size={14} />
+            ) : (
+              <Terminal size={14} />
             )}
             {t === "reports"
-              ? `报告 (${workspace.reports.length})`
+              ? `报告 (${displayReports.length})`
               : t === "materials"
                 ? `材料 (${workspace.materials.length})`
-                : "对话"}
+                : t === "chat"
+                  ? "对话"
+                  : "执行日志"}
           </button>
         ))}
       </div>
@@ -717,7 +801,23 @@ export default function WorkspaceDetailPage() {
       {/* Reports tab */}
       {tab === "reports" && (
         <div>
-          {workspace.reports.some((r) => r.status === "completed") && (
+          {versions.length > 0 && (
+            <div className="flex items-center gap-2 mb-4">
+              <span className="text-xs text-on-surface-variant shrink-0">版本：</span>
+              <select
+                value={selectedVersionTaskId ?? ""}
+                onChange={(e) => setSelectedVersionTaskId(e.target.value || null)}
+                className="text-xs rounded-lg border border-outline-variant/30 bg-surface-container-low text-on-surface px-2 py-1 outline-none focus:border-primary/50 max-w-full"
+              >
+                {versions.map((v, i) => (
+                  <option key={v.task_id} value={v.task_id}>
+                    {new Date(v.created_at).toLocaleString()} · {v.status}{i === 0 ? "（最新）" : ""}
+                  </option>
+                ))}
+              </select>
+            </div>
+          )}
+          {displayReports.some((r) => r.status === "completed") && (
             <div className="flex items-center gap-2 mb-4">
               <span className="text-xs text-on-surface-variant">导出报告：</span>
               {(["md", "docx", "xml"] as const).map((fmt) => (
@@ -732,7 +832,7 @@ export default function WorkspaceDetailPage() {
               ))}
             </div>
           )}
-          {workspace.reports.length === 0 ? (
+          {displayReports.length === 0 ? (
             <div className="flex flex-col items-center justify-center h-48 rounded-xl border border-outline-variant/30 bg-surface-container-low gap-3">
               <FileText size={36} className="text-on-surface-variant/30" />
               <p className="text-on-surface-variant text-sm">
@@ -745,9 +845,39 @@ export default function WorkspaceDetailPage() {
             </div>
           ) : (
             <div className="space-y-3">
-              {workspace.reports.map((report) => (
+              {displayReports.map((report) => (
                 <ReportCard key={report.id} report={report} wsId={wsId} />
               ))}
+            </div>
+          )}
+        </div>
+      )}
+
+      {/* Logs tab — live execution events (running) or historical replay (version) */}
+      {tab === "logs" && (
+        <div className="rounded-xl border border-outline-variant/20 bg-surface-container-low p-4 h-[calc(100vh-300px)] min-h-[400px] overflow-y-auto font-data text-xs">
+          {logSteps.length === 0 ? (
+            <div className="flex flex-col items-center justify-center h-full gap-3 text-on-surface-variant">
+              <Terminal size={32} className="opacity-30" />
+              <p>{analyzeStatus === "running" ? "等待执行事件…" : "该版本暂无执行日志"}</p>
+            </div>
+          ) : (
+            <div className="space-y-1.5">
+              {logSteps.map((s, i) => (
+                <div key={`${s.timestamp}-${i}`} className="flex items-start gap-2">
+                  <span className="text-on-surface-variant/40 shrink-0 tabular-nums">
+                    {new Date(s.timestamp).toLocaleTimeString()}
+                  </span>
+                  <span className={`shrink-0 ${s.level === "error" ? "text-red-400" : "text-primary/70"}`}>
+                    {s.event_type ?? "·"}
+                  </span>
+                  <span className="text-on-surface break-words">{s.step}</span>
+                  {analyzeStatus === "running" && i === logSteps.length - 1 && (
+                    <span className="ml-auto tabular-nums text-on-surface-variant/50 shrink-0">{logElapsedSecs}s</span>
+                  )}
+                </div>
+              ))}
+              <div ref={logEndRef} />
             </div>
           )}
         </div>

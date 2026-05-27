@@ -157,10 +157,20 @@ export interface WorkspaceMaterial {
 export interface WorkspaceReportMeta {
   id: string;
   workspace_id: string;
+  task_id: string | null;
   report_type: string;
   title: string | null;
   status: WorkspaceReportStatus;
   created_at: string;
+}
+
+export interface WorkspaceVersion {
+  task_id: string;
+  status: string;
+  progress: number;
+  material_ids: string[];
+  created_at: string;
+  updated_at: string;
 }
 
 export interface WorkspaceReport extends WorkspaceReportMeta {

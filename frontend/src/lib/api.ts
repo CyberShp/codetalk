@@ -366,9 +366,12 @@ export const api = {
       }),
 
     analyzeStatus: (id: string) =>
-      request<{ analyze_status: string | null; analyze_progress: number }>(
+      request<{ analyze_status: string | null; analyze_progress: number; task_id: string | null }>(
         `/api/workspaces/${id}/analyze-status`,
       ),
+
+    versions: (wsId: string) =>
+      request<import("./types").WorkspaceVersion[]>(`/api/workspaces/${wsId}/versions`),
 
     report: (wsId: string, reportId: string) =>
       request<import("./types").WorkspaceReport>(
