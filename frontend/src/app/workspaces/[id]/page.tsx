@@ -547,40 +547,57 @@ export default function WorkspaceDetailPage() {
     };
   }, [wsId]); // eslint-disable-line react-hooks/exhaustive-deps
 
-  // F2: live execution-log stream — subscribe to the running version's task WS
+  // F2: live execution-log stream — fetch history first, then open WS to avoid overwrite race
   useEffect(() => {
     if (analyzeStatus !== "running" || !currentAnalysisTaskId || typeof window === "undefined") return;
     let cancelled = false;
     const apiBase = process.env.NEXT_PUBLIC_API_URL ?? "http://localhost:8100";
-    const ws = new WebSocket(apiBase.replace(/^http/, "ws") + `/ws/tasks/${currentAnalysisTaskId}/logs`);
-    wsLogRef.current = ws;
-    // Seed history first so a reload mid-run doesn't lose already-produced events
+
+    const openWs = () => {
+      if (cancelled) return;
+      const ws = new WebSocket(apiBase.replace(/^http/, "ws") + `/ws/tasks/${currentAnalysisTaskId}/logs`);
+      wsLogRef.current = ws;
+      ws.onmessage = (evt) => {
+        try {
+          const msg = JSON.parse(evt.data as string);
+          if (msg.type === "event" && msg.timestamp && msg.step) {
+            lastLogStepTimeRef.current = Date.now();
+            setLogElapsedSecs(0);
+            setLogSteps((prev) => {
+              if (prev.some((s) => s.timestamp === msg.timestamp && s.step === msg.step)) return prev;
+              return [...prev, {
+                timestamp: msg.timestamp, progress: msg.progress, step: msg.step,
+                event_type: msg.event_type, phase: msg.phase, target: msg.target,
+                detail: msg.detail, level: msg.level,
+              }];
+            });
+          }
+        } catch { /* ignore malformed WS messages */ }
+      };
+      ws.onerror = () => ws.close();
+    };
+
     api.tasks.steps(currentAnalysisTaskId)
       .then((history) => {
         if (cancelled) return;
         setLogSteps(history);
-        if (history.length > 0) lastLogStepTimeRef.current = Date.now();
-      })
-      .catch(() => { if (!cancelled) setLogSteps([]); });
-    ws.onmessage = (evt) => {
-      try {
-        const msg = JSON.parse(evt.data as string);
-        if (msg.type === "event" && msg.timestamp && msg.step) {
-          lastLogStepTimeRef.current = Date.now();
-          setLogElapsedSecs(0);
-          setLogSteps((prev) => {
-            if (prev.some((s) => s.timestamp === msg.timestamp && s.step === msg.step)) return prev;
-            return [...prev, {
-              timestamp: msg.timestamp, progress: msg.progress, step: msg.step,
-              event_type: msg.event_type, phase: msg.phase, target: msg.target,
-              detail: msg.detail, level: msg.level,
-            }];
-          });
+        // Seed timer from last history timestamp so stopwatch reflects actual elapsed time
+        if (history.length > 0) {
+          lastLogStepTimeRef.current = new Date(history[history.length - 1].timestamp).getTime();
         }
-      } catch { /* ignore malformed WS messages */ }
+        openWs();
+      })
+      .catch(() => {
+        if (cancelled) return;
+        setLogSteps([]);
+        openWs();
+      });
+
+    return () => {
+      cancelled = true;
+      wsLogRef.current?.close();
+      wsLogRef.current = null;
     };
-    ws.onerror = () => ws.close();
-    return () => { cancelled = true; ws.close(); wsLogRef.current = null; };
   }, [analyzeStatus, currentAnalysisTaskId]);
 
   // F2: stopwatch — tick every second while running
@@ -837,11 +854,17 @@ export default function WorkspaceDetailPage() {
           )}
           {displayReports.some((r) => r.status === "completed") && (
             <div className="flex items-center gap-2 mb-4">
-              <span className="text-xs text-on-surface-variant">导出报告：</span>
+              <span
+                className="text-xs text-on-surface-variant"
+                title={versions.length > 1 ? "当前导出包含该工作空间所有版本的已完成报告" : undefined}
+              >
+                {versions.length > 1 ? "导出（全版本）：" : "导出报告："}
+              </span>
               {(["md", "docx", "xml"] as const).map((fmt) => (
                 <button
                   key={fmt}
                   onClick={() => window.open(api.workspaces.exportUrl(wsId, fmt), "_blank")}
+                  title={versions.length > 1 ? `导出所有版本的已完成报告（${fmt.toUpperCase()}）` : undefined}
                   className="flex items-center gap-1 px-2.5 py-1 text-xs rounded-lg border border-outline-variant/30 text-on-surface-variant hover:bg-surface-container hover:text-on-surface transition-colors uppercase"
                 >
                   <Download size={11} />
