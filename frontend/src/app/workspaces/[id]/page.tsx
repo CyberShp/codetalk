@@ -581,7 +581,9 @@ export default function WorkspaceDetailPage() {
     api.tasks.steps(currentAnalysisTaskId)
       .then((history) => {
         if (cancelled || history.length === 0) return;
-        lastLogStepTimeRef.current = new Date(history[history.length - 1].timestamp).getTime();
+        const historyTs = new Date(history[history.length - 1].timestamp).getTime();
+        // Don't overwrite a more-recent live timestamp that arrived while history was loading
+        lastLogStepTimeRef.current = Math.max(lastLogStepTimeRef.current ?? 0, historyTs);
         setLogSteps((prev) => {
           const merged = [...history];
           for (const s of prev) {
