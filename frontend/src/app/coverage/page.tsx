@@ -159,7 +159,7 @@ export default function CoveragePage() {
   };
 
   return (
-    <div className="max-w-7xl space-y-6">
+    <div className="w-full px-4 xl:px-6 space-y-6">
       {/* Header */}
       <div>
         <h1 className="text-2xl font-display font-bold text-on-surface">

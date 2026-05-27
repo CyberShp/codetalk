@@ -484,6 +484,15 @@ async def api_services_status():
                 "pid": proc.pid if proc.returncode is None else None,
                 "running": proc.returncode is None,
             }
+        # Aggregate deepwiki-api + deepwiki-ui into a single "deepwiki" key so the
+        # deployer frontend (which queries processes['deepwiki']) gets accurate state.
+        dw_parts = {k: v for k, v in processes.items() if k.startswith("deepwiki-")}
+        if dw_parts:
+            running_part = next((v for v in dw_parts.values() if v["running"]), None)
+            processes["deepwiki"] = {
+                "pid": running_part["pid"] if running_part else None,
+                "running": any(v["running"] for v in dw_parts.values()),
+            }
     return {"running": running, "processes": processes}
 
 

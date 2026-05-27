@@ -586,7 +586,7 @@ export default function WorkspaceDetailPage() {
   const canAnalyze = workspace.indexed === 1 && analyzeStatus !== "running";
 
   return (
-    <div className="max-w-7xl mx-auto">
+    <div className="w-full px-4 xl:px-6">
       <Link
         href="/workspaces"
         className="flex items-center gap-2 text-sm text-on-surface-variant hover:text-on-surface mb-6"

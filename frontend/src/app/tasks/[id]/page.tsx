@@ -146,7 +146,7 @@ export default function TaskDetailPage() {
   const StatusIcon = cfg.icon;
 
   return (
-    <div className="max-w-6xl">
+    <div className="w-full px-4 xl:px-6">
       {/* Header */}
       <div className="flex items-start justify-between mb-6">
         <div className="flex items-start gap-3">

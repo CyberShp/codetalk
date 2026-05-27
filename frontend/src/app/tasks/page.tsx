@@ -58,7 +58,7 @@ export default function TasksPage() {
   }, [loadTasks]);
 
   return (
-    <div className="max-w-6xl">
+    <div className="w-full px-4 xl:px-6">
       <div className="flex items-center justify-between mb-6">
         <div>
           <h1 className="font-display text-2xl font-bold text-on-surface flex items-center gap-3">
