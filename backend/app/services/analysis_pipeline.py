@@ -1683,7 +1683,7 @@ class AnalysisPipeline:
         if detail is not None:
             entry_data["detail"] = detail
 
-        entry = json.dumps(entry_data, ensure_ascii=False)
+        entry = json.dumps(entry_data, ensure_ascii=True)
 
         def _write() -> None:
             step_file = settings.outputs_path / task_id / "steps.jsonl"

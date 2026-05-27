@@ -429,9 +429,19 @@ async def get_task_steps(task_id: str, db: aiosqlite.Connection = Depends(get_db
     if not step_file.exists():
         return []
 
+    def _read() -> str:
+        return step_file.read_text(encoding="utf-8", errors="replace")
+
     try:
-        content = await asyncio.to_thread(step_file.read_text, "utf-8")
-        return [json.loads(line) for line in content.splitlines() if line.strip()]
+        content = await asyncio.to_thread(_read)
+        lines = []
+        for line in content.splitlines():
+            if line.strip():
+                try:
+                    lines.append(json.loads(line))
+                except json.JSONDecodeError:
+                    pass
+        return lines
     except Exception:
         logger.exception("Failed to read steps file for task %s", task_id)
         return []

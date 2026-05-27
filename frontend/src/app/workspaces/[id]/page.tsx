@@ -598,6 +598,11 @@ export default function WorkspaceDetailPage() {
       cancelled = true;
       wsLogRef.current?.close();
       wsLogRef.current = null;
+      // Final backfill: replace logSteps with the authoritative server history
+      // so the log remains complete even if the WS connection dropped mid-run.
+      api.tasks.steps(currentAnalysisTaskId)
+        .then((allSteps) => { if (allSteps.length > 0) setLogSteps(allSteps); })
+        .catch(() => {});
     };
   }, [analyzeStatus, currentAnalysisTaskId]);
 

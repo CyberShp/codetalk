@@ -55,6 +55,7 @@ class WorkspaceReportListItem(BaseModel):
     """Report metadata only — no content. Used in workspace list/detail responses."""
     id: str
     workspace_id: str
+    task_id: str | None = None
     report_type: str
     title: str | None
     status: str
