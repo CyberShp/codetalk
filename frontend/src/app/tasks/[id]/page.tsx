@@ -51,10 +51,13 @@ export default function TaskDetailPage() {
   const [error, setError] = useState<string | null>(null);
   const [steps, setSteps] = useState<TaskStep[]>([]);
   const [cancellingTask, setCancellingTask] = useState(false);
+  const [elapsedSecs, setElapsedSecs] = useState(0);
 
   // Only show the full-page spinner on the very first fetch.
   const hasLoadedOnce = useRef(false);
   const stepsEndRef = useRef<HTMLDivElement>(null);
+  const wsRef = useRef<WebSocket | null>(null);
+  const lastStepTimeRef = useRef<number | null>(null);
 
   const loadTask = useCallback(async () => {
     if (!taskId) return;
@@ -92,7 +95,7 @@ export default function TaskDetailPage() {
     }
   }, [taskId]);
 
-  // Load steps on mount and poll every 5 s while running
+  // Load steps on mount and poll every 5 s while running (fallback for WS gaps)
   useEffect(() => {
     if (!taskId) return;
     loadSteps();
@@ -100,6 +103,64 @@ export default function TaskDetailPage() {
     const timer = setInterval(loadSteps, 5000);
     return () => clearInterval(timer);
   }, [taskId, task?.status, loadSteps]);
+
+  // WebSocket live events — connect while task is running, append events to steps
+  useEffect(() => {
+    if (task?.status !== "running" || !taskId || typeof window === "undefined") return;
+    const apiBase = process.env.NEXT_PUBLIC_API_URL ?? "http://localhost:8100";
+    const wsUrl = apiBase.replace(/^http/, "ws") + `/ws/tasks/${taskId}/logs`;
+    const ws = new WebSocket(wsUrl);
+    wsRef.current = ws;
+
+    ws.onmessage = (evt) => {
+      try {
+        const msg = JSON.parse(evt.data as string);
+        if (msg.type === "event" && msg.timestamp && msg.step) {
+          lastStepTimeRef.current = Date.now();
+          setElapsedSecs(0);
+          setSteps((prev) => {
+            const isDup = prev.some(
+              (s) => s.timestamp === msg.timestamp && s.step === msg.step,
+            );
+            if (isDup) return prev;
+            return [...prev, {
+              timestamp: msg.timestamp,
+              progress: msg.progress,
+              step: msg.step,
+              type: msg.type,
+              phase: msg.phase,
+              target: msg.target,
+              detail: msg.detail,
+              level: msg.level,
+            }];
+          });
+        }
+      } catch {
+        // ignore malformed WS messages
+      }
+    };
+
+    ws.onerror = () => ws.close();
+
+    return () => {
+      ws.close();
+      wsRef.current = null;
+    };
+  }, [task?.status, taskId]);
+
+  // Stopwatch — tick every second when task is running
+  useEffect(() => {
+    if (task?.status !== "running") {
+      setElapsedSecs(0);
+      return;
+    }
+    const timer = setInterval(() => {
+      if (lastStepTimeRef.current !== null) {
+        setElapsedSecs(Math.floor((Date.now() - lastStepTimeRef.current) / 1000));
+      }
+    }, 1000);
+    return () => clearInterval(timer);
+  }, [task?.status]);
 
   const handleCancel = useCallback(async () => {
     if (!taskId) return;
@@ -211,6 +272,11 @@ export default function TaskDetailPage() {
               <Loader2 size={12} className="animate-spin shrink-0" />
             )}
             <span className="font-data">{task.current_step}</span>
+            {task.status === "running" && steps.length > 0 && (
+              <span className="ml-auto tabular-nums text-on-surface-variant/50">
+                {elapsedSecs}s
+              </span>
+            )}
           </div>
         )}
 

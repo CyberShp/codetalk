@@ -77,3 +77,17 @@ async def broadcast_task_progress(
         except Exception:
             dead.add(ws)
     subscribers -= dead
+
+
+async def broadcast_task_event(task_id: str, event: dict) -> None:
+    """Broadcast a structured pipeline event to all WebSocket subscribers for a task."""
+    subscribers = _task_subscribers.get(task_id, set())
+    if not subscribers:
+        return
+    dead: set[WebSocket] = set()
+    for ws in subscribers:
+        try:
+            await ws.send_json(event)
+        except Exception:
+            dead.add(ws)
+    subscribers -= dead

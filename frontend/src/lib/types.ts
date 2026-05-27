@@ -25,6 +25,11 @@ export interface TaskStep {
   timestamp: string;
   progress: number;
   step: string;
+  type?: string;
+  phase?: string;
+  target?: Record<string, unknown>;
+  detail?: Record<string, unknown>;
+  level?: string;
 }
 
 export interface TaskCreate {

@@ -374,6 +374,12 @@ class AnalysisPipeline:
             timeout=httpx.Timeout(1800, connect=10),
             trust_env=False,
         ) as client:
+            await AnalysisPipeline._log_step(
+                self._task_id, 10, "GitNexus 开始索引代码库...",
+                event_type="api_call", phase="data_collection",
+                target={"path": tool_repo_path},
+                detail={"api": "POST /api/analyze", "endpoint": base_url},
+            )
             resp = await client.post("/api/analyze", json={"path": tool_repo_path})
 
             job_id: str | None = None
@@ -400,7 +406,7 @@ class AnalysisPipeline:
 
             if job_id is not None:
                 # Poll for completion (30 min max)
-                for _ in range(900):
+                for _poll_idx in range(900):
                     await asyncio.sleep(2)
                     status_resp = await client.get(f"/api/analyze/{job_id}")
                     status = status_resp.json()
@@ -411,17 +417,35 @@ class AnalysisPipeline:
                                 "GitNexus status missing repoName; falling back to dir name: %s",
                                 repo_name,
                             )
+                        await AnalysisPipeline._log_step(
+                            self._task_id, 15, "GitNexus 索引完成",
+                            event_type="api_done", phase="data_collection",
+                            detail={"job_id": job_id, "repo": repo_name},
+                        )
                         break
                     if status["status"] == "failed":
                         raise RuntimeError(
                             "GitNexus indexing failed: "
                             + status.get("error", "unknown")
                         )
+                    if _poll_idx % 5 == 0:
+                        elapsed_s = (_poll_idx + 1) * 2
+                        await AnalysisPipeline._log_step(
+                            self._task_id, 12,
+                            f"GitNexus 索引中... 已等待 {elapsed_s}s",
+                            event_type="api_poll", phase="data_collection",
+                            detail={"job_id": job_id, "elapsed_s": elapsed_s},
+                        )
                 else:
                     raise RuntimeError("GitNexus indexing timed out")
 
             # repo_name is set from 409 body or poll status
             repo_name = repo_name or Path(tool_repo_path).name
+            await AnalysisPipeline._log_step(
+                self._task_id, 16, f"获取代码图谱（仓库：{repo_name}）...",
+                event_type="api_call", phase="data_collection",
+                detail={"api": "GET /api/graph", "repo": repo_name},
+            )
             graph_resp = await client.get("/api/graph", params={"repo": repo_name}, timeout=120)
             if graph_resp.status_code == 404:
                 logger.warning(
@@ -431,10 +455,14 @@ class AnalysisPipeline:
                 graph_resp = await client.get("/api/graph", timeout=120)
             graph_resp.raise_for_status()
             self._gitnexus_data = graph_resp.json()
-            logger.info(
-                "GitNexus data collected: %d nodes, %d edges",
-                len(self._gitnexus_data.get("nodes", [])),
-                len(self._gitnexus_data.get("relationships", [])),
+            nodes = len(self._gitnexus_data.get("nodes", []))
+            edges = len(self._gitnexus_data.get("relationships", []))
+            logger.info("GitNexus data collected: %d nodes, %d edges", nodes, edges)
+            await AnalysisPipeline._log_step(
+                self._task_id, 18,
+                f"代码图谱获取完成：{nodes} 节点，{edges} 关系",
+                event_type="api_done", phase="data_collection",
+                detail={"nodes": nodes, "edges": edges},
             )
 
         # Task 10: save to cache
@@ -613,13 +641,25 @@ class AnalysisPipeline:
                         return cached_entry
 
             async with sem:
+                await AnalysisPipeline._log_step(
+                    self._task_id, 50,
+                    f"开始分析模块：{community['name']}",
+                    event_type="llm_start", phase="module_analysis",
+                    target={"module": community["name"]},
+                    detail={"file_count": len(community.get("files", []))},
+                )
+                _t0 = asyncio.get_event_loop().time()
                 try:
                     summary = await self._analyze_module(llm_client, community)
                     if data_quality_note:
                         summary += data_quality_note
+                    _dur = int((asyncio.get_event_loop().time() - _t0) * 1000)
                     await AnalysisPipeline._log_step(
                         self._task_id, 55,
                         f"模块分析完成：{community['name']}（共 {total} 个模块）",
+                        event_type="llm_done", phase="module_analysis",
+                        target={"module": community["name"]},
+                        detail={"duration_ms": _dur},
                     )
                 except Exception as exc:
                     logger.exception(
@@ -631,6 +671,9 @@ class AnalysisPipeline:
                     await AnalysisPipeline._log_step(
                         self._task_id, 55,
                         f"模块分析失败：{community['name']} — {exc}",
+                        event_type="llm_error", phase="module_analysis",
+                        target={"module": community["name"]},
+                        level="error",
                     )
                 return {
                     "module_name": community["name"],
@@ -704,12 +747,23 @@ class AnalysisPipeline:
 
         async def summarize_one(unit: dict) -> dict:
             async with sem:
+                await AnalysisPipeline._log_step(
+                    self._task_id, 58,
+                    f"开始分析单元：{unit['title']}",
+                    event_type="llm_start", phase="plan_analysis",
+                    target={"unit": unit["title"]},
+                )
+                _t0 = asyncio.get_event_loop().time()
                 summary = await self._summarize_analysis_unit(
                     llm_client, unit, out_chars,
                 )
+                _dur = int((asyncio.get_event_loop().time() - _t0) * 1000)
                 await AnalysisPipeline._log_step(
                     self._task_id, 60,
                     f"单元分析完成：{unit['title']}",
+                    event_type="llm_done", phase="plan_analysis",
+                    target={"unit": unit["title"]},
+                    detail={"duration_ms": _dur},
                 )
             return {
                 "module_name": unit["title"],
@@ -1602,13 +1656,34 @@ class AnalysisPipeline:
             await AnalysisPipeline._log_step(task_id, progress, current_step)
 
     @staticmethod
-    async def _log_step(task_id: str, progress: int, step: str) -> None:
-        """Append a timestamped step entry to outputs/{task_id}/steps.jsonl."""
+    async def _log_step(
+        task_id: str,
+        progress: int,
+        step: str,
+        *,
+        event_type: str = "milestone",
+        phase: str | None = None,
+        target: dict | None = None,
+        detail: dict | None = None,
+        level: str = "info",
+    ) -> None:
+        """Append a timestamped structured event to outputs/{task_id}/steps.jsonl and broadcast via WS."""
         ts = datetime.now(timezone.utc).isoformat()
-        entry = json.dumps(
-            {"timestamp": ts, "progress": progress, "step": step},
-            ensure_ascii=False,
-        )
+        entry_data: dict = {
+            "timestamp": ts,
+            "progress": progress,
+            "step": step,
+            "type": event_type,
+            "level": level,
+        }
+        if phase is not None:
+            entry_data["phase"] = phase
+        if target is not None:
+            entry_data["target"] = target
+        if detail is not None:
+            entry_data["detail"] = detail
+
+        entry = json.dumps(entry_data, ensure_ascii=False)
 
         def _write() -> None:
             step_file = settings.outputs_path / task_id / "steps.jsonl"
@@ -1620,3 +1695,9 @@ class AnalysisPipeline:
             await asyncio.to_thread(_write)
         except Exception as exc:
             logger.warning("Step log write failed for %s: %s", task_id, exc)
+
+        try:
+            from app.api.ws import broadcast_task_event  # lazy — avoids circular import
+            await broadcast_task_event(task_id, {"type": "event", **entry_data})
+        except Exception:
+            pass
