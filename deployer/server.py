@@ -95,7 +95,10 @@ async def api_get_config():
 @app.post("/api/config")
 async def api_save_config(config: dict):
     """Persist deployment config to disk."""
-    config_store.save_config(config)
+    try:
+        config_store.save_config(config)
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc))
     return {"ok": True}
 
 

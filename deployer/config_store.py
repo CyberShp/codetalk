@@ -141,6 +141,7 @@ def save_config(config: dict) -> None:
         except (json.JSONDecodeError, OSError):
             pass
     existing.update(normalized)
+    _validate_ports(existing)
     with open(CONFIG_PATH, "w", encoding="utf-8") as f:
         json.dump(existing, f, indent=2)
 

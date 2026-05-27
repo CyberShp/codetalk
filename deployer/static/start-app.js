@@ -28,6 +28,8 @@
   var isStarting = false;
   var eventSource = null;
   var statusTimer = null;
+  var reconnectTimer = null;
+  var reconnectDelay = 1000;
   var forceTakeover = false;
 
   // Services we track — must match data-svc attrs in HTML
@@ -210,17 +212,24 @@
       es.close();
       eventSource = null;
       if (isStarting) {
-        appendLog('error', 'SSE 连接断开，尝试重连...');
-        setTimeout(openEventStream, 3000);
+        var delay = reconnectDelay;
+        reconnectDelay = Math.min(reconnectDelay * 2, 30000);
+        appendLog('error', 'SSE 连接断开，' + (delay / 1000).toFixed(0) + 's 后重连...');
+        reconnectTimer = setTimeout(openEventStream, delay);
       }
     };
   }
 
   function closeEventStream() {
+    if (reconnectTimer !== null) {
+      clearTimeout(reconnectTimer);
+      reconnectTimer = null;
+    }
     if (eventSource) {
       eventSource.close();
       eventSource = null;
     }
+    reconnectDelay = 1000;
   }
 
   function handleStreamEvent(evt) {
