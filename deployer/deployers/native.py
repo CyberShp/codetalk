@@ -185,6 +185,8 @@ class NativeDeployer:
     # ------------------------------------------------------------------
 
     async def supplement_deepwiki(self, deepwiki_path: str) -> None:
+        if not deepwiki_path:
+            deepwiki_path = str(PROJECT_ROOT.parent / "codetalk_data" / "deepwiki-open")
         dw_dir = Path(deepwiki_path)
         total = 6
 
@@ -1196,6 +1198,45 @@ class NativeDeployer:
             except ProcessLookupError:
                 pass
 
+    def _build_deepwiki_env(self) -> dict[str, str]:
+        """Build the LLM + tiktoken env dict for deepwiki processes.
+
+        Reads from self._config first, then merges KEY=VALUE lines from
+        <deepwiki_path>/.env (if it exists). Uses manual line parsing —
+        no python-dotenv dependency required.
+        """
+        env: dict[str, str] = {}
+        llm_base_url = self._config.get("llm_base_url", "")
+        if llm_base_url:
+            env = {
+                "OPENAI_BASE_URL": llm_base_url,
+                "OPENAI_API_KEY": self._config.get("llm_api_key", ""),
+                "LLM_MODEL": self._config.get("llm_model", ""),
+                "FORCE_DIRECT": "true",
+                "TRUST_ENV": "false",
+            }
+        tiktoken_cache = _best_tiktoken_cache()
+        if tiktoken_cache is not None:
+            env["TIKTOKEN_CACHE_DIR"] = str(tiktoken_cache.resolve())
+        deepwiki_path = self._config.get("deepwiki_path", "")
+        if deepwiki_path:
+            dot_env = Path(deepwiki_path) / ".env"
+            if dot_env.exists():
+                try:
+                    for line in dot_env.read_text(encoding="utf-8").splitlines():
+                        line = line.strip()
+                        if not line or line.startswith("#"):
+                            continue
+                        if "=" in line:
+                            k, _, v = line.partition("=")
+                            k = k.strip()
+                            v = v.strip().strip('"').strip("'")
+                            if k:
+                                env.setdefault(k, v)
+                except OSError:
+                    pass
+        return env
+
     async def restart_service(self, name: str) -> dict:
         """Restart a named service (or deepwiki pair) using stored startup args."""
         targets = ["deepwiki-api", "deepwiki-ui"] if name == "deepwiki" else [name]
@@ -1210,6 +1251,14 @@ class NativeDeployer:
 
         for target in targets:
             await self._terminate_process(target)
+
+        if name == "deepwiki":
+            # Re-read config and deepwiki/.env so LLM params are current.
+            fresh_env = self._build_deepwiki_env()
+            for target in targets:
+                args = self._start_args[target]
+                merged = {**(args.get("env_extra") or {}), **fresh_env}
+                self._start_args[target] = {**args, "env_extra": merged}
 
         for target in targets:
             args = self._start_args[target]
@@ -1254,6 +1303,35 @@ class NativeDeployer:
                 "cwd": str(PROJECT_ROOT),
                 "env_extra": None,
             }
+        deepwiki_path = cfg.get("deepwiki_path", "")
+        if deepwiki_path and name in ("deepwiki-api", "deepwiki-ui"):
+            dw_dir = Path(deepwiki_path)
+            has_python_api = (dw_dir / "api" / "pyproject.toml").exists() or (dw_dir / "requirements.txt").exists()
+            has_package_json = (dw_dir / "package.json").exists()
+            llm_env = self._build_deepwiki_env()
+            api_port = self._config_port("deepwiki_api_port", 8091)
+            ui_port = self._config_port("deepwiki_ui_port", 3001)
+            if name == "deepwiki-api" and has_python_api:
+                venv_dir = dw_dir / ".venv"
+                venv_python = (venv_dir / "Scripts" / "python.exe") if sys.platform == "win32" else (venv_dir / "bin" / "python")
+                launcher = str(DEPLOYER_DIR / "deepwiki_launcher.py")
+                return {
+                    "cmd": [str(venv_python), launcher],
+                    "cwd": str(dw_dir),
+                    "env_extra": {**llm_env, "DEEPWIKI_API_PORT": str(api_port)},
+                }
+            if name == "deepwiki-ui" and has_package_json:
+                standalone_server = dw_dir / ".next" / "standalone" / "server.js"
+                if standalone_server.exists():
+                    ui_cmd = ["node", str(standalone_server)]
+                else:
+                    npm_cmd = "npm.cmd" if sys.platform == "win32" else "npm"
+                    ui_cmd = [npm_cmd, "run", "start"]
+                return {
+                    "cmd": ui_cmd,
+                    "cwd": str(dw_dir),
+                    "env_extra": {**llm_env, "PORT": str(ui_port), "SERVER_BASE_URL": f"http://localhost:{api_port}"},
+                }
         return None
 
     async def start_service(self, name: str) -> dict:

@@ -229,7 +229,7 @@ async def api_supplement_deepwiki(body: dict):
 
     deepwiki_path = body.get("deepwikiPath", "").strip()
     if not deepwiki_path:
-        raise HTTPException(status_code=400, detail="deepwikiPath is required")
+        deepwiki_path = config_store.DEFAULT_DEEPWIKI_PATH
 
     cfg = config_store.load_config()
     cfg["deepwiki_path"] = deepwiki_path

@@ -5,6 +5,8 @@ import os
 from pathlib import Path
 
 CONFIG_PATH = Path(__file__).parent / ".deploy-config.json"
+_PROJECT_ROOT = Path(__file__).parent.parent
+DEFAULT_DEEPWIKI_PATH = str(_PROJECT_ROOT.parent / "codetalk_data" / "deepwiki-open")
 
 # camelCase (frontend) -> snake_case (backend/deployer canonical form)
 _KEY_MAP = {
@@ -136,7 +138,7 @@ def get_default_config(mode: str) -> dict:
         "openai_api_key": "",
         "anthropic_api_key": "",
         "google_api_key": "",
-        "deepwiki_path": "",
+        "deepwiki_path": DEFAULT_DEEPWIKI_PATH,
         "repos_path": "./workspace/repos",
         "frontend_port": 3005,
         "gitnexus_port": 7100,
