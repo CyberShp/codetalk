@@ -90,6 +90,11 @@ export default function TaskDetailPage() {
     try {
       const data = await api.tasks.steps(taskId);
       setSteps(data);
+      if (data.length > 0) {
+        const lastTs = new Date(data[data.length - 1].timestamp).getTime();
+        lastStepTimeRef.current = lastTs;
+        setElapsedSecs(Math.floor((Date.now() - lastTs) / 1000));
+      }
     } catch {
       // ignore step load errors
     }
@@ -127,7 +132,7 @@ export default function TaskDetailPage() {
               timestamp: msg.timestamp,
               progress: msg.progress,
               step: msg.step,
-              type: msg.type,
+              event_type: msg.event_type,
               phase: msg.phase,
               target: msg.target,
               detail: msg.detail,
@@ -160,7 +165,7 @@ export default function TaskDetailPage() {
       }
     }, 1000);
     return () => clearInterval(timer);
-  }, [task?.status]);
+  }, [task?.status, setElapsedSecs]);
 
   const handleCancel = useCallback(async () => {
     if (!taskId) return;

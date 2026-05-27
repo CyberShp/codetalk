@@ -1673,7 +1673,7 @@ class AnalysisPipeline:
             "timestamp": ts,
             "progress": progress,
             "step": step,
-            "type": event_type,
+            "event_type": event_type,
             "level": level,
         }
         if phase is not None:

@@ -25,7 +25,7 @@ export interface TaskStep {
   timestamp: string;
   progress: number;
   step: string;
-  type?: string;
+  event_type?: string;
   phase?: string;
   target?: Record<string, unknown>;
   detail?: Record<string, unknown>;
