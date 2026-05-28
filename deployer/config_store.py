@@ -28,6 +28,7 @@ _KEY_MAP = {
     "llmBaseUrl": "llm_base_url",
     "llmApiKey": "llm_api_key",
     "llmModel": "llm_model",
+    "deepwikiEmbedderType": "deepwiki_embedder_type",
     "installDeepwiki": "install_deepwiki",
     "installGitnexus": "install_gitnexus",
     "corsOrigins": "cors_origins",

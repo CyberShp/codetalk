@@ -251,9 +251,10 @@ function initConfigForm() {
         if (ports) ports.style.display = installDeepwikiCb.checked ? '' : 'none';
       }
       if (cfg.installGitnexus === false && installGitnexusCb) installGitnexusCb.checked = false;
-      if (cfg.portDeepwikiApi) ($('#port-deepwiki-api') || {}).value  = cfg.portDeepwikiApi;
-      if (cfg.portDeepwikiUi)  ($('#port-deepwiki-ui')  || {}).value  = cfg.portDeepwikiUi;
-      if (cfg.deepwikiPath)    ($('#deepwiki-path')     || {}).value  = cfg.deepwikiPath;
+      if (cfg.portDeepwikiApi)       ($('#port-deepwiki-api')       || {}).value = cfg.portDeepwikiApi;
+      if (cfg.portDeepwikiUi)        ($('#port-deepwiki-ui')        || {}).value = cfg.portDeepwikiUi;
+      if (cfg.deepwikiPath)          ($('#deepwiki-path')           || {}).value = cfg.deepwikiPath;
+      if (cfg.deepwikiEmbedderType)  ($('#deepwiki-embedder-type')  || {}).value = cfg.deepwikiEmbedderType;
       if (cfg.portGitnexus)    ($('#port-gitnexus')     || {}).value  = cfg.portGitnexus;
       if (cfg.dbUser)          ($('#db-user')            || {}).value  = cfg.dbUser;
       if (cfg.dbPassword)      ($('#db-password')        || {}).value  = cfg.dbPassword;
@@ -295,9 +296,10 @@ function collectConfig() {
     workspacePath:   (($('#workspace-path') || {}).value || './workspace').trim(),
     installDeepwiki: installDeepwikiCb ? installDeepwikiCb.checked : true,
     installGitnexus: installGitnexusCb ? installGitnexusCb.checked : true,
-    portDeepwikiApi: (($('#port-deepwiki-api') || {}).value || '8091').trim(),
-    portDeepwikiUi:  (($('#port-deepwiki-ui')  || {}).value || '3001').trim(),
-    deepwikiPath:    (($('#deepwiki-path')     || {}).value || '').trim(),
+    portDeepwikiApi:       (($('#port-deepwiki-api')       || {}).value || '8091').trim(),
+    portDeepwikiUi:        (($('#port-deepwiki-ui')        || {}).value || '3001').trim(),
+    deepwikiPath:          (($('#deepwiki-path')           || {}).value || '').trim(),
+    deepwikiEmbedderType:  (($('#deepwiki-embedder-type')  || {}).value || 'openai').trim(),
     portGitnexus:    (($('#port-gitnexus')     || {}).value || '7100').trim(),
     reposPath:       (($('#repos-path')        || {}).value || './.repos'),
     portFrontend:    (($('#port-frontend')     || {}).value || '3005'),

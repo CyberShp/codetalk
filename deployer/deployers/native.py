@@ -1074,9 +1074,16 @@ class NativeDeployer:
             elif dw_dir and dw_dir.exists():
                 dw_api_port = self._config_port("deepwiki_api_port", 8091)
                 dw_ui_port = self._config_port("deepwiki_ui_port", 3001)
-                llm_env: dict[str, str] = {
-                    "DEEPWIKI_EMBEDDER_TYPE": self._config.get("deepwiki_embedder_type", "openai"),
-                }
+                embedder_type = self._config.get("deepwiki_embedder_type", "openai")
+                llm_env: dict[str, str] = {"DEEPWIKI_EMBEDDER_TYPE": embedder_type}
+                if embedder_type == "google":
+                    google_api_key = self._config.get("google_api_key", "")
+                    if google_api_key:
+                        llm_env["GOOGLE_API_KEY"] = google_api_key
+                elif embedder_type == "ollama":
+                    ollama_host = self._config.get("ollama_base_url", "http://localhost:11434")
+                    if ollama_host:
+                        llm_env["OLLAMA_HOST"] = ollama_host
                 llm_base_url = self._config.get("llm_base_url", "")
                 if llm_base_url:
                     llm_env.update({

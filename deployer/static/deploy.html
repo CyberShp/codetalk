@@ -203,6 +203,12 @@
                     <input type="number" id="port-deepwiki-ui" name="portDeepwikiUi" class="form-input form-input-sm font-mono" value="3001" min="1024" max="65535" />
                     <span class="port-label" style="grid-column: 1">安装路径</span>
                     <input type="text" id="deepwiki-path" name="deepwikiPath" class="form-input font-mono" placeholder="留空自动使用默认路径（../codetalk_data/deepwiki-open）" style="grid-column: 2 / -1" />
+                    <span class="port-label" style="grid-column: 1">Embedder</span>
+                    <select id="deepwiki-embedder-type" name="deepwikiEmbedderType" class="form-input" style="grid-column: 2 / -1">
+                      <option value="openai">OpenAI（默认）</option>
+                      <option value="google">Google Gemini</option>
+                      <option value="ollama">Ollama（本地）</option>
+                    </select>
                   </div>
                 </label>
                 <label class="component-item">
