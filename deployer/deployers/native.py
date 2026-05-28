@@ -1093,6 +1093,9 @@ class NativeDeployer:
 
         if cfg.get("install_cgc", True):
             cgc_exe = self._resolve_cgc_exe()
+            if not cgc_exe:
+                await self._ensure_cgc(step)
+                cgc_exe = self._resolve_cgc_exe()
             if cgc_exe:
                 cgc_port = self._config_port("cgc_port", _CGC_DEFAULT_PORT)
                 await self._release_ports([cgc_port], step, force_takeover=force_takeover)
@@ -1106,7 +1109,7 @@ class NativeDeployer:
             else:
                 await self._emit(
                     "start_services", "running",
-                    "⚠️ cgc 可执行文件未找到（未安装或路径未配置），跳过 CGC 启动。"
+                    "⚠️ cgc 可执行文件未找到（安装尝试后仍缺失或路径未配置），跳过 CGC 启动。"
                     "请确认 D:\\coworkers\\cgc-venv\\Scripts\\cgc.exe 存在，"
                     "或在部署配置中设置 cgcVenvPath。",
                     step,
@@ -1615,6 +1618,20 @@ class NativeDeployer:
     # ------------------------------------------------------------------
     # Helpers
     # ------------------------------------------------------------------
+
+    async def _ensure_cgc(self, step: int) -> None:
+        """Install CGC venv + codegraphcontext + mcp if not already present."""
+        if _cgc is None:
+            return
+        venv_path_str = str(self._config.get("cgc_venv_path", "")).strip()
+        venv_path = Path(venv_path_str) if venv_path_str else None
+        await self._emit("start_services", "running", "正在安装 CGC（codegraphcontext + mcp）...", step)
+        try:
+            await asyncio.to_thread(_cgc.ensure_cgc_installed, venv_path)
+            await self._emit("start_services", "running", "CGC 安装完成", step)
+        except _cgc.CGCInstallError as exc:
+            await self._emit("start_services", "error", f"CGC 安装失败：{exc}", step)
+            raise RuntimeError(str(exc)) from exc
 
     async def _get_git_hash(self, cwd: Path) -> str:
         """Return the current HEAD commit hash, or '' if git is unavailable."""

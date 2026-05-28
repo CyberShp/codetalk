@@ -7,6 +7,7 @@ deployers/native.py to launch and manage the CGC process.
 from __future__ import annotations
 
 import os
+import subprocess
 import sys
 from pathlib import Path
 
@@ -42,6 +43,62 @@ def resolve_cgc_exe(config: dict | None = None) -> str | None:
         if exe.exists():
             return str(exe)
     return None
+
+
+class CGCInstallError(RuntimeError):
+    """CGC or its dependencies could not be installed."""
+
+
+def ensure_cgc_installed(venv_path: Path | None = None) -> None:
+    """Ensure the CGC venv exists with codegraphcontext + mcp installed.
+
+    Idempotent: returns immediately if cgc.exe already exists in the venv.
+    Otherwise creates the venv (if absent) and runs pip install for both
+    ``codegraphcontext`` and ``mcp`` (which cgc 0.x omits from its own deps).
+
+    Args:
+        venv_path: Target venv directory. Defaults to CGC_DEFAULT_VENV.
+
+    Raises:
+        CGCInstallError: on venv creation failure or pip install failure.
+    """
+    venv: Path = venv_path if isinstance(venv_path, Path) else (
+        Path(venv_path) if venv_path else CGC_DEFAULT_VENV
+    )
+    scripts = "Scripts" if sys.platform == "win32" else "bin"
+    exe_name = "cgc.exe" if sys.platform == "win32" else "cgc"
+    pip_name = "pip.exe" if sys.platform == "win32" else "pip"
+
+    if (venv / scripts / exe_name).exists():
+        return  # already installed
+
+    python_exe = venv / scripts / ("python.exe" if sys.platform == "win32" else "python")
+    if not python_exe.exists():
+        result = subprocess.run(
+            [sys.executable, "-m", "venv", str(venv)],
+            capture_output=True,
+            text=True,
+        )
+        if result.returncode != 0:
+            detail = (result.stderr or result.stdout or "unknown error").strip()
+            raise CGCInstallError(
+                f"CGC 虚拟环境创建失败 ({venv}): {detail}\n"
+                f"请手动运行: python -m venv {venv}"
+            )
+
+    pip_exe = str(venv / scripts / pip_name)
+    for pkg in ("codegraphcontext", "mcp"):
+        result = subprocess.run(
+            [pip_exe, "install", pkg],
+            capture_output=True,
+            text=True,
+        )
+        if result.returncode != 0:
+            detail = (result.stderr or result.stdout or "unknown error").strip()
+            raise CGCInstallError(
+                f"CGC 依赖安装失败 ({pkg}): {detail}\n"
+                f"请手动运行: {pip_exe} install {pkg}"
+            )
 
 
 def cgc_cwd() -> str:
