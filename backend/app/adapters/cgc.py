@@ -267,6 +267,16 @@ class CGCClient:
 class CGCAdapter(BaseToolAdapter):
     """BaseToolAdapter wrapper around CGCClient for the adapter registry."""
 
+    _prepare_locks: dict[tuple[str, str, int], asyncio.Lock] = {}
+
+    @classmethod
+    def _prepare_lock_for(cls, base_url: str, repo_path: str) -> asyncio.Lock:
+        loop = asyncio.get_running_loop()
+        key = (base_url, repo_path, id(loop))
+        if key not in cls._prepare_locks:
+            cls._prepare_locks[key] = asyncio.Lock()
+        return cls._prepare_locks[key]
+
     def __init__(self, base_url: str | None = None) -> None:
         self._cgc = CGCClient(base_url=base_url)
 
@@ -289,9 +299,11 @@ class CGCAdapter(BaseToolAdapter):
         )
 
     async def prepare(self, request: AnalysisRequest) -> None:
-        """Index the repository before analysis."""
-        job_id = await self._cgc.index_repo(request.repo_local_path)
-        await self._cgc.wait_for_index(job_id)
+        """Index the repository before analysis (deduped per path)."""
+        lock = self._prepare_lock_for(self._cgc._base_url, request.repo_local_path)
+        async with lock:
+            job_id = await self._cgc.index_repo(request.repo_local_path)
+            await self._cgc.wait_for_index(job_id)
 
     async def analyze(self, request: AnalysisRequest) -> UnifiedResult:
         """Run complexity + module-dependency analysis on the repository."""

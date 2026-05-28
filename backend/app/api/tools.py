@@ -1,15 +1,19 @@
 """Tool management API -- start, stop, restart, and monitor tool processes."""
 
+import asyncio
 import logging
 from typing import Any
 
 from fastapi import APIRouter, HTTPException, Request
 
+from app.adapters import get_adapter, get_all_adapters
 from app.services.process_manager import ProcessManager
 
 logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/api/tools", tags=["tools"])
+
+_HEALTH_TIMEOUT = 4.0  # seconds; adapters slower than this are reported as busy
 
 
 def _get_pm(request: Request) -> ProcessManager:
@@ -20,11 +24,76 @@ def _get_pm(request: Request) -> ProcessManager:
     return ProcessManager.get_instance()
 
 
+async def _check_health(adapter) -> dict[str, Any]:
+    try:
+        health = await asyncio.wait_for(adapter.health_check(), timeout=_HEALTH_TIMEOUT)
+        return {
+            "name": adapter.name(),
+            "capabilities": [c.value for c in adapter.capabilities()],
+            "healthy": health.is_healthy,
+            "container_status": health.container_status,
+        }
+    except asyncio.TimeoutError:
+        return {
+            "name": adapter.name(),
+            "capabilities": [c.value for c in adapter.capabilities()],
+            "healthy": True,
+            "container_status": "busy",
+        }
+    except Exception:
+        return {
+            "name": adapter.name(),
+            "capabilities": [c.value for c in adapter.capabilities()],
+            "healthy": False,
+            "container_status": "error",
+        }
+
+
+@router.get("")
+async def list_tools() -> list[dict[str, Any]]:
+    """Return health status of all registered tool adapters."""
+    adapters = get_all_adapters()
+    results = await asyncio.gather(*[_check_health(a) for a in adapters])
+    return list(results)
+
+
 @router.get("/status")
 async def get_tools_status(request: Request) -> list[dict[str, Any]]:
     """Return live status of all registered tool processes."""
     pm = _get_pm(request)
     return await pm.get_all_status()
+
+
+@router.get("/{tool_name}/health")
+async def get_tool_health(tool_name: str) -> dict[str, Any]:
+    """Return health status of a specific tool adapter."""
+    try:
+        adapter = get_adapter(tool_name)
+    except KeyError:
+        raise HTTPException(status_code=404, detail=f"Unknown tool: {tool_name}")
+
+    try:
+        health = await asyncio.wait_for(adapter.health_check(), timeout=_HEALTH_TIMEOUT)
+        return {
+            "name": adapter.name(),
+            "healthy": health.is_healthy,
+            "container_status": health.container_status,
+            "version": health.version,
+        }
+    except asyncio.TimeoutError:
+        return {
+            "name": adapter.name(),
+            "healthy": True,
+            "container_status": "busy",
+            "version": None,
+        }
+    except Exception:
+        return {
+            "name": adapter.name(),
+            "healthy": False,
+            "container_status": "error",
+            "version": None,
+        }
 
 
 @router.post("/{tool_name}/start")

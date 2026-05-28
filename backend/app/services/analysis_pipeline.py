@@ -21,7 +21,8 @@ from pathlib import Path
 import aiosqlite
 import httpx
 
-from app.adapters.base import AnalysisRequest
+from app.adapters import create_adapter
+from app.adapters.base import AnalysisRequest, BaseToolAdapter
 from app.config import settings
 from app.llm.base import BaseLLMClient, LLMResponse, current_task_id
 from app.llm.factory import create_llm_client_from_active
@@ -78,6 +79,8 @@ class AnalysisPipeline:
         self._scope_preview: ScopePreview | None = None
         self._evidence_cards: list[EvidenceCard] = []
         self._analysis_units: list[dict] = []
+        # Adapter instances created during prepare phase, keyed by tool name
+        self._tool_adapters: dict[str, BaseToolAdapter] = {}
 
     # ------------------------------------------------------------------
     # Public entry point
@@ -271,14 +274,37 @@ class AnalysisPipeline:
     # ------------------------------------------------------------------
 
     async def _phase_prepare(self, repo_path: str, tools: list[str]) -> None:
-        """Validate repo path and ensure git is initialized."""
+        """Validate repo path, git init, and run adapter prepare in parallel."""
         path = Path(repo_path)
         if not path.exists():
             raise FileNotFoundError(f"代码路径不存在: {repo_path}")
 
+        req = AnalysisRequest(repo_local_path=repo_path)
+        self._tool_adapters = {}
+
+        adapter_coros = []
+        for tool_name in tools:
+            try:
+                adapter = create_adapter(tool_name)
+                self._tool_adapters[tool_name] = adapter
+                adapter_coros.append(adapter.prepare(req))
+            except KeyError:
+                pass  # no registered adapter for this tool
+
+        results = await asyncio.gather(
+            self._ensure_git_init(path),
+            *adapter_coros,
+            return_exceptions=True,
+        )
+        for result in results:
+            if isinstance(result, Exception):
+                logger.warning("Prepare step error (non-fatal): %s", result)
+
+    async def _ensure_git_init(self, path: Path) -> None:
+        """Ensure git is initialized for the repo path."""
         git_dir = path / ".git"
         if not git_dir.exists():
-            logger.info("Initializing git repo at %s", repo_path)
+            logger.info("Initializing git repo at %s", path)
             proc = await asyncio.to_thread(
                 subprocess.run,
                 ["git", "init"],
