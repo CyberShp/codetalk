@@ -1,12 +1,17 @@
+import logging
 import uuid
 from datetime import datetime, timezone
+from pathlib import Path
 from typing import Any
 
 import aiosqlite
 from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel
 
+from app.config import settings as app_settings
 from app.database import get_db
+
+logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/api/settings", tags=["设置管理"])
 
@@ -189,6 +194,72 @@ _GENERAL_KEYS = ("proxy_mode", "proxy_url", "ssl_cert_path",
                  "active_chat_model_id", "active_embedding_model_id")
 
 
+async def _sync_deepwiki_env(
+    db: aiosqlite.Connection,
+    active_chat_id: str,
+    active_embedding_id: str,
+) -> None:
+    """Write active LLM model config into deepwiki's .env for runtime use.
+
+    Runs silently: errors are logged but never propagate to the caller so
+    a missing deepwiki path or DB row never breaks the settings save.
+    """
+    deepwiki_path = app_settings.deepwiki_path
+    if not deepwiki_path:
+        return
+
+    env_updates: dict[str, str] = {}
+
+    if active_chat_id:
+        async with db.execute(
+            "SELECT base_url, api_key, model FROM llm_configs WHERE id = ?",
+            (active_chat_id,),
+        ) as cur:
+            row = await cur.fetchone()
+        if row:
+            if row["base_url"]:
+                env_updates["OPENAI_BASE_URL"] = row["base_url"]
+            if row["api_key"]:
+                env_updates["OPENAI_API_KEY"] = row["api_key"]
+            if row["model"]:
+                env_updates["LLM_MODEL"] = row["model"]
+
+    if active_embedding_id:
+        async with db.execute(
+            "SELECT model FROM llm_configs WHERE id = ?",
+            (active_embedding_id,),
+        ) as cur:
+            row = await cur.fetchone()
+        if row and row["model"]:
+            env_updates["OPENAI_EMBEDDING_MODEL"] = row["model"]
+
+    if not env_updates:
+        return
+
+    dot_env = Path(deepwiki_path) / ".env"
+    try:
+        existing: list[str] = (
+            dot_env.read_text(encoding="utf-8").splitlines()
+            if dot_env.exists()
+            else []
+        )
+        updated_keys = set(env_updates.keys())
+        kept = [
+            ln for ln in existing
+            if not ln.strip()
+            or ln.startswith("#")
+            or ln.split("=", 1)[0].strip() not in updated_keys
+        ]
+        new_lines = [f"{k}={v}" for k, v in env_updates.items()]
+        dot_env.write_text("\n".join(kept + new_lines) + "\n", encoding="utf-8")
+        logger.info(
+            "settings: synced deepwiki .env with keys=%s",
+            list(env_updates.keys()),
+        )
+    except OSError as exc:
+        logger.warning("settings: failed to sync deepwiki .env: %s", exc)
+
+
 @router.get("/general", response_model=GeneralSettings)
 async def get_general_settings(db: aiosqlite.Connection = Depends(get_db)):
     async with db.execute(
@@ -213,4 +284,5 @@ async def update_general_settings(data: GeneralSettings, db: aiosqlite.Connectio
             (key, str(value)),
         )
     await db.commit()
+    await _sync_deepwiki_env(db, data.active_chat_model_id, data.active_embedding_model_id)
     return data
