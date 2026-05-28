@@ -447,11 +447,15 @@ export default function WorkspaceDetailPage() {
   const pollIndexRef = useRef<ReturnType<typeof setInterval> | null>(null);
   const pollAnalyzeRef = useRef<ReturnType<typeof setInterval> | null>(null);
   const lastAnalysisTaskIdRef = useRef<string | null>(null);
+  const selectedVersionTaskIdRef = useRef<string | null>(null);
   const hasLoadedRef = useRef(false);
   const toggleVersion = useRef<Record<string, number>>({});
   const wsLogRef = useRef<WebSocket | null>(null);
   const lastLogStepTimeRef = useRef<number | null>(null);
   const logEndRef = useRef<HTMLDivElement>(null);
+
+  // Keep ref in sync so WS cleanup can read current value even after re-render
+  selectedVersionTaskIdRef.current = selectedVersionTaskId;
 
   const loadWorkspace = useCallback(async () => {
     try {
@@ -625,8 +629,13 @@ export default function WorkspaceDetailPage() {
       wsLogRef.current = null;
       // Explicit final backfill for the analysis-completion case (analyzeStatus
       // left "running"), where ws.onclose was skipped because live was already false.
+      // Guard: skip if user navigated away — historical effect will load the correct task.
       api.tasks.steps(taskId)
-        .then((allSteps) => { if (allSteps.length > 0) setLogSteps(allSteps); })
+        .then((allSteps) => {
+          if (allSteps.length > 0 && selectedVersionTaskIdRef.current === taskId) {
+            setLogSteps(allSteps);
+          }
+        })
         .catch(() => {});
     };
   }, [analyzeStatus, currentAnalysisTaskId, selectedVersionTaskId]);
