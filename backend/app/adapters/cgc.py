@@ -100,17 +100,22 @@ class CGCClient:
     # Indexing
     # ------------------------------------------------------------------
 
-    async def index_repo(self, path: str, is_dependency: bool = False) -> str:
+    async def index_repo(
+        self,
+        path: str,
+        is_dependency: bool = False,
+        repo_name: str | None = None,
+    ) -> str:
         """Start indexing *path* and return the background job ID.
 
         Raises:
             CGCUnavailable: on network error.
             CGCQueryError: if the gateway returns an error response.
         """
-        result = await self._call_tool(
-            "add_code_to_graph",
-            {"path": path, "is_dependency": is_dependency},
-        )
+        args: dict = {"path": path, "is_dependency": is_dependency}
+        if repo_name:
+            args["repo_name"] = repo_name
+        result = await self._call_tool("add_code_to_graph", args)
         job_id = result.get("job_id") if isinstance(result, dict) else None
         if not job_id:
             raise CGCQueryError(f"add_code_to_graph returned no job_id: {result!r}")
@@ -128,29 +133,36 @@ class CGCClient:
             await asyncio.sleep(_INDEX_POLL_INTERVAL)
             elapsed += _INDEX_POLL_INTERVAL
             result = await self._call_tool("check_job_status", {"job_id": job_id})
-            status = result.get("status", "") if isinstance(result, dict) else ""
+            # CGC returns {"success": True, "job": {"status": "...", ...}}
+            # Fall back to flat dict for backward compatibility with test mocks.
+            if isinstance(result, dict):
+                job = result.get("job", result)
+                status = job.get("status", "") if isinstance(job, dict) else ""
+                error_info = (job.get("error") or result.get("error") or "unknown") if isinstance(job, dict) else "unknown"
+            else:
+                status = ""
+                error_info = "unknown"
             if status == "completed":
                 return True
             if status == "failed":
-                raise CGCIndexFailed(
-                    f"CGC index job {job_id} failed: {result.get('error', 'unknown')}"
-                )
+                raise CGCIndexFailed(f"CGC index job {job_id} failed: {error_info}")
         raise asyncio.TimeoutError(f"CGC indexing timed out after {timeout}s (job={job_id})")
 
     # ------------------------------------------------------------------
     # Relationship queries (via analyze_code_relationships)
     # ------------------------------------------------------------------
 
-    async def find_callers(self, func_name: str, repo_path: str | None = None) -> list:
+    async def find_callers(self, func_name: str, repo_path: str | None = None, depth: int | None = None) -> list:
         """Return list of callers of *func_name*."""
-        return await self._analyze("find_callers", func_name, repo_path=repo_path)
+        return await self._analyze("find_callers", func_name, repo_path=repo_path, depth=depth)
 
-    async def find_callees(self, func_name: str, repo_path: str | None = None) -> list:
+    async def find_callees(self, func_name: str, repo_path: str | None = None, depth: int | None = None) -> list:
         """Return list of functions called by *func_name*."""
-        return await self._analyze("find_callees", func_name, repo_path=repo_path)
+        return await self._analyze("find_callees", func_name, repo_path=repo_path, depth=depth)
 
-    async def call_chain(self, target: str, repo_path: str | None = None) -> dict:
-        """Return call-chain data for *target* (e.g. 'from_func:to_func')."""
+    async def call_chain(self, from_func: str, to_func: str, repo_path: str | None = None) -> dict:
+        """Return call-chain data from *from_func* to *to_func*."""
+        target = f"{from_func}:{to_func}"
         result = await self._analyze("call_chain", target, repo_path=repo_path)
         return result if isinstance(result, dict) else {"chain": result}
 
@@ -195,13 +207,21 @@ class CGCClient:
         target: str,
         repo_path: str | None = None,
         context: str | None = None,
+        depth: int | None = None,
     ) -> list | dict:
         args: dict = {"query_type": query_type, "target": target}
         if repo_path:
             args["repo_path"] = repo_path
         if context:
             args["context"] = context
-        return await self._call_tool("analyze_code_relationships", args)
+        if depth is not None:
+            args["depth"] = depth
+        raw = await self._call_tool("analyze_code_relationships", args)
+        # CGC wraps: {"success": True, "query_type": ..., "results": <list|dict>}
+        # Single-key unwrap in _call_tool never fires on this multi-key response.
+        if isinstance(raw, dict) and "results" in raw:
+            return raw["results"]
+        return raw
 
     async def _call_tool(self, name: str, arguments: dict) -> list | dict:
         """POST /api/v1/tools/call and return the ``data`` payload.

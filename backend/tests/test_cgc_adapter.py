@@ -159,6 +159,20 @@ class IndexRepoTests(unittest.IsolatedAsyncioTestCase):
         with self.assertRaises(CGCQueryError):
             await client.index_repo("/tmp/myrepo")
 
+    async def test_passes_repo_name_when_provided(self):
+        client = CGCClient(base_url="http://cgc:7072")
+        client._client = _FakeAsyncClient(post_responses=[_ok({"job_id": "job-abc"})])
+        await client.index_repo("/tmp/myrepo", repo_name="my-project")
+        _, body = client._client.post_calls[0]
+        self.assertEqual(body["arguments"]["repo_name"], "my-project")
+
+    async def test_omits_repo_name_when_not_provided(self):
+        client = CGCClient(base_url="http://cgc:7072")
+        client._client = _FakeAsyncClient(post_responses=[_ok({"job_id": "job-abc"})])
+        await client.index_repo("/tmp/myrepo")
+        _, body = client._client.post_calls[0]
+        self.assertNotIn("repo_name", body["arguments"])
+
 
 # ---------------------------------------------------------------------------
 # wait_for_index tests
@@ -193,6 +207,27 @@ class WaitForIndexTests(unittest.IsolatedAsyncioTestCase):
         with unittest.mock.patch("app.adapters.cgc._INDEX_POLL_INTERVAL", 0):
             with self.assertRaises(asyncio.TimeoutError):
                 await client.wait_for_index("job-1", timeout=0)
+
+    async def test_returns_true_for_real_cgc_response_shape(self):
+        """Real CGC: {"success": True, "job": {"status": "completed", ...}}"""
+        client = CGCClient(base_url="http://cgc:7072")
+        client._client = _FakeAsyncClient(
+            post_responses=[_ok({"success": True, "job": {"status": "completed"}})]
+        )
+        with unittest.mock.patch("app.adapters.cgc._INDEX_POLL_INTERVAL", 0):
+            result = await client.wait_for_index("job-real")
+        self.assertTrue(result)
+
+    async def test_raises_index_failed_for_real_cgc_failed_response(self):
+        """Real CGC failed: {"success": True, "job": {"status": "failed", "error": "..."}}"""
+        client = CGCClient(base_url="http://cgc:7072")
+        client._client = _FakeAsyncClient(
+            post_responses=[_ok({"success": True, "job": {"status": "failed", "error": "index error"}})]
+        )
+        with unittest.mock.patch("app.adapters.cgc._INDEX_POLL_INTERVAL", 0):
+            with self.assertRaises(CGCIndexFailed) as cm:
+                await client.wait_for_index("job-real")
+        self.assertIn("index error", str(cm.exception))
 
 
 # ---------------------------------------------------------------------------
@@ -229,6 +264,44 @@ class RelationshipQueryTests(unittest.IsolatedAsyncioTestCase):
         )
         with self.assertRaises(CGCQueryError):
             await client.find_callers("nonexistent_func")
+
+    async def test_find_callers_real_cgc_response_shape(self):
+        """Real CGC wraps: {"success": True, "query_type": ..., "results": [...]}"""
+        client = CGCClient(base_url="http://cgc:7072")
+        callers = [{"name": "caller_a", "path": "app/main.py"}]
+        client._client = _FakeAsyncClient(
+            post_responses=[_ok({
+                "success": True, "query_type": "find_callers",
+                "target": "my_func", "context": None, "results": callers,
+            })]
+        )
+        result = await client.find_callers("my_func", repo_path="/repo")
+        self.assertEqual(result, callers)
+
+    async def test_find_callers_passes_depth_to_cgc(self):
+        client = CGCClient(base_url="http://cgc:7072")
+        client._client = _FakeAsyncClient(post_responses=[_ok([])])
+        await client.find_callers("my_func", depth=3)
+        _, body = client._client.post_calls[0]
+        self.assertEqual(body["arguments"]["depth"], 3)
+
+
+# ---------------------------------------------------------------------------
+# call_chain tests
+# ---------------------------------------------------------------------------
+
+
+class CallChainTests(unittest.IsolatedAsyncioTestCase):
+    async def test_combines_from_to_as_colon_target(self):
+        """call_chain(from_func, to_func) passes 'from_func:to_func' as target."""
+        client = CGCClient(base_url="http://cgc:7072")
+        chain_data = [{"from": "func_a", "to": "func_b"}]
+        client._client = _FakeAsyncClient(post_responses=[_ok(chain_data)])
+        result = await client.call_chain("func_a", "func_b", repo_path="/repo")
+        self.assertIsInstance(result, dict)
+        _, body = client._client.post_calls[0]
+        self.assertEqual(body["arguments"]["target"], "func_a:func_b")
+        self.assertEqual(body["arguments"]["query_type"], "call_chain")
 
 
 # ---------------------------------------------------------------------------
