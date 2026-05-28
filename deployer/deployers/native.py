@@ -170,7 +170,7 @@ class NativeDeployer:
             if self._config.get("install_cgc", True) and self._processes.get("cgc") is not None:
                 cgc_port = self._config_port("cgc_port", _CGC_DEFAULT_PORT)
                 try:
-                    resp = await client.get(f"http://localhost:{cgc_port}/status")
+                    resp = await client.get(f"http://localhost:{cgc_port}/api/v1/status")
                     healthy = 200 <= resp.status_code < 400
                     results.append({"name": "cgc", "healthy": healthy, "message": f"HTTP {resp.status_code}"})
                 except Exception as exc:
@@ -1574,7 +1574,7 @@ class NativeDeployer:
                 cgc_port = self._config_port("cgc_port", _CGC_DEFAULT_PORT)
                 try:
                     async with httpx.AsyncClient(timeout=3, trust_env=False) as client:
-                        resp = await client.get(f"http://localhost:{cgc_port}/status")
+                        resp = await client.get(f"http://localhost:{cgc_port}/api/v1/status")
                         if not (200 <= resp.status_code < 400):
                             all_ok = False
                 except Exception:

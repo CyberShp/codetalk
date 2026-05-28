@@ -40,6 +40,7 @@ class Settings(BaseSettings):
 
     # Tool process endpoints
     gitnexus_base_url: str = "http://localhost:7100"
+    cgc_base_url: str = "http://localhost:7072"
     deepwiki_api_url: str = "http://localhost:8091"
     deepwiki_ui_url: str = "http://localhost:3001"
     joern_base_url: str = "http://localhost:8090"
