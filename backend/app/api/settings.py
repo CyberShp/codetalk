@@ -131,6 +131,13 @@ async def update_llm_config(
         )
         await db.commit()
 
+        # Re-sync deepwiki if the updated config is currently active.
+        active_chat_id, active_embed_id = await _read_active_ids(db)
+        if cfg_id in (active_chat_id, active_embed_id):
+            env_changed = await _sync_deepwiki_env(db, active_chat_id, active_embed_id)
+            if env_changed:
+                _schedule_deepwiki_restart()
+
     async with db.execute("SELECT * FROM llm_configs WHERE id = ?", (cfg_id,)) as cur:
         row = await cur.fetchone()
     return _row_to_llm(row)
@@ -141,6 +148,11 @@ async def delete_llm_config(cfg_id: str, db: aiosqlite.Connection = Depends(get_
     async with db.execute("SELECT id FROM llm_configs WHERE id = ?", (cfg_id,)) as cur:
         if not await cur.fetchone():
             raise HTTPException(status_code=404, detail="LLM 配置不存在")
+
+    # Capture active IDs before deletion so we know whether to sync deepwiki.
+    active_chat_id, active_embed_id = await _read_active_ids(db)
+    was_active = cfg_id in (active_chat_id, active_embed_id)
+
     await db.execute("DELETE FROM llm_configs WHERE id = ?", (cfg_id,))
     # Clear any active model reference that pointed at the deleted config.
     await db.execute(
@@ -150,6 +162,13 @@ async def delete_llm_config(cfg_id: str, db: aiosqlite.Connection = Depends(get_
         (cfg_id,),
     )
     await db.commit()
+
+    if was_active:
+        # Re-read now-cleared active IDs and strip the dead keys from deepwiki .env.
+        new_chat_id, new_embed_id = await _read_active_ids(db)
+        env_changed = await _sync_deepwiki_env(db, new_chat_id, new_embed_id)
+        if env_changed:
+            _schedule_deepwiki_restart()
 
 
 @router.post("/llm/test")
@@ -195,6 +214,17 @@ _GENERAL_KEYS = ("proxy_mode", "proxy_url", "ssl_cert_path",
                  "active_chat_model_id", "active_embedding_model_id")
 
 _CHAT_ENV_KEYS = frozenset({"OPENAI_BASE_URL", "OPENAI_API_KEY", "LLM_MODEL"})
+
+
+async def _read_active_ids(db: aiosqlite.Connection) -> tuple[str, str]:
+    """Return (active_chat_model_id, active_embedding_model_id) from settings table."""
+    async with db.execute(
+        "SELECT key, value FROM settings "
+        "WHERE key IN ('active_chat_model_id', 'active_embedding_model_id')"
+    ) as cur:
+        rows = await cur.fetchall()
+    stored = {r["key"]: r["value"] for r in rows}
+    return stored.get("active_chat_model_id", ""), stored.get("active_embedding_model_id", "")
 _EMBED_ENV_KEYS = frozenset({"DEEPWIKI_EMBEDDING_BASE_URL", "DEEPWIKI_EMBEDDING_API_KEY", "OPENAI_EMBEDDING_MODEL"})
 
 
