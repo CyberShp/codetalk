@@ -4,6 +4,7 @@ import asyncio
 import hashlib
 import json
 import logging
+import time
 from abc import ABC, abstractmethod
 from collections.abc import AsyncIterator
 from contextvars import ContextVar
@@ -153,6 +154,7 @@ class BaseLLMClient(ABC):
         retry once (or up to ``max_retries``) before raising — providers
         occasionally drop the first delta when overloaded.
         """
+        t0 = time.monotonic()
         last_exc: BaseException | None = None
         for attempt in range(max_retries + 1):
             try:
@@ -172,6 +174,12 @@ class BaseLLMClient(ABC):
                         f"streaming produced empty/too-short output "
                         f"(chunks={chunk_count}, chars={len(content.strip())})"
                     )
+                model_name = getattr(self, "_model", "streaming")
+                await self._write_debug_snapshot(
+                    messages,
+                    LLMResponse(content=content, model=model_name, usage={}),
+                    (time.monotonic() - t0) * 1000,
+                )
                 return content
             except LLMEmptyOutputError as exc:
                 last_exc = exc
