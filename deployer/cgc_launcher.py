@@ -75,8 +75,25 @@ def ensure_cgc_installed(venv_path: Path | None = None) -> None:
     def _pip(*args: str) -> list:
         return [str(python_exe), "-m", "pip", *args]
 
-    if (venv / scripts / exe_name).exists():
-        # cgc.exe present — verify mcp is also installed (cgc 0.x omits it)
+    def _pip_healthy() -> bool:
+        """Return True only if this venv's Python can actually run pip.
+
+        Checks file existence first to avoid spawning a process for a missing
+        interpreter (e.g. pyvenv.cfg pointing to a deleted Python install).
+        """
+        if not python_exe.exists():
+            return False
+        try:
+            r = subprocess.run(_pip("--version"), capture_output=True)
+            return r.returncode == 0
+        except (FileNotFoundError, OSError):
+            return False
+
+    # Cache once — used in both the early-exit guard and the recreate guard.
+    _pip_ok = _pip_healthy()
+
+    if (venv / scripts / exe_name).exists() and _pip_ok:
+        # cgc.exe present + interpreter healthy — verify mcp is also installed
         chk = subprocess.run(_pip("show", "mcp"), capture_output=True)
         if chk.returncode == 0:
             return  # fully installed
@@ -90,7 +107,8 @@ def ensure_cgc_installed(venv_path: Path | None = None) -> None:
             )
         return
 
-    if not python_exe.exists():
+    # cgc.exe absent OR interpreter broken — (re)create venv and install all deps
+    if not python_exe.exists() or not _pip_ok:
         result = subprocess.run(
             [sys.executable, "-m", "venv", str(venv)],
             capture_output=True,

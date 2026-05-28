@@ -35,18 +35,20 @@ class EnsureCGCInstalledAlreadyPresentTests(unittest.TestCase):
             scripts_dir = venv / _scripts()
             scripts_dir.mkdir(parents=True)
             (scripts_dir / _exe("cgc")).touch()
-            (scripts_dir / _exe("pip")).touch()
+            (scripts_dir / _exe("python")).touch()  # interpreter must exist for health check
 
-            def _pip_show_ok(cmd, **kwargs):
+            def _ok(cmd, **kwargs):
                 result = unittest.mock.MagicMock()
                 result.returncode = 0
                 return result
 
-            with unittest.mock.patch("subprocess.run", side_effect=_pip_show_ok) as mock_run:
+            with unittest.mock.patch("subprocess.run", side_effect=_ok) as mock_run:
                 ensure_cgc_installed(venv)
-                # only pip show mcp check; no install calls
-                self.assertEqual(mock_run.call_count, 1)
-                self.assertIn("show", mock_run.call_args_list[0].args[0])
+                # --version health check + pip show mcp
+                self.assertEqual(mock_run.call_count, 2)
+                calls = [c.args[0] for c in mock_run.call_args_list]
+                self.assertIn("--version", calls[0])
+                self.assertIn("show", calls[1])
 
 
 class EnsureCGCInstalledPartialInstallTests(unittest.TestCase):
@@ -58,14 +60,14 @@ class EnsureCGCInstalledPartialInstallTests(unittest.TestCase):
             scripts_dir = venv / _scripts()
             scripts_dir.mkdir(parents=True)
             (scripts_dir / _exe("cgc")).touch()
-            (scripts_dir / _exe("pip")).touch()
+            (scripts_dir / _exe("python")).touch()
 
             call_log: list = []
 
             def _fake(cmd, **kwargs):
                 call_log.append(cmd)
                 result = unittest.mock.MagicMock()
-                # pip show mcp → not found (mcp missing)
+                # pip show mcp → not found; everything else (--version, install) → ok
                 result.returncode = 1 if "show" in cmd else 0
                 result.stderr = ""
                 result.stdout = ""
@@ -74,10 +76,12 @@ class EnsureCGCInstalledPartialInstallTests(unittest.TestCase):
             with unittest.mock.patch("subprocess.run", side_effect=_fake):
                 ensure_cgc_installed(venv)
 
-            self.assertEqual(len(call_log), 2)
-            self.assertIn("show", call_log[0])   # pip show mcp
-            self.assertIn("install", call_log[1])  # pip install mcp
-            self.assertIn("mcp", call_log[1])
+            # --version health check + pip show mcp + pip install mcp
+            self.assertEqual(len(call_log), 3)
+            self.assertIn("--version", call_log[0])
+            self.assertIn("show", call_log[1])
+            self.assertIn("install", call_log[2])
+            self.assertIn("mcp", call_log[2])
 
     def test_raises_when_cgc_present_mcp_install_fails(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -85,16 +89,17 @@ class EnsureCGCInstalledPartialInstallTests(unittest.TestCase):
             scripts_dir = venv / _scripts()
             scripts_dir.mkdir(parents=True)
             (scripts_dir / _exe("cgc")).touch()
-            (scripts_dir / _exe("pip")).touch()
+            (scripts_dir / _exe("python")).touch()
 
-            def _fail(cmd, **kwargs):
+            def _fake(cmd, **kwargs):
                 result = unittest.mock.MagicMock()
-                result.returncode = 1  # both pip show and pip install fail
+                # interpreter healthy, mcp absent, mcp install fails
+                result.returncode = 0 if "--version" in cmd else 1
                 result.stderr = "network error"
                 result.stdout = ""
                 return result
 
-            with unittest.mock.patch("subprocess.run", side_effect=_fail):
+            with unittest.mock.patch("subprocess.run", side_effect=_fake):
                 with self.assertRaises(CGCInstallError) as cm:
                     ensure_cgc_installed(venv)
                 self.assertIn("mcp", str(cm.exception))
@@ -134,7 +139,6 @@ class EnsureCGCInstalledFreshVenvTests(unittest.TestCase):
             scripts_dir = venv / _scripts()
             scripts_dir.mkdir(parents=True)
             (scripts_dir / _exe("python")).touch()
-            (scripts_dir / _exe("pip")).touch()
 
             def _fake(cmd, **kwargs):
                 result = unittest.mock.MagicMock()
@@ -145,8 +149,8 @@ class EnsureCGCInstalledFreshVenvTests(unittest.TestCase):
 
             with unittest.mock.patch("subprocess.run", side_effect=_fake) as mock_run:
                 ensure_cgc_installed(venv)
-                # only pip install codegraphcontext + mcp (no venv creation)
-                self.assertEqual(mock_run.call_count, 2)
+                # --version health check + pip install codegraphcontext + pip install mcp
+                self.assertEqual(mock_run.call_count, 3)
 
 
 class EnsureCGCInstalledFailureTests(unittest.TestCase):
@@ -172,16 +176,16 @@ class EnsureCGCInstalledFailureTests(unittest.TestCase):
             scripts_dir = venv / _scripts()
             scripts_dir.mkdir(parents=True)
             (scripts_dir / _exe("python")).touch()
-            (scripts_dir / _exe("pip")).touch()
 
-            def _fail(cmd, **kwargs):
+            def _fake(cmd, **kwargs):
                 result = unittest.mock.MagicMock()
-                result.returncode = 1
+                # interpreter healthy so we skip venv creation; installs fail
+                result.returncode = 0 if "--version" in cmd else 1
                 result.stderr = "pip error"
                 result.stdout = ""
                 return result
 
-            with unittest.mock.patch("subprocess.run", side_effect=_fail):
+            with unittest.mock.patch("subprocess.run", side_effect=_fake):
                 with self.assertRaises(CGCInstallError) as cm:
                     ensure_cgc_installed(venv)
                 self.assertIn("依赖安装失败", str(cm.exception))
