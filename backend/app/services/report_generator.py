@@ -172,8 +172,8 @@ class ReportGenerator:
             "limits": plan.llm_limits.model_dump(),
             "has_requirements": bool(requirements_doc),
             "has_design": bool(design_doc),
-            "requirements_doc_excerpt": (requirements_doc or "")[:3000],
-            "design_doc_excerpt": (design_doc or "")[:3000],
+            "requirements_doc_excerpt": (requirements_doc or "")[:30000],
+            "design_doc_excerpt": (design_doc or "")[:30000],
             "module_summaries": module_summaries,
         }
 
@@ -426,6 +426,16 @@ class ReportGenerator:
                 "\n### 强制要求\n本小节必须包含至少一段 Mermaid 序列图或流程图，"
                 "用 ```mermaid 代码块包裹。\n"
             )
+        # P0-003: inject user-uploaded materials so LLM can do real traceability
+        requirements_excerpt = common_context.get("requirements_doc_excerpt", "")
+        design_excerpt = common_context.get("design_doc_excerpt", "")
+        if requirements_excerpt or design_excerpt:
+            prompt += "\n## 用户上传的需求/设计材料（必须逐条对照）\n"
+            if requirements_excerpt:
+                prompt += f"### 需求文档\n{requirements_excerpt}\n"
+            if design_excerpt:
+                prompt += f"### 设计文档\n{design_excerpt}\n"
+
         prompt += (
             f"\n## 分析单元概览\n{unit_summary}\n"
             f"\n## 证据卡（最多 {card_cap} 条）\n{evidence_md}\n"
@@ -1203,12 +1213,18 @@ _SECTION_BLUEPRINTS: dict[str, list[dict]] = {
     "requirements_traceability": [
         {
             "heading": "需求 → 设计映射",
-            "instructions": "用表格将需求材料中的条目映射到设计文档中的章节，未找到来源处标注 `待验证`。",
-            "min_chars": 150,
+            "instructions": (
+                "**第一步（必须）**：从需求材料中逐条列出所有需求条目，格式：`编号 | 需求描述（一句话）`；"
+                "严禁跳过此步骤直接写映射表。\n"
+                "**第二步**：对每条需求，用以下表格做映射：\n"
+                "| 需求编号 | 需求描述 | 实现函数/模块 | 触发方式 | 可观测信号 | 测试要点 |\n"
+                "未找到实现处填 `待验证`；表格必须覆盖第一步列出的全部条目。"
+            ),
+            "min_chars": 300,
         },
         {
             "heading": "设计 → 代码映射",
-            "instructions": "用表格将设计章节映射到证据卡中的文件/符号。",
+            "instructions": "用表格将设计章节映射到证据卡中的文件/符号（设计章节 | 实现文件/函数 | 来源证据卡）。",
             "min_chars": 150,
         },
         {
