@@ -369,9 +369,12 @@ async def api_quickstart(request: Request):
             backend_port = cfg.get("backend_port", 8100)
             frontend_port = cfg.get("frontend_port", 3005)
             gitnexus_port = cfg.get("gitnexus_port", 7100)
+            cgc_port = cfg.get("cgc_port", 7072)
             ports = [backend_port, frontend_port]
             if cfg.get("install_gitnexus", True):
                 ports.append(gitnexus_port)
+            if cfg.get("install_cgc", True):
+                ports.append(cgc_port)
             conflicts = await deployer._scan_port_conflicts(ports)
             if conflicts:
                 raise HTTPException(

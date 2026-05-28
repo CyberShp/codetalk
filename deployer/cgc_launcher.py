@@ -11,7 +11,8 @@ import sys
 from pathlib import Path
 
 # D:\coworkers\ (parent of the codetalk repo)
-_COWORKERS: Path = Path(__file__).parent.parent.parent.parent
+# cgc_launcher.py lives at deployer/cgc_launcher.py → 3 levels up = D:\coworkers\
+_COWORKERS: Path = Path(__file__).parent.parent.parent
 
 CGC_DEFAULT_VENV: Path = _COWORKERS / "cgc-venv"
 CGC_DEFAULT_PORT: int = 7072

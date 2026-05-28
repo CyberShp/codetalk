@@ -1095,7 +1095,7 @@ class NativeDeployer:
             cgc_exe = self._resolve_cgc_exe()
             if cgc_exe:
                 cgc_port = self._config_port("cgc_port", _CGC_DEFAULT_PORT)
-                await self._release_ports([cgc_port], step)
+                await self._release_ports([cgc_port], step, force_takeover=force_takeover)
                 await self._start_process(
                     "cgc",
                     [cgc_exe, "api", "start", "--host", "127.0.0.1", "--port", str(cgc_port)],
