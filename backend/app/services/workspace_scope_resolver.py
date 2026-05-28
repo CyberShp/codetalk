@@ -173,6 +173,15 @@ class _GraphIndex:
             if label in ("File", "Module"):
                 self._file_nodes.append(node)
             elif label in ("Function", "Class", "Struct", "Method"):
+                # P0-004: exclude typedef function-pointer aliases that leak across modules.
+                # In C codebases (SPDK etc.), typedef'd fp types share the "Function" label
+                # but have no real implementation — they pollute unrelated module scopes.
+                props = node.get("properties", {}) or {}
+                if props.get("kind") == "typedef" or props.get("subkind") == "typedef":
+                    continue
+                name = str(props.get("name", ""))
+                if label == "Function" and (name.endswith("_cb") or name.endswith("_fn")):
+                    continue
                 self._symbol_nodes.append(node)
             elif label == "Community":
                 self._community_nodes.append(node)
@@ -193,14 +202,22 @@ class _GraphIndex:
         return not self._nodes
 
     def search_files(
-        self, keywords: list[str], limit: int, focused_module: str | None = None
+        self,
+        keywords: list[str],
+        limit: int,
+        focused_module: str | None = None,
+        path_filter: list[str] | None = None,
     ) -> list[tuple[dict, float]]:
-        return _rank_nodes_by_keywords(self._file_nodes, keywords, limit, focused_module)
+        return _rank_nodes_by_keywords(self._file_nodes, keywords, limit, focused_module, path_filter)
 
     def search_symbols(
-        self, keywords: list[str], limit: int, focused_module: str | None = None
+        self,
+        keywords: list[str],
+        limit: int,
+        focused_module: str | None = None,
+        path_filter: list[str] | None = None,
     ) -> list[tuple[dict, float]]:
-        return _rank_nodes_by_keywords(self._symbol_nodes, keywords, limit, focused_module)
+        return _rank_nodes_by_keywords(self._symbol_nodes, keywords, limit, focused_module, path_filter)
 
     def communities_for_nodes(self, node_ids: Iterable[str], limit: int) -> list[str]:
         names: list[str] = []
@@ -234,12 +251,21 @@ def _rank_nodes_by_keywords(
     keywords: list[str],
     limit: int,
     focused_module: str | None = None,
+    path_filter: list[str] | None = None,
 ) -> list[tuple[dict, float]]:
     if not keywords:
         return []
+    # P0-004: if path_hints were provided, restrict to matching nodes only
+    active_nodes: list[dict] = nodes
+    if path_filter:
+        lower_hints = [h.lower() for h in path_filter]
+        active_nodes = [
+            n for n in nodes
+            if any(hint in _node_path(n).lower() for hint in lower_hints)
+        ]
     folded = [kw.lower() if kw.isascii() else kw for kw in keywords]
     scored: list[tuple[dict, float]] = []
-    for node in nodes:
+    for node in active_nodes:
         text = _node_text(node)
         if not text:
             continue
@@ -492,6 +518,8 @@ class WorkspaceScopeResolver:
     ) -> ResolvedAnalysisObject:
         keywords = _tokenize(obj.text)
         obj_warnings: list[str] = []
+        # P0-004: path_hints narrow scope to specific path prefixes
+        path_filter: list[str] | None = list(obj.path_hints) if obj.path_hints else None
 
         if not keywords:
             obj_warnings.append("分析对象过于笼统，未提取到可检索关键字。")
@@ -507,7 +535,9 @@ class WorkspaceScopeResolver:
         seen_keys: set[tuple[str, str]] = set()
 
         if gitnexus_available:
-            for node, hits in index.search_files(keywords, limits.max_files_per_object):
+            for node, hits in index.search_files(
+                keywords, limits.max_files_per_object, path_filter=path_filter
+            ):
                 path = _node_path(node)
                 key = ("file", path)
                 if key in seen_keys:
@@ -522,7 +552,9 @@ class WorkspaceScopeResolver:
                         reason=f"GitNexus 文件命中关键字 ({hits} 次)",
                     )
                 )
-            for node, hits in index.search_symbols(keywords, limits.max_functions_per_object):
+            for node, hits in index.search_symbols(
+                keywords, limits.max_functions_per_object, path_filter=path_filter
+            ):
                 sym = node.get("properties", {}).get("name") or node.get("id")
                 key = ("symbol", sym)
                 if key in seen_keys:

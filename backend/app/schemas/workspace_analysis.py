@@ -35,6 +35,7 @@ class AnalysisObject(BaseModel):
     text: str = Field(min_length=1, max_length=2000)
     kind: Literal["topic", "module", "flow", "file", "function", "mixed"] = "topic"
     priority: Literal["high", "medium", "low"] = "medium"
+    path_hints: list[str] = Field(default_factory=list, max_length=16)
 
 
 class FocusOptions(BaseModel):
