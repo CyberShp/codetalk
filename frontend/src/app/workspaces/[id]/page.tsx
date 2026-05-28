@@ -516,6 +516,11 @@ export default function WorkspaceDetailPage() {
         setAnalyzeStatus(s.analyze_status);
         setAnalyzeProgress(s.analyze_progress);
         if (s.task_id) {
+          if (!lastAnalysisTaskIdRef.current) {
+            // First poll that returns a task_id — immediately show the new version tab
+            void loadVersions();
+            setSelectedVersionTaskId(s.task_id);
+          }
           setCurrentAnalysisTaskId(s.task_id);
           lastAnalysisTaskIdRef.current = s.task_id;
         }
@@ -560,6 +565,8 @@ export default function WorkspaceDetailPage() {
   // History then merges into the already-accumulating live state via dedup+sort.
   useEffect(() => {
     if (analyzeStatus !== "running" || !currentAnalysisTaskId || typeof window === "undefined") return;
+    // User navigated away to a historical task — don't pollute its logSteps with live events
+    if (selectedVersionTaskId !== null && selectedVersionTaskId !== currentAnalysisTaskId) return;
     let live = true;
     const taskId = currentAnalysisTaskId;
     const apiBase = process.env.NEXT_PUBLIC_API_URL ?? "http://localhost:8100";
@@ -622,7 +629,7 @@ export default function WorkspaceDetailPage() {
         .then((allSteps) => { if (allSteps.length > 0) setLogSteps(allSteps); })
         .catch(() => {});
     };
-  }, [analyzeStatus, currentAnalysisTaskId]);
+  }, [analyzeStatus, currentAnalysisTaskId, selectedVersionTaskId]);
 
   // F2: stopwatch — tick every second while running
   useEffect(() => {
@@ -635,15 +642,18 @@ export default function WorkspaceDetailPage() {
     return () => clearInterval(timer);
   }, [analyzeStatus]);
 
-  // F2: when viewing a historical version (not running), replay its steps.jsonl
+  // F2: when viewing a historical version (or a non-current task while running), replay its steps.jsonl
   useEffect(() => {
-    if (analyzeStatus === "running" || !selectedVersionTaskId) return;
+    // Only skip when user is actively watching the live log of the currently-running task
+    if (selectedVersionTaskId === currentAnalysisTaskId && analyzeStatus === "running") return;
+    if (!selectedVersionTaskId) return;
     let cancelled = false;
+    setLogSteps([]); // clear stale residue before loading new task's history
     api.tasks.steps(selectedVersionTaskId)
       .then((s) => { if (!cancelled) setLogSteps(s); })
       .catch(() => { if (!cancelled) setLogSteps([]); });
     return () => { cancelled = true; };
-  }, [analyzeStatus, selectedVersionTaskId]);
+  }, [analyzeStatus, selectedVersionTaskId, currentAnalysisTaskId]);
 
   // F2: auto-scroll the log tab to the latest entry
   useEffect(() => {
@@ -668,6 +678,7 @@ export default function WorkspaceDetailPage() {
     setLogSteps([]);
     setSelectedVersionTaskId(null);
     startAnalyzePoll();
+    void loadVersions();
   };
 
   const handleReindex = async () => {
@@ -907,11 +918,16 @@ export default function WorkspaceDetailPage() {
             <div className="flex flex-col items-center justify-center h-48 rounded-xl border border-outline-variant/30 bg-surface-container-low gap-3">
               <FileText size={36} className="text-on-surface-variant/30" />
               <p className="text-on-surface-variant text-sm">
-                {workspace.indexed === 1
-                  ? "尚未生成报告，点击「生成报告」开始分析"
-                  : workspace.indexed === 0
-                    ? "等待索引完成后可生成报告"
-                    : "索引失败，请重新索引后生成报告"}
+                {(() => {
+                  if (selectedVersionTaskId === "__legacy__") return "该版本暂无报告";
+                  if (selectedVersionTaskId) {
+                    const ver = versions.find((v) => v.task_id === selectedVersionTaskId);
+                    return `该版本暂无报告${ver ? `（任务状态：${ver.status}）` : ""}`;
+                  }
+                  if (workspace.indexed === 1) return "尚未生成报告，点击「生成报告」开始分析";
+                  if (workspace.indexed === 0) return "等待索引完成后可生成报告";
+                  return "索引失败，请重新索引后生成报告";
+                })()}
               </p>
             </div>
           ) : (
