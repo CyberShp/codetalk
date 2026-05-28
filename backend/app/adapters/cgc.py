@@ -162,7 +162,7 @@ class CGCClient:
 
     async def call_chain(self, from_func: str, to_func: str, repo_path: str | None = None) -> dict:
         """Return call-chain data from *from_func* to *to_func*."""
-        target = f"{from_func}:{to_func}"
+        target = f"{from_func}->{to_func}"
         result = await self._analyze("call_chain", target, repo_path=repo_path)
         return result if isinstance(result, dict) else {"chain": result}
 

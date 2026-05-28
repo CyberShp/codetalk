@@ -292,15 +292,15 @@ class RelationshipQueryTests(unittest.IsolatedAsyncioTestCase):
 
 
 class CallChainTests(unittest.IsolatedAsyncioTestCase):
-    async def test_combines_from_to_as_colon_target(self):
-        """call_chain(from_func, to_func) passes 'from_func:to_func' as target."""
+    async def test_combines_from_to_as_arrow_target(self):
+        """call_chain(from_func, to_func) passes 'from_func->to_func' as target (CGC arrow format)."""
         client = CGCClient(base_url="http://cgc:7072")
         chain_data = [{"from": "func_a", "to": "func_b"}]
         client._client = _FakeAsyncClient(post_responses=[_ok(chain_data)])
         result = await client.call_chain("func_a", "func_b", repo_path="/repo")
-        self.assertIsInstance(result, dict)
+        self.assertEqual(result, {"chain": chain_data})
         _, body = client._client.post_calls[0]
-        self.assertEqual(body["arguments"]["target"], "func_a:func_b")
+        self.assertEqual(body["arguments"]["target"], "func_a->func_b")
         self.assertEqual(body["arguments"]["query_type"], "call_chain")
 
 
