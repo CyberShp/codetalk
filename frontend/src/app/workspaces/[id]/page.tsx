@@ -522,6 +522,9 @@ export default function WorkspaceDetailPage() {
           setAnalyzing(false);
           await loadWorkspace();
           await loadVersions();
+          if (s.task_id) {
+            setSelectedVersionTaskId(s.task_id);
+          }
         }
       } catch {
         // ignore
