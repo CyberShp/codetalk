@@ -309,6 +309,10 @@ class CGCAdapter(BaseToolAdapter):
             job_id = await self._cgc.index_repo(request.repo_local_path)
             await self._cgc.wait_for_index(job_id)
             fut.set_result(None)
+        except asyncio.CancelledError:
+            if not fut.done():
+                fut.cancel()
+            raise
         except Exception as exc:
             if not fut.done():
                 fut.set_exception(exc)

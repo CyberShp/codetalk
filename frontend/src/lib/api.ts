@@ -222,7 +222,7 @@ export const api = {
 
   // ── 工具状态 ──
   tools: {
-    status: () => request<ToolInfo[]>("/api/tools/status"),
+    status: () => request<ToolInfo[]>("/api/tools/procs"),
 
     start: (name: string) =>
       request<{ success: boolean; message: string }>(
