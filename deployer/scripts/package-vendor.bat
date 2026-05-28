@@ -47,7 +47,14 @@ set "TK_CACHE=%LOCALAPPDATA%\tiktoken_v1"
 if not exist "!TK_CACHE!" (
     echo tiktoken cache not found at !TK_CACHE!
     echo Downloading all tiktoken encodings...
-    python -c "import tiktoken; [tiktoken.get_encoding(n) for n in tiktoken.list_encoding_names()]" 2>nul
+    python -c "import tiktoken; [tiktoken.get_encoding(n) for n in tiktoken.list_encoding_names()]"
+    if errorlevel 1 (
+        echo ERROR: tiktoken download failed. Check Python installation and network connectivity.
+        echo        Install tiktoken manually: pip install tiktoken
+        echo        Then re-run this script on a machine with internet access.
+        pause
+        exit /b 1
+    )
 )
 
 if exist "!TK_CACHE!" (

@@ -190,6 +190,21 @@ class NativeDeployer:
         dw_dir = Path(deepwiki_path)
         total = 6
 
+        # Fail-fast before any install work: DeepWiki's tokenizer requires the
+        # tiktoken BPE files to be present locally (intranet boxes can't download
+        # them). Surface a clear, actionable error rather than letting the deploy
+        # appear to succeed and then crashing at deepwiki startup.
+        if _best_tiktoken_cache() is None:
+            msg = (
+                "缺少 tiktoken BPE 缓存文件（cl100k / o200k）——"
+                "DeepWiki 在无外网环境下启动时将因无法加载 tokenizer 而崩溃。"
+                "请先在有外网的机器上运行 deployer\\scripts\\package-vendor.bat，"
+                "再将生成的 deployer\\vendor\\tiktoken_cache\\ 目录复制到本机后重试。"
+            )
+            await self._emit_sup("deepwiki_validate", "error", msg, 1, total)
+            self._stopped = True
+            raise RuntimeError("tiktoken BPE cache missing — run package-vendor.bat first")
+
         await self._emit_sup("deepwiki_validate", "running", "验证 DeepWiki-Open 路径...", 1, total)
         if not dw_dir.exists():
             await self._emit_sup("deepwiki_validate", "running", f"目录不存在，正在克隆 DeepWiki-Open 到 {deepwiki_path}...", 1, total)
@@ -711,6 +726,16 @@ class NativeDeployer:
         tiktoken_cache = _best_tiktoken_cache()
         if tiktoken_cache is not None:
             env_lines.append(f"TIKTOKEN_CACHE_DIR={tiktoken_cache.resolve()}")
+        elif deepwiki_path:
+            # Emit a visible warning — silent skip caused the bug where deployer
+            # said "配置完成" but deepwiki crashed immediately on startup.
+            await self._emit(
+                "generate_config", "running",
+                "⚠️ 未找到 tiktoken BPE 缓存，TIKTOKEN_CACHE_DIR 未写入。"
+                "DeepWiki 在无外网环境下将因无法加载 tokenizer 而崩溃。"
+                "请运行 deployer\\scripts\\package-vendor.bat 补充缓存后重新部署。",
+                step,
+            )
 
         backend_env = PROJECT_ROOT / "backend" / ".env"
         known_keys = {ln.split("=", 1)[0] for ln in env_lines if "=" in ln}
