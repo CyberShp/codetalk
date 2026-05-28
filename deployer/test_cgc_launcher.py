@@ -4,6 +4,7 @@ Covers:
 - cgc.exe + mcp both present → idempotent, only pip show called
 - cgc.exe present, mcp missing → installs only mcp
 - cgc.exe present, mcp missing, pip install fails → CGCInstallError
+- cgc.exe present but interpreter broken → recreates venv + installs both packages
 - venv absent → creates venv + installs codegraphcontext + mcp
 - venv creation fails → CGCInstallError
 - pip install fails → CGCInstallError
@@ -103,6 +104,44 @@ class EnsureCGCInstalledPartialInstallTests(unittest.TestCase):
                 with self.assertRaises(CGCInstallError) as cm:
                     ensure_cgc_installed(venv)
                 self.assertIn("mcp", str(cm.exception))
+
+    def test_recreates_venv_when_cgc_exists_but_interpreter_broken(self) -> None:
+        """Regression: cgc.exe + python.exe present but python -m pip --version fails.
+
+        This mirrors the real cgc-venv state where pyvenv.cfg points to a deleted
+        Python install.  _pip_healthy() must return False, triggering full venv
+        recreation rather than a pip show/install attempt through the broken exe.
+        """
+        with tempfile.TemporaryDirectory() as tmp:
+            venv = Path(tmp) / "cgc-venv"
+            scripts_dir = venv / _scripts()
+            scripts_dir.mkdir(parents=True)
+            (scripts_dir / _exe("cgc")).touch()
+            (scripts_dir / _exe("python")).touch()
+
+            call_log: list = []
+
+            def _fake(cmd, **kwargs):
+                call_log.append(cmd)
+                result = unittest.mock.MagicMock()
+                # python -m pip --version fails (broken interpreter)
+                result.returncode = 1 if "--version" in cmd else 0
+                result.stderr = "No Python at ..."
+                result.stdout = ""
+                return result
+
+            with unittest.mock.patch("subprocess.run", side_effect=_fake):
+                ensure_cgc_installed(venv)
+
+            # health-check (fails) → venv recreate → install codegraphcontext → install mcp
+            self.assertEqual(len(call_log), 4)
+            self.assertIn("--version", call_log[0])
+            self.assertIn("venv", call_log[1])
+            self.assertIn("codegraphcontext", call_log[2])
+            self.assertIn("mcp", call_log[3])
+            # Must NOT have tried pip show/install through the broken interpreter
+            for cmd in call_log:
+                self.assertNotIn("show", cmd)
 
 
 class EnsureCGCInstalledFreshVenvTests(unittest.TestCase):
