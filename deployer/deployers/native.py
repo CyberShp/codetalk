@@ -660,17 +660,17 @@ class NativeDeployer:
     # Step 4: Install GitNexus
     # ------------------------------------------------------------------
 
-    def _resolve_cgc_exe(self) -> str | None:
-        """Resolve the cgc executable path using cgc_launcher, or None if unavailable."""
+    def _resolve_cgc_cmd(self) -> list[str] | None:
+        """Resolve the cgc startup command, or None if no usable venv is found."""
         if _cgc is not None:
-            return _cgc.resolve_cgc_exe(self._config)
+            return _cgc.resolve_cgc_cmd(self._config)
         # Fallback: probe the default venv location directly.
         scripts = "Scripts" if sys.platform == "win32" else "bin"
-        exe_name = "cgc.exe" if sys.platform == "win32" else "cgc"
+        python_name = "python.exe" if sys.platform == "win32" else "python"
         for venv_name in ("cgc-venv", "cgc-venv-throwaway"):
-            exe = PROJECT_ROOT.parent / venv_name / scripts / exe_name
-            if exe.exists():
-                return str(exe)
+            python_exe = PROJECT_ROOT.parent / venv_name / scripts / python_name
+            if python_exe.exists():
+                return [str(python_exe), "-m", "codegraphcontext"]
         return None
 
     def _cgc_cwd(self) -> str:
@@ -1112,13 +1112,13 @@ class NativeDeployer:
 
         if cfg.get("install_cgc", True):
             await self._ensure_cgc(step)
-            cgc_exe = self._resolve_cgc_exe()
-            if cgc_exe:
+            cgc_cmd = self._resolve_cgc_cmd()
+            if cgc_cmd:
                 cgc_port = self._config_port("cgc_port", _CGC_DEFAULT_PORT)
                 await self._release_ports([cgc_port], step, force_takeover=force_takeover)
                 await self._start_process(
                     "cgc",
-                    [cgc_exe, "api", "start", "--host", "127.0.0.1", "--port", str(cgc_port)],
+                    [*cgc_cmd, "api", "start", "--host", "127.0.0.1", "--port", str(cgc_port)],
                     cwd=self._cgc_cwd(),
                     step_name="start_services",
                     step_index=step,
@@ -1126,8 +1126,8 @@ class NativeDeployer:
             else:
                 await self._emit(
                     "start_services", "running",
-                    "⚠️ cgc 可执行文件未找到（安装尝试后仍缺失或路径未配置），跳过 CGC 启动。"
-                    "请确认 D:\\coworkers\\cgc-venv\\Scripts\\cgc.exe 存在，"
+                    "⚠️ CGC Python 解释器未找到（安装尝试后仍缺失或路径未配置），跳过 CGC 启动。"
+                    "请确认 cgc-venv 存在且包含有效的 python.exe，"
                     "或在部署配置中设置 cgcVenvPath。",
                     step,
                 )
@@ -1457,10 +1457,10 @@ class NativeDeployer:
                 "env_extra": None,
             }
         if name == "cgc":
-            cgc_exe = self._resolve_cgc_exe()
-            if cgc_exe:
+            cgc_cmd = self._resolve_cgc_cmd()
+            if cgc_cmd:
                 return {
-                    "cmd": [cgc_exe, "api", "start", "--host", "127.0.0.1", "--port", str(self._config_port("cgc_port", _CGC_DEFAULT_PORT))],
+                    "cmd": [*cgc_cmd, "api", "start", "--host", "127.0.0.1", "--port", str(self._config_port("cgc_port", _CGC_DEFAULT_PORT))],
                     "cwd": self._cgc_cwd(),
                     "env_extra": None,
                 }
