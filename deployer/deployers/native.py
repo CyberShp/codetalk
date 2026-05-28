@@ -1111,10 +1111,8 @@ class NativeDeployer:
             )
 
         if cfg.get("install_cgc", True):
+            await self._ensure_cgc(step)
             cgc_exe = self._resolve_cgc_exe()
-            if not cgc_exe:
-                await self._ensure_cgc(step)
-                cgc_exe = self._resolve_cgc_exe()
             if cgc_exe:
                 cgc_port = self._config_port("cgc_port", _CGC_DEFAULT_PORT)
                 await self._release_ports([cgc_port], step, force_takeover=force_takeover)

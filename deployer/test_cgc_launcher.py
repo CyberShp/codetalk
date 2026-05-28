@@ -1,7 +1,9 @@
 """Tests for cgc_launcher.ensure_cgc_installed.
 
-Covers three paths:
-- cgc.exe already present → idempotent, no subprocess calls
+Covers:
+- cgc.exe + mcp both present → idempotent, only pip show called
+- cgc.exe present, mcp missing → installs only mcp
+- cgc.exe present, mcp missing, pip install fails → CGCInstallError
 - venv absent → creates venv + installs codegraphcontext + mcp
 - venv creation fails → CGCInstallError
 - pip install fails → CGCInstallError
@@ -27,16 +29,75 @@ def _exe(name: str) -> str:
 
 
 class EnsureCGCInstalledAlreadyPresentTests(unittest.TestCase):
-    def test_returns_immediately_when_cgc_exe_exists(self) -> None:
+    def test_returns_immediately_when_cgc_and_mcp_present(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             venv = Path(tmp) / "cgc-venv"
             scripts_dir = venv / _scripts()
             scripts_dir.mkdir(parents=True)
             (scripts_dir / _exe("cgc")).touch()
+            (scripts_dir / _exe("pip")).touch()
 
-            with unittest.mock.patch("subprocess.run") as mock_run:
+            def _pip_show_ok(cmd, **kwargs):
+                result = unittest.mock.MagicMock()
+                result.returncode = 0
+                return result
+
+            with unittest.mock.patch("subprocess.run", side_effect=_pip_show_ok) as mock_run:
                 ensure_cgc_installed(venv)
-                mock_run.assert_not_called()
+                # only pip show mcp check; no install calls
+                self.assertEqual(mock_run.call_count, 1)
+                self.assertIn("show", mock_run.call_args_list[0].args[0])
+
+
+class EnsureCGCInstalledPartialInstallTests(unittest.TestCase):
+    """cgc.exe exists but mcp is missing — should install only mcp."""
+
+    def test_installs_only_mcp_when_cgc_present_but_mcp_missing(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            venv = Path(tmp) / "cgc-venv"
+            scripts_dir = venv / _scripts()
+            scripts_dir.mkdir(parents=True)
+            (scripts_dir / _exe("cgc")).touch()
+            (scripts_dir / _exe("pip")).touch()
+
+            call_log: list = []
+
+            def _fake(cmd, **kwargs):
+                call_log.append(cmd)
+                result = unittest.mock.MagicMock()
+                # pip show mcp → not found (mcp missing)
+                result.returncode = 1 if "show" in cmd else 0
+                result.stderr = ""
+                result.stdout = ""
+                return result
+
+            with unittest.mock.patch("subprocess.run", side_effect=_fake):
+                ensure_cgc_installed(venv)
+
+            self.assertEqual(len(call_log), 2)
+            self.assertIn("show", call_log[0])   # pip show mcp
+            self.assertIn("install", call_log[1])  # pip install mcp
+            self.assertIn("mcp", call_log[1])
+
+    def test_raises_when_cgc_present_mcp_install_fails(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            venv = Path(tmp) / "cgc-venv"
+            scripts_dir = venv / _scripts()
+            scripts_dir.mkdir(parents=True)
+            (scripts_dir / _exe("cgc")).touch()
+            (scripts_dir / _exe("pip")).touch()
+
+            def _fail(cmd, **kwargs):
+                result = unittest.mock.MagicMock()
+                result.returncode = 1  # both pip show and pip install fail
+                result.stderr = "network error"
+                result.stdout = ""
+                return result
+
+            with unittest.mock.patch("subprocess.run", side_effect=_fail):
+                with self.assertRaises(CGCInstallError) as cm:
+                    ensure_cgc_installed(venv)
+                self.assertIn("mcp", str(cm.exception))
 
 
 class EnsureCGCInstalledFreshVenvTests(unittest.TestCase):

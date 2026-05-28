@@ -69,8 +69,22 @@ def ensure_cgc_installed(venv_path: Path | None = None) -> None:
     exe_name = "cgc.exe" if sys.platform == "win32" else "cgc"
     pip_name = "pip.exe" if sys.platform == "win32" else "pip"
 
+    pip_exe = str(venv / scripts / pip_name)
+
     if (venv / scripts / exe_name).exists():
-        return  # already installed
+        # cgc.exe present — verify mcp is also installed (cgc 0.x omits it)
+        chk = subprocess.run([pip_exe, "show", "mcp"], capture_output=True)
+        if chk.returncode == 0:
+            return  # fully installed
+        # mcp missing — install it without reinstalling codegraphcontext
+        result = subprocess.run([pip_exe, "install", "mcp"], capture_output=True, text=True)
+        if result.returncode != 0:
+            detail = (result.stderr or result.stdout or "unknown error").strip()
+            raise CGCInstallError(
+                f"CGC 依赖安装失败 (mcp): {detail}\n"
+                f"请手动运行: {pip_exe} install mcp"
+            )
+        return
 
     python_exe = venv / scripts / ("python.exe" if sys.platform == "win32" else "python")
     if not python_exe.exists():
@@ -86,7 +100,6 @@ def ensure_cgc_installed(venv_path: Path | None = None) -> None:
                 f"请手动运行: python -m venv {venv}"
             )
 
-    pip_exe = str(venv / scripts / pip_name)
     for pkg in ("codegraphcontext", "mcp"):
         result = subprocess.run(
             [pip_exe, "install", pkg],
