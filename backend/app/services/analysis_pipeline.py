@@ -469,75 +469,95 @@ class AnalysisPipeline:
         )
 
         base_url = settings.gitnexus_base_url
+
+        # P0-001: skip POST /api/analyze if GitNexusAdapter.prepare() already indexed this path,
+        # avoiding redundant re-indexing (3-15 minutes) on every analyze call.
+        repo_name: str | None = None
+        try:
+            from app.adapters.gitnexus import GitNexusAdapter  # lazy import, no circular risk
+            cached = GitNexusAdapter._indexed_repo_by_path.get((base_url, tool_repo_path))
+            if cached:
+                repo_name = cached
+                logger.info(
+                    "GitNexus: skipping re-analyze, adapter already indexed as %s", repo_name
+                )
+        except Exception as exc:
+            logger.debug("GitNexus adapter cache check failed (non-fatal): %s", exc)
+
         async with httpx.AsyncClient(
             base_url=base_url,
             timeout=httpx.Timeout(1800, connect=10),
             trust_env=False,
         ) as client:
-            await AnalysisPipeline._log_step(
-                self._task_id, 10, "GitNexus 开始索引代码库...",
-                event_type="api_call", phase="data_collection",
-                target={"path": tool_repo_path},
-                detail={"api": "POST /api/analyze", "endpoint": base_url},
-            )
-            resp = await client.post("/api/analyze", json={"path": tool_repo_path})
+            if repo_name is None:
+                await AnalysisPipeline._log_step(
+                    self._task_id, 10, "GitNexus 开始索引代码库...",
+                    event_type="api_call", phase="data_collection",
+                    target={"path": tool_repo_path},
+                    detail={"api": "POST /api/analyze", "endpoint": base_url},
+                )
+                resp = await client.post("/api/analyze", json={"path": tool_repo_path})
 
-            job_id: str | None = None
-            repo_name: str | None = None
-            if resp.status_code == 409:
-                body = resp.json() if resp.content else {}
-                if body.get("jobId"):
-                    job_id = body["jobId"]
-                    logger.info("GitNexus 409 — joining existing job %s", job_id)
-                else:
-                    repo_name = body.get("repoName") or body.get("repo")
-                    if repo_name:
-                        logger.info("GitNexus 409 — repo already indexed as %s", repo_name)
+                job_id: str | None = None
+                if resp.status_code == 409:
+                    body = resp.json() if resp.content else {}
+                    if body.get("jobId"):
+                        job_id = body["jobId"]
+                        logger.info("GitNexus 409 — joining existing job %s", job_id)
                     else:
-                        raise RuntimeError(
-                            "GitNexus 正在分析一个包含此路径的父项目，请等待该任务完成后再试"
-                        )
-            elif resp.is_error:
-                resp.raise_for_status()
-            else:
-                job = resp.json()
-                job_id = job.get("jobId", "")
-                logger.info("GitNexus indexing started: %s", job_id)
-
-            if job_id is not None:
-                # Poll for completion (30 min max)
-                for _poll_idx in range(900):
-                    await asyncio.sleep(2)
-                    status_resp = await client.get(f"/api/analyze/{job_id}")
-                    status = status_resp.json()
-                    if status["status"] == "complete":
-                        repo_name = status.get("repoName", "") or Path(tool_repo_path).name
-                        if not status.get("repoName"):
-                            logger.warning(
-                                "GitNexus status missing repoName; falling back to dir name: %s",
-                                repo_name,
+                        repo_name = body.get("repoName") or body.get("repo")
+                        if repo_name:
+                            logger.info("GitNexus 409 — repo already indexed as %s", repo_name)
+                        else:
+                            raise RuntimeError(
+                                "GitNexus 正在分析一个包含此路径的父项目，请等待该任务完成后再试"
                             )
-                        await AnalysisPipeline._log_step(
-                            self._task_id, 15, "GitNexus 索引完成",
-                            event_type="api_done", phase="data_collection",
-                            detail={"job_id": job_id, "repo": repo_name},
-                        )
-                        break
-                    if status["status"] == "failed":
-                        raise RuntimeError(
-                            "GitNexus indexing failed: "
-                            + status.get("error", "unknown")
-                        )
-                    if _poll_idx % 5 == 0:
-                        elapsed_s = (_poll_idx + 1) * 2
-                        await AnalysisPipeline._log_step(
-                            self._task_id, 12,
-                            f"GitNexus 索引中... 已等待 {elapsed_s}s",
-                            event_type="api_poll", phase="data_collection",
-                            detail={"job_id": job_id, "elapsed_s": elapsed_s},
-                        )
+                elif resp.is_error:
+                    resp.raise_for_status()
                 else:
-                    raise RuntimeError("GitNexus indexing timed out")
+                    job = resp.json()
+                    job_id = job.get("jobId", "")
+                    logger.info("GitNexus indexing started: %s", job_id)
+
+                if job_id is not None:
+                    # Poll for completion (30 min max)
+                    for _poll_idx in range(900):
+                        await asyncio.sleep(2)
+                        status_resp = await client.get(f"/api/analyze/{job_id}")
+                        status = status_resp.json()
+                        # P0-002: status=complete but phase=retrying means worker crashed;
+                        # keep polling until phase clears.
+                        _raw_prog = status.get("progress")
+                        _prog_dict = _raw_prog if isinstance(_raw_prog, dict) else {}
+                        _phase = str(_prog_dict.get("phase") or "")
+                        if status["status"] == "complete" and _phase not in ("retrying", "error"):
+                            repo_name = status.get("repoName", "") or Path(tool_repo_path).name
+                            if not status.get("repoName"):
+                                logger.warning(
+                                    "GitNexus status missing repoName; falling back to dir name: %s",
+                                    repo_name,
+                                )
+                            await AnalysisPipeline._log_step(
+                                self._task_id, 15, "GitNexus 索引完成",
+                                event_type="api_done", phase="data_collection",
+                                detail={"job_id": job_id, "repo": repo_name},
+                            )
+                            break
+                        if status["status"] == "failed":
+                            raise RuntimeError(
+                                "GitNexus indexing failed: "
+                                + status.get("error", "unknown")
+                            )
+                        if _poll_idx % 5 == 0:
+                            elapsed_s = (_poll_idx + 1) * 2
+                            await AnalysisPipeline._log_step(
+                                self._task_id, 12,
+                                f"GitNexus 索引中... 已等待 {elapsed_s}s",
+                                event_type="api_poll", phase="data_collection",
+                                detail={"job_id": job_id, "elapsed_s": elapsed_s},
+                            )
+                    else:
+                        raise RuntimeError("GitNexus indexing timed out")
 
             # repo_name is set from 409 body or poll status
             repo_name = repo_name or Path(tool_repo_path).name

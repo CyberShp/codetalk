@@ -209,7 +209,12 @@ class GitNexusAdapter(BaseToolAdapter):
                         pct = min(99, int(elapsed / _POLL_TIMEOUT * 100))
                     await on_progress(pct)
 
-                if status["status"] == "complete":
+                # P0-002: status=complete but phase=retrying means worker crashed and is
+                # still recovering; treat it as in-progress and keep polling.
+                _raw_progress = status.get("progress")
+                _progress_dict = _raw_progress if isinstance(_raw_progress, dict) else {}
+                phase = str(_progress_dict.get("phase") or "")
+                if status["status"] == "complete" and phase not in ("retrying", "error"):
                     self._repo_name = status.get("repoName", "") or Path(tool_repo_path).name
                     if not status.get("repoName"):
                         logger.warning(
