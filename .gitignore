@@ -27,8 +27,11 @@ Thumbs.db
 .vscode/
 *.swp
 
-# Docker volumes
-data/
+# Docker volumes — except the bundled tiktoken BPE cache (needed for offline deepwiki).
+# Use data/* (not data/) so the negation rules below can override specific subdirs.
+data/*
+!data/tiktoken_cache/
+!data/tiktoken_cache/**
 .repos/
 
 # Agent config (local per-developer)
