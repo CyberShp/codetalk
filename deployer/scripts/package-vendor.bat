@@ -60,9 +60,20 @@ if not exist "!TK_CACHE!" (
 if exist "!TK_CACHE!" (
     if exist "vendor\tiktoken_cache" rmdir /s /q "vendor\tiktoken_cache"
     xcopy "!TK_CACHE!" "vendor\tiktoken_cache\" /E /I /Q /Y >nul
+    REM Verify the copy actually produced BPE files — an empty cache is useless.
+    dir "vendor\tiktoken_cache\*" /b /a:-d 2>nul >nul
+    if errorlevel 1 (
+        echo ERROR: vendor\tiktoken_cache is empty after copy. Source may have no BPE files.
+        echo        Delete %LOCALAPPDATA%\tiktoken_v1 and re-run to force a fresh download.
+        pause
+        exit /b 1
+    )
     echo tiktoken cache packaged: vendor\tiktoken_cache\
 ) else (
-    echo WARNING: tiktoken cache not available. DeepWiki may fail on intranet.
+    echo ERROR: tiktoken cache not available at !TK_CACHE!. Cannot create vendor bundle.
+    echo        Ensure Python ^(with tiktoken installed^) and internet access, then re-run.
+    pause
+    exit /b 1
 )
 
 echo.

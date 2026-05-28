@@ -552,10 +552,11 @@ export default function WorkspaceDetailPage() {
   // History then merges into the already-accumulating live state via dedup+sort.
   useEffect(() => {
     if (analyzeStatus !== "running" || !currentAnalysisTaskId || typeof window === "undefined") return;
-    let cancelled = false;
+    let live = true;
+    const taskId = currentAnalysisTaskId;
     const apiBase = process.env.NEXT_PUBLIC_API_URL ?? "http://localhost:8100";
 
-    const ws = new WebSocket(apiBase.replace(/^http/, "ws") + `/ws/tasks/${currentAnalysisTaskId}/logs`);
+    const ws = new WebSocket(apiBase.replace(/^http/, "ws") + `/ws/tasks/${taskId}/logs`);
     wsLogRef.current = ws;
     ws.onmessage = (evt) => {
       try {
@@ -575,12 +576,21 @@ export default function WorkspaceDetailPage() {
       } catch { /* ignore malformed WS messages */ }
     };
     ws.onerror = () => ws.close();
+    // onclose fires for both network drop (onerror→close) and the intentional
+    // close in the cleanup below.  live is set false before that close(), so
+    // only an unexpected mid-run drop reaches the backfill here.
+    ws.onclose = () => {
+      if (!live) return;
+      api.tasks.steps(taskId)
+        .then((allSteps) => { if (live && allSteps.length > 0) setLogSteps(allSteps); })
+        .catch(() => {});
+    };
 
     // After WS is registered, backfill from steps.jsonl and merge with any
     // live events already received while the fetch was in flight.
-    api.tasks.steps(currentAnalysisTaskId)
+    api.tasks.steps(taskId)
       .then((history) => {
-        if (cancelled || history.length === 0) return;
+        if (!live || history.length === 0) return;
         const historyTs = new Date(history[history.length - 1].timestamp).getTime();
         // Don't overwrite a more-recent live timestamp that arrived while history was loading
         lastLogStepTimeRef.current = Math.max(lastLogStepTimeRef.current ?? 0, historyTs);
@@ -595,12 +605,12 @@ export default function WorkspaceDetailPage() {
       .catch(() => { /* history unavailable; live events continue unaffected */ });
 
     return () => {
-      cancelled = true;
+      live = false; // set before ws.close() so onclose skips its backfill
       wsLogRef.current?.close();
       wsLogRef.current = null;
-      // Final backfill: replace logSteps with the authoritative server history
-      // so the log remains complete even if the WS connection dropped mid-run.
-      api.tasks.steps(currentAnalysisTaskId)
+      // Explicit final backfill for the analysis-completion case (analyzeStatus
+      // left "running"), where ws.onclose was skipped because live was already false.
+      api.tasks.steps(taskId)
         .then((allSteps) => { if (allSteps.length > 0) setLogSteps(allSteps); })
         .catch(() => {});
     };

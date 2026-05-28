@@ -194,7 +194,20 @@ class NativeDeployer:
         # tiktoken BPE files to be present locally (intranet boxes can't download
         # them). Surface a clear, actionable error rather than letting the deploy
         # appear to succeed and then crashing at deepwiki startup.
-        if _best_tiktoken_cache() is None:
+        #
+        # Accept either the standard candidate paths OR the deepwiki-local
+        # tiktoken/ dir that _start_deepwiki_processes() stages into — the
+        # launcher runs with cwd=dw_dir and loads tiktoken relative to that,
+        # so an existing working DeepWiki install already has BPE files there.
+        _tiktoken_staged = dw_dir / "tiktoken"
+        _has_tiktoken = _best_tiktoken_cache() is not None or (
+            _tiktoken_staged.is_dir()
+            and any(
+                p for p in _tiktoken_staged.iterdir()
+                if p.is_file() and not p.name.startswith(".")
+            )
+        )
+        if not _has_tiktoken:
             msg = (
                 "缺少 tiktoken BPE 缓存文件（cl100k / o200k）——"
                 "DeepWiki 在无外网环境下启动时将因无法加载 tokenizer 而崩溃。"
