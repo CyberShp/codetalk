@@ -655,9 +655,11 @@ export default function WorkspaceDetailPage() {
   useEffect(() => {
     // Only skip when user is actively watching the live log of the currently-running task
     if (selectedVersionTaskId === currentAnalysisTaskId && analyzeStatus === "running") return;
-    if (!selectedVersionTaskId || selectedVersionTaskId === "__legacy__") return;
+    if (!selectedVersionTaskId || selectedVersionTaskId === "__legacy__") {
+      setLogSteps([]);
+      return;
+    }
     let cancelled = false;
-    setLogSteps([]); // clear stale residue before loading new task's history
     api.tasks.steps(selectedVersionTaskId)
       .then((s) => { if (!cancelled) setLogSteps(s); })
       .catch(() => { if (!cancelled) setLogSteps([]); });
