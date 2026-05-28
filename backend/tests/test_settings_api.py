@@ -408,3 +408,116 @@ async def test_update_general_settings_no_deepwiki_path_does_not_fail(client, mo
         },
     )
     assert resp.status_code == 200
+
+
+_EMBED_LLM_SEPARATE = {
+    "name": "embed-separate",
+    "api_type": "openai_compat",
+    "base_url": "http://embed.internal/v1",
+    "api_key": "sk-embed-key",
+    "model": "bge-large-v3",
+    "is_chat_model": False,
+    "is_embedding_model": True,
+}
+
+
+async def test_update_general_settings_syncs_deepwiki_embedding_full_config(
+    client, tmp_path, monkeypatch
+):
+    """Saving active_embedding_model_id writes base_url, api_key, and model to deepwiki .env."""
+    from app.config import settings as app_settings
+    monkeypatch.setattr(app_settings, "deepwiki_path", str(tmp_path))
+
+    embed_resp = await client.post("/api/settings/llm", json=_EMBED_LLM_SEPARATE)
+    embed_id = embed_resp.json()["id"]
+
+    await client.put(
+        "/api/settings/general",
+        json={
+            "proxy_mode": "none",
+            "proxy_url": "",
+            "ssl_cert_path": "",
+            "active_chat_model_id": "",
+            "active_embedding_model_id": embed_id,
+        },
+    )
+
+    content = (tmp_path / ".env").read_text(encoding="utf-8")
+    assert "DEEPWIKI_EMBEDDING_BASE_URL=http://embed.internal/v1" in content
+    assert "DEEPWIKI_EMBEDDING_API_KEY=sk-embed-key" in content
+    assert "OPENAI_EMBEDDING_MODEL=bge-large-v3" in content
+
+
+async def test_update_general_settings_clears_deepwiki_chat_env(client, tmp_path, monkeypatch):
+    """Setting active_chat_model_id to empty removes chat env keys from deepwiki .env."""
+    from app.config import settings as app_settings
+    monkeypatch.setattr(app_settings, "deepwiki_path", str(tmp_path))
+
+    chat_resp = await client.post("/api/settings/llm", json=_CHAT_LLM)
+    chat_id = chat_resp.json()["id"]
+
+    await client.put(
+        "/api/settings/general",
+        json={"proxy_mode": "none", "proxy_url": "", "ssl_cert_path": "",
+              "active_chat_model_id": chat_id, "active_embedding_model_id": ""},
+    )
+    content = (tmp_path / ".env").read_text(encoding="utf-8")
+    assert "OPENAI_BASE_URL=" in content  # precondition: was written
+
+    await client.put(
+        "/api/settings/general",
+        json={"proxy_mode": "none", "proxy_url": "", "ssl_cert_path": "",
+              "active_chat_model_id": "", "active_embedding_model_id": ""},
+    )
+    content = (tmp_path / ".env").read_text(encoding="utf-8")
+    assert "OPENAI_BASE_URL=" not in content
+    assert "OPENAI_API_KEY=" not in content
+    assert "LLM_MODEL=" not in content
+
+
+async def test_update_general_settings_clears_deepwiki_embedding_env(client, tmp_path, monkeypatch):
+    """Setting active_embedding_model_id to empty removes embedding env keys from deepwiki .env."""
+    from app.config import settings as app_settings
+    monkeypatch.setattr(app_settings, "deepwiki_path", str(tmp_path))
+
+    embed_resp = await client.post("/api/settings/llm", json=_EMBED_LLM_SEPARATE)
+    embed_id = embed_resp.json()["id"]
+
+    await client.put(
+        "/api/settings/general",
+        json={"proxy_mode": "none", "proxy_url": "", "ssl_cert_path": "",
+              "active_chat_model_id": "", "active_embedding_model_id": embed_id},
+    )
+    content = (tmp_path / ".env").read_text(encoding="utf-8")
+    assert "OPENAI_EMBEDDING_MODEL=" in content  # precondition: was written
+
+    await client.put(
+        "/api/settings/general",
+        json={"proxy_mode": "none", "proxy_url": "", "ssl_cert_path": "",
+              "active_chat_model_id": "", "active_embedding_model_id": ""},
+    )
+    content = (tmp_path / ".env").read_text(encoding="utf-8")
+    assert "DEEPWIKI_EMBEDDING_BASE_URL=" not in content
+    assert "DEEPWIKI_EMBEDDING_API_KEY=" not in content
+    assert "OPENAI_EMBEDDING_MODEL=" not in content
+
+
+async def test_update_general_settings_triggers_deepwiki_restart(client, tmp_path, monkeypatch):
+    """_schedule_deepwiki_restart is called when deepwiki .env is successfully updated."""
+    from app.config import settings as app_settings
+    monkeypatch.setattr(app_settings, "deepwiki_path", str(tmp_path))
+
+    import app.api.settings as settings_mod
+    calls: list[bool] = []
+    monkeypatch.setattr(settings_mod, "_schedule_deepwiki_restart", lambda: calls.append(True))
+
+    chat_resp = await client.post("/api/settings/llm", json=_CHAT_LLM)
+    chat_id = chat_resp.json()["id"]
+
+    await client.put(
+        "/api/settings/general",
+        json={"proxy_mode": "none", "proxy_url": "", "ssl_cert_path": "",
+              "active_chat_model_id": chat_id, "active_embedding_model_id": ""},
+    )
+
+    assert calls == [True]

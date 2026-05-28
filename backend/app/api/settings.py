@@ -1,3 +1,4 @@
+import asyncio
 import logging
 import uuid
 from datetime import datetime, timezone
@@ -193,22 +194,27 @@ async def test_llm_connection(
 _GENERAL_KEYS = ("proxy_mode", "proxy_url", "ssl_cert_path",
                  "active_chat_model_id", "active_embedding_model_id")
 
+_CHAT_ENV_KEYS = frozenset({"OPENAI_BASE_URL", "OPENAI_API_KEY", "LLM_MODEL"})
+_EMBED_ENV_KEYS = frozenset({"DEEPWIKI_EMBEDDING_BASE_URL", "DEEPWIKI_EMBEDDING_API_KEY", "OPENAI_EMBEDDING_MODEL"})
+
 
 async def _sync_deepwiki_env(
     db: aiosqlite.Connection,
     active_chat_id: str,
     active_embedding_id: str,
-) -> None:
+) -> bool:
     """Write active LLM model config into deepwiki's .env for runtime use.
 
+    Returns True if the .env file was written; False if skipped.
     Runs silently: errors are logged but never propagate to the caller so
     a missing deepwiki path or DB row never breaks the settings save.
     """
     deepwiki_path = app_settings.deepwiki_path
     if not deepwiki_path:
-        return
+        return False
 
     env_updates: dict[str, str] = {}
+    env_removals: set[str] = set()
 
     if active_chat_id:
         async with db.execute(
@@ -223,41 +229,67 @@ async def _sync_deepwiki_env(
                 env_updates["OPENAI_API_KEY"] = row["api_key"]
             if row["model"]:
                 env_updates["LLM_MODEL"] = row["model"]
+    else:
+        env_removals.update(_CHAT_ENV_KEYS)
 
     if active_embedding_id:
         async with db.execute(
-            "SELECT model FROM llm_configs WHERE id = ?",
+            "SELECT base_url, api_key, model FROM llm_configs WHERE id = ?",
             (active_embedding_id,),
         ) as cur:
             row = await cur.fetchone()
-        if row and row["model"]:
-            env_updates["OPENAI_EMBEDDING_MODEL"] = row["model"]
+        if row:
+            if row["base_url"]:
+                env_updates["DEEPWIKI_EMBEDDING_BASE_URL"] = row["base_url"]
+            if row["api_key"]:
+                env_updates["DEEPWIKI_EMBEDDING_API_KEY"] = row["api_key"]
+            if row["model"]:
+                env_updates["OPENAI_EMBEDDING_MODEL"] = row["model"]
+    else:
+        env_removals.update(_EMBED_ENV_KEYS)
 
-    if not env_updates:
-        return
+    if not env_updates and not env_removals:
+        return False
 
     dot_env = Path(deepwiki_path) / ".env"
+    # Nothing to remove from a file that doesn't exist yet.
+    if not env_updates and not dot_env.exists():
+        return False
+
+    managed_keys = env_removals | set(env_updates.keys())
     try:
         existing: list[str] = (
             dot_env.read_text(encoding="utf-8").splitlines()
             if dot_env.exists()
             else []
         )
-        updated_keys = set(env_updates.keys())
         kept = [
             ln for ln in existing
             if not ln.strip()
             or ln.startswith("#")
-            or ln.split("=", 1)[0].strip() not in updated_keys
+            or ln.split("=", 1)[0].strip() not in managed_keys
         ]
         new_lines = [f"{k}={v}" for k, v in env_updates.items()]
         dot_env.write_text("\n".join(kept + new_lines) + "\n", encoding="utf-8")
         logger.info(
-            "settings: synced deepwiki .env with keys=%s",
+            "settings: synced deepwiki .env (updated=%s removed=%s)",
             list(env_updates.keys()),
+            list(env_removals - set(env_updates.keys())),
         )
+        return True
     except OSError as exc:
         logger.warning("settings: failed to sync deepwiki .env: %s", exc)
+        return False
+
+
+def _schedule_deepwiki_restart() -> None:
+    """Schedule a background restart of deepwiki-api to apply updated .env values."""
+    from app.services.process_manager import ProcessManager
+    pm = ProcessManager.get_instance()
+    mp = pm._processes.get("deepwiki-api")
+    if mp is not None and mp.status == "running":
+        asyncio.create_task(pm.restart("deepwiki-api"))
+        logger.info("settings: scheduled deepwiki-api restart to apply new .env")
 
 
 @router.get("/general", response_model=GeneralSettings)
@@ -284,5 +316,7 @@ async def update_general_settings(data: GeneralSettings, db: aiosqlite.Connectio
             (key, str(value)),
         )
     await db.commit()
-    await _sync_deepwiki_env(db, data.active_chat_model_id, data.active_embedding_model_id)
+    env_changed = await _sync_deepwiki_env(db, data.active_chat_model_id, data.active_embedding_model_id)
+    if env_changed:
+        _schedule_deepwiki_restart()
     return data
