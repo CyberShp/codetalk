@@ -446,6 +446,7 @@ export default function WorkspaceDetailPage() {
 
   const pollIndexRef = useRef<ReturnType<typeof setInterval> | null>(null);
   const pollAnalyzeRef = useRef<ReturnType<typeof setInterval> | null>(null);
+  const lastAnalysisTaskIdRef = useRef<string | null>(null);
   const hasLoadedRef = useRef(false);
   const toggleVersion = useRef<Record<string, number>>({});
   const wsLogRef = useRef<WebSocket | null>(null);
@@ -514,7 +515,10 @@ export default function WorkspaceDetailPage() {
         const s = await api.workspaces.analyzeStatus(wsId);
         setAnalyzeStatus(s.analyze_status);
         setAnalyzeProgress(s.analyze_progress);
-        if (s.task_id) setCurrentAnalysisTaskId(s.task_id);
+        if (s.task_id) {
+          setCurrentAnalysisTaskId(s.task_id);
+          lastAnalysisTaskIdRef.current = s.task_id;
+        }
 
         if (s.analyze_status !== "running") {
           clearInterval(pollAnalyzeRef.current!);
@@ -522,8 +526,9 @@ export default function WorkspaceDetailPage() {
           setAnalyzing(false);
           await loadWorkspace();
           await loadVersions();
-          if (s.task_id) {
-            setSelectedVersionTaskId(s.task_id);
+          const pinTaskId = s.task_id ?? lastAnalysisTaskIdRef.current;
+          if (pinTaskId) {
+            setSelectedVersionTaskId(pinTaskId);
           }
         }
       } catch {
@@ -659,6 +664,7 @@ export default function WorkspaceDetailPage() {
     setAnalyzeStatus("running");
     setAnalyzeProgress(0);
     setCurrentAnalysisTaskId(null);
+    lastAnalysisTaskIdRef.current = null;
     setLogSteps([]);
     setSelectedVersionTaskId(null);
     startAnalyzePoll();
