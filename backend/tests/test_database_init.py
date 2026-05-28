@@ -281,6 +281,71 @@ class TestCrashRecovery:
                 row = await cur.fetchone()
         assert row[0] == 1
 
+    @pytest.mark.asyncio
+    async def test_task_running_reset_to_failed_on_restart(self, fresh_db):
+        async with aiosqlite.connect(fresh_db) as db:
+            await db.executescript(_SCHEMA)
+            await db.execute(
+                "INSERT INTO tasks (id, name, repo_path, status) "
+                "VALUES ('t1', 'stuck task', '/repo', 'running')"
+            )
+            await db.commit()
+
+        with patch("app.config.settings.sqlite_db", fresh_db), \
+             patch("app.api.prompts.seed_default_template", return_value=None):
+            await init_db()
+
+        async with aiosqlite.connect(fresh_db) as db:
+            async with db.execute(
+                "SELECT status, error_message FROM tasks WHERE id = 't1'"
+            ) as cur:
+                row = await cur.fetchone()
+        assert row[0] == "failed"
+        assert row[1] == "Backend restart — task abandoned"
+
+    @pytest.mark.asyncio
+    async def test_task_pending_reset_to_failed_on_restart(self, fresh_db):
+        async with aiosqlite.connect(fresh_db) as db:
+            await db.executescript(_SCHEMA)
+            await db.execute(
+                "INSERT INTO tasks (id, name, repo_path, status) "
+                "VALUES ('t2', 'queued task', '/repo', 'pending')"
+            )
+            await db.commit()
+
+        with patch("app.config.settings.sqlite_db", fresh_db), \
+             patch("app.api.prompts.seed_default_template", return_value=None):
+            await init_db()
+
+        async with aiosqlite.connect(fresh_db) as db:
+            async with db.execute(
+                "SELECT status, error_message FROM tasks WHERE id = 't2'"
+            ) as cur:
+                row = await cur.fetchone()
+        assert row[0] == "failed"
+        assert row[1] == "Backend restart — task abandoned"
+
+    @pytest.mark.asyncio
+    async def test_task_completed_not_touched_on_restart(self, fresh_db):
+        async with aiosqlite.connect(fresh_db) as db:
+            await db.executescript(_SCHEMA)
+            await db.execute(
+                "INSERT INTO tasks (id, name, repo_path, status) "
+                "VALUES ('t3', 'done task', '/repo', 'completed')"
+            )
+            await db.commit()
+
+        with patch("app.config.settings.sqlite_db", fresh_db), \
+             patch("app.api.prompts.seed_default_template", return_value=None):
+            await init_db()
+
+        async with aiosqlite.connect(fresh_db) as db:
+            async with db.execute(
+                "SELECT status FROM tasks WHERE id = 't3'"
+            ) as cur:
+                row = await cur.fetchone()
+        assert row[0] == "completed"
+
 
 # ---------------------------------------------------------------------------
 # init_db full run
