@@ -33,6 +33,9 @@ _KEY_MAP = {
     "deepwikiOllamaHost": "deepwiki_ollama_host",
     "installDeepwiki": "install_deepwiki",
     "installGitnexus": "install_gitnexus",
+    "installCgc": "install_cgc",
+    "portCgc": "cgc_port",
+    "cgcVenvPath": "cgc_venv_path",
     "corsOrigins": "cors_origins",
     "workspacePath": "workspace_path",
     "forceTakeover": "force_takeover",
@@ -112,7 +115,7 @@ def _pick_api_key_for_frontend(cfg: dict) -> dict:
     return cfg
 
 
-_PORT_KEYS = {"backend_port", "frontend_port", "gitnexus_port", "deepwiki_api_port", "deepwiki_ui_port", "postgres_port"}
+_PORT_KEYS = {"backend_port", "frontend_port", "gitnexus_port", "deepwiki_api_port", "deepwiki_ui_port", "postgres_port", "cgc_port"}
 
 
 def _validate_ports(cfg: dict) -> dict:
@@ -162,6 +165,8 @@ def get_default_config(mode: str) -> dict:
         "repos_path": "./workspace/repos",
         "frontend_port": 3005,
         "gitnexus_port": 7100,
+        "cgc_port": 7072,
+        "install_cgc": True,
         "cors_origins": "http://localhost:3000,http://localhost:3005",
     }
     if mode == "native":

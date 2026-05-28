@@ -14,6 +14,17 @@ PROJECT_ROOT = Path(__file__).parent.parent.parent
 DEPLOYER_DIR = Path(__file__).parent.parent
 VENDOR_DIR = DEPLOYER_DIR / "vendor"
 
+# Make the deployer/ root importable so cgc_launcher can be found.
+if str(DEPLOYER_DIR) not in sys.path:
+    sys.path.insert(0, str(DEPLOYER_DIR))
+
+try:
+    import cgc_launcher as _cgc  # noqa: E402
+    _CGC_DEFAULT_PORT: int = _cgc.CGC_DEFAULT_PORT
+except ImportError:  # safety net — shouldn't happen in normal deployment
+    _cgc = None  # type: ignore[assignment]
+    _CGC_DEFAULT_PORT = 7072
+
 DEEPWIKI_REPO = "https://github.com/AsyncFuncAI/deepwiki-open.git"
 _CL100K_BPE = "9b5ad71b2ce5302211f9c61530b329a4922fc6a4"
 
@@ -155,6 +166,15 @@ class NativeDeployer:
                         results.append({"name": name, "healthy": False, "message": f"HTTP {resp.status_code}"})
                 except Exception as exc:
                     results.append({"name": name, "healthy": False, "message": str(exc)})
+
+            if self._config.get("install_cgc", True) and self._processes.get("cgc") is not None:
+                cgc_port = self._config_port("cgc_port", _CGC_DEFAULT_PORT)
+                try:
+                    resp = await client.get(f"http://localhost:{cgc_port}/status")
+                    healthy = 200 <= resp.status_code < 400
+                    results.append({"name": "cgc", "healthy": healthy, "message": f"HTTP {resp.status_code}"})
+                except Exception as exc:
+                    results.append({"name": "cgc", "healthy": False, "message": str(exc)})
 
             if self._config.get("install_deepwiki", False) or bool(self._config.get("deepwiki_path", "")):
                 port = self._config.get("deepwiki_api_port", 8091)
@@ -621,6 +641,28 @@ class NativeDeployer:
     # Step 4: Install GitNexus
     # ------------------------------------------------------------------
 
+    def _resolve_cgc_exe(self) -> str | None:
+        """Resolve the cgc executable path using cgc_launcher, or None if unavailable."""
+        if _cgc is not None:
+            return _cgc.resolve_cgc_exe(self._config)
+        # Fallback: probe the default venv location directly.
+        scripts = "Scripts" if sys.platform == "win32" else "bin"
+        exe_name = "cgc.exe" if sys.platform == "win32" else "cgc"
+        for venv_name in ("cgc-venv", "cgc-venv-throwaway"):
+            exe = PROJECT_ROOT.parent / venv_name / scripts / exe_name
+            if exe.exists():
+                return str(exe)
+        return None
+
+    def _cgc_cwd(self) -> str:
+        """Working directory for cgc (avoids GBK codec error from non-ASCII .env)."""
+        if _cgc is not None:
+            return _cgc.cgc_cwd()
+        import os as _os
+        cwd = Path(_os.path.expanduser("~")) / ".codegraphcontext"
+        cwd.mkdir(parents=True, exist_ok=True)
+        return str(cwd)
+
     def _resolve_gitnexus_cmd(self) -> list[str]:
         """Resolve the gitnexus binary path by probing install locations."""
         if cached := self._config.get("_gitnexus_cmd"):
@@ -728,6 +770,7 @@ class NativeDeployer:
         deepwiki_ui_port = cfg.get("deepwiki_ui_port", 3001)
         deepwiki_path = cfg.get("deepwiki_path", "")
 
+        cgc_port = self._config_port("cgc_port", _CGC_DEFAULT_PORT)
         env_lines = [
             "DATA_DIR=data",
             "SQLITE_DB=data/codetalk.db",
@@ -735,6 +778,8 @@ class NativeDeployer:
             f"GITNEXUS_BASE_URL=http://localhost:{gitnexus_port}",
             f"GITNEXUS_PORT={gitnexus_port}",
             "GITNEXUS_BIN=gitnexus",
+            f"CGC_BASE_URL=http://localhost:{cgc_port}",
+            f"CGC_PORT={cgc_port}",
             f"CORS_ORIGINS=http://localhost:{frontend_port},http://127.0.0.1:{frontend_port}",
             "TOOL_HEALTH_INTERVAL=30",
         ]
@@ -1045,6 +1090,27 @@ class NativeDeployer:
                 step_name="start_services",
                 step_index=step,
             )
+
+        if cfg.get("install_cgc", True):
+            cgc_exe = self._resolve_cgc_exe()
+            if cgc_exe:
+                cgc_port = self._config_port("cgc_port", _CGC_DEFAULT_PORT)
+                await self._release_ports([cgc_port], step)
+                await self._start_process(
+                    "cgc",
+                    [cgc_exe, "api", "start", "--host", "127.0.0.1", "--port", str(cgc_port)],
+                    cwd=self._cgc_cwd(),
+                    step_name="start_services",
+                    step_index=step,
+                )
+            else:
+                await self._emit(
+                    "start_services", "running",
+                    "⚠️ cgc 可执行文件未找到（未安装或路径未配置），跳过 CGC 启动。"
+                    "请确认 D:\\coworkers\\cgc-venv\\Scripts\\cgc.exe 存在，"
+                    "或在部署配置中设置 cgcVenvPath。",
+                    step,
+                )
 
         npm_cmd = "npm.cmd" if sys.platform == "win32" else "npm"
         next_build_dir = frontend_dir / ".next"
@@ -1369,6 +1435,14 @@ class NativeDeployer:
                 "cwd": str(PROJECT_ROOT),
                 "env_extra": None,
             }
+        if name == "cgc":
+            cgc_exe = self._resolve_cgc_exe()
+            if cgc_exe:
+                return {
+                    "cmd": [cgc_exe, "api", "start", "--host", "127.0.0.1", "--port", str(self._config_port("cgc_port", _CGC_DEFAULT_PORT))],
+                    "cwd": self._cgc_cwd(),
+                    "env_extra": None,
+                }
         deepwiki_path = cfg.get("deepwiki_path", "")
         if deepwiki_path and name in ("deepwiki-api", "deepwiki-ui"):
             dw_dir = Path(deepwiki_path)
@@ -1491,6 +1565,16 @@ class NativeDeployer:
                 try:
                     async with httpx.AsyncClient(timeout=3, trust_env=False) as client:
                         resp = await client.get(f"http://localhost:{port}{path}")
+                        if not (200 <= resp.status_code < 400):
+                            all_ok = False
+                except Exception:
+                    all_ok = False
+
+            if self._config.get("install_cgc", True) and self._processes.get("cgc") is not None:
+                cgc_port = self._config_port("cgc_port", _CGC_DEFAULT_PORT)
+                try:
+                    async with httpx.AsyncClient(timeout=3, trust_env=False) as client:
+                        resp = await client.get(f"http://localhost:{cgc_port}/status")
                         if not (200 <= resp.status_code < 400):
                             all_ok = False
                 except Exception:
