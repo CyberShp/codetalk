@@ -3,7 +3,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import httpx
 
-from app.services.wiki_orchestrator import EmptyEmbeddingError, WikiOrchestrator, WikiPage
+from app.services.wiki_orchestrator import EmptyEmbeddingError, WikiOrchestrator, WikiPage, WikiStructure
 
 
 class WikiOrchestratorPayloadTests(unittest.IsolatedAsyncioTestCase):
@@ -91,6 +91,27 @@ class EmptyEmbeddingPatternTests(unittest.IsolatedAsyncioTestCase):
 
         with self.assertRaises(httpx.HTTPStatusError):
             await orchestrator._stream_collect(mock_client, {"messages": []})
+
+
+class ParseStructureXmlTests(unittest.TestCase):
+    _MINIMAL_XML = (
+        "<wiki_structure>"
+        "<title>Test Repo</title>"
+        "<description>A test wiki</description>"
+        "<pages></pages>"
+        "</wiki_structure>"
+    )
+
+    def test_markdown_codefenced_xml_parses_successfully(self) -> None:
+        fenced = f"```xml\n{self._MINIMAL_XML}\n```"
+        result = WikiOrchestrator._parse_structure_xml(fenced)
+        self.assertIsInstance(result, WikiStructure)
+        self.assertEqual(result.title, "Test Repo")
+        self.assertEqual(result.description, "A test wiki")
+
+    def test_no_xml_raises_value_error(self) -> None:
+        with self.assertRaises(ValueError):
+            WikiOrchestrator._parse_structure_xml("Sorry, I cannot generate a wiki structure.")
 
 
 if __name__ == "__main__":
