@@ -102,6 +102,9 @@ class AnalysisPipeline:
         self._analysis_units: list[dict] = []
         # Adapter instances created during prepare phase, keyed by tool name
         self._tool_adapters: dict[str, BaseToolAdapter] = {}
+        # Set by _assess_tool_health() after prepare; controls data-collection and injection gating
+        self._pipeline_mode: str = "dual"  # "dual" | "gitnexus_only" | "cgc_only" | "llm_direct"
+        self._tool_health_warning: str = ""  # user-visible degradation notice
 
     # ------------------------------------------------------------------
     # Public entry point
@@ -148,6 +151,9 @@ class AnalysisPipeline:
             # Phase 0: Preparation
             self._check_cancelled(cancel_event)
             await self._phase_prepare(repo_path, tools)
+            await self._assess_tool_health()
+            if self._tool_health_warning:
+                await self._log_step(task_id, 10, self._tool_health_warning)
             await self._update_progress(task_id, 10, "running", None, "环境准备完成，开始采集数据…")
 
             # Phase 1: Data Collection
@@ -312,6 +318,15 @@ class AnalysisPipeline:
             except KeyError:
                 pass  # no registered adapter for this tool
 
+        # Soft-add CGC for health-checking and evidence injection even when not in user's tools list.
+        if "cgc" not in self._tool_adapters:
+            try:
+                cgc_adapter = create_adapter("cgc")
+                self._tool_adapters["cgc"] = cgc_adapter
+                adapter_coros.append(cgc_adapter.prepare(req))
+            except Exception:
+                pass  # CGC unavailable — will degrade gracefully in _assess_tool_health
+
         results = await asyncio.gather(
             self._ensure_git_init(path),
             *adapter_coros,
@@ -320,6 +335,44 @@ class AnalysisPipeline:
         for result in results:
             if isinstance(result, Exception):
                 logger.warning("Prepare step error (non-fatal): %s", result)
+
+    async def _assess_tool_health(self) -> None:
+        """Check adapter health after prepare and set _pipeline_mode for graceful degradation.
+
+        Modes:
+          dual          — both CGC and GitNexus healthy (default)
+          gitnexus_only — CGC unavailable; evidence injection skipped
+          cgc_only      — GitNexus unavailable; gitnexus data collection skipped
+          llm_direct    — both unavailable; pipeline runs on file-content only
+        """
+        async def _check(adapter: BaseToolAdapter | None) -> bool:
+            if adapter is None:
+                return False
+            try:
+                health = await asyncio.wait_for(adapter.health_check(), timeout=5.0)
+                return bool(health.is_healthy)
+            except Exception:
+                return False
+
+        gitnexus_ok, cgc_ok = await asyncio.gather(
+            _check(self._tool_adapters.get("gitnexus")),
+            _check(self._tool_adapters.get("cgc")),
+        )
+
+        if gitnexus_ok and cgc_ok:
+            self._pipeline_mode = "dual"
+        elif gitnexus_ok:
+            self._pipeline_mode = "gitnexus_only"
+            self._tool_health_warning = "⚠️ CGC 不可用，已降级为单图模式（GitNexus）"
+            logger.warning("CGC unavailable — degrading to gitnexus_only mode")
+        elif cgc_ok:
+            self._pipeline_mode = "cgc_only"
+            self._tool_health_warning = "⚠️ GitNexus 不可用，已降级为单图模式（CGC）"
+            logger.warning("GitNexus unavailable — degrading to cgc_only mode")
+        else:
+            self._pipeline_mode = "llm_direct"
+            self._tool_health_warning = "⚠️ 图谱工具均不可用，已降级为 LLM 直读模式（结果质量受影响）"
+            logger.warning("Both GitNexus and CGC unavailable — degrading to llm_direct mode")
 
     async def _ensure_git_init(self, path: Path) -> None:
         """Ensure git is initialized for the repo path."""
@@ -344,7 +397,7 @@ class AnalysisPipeline:
         """Collect data from GitNexus and DeepWiki in parallel."""
         coros = []
 
-        if "gitnexus" in tools:
+        if "gitnexus" in tools and self._pipeline_mode not in ("cgc_only", "llm_direct"):
             coros.append(self._collect_gitnexus(repo_path))
         if "deepwiki" in tools:
             coros.append(self._collect_deepwiki(repo_path))
