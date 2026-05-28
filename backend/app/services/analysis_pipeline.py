@@ -58,6 +58,27 @@ _SOURCE_EXTS = frozenset({
     ".c", ".cpp", ".cc", ".cxx", ".h", ".hpp",
 })
 
+# CGC business-level query limits
+_CGC_MAX_SYMBOLS_PER_OBJECT: int = 3
+_CGC_NAME_DISPLAY_LIMIT: int = 6
+
+
+def _extract_cgc_names(items: list, *, limit: int = _CGC_NAME_DISPLAY_LIMIT) -> list[str]:
+    """Extract readable symbol names from a CGC result list."""
+    names: list[str] = []
+    for item in items[:limit]:
+        if isinstance(item, dict):
+            name = (
+                item.get("name")
+                or item.get("symbol")
+                or item.get("function")
+                or str(item)
+            )
+        else:
+            name = str(item)
+        names.append(name)
+    return names
+
 
 class AnalysisPipeline:
     """Stateless pipeline that runs the full analysis for a task."""
@@ -753,9 +774,17 @@ class AnalysisPipeline:
             repo_path=self._repo_path, limits=plan.llm_limits,
         )
         self._evidence_cards = await builder.build_cards(scope.resolved_objects)
+
+        # 1b. Augment with CGC graph queries (callers / callees / call_chain / module_deps).
+        cgc_cards = await self._inject_cgc_evidence_cards(
+            scope.resolved_objects, plan.llm_limits.max_evidence_cards
+        )
+        self._evidence_cards.extend(cgc_cards)
+
         await self._log_step(
             self._task_id, 50,
-            f"📋 已构建 {len(self._evidence_cards)} 张证据卡（上限 {plan.llm_limits.max_evidence_cards}）",
+            f"📋 已构建 {len(self._evidence_cards)} 张证据卡"
+            f"（其中 CGC 图谱 {len(cgc_cards)} 张，上限 {plan.llm_limits.max_evidence_cards}）",
         )
 
         # 2. Group objects into analysis units.  Closely related objects
@@ -887,6 +916,138 @@ class AnalysisPipeline:
             })
             units = head
         return units
+
+    async def _inject_cgc_evidence_cards(
+        self,
+        resolved_objects: list,
+        budget: int,
+    ) -> list[EvidenceCard]:
+        """Augment evidence cards with CGC graph queries.
+
+        Queries callers/callees (Type 1), call chains (Type 2), and module
+        dependency maps (Type 3) for each resolved object's gitnexus symbols.
+        Silently degrades when CGC is unavailable or individual queries fail.
+        """
+        cgc_adapter = self._tool_adapters.get("cgc")
+        if cgc_adapter is None:
+            return []
+        health = await cgc_adapter.health_check()
+        if not health.is_healthy:
+            logger.info("CGC unavailable — skipping CGC evidence injection")
+            return []
+
+        cgc = cgc_adapter._cgc
+        repo_path = self._repo_path
+        cards: list[EvidenceCard] = []
+        existing = len(self._evidence_cards)
+
+        def _remaining() -> int:
+            return budget - existing - len(cards)
+
+        # Type 3 — module dependency map (once per repo, attached to first object)
+        if _remaining() > 0 and resolved_objects:
+            try:
+                deps = await cgc.module_deps(target=repo_path, repo_path=repo_path)
+                if deps:
+                    dep_lines: list[str] = []
+                    if isinstance(deps, dict):
+                        for k, v in list(deps.items())[:8]:
+                            dep_lines.append(f"{k}: {v}")
+                    cards.append(EvidenceCard(
+                        card_id="cgc_module_deps",
+                        object_id=resolved_objects[0].object_id,
+                        title="CGC 模块依赖图",
+                        source="cgc",
+                        confidence="medium",
+                        snippet="",
+                        notes=dep_lines or ["依赖数据结构不可解析"],
+                        needs_verification=True,
+                    ))
+            except Exception as exc:
+                logger.debug("CGC module_deps failed: %s", exc)
+
+        for resolved in resolved_objects:
+            if _remaining() <= 0:
+                break
+
+            # Only use symbols that gitnexus already confirmed exist in the graph
+            gitnexus_syms = [
+                c.symbol
+                for c in resolved.candidate_symbols
+                if c.symbol and c.source == "gitnexus"
+            ][:_CGC_MAX_SYMBOLS_PER_OBJECT]
+
+            # Type 1 — callers / callees per symbol
+            for sym in gitnexus_syms:
+                if _remaining() <= 0:
+                    break
+                try:
+                    callers = await cgc.find_callers(sym, repo_path=repo_path)
+                    if callers:
+                        names = _extract_cgc_names(callers)
+                        cards.append(EvidenceCard(
+                            card_id=f"cgc_callers_{resolved.object_id}_{sym}",
+                            object_id=resolved.object_id,
+                            title=f"CGC 调用者：{sym}",
+                            source="cgc",
+                            confidence="medium",
+                            symbol=sym,
+                            snippet="",
+                            notes=[f"调用者（共 {len(callers)} 个）：{', '.join(names)}"],
+                            needs_verification=True,
+                        ))
+                except Exception as exc:
+                    logger.debug("CGC find_callers(%s): %s", sym, exc)
+
+                if _remaining() <= 0:
+                    break
+                try:
+                    callees = await cgc.find_callees(sym, repo_path=repo_path)
+                    if callees:
+                        names = _extract_cgc_names(callees)
+                        cards.append(EvidenceCard(
+                            card_id=f"cgc_callees_{resolved.object_id}_{sym}",
+                            object_id=resolved.object_id,
+                            title=f"CGC 被调用：{sym}",
+                            source="cgc",
+                            confidence="medium",
+                            symbol=sym,
+                            snippet="",
+                            notes=[f"被调用（共 {len(callees)} 个）：{', '.join(names)}"],
+                            needs_verification=True,
+                        ))
+                except Exception as exc:
+                    logger.debug("CGC find_callees(%s): %s", sym, exc)
+
+            # Type 2 — call chain (exception propagation, first symbol pair)
+            if len(gitnexus_syms) >= 2 and _remaining() > 0:
+                entry, sink = gitnexus_syms[0], gitnexus_syms[1]
+                try:
+                    chain = await cgc.call_chain(entry, sink, repo_path=repo_path)
+                    if chain:
+                        path_data = (
+                            chain.get("chain") or chain.get("path") or []
+                            if isinstance(chain, dict) else []
+                        )
+                        chain_notes: list[str] = []
+                        if isinstance(path_data, list) and path_data:
+                            chain_notes.append(
+                                "调用链：" + " → ".join(str(n) for n in path_data[:10])
+                            )
+                        cards.append(EvidenceCard(
+                            card_id=f"cgc_chain_{resolved.object_id}_{entry}_{sink}",
+                            object_id=resolved.object_id,
+                            title=f"CGC 调用链：{entry} → {sink}",
+                            source="cgc",
+                            confidence="medium",
+                            snippet="",
+                            notes=chain_notes or ["调用链数据不可解析"],
+                            needs_verification=True,
+                        ))
+                except Exception as exc:
+                    logger.debug("CGC call_chain(%s→%s): %s", entry, sink, exc)
+
+        return cards
 
     async def _summarize_analysis_unit(
         self,
