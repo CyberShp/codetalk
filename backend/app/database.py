@@ -203,13 +203,14 @@ async def init_db() -> None:
             " WHERE analyze_status = 'running'"
         )
 
-        # Reset tasks stuck in 'running' or 'pending' from a prior crash — any such
-        # task in the DB at startup is an orphan (its asyncio coroutine is gone).
+        # Reset tasks stuck in 'running' from a prior crash — their asyncio
+        # coroutines are gone after restart. Leave 'pending' tasks untouched:
+        # those are user-created drafts that were never started.
         await db.execute(
             "UPDATE tasks SET status = 'failed',"
             " error_message = 'Backend restart — task abandoned',"
             " updated_at = CURRENT_TIMESTAMP"
-            " WHERE status IN ('running', 'pending')"
+            " WHERE status = 'running'"
         )
 
         await db.commit()

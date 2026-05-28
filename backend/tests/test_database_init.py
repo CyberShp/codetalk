@@ -304,7 +304,8 @@ class TestCrashRecovery:
         assert row[1] == "Backend restart — task abandoned"
 
     @pytest.mark.asyncio
-    async def test_task_pending_reset_to_failed_on_restart(self, fresh_db):
+    async def test_task_pending_not_touched_on_restart(self, fresh_db):
+        """User-created pending tasks (never started) must survive a restart."""
         async with aiosqlite.connect(fresh_db) as db:
             await db.executescript(_SCHEMA)
             await db.execute(
@@ -322,8 +323,8 @@ class TestCrashRecovery:
                 "SELECT status, error_message FROM tasks WHERE id = 't2'"
             ) as cur:
                 row = await cur.fetchone()
-        assert row[0] == "failed"
-        assert row[1] == "Backend restart — task abandoned"
+        assert row[0] == "pending"
+        assert row[1] is None
 
     @pytest.mark.asyncio
     async def test_task_completed_not_touched_on_restart(self, fresh_db):
