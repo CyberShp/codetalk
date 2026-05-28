@@ -99,6 +99,24 @@ def _stage_tiktoken_into_deepwiki(cache_dir: Path, deepwiki_dir: Path) -> int:
         staged += 1
     return staged
 
+def _copy_standalone_statics(next_dir: Path, dw_dir: Path) -> None:
+    """Copy .next/static and public/ into .next/standalone/ for a standalone Next.js build.
+
+    next build with output:'standalone' does not auto-copy these directories.
+    Skipping them causes 404s for every CSS/JS asset served via server.js.
+    Idempotent: dirs_exist_ok=True makes repeated calls safe.
+    """
+    standalone = next_dir / "standalone"
+    if not standalone.exists():
+        return
+    static_src = next_dir / "static"
+    if static_src.exists():
+        shutil.copytree(static_src, standalone / ".next" / "static", dirs_exist_ok=True)
+    public_src = dw_dir / "public"
+    if public_src.exists():
+        shutil.copytree(public_src, standalone / "public", dirs_exist_ok=True)
+
+
 SERVICE_DEFAULTS = [
     ("backend", "backend_port", 8100, "http", "/health"),
     ("frontend", "frontend_port", 3005, "http", "/"),
@@ -379,6 +397,7 @@ class NativeDeployer:
                 # Marker is best-effort; failure just means next deploy will rebuild.
                 await self._emit_sup("deepwiki_build", "running",
                                      f"（警告）写入构建端口标记失败：{exc}", 4, total)
+            _copy_standalone_statics(next_dir, dw_dir)
             await self._emit_sup("deepwiki_build", "done", "前端构建完成", 4, total)
         else:
             await self._emit_sup("deepwiki_build", "done",
@@ -1246,6 +1265,7 @@ class NativeDeployer:
         if has_package_json:
             standalone_server = dw_dir / ".next" / "standalone" / "server.js"
             if standalone_server.exists():
+                _copy_standalone_statics(dw_dir / ".next", dw_dir)
                 ui_cmd = ["node", str(standalone_server)]
             else:
                 npm_cmd = "npm.cmd" if sys.platform == "win32" else "npm"
