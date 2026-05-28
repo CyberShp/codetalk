@@ -7,7 +7,13 @@ Version: 1.0.0
 """
 
 WIKI_STRUCTURE_PROMPT = """\
-Analyze this repository and create a wiki structure for it.
+CRITICAL INSTRUCTION: Your response must be ONLY a valid XML block. \
+Do NOT include any text, explanation, greeting, or markdown \
+before or after the XML. Start your response immediately with \
+<wiki_structure> and end with </wiki_structure>. \
+No preamble. No code fences. No markdown. Just the XML.
+
+You are analyzing this repository to create a wiki structure.
 
 1. The complete file tree of the project:
 <file_tree>
@@ -19,15 +25,9 @@ Analyze this repository and create a wiki structure for it.
 {readme}
 </readme>
 
-I want to create a wiki for this repository. \
-Determine the most logical structure for a wiki based on the repository's content.
+Task: Create {page_count} pages for a {wiki_type_description} wiki of this codebase.
 
-Create {page_count} pages that would make a {wiki_type_description} wiki \
-for this codebase.
-
-Your response MUST be in XML format. Start with <wiki_structure> and end with </wiki_structure>.
-
-The XML structure must follow this format:
+REQUIRED OUTPUT FORMAT — your entire response must be exactly this XML structure:
 <wiki_structure>
   <title>Overall Wiki Title</title>
   <description>Brief description of the wiki</description>
@@ -64,6 +64,7 @@ Rules:
 - related_pages should reference other page ids
 - Sections group related pages; every page belongs to exactly one section
 - {language_instruction}
+- REMINDER: output ONLY the XML block above. No other text.
 """
 
 WIKI_PAGE_PROMPT = """\

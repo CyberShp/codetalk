@@ -554,11 +554,19 @@ class WikiOrchestrator:
 
         Tries xml.etree.ElementTree first, falls back to regex.
         """
+        # Strip markdown code fences (```xml ... ``` or ``` ... ```)
+        # Some models wrap XML in code blocks despite instructions.
+        stripped = re.sub(r"```(?:xml)?\s*", "", raw).strip()
+
         # Extract XML block
         match = re.search(
-            r"<wiki_structure>[\s\S]*?</wiki_structure>", raw
+            r"<wiki_structure>[\s\S]*?</wiki_structure>", stripped
         )
         if not match:
+            logger.error(
+                "LLM response missing <wiki_structure> XML. Raw response (first 800 chars): %s",
+                raw[:800],
+            )
             raise ValueError(
                 "LLM response does not contain <wiki_structure> XML block"
             )
