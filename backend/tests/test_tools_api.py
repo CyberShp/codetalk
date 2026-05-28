@@ -50,7 +50,7 @@ class TestGetPmFromAppState:
         """Line 19: when app.state.process_manager is set, _get_pm returns it
         without falling through to ProcessManager.get_instance()."""
         client, mock_pm = tools_client
-        resp = await client.get("/api/tools/status")
+        resp = await client.get("/api/tools/procs")
         assert resp.status_code == 200
         mock_pm.get_all_status.assert_called_once()
 

@@ -113,17 +113,19 @@ class ParallelPrepareTests(unittest.IsolatedAsyncioTestCase):
 class CGCAdapterDedupTests(unittest.IsolatedAsyncioTestCase):
     """Verify CGCAdapter.prepare() deduplicates concurrent calls for the same path."""
 
-    async def test_concurrent_prepare_calls_are_serialized(self) -> None:
-        """Two concurrent prepare() calls on the same repo path serialize via lock."""
+    async def test_concurrent_prepare_calls_are_deduped(self) -> None:
+        """Two concurrent prepare() calls on the same repo path submit only one job."""
         from app.adapters.cgc import CGCAdapter
 
         call_log: list[str] = []
 
         async def _fake_index_repo(path, **_):
+            await asyncio.sleep(0)  # yield so concurrent task can see the inflight map
             call_log.append(f"index:{path}")
             return "job-1"
 
         async def _fake_wait(job_id):
+            await asyncio.sleep(0)
             call_log.append(f"wait:{job_id}")
 
         adapter = CGCAdapter(base_url="http://cgc:7072")
@@ -135,11 +137,11 @@ class CGCAdapterDedupTests(unittest.IsolatedAsyncioTestCase):
 
         await asyncio.gather(adapter.prepare(req), adapter.prepare(req))
 
-        # Both calls complete; index+wait pairs are interleaved due to serialization
+        # True dedup: only one index_repo() job submitted regardless of concurrency
         index_calls = [e for e in call_log if e.startswith("index:")]
         wait_calls = [e for e in call_log if e.startswith("wait:")]
-        self.assertEqual(len(index_calls), 2)
-        self.assertEqual(len(wait_calls), 2)
+        self.assertEqual(len(index_calls), 1)
+        self.assertEqual(len(wait_calls), 1)
 
 
 if __name__ == "__main__":

@@ -267,15 +267,10 @@ class CGCClient:
 class CGCAdapter(BaseToolAdapter):
     """BaseToolAdapter wrapper around CGCClient for the adapter registry."""
 
-    _prepare_locks: dict[tuple[str, str, int], asyncio.Lock] = {}
-
-    @classmethod
-    def _prepare_lock_for(cls, base_url: str, repo_path: str) -> asyncio.Lock:
-        loop = asyncio.get_running_loop()
-        key = (base_url, repo_path, id(loop))
-        if key not in cls._prepare_locks:
-            cls._prepare_locks[key] = asyncio.Lock()
-        return cls._prepare_locks[key]
+    # In-flight prepare Futures keyed by (base_url, repo_path, loop_id).
+    # When multiple concurrent callers prepare the same path, only one
+    # index_repo() job is submitted; the rest await the shared Future.
+    _prepare_inflight: dict[tuple[str, str, int], "asyncio.Future[None]"] = {}
 
     def __init__(self, base_url: str | None = None) -> None:
         self._cgc = CGCClient(base_url=base_url)
@@ -299,11 +294,27 @@ class CGCAdapter(BaseToolAdapter):
         )
 
     async def prepare(self, request: AnalysisRequest) -> None:
-        """Index the repository before analysis (deduped per path)."""
-        lock = self._prepare_lock_for(self._cgc._base_url, request.repo_local_path)
-        async with lock:
+        """Index the repository (true dedup: same path concurrently → one job)."""
+        loop = asyncio.get_running_loop()
+        key = (self._cgc._base_url, request.repo_local_path, id(loop))
+
+        existing = self._prepare_inflight.get(key)
+        if existing is not None:
+            await asyncio.shield(existing)
+            return
+
+        fut: asyncio.Future[None] = loop.create_future()
+        self._prepare_inflight[key] = fut
+        try:
             job_id = await self._cgc.index_repo(request.repo_local_path)
             await self._cgc.wait_for_index(job_id)
+            fut.set_result(None)
+        except Exception as exc:
+            if not fut.done():
+                fut.set_exception(exc)
+            raise
+        finally:
+            self._prepare_inflight.pop(key, None)
 
     async def analyze(self, request: AnalysisRequest) -> UnifiedResult:
         """Run complexity + module-dependency analysis on the repository."""

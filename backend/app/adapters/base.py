@@ -23,6 +23,8 @@ class ToolHealth:
     container_status: str
     version: str | None = None
     last_check: str = ""
+    indexed_repos: int = 0
+    last_index_error: str | None = None
 
 
 @dataclass

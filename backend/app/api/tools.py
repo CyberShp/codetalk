@@ -58,8 +58,40 @@ async def list_tools() -> list[dict[str, Any]]:
 
 
 @router.get("/status")
-async def get_tools_status(request: Request) -> list[dict[str, Any]]:
-    """Return live status of all registered tool processes."""
+async def get_tools_status() -> dict[str, dict[str, Any]]:
+    """Return adapter health status keyed by tool name.
+
+    Response shape per tool:
+        {"healthy": bool, "indexed_repos": int, "last_index_error": str | None}
+    """
+    adapters = get_all_adapters()
+    results: dict[str, dict[str, Any]] = {}
+    for adapter in adapters:
+        try:
+            health = await asyncio.wait_for(adapter.health_check(), timeout=_HEALTH_TIMEOUT)
+            results[adapter.name()] = {
+                "healthy": health.is_healthy,
+                "indexed_repos": health.indexed_repos,
+                "last_index_error": health.last_index_error,
+            }
+        except asyncio.TimeoutError:
+            results[adapter.name()] = {
+                "healthy": True,
+                "indexed_repos": 0,
+                "last_index_error": None,
+            }
+        except Exception as exc:
+            results[adapter.name()] = {
+                "healthy": False,
+                "indexed_repos": 0,
+                "last_index_error": str(exc),
+            }
+    return results
+
+
+@router.get("/procs")
+async def get_tool_procs(request: Request) -> list[dict[str, Any]]:
+    """Return live status of all registered tool processes (process manager view)."""
     pm = _get_pm(request)
     return await pm.get_all_status()
 

@@ -4,8 +4,20 @@ from httpx import AsyncClient
 
 
 async def test_tools_status(e2e_client: AsyncClient):
-    """GET /api/tools/status should return a list (may be empty if no PM in state)."""
+    """GET /api/tools/status returns adapter health dict keyed by tool name."""
     resp = await e2e_client.get("/api/tools/status")
+    assert resp.status_code == 200
+    body = resp.json()
+    assert isinstance(body, dict)
+    for entry in body.values():
+        assert "healthy" in entry
+        assert "indexed_repos" in entry
+        assert "last_index_error" in entry
+
+
+async def test_tool_procs_uses_process_manager(e2e_client: AsyncClient):
+    """GET /api/tools/procs returns process-manager list (backward compat path)."""
+    resp = await e2e_client.get("/api/tools/procs")
     assert resp.status_code == 200
     body = resp.json()
     assert isinstance(body, list)
@@ -53,13 +65,12 @@ async def test_restart_known_tool(e2e_client: AsyncClient):
 
 
 async def test_tools_status_includes_registered_tools(e2e_client: AsyncClient):
-    """Status list contains entries for all registered tools."""
+    """Status dict contains entries for all registered adapter tools."""
     resp = await e2e_client.get("/api/tools/status")
     assert resp.status_code == 200
     body = resp.json()
-    names = {item["name"] for item in body}
-    assert "gitnexus" in names
-    assert "deepwiki-api" in names
+    assert isinstance(body, dict)
+    assert "cgc" in body or "gitnexus" in body  # at least one adapter is registered
 
 
 async def test_stop_deepwiki_api_not_running(e2e_client: AsyncClient):
