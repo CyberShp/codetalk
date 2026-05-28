@@ -67,26 +67,29 @@ def ensure_cgc_installed(venv_path: Path | None = None) -> None:
     )
     scripts = "Scripts" if sys.platform == "win32" else "bin"
     exe_name = "cgc.exe" if sys.platform == "win32" else "cgc"
-    pip_name = "pip.exe" if sys.platform == "win32" else "pip"
+    python_exe = venv / scripts / ("python.exe" if sys.platform == "win32" else "python")
 
-    pip_exe = str(venv / scripts / pip_name)
+    # Use `python -m pip` rather than `pip.exe` — the pip script wrapper can be
+    # broken/missing (e.g. after a pip upgrade that replaces the launcher) while
+    # the underlying module and Python executable remain fully functional.
+    def _pip(*args: str) -> list:
+        return [str(python_exe), "-m", "pip", *args]
 
     if (venv / scripts / exe_name).exists():
         # cgc.exe present — verify mcp is also installed (cgc 0.x omits it)
-        chk = subprocess.run([pip_exe, "show", "mcp"], capture_output=True)
+        chk = subprocess.run(_pip("show", "mcp"), capture_output=True)
         if chk.returncode == 0:
             return  # fully installed
         # mcp missing — install it without reinstalling codegraphcontext
-        result = subprocess.run([pip_exe, "install", "mcp"], capture_output=True, text=True)
+        result = subprocess.run(_pip("install", "mcp"), capture_output=True, text=True)
         if result.returncode != 0:
             detail = (result.stderr or result.stdout or "unknown error").strip()
             raise CGCInstallError(
                 f"CGC 依赖安装失败 (mcp): {detail}\n"
-                f"请手动运行: {pip_exe} install mcp"
+                f"请手动运行: {python_exe} -m pip install mcp"
             )
         return
 
-    python_exe = venv / scripts / ("python.exe" if sys.platform == "win32" else "python")
     if not python_exe.exists():
         result = subprocess.run(
             [sys.executable, "-m", "venv", str(venv)],
@@ -102,7 +105,7 @@ def ensure_cgc_installed(venv_path: Path | None = None) -> None:
 
     for pkg in ("codegraphcontext", "mcp"):
         result = subprocess.run(
-            [pip_exe, "install", pkg],
+            _pip("install", pkg),
             capture_output=True,
             text=True,
         )
@@ -110,7 +113,7 @@ def ensure_cgc_installed(venv_path: Path | None = None) -> None:
             detail = (result.stderr or result.stdout or "unknown error").strip()
             raise CGCInstallError(
                 f"CGC 依赖安装失败 ({pkg}): {detail}\n"
-                f"请手动运行: {pip_exe} install {pkg}"
+                f"请手动运行: {python_exe} -m pip install {pkg}"
             )
 
 
