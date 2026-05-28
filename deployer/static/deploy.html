@@ -209,6 +209,10 @@
                       <option value="google">Google Gemini</option>
                       <option value="ollama">Ollama（本地）</option>
                     </select>
+                    <span class="port-label" id="dw-google-key-label" style="grid-column: 1; display: none">Google Key</span>
+                    <input type="password" id="deepwiki-google-api-key" name="deepwikiGoogleApiKey" class="form-input" placeholder="Google API Key（Gemini embedder 专用）" style="grid-column: 2 / -1; display: none" autocomplete="new-password" />
+                    <span class="port-label" id="dw-ollama-host-label" style="grid-column: 1; display: none">Ollama Host</span>
+                    <input type="text" id="deepwiki-ollama-host" name="deepwikiOllamaHost" class="form-input font-mono" placeholder="http://localhost:11434" style="grid-column: 2 / -1; display: none" />
                   </div>
                 </label>
                 <label class="component-item">

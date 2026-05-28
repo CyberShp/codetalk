@@ -368,16 +368,27 @@ class NativeDeployer:
         api_port = self._config_port("deepwiki_api_port", 8091)
         ui_port = self._config_port("deepwiki_ui_port", 3001)
 
-        llm_env: dict[str, str] = {}
+        embedder_type = self._config.get("deepwiki_embedder_type", "openai")
+        llm_env: dict[str, str] = {"DEEPWIKI_EMBEDDER_TYPE": embedder_type}
+        if embedder_type == "google":
+            gkey = (self._config.get("deepwiki_google_api_key", "")
+                    or self._config.get("google_api_key", ""))
+            if gkey:
+                llm_env["GOOGLE_API_KEY"] = gkey
+        elif embedder_type == "ollama":
+            ohost = (self._config.get("deepwiki_ollama_host", "")
+                     or self._config.get("ollama_base_url", "http://localhost:11434"))
+            if ohost:
+                llm_env["OLLAMA_HOST"] = ohost
         llm_base_url = self._config.get("llm_base_url", "")
         if llm_base_url:
-            llm_env = {
+            llm_env.update({
                 "OPENAI_BASE_URL": llm_base_url,
                 "OPENAI_API_KEY": self._config.get("llm_api_key", ""),
                 "LLM_MODEL": self._config.get("llm_model", ""),
                 "FORCE_DIRECT": "true",
                 "TRUST_ENV": "false",
-            }
+            })
 
         for _proc_name in ("deepwiki-api", "deepwiki-ui"):
             _old = self._processes.get(_proc_name)
@@ -1077,13 +1088,15 @@ class NativeDeployer:
                 embedder_type = self._config.get("deepwiki_embedder_type", "openai")
                 llm_env: dict[str, str] = {"DEEPWIKI_EMBEDDER_TYPE": embedder_type}
                 if embedder_type == "google":
-                    google_api_key = self._config.get("google_api_key", "")
-                    if google_api_key:
-                        llm_env["GOOGLE_API_KEY"] = google_api_key
+                    gkey = (self._config.get("deepwiki_google_api_key", "")
+                            or self._config.get("google_api_key", ""))
+                    if gkey:
+                        llm_env["GOOGLE_API_KEY"] = gkey
                 elif embedder_type == "ollama":
-                    ollama_host = self._config.get("ollama_base_url", "http://localhost:11434")
-                    if ollama_host:
-                        llm_env["OLLAMA_HOST"] = ollama_host
+                    ohost = (self._config.get("deepwiki_ollama_host", "")
+                             or self._config.get("ollama_base_url", "http://localhost:11434"))
+                    if ohost:
+                        llm_env["OLLAMA_HOST"] = ohost
                 llm_base_url = self._config.get("llm_base_url", "")
                 if llm_base_url:
                     llm_env.update({
@@ -1247,16 +1260,27 @@ class NativeDeployer:
         <deepwiki_path>/.env (if it exists). Uses manual line parsing —
         no python-dotenv dependency required.
         """
-        env: dict[str, str] = {}
+        embedder_type = self._config.get("deepwiki_embedder_type", "openai")
+        env: dict[str, str] = {"DEEPWIKI_EMBEDDER_TYPE": embedder_type}
+        if embedder_type == "google":
+            gkey = (self._config.get("deepwiki_google_api_key", "")
+                    or self._config.get("google_api_key", ""))
+            if gkey:
+                env["GOOGLE_API_KEY"] = gkey
+        elif embedder_type == "ollama":
+            ohost = (self._config.get("deepwiki_ollama_host", "")
+                     or self._config.get("ollama_base_url", "http://localhost:11434"))
+            if ohost:
+                env["OLLAMA_HOST"] = ohost
         llm_base_url = self._config.get("llm_base_url", "")
         if llm_base_url:
-            env = {
+            env.update({
                 "OPENAI_BASE_URL": llm_base_url,
                 "OPENAI_API_KEY": self._config.get("llm_api_key", ""),
                 "LLM_MODEL": self._config.get("llm_model", ""),
                 "FORCE_DIRECT": "true",
                 "TRUST_ENV": "false",
-            }
+            })
         tiktoken_cache = _best_tiktoken_cache()
         if tiktoken_cache is not None:
             env["TIKTOKEN_CACHE_DIR"] = str(tiktoken_cache.resolve())

@@ -29,6 +29,8 @@ _KEY_MAP = {
     "llmApiKey": "llm_api_key",
     "llmModel": "llm_model",
     "deepwikiEmbedderType": "deepwiki_embedder_type",
+    "deepwikiGoogleApiKey": "deepwiki_google_api_key",
+    "deepwikiOllamaHost": "deepwiki_ollama_host",
     "installDeepwiki": "install_deepwiki",
     "installGitnexus": "install_gitnexus",
     "corsOrigins": "cors_origins",

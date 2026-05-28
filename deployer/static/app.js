@@ -227,6 +227,10 @@ function initConfigForm() {
     installDeepwikiCb.addEventListener('change', syncDeepwikiPorts);
     syncDeepwikiPorts();
   }
+  const embedderSel = $('#deepwiki-embedder-type');
+  if (embedderSel) {
+    embedderSel.addEventListener('change', () => updateEmbedderFields(embedderSel.value));
+  }
   if (installGitnexusCb) {
     installGitnexusCb.addEventListener('change', () => {
       const ports = $('#gitnexus-ports');
@@ -254,7 +258,12 @@ function initConfigForm() {
       if (cfg.portDeepwikiApi)       ($('#port-deepwiki-api')       || {}).value = cfg.portDeepwikiApi;
       if (cfg.portDeepwikiUi)        ($('#port-deepwiki-ui')        || {}).value = cfg.portDeepwikiUi;
       if (cfg.deepwikiPath)          ($('#deepwiki-path')           || {}).value = cfg.deepwikiPath;
-      if (cfg.deepwikiEmbedderType)  ($('#deepwiki-embedder-type')  || {}).value = cfg.deepwikiEmbedderType;
+      if (cfg.deepwikiEmbedderType) {
+        const sel = $('#deepwiki-embedder-type');
+        if (sel) { sel.value = cfg.deepwikiEmbedderType; updateEmbedderFields(cfg.deepwikiEmbedderType); }
+      }
+      if (cfg.deepwikiGoogleApiKey) ($('#deepwiki-google-api-key') || {}).value = cfg.deepwikiGoogleApiKey;
+      if (cfg.deepwikiOllamaHost)   ($('#deepwiki-ollama-host')    || {}).value = cfg.deepwikiOllamaHost;
       if (cfg.portGitnexus)    ($('#port-gitnexus')     || {}).value  = cfg.portGitnexus;
       if (cfg.dbUser)          ($('#db-user')            || {}).value  = cfg.dbUser;
       if (cfg.dbPassword)      ($('#db-password')        || {}).value  = cfg.dbPassword;
@@ -266,6 +275,19 @@ function initConfigForm() {
       if (cfg.corsOrigins)     ($('#cors-origins')       || {}).value  = cfg.corsOrigins;
     })
     .catch(() => {});
+}
+
+function updateEmbedderFields(type) {
+  const googleLabel = $('#dw-google-key-label');
+  const googleInput = $('#deepwiki-google-api-key');
+  const ollamaLabel = $('#dw-ollama-host-label');
+  const ollamaInput = $('#deepwiki-ollama-host');
+  const showGoogle = type === 'google';
+  const showOllama = type === 'ollama';
+  if (googleLabel) googleLabel.style.display = showGoogle ? '' : 'none';
+  if (googleInput) googleInput.style.display = showGoogle ? '' : 'none';
+  if (ollamaLabel) ollamaLabel.style.display = showOllama ? '' : 'none';
+  if (ollamaInput) ollamaInput.style.display = showOllama ? '' : 'none';
 }
 
 function updatePortsVisibility() {
@@ -299,7 +321,9 @@ function collectConfig() {
     portDeepwikiApi:       (($('#port-deepwiki-api')       || {}).value || '8091').trim(),
     portDeepwikiUi:        (($('#port-deepwiki-ui')        || {}).value || '3001').trim(),
     deepwikiPath:          (($('#deepwiki-path')           || {}).value || '').trim(),
-    deepwikiEmbedderType:  (($('#deepwiki-embedder-type')  || {}).value || 'openai').trim(),
+    deepwikiEmbedderType:   (($('#deepwiki-embedder-type')   || {}).value || 'openai').trim(),
+    deepwikiGoogleApiKey:   (($('#deepwiki-google-api-key') || {}).value || '').trim(),
+    deepwikiOllamaHost:     (($('#deepwiki-ollama-host')    || {}).value || '').trim(),
     portGitnexus:    (($('#port-gitnexus')     || {}).value || '7100').trim(),
     reposPath:       (($('#repos-path')        || {}).value || './.repos'),
     portFrontend:    (($('#port-frontend')     || {}).value || '3005'),
