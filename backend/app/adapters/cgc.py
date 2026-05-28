@@ -271,6 +271,8 @@ class CGCAdapter(BaseToolAdapter):
     # When multiple concurrent callers prepare the same path, only one
     # index_repo() job is submitted; the rest await the shared Future.
     _prepare_inflight: dict[tuple[str, str, int], "asyncio.Future[None]"] = {}
+    _indexed_count: int = 0
+    _last_index_error: str | None = None
 
     def __init__(self, base_url: str | None = None) -> None:
         self._cgc = CGCClient(base_url=base_url)
@@ -291,6 +293,8 @@ class CGCAdapter(BaseToolAdapter):
         return ToolHealth(
             is_healthy=healthy,
             container_status="running" if healthy else "unreachable",
+            indexed_repos=self._indexed_count,
+            last_index_error=self._last_index_error,
         )
 
     async def prepare(self, request: AnalysisRequest) -> None:
@@ -308,12 +312,15 @@ class CGCAdapter(BaseToolAdapter):
         try:
             job_id = await self._cgc.index_repo(request.repo_local_path)
             await self._cgc.wait_for_index(job_id)
+            CGCAdapter._indexed_count += 1
+            CGCAdapter._last_index_error = None
             fut.set_result(None)
         except asyncio.CancelledError:
             if not fut.done():
                 fut.cancel()
             raise
         except Exception as exc:
+            CGCAdapter._last_index_error = str(exc)
             if not fut.done():
                 fut.set_exception(exc)
             raise

@@ -84,6 +84,7 @@ class GitNexusAdapter(BaseToolAdapter):
         ]
 
     async def health_check(self) -> ToolHealth:
+        n_indexed = len(self._indexed_repo_by_path)
         try:
             resp = await self.client.get("/api/info")
             if resp.status_code < 500:
@@ -92,6 +93,7 @@ class GitNexusAdapter(BaseToolAdapter):
                     is_healthy=True,
                     container_status="running",
                     version=data.get("version"),
+                    indexed_repos=n_indexed,
                 )
         except Exception:
             pass
@@ -100,17 +102,23 @@ class GitNexusAdapter(BaseToolAdapter):
         try:
             resp = await self.client.post("/api/analyze", json={})
             if resp.status_code < 500:
-                return ToolHealth(is_healthy=True, container_status="running")
+                return ToolHealth(
+                    is_healthy=True,
+                    container_status="running",
+                    indexed_repos=n_indexed,
+                )
             return ToolHealth(
                 is_healthy=False,
                 container_status="unhealthy",
                 last_check=f"HTTP {resp.status_code}",
+                indexed_repos=n_indexed,
             )
         except Exception as exc:
             return ToolHealth(
                 is_healthy=False,
                 container_status="error",
                 last_check=str(exc),
+                indexed_repos=n_indexed,
             )
 
     async def prepare(

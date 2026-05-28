@@ -372,5 +372,62 @@ class ComplexityValueTests(unittest.TestCase):
         self.assertEqual(_complexity_value({"complexity": 8.9}), 8)
 
 
+class CGCAdapterHealthTrackingTests(unittest.IsolatedAsyncioTestCase):
+    """health_check() reflects real indexed_count and last_index_error state."""
+
+    def setUp(self) -> None:
+        from app.adapters.cgc import CGCAdapter
+        CGCAdapter._indexed_count = 0
+        CGCAdapter._last_index_error = None
+        CGCAdapter._prepare_inflight.clear()
+
+    def tearDown(self) -> None:
+        from app.adapters.cgc import CGCAdapter
+        CGCAdapter._indexed_count = 0
+        CGCAdapter._last_index_error = None
+        CGCAdapter._prepare_inflight.clear()
+
+    async def test_health_check_reports_zero_before_prepare(self) -> None:
+        from app.adapters.cgc import CGCAdapter
+        adapter = CGCAdapter(base_url="http://cgc:7072")
+        adapter._cgc.is_healthy = unittest.mock.AsyncMock(return_value=True)
+        health = await adapter.health_check()
+        self.assertEqual(health.indexed_repos, 0)
+        self.assertIsNone(health.last_index_error)
+
+    async def test_indexed_count_increments_on_successful_prepare(self) -> None:
+        from app.adapters.cgc import CGCAdapter
+        from app.adapters.base import AnalysisRequest
+
+        adapter = CGCAdapter(base_url="http://cgc:7072")
+        adapter._cgc.index_repo = unittest.mock.AsyncMock(return_value="job-1")
+        adapter._cgc.wait_for_index = unittest.mock.AsyncMock(return_value=True)
+        adapter._cgc.is_healthy = unittest.mock.AsyncMock(return_value=True)
+
+        await adapter.prepare(AnalysisRequest(repo_local_path="/repo/x"))
+        health = await adapter.health_check()
+        self.assertEqual(health.indexed_repos, 1)
+        self.assertIsNone(health.last_index_error)
+
+    async def test_last_index_error_set_on_failed_prepare(self) -> None:
+        from app.adapters.cgc import CGCAdapter, CGCIndexFailed
+        from app.adapters.base import AnalysisRequest
+
+        adapter = CGCAdapter(base_url="http://cgc:7072")
+        adapter._cgc.index_repo = unittest.mock.AsyncMock(return_value="job-err")
+        adapter._cgc.wait_for_index = unittest.mock.AsyncMock(
+            side_effect=CGCIndexFailed("indexing failed")
+        )
+        adapter._cgc.is_healthy = unittest.mock.AsyncMock(return_value=True)
+
+        with self.assertRaises(CGCIndexFailed):
+            await adapter.prepare(AnalysisRequest(repo_local_path="/repo/y"))
+
+        health = await adapter.health_check()
+        self.assertEqual(health.indexed_repos, 0)
+        self.assertIsNotNone(health.last_index_error)
+        self.assertIn("indexing failed", health.last_index_error)
+
+
 if __name__ == "__main__":
     unittest.main()

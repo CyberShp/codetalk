@@ -183,5 +183,44 @@ class GitNexusAdapterProgressParsingTests(unittest.IsolatedAsyncioTestCase):
         self.assertIsInstance(recorded[0], int)
 
 
+class GitNexusHealthIndexedReposTests(unittest.IsolatedAsyncioTestCase):
+    """health_check() indexed_repos reflects real _indexed_repo_by_path cache."""
+
+    def setUp(self) -> None:
+        GitNexusAdapter._indexed_repo_by_path.clear()
+
+    def tearDown(self) -> None:
+        GitNexusAdapter._indexed_repo_by_path.clear()
+
+    async def test_health_check_reports_zero_when_nothing_indexed(self) -> None:
+        adapter = GitNexusAdapter(base_url="http://gitnexus:7100")
+        adapter._client = _FakeAsyncClient(
+            get_responses=[_FakeResponse(200, {"version": "1.0"})],
+        )
+        health = await adapter.health_check()
+        self.assertEqual(health.indexed_repos, 0)
+
+    async def test_health_check_reports_actual_count_after_indexing(self) -> None:
+        GitNexusAdapter._indexed_repo_by_path[("http://gitnexus:7100", "/repo/a")] = "a"
+        GitNexusAdapter._indexed_repo_by_path[("http://gitnexus:7100", "/repo/b")] = "b"
+        adapter = GitNexusAdapter(base_url="http://gitnexus:7100")
+        adapter._client = _FakeAsyncClient(
+            get_responses=[_FakeResponse(200, {"version": "1.0"})],
+        )
+        health = await adapter.health_check()
+        self.assertEqual(health.indexed_repos, 2)
+
+    async def test_health_check_reports_count_even_when_unhealthy(self) -> None:
+        GitNexusAdapter._indexed_repo_by_path[("http://gitnexus:7100", "/repo/c")] = "c"
+        adapter = GitNexusAdapter(base_url="http://gitnexus:7100")
+        adapter._client = _FakeAsyncClient(
+            get_responses=[],
+            post_responses=[_FakeResponse(503, {})],
+        )
+        health = await adapter.health_check()
+        self.assertFalse(health.is_healthy)
+        self.assertEqual(health.indexed_repos, 1)
+
+
 if __name__ == "__main__":
     unittest.main()
