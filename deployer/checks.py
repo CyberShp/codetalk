@@ -1,6 +1,7 @@
 """Prerequisite checks for Docker Compose, Kubernetes, and Native deployment modes."""
 
 import asyncio
+import errno
 import re
 import shutil
 import socket
@@ -38,13 +39,44 @@ async def _run_cmd(*args: str) -> tuple[int, str, str]:
 
 def _check_port_free(port: int) -> bool:
     """Return True if the port can be bound (i.e. is not in use)."""
+    return _probe_port_bind(port)["available"]
+
+
+def _classify_bind_error(exc: OSError) -> str:
+    """Return a stable reason for a socket bind failure."""
+    winerror = getattr(exc, "winerror", None)
+    if exc.errno == errno.EADDRINUSE or winerror == 10048:
+        return "in_use"
+    if exc.errno in (errno.EACCES, errno.EPERM) or winerror == 10013:
+        return "access_denied"
+    return "unavailable"
+
+
+def _probe_port_bind(port: int) -> dict:
+    """Probe whether a TCP port can be bound and preserve the failure reason."""
     with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
         s.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
         try:
             s.bind(("0.0.0.0", port))
-            return True
-        except OSError:
-            return False
+            return {"available": True, "reason": "", "error": ""}
+        except OSError as exc:
+            return {
+                "available": False,
+                "reason": _classify_bind_error(exc),
+                "error": str(exc),
+            }
+
+
+def _format_port_unavailable_message(port: int, probe: dict, pid_info: str = "") -> str:
+    reason = probe.get("reason", "")
+    if reason == "in_use":
+        return f"Port {port} is already in use{pid_info}"
+    if reason == "access_denied":
+        return (
+            f"Port {port} cannot be bound. On Windows this can happen when the "
+            "port is in an excluded/reserved range."
+        )
+    return f"Port {port} cannot be bound"
 
 
 async def _check_docker() -> dict:
@@ -202,7 +234,8 @@ def _check_ports(
     )
     results = []
     for port in ports:
-        if _check_port_free(port):
+        probe = _probe_port_bind(port)
+        if probe["available"]:
             results.append(
                 _make_result(f"Port {port}", "pass", f"Port {port} is available")
             )
@@ -216,7 +249,7 @@ def _check_ports(
                 _make_result(
                     f"Port {port}",
                     "fail",
-                    f"Port {port} is already in use{pid_info}",
+                    _format_port_unavailable_message(port, probe, pid_info),
                     fix=f"{hint} (port {port})",
                 )
             )

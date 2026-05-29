@@ -18,6 +18,8 @@ VENDOR_DIR = DEPLOYER_DIR / "vendor"
 if str(DEPLOYER_DIR) not in sys.path:
     sys.path.insert(0, str(DEPLOYER_DIR))
 
+from checks import _format_port_unavailable_message, _probe_port_bind  # noqa: E402
+
 try:
     import cgc_launcher as _cgc  # noqa: E402
     _CGC_DEFAULT_PORT: int = _cgc.CGC_DEFAULT_PORT
@@ -872,6 +874,7 @@ class NativeDeployer:
         conflicts: list[dict] = []
         own_pid = os.getpid()
         for port in ports:
+            found_listener = False
             if sys.platform == "win32":
                 try:
                     scan = await asyncio.create_subprocess_exec(
@@ -902,6 +905,7 @@ class NativeDeployer:
                             proc_name = first_line.split(",")[0].strip('"') or pid_str
                         except Exception:
                             pass
+                        found_listener = True
                         conflicts.append({
                             "port": port,
                             "pid": pid,
@@ -935,6 +939,7 @@ class NativeDeployer:
                             proc_name = name_out.decode(errors="replace").strip() or pid_str
                         except Exception:
                             pass
+                        found_listener = True
                         conflicts.append({
                             "port": port,
                             "pid": pid,
@@ -943,6 +948,17 @@ class NativeDeployer:
                         })
                 except (asyncio.TimeoutError, Exception):
                     pass
+            if not found_listener:
+                probe = _probe_port_bind(port)
+                if not probe["available"]:
+                    conflicts.append({
+                        "port": port,
+                        "pid": None,
+                        "process_name": "unavailable",
+                        "is_own": False,
+                        "reason": probe.get("reason", "unavailable"),
+                        "message": _format_port_unavailable_message(port, probe),
+                    })
         return conflicts
 
     async def _release_ports(self, ports: list[int], step: int, force_takeover: bool = False) -> None:

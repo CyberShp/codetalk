@@ -75,9 +75,9 @@ class ConfigStoreTests(unittest.TestCase):
                 saved = config_store.load_config()
                 frontend_cfg = config_store.load_config_for_frontend()
 
-        self.assertEqual(saved["gitnexus_port"], "7111")
+        self.assertEqual(saved["gitnexus_port"], 7111)
         self.assertNotIn("portGitnexus", saved)
-        self.assertEqual(frontend_cfg["portGitnexus"], "7111")
+        self.assertEqual(frontend_cfg["portGitnexus"], 7111)
 
 
 class NativeDeployerTests(unittest.IsolatedAsyncioTestCase):
@@ -156,6 +156,48 @@ class NativeDeployerTests(unittest.IsolatedAsyncioTestCase):
 
         self.assertIn("http://localhost:7111/api/info", calls)
         self.assertTrue(any(item["name"] == "gitnexus" and item["healthy"] for item in results))
+
+    async def test_scan_port_conflicts_reports_bind_denied_without_listener(self) -> None:
+        class FakeScan:
+            async def communicate(self):
+                return b"", b""
+
+        async def fake_create_subprocess_exec(*args, **kwargs):
+            return FakeScan()
+
+        deployer = NativeDeployer({"gitnexus_port": 7100}, asyncio.Queue())
+
+        with (
+            patch("deployers.native.sys.platform", "win32"),
+            patch("deployers.native.asyncio.create_subprocess_exec", fake_create_subprocess_exec),
+            patch(
+                "deployers.native._probe_port_bind",
+                return_value={
+                    "available": False,
+                    "reason": "access_denied",
+                    "error": "access denied",
+                },
+                create=True,
+            ),
+        ):
+            conflicts = await deployer._scan_port_conflicts([7100])
+
+        self.assertEqual(
+            conflicts,
+            [
+                {
+                    "port": 7100,
+                    "pid": None,
+                    "process_name": "unavailable",
+                    "is_own": False,
+                    "reason": "access_denied",
+                    "message": (
+                        "Port 7100 cannot be bound. On Windows this can happen "
+                        "when the port is in an excluded/reserved range."
+                    ),
+                }
+            ],
+        )
 
 
 if __name__ == "__main__":

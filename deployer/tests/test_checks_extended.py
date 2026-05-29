@@ -137,3 +137,29 @@ def test_check_ports_with_occupied_port_not_own():
         else:
             results = checks._check_ports(ports=[port], mode="native", own_ports=set())
             assert any(r["status"] == "fail" for r in results)
+
+
+def test_check_ports_reports_bind_denied_separately(monkeypatch):
+    """Access-denied bind failures are not necessarily process conflicts."""
+
+    class DeniedSocket:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, exc_type, exc, tb):
+            return None
+
+        def setsockopt(self, *args):
+            return None
+
+        def bind(self, *args):
+            raise PermissionError(13, "access denied")
+
+    monkeypatch.setattr(checks.socket, "socket", lambda *args, **kwargs: DeniedSocket())
+    monkeypatch.setattr(checks, "_identify_port_user", lambda port: "")
+
+    result = checks._check_ports(ports=[7100], mode="native", own_ports=set())[0]
+
+    assert result["status"] == "fail"
+    assert "already in use" not in result["message"]
+    assert "cannot be bound" in result["message"]
