@@ -65,6 +65,23 @@ class TestStartToolSuccess:
         assert body["success"] is True
         assert "gitnexus" in body["message"]
 
+    async def test_start_failure_includes_process_last_error(self):
+        """Failed starts should surface ProcessManager.last_error to the UI."""
+        mock_pm = MagicMock()
+        mock_pm.start = AsyncMock(return_value=False)
+        managed = MagicMock()
+        managed.last_error = "Working directory does not exist: X"
+        mock_pm._processes = {"deepwiki-api": managed}
+
+        app = _make_app(mock_pm)
+        async with AsyncClient(
+            transport=ASGITransport(app=app), base_url="http://test"
+        ) as client:
+            resp = await client.post("/api/tools/deepwiki-api/start")
+
+        assert resp.status_code == 400
+        assert "Working directory does not exist: X" in resp.json()["detail"]
+
 
 class TestRestartToolSuccess:
     async def test_restart_returns_success(self, tools_client):
@@ -75,3 +92,33 @@ class TestRestartToolSuccess:
         body = resp.json()
         assert body["success"] is True
         assert "gitnexus" in body["message"]
+
+
+async def test_deepwiki_registry_uses_venv_launcher_and_declared_ports(tmp_path, monkeypatch):
+    """DeepWiki native process config should start the real venv launcher on configured ports."""
+    from app.config import settings
+    from app.services import process_manager
+
+    deepwiki_dir = tmp_path / "deepwiki-open"
+    scripts_dir = "Scripts" if process_manager.sys.platform == "win32" else "bin"
+    python_name = "python.exe" if process_manager.sys.platform == "win32" else "python"
+    venv_python = deepwiki_dir / ".venv" / scripts_dir / python_name
+    venv_python.parent.mkdir(parents=True)
+    venv_python.write_text("", encoding="utf-8")
+    (deepwiki_dir / "package.json").write_text("{}", encoding="utf-8")
+
+    monkeypatch.setattr(settings, "deepwiki_path", str(deepwiki_dir))
+    monkeypatch.setattr(settings, "deepwiki_api_port", 8091)
+    monkeypatch.setattr(settings, "deepwiki_ui_port", 3001)
+
+    registry = process_manager._build_registry()
+
+    api = registry["deepwiki-api"]
+    assert api["command"][0] == str(venv_python)
+    assert api["command"][1].endswith("deepwiki_launcher.py")
+    assert api["env"]["DEEPWIKI_API_PORT"] == "8091"
+    assert api["env"]["PORT"] == "8091"
+
+    ui = registry["deepwiki-ui"]
+    assert ui["env"]["PORT"] == "3001"
+    assert ui["env"]["SERVER_BASE_URL"] == "http://localhost:8091"

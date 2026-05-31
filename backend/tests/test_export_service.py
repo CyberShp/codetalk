@@ -185,6 +185,70 @@ class TestExportWorkspaceReports:
             assert len(names) == 1
             assert "map.md" in names[0]
 
+    async def test_defaults_to_latest_task_reports_only(self, sqlite_db):
+        """Workspace export should not bundle reports from every historical task."""
+        ws_id = "ws-exp-latest-task"
+        old_time = "2026-01-01T00:00:00+00:00"
+        new_time = "2026-01-02T00:00:00+00:00"
+        async with aiosqlite.connect(sqlite_db) as db:
+            db.row_factory = aiosqlite.Row
+            await db.execute(
+                "INSERT INTO workspaces (id, name, repo_path, indexed, created_at, updated_at) "
+                "VALUES (?, 'exp', '/r', 1, ?, ?)",
+                (ws_id, old_time, new_time),
+            )
+            await db.execute(
+                "INSERT INTO workspace_reports "
+                "(id, workspace_id, task_id, report_type, title, content, status, created_at) "
+                "VALUES ('old-r', ?, 'old-task', 'module_map', 'old.md', '# Old', 'completed', ?)",
+                (ws_id, old_time),
+            )
+            await db.execute(
+                "INSERT INTO workspace_reports "
+                "(id, workspace_id, task_id, report_type, title, content, status, created_at) "
+                "VALUES ('new-r', ?, 'new-task', 'module_map', 'new.md', '# New', 'completed', ?)",
+                (ws_id, new_time),
+            )
+            await db.commit()
+
+            data, filename, _ = await export_workspace_reports(ws_id, "md", db)
+
+        assert "new-task" in filename
+        with zipfile.ZipFile(io.BytesIO(data)) as zf:
+            assert zf.namelist() == ["new.md"]
+            assert zf.read("new.md").decode("utf-8") == "# New"
+
+    async def test_filters_to_requested_task_id(self, sqlite_db):
+        ws_id = "ws-exp-specific-task"
+        now = datetime.now(timezone.utc).isoformat()
+        async with aiosqlite.connect(sqlite_db) as db:
+            db.row_factory = aiosqlite.Row
+            await db.execute(
+                "INSERT INTO workspaces (id, name, repo_path, indexed, created_at, updated_at) "
+                "VALUES (?, 'exp', '/r', 1, ?, ?)",
+                (ws_id, now, now),
+            )
+            for report_id, task_id, title in [
+                ("a", "task-a", "a.md"),
+                ("b", "task-b", "b.md"),
+            ]:
+                await db.execute(
+                    "INSERT INTO workspace_reports "
+                    "(id, workspace_id, task_id, report_type, title, content, status, created_at) "
+                    "VALUES (?, ?, ?, 'module_map', ?, ?, 'completed', ?)",
+                    (report_id, ws_id, task_id, title, f"# {task_id}", now),
+                )
+            await db.commit()
+
+            data, filename, _ = await export_workspace_reports(
+                ws_id, "md", db, task_id="task-a"
+            )
+
+        assert "task-a" in filename
+        with zipfile.ZipFile(io.BytesIO(data)) as zf:
+            assert zf.namelist() == ["a.md"]
+            assert zf.read("a.md").decode("utf-8") == "# task-a"
+
     async def test_raises_when_no_completed(self, sqlite_db):
         ws_id = "ws-exp2"
         now = datetime.now(timezone.utc).isoformat()

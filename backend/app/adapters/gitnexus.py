@@ -31,6 +31,198 @@ _POLL_INTERVAL = 2  # seconds between job status polls
 _POLL_TIMEOUT = 1800  # max seconds to wait for analysis (30 min for large repos)
 
 
+# ---------------------------------------------------------------------------
+# /api/repos response parsing (Round 2/3 bug: real service returns a top-level
+# array with duplicate repo names like two `spdk`, so detection must tolerate
+# multiple shapes AND match by normalized path — not just by name).
+# ---------------------------------------------------------------------------
+
+_REPO_NAME_KEYS = ("name", "repo", "repoName", "repo_name", "id")
+_REPO_PATH_KEYS = (
+    "path", "root", "indexRoot", "index_root", "rootPath", "root_path",
+    "dir", "directory", "absolutePath", "absolute_path", "repoPath",
+    "repo_path", "localPath", "local_path",
+)
+
+
+def _looks_like_path(s: str) -> bool:
+    return isinstance(s, str) and ("/" in s or "\\" in s)
+
+
+def _basename(p: object) -> str:
+    """Separator-agnostic basename — `pathlib.Path` on Linux won't split the
+    Windows backslash paths GitNexus reports, so do it manually."""
+    if not p:
+        return ""
+    import re as _re
+    parts = [seg for seg in _re.split(r"[\\/]+", str(p)) if seg]
+    return parts[-1] if parts else ""
+
+
+def _norm_repo_path(p: str) -> str:
+    """Cross-platform path normalisation for comparison (case-insensitive)."""
+    if not p:
+        return ""
+    return str(p).replace("\\", "/").rstrip("/").lower()
+
+
+def _extract_repo_entries(payload: object) -> list:
+    """Pull the repo list out of whatever shape /api/repos returned.
+
+    Handles: a bare top-level list, ``{"repos": [...]}`` / ``{"data": [...]}``
+    wrappers, and a single repo object.
+    """
+    if isinstance(payload, list):
+        return payload
+    if isinstance(payload, dict):
+        for key in ("repos", "data", "items", "results"):
+            val = payload.get(key)
+            if isinstance(val, list):
+                return val
+        if any(k in payload for k in _REPO_NAME_KEYS + _REPO_PATH_KEYS):
+            return [payload]
+    return []
+
+
+def _entry_names(entry: object) -> list[str]:
+    if isinstance(entry, str):
+        return [entry, _basename(entry)] if _looks_like_path(entry) else [entry]
+    if isinstance(entry, dict):
+        out: list[str] = []
+        for k in _REPO_NAME_KEYS:
+            v = entry.get(k)
+            if isinstance(v, str) and v:
+                out.append(v)
+        for k in _REPO_PATH_KEYS:
+            v = entry.get(k)
+            if isinstance(v, str) and v:
+                out.append(_basename(v))
+        return out
+    return []
+
+
+def _entry_paths(entry: object) -> list[str]:
+    if isinstance(entry, str):
+        return [entry] if _looks_like_path(entry) else []
+    if isinstance(entry, dict):
+        out: list[str] = []
+        for k in _REPO_PATH_KEYS:
+            v = entry.get(k)
+            if isinstance(v, str) and v:
+                out.append(v)
+        for v in entry.values():  # any other path-looking value
+            if isinstance(v, str) and _looks_like_path(v) and v not in out:
+                out.append(v)
+        return out
+    return []
+
+
+def _path_matches(target: str, candidate: str) -> bool:
+    """True when *candidate* refers to the same repo dir as *target*.
+
+    Compares path *components* from the tail: the basenames must match and the
+    shorter path must be a component-wise suffix of the longer one.  This
+    tolerates host-vs-container prefix differences (``/b/spdk`` ==
+    ``/host/a/b/spdk``) while never cross-matching two distinct same-named
+    repos (``D:\\...\\spdk`` vs ``E:\\...\\spdk``).
+    """
+    t, c = _norm_repo_path(target), _norm_repo_path(candidate)
+    if not t or not c:
+        return False
+    if t == c:
+        return True
+    tp = [x for x in t.split("/") if x]
+    cp = [x for x in c.split("/") if x]
+    if not tp or not cp or tp[-1] != cp[-1]:
+        return False
+    n = min(len(tp), len(cp))
+    return tp[-n:] == cp[-n:]
+
+
+def _entry_id(entry: object) -> str | None:
+    if isinstance(entry, dict):
+        for k in ("id", "repoId", "repo_id", "uuid"):
+            v = entry.get(k)
+            if isinstance(v, (str, int)) and str(v):
+                return str(v)
+    return None
+
+
+def _entry_stats(entry: object) -> dict:
+    """Best-effort extraction of {node_count, edge_count, file_count}."""
+    out: dict = {"node_count": None, "edge_count": None, "file_count": None}
+    if not isinstance(entry, dict):
+        return out
+    stats = entry.get("stats") if isinstance(entry.get("stats"), dict) else entry
+    for dst, keys in (
+        ("node_count", ("nodes", "node_count", "nodeCount")),
+        ("edge_count", ("edges", "edge_count", "edgeCount", "relationships")),
+        ("file_count", ("files", "file_count", "fileCount")),
+    ):
+        for k in keys:
+            v = stats.get(k)
+            if isinstance(v, int):
+                out[dst] = v
+                break
+    return out
+
+
+def resolve_indexed_repo(payload: object, tool_repo_path: str) -> dict | None:
+    """Resolve the indexed GitNexus repo *descriptor* for *tool_repo_path*.
+
+    Returns ``{name, path, id, node_count, edge_count, file_count, ambiguous}``
+    or None.  ``ambiguous`` is True when more than one indexed repo shares the
+    matched name — in that case ``GET /api/graph?repo=<name>`` cannot be trusted
+    to return the right repo, so the caller must disambiguate/verify (Round 4
+    P1: graph fetched the wrong same-named repo).
+    """
+    entries = _extract_repo_entries(payload)
+    matched = None
+    matched_path = None
+    # 1. path match (preferred — the only reliable disambiguator)
+    for entry in entries:
+        for p in _entry_paths(entry):
+            if _path_matches(tool_repo_path, p):
+                matched, matched_path = entry, p
+                break
+        if matched is not None:
+            break
+    # 2. unique basename fallback
+    if matched is None:
+        base = _basename(tool_repo_path)
+        basename_matches = [e for e in entries if base in _entry_names(e)]
+        if len(basename_matches) == 1:
+            matched = basename_matches[0]
+            paths = _entry_paths(matched)
+            matched_path = paths[0] if paths else None
+        else:
+            return None
+
+    names = _entry_names(matched)
+    target_base = _basename(tool_repo_path)
+    name = (
+        target_base
+        if target_base in names
+        else (names[0] if names else target_base)
+    )
+    # ambiguity: how many indexed repos share this name?
+    same_name = sum(1 for e in entries if name in _entry_names(e))
+    descriptor = {
+        "name": name,
+        "path": matched_path,
+        "id": _entry_id(matched),
+        "ambiguous": same_name > 1,
+        **_entry_stats(matched),
+    }
+    return descriptor
+
+
+def resolve_indexed_repo_name(payload: object, tool_repo_path: str) -> str | None:
+    """Back-compat thin wrapper returning just the resolved repo name."""
+    descriptor = resolve_indexed_repo(payload, tool_repo_path)
+    return descriptor["name"] if descriptor else None
+
+
 class GitNexusAdapter(BaseToolAdapter):
     _indexed_repo_by_path: dict[tuple[str, str], str] = {}
     _prepare_locks: dict[tuple[str, str, int], asyncio.Lock] = {}
@@ -39,6 +231,9 @@ class GitNexusAdapter(BaseToolAdapter):
         self.base_url = base_url
         self._client: httpx.AsyncClient | None = None
         self._repo_name: str = ""
+        # Resolved on-disk path of the indexed repo — used to disambiguate
+        # same-named repos on graph/embed queries (Round 4 P1).
+        self._repo_index_path: str = ""
 
     @classmethod
     def _prepare_lock_for(cls, base_url: str, tool_repo_path: str) -> asyncio.Lock:
@@ -146,6 +341,24 @@ class GitNexusAdapter(BaseToolAdapter):
             if cached_repo_name:
                 self.clear_cached_repo(self.base_url, tool_repo_path)
 
+            # P0-002 / Round 2-3: the in-process cache is empty after a backend
+            # restart or when a different adapter instance indexed the repo.
+            # Before paying for a full re-index (3-15 min), ask GitNexus and
+            # match by NORMALIZED PATH (the real /api/repos returns a top-level
+            # array with duplicate `spdk` names, so name-only matching is unsafe).
+            resolved = await self._resolve_repo_for_path(tool_repo_path)
+            if resolved:
+                self._repo_name = resolved["name"]
+                self._repo_index_path = resolved.get("path") or ""
+                self._indexed_repo_by_path[cache_key] = self._repo_name
+                logger.info(
+                    "gitnexus: repo already indexed as %s (resolved by path %s), "
+                    "skipping analyze",
+                    self._repo_name, resolved.get("path"),
+                )
+                asyncio.ensure_future(self._trigger_embed())
+                return
+
             resp = await self.client.post(
                 "/api/analyze",
                 json={"path": tool_repo_path},
@@ -239,14 +452,26 @@ class GitNexusAdapter(BaseToolAdapter):
             resp = await self.client.get("/api/repos", params={"repo": repo_name}, timeout=10)
             if resp.status_code != 200:
                 return False
-            repos = resp.json().get("repos", [])
-            names = {
-                repo if isinstance(repo, str) else (repo.get("name") or repo.get("repo") or "")
-                for repo in repos
-            }
-            return repo_name in names
+            entries = _extract_repo_entries(resp.json())
+            return any(repo_name in _entry_names(entry) for entry in entries)
         except Exception:
             return False
+
+    async def _resolve_repo_for_path(self, tool_repo_path: str) -> dict | None:
+        """Resolve the indexed repo *descriptor* for *tool_repo_path* via /api/repos.
+
+        Matches by normalized path so duplicate repo names cannot cause a
+        re-index of an already-indexed repo (Round 2/3 bug) and so graph/embed
+        queries can disambiguate same-named repos (Round 4 P1).
+        """
+        try:
+            resp = await self.client.get("/api/repos", timeout=10)
+            if resp.status_code != 200:
+                return None
+            return resolve_indexed_repo(resp.json(), tool_repo_path)
+        except Exception as exc:
+            logger.debug("gitnexus: repo resolve by path failed (non-fatal): %s", exc)
+            return None
 
     async def _trigger_embed(self) -> None:
         """Start embedding job for the indexed repo (non-blocking).
@@ -257,6 +482,10 @@ class GitNexusAdapter(BaseToolAdapter):
         params: dict[str, str] = {}
         if self._repo_name:
             params["repo"] = self._repo_name
+        # Best-effort disambiguation for same-named repos (Round 4 P1); GitNexus
+        # ignores the param if unsupported.
+        if self._repo_index_path:
+            params["path"] = self._repo_index_path
         try:
             resp = await self.client.post("/api/embed", params=params, timeout=10)
             if resp.status_code == 202:
@@ -274,6 +503,9 @@ class GitNexusAdapter(BaseToolAdapter):
         params: dict[str, str] = {}
         if self._repo_name:
             params["repo"] = self._repo_name
+        # Best-effort disambiguation for same-named repos (Round 4 P1).
+        if self._repo_index_path:
+            params["path"] = self._repo_index_path
 
         resp = await self.client.get(
             "/api/graph",

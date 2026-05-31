@@ -136,16 +136,25 @@ function ReportCard({ report, wsId }: { report: WorkspaceReportMeta; wsId: strin
     traceability: "需求-设计-代码追踪",
   };
 
+  const [loadError, setLoadError] = useState<string | null>(null);
+  const displayTitle = report.title?.trim() || LABELS[report.report_type] || report.report_type;
+
   const handleToggle = async () => {
     const next = !expanded;
     setExpanded(next);
+    // Re-fetch when opening if we have neither content nor a prior error, so a
+    // failed first load can be retried instead of silently staying blank.
     if (next && content === null && !loadingContent) {
       setLoadingContent(true);
+      setLoadError(null);
       try {
         const full = await api.workspaces.report(wsId, report.id);
-        setContent(full.content);
-      } catch {
-        setContent("（内容加载失败）");
+        // Distinguish "loaded but empty" (failed/partial report) from "loaded
+        // with body" so the card never looks like it just didn't open.
+        setContent(full.content ?? "");
+      } catch (e) {
+        const msg = e instanceof Error ? e.message : String(e);
+        setLoadError(`内容加载失败：${msg}`);
       } finally {
         setLoadingContent(false);
       }
@@ -161,7 +170,7 @@ function ReportCard({ report, wsId }: { report: WorkspaceReportMeta; wsId: strin
         <div className="flex items-center gap-2">
           <FileText size={16} className="text-primary shrink-0" />
           <span className="font-medium text-sm text-on-surface">
-            {LABELS[report.report_type] ?? report.report_type}
+            {displayTitle}
           </span>
         </div>
         {expanded ? (
@@ -176,10 +185,27 @@ function ReportCard({ report, wsId }: { report: WorkspaceReportMeta; wsId: strin
             <div className="flex justify-center mt-3">
               <Loader2 size={16} className="animate-spin text-primary" />
             </div>
+          ) : loadError ? (
+            <div className="mt-3 text-xs text-error">
+              {loadError}
+              <button
+                onClick={handleToggle}
+                className="ml-2 underline hover:text-on-surface"
+              >
+                重试
+              </button>
+            </div>
+          ) : content !== null && content.trim() === "" ? (
+            <div className="mt-3 text-xs text-on-surface-variant">
+              {`该报告无正文内容（状态：${report.status}）。可能因截断或证据不足被标记为 partial/failed。`}
+            </div>
           ) : (
-            <pre className="mt-3 text-xs text-on-surface-variant whitespace-pre-wrap leading-relaxed font-mono overflow-auto max-h-[500px]">
-              {content ?? "（暂无内容）"}
-            </pre>
+            <div className="mt-3 max-h-[560px] overflow-auto rounded-lg bg-surface-container-lowest/40 p-4">
+              <MarkdownRenderer
+                content={content ?? "（暂无内容）"}
+                enableNumericCitations={false}
+              />
+            </div>
           )}
         </div>
       )}
@@ -676,10 +702,7 @@ export default function WorkspaceDetailPage() {
     setShowAnalysisModal(true);
   };
 
-  const handleAnalysisStarted = (_info: {
-    analysis_units?: number | null;
-    evidence_cards?: number | null;
-  }) => {
+  const handleAnalysisStarted = () => {
     setShowAnalysisModal(false);
     setAnalyzing(true);
     setAnalyzeStatus("running");
@@ -900,22 +923,20 @@ export default function WorkspaceDetailPage() {
             </div>
           )}
           {(() => {
-              // Export is always workspace-wide; label honestly when it spans multiple buckets
-              const exportsMultipleBuckets =
-                versions.length > 1 || (versions.length > 0 && legacyReports.length > 0);
+              const exportTaskId =
+                selectedVersionTaskId ??
+                versions[0]?.task_id ??
+                (legacyReports.length > 0 ? "__legacy__" : null);
               return displayReports.some((r) => r.status === "completed") ? (
                 <div className="flex items-center gap-2 mb-4">
-                  <span
-                    className="text-xs text-on-surface-variant"
-                    title={exportsMultipleBuckets ? "当前导出包含该工作空间所有版本的已完成报告" : undefined}
-                  >
-                    {exportsMultipleBuckets ? "导出（全版本）：" : "导出报告："}
+                  <span className="text-xs text-on-surface-variant">
+                    导出当前版本：
                   </span>
                   {(["md", "docx", "xml"] as const).map((fmt) => (
                     <button
                       key={fmt}
-                      onClick={() => window.open(api.workspaces.exportUrl(wsId, fmt), "_blank")}
-                      title={exportsMultipleBuckets ? `导出所有版本的已完成报告（${fmt.toUpperCase()}）` : undefined}
+                      onClick={() => window.open(api.workspaces.exportUrl(wsId, fmt, exportTaskId), "_blank")}
+                      title={`仅导出当前选择版本的已完成报告（${fmt.toUpperCase()}）`}
                       className="flex items-center gap-1 px-2.5 py-1 text-xs rounded-lg border border-outline-variant/30 text-on-surface-variant hover:bg-surface-container hover:text-on-surface transition-colors uppercase"
                     >
                       <Download size={11} />
@@ -944,7 +965,11 @@ export default function WorkspaceDetailPage() {
           ) : (
             <div className="space-y-3">
               {displayReports.map((report) => (
-                <ReportCard key={report.id} report={report} wsId={wsId} />
+                <ReportCard
+                  key={`${report.task_id ?? "legacy"}:${report.id ?? report.report_type}`}
+                  report={report}
+                  wsId={wsId}
+                />
               ))}
             </div>
           )}

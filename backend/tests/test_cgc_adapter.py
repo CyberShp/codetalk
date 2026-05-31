@@ -3,10 +3,13 @@
 import asyncio
 import unittest
 import unittest.mock
+from pathlib import Path
 
 import httpx
 
 from app.adapters.cgc import (
+    CGCAdapter,
+    CGCCLIClient,
     CGCClient,
     CGCIndexFailed,
     CGCQueryError,
@@ -419,6 +422,9 @@ class CGCAdapterHealthTrackingTests(unittest.IsolatedAsyncioTestCase):
             side_effect=CGCIndexFailed("indexing failed")
         )
         adapter._cgc.is_healthy = unittest.mock.AsyncMock(return_value=True)
+        adapter._cli.index_repo = unittest.mock.AsyncMock(
+            side_effect=CGCIndexFailed("cli indexing failed")
+        )
 
         with self.assertRaises(CGCIndexFailed):
             await adapter.prepare(AnalysisRequest(repo_local_path="/repo/y"))
@@ -426,7 +432,88 @@ class CGCAdapterHealthTrackingTests(unittest.IsolatedAsyncioTestCase):
         health = await adapter.health_check()
         self.assertEqual(health.indexed_repos, 0)
         self.assertIsNotNone(health.last_index_error)
-        self.assertIn("indexing failed", health.last_index_error)
+        self.assertIn("cli indexing failed", health.last_index_error)
+
+
+class CGCCLIFallbackTests(unittest.IsolatedAsyncioTestCase):
+    async def test_cli_index_uses_codegraphcontext_index(self) -> None:
+        calls: list[list[str]] = []
+
+        def _run(cmd, **kwargs):
+            calls.append(list(cmd))
+            return unittest.mock.Mock(returncode=0, stdout="Successfully finished indexing", stderr="")
+
+        cli = CGCCLIClient(python_exe="python-test", run=_run)
+        await cli.index_repo(r"E:\repo\spdk")
+
+        self.assertEqual(
+            calls[0],
+            ["python-test", "-m", "codegraphcontext", "index", str(Path(r"E:\repo\spdk"))],
+        )
+
+    async def test_adapter_prepare_falls_back_to_cli_when_gateway_unavailable(self) -> None:
+        from app.adapters.base import AnalysisRequest
+
+        adapter = CGCAdapter(base_url="http://cgc-unavailable:7072")
+        adapter._cgc.index_repo = unittest.mock.AsyncMock(side_effect=CGCUnavailable("down"))
+        adapter._cgc.is_healthy = unittest.mock.AsyncMock(return_value=False)
+
+        cli = unittest.mock.MagicMock()
+        cli.index_repo = unittest.mock.AsyncMock(return_value="cli-index")
+        cli.is_healthy = unittest.mock.AsyncMock(return_value=True)
+        adapter._cli = cli
+
+        await adapter.prepare(AnalysisRequest(repo_local_path=r"E:\repo\spdk"))
+
+        cli.index_repo.assert_awaited_once_with(r"E:\repo\spdk")
+        self.assertIs(adapter._cgc, cli)
+        health = await adapter.health_check()
+        self.assertTrue(health.is_healthy)
+
+    async def test_prepare_indexes_each_scope_path_when_provided(self) -> None:
+        from app.adapters.base import AnalysisRequest
+
+        adapter = CGCAdapter(base_url="http://cgc:7072")
+        adapter._cgc.index_repo = unittest.mock.AsyncMock(return_value="job-1")
+        adapter._cgc.wait_for_index = unittest.mock.AsyncMock(return_value=True)
+
+        await adapter.prepare(
+            AnalysisRequest(
+                repo_local_path=r"E:\repo\spdk",
+                options={
+                    "cgc_index_paths": [
+                        r"E:\repo\spdk\lib\log",
+                        r"E:\repo\spdk\include\spdk",
+                    ]
+                },
+            )
+        )
+
+        adapter._cgc.index_repo.assert_has_awaits(
+            [
+                unittest.mock.call(r"E:\repo\spdk\lib\log"),
+                unittest.mock.call(r"E:\repo\spdk\include\spdk"),
+            ]
+        )
+        self.assertEqual(adapter._cgc.wait_for_index.await_count, 2)
+
+    async def test_cli_find_callers_parses_table_names(self) -> None:
+        def _run(cmd, **kwargs):
+            return unittest.mock.Mock(
+                returncode=0,
+                stdout=(
+                    "Function 'spdk_thread_poll' is called by:\n"
+                    "| caller_a | E:/repo/file.c:10 |\n"
+                    "| caller_b | E:/repo/file.c:20 |\n"
+                    "Total: 2 function(s)\n"
+                ),
+                stderr="",
+            )
+
+        cli = CGCCLIClient(python_exe="python-test", run=_run)
+        callers = await cli.find_callers("spdk_thread_poll", repo_path=r"E:\repo")
+
+        self.assertEqual([c["name"] for c in callers], ["caller_a", "caller_b"])
 
 
 if __name__ == "__main__":

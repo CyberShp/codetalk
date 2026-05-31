@@ -48,7 +48,7 @@ async def export_reports(task_id: str, fmt: str) -> tuple[bytes, str, str]:
 # ---------------------------------------------------------------------------
 
 async def export_workspace_reports(
-    ws_id: str, fmt: str, db: object
+    ws_id: str, fmt: str, db: object, task_id: str | None = None
 ) -> tuple[bytes, str, str]:
     """Export completed workspace reports in the requested format.
 
@@ -56,16 +56,41 @@ async def export_workspace_reports(
         ws_id: Workspace UUID.
         fmt: Export format — "md", "docx", or "xml".
         db: aiosqlite.Connection.
+        task_id: Optional analysis task id; defaults to the latest completed
+            task so workspace exports do not bundle historical reports.
 
     Raises:
         FileNotFoundError: No completed reports for this workspace.
         ValueError: Unsupported format.
     """
+    resolved_task_id = task_id
+    legacy_only = resolved_task_id == "__legacy__"
+
+    if resolved_task_id is None:
+        async with db.execute(  # type: ignore[attr-defined]
+            "SELECT task_id FROM workspace_reports"
+            " WHERE workspace_id = ? AND status = 'completed'"
+            " ORDER BY created_at DESC LIMIT 1",
+            (ws_id,),
+        ) as cur:
+            latest = await cur.fetchone()
+        if latest:
+            resolved_task_id = latest["task_id"]
+            legacy_only = resolved_task_id is None
+
+    where = "workspace_id = ? AND status = 'completed'"
+    params: list[object] = [ws_id]
+    if legacy_only:
+        where += " AND task_id IS NULL"
+    elif resolved_task_id:
+        where += " AND task_id = ?"
+        params.append(resolved_task_id)
+
     async with db.execute(  # type: ignore[attr-defined]
         "SELECT title, content FROM workspace_reports"
-        " WHERE workspace_id = ? AND status = 'completed'"
+        f" WHERE {where}"
         " ORDER BY created_at",
-        (ws_id,),
+        tuple(params),
     ) as cur:
         rows = await cur.fetchall()
 
@@ -77,7 +102,13 @@ async def export_workspace_reports(
         title = row["title"] or "report"
         name = title if title.endswith(".md") else f"{title}.md"
         docs.append(_ReportDoc(name=name, content=row["content"] or ""))
-    return _dispatch(docs, f"workspace-{ws_id[:8]}", fmt)
+    if legacy_only:
+        suffix = "legacy"
+    elif resolved_task_id:
+        suffix = str(resolved_task_id)[:8]
+    else:
+        suffix = ws_id[:8]
+    return _dispatch(docs, f"workspace-{ws_id[:8]}-{suffix}", fmt)
 
 
 # ---------------------------------------------------------------------------

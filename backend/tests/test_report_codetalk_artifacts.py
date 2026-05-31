@@ -1,0 +1,167 @@
+from dataclasses import dataclass
+from pathlib import Path
+
+import pytest
+
+from app.llm.base import BaseLLMClient, LLMResponse
+from app.prompts.templates import MODULE_MAP_PROMPT
+from app.schemas.workspace_analysis import AnalysisPlan, LLMLimits, ReportSpec
+from app.services.report_generator import ReportGenerator
+
+
+class CapturingLLM(BaseLLMClient):
+    def __init__(self, content: str) -> None:
+        self.content = content
+        self.prompts: list[str] = []
+
+    async def complete(
+        self,
+        messages: list[dict],
+        max_tokens: int = 4096,
+        temperature: float = 0.3,
+    ) -> LLMResponse:
+        self.prompts.append(messages[-1]["content"])
+        return LLMResponse(
+            content=self.content,
+            model="fake",
+            usage={"prompt_tokens": 1, "completion_tokens": 1, "total_tokens": 2},
+        )
+
+    async def health_check(self) -> tuple[bool, str]:
+        return True, "ok"
+
+
+@dataclass
+class FakeCard:
+    title: str
+    source: str = "repo_search"
+    file_path: str = "lib/log/log.c"
+    symbol: str = "spdk_vlog"
+    confidence: str = "high"
+    snippet: str = "spdk_vlog calls free(ext_buf)"
+    object_id: str = "obj-1"
+
+    def to_markdown(self) -> str:
+        return f"### {self.title}\n- `{self.file_path}` `{self.symbol}`"
+
+
+def _plan(template_id: str) -> AnalysisPlan:
+    return AnalysisPlan(
+        reports=[
+            ReportSpec(
+                id=template_id,
+                title="Module Map",
+                template_id=template_id,
+                enabled=True,
+            )
+        ],
+        llm_limits=LLMLimits(
+            max_cards_per_report_section=2,
+            max_output_chars_per_section=600,
+            retry_empty_output=0,
+        ),
+    )
+
+
+def test_plan_blueprints_do_not_delegate_layout_to_ai() -> None:
+    instructions = "\n".join(
+        section.get("instructions", "")
+        for sections in ReportGenerator._section_blueprints().values()
+        for section in sections
+    )
+    assert "Use a Markdown dependency table." not in instructions
+    assert "Output SFMEA table:" not in instructions
+    assert "map each requirement using columns:" not in instructions
+    assert "CodeTalk will render" in instructions
+
+
+@pytest.mark.asyncio
+async def test_codetalk_adds_diagram_and_tables_when_ai_returns_prose(tmp_path: Path) -> None:
+    llm = CapturingLLM(
+        "AI_CONTENT " * 40
+        + "This prose intentionally contains no markdown table and no mermaid block."
+    )
+    generator = ReportGenerator(llm, tmp_path, "task-artifacts")
+    spec = _plan("module_map").reports[0]
+    card = FakeCard(title="source evidence")
+    analysis_units = [{"title": "Log output path", "object_ids": ["obj-1"], "cards": [card]}]
+
+    entry = await generator._generate_plan_report(
+        spec=spec,
+        plan=_plan("module_map"),
+        common_context={
+            "pipeline_mode": "dual",
+            "index_coverage": {},
+            "active_materials": [],
+            "gitnexus_available": True,
+            "cgc_available": True,
+        },
+        analysis_units=analysis_units,
+        evidence_cards=[card],
+        sem=__import__("asyncio").Semaphore(1),
+    )
+
+    output = (tmp_path / entry["filename"]).read_text(encoding="utf-8")
+    assert entry["status"] == "completed"
+    assert "### CodeTalk Evidence Table" in output
+    assert "### CodeTalk Diagram" in output
+    assert "```mermaid" in output
+    assert "| Evidence | Source | File/Symbol | Confidence |" in output
+
+
+@pytest.mark.asyncio
+async def test_section_prompt_delegates_layout_to_codetalk(tmp_path: Path) -> None:
+    llm = CapturingLLM("AI_CONTENT " * 40)
+    generator = ReportGenerator(llm, tmp_path, "task-prompt")
+    plan = _plan("module_map")
+    section = {
+        "heading": "Unit grouping",
+        "instructions": "Describe units.",
+        "requires_mermaid": True,
+        "requires_sfmea": True,
+        "min_chars": 80,
+    }
+
+    await generator._render_section(
+        spec=plan.reports[0],
+        section=section,
+        plan=plan,
+        common_context={},
+        analysis_units=[{"title": "Unit A", "object_ids": ["obj-1"], "cards": [FakeCard("c")]}],
+        evidence_cards=[],
+        section_idx=0,
+        sem=__import__("asyncio").Semaphore(1),
+    )
+
+    assert llm.prompts
+    prompt = llm.prompts[0]
+    assert "CodeTalk will render Markdown tables, Mermaid diagrams, and SFMEA grids" in prompt
+    assert "This section must include at least one Mermaid" not in prompt
+    assert "This section must include an SFMEA table" not in prompt
+
+
+@pytest.mark.asyncio
+async def test_legacy_report_prompts_and_outputs_use_codetalk_layout(tmp_path: Path) -> None:
+    llm = CapturingLLM(
+        "AI legacy report prose. "
+        "This response intentionally has no markdown table and no mermaid block."
+    )
+    generator = ReportGenerator(llm, tmp_path, "legacy-artifacts")
+    prompt = MODULE_MAP_PROMPT.format(
+        project_overview="project overview",
+        module_summaries="module summaries",
+        inter_module_deps="module deps",
+    )
+
+    await generator._generate_report(report_type="module_map", prompt=prompt)
+
+    assert llm.prompts
+    assert "CodeTalk layout ownership" in llm.prompts[0]
+    assert "```mermaid" not in llm.prompts[0]
+    assert "| ---" not in llm.prompts[0]
+
+    output = (tmp_path / generator.generated_files[0]).read_text(encoding="utf-8")
+    assert "### CodeTalk Evidence Table" in output
+    assert "### CodeTalk Diagram" in output
+    assert "```mermaid" in output
+    assert "Report structure warning" not in output

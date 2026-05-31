@@ -8,7 +8,7 @@ from pathlib import Path
 
 import aiosqlite
 import httpx
-from fastapi import APIRouter, Depends, HTTPException, Query
+from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from fastapi.responses import Response, StreamingResponse
 from pydantic import BaseModel, Field
 
@@ -24,6 +24,11 @@ router = APIRouter(prefix="/api/workspaces", tags=["工作空间"])
 logger = logging.getLogger(__name__)
 
 _MATERIALS_ROOT = settings.data_path / "workspaces"
+
+
+def _schedule_background_task(coro):
+    """Schedule a fire-and-forget workspace background coroutine."""
+    return asyncio.create_task(coro)
 
 
 # --- Schemas ---
@@ -192,13 +197,14 @@ async def _run_workspace_analysis(
     repo_path: str,
     plan: AnalysisPlan | None = None,
     scope_preview: ScopePreview | None = None,
+    task_id: str | None = None,
 ) -> None:
     """Background task: run WorkspacePipeline, update analyze_status on failure."""
     from app.services.workspace_pipeline import WorkspacePipeline
 
     try:
         await WorkspacePipeline().run(
-            ws_id, repo_path, plan=plan, scope_preview=scope_preview,
+            ws_id, repo_path, plan=plan, scope_preview=scope_preview, task_id=task_id,
         )
     except Exception as exc:
         logger.error("Workspace analysis failed for %s: %s", ws_id, exc)
@@ -241,7 +247,7 @@ async def create_workspace(
     )
     await db.commit()
 
-    asyncio.create_task(_index_workspace(ws_id, data.repo_path))
+    _schedule_background_task(_index_workspace(ws_id, data.repo_path))
 
     async with db.execute("SELECT * FROM workspaces WHERE id = ?", (ws_id,)) as cur:
         row = await cur.fetchone()
@@ -285,7 +291,7 @@ async def get_index_status(ws_id: str, db: aiosqlite.Connection = Depends(get_db
 @router.post("/{ws_id}/reindex", status_code=202)
 async def reindex_workspace(ws_id: str, db: aiosqlite.Connection = Depends(get_db)):
     ws = await _get_workspace_or_404(ws_id, db)
-    asyncio.create_task(_index_workspace(ws_id, ws["repo_path"]))
+    _schedule_background_task(_index_workspace(ws_id, ws["repo_path"]))
     return {"status": "indexing", "message": "重新索引已启动"}
 
 
@@ -398,19 +404,50 @@ async def analyze_workspace(
         )
 
     plan_json = plan.model_dump_json()
+    task_id = str(uuid.uuid4())
+    now = datetime.now(timezone.utc).isoformat()
+    report_plan_json = json.dumps([r.model_dump() for r in plan.enabled_reports()])
 
     await db.execute(
         "UPDATE workspaces SET analyze_status = 'running', analyze_progress = 0, "
         "last_analysis_plan_json = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?",
         (plan_json, ws_id),
     )
+    await db.execute(
+        """INSERT INTO tasks
+               (id, name, repo_path, status, tools,
+                analysis_focus, prompt_content, deepwiki_depth,
+                analysis_plan_json, report_plan_json, workspace_id,
+                progress, error_message, created_at, updated_at)
+           VALUES (?, ?, ?, 'pending', ?, ?, ?, 'balanced', ?, ?, ?, 0, NULL, ?, ?)""",
+        (
+            task_id,
+            f"__ws_{ws_id}",
+            ws["repo_path"],
+            json.dumps(["gitnexus"]),
+            "User-defined workspace analysis plan",
+            plan.user_guidance or "",
+            plan_json,
+            report_plan_json,
+            ws_id,
+            now,
+            now,
+        ),
+    )
     await db.commit()
 
-    asyncio.create_task(
-        _run_workspace_analysis(ws_id, ws["repo_path"], plan=plan, scope_preview=scope_preview)
+    _schedule_background_task(
+        _run_workspace_analysis(
+            ws_id,
+            ws["repo_path"],
+            plan=plan,
+            scope_preview=scope_preview,
+            task_id=task_id,
+        )
     )
     return {
         "status": "running",
+        "task_id": task_id,
         "message": "工作空间分析已启动",
         "analysis_units": (
             scope_preview.estimated_analysis_units if scope_preview else None
@@ -438,7 +475,8 @@ async def get_analyze_status(ws_id: str, db: aiosqlite.Connection = Depends(get_
         # Fallback: tasks created before workspace_id migration
         if not task_row:
             async with db.execute(
-                "SELECT id, progress FROM tasks WHERE name = ? ORDER BY created_at DESC LIMIT 1",
+                "SELECT id, progress FROM tasks WHERE name = ?"
+                " AND status IN ('running', 'pending') ORDER BY created_at DESC LIMIT 1",
                 (f"__ws_{ws_id}",),
             ) as cur:
                 task_row = await cur.fetchone()
@@ -449,10 +487,24 @@ async def get_analyze_status(ws_id: str, db: aiosqlite.Connection = Depends(get_
                 "task_id": task_row["id"],
             }
 
+    latest_task = None
+    if ws.get("analyze_status") != "running":
+        async with db.execute(
+            "SELECT id FROM tasks WHERE workspace_id = ? ORDER BY created_at DESC LIMIT 1",
+            (ws_id,),
+        ) as cur:
+            latest_task = await cur.fetchone()
+        if not latest_task:
+            async with db.execute(
+                "SELECT id FROM tasks WHERE name = ? ORDER BY created_at DESC LIMIT 1",
+                (f"__ws_{ws_id}",),
+            ) as cur:
+                latest_task = await cur.fetchone()
+
     return {
         "analyze_status": ws.get("analyze_status"),
         "analyze_progress": ws.get("analyze_progress", 0),
-        "task_id": None,
+        "task_id": latest_task["id"] if latest_task else None,
     }
 
 
@@ -498,12 +550,13 @@ async def get_report(
 async def export_workspace_reports(
     ws_id: str,
     format: str = Query(default="md", pattern="^(md|docx|xml)$"),
+    task_id: str | None = Query(default=None),
     db: aiosqlite.Connection = Depends(get_db),
 ):
     await _get_workspace_or_404(ws_id, db)
     from app.services.export_service import export_workspace_reports as _export
     try:
-        data, filename, content_type = await _export(ws_id, format, db)
+        data, filename, content_type = await _export(ws_id, format, db, task_id=task_id)
     except FileNotFoundError as exc:
         raise HTTPException(status_code=404, detail=str(exc))
     return Response(
@@ -539,21 +592,59 @@ async def export_workspace_chat(
 )
 async def upload_material(
     ws_id: str,
-    body: AddMaterialRequest,
+    request: Request,
     db: aiosqlite.Connection = Depends(get_db),
 ):
+    """Add a workspace material.
+
+    Accepts EITHER form (backward + automation compatible):
+
+    * ``multipart/form-data`` with a ``file`` field — the bytes are saved under
+      ``data/workspaces/{ws_id}/materials`` and that path is recorded.
+    * ``application/json`` with ``{"file_path": "..."}`` — an existing on-disk
+      path is referenced directly.
+
+    The e2e suite and the in-app browser upload via multipart; the modal's
+    "reference a path" flow uses JSON.  Supporting both fixes the 6 multipart
+    422 failures without dropping the JSON contract.
+    """
     await _get_workspace_or_404(ws_id, db)
 
+    content_type_header = (request.headers.get("content-type") or "").lower()
     mat_id = str(uuid.uuid4())
-    filename = Path(body.file_path).name
     now = datetime.now(timezone.utc).isoformat()
+
+    if content_type_header.startswith("multipart/form-data"):
+        form = await request.form()
+        upload = form.get("file")
+        if upload is None or not hasattr(upload, "filename"):
+            raise HTTPException(status_code=422, detail="缺少上传文件字段 'file'")
+        filename = Path(upload.filename or "material").name
+        dest_dir = _MATERIALS_ROOT / ws_id / "materials"
+        dest_dir.mkdir(parents=True, exist_ok=True)
+        dest_path = dest_dir / f"{mat_id}_{filename}"
+        data = await upload.read()
+        await asyncio.to_thread(dest_path.write_bytes, data)
+        file_path = str(dest_path)
+    else:
+        try:
+            payload = await request.json()
+        except Exception:
+            raise HTTPException(status_code=422, detail="请求体必须是 JSON 或 multipart 上传")
+        try:
+            body = AddMaterialRequest.model_validate(payload)
+        except Exception as exc:
+            raise HTTPException(status_code=422, detail=f"file_path 无效: {exc}")
+        file_path = body.file_path
+        filename = Path(file_path).name
+
     content_type = _guess_content_type(filename)
 
     await db.execute(
         """INSERT INTO workspace_materials
                (id, workspace_id, filename, content_type, file_path, is_active, created_at)
            VALUES (?, ?, ?, ?, ?, TRUE, ?)""",
-        (mat_id, ws_id, filename, content_type, body.file_path, now),
+        (mat_id, ws_id, filename, content_type, file_path, now),
     )
     await db.commit()
 
@@ -562,12 +653,12 @@ async def upload_material(
         "workspace_id": ws_id,
         "filename": filename,
         "content_type": content_type,
-        "file_path": body.file_path,
+        "file_path": file_path,
         "is_active": True,
         "created_at": now,
     }
 
-    asyncio.create_task(_embed_material_background(mat_id, ws_id))
+    _schedule_background_task(_embed_material_background(mat_id, ws_id))
 
     return result
 
@@ -602,7 +693,7 @@ async def toggle_material(
     mat["is_active"] = body.is_active
 
     if body.is_active:
-        asyncio.create_task(_embed_material_background(mat_id, ws_id))
+        _schedule_background_task(_embed_material_background(mat_id, ws_id))
     else:
         try:
             from app.services.material_rag import delete_material_chunks
@@ -703,7 +794,7 @@ async def trigger_embedding(
         except Exception as exc:
             logger.error("Workspace embedding failed: %s", exc)
 
-    asyncio.create_task(_run_embed())
+    _schedule_background_task(_run_embed())
     return {"status": "embedding_started"}
 
 

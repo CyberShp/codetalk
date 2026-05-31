@@ -41,6 +41,7 @@ class Settings(BaseSettings):
     # Tool process endpoints
     gitnexus_base_url: str = "http://localhost:7100"
     cgc_base_url: str = "http://localhost:7072"
+    cgc_index_timeout: int = 600     # max seconds to wait for CGC Gateway indexing before CLI fallback
     deepwiki_api_url: str = "http://localhost:8091"
     deepwiki_ui_url: str = "http://localhost:3001"
     joern_base_url: str = "http://localhost:8090"
@@ -52,6 +53,10 @@ class Settings(BaseSettings):
     deepwiki_ui_port: int = 3001
     deepwiki_path: str = ""          # path to deepwiki-open installation
     gitnexus_bin: str = "gitnexus"   # path to gitnexus binary
+    gitnexus_source_reader: str = "cli_first"  # cli_first | http_only
+    gitnexus_cli_timeout: int = 20    # seconds for short GitNexus CLI source reads
+    cgc_cli_python: str = ""          # optional python executable for `python -m codegraphcontext`
+    cgc_cli_timeout: int = 1800       # seconds for CGC CLI indexing / graph queries
     tiktoken_cache_dir: str = ""     # override path for tiktoken BPE cache (TIKTOKEN_CACHE_DIR)
     tool_health_interval: int = 30   # seconds between health checks
 
@@ -89,6 +94,11 @@ class Settings(BaseSettings):
     @property
     def outputs_path(self) -> Path:
         return self.data_path / "outputs"
+
+    @property
+    def deepwiki_base_url(self) -> str:
+        """Backward-compatible alias for older DeepWiki routes."""
+        return self.deepwiki_api_url
 
     @property
     def tiktoken_cache_path(self) -> Path:

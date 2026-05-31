@@ -3,6 +3,7 @@
 import React, { useMemo } from "react";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
+import rehypeRaw from "rehype-raw";
 import type { PluggableList } from "unified";
 import type { Components } from "react-markdown";
 import { FileCode, ExternalLink } from "lucide-react";
@@ -216,6 +217,16 @@ export default function MarkdownRenderer({
           {children}
         </blockquote>
       ),
+      details: ({ children }) => (
+        <details className="mb-4 rounded-lg border border-outline-variant/25 bg-surface-container-low/50 p-3 open:bg-surface-container-low">
+          {children}
+        </details>
+      ),
+      summary: ({ children }) => (
+        <summary className="cursor-pointer text-sm font-medium text-on-surface hover:text-primary">
+          {children}
+        </summary>
+      ),
       a: ({ children, href }) => {
         const text = extractText(children);
         // Source citation: file-path references from wiki prompts, optionally numeric [1]
@@ -331,12 +342,16 @@ export default function MarkdownRenderer({
     }),
     [anchorBaseUrl, enableNumericCitations, onCitationClick]
   );
+  const appliedRehypePlugins = useMemo<PluggableList>(
+    () => [rehypeRaw, ...rehypePlugins],
+    [rehypePlugins]
+  );
 
   return (
-    <div className="prose-kinetic max-w-full overflow-hidden">
+    <div className="prose-kinetic max-w-full overflow-hidden break-words">
       <ReactMarkdown
         remarkPlugins={[remarkGfm]}
-        rehypePlugins={rehypePlugins}
+        rehypePlugins={appliedRehypePlugins}
         components={components}
       >
         {content}

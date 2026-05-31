@@ -50,9 +50,11 @@ def _build_e2e_app() -> FastAPI:
         coverage,
         export,
         prompts,
+        repo_wiki,
         settings as settings_router,
         tasks,
         tools,
+        ws,
     )
     from app.api.deepwiki_pages import router as deepwiki_router
     from app.api.workspaces import router as workspaces_router
@@ -63,8 +65,10 @@ def _build_e2e_app() -> FastAPI:
     app.include_router(export.router)
     app.include_router(prompts.router)
     app.include_router(coverage.router)
+    app.include_router(ws.router)
     app.include_router(workspaces_router)
     app.include_router(deepwiki_router)
+    app.include_router(repo_wiki.router)
 
     @app.get("/health")
     async def health():

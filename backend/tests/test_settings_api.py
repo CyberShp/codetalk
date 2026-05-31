@@ -1,5 +1,6 @@
 """Tests for /api/settings/llm and /api/settings/general endpoints."""
 
+import json
 from unittest.mock import AsyncMock, patch
 
 
@@ -445,7 +446,103 @@ async def test_update_general_settings_syncs_deepwiki_embedding_full_config(
     content = (tmp_path / ".env").read_text(encoding="utf-8")
     assert "DEEPWIKI_EMBEDDING_BASE_URL=http://embed.internal/v1" in content
     assert "DEEPWIKI_EMBEDDING_API_KEY=sk-embed-key" in content
+    assert "DEEPWIKI_EMBEDDING_MODEL=bge-large-v3" in content
+    assert "DEEPWIKI_EMBEDDER_TYPE=openai" in content
     assert "OPENAI_EMBEDDING_MODEL=bge-large-v3" in content
+
+
+async def test_update_general_settings_syncs_deepwiki_embedder_json(
+    client, tmp_path, monkeypatch
+):
+    """Saving active_embedding_model_id makes deepwiki embedder.json use active embedding."""
+    from app.config import settings as app_settings
+    monkeypatch.setattr(app_settings, "deepwiki_path", str(tmp_path))
+
+    config_dir = tmp_path / "api" / "config"
+    config_dir.mkdir(parents=True)
+    (config_dir / "embedder.json").write_text(
+        json.dumps({
+            "embedder": {
+                "client_class": "OpenAIClient",
+                "batch_size": 500,
+                "model_kwargs": {
+                    "model": "text-embedding-3-small",
+                    "dimensions": 256,
+                    "encoding_format": "float",
+                },
+            },
+            "embedder_ollama": {"model_kwargs": {"model": "nomic-embed-text"}},
+        }),
+        encoding="utf-8",
+    )
+
+    payload = {
+        **_EMBED_LLM_SEPARATE,
+        "base_url": "http://embed.internal",
+        "model": "bge-m3",
+    }
+    embed_resp = await client.post("/api/settings/llm", json=payload)
+    embed_id = embed_resp.json()["id"]
+
+    await client.put(
+        "/api/settings/general",
+        json={
+            "proxy_mode": "none",
+            "proxy_url": "",
+            "ssl_cert_path": "",
+            "active_chat_model_id": "",
+            "active_embedding_model_id": embed_id,
+        },
+    )
+
+    env_content = (tmp_path / ".env").read_text(encoding="utf-8")
+    assert "DEEPWIKI_EMBEDDING_BASE_URL=http://embed.internal/v1" in env_content
+
+    config = json.loads((config_dir / "embedder.json").read_text(encoding="utf-8"))
+    embedder = config["embedder"]
+    assert embedder["client_class"] == "OpenAIClient"
+    assert embedder["initialize_kwargs"] == {
+        "api_key": "${DEEPWIKI_EMBEDDING_API_KEY}",
+        "base_url": "${DEEPWIKI_EMBEDDING_BASE_URL}",
+    }
+    assert embedder["batch_size"] == 10
+    assert embedder["model_kwargs"] == {"model": "bge-m3"}
+    assert config["embedder_ollama"]["model_kwargs"]["model"] == "nomic-embed-text"
+
+
+async def test_deepwiki_generation_uses_active_chat_model(db):
+    """DeepWiki repo generation should not fall back to gpt-4o when a chat model is active."""
+    from app.api.deepwiki_pages import _resolve_active_deepwiki_model
+
+    await db.execute(
+        """INSERT INTO llm_configs
+           (id, name, api_type, base_url, api_key, model, max_tokens, temperature,
+            config_json, is_chat_model, is_embedding_model, created_at)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+        (
+            "chat-id",
+            "deepseek",
+            "openai_compat",
+            "https://api.deepseek.com",
+            "sk-test",
+            "deepseek-chat",
+            4096,
+            0.3,
+            None,
+            1,
+            0,
+            "now",
+        ),
+    )
+    await db.execute(
+        "INSERT INTO settings (key, value) VALUES (?, ?)",
+        ("active_chat_model_id", "chat-id"),
+    )
+    await db.commit()
+
+    provider, model = await _resolve_active_deepwiki_model(db)
+    assert provider == "openai"
+    assert model == "deepseek-chat"
 
 
 async def test_update_general_settings_clears_deepwiki_chat_env(client, tmp_path, monkeypatch):

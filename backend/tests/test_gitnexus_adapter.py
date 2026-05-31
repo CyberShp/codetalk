@@ -36,8 +36,10 @@ class _FakeAsyncClient:
         assert self.get_responses, f"unexpected GET {path}"
         return self.get_responses.pop(0)
 
-    async def post(self, path: str, json: dict | None = None):
+    async def post(self, path: str, json: dict | None = None, **kwargs):
         self.post_calls.append((path, json))
+        if path == "/api/embed":
+            return _FakeResponse(202, {"jobId": "embed-job"})
         assert self.post_responses, f"unexpected POST {path}"
         return self.post_responses.pop(0)
 
@@ -56,6 +58,7 @@ class GitNexusAdapterPrepareTests(unittest.IsolatedAsyncioTestCase):
 
         first_client = _FakeAsyncClient(
             get_responses=[
+                _FakeResponse(200, {"repos": []}),
                 _FakeResponse(200, {"status": "complete", "repoName": "open-iscsi"}),
             ],
             post_responses=[
@@ -78,7 +81,7 @@ class GitNexusAdapterPrepareTests(unittest.IsolatedAsyncioTestCase):
             await second.prepare(request)
 
         self.assertEqual(first_client.post_calls, [
-            ("/api/analyze", {"path": "/tmp/repos/open-iscsi"})
+            ("/api/analyze", {"path": "/tmp/repos/open-iscsi"}),
         ])
         self.assertEqual(second_client.post_calls, [])
         self.assertEqual(
@@ -92,6 +95,7 @@ class GitNexusAdapterPrepareTests(unittest.IsolatedAsyncioTestCase):
         adapter = GitNexusAdapter(base_url="http://gitnexus:7100")
         adapter._client = _FakeAsyncClient(
             get_responses=[
+                _FakeResponse(200, {"repos": []}),
                 _FakeResponse(200, {"repos": []}),
                 _FakeResponse(200, {"status": "complete", "repoName": "open-iscsi"}),
             ],
@@ -108,11 +112,12 @@ class GitNexusAdapterPrepareTests(unittest.IsolatedAsyncioTestCase):
             adapter._client.get_calls,
             [
                 ("/api/repos", {"repo": "open-iscsi"}, 10),
+                ("/api/repos", None, 10),
                 ("/api/analyze/job-2", None, None),
             ],
         )
         self.assertEqual(adapter._client.post_calls, [
-            ("/api/analyze", {"path": "/tmp/repos/open-iscsi"})
+            ("/api/analyze", {"path": "/tmp/repos/open-iscsi"}),
         ])
         self.assertEqual(adapter.current_repo_name, "open-iscsi")
 
@@ -131,6 +136,7 @@ class GitNexusAdapterProgressParsingTests(unittest.IsolatedAsyncioTestCase):
         adapter = GitNexusAdapter(base_url="http://gitnexus:7100")
         adapter._client = _FakeAsyncClient(
             get_responses=[
+                _FakeResponse(200, {"repos": []}),
                 _FakeResponse(200, {"status": "pending", "progress": progress_value}),
                 _FakeResponse(200, {"status": "complete", "repoName": "myrepo"}),
             ],

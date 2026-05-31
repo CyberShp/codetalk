@@ -209,12 +209,15 @@ def build_default_plan(
     ]
 
     if has_requirements:
+        # codetalks 愿景下，只要工作空间有活跃的需求/设计材料，需求-设计-代码追踪
+        # 就是验证“材料是否真正进入测试场景”的核心报告，应默认启用（而非可选）。
+        # 这样有材料时默认生成 7 份报告；无材料时此报告不追加。
         reports.append(
             ReportSpec(
                 id="requirements_traceability",
                 title="需求-设计-代码追踪",
                 template_id="requirements_traceability",
-                enabled=False,
+                enabled=True,
                 custom=False,
             )
         )

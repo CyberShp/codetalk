@@ -235,7 +235,9 @@ class TestPipelineRun:
             ) as cur:
                 reports = await cur.fetchall()
 
-        assert len(tasks) == 0
+        assert len(tasks) == 1
+        assert tasks[0]["id"] == captured_task_ids[0]
+        assert tasks[0]["workspace_id"] == ws_id
         assert len(reports) == 1
 
     async def test_material_classification(self, sqlite_db, tmp_path):
@@ -453,4 +455,5 @@ class TestPipelineRun:
             async with db.execute("SELECT * FROM tasks") as cur:
                 tasks = await cur.fetchall()
 
-        assert len(tasks) == 0
+        assert len(tasks) == 1
+        assert tasks[0]["workspace_id"] == ws_id

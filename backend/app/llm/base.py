@@ -22,6 +22,47 @@ T = TypeVar("T")
 # consumed by _write_debug_snapshot.  None outside a pipeline context.
 current_task_id: ContextVar[str | None] = ContextVar("current_task_id", default=None)
 
+# ContextVar carrying the provider's finish_reason / stop_reason for the most
+# recent streamed call in *this* task.  asyncio.gather runs each report section
+# in its own task with an isolated context copy, so providers can set this from
+# the SSE stream and _write_debug_snapshot can record it without cross-talk.
+current_finish_reason: ContextVar[str | None] = ContextVar(
+    "current_finish_reason", default=None
+)
+
+# Per-task count of genuinely truncated LLM generations (finish_reason=length).
+# A ContextVar can't aggregate across the isolated contexts that asyncio.gather
+# gives each report section, so we keep a process-global tally keyed by task_id
+# (set via current_task_id).  The report generator resets it at the start of a
+# run and reads it at the end to mark the run's health (Round 2/3 bug: truncated
+# sections were still shipped as `completed`).
+_task_truncations: dict[str, int] = {}
+
+
+def note_truncation(task_id: str | None) -> None:
+    if task_id:
+        _task_truncations[task_id] = _task_truncations.get(task_id, 0) + 1
+
+
+def forgive_truncation(task_id: str | None, count: int = 1) -> None:
+    """Mark provider truncations as recovered after a later retry succeeds."""
+    if not task_id or count <= 0:
+        return
+    remaining = max(0, _task_truncations.get(task_id, 0) - count)
+    if remaining:
+        _task_truncations[task_id] = remaining
+    else:
+        _task_truncations.pop(task_id, None)
+
+
+def get_truncation_count(task_id: str | None) -> int:
+    return _task_truncations.get(task_id, 0) if task_id else 0
+
+
+def reset_truncation_count(task_id: str | None) -> None:
+    if task_id:
+        _task_truncations.pop(task_id, None)
+
 _RETRYABLE_EXCEPTIONS = (
     httpx.ConnectError,
     httpx.TimeoutException,
@@ -39,8 +80,12 @@ class LLMEmptyOutputError(RuntimeError):
 _DEFAULT_BACKOFF_SECONDS = (1, 2, 4)
 
 # Truncation limits: keep snapshots small while still useful for debugging.
+# NOTE: _SNAPSHOT_RESP_CHARS previously sat at 2000, which made *every* longer
+# report section look "truncated" in debug JSON (trailing "…") even when the
+# saved report was complete.  Raised to a realistic section size and the
+# snapshot now explicitly flags when *it* did the truncating (P1).
 _SNAPSHOT_MSG_CHARS = 500
-_SNAPSHOT_RESP_CHARS = 2000
+_SNAPSHOT_RESP_CHARS = 12000
 
 
 async def async_retry(
@@ -160,6 +205,9 @@ class BaseLLMClient(ABC):
             try:
                 content = ""
                 chunk_count = 0
+                # Reset before streaming so a stale value from a prior call in
+                # this task can't be mis-attributed.
+                current_finish_reason.set(None)
                 async for chunk in self.stream_complete(
                     messages, max_tokens, temperature,
                 ):
@@ -279,6 +327,13 @@ class BaseLLMClient(ABC):
         filename = f"{ts}_{model_safe}_{content_hash[:8]}.json"
 
         messages_str = json.dumps(messages, ensure_ascii=False)
+        snapshot_truncated = len(response.content) > _SNAPSHOT_RESP_CHARS
+        finish_reason = current_finish_reason.get()
+        llm_truncated = (finish_reason == "length") or bool(
+            getattr(response, "truncated", False)
+        )
+        if llm_truncated:
+            note_truncation(task_id)
         snapshot = {
             "timestamp": ts,
             "model": response.model,
@@ -289,9 +344,16 @@ class BaseLLMClient(ABC):
             "messages_total_chars": len(messages_str),
             "response_content": (
                 response.content[:_SNAPSHOT_RESP_CHARS]
-                + ("…" if len(response.content) > _SNAPSHOT_RESP_CHARS else "")
+                + ("…" if snapshot_truncated else "")
             ),
             "response_total_chars": len(response.content),
+            # finish_reason from the provider (length == real LLM truncation).
+            "finish_reason": finish_reason,
+            # True when the provider itself reported a truncated generation.
+            "llm_truncated": llm_truncated,
+            # True when the trailing "…" above is the SNAPSHOT's own doing, not
+            # the model's — so reviewers stop mistaking it for LLM truncation.
+            "response_snapshot_truncated": snapshot_truncated,
             "usage": response.usage,
             "duration_ms": round(duration_ms, 1),
         }

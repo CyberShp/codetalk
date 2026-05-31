@@ -1132,12 +1132,22 @@ class NativeDeployer:
             if cgc_cmd:
                 cgc_port = self._config_port("cgc_port", _CGC_DEFAULT_PORT)
                 await self._release_ports([cgc_port], step, force_takeover=force_takeover)
+                # PATCH: tell CGC which paths it's allowed to index.
+                # Without this, CGC's path-traversal guard rejects any repo
+                # outside cwd (~/.codegraphcontext/) with WSAEACCES-equivalent error.
+                # Allow the entire codetalks-Test workspace root (PROJECT_ROOT.parent)
+                # plus the user's home dir for CGC's own state files.
+                _cgc_allowed_roots = ";".join([
+                    str(PROJECT_ROOT.parent),
+                    os.path.expanduser("~"),
+                ])
                 await self._start_process(
                     "cgc",
                     [*cgc_cmd, "api", "start", "--host", "127.0.0.1", "--port", str(cgc_port)],
                     cwd=self._cgc_cwd(),
                     step_name="start_services",
                     step_index=step,
+                    env_extra={"CGC_ALLOWED_ROOTS": _cgc_allowed_roots},
                 )
             else:
                 await self._emit(
@@ -1475,10 +1485,15 @@ class NativeDeployer:
         if name == "cgc":
             cgc_cmd = self._resolve_cgc_cmd()
             if cgc_cmd:
+                # PATCH: same CGC_ALLOWED_ROOTS injection as in the quickstart path.
+                _cgc_allowed_roots = ";".join([
+                    str(PROJECT_ROOT.parent),
+                    os.path.expanduser("~"),
+                ])
                 return {
                     "cmd": [*cgc_cmd, "api", "start", "--host", "127.0.0.1", "--port", str(self._config_port("cgc_port", _CGC_DEFAULT_PORT))],
                     "cwd": self._cgc_cwd(),
-                    "env_extra": None,
+                    "env_extra": {"CGC_ALLOWED_ROOTS": _cgc_allowed_roots},
                 }
         deepwiki_path = cfg.get("deepwiki_path", "")
         if deepwiki_path and name in ("deepwiki-api", "deepwiki-ui"):

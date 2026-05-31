@@ -1,11 +1,12 @@
 """Unit tests for AnalysisPipeline._inject_cgc_evidence_cards (Subtask 3)."""
 
 import unittest
-from unittest.mock import AsyncMock, MagicMock
+from unittest.mock import AsyncMock, MagicMock, patch
 
 from app.adapters.base import ToolHealth
-from app.schemas.workspace_analysis import ResolvedAnalysisObject, ScopeCandidate
+from app.schemas.workspace_analysis import AnalysisPlan, ResolvedAnalysisObject, ScopeCandidate, ScopePreview
 from app.services.analysis_pipeline import AnalysisPipeline
+from app.services.evidence_card_builder import EvidenceCard
 
 
 def _make_resolved(
@@ -181,6 +182,82 @@ class TestCGCInjectionBudget(unittest.IsolatedAsyncioTestCase):
         cards = await pipeline._inject_cgc_evidence_cards(resolved, budget=10)
 
         self.assertLessEqual(len(cards), 1)
+
+
+class TestEvidenceProductOrder(unittest.IsolatedAsyncioTestCase):
+    async def test_cgc_products_are_read_before_source_cards(self) -> None:
+        order: list[str] = []
+        pipeline = _make_pipeline()
+        plan = AnalysisPlan()
+        scope = ScopePreview(
+            workspace_id="ws",
+            resolved_objects=[_make_resolved("obj1", symbols=["FuncA"])],
+        )
+
+        cgc_card = EvidenceCard(
+            card_id="cgc",
+            object_id="obj1",
+            title="CGC product",
+            source="cgc",
+            confidence="medium",
+        )
+        source_card = EvidenceCard(
+            card_id="source",
+            object_id="obj1",
+            title="Source card",
+            source="repo_search",
+            confidence="high",
+        )
+
+        async def _inject(*_args, **_kwargs):
+            order.append("cgc")
+            return [cgc_card]
+
+        fake_builder = MagicMock()
+
+        async def _build(*_args, **_kwargs):
+            order.append("source")
+            return [source_card]
+
+        fake_builder.build_cards = AsyncMock(side_effect=_build)
+        pipeline._inject_cgc_evidence_cards = AsyncMock(side_effect=_inject)
+
+        with patch("app.services.analysis_pipeline.EvidenceCardBuilder", return_value=fake_builder):
+            cgc_cards = await pipeline._build_evidence_cards_product_first(scope, plan)
+
+        self.assertEqual(order, ["cgc", "source"])
+        self.assertEqual(cgc_cards, [cgc_card])
+        self.assertEqual(pipeline._evidence_cards, [cgc_card, source_card])
+
+    async def test_unit_prompt_keeps_cgc_product_cards_visible(self) -> None:
+        pipeline = _make_pipeline()
+        source_cards = [
+            EvidenceCard(
+                card_id=f"src{i}",
+                object_id="obj1",
+                title=f"source {i}",
+                source="repo_search",
+                confidence="high",
+                file_path=f"/fake/repo/lib/log/file{i}.c",
+                snippet="source",
+            )
+            for i in range(6)
+        ]
+        cgc_card = EvidenceCard(
+            card_id="cgc_callers",
+            object_id="obj1",
+            title="CGC callers",
+            source="cgc",
+            confidence="medium",
+            notes=["callerA -> FuncA"],
+        )
+
+        selected = pipeline._cards_for_unit_prompt(
+            {"object_ids": ["obj1"], "cards": [*source_cards, cgc_card]},
+            limit=3,
+        )
+
+        self.assertIn(cgc_card, selected)
 
 
 if __name__ == "__main__":

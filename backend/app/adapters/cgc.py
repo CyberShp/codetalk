@@ -13,7 +13,13 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import os
+import re
+import shutil
+import subprocess
 from collections.abc import AsyncIterator
+from pathlib import Path
+from typing import Callable
 
 import httpx
 
@@ -31,6 +37,31 @@ logger = logging.getLogger(__name__)
 _DEFAULT_TIMEOUT: float = 30.0
 _INDEX_POLL_INTERVAL: int = 3  # seconds
 _INDEX_POLL_TIMEOUT: int = 600  # seconds
+
+
+def _default_cgc_python() -> str | None:
+    configured = (settings.cgc_cli_python or "").strip()
+    if configured:
+        return configured
+
+    env_value = os.environ.get("CGC_CLI_PYTHON", "").strip()
+    if env_value:
+        return env_value
+
+    candidates = [
+        Path(r"D:\coworkers\cgc-venv\Scripts\python.exe"),
+        Path(r"D:\coworkers\cgc-venv-throwaway\Scripts\python.exe"),
+    ]
+    for candidate in candidates:
+        if candidate.exists():
+            return str(candidate)
+
+    cgc_bin = shutil.which("cgc")
+    if cgc_bin:
+        return cgc_bin
+
+    python_bin = shutil.which("python")
+    return python_bin
 
 
 # ---------------------------------------------------------------------------
@@ -260,6 +291,132 @@ class CGCClient:
 
 
 # ---------------------------------------------------------------------------
+# CLI fallback client
+# ---------------------------------------------------------------------------
+
+
+class CGCCLIClient:
+    """Small async wrapper around the official ``python -m codegraphcontext`` CLI.
+
+    The HTTP Gateway is preferred when healthy.  The CLI fallback exists because
+    CGC 0.4.x Gateway jobs can remain pending in some Windows/KuzuDB setups,
+    while the official CLI still completes ``index`` and ``analyze`` reliably.
+    """
+
+    def __init__(
+        self,
+        python_exe: str | None = None,
+        timeout: int | None = None,
+        run: Callable | None = None,
+    ) -> None:
+        self._python_exe = python_exe or _default_cgc_python()
+        self._timeout = timeout or settings.cgc_cli_timeout
+        self._run = run or subprocess.run
+
+    def _base_cmd(self) -> list[str]:
+        if not self._python_exe:
+            raise CGCUnavailable("CGC CLI python executable not found")
+        exe = Path(self._python_exe).name.lower()
+        if exe.startswith("cgc"):
+            return [self._python_exe]
+        return [self._python_exe, "-m", "codegraphcontext"]
+
+    async def is_healthy(self) -> bool:
+        try:
+            result = await self._run_cli(["--version"], timeout=30)
+            return result.returncode == 0 or "CodeGraphContext" in (
+                (result.stdout or "") + (result.stderr or "")
+            )
+        except Exception:
+            return False
+
+    async def index_repo(self, path: str, is_dependency: bool = False, repo_name: str | None = None) -> str:
+        args = ["index", str(Path(path))]
+        result = await self._run_cli(args, timeout=self._timeout)
+        text = (result.stdout or "") + "\n" + (result.stderr or "")
+        if result.returncode != 0 and "Successfully finished indexing" not in text and "already indexed" not in text:
+            raise CGCIndexFailed(text.strip() or f"CGC CLI index failed for {path}")
+        return "cli-index"
+
+    async def wait_for_index(self, job_id: str, timeout: int = _INDEX_POLL_TIMEOUT) -> bool:
+        return True
+
+    async def find_callers(self, func_name: str, repo_path: str | None = None, depth: int | None = None) -> list:
+        return await self._analyze_table(["analyze", "callers", func_name])
+
+    async def find_callees(self, func_name: str, repo_path: str | None = None, depth: int | None = None) -> list:
+        return await self._analyze_table(["analyze", "calls", func_name])
+
+    async def call_chain(self, from_func: str, to_func: str, repo_path: str | None = None) -> dict:
+        rows = await self._analyze_table(["analyze", "chain", from_func, to_func])
+        return {"chain": [row.get("name") for row in rows if row.get("name")]}
+
+    async def module_deps(self, target: str, repo_path: str | None = None) -> dict:
+        result = await self._run_cli(["analyze", "deps", str(Path(target))], timeout=self._timeout)
+        text = (result.stdout or "") + "\n" + (result.stderr or "")
+        return {"cli_output": text.strip()} if text.strip() else {}
+
+    async def find_complexity(self, repo_path: str | None = None, threshold: int = 10) -> list:
+        result = await self._run_cli(["analyze", "complexity"], timeout=self._timeout)
+        return [
+            row for row in _parse_cli_table((result.stdout or "") + "\n" + (result.stderr or ""))
+            if _complexity_value(row) >= threshold
+        ]
+
+    async def find_code(self, query: str, repo_path: str | None = None) -> list:
+        return await self._analyze_table(["find", "name", query])
+
+    async def _analyze_table(self, args: list[str]) -> list[dict]:
+        result = await self._run_cli(args, timeout=self._timeout)
+        text = (result.stdout or "") + "\n" + (result.stderr or "")
+        if result.returncode != 0 and not text.strip():
+            raise CGCQueryError(f"CGC CLI command failed: {' '.join(args)}")
+        return _parse_cli_table(text)
+
+    async def _run_cli(self, args: list[str], timeout: int | None = None):
+        cmd = [*self._base_cmd(), *args]
+        logger.info("cgc: running CLI: %s", " ".join(cmd))
+        return await asyncio.to_thread(
+            self._run,
+            cmd,
+            capture_output=True,
+            text=True,
+            timeout=timeout or self._timeout,
+            cwd=os.path.expanduser("~/.codegraphcontext"),
+        )
+
+
+def _parse_cli_table(text: str) -> list[dict]:
+    rows: list[dict] = []
+    for line in text.splitlines():
+        stripped = line.strip()
+        if not stripped.startswith("|") or set(stripped) <= {"|", "-", " "}:
+            continue
+        cells = [cell.strip() for cell in stripped.strip("|").split("|")]
+        if not cells:
+            continue
+        first = cells[0]
+        if not first or first.lower() in {"name", "called function", "caller", "function"}:
+            continue
+        if first.startswith("+"):
+            continue
+        row = {"name": first}
+        if len(cells) > 1:
+            row["location"] = cells[1]
+            m = re.search(r":(\d+)$", cells[1])
+            if m:
+                row["line"] = int(m.group(1))
+        if len(cells) > 2:
+            row["type"] = cells[2]
+        for cell in cells[1:]:
+            if cell.isdigit():
+                row["complexity"] = int(cell)
+                break
+        rows.append(row)
+    return rows
+
+
+# ---------------------------------------------------------------------------
 # BaseToolAdapter wrapper
 # ---------------------------------------------------------------------------
 
@@ -276,6 +433,7 @@ class CGCAdapter(BaseToolAdapter):
 
     def __init__(self, base_url: str | None = None) -> None:
         self._cgc = CGCClient(base_url=base_url)
+        self._cli = CGCCLIClient()
 
     def name(self) -> str:
         return "cgc"
@@ -300,7 +458,24 @@ class CGCAdapter(BaseToolAdapter):
     async def prepare(self, request: AnalysisRequest) -> None:
         """Index the repository (true dedup: same path concurrently → one job)."""
         loop = asyncio.get_running_loop()
-        key = (self._cgc._base_url, request.repo_local_path, id(loop))
+        configured_paths = request.options.get("cgc_index_paths") if request.options else None
+        if isinstance(configured_paths, list):
+            index_paths = [str(p) for p in configured_paths if str(p).strip()]
+        else:
+            index_paths = []
+        if not index_paths:
+            index_paths = [request.repo_local_path]
+
+        deduped_paths: list[str] = []
+        seen_paths: set[str] = set()
+        for index_path in index_paths:
+            key_path = os.path.normcase(str(Path(index_path)))
+            if key_path in seen_paths:
+                continue
+            seen_paths.add(key_path)
+            deduped_paths.append(index_path)
+
+        key = (self._cgc._base_url, "|".join(deduped_paths), id(loop))
 
         existing = self._prepare_inflight.get(key)
         if existing is not None:
@@ -308,10 +483,17 @@ class CGCAdapter(BaseToolAdapter):
             return
 
         fut: asyncio.Future[None] = loop.create_future()
+        fut.add_done_callback(_consume_future_exception)
         self._prepare_inflight[key] = fut
         try:
-            job_id = await self._cgc.index_repo(request.repo_local_path)
-            await self._cgc.wait_for_index(job_id)
+            for index_path in deduped_paths:
+                try:
+                    job_id = await self._cgc.index_repo(index_path)
+                    await self._cgc.wait_for_index(job_id, timeout=settings.cgc_index_timeout)
+                except (CGCUnavailable, CGCQueryError, CGCIndexFailed, asyncio.TimeoutError) as exc:
+                    logger.warning("CGC Gateway prepare failed, falling back to CLI: %s", exc)
+                    await self._cli.index_repo(index_path)
+                    self._cgc = self._cli
             CGCAdapter._indexed_count += 1
             CGCAdapter._last_index_error = None
             fut.set_result(None)
@@ -357,3 +539,13 @@ def _complexity_value(item: dict) -> int:
         if isinstance(v, (int, float)):
             return int(v)
     return 0
+
+
+def _consume_future_exception(fut: "asyncio.Future[None]") -> None:
+    """Mark prepare-dedup Future exceptions observed when no waiter remains."""
+    if fut.cancelled():
+        return
+    try:
+        fut.exception()
+    except Exception:
+        pass

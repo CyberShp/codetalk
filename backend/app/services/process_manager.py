@@ -8,6 +8,7 @@ import asyncio
 import logging
 import os
 import shutil
+import sys
 import time
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -21,6 +22,7 @@ from app.config import settings
 _CL100K_BPE = "9b5ad71b2ce5302211f9c61530b329a4922fc6a4"
 
 logger = logging.getLogger(__name__)
+_REPO_ROOT = Path(__file__).resolve().parents[3]
 
 
 # ---------------------------------------------------------------------------
@@ -54,6 +56,50 @@ async def _ensure_deepwiki_tiktoken(deepwiki_path: str) -> None:
     logger.info("ProcessManager: tiktoken BPE file staged at %s", dest)
 
 
+def _deepwiki_venv_python(deepwiki_path: str) -> str:
+    venv_dir = Path(deepwiki_path) / ".venv"
+    python_name = "python.exe" if sys.platform == "win32" else "python"
+    scripts_dir = "Scripts" if sys.platform == "win32" else "bin"
+    candidate = venv_dir / scripts_dir / python_name
+    return str(candidate) if candidate.exists() else "python"
+
+
+def _deepwiki_api_command(deepwiki_path: str) -> list[str]:
+    python_exe = _deepwiki_venv_python(deepwiki_path)
+    launcher = _REPO_ROOT / "deployer" / "deepwiki_launcher.py"
+    if launcher.exists():
+        return [python_exe, str(launcher)]
+    return [python_exe, "-m", "api.main"]
+
+
+def _deepwiki_ui_command(deepwiki_path: str) -> list[str]:
+    deepwiki_dir = Path(deepwiki_path)
+    standalone = deepwiki_dir / ".next" / "standalone" / "server.js"
+    if standalone.exists():
+        return ["node", str(standalone)]
+    npm_cmd = "npm.cmd" if sys.platform == "win32" else "npm"
+    return [npm_cmd, "run", "start"]
+
+
+def _deepwiki_api_env() -> dict[str, str]:
+    return {
+        "TIKTOKEN_CACHE_DIR": (
+            str(Path(settings.deepwiki_path) / "tiktoken")
+            if settings.deepwiki_path
+            else str(settings.tiktoken_cache_path)
+        ),
+        "DEEPWIKI_API_PORT": str(settings.deepwiki_api_port),
+        "PORT": str(settings.deepwiki_api_port),
+    }
+
+
+def _deepwiki_ui_env() -> dict[str, str]:
+    return {
+        "PORT": str(settings.deepwiki_ui_port),
+        "SERVER_BASE_URL": f"http://localhost:{settings.deepwiki_api_port}",
+    }
+
+
 def _build_registry() -> dict[str, dict[str, Any]]:
     """Build the tool registry from current settings.
 
@@ -76,26 +122,25 @@ def _build_registry() -> dict[str, dict[str, Any]]:
         },
         "deepwiki-api": {
             "display_name": "DeepWiki API",
-            "command": ["python", "-m", "api.main"],
+            "command": (
+                _deepwiki_api_command(settings.deepwiki_path)
+                if settings.deepwiki_path
+                else ["python", "-m", "api.main"]
+            ),
             "health_url": f"http://localhost:{settings.deepwiki_api_port}/health",
             "cwd": settings.deepwiki_path or None,
-            # Prefer the tiktoken subdir inside deepwiki's own working directory so that
-            # deepwiki's .env "TIKTOKEN_CACHE_DIR=./tiktoken" and our pre-copied file agree.
-            # Fall back to codetalk's vendor cache if deepwiki_path is not configured.
-            "env": {
-                "TIKTOKEN_CACHE_DIR": (
-                    str(Path(settings.deepwiki_path) / "tiktoken")
-                    if settings.deepwiki_path
-                    else str(settings.tiktoken_cache_path)
-                ),
-            },
+            "env": _deepwiki_api_env(),
         },
         "deepwiki-ui": {
             "display_name": "DeepWiki UI",
-            "command": ["npm", "run", "start"],
+            "command": (
+                _deepwiki_ui_command(settings.deepwiki_path)
+                if settings.deepwiki_path
+                else ["npm", "run", "start"]
+            ),
             "health_url": f"http://localhost:{settings.deepwiki_ui_port}",
             "cwd": settings.deepwiki_path or None,
-            "env": {},
+            "env": _deepwiki_ui_env(),
         },
     }
 

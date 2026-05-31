@@ -4,6 +4,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import httpx
 
 from app.services.wiki_orchestrator import EmptyEmbeddingError, WikiOrchestrator, WikiPage, WikiStructure
+from app.services.wiki_prompts import build_page_prompt
 
 
 class WikiOrchestratorPayloadTests(unittest.IsolatedAsyncioTestCase):
@@ -54,6 +55,51 @@ class WikiOrchestratorPayloadTests(unittest.IsolatedAsyncioTestCase):
 
         self.assertEqual(captured["type"], "local")
         self.assertEqual(captured["included_files"], "lib/iscsi.c\nlib/login.c")
+
+    async def test_generate_page_prompt_and_output_delegate_layout_to_codetalk(self) -> None:
+        orchestrator = WikiOrchestrator()
+        captured: dict = {}
+
+        async def fake_stream_collect(client, payload):
+            captured.update(payload)
+            return "# Storage Path\n\nAI prose without tables or diagrams."
+
+        with patch.object(orchestrator, "_stream_collect", AsyncMock(side_effect=fake_stream_collect)):
+            content = await orchestrator._generate_page(
+                client=object(),  # type: ignore[arg-type]
+                page=WikiPage(
+                    id="p1",
+                    title="Storage Path",
+                    file_paths=["lib/iscsi.c", "lib/login.c"],
+                ),
+                repo_local_path="/data/repos/repo-uuid",
+                language="zh",
+                provider="openai",
+                model="gpt-4o",
+            )
+
+        prompt = captured["messages"][0]["content"]
+        self.assertIn("CodeTalk will prepend the source-file", prompt)
+        self.assertNotIn("EXTENSIVELY use Mermaid diagrams", prompt)
+        self.assertNotIn("Use Markdown tables", prompt)
+        self.assertIn("<details>", content)
+        self.assertIn("### CodeTalk Source Table", content)
+        self.assertIn("### CodeTalk Page Graph", content)
+        self.assertIn("```mermaid", content)
+
+
+class WikiPromptTests(unittest.TestCase):
+    def test_page_prompt_does_not_ask_ai_for_tables_or_mermaid(self) -> None:
+        prompt = build_page_prompt(
+            page_title="Storage Path",
+            file_paths=["lib/iscsi.c", "lib/login.c"],
+            language="zh",
+        )
+
+        self.assertIn("CodeTalk will prepend the source-file", prompt)
+        self.assertIn("Do NOT create Markdown tables, Mermaid diagrams", prompt)
+        self.assertNotIn("EXTENSIVELY use Mermaid diagrams", prompt)
+        self.assertNotIn("Use Markdown tables for structured data", prompt)
 
 
 class EmptyEmbeddingPatternTests(unittest.IsolatedAsyncioTestCase):

@@ -52,6 +52,35 @@ async def _get_repo_or_404(repo_id: str, db: aiosqlite.Connection) -> dict[str, 
     return _row_to_repo(row)
 
 
+async def _resolve_active_deepwiki_model(
+    db: aiosqlite.Connection,
+) -> tuple[str, str]:
+    """Return the DeepWiki provider/model pair from the active chat config."""
+    async with db.execute(
+        "SELECT value FROM settings WHERE key = 'active_chat_model_id'"
+    ) as cur:
+        setting_row = await cur.fetchone()
+
+    active_chat_id = setting_row["value"] if setting_row else ""
+    if not active_chat_id:
+        return settings.deepwiki_provider, "gpt-4o"
+
+    async with db.execute(
+        "SELECT api_type, model FROM llm_configs WHERE id = ?",
+        (active_chat_id,),
+    ) as cur:
+        llm_row = await cur.fetchone()
+
+    if not llm_row or not llm_row["model"]:
+        return settings.deepwiki_provider, "gpt-4o"
+
+    # DeepWiki's "openai" provider is the OpenAI-compatible client. The actual
+    # endpoint/key come from the synced .env, so DeepSeek/vLLM/DashScope-compatible
+    # chat models should still be sent as provider=openai with their model name.
+    provider = "openai" if llm_row["api_type"] == "openai_compat" else settings.deepwiki_provider
+    return provider, llm_row["model"]
+
+
 def _extract_pages(wiki_data_raw: str | None) -> list[dict[str, Any]]:
     """Normalize wiki_data JSON to a stable page list.
 
@@ -182,6 +211,7 @@ async def generate_wiki(repo_id: str, db: aiosqlite.Connection = Depends(get_db)
     _generation_status[repo_id] = {"running": True, "progress": 0, "error": None}
 
     repo_path = repo["repo_path"]
+    deepwiki_provider, deepwiki_model = await _resolve_active_deepwiki_model(db)
 
     async def _update_progress(pct: int) -> None:
         _generation_status[repo_id] = {"running": True, "progress": pct, "error": None}
@@ -238,7 +268,8 @@ async def generate_wiki(repo_id: str, db: aiosqlite.Connection = Depends(get_db)
                 owner="local",
                 repo=repo_id,
                 language="zh",
-                provider=settings.deepwiki_provider,
+                provider=deepwiki_provider,
+                model=deepwiki_model,
                 comprehensive=True,
                 on_progress=on_progress,
             )

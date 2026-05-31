@@ -1,4 +1,5 @@
 import asyncio
+import json
 import logging
 import uuid
 from datetime import datetime, timezone
@@ -225,7 +226,71 @@ async def _read_active_ids(db: aiosqlite.Connection) -> tuple[str, str]:
         rows = await cur.fetchall()
     stored = {r["key"]: r["value"] for r in rows}
     return stored.get("active_chat_model_id", ""), stored.get("active_embedding_model_id", "")
-_EMBED_ENV_KEYS = frozenset({"DEEPWIKI_EMBEDDING_BASE_URL", "DEEPWIKI_EMBEDDING_API_KEY", "OPENAI_EMBEDDING_MODEL"})
+_EMBED_ENV_KEYS = frozenset({
+    "DEEPWIKI_EMBEDDING_BASE_URL",
+    "DEEPWIKI_EMBEDDING_API_KEY",
+    "DEEPWIKI_EMBEDDING_MODEL",
+    "DEEPWIKI_EMBEDDER_TYPE",
+    "OPENAI_EMBEDDING_MODEL",
+})
+
+
+def _as_openai_sdk_base_url(base_url: str) -> str:
+    """Normalize CodeTalk's root URL into the base URL expected by OpenAI SDK clients."""
+    value = (base_url or "").rstrip("/")
+    if not value:
+        return ""
+    if value.endswith("/v1"):
+        return value
+    return f"{value}/v1"
+
+
+def _sync_deepwiki_embedder_json(deepwiki_path: str, model: str) -> bool:
+    """Make deepwiki-open's OpenAI embedder consume the active embedding config.
+
+    DeepWiki's OpenAIClient reads initialize_kwargs from api/config/embedder.json.
+    Keeping credentials as env placeholders avoids writing secrets into JSON while
+    still letting the active embedding base URL/key/model differ from chat config.
+    """
+    if not deepwiki_path or not model:
+        return False
+
+    config_path = Path(deepwiki_path) / "api" / "config" / "embedder.json"
+    if not config_path.exists():
+        return False
+
+    try:
+        config = json.loads(config_path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError) as exc:
+        logger.warning("settings: failed to read deepwiki embedder.json: %s", exc)
+        return False
+
+    embedder = config.setdefault("embedder", {})
+    before = json.dumps(embedder, sort_keys=True, ensure_ascii=False)
+    embedder["client_class"] = "OpenAIClient"
+    embedder["initialize_kwargs"] = {
+        "api_key": "${DEEPWIKI_EMBEDDING_API_KEY}",
+        "base_url": "${DEEPWIKI_EMBEDDING_BASE_URL}",
+    }
+    # Keep batches modest for intranet/OpenAI-compatible providers; large
+    # batches were a common source of opaque 500s in DeepWiki's RAG setup.
+    embedder["batch_size"] = 10
+    embedder["model_kwargs"] = {"model": model}
+
+    after = json.dumps(embedder, sort_keys=True, ensure_ascii=False)
+    if before == after:
+        return False
+
+    try:
+        config_path.write_text(
+            json.dumps(config, indent=2, ensure_ascii=False) + "\n",
+            encoding="utf-8",
+        )
+        logger.info("settings: synced deepwiki embedder.json model=%s", model)
+        return True
+    except OSError as exc:
+        logger.warning("settings: failed to write deepwiki embedder.json: %s", exc)
+        return False
 
 
 async def _sync_deepwiki_env(
@@ -254,7 +319,7 @@ async def _sync_deepwiki_env(
             row = await cur.fetchone()
         if row:
             if row["base_url"]:
-                env_updates["OPENAI_BASE_URL"] = row["base_url"]
+                env_updates["OPENAI_BASE_URL"] = _as_openai_sdk_base_url(row["base_url"])
             if row["api_key"]:
                 env_updates["OPENAI_API_KEY"] = row["api_key"]
             if row["model"]:
@@ -270,11 +335,13 @@ async def _sync_deepwiki_env(
             row = await cur.fetchone()
         if row:
             if row["base_url"]:
-                env_updates["DEEPWIKI_EMBEDDING_BASE_URL"] = row["base_url"]
+                env_updates["DEEPWIKI_EMBEDDING_BASE_URL"] = _as_openai_sdk_base_url(row["base_url"])
             if row["api_key"]:
                 env_updates["DEEPWIKI_EMBEDDING_API_KEY"] = row["api_key"]
             if row["model"]:
+                env_updates["DEEPWIKI_EMBEDDING_MODEL"] = row["model"]
                 env_updates["OPENAI_EMBEDDING_MODEL"] = row["model"]
+            env_updates["DEEPWIKI_EMBEDDER_TYPE"] = "openai"
     else:
         env_removals.update(_EMBED_ENV_KEYS)
 
@@ -301,6 +368,11 @@ async def _sync_deepwiki_env(
         ]
         new_lines = [f"{k}={v}" for k, v in env_updates.items()]
         dot_env.write_text("\n".join(kept + new_lines) + "\n", encoding="utf-8")
+        if "DEEPWIKI_EMBEDDING_MODEL" in env_updates:
+            _sync_deepwiki_embedder_json(
+                deepwiki_path,
+                env_updates["DEEPWIKI_EMBEDDING_MODEL"],
+            )
         logger.info(
             "settings: synced deepwiki .env (updated=%s removed=%s)",
             list(env_updates.keys()),

@@ -395,8 +395,11 @@ export const api = {
         signal,
       }),
 
-    exportUrl: (wsId: string, format: "md" | "docx" | "xml") =>
-      `${BASE}/api/workspaces/${wsId}/export?format=${format}`,
+    exportUrl: (wsId: string, format: "md" | "docx" | "xml", taskId?: string | null) => {
+      const params = new URLSearchParams({ format });
+      if (taskId) params.set("task_id", taskId);
+      return `${BASE}/api/workspaces/${wsId}/export?${params.toString()}`;
+    },
 
     chatExportUrl: (wsId: string) =>
       `${BASE}/api/workspaces/${wsId}/chat/export`,

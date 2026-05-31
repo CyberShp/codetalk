@@ -81,10 +81,11 @@ these files. You MUST use AT LEAST 5 relevant source files for comprehensive \
 coverage - if fewer are provided, search for additional related files in the \
 codebase.
 
-CRITICAL STARTING INSTRUCTION:
-The very first thing on the page MUST be a `<details>` block listing ALL the \
-`[RELEVANT_SOURCE_FILES]` you used to generate the content. There MUST be AT \
-LEAST 5 source files listed.
+CRITICAL FORMAT OWNERSHIP:
+CodeTalk will prepend the source-file `<details>` block, source table, and \
+diagram. Do NOT create Markdown tables, Mermaid diagrams, or the opening \
+source-file details block yourself. Write narrative prose, concise bullets, \
+source citations, and code snippets only.
 
 [WIKI_PAGE_TOPIC]: {page_title}
 
@@ -104,23 +105,17 @@ using H2 (`##`) and H3 (`###`) headings. For each section:
    - Explain the architecture, logic, or design relevant to the section
    - Reference specific data structures, configuration elements, or code
 
-3. **Mermaid Diagrams**: EXTENSIVELY use Mermaid diagrams:
-   - Use `graph TD` (top-down) for flowcharts, NEVER `graph LR`
-   - For sequence diagrams: define ALL participants first, use correct arrow \
-syntax (->> for requests, -->> for responses)
-   - Maximum 3-4 word node labels for readability
+3. **Structured facts**: Describe config params, API endpoints, enum values, \
+and relationships in prose or bullets. CodeTalk will render tables and diagrams.
 
-4. **Tables**: Use Markdown tables for structured data (config params, API \
-endpoints, enum values)
+4. **Code Snippets**: Include relevant code snippets with language identifiers
 
-5. **Code Snippets**: Include relevant code snippets with language identifiers
-
-6. **Source Citations**: EVERY piece of significant information MUST cite its \
+5. **Source Citations**: EVERY piece of significant information MUST cite its \
 source file. Format: `Sources: [filename.ext:start_line-end_line]()` for \
 ranges, or `[dir/file.ext]()` for whole files.
    - You MUST cite AT LEAST 5 different source files throughout the page.
 
-7. **Summary**: Conclude with a brief summary of key aspects covered.
+6. **Summary**: Conclude with a brief summary of key aspects covered.
 
 {language_instruction}
 

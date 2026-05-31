@@ -7,7 +7,12 @@ from collections.abc import AsyncIterator
 
 import httpx
 
-from app.llm.base import BaseLLMClient, LLMResponse, async_retry
+from app.llm.base import (
+    BaseLLMClient,
+    LLMResponse,
+    async_retry,
+    current_finish_reason,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -106,6 +111,18 @@ class AnthropicClient(BaseLLMClient):
                             text = delta.get("text", "")
                             if text:
                                 yield text
+                    except json.JSONDecodeError:
+                        continue
+                elif line.startswith("data: ") and current_event == "message_delta":
+                    # Anthropic reports stop_reason on the message_delta event;
+                    # "max_tokens" is the equivalent of OpenAI's "length" (P1).
+                    try:
+                        data = json.loads(line[6:])
+                        stop = (data.get("delta") or {}).get("stop_reason")
+                        if stop:
+                            current_finish_reason.set(
+                                "length" if stop == "max_tokens" else str(stop)
+                            )
                     except json.JSONDecodeError:
                         continue
                 elif not line:

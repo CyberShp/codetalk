@@ -11,7 +11,12 @@ from collections.abc import AsyncIterator
 
 import httpx
 
-from app.llm.base import BaseLLMClient, LLMResponse, async_retry
+from app.llm.base import (
+    BaseLLMClient,
+    LLMResponse,
+    async_retry,
+    current_finish_reason,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -110,6 +115,12 @@ class OpenAICompatClient(BaseLLMClient):
                     choice = chunk["choices"][0]
                 except (KeyError, IndexError):
                     continue
+                # Record the provider's finish_reason so debug snapshots and the
+                # report generator can tell a truncated ("length") generation
+                # apart from a clean stop (P1).
+                fr = choice.get("finish_reason")
+                if fr:
+                    current_finish_reason.set(str(fr))
                 candidates = [
                     (choice.get("delta") or {}).get("content"),
                     (choice.get("delta") or {}).get("text"),

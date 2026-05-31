@@ -14,6 +14,7 @@ import {
 } from "lucide-react";
 import { api } from "@/lib/api";
 import type { DeepWikiPage, DeepWikiRepo } from "@/lib/types";
+import MarkdownRenderer from "@/components/ui/MarkdownRenderer";
 
 function StatusBadge({ status, progress }: { status: DeepWikiRepo["status"]; progress: number }) {
   if (status === "running") {
@@ -31,35 +32,6 @@ function StatusBadge({ status, progress }: { status: DeepWikiRepo["status"]; pro
     return <span className="text-xs text-red-400">生成失败</span>;
   }
   return <span className="text-xs text-amber-400">待生成</span>;
-}
-
-function MarkdownContent({ content }: { content: string }) {
-  const lines = content.split("\n");
-  return (
-    <div className="prose prose-invert prose-sm max-w-none text-on-surface">
-      {lines.map((line, i) => {
-        if (line.startsWith("### ")) {
-          return <h3 key={i} className="text-base font-semibold mt-4 mb-1 text-on-surface">{line.slice(4)}</h3>;
-        }
-        if (line.startsWith("## ")) {
-          return <h2 key={i} className="text-lg font-semibold mt-5 mb-2 text-on-surface">{line.slice(3)}</h2>;
-        }
-        if (line.startsWith("# ")) {
-          return <h1 key={i} className="text-xl font-bold mt-6 mb-3 text-on-surface">{line.slice(2)}</h1>;
-        }
-        if (line.startsWith("```")) {
-          return <div key={i} className="text-xs font-mono text-on-surface-variant">{line}</div>;
-        }
-        if (line.startsWith("- ") || line.startsWith("* ")) {
-          return <li key={i} className="ml-4 text-sm text-on-surface">{line.slice(2)}</li>;
-        }
-        if (line.trim() === "") {
-          return <div key={i} className="h-2" />;
-        }
-        return <p key={i} className="text-sm text-on-surface leading-relaxed">{line}</p>;
-      })}
-    </div>
-  );
 }
 
 export default function DeepWikiRepoPage() {
@@ -227,7 +199,7 @@ export default function DeepWikiRepoPage() {
       {repo.status === "completed" && pageList.length > 0 ? (
         <div className="flex flex-1 min-h-0 gap-0 mt-4">
           {/* Left: page title list */}
-          <div className="w-56 shrink-0 flex flex-col gap-0.5 overflow-y-auto pr-2 border-r border-outline-variant/20">
+          <div className="w-48 lg:w-56 shrink-0 flex flex-col gap-0.5 overflow-y-auto pr-2 border-r border-outline-variant/20">
             {pageList.map((item, index) => (
               <button
                 key={item.id}
@@ -248,7 +220,7 @@ export default function DeepWikiRepoPage() {
           </div>
 
           {/* Center: page content (lazy-loaded per selection) */}
-          <div className="flex-1 min-w-0 overflow-y-auto px-6">
+          <div className="flex-1 min-w-0 overflow-y-auto px-4 lg:px-6">
             {pageLoading ? (
               <div className="flex justify-center items-center h-full">
                 <Loader2 size={20} className="animate-spin text-primary" />
@@ -258,7 +230,10 @@ export default function DeepWikiRepoPage() {
                 <h2 className="text-xl font-bold text-on-surface mb-4">
                   {selectedPage.title}
                 </h2>
-                <MarkdownContent content={selectedPage.content} />
+                <MarkdownRenderer
+                  content={selectedPage.content}
+                  enableNumericCitations={false}
+                />
               </>
             ) : (
               <div className="flex items-center justify-center h-full text-on-surface-variant text-sm">
@@ -269,7 +244,7 @@ export default function DeepWikiRepoPage() {
 
           {/* Right: metadata panel */}
           {selectedPage && !pageLoading && (
-            <div className="w-52 shrink-0 flex flex-col gap-4 pl-4 border-l border-outline-variant/20 overflow-y-auto">
+            <div className="hidden xl:flex w-52 shrink-0 flex-col gap-4 pl-4 border-l border-outline-variant/20 overflow-y-auto">
               {selectedPage.importance && (
                 <div>
                   <p className="text-xs text-on-surface-variant mb-1">重要性</p>

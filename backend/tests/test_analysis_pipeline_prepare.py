@@ -1,10 +1,19 @@
 """Tests for parallel adapter prepare in AnalysisPipeline._phase_prepare (Part 3A)."""
 
 import asyncio
+import tempfile
 import unittest
 from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock, patch
 
+from app.adapters.base import AnalysisRequest
+from app.schemas.workspace_analysis import (
+    AnalysisObject,
+    AnalysisPlan,
+    ResolvedAnalysisObject,
+    ScopeCandidate,
+    ScopePreview,
+)
 from app.services.analysis_pipeline import AnalysisPipeline
 
 _FAKE_REPO = "/fake/repo"
@@ -109,6 +118,84 @@ class ParallelPrepareTests(unittest.IsolatedAsyncioTestCase):
 
         git_init_mock.assert_called_once_with(Path(_FAKE_REPO))
 
+    async def test_prepare_passes_scope_aware_paths_only_to_cgc(self) -> None:
+        """CGC indexes plan-relevant subtrees while GitNexus still sees the full repo."""
+        with tempfile.TemporaryDirectory() as tmp:
+            repo = Path(tmp)
+            (repo / "lib" / "log").mkdir(parents=True)
+            (repo / "include" / "spdk").mkdir(parents=True)
+            (repo / "lib" / "log" / "log.c").write_text("void spdk_vlog(void) {}", encoding="utf-8")
+            (repo / "lib" / "log" / "log_flags.c").write_text("void spdk_log_set_flag(void) {}", encoding="utf-8")
+            (repo / "include" / "spdk" / "log.h").write_text("void SPDK_NOTICELOG(void);", encoding="utf-8")
+
+            cgc_adapter = MagicMock()
+            cgc_adapter.prepare = AsyncMock()
+            gitnexus_adapter = MagicMock()
+            gitnexus_adapter.prepare = AsyncMock()
+
+            pipeline = self._make_pipeline()
+            pipeline._analysis_plan = AnalysisPlan(
+                analysis_objects=[
+                    AnalysisObject(
+                        id="log",
+                        text="log path focused analysis",
+                        kind="file",
+                        path_hints=["lib/log/log.c", "include/spdk/log.h"],
+                    )
+                ]
+            )
+            pipeline._scope_preview = ScopePreview(
+                workspace_id="ws",
+                resolved_objects=[
+                    ResolvedAnalysisObject(
+                        object_id="log",
+                        text="log path focused analysis",
+                        candidate_files=[
+                            ScopeCandidate(
+                                path="lib/log/log.c",
+                                source="repo_search",
+                                confidence="high",
+                                reason="exact path hint",
+                            ),
+                            ScopeCandidate(
+                                path="lib/log/log_flags.c",
+                                source="repo_search",
+                                confidence="high",
+                                reason="exact path hint",
+                            ),
+                        ],
+                    )
+                ],
+            )
+
+            def _fake_create(name: str):
+                if name == "cgc":
+                    return cgc_adapter
+                if name == "gitnexus":
+                    return gitnexus_adapter
+                raise KeyError(name)
+
+            with (
+                patch("app.services.analysis_pipeline.create_adapter", side_effect=_fake_create),
+                patch.object(pipeline, "_ensure_git_init", new=AsyncMock()),
+            ):
+                await pipeline._phase_prepare(str(repo), ["gitnexus"])
+
+        git_req = gitnexus_adapter.prepare.call_args.args[0]
+        cgc_req = cgc_adapter.prepare.call_args.args[0]
+
+        self.assertIsInstance(git_req, AnalysisRequest)
+        self.assertEqual(Path(git_req.repo_local_path), repo)
+        self.assertEqual(git_req.options.get("cgc_index_paths"), None)
+
+        self.assertIsInstance(cgc_req, AnalysisRequest)
+        self.assertEqual(Path(cgc_req.repo_local_path), repo)
+        cgc_paths = {Path(p) for p in cgc_req.options["cgc_index_paths"]}
+        self.assertEqual(
+            cgc_paths,
+            {repo / "lib" / "log", repo / "include" / "spdk"},
+        )
+
 
 class CGCAdapterDedupTests(unittest.IsolatedAsyncioTestCase):
     """Verify CGCAdapter.prepare() deduplicates concurrent calls for the same path."""
@@ -124,7 +211,7 @@ class CGCAdapterDedupTests(unittest.IsolatedAsyncioTestCase):
             call_log.append(f"index:{path}")
             return "job-1"
 
-        async def _fake_wait(job_id):
+        async def _fake_wait(job_id, **_):
             await asyncio.sleep(0)
             call_log.append(f"wait:{job_id}")
 

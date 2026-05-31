@@ -57,6 +57,76 @@ _TIKTOKEN_CACHE_CANDIDATES = [
 ]
 
 
+def _parse_simple_dotenv_line(line: str) -> tuple[str, str] | None:
+    """Parse a basic KEY=VALUE line for the dependency-free fallback loader."""
+    stripped = line.strip()
+    if not stripped or stripped.startswith("#"):
+        return None
+    if stripped.startswith("export "):
+        stripped = stripped[len("export "):].strip()
+    if "=" not in stripped:
+        return None
+
+    key, value = stripped.split("=", 1)
+    key = key.strip()
+    if not key:
+        return None
+
+    value = value.strip()
+    if len(value) >= 2 and value[0] == value[-1] and value[0] in {"'", '"'}:
+        value = value[1:-1]
+    return key, value
+
+
+def _load_deepwiki_dotenv(dotenv_path: str | None = None) -> bool:
+    """Load deepwiki-open/.env before importing upstream api modules.
+
+    The upstream api.main entrypoint calls load_dotenv(), but this launcher
+    imports api.api directly so it must load the file itself. Values in the
+    synced .env intentionally win over inherited process variables because
+    CodeTalk's Settings page is the source of truth for DeepWiki runtime config.
+    """
+    path = dotenv_path or os.path.join(os.getcwd(), ".env")
+    if not os.path.isfile(path):
+        log.warning("deepwiki .env not found at %s; continuing with process environment", path)
+        return False
+
+    try:
+        from dotenv import dotenv_values, load_dotenv
+    except Exception as exc:
+        loaded_keys: list[str] = []
+        try:
+            with open(path, "r", encoding="utf-8") as f:
+                for line in f:
+                    parsed = _parse_simple_dotenv_line(line)
+                    if parsed is None:
+                        continue
+                    key, value = parsed
+                    os.environ[key] = value
+                    loaded_keys.append(key)
+        except OSError as read_exc:
+            log.warning("Could not read deepwiki .env at %s: %s", path, read_exc)
+            return False
+        log.info(
+            "Loaded deepwiki .env from %s via fallback parser (%d key(s)); "
+            "python-dotenv unavailable: %s",
+            path, len(loaded_keys), exc,
+        )
+        return True
+
+    values = dotenv_values(path)
+    loaded_keys = sorted(k for k, v in values.items() if k and v is not None)
+    load_dotenv(path, override=True)
+    log.info("Loaded deepwiki .env from %s (%d key(s))", path, len(loaded_keys))
+    return True
+
+
+def _quiet_secret_prone_dependency_logs() -> None:
+    """Suppress dependency INFO logs that stringify model clients or prompts."""
+    for logger_name in ("adalflow.core.component", "api.openai_client"):
+        logging.getLogger(logger_name).setLevel(logging.WARNING)
+
+
 def _list_cache_files(path: str) -> list[str]:
     """List regular files in path (no hidden, no dirs). Returns [] on error."""
     try:
@@ -210,6 +280,10 @@ if __name__ == "__main__":
     # Ensure `import api` resolves from cwd (= deepwiki-open dir), not from
     # this script's dir (= deployer/).
     sys.path.insert(0, os.getcwd())
+
+    # DeepWiki runtime configuration synced by CodeTalk Settings.
+    _load_deepwiki_dotenv()
+    _quiet_secret_prone_dependency_logs()
 
     # Tiktoken cache wiring (must happen before any tiktoken import).
     cache_dir = _resolve_cache_dir()

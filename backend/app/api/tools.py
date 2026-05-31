@@ -134,7 +134,12 @@ async def start_tool(tool_name: str, request: Request) -> dict[str, Any]:
     pm = _get_pm(request)
     ok = await pm.start(tool_name)
     if not ok:
-        raise HTTPException(status_code=400, detail=f"Failed to start tool: {tool_name}")
+        detail = f"Failed to start tool: {tool_name}"
+        managed = getattr(pm, "_processes", {}).get(tool_name)
+        last_error = getattr(managed, "last_error", None)
+        if last_error:
+            detail = f"{detail}: {last_error}"
+        raise HTTPException(status_code=400, detail=detail)
     return {"success": True, "message": f"{tool_name} started"}
 
 

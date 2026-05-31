@@ -21,6 +21,7 @@ from app.utils.local_client import local_http_client
 from app.utils.repo_paths import to_tool_repo_path
 
 from app.services.chat_payload import DEFAULT_EXCLUDED_DIRS
+from app.services.wiki_artifacts import attach_codetalk_wiki_artifacts
 from app.services.wiki_prompts import build_page_prompt, build_structure_prompt
 
 logger = logging.getLogger(__name__)
@@ -416,7 +417,12 @@ class WikiOrchestrator:
         if page.file_paths:
             payload["included_files"] = "\n".join(page.file_paths)
 
-        return await self._stream_collect(client, payload)
+        content = await self._stream_collect(client, payload)
+        return attach_codetalk_wiki_artifacts(
+            page_title=page.title,
+            file_paths=page.file_paths,
+            ai_content=content,
+        )
 
     async def _stream_collect(
         self, client: httpx.AsyncClient, payload: dict

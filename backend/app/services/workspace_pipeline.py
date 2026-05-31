@@ -43,8 +43,9 @@ class WorkspacePipeline:
         repo_path: str,
         plan: AnalysisPlan | None = None,
         scope_preview: ScopePreview | None = None,
+        task_id: str | None = None,
     ) -> None:
-        task_id = str(uuid.uuid4())
+        task_id = task_id or str(uuid.uuid4())
         now = datetime.now(timezone.utc).isoformat()
 
         # If no scope preview was provided (legacy callers / preview skipped),
@@ -122,7 +123,7 @@ class WorkspacePipeline:
             tools = ["gitnexus"]
 
             await db.execute(
-                """INSERT INTO tasks
+                """INSERT OR REPLACE INTO tasks
                        (id, name, repo_path, status, tools,
                         analysis_focus, prompt_content, deepwiki_depth,
                         requirements_doc, design_doc, material_ids,
@@ -177,6 +178,10 @@ class WorkspacePipeline:
             written_keys: set[str] = set()
             any_completed = False
             any_failed = False
+            await db.execute(
+                "DELETE FROM workspace_reports WHERE workspace_id = ?",
+                (ws_id,),
+            )
 
             if entries:
                 for entry in entries:

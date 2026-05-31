@@ -24,15 +24,39 @@ import httpx
 from app.adapters import create_adapter
 from app.adapters.base import AnalysisRequest, BaseToolAdapter
 from app.config import settings
-from app.llm.base import BaseLLMClient, LLMResponse, current_task_id
+from app.llm.base import (
+    BaseLLMClient,
+    LLMResponse,
+    current_task_id,
+    reset_truncation_count,
+)
 from app.llm.factory import create_llm_client_from_active
 from app.prompts.templates import MODULE_SUMMARY_PROMPT
 from app.schemas.workspace_analysis import AnalysisPlan, ScopePreview
 from app.services.evidence_card_builder import EvidenceCard, EvidenceCardBuilder
 from app.services.report_generator import ReportGenerator
+from app.services.workspace_scope_resolver import (
+    normalize_file_key,
+    plan_analysis_units,
+)
 from app.utils.repo_paths import to_tool_repo_path
 
 logger = logging.getLogger(__name__)
+
+
+# Per-task locks serialising appends to steps.jsonl.  Under high
+# LLM/report concurrency, unsynchronised ``to_thread`` appends interleaved and
+# corrupted the file with half-written lines (Round 2/3: ``fo"}`` /
+# ``lestone", ...``).  One async lock per task makes every append atomic.
+_STEPS_LOCKS: dict[str, asyncio.Lock] = {}
+
+
+def _steps_lock_for(task_id: str) -> asyncio.Lock:
+    lock = _STEPS_LOCKS.get(task_id)
+    if lock is None:
+        lock = asyncio.Lock()
+        _STEPS_LOCKS[task_id] = lock
+    return lock
 
 
 class _CancelledError(Exception):
@@ -80,6 +104,14 @@ def _extract_cgc_names(items: list, *, limit: int = _CGC_NAME_DISPLAY_LIMIT) -> 
     return names
 
 
+def _is_relative_to(path: Path, parent: Path) -> bool:
+    try:
+        path.relative_to(parent)
+        return True
+    except ValueError:
+        return False
+
+
 class AnalysisPipeline:
     """Stateless pipeline that runs the full analysis for a task."""
 
@@ -105,6 +137,11 @@ class AnalysisPipeline:
         # Set by _assess_tool_health() after prepare; controls data-collection and injection gating
         self._pipeline_mode: str = "dual"  # "dual" | "gitnexus_only" | "cgc_only" | "llm_direct"
         self._tool_health_warning: str = ""  # user-visible degradation notice
+        self._gitnexus_index_root: str = ""  # repo name/path GitNexus actually used
+        self._gitnexus_index_path: str = ""  # resolved on-disk path of the indexed repo
+        self._gitnexus_stats: dict = {}      # {expected:{...}, actual:{nodes,edges}, matched:bool}
+        self._gitnexus_extra_degraded: list[str] = []  # e.g. ["gitnexus_repo_ambiguous"]
+        self._cgc_index_paths: list[str] = []
 
     # ------------------------------------------------------------------
     # Public entry point
@@ -119,6 +156,8 @@ class AnalysisPipeline:
         logger.info("Pipeline started for task %s", task_id, extra={"task_id": task_id})
         self._task_id = task_id
         _ctx_token = current_task_id.set(task_id)
+        # Start each run with a clean truncation tally (Round 2/3 health signal).
+        reset_truncation_count(task_id)
 
         try:
             task = await self._load_task(task_id)
@@ -239,6 +278,20 @@ class AnalysisPipeline:
                         sem=llm_sem,
                         data_quality=self._data_quality,
                         repo_path=self._repo_path,
+                        pipeline_mode=self._pipeline_mode,
+                        extra_degraded=self._gitnexus_extra_degraded,
+                        index_coverage={
+                            "agent_cwd": os.getcwd(),
+                            "target_path": self._repo_path,
+                            "gitnexus_index_root": self._gitnexus_index_root or "(未解析)",
+                            "gitnexus_index_path": self._gitnexus_index_path or "(未解析)",
+                            "gitnexus_stats": self._gitnexus_stats or {},
+                            "cgc_index_root": (
+                                ", ".join(self._cgc_index_paths)
+                                if self._pipeline_mode in ("dual", "cgc_only") and self._cgc_index_paths
+                                else ("已索引" if self._pipeline_mode in ("dual", "cgc_only") else "不可用")
+                            ),
+                        },
                     )
                 else:
                     await generator.generate_all(
@@ -278,12 +331,12 @@ class AnalysisPipeline:
                 await self._save_raw_data(output_dir)
                 final_status = "completed"
 
-            if final_status == "failed":
-                done_msg = "分析失败：所有 AI 输出均未成功"
-            elif final_status == "completed_with_warnings":
-                done_msg = "分析完成（部分内容生成失败）"
-            else:
-                done_msg = "分析完成"
+            done_msg = self._final_done_message(
+                final_status,
+                degraded=self._gitnexus_extra_degraded,
+                all_modules_failed=all_modules_failed,
+                no_reports=no_reports,
+            )
             await self._update_progress(task_id, 100, final_status, None, done_msg)
             logger.info("Pipeline completed for task %s (status=%s)", task_id, final_status, extra={"task_id": task_id})
 
@@ -300,6 +353,88 @@ class AnalysisPipeline:
     # Phase 0: Preparation
     # ------------------------------------------------------------------
 
+    def _derive_cgc_index_paths(self, repo_path: str) -> list[str]:
+        """Pick the smallest source directories CGC should index for this plan."""
+        root = Path(repo_path).resolve()
+        candidates: list[Path] = []
+
+        def _add(raw: str | None) -> None:
+            text = (raw or "").strip()
+            if not text:
+                return
+            path = Path(text)
+            if not path.is_absolute():
+                path = root / text
+            try:
+                resolved = path.resolve(strict=False)
+            except OSError:
+                resolved = path
+            try:
+                resolved.relative_to(root)
+            except ValueError:
+                return
+            if resolved == root:
+                return
+            if path.exists() and path.is_dir():
+                index_path = resolved
+            elif (path.exists() and path.is_file()) or resolved.suffix.lower() in _SOURCE_EXTS:
+                index_path = resolved.parent
+            else:
+                index_path = resolved if not resolved.suffix else resolved.parent
+            if index_path != root:
+                candidates.append(index_path)
+
+        scope = self._scope_preview
+        if scope is not None:
+            for resolved in scope.resolved_objects:
+                for cand in resolved.candidate_files:
+                    _add(cand.path)
+
+        plan = self._analysis_plan
+        if plan is not None:
+            for obj in plan.analysis_objects:
+                for hint in obj.path_hints:
+                    _add(hint)
+
+        if not candidates:
+            return [str(root)]
+
+        deduped: list[Path] = []
+        seen: set[str] = set()
+        for path in candidates:
+            key = os.path.normcase(str(path))
+            if key in seen:
+                continue
+            seen.add(key)
+            deduped.append(path)
+
+        narrow_first = sorted(deduped, key=lambda p: len(p.parts), reverse=True)
+        scoped: list[Path] = []
+        for path in narrow_first:
+            if any(_is_relative_to(existing, path) for existing in scoped):
+                continue
+            scoped.append(path)
+        scoped.sort(key=lambda p: os.path.normcase(str(p)))
+        return [str(path) for path in scoped[:8]] or [str(root)]
+
+    @staticmethod
+    def _final_done_message(
+        final_status: str,
+        *,
+        degraded: list[str] | None = None,
+        all_modules_failed: bool = False,
+        no_reports: bool = False,
+    ) -> str:
+        if final_status == "failed":
+            return "分析失败：所有 AI 输出均未成功"
+        if final_status == "completed_with_warnings":
+            if all_modules_failed or no_reports:
+                return "分析完成（部分内容生成失败）"
+            if degraded:
+                return "分析完成（存在降级警告）"
+            return "分析完成（存在警告）"
+        return "分析完成"
+
     async def _phase_prepare(self, repo_path: str, tools: list[str]) -> None:
         """Validate repo path, git init, and run adapter prepare in parallel."""
         path = Path(repo_path)
@@ -307,14 +442,36 @@ class AnalysisPipeline:
             raise FileNotFoundError(f"代码路径不存在: {repo_path}")
 
         req = AnalysisRequest(repo_local_path=repo_path)
+        self._cgc_index_paths = self._derive_cgc_index_paths(repo_path)
+        cgc_req = AnalysisRequest(
+            repo_local_path=repo_path,
+            options={"cgc_index_paths": self._cgc_index_paths},
+        )
         self._tool_adapters = {}
+
+        # During prepare(), GitNexus may index for several minutes.  Surface its
+        # progress into the 1-9% band so the page shows movement instead of a
+        # frozen 0% (P0-002 UX half).
+        async def _gitnexus_prepare_progress(pct: int) -> None:
+            mapped = 1 + int(max(0, min(100, pct)) * 0.08)  # 1..9
+            await self._update_progress(
+                self._task_id, mapped, "running", None,
+                f"GitNexus 索引中… {max(0, min(100, pct))}%",
+            )
 
         adapter_coros = []
         for tool_name in tools:
             try:
                 adapter = create_adapter(tool_name)
                 self._tool_adapters[tool_name] = adapter
-                adapter_coros.append(adapter.prepare(req))
+                if tool_name == "gitnexus":
+                    adapter_coros.append(
+                        adapter.prepare(req, on_progress=_gitnexus_prepare_progress)
+                    )
+                elif tool_name == "cgc":
+                    adapter_coros.append(adapter.prepare(cgc_req))
+                else:
+                    adapter_coros.append(adapter.prepare(req))
             except KeyError:
                 pass  # no registered adapter for this tool
 
@@ -323,9 +480,17 @@ class AnalysisPipeline:
             try:
                 cgc_adapter = create_adapter("cgc")
                 self._tool_adapters["cgc"] = cgc_adapter
-                adapter_coros.append(cgc_adapter.prepare(req))
+                adapter_coros.append(cgc_adapter.prepare(cgc_req))
             except Exception:
                 pass  # CGC unavailable — will degrade gracefully in _assess_tool_health
+
+        if self._cgc_index_paths and self._cgc_index_paths != [str(path.resolve())]:
+            await AnalysisPipeline._log_step(
+                self._task_id, 8,
+                "CGC scope-aware index paths selected",
+                event_type="scope", phase="prepare",
+                detail={"paths": self._cgc_index_paths},
+            )
 
         results = await asyncio.gather(
             self._ensure_git_init(path),
@@ -440,6 +605,127 @@ class AnalysisPipeline:
         else:
             self._data_quality = "good"
 
+    @staticmethod
+    async def _gitnexus_resolve_repo(
+        client: httpx.AsyncClient, tool_repo_path: str
+    ) -> dict | None:
+        """Resolve the indexed GitNexus repo *descriptor* for *tool_repo_path*.
+
+        Returns ``{name, path, id, node_count, edge_count, ambiguous, ...}`` or
+        None.  Matches by normalized path (handles the real /api/repos top-level
+        array with duplicate names), and flags same-name ambiguity so the graph
+        fetch can verify it pulled the right repo (Round 4 P1).  Never raises.
+        """
+        try:
+            from app.adapters.gitnexus import resolve_indexed_repo
+            resp = await client.get("/api/repos", timeout=10)
+            if resp.status_code != 200:
+                return None
+            return resolve_indexed_repo(resp.json(), tool_repo_path)
+        except Exception as exc:
+            logger.debug("GitNexus repo resolve probe failed (non-fatal): %s", exc)
+            return None
+
+    @staticmethod
+    def _gitnexus_graph_counts(graph: dict) -> tuple[int, int]:
+        """Return node/edge counts across GitNexus graph response variants."""
+        edges = graph.get("relationships")
+        if edges is None:
+            edges = graph.get("edges", [])
+        return len(graph.get("nodes", [])), len(edges or [])
+
+    async def _fetch_gitnexus_graph(
+        self,
+        client: httpx.AsyncClient,
+        repo_name: str,
+        descriptor: dict | None,
+    ) -> dict:
+        """GET the knowledge graph, disambiguating same-named repos by stats.
+
+        When two indexed repos share ``repo_name``, ``GET /api/graph?repo=<name>``
+        is ambiguous: GitNexus resolves by name and may return the wrong repo
+        (Round 4 P1 — fetched D:\\...\\spdk instead of the target E:\\...\\spdk).
+        We try the most path/id-specific query first and verify the returned
+        node/edge counts against the resolved repo's expected stats.  If we
+        cannot get a matching graph, we keep the response but record a degraded
+        flag so the run is not silently trusted.
+        """
+        expected_nodes = (descriptor or {}).get("node_count")
+        expected_edges = (descriptor or {}).get("edge_count")
+        has_expected = expected_nodes is not None or expected_edges is not None
+        ambiguous = bool(descriptor and descriptor.get("ambiguous"))
+
+        # Most-specific identifiers first; only bother with extras when ambiguous.
+        param_sets: list[dict] = []
+        if ambiguous and descriptor:
+            if descriptor.get("id"):
+                param_sets.append({"repo": str(descriptor["id"])})
+                param_sets.append({"repoId": str(descriptor["id"])})
+            if descriptor.get("path"):
+                param_sets.append({"repo": repo_name, "path": descriptor["path"]})
+                param_sets.append({"path": descriptor["path"]})
+        param_sets.append({"repo": repo_name})
+
+        last_graph: dict | None = None
+        last_params: dict | None = None
+        matched = False
+        seen_counts: set[tuple[int, int]] = set()
+
+        for params in param_sets:
+            resp = await client.get("/api/graph", params=params, timeout=120)
+            if resp.status_code == 404:
+                continue
+            resp.raise_for_status()
+            graph = resp.json()
+            nodes, edges = self._gitnexus_graph_counts(graph)
+            last_graph, last_params = graph, params
+            if has_expected:
+                ok_nodes = expected_nodes is None or expected_nodes == nodes
+                ok_edges = expected_edges is None or expected_edges == edges
+                if ok_nodes and ok_edges:
+                    matched = True
+                    break
+                # If repeated param sets return identical counts, GitNexus is
+                # ignoring our disambiguators — stop hammering the heavy endpoint.
+                if (nodes, edges) in seen_counts:
+                    break
+                seen_counts.add((nodes, edges))
+            else:
+                matched = True  # nothing to verify against
+                break
+
+        if last_graph is None:
+            resp = await client.get("/api/graph", timeout=120)
+            resp.raise_for_status()
+            last_graph = resp.json()
+            last_params = {}
+
+        actual_nodes, actual_edges = self._gitnexus_graph_counts(last_graph)
+        self._gitnexus_stats = {
+            "expected": {"nodes": expected_nodes, "edges": expected_edges},
+            "actual": {"nodes": actual_nodes, "edges": actual_edges},
+            "matched": matched or not has_expected,
+            "query": last_params,
+        }
+        if ambiguous and has_expected and not matched:
+            self._gitnexus_extra_degraded.append("gitnexus_repo_ambiguous")
+            logger.error(
+                "GitNexus same-name repo ambiguity: expected ~%s nodes for %s but "
+                "graph returned %d nodes; reports may reference the wrong repo",
+                expected_nodes, (descriptor or {}).get("path"), actual_nodes,
+            )
+            await AnalysisPipeline._log_step(
+                self._task_id, 18,
+                "⚠️ GitNexus 同名仓库歧义：按名取图与目标路径 stats 不一致，已标记 degraded",
+                event_type="warning", phase="data_collection", level="warning",
+                detail={
+                    "expected_nodes": expected_nodes,
+                    "actual_nodes": actual_nodes,
+                    "target_path": (descriptor or {}).get("path"),
+                },
+            )
+        return last_graph
+
     async def _collect_gitnexus(self, repo_path: str) -> None:
         """Call GitNexus to get the knowledge graph, with commit-based caching."""
         # Task 10: check cache before calling API
@@ -489,6 +775,36 @@ class AnalysisPipeline:
             timeout=httpx.Timeout(1800, connect=10),
             trust_env=False,
         ) as client:
+            # P0-002: even with a cold in-process cache, GitNexus itself may
+            # already hold this repo's graph.  Probe /api/repos for the derived
+            # name first; if it's there, skip straight to GET /api/graph instead
+            # of re-running a multi-minute POST /api/analyze.
+            descriptor: dict | None = None
+            if repo_name is None:
+                descriptor = await self._gitnexus_resolve_repo(client, tool_repo_path)
+                if descriptor:
+                    repo_name = descriptor["name"]
+                    self._gitnexus_index_path = descriptor.get("path") or ""
+                    try:
+                        from app.adapters.gitnexus import GitNexusAdapter
+                        GitNexusAdapter._indexed_repo_by_path[(base_url, tool_repo_path)] = repo_name
+                    except Exception:
+                        pass
+                    logger.info(
+                        "GitNexus: repo already indexed as %s (resolved by path %s), "
+                        "skipping re-analyze", repo_name, descriptor.get("path"),
+                    )
+                    await AnalysisPipeline._log_step(
+                        self._task_id, 15, f"GitNexus 已索引（{repo_name}），跳过重复分析",
+                        event_type="api_done", phase="data_collection",
+                        detail={
+                            "repo": repo_name,
+                            "path": descriptor.get("path"),
+                            "ambiguous": descriptor.get("ambiguous"),
+                            "source": "repo_probe",
+                        },
+                    )
+
             if repo_name is None:
                 await AnalysisPipeline._log_step(
                     self._task_id, 10, "GitNexus 开始索引代码库...",
@@ -561,28 +877,35 @@ class AnalysisPipeline:
 
             # repo_name is set from 409 body or poll status
             repo_name = repo_name or Path(tool_repo_path).name
+            self._gitnexus_index_root = repo_name  # for the 00 index-coverage table
+            # Resolve the descriptor (path + expected stats + same-name ambiguity)
+            # so the graph fetch can verify it pulled the RIGHT repo (Round 4 P1).
+            if descriptor is None:
+                descriptor = await self._gitnexus_resolve_repo(client, tool_repo_path)
+                if descriptor and not self._gitnexus_index_path:
+                    self._gitnexus_index_path = descriptor.get("path") or ""
             await AnalysisPipeline._log_step(
                 self._task_id, 16, f"获取代码图谱（仓库：{repo_name}）...",
                 event_type="api_call", phase="data_collection",
-                detail={"api": "GET /api/graph", "repo": repo_name},
+                detail={
+                    "api": "GET /api/graph",
+                    "repo": repo_name,
+                    "path": (descriptor or {}).get("path"),
+                    "ambiguous": (descriptor or {}).get("ambiguous"),
+                },
             )
-            graph_resp = await client.get("/api/graph", params={"repo": repo_name}, timeout=120)
-            if graph_resp.status_code == 404:
-                logger.warning(
-                    "GitNexus graph 404 for repo=%s; retrying without repo filter",
-                    repo_name,
-                )
-                graph_resp = await client.get("/api/graph", timeout=120)
-            graph_resp.raise_for_status()
-            self._gitnexus_data = graph_resp.json()
-            nodes = len(self._gitnexus_data.get("nodes", []))
-            edges = len(self._gitnexus_data.get("relationships", []))
+            self._gitnexus_data = await self._fetch_gitnexus_graph(
+                client, repo_name, descriptor
+            )
+            nodes, edges = self._gitnexus_graph_counts(self._gitnexus_data)
             logger.info("GitNexus data collected: %d nodes, %d edges", nodes, edges)
+            _stats = self._gitnexus_stats or {}
             await AnalysisPipeline._log_step(
                 self._task_id, 18,
-                f"代码图谱获取完成：{nodes} 节点，{edges} 关系",
+                f"代码图谱获取完成：{nodes} 节点，{edges} 关系"
+                + ("（⚠️ 与目标仓库 stats 不一致）" if _stats.get("matched") is False else ""),
                 event_type="api_done", phase="data_collection",
-                detail={"nodes": nodes, "edges": edges},
+                detail={"nodes": nodes, "edges": edges, "stats": _stats},
             )
 
         # Task 10: save to cache
@@ -842,17 +1165,8 @@ class AnalysisPipeline:
             )
             self._scope_preview = scope
 
-        # 1. Build evidence cards (bounded by LLMLimits.max_evidence_cards).
-        builder = EvidenceCardBuilder(
-            repo_path=self._repo_path, limits=plan.llm_limits,
-        )
-        self._evidence_cards = await builder.build_cards(scope.resolved_objects)
-
-        # 1b. Augment with CGC graph queries (callers / callees / call_chain / module_deps).
-        cgc_cards = await self._inject_cgc_evidence_cards(
-            scope.resolved_objects, plan.llm_limits.max_evidence_cards
-        )
-        self._evidence_cards.extend(cgc_cards)
+        # 1. Read graph products first, then source cards.
+        cgc_cards = await self._build_evidence_cards_product_first(scope, plan)
 
         await self._log_step(
             self._task_id, 50,
@@ -864,6 +1178,10 @@ class AnalysisPipeline:
         #    (sharing files/symbols) collapse to the same unit.  Hard cap
         #    via LLMLimits.max_analysis_units (AC-P2).
         self._analysis_units = self._group_analysis_units(scope.resolved_objects, plan)
+        unit_mapping = self._build_analysis_unit_mapping(
+            scope.resolved_objects, plan, self._analysis_units
+        )
+        await self._write_analysis_unit_mapping(unit_mapping)
         await self._log_step(
             self._task_id, 55,
             f"🧩 已规划 {len(self._analysis_units)} 个分析单元（GitNexus 社区数与之无关）",
@@ -912,6 +1230,28 @@ class AnalysisPipeline:
 
         self._module_summaries = results
 
+    async def _build_evidence_cards_product_first(
+        self,
+        scope: ScopePreview,
+        plan: AnalysisPlan,
+    ) -> list[EvidenceCard]:
+        """Build evidence in product-first order: CGC graph cards before source."""
+        self._evidence_cards = []
+        cgc_cards = await self._inject_cgc_evidence_cards(
+            scope.resolved_objects, plan.llm_limits.max_evidence_cards
+        )
+        self._evidence_cards = list(cgc_cards)
+
+        builder = EvidenceCardBuilder(
+            repo_path=self._repo_path,
+            limits=plan.llm_limits,
+            gitnexus_repo=self._gitnexus_index_root or Path(self._repo_path).name,
+        )
+        source_cards = await builder.build_cards(scope.resolved_objects)
+        remaining = max(0, plan.llm_limits.max_evidence_cards - len(self._evidence_cards))
+        self._evidence_cards.extend(source_cards[:remaining])
+        return cgc_cards
+
     def _group_analysis_units(
         self, resolved_objects, plan: AnalysisPlan,
     ) -> list[dict]:
@@ -919,40 +1259,23 @@ class AnalysisPipeline:
         for card in self._evidence_cards:
             cards_by_object.setdefault(card.object_id, []).append(card)
 
-        # Simple grouping heuristic: union-find on shared file paths.
-        parent: dict[str, str] = {obj.object_id: obj.object_id for obj in resolved_objects}
+        # Delegate the grouping + cap to the SHARED planner that the preview
+        # also uses, so the unit count the user saw in "预览分析范围" matches the
+        # count we actually execute (P0: preview ↔ execution consistency).
+        object_files: list[tuple[str, list[str]]] = []
+        for obj in resolved_objects:
+            keys = [
+                normalize_file_key(self._repo_path, card.file_path)
+                for card in cards_by_object.get(obj.object_id, [])
+                if card.file_path
+            ]
+            object_files.append((obj.object_id, keys))
 
-        def find(x: str) -> str:
-            while parent[x] != x:
-                parent[x] = parent[parent[x]]
-                x = parent[x]
-            return x
+        groups = plan_analysis_units(object_files, plan.llm_limits.max_analysis_units)
 
-        def union(a: str, b: str) -> None:
-            ra, rb = find(a), find(b)
-            if ra != rb:
-                parent[rb] = ra
-
-        file_owner: dict[str, str] = {}
-        for obj_id, cards in cards_by_object.items():
-            for card in cards:
-                if not card.file_path:
-                    continue
-                prev = file_owner.get(card.file_path)
-                if prev is None:
-                    file_owner[card.file_path] = obj_id
-                else:
-                    union(prev, obj_id)
-
-        groups: dict[str, list[str]] = {}
-        for obj_id in [o.object_id for o in resolved_objects]:
-            root = find(obj_id)
-            groups.setdefault(root, []).append(obj_id)
-
-        # Convert groups into analysis-unit dicts.
         text_by_id = {o.object_id: o.text for o in resolved_objects}
         units: list[dict] = []
-        for idx, (root, members) in enumerate(groups.items()):
+        for idx, members in enumerate(groups):
             unit_cards: list[EvidenceCard] = []
             for mid in members:
                 unit_cards.extend(cards_by_object.get(mid, []))
@@ -966,29 +1289,92 @@ class AnalysisPipeline:
                 "cards": unit_cards,
                 "card_dicts": [c.to_dict() for c in unit_cards],
             })
-
-        # Hard cap on units — merge tail into last bucket if needed.
-        cap = plan.llm_limits.max_analysis_units
-        if len(units) > cap:
-            head = units[: cap - 1]
-            tail = units[cap - 1 :]
-            merged_cards: list[EvidenceCard] = []
-            merged_texts: list[str] = []
-            merged_object_ids: list[str] = []
-            for u in tail:
-                merged_cards.extend(u["cards"])
-                merged_texts.extend(u["object_texts"])
-                merged_object_ids.extend(u["object_ids"])
-            head.append({
-                "id": f"unit_{cap}",
-                "title": "其他分析对象合集",
-                "object_ids": merged_object_ids,
-                "object_texts": merged_texts,
-                "cards": merged_cards,
-                "card_dicts": [c.to_dict() for c in merged_cards],
-            })
-            units = head
         return units
+
+    def _build_analysis_unit_mapping(
+        self, resolved_objects, plan: AnalysisPlan, units: list[dict],
+    ) -> dict:
+        cards_by_object: dict[str, list[EvidenceCard]] = {}
+        for card in self._evidence_cards:
+            cards_by_object.setdefault(card.object_id, []).append(card)
+
+        unit_by_object: dict[str, dict] = {}
+        for unit in units:
+            for object_id in unit.get("object_ids", []):
+                unit_by_object[object_id] = unit
+
+        resolved_by_id = {obj.object_id: obj for obj in resolved_objects}
+        objects: list[dict] = []
+        for planned in plan.analysis_objects:
+            resolved = resolved_by_id.get(planned.id)
+            unit = unit_by_object.get(planned.id)
+            cards = cards_by_object.get(planned.id, [])
+            candidates = []
+            if resolved is not None:
+                candidates = [
+                    *(c.model_dump() for c in resolved.candidate_files),
+                    *(c.model_dump() for c in resolved.candidate_symbols),
+                ]
+            if cards:
+                coverage_status = "direct_evidence"
+            elif candidates:
+                coverage_status = "resolved_without_evidence_cards"
+            else:
+                coverage_status = "unresolved"
+            objects.append({
+                "object_id": planned.id,
+                "text": planned.text,
+                "kind": planned.kind,
+                "priority": planned.priority,
+                "coverage_status": coverage_status,
+                "unit_id": unit.get("id") if unit else None,
+                "unit_title": unit.get("title") if unit else None,
+                "candidate_count": len(candidates),
+                "candidates": candidates,
+                "evidence_card_ids": [card.card_id for card in cards],
+                "warnings": list(resolved.warnings) if resolved is not None else ["not resolved"],
+            })
+
+        mapping_units: list[dict] = []
+        for unit in units:
+            unit_cards = unit.get("cards", [])
+            files = sorted({
+                card.file_path for card in unit_cards
+                if getattr(card, "file_path", None)
+            })
+            mapping_units.append({
+                "unit_id": unit.get("id"),
+                "title": unit.get("title"),
+                "object_ids": list(unit.get("object_ids", [])),
+                "object_texts": list(unit.get("object_texts", [])),
+                "evidence_card_ids": [card.card_id for card in unit_cards],
+                "files": files,
+            })
+
+        return {
+            "version": "analysis-unit-mapping-v1",
+            "task_id": self._task_id,
+            "plan_object_count": len(plan.analysis_objects),
+            "resolved_object_count": len(resolved_objects),
+            "unit_count": len(units),
+            "objects": objects,
+            "units": mapping_units,
+        }
+
+    async def _write_analysis_unit_mapping(self, mapping: dict) -> None:
+        if not self._task_id:
+            return
+        out_dir = settings.outputs_path / self._task_id
+        out_dir.mkdir(parents=True, exist_ok=True)
+        path = out_dir / "analysis_unit_mapping.json"
+        try:
+            await asyncio.to_thread(
+                path.write_text,
+                json.dumps(mapping, ensure_ascii=False, indent=2),
+                "utf-8",
+            )
+        except Exception as exc:
+            logger.warning("Failed to write analysis unit mapping: %s", exc)
 
     async def _inject_cgc_evidence_cards(
         self,
@@ -1010,7 +1396,7 @@ class AnalysisPipeline:
             return []
 
         cgc = cgc_adapter._cgc
-        repo_path = self._repo_path
+        repo_path = self._cgc_index_paths[0] if self._cgc_index_paths else self._repo_path
         cards: list[EvidenceCard] = []
         existing = len(self._evidence_cards)
 
@@ -1130,7 +1516,7 @@ class AnalysisPipeline:
     ) -> str:
         """Tiny LLM call that condenses a unit's evidence into 600-1000 chars."""
         cards_md = "\n\n".join(
-            card.to_markdown() for card in unit["cards"][:8]
+            card.to_markdown() for card in self._cards_for_unit_prompt(unit)
         ) or "（无证据卡）"
         prompt = (
             "你是资深代码分析与测试专家。请基于以下证据卡，为一个分析单元生成"
@@ -1158,6 +1544,76 @@ class AnalysisPipeline:
         except Exception as exc:
             return f"（分析失败: {exc}）"
         return content or "（LLM 未返回内容）"
+
+    def _cards_for_unit_prompt(self, unit: dict, limit: int = 12) -> list[EvidenceCard]:
+        """Select balanced, high-signal evidence for a unit summary prompt."""
+        cards: list[EvidenceCard] = list(unit.get("cards") or [])
+        if not cards:
+            return []
+
+        def score(card: EvidenceCard) -> int:
+            path = (card.file_path or "").replace("\\", "/").lower()
+            value = 0
+            if card.source == "repo_search" and card.symbol:
+                value += 120
+            elif card.source == "repo_search":
+                value += 80
+            elif card.source == "gitnexus":
+                value += 50
+            elif card.source == "cgc":
+                value += 180
+            elif card.source == "material":
+                value += 40
+            if card.confidence == "high":
+                value += 20
+            elif card.confidence == "medium":
+                value += 10
+            if "/lib/log/" in path:
+                value += 50
+            if "/include/spdk/log.h" in path:
+                value += 35
+            if "/app/" in path or "/examples/" in path:
+                value -= 20
+            if "/test/" in path:
+                value -= 10
+            return value
+
+        object_order = {oid: idx for idx, oid in enumerate(unit.get("object_ids") or [])}
+        ranked = sorted(
+            cards,
+            key=lambda c: (
+                object_order.get(c.object_id, 999),
+                -score(c),
+                c.file_path or c.title,
+            ),
+        )
+
+        selected: list[EvidenceCard] = []
+        selected_keys: set[tuple[str, str | None]] = set()
+        per_object = max(1, min(3, limit // max(1, len(object_order) or 1)))
+        counts: dict[str, int] = {}
+
+        for card in ranked:
+            if counts.get(card.object_id, 0) >= per_object:
+                continue
+            key = (card.file_path or card.title, card.symbol)
+            if key in selected_keys:
+                continue
+            selected.append(card)
+            selected_keys.add(key)
+            counts[card.object_id] = counts.get(card.object_id, 0) + 1
+            if len(selected) >= limit:
+                return selected
+
+        for card in sorted(cards, key=lambda c: (-score(c), c.file_path or c.title)):
+            key = (card.file_path or card.title, card.symbol)
+            if key in selected_keys:
+                continue
+            selected.append(card)
+            selected_keys.add(key)
+            if len(selected) >= limit:
+                break
+        return selected
 
     def _extract_communities(self) -> list[dict]:
         """Extract community/module groups from GitNexus data."""
@@ -1948,11 +2404,17 @@ class AnalysisPipeline:
         def _write() -> None:
             step_file = settings.outputs_path / task_id / "steps.jsonl"
             step_file.parent.mkdir(parents=True, exist_ok=True)
+            # Write the whole line in one call and flush so concurrent tasks
+            # never observe a partially written record.
             with step_file.open("a", encoding="utf-8") as f:
                 f.write(entry + "\n")
+                f.flush()
 
         try:
-            await asyncio.to_thread(_write)
+            # Serialise per task so concurrent report/section events cannot
+            # interleave their appends and corrupt the JSONL.
+            async with _steps_lock_for(task_id):
+                await asyncio.to_thread(_write)
         except Exception as exc:
             logger.warning("Step log write failed for %s: %s", task_id, exc)
 

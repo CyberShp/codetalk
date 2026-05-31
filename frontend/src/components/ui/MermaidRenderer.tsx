@@ -15,6 +15,7 @@ export default function MermaidRenderer({ chart }: { chart: string }) {
         mermaid.initialize({
           startOnLoad: false,
           theme: "dark",
+          suppressErrorRendering: true,
           themeVariables: {
             darkMode: true,
             background: "#10141A",
@@ -26,6 +27,10 @@ export default function MermaidRenderer({ chart }: { chart: string }) {
             tertiaryColor: "#1C2026",
           },
         });
+        const parsed = await mermaid.parse(chart, { suppressErrors: true });
+        if (!parsed) {
+          throw new Error("Invalid Mermaid diagram syntax");
+        }
         const id = `mermaid-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
         const { svg: rendered } = await mermaid.render(id, chart);
         if (!cancelled) {

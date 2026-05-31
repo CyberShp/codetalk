@@ -22,17 +22,17 @@ pytestmark = [pytest.mark.asyncio, pytest.mark.integration]
 
 @pytest.fixture(autouse=True)
 def background_tasks(monkeypatch):
-    """Capture asyncio.create_task calls. Returns list of scheduled coroutine qualnames."""
-    import asyncio
+    """Capture workspace API background tasks without patching global asyncio."""
+    from app.api import workspaces
 
     captured: list[str] = []
 
-    def _capture(coro, *, name=None):
+    def _capture(coro):
         captured.append(getattr(coro, "__qualname__", repr(coro)))
         if hasattr(coro, "close"):
             coro.close()
 
-    monkeypatch.setattr(asyncio, "create_task", _capture)
+    monkeypatch.setattr(workspaces, "_schedule_background_task", _capture)
     return captured
 
 
@@ -176,7 +176,15 @@ class TestIndexAndAnalyze:
         await _seed_ws(sqlite_db, "ws-az", indexed=1)
         resp = await client_v2.post("/api/workspaces/ws-az/analyze")
         assert resp.status_code == 202
+        task_id = resp.json()["task_id"]
+        assert task_id
         assert any("_run_workspace_analysis" in c for c in background_tasks)
+
+        status_resp = await client_v2.get("/api/workspaces/ws-az/analyze-status")
+        assert status_resp.status_code == 200
+        status_body = status_resp.json()
+        assert status_body["analyze_status"] == "running"
+        assert status_body["task_id"] == task_id
 
     async def test_analyze_blocks_when_already_running(self, client_v2, sqlite_db):
         now = datetime.now(timezone.utc).isoformat()
@@ -199,6 +207,32 @@ class TestIndexAndAnalyze:
         body = resp.json()
         assert "analyze_status" in body
         assert "analyze_progress" in body
+
+    async def test_analyze_status_done_keeps_latest_task_id(self, client_v2, sqlite_db):
+        ws_id = "ws-status-done-task"
+        now = datetime.now(timezone.utc).isoformat()
+        async with aiosqlite.connect(sqlite_db) as db:
+            await db.execute(
+                "INSERT INTO workspaces "
+                "(id, name, repo_path, indexed, analyze_status, analyze_progress, created_at, updated_at) "
+                "VALUES (?, 'ws', '/repo', 1, 'done', 100, ?, ?)",
+                (ws_id, now, now),
+            )
+            await db.execute(
+                "INSERT INTO tasks (id, name, repo_path, status, tools, "
+                "analysis_focus, prompt_content, deepwiki_depth, workspace_id, progress, created_at, updated_at) "
+                "VALUES ('latest-done-task', ?, '/repo', 'completed', '[]', "
+                "'focus', 'prompt', 'balanced', ?, 100, ?, ?)",
+                (f"__ws_{ws_id}", ws_id, now, now),
+            )
+            await db.commit()
+
+        resp = await client_v2.get(f"/api/workspaces/{ws_id}/analyze-status")
+        assert resp.status_code == 200
+        body = resp.json()
+        assert body["analyze_status"] == "done"
+        assert body["analyze_progress"] == 100
+        assert body["task_id"] == "latest-done-task"
 
     async def test_analyze_status_shows_shadow_task_progress(self, client_v2, sqlite_db):
         """get_analyze_status: shadow task record exists → returns its live progress (line 289)."""
@@ -224,6 +258,34 @@ class TestIndexAndAnalyze:
         body = resp.json()
         assert body["analyze_status"] == "running"
         assert body["analyze_progress"] == 42
+
+    async def test_analyze_status_ignores_completed_legacy_shadow_task(self, client_v2, sqlite_db):
+        """A completed legacy __ws_* task must not be exposed as the live task id."""
+        ws_id = "ws-shadow-old"
+        now = datetime.now(timezone.utc).isoformat()
+        async with aiosqlite.connect(sqlite_db) as db:
+            await db.execute(
+                "INSERT INTO workspaces "
+                "(id, name, repo_path, indexed, analyze_status, analyze_progress, created_at, updated_at) "
+                "VALUES (?, 'ws', '/repo', 1, 'running', 17, ?, ?)",
+                (ws_id, now, now),
+            )
+            await db.execute(
+                "INSERT INTO tasks (id, name, repo_path, status, tools, "
+                "analysis_focus, prompt_content, deepwiki_depth, progress, created_at, updated_at) "
+                "VALUES ('old-completed-task', ?, '/repo', 'completed', '[]', "
+                "'focus', 'prompt', 'balanced', 100, ?, ?)",
+                (f"__ws_{ws_id}", now, now),
+            )
+            await db.commit()
+
+        resp = await client_v2.get(f"/api/workspaces/{ws_id}/analyze-status")
+
+        assert resp.status_code == 200
+        body = resp.json()
+        assert body["analyze_status"] == "running"
+        assert body["analyze_progress"] == 17
+        assert body["task_id"] is None
 
 
 # ---------------------------------------------------------------------------
