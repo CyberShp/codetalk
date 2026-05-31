@@ -21,8 +21,14 @@ logger = logging.getLogger(__name__)
 _MAX_SNIPPET_CHARS = 400
 _MAX_MATERIAL_CHARS = 2000
 _MAX_REPORT_SUMMARY_CHARS = 500
+_MAX_REPORTS_IN_CONTEXT = 8
 _SEARCH_LIMIT = 5
 _HISTORY_LIMIT = 50
+_RECENT_HISTORY_LIMIT = 20
+_MEMORY_SUMMARY_LIMIT = 40
+_MEMORY_SNIPPET_CHARS = 160
+_EVIDENCE_BEGIN = "<!-- CODETALK_EVIDENCE_STATUS_BEGIN -->"
+_EVIDENCE_END = "<!-- CODETALK_EVIDENCE_STATUS_END -->"
 
 _REPORT_LABELS: dict[str, str] = {
     "module_map": "项目与模块地图",
@@ -35,11 +41,13 @@ _REPORT_LABELS: dict[str, str] = {
 
 # T10: Mode-differentiated system prompts
 _TARGETED_SYSTEM = """\
-你是代码库结构化分析助手，专注于结合需求/设计文档对代码进行深度分析。
+你是代码库结构化分析助手，专注于结合需求/设计文档、历史对话、报告摘要和可用代码证据进行深度分析。
 
 ## 代码仓库
 {repo_path}
 {module_context}
+{memory_summary}
+{evidence_status_block}
 ## 相关代码片段
 {code_snippets}
 
@@ -49,17 +57,33 @@ _TARGETED_SYSTEM = """\
 ## 已生成分析报告摘要
 {reports_summary}
 
+## Mode Contract
+MODE_TARGETED
+- Scope: code snippets + active materials + completed reports + conversation memory.
+- Required output sections: Evidence status, Conclusion, Evidence-backed analysis, Gaps / 待验证, Next actions.
+- Every concrete claim should point to a visible source category when possible.
+- Claims without direct evidence must be marked 待验证.
+
 请使用 Markdown 格式输出详细、结构化的回答，语言：中文。\
 """
 
 _FREEQA_SYSTEM = """\
-你是代码库问答助手，可以轻松回答关于代码仓库的各类问题。
+你是代码库问答助手，用于快速回答关于代码仓库的轻量问题。自由问答只使用代码片段和对话记忆，不使用材料和报告摘要。
 
 ## 代码仓库
 {repo_path}
 {module_context}
+{memory_summary}
+{evidence_status_block}
 ## 相关代码片段
 {code_snippets}
+
+## Mode Contract
+MODE_FREEQA
+- Scope: code snippets + conversation memory only.
+- Do not claim that active materials or reports were used in freeqa mode.
+- Prefer concise answers.
+- Claims without direct evidence must be marked 待验证.
 
 请用中文回答，语气自然、简洁，可以使用 Markdown 格式。\
 """
@@ -195,13 +219,15 @@ async def _load_materials_context(ws_id: str, query: str) -> list[str]:
 
 
 async def _load_report_summaries(ws_id: str) -> list[str]:
-    """Load first _MAX_REPORT_SUMMARY_CHARS of each completed report."""
+    """Load bounded summaries of the most recent completed reports."""
     async with aiosqlite.connect(settings.sqlite_db) as db:
         db.row_factory = aiosqlite.Row
         async with db.execute(
             "SELECT report_type, content FROM workspace_reports "
-            "WHERE workspace_id = ? AND status = 'completed'",
-            (ws_id,),
+            "WHERE workspace_id = ? AND status = 'completed' "
+            "AND content IS NOT NULL AND TRIM(content) != '' "
+            "ORDER BY created_at DESC LIMIT ?",
+            (ws_id, _MAX_REPORTS_IN_CONTEXT),
         ) as cur:
             rows = [dict(r) for r in await cur.fetchall()]
 
@@ -233,6 +259,117 @@ async def _load_history(ws_id: str) -> list[dict]:
             return [{"role": r["role"], "content": r["content"]} for r in await cur.fetchall()]
 
 
+async def _load_all_history(ws_id: str) -> list[dict]:
+    """Load full chat history in chronological order for memory compression."""
+    async with aiosqlite.connect(settings.sqlite_db) as db:
+        db.row_factory = aiosqlite.Row
+        async with db.execute(
+            "SELECT role, content FROM workspace_chats"
+            " WHERE workspace_id = ? ORDER BY created_at ASC",
+            (ws_id,),
+        ) as cur:
+            return [{"role": r["role"], "content": r["content"]} for r in await cur.fetchall()]
+
+
+def _truncate_memory_text(text: str, limit: int = _MEMORY_SNIPPET_CHARS) -> str:
+    compact = " ".join((text or "").split())
+    if len(compact) <= limit:
+        return compact
+    return compact[: limit - 1] + "…"
+
+
+def _format_memory_summary(older: list[dict]) -> str:
+    if not older:
+        return ""
+
+    if len(older) <= _MEMORY_SUMMARY_LIMIT:
+        selected = older
+    else:
+        head_count = _MEMORY_SUMMARY_LIMIT // 2
+        tail_count = _MEMORY_SUMMARY_LIMIT - head_count
+        selected = older[:head_count] + older[-tail_count:]
+
+    bullets = []
+    for idx, msg in enumerate(selected, start=1):
+        role = "用户" if msg.get("role") == "user" else "助手"
+        bullets.append(f"- {idx}. {role}: {_truncate_memory_text(msg.get('content', ''))}")
+
+    omitted = len(older) - len(selected)
+    omitted_note = f"\n- omitted_older_messages: {omitted}" if omitted > 0 else ""
+    return (
+        "## CODETALK_MEMORY_SUMMARY\n"
+        "The following compact memory preserves older turns that no longer fit "
+        "as full chat messages. Use it as conversation context, but treat old "
+        "facts as secondary to current evidence.\n"
+        + "\n".join(bullets)
+        + omitted_note
+        + "\n"
+    )
+
+
+async def _load_history_for_prompt(ws_id: str) -> tuple[str, list[dict]]:
+    """Return a compact older-memory block plus recent full messages."""
+    history = await _load_all_history(ws_id)
+    if len(history) <= _RECENT_HISTORY_LIMIT:
+        return "", history
+
+    older = history[:-_RECENT_HISTORY_LIMIT]
+    recent = history[-_RECENT_HISTORY_LIMIT:]
+    return _format_memory_summary(older), recent
+
+
+def _build_evidence_notice(
+    *,
+    mode: str,
+    code_snippet_count: int,
+    material_count: int | None,
+    report_count: int | None,
+    memory_summary_present: bool,
+    recent_history_count: int,
+) -> str:
+    mode_label = "结构化分析" if mode == "targeted" else "自由问答"
+    material_value = str(material_count) if material_count is not None else "not_used_in_freeqa"
+    report_value = str(report_count) if report_count is not None else "not_used_in_freeqa"
+    lines = [
+        "> **证据状态**",
+        f"> - mode: {mode_label} ({mode})",
+        f"> - code_snippets: {code_snippet_count}",
+        f"> - materials: {material_value}",
+        f"> - reports: {report_value}",
+        f"> - memory_summary: {'yes' if memory_summary_present else 'no'}",
+        f"> - recent_history_messages: {recent_history_count}",
+    ]
+    if code_snippet_count == 0:
+        lines.append(
+            "> - code_evidence: unavailable_or_no_hits; Claims without direct evidence must be marked 待验证."
+        )
+    else:
+        lines.append("> - code_evidence: direct snippets available; cite file paths when using them.")
+    if mode == "freeqa":
+        lines.append("> - mode_scope: freeqa does not use active materials or completed reports.")
+    else:
+        lines.append("> - mode_scope: targeted uses active materials and completed reports when available.")
+    return "\n".join(lines)
+
+
+def _evidence_status_block(notice: str) -> str:
+    return f"{_EVIDENCE_BEGIN}\n{notice}\n{_EVIDENCE_END}\n"
+
+
+def extract_evidence_notice(messages: list[dict]) -> str:
+    """Extract the user-visible deterministic evidence notice from system prompt."""
+    for msg in messages:
+        if msg.get("role") != "system":
+            continue
+        content = msg.get("content") or ""
+        start = content.find(_EVIDENCE_BEGIN)
+        end = content.find(_EVIDENCE_END)
+        if start == -1 or end == -1 or end <= start:
+            continue
+        return content[start + len(_EVIDENCE_BEGIN):end].strip()
+    return ""
+
+
 async def build_chat_messages(
     ws_id: str,
     repo_path: str,
@@ -241,12 +378,13 @@ async def build_chat_messages(
     module: str | None = None,
 ) -> list[dict]:
     """Gather workspace context and build the full LLM message list."""
-    snippets, history = await asyncio.gather(
+    snippets, history_context = await asyncio.gather(
         _search_gitnexus(repo_path, user_message, module),
-        _load_history(ws_id),
+        _load_history_for_prompt(ws_id),
     )
+    memory_summary, history = history_context
 
-    code_text = "\n\n".join(snippets) if snippets else "（无相关代码片段）"
+    code_text = "\n\n".join(snippets) if snippets else "（无直接代码片段；工具不可用或未命中，请将相关结论标记为待验证）"
     module_context = f"\n## 聚焦模块\n{module}\n" if module else ""
 
     if mode == "targeted":
@@ -254,17 +392,37 @@ async def build_chat_messages(
             _load_materials_context(ws_id, user_message),
             _load_report_summaries(ws_id),
         )
+        evidence_notice = _build_evidence_notice(
+            mode=mode,
+            code_snippet_count=len(snippets),
+            material_count=len(materials),
+            report_count=len(reports),
+            memory_summary_present=bool(memory_summary),
+            recent_history_count=len(history),
+        )
         system_prompt = _TARGETED_SYSTEM.format(
             repo_path=repo_path,
             module_context=module_context,
+            memory_summary=memory_summary,
+            evidence_status_block=_evidence_status_block(evidence_notice),
             code_snippets=code_text,
             materials_summary="\n\n".join(materials) if materials else "（无）",
             reports_summary="\n\n".join(reports) if reports else "（尚未生成报告）",
         )
     else:
+        evidence_notice = _build_evidence_notice(
+            mode=mode,
+            code_snippet_count=len(snippets),
+            material_count=None,
+            report_count=None,
+            memory_summary_present=bool(memory_summary),
+            recent_history_count=len(history),
+        )
         system_prompt = _FREEQA_SYSTEM.format(
             repo_path=repo_path,
             module_context=module_context,
+            memory_summary=memory_summary,
+            evidence_status_block=_evidence_status_block(evidence_notice),
             code_snippets=code_text,
         )
 

@@ -4,6 +4,7 @@ Uses client_v2 fixture (FastAPI test client + settings.sqlite_db patch).
 Background tasks (indexing, embedding) are suppressed via autouse fixture.
 """
 
+import asyncio
 import struct
 import uuid
 from datetime import datetime, timedelta, timezone
@@ -752,6 +753,56 @@ class TestBackgroundTasks:
 
 
 class TestChatStream:
+    async def test_stream_prepends_visible_evidence_status(self, client_v2, sqlite_db):
+        """workspace_chat_stream: evidence status in the system prompt is user-visible and persisted."""
+        ws_id = "ws-stream-evidence-status"
+        await _seed_ws(sqlite_db, ws_id, indexed=1)
+
+        async def _mock_stream(messages, **kwargs):
+            yield "answer body"
+
+        mock_llm = MagicMock()
+        mock_llm.stream_complete = _mock_stream
+        persisted_reply = AsyncMock()
+        messages = [
+            {
+                "role": "system",
+                "content": (
+                    "<!-- CODETALK_EVIDENCE_STATUS_BEGIN -->\n"
+                    "> Evidence status: degraded\n"
+                    "> code_snippets: 0\n"
+                    "<!-- CODETALK_EVIDENCE_STATUS_END -->"
+                ),
+            },
+            {"role": "user", "content": "hi"},
+        ]
+
+        with patch(
+            "app.llm.factory.create_llm_client_from_active",
+            AsyncMock(return_value=mock_llm),
+        ):
+            with patch(
+                "app.services.workspace_chat.build_chat_messages",
+                AsyncMock(return_value=messages),
+            ):
+                with patch("app.services.workspace_chat.persist_user_message", AsyncMock()):
+                    with patch(
+                        "app.services.workspace_chat.persist_assistant_reply",
+                        persisted_reply,
+                    ):
+                        resp = await client_v2.post(
+                            f"/api/workspaces/{ws_id}/chat/stream",
+                            json={"message": "What is this?", "mode": "freeqa"},
+                        )
+
+        assert resp.status_code == 200
+        body = resp.content.decode("utf-8")
+        assert "Evidence status: degraded" in body
+        assert "answer body" in body
+        persisted = persisted_reply.await_args.args[2]
+        assert "Evidence status: degraded" in persisted
+        assert "answer body" in persisted
+
     async def test_stream_mocked_llm(self, client_v2, sqlite_db):
         """workspace_chat_stream: mocked LLM yields tokens, SSE events stream back."""
         ws_id = "ws-stream-ok"
@@ -818,6 +869,44 @@ class TestChatStream:
         assert resp.status_code == 200
         body = resp.content.decode("utf-8")
         assert "error" in body
+
+    async def test_stream_cancel_persists_partial_reply(self, client_v2, sqlite_db):
+        """workspace_chat_stream: cancelled stream still saves partial assistant context."""
+        ws_id = "ws-stream-cancel"
+        await _seed_ws(sqlite_db, ws_id, indexed=1)
+
+        async def _cancelled_stream(messages, **kwargs):
+            yield "partial answer"
+            raise asyncio.CancelledError()
+
+        mock_llm = MagicMock()
+        mock_llm.stream_complete = _cancelled_stream
+        persisted_reply = AsyncMock()
+
+        with patch(
+            "app.llm.factory.create_llm_client_from_active",
+            AsyncMock(return_value=mock_llm),
+        ):
+            with patch(
+                "app.services.workspace_chat.build_chat_messages",
+                AsyncMock(return_value=[{"role": "user", "content": "hi"}]),
+            ):
+                with patch("app.services.workspace_chat.persist_user_message", AsyncMock()):
+                    with patch(
+                        "app.services.workspace_chat.persist_assistant_reply",
+                        persisted_reply,
+                    ):
+                        resp = await client_v2.post(
+                            f"/api/workspaces/{ws_id}/chat/stream",
+                            json={"message": "hello?", "mode": "freeqa"},
+                        )
+
+        assert resp.status_code == 200
+        body = resp.content.decode("utf-8")
+        assert "partial answer" in body
+        persisted = persisted_reply.await_args.args[2]
+        assert "partial answer" in persisted
+        assert "interrupted" in persisted
 
     async def test_stream_persist_user_message_exception_swallowed(
         self, client_v2, sqlite_db

@@ -17,6 +17,7 @@ import {
   BarChart2,
   MessageSquare,
   Send,
+  Square,
   Bot,
   User,
 
@@ -213,8 +214,16 @@ function ReportCard({ report, wsId }: { report: WorkspaceReportMeta; wsId: strin
   );
 }
 
-function ChatPanel({ wsId, indexed }: { wsId: string; indexed: number }) {
-  const { messages, streaming, streamingContent, loadingHistory, init, send } =
+function ChatPanel({
+  wsId,
+  indexed,
+  lastIndexError,
+}: {
+  wsId: string;
+  indexed: number;
+  lastIndexError?: string | null;
+}) {
+  const { messages, streaming, streamingContent, loadingHistory, init, send, stop } =
     useWsChat(wsId);
   const [input, setInput] = useState("");
   const [mode, setMode] = useState<ChatMode>("freeqa");
@@ -276,8 +285,8 @@ function ChatPanel({ wsId, indexed }: { wsId: string; indexed: number }) {
       {/* Mode toggle */}
       <div className="flex gap-2 mb-3">
         {([
-          { m: "freeqa" as ChatMode, Icon: Sparkles, label: "自由问答", desc: "基于代码片段轻量问答" },
-          { m: "targeted" as ChatMode, Icon: Crosshair, label: "结构化分析", desc: "结合材料与报告深度分析" },
+          { m: "freeqa" as ChatMode, Icon: Sparkles, label: "自由问答", desc: "代码片段 + 记忆" },
+          { m: "targeted" as ChatMode, Icon: Crosshair, label: "结构化分析", desc: "材料 + 报告 + 记忆" },
         ]).map(({ m, Icon, label, desc }) => (
           <button
             key={m}
@@ -417,6 +426,11 @@ function ChatPanel({ wsId, indexed }: { wsId: string; indexed: number }) {
       {!canChat && (
         <div className="mt-3 px-4 py-2.5 rounded-xl bg-amber-400/10 border border-amber-400/20 text-xs text-amber-500">
           {indexed === 0 ? "工作空间正在索引中，完成后可开始对话" : "工作空间索引失败，请重新索引后再对话"}
+          {indexed === -1 && lastIndexError && (
+            <div className="mt-1 text-amber-200/90 whitespace-pre-wrap">
+              {lastIndexError}
+            </div>
+          )}
         </div>
       )}
 
@@ -435,14 +449,24 @@ function ChatPanel({ wsId, indexed }: { wsId: string; indexed: number }) {
           rows={2}
           className="flex-1 resize-none rounded-xl border border-outline-variant/30 bg-surface-container-low px-3 py-2 text-sm text-on-surface placeholder:text-on-surface-variant/40 focus:outline-none focus:border-primary/50 disabled:opacity-50"
         />
-        <button
-          onClick={handleSend}
-          disabled={!input.trim() || streaming || !canChat}
-          className="self-end flex items-center gap-1.5 px-4 py-2 text-sm rounded-xl bg-primary text-on-primary hover:opacity-90 disabled:opacity-40 disabled:cursor-not-allowed transition-opacity"
-        >
-          {streaming ? <Loader2 size={14} className="animate-spin" /> : <Send size={14} />}
-          发送
-        </button>
+        {streaming ? (
+          <button
+            onClick={stop}
+            className="self-end flex items-center gap-1.5 px-4 py-2 text-sm rounded-xl border border-outline-variant/40 text-on-surface hover:bg-surface-container transition-colors"
+          >
+            <Square size={14} />
+            停止
+          </button>
+        ) : (
+          <button
+            onClick={handleSend}
+            disabled={!input.trim() || !canChat}
+            className="self-end flex items-center gap-1.5 px-4 py-2 text-sm rounded-xl bg-primary text-on-primary hover:opacity-90 disabled:opacity-40 disabled:cursor-not-allowed transition-opacity"
+          >
+            <Send size={14} />
+            发送
+          </button>
+        )}
       </div>
     </div>
   );
@@ -1120,7 +1144,13 @@ export default function WorkspaceDetailPage() {
       )}
 
       {/* Chat tab */}
-      {tab === "chat" && <ChatPanel wsId={wsId} indexed={workspace.indexed} />}
+      {tab === "chat" && (
+        <ChatPanel
+          wsId={wsId}
+          indexed={workspace.indexed}
+          lastIndexError={workspace.last_index_error}
+        />
+      )}
 
       <AnalysisTaskModal
         wsId={wsId}

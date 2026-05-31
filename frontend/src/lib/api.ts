@@ -383,7 +383,8 @@ export const api = {
 
     chatHistory: (wsId: string, limit = 50) =>
       request<import("./types").WorkspaceChatMessage[]>(
-        `/api/workspaces/${wsId}/chat/history?limit=${limit}`,
+        `/api/workspaces/${wsId}/chat/history?limit=${limit}&_=${Date.now()}`,
+        { cache: "no-store" },
       ),
 
     chatStream: (wsId: string, message: string, mode: import("./types").ChatMode, module?: string, signal?: AbortSignal): Promise<Response> =>

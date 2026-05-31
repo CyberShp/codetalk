@@ -888,6 +888,7 @@ async def workspace_chat_stream(
 
     from app.services.workspace_chat import (
         build_chat_messages,
+        extract_evidence_notice,
         persist_user_message,
         persist_assistant_reply,
     )
@@ -895,6 +896,7 @@ async def workspace_chat_stream(
     # Fix 3a: build context first so _load_history() excludes this turn's user message,
     # then persist — message is still saved before streaming begins
     messages = await build_chat_messages(ws_id, ws["repo_path"], body.message, body.mode, body.module)
+    evidence_notice = extract_evidence_notice(messages)
 
     try:
         await persist_user_message(ws_id, body.mode, body.message)
@@ -906,17 +908,27 @@ async def workspace_chat_stream(
     async def _generate():
         chunks: list[str] = []
         had_error = False
+        interrupted = False
         try:
+            if evidence_notice:
+                notice = evidence_notice + "\n\n"
+                chunks.append(notice)
+                yield f"data: {json.dumps({'content': notice, 'done': False}, ensure_ascii=False)}\n\n"
             async for delta in llm.stream_complete(messages, max_tokens=min(2048, settings.llm_max_output_tokens), temperature=0.5):
                 chunks.append(delta)
                 yield f"data: {json.dumps({'content': delta, 'done': False}, ensure_ascii=False)}\n\n"
+        except asyncio.CancelledError:
+            logger.info("Workspace chat stream interrupted by client")
+            interrupted = True
         except Exception as exc:
             logger.error("Workspace chat stream error: %s", exc)
             had_error = True
             yield f"data: {json.dumps({'content': '', 'done': True, 'error': '生成失败，请重试'}, ensure_ascii=False)}\n\n"
         finally:
             reply = "".join(chunks)
-            if had_error:
+            if interrupted:
+                content: str | None = (reply + "\n\n[interrupted: partial answer saved]") if reply else None
+            elif had_error:
                 content: str | None = (reply + "\n\n⚠️ 生成失败（响应不完整）") if reply else "⚠️ 生成失败，请重试"
             else:
                 content = reply or None
@@ -926,7 +938,7 @@ async def workspace_chat_stream(
                 except Exception as exc:
                     logger.error("Failed to persist assistant reply: %s", exc)
 
-        if not had_error:
+        if not had_error and not interrupted:
             yield f"data: {json.dumps({'content': '', 'done': True}, ensure_ascii=False)}\n\n"
 
     return StreamingResponse(_generate(), media_type="text/event-stream")

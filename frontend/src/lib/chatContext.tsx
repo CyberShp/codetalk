@@ -79,6 +79,29 @@ export function ChatProvider({ children }: { children: React.ReactNode }) {
     // Capture snapshot before dispatch so the error path always includes the user bubble,
     // even if the render hasn't flushed yet when a fast failure hits the catch block.
     const messagesWithUserBubble = [...(stateRef.current.get(wsId)?.messages ?? []), userBubble];
+    const mergeAbortSnapshot = (
+      history: WorkspaceChatMessage[],
+      accumulated: string,
+    ): WorkspaceChatMessage[] => {
+      let next = history.some((msg) => msg.role === "user" && msg.content === text)
+        ? history
+        : [...history, userBubble];
+      const partial = accumulated.trim();
+      if (partial && !next.some((msg) => msg.role === "assistant" && msg.content.includes(partial.slice(0, 80)))) {
+        next = [
+          ...next,
+          {
+            id: `abort-${Date.now()}`,
+            workspace_id: wsId,
+            mode,
+            role: "assistant" as const,
+            content: `${accumulated}\n\n[interrupted: partial answer saved]`,
+            created_at: new Date().toISOString(),
+          },
+        ];
+      }
+      return next;
+    };
     dispatch({
       type: "patch",
       key: wsId,
@@ -88,7 +111,10 @@ export function ChatProvider({ children }: { children: React.ReactNode }) {
     aborts.current.set(wsId, abort);
     try {
       const res = await api.workspaces.chatStream(wsId, text, mode, module, abort.signal);
-      if (!res.ok || !res.body) throw new Error(`HTTP ${res.status}`);
+      if (!res.ok || !res.body) {
+        const detail = await res.text().catch(() => "");
+        throw new Error(detail.trim() || `HTTP ${res.status}`);
+      }
       const reader = res.body.getReader();
       const decoder = new TextDecoder();
       let buf = "";
@@ -107,12 +133,12 @@ export function ChatProvider({ children }: { children: React.ReactNode }) {
               done: boolean;
               error?: string;
             };
-            if (evt.done) break;
             if (evt.error) {
               accumulated += `\n\n⚠️ ${evt.error}`;
               dispatch({ type: "patch", key: wsId, patch: { streamingContent: accumulated } });
               break;
             }
+            if (evt.done) break;
             if (evt.content) {
               accumulated += evt.content;
               dispatch({ type: "patch", key: wsId, patch: { streamingContent: accumulated } });
@@ -122,16 +148,29 @@ export function ChatProvider({ children }: { children: React.ReactNode }) {
           }
         }
       }
+      if (abort.signal.aborted) {
+        await new Promise((resolve) => setTimeout(resolve, 500));
+      }
       const updated = await api.workspaces
         .chatHistory(wsId)
         .catch(() => stateRef.current.get(wsId)?.messages ?? []);
-      dispatch({ type: "set_messages", key: wsId, messages: updated });
+      dispatch({
+        type: "set_messages",
+        key: wsId,
+        messages: abort.signal.aborted ? mergeAbortSnapshot(updated, accumulated) : updated,
+      });
       dispatch({ type: "patch", key: wsId, patch: { streaming: false, streamingContent: "" } });
     } catch (e) {
-      if (e instanceof Error && e.name === "AbortError") {
+      if (abort.signal.aborted || (e instanceof Error && e.name === "AbortError")) {
+        await new Promise((resolve) => setTimeout(resolve, 500));
+        const updated = await api.workspaces
+          .chatHistory(wsId)
+          .catch(() => stateRef.current.get(wsId)?.messages ?? messagesWithUserBubble);
+        dispatch({ type: "set_messages", key: wsId, messages: mergeAbortSnapshot(updated, "") });
         dispatch({ type: "patch", key: wsId, patch: { streaming: false, streamingContent: "" } });
         return;
       }
+      const detail = e instanceof Error && e.message ? `：${e.message}` : "";
       dispatch({
         type: "patch",
         key: wsId,
@@ -143,7 +182,7 @@ export function ChatProvider({ children }: { children: React.ReactNode }) {
               workspace_id: wsId,
               mode,
               role: "assistant" as const,
-              content: "⚠️ 发送失败，请稍后重试。",
+              content: `⚠️ 发送失败${detail}`,
               created_at: new Date().toISOString(),
             },
           ],
@@ -159,7 +198,6 @@ export function ChatProvider({ children }: { children: React.ReactNode }) {
   const stop = useCallback((wsId: string) => {
     aborts.current.get(wsId)?.abort();
     aborts.current.delete(wsId);
-    dispatch({ type: "patch", key: wsId, patch: { streaming: false, streamingContent: "" } });
   }, []);
 
   const cleanup = useCallback((wsId: string) => {

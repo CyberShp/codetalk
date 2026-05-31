@@ -47,10 +47,15 @@ async def _seed_chats(db_path: str, ws_id: str, count: int) -> None:
 
 
 async def _seed_report(
-    db_path: str, ws_id: str, report_type: str, status: str, content: str | None = None
+    db_path: str,
+    ws_id: str,
+    report_type: str,
+    status: str,
+    content: str | None = None,
+    created_at: str | None = None,
 ) -> str:
     rid = str(uuid.uuid4())
-    now = datetime.now(timezone.utc).isoformat()
+    now = created_at or datetime.now(timezone.utc).isoformat()
     async with aiosqlite.connect(db_path) as db:
         await db.execute(
             "INSERT INTO workspace_reports (id, workspace_id, report_type, title, content, status, created_at) "
@@ -75,6 +80,74 @@ async def _seed_material(
         )
         await db.commit()
     return mid
+
+
+class TestTrustworthyChatProductContracts:
+    async def test_freeqa_includes_trust_contract_when_code_evidence_missing(self, sqlite_db):
+        ws_id = await _seed_workspace(sqlite_db)
+
+        with patch(
+            "app.services.workspace_chat._search_gitnexus",
+            new_callable=AsyncMock,
+            return_value=[],
+        ):
+            from app.services.workspace_chat import build_chat_messages
+
+            msgs = await build_chat_messages(ws_id, "/repo", "what is logging?", "freeqa")
+
+        system = msgs[0]["content"]
+        assert "MODE_FREEQA" in system
+        assert "CODETALK_EVIDENCE_STATUS_BEGIN" in system
+        assert "code_snippets: 0" in system
+        assert "Claims without direct evidence must be marked" in system
+        assert "materials: not_used_in_freeqa" in system
+        assert "reports: not_used_in_freeqa" in system
+
+    async def test_targeted_mode_has_distinct_evidence_contract(self, sqlite_db):
+        ws_id = await _seed_workspace(sqlite_db)
+        await _seed_report(sqlite_db, ws_id, "test_design", "completed", "Report body")
+
+        with patch(
+            "app.services.workspace_chat._search_gitnexus",
+            new_callable=AsyncMock,
+            return_value=["```\n// log.c\nspdk_log_open();\n```"],
+        ), patch(
+            "app.services.workspace_chat._load_materials_context",
+            new_callable=AsyncMock,
+            return_value=["material one", "material two"],
+        ):
+            from app.services.workspace_chat import build_chat_messages
+
+            msgs = await build_chat_messages(ws_id, "/repo", "test strategy", "targeted")
+
+        system = msgs[0]["content"]
+        assert "MODE_TARGETED" in system
+        assert "code_snippets: 1" in system
+        assert "materials: 2" in system
+        assert "reports: 1" in system
+        assert "Required output sections" in system
+        assert "Evidence status" in system
+
+    async def test_long_history_adds_memory_summary_without_dropping_recent_context(self, sqlite_db):
+        ws_id = await _seed_workspace(sqlite_db)
+        await _seed_chats(sqlite_db, ws_id, 80)
+
+        with patch(
+            "app.services.workspace_chat._search_gitnexus",
+            new_callable=AsyncMock,
+            return_value=[],
+        ):
+            from app.services.workspace_chat import build_chat_messages
+
+            msgs = await build_chat_messages(ws_id, "/repo", "continue", "freeqa")
+
+        system = msgs[0]["content"]
+        assert "CODETALK_MEMORY_SUMMARY" in system
+        assert "msg-0" in system
+        assert "msg-59" in system
+        recent_contents = [m["content"] for m in msgs[1:-1]]
+        assert "msg-60" in recent_contents
+        assert "msg-79" in recent_contents
 
 
 # ---------------------------------------------------------------------------
@@ -230,6 +303,30 @@ class TestLoadReportSummaries:
         from app.services.workspace_chat import _load_report_summaries
 
         assert await _load_report_summaries(ws_id) == []
+
+    async def test_caps_to_recent_completed_reports(self, sqlite_db):
+        ws_id = await _seed_workspace(sqlite_db)
+        base = datetime(2025, 1, 1, tzinfo=timezone.utc)
+        for i in range(12):
+            await _seed_report(
+                sqlite_db,
+                ws_id,
+                "custom_type",
+                "completed",
+                f"report-{i}",
+                (base + timedelta(minutes=i)).isoformat(),
+            )
+
+        from app.services.workspace_chat import _load_report_summaries
+
+        summaries = await _load_report_summaries(ws_id)
+
+        assert len(summaries) == 8
+        joined = "\n".join(summaries)
+        assert "report-0" not in joined
+        assert "report-3" not in joined
+        assert "report-4" in joined
+        assert "report-11" in joined
 
 
 # ---------------------------------------------------------------------------
