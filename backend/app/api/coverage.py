@@ -6,7 +6,7 @@ import logging
 import uuid
 
 import aiosqlite
-from fastapi import APIRouter, BackgroundTasks, File, HTTPException, UploadFile
+from fastapi import APIRouter, BackgroundTasks, File, Form, HTTPException, UploadFile
 from pydantic import BaseModel
 
 from app.config import settings
@@ -28,6 +28,8 @@ class CoverageAnalysisResponse(BaseModel):
     overall_function_rate: float
     module_count: int
     source_format: str
+    workspace_id: str | None = None
+    repo_path: str | None = None
     created_at: str
     updated_at: str
 
@@ -40,9 +42,11 @@ class CoverageDetailResponse(CoverageAnalysisResponse):
 @router.post("/upload", response_model=CoverageAnalysisResponse)
 async def upload_coverage(
     files: list[UploadFile] = File(..., description="XML 或 HTML 覆盖率报告文件"),
-    name: str = "",
+    name: str = Form(""),
+    workspace_id: str = Form(""),
+    repo_path: str = Form(""),
 ):
-    """Upload coverage report files (XML/HTML) for parsing."""
+    """Upload coverage report files for parsing."""
     if not files:
         raise HTTPException(status_code=400, detail="请至少上传一个覆盖率文件")
 
@@ -53,10 +57,10 @@ async def upload_coverage(
         if not f.filename:
             continue
         lower = f.filename.lower()
-        if not lower.endswith((".xml", ".html", ".htm")):
+        if not lower.endswith((".xml", ".html", ".htm", ".csv", ".tsv", ".txt")):
             raise HTTPException(
                 status_code=400,
-                detail=f"不支持的文件格式: {f.filename}（仅支持 XML、HTML）",
+                detail=f"不支持的文件格式: {f.filename}（仅支持 XML、HTML、CSV、TSV、TXT）",
             )
         content = await f.read()
         if len(content) > max_bytes:
@@ -69,10 +73,29 @@ async def upload_coverage(
     if not parsed_files:
         raise HTTPException(status_code=400, detail="未找到有效的覆盖率文件")
 
+    resolved_workspace_id = workspace_id.strip() or None
+    resolved_repo_path = repo_path.strip() or None
+    if resolved_workspace_id:
+        async with aiosqlite.connect(settings.sqlite_db) as db:
+            db.row_factory = aiosqlite.Row
+            rows = await db.execute_fetchall(
+                "SELECT id, repo_path FROM workspaces WHERE id = ?",
+                (resolved_workspace_id,),
+            )
+        if not rows:
+            raise HTTPException(status_code=404, detail="工作空间不存在")
+        resolved_repo_path = dict(rows[0])["repo_path"]
+
     analysis_id = str(uuid.uuid4())
 
     try:
-        await _analyzer.parse_and_store(analysis_id, parsed_files, name=name)
+        await _analyzer.parse_and_store(
+            analysis_id,
+            parsed_files,
+            name=name,
+            workspace_id=resolved_workspace_id,
+            repo_path=resolved_repo_path,
+        )
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc))
 
@@ -108,11 +131,22 @@ async def trigger_analysis(analysis_id: str, background_tasks: BackgroundTasks):
             detail=f"当前状态「{record.status}」不支持分析",
         )
 
+    if record.source_format == "internal_function_hits":
+        results = await _analyzer.run_analysis(analysis_id)
+        return {
+            "analysis_id": analysis_id,
+            "status": "analyzed",
+            "module_results": len(results),
+            "results": results,
+        }
+
     background_tasks.add_task(_analyzer.run_analysis, analysis_id)
 
     return {
         "analysis_id": analysis_id,
         "status": "analyzing",
+        "module_results": 0,
+        "results": [],
         "message": "AI 分析已启动，请稍后查看结果",
     }
 
@@ -175,6 +209,8 @@ def _row_to_response(row: dict) -> CoverageAnalysisResponse:
         overall_function_rate=row.get("overall_function_rate", 0),
         module_count=row.get("module_count", 0),
         source_format=row.get("source_format", "unknown"),
+        workspace_id=row.get("workspace_id"),
+        repo_path=row.get("repo_path"),
         created_at=row.get("created_at", ""),
         updated_at=row.get("updated_at", ""),
     )
@@ -191,6 +227,8 @@ def _row_to_detail_response(row: dict) -> CoverageDetailResponse:
         overall_function_rate=row.get("overall_function_rate", 0),
         module_count=row.get("module_count", 0),
         source_format=row.get("source_format", "unknown"),
+        workspace_id=row.get("workspace_id"),
+        repo_path=row.get("repo_path"),
         modules_json=row.get("modules_json"),
         analysis_results_json=row.get("analysis_results_json"),
         created_at=row.get("created_at", ""),

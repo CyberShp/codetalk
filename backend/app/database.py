@@ -72,6 +72,8 @@ CREATE TABLE IF NOT EXISTS coverage_analyses (
     name TEXT NOT NULL,
     source_type TEXT DEFAULT 'upload',
     status TEXT DEFAULT 'parsed',
+    workspace_id TEXT,
+    repo_path TEXT,
     overall_line_rate REAL DEFAULT 0,
     overall_branch_rate REAL DEFAULT 0,
     overall_function_rate REAL DEFAULT 0,
@@ -191,6 +193,10 @@ _MIGRATIONS = [
     "ALTER TABLE tasks ADD COLUMN workspace_id TEXT",
     "ALTER TABLE workspace_reports ADD COLUMN task_id TEXT",
     "CREATE INDEX IF NOT EXISTS idx_tasks_workspace_id ON tasks(workspace_id)",
+    # Coverage uploads can now be scoped to an indexed workspace/repository.
+    "ALTER TABLE coverage_analyses ADD COLUMN workspace_id TEXT",
+    "ALTER TABLE coverage_analyses ADD COLUMN repo_path TEXT",
+    "CREATE INDEX IF NOT EXISTS idx_coverage_workspace_id ON coverage_analyses(workspace_id)",
 ]
 
 

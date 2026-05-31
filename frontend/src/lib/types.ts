@@ -369,6 +369,8 @@ export interface CoverageAnalysis {
   overall_function_rate: number;
   module_count: number;
   source_format: string;
+  workspace_id?: string | null;
+  repo_path?: string | null;
   created_at: string;
   updated_at: string;
 }
@@ -383,6 +385,19 @@ export interface CoverageModuleResult {
   line_rate: number;
   branch_rate: number;
   function_rate: number;
+  function_name?: string;
+  file_path?: string;
+  line_start?: number | null;
+  line_end?: number | null;
+  hit_count?: number;
+  risk_level?: "high" | "medium" | "low";
+  category?: string;
+  scenario?: string;
+  input_conditions?: string;
+  expected_behavior?: string;
+  observable_signals?: string[];
+  confidence?: "high" | "medium" | "low";
+  evidence?: Record<string, unknown>;
   analysis?: string;
   error?: string;
   uncovered_function_count?: number;

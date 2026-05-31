@@ -11,12 +11,26 @@ HTML parsing: best-effort extraction from common coverage report generators.
 from __future__ import annotations
 
 import logging
+import csv
+import io
 import re
 from dataclasses import dataclass, field
 from typing import Protocol
 import defusedxml.ElementTree as ET
 
 logger = logging.getLogger(__name__)
+
+
+@dataclass
+class FunctionHit:
+    function_name: str
+    file_path: str
+    line_start: int | None = None
+    line_end: int | None = None
+    triggered: bool = False
+    hit_count: int = 0
+    raw_location: str = ""
+    raw: dict = field(default_factory=dict)
 
 
 @dataclass
@@ -31,6 +45,7 @@ class FileCoverage:
     uncovered_lines: list[int] = field(default_factory=list)
     uncovered_branches: list[str] = field(default_factory=list)
     uncovered_functions: list[str] = field(default_factory=list)
+    function_hits: list[FunctionHit] = field(default_factory=list)
 
 
 @dataclass
@@ -43,6 +58,7 @@ class ModuleCoverage:
     uncovered_lines: list[str] = field(default_factory=list)
     uncovered_branches: list[str] = field(default_factory=list)
     uncovered_functions: list[str] = field(default_factory=list)
+    function_hits: list[FunctionHit] = field(default_factory=list)
 
 
 @dataclass
@@ -276,6 +292,246 @@ def detect_and_parse_xml(xml_content: str) -> CoverageReport:
     if "<report " in content_stripped[:500] or 'name="JaCoCo"' in content_stripped[:500]:
         return parse_jacoco_xml(xml_content)
     return parse_cobertura_xml(xml_content)
+
+
+_FUNC_HEADERS = {
+    "function", "functionname", "name", "symbol", "symbolname",
+    "函数", "函数名", "方法", "方法名",
+}
+_LOCATION_HEADERS = {
+    "location", "codelocation", "source", "path", "file", "filename",
+    "filepath", "代码位置", "源码位置", "文件位置", "文件", "路径",
+}
+_TRIGGER_HEADERS = {
+    "triggered", "covered", "hit", "executed", "visited", "是否触发",
+    "触发", "是否覆盖", "覆盖", "是否执行", "执行",
+}
+_COUNT_HEADERS = {
+    "hitcount", "hits", "count", "times", "触发次数", "命中次数",
+    "执行次数", "次数",
+}
+
+
+def parse_internal_function_hits(content: str) -> CoverageReport:
+    """Parse the intranet precise-testing function hit table.
+
+    Expected logical columns are function name, code location, triggered flag,
+    and hit count. The exact intranet header names are still unsettled, so this
+    parser accepts common English/Chinese aliases and a headerless four-column
+    fallback.
+    """
+    rows = _read_delimited_rows(content)
+    if not rows:
+        raise ValueError("No rows found in internal function-hit coverage file")
+
+    header = [_normalize_header(c) for c in rows[0]]
+    has_header = any(h in _FUNC_HEADERS | _LOCATION_HEADERS for h in header)
+    if has_header:
+        data_rows = rows[1:]
+        indexes = _internal_hit_indexes(header)
+    else:
+        data_rows = rows
+        indexes = {"function": 0, "location": 1, "triggered": 2, "hit_count": 3}
+
+    hits: list[FunctionHit] = []
+    for row in data_rows:
+        if not any(c.strip() for c in row):
+            continue
+        if not has_header and len(row) < 4:
+            continue
+        hit = _row_to_function_hit(row, indexes)
+        if hit.function_name and hit.file_path:
+            hits.append(hit)
+
+    if not hits:
+        raise ValueError("No function hit records found in internal coverage file")
+
+    return _function_hits_to_report(hits)
+
+
+def _read_delimited_rows(content: str) -> list[list[str]]:
+    sample = next((line for line in content.splitlines() if line.strip()), "")
+    delimiter = "\t" if "\t" in sample else "|" if "|" in sample else ";" if ";" in sample else ","
+    reader = csv.reader(io.StringIO(content), delimiter=delimiter)
+    return [[cell.strip() for cell in row] for row in reader if any(c.strip() for c in row)]
+
+
+def _normalize_header(value: str) -> str:
+    return re.sub(r"[\s_\-:/()（）]+", "", value.strip().lstrip("\ufeff").lower())
+
+
+def _internal_hit_indexes(header: list[str]) -> dict[str, int]:
+    indexes: dict[str, int] = {}
+    for idx, name in enumerate(header):
+        if name in _FUNC_HEADERS and "function" not in indexes:
+            indexes["function"] = idx
+        elif name in _LOCATION_HEADERS and "location" not in indexes:
+            indexes["location"] = idx
+        elif name in _TRIGGER_HEADERS and "triggered" not in indexes:
+            indexes["triggered"] = idx
+        elif name in _COUNT_HEADERS and "hit_count" not in indexes:
+            indexes["hit_count"] = idx
+
+    missing = [key for key in ("function", "location") if key not in indexes]
+    if missing:
+        raise ValueError(
+            "Internal coverage file missing required columns: " + ", ".join(missing)
+        )
+    return indexes
+
+
+def _row_to_function_hit(row: list[str], indexes: dict[str, int]) -> FunctionHit:
+    def cell(key: str) -> str:
+        idx = indexes.get(key)
+        if idx is None or idx >= len(row):
+            return ""
+        return row[idx].strip()
+
+    raw_location = cell("location")
+    file_path, line_start, line_end = _parse_location(raw_location)
+    hit_count = _parse_hit_count(cell("hit_count"))
+    triggered = _parse_triggered(cell("triggered"), hit_count)
+
+    return FunctionHit(
+        function_name=cell("function"),
+        file_path=file_path,
+        line_start=line_start,
+        line_end=line_end,
+        triggered=triggered,
+        hit_count=hit_count,
+        raw_location=raw_location,
+        raw={
+            "function_name": cell("function"),
+            "code_location": raw_location,
+            "triggered": cell("triggered"),
+            "hit_count": cell("hit_count"),
+        },
+    )
+
+
+def _parse_location(value: str) -> tuple[str, int | None, int | None]:
+    text = value.strip().strip("\"'")
+    match = re.match(
+        r"^(?P<path>.+?)[(:\[]\s*(?:L|line\s*)?"
+        r"(?P<start>\d+)(?:\s*[-,~]\s*(?:L)?(?P<end>\d+))?\s*[\])]*$",
+        text,
+        flags=re.IGNORECASE,
+    )
+    if not match:
+        return _normalize_path(text), None, None
+    file_path = _normalize_path(match.group("path"))
+    line_start = int(match.group("start"))
+    line_end = int(match.group("end") or line_start)
+    return file_path, line_start, line_end
+
+
+def _normalize_path(value: str) -> str:
+    path = value.strip().replace("\\", "/")
+    while path.startswith("./"):
+        path = path[2:]
+    return path
+
+
+def _parse_hit_count(value: str) -> int:
+    if not value:
+        return 0
+    match = re.search(r"-?\d+", value)
+    return max(0, int(match.group(0))) if match else 0
+
+
+def _parse_triggered(value: str, hit_count: int) -> bool:
+    normalized = value.strip().lower()
+    if not normalized:
+        return hit_count > 0
+    if normalized in {"1", "true", "yes", "y", "covered", "hit", "executed", "是", "已触发", "触发", "已覆盖", "执行"}:
+        return True
+    if normalized in {"0", "false", "no", "n", "uncovered", "missed", "notexecuted", "否", "未触发", "未覆盖", "未执行"}:
+        return False
+    if re.fullmatch(r"\d+", normalized):
+        return int(normalized) > 0
+    return hit_count > 0
+
+
+def _function_hits_to_report(hits: list[FunctionHit]) -> CoverageReport:
+    by_module: dict[str, list[FunctionHit]] = {}
+    for hit in hits:
+        by_module.setdefault(_module_from_path(hit.file_path), []).append(hit)
+
+    modules: list[ModuleCoverage] = []
+    for module_path, module_hits in sorted(by_module.items()):
+        covered = sum(1 for hit in module_hits if hit.triggered or hit.hit_count > 0)
+        rate = covered / len(module_hits)
+        by_file: dict[str, list[FunctionHit]] = {}
+        for hit in module_hits:
+            by_file.setdefault(hit.file_path, []).append(hit)
+
+        files: list[FileCoverage] = []
+        for filename, file_hits in sorted(by_file.items()):
+            file_covered = sum(1 for hit in file_hits if hit.triggered or hit.hit_count > 0)
+            file_rate = file_covered / len(file_hits)
+            files.append(
+                FileCoverage(
+                    filename=filename,
+                    line_rate=file_rate,
+                    branch_rate=0.0,
+                    lines_covered=file_covered,
+                    lines_total=len(file_hits),
+                    uncovered_functions=[
+                        _function_hit_label(hit) for hit in file_hits
+                        if not (hit.triggered or hit.hit_count > 0)
+                    ],
+                    function_hits=file_hits,
+                )
+            )
+
+        uncovered = [
+            _function_hit_label(hit)
+            for hit in module_hits
+            if not (hit.triggered or hit.hit_count > 0)
+        ]
+        modules.append(
+            ModuleCoverage(
+                module_path=module_path,
+                line_rate=rate,
+                branch_rate=0.0,
+                function_rate=rate,
+                files=files,
+                uncovered_lines=[
+                    f"{hit.file_path}:{hit.line_start}"
+                    for hit in module_hits
+                    if not (hit.triggered or hit.hit_count > 0) and hit.line_start
+                ][:200],
+                uncovered_functions=uncovered[:100],
+                function_hits=module_hits,
+            )
+        )
+
+    covered_total = sum(1 for hit in hits if hit.triggered or hit.hit_count > 0)
+    overall = covered_total / len(hits)
+    return CoverageReport(
+        overall_line_rate=overall,
+        overall_branch_rate=0.0,
+        overall_function_rate=overall,
+        modules=modules,
+        source_format="internal_function_hits",
+        raw_metadata={"record_count": len(hits), "covered_count": covered_total},
+    )
+
+
+def _module_from_path(path: str) -> str:
+    normalized = _normalize_path(path)
+    if "/" not in normalized:
+        return "(root)"
+    parent = normalized.rsplit("/", 1)[0]
+    return parent or "(root)"
+
+
+def _function_hit_label(hit: FunctionHit) -> str:
+    if hit.line_start is None:
+        return f"{hit.file_path}:{hit.function_name}"
+    if hit.line_end and hit.line_end != hit.line_start:
+        return f"{hit.file_path}:{hit.function_name}:L{hit.line_start}-L{hit.line_end}"
+    return f"{hit.file_path}:{hit.function_name}:L{hit.line_start}"
 
 
 def parse_html_coverage(html_content: str) -> CoverageReport:

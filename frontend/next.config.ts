@@ -11,7 +11,11 @@ import type { NextConfig } from "next";
 //      from the last build, hydration crashed (e.g. Sidebar items mismatch).
 // We use plain `next start` instead — one build artifact, no copy step,
 // no drift between standalone snapshot and source.
-const nextConfig: NextConfig = {};
+const nextConfig: NextConfig = {
+  ...(process.env.CODETALK_NEXT_DIST_DIR
+    ? { distDir: process.env.CODETALK_NEXT_DIST_DIR }
+    : {}),
+};
 
 export default nextConfig;
 

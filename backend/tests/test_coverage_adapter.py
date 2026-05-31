@@ -4,6 +4,7 @@ import pytest
 
 from app.adapters.coverage import (
     IntranetCoverageAdapter,
+    parse_internal_function_hits,
     parse_html_coverage,
     parse_jacoco_xml,
 )
@@ -95,3 +96,51 @@ class TestJacocoCounterFallback:
         mod = report.modules[0]
         assert len(mod.files) == 1
         assert mod.files[0].branch_rate == 1.0
+
+
+class TestParseInternalFunctionHits:
+    def test_parses_function_hit_table_and_uncovered_functions(self):
+        csv_text = """function_name,code_location,triggered,hit_count
+init_session,src/session.c:12-30,yes,4
+recover_session,src/session.c:42-66,no,0
+"""
+
+        report = parse_internal_function_hits(csv_text)
+
+        assert report.source_format == "internal_function_hits"
+        assert report.overall_function_rate == 0.5
+        assert len(report.modules) == 1
+        module = report.modules[0]
+        assert module.module_path == "src"
+        assert module.function_rate == 0.5
+        assert module.uncovered_functions == ["src/session.c:recover_session:L42-L66"]
+        assert len(module.function_hits) == 2
+        uncovered = module.function_hits[1]
+        assert uncovered.function_name == "recover_session"
+        assert uncovered.file_path == "src/session.c"
+        assert uncovered.line_start == 42
+        assert uncovered.line_end == 66
+        assert uncovered.triggered is False
+        assert uncovered.hit_count == 0
+
+    def test_parses_headerless_four_column_table(self):
+        table = """init|src/a.c:1|1|9
+cleanup|src/a.c:9|0|0
+"""
+
+        report = parse_internal_function_hits(table)
+
+        assert report.source_format == "internal_function_hits"
+        assert report.overall_function_rate == 0.5
+        assert report.modules[0].function_hits[0].function_name == "init"
+        assert report.modules[0].function_hits[1].line_start == 9
+
+    def test_parses_utf8_bom_header(self):
+        csv_text = "\ufefffunction_name,code_location,triggered,hit_count\n" \
+            "cleanup_temp,src/session.c:42,false,0\n"
+
+        report = parse_internal_function_hits(csv_text)
+
+        assert report.source_format == "internal_function_hits"
+        assert report.overall_function_rate == 0.0
+        assert report.modules[0].function_hits[0].function_name == "cleanup_temp"

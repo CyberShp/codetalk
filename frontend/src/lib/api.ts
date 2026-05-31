@@ -24,10 +24,13 @@ import type {
   ScopePreview,
 } from "./types";
 
+const CONFIGURED_API_BASE = process.env.NEXT_PUBLIC_API_URL?.replace(/\/$/, "");
+
 export const BASE =
-  typeof window !== "undefined"
+  CONFIGURED_API_BASE ??
+  (typeof window !== "undefined"
     ? `${window.location.protocol}//${window.location.hostname}:8100`
-    : (process.env.NEXT_PUBLIC_API_URL ?? "http://localhost:8100");
+    : "http://localhost:8100");
 
 function extractErrorMessage(body: string): string {
   const text = body.trim();
@@ -249,13 +252,20 @@ export const api = {
 
     get: (id: string) => request<CoverageDetail>(`/api/coverage/${id}`),
 
-    upload: async (files: File[], name?: string): Promise<CoverageAnalysis> => {
+    upload: async (
+      files: File[],
+      name?: string,
+      workspaceId?: string,
+    ): Promise<CoverageAnalysis> => {
       const formData = new FormData();
       for (const f of files) {
         formData.append("files", f);
       }
       if (name) {
         formData.append("name", name);
+      }
+      if (workspaceId) {
+        formData.append("workspace_id", workspaceId);
       }
       const res = await fetch(`${BASE}/api/coverage/upload`, {
         method: "POST",

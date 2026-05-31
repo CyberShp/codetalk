@@ -18,6 +18,7 @@ import type {
   CoverageAnalysis,
   CoverageDetail,
   CoverageModuleResult,
+  Workspace,
 } from "@/lib/types";
 
 function pct(rate: number): string {
@@ -74,6 +75,8 @@ export default function CoveragePage() {
   );
   const [expandedModule, setExpandedModule] = useState<string | null>(null);
   const [uploadName, setUploadName] = useState("");
+  const [workspaces, setWorkspaces] = useState<Workspace[]>([]);
+  const [selectedWorkspaceId, setSelectedWorkspaceId] = useState("");
   const fileInputRef = useRef<HTMLInputElement>(null);
 
   const loadList = useCallback(async () => {
@@ -87,9 +90,19 @@ export default function CoveragePage() {
     }
   }, []);
 
+  const loadWorkspaces = useCallback(async () => {
+    try {
+      const list = await api.workspaces.list();
+      setWorkspaces(list);
+    } catch {
+      setWorkspaces([]);
+    }
+  }, []);
+
   useEffect(() => {
     loadList();
-  }, [loadList]);
+    loadWorkspaces();
+  }, [loadList, loadWorkspaces]);
 
   const handleUpload = async (fileList: FileList | null) => {
     if (!fileList || fileList.length === 0) return;
@@ -97,7 +110,11 @@ export default function CoveragePage() {
     setError("");
     try {
       const files = Array.from(fileList);
-      await api.coverage.upload(files, uploadName || undefined);
+      await api.coverage.upload(
+        files,
+        uploadName || undefined,
+        selectedWorkspaceId || undefined,
+      );
       setUploadName("");
       if (fileInputRef.current) fileInputRef.current.value = "";
       await loadList();
@@ -113,7 +130,15 @@ export default function CoveragePage() {
     setError("");
     try {
       const result = await api.coverage.analyze(id);
-      setModuleResults(result.results);
+      const d = await api.coverage.get(id);
+      setDetail(d);
+      if (result.results?.length) {
+        setModuleResults(result.results);
+      } else if (d.analysis_results_json) {
+        setModuleResults(JSON.parse(d.analysis_results_json));
+      } else {
+        setModuleResults([]);
+      }
       setExpandedId(id);
       await loadList();
     } catch (e) {
@@ -166,7 +191,7 @@ export default function CoveragePage() {
           精准测试覆盖率分析
         </h1>
         <p className="text-sm text-on-surface-variant mt-1">
-          上传覆盖率报告（XML/HTML），AI 分析未覆盖分支并推荐测试用例
+          上传覆盖率报告（XML/HTML/CSV/TSV/TXT），AI 分析未覆盖代码并推荐测试用例
         </p>
       </div>
 
@@ -184,12 +209,24 @@ export default function CoveragePage() {
             onChange={(e) => setUploadName(e.target.value)}
             className="w-full px-3 py-2 rounded-lg bg-surface-container border border-outline-variant/30 text-sm text-on-surface placeholder:text-on-surface-variant/50 focus:outline-none focus:ring-1 focus:ring-primary"
           />
+          <select
+            value={selectedWorkspaceId}
+            onChange={(e) => setSelectedWorkspaceId(e.target.value)}
+            className="w-full px-3 py-2 rounded-lg bg-surface-container border border-outline-variant/30 text-sm text-on-surface focus:outline-none focus:ring-1 focus:ring-primary"
+          >
+            <option value="">No workspace binding</option>
+            {workspaces.map((ws) => (
+              <option key={ws.id} value={ws.id}>
+                {ws.name} - {ws.repo_path}
+              </option>
+            ))}
+          </select>
           <div className="flex items-center gap-3">
             <input
               ref={fileInputRef}
               type="file"
               multiple
-              accept=".xml,.html,.htm"
+              accept=".xml,.html,.htm,.csv,.tsv,.txt"
               onChange={(e) => handleUpload(e.target.files)}
               className="flex-1 text-sm text-on-surface-variant file:mr-3 file:py-2 file:px-4 file:rounded-lg file:border-0 file:bg-primary/10 file:text-primary file:text-sm file:font-medium file:cursor-pointer hover:file:bg-primary/20"
               disabled={uploading}
@@ -199,7 +236,7 @@ export default function CoveragePage() {
             )}
           </div>
           <p className="text-xs text-on-surface-variant/60">
-            支持 Cobertura XML、JaCoCo XML、HTML 覆盖率报告。可多文件上传（按模块目录分类）
+            支持 Cobertura XML、JaCoCo XML、HTML 覆盖率报告，以及内网函数命中表（CSV/TSV/TXT）。可多文件上传（按模块目录分类）
           </p>
         </div>
 
@@ -260,6 +297,9 @@ export default function CoveragePage() {
                     <div className="flex items-center gap-4 mt-1 text-xs text-on-surface-variant">
                       <span>{a.module_count} 个模块</span>
                       <span>格式: {a.source_format}</span>
+                      {a.workspace_id && (
+                        <span>workspace: {a.workspace_id.slice(0, 8)}</span>
+                      )}
                       <span>
                         {new Date(a.created_at).toLocaleString("zh-CN")}
                       </span>
@@ -376,25 +416,40 @@ export default function CoveragePage() {
                         <CheckCircle2 size={14} className="text-green-400" />
                         AI 分析结果
                       </h3>
-                      {moduleResults.map((mr) => (
+                      {moduleResults.map((mr) => {
+                        const resultId = [
+                          mr.module_path,
+                          mr.function_name ?? "",
+                          mr.file_path ?? "",
+                          mr.line_start ?? "",
+                        ].join(":");
+                        return (
                         <div
-                          key={mr.module_path}
+                          key={resultId}
                           className="bg-surface-container rounded-lg overflow-hidden"
                         >
                           <button
                             onClick={() =>
                               setExpandedModule(
-                                expandedModule === mr.module_path
+                                expandedModule === resultId
                                   ? null
-                                  : mr.module_path,
+                                  : resultId,
                               )
                             }
                             className="w-full px-4 py-3 flex items-center justify-between text-left"
                           >
                             <div>
                               <span className="text-sm font-mono text-on-surface">
-                                {mr.module_path}
+                                {mr.function_name ?? mr.module_path}
                               </span>
+                              {mr.function_name && (
+                                <div className="mt-1 text-xs text-on-surface-variant">
+                                  {mr.file_path}
+                                  {mr.line_start ? `:${mr.line_start}` : ""}
+                                  {mr.risk_level ? ` · risk ${mr.risk_level}` : ""}
+                                  {mr.confidence ? ` · confidence ${mr.confidence}` : ""}
+                                </div>
+                              )}
                               <div className="flex items-center gap-3 mt-1 text-xs">
                                 <span className={rateColor(mr.line_rate)}>
                                   行 {pct(mr.line_rate)}
@@ -407,7 +462,7 @@ export default function CoveragePage() {
                                 </span>
                               </div>
                             </div>
-                            {expandedModule === mr.module_path ? (
+                            {expandedModule === resultId ? (
                               <ChevronUp
                                 size={14}
                                 className="text-on-surface-variant"
@@ -419,7 +474,7 @@ export default function CoveragePage() {
                               />
                             )}
                           </button>
-                          {expandedModule === mr.module_path && (
+                          {expandedModule === resultId && (
                             <div className="px-4 pb-4 border-t border-outline-variant/10">
                               {mr.error ? (
                                 <p className="text-sm text-error mt-2">
@@ -437,7 +492,8 @@ export default function CoveragePage() {
                             </div>
                           )}
                         </div>
-                      ))}
+                        );
+                      })}
                     </div>
                   )}
 

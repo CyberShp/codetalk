@@ -281,3 +281,35 @@ async def test_upload_jacoco_xml(e2e_client: AsyncClient):
     body = resp.json()
     assert body["source_format"] == "jacoco"
     assert body["status"] == "parsed"
+
+
+async def test_upload_internal_function_hits_with_workspace(
+    e2e_client: AsyncClient, repo_path: str
+):
+    create_resp = await e2e_client.post(
+        "/api/workspaces",
+        json={"name": "Coverage WS", "repo_path": repo_path},
+    )
+    assert create_resp.status_code == 201
+    ws_id = create_resp.json()["id"]
+
+    csv_content = """function_name,code_location,triggered,hit_count
+startup,main.py:1,true,3
+recover_after_failure,main.py:2,false,0
+"""
+    resp = await e2e_client.post(
+        "/api/coverage/upload",
+        files={"files": ("internal.csv", csv_content.encode(), "text/csv")},
+        data={"name": "internal-hit-table", "workspace_id": ws_id},
+    )
+
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["workspace_id"] == ws_id
+    assert body["repo_path"] == repo_path
+    assert body["source_format"] == "internal_function_hits"
+    assert body["overall_function_rate"] == 0.5
+
+    detail_resp = await e2e_client.get(f"/api/coverage/{body['id']}")
+    assert detail_resp.status_code == 200
+    assert "recover_after_failure" in detail_resp.json()["modules_json"]

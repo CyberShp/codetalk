@@ -5,13 +5,18 @@ in parse_and_store (lines 133-134), and the LLM analysis loop in run_analysis
 (lines 238-263).
 """
 
+import asyncio
 import uuid
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
-from app.adapters.coverage import ModuleCoverage
-from app.services.coverage_analyzer import CoverageAnalyzer, _analyze_module
+from app.adapters.coverage import FunctionHit, ModuleCoverage
+from app.services.coverage_analyzer import (
+    CoverageAnalyzer,
+    _analyze_module,
+    _build_black_box_function_recommendations,
+)
 
 pytestmark = [pytest.mark.asyncio]
 
@@ -239,3 +244,148 @@ class TestRunAnalysisWithMockedLLM:
 
         assert len(results) > 0
         assert "error" in results[0]
+
+
+class TestInternalFunctionHitRecommendations:
+    async def test_run_analysis_generates_black_box_recommendations_without_llm(self, sqlite_db):
+        analyzer = CoverageAnalyzer()
+        analysis_id = str(uuid.uuid4())
+        csv_text = """function_name,code_location,triggered,hit_count
+happy_path,src/service.c:10-20,true,8
+error_recovery,src/service.c:40-55,false,0
+"""
+
+        await analyzer.parse_and_store(
+            analysis_id,
+            [("internal.csv", csv_text)],
+            name="internal-hit-test",
+            workspace_id="ws-1",
+            repo_path="/repo",
+        )
+
+        results = await analyzer.run_analysis(analysis_id)
+
+        assert len(results) == 1
+        rec = results[0]
+        assert rec["function_name"] == "error_recovery"
+        assert rec["file_path"] == "src/service.c"
+        assert rec["line_start"] == 40
+        assert rec["risk_level"] in ("high", "medium", "low")
+        assert rec["category"] == "black_box_function_gap"
+        assert "scenario" in rec
+        assert "expected_behavior" in rec
+        assert rec["evidence"]["coverage"]["hit_count"] == 0
+
+        import aiosqlite
+        from app.config import settings
+
+        async with aiosqlite.connect(settings.sqlite_db) as db:
+            db.row_factory = aiosqlite.Row
+            row = (
+                await db.execute_fetchall(
+                    "SELECT status, analysis_results_json, workspace_id, repo_path "
+                    "FROM coverage_analyses WHERE id = ?",
+                    (analysis_id,),
+                )
+            )[0]
+
+        assert row["status"] == "analyzed"
+        assert row["workspace_id"] == "ws-1"
+        assert row["repo_path"] == "/repo"
+        assert "error_recovery" in row["analysis_results_json"]
+
+    async def test_workspace_scope_timeout_does_not_block_recommendations(
+        self, sqlite_db, tmp_path
+    ):
+        analyzer = CoverageAnalyzer()
+        analysis_id = str(uuid.uuid4())
+        csv_text = """function_name,code_location,triggered,hit_count
+recover_session,src/service.c:40-55,false,0
+"""
+
+        await analyzer.parse_and_store(
+            analysis_id,
+            [("internal.csv", csv_text)],
+            name="scope-timeout-test",
+            workspace_id="ws-1",
+            repo_path=str(tmp_path),
+        )
+
+        async def slow_resolve(self, *args, **kwargs):
+            await asyncio.sleep(0.2)
+            raise AssertionError("scope resolver should have timed out")
+
+        with (
+            patch(
+                "app.services.coverage_analyzer.WORKSPACE_SCOPE_ENRICHMENT_TIMEOUT_SECONDS",
+                0.01,
+            ),
+            patch(
+                "app.services.workspace_scope_resolver.WorkspaceScopeResolver.resolve",
+                new=slow_resolve,
+            ),
+            patch(
+                "app.services.coverage_analyzer._resolve_cgc_context_for_hits",
+                AsyncMock(return_value={}),
+            ),
+        ):
+            results = await analyzer.run_analysis(analysis_id)
+
+        assert len(results) == 1
+        assert results[0]["function_name"] == "recover_session"
+        assert results[0]["evidence"]["gitnexus_scope"] == {}
+
+    async def test_recommendations_include_gitnexus_and_cgc_evidence(self):
+        hit = FunctionHit(
+            function_name="recover_session",
+            file_path="src/service.c",
+            line_start=40,
+            line_end=55,
+            triggered=False,
+            hit_count=0,
+            raw_location="src/service.c:40-55",
+        )
+        module = ModuleCoverage(
+            module_path="src",
+            line_rate=0.0,
+            branch_rate=0.0,
+            function_rate=0.0,
+            function_hits=[hit],
+        )
+        key = "src/service.c:recover_session:40"
+
+        with (
+            patch(
+                "app.services.coverage_analyzer._resolve_workspace_scope_for_hits",
+                AsyncMock(return_value={
+                    key: {
+                        "gitnexus_available": True,
+                        "candidate_symbols": [{"name": "recover_session"}],
+                        "candidate_files": [{"path": "src/service.c"}],
+                        "related_communities": ["session"],
+                        "warnings": [],
+                    }
+                }),
+            ),
+            patch(
+                "app.services.coverage_analyzer._resolve_cgc_context_for_hits",
+                AsyncMock(return_value={
+                    key: {
+                        "available": True,
+                        "callers": [{"name": "handle_session", "location": "src/api.c"}],
+                        "callees": [{"name": "reset_state", "location": "src/state.c"}],
+                    }
+                }),
+            ),
+        ):
+            results = await _build_black_box_function_recommendations(
+                [module],
+                workspace_id="ws-1",
+                repo_path="/repo",
+            )
+
+        assert len(results) == 1
+        rec = results[0]
+        assert rec["confidence"] == "high"
+        assert rec["evidence"]["gitnexus_scope"]["gitnexus_available"] is True
+        assert rec["evidence"]["cgc"]["callers"][0]["name"] == "handle_session"
