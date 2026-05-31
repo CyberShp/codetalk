@@ -94,7 +94,9 @@ export default function WorkbenchPage() {
   }, []);
 
   useEffect(() => {
-    loadData();
+    queueMicrotask(() => {
+      void loadData();
+    });
   }, [loadData]);
 
   const recentTasks = tasks.slice(0, 5);

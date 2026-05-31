@@ -1357,6 +1357,22 @@ class NativeDeployer:
         proc = self._processes.get(name)
         if proc is None or proc.returncode is not None:
             return
+        if sys.platform == "win32":
+            try:
+                kill_tree = await asyncio.create_subprocess_exec(
+                    "taskkill",
+                    "/T",
+                    "/F",
+                    "/PID",
+                    str(proc.pid),
+                    stdout=asyncio.subprocess.DEVNULL,
+                    stderr=asyncio.subprocess.DEVNULL,
+                )
+                await asyncio.wait_for(kill_tree.wait(), timeout=timeout)
+                await asyncio.wait_for(proc.wait(), timeout=timeout)
+                return
+            except (ProcessLookupError, asyncio.TimeoutError, FileNotFoundError):
+                pass
         try:
             proc.terminate()
             await asyncio.wait_for(proc.wait(), timeout=timeout)

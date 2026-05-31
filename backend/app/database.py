@@ -2,6 +2,24 @@ import aiosqlite
 
 from app.config import settings
 
+
+class _UnavailableAsyncSession:
+    """Compatibility shim for legacy SQLAlchemy routes in the lightweight app."""
+
+    async def __aenter__(self):
+        raise RuntimeError(
+            "SQLAlchemy async_session is not configured in the lightweight "
+            "SQLite runtime. Use FastAPI get_db() overrides in legacy route "
+            "tests or migrate the route to aiosqlite before enabling it."
+        )
+
+    async def __aexit__(self, exc_type, exc, tb):
+        return False
+
+
+def async_session():
+    return _UnavailableAsyncSession()
+
 # DDL executed once at startup — all tables use TEXT primary keys (UUID strings)
 _SCHEMA = """
 CREATE TABLE IF NOT EXISTS tasks (

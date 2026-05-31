@@ -11,10 +11,13 @@ def running_in_container() -> bool:
 
 
 def default_repos_base_path(repo_root: Path, in_container: Optional[bool] = None) -> str:
+    auto_detected = in_container is None
     if in_container is None:
         in_container = running_in_container()
     if in_container:
         return "/data/repos"
+    if not auto_detected:
+        return (repo_root / ".repos").as_posix()
     return str((repo_root / ".repos").resolve())
 
 
@@ -64,6 +67,21 @@ def _translate_path(repo_path: str, host_base: str, container_base: str) -> Opti
         return None
 
 
+def _managed_repos_fallback(repo_path: str, container_base: str) -> Optional[str]:
+    """Map historical managed .repos paths when explicit host_base misses."""
+    normalized = repo_path.replace("\\", "/")
+    marker = "/.repos/"
+    if marker not in normalized:
+        return None
+    relative = normalized.split(marker, 1)[1].strip("/")
+    if not relative or relative.startswith(".."):
+        return None
+    base = container_base or "/data/repos"
+    if base == repo_path:
+        base = "/data/repos"
+    return str(PurePosixPath(base) / PurePosixPath(relative))
+
+
 def to_tool_repo_path(
     repo_path: str,
     host_base_path: str,
@@ -91,6 +109,11 @@ def to_tool_repo_path(
 
     # Fall back to managed repos mapping (.repos / /data/repos)
     result = _translate_path(repo_path, host_base_path, tool_base_path)
+    if result is not None:
+        return result
+
+    fallback_base = "/data/repos" if tool_base_path == host_base_path else tool_base_path
+    result = _managed_repos_fallback(repo_path, fallback_base)
     if result is not None:
         return result
 

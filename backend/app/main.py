@@ -54,6 +54,7 @@ app.add_middleware(
 )
 
 from app.api import tasks, settings as settings_router, tools, export, prompts, coverage, ws, repo_wiki  # noqa: E402
+from app.api.repo_analysis import router as repo_analysis_router  # noqa: E402
 from app.api.workspaces import router as workspaces_router  # noqa: E402
 from app.api.deepwiki_pages import router as deepwiki_router  # noqa: E402
 
@@ -67,6 +68,7 @@ app.include_router(ws.router)
 app.include_router(workspaces_router)
 app.include_router(deepwiki_router)
 app.include_router(repo_wiki.router)
+app.include_router(repo_analysis_router)
 
 
 @app.get("/health")
