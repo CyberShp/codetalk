@@ -226,7 +226,7 @@ export default function CoveragePage() {
               ref={fileInputRef}
               type="file"
               multiple
-              accept=".xml,.html,.htm,.csv,.tsv,.txt"
+              accept=".xml,.html,.htm,.csv,.tsv,.txt,.xlsx,.xls"
               onChange={(e) => handleUpload(e.target.files)}
               className="flex-1 text-sm text-on-surface-variant file:mr-3 file:py-2 file:px-4 file:rounded-lg file:border-0 file:bg-primary/10 file:text-primary file:text-sm file:font-medium file:cursor-pointer hover:file:bg-primary/20"
               disabled={uploading}
@@ -236,7 +236,7 @@ export default function CoveragePage() {
             )}
           </div>
           <p className="text-xs text-on-surface-variant/60">
-            支持 Cobertura XML、JaCoCo XML、HTML 覆盖率报告，以及内网函数命中表（CSV/TSV/TXT）。可多文件上传（按模块目录分类）
+            支持 Cobertura XML、JaCoCo XML、HTML 覆盖率报告，以及内网函数命中表（CSV/TSV/TXT/XLSX，兼容文本导出的 XLS）。可多文件上传（按模块目录分类）
           </p>
         </div>
 

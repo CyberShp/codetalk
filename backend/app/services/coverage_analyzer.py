@@ -18,6 +18,7 @@ from app.adapters.coverage import (
     ModuleCoverage,
     detect_and_parse_xml,
     parse_internal_function_hits,
+    parse_internal_function_hits_xlsx,
     parse_html_coverage,
 )
 from app.config import settings
@@ -113,13 +114,25 @@ async def _analyze_module(
     }
 
 
+def _coverage_text(content: str | bytes) -> str:
+    if isinstance(content, bytes):
+        return content.decode("utf-8", errors="replace")
+    return content
+
+
+def _coverage_bytes(content: str | bytes) -> bytes:
+    if isinstance(content, bytes):
+        return content
+    return content.encode("utf-8")
+
+
 class CoverageAnalyzer:
     """Orchestrates coverage parsing and AI analysis."""
 
     async def parse_and_store(
         self,
         analysis_id: str,
-        files: list[tuple[str, str]],
+        files: list[tuple[str, str | bytes]],
         name: str = "",
         workspace_id: str | None = None,
         repo_path: str | None = None,
@@ -132,14 +145,26 @@ class CoverageAnalyzer:
             lower = filename.lower()
             if lower.endswith(".xml"):
                 try:
-                    report = detect_and_parse_xml(content)
+                    report = detect_and_parse_xml(_coverage_text(content))
                 except Exception as exc:
                     raise ValueError(f"文件 {filename} XML 格式无效: {exc}") from exc
             elif lower.endswith((".html", ".htm")):
-                report = parse_html_coverage(content)
+                report = parse_html_coverage(_coverage_text(content))
+            elif lower.endswith(".xlsx"):
+                try:
+                    report = parse_internal_function_hits_xlsx(_coverage_bytes(content))
+                except Exception as exc:
+                    logger.warning("Skipping invalid Excel coverage file %s: %s", filename, exc)
+                    continue
+            elif lower.endswith(".xls"):
+                try:
+                    report = parse_internal_function_hits(_coverage_text(content))
+                except Exception as exc:
+                    logger.warning("Skipping invalid legacy Excel coverage file %s: %s", filename, exc)
+                    continue
             elif lower.endswith((".csv", ".tsv", ".txt")):
                 try:
-                    report = parse_internal_function_hits(content)
+                    report = parse_internal_function_hits(_coverage_text(content))
                 except Exception as exc:
                     logger.warning("Skipping invalid internal coverage file %s: %s", filename, exc)
                     continue
@@ -324,6 +349,7 @@ async def _build_black_box_function_recommendations(
             "line_rate": module.line_rate,
             "branch_rate": module.branch_rate,
             "function_rate": module.function_rate,
+            "feature_name": hit.feature_name,
             "function_name": hit.function_name,
             "file_path": hit.file_path,
             "line_start": hit.line_start,
@@ -341,6 +367,8 @@ async def _build_black_box_function_recommendations(
                     "workspace_id": workspace_id,
                     "repo_path": repo_path,
                     "module_path": module.module_path,
+                    "feature_name": hit.feature_name,
+                    "module_name": hit.module_name,
                     "file_path": hit.file_path,
                     "function_name": hit.function_name,
                     "line_start": hit.line_start,
@@ -615,6 +643,8 @@ def _dict_to_module(d: dict) -> ModuleCoverage:
 
 def _function_hit_to_dict(hit: FunctionHit) -> dict:
     return {
+        "feature_name": hit.feature_name,
+        "module_name": hit.module_name,
         "function_name": hit.function_name,
         "file_path": hit.file_path,
         "line_start": hit.line_start,
@@ -630,6 +660,8 @@ def _dict_to_function_hit(d: dict) -> FunctionHit:
     return FunctionHit(
         function_name=d.get("function_name", ""),
         file_path=d.get("file_path", ""),
+        feature_name=d.get("feature_name", ""),
+        module_name=d.get("module_name", ""),
         line_start=d.get("line_start"),
         line_end=d.get("line_end"),
         triggered=bool(d.get("triggered", False)),

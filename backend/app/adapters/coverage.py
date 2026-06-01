@@ -14,6 +14,7 @@ import logging
 import csv
 import io
 import re
+import zipfile
 from dataclasses import dataclass, field
 from typing import Protocol
 import defusedxml.ElementTree as ET
@@ -25,6 +26,8 @@ logger = logging.getLogger(__name__)
 class FunctionHit:
     function_name: str
     file_path: str
+    feature_name: str = ""
+    module_name: str = ""
     line_start: int | None = None
     line_end: int | None = None
     triggered: bool = False
@@ -296,11 +299,20 @@ def detect_and_parse_xml(xml_content: str) -> CoverageReport:
 
 _FUNC_HEADERS = {
     "function", "functionname", "name", "symbol", "symbolname",
-    "函数", "函数名", "方法", "方法名",
+    "函数", "函数名", "函数名称", "方法", "方法名", "方法名称",
+}
+_FEATURE_HEADERS = {
+    "feature", "featurename", "scenario", "story", "requirement",
+    "特性", "特性名", "特性名称", "场景", "需求",
+}
+_MODULE_HEADERS = {
+    "module", "modulename", "component", "subsystem", "package",
+    "模块", "模块名", "模块名称", "组件", "子系统",
 }
 _LOCATION_HEADERS = {
     "location", "codelocation", "source", "path", "file", "filename",
-    "filepath", "代码位置", "源码位置", "文件位置", "文件", "路径",
+    "filepath", "codepath", "代码位置", "源码位置", "文件位置",
+    "代码路径", "源码路径", "文件路径", "文件", "路径",
 }
 _TRIGGER_HEADERS = {
     "triggered", "covered", "hit", "executed", "visited", "是否触发",
@@ -308,7 +320,7 @@ _TRIGGER_HEADERS = {
 }
 _COUNT_HEADERS = {
     "hitcount", "hits", "count", "times", "触发次数", "命中次数",
-    "执行次数", "次数",
+    "执行次数", "覆盖次数", "次数",
 }
 
 
@@ -321,17 +333,48 @@ def parse_internal_function_hits(content: str) -> CoverageReport:
     fallback.
     """
     rows = _read_delimited_rows(content)
+    return _function_hit_rows_to_report(rows)
+
+
+def parse_internal_function_hits_xlsx(content: bytes) -> CoverageReport:
+    """Parse an XLSX intranet function-hit table.
+
+    The intranet export is a small worksheet, usually with the six columns:
+    feature, module, code path, function name, covered flag, hit count.  We
+    intentionally parse the Office Open XML container directly so deployments
+    do not depend on openpyxl just to ingest coverage evidence.
+    """
+
+    rows = _read_xlsx_rows(content)
+    return _function_hit_rows_to_report(rows)
+
+
+def _function_hit_rows_to_report(rows: list[list[str]]) -> CoverageReport:
     if not rows:
         raise ValueError("No rows found in internal function-hit coverage file")
 
     header = [_normalize_header(c) for c in rows[0]]
-    has_header = any(h in _FUNC_HEADERS | _LOCATION_HEADERS for h in header)
+    known_headers = (
+        _FUNC_HEADERS | _LOCATION_HEADERS | _TRIGGER_HEADERS | _COUNT_HEADERS
+        | _FEATURE_HEADERS | _MODULE_HEADERS
+    )
+    has_header = any(h in known_headers for h in header)
     if has_header:
         data_rows = rows[1:]
         indexes = _internal_hit_indexes(header)
     else:
         data_rows = rows
-        indexes = {"function": 0, "location": 1, "triggered": 2, "hit_count": 3}
+        if len(rows[0]) >= 6:
+            indexes = {
+                "feature": 0,
+                "module": 1,
+                "location": 2,
+                "function": 3,
+                "triggered": 4,
+                "hit_count": 5,
+            }
+        else:
+            indexes = {"function": 0, "location": 1, "triggered": 2, "hit_count": 3}
 
     hits: list[FunctionHit] = []
     for row in data_rows:
@@ -356,6 +399,82 @@ def _read_delimited_rows(content: str) -> list[list[str]]:
     return [[cell.strip() for cell in row] for row in reader if any(c.strip() for c in row)]
 
 
+def _read_xlsx_rows(content: bytes) -> list[list[str]]:
+    if not content:
+        return []
+    try:
+        with zipfile.ZipFile(io.BytesIO(content)) as zf:
+            shared_strings = _xlsx_shared_strings(zf)
+            sheet_name = _first_xlsx_sheet_name(zf)
+            xml = zf.read(sheet_name)
+    except (KeyError, zipfile.BadZipFile) as exc:
+        raise ValueError(f"Invalid XLSX coverage file: {exc}") from exc
+
+    root = ET.fromstring(xml)
+    rows: list[list[str]] = []
+    for row in root.findall(".//{*}sheetData/{*}row"):
+        values_by_col: dict[int, str] = {}
+        max_col = 0
+        for cell in row.findall("{*}c"):
+            ref = cell.get("r") or ""
+            col_idx = _xlsx_col_index(ref)
+            if col_idx <= 0:
+                col_idx = max_col + 1
+            max_col = max(max_col, col_idx)
+            values_by_col[col_idx] = _xlsx_cell_text(cell, shared_strings)
+        values = [values_by_col.get(idx, "").strip() for idx in range(1, max_col + 1)]
+        if any(values):
+            rows.append(values)
+    return rows
+
+
+def _first_xlsx_sheet_name(zf: zipfile.ZipFile) -> str:
+    sheet_names = sorted(
+        name for name in zf.namelist()
+        if name.startswith("xl/worksheets/") and name.endswith(".xml")
+    )
+    if not sheet_names:
+        raise KeyError("xl/worksheets/*.xml")
+    return sheet_names[0]
+
+
+def _xlsx_shared_strings(zf: zipfile.ZipFile) -> list[str]:
+    try:
+        xml = zf.read("xl/sharedStrings.xml")
+    except KeyError:
+        return []
+    root = ET.fromstring(xml)
+    values: list[str] = []
+    for item in root.findall(".//{*}si"):
+        texts = [node.text or "" for node in item.findall(".//{*}t")]
+        values.append("".join(texts))
+    return values
+
+
+def _xlsx_col_index(ref: str) -> int:
+    match = re.match(r"([A-Za-z]+)", ref or "")
+    if not match:
+        return 0
+    value = 0
+    for ch in match.group(1).upper():
+        value = value * 26 + (ord(ch) - ord("A") + 1)
+    return value
+
+
+def _xlsx_cell_text(cell: ET.Element, shared_strings: list[str]) -> str:
+    cell_type = cell.get("t") or ""
+    if cell_type == "inlineStr":
+        return "".join(node.text or "" for node in cell.findall(".//{*}t"))
+    value = cell.find("{*}v")
+    raw = value.text if value is not None else ""
+    if cell_type == "s":
+        try:
+            return shared_strings[int(raw)]
+        except (ValueError, IndexError):
+            return raw or ""
+    return raw or ""
+
+
 def _normalize_header(value: str) -> str:
     return re.sub(r"[\s_\-:/()（）]+", "", value.strip().lstrip("\ufeff").lower())
 
@@ -363,7 +482,11 @@ def _normalize_header(value: str) -> str:
 def _internal_hit_indexes(header: list[str]) -> dict[str, int]:
     indexes: dict[str, int] = {}
     for idx, name in enumerate(header):
-        if name in _FUNC_HEADERS and "function" not in indexes:
+        if name in _FEATURE_HEADERS and "feature" not in indexes:
+            indexes["feature"] = idx
+        elif name in _MODULE_HEADERS and "module" not in indexes:
+            indexes["module"] = idx
+        elif name in _FUNC_HEADERS and "function" not in indexes:
             indexes["function"] = idx
         elif name in _LOCATION_HEADERS and "location" not in indexes:
             indexes["location"] = idx
@@ -395,6 +518,8 @@ def _row_to_function_hit(row: list[str], indexes: dict[str, int]) -> FunctionHit
     return FunctionHit(
         function_name=cell("function"),
         file_path=file_path,
+        feature_name=cell("feature"),
+        module_name=cell("module"),
         line_start=line_start,
         line_end=line_end,
         triggered=triggered,
@@ -402,6 +527,8 @@ def _row_to_function_hit(row: list[str], indexes: dict[str, int]) -> FunctionHit
         raw_location=raw_location,
         raw={
             "function_name": cell("function"),
+            "feature_name": cell("feature"),
+            "module_name": cell("module"),
             "code_location": raw_location,
             "triggered": cell("triggered"),
             "hit_count": cell("hit_count"),
@@ -455,7 +582,7 @@ def _parse_triggered(value: str, hit_count: int) -> bool:
 def _function_hits_to_report(hits: list[FunctionHit]) -> CoverageReport:
     by_module: dict[str, list[FunctionHit]] = {}
     for hit in hits:
-        by_module.setdefault(_module_from_path(hit.file_path), []).append(hit)
+        by_module.setdefault(_module_from_hit(hit), []).append(hit)
 
     modules: list[ModuleCoverage] = []
     for module_path, module_hits in sorted(by_module.items()):
@@ -516,6 +643,12 @@ def _function_hits_to_report(hits: list[FunctionHit]) -> CoverageReport:
         source_format="internal_function_hits",
         raw_metadata={"record_count": len(hits), "covered_count": covered_total},
     )
+
+
+def _module_from_hit(hit: FunctionHit) -> str:
+    if hit.module_name.strip():
+        return hit.module_name.strip()
+    return _module_from_path(hit.file_path)
 
 
 def _module_from_path(path: str) -> str:

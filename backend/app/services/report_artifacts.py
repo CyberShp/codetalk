@@ -18,7 +18,7 @@ def build_codetalk_section_artifacts(
     analysis_units: list[dict],
     evidence_cards: list[Any],
     common_context: dict,
-    max_rows: int = 8,
+    max_rows: int = 16,
 ) -> str:
     """Return Markdown artifacts for one report section.
 
@@ -53,7 +53,7 @@ def build_codetalk_report_artifact_appendix(
     analysis_units: list[dict],
     evidence_cards: list[Any],
     common_context: dict,
-    max_rows: int = 12,
+    max_rows: int = 24,
 ) -> str:
     """Return report-level traceability artifacts.
 
@@ -248,12 +248,12 @@ def _render_function_failure_matrix(matrix: dict, *, max_rows: int) -> str:
     lines = [
         "### CodeTalk Function Failure Matrix",
         "",
-        "| Function | Branch/Error signals | State/Cleanup | Evidence | Gaps / next actions |",
-        "| --- | --- | --- | --- | --- |",
+        "| Function | Risk | Branch/Error signals | State/Cleanup/Propagation | Evidence | Gaps / next actions |",
+        "| --- | --- | --- | --- | --- | --- |",
     ]
     rows = matrix.get("functions") or []
     if not rows:
-        lines.append("| (no function evidence) | none | none | none | Need source snippets or CGC function context. |")
+        lines.append("| (no function evidence) | unknown | none | none | none | Need source snippets or CGC function context. |")
         return "\n".join(lines)
     for row in rows[:max_rows]:
         function_ref = f"{row.get('file_path') or '(unknown_file)'}::{row.get('function') or '(unknown_function)'}"
@@ -264,13 +264,15 @@ def _render_function_failure_matrix(matrix: dict, *, max_rows: int) -> str:
         state_cleanup = _join_cell([
             *_limit(row.get("state_transitions")),
             *_limit(row.get("cleanup_signals")),
+            *_limit(row.get("propagation_signals")),
         ])
         gaps_next = _join_cell([
+            *_limit(row.get("containment_gaps"), 2),
             *_limit(row.get("gaps"), 2),
             *_limit(row.get("next_actions"), 2),
         ])
         lines.append(
-            f"| {_cell(function_ref)} | {_cell(branch_error)} | {_cell(state_cleanup)} | "
+            f"| {_cell(function_ref)} | {_cell(str(row.get('risk') or 'unknown'))} | {_cell(branch_error)} | {_cell(state_cleanup)} | "
             f"{_cell(_join_cell(row.get('evidence_card_ids') or []))} | {_cell(gaps_next)} |"
         )
     return "\n".join(lines)
@@ -280,20 +282,24 @@ def _render_branch_deep_dive(deep_dive: dict, *, max_rows: int) -> str:
     lines = [
         "### CodeTalk Branch Deep Dive",
         "",
-        "| Function | Condition | Observation | Evidence | Test trigger hint |",
-        "| --- | --- | --- | --- | --- |",
+        "| Function | Risk | Condition | Observation / containment | Evidence | Test trigger hint |",
+        "| --- | --- | --- | --- | --- | --- |",
     ]
     branches = deep_dive.get("branches") or []
     if not branches:
-        lines.append("| (no branch evidence) | none | none | none | Request a wider source window or CGC branch query. |")
+        lines.append("| (no branch evidence) | unknown | none | none | none | Request a wider source window or CGC branch query. |")
         return "\n".join(lines)
     for branch in branches[:max_rows]:
         function_ref = f"{branch.get('file_path') or '(unknown_file)'}::{branch.get('function') or '(unknown_function)'}"
         lines.append(
-            "| {fn} | {condition} | {observation} | {evidence} | {trigger} |".format(
+            "| {fn} | {risk} | {condition} | {observation} | {evidence} | {trigger} |".format(
                 fn=_cell(function_ref),
+                risk=_cell(str(branch.get("risk") or "unknown")),
                 condition=_cell(str(branch.get("condition") or "")),
-                observation=_cell(str(branch.get("observation") or "")),
+                observation=_cell(_join_cell([
+                    str(branch.get("observation") or ""),
+                    *_limit(branch.get("containment_gaps"), 2),
+                ])),
                 evidence=_cell(str(branch.get("evidence_card_id") or "")),
                 trigger=_cell(str(branch.get("test_trigger_hint") or "")),
             )

@@ -42,7 +42,7 @@ from app.schemas.workspace_analysis import (
 
 logger = logging.getLogger(__name__)
 
-_MAX_SNIPPET_BYTES = 4_000  # ~ 600-800 Chinese chars worth of code per card
+_MAX_SNIPPET_BYTES = 8_000  # enough room for branch/cleanup tails in medium C functions
 _SOURCE_EXTS = frozenset({
     ".py", ".js", ".ts", ".tsx", ".jsx", ".go", ".rs", ".java",
     ".c", ".cpp", ".h", ".hpp", ".cc", ".cxx", ".cs", ".rb", ".php",
@@ -531,7 +531,7 @@ class EvidenceCardBuilder:
         resolved: ResolvedAnalysisObject,
     ) -> list[EvidenceCard]:
         seen: set[tuple[str, str]] = set()
-        per_object_cap = max(2, self._limits.max_files_per_object // 2)
+        per_object_cap = max(2, self._limits.max_files_per_object)
         cards: list[EvidenceCard] = []
 
         # Files first — they ground the LLM in real source.

@@ -49,6 +49,7 @@ from app.services.report_generator import (
 )
 from app.services.workspace_scope_resolver import (
     _exact_symbol_repo_hits_blocking,
+    estimate_evidence_cards,
     _looks_like_symbol,
     _path_hint_repo_hits_blocking,
 )
@@ -133,6 +134,37 @@ def test_path_hints_expand_source_directories_recursively(tmp_path) -> None:
         "nvme_tcp/trans/tls/handshake/ntt_tls_handshake.c",
         "nvme_tcp/trans/tls/io/ntt_tls_io.c",
     ]
+
+
+def test_default_evidence_budget_can_cover_medium_primary_module(tmp_path) -> None:
+    module_dir = tmp_path / "net_mgmt" / "dpdknetmgmt"
+    module_dir.mkdir(parents=True)
+    candidates = []
+    for idx in range(16):
+        path = module_dir / f"dpdk_path_{idx:02d}.c"
+        path.write_text(f"int dpdk_path_{idx:02d}(void) {{ return {idx}; }}\n", encoding="utf-8")
+        candidates.append(
+            ScopeCandidate(
+                path=str(path),
+                source="repo_search",
+                confidence="high",
+                reason="primary path hint expansion",
+                role="primary",
+            )
+        )
+    resolved = ResolvedAnalysisObject(
+        object_id="obj_net_mgmt",
+        text="net_mgmt/dpdknetmgmt",
+        candidate_files=candidates,
+    )
+    limits = LLMLimits()
+    builder = EvidenceCardBuilder(repo_path=str(tmp_path), limits=limits)
+
+    cards = asyncio.run(builder.build_cards([resolved]))
+    estimated = estimate_evidence_cards([resolved], limits)
+
+    assert len(cards) >= 16
+    assert estimated >= 16
 
 
 def test_symbol_evidence_snippet_focuses_on_definition() -> None:

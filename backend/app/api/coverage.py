@@ -52,15 +52,15 @@ async def upload_coverage(
 
     max_bytes = settings.coverage_max_upload_mb * 1024 * 1024
 
-    parsed_files: list[tuple[str, str]] = []
+    parsed_files: list[tuple[str, str | bytes]] = []
     for f in files:
         if not f.filename:
             continue
         lower = f.filename.lower()
-        if not lower.endswith((".xml", ".html", ".htm", ".csv", ".tsv", ".txt")):
+        if not lower.endswith((".xml", ".html", ".htm", ".csv", ".tsv", ".txt", ".xlsx", ".xls")):
             raise HTTPException(
                 status_code=400,
-                detail=f"不支持的文件格式: {f.filename}（仅支持 XML、HTML、CSV、TSV、TXT）",
+                detail=f"不支持的文件格式: {f.filename}（仅支持 XML、HTML、CSV、TSV、TXT、XLSX、文本 XLS）",
             )
         content = await f.read()
         if len(content) > max_bytes:
@@ -68,7 +68,10 @@ async def upload_coverage(
                 status_code=400,
                 detail=f"文件 {f.filename} 超过 {settings.coverage_max_upload_mb}MB 限制",
             )
-        parsed_files.append((f.filename, content.decode("utf-8", errors="replace")))
+        if lower.endswith((".xlsx", ".xls")):
+            parsed_files.append((f.filename, content))
+        else:
+            parsed_files.append((f.filename, content.decode("utf-8", errors="replace")))
 
     if not parsed_files:
         raise HTTPException(status_code=400, detail="未找到有效的覆盖率文件")

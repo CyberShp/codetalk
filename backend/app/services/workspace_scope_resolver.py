@@ -991,11 +991,11 @@ def estimate_evidence_cards(resolved_objects, limits) -> int:
     """Estimate the evidence-card count the EvidenceCardBuilder will emit.
 
     Replicates the builder's per-object caps (files capped at
-    ``max(2, max_files_per_object // 2)``, symbols topped up to ``cap + 4``,
+    ``max(2, max_files_per_object)``, symbols topped up to ``cap + 4``,
     plus one community card) so the preview's card count tracks reality instead
     of summing every raw candidate.
     """
-    per_object_cap = max(2, limits.max_files_per_object // 2)
+    per_object_cap = max(2, limits.max_files_per_object)
     total = 0
     for r in resolved_objects:
         seen_paths: set[str] = set()

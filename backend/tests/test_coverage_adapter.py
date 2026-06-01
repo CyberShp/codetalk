@@ -1,10 +1,14 @@
 """Unit tests for app/adapters/coverage.py — covers adapter stubs and parse paths."""
 
+import zipfile
+from io import BytesIO
+
 import pytest
 
 from app.adapters.coverage import (
     IntranetCoverageAdapter,
     parse_internal_function_hits,
+    parse_internal_function_hits_xlsx,
     parse_html_coverage,
     parse_jacoco_xml,
 )
@@ -144,3 +148,71 @@ cleanup|src/a.c:9|0|0
         assert report.source_format == "internal_function_hits"
         assert report.overall_function_rate == 0.0
         assert report.modules[0].function_hits[0].function_name == "cleanup_temp"
+
+    def test_parses_intranet_six_column_chinese_table(self):
+        csv_text = (
+            "特性名称,模块名称,代码路径,函数名称,是否覆盖,覆盖次数\n"
+            "网卡初始化,net_mgmt,net_mgmt/dpdknetmgmt/dpdkxxx,dpdknet_mgmt_init,否,0\n"
+            "网卡初始化,net_mgmt,net_mgmt/dpdknetmgmt/dpdkxxx,dpdknet_probe,是,3\n"
+        )
+
+        report = parse_internal_function_hits(csv_text)
+
+        assert report.source_format == "internal_function_hits"
+        assert report.modules[0].module_path == "net_mgmt"
+        hits = report.modules[0].function_hits
+        assert hits[0].feature_name == "网卡初始化"
+        assert hits[0].module_name == "net_mgmt"
+        assert hits[0].file_path == "net_mgmt/dpdknetmgmt/dpdkxxx"
+        assert hits[0].function_name == "dpdknet_mgmt_init"
+        assert hits[0].triggered is False
+        assert hits[1].hit_count == 3
+
+    def test_parses_xlsx_intranet_six_column_table(self):
+        workbook = _minimal_xlsx(
+            [
+                ["特性名称", "模块名称", "代码路径", "函数名称", "是否覆盖", "覆盖次数"],
+                ["异常恢复", "net_mgmt", "net_mgmt/dpdknetmgmt/dpdkxxx", "dpdknet_recover", "否", "0"],
+                ["异常恢复", "net_mgmt", "net_mgmt/dpdknetmgmt/dpdkxxx", "dpdknet_start", "是", "5"],
+            ]
+        )
+
+        report = parse_internal_function_hits_xlsx(workbook)
+
+        assert report.source_format == "internal_function_hits"
+        assert report.overall_function_rate == 0.5
+        assert report.modules[0].module_path == "net_mgmt"
+        assert report.modules[0].uncovered_functions == [
+            "net_mgmt/dpdknetmgmt/dpdkxxx:dpdknet_recover"
+        ]
+
+
+def _minimal_xlsx(rows: list[list[str]]) -> bytes:
+    def col_name(index: int) -> str:
+        name = ""
+        while index:
+            index, rem = divmod(index - 1, 26)
+            name = chr(65 + rem) + name
+        return name
+
+    sheet_rows = []
+    for row_idx, row in enumerate(rows, start=1):
+        cells = []
+        for col_idx, value in enumerate(row, start=1):
+            ref = f"{col_name(col_idx)}{row_idx}"
+            cells.append(
+                f'<c r="{ref}" t="inlineStr"><is><t>{value}</t></is></c>'
+            )
+        sheet_rows.append(f'<row r="{row_idx}">{"".join(cells)}</row>')
+
+    sheet_xml = (
+        '<?xml version="1.0" encoding="UTF-8"?>'
+        '<worksheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main">'
+        f'<sheetData>{"".join(sheet_rows)}</sheetData>'
+        "</worksheet>"
+    )
+    out = BytesIO()
+    with zipfile.ZipFile(out, "w") as zf:
+        zf.writestr("[Content_Types].xml", "<Types/>")
+        zf.writestr("xl/worksheets/sheet1.xml", sheet_xml)
+    return out.getvalue()

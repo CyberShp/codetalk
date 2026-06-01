@@ -77,12 +77,12 @@ class ReportSpec(BaseModel):
 class LLMLimits(BaseModel):
     """Hard caps applied during scope resolution and analysis fan-out."""
 
-    max_evidence_cards: int = Field(default=48, ge=1, le=256)
-    max_files_per_object: int = Field(default=12, ge=1, le=64)
+    max_evidence_cards: int = Field(default=96, ge=1, le=256)
+    max_files_per_object: int = Field(default=24, ge=1, le=64)
     max_functions_per_object: int = Field(default=30, ge=1, le=128)
     max_communities_per_object: int = Field(default=8, ge=1, le=32)
-    max_cards_per_report_section: int = Field(default=12, ge=1, le=64)
-    max_output_chars_per_section: int = Field(default=1200, ge=200, le=8000)
+    max_cards_per_report_section: int = Field(default=24, ge=1, le=64)
+    max_output_chars_per_section: int = Field(default=2400, ge=200, le=8000)
     retry_empty_output: int = Field(default=1, ge=0, le=3)
     max_analysis_units: int = Field(default=16, ge=1, le=64)
 

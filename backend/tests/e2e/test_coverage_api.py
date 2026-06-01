@@ -1,6 +1,8 @@
 ﻿"""E2E tests for /api/coverage endpoints."""
 
 import uuid
+import zipfile
+from io import BytesIO
 
 from httpx import AsyncClient
 
@@ -313,3 +315,66 @@ recover_after_failure,main.py:2,false,0
     detail_resp = await e2e_client.get(f"/api/coverage/{body['id']}")
     assert detail_resp.status_code == 200
     assert "recover_after_failure" in detail_resp.json()["modules_json"]
+
+
+async def test_upload_internal_function_hits_xlsx(e2e_client: AsyncClient):
+    workbook = _minimal_xlsx(
+        [
+            ["特性名称", "模块名称", "代码路径", "函数名称", "是否覆盖", "覆盖次数"],
+            ["网卡初始化", "net_mgmt", "net_mgmt/dpdknetmgmt/dpdkxxx", "dpdknet_mgmt_init", "否", "0"],
+            ["网卡初始化", "net_mgmt", "net_mgmt/dpdknetmgmt/dpdkxxx", "dpdknet_probe", "是", "2"],
+        ]
+    )
+
+    resp = await e2e_client.post(
+        "/api/coverage/upload",
+        files={
+            "files": (
+                "internal.xlsx",
+                workbook,
+                "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+            )
+        },
+        data={"name": "internal-xlsx-table"},
+    )
+
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["source_format"] == "internal_function_hits"
+    assert body["overall_function_rate"] == 0.5
+    detail_resp = await e2e_client.get(f"/api/coverage/{body['id']}")
+    assert detail_resp.status_code == 200
+    detail = detail_resp.json()
+    assert "dpdknet_mgmt_init" in detail["modules_json"]
+    assert "网卡初始化" in detail["modules_json"]
+
+
+def _minimal_xlsx(rows: list[list[str]]) -> bytes:
+    def col_name(index: int) -> str:
+        name = ""
+        while index:
+            index, rem = divmod(index - 1, 26)
+            name = chr(65 + rem) + name
+        return name
+
+    sheet_rows = []
+    for row_idx, row in enumerate(rows, start=1):
+        cells = []
+        for col_idx, value in enumerate(row, start=1):
+            ref = f"{col_name(col_idx)}{row_idx}"
+            cells.append(
+                f'<c r="{ref}" t="inlineStr"><is><t>{value}</t></is></c>'
+            )
+        sheet_rows.append(f'<row r="{row_idx}">{"".join(cells)}</row>')
+
+    sheet_xml = (
+        '<?xml version="1.0" encoding="UTF-8"?>'
+        '<worksheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main">'
+        f'<sheetData>{"".join(sheet_rows)}</sheetData>'
+        "</worksheet>"
+    )
+    out = BytesIO()
+    with zipfile.ZipFile(out, "w") as zf:
+        zf.writestr("[Content_Types].xml", "<Types/>")
+        zf.writestr("xl/worksheets/sheet1.xml", sheet_xml)
+    return out.getvalue()

@@ -59,6 +59,15 @@ _OBSERVABLE_RE = re.compile(
     r"\b(log|printf|warn|trace|metric|return|status|code|response|reply|disconnect|close)\b",
     re.I,
 )
+_PROPAGATION_RE = re.compile(
+    r"\b(return|throw|raise|goto|propagate|complete|callback|reply|disconnect|abort)\b",
+    re.I,
+)
+_ERROR_CONDITION_RE = re.compile(
+    r"(<\s*0|<=\s*0|==\s*NULL|!=\s*0|!\s*[A-Za-z_]\w*|failed|fail|error|errno|timeout|SSL_get_error)",
+    re.I,
+)
+_SILENT_SUCCESS_RE = re.compile(r"\breturn\s+0\s*;", re.I)
 
 
 def build_analysis_artifact_bundle(
@@ -176,6 +185,9 @@ def build_function_failure_matrix(*, task_id: str, evidence_cards: list[dict]) -
                     "resource_signals": [],
                     "state_transitions": [],
                     "observable_signals": [],
+                    "propagation_signals": [],
+                    "containment_gaps": [],
+                    "risk": "unknown",
                     "gaps": [],
                     "next_actions": [],
                 },
@@ -188,8 +200,13 @@ def build_function_failure_matrix(*, task_id: str, evidence_cards: list[dict]) -
                 "resource_signals",
                 "state_transitions",
                 "observable_signals",
+                "propagation_signals",
             ):
                 row[field] = _dedupe([*row[field], *signals[field]])[:12]
+            row["containment_gaps"] = _dedupe([
+                *row["containment_gaps"],
+                *_containment_gaps_for_signals(signals),
+            ])
             if not lines:
                 row["gaps"].append("No source snippet was available for this function.")
             if not signals["branch_conditions"]:
@@ -197,6 +214,7 @@ def build_function_failure_matrix(*, task_id: str, evidence_cards: list[dict]) -
             if not signals["error_signals"]:
                 row["gaps"].append("No explicit error signal was visible in the collected snippet.")
             row["gaps"] = _dedupe(row["gaps"])
+            row["risk"] = _risk_for_row(row)
             row["next_actions"] = _next_actions_for_row(row)
 
     rows = sorted(rows_by_key.values(), key=lambda r: (str(r.get("file_path") or ""), r["function"]))
@@ -215,10 +233,12 @@ def build_branch_deep_dive(*, task_id: str, evidence_cards: list[dict]) -> dict:
         lines = _snippet_lines(card.get("snippet") or "", with_numbers=True)
         functions = _functions_for_card(card, [line for _, line in lines]) or ["(unknown_function)"]
         card_branches = []
-        for line_number, line in lines:
+        for idx, (line_number, line) in enumerate(lines):
             if not _BRANCH_RE.search(line):
                 continue
             condition = _extract_branch_condition(line)
+            context = _branch_context(lines, line_number, idx)
+            containment_gaps = _branch_containment_gaps(condition, context)
             item = {
                 "branch_id": f"branch:{card.get('card_id')}:{line_number or len(branches) + 1}",
                 "function": functions[0],
@@ -230,6 +250,9 @@ def build_branch_deep_dive(*, task_id: str, evidence_cards: list[dict]) -> dict:
                 "evidence_card_id": card.get("card_id"),
                 "observation": _observation_hint(line),
                 "test_trigger_hint": f"Force input/state to satisfy: {condition}",
+                "propagation": _join_limited(_propagation_lines(context)),
+                "containment_gaps": containment_gaps,
+                "risk": "high" if containment_gaps else "medium" if _is_error_condition(condition) else "low",
                 "uncertainty": [] if card.get("confidence") == "high" else ["Evidence confidence is not high."],
             }
             branches.append(item)
@@ -334,14 +357,17 @@ def format_artifacts_for_report_qa(
         lines.extend(["", "### Function Failure Matrix"])
         for row in functions[:max_functions]:
             lines.append(
-                "- {file}::{fn}; evidence={evidence}; branches={branches}; errors={errors}; cleanup={cleanup}; state={state}; gaps={gaps}".format(
+                "- {file}::{fn}; risk={risk}; evidence={evidence}; branches={branches}; errors={errors}; cleanup={cleanup}; state={state}; propagation={propagation}; containment_gaps={containment}; gaps={gaps}".format(
                     file=row.get("file_path") or "(unknown_file)",
                     fn=row.get("function") or "(unknown_function)",
+                    risk=row.get("risk") or "unknown",
                     evidence=", ".join(row.get("evidence_card_ids") or []) or "none",
                     branches=_join_limited(row.get("branch_conditions")),
                     errors=_join_limited(row.get("error_signals")),
                     cleanup=_join_limited(row.get("cleanup_signals")),
                     state=_join_limited(row.get("state_transitions")),
+                    propagation=_join_limited(row.get("propagation_signals")),
+                    containment=_join_limited(row.get("containment_gaps")),
                     gaps=_join_limited(row.get("gaps")),
                 )
             )
@@ -352,13 +378,15 @@ def format_artifacts_for_report_qa(
         lines.extend(["", "### Branch Deep Dive"])
         for branch in branches[:max_branches]:
             lines.append(
-                "- {file}::{fn}; condition={condition}; evidence={evidence}; trigger={trigger}; observation={observation}".format(
+                "- {file}::{fn}; risk={risk}; condition={condition}; evidence={evidence}; trigger={trigger}; observation={observation}; containment_gaps={containment}".format(
                     file=branch.get("file_path") or "(unknown_file)",
                     fn=branch.get("function") or "(unknown_function)",
+                    risk=branch.get("risk") or "unknown",
                     condition=_one_line(branch.get("condition")),
                     evidence=branch.get("evidence_card_id") or "none",
                     trigger=_one_line(branch.get("test_trigger_hint")),
                     observation=_one_line(branch.get("observation")),
+                    containment=_join_limited(branch.get("containment_gaps")),
                 )
             )
 
@@ -423,6 +451,7 @@ def _extract_signals(lines: list[str]) -> dict[str, list[str]]:
         "resource_signals": [],
         "state_transitions": [],
         "observable_signals": [],
+        "propagation_signals": [],
     }
     for line in lines:
         clean = _one_line(line)
@@ -430,7 +459,7 @@ def _extract_signals(lines: list[str]) -> dict[str, list[str]]:
             continue
         if _BRANCH_RE.search(clean):
             signals["branch_conditions"].append(_extract_branch_condition(clean))
-        if _ERROR_RE.search(clean):
+        if _ERROR_RE.search(clean) or _is_error_condition(clean):
             signals["error_signals"].append(clean)
         if _CLEANUP_RE.search(clean):
             signals["cleanup_signals"].append(clean)
@@ -440,6 +469,8 @@ def _extract_signals(lines: list[str]) -> dict[str, list[str]]:
             signals["state_transitions"].append(clean)
         if _OBSERVABLE_RE.search(clean):
             signals["observable_signals"].append(clean)
+        if _PROPAGATION_RE.search(clean):
+            signals["propagation_signals"].append(clean)
     return {key: _dedupe(value) for key, value in signals.items()}
 
 
@@ -498,6 +529,68 @@ def _observation_hint(line: str) -> str:
     return "Observe status, state transition, logs, and downstream behavior."
 
 
+def _is_error_condition(text: str) -> bool:
+    return _ERROR_CONDITION_RE.search(text or "") is not None
+
+
+def _branch_context(
+    lines: list[tuple[int | None, str]],
+    line_number: int | None,
+    fallback_idx: int,
+) -> list[str]:
+    if line_number is None:
+        return [line for _number, line in lines[fallback_idx: fallback_idx + 10]]
+    for idx, (number, _line) in enumerate(lines):
+        if number == line_number:
+            return [line for _number, line in lines[idx: idx + 10]]
+    return []
+
+
+def _propagation_lines(lines: list[str]) -> list[str]:
+    return [
+        _one_line(line)
+        for line in lines
+        if _PROPAGATION_RE.search(line or "")
+    ]
+
+
+def _containment_gaps_for_signals(signals: dict[str, list[str]]) -> list[str]:
+    if not signals.get("error_signals"):
+        return []
+    gaps: list[str] = []
+    if not signals.get("propagation_signals"):
+        gaps.append("No explicit error propagation signal was visible near the error branch.")
+    if not signals.get("cleanup_signals") and not signals.get("state_transitions"):
+        gaps.append("No cleanup/resource release or state rollback was visible near the error branch.")
+    if not signals.get("observable_signals"):
+        gaps.append("No user-visible return/log/status observation was visible for the error branch.")
+    if any(_SILENT_SUCCESS_RE.search(line) for line in signals.get("propagation_signals", [])):
+        gaps.append("Potential silent success: an error-like branch returns success code 0.")
+    return gaps
+
+
+def _branch_containment_gaps(condition: str, context: list[str]) -> list[str]:
+    if not _is_error_condition(condition):
+        return []
+    gaps: list[str] = []
+    joined = "\n".join(context)
+    if _SILENT_SUCCESS_RE.search(joined):
+        gaps.append("Potential silent success: error-like branch returns success code 0.")
+    if not _CLEANUP_RE.search(joined) and not _ASSIGN_RE.search(joined):
+        gaps.append("No cleanup/resource release or state rollback was visible in the branch window.")
+    if not any(_PROPAGATION_RE.search(line) for line in context):
+        gaps.append("No explicit propagation/return/throw signal was visible in the branch window.")
+    return _dedupe(gaps)
+
+
+def _risk_for_row(row: dict) -> str:
+    if row.get("containment_gaps"):
+        return "high"
+    if row.get("error_signals") or row.get("cleanup_signals"):
+        return "medium"
+    return "low"
+
+
 def _next_actions_for_row(row: dict) -> list[str]:
     actions = []
     if row.get("branch_conditions"):
@@ -508,6 +601,8 @@ def _next_actions_for_row(row: dict) -> list[str]:
         actions.append("Map each error signal to expected return/log/state observations.")
     if row.get("cleanup_signals"):
         actions.append("Verify cleanup/resource release on failure and retry paths.")
+    if row.get("containment_gaps"):
+        actions.append("Trace caller-visible propagation and add a negative test for missing fallback.")
     return _dedupe(actions)
 
 

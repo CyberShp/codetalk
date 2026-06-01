@@ -125,6 +125,49 @@ int tls_recv(struct conn *c) {
     assert branches[0]["evidence_card_id"] == "card-1"
 
 
+def test_artifact_bundle_flags_uncontained_error_propagation() -> None:
+    card = FakeCard(
+        file_path="net_mgmt/dpdk.c",
+        symbol="dpdknet_mgmt_init",
+        snippet="""
+int dpdknet_mgmt_init(struct dpdk_ctx *ctx) {
+    int rc = dpdk_probe(ctx);
+    if (rc < 0) {
+        return 0;
+    }
+    ctx->state = DPDK_READY;
+    return 0;
+}
+""".strip(),
+    )
+
+    bundle = build_analysis_artifact_bundle(
+        task_id="task-propagation",
+        analysis_unit_mapping={
+            "objects": [
+                {
+                    "object_id": "obj-1",
+                    "text": "dpdknet_mgmt_init exception propagation",
+                    "coverage_status": "direct_evidence",
+                    "evidence_card_ids": ["card-1"],
+                }
+            ]
+        },
+        evidence_cards=[card],
+        analysis_units=[],
+    )
+
+    row = bundle["function_failure_matrix"]["functions"][0]
+    assert row["containment_gaps"]
+    assert any("error" in gap.lower() for gap in row["containment_gaps"])
+    assert row["risk"] == "high"
+
+    branch = bundle["branch_deep_dive"]["branches"][0]
+    assert branch["risk"] == "high"
+    assert branch["containment_gaps"]
+    assert any("silent success" in gap.lower() for gap in branch["containment_gaps"])
+
+
 @pytest.mark.asyncio
 async def test_write_analysis_artifacts_creates_stable_json_files(tmp_path: Path) -> None:
     card = FakeCard(snippet="int fail(void) { if (errno) { return -EINVAL; } return 0; }")
