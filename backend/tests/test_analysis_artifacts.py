@@ -295,3 +295,72 @@ def test_format_artifacts_for_report_qa_mentions_evidence_functions_and_gaps() -
     assert "tls_recv" in text
     assert "SSL_get_error" in text
     assert "gap" in text
+
+
+class TestCoverageTestDesignArtifact:
+    """coverage_test_design.json read/write + report_qa formatting."""
+
+    _DESIGN = {
+        "version": "coverage-test-design-v1",
+        "summary": {
+            "uncovered_function_count": 1,
+            "uncovered_branch_count": 0,
+            "black_box_ready_count": 1,
+            "gray_box_required_count": 0,
+            "workspace_bound": True,
+            "tool_status": {"joern": "unavailable_reserved", "ripgrep": "available",
+                            "cgc": "unavailable", "source": "available"},
+        },
+        "gaps": [{
+            "kind": "function",
+            "function_name": "recover_session",
+            "file_path": "src/session.c",
+            "line_start": 1,
+            "hit_count": 0,
+            "risk_level": "high",
+            "confidence": "high",
+            "trigger_branches": [{"source": "caller", "condition": "if (rc < 0)"}],
+            "entry_paths": [{"entry_kind": "api",
+                             "chain": ["api_handle_request", "recover_session"]}],
+            "black_box_cases": [{"title": "经 api 入口触达 recover_session"}],
+            "gray_box": {"scheme": "fault injection"},
+            "gray_box_required": False,
+            "evidence_gaps": ["Joern 未接入"],
+        }],
+        "warnings": ["Joern 工具未接入（预留）"],
+    }
+
+    async def test_write_load_roundtrip(self, tmp_path):
+        import asyncio
+        from app.services.analysis_artifacts import (
+            write_coverage_test_design,
+            load_analysis_artifact_bundle,
+            COVERAGE_TEST_DESIGN_FILENAME,
+        )
+
+        path = await write_coverage_test_design(tmp_path, self._DESIGN)
+        assert path.name == COVERAGE_TEST_DESIGN_FILENAME
+        bundle = load_analysis_artifact_bundle(tmp_path)
+        assert "coverage_test_design" in bundle
+        assert bundle["coverage_test_design"]["version"] == "coverage-test-design-v1"
+
+    async def test_report_qa_includes_coverage_design(self, tmp_path):
+        from app.services.analysis_artifacts import (
+            write_coverage_test_design,
+            load_analysis_artifact_bundle,
+            format_artifacts_for_report_qa,
+        )
+
+        await write_coverage_test_design(tmp_path, self._DESIGN)
+        bundle = load_analysis_artifact_bundle(tmp_path)
+        rendered = format_artifacts_for_report_qa(bundle, "recover_session 怎么触发")
+        assert "Coverage Gap Test Design" in rendered
+        assert "recover_session" in rendered
+        assert "api_handle_request" in rendered  # entry path surfaced
+        assert "if (rc < 0)" in rendered  # trigger condition surfaced
+
+    def test_format_empty_design_returns_blank(self):
+        from app.services.analysis_artifacts import format_coverage_test_design_for_qa
+
+        assert format_coverage_test_design_for_qa({}) == ""
+        assert format_coverage_test_design_for_qa({"gaps": []}) == ""

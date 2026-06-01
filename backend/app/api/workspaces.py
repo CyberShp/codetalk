@@ -198,6 +198,8 @@ async def _run_workspace_analysis(
     plan: AnalysisPlan | None = None,
     scope_preview: ScopePreview | None = None,
     task_id: str | None = None,
+    include_coverage_gaps: bool = True,
+    coverage_analysis_ids: list[str] | None = None,
 ) -> None:
     """Background task: run WorkspacePipeline, update analyze_status on failure."""
     from app.services.workspace_pipeline import WorkspacePipeline
@@ -205,6 +207,8 @@ async def _run_workspace_analysis(
     try:
         await WorkspacePipeline().run(
             ws_id, repo_path, plan=plan, scope_preview=scope_preview, task_id=task_id,
+            include_coverage_gaps=include_coverage_gaps,
+            coverage_analysis_ids=coverage_analysis_ids,
         )
     except Exception as exc:
         logger.error("Workspace analysis failed for %s: %s", ws_id, exc)
@@ -305,6 +309,11 @@ async def reindex_workspace(ws_id: str, db: aiosqlite.Connection = Depends(get_d
 class AnalyzeRequest(BaseModel):
     plan: AnalysisPlan | None = None
     scope_preview: ScopePreview | None = None
+    # Coverage gap test-design (coverage-test-design-v1).  When enabled, the
+    # workspace's latest analyzed coverage (or the explicitly listed analyses)
+    # is folded into the test_design report and the report_qa evidence surface.
+    include_coverage_gaps: bool = True
+    coverage_analysis_ids: list[str] | None = None
 
 
 @router.get("/{ws_id}/analysis/default-plan", response_model=AnalysisPlan)
@@ -443,6 +452,8 @@ async def analyze_workspace(
             plan=plan,
             scope_preview=scope_preview,
             task_id=task_id,
+            include_coverage_gaps=body.include_coverage_gaps if body else True,
+            coverage_analysis_ids=body.coverage_analysis_ids if body else None,
         )
     )
     return {

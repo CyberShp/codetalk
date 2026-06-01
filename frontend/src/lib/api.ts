@@ -352,7 +352,12 @@ export const api = {
 
     analyze: (
       id: string,
-      body?: { plan?: AnalysisPlan; scope_preview?: ScopePreview | null },
+      body?: {
+        plan?: AnalysisPlan;
+        scope_preview?: ScopePreview | null;
+        include_coverage_gaps?: boolean;
+        coverage_analysis_ids?: string[] | null;
+      },
     ) =>
       request<{
         status: string;

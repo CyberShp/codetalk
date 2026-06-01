@@ -382,11 +382,72 @@ export interface CoverageDetail extends CoverageAnalysis {
   analysis_results_json: string | null;
 }
 
+/* coverage-test-design-v1 enrichment */
+
+export interface CoverageTriggerBranch {
+  condition: string;
+  source?: string; // "self" | "caller"
+  file?: string | null;
+  line?: string;
+  line_number?: number | null;
+  category?: string;
+  is_error_path?: boolean;
+}
+
+export interface CoverageEntryPath {
+  entry_kind: string; // cli | api | message | config | file
+  entry_symbol?: string | null;
+  entry_file?: string | null;
+  chain?: string[];
+  depth?: number;
+  call_line?: number | null;
+  evidence?: string | null;
+  tool?: string;
+}
+
+export interface CoverageBlackBoxCase {
+  title: string;
+  entry_kind?: string;
+  preconditions?: string;
+  inputs?: string;
+  steps?: string[];
+  expected?: string;
+  observable_signals?: string[];
+  evidence?: string | null;
+}
+
+export interface CoverageGrayBox {
+  required?: boolean;
+  technique?: string;
+  scheme?: string;
+  injection_points?: string[];
+  stub_or_fault?: string;
+  observable_signals?: string[];
+}
+
+export interface CoverageSourceWindow {
+  available?: boolean;
+  path?: string;
+  definition_line?: number;
+  start?: number;
+  end?: number;
+  tool?: string;
+}
+
+export interface CoverageToolStatus {
+  joern?: string;
+  cgc?: string;
+  gitnexus?: string;
+  ripgrep?: string;
+  source?: string;
+}
+
 export interface CoverageModuleResult {
   module_path: string;
   line_rate: number;
   branch_rate: number;
   function_rate: number;
+  kind?: "function" | "branch";
   function_name?: string;
   file_path?: string;
   line_start?: number | null;
@@ -404,4 +465,16 @@ export interface CoverageModuleResult {
   error?: string;
   uncovered_function_count?: number;
   uncovered_branch_count?: number;
+  // coverage-test-design-v1 fields
+  source_window?: CoverageSourceWindow | null;
+  trigger_branches?: CoverageTriggerBranch[];
+  entry_paths?: CoverageEntryPath[];
+  black_box_cases?: CoverageBlackBoxCase[];
+  gray_box?: CoverageGrayBox | null;
+  gray_box_required?: boolean;
+  evidence_gaps?: string[];
+  tool_status?: CoverageToolStatus;
+  // branch-gap fields
+  branch?: string;
+  condition?: string;
 }

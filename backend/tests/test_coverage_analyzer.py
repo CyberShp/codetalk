@@ -389,3 +389,157 @@ recover_session,src/service.c:40-55,false,0
         assert rec["confidence"] == "high"
         assert rec["evidence"]["gitnexus_scope"]["gitnexus_available"] is True
         assert rec["evidence"]["cgc"]["callers"][0]["name"] == "handle_session"
+
+
+class TestCoverageTestDesign:
+    """coverage-test-design-v1 entry-oriented tracing engine."""
+
+    @staticmethod
+    def _make_repo(tmp_path):
+        src = tmp_path / "src"
+        src.mkdir()
+        # External API entry that reaches recover_session inside an error branch.
+        (src / "api.c").write_text(
+            "int api_handle_request(request_t *req) {\n"
+            "    int rc = do_work(req);\n"
+            "    if (rc < 0) {\n"
+            "        recover_session(req->session);\n"
+            "        return -1;\n"
+            "    }\n"
+            "    return 0;\n"
+            "}\n",
+            encoding="utf-8",
+        )
+        (src / "session.c").write_text(
+            "void recover_session(session_t *s) {\n"
+            "    if (s == NULL) {\n"
+            "        return;\n"
+            "    }\n"
+            "    cleanup(s);\n"
+            "}\n",
+            encoding="utf-8",
+        )
+        return src
+
+    @staticmethod
+    def _modules(csv_text):
+        from app.adapters.coverage import parse_internal_function_hits
+        return parse_internal_function_hits(csv_text).modules
+
+    async def test_traces_external_entry_and_builds_black_box(self, tmp_path):
+        from app.services.coverage_analyzer import build_coverage_test_design
+
+        self._make_repo(tmp_path)
+        modules = self._modules(
+            "feature,module,code_location,function,triggered,hit_count\n"
+            "rec,session,src/session.c:1-6,recover_session,false,0\n"
+        )
+        design = await build_coverage_test_design(
+            modules, workspace_id="ws-1", repo_path=str(tmp_path)
+        )
+        assert design["version"] == "coverage-test-design-v1"
+        assert design["summary"]["workspace_bound"] is True
+
+        fn_gaps = [g for g in design["gaps"] if g.get("kind") == "function"]
+        assert len(fn_gaps) == 1
+        gap = fn_gaps[0]
+        assert gap["function_name"] == "recover_session"
+        assert gap["source_window"]["available"] is True
+        # Entry-oriented trace finds the API entry → black-box ready, not gray.
+        assert gap["gray_box_required"] is False
+        kinds = {e["entry_kind"] for e in gap["entry_paths"]}
+        assert "api" in kinds
+        assert any("api_handle_request" in (e.get("chain") or []) for e in gap["entry_paths"])
+        # Trigger conditions include the caller guard and the self guard.
+        conditions = {b["condition"] for b in gap["trigger_branches"]}
+        assert any("rc < 0" in c for c in conditions)
+        assert any("s == NULL" in c for c in conditions)
+        assert gap["black_box_cases"]
+        assert design["summary"]["black_box_ready_count"] == 1
+
+    async def test_gray_box_when_no_external_entry(self, tmp_path):
+        from app.services.coverage_analyzer import build_coverage_test_design
+
+        # internal_helper has no caller anywhere in the repo → no entry path.
+        src = tmp_path / "src"
+        src.mkdir()
+        (src / "util.c").write_text(
+            "void internal_helper(ctx_t *c) {\n"
+            "    if (c->flag) {\n"
+            "        free(c->buf);\n"
+            "    }\n"
+            "}\n",
+            encoding="utf-8",
+        )
+        modules = self._modules(
+            "feature,module,code_location,function,triggered,hit_count\n"
+            "h,util,src/util.c:1-5,internal_helper,false,0\n"
+        )
+        design = await build_coverage_test_design(
+            modules, workspace_id="ws-1", repo_path=str(tmp_path)
+        )
+        gap = [g for g in design["gaps"] if g.get("kind") == "function"][0]
+        assert gap["entry_paths"] == []
+        assert gap["gray_box_required"] is True
+        assert gap["gray_box"]["required"] is True
+        assert gap["gray_box"]["scheme"]
+        assert any("入口" in g for g in gap["evidence_gaps"])
+        assert design["summary"]["gray_box_required_count"] == 1
+
+    async def test_unbound_workspace_does_not_fabricate_paths(self, tmp_path):
+        from app.services.coverage_analyzer import build_coverage_test_design
+
+        self._make_repo(tmp_path)  # repo exists, but we pass no workspace binding
+        modules = self._modules(
+            "feature,module,code_location,function,triggered,hit_count\n"
+            "rec,session,src/session.c:1-6,recover_session,false,0\n"
+        )
+        design = await build_coverage_test_design(
+            modules, workspace_id=None, repo_path=None
+        )
+        assert design["summary"]["workspace_bound"] is False
+        gap = [g for g in design["gaps"] if g.get("kind") == "function"][0]
+        assert gap["entry_paths"] == []
+        assert gap["trigger_branches"] == []
+        assert gap["source_window"] is None
+        assert any("未绑定工作区" in w for w in design["warnings"])
+
+    async def test_tool_unavailable_markers_when_ripgrep_missing(self, tmp_path, monkeypatch):
+        import app.services.coverage_analyzer as mod
+        from app.services.coverage_analyzer import build_coverage_test_design
+
+        self._make_repo(tmp_path)
+        monkeypatch.setattr(mod.shutil, "which", lambda _name: None)  # rg unavailable
+        modules = self._modules(
+            "feature,module,code_location,function,triggered,hit_count\n"
+            "rec,session,src/session.c:1-6,recover_session,false,0\n"
+        )
+        design = await build_coverage_test_design(
+            modules, workspace_id="ws-1", repo_path=str(tmp_path)
+        )
+        ts = design["summary"]["tool_status"]
+        assert ts["ripgrep"] == "unavailable"
+        assert ts["joern"].startswith("unavailable")
+        # Source window still works (filesystem read), but no caller trace.
+        gap = [g for g in design["gaps"] if g.get("kind") == "function"][0]
+        assert gap["entry_paths"] == []
+        assert gap["gray_box_required"] is True
+
+    async def test_branch_gaps_designed_from_conditions(self, tmp_path):
+        from app.adapters.coverage import ModuleCoverage
+        from app.services.coverage_analyzer import build_coverage_test_design
+
+        module = ModuleCoverage(
+            module_path="app/calc",
+            line_rate=0.5,
+            branch_rate=0.4,
+            function_rate=1.0,
+            uncovered_branches=["app/calc.py:L15 if (value < 0)"],
+        )
+        design = await build_coverage_test_design(
+            [module], workspace_id="ws-1", repo_path=str(tmp_path)
+        )
+        branch_gaps = [g for g in design["gaps"] if g.get("kind") == "branch"]
+        assert len(branch_gaps) == 1
+        assert branch_gaps[0]["black_box_cases"]
+        assert design["summary"]["uncovered_branch_count"] == 1

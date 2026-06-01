@@ -975,3 +975,34 @@ class TestChatStream:
         assert resp.status_code == 200
         body = resp.content.decode("utf-8")
         assert "Some text" in body
+
+
+class TestAnalyzeCoverageGapFlags:
+    """AnalyzeRequest forwards the coverage gap test-design selection."""
+
+    async def test_forwards_explicit_coverage_flags(self, client_v2, sqlite_db):
+        from app.api import workspaces as wsmod
+
+        ws_id = await _seed_ws(sqlite_db, "ws-cov-flags", indexed=1)
+        with patch.object(wsmod, "_run_workspace_analysis", new=AsyncMock()) as m:
+            resp = await client_v2.post(
+                f"/api/workspaces/{ws_id}/analyze",
+                json={
+                    "include_coverage_gaps": False,
+                    "coverage_analysis_ids": ["cov-1", "cov-2"],
+                },
+            )
+        assert resp.status_code == 202
+        m.assert_called_once()
+        assert m.call_args.kwargs["include_coverage_gaps"] is False
+        assert m.call_args.kwargs["coverage_analysis_ids"] == ["cov-1", "cov-2"]
+
+    async def test_defaults_enable_coverage_gaps(self, client_v2, sqlite_db):
+        from app.api import workspaces as wsmod
+
+        ws_id = await _seed_ws(sqlite_db, "ws-cov-default", indexed=1)
+        with patch.object(wsmod, "_run_workspace_analysis", new=AsyncMock()) as m:
+            resp = await client_v2.post(f"/api/workspaces/{ws_id}/analyze")
+        assert resp.status_code == 202
+        assert m.call_args.kwargs["include_coverage_gaps"] is True
+        assert m.call_args.kwargs["coverage_analysis_ids"] is None

@@ -44,6 +44,8 @@ class WorkspacePipeline:
         plan: AnalysisPlan | None = None,
         scope_preview: ScopePreview | None = None,
         task_id: str | None = None,
+        include_coverage_gaps: bool = True,
+        coverage_analysis_ids: list[str] | None = None,
     ) -> None:
         task_id = task_id or str(uuid.uuid4())
         now = datetime.now(timezone.utc).isoformat()
@@ -154,7 +156,142 @@ class WorkspacePipeline:
         from app.services.analysis_pipeline import AnalysisPipeline
 
         await AnalysisPipeline().run(task_id)
+        if include_coverage_gaps:
+            await self._apply_coverage_test_design(
+                ws_id, repo_path, task_id, coverage_analysis_ids
+            )
         await self._harvest_reports(ws_id, task_id)
+
+    async def _apply_coverage_test_design(
+        self,
+        ws_id: str,
+        repo_path: str,
+        task_id: str,
+        coverage_analysis_ids: list[str] | None,
+    ) -> None:
+        """Fold the workspace's analyzed coverage into a coverage-test-design-v1
+        artifact and the deterministic test_design report section.
+
+        Best-effort: a failure here must never fail the whole analysis run.
+        """
+        try:
+            from app.services.coverage_analyzer import (
+                build_coverage_test_design,
+                _dict_to_module,
+            )
+            from app.services.analysis_artifacts import write_coverage_test_design
+            from app.services.report_generator import build_coverage_test_design_section
+
+            modules_json = await self._resolve_coverage_modules_json(
+                ws_id, coverage_analysis_ids
+            )
+            if not modules_json:
+                return
+
+            modules = [_dict_to_module(d) for d in json.loads(modules_json)]
+            if not modules:
+                return
+
+            design = await build_coverage_test_design(
+                modules, workspace_id=ws_id, repo_path=repo_path
+            )
+            if not design.get("gaps"):
+                return
+
+            output_dir = settings.outputs_path / task_id
+            await write_coverage_test_design(output_dir, design)
+
+            section = build_coverage_test_design_section(design)
+            if section:
+                await asyncio.to_thread(
+                    self._append_test_design_section, output_dir, section
+                )
+            logger.info(
+                "Workspace %s: coverage test design written (%d gaps)",
+                ws_id, len(design.get("gaps") or []),
+            )
+        except Exception as exc:
+            logger.warning(
+                "Coverage test design skipped for ws=%s: %s", ws_id, exc
+            )
+
+    async def _resolve_coverage_modules_json(
+        self,
+        ws_id: str,
+        coverage_analysis_ids: list[str] | None,
+    ) -> str | None:
+        """Return the modules_json of the selected coverage analysis.
+
+        Explicit ids win; otherwise the workspace's most-recently analyzed
+        coverage is used (per the product decision to auto-include the latest).
+        """
+        async with aiosqlite.connect(settings.sqlite_db) as db:
+            db.row_factory = aiosqlite.Row
+            if coverage_analysis_ids:
+                placeholders = ",".join("?" for _ in coverage_analysis_ids)
+                async with db.execute(
+                    f"SELECT modules_json FROM coverage_analyses "
+                    f"WHERE id IN ({placeholders}) AND workspace_id = ? "
+                    f"ORDER BY updated_at DESC LIMIT 1",
+                    (*coverage_analysis_ids, ws_id),
+                ) as cur:
+                    row = await cur.fetchone()
+            else:
+                async with db.execute(
+                    "SELECT modules_json FROM coverage_analyses "
+                    "WHERE workspace_id = ? AND status = 'analyzed' "
+                    "ORDER BY updated_at DESC LIMIT 1",
+                    (ws_id,),
+                ) as cur:
+                    row = await cur.fetchone()
+        return row["modules_json"] if row and row["modules_json"] else None
+
+    @staticmethod
+    def _append_test_design_section(output_dir: Path, section: str) -> None:
+        """Append (or create) the test_design report with the coverage section."""
+        target = WorkspacePipeline._resolve_test_design_path(output_dir)
+        block = "\n\n" + section.rstrip() + "\n"
+        if target.exists():
+            existing = target.read_text(encoding="utf-8", errors="replace")
+            target.write_text(existing.rstrip() + block, encoding="utf-8")
+            return
+        # The test_design report was not generated; create a standalone file so
+        # the matrix is still surfaced and harvested.
+        from datetime import datetime, timezone
+
+        header = (
+            "---\n"
+            "report_type: test_design\n"
+            "template_id: test_design\n"
+            f"generated_at: {datetime.now(timezone.utc).isoformat()}\n"
+            "---\n\n# 测试设计输入\n"
+        )
+        output_dir.mkdir(parents=True, exist_ok=True)
+        target.write_text(header + block, encoding="utf-8")
+
+    @staticmethod
+    def _resolve_test_design_path(output_dir: Path) -> Path:
+        """Find the test_design report file written by the generator.
+
+        Prefers the run manifest's filename, then known candidate filenames,
+        and finally falls back to the schema map name (used when creating one).
+        """
+        manifest_path = output_dir / "report_manifest.json"
+        if manifest_path.exists():
+            try:
+                manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+                for entry in manifest.get("reports", []) or []:
+                    rtype = entry.get("report_type") or entry.get("template_id")
+                    filename = entry.get("filename")
+                    if rtype == "test_design" and filename:
+                        return output_dir / filename
+            except Exception:
+                pass
+        candidates = ["15-测试视角代码理解.md", REPORT_FILE_MAP.get("test_design", "")]
+        for name in candidates:
+            if name and (output_dir / name).exists():
+                return output_dir / name
+        return output_dir / (REPORT_FILE_MAP.get("test_design") or "04-测试设计输入.md")
 
     async def _harvest_reports(self, ws_id: str, task_id: str) -> None:
         output_dir = settings.outputs_path / task_id

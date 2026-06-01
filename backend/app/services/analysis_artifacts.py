@@ -20,6 +20,11 @@ ARTIFACT_FILENAMES = {
     "branch_deep_dive": "branch_deep_dive.json",
 }
 
+# The coverage gap test-design artifact is produced separately (from uploaded
+# coverage data + source tracing, not from evidence cards), so it is loaded
+# alongside the bundle but is not part of build_analysis_artifact_bundle().
+COVERAGE_TEST_DESIGN_FILENAME = "coverage_test_design.json"
+
 _KEYWORDS = {
     "if",
     "for",
@@ -302,11 +307,27 @@ async def write_analysis_artifacts(
     return written
 
 
+async def write_coverage_test_design(output_dir: Path, design: dict) -> Path:
+    """Persist a coverage-test-design-v1 structure as a report artifact."""
+
+    output_dir.mkdir(parents=True, exist_ok=True)
+    path = output_dir / COVERAGE_TEST_DESIGN_FILENAME
+    payload = json.dumps(design, ensure_ascii=False, indent=2)
+    await asyncio.to_thread(path.write_text, payload, "utf-8")
+    return path
+
+
 def load_analysis_artifact_bundle(output_dir: Path) -> dict[str, dict]:
-    """Load available artifact JSON files from an output directory."""
+    """Load available artifact JSON files from an output directory.
+
+    Includes the coverage gap test-design artifact (``coverage_test_design``)
+    when present, so report follow-up (report_qa) can answer "how do I test /
+    trigger this uncovered function, and where is the evidence?".
+    """
 
     bundle: dict[str, dict] = {}
-    for key, filename in ARTIFACT_FILENAMES.items():
+    filenames = {**ARTIFACT_FILENAMES, "coverage_test_design": COVERAGE_TEST_DESIGN_FILENAME}
+    for key, filename in filenames.items():
         path = output_dir / filename
         if not path.exists():
             continue
@@ -390,6 +411,86 @@ def format_artifacts_for_report_qa(
                 )
             )
 
+    coverage_design = bundle.get("coverage_test_design") or {}
+    coverage_block = format_coverage_test_design_for_qa(
+        coverage_design, query, max_gaps=max_functions
+    )
+    if coverage_block:
+        lines.extend(["", coverage_block])
+
+    return "\n".join(lines).strip()
+
+
+def format_coverage_test_design_for_qa(
+    design: dict,
+    query: str | None = None,
+    *,
+    max_gaps: int = 8,
+) -> str:
+    """Render the coverage gap test-design artifact for report_qa prompts.
+
+    Answers, per uncovered function: how to trigger it (entry path / branch),
+    how to test it (black-box / gray-box), and where the evidence is.
+    """
+    if not design or not design.get("gaps"):
+        return ""
+    query_terms = _query_terms(query)
+    summary = design.get("summary") or {}
+    lines = [
+        "### Coverage Gap Test Design",
+        "- summary: functions={fns}; branches={brs}; black_box_ready={bb}; "
+        "gray_box_required={gb}; workspace_bound={wb}".format(
+            fns=summary.get("uncovered_function_count", 0),
+            brs=summary.get("uncovered_branch_count", 0),
+            bb=summary.get("black_box_ready_count", 0),
+            gb=summary.get("gray_box_required_count", 0),
+            wb=summary.get("workspace_bound", False),
+        ),
+    ]
+    tool_status = summary.get("tool_status") or {}
+    if tool_status:
+        lines.append("- tool_status: " + ", ".join(
+            f"{k}={v}" for k, v in tool_status.items()
+        ))
+
+    function_gaps = [g for g in design.get("gaps") or [] if g.get("kind") == "function"]
+    for gap in _rank_items(function_gaps, query_terms)[:max_gaps]:
+        entries = "; ".join(
+            f"[{e.get('entry_kind')}] {' -> '.join(e.get('chain') or [])}"
+            for e in (gap.get("entry_paths") or [])[:3]
+        ) or ("gray_box_required" if gap.get("gray_box_required") else "none")
+        triggers = "; ".join(
+            f"[{b.get('source')}] {_one_line(b.get('condition'))}"
+            for b in (gap.get("trigger_branches") or [])[:3]
+        ) or "none"
+        cases = "; ".join(
+            _one_line(c.get("title")) for c in (gap.get("black_box_cases") or [])[:2]
+        ) or "none"
+        gray = gap.get("gray_box") or {}
+        lines.append(
+            "- {file}::{fn}; risk={risk}; confidence={conf}; entries={entries}; "
+            "triggers={triggers}; black_box={cases}; gray_box={gray}; "
+            "evidence={evi}; evidence_gaps={gaps}".format(
+                file=gap.get("file_path") or "(unknown_file)",
+                fn=gap.get("function_name") or "(unknown_function)",
+                risk=gap.get("risk_level") or "unknown",
+                conf=gap.get("confidence") or "unknown",
+                entries=entries,
+                triggers=triggers,
+                cases=cases,
+                gray=(_one_line(gray.get("scheme")) if gap.get("gray_box_required") else "not_required"),
+                evi="{f}:{l} hit_count={h}".format(
+                    f=gap.get("file_path") or "?",
+                    l=gap.get("line_start") or "?",
+                    h=gap.get("hit_count"),
+                ),
+                gaps=_join_limited(gap.get("evidence_gaps")),
+            )
+        )
+
+    warnings = design.get("warnings") or []
+    if warnings:
+        lines.append("- warnings: " + _join_limited(warnings, limit=4))
     return "\n".join(lines).strip()
 
 

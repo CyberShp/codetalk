@@ -2286,6 +2286,179 @@ _COVERAGE_BY_MODE: dict[str, tuple[str, str, str]] = {
 }
 
 
+def _ctd_cell(value: object) -> str:
+    """Sanitize a value for a Markdown table cell."""
+    text = " ".join(str(value if value is not None else "").split())
+    return text.replace("|", "\\|") or "-"
+
+
+def build_coverage_test_design_section(design: dict | None) -> str:
+    """Render the deterministic 覆盖率缺口驱动测试设计 section for test_design reports.
+
+    Built straight from the ``coverage-test-design-v1`` artifact (no LLM pass):
+    a coverage-gap test-design matrix for uncovered functions, per-function
+    trigger/entry/black-box/gray-box detail, an uncovered-branch table, and the
+    tool-availability / evidence-gap warnings.
+    """
+    if not design or not isinstance(design, dict):
+        return ""
+    gaps = design.get("gaps") or []
+    function_gaps = [g for g in gaps if g.get("kind") == "function"]
+    branch_gaps = [g for g in gaps if g.get("kind") == "branch"]
+    if not function_gaps and not branch_gaps:
+        return ""
+
+    summary = design.get("summary") or {}
+    tool_status = summary.get("tool_status") or {}
+    lines: list[str] = ["## 覆盖率缺口驱动测试设计"]
+    lines.append(
+        "> 本节由覆盖率缺口确定性生成（未经 LLM 改写）。未覆盖分支直接依据分支条件设计；"
+        "未覆盖函数经入口导向分层追踪（≤4 跳）反推外部触发入口，"
+        "找不到外部入口时给出灰盒注入方案并标注 `灰盒必需`。"
+    )
+    if not summary.get("workspace_bound", False):
+        lines.append(
+            "> ⚠️ 覆盖率未绑定工作区/仓库：仅解析覆盖率，未生成源码级触发路径。请绑定工作区后重新分析。"
+        )
+    lines.append("")
+    lines.append(
+        "- 覆盖率缺口概况：未覆盖函数 {fns} 个，未覆盖分支 {brs} 个，"
+        "可黑盒触达 {bb} 个，需灰盒 {gb} 个，高风险 {hr} 个。".format(
+            fns=summary.get("uncovered_function_count", len(function_gaps)),
+            brs=summary.get("uncovered_branch_count", len(branch_gaps)),
+            bb=summary.get("black_box_ready_count", 0),
+            gb=summary.get("gray_box_required_count", 0),
+            hr=summary.get("high_risk_count", 0),
+        )
+    )
+    if tool_status:
+        lines.append(
+            "- 工具状态（降级会影响精度）：" + "，".join(
+                f"{k}={v}" for k, v in tool_status.items()
+            )
+        )
+
+    if function_gaps:
+        lines.extend([
+            "",
+            "### 覆盖率缺口测试设计矩阵",
+            "",
+            "| 未覆盖函数 | 文件 | 风险 | 触发条件/分支 | 外部入口 | 黑盒用例 | 灰盒方案 | 证据 | 待验证 |",
+            "| --- | --- | --- | --- | --- | --- | --- | --- | --- |",
+        ])
+        for gap in function_gaps[:60]:
+            triggers = "；".join(
+                f"[{b.get('source')}] {b.get('condition')}"
+                for b in (gap.get("trigger_branches") or [])[:3]
+            )
+            entries = "；".join(
+                f"[{e.get('entry_kind')}] {' → '.join(e.get('chain') or [])}"
+                for e in (gap.get("entry_paths") or [])[:2]
+            )
+            if not entries:
+                entries = "（4 跳内未找到，灰盒必需）" if gap.get("gray_box_required") else "-"
+            cases = "；".join(
+                c.get("title") for c in (gap.get("black_box_cases") or [])[:2]
+            )
+            gray = gap.get("gray_box") or {}
+            gray_text = gray.get("scheme") if gap.get("gray_box_required") else "（非必需）"
+            evidence = "{f}:{l} hit_count={h}".format(
+                f=gap.get("file_path") or "?",
+                l=gap.get("line_start") or "?",
+                h=gap.get("hit_count"),
+            )
+            lines.append(
+                "| {fn} | {file} | {risk} | {trig} | {entry} | {cases} | {gray} | {evi} | {gaps} |".format(
+                    fn=_ctd_cell(gap.get("function_name")),
+                    file=_ctd_cell(gap.get("file_path")),
+                    risk=_ctd_cell(gap.get("risk_level")),
+                    trig=_ctd_cell(triggers),
+                    entry=_ctd_cell(entries),
+                    cases=_ctd_cell(cases),
+                    gray=_ctd_cell(gray_text),
+                    evi=_ctd_cell(evidence),
+                    gaps=_ctd_cell("；".join(gap.get("evidence_gaps") or [])),
+                )
+            )
+
+        # Per-function detail for the top gaps (depth over breadth).
+        lines.extend(["", "### 未覆盖函数触发与测试详情"])
+        for gap in function_gaps[:12]:
+            lines.append(f"\n#### `{gap.get('function_name')}` （{gap.get('file_path')}）")
+            lines.append(
+                f"- 风险等级：{gap.get('risk_level')}；置信度：{gap.get('confidence')}；"
+                f"覆盖次数：{gap.get('hit_count')}"
+            )
+            sw = gap.get("source_window") or {}
+            if sw.get("available"):
+                lines.append(
+                    f"- 源码证据：{sw.get('path')}:{sw.get('start')}-{sw.get('end')}"
+                    f"（定义行 {sw.get('definition_line')}）"
+                )
+            triggers = gap.get("trigger_branches") or []
+            if triggers:
+                lines.append("- 触发条件/分支：")
+                for b in triggers[:6]:
+                    loc = f"（{b.get('file')}:{b.get('line_number')}）" if b.get("file") else ""
+                    lines.append(f"  - [{b.get('source')}] `{b.get('condition')}`{loc}")
+            entries = gap.get("entry_paths") or []
+            if entries:
+                lines.append("- 外部入口路径：")
+                for e in entries[:4]:
+                    lines.append(
+                        f"  - [{e.get('entry_kind')}] {' → '.join(e.get('chain') or [])}"
+                        f"（{e.get('evidence')}）"
+                    )
+            else:
+                gray = gap.get("gray_box") or {}
+                lines.append(f"- 灰盒方案（{gray.get('technique')}）：{gray.get('scheme')}")
+                if gray.get("injection_points"):
+                    lines.append("  - 注入点：" + "；".join(gray.get("injection_points")[:6]))
+            cases = gap.get("black_box_cases") or []
+            if cases:
+                lines.append("- 测试用例：")
+                for c in cases[:4]:
+                    lines.append(f"  - **{c.get('title')}**")
+                    lines.append(f"    - 前置：{c.get('preconditions')}")
+                    lines.append(f"    - 输入：{c.get('inputs')}")
+                    if c.get("steps"):
+                        lines.append("    - 步骤：" + " → ".join(c.get("steps")))
+                    lines.append(f"    - 预期：{c.get('expected')}")
+                    signals = c.get("observable_signals") or []
+                    if signals:
+                        lines.append("    - 可观测信号：" + "、".join(str(s) for s in signals))
+            if gap.get("evidence_gaps"):
+                lines.append("- 待验证/证据缺口：" + "；".join(gap.get("evidence_gaps")))
+
+    if branch_gaps:
+        lines.extend([
+            "",
+            "### 未覆盖分支测试设计",
+            "",
+            "| 模块 | 分支条件 | 风险 | 黑盒用例 | 待验证 |",
+            "| --- | --- | --- | --- | --- |",
+        ])
+        for gap in branch_gaps[:60]:
+            case0 = (gap.get("black_box_cases") or [{}])[0]
+            lines.append(
+                "| {mod} | {cond} | {risk} | {case} | {gaps} |".format(
+                    mod=_ctd_cell(gap.get("module_path")),
+                    cond=_ctd_cell(gap.get("condition")),
+                    risk=_ctd_cell(gap.get("risk_level")),
+                    case=_ctd_cell(case0.get("title")),
+                    gaps=_ctd_cell("；".join(gap.get("evidence_gaps") or [])),
+                )
+            )
+
+    warnings = design.get("warnings") or []
+    if warnings:
+        lines.extend(["", "### 工具可用性与证据缺口"])
+        for w in warnings[:8]:
+            lines.append(f"- {w}")
+
+    return "\n".join(lines).strip() + "\n"
+
+
 def build_index_coverage_section(common_context: dict) -> str:
     """Build a deterministic runtime coverage table."""
     info = common_context.get("index_coverage") or {}

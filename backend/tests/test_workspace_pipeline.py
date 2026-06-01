@@ -457,3 +457,103 @@ class TestPipelineRun:
 
         assert len(tasks) == 1
         assert tasks[0]["workspace_id"] == ws_id
+
+
+class TestApplyCoverageTestDesign:
+    """WorkspacePipeline folds analyzed coverage into the test_design report."""
+
+    @staticmethod
+    def _make_repo(tmp_path):
+        repo = tmp_path / "repo"
+        (repo / "src").mkdir(parents=True)
+        (repo / "src" / "api.c").write_text(
+            "int api_handle_request(req_t *r) {\n"
+            "    if (do_work(r) < 0) {\n"
+            "        recover_session(r->s);\n"
+            "    }\n"
+            "}\n",
+            encoding="utf-8",
+        )
+        (repo / "src" / "session.c").write_text(
+            "void recover_session(s_t *s) {\n"
+            "    if (s == NULL) { return; }\n"
+            "    cleanup(s);\n"
+            "}\n",
+            encoding="utf-8",
+        )
+        return repo
+
+    async def _seed(self, sqlite_db, ws_id, cov_id, repo):
+        from app.adapters.coverage import parse_internal_function_hits
+        from app.services.coverage_analyzer import _module_to_dict
+
+        report = parse_internal_function_hits(
+            "feature,module,code_location,function,triggered,hit_count\n"
+            "rec,session,src/session.c:1-4,recover_session,false,0\n"
+        )
+        modules_json = json.dumps(
+            [_module_to_dict(m) for m in report.modules], ensure_ascii=False
+        )
+        async with aiosqlite.connect(sqlite_db) as db:
+            await db.execute(
+                "INSERT INTO workspaces (id, name, repo_path, indexed) VALUES (?,?,?,1)",
+                (ws_id, "WS", str(repo)),
+            )
+            await db.execute(
+                "INSERT INTO coverage_analyses "
+                "(id, name, status, workspace_id, repo_path, modules_json, source_format) "
+                "VALUES (?,?,?,?,?,?,?)",
+                (cov_id, "cov", "analyzed", ws_id, str(repo), modules_json,
+                 "internal_function_hits"),
+            )
+            await db.commit()
+
+    async def test_writes_artifact_and_appends_report_section(self, sqlite_db, tmp_path):
+        from app.config import settings
+
+        ws_id, cov_id, task_id = "ws-ctd", "cov-ctd", str(uuid.uuid4())
+        repo = self._make_repo(tmp_path)
+        await self._seed(sqlite_db, ws_id, cov_id, repo)
+
+        output_dir = settings.outputs_path / task_id
+        output_dir.mkdir(parents=True, exist_ok=True)
+        (output_dir / "report_manifest.json").write_text(
+            json.dumps({"reports": [{"report_type": "test_design",
+                                     "filename": "15-测试视角代码理解.md",
+                                     "status": "completed"}]}),
+            encoding="utf-8",
+        )
+        report_file = output_dir / "15-测试视角代码理解.md"
+        report_file.write_text("# 测试视角代码理解\n\n（LLM 内容）\n", encoding="utf-8")
+
+        await WorkspacePipeline()._apply_coverage_test_design(
+            ws_id, str(repo), task_id, None
+        )
+
+        artifact = output_dir / "coverage_test_design.json"
+        assert artifact.exists()
+        design = json.loads(artifact.read_text(encoding="utf-8"))
+        assert design["version"] == "coverage-test-design-v1"
+        assert design["summary"]["uncovered_function_count"] == 1
+
+        report_md = report_file.read_text(encoding="utf-8")
+        assert "覆盖率缺口测试设计矩阵" in report_md
+        assert "recover_session" in report_md
+        assert "api_handle_request" in report_md  # external entry traced
+
+    async def test_no_coverage_is_noop(self, sqlite_db, tmp_path):
+        from app.config import settings
+
+        ws_id, task_id = "ws-nocov", str(uuid.uuid4())
+        repo = self._make_repo(tmp_path)
+        async with aiosqlite.connect(sqlite_db) as db:
+            await db.execute(
+                "INSERT INTO workspaces (id, name, repo_path, indexed) VALUES (?,?,?,1)",
+                (ws_id, "WS", str(repo)),
+            )
+            await db.commit()
+
+        await WorkspacePipeline()._apply_coverage_test_design(
+            ws_id, str(repo), task_id, None
+        )
+        assert not (settings.outputs_path / task_id / "coverage_test_design.json").exists()

@@ -1,10 +1,11 @@
 "use client";
 
 import React, { useCallback, useEffect, useMemo, useState } from "react";
-import { Loader2, X, Eye, Play } from "lucide-react";
+import { Loader2, X, Eye, Play, BarChart3 } from "lucide-react";
 import type {
   AnalysisObject,
   AnalysisPlan,
+  CoverageAnalysis,
   ScopePreview as ScopePreviewT,
 } from "@/lib/types";
 import { api } from "@/lib/api";
@@ -40,6 +41,11 @@ export default function AnalysisTaskModal({
   const [submitting, setSubmitting] = useState(false);
   const [submitError, setSubmitError] = useState<string | null>(null);
 
+  const [includeCoverageGaps, setIncludeCoverageGaps] = useState(true);
+  const [coverageAnalyses, setCoverageAnalyses] = useState<CoverageAnalysis[]>(
+    [],
+  );
+
   // Load the default plan whenever the modal opens.
   useEffect(() => {
     if (!open) return;
@@ -56,6 +62,25 @@ export default function AnalysisTaskModal({
       )
       .finally(() => setLoadingPlan(false));
   }, [open, wsId]);
+
+  // Surface the workspace's analyzed coverage so the user knows what will be
+  // auto-included as coverage gap test design.
+  useEffect(() => {
+    if (!open) return;
+    api.coverage
+      .list()
+      .then((list) =>
+        setCoverageAnalyses(list.filter((c) => c.workspace_id === wsId)),
+      )
+      .catch(() => setCoverageAnalyses([]));
+  }, [open, wsId]);
+
+  const latestAnalyzedCoverage = useMemo<CoverageAnalysis | null>(() => {
+    const analyzed = coverageAnalyses
+      .filter((c) => c.status === "analyzed")
+      .sort((a, b) => (a.updated_at < b.updated_at ? 1 : -1));
+    return analyzed[0] ?? null;
+  }, [coverageAnalyses]);
 
   const objects = plan?.analysis_objects ?? [];
 
@@ -128,6 +153,7 @@ export default function AnalysisTaskModal({
       const resp = await api.workspaces.analyze(wsId, {
         plan: effectivePlan,
         scope_preview: preview ?? undefined,
+        include_coverage_gaps: includeCoverageGaps,
       });
       onStarted({
         analysis_units: resp.analysis_units ?? null,
@@ -203,6 +229,43 @@ export default function AnalysisTaskModal({
                   className="w-full resize-y rounded-xl border border-outline-variant/30 bg-surface-container-low px-3 py-2 text-sm text-on-surface focus:outline-none focus:border-primary/60"
                 />
               </div>
+              {/* Coverage gap test design */}
+              <div className="rounded-xl border border-outline-variant/30 bg-surface-container-low p-3 space-y-2">
+                <label className="flex items-center gap-2 text-sm font-medium text-on-surface cursor-pointer">
+                  <input
+                    type="checkbox"
+                    checked={includeCoverageGaps}
+                    onChange={(e) => setIncludeCoverageGaps(e.target.checked)}
+                    className="accent-primary"
+                  />
+                  <BarChart3 size={14} /> 纳入覆盖率缺口测试设计
+                </label>
+                {includeCoverageGaps ? (
+                  latestAnalyzedCoverage ? (
+                    <p className="text-[11px] text-on-surface-variant/80">
+                      将自动纳入该工作区最新已分析覆盖率：
+                      <span className="text-on-surface">
+                        {latestAnalyzedCoverage.name}
+                      </span>
+                      （{latestAnalyzedCoverage.module_count} 模块 ·{" "}
+                      {new Date(
+                        latestAnalyzedCoverage.updated_at,
+                      ).toLocaleDateString("zh-CN")}
+                      ）。报告 test_design 将包含「覆盖率缺口驱动测试设计」矩阵。
+                    </p>
+                  ) : (
+                    <p className="text-[11px] text-amber-300/80">
+                      未发现该工作区已分析的覆盖率。请先到「覆盖率」页上传并绑定本工作区、点击
+                      AI 分析；之后启动分析时会自动纳入。
+                    </p>
+                  )
+                ) : (
+                  <p className="text-[11px] text-on-surface-variant/60">
+                    本次报告将不包含覆盖率缺口测试设计。
+                  </p>
+                )}
+              </div>
+
               <ScopePreviewPanel preview={preview} loading={previewLoading} />
               {previewError && (
                 <div className="rounded-md bg-error/10 border border-error/30 px-3 py-2 text-xs text-error">

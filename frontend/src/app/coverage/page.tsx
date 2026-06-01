@@ -12,6 +12,9 @@ import {
   AlertTriangle,
   CheckCircle2,
   BarChart3,
+  GitBranch,
+  FlaskConical,
+  LogIn,
 } from "lucide-react";
 import { api } from "@/lib/api";
 import type {
@@ -61,6 +64,199 @@ const STATUS_MAP: Record<string, { label: string; color: string }> = {
   analyzing: { label: "分析中", color: "text-amber-400" },
   analyzed: { label: "已分析", color: "text-green-400" },
 };
+
+const ENTRY_KIND_LABEL: Record<string, string> = {
+  cli: "CLI",
+  api: "API",
+  message: "消息",
+  config: "配置",
+  file: "文件",
+  unknown: "未知",
+};
+
+function entryKindLabel(kind: string): string {
+  return ENTRY_KIND_LABEL[kind] ?? kind;
+}
+
+/**
+ * Structured render of the coverage-test-design-v1 enrichment for one uncovered
+ * function: trigger conditions, external entry paths, black-box cases, gray-box
+ * scheme, and the evidence / pending-verification gaps.
+ */
+function GapDesignDetail({ mr }: { mr: CoverageModuleResult }) {
+  const triggers = mr.trigger_branches ?? [];
+  const entries = mr.entry_paths ?? [];
+  const cases = mr.black_box_cases ?? [];
+  const gaps = mr.evidence_gaps ?? [];
+  const sw = mr.source_window ?? null;
+  const grayRequired = mr.gray_box_required ?? false;
+
+  const hasDesign =
+    triggers.length > 0 ||
+    entries.length > 0 ||
+    cases.length > 0 ||
+    gaps.length > 0 ||
+    grayRequired;
+  if (!hasDesign) return null;
+
+  return (
+    <div className="mt-3 space-y-3">
+      {/* Status badges */}
+      <div className="flex flex-wrap items-center gap-2">
+        {grayRequired ? (
+          <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full bg-amber-500/15 text-amber-300 text-xs">
+            <FlaskConical size={12} /> 灰盒必需
+          </span>
+        ) : (
+          <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full bg-green-500/15 text-green-300 text-xs">
+            <LogIn size={12} /> 黑盒可触达
+          </span>
+        )}
+        {sw?.available && (
+          <span className="text-xs text-on-surface-variant/70">
+            源码 {sw.path}
+            {sw.start ? `:${sw.start}-${sw.end}` : ""}
+          </span>
+        )}
+      </div>
+
+      {/* Trigger conditions / branches */}
+      {triggers.length > 0 && (
+        <div>
+          <div className="text-xs font-medium text-on-surface mb-1 flex items-center gap-1">
+            <GitBranch size={12} /> 触发条件 / 分支
+          </div>
+          <ul className="space-y-1">
+            {triggers.map((b, i) => (
+              <li
+                key={`trig-${i}-${b.file ?? ""}-${b.line_number ?? ""}`}
+                className="text-xs text-on-surface-variant"
+              >
+                <span className="px-1.5 py-0.5 rounded bg-surface-container-high text-[10px] mr-1">
+                  {b.source === "caller" ? "调用点守卫" : "函数内"}
+                </span>
+                <code className="text-on-surface">{b.condition}</code>
+                {b.file && (
+                  <span className="opacity-60">
+                    {" "}
+                    · {b.file}
+                    {b.line_number ? `:${b.line_number}` : ""}
+                  </span>
+                )}
+              </li>
+            ))}
+          </ul>
+        </div>
+      )}
+
+      {/* External entry paths (entry-oriented tracing) */}
+      {entries.length > 0 ? (
+        <div>
+          <div className="text-xs font-medium text-on-surface mb-1">
+            外部入口路径（入口导向分层追踪）
+          </div>
+          <ul className="space-y-1">
+            {entries.map((e, i) => (
+              <li
+                key={`entry-${i}-${e.entry_symbol ?? ""}`}
+                className="text-xs text-on-surface-variant"
+              >
+                <span className="px-1.5 py-0.5 rounded bg-primary/15 text-primary text-[10px] mr-1">
+                  {entryKindLabel(e.entry_kind)}
+                </span>
+                <span className="font-mono text-on-surface">
+                  {(e.chain ?? []).join(" → ")}
+                </span>
+                {e.evidence && (
+                  <div className="opacity-60 mt-0.5 font-mono">{e.evidence}</div>
+                )}
+              </li>
+            ))}
+          </ul>
+        </div>
+      ) : grayRequired && mr.gray_box ? (
+        <div className="text-xs text-amber-300/90">
+          4 跳内未找到外部入口，建议灰盒方案：{mr.gray_box.scheme}
+          {mr.gray_box.injection_points && mr.gray_box.injection_points.length > 0 && (
+            <div className="opacity-70 mt-0.5">
+              注入点：{mr.gray_box.injection_points.join("；")}
+            </div>
+          )}
+        </div>
+      ) : null}
+
+      {/* Black-box / gray-box test cases */}
+      {cases.length > 0 && (
+        <div>
+          <div className="text-xs font-medium text-on-surface mb-1">测试用例</div>
+          <div className="space-y-2">
+            {cases.map((c, i) => (
+              <div
+                key={`case-${i}-${c.title}`}
+                className="rounded-lg bg-surface-container-high/60 p-2 space-y-0.5"
+              >
+                <div className="text-xs font-medium text-on-surface">
+                  {c.title}
+                </div>
+                {c.preconditions && (
+                  <div className="text-[11px] text-on-surface-variant">
+                    前置：{c.preconditions}
+                  </div>
+                )}
+                {c.inputs && (
+                  <div className="text-[11px] text-on-surface-variant">
+                    输入：{c.inputs}
+                  </div>
+                )}
+                {c.steps && c.steps.length > 0 && (
+                  <div className="text-[11px] text-on-surface-variant">
+                    步骤：{c.steps.join(" → ")}
+                  </div>
+                )}
+                {c.expected && (
+                  <div className="text-[11px] text-on-surface-variant">
+                    预期：{c.expected}
+                  </div>
+                )}
+                {c.observable_signals && c.observable_signals.length > 0 && (
+                  <div className="text-[11px] text-on-surface-variant/80">
+                    可观测：{c.observable_signals.join("、")}
+                  </div>
+                )}
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
+
+      {/* Evidence / pending-verification gaps */}
+      {gaps.length > 0 && (
+        <div>
+          <div className="text-xs font-medium text-on-surface mb-1 flex items-center gap-1">
+            <AlertTriangle size={12} className="text-amber-400" /> 待验证 / 证据缺口
+          </div>
+          <ul className="list-disc list-inside space-y-0.5">
+            {gaps.map((g) => (
+              <li key={g} className="text-[11px] text-on-surface-variant">
+                {g}
+              </li>
+            ))}
+          </ul>
+        </div>
+      )}
+
+      {/* Tool availability */}
+      {mr.tool_status && (
+        <div className="text-[10px] text-on-surface-variant/60">
+          工具：
+          {Object.entries(mr.tool_status)
+            .map(([k, v]) => `${k}=${v}`)
+            .join(" · ")}
+        </div>
+      )}
+    </div>
+  );
+}
 
 export default function CoveragePage() {
   const [analyses, setAnalyses] = useState<CoverageAnalysis[]>([]);
@@ -480,14 +676,28 @@ export default function CoveragePage() {
                                 <p className="text-sm text-error mt-2">
                                   {mr.error}
                                 </p>
-                              ) : mr.analysis ? (
-                                <div className="mt-3 prose prose-invert prose-sm max-w-none text-on-surface-variant leading-relaxed whitespace-pre-wrap">
-                                  {mr.analysis}
-                                </div>
                               ) : (
-                                <p className="text-sm text-on-surface-variant mt-2">
-                                  暂无分析结果
-                                </p>
+                                <>
+                                  <GapDesignDetail mr={mr} />
+                                  {mr.analysis ? (
+                                    <details className="mt-3 group">
+                                      <summary className="text-xs text-on-surface-variant/70 cursor-pointer hover:text-on-surface">
+                                        原始建议（Markdown）
+                                      </summary>
+                                      <div className="mt-2 prose prose-invert prose-sm max-w-none text-on-surface-variant leading-relaxed whitespace-pre-wrap">
+                                        {mr.analysis}
+                                      </div>
+                                    </details>
+                                  ) : null}
+                                  {!mr.analysis &&
+                                    !mr.trigger_branches?.length &&
+                                    !mr.entry_paths?.length &&
+                                    !mr.black_box_cases?.length && (
+                                      <p className="text-sm text-on-surface-variant mt-2">
+                                        暂无分析结果
+                                      </p>
+                                    )}
+                                </>
                               )}
                             </div>
                           )}
