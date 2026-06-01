@@ -33,6 +33,7 @@ from app.llm.base import (
 from app.llm.factory import create_llm_client_from_active
 from app.prompts.templates import MODULE_SUMMARY_PROMPT
 from app.schemas.workspace_analysis import AnalysisPlan, ScopePreview
+from app.services.analysis_artifacts import write_analysis_artifacts
 from app.services.evidence_card_builder import EvidenceCard, EvidenceCardBuilder
 from app.services.report_generator import ReportGenerator
 from app.services.workspace_scope_resolver import (
@@ -1182,6 +1183,7 @@ class AnalysisPipeline:
             scope.resolved_objects, plan, self._analysis_units
         )
         await self._write_analysis_unit_mapping(unit_mapping)
+        await self._write_analysis_artifacts(unit_mapping)
         await self._log_step(
             self._task_id, 55,
             f"🧩 已规划 {len(self._analysis_units)} 个分析单元（GitNexus 社区数与之无关）",
@@ -1375,6 +1377,20 @@ class AnalysisPipeline:
             )
         except Exception as exc:
             logger.warning("Failed to write analysis unit mapping: %s", exc)
+
+    async def _write_analysis_artifacts(self, unit_mapping: dict) -> None:
+        if not self._task_id:
+            return
+        try:
+            await write_analysis_artifacts(
+                output_dir=settings.outputs_path / self._task_id,
+                task_id=self._task_id,
+                analysis_unit_mapping=unit_mapping,
+                evidence_cards=self._evidence_cards,
+                analysis_units=self._analysis_units,
+            )
+        except Exception as exc:
+            logger.warning("Failed to write analysis artifacts: %s", exc)
 
     async def _inject_cgc_evidence_cards(
         self,

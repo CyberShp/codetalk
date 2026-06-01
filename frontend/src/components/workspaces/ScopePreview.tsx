@@ -9,6 +9,19 @@ interface Props {
   loading: boolean;
 }
 
+function countFileRoles(
+  files: ScopePreview["resolved_objects"][number]["candidate_files"],
+): Record<string, number> {
+  return files.reduce(
+    (acc, file) => {
+      const role = file.role ?? "related";
+      acc[role] = (acc[role] ?? 0) + 1;
+      return acc;
+    },
+    {} as Record<string, number>,
+  );
+}
+
 export default function ScopePreviewPanel({ preview, loading }: Props) {
   if (loading) {
     return (
@@ -47,32 +60,40 @@ export default function ScopePreviewPanel({ preview, loading }: Props) {
         </ul>
       )}
       <div className="space-y-2 max-h-56 overflow-y-auto pr-1">
-        {preview.resolved_objects.map((obj) => (
-          <div
-            key={obj.object_id}
-            className="rounded-lg border border-outline-variant/20 bg-surface-container/40 px-2 py-1.5"
-          >
-            <div className="font-medium text-on-surface mb-0.5 truncate" title={obj.text}>
-              {obj.text || "（空对象）"}
-            </div>
-            <div className="text-[10px] text-on-surface-variant/70 flex flex-wrap items-center gap-x-3 gap-y-0.5">
-              <span className="inline-flex items-center gap-1">
-                <FileText size={10} /> 文件 {obj.candidate_files.length}
-              </span>
-              <span className="inline-flex items-center gap-1">
-                <Hash size={10} /> 符号 {obj.candidate_symbols.length}
-              </span>
-              {obj.related_communities.length > 0 && (
-                <span>社区：{obj.related_communities.slice(0, 4).join("、")}</span>
+        {preview.resolved_objects.map((obj) => {
+          const roleCounts = countFileRoles(obj.candidate_files);
+          return (
+            <div
+              key={obj.object_id}
+              className="rounded-lg border border-outline-variant/20 bg-surface-container/40 px-2 py-1.5"
+            >
+              <div className="font-medium text-on-surface mb-0.5 truncate" title={obj.text}>
+                {obj.text || "（空对象）"}
+              </div>
+              <div className="text-[10px] text-on-surface-variant/70 flex flex-wrap items-center gap-x-3 gap-y-0.5">
+                <span className="inline-flex items-center gap-1">
+                  <FileText size={10} /> 文件 {obj.candidate_files.length}
+                </span>
+                <span className="inline-flex items-center gap-1">
+                  <Hash size={10} /> 符号 {obj.candidate_symbols.length}
+                </span>
+                {obj.related_communities.length > 0 && (
+                  <span>社区：{obj.related_communities.slice(0, 4).join("、")}</span>
+                )}
+                {Object.keys(roleCounts).length > 0 && (
+                  <span>
+                    范围：primary {roleCounts.primary ?? 0} / related {roleCounts.related ?? 0} / external {roleCounts.external ?? 0}
+                  </span>
+                )}
+              </div>
+              {obj.warnings.length > 0 && (
+                <div className="mt-1 text-[10px] text-amber-500/90">
+                  ⚠ {obj.warnings.join(" / ")}
+                </div>
               )}
             </div>
-            {obj.warnings.length > 0 && (
-              <div className="mt-1 text-[10px] text-amber-500/90">
-                ⚠ {obj.warnings.join(" / ")}
-              </div>
-            )}
-          </div>
-        ))}
+          );
+        })}
       </div>
     </div>
   );

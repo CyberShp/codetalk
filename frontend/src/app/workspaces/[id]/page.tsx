@@ -24,6 +24,7 @@ import {
   Trash2,
   Sparkles,
   Crosshair,
+  FileSearch,
   Download,
   Terminal,
 } from "lucide-react";
@@ -218,15 +219,20 @@ function ChatPanel({
   wsId,
   indexed,
   lastIndexError,
+  reports,
 }: {
   wsId: string;
   indexed: number;
   lastIndexError?: string | null;
+  reports: WorkspaceReportMeta[];
 }) {
   const { messages, streaming, streamingContent, loadingHistory, init, send, stop } =
     useWsChat(wsId);
   const [input, setInput] = useState("");
-  const [mode, setMode] = useState<ChatMode>("freeqa");
+  const hasCompletedReports = reports.some((report) => report.status === "completed");
+  const [selectedMode, setSelectedMode] = useState<ChatMode>("freeqa");
+  const [modeTouched, setModeTouched] = useState(false);
+  const mode: ChatMode = modeTouched ? selectedMode : hasCompletedReports ? "report_qa" : selectedMode;
   const [modules, setModules] = useState<WorkspaceModule[]>([]);
   const [selectedModule, setSelectedModule] = useState<string | null>(null);
   const userNearBottom = useRef(true);
@@ -285,12 +291,16 @@ function ChatPanel({
       {/* Mode toggle */}
       <div className="flex gap-2 mb-3">
         {([
+          { m: "report_qa" as ChatMode, Icon: FileSearch, label: "报告追问", desc: "报告 + 代码 + 记忆" },
           { m: "freeqa" as ChatMode, Icon: Sparkles, label: "自由问答", desc: "代码片段 + 记忆" },
           { m: "targeted" as ChatMode, Icon: Crosshair, label: "结构化分析", desc: "材料 + 报告 + 记忆" },
         ]).map(({ m, Icon, label, desc }) => (
           <button
             key={m}
-            onClick={() => setMode(m)}
+            onClick={() => {
+              setModeTouched(true);
+              setSelectedMode(m);
+            }}
             className={`flex-1 flex items-center gap-2.5 px-3 py-2 rounded-lg border transition-all text-left ${
               mode === m
                 ? "bg-primary/10 border-primary/40 shadow-sm"
@@ -385,8 +395,14 @@ function ChatPanel({
                 {msg.role === "user" && (
                   <div className="flex justify-end mt-0.5 pr-8">
                     <span className="inline-flex items-center gap-0.5 text-[10px] text-on-surface-variant/40">
-                      {msg.mode === "targeted" ? <Crosshair size={9} /> : <Sparkles size={9} />}
-                      {msg.mode === "targeted" ? "结构化" : "自由"}
+                      {msg.mode === "targeted" ? (
+                        <Crosshair size={9} />
+                      ) : msg.mode === "report_qa" ? (
+                        <FileSearch size={9} />
+                      ) : (
+                        <Sparkles size={9} />
+                      )}
+                      {msg.mode === "targeted" ? "结构化" : msg.mode === "report_qa" ? "报告追问" : "自由"}
                     </span>
                   </div>
                 )}
@@ -434,6 +450,12 @@ function ChatPanel({
         </div>
       )}
 
+      {canChat && hasCompletedReports && mode === "freeqa" && (
+        <div className="mt-3 px-4 py-2.5 rounded-xl bg-amber-400/10 border border-amber-400/20 text-xs text-amber-500">
+          自由问答不会加载已生成报告或材料；报告后追问请切换到「报告追问」。
+        </div>
+      )}
+
       {/* Input area */}
       <div className="mt-3 flex gap-2">
         <textarea
@@ -441,7 +463,9 @@ function ChatPanel({
           onChange={(e) => setInput(e.target.value)}
           onKeyDown={handleKeyDown}
           placeholder={canChat
-            ? mode === "freeqa"
+            ? mode === "report_qa"
+              ? "追问已生成报告，必要时结合代码片段… (Enter 发送)"
+              : mode === "freeqa"
               ? "轻量问答，基于代码片段回答… (Enter 发送)"
               : "深度分析，结合材料与报告… (Enter 发送)"
             : "等待索引完成后可对话…"}
@@ -1149,6 +1173,7 @@ export default function WorkspaceDetailPage() {
           wsId={wsId}
           indexed={workspace.indexed}
           lastIndexError={workspace.last_index_error}
+          reports={workspace.reports}
         />
       )}
 

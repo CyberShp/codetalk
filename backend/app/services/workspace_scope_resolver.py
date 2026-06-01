@@ -283,7 +283,7 @@ def _rank_nodes_by_keywords(
         lower_hints = [h.lower() for h in path_filter]
         active_nodes = [
             n for n in nodes
-            if any(hint in _node_path(n).lower() for hint in lower_hints)
+            if any(hint in _normalize_path_hint(_node_path(n)).lower() for hint in lower_hints)
         ]
     folded = [kw.lower() if kw.isascii() else kw for kw in keywords]
     scored: list[tuple[dict, float]] = []
@@ -465,7 +465,12 @@ def _exact_symbol_repo_hits_blocking(
 def _path_hint_repo_hits_blocking(
     repo_path: str, path_hints: list[str], limit: int
 ) -> list[str]:
-    """Return existing source files named directly by analysis-object hints."""
+    """Return source files named or scoped by analysis-object path hints.
+
+    Hints may be concrete files or directories.  Directory hints are expanded
+    recursively so a user-supplied module path such as ``nvme_tcp/trans/tls``
+    becomes a primary source scope instead of a weak keyword.
+    """
     if not repo_path or not path_hints or limit <= 0:
         return []
     try:
@@ -475,28 +480,68 @@ def _path_hint_repo_hits_blocking(
 
     results: list[str] = []
     seen: set[str] = set()
+
+    def _append_source(path: Path) -> None:
+        if len(results) >= limit:
+            return
+        if path.suffix.lower() not in _SOURCE_EXTS:
+            return
+        try:
+            resolved = path.resolve()
+            resolved.relative_to(root)
+        except Exception:
+            return
+        key = str(resolved)
+        if key in seen:
+            return
+        seen.add(key)
+        results.append(key)
+
+    def _source_files_under(directory: Path) -> list[Path]:
+        files: list[Path] = []
+        for walk_root, dirs, names in _walk(directory):
+            dirs[:] = [d for d in dirs if d not in _DIR_SKIP and not d.startswith(".")]
+            for name in names:
+                full = Path(walk_root) / name
+                if full.suffix.lower() in _SOURCE_EXTS:
+                    files.append(full)
+        files.sort(key=lambda p: p.relative_to(root).as_posix().lower())
+        return files
+
     for hint in path_hints:
-        hint = (hint or "").strip()
-        if not hint:
+        normalized_hint = _normalize_path_hint(hint)
+        if not normalized_hint:
             continue
         try:
-            candidate = Path(hint)
+            candidate = Path(normalized_hint)
             if not candidate.is_absolute():
-                candidate = root / hint
+                candidate = root.joinpath(*[part for part in normalized_hint.split("/") if part])
             candidate = candidate.resolve()
             candidate.relative_to(root)
         except Exception:
             continue
-        if not candidate.is_file() or candidate.suffix.lower() not in _SOURCE_EXTS:
-            continue
-        key = str(candidate)
-        if key in seen:
-            continue
-        seen.add(key)
-        results.append(key)
+
+        if candidate.is_file():
+            _append_source(candidate)
+        elif candidate.is_dir():
+            for source in _source_files_under(candidate):
+                _append_source(source)
+                if len(results) >= limit:
+                    break
         if len(results) >= limit:
             break
     return results
+
+
+def _normalize_path_hint(hint: str) -> str:
+    """Normalize UI/user path hints before comparing with repo paths."""
+    value = (hint or "").strip()
+    if not value:
+        return ""
+    value = re.sub(r"[\r\n\t]+", "/", value)
+    value = value.replace("\\", "/")
+    value = re.sub(r"/+", "/", value)
+    return value.rstrip("/")
 
 
 def _score_symbol_hit(path: str, line: str, symbol: str) -> int:
@@ -586,6 +631,7 @@ async def _candidate_materials(
                     source="material",
                     confidence="medium",
                     reason=f"材料文件名命中关键字：{row['filename']}",
+                    role="external",
                 )
             )
             if len(candidates) >= limit:
@@ -695,7 +741,10 @@ class WorkspaceScopeResolver:
         keywords = _tokenize(obj.text)
         obj_warnings: list[str] = []
         # P0-004: path_hints narrow scope to specific path prefixes
-        path_filter: list[str] | None = list(obj.path_hints) if obj.path_hints else None
+        normalized_path_hints = [
+            h for h in (_normalize_path_hint(hint) for hint in obj.path_hints) if h
+        ]
+        path_filter: list[str] | None = normalized_path_hints or None
 
         if not keywords:
             obj_warnings.append("分析对象过于笼统，未提取到可检索关键字。")
@@ -711,7 +760,7 @@ class WorkspaceScopeResolver:
         seen_keys: set[tuple[str, str]] = set()
 
         for hit in _path_hint_repo_hits_blocking(
-            repo_path, obj.path_hints, limits.max_files_per_object
+            repo_path, normalized_path_hints, limits.max_files_per_object
         ):
             key = ("file", normalize_file_key(repo_path, hit))
             if key in seen_keys:
@@ -723,6 +772,7 @@ class WorkspaceScopeResolver:
                     source="repo_search",
                     confidence="high",
                     reason="分析对象 path_hints 精确命中源码文件",
+                    role="primary",
                 )
             )
 
@@ -742,6 +792,7 @@ class WorkspaceScopeResolver:
                         source="gitnexus",
                         confidence="high" if hits > 1 else "medium",
                         reason=f"GitNexus 文件命中关键字 ({hits} 次)",
+                        role="primary" if path_filter else "related",
                     )
                 )
             for node, hits in index.search_symbols(
@@ -760,6 +811,7 @@ class WorkspaceScopeResolver:
                         source="gitnexus",
                         confidence="high" if hits > 1 else "medium",
                         reason=f"GitNexus 符号命中关键字 ({hits} 次)",
+                        role="primary" if path_filter else "related",
                     )
                 )
 
@@ -784,6 +836,7 @@ class WorkspaceScopeResolver:
                         source="repo_search",
                         confidence="high",
                         reason="本地源码精确符号命中，优先作为事实证据（防止图谱漏召回）",
+                        role="primary",
                     )
                 )
             # Exact local symbol evidence is the most trustworthy grounding when
@@ -807,6 +860,7 @@ class WorkspaceScopeResolver:
                         source="repo_search",
                         confidence="medium",
                         reason="本地代码搜索命中关键字",
+                        role="related",
                     )
                 )
 

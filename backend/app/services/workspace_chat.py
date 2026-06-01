@@ -14,6 +14,10 @@ import aiosqlite
 import httpx
 
 from app.config import settings
+from app.services.analysis_artifacts import (
+    format_artifacts_for_report_qa,
+    load_analysis_artifact_bundle,
+)
 from app.utils.repo_paths import to_tool_repo_path
 
 logger = logging.getLogger(__name__)
@@ -21,6 +25,7 @@ logger = logging.getLogger(__name__)
 _MAX_SNIPPET_CHARS = 400
 _MAX_MATERIAL_CHARS = 2000
 _MAX_REPORT_SUMMARY_CHARS = 500
+_MAX_REPORT_QUERY_CHARS = 1400
 _MAX_REPORTS_IN_CONTEXT = 8
 _SEARCH_LIMIT = 5
 _HISTORY_LIMIT = 50
@@ -67,6 +72,33 @@ MODE_TARGETED
 请使用 Markdown 格式输出详细、结构化的回答，语言：中文。\
 """
 
+_REPORT_QA_SYSTEM = """\
+你是 CodeTalk 报告追问助手，专注于基于已生成分析报告、可用代码片段和对话记忆回答后续问题。
+
+## 代码仓库
+{repo_path}
+{module_context}
+{memory_summary}
+{evidence_status_block}
+## 相关代码片段
+{code_snippets}
+
+## CodeTalk 可追溯分析资产
+{analysis_artifacts}
+
+## 已生成分析报告相关片段
+{reports_summary}
+
+## Mode Contract
+MODE_REPORT_QA
+- Scope: completed reports + code snippets + conversation memory.
+- Treat completed reports as the primary context for follow-up questions.
+- If the answer needs source details not present in report snippets or code snippets, say 待验证 and name the missing file/function.
+- Do not answer as if materials were loaded unless they appear in the visible context.
+
+请使用中文回答，先给结论，再列报告/代码证据和待验证缺口。\
+"""
+
 _FREEQA_SYSTEM = """\
 你是代码库问答助手，用于快速回答关于代码仓库的轻量问题。自由问答只使用代码片段和对话记忆，不使用材料和报告摘要。
 
@@ -82,6 +114,7 @@ _FREEQA_SYSTEM = """\
 MODE_FREEQA
 - Scope: code snippets + conversation memory only.
 - Do not claim that active materials or reports were used in freeqa mode.
+- If code_snippets is 0, do not infer an answer; ask the user to switch to 报告追问/结构化分析 or provide a file/function name.
 - Prefer concise answers.
 - Claims without direct evidence must be marked 待验证.
 
@@ -218,7 +251,53 @@ async def _load_materials_context(ws_id: str, query: str) -> list[str]:
     return context
 
 
-async def _load_report_summaries(ws_id: str) -> list[str]:
+def _query_terms(query: str | None) -> list[str]:
+    if not query:
+        return []
+    terms: list[str] = []
+    seen: set[str] = set()
+    for raw in query.replace("_", " ").split():
+        term = "".join(ch for ch in raw if ch.isalnum() or ch in {"_", "-"}).lower()
+        if len(term) < 2 or term in seen:
+            continue
+        seen.add(term)
+        terms.append(term)
+    return terms[:8]
+
+
+def _select_report_excerpt(content: str, query: str | None = None) -> str:
+    content = (content or "").strip()
+    if not content:
+        return ""
+    terms = _query_terms(query)
+    if not terms:
+        excerpt = content[:_MAX_REPORT_SUMMARY_CHARS]
+        if len(content) > _MAX_REPORT_SUMMARY_CHARS:
+            excerpt += "…"
+        return excerpt
+
+    lower = content.lower()
+    hit_positions = [lower.find(term) for term in terms if lower.find(term) >= 0]
+    if not hit_positions:
+        excerpt = content[:_MAX_REPORT_SUMMARY_CHARS]
+        if len(content) > _MAX_REPORT_SUMMARY_CHARS:
+            excerpt += "…"
+        return excerpt
+
+    center = min(hit_positions)
+    half = _MAX_REPORT_QUERY_CHARS // 2
+    start = max(0, center - half)
+    end = min(len(content), start + _MAX_REPORT_QUERY_CHARS)
+    start = max(0, end - _MAX_REPORT_QUERY_CHARS)
+    excerpt = content[start:end]
+    if start > 0:
+        excerpt = "…" + excerpt
+    if end < len(content):
+        excerpt += "…"
+    return excerpt
+
+
+async def _load_report_summaries(ws_id: str, query: str | None = None) -> list[str]:
     """Load bounded summaries of the most recent completed reports."""
     async with aiosqlite.connect(settings.sqlite_db) as db:
         db.row_factory = aiosqlite.Row
@@ -237,11 +316,47 @@ async def _load_report_summaries(ws_id: str) -> list[str]:
         if not content:
             continue
         label = _REPORT_LABELS.get(row["report_type"], row["report_type"])
-        excerpt = content[:_MAX_REPORT_SUMMARY_CHARS]
-        if len(content) > _MAX_REPORT_SUMMARY_CHARS:
-            excerpt += "…"
+        excerpt = _select_report_excerpt(content, query)
         summaries.append(f"**{label}**\n{excerpt}")
     return summaries
+
+
+async def _load_report_analysis_artifacts(
+    ws_id: str,
+    query: str | None = None,
+) -> tuple[list[str], int]:
+    """Load compact summaries of artifact JSONs for the latest report tasks."""
+
+    async with aiosqlite.connect(settings.sqlite_db) as db:
+        db.row_factory = aiosqlite.Row
+        async with db.execute(
+            "SELECT task_id FROM workspace_reports "
+            "WHERE workspace_id = ? AND status = 'completed' "
+            "AND task_id IS NOT NULL AND TRIM(task_id) != '' "
+            "ORDER BY created_at DESC LIMIT ?",
+            (ws_id, _MAX_REPORTS_IN_CONTEXT),
+        ) as cur:
+            rows = [dict(r) for r in await cur.fetchall()]
+
+    contexts: list[str] = []
+    artifact_count = 0
+    seen: set[str] = set()
+    for row in rows:
+        task_id = str(row.get("task_id") or "").strip()
+        if not task_id or task_id in seen:
+            continue
+        seen.add(task_id)
+        bundle = await asyncio.to_thread(
+            load_analysis_artifact_bundle,
+            settings.outputs_path / task_id,
+        )
+        if not bundle:
+            continue
+        artifact_count += len(bundle)
+        formatted = format_artifacts_for_report_qa(bundle, query)
+        if formatted:
+            contexts.append(f"### task_id={task_id}\n{formatted}")
+    return contexts, artifact_count
 
 
 async def _load_history(ws_id: str) -> list[dict]:
@@ -326,8 +441,12 @@ def _build_evidence_notice(
     report_count: int | None,
     memory_summary_present: bool,
     recent_history_count: int,
+    analysis_artifact_count: int | None = None,
 ) -> str:
-    mode_label = "结构化分析" if mode == "targeted" else "自由问答"
+    mode_label = {
+        "targeted": "结构化分析",
+        "report_qa": "报告追问",
+    }.get(mode, "自由问答")
     material_value = str(material_count) if material_count is not None else "not_used_in_freeqa"
     report_value = str(report_count) if report_count is not None else "not_used_in_freeqa"
     lines = [
@@ -336,6 +455,7 @@ def _build_evidence_notice(
         f"> - code_snippets: {code_snippet_count}",
         f"> - materials: {material_value}",
         f"> - reports: {report_value}",
+        f"> - analysis_artifacts: {analysis_artifact_count if analysis_artifact_count is not None else 'not_used'}",
         f"> - memory_summary: {'yes' if memory_summary_present else 'no'}",
         f"> - recent_history_messages: {recent_history_count}",
     ]
@@ -347,6 +467,8 @@ def _build_evidence_notice(
         lines.append("> - code_evidence: direct snippets available; cite file paths when using them.")
     if mode == "freeqa":
         lines.append("> - mode_scope: freeqa does not use active materials or completed reports.")
+    elif mode == "report_qa":
+        lines.append("> - mode_scope: report_qa uses completed reports and code snippets when available.")
     else:
         lines.append("> - mode_scope: targeted uses active materials and completed reports when available.")
     return "\n".join(lines)
@@ -390,7 +512,7 @@ async def build_chat_messages(
     if mode == "targeted":
         materials, reports = await asyncio.gather(
             _load_materials_context(ws_id, user_message),
-            _load_report_summaries(ws_id),
+            _load_report_summaries(ws_id, user_message),
         )
         evidence_notice = _build_evidence_notice(
             mode=mode,
@@ -407,6 +529,34 @@ async def build_chat_messages(
             evidence_status_block=_evidence_status_block(evidence_notice),
             code_snippets=code_text,
             materials_summary="\n\n".join(materials) if materials else "（无）",
+            reports_summary="\n\n".join(reports) if reports else "（尚未生成报告）",
+        )
+    elif mode == "report_qa":
+        reports, artifact_result = await asyncio.gather(
+            _load_report_summaries(ws_id, user_message),
+            _load_report_analysis_artifacts(ws_id, user_message),
+        )
+        artifact_summaries, artifact_count = artifact_result
+        evidence_notice = _build_evidence_notice(
+            mode=mode,
+            code_snippet_count=len(snippets),
+            material_count=0,
+            report_count=len(reports),
+            memory_summary_present=bool(memory_summary),
+            recent_history_count=len(history),
+            analysis_artifact_count=artifact_count,
+        )
+        system_prompt = _REPORT_QA_SYSTEM.format(
+            repo_path=repo_path,
+            module_context=module_context,
+            memory_summary=memory_summary,
+            evidence_status_block=_evidence_status_block(evidence_notice),
+            code_snippets=code_text,
+            analysis_artifacts=(
+                "\n\n".join(artifact_summaries)
+                if artifact_summaries
+                else "(no CodeTalk analysis artifacts found for completed reports)"
+            ),
             reports_summary="\n\n".join(reports) if reports else "（尚未生成报告）",
         )
     else:

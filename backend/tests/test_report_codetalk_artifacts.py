@@ -34,6 +34,7 @@ class CapturingLLM(BaseLLMClient):
 @dataclass
 class FakeCard:
     title: str
+    card_id: str = "card-1"
     source: str = "repo_search"
     file_path: str = "lib/log/log.c"
     symbol: str = "spdk_vlog"
@@ -43,6 +44,20 @@ class FakeCard:
 
     def to_markdown(self) -> str:
         return f"### {self.title}\n- `{self.file_path}` `{self.symbol}`"
+
+    def to_dict(self) -> dict:
+        return {
+            "card_id": self.card_id,
+            "object_id": self.object_id,
+            "title": self.title,
+            "source": self.source,
+            "confidence": self.confidence,
+            "file_path": self.file_path,
+            "symbol": self.symbol,
+            "snippet": self.snippet,
+            "notes": [],
+            "needs_verification": False,
+        }
 
 
 def _plan(template_id: str) -> AnalysisPlan:
@@ -110,6 +125,73 @@ async def test_codetalk_adds_diagram_and_tables_when_ai_returns_prose(tmp_path: 
 
 
 @pytest.mark.asyncio
+async def test_plan_report_contains_traceability_failure_and_branch_appendix(tmp_path: Path) -> None:
+    llm = CapturingLLM("AI_CONTENT " * 40)
+    generator = ReportGenerator(llm, tmp_path, "task-report-assets")
+    plan = _plan("test_design")
+    spec = plan.reports[0]
+    card = FakeCard(
+        title="TLS receive failure branch",
+        card_id="card-tls",
+        file_path="lib/tls.c",
+        symbol="tls_recv",
+        snippet=(
+            "int tls_recv(struct conn *c) {\n"
+            "    int rc = SSL_read(c->ssl, c->buf, sizeof(c->buf));\n"
+            "    if (rc <= 0) {\n"
+            "        int err = SSL_get_error(c->ssl, rc);\n"
+            "        c->state = CONN_CLOSED;\n"
+            "        free(c->buf);\n"
+            "        return -EIO;\n"
+            "    }\n"
+            "    return rc;\n"
+            "}\n"
+        ),
+        object_id="obj-tls",
+    )
+
+    entry = await generator._generate_plan_report(
+        spec=spec,
+        plan=plan,
+        common_context={
+            "pipeline_mode": "llm_direct",
+            "index_coverage": {},
+            "active_materials": [],
+            "gitnexus_available": False,
+            "cgc_available": False,
+            "analysis_objects": [
+                {"id": "obj-tls", "text": "TLS receive failure handling", "kind": "flow", "priority": "high"},
+                {"id": "obj-retry", "text": "TLS timeout retry policy", "kind": "flow", "priority": "medium"},
+            ],
+        },
+        analysis_units=[
+            {
+                "id": "unit_1",
+                "title": "TLS receive",
+                "object_ids": ["obj-tls"],
+                "cards": [card],
+            }
+        ],
+        evidence_cards=[card],
+        sem=__import__("asyncio").Semaphore(1),
+    )
+
+    output = (tmp_path / entry["filename"]).read_text(encoding="utf-8")
+    assert "## 90 CodeTalk Traceability Artifacts" in output
+    assert "### CodeTalk Claim-Evidence Map" in output
+    assert "claim:obj-tls" in output
+    assert "TLS timeout retry policy" in output
+    assert "gap" in output
+    assert "### CodeTalk Function Failure Matrix" in output
+    assert "lib/tls.c::tls_recv" in output
+    assert "SSL_get_error" in output
+    assert "free(c->buf);" in output
+    assert "### CodeTalk Branch Deep Dive" in output
+    assert "if (rc <= 0)" in output
+    assert "No graph evidence" in output
+
+
+@pytest.mark.asyncio
 async def test_section_prompt_delegates_layout_to_codetalk(tmp_path: Path) -> None:
     llm = CapturingLLM("AI_CONTENT " * 40)
     generator = ReportGenerator(llm, tmp_path, "task-prompt")
@@ -138,6 +220,32 @@ async def test_section_prompt_delegates_layout_to_codetalk(tmp_path: Path) -> No
     assert "CodeTalk will render Markdown tables, Mermaid diagrams, and SFMEA grids" in prompt
     assert "This section must include at least one Mermaid" not in prompt
     assert "This section must include an SFMEA table" not in prompt
+
+
+@pytest.mark.asyncio
+async def test_test_design_prompt_uses_developer_to_tester_contract(tmp_path: Path) -> None:
+    llm = CapturingLLM("AI_CONTENT " * 40)
+    generator = ReportGenerator(llm, tmp_path, "task-scenario")
+    plan = _plan("test_design")
+    section = ReportGenerator._section_blueprints()["test_design"][0]
+
+    await generator._render_section(
+        spec=plan.reports[0],
+        section=section,
+        plan=plan,
+        common_context={},
+        analysis_units=[{"title": "TLS handshake", "object_ids": ["obj-1"], "cards": [FakeCard("tls card")]}],
+        evidence_cards=[],
+        section_idx=0,
+        sem=__import__("asyncio").Semaphore(1),
+    )
+
+    prompt = llm.prompts[0]
+    assert "Developer-to-Tester Scenario Mode" in prompt
+    assert "black-box trigger" in prompt
+    assert "gray-box aid" in prompt
+    assert "function failure matrix" in prompt
+    assert "branch condition" in prompt
 
 
 @pytest.mark.asyncio

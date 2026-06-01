@@ -9,6 +9,7 @@ Covers the three lines missed by E2E tests:
 from contextlib import asynccontextmanager
 from unittest.mock import AsyncMock, MagicMock
 
+import asyncio
 import pytest
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
@@ -118,7 +119,54 @@ async def test_deepwiki_registry_uses_venv_launcher_and_declared_ports(tmp_path,
     assert api["command"][1].endswith("deepwiki_launcher.py")
     assert api["env"]["DEEPWIKI_API_PORT"] == "8091"
     assert api["env"]["PORT"] == "8091"
+    assert api["restart_on_health_failure"] is False
 
     ui = registry["deepwiki-ui"]
     assert ui["env"]["PORT"] == "3001"
     assert ui["env"]["SERVER_BASE_URL"] == "http://localhost:8091"
+
+
+async def test_deepwiki_process_env_loads_synced_dotenv(tmp_path, monkeypatch):
+    """ProcessManager should pass DeepWiki's synced .env to the subprocess."""
+    from app.services import process_manager
+
+    (tmp_path / ".env").write_text(
+        "OPENAI_BASE_URL=http://internal.ai/v1\n"
+        "OPENAI_API_KEY=fresh-key\n"
+        "LLM_MODEL=qwen-test\n",
+        encoding="utf-8",
+    )
+    monkeypatch.setenv("OPENAI_API_KEY", "stale-system-key")
+
+    env = process_manager._build_process_env(
+        "deepwiki-api",
+        {"env": {"PORT": "8091"}},
+        str(tmp_path),
+    )
+
+    assert env["OPENAI_API_KEY"] == "fresh-key"
+    assert env["OPENAI_BASE_URL"] == "http://internal.ai/v1"
+    assert env["LLM_MODEL"] == "qwen-test"
+    assert env["PORT"] == "8091"
+
+
+async def test_process_log_streams_write_to_named_files(tmp_path, monkeypatch):
+    """Managed subprocess stdout/stderr should be inspectable from log files."""
+    from app.config import settings
+    from app.services import process_manager
+
+    monkeypatch.setattr(settings, "data_dir", str(tmp_path))
+
+    stdout, stderr = process_manager._open_process_log_streams("deepwiki-api")
+    try:
+        assert stdout is not asyncio.subprocess.DEVNULL
+        assert stderr is not asyncio.subprocess.DEVNULL
+        stdout.write(b"hello out\n")
+        stderr.write(b"hello err\n")
+    finally:
+        stdout.close()
+        stderr.close()
+
+    log_dir = tmp_path / "logs" / "processes"
+    assert (log_dir / "deepwiki-api.out.log").read_text(encoding="utf-8") == "hello out\n"
+    assert (log_dir / "deepwiki-api.err.log").read_text(encoding="utf-8") == "hello err\n"

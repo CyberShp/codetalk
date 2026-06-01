@@ -13,6 +13,15 @@ function makeId(): string {
   return `obj_${Math.random().toString(36).slice(2, 10)}`;
 }
 
+function normalizePathHint(path: string): string {
+  return path.trim().replace(/[\r\n\t]+/g, "/").replace(/\\/g, "/").replace(/\/+/g, "/").replace(/\/+$/g, "");
+}
+
+function inferPathHints(text: string): string[] {
+  const matches = text.match(/(?:[A-Za-z]:)?[A-Za-z0-9_.-]+(?:[\\/][A-Za-z0-9_.-]+)+(?:[\\/])?/g) ?? [];
+  return Array.from(new Set(matches.map(normalizePathHint).filter(Boolean))).slice(0, 16);
+}
+
 const EXAMPLE_TEXT =
   "iscsi target login path\niscsi target logout / disconnect / session cleanup\niscsi target error handling and retry path\nFC login and link recovery";
 
@@ -32,6 +41,11 @@ export default function AnalysisObjectEditor({ objects, onChange }: Props) {
         text: trimmed,
         kind: existing?.kind ?? "topic",
         priority: existing?.priority ?? "medium",
+        path_hints: trimmed
+          ? Array.from(
+              new Set([...(existing?.path_hints ?? []), ...inferPathHints(trimmed)]),
+            ).slice(0, 16)
+          : [],
       };
     });
     onChange(next);
@@ -78,6 +92,14 @@ export default function AnalysisObjectEditor({ objects, onChange }: Props) {
                 <span className="flex-1 truncate" title={o.text}>
                   {o.text}
                 </span>
+                {(o.path_hints?.length ?? 0) > 0 && (
+                  <span
+                    className="max-w-[180px] truncate rounded border border-primary/20 px-1.5 py-0.5 text-[10px] text-primary/80"
+                    title={o.path_hints?.join("\n")}
+                  >
+                    {o.path_hints?.[0]}
+                  </span>
+                )}
                 <select
                   value={o.priority}
                   onChange={(e) => {
@@ -106,7 +128,7 @@ export default function AnalysisObjectEditor({ objects, onChange }: Props) {
             ))}
           <button
             type="button"
-            onClick={() => onChange([...objects, { id: makeId(), text: "", kind: "topic", priority: "medium" }])}
+            onClick={() => onChange([...objects, { id: makeId(), text: "", kind: "topic", priority: "medium", path_hints: [] }])}
             className="flex items-center gap-1 text-xs text-primary hover:underline mt-1"
           >
             <Plus size={12} /> 追加一行

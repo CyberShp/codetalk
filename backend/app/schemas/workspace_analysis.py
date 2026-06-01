@@ -102,6 +102,7 @@ class AnalysisPlan(BaseModel):
         # Trim text content so blank lines from the textarea don't survive
         for obj in self.analysis_objects:
             obj.text = obj.text.strip()
+            obj.path_hints = [hint.strip() for hint in obj.path_hints if hint.strip()]
         self.user_guidance = self.user_guidance.strip()
         return self
 
@@ -122,6 +123,7 @@ class ScopeCandidate(BaseModel):
     source: Literal["gitnexus", "repo_search", "material", "manual"]
     confidence: Literal["high", "medium", "low"]
     reason: str
+    role: Literal["primary", "related", "external"] | None = None
 
 
 class ResolvedAnalysisObject(BaseModel):

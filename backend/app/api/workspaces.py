@@ -855,7 +855,7 @@ async def get_workspace_modules(
 
 class WorkspaceChatRequest(BaseModel):
     message: str = Field(min_length=1, max_length=8000)
-    mode: str = Field(default="freeqa", pattern="^(targeted|freeqa)$")
+    mode: str = Field(default="freeqa", pattern="^(targeted|freeqa|report_qa)$")
     module: str | None = None
 
 

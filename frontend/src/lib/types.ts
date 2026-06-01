@@ -198,7 +198,7 @@ export interface WorkspaceCreate {
   repo_path: string;
 }
 
-export type ChatMode = "targeted" | "freeqa";
+export type ChatMode = "targeted" | "freeqa" | "report_qa";
 
 export interface WorkspaceChatMessage {
   id: string;
@@ -230,6 +230,7 @@ export interface AnalysisObject {
   text: string;
   kind: AnalysisObjectKind;
   priority: AnalysisObjectPriority;
+  path_hints?: string[];
 }
 
 export interface FocusOptions {
@@ -293,6 +294,7 @@ export interface ScopeCandidate {
   source: ScopeCandidateSource;
   confidence: ScopeCandidateConfidence;
   reason: string;
+  role?: "primary" | "related" | "external" | null;
 }
 
 export interface ResolvedAnalysisObject {

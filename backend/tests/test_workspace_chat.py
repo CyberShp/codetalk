@@ -4,6 +4,7 @@ Tests persist_*, _load_*, and build_chat_messages using the sqlite_db fixture
 (V2 services connect via aiosqlite.connect(settings.sqlite_db) directly).
 """
 
+import json
 import struct
 import uuid
 from datetime import datetime, timedelta, timezone
@@ -53,14 +54,16 @@ async def _seed_report(
     status: str,
     content: str | None = None,
     created_at: str | None = None,
+    task_id: str | None = None,
 ) -> str:
     rid = str(uuid.uuid4())
     now = created_at or datetime.now(timezone.utc).isoformat()
     async with aiosqlite.connect(db_path) as db:
         await db.execute(
-            "INSERT INTO workspace_reports (id, workspace_id, report_type, title, content, status, created_at) "
-            "VALUES (?, ?, ?, ?, ?, ?, ?)",
-            (rid, ws_id, report_type, f"T-{report_type}", content, status, now),
+            "INSERT INTO workspace_reports "
+            "(id, workspace_id, task_id, report_type, title, content, status, created_at) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+            (rid, ws_id, task_id, report_type, f"T-{report_type}", content, status, now),
         )
         await db.commit()
     return rid
@@ -294,6 +297,24 @@ class TestLoadReportSummaries:
 
         summaries = await _load_report_summaries(ws_id)
         assert summaries[0].endswith("…")
+
+    async def test_query_relevant_report_chunk_can_come_after_leading_summary(self, sqlite_db):
+        ws_id = await _seed_workspace(sqlite_db)
+        content = (
+            "# 测试视角代码理解\n"
+            + ("前置概览。" * 140)
+            + "\n## SSL failure handling\n"
+            + "SSL_get_error maps WANT_READ to retry observation and SSL_ERROR_SYSCALL to connection close.\n"
+        )
+        await _seed_report(sqlite_db, ws_id, "test_design", "completed", content)
+
+        from app.services.workspace_chat import _load_report_summaries
+
+        summaries = await _load_report_summaries(ws_id, "SSL_get_error retry")
+
+        joined = "\n".join(summaries)
+        assert "SSL_get_error" in joined
+        assert "WANT_READ" in joined
 
     async def test_skips_empty_content(self, sqlite_db):
         ws_id = await _seed_workspace(sqlite_db)
@@ -557,6 +578,120 @@ class TestBuildChatMessages:
         system = msgs[0]["content"]
         assert "结构化分析助手" in system
         assert "项目与模块地图" in system
+
+    async def test_report_qa_mode_uses_completed_reports_not_freeqa_contract(self, sqlite_db):
+        ws_id = await _seed_workspace(sqlite_db)
+        await _seed_report(
+            sqlite_db,
+            ws_id,
+            "test_design",
+            "completed",
+            "# 测试视角代码理解\n\nSSL_get_error failure matrix and observable signals.",
+        )
+
+        with patch(
+            "app.services.workspace_chat._search_gitnexus",
+            new_callable=AsyncMock,
+            return_value=[],
+        ), patch(
+            "app.services.workspace_chat._load_materials_context",
+            new_callable=AsyncMock,
+            return_value=[],
+        ):
+            from app.services.workspace_chat import build_chat_messages
+
+            msgs = await build_chat_messages(ws_id, "/repo", "SSL_get_error 怎么测？", "report_qa")
+
+        system = msgs[0]["content"]
+        assert "MODE_REPORT_QA" in system
+        assert "reports: 1" in system
+        assert "not_used_in_freeqa" not in system
+        assert "SSL_get_error" in system
+
+    async def test_report_qa_mode_includes_analysis_artifacts_for_report_task(self, sqlite_db):
+        ws_id = await _seed_workspace(sqlite_db)
+        task_id = "task-artifacts-chat"
+        await _seed_report(
+            sqlite_db,
+            ws_id,
+            "test_design",
+            "completed",
+            "# Test design\n\nUse SSL_get_error for retry observations.",
+            task_id=task_id,
+        )
+
+        from app.config import settings
+
+        out_dir = settings.outputs_path / task_id
+        out_dir.mkdir(parents=True, exist_ok=True)
+        (out_dir / "claim_evidence_map.json").write_text(
+            json.dumps(
+                {
+                    "claims": [
+                        {
+                            "claim_id": "claim:obj-1",
+                            "claim": "TLS read error handling",
+                            "status": "supported",
+                            "evidence_card_ids": ["card-1"],
+                            "files": ["lib/tls.c"],
+                            "symbols": ["tls_recv"],
+                            "uncertainty": [],
+                        }
+                    ]
+                }
+            ),
+            encoding="utf-8",
+        )
+        (out_dir / "function_failure_matrix.json").write_text(
+            json.dumps(
+                {
+                    "functions": [
+                        {
+                            "function": "tls_recv",
+                            "file_path": "lib/tls.c",
+                            "branch_conditions": ["if (rc <= 0) {"],
+                            "error_signals": ["SSL_get_error(c->ssl, rc);"],
+                            "cleanup_signals": ["free(c->buf);"],
+                            "state_transitions": ["c->state = CONN_CLOSED;"],
+                            "evidence_card_ids": ["card-1"],
+                            "gaps": [],
+                        }
+                    ]
+                }
+            ),
+            encoding="utf-8",
+        )
+        (out_dir / "branch_deep_dive.json").write_text(
+            json.dumps(
+                {
+                    "branches": [
+                        {
+                            "function": "tls_recv",
+                            "file_path": "lib/tls.c",
+                            "condition": "if (rc <= 0) {",
+                            "evidence_card_id": "card-1",
+                            "test_trigger_hint": "Force rc <= 0",
+                        }
+                    ]
+                }
+            ),
+            encoding="utf-8",
+        )
+
+        with patch(
+            "app.services.workspace_chat._search_gitnexus",
+            new_callable=AsyncMock,
+            return_value=[],
+        ):
+            from app.services.workspace_chat import build_chat_messages
+
+            msgs = await build_chat_messages(ws_id, "/repo", "SSL_get_error 怎么测?", "report_qa")
+
+        system = msgs[0]["content"]
+        assert "CODETALK_ANALYSIS_ARTIFACTS" in system
+        assert "tls_recv" in system
+        assert "claim:obj-1" in system
+        assert "analysis_artifacts: 3" in system
 
     async def test_includes_history(self, sqlite_db):
         ws_id = await _seed_workspace(sqlite_db)

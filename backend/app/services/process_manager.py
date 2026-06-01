@@ -11,6 +11,7 @@ import shutil
 import sys
 import time
 from dataclasses import dataclass, field
+from io import BufferedWriter
 from pathlib import Path
 from typing import Any
 
@@ -93,6 +94,59 @@ def _deepwiki_api_env() -> dict[str, str]:
     }
 
 
+def _parse_simple_dotenv_line(line: str) -> tuple[str, str] | None:
+    stripped = line.strip()
+    if not stripped or stripped.startswith("#"):
+        return None
+    if stripped.startswith("export "):
+        stripped = stripped[len("export "):].strip()
+    if "=" not in stripped:
+        return None
+    key, value = stripped.split("=", 1)
+    key = key.strip()
+    if not key:
+        return None
+    value = value.strip()
+    if len(value) >= 2 and value[0] == value[-1] and value[0] in {"'", '"'}:
+        value = value[1:-1]
+    return key, value
+
+
+def _read_dotenv_env(cwd: str | None) -> dict[str, str]:
+    if not cwd:
+        return {}
+    path = Path(cwd) / ".env"
+    if not path.exists():
+        return {}
+    env: dict[str, str] = {}
+    try:
+        for line in path.read_text(encoding="utf-8").splitlines():
+            parsed = _parse_simple_dotenv_line(line)
+            if parsed is None:
+                continue
+            key, value = parsed
+            env[key] = value
+    except OSError as exc:
+        logger.warning("ProcessManager: failed to read %s: %s", path, exc)
+    return env
+
+
+def _build_process_env(name: str, cfg: dict[str, Any], cwd: str | None) -> dict[str, str]:
+    env = {**os.environ}
+    if name == "deepwiki-api":
+        env.update(_read_dotenv_env(cwd))
+    env.update(cfg.get("env", {}))
+    return env
+
+
+def _open_process_log_streams(name: str) -> tuple[BufferedWriter, BufferedWriter]:
+    log_dir = settings.data_path / "logs" / "processes"
+    log_dir.mkdir(parents=True, exist_ok=True)
+    stdout = open(log_dir / f"{name}.out.log", "ab", buffering=0)
+    stderr = open(log_dir / f"{name}.err.log", "ab", buffering=0)
+    return stdout, stderr
+
+
 def _deepwiki_ui_env() -> dict[str, str]:
     return {
         "PORT": str(settings.deepwiki_ui_port),
@@ -130,6 +184,9 @@ def _build_registry() -> dict[str, dict[str, Any]]:
             "health_url": f"http://localhost:{settings.deepwiki_api_port}/health",
             "cwd": settings.deepwiki_path or None,
             "env": _deepwiki_api_env(),
+            # DeepWiki generation can occupy the API long enough for /health to
+            # timeout.  Restart only on process exit or an explicit user action.
+            "restart_on_health_failure": False,
         },
         "deepwiki-ui": {
             "display_name": "DeepWiki UI",
@@ -165,6 +222,8 @@ class ManagedProcess:
     restart_count: int = 0
     last_error: str | None = None
     _config: dict[str, Any] = field(default_factory=dict)
+    stdout_handle: BufferedWriter | None = None
+    stderr_handle: BufferedWriter | None = None
 
     @property
     def uptime_seconds(self) -> float:
@@ -300,16 +359,29 @@ class ProcessManager:
         if name == "deepwiki-api" and cwd:
             await _ensure_deepwiki_tiktoken(cwd)
 
-        env = {**os.environ, **cfg.get("env", {})}
+        env = _build_process_env(name, cfg, cwd)
         mp.status = "starting"
+        self._close_process_logs(mp)
+        stdout_target: Any = asyncio.subprocess.DEVNULL
+        stderr_target: Any = asyncio.subprocess.DEVNULL
+        try:
+            stdout_target, stderr_target = _open_process_log_streams(name)
+            mp.stdout_handle = stdout_target
+            mp.stderr_handle = stderr_target
+        except OSError as exc:
+            logger.warning(
+                "ProcessManager: failed to open process logs for '%s': %s; using DEVNULL",
+                name,
+                exc,
+            )
 
         try:
             proc = await asyncio.create_subprocess_exec(
                 *cmd,
                 cwd=cwd,
                 env=env,
-                stdout=asyncio.subprocess.DEVNULL,
-                stderr=asyncio.subprocess.DEVNULL,
+                stdout=stdout_target,
+                stderr=stderr_target,
             )
             mp.process = proc
             mp.pid = proc.pid
@@ -319,6 +391,7 @@ class ProcessManager:
             logger.info("ProcessManager: started '%s' (pid=%d)", name, proc.pid)
             return True
         except Exception as exc:
+            self._close_process_logs(mp)
             mp.status = "error"
             mp.last_error = str(exc)
             logger.error("ProcessManager: failed to start '%s': %s", name, exc)
@@ -335,6 +408,7 @@ class ProcessManager:
             mp.status = "stopped"
             mp.pid = None
             mp.started_at = None
+            self._close_process_logs(mp)
             return True
 
         try:
@@ -355,6 +429,7 @@ class ProcessManager:
             mp.pid = None
             mp.started_at = None
             mp.process = None
+            self._close_process_logs(mp)
 
         return True
 
@@ -440,9 +515,22 @@ class ProcessManager:
         # Only promote to "error" for processes we spawned; externally-started
         # processes that aren't reachable stay "stopped" rather than "error".
         if mp.status != "stopped":
-            mp.status = "error"
+            if cfg.get("restart_on_health_failure", True):
+                mp.status = "error"
         mp.last_error = last_error
         return {**mp.to_dict(), "healthy": False}
+
+    @staticmethod
+    def _close_process_logs(mp: ManagedProcess) -> None:
+        for handle in (mp.stdout_handle, mp.stderr_handle):
+            if handle is None:
+                continue
+            try:
+                handle.close()
+            except OSError:
+                pass
+        mp.stdout_handle = None
+        mp.stderr_handle = None
 
     async def get_all_status(self) -> list[dict[str, Any]]:
         """Return status of all registered tools with parallel health checks."""
@@ -478,6 +566,7 @@ class ProcessManager:
                         exit_code,
                     )
                     mp.last_error = f"Exited with code {exit_code}"
+                    self._close_process_logs(mp)
                     mp.restart_count += 1
                     await self.start(name)
                     continue
@@ -486,6 +575,13 @@ class ProcessManager:
                 if mp.status == "running":
                     health = await self.health_check(name)
                     if not health.get("healthy", False) and mp.status == "error":
+                        if not mp._config.get("restart_on_health_failure", True):
+                            logger.warning(
+                                "ProcessManager: '%s' health check failed; keeping process alive",
+                                name,
+                            )
+                            mp.status = "running"
+                            continue
                         logger.warning(
                             "ProcessManager: '%s' failed health check, auto-restarting",
                             name,

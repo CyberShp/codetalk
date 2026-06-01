@@ -38,7 +38,10 @@ from app.llm.base import (
     reset_truncation_count,
 )
 from app.prompts.schemas import REPORT_FILE_MAP
-from app.services.report_artifacts import build_codetalk_section_artifacts
+from app.services.report_artifacts import (
+    build_codetalk_report_artifact_appendix,
+    build_codetalk_section_artifacts,
+)
 from app.schemas.workspace_analysis import AnalysisPlan, ReportSpec, ScopePreview
 from app.prompts.templates import (
     BUSINESS_FLOW_PROMPT,
@@ -502,6 +505,15 @@ class ReportGenerator:
                     "> Section generation failed: " + (body or "LLM returned no content") + "\n"
                 )
 
+        appendix = build_codetalk_report_artifact_appendix(
+            task_id=self._task_id,
+            analysis_units=analysis_units,
+            evidence_cards=evidence_cards,
+            common_context=common_context,
+        )
+        if appendix:
+            body_parts.append("\n" + appendix + "\n")
+
         full_content = header + "\n".join(body_parts)
         full_content = scrub_tool_orchestration_contradictions(
             full_content, common_context
@@ -592,6 +604,16 @@ class ReportGenerator:
             "- If requirements/design expectations conflict with exact source evidence, write source facts first, then design expectations.\n"
             "- If a claimed behavior is absent from source facts, expected tests must say 验收会失败/需求未覆盖.\n"
         )
+        if spec.template_id == "test_design":
+            prompt += (
+                "\n### Developer-to-Tester Scenario Mode\n"
+                "Write as a developer explaining implementation-backed test scenarios to testers. "
+                "Convert source logic into executable black-box and gray-box test design, not a code-review narrative.\n"
+                "- For each scenario, include black-box trigger, gray-box aid, expected result, and observable signal.\n"
+                "- For key functions, build a function failure matrix in prose: function, file, normal path, branch condition, error code/class, cleanup/resource release, state transition, propagation, log/return/connection observation.\n"
+                "- Prefer depth over breadth: if evidence is limited, deep-dive the most relevant flow/function instead of listing generic risks.\n"
+                "- SFMEA content must be externally constructible and observable; mark any missing source support as 待验证.\n"
+            )
         if focus_active:
             prompt += f"\n### 焦点方向\n{focus_active}\n"
         if guidance:
@@ -2136,7 +2158,7 @@ _SECTION_BLUEPRINTS: dict[str, list[dict]] = {
     ],
     "business_flow": [
         {"heading": "核心业务流程清单", "instructions": "Identify 3-5 important flows with goal, normal path, state, input, output.", "requires_mermaid": True, "min_chars": 200},
-        {"heading": "异常与边界分支", "instructions": "Describe error branches, retries, fallback behavior, and observable signals.", "min_chars": 120},
+        {"heading": "异常与边界分支", "instructions": "For each important branch, include code branch condition, error code/class, cleanup/resource release, state transition, propagation, logs/return values/connection state observations, black-box construction, and gray-box aid. Avoid generic error-branch prose.", "min_chars": 160},
         {"heading": "流程间交互", "instructions": "Explain dependencies/triggers between flows and testing impact.", "min_chars": 120},
     ],
     "gitnexus_reliability": [
@@ -2145,11 +2167,11 @@ _SECTION_BLUEPRINTS: dict[str, list[dict]] = {
         {"heading": "推荐的验证工具", "instructions": "Recommend clangd, cscope, ctags, rg, compile_commands.json or other validation tools for this repo.", "min_chars": 80},
     ],
     "test_design": [
-        {"heading": "测试场景清单", "instructions": "Create test scenarios per object with external trigger, path reason, expected result, observation point, black-box construction, and gray-box aid.", "min_chars": 200},
+        {"heading": "测试场景清单", "instructions": "Create Developer-to-Tester Scenario Mode output per object: external trigger, source-backed path reason, branch condition, expected result, observation point, black-box construction, gray-box aid, and function failure matrix notes for key functions.", "min_chars": 220},
         {"heading": "状态类测试点", "instructions": "List state variable/object, initial state, external transition action, target state, expected result, observation point.", "min_chars": 150},
         {"heading": "配置类测试点", "instructions": "List configuration/switch values, affected code path, external trigger, expected result, and observation point.", "min_chars": 150},
         {"heading": "时序 / 并发 / 重试 / 超时测试点", "instructions": "List timing and concurrency tests. If materials claim a behavior but 源码未实现, mark expected result as 验收会失败/需求未覆盖 and do not write that the behavior will trigger.", "min_chars": 150},
-        {"heading": "SFMEA 表", "instructions": "Provide SFMEA source content in prose/bullets: function or flow, failure mode, trigger, injection point, propagation, impact, observable signal, and suggested test. CodeTalk will render the SFMEA grid.", "requires_sfmea": True, "min_chars": 200},
+        {"heading": "SFMEA 表", "instructions": "Provide SFMEA source content in prose/bullets: function or flow, failure mode, black-box trigger, gray-box injection point, branch condition/error code, propagation, impact, observable signal, and suggested test. CodeTalk will render the SFMEA grid.", "requires_sfmea": True, "min_chars": 220},
     ],
     "requirements_traceability": [
         {"heading": "需求 → 设计映射", "instructions": "Step 1: list every requirement from materials. Step 2: describe each mapping in prose/bullets with requirement id, description, implementation_exists, requirement_status, trigger, observable signal, and test points. CodeTalk will render structured tables. 实现存在不等于需求已覆盖: if source exists but conflicts with material expectation, requirement_status must be 未覆盖 or 部分未覆盖, never 已覆盖.", "min_chars": 300},

@@ -9,6 +9,7 @@ import asyncio
 import gc
 import json
 import subprocess
+from pathlib import Path
 
 import pytest
 
@@ -108,6 +109,30 @@ def test_path_hints_prioritize_exact_source_files() -> None:
     assert normalized[0].endswith("/lib/log/log_flags.c")
     assert normalized[1].endswith("/lib/log/log_deprecated.c")
     assert all("missing/nope.c" not in h for h in normalized)
+
+
+def test_path_hints_expand_source_directories_recursively(tmp_path) -> None:
+    tls_dir = tmp_path / "nvme_tcp" / "trans" / "tls"
+    (tls_dir / "handshake").mkdir(parents=True)
+    (tls_dir / "io").mkdir()
+    (tls_dir / "crypto").mkdir()
+    (tls_dir / "handshake" / "ntt_tls_handshake.c").write_text("int hs;\n", encoding="utf-8")
+    (tls_dir / "io" / "ntt_tls_io.c").write_text("int io;\n", encoding="utf-8")
+    (tls_dir / "crypto" / "ntt_tls_crypto.h").write_text("int crypto;\n", encoding="utf-8")
+    (tls_dir / "README.md").write_text("not source\n", encoding="utf-8")
+
+    hits = _path_hint_repo_hits_blocking(
+        str(tmp_path),
+        [r"nvme_tcp\trans\tls"],
+        10,
+    )
+
+    rels = [Path(h).relative_to(tmp_path).as_posix() for h in hits]
+    assert rels == [
+        "nvme_tcp/trans/tls/crypto/ntt_tls_crypto.h",
+        "nvme_tcp/trans/tls/handshake/ntt_tls_handshake.c",
+        "nvme_tcp/trans/tls/io/ntt_tls_io.c",
+    ]
 
 
 def test_symbol_evidence_snippet_focuses_on_definition() -> None:
