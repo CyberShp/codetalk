@@ -457,6 +457,163 @@ class TestCoverageTestDesign:
         assert gap["black_box_cases"]
         assert design["summary"]["black_box_ready_count"] == 1
 
+    async def test_resolves_function_when_coverage_path_is_directory(self, tmp_path):
+        from app.services.coverage_analyzer import build_coverage_test_design
+
+        self._make_repo(tmp_path)
+        modules = self._modules(
+            "feature,module,code_location,function,triggered,hit_count\n"
+            "rec,session,src,recover_session,false,0\n"
+        )
+        design = await build_coverage_test_design(
+            modules, workspace_id="ws-1", repo_path=str(tmp_path)
+        )
+
+        gap = [g for g in design["gaps"] if g.get("kind") == "function"][0]
+        assert gap["source_window"]["available"] is True
+        assert gap["source_window"]["path"] == "src/session.c"
+        assert any("api_handle_request" in (e.get("chain") or []) for e in gap["entry_paths"])
+
+    async def test_cgc_callers_seed_entry_trace_when_rg_call_site_missing(self, tmp_path):
+        from app.adapters.coverage import FunctionHit, ModuleCoverage
+        from app.services.coverage_analyzer import _design_function_gap
+
+        self._make_repo(tmp_path)
+        hit = FunctionHit(
+            function_name="recover_session",
+            file_path="src/session.c",
+            line_start=1,
+            line_end=6,
+            triggered=False,
+            hit_count=0,
+        )
+        module = ModuleCoverage(
+            module_path="src",
+            line_rate=0.0,
+            branch_rate=0.0,
+            function_rate=0.0,
+            function_hits=[hit],
+        )
+        result = _design_function_gap(
+            module,
+            hit,
+            workspace_id="ws-1",
+            repo_path=str(tmp_path),
+            repo_root=tmp_path,
+            rg_available=False,
+            scope={},
+            cgc_context={
+                "available": True,
+                "callers": [{"name": "api_handle_request", "location": "src/api.c"}],
+            },
+            trace=True,
+        )
+
+        assert result["gray_box_required"] is False
+        assert result["entry_paths"][0]["tool"] == "cgc"
+        assert result["entry_paths"][0]["entry_symbol"] == "api_handle_request"
+
+    async def test_ripgrep_call_sites_skip_vendor_and_build_dirs(self, tmp_path):
+        from app.services.coverage_analyzer import _ripgrep_call_sites
+
+        vendor = tmp_path / "node_modules"
+        vendor.mkdir()
+        (vendor / "lib.c").write_text(
+            "void wrapper(void) { recover_session(0); }\n",
+            encoding="utf-8",
+        )
+
+        assert _ripgrep_call_sites(tmp_path, "recover_session") == []
+
+    async def test_spdk_rpc_multiline_handler_becomes_black_box_entry(self, tmp_path):
+        from app.services.coverage_analyzer import build_coverage_test_design
+
+        mod = tmp_path / "module" / "bdev" / "zone_block"
+        mod.mkdir(parents=True)
+        (mod / "vbdev_zone_block.h").write_text(
+            "int vbdev_zone_block_create(const char *bdev_name, const char *vbdev_name,\n"
+            "                             uint64_t zone_capacity,\n"
+            "                             uint64_t optimal_open_zones);\n",
+            encoding="utf-8",
+        )
+        (mod / "vbdev_zone_block_rpc.c").write_text(
+            "static void\n"
+            "rpc_bdev_zone_block_create(struct spdk_jsonrpc_request *request,\n"
+            "                           const struct spdk_json_val *params)\n"
+            "{\n"
+            "    struct rpc_bdev_zone_block_create_ctx req = {};\n"
+            "    int rc;\n"
+            "    if (decode(params, &req)) {\n"
+            "        goto cleanup;\n"
+            "    }\n"
+            "    rc = vbdev_zone_block_create(req.base_bdev, req.name, req.zone_capacity,\n"
+            "                                 req.optimal_open_zones);\n"
+            "cleanup:\n"
+            "    return;\n"
+            "}\n"
+            "SPDK_RPC_REGISTER(\"bdev_zone_block_create\", rpc_bdev_zone_block_create, SPDK_RPC_RUNTIME)\n",
+            encoding="utf-8",
+        )
+        (mod / "vbdev_zone_block.c").write_text(
+            "int\n"
+            "vbdev_zone_block_create(const char *bdev_name, const char *vbdev_name, uint64_t zone_capacity,\n"
+            "                        uint64_t optimal_open_zones)\n"
+            "{\n"
+            "    if (zone_capacity == 0) {\n"
+            "        return -EINVAL;\n"
+            "    }\n"
+            "    if (optimal_open_zones == 0) {\n"
+            "        return -EINVAL;\n"
+            "    }\n"
+            "    return zone_block_register(bdev_name);\n"
+            "}\n",
+            encoding="utf-8",
+        )
+        modules = self._modules(
+            "feature,module,code_location,function,triggered,hit_count\n"
+            "zone,bdev_zone_block,module/bdev/zone_block/vbdev_zone_block.c:2-13,"
+            "vbdev_zone_block_create,false,0\n"
+        )
+
+        design = await build_coverage_test_design(
+            modules, workspace_id="ws-1", repo_path=str(tmp_path)
+        )
+
+        gap = [g for g in design["gaps"] if g.get("kind") == "function"][0]
+        assert gap["gray_box_required"] is False
+        entry = gap["entry_paths"][0]
+        assert entry["entry_symbol"] == "rpc_bdev_zone_block_create"
+        assert entry["entry_label"] == "JSON-RPC bdev_zone_block_create"
+        assert entry["chain"] == ["rpc_bdev_zone_block_create", "vbdev_zone_block_create"]
+        assert set(entry["input_hints"]) == {
+            "base_bdev",
+            "name",
+            "zone_capacity",
+            "optimal_open_zones",
+        }
+        assert not any((b.get("file") or "").endswith(".h") for b in gap["trigger_branches"])
+        assert not any(
+            str(b.get("condition") or "").startswith("int vbdev_zone_block_create")
+            for b in gap["trigger_branches"]
+        )
+        assert not any(
+            str(b.get("condition") or "").startswith("rc = vbdev_zone_block_create")
+            for b in gap["trigger_branches"]
+        )
+        assert not any(
+            "Insert the bdev" in str(b.get("condition") or "")
+            for b in gap["trigger_branches"]
+        )
+        case_text = "\n".join(
+            str(value)
+            for case in gap["black_box_cases"]
+            for value in case.values()
+        )
+        assert "JSON-RPC bdev_zone_block_create" in case_text
+        assert "zone_capacity" in case_text
+        assert "optimal_open_zones" in case_text
+        assert "Drive the nearest public API" not in case_text
+
     async def test_gray_box_when_no_external_entry(self, tmp_path):
         from app.services.coverage_analyzer import build_coverage_test_design
 

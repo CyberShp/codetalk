@@ -6,6 +6,7 @@ from __future__ import annotations
 import json
 import logging
 import asyncio
+import os
 import re
 import shutil
 import subprocess
@@ -48,6 +49,17 @@ _SOURCE_EXTENSION_CANDIDATES = (
     ".c", ".h", ".cc", ".cpp", ".cxx", ".hpp",
     ".py", ".go", ".rs", ".java", ".js", ".jsx", ".ts", ".tsx", ".cs",
 )
+_SOURCE_FILE_EXTS = {ext for ext in _SOURCE_EXTENSION_CANDIDATES if ext}
+_DIR_SKIP = {
+    ".git", ".hg", ".svn", "node_modules", "dist", "build", "out", "target",
+    ".next", "vendor", "coverage", ".tox", ".mypy_cache", ".pytest_cache",
+    "__pycache__", ".venv", "venv",
+}
+_RIPGREP_EXCLUDE_GLOBS = tuple(
+    glob
+    for name in sorted(_DIR_SKIP)
+    for glob in (f"!{name}/**", f"!**/{name}/**")
+)
 
 # A function-*definition* line: optional return type / modifiers, then the
 # function name, a parenthesised parameter list, and a trailing block opener
@@ -72,9 +84,61 @@ def _match_def_name(line: str) -> str | None:
         return None
     name = match.group(1)
     return None if name in _NON_FUNCTION_NAMES else name
+
+
+def _match_multiline_def_name(lines: list[str], idx: int) -> str | None:
+    """Return a C-like function name for multi-line definitions/prototypes.
+
+    SPDK commonly writes return types and long parameter lists across several
+    lines.  A textual call like ``rc = fn(...`` must not be mistaken for a
+    definition, so a match needs a type-like prefix on the same line or the
+    previous non-empty line.
+    """
+    if idx < 0 or idx >= len(lines):
+        return None
+    line_name = re.search(r"\b([A-Za-z_]\w*)\s*\(", lines[idx])
+    if not line_name or line_name.group(1) in _NON_FUNCTION_NAMES:
+        return None
+
+    for start in range(idx, max(-1, idx - 3), -1):
+        start_text = lines[start].strip()
+        if not start_text or start_text.startswith(("//", "/*", "*")):
+            break
+        fragment_lines: list[str] = []
+        for end in range(start, min(len(lines), idx + 8)):
+            text = lines[end].strip()
+            if not text:
+                continue
+            fragment_lines.append(text)
+            if "{" in text or ";" in text:
+                break
+        signature = " ".join(fragment_lines)
+        match = _SIGNATURE_RE.match(signature)
+        if not match:
+            continue
+        name = match.group("name")
+        if name in _NON_FUNCTION_NAMES:
+            continue
+        prefix = (match.group("prefix") or "").strip()
+        prev = _previous_nonempty_line(lines, start)
+        if prefix or (prev and _TYPE_ONLY_LINE_RE.match(prev.strip())):
+            return name
+    return None
+
+
+def _previous_nonempty_line(lines: list[str], idx: int) -> str | None:
+    for pos in range(idx - 1, -1, -1):
+        text = lines[pos].strip()
+        if text:
+            return text
+    return None
 _BRANCH_KEYWORD_RE = re.compile(
     r"\b(if|else\s+if|elif|switch|case|default|while|for|catch|except|when|guard)\b"
     r"|return\s+-[A-Za-z0-9_]+|goto\s+\w+",
+    re.IGNORECASE,
+)
+_CALLER_GUARD_RE = re.compile(
+    r"\b(if|else\s+if|elif|switch|case|default|while|for|catch|except|when|guard)\b",
     re.IGNORECASE,
 )
 _ERROR_CONDITION_RE = re.compile(
@@ -82,6 +146,16 @@ _ERROR_CONDITION_RE = re.compile(
     r"\berror|\bfail|errno|timeout|exception|panic|E[A-Z0-9_]{2,})",
     re.IGNORECASE,
 )
+_TYPE_ONLY_LINE_RE = re.compile(
+    r"^(?:static\s+)?(?:inline\s+)?(?:const\s+)?(?:unsigned\s+|signed\s+)?"
+    r"(?:void|bool|char|int|long|short|size_t|ssize_t|uint\d+_t|int\d+_t|"
+    r"struct\s+[A-Za-z_]\w*|enum\s+[A-Za-z_]\w*|[A-Za-z_]\w*(?:\s*[*&]+)?)$"
+)
+_SIGNATURE_RE = re.compile(
+    r"^(?P<prefix>[\w\s\*&:<>,~\[\]]*?)\b"
+    r"(?P<name>[A-Za-z_]\w*)\s*\([^;{}]*\)\s*(?:\{|;|$)"
+)
+_REQ_FIELD_RE = re.compile(r"\b(?:req|attrs|opts|ctx)\.([A-Za-z_]\w*)\b")
 
 # Entry classification heuristics: path/symbol fragments -> external entry kind.
 _ENTRY_SIGNATURES: tuple[tuple[str, tuple[str, ...]], ...] = (
@@ -800,7 +874,11 @@ def _existing_repo_root(repo_path: str | None) -> Path | None:
         return None
 
 
-def _resolve_source_file(repo_root: Path | None, file_path: str) -> Path | None:
+def _resolve_source_file(
+    repo_root: Path | None,
+    file_path: str,
+    function_name: str | None = None,
+) -> Path | None:
     """Resolve a coverage code-path to a real file inside the repo.
 
     The intranet code-path column may be a real relative path, a path without an
@@ -815,24 +893,89 @@ def _resolve_source_file(repo_root: Path | None, file_path: str) -> Path | None:
         try:
             if candidate.is_file() and _is_within(repo_root, candidate):
                 return candidate
+            if candidate.is_dir() and function_name and _is_within(repo_root, candidate):
+                found = _find_source_file_defining_function(repo_root, candidate, function_name)
+                if found is not None:
+                    return found
         except OSError:
             continue
+    if function_name:
+        hinted_parent = repo_root / rel
+        if hinted_parent.is_file():
+            hinted_parent = hinted_parent.parent
+        if hinted_parent.is_dir() and _is_within(repo_root, hinted_parent):
+            found = _find_source_file_defining_function(repo_root, hinted_parent, function_name)
+            if found is not None:
+                return found
     basename = Path(rel).name
     if not basename:
-        return None
-    # Bounded basename search across the repo (ignores VCS / build dirs).
+        return (
+            _find_source_file_defining_function(repo_root, repo_root, function_name)
+            if function_name else None
+        )
+    # Bounded basename search across the repo, skipping dependency/build dirs.
+    for ext in _SOURCE_EXTENSION_CANDIDATES:
+        target = basename + ext
+        matches = 0
+        for candidate in _iter_source_files(repo_root, name_filter=target, limit=50):
+            matches += 1
+            if candidate.is_file() and _is_within(repo_root, candidate):
+                return candidate
+            if matches >= 50:
+                break
+    if function_name:
+        return _find_source_file_defining_function(repo_root, repo_root, function_name)
+    return None
+
+
+def _iter_source_files(
+    root: Path,
+    *,
+    name_filter: str | None = None,
+    limit: int = 500,
+) -> list[Path]:
+    """Iterate source files below root while skipping generated/vendor dirs."""
+    results: list[Path] = []
     try:
-        for ext in _SOURCE_EXTENSION_CANDIDATES:
-            target = basename + ext
-            matches = 0
-            for candidate in repo_root.rglob(target):
-                matches += 1
-                if candidate.is_file() and _is_within(repo_root, candidate):
-                    return candidate
-                if matches >= 50:
-                    break
+        for dirpath, dirnames, filenames in os.walk(root):
+            dirnames[:] = [
+                d for d in dirnames
+                if d not in _DIR_SKIP and not d.startswith(".")
+            ]
+            for filename in filenames:
+                if name_filter and filename != name_filter:
+                    continue
+                path = Path(dirpath) / filename
+                if path.suffix.lower() not in _SOURCE_FILE_EXTS:
+                    continue
+                results.append(path)
+                if len(results) >= limit:
+                    return results
     except OSError:
+        return results
+    return results
+
+
+def _find_source_file_defining_function(
+    repo_root: Path,
+    search_root: Path,
+    function_name: str,
+) -> Path | None:
+    if not function_name:
         return None
+    for candidate in _iter_source_files(search_root, limit=1000):
+        try:
+            if not _is_within(repo_root, candidate):
+                continue
+            lines = candidate.read_text(encoding="utf-8", errors="replace").splitlines()
+        except OSError:
+            continue
+        if any(
+            _match_def_name(line) == function_name
+            or _match_multiline_def_name(lines, idx) == function_name
+            for idx, line in enumerate(lines)
+        ):
+            return candidate
     return None
 
 
@@ -846,7 +989,7 @@ def _is_within(root: Path, candidate: Path) -> bool:
 
 def _read_source_window(repo_root: Path | None, hit: FunctionHit) -> dict | None:
     """Return the source window around an uncovered function, or None."""
-    source_file = _resolve_source_file(repo_root, hit.file_path)
+    source_file = _resolve_source_file(repo_root, hit.file_path, hit.function_name)
     if source_file is None:
         return None
     try:
@@ -890,7 +1033,10 @@ def _find_definition_line(lines: list[str], function_name: str) -> int | None:
         return None
     name_re = re.compile(rf"\b{re.escape(function_name)}\s*\(")
     for idx, line in enumerate(lines):
-        if name_re.search(line) and _match_def_name(line) == function_name:
+        if name_re.search(line) and (
+            _match_def_name(line) == function_name
+            or _match_multiline_def_name(lines, idx) == function_name
+        ):
             return idx + 1
     # Fallback: first textual occurrence of "name(".
     for idx, line in enumerate(lines):
@@ -941,11 +1087,14 @@ def _branches_from_window(window: dict | None, *, source: str) -> list[dict]:
     branches: list[dict] = []
     for item in window.get("lines") or []:
         text = item.get("text") or ""
+        stripped = text.strip()
+        if stripped.startswith(("//", "#", "*", "/*")):
+            continue
         if not _BRANCH_KEYWORD_RE.search(text):
             continue
         branches.append({
             "condition": _extract_branch_condition(text),
-            "line": text.strip()[:200],
+            "line": stripped[:200],
             "line_number": item.get("n"),
             "category": _branch_category(text),
             "source": source,
@@ -969,15 +1118,40 @@ def _dedupe_branches(branches: list[dict]) -> list[dict]:
     return out[:16]
 
 
+def _is_definition_or_declaration_site(
+    abs_file: str,
+    line_number: int,
+    function_name: str,
+) -> bool:
+    try:
+        lines = Path(abs_file).read_text(encoding="utf-8", errors="replace").splitlines()
+    except OSError:
+        return False
+    idx = line_number - 1
+    if idx < 0 or idx >= len(lines):
+        return False
+    line = lines[idx]
+    return (
+        _match_def_name(line) == function_name
+        or _match_multiline_def_name(lines, idx) == function_name
+    )
+
+
 def _ripgrep_call_sites(repo_root: Path, function_name: str) -> list[dict]:
     """Find textual call sites of ``function_name`` via ripgrep (degraded mode)."""
     if not function_name or shutil.which("rg") is None:
         return []
     pattern = rf"\b{re.escape(function_name)}\s*\("
+    exclude_args = [
+        item
+        for glob in _RIPGREP_EXCLUDE_GLOBS
+        for item in ("--glob", glob)
+    ]
     try:
         proc = subprocess.run(
             ["rg", "--no-heading", "--line-number", "--color", "never",
-             "--max-count", "40", "-e", pattern, str(repo_root)],
+             "--max-count", "40", *exclude_args,
+             "-e", pattern, str(repo_root)],
             capture_output=True,
             text=True,
             timeout=RIPGREP_TIMEOUT_SECONDS,
@@ -998,7 +1172,7 @@ def _ripgrep_call_sites(repo_root: Path, function_name: str) -> list[dict]:
             continue
         stripped = text.strip()
         # Skip the definition itself and obvious comment lines.
-        if _match_def_name(text) == function_name:
+        if _is_definition_or_declaration_site(file_str, line_number, function_name):
             continue
         if stripped.startswith(("//", "#", "*", "/*")):
             continue
@@ -1027,7 +1201,7 @@ def _caller_context(abs_file: str, line_number: int) -> tuple[str | None, dict |
 
     enclosing: str | None = None
     for idx in range(upper, -1, -1):
-        name = _match_def_name(lines[idx])
+        name = _match_def_name(lines[idx]) or _match_multiline_def_name(lines, idx)
         if name:
             enclosing = name
             break
@@ -1036,9 +1210,12 @@ def _caller_context(abs_file: str, line_number: int) -> tuple[str | None, dict |
     low = max(0, line_number - 8)
     for idx in range(upper, low - 1, -1):
         text = lines[idx]
-        if _match_def_name(text) is not None:
+        if (
+            _match_def_name(text) is not None
+            or _match_multiline_def_name(lines, idx) is not None
+        ):
             break  # reached the enclosing definition without a guard
-        if _BRANCH_KEYWORD_RE.search(text):
+        if _CALLER_GUARD_RE.search(text):
             guard = {
                 "condition": _extract_branch_condition(text),
                 "line": text.strip()[:200],
@@ -1061,6 +1238,114 @@ def _classify_entry(file_path: str, enclosing_fn: str | None, line_text: str) ->
     return None
 
 
+def _entry_metadata_for_site(abs_file: str, line_number: int, enclosing_fn: str | None) -> dict:
+    metadata: dict = {}
+    if not enclosing_fn:
+        return metadata
+    rpc_method = _spdk_rpc_method_for_handler(abs_file, enclosing_fn)
+    if rpc_method:
+        metadata["entry_label"] = f"JSON-RPC {rpc_method}"
+    hints = _request_field_hints(abs_file, line_number)
+    if hints:
+        metadata["input_hints"] = hints
+    return metadata
+
+
+def _spdk_rpc_method_for_handler(abs_file: str, handler_name: str) -> str | None:
+    try:
+        text = Path(abs_file).read_text(encoding="utf-8", errors="replace")
+    except OSError:
+        return None
+    pattern = re.compile(
+        rf"SPDK_RPC_REGISTER\s*\(\s*\"([^\"]+)\"\s*,\s*{re.escape(handler_name)}\b",
+        re.MULTILINE | re.DOTALL,
+    )
+    match = pattern.search(text)
+    return match.group(1) if match else None
+
+
+def _request_field_hints(abs_file: str, line_number: int) -> list[str]:
+    try:
+        lines = Path(abs_file).read_text(encoding="utf-8", errors="replace").splitlines()
+    except OSError:
+        return []
+    idx = line_number - 1
+    if idx < 0 or idx >= len(lines):
+        return []
+    statement: list[str] = []
+    for pos in range(idx, min(len(lines), idx + 8)):
+        text = lines[pos].strip()
+        if not text:
+            continue
+        statement.append(text)
+        if ";" in text:
+            break
+    seen: set[str] = set()
+    hints: list[str] = []
+    for match in _REQ_FIELD_RE.finditer(" ".join(statement)):
+        field = match.group(1)
+        if field not in seen:
+            seen.add(field)
+            hints.append(field)
+    return hints[:12]
+
+
+def _split_cgc_location(location: object) -> tuple[str | None, int | None]:
+    text = str(location or "").strip()
+    if not text:
+        return None, None
+    file_part = text
+    line_number: int | None = None
+    if ":" in text:
+        maybe_file, maybe_line = text.rsplit(":", 1)
+        if maybe_line.isdigit():
+            file_part = maybe_file
+            line_number = int(maybe_line)
+    return file_part.replace("\\", "/"), line_number
+
+
+def _cgc_caller_seed_paths(
+    function_name: str,
+    cgc_callers: object,
+) -> tuple[list[dict], list[tuple[list[str], str]]]:
+    """Turn CGC callers into entry paths or BFS seeds.
+
+    CGC often has a call graph even when text call-site search is unavailable or
+    incomplete.  It may not include the exact branch line, but it can still
+    identify a likely public entry/caller and keep the result source-labelled.
+    """
+    if not isinstance(cgc_callers, list):
+        return [], []
+    entries: list[dict] = []
+    frontier: list[tuple[list[str], str]] = []
+    for caller in cgc_callers[:8]:
+        if not isinstance(caller, dict):
+            continue
+        name = str(caller.get("name") or "").strip()
+        if not name:
+            continue
+        location, line_number = _split_cgc_location(caller.get("location"))
+        entry_kind = _classify_entry(location or "", name, "")
+        chain = [name, function_name]
+        if entry_kind:
+            entries.append({
+                "entry_kind": entry_kind,
+                "entry_symbol": name,
+                "entry_file": location,
+                "call_line": line_number,
+                "chain": chain,
+                "depth": len(chain) - 1,
+                "evidence": (
+                    f"{location}:{line_number}" if location and line_number
+                    else location or name
+                ),
+                "tool": "cgc",
+            })
+        else:
+            frontier.append((chain, name))
+    return entries, frontier
+
+
 def _trace_entry_paths(
     repo_root: Path | None,
     function_name: str,
@@ -1081,27 +1366,29 @@ def _trace_entry_paths(
     visited: set[str] = {function_name}
     # BFS frontier of (chain_so_far, current_symbol).
     frontier: list[tuple[list[str], str]] = [([function_name], function_name)]
+    cgc_entries, cgc_frontier = _cgc_caller_seed_paths(function_name, cgc_callers)
+    entry_paths.extend(cgc_entries)
+    for chain, symbol in cgc_frontier:
+        if symbol not in visited:
+            visited.add(symbol)
+            frontier.append((chain, symbol))
 
-    direct = True
     for _hop in range(ENTRY_TRACE_MAX_HOPS):
         next_frontier: list[tuple[list[str], str]] = []
         for chain, symbol in frontier:
             sites = _ripgrep_call_sites(repo_root, symbol) if rg_available else []
             for site in sites[:6]:
                 enclosing, guard = _caller_context(site["abs_file"], site["line_number"])
-                if direct:
-                    branch = dict(guard) if guard else {
-                        "condition": _extract_branch_condition(site["text"]),
-                        "line": site["text"],
-                        "line_number": site["line_number"],
-                        "category": _branch_category(site["text"]),
-                        "is_error_path": bool(_ERROR_CONDITION_RE.search(site["text"])),
-                    }
+                if len(chain) == 1 and guard:
+                    branch = dict(guard)
                     branch.update({"source": "caller", "file": site["file"]})
                     caller_branches.append(branch)
                 entry_kind = _classify_entry(site["file"], enclosing, site["text"])
                 caller_chain = ([enclosing, *chain] if enclosing else chain)
                 if entry_kind:
+                    metadata = _entry_metadata_for_site(
+                        site["abs_file"], site["line_number"], enclosing
+                    )
                     entry_paths.append({
                         "entry_kind": entry_kind,
                         "entry_symbol": enclosing,
@@ -1111,12 +1398,12 @@ def _trace_entry_paths(
                         "depth": len(caller_chain) - 1,
                         "evidence": f"{site['file']}:{site['line_number']} {site['text']}",
                         "tool": "ripgrep" if rg_available else "cgc",
+                        **metadata,
                     })
                     continue
                 if enclosing and enclosing not in visited:
                     visited.add(enclosing)
                     next_frontier.append((caller_chain, enclosing))
-        direct = False
         if entry_paths or not next_frontier:
             break
         frontier = next_frontier
@@ -1146,6 +1433,23 @@ def _build_black_box_cases(
 
     for entry in entry_paths[:3]:
         chain = " -> ".join(entry.get("chain") or [])
+        entry_label = (
+            entry.get("entry_label")
+            or entry.get("entry_symbol")
+            or entry.get("entry_kind")
+        )
+        input_hints = [str(item) for item in (entry.get("input_hints") or []) if item]
+        entry_inputs = (
+            f"通过 {entry_label} 的外部请求参数构造有效、边界和异常输入："
+            + ", ".join(input_hints)
+            if input_hints else base_inputs
+        )
+        steps = [
+            f"从 {entry.get('entry_kind')} 入口 ({entry.get('entry_file')}) 发起 {entry_label} 请求/命令/消息",
+        ]
+        if input_hints:
+            steps.append("设置入口参数：" + ", ".join(input_hints))
+        steps.append(f"构造输入使调用沿 {chain} 到达 {hit.function_name}")
         cases.append({
             "title": f"经 {entry.get('entry_kind')} 入口触达 {hit.function_name}",
             "entry_kind": entry.get("entry_kind"),
@@ -1159,6 +1463,23 @@ def _build_black_box_cases(
             "observable_signals": signals,
             "evidence": entry.get("evidence"),
         })
+        cases[-1].update({
+            "title": f"经 {entry.get('entry_kind')} 入口 {entry_label} 触达 {hit.function_name}",
+            "preconditions": f"通过外部入口 {entry_label} 驱动调用链：{chain}",
+            "inputs": entry_inputs,
+            "steps": steps,
+        })
+
+    primary_entry = entry_paths[0] if entry_paths else {}
+    primary_entry_label = (
+        primary_entry.get("entry_label")
+        or primary_entry.get("entry_symbol")
+        or primary_entry.get("entry_kind")
+    )
+    primary_input_hints = [
+        str(item) for item in (primary_entry.get("input_hints") or []) if item
+    ]
+    primary_chain = " -> ".join(primary_entry.get("chain") or [])
 
     for branch in trigger_branches[:3]:
         if not branch.get("is_error_path") and branch.get("source") != "caller":
@@ -1178,6 +1499,33 @@ def _build_black_box_cases(
             "evidence": (f"{branch.get('file')}:{branch.get('line_number')}"
                          if branch.get("file") else None),
         })
+        if primary_entry_label:
+            branch_inputs = (
+                f"通过 {primary_entry_label} 调整外部请求参数/状态，使分支条件 "
+                f"`{branch.get('condition')}` 成立"
+            )
+            if primary_input_hints:
+                branch_inputs += "；可调入口参数：" + ", ".join(primary_input_hints)
+            branch_steps = [
+                (
+                    f"从 {primary_entry.get('entry_kind')} 入口 "
+                    f"({primary_entry.get('entry_file')}) 发起 {primary_entry_label}"
+                ),
+            ]
+            if primary_input_hints:
+                branch_steps.append("设置入口参数：" + ", ".join(primary_input_hints))
+            branch_steps.append(
+                f"构造输入使 `{branch.get('condition')}` 成立，并沿 {primary_chain} "
+                f"到达 {hit.function_name}"
+            )
+            cases[-1].update({
+                "preconditions": (
+                    f"通过外部入口 {primary_entry_label} 覆盖分支："
+                    f"{branch.get('condition')}"
+                ),
+                "inputs": branch_inputs,
+                "steps": branch_steps,
+            })
 
     if not cases:
         # No source-backed entry/branch; still give a coverage-driven sketch.

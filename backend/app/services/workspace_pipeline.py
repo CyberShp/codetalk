@@ -220,10 +220,11 @@ class WorkspacePipeline:
         ws_id: str,
         coverage_analysis_ids: list[str] | None,
     ) -> str | None:
-        """Return the modules_json of the selected coverage analysis.
+        """Return merged modules_json for the selected coverage analyses.
 
-        Explicit ids win; otherwise the workspace's most-recently analyzed
-        coverage is used (per the product decision to auto-include the latest).
+        Explicit ids win and all analyzed matching rows are merged; otherwise
+        the workspace's most-recently analyzed coverage is used (per the product
+        decision to auto-include the latest).
         """
         async with aiosqlite.connect(settings.sqlite_db) as db:
             db.row_factory = aiosqlite.Row
@@ -232,10 +233,11 @@ class WorkspacePipeline:
                 async with db.execute(
                     f"SELECT modules_json FROM coverage_analyses "
                     f"WHERE id IN ({placeholders}) AND workspace_id = ? "
-                    f"ORDER BY updated_at DESC LIMIT 1",
+                    f"AND status = 'analyzed' "
+                    f"ORDER BY updated_at DESC",
                     (*coverage_analysis_ids, ws_id),
                 ) as cur:
-                    row = await cur.fetchone()
+                    rows = await cur.fetchall()
             else:
                 async with db.execute(
                     "SELECT modules_json FROM coverage_analyses "
@@ -243,8 +245,20 @@ class WorkspacePipeline:
                     "ORDER BY updated_at DESC LIMIT 1",
                     (ws_id,),
                 ) as cur:
-                    row = await cur.fetchone()
-        return row["modules_json"] if row and row["modules_json"] else None
+                    rows = await cur.fetchall()
+
+        merged: list[dict] = []
+        for row in rows:
+            raw = row["modules_json"] if row and row["modules_json"] else None
+            if not raw:
+                continue
+            try:
+                data = json.loads(raw)
+            except Exception:
+                continue
+            if isinstance(data, list):
+                merged.extend(item for item in data if isinstance(item, dict))
+        return json.dumps(merged, ensure_ascii=False) if merged else None
 
     @staticmethod
     def _append_test_design_section(output_dir: Path, section: str) -> None:

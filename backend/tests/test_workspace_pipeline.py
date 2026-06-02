@@ -557,3 +557,61 @@ class TestApplyCoverageTestDesign:
             ws_id, str(repo), task_id, None
         )
         assert not (settings.outputs_path / task_id / "coverage_test_design.json").exists()
+
+    async def test_explicit_coverage_ids_are_merged_and_must_be_analyzed(
+        self, sqlite_db, tmp_path
+    ):
+        from app.adapters.coverage import parse_internal_function_hits
+        from app.services.coverage_analyzer import _module_to_dict
+
+        ws_id = "ws-cov-merge"
+        repo = self._make_repo(tmp_path)
+
+        def modules_json(function_name: str) -> str:
+            report = parse_internal_function_hits(
+                "feature,module,code_location,function,triggered,hit_count\n"
+                f"rec,session,src/session.c:1-4,{function_name},false,0\n"
+            )
+            return json.dumps(
+                [_module_to_dict(m) for m in report.modules], ensure_ascii=False
+            )
+
+        async with aiosqlite.connect(sqlite_db) as db:
+            await db.execute(
+                "INSERT INTO workspaces (id, name, repo_path, indexed) VALUES (?,?,?,1)",
+                (ws_id, "WS", str(repo)),
+            )
+            for cov_id, status, function_name, updated_at in [
+                ("cov-a", "analyzed", "recover_session", "2026-06-02T01:00:00Z"),
+                ("cov-b", "analyzed", "internal_helper", "2026-06-02T02:00:00Z"),
+                ("cov-parsed", "parsed", "must_not_appear", "2026-06-02T03:00:00Z"),
+            ]:
+                await db.execute(
+                    "INSERT INTO coverage_analyses "
+                    "(id, name, status, workspace_id, repo_path, modules_json, source_format, updated_at) "
+                    "VALUES (?,?,?,?,?,?,?,?)",
+                    (
+                        cov_id,
+                        cov_id,
+                        status,
+                        ws_id,
+                        str(repo),
+                        modules_json(function_name),
+                        "internal_function_hits",
+                        updated_at,
+                    ),
+                )
+            await db.commit()
+
+        merged_json = await WorkspacePipeline()._resolve_coverage_modules_json(
+            ws_id, ["cov-a", "cov-b", "cov-parsed"]
+        )
+        assert merged_json is not None
+        names = [
+            hit["function_name"]
+            for module in json.loads(merged_json)
+            for hit in module.get("function_hits", [])
+        ]
+        assert "recover_session" in names
+        assert "internal_helper" in names
+        assert "must_not_appear" not in names
