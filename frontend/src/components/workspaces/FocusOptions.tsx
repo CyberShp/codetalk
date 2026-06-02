@@ -14,24 +14,24 @@ const ITEMS: Array<{
   hint?: string;
   highlight?: boolean;
 }> = [
-  { key: "key_flows", label: "关键业务/协议流程" },
-  { key: "exception_branches", label: "异常分支" },
-  { key: "exception_propagation", label: "异常传播路径" },
-  { key: "boundary_values", label: "边界值" },
-  { key: "long_running_flip", label: "长运行变量翻转/回绕" },
-  { key: "state_machine", label: "状态机/状态转换" },
-  { key: "resource_cleanup", label: "资源分配与清理" },
-  { key: "concurrency", label: "并发/锁/异步顺序" },
-  { key: "observability", label: "可观测性（日志/计数/告警）" },
-  { key: "sfmea", label: "SFMEA 输入" },
-  { key: "cpp_implicit_logic", label: "C/C++ 隐式逻辑（宏/函数指针/switch）" },
-  { key: "security_risk", label: "安全风险", hint: "默认关闭", highlight: false },
+  { key: "key_flows", label: "External trigger / protocol flow" },
+  { key: "exception_propagation", label: "Exception propagation path" },
+  { key: "exception_branches", label: "Error and fallback branches" },
+  { key: "boundary_values", label: "Boundary values and limits" },
+  { key: "state_machine", label: "State transitions" },
+  { key: "resource_cleanup", label: "Resource allocation / cleanup" },
+  { key: "concurrency", label: "Concurrency / async ordering" },
+  { key: "observability", label: "Observable logs / counters / alarms" },
+  { key: "long_running_flip", label: "Long-running flip / wraparound" },
+  { key: "sfmea", label: "SFMEA input" },
+  { key: "cpp_implicit_logic", label: "C/C++ macros / callbacks / switch" },
+  { key: "security_risk", label: "Security risk", hint: "Off by default", highlight: false },
 ];
 
 export default function FocusOptionsEditor({ value, onChange }: Props) {
   return (
     <div className="space-y-2">
-      <label className="text-sm font-medium text-on-surface">焦点方向</label>
+      <label className="text-sm font-medium text-on-surface">Test focus directions</label>
       <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
         {ITEMS.map((item) => {
           const enabled = value[item.key];

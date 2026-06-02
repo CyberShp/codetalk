@@ -609,8 +609,14 @@ class ReportGenerator:
                 "\n### Developer-to-Tester Scenario Mode\n"
                 "Write as a developer explaining implementation-backed test scenarios to testers. "
                 "Convert source logic into executable black-box and gray-box test design, not a code-review narrative.\n"
-                "- For each scenario, include black-box trigger, gray-box aid, expected result, and observable signal.\n"
+                "- For each scenario, include black-box trigger, gray-box aid, source evidence chain, branch condition, expected result, observable signal, and verification gap.\n"
+                "- Required scenario fields: black-box trigger; gray-box aid/injection point; source evidence chain; branch condition; expected result; observable signal; verification gap.\n"
+                "- Use the staged weak-model pipeline: coverage gap -> BranchFactCard -> ExternalEntryCard -> requirements/design wording -> BlackBoxReadinessCard -> TestCaseDraft -> WhiteBoxLeakCheckResult.\n"
+                "- Classify every scenario as exactly one of `black_box_ready`, `black_box_hypothesis`, or `gray_box_required` before writing the case.\n"
+                "- Split output into Test execution area, Gray-box aid area, and Evidence area. Function names, source paths, line numbers, private fields, branch expressions, mock/stub/hook steps, and coverage targets belong only in Evidence or Gray-box aid, never in the black-box Test execution area.\n"
+                "- Move from external trigger -> source branch -> expected result -> observation point; do not stop at module responsibility.\n"
                 "- For key functions, build a function failure matrix in prose: function, file, normal path, branch condition, error code/class, cleanup/resource release, state transition, propagation, log/return/connection observation.\n"
+                "- When evidence is missing, mark the case as 待验证 / gray-box required and do not invent a confident black-box path.\n"
                 "- Prefer depth over breadth: if evidence is limited, deep-dive the most relevant flow/function instead of listing generic risks.\n"
                 "- SFMEA content must be externally constructible and observable; mark any missing source support as 待验证.\n"
             )
@@ -2181,6 +2187,66 @@ _SECTION_BLUEPRINTS: dict[str, list[dict]] = {
 }
 
 
+_SECTION_BLUEPRINTS["source_reading"][0]["instructions"] = (
+    "For each evidence file with snippet, list path, unit, external entry or caller, "
+    "key functions, state variables, error codes/classes, cleanup/resource release, "
+    "branch conditions, and observable logs/returns/counters."
+)
+_SECTION_BLUEPRINTS["source_reading"][1]["instructions"] = (
+    "For C/C++ evidence, list macros, function pointers, callbacks, switch-case "
+    "dispatch points, build/config branches, and how each changes black-box "
+    "reachability or gray-box injection/observation."
+)
+_SECTION_BLUEPRINTS["source_reading"][2]["instructions"] = (
+    "List possible missed or wrong GitNexus relations, the test impact of each "
+    "relation, and prefix uncertain items with 待验证."
+)
+
+_SECTION_BLUEPRINTS["business_flow"][0]["instructions"] = (
+    "Identify 3-5 important flows with external trigger/input, normal path, "
+    "source-backed state transition, output, and observable signal. Make each "
+    "flow directly usable as a black-box or gray-box test seed."
+)
+_SECTION_BLUEPRINTS["business_flow"][2]["instructions"] = (
+    "Explain dependencies/triggers between flows, where one flow changes the "
+    "preconditions of another, and the concrete testing impact: setup action, "
+    "trigger, expected result, and observation point."
+)
+
+_SECTION_BLUEPRINTS["test_design"][0]["instructions"] = (
+    "Create Developer-to-Tester Scenario Mode output per object. Each scenario "
+    "must first follow the staged pipeline: BranchFactCard, ExternalEntryCard, "
+    "BlackBoxReadinessCard (`black_box_ready`, `black_box_hypothesis`, or "
+    "`gray_box_required`), TestCaseDraft, and WhiteBoxLeakCheckResult. Then output "
+    "Test execution area, Gray-box aid area, and Evidence area. Each scenario must "
+    "include black-box trigger, gray-box aid/injection point, source evidence chain, "
+    "branch condition, expected result, observable signal, verification gap, and "
+    "function failure matrix notes for key functions."
+)
+_SECTION_BLUEPRINTS["test_design"][1]["instructions"] = (
+    "List state variable/object, initial state, external transition action, target "
+    "state, source evidence, expected result, observation point, and whether "
+    "gray-box setup is required."
+)
+_SECTION_BLUEPRINTS["test_design"][2]["instructions"] = (
+    "List configuration/switch values, affected code path, external trigger, "
+    "boundary value, expected result, observable signal, and gray-box aid when "
+    "black-box reachability is unclear."
+)
+_SECTION_BLUEPRINTS["test_design"][3]["instructions"] = (
+    "List timing and concurrency tests with trigger ordering, branch condition, "
+    "expected result, observable signal, and injection/observation aid. If materials "
+    "claim a behavior but source evidence is absent (源码未实现), mark expected result as "
+    "验收会失败/需求未覆盖 and do not write that the behavior will trigger."
+)
+_SECTION_BLUEPRINTS["test_design"][4]["instructions"] = (
+    "Provide SFMEA source content in prose/bullets: function or flow, failure mode, "
+    "black-box trigger, gray-box injection point, source evidence chain, branch "
+    "condition/error code, propagation, impact, observable signal, verification gap, "
+    "and suggested test. CodeTalk will render the SFMEA grid."
+)
+
+
 def _default_sections_for(spec: ReportSpec) -> list[dict]:
     """Build a minimal section blueprint for custom report specs."""
     instructions = (spec.audience or "") + "\nQuestions:\n" + "\n".join(f"- {q}" for q in (spec.questions or []))
@@ -2292,6 +2358,75 @@ def _ctd_cell(value: object) -> str:
     return text.replace("|", "\\|") or "-"
 
 
+def _ctd_case_type_label(case_type: object) -> str:
+    mapping = {
+        "black_box_ready": "black_box_ready",
+        "black_box_hypothesis": "black_box_hypothesis",
+        "gray_box_required": "gray_box_required",
+    }
+    return mapping.get(str(case_type or ""), str(case_type or "unknown"))
+
+
+def _ctd_render_test_case_drafts(lines: list[str], gap: dict) -> None:
+    drafts = gap.get("test_case_drafts") or []
+    if not drafts:
+        return
+    lines.append("- Test execution area:")
+    for draft in drafts[:3]:
+        execution = draft.get("test_execution") or {}
+        lines.append(f"  - Type: `{_ctd_case_type_label(draft.get('case_type'))}`")
+        lines.append(f"    - Title: {_ctd_cell(execution.get('title'))}")
+        lines.append(f"    - External trigger: {_ctd_cell(execution.get('external_trigger'))}")
+        lines.append(f"    - Preconditions: {_ctd_cell(execution.get('preconditions'))}")
+        lines.append(f"    - Test input: {_ctd_cell(execution.get('inputs'))}")
+        steps = execution.get("steps") or []
+        if steps:
+            lines.append("    - Steps: " + " -> ".join(_ctd_cell(step) for step in steps[:6]))
+        lines.append(f"    - Expected result: {_ctd_cell(execution.get('expected'))}")
+        signals = execution.get("observable_signals") or []
+        if signals:
+            lines.append("    - Observable signals: " + "; ".join(_ctd_cell(sig) for sig in signals[:8]))
+
+
+def _ctd_render_gray_and_evidence(lines: list[str], gap: dict) -> None:
+    readiness = gap.get("black_box_readiness") or {}
+    lint = gap.get("white_box_leak_check") or {}
+    gray = gap.get("gray_box") or {}
+    branch_fact = gap.get("branch_fact_card") or {}
+    entry_card = gap.get("external_entry_card") or {}
+
+    lines.append("- Gray-box aid area:")
+    lines.append(f"  - Required: {_ctd_cell(gray.get('required'))}")
+    if gray.get("technique") or gray.get("scheme"):
+        lines.append(f"  - Technique: {_ctd_cell(gray.get('technique'))}")
+        lines.append(f"  - Scheme: {_ctd_cell(gray.get('scheme'))}")
+    if gray.get("injection_points"):
+        lines.append("  - Injection/observation points: " + "; ".join(
+            _ctd_cell(point) for point in (gray.get("injection_points") or [])[:6]
+        ))
+
+    lines.append("- Evidence area:")
+    lines.append(f"  - Readiness: `{_ctd_case_type_label(readiness.get('case_type'))}`; {_ctd_cell(readiness.get('rationale'))}")
+    lines.append(f"  - White-box leak lint: {'pass' if lint.get('passed', True) else 'failed'}")
+    if branch_fact.get("source_evidence"):
+        lines.append("  - Source/coverage evidence: " + "; ".join(
+            _ctd_cell(item) for item in (branch_fact.get("source_evidence") or [])[:6]
+        ))
+    if branch_fact.get("branch_conditions"):
+        lines.append("  - Branch conditions: " + "; ".join(
+            _ctd_cell(item) for item in (branch_fact.get("branch_conditions") or [])[:6]
+        ))
+    entries = entry_card.get("entries") or []
+    if entries:
+        labels = [
+            f"[{entry.get('entry_kind')}] {entry.get('entry_label')}"
+            for entry in entries[:4]
+        ]
+        lines.append("  - External entry evidence: " + "; ".join(_ctd_cell(label) for label in labels))
+    if gap.get("evidence_gaps"):
+        lines.append("  - Verification gaps: " + "; ".join(_ctd_cell(item) for item in gap.get("evidence_gaps")[:6]))
+
+
 def build_coverage_test_design_section(design: dict | None) -> str:
     """Render the deterministic 覆盖率缺口驱动测试设计 section for test_design reports.
 
@@ -2323,11 +2458,14 @@ def build_coverage_test_design_section(design: dict | None) -> str:
     lines.append("")
     lines.append(
         "- 覆盖率缺口概况：未覆盖函数 {fns} 个，未覆盖分支 {brs} 个，"
-        "可黑盒触达 {bb} 个，需灰盒 {gb} 个，高风险 {hr} 个。".format(
+        "black_box_ready {bb} 个，black_box_hypothesis {hyp} 个，"
+        "gray_box_required {gb} 个，白盒泄漏 lint 失败 {lint} 个，高风险 {hr} 个。".format(
             fns=summary.get("uncovered_function_count", len(function_gaps)),
             brs=summary.get("uncovered_branch_count", len(branch_gaps)),
             bb=summary.get("black_box_ready_count", 0),
+            hyp=summary.get("black_box_hypothesis_count", 0),
             gb=summary.get("gray_box_required_count", 0),
+            lint=summary.get("white_box_lint_failed_count", 0),
             hr=summary.get("high_risk_count", 0),
         )
     )
@@ -2343,14 +2481,12 @@ def build_coverage_test_design_section(design: dict | None) -> str:
             "",
             "### 覆盖率缺口测试设计矩阵",
             "",
-            "| 未覆盖函数 | 文件 | 风险 | 触发条件/分支 | 外部入口 | 黑盒用例 | 灰盒方案 | 证据 | 待验证 |",
+            "| 未覆盖函数 | 文件 | 类型 | 风险 | 外部入口 | 测试执行区 | 灰盒方案 | 证据 | 待验证 |",
             "| --- | --- | --- | --- | --- | --- | --- | --- | --- |",
         ])
         for gap in function_gaps[:60]:
-            triggers = "；".join(
-                f"[{b.get('source')}] {b.get('condition')}"
-                for b in (gap.get("trigger_branches") or [])[:3]
-            )
+            readiness = gap.get("black_box_readiness") or {}
+            case_type = _ctd_case_type_label(readiness.get("case_type"))
             entries = "；".join(
                 f"[{e.get('entry_kind')}] {' → '.join(e.get('chain') or [])}"
                 for e in (gap.get("entry_paths") or [])[:2]
@@ -2358,7 +2494,8 @@ def build_coverage_test_design_section(design: dict | None) -> str:
             if not entries:
                 entries = "（4 跳内未找到，灰盒必需）" if gap.get("gray_box_required") else "-"
             cases = "；".join(
-                c.get("title") for c in (gap.get("black_box_cases") or [])[:2]
+                (draft.get("test_execution") or {}).get("title", "")
+                for draft in (gap.get("test_case_drafts") or [])[:2]
             )
             gray = gap.get("gray_box") or {}
             gray_text = gray.get("scheme") if gap.get("gray_box_required") else "（非必需）"
@@ -2368,11 +2505,11 @@ def build_coverage_test_design_section(design: dict | None) -> str:
                 h=gap.get("hit_count"),
             )
             lines.append(
-                "| {fn} | {file} | {risk} | {trig} | {entry} | {cases} | {gray} | {evi} | {gaps} |".format(
+                "| {fn} | {file} | {type} | {risk} | {entry} | {cases} | {gray} | {evi} | {gaps} |".format(
                     fn=_ctd_cell(gap.get("function_name")),
                     file=_ctd_cell(gap.get("file_path")),
+                    type=_ctd_cell(case_type),
                     risk=_ctd_cell(gap.get("risk_level")),
-                    trig=_ctd_cell(triggers),
                     entry=_ctd_cell(entries),
                     cases=_ctd_cell(cases),
                     gray=_ctd_cell(gray_text),
@@ -2389,60 +2526,38 @@ def build_coverage_test_design_section(design: dict | None) -> str:
                 f"- 风险等级：{gap.get('risk_level')}；置信度：{gap.get('confidence')}；"
                 f"覆盖次数：{gap.get('hit_count')}"
             )
-            sw = gap.get("source_window") or {}
-            if sw.get("available"):
-                lines.append(
-                    f"- 源码证据：{sw.get('path')}:{sw.get('start')}-{sw.get('end')}"
-                    f"（定义行 {sw.get('definition_line')}）"
-                )
-            triggers = gap.get("trigger_branches") or []
-            if triggers:
-                lines.append("- 触发条件/分支：")
-                for b in triggers[:6]:
-                    loc = f"（{b.get('file')}:{b.get('line_number')}）" if b.get("file") else ""
-                    lines.append(f"  - [{b.get('source')}] `{b.get('condition')}`{loc}")
-            entries = gap.get("entry_paths") or []
-            if entries:
-                lines.append("- 外部入口路径：")
-                for e in entries[:4]:
-                    lines.append(
-                        f"  - [{e.get('entry_kind')}] {' → '.join(e.get('chain') or [])}"
-                        f"（{e.get('evidence')}）"
-                    )
+            if gap.get("test_case_drafts"):
+                _ctd_render_test_case_drafts(lines, gap)
+                _ctd_render_gray_and_evidence(lines, gap)
             else:
-                gray = gap.get("gray_box") or {}
-                lines.append(f"- 灰盒方案（{gray.get('technique')}）：{gray.get('scheme')}")
-                if gray.get("injection_points"):
-                    lines.append("  - 注入点：" + "；".join(gray.get("injection_points")[:6]))
-            cases = gap.get("black_box_cases") or []
-            if cases:
-                lines.append("- 测试用例：")
-                for c in cases[:4]:
-                    lines.append(f"  - **{c.get('title')}**")
-                    lines.append(f"    - 前置：{c.get('preconditions')}")
-                    lines.append(f"    - 输入：{c.get('inputs')}")
-                    if c.get("steps"):
-                        lines.append("    - 步骤：" + " → ".join(c.get("steps")))
-                    lines.append(f"    - 预期：{c.get('expected')}")
-                    signals = c.get("observable_signals") or []
-                    if signals:
-                        lines.append("    - 可观测信号：" + "、".join(str(s) for s in signals))
-            if gap.get("evidence_gaps"):
-                lines.append("- 待验证/证据缺口：" + "；".join(gap.get("evidence_gaps")))
+                cases = gap.get("black_box_cases") or []
+                if cases:
+                    lines.append("- Test execution area:")
+                    for c in cases[:4]:
+                        lines.append(f"  - **{c.get('title')}**")
+                        lines.append(f"    - Preconditions: {c.get('preconditions')}")
+                        lines.append(f"    - Test input: {c.get('inputs')}")
+                        if c.get("steps"):
+                            lines.append("    - Steps: " + " -> ".join(c.get("steps")))
+                        lines.append(f"    - Expected result: {c.get('expected')}")
+                _ctd_render_gray_and_evidence(lines, gap)
 
     if branch_gaps:
         lines.extend([
             "",
             "### 未覆盖分支测试设计",
             "",
-            "| 模块 | 分支条件 | 风险 | 黑盒用例 | 待验证 |",
-            "| --- | --- | --- | --- | --- |",
+            "| 模块 | 类型 | 分支条件 | 风险 | 测试执行区 | 待验证 |",
+            "| --- | --- | --- | --- | --- | --- |",
         ])
         for gap in branch_gaps[:60]:
-            case0 = (gap.get("black_box_cases") or [{}])[0]
+            draft0 = (gap.get("test_case_drafts") or [{}])[0]
+            case0 = draft0.get("test_execution") or (gap.get("black_box_cases") or [{}])[0]
+            readiness = gap.get("black_box_readiness") or {}
             lines.append(
-                "| {mod} | {cond} | {risk} | {case} | {gaps} |".format(
+                "| {mod} | {type} | {cond} | {risk} | {case} | {gaps} |".format(
                     mod=_ctd_cell(gap.get("module_path")),
+                    type=_ctd_cell(_ctd_case_type_label(readiness.get("case_type"))),
                     cond=_ctd_cell(gap.get("condition")),
                     risk=_ctd_cell(gap.get("risk_level")),
                     case=_ctd_cell(case0.get("title")),

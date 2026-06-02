@@ -10,6 +10,7 @@ import os
 import re
 import shutil
 import subprocess
+from dataclasses import asdict, dataclass
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -34,6 +35,9 @@ WORKSPACE_SCOPE_ENRICHMENT_TIMEOUT_SECONDS = 5.0
 
 # Coverage gap test-design constants (coverage-test-design-v1).
 COVERAGE_TEST_DESIGN_VERSION = "coverage-test-design-v1"
+BLACK_BOX_READY = "black_box_ready"
+BLACK_BOX_HYPOTHESIS = "black_box_hypothesis"
+GRAY_BOX_REQUIRED = "gray_box_required"
 # Entry-oriented layered tracing: how far up the caller chain we walk to find an
 # external entry (CLI / API / message handler / config / file input) before we
 # fall back to a gray-box injection scheme.
@@ -156,6 +160,48 @@ _SIGNATURE_RE = re.compile(
     r"(?P<name>[A-Za-z_]\w*)\s*\([^;{}]*\)\s*(?:\{|;|$)"
 )
 _REQ_FIELD_RE = re.compile(r"\b(?:req|attrs|opts|ctx)\.([A-Za-z_]\w*)\b")
+
+_WHITE_BOX_LEAK_RULES: tuple[tuple[str, re.Pattern], ...] = (
+    ("source_path", re.compile(r"\b[\w./\\-]+\.(?:c|h|cc|cpp|cxx|hpp|py|go|rs|java|js|jsx|ts|tsx)(?::\d+)?\b")),
+    ("function_call", re.compile(r"\b[A-Za-z_]\w*\s*\(")),
+    ("branch_expression", re.compile(r"\b(?:if|else\s+if|switch|while|for)\s*\(|\bcase\s+[^:]+:")),
+    ("private_member", re.compile(r"\b[A-Za-z_]\w*(?:->|\.)[A-Za-z_]\w*\b")),
+    ("gray_box_action", re.compile(r"\b(?:mock|stub|hook|fault[_ -]?injection)\b|覆盖(?:某)?(?:行|分支|if)", re.IGNORECASE)),
+)
+
+
+@dataclass(frozen=True)
+class BranchFactCard:
+    """Source/coverage facts. This card is evidence, not tester instructions."""
+
+    uncovered_location: str
+    branch_conditions: list[str]
+    behavior_impact: str
+    source_evidence: list[str]
+    possible_observable_signals: list[str]
+
+
+@dataclass(frozen=True)
+class ExternalEntryCard:
+    has_external_entry: bool
+    entries: list[dict]
+    missing_evidence: list[str]
+
+
+@dataclass(frozen=True)
+class BlackBoxReadinessCard:
+    case_type: str
+    has_external_entry: bool
+    has_constructible_input: bool
+    has_observable_signal: bool
+    rationale: str
+
+
+@dataclass(frozen=True)
+class WhiteBoxLeakCheckResult:
+    passed: bool
+    findings: list[dict]
+    action: str
 
 # Entry classification heuristics: path/symbol fragments -> external entry kind.
 _ENTRY_SIGNATURES: tuple[tuple[str, tuple[str, ...]], ...] = (
@@ -555,14 +601,6 @@ def _design_function_gap(
 
     has_black_box_entry = bool(entry_paths)
     gray_box_required = not has_black_box_entry
-    black_box_cases = _build_black_box_cases(hit, entry_paths, trigger_branches)
-    gray_box = _build_gray_box_scheme(
-        hit,
-        repo_root=repo_root,
-        cgc_callers=cgc_callers,
-        trigger_branches=trigger_branches,
-        required=gray_box_required,
-    )
     tool_status = _gap_tool_status(
         repo_root=repo_root,
         rg_available=rg_available,
@@ -577,6 +615,40 @@ def _design_function_gap(
         trigger_branches=trigger_branches,
         tool_status=tool_status,
     )
+    branch_fact_card = _build_branch_fact_card(hit, source_window, trigger_branches)
+    external_entry_card = _build_external_entry_card(entry_paths, evidence_gaps)
+    readiness_card = _build_readiness_card(
+        external_entry_card,
+        branch_fact_card,
+        evidence_gaps,
+        gray_box_required=gray_box_required,
+    )
+    black_box_cases = _build_black_box_cases(hit, entry_paths, trigger_branches)
+    gray_box = _build_gray_box_scheme(
+        hit,
+        repo_root=repo_root,
+        cgc_callers=cgc_callers,
+        trigger_branches=trigger_branches,
+        required=gray_box_required,
+    )
+    test_case_drafts = _build_test_case_drafts(
+        hit,
+        black_box_cases,
+        gray_box,
+        branch_fact_card,
+        external_entry_card,
+        readiness_card,
+    )
+    white_box_leak_check = _lint_test_case_drafts(test_case_drafts)
+    if not white_box_leak_check.get("passed") and readiness_card.get("case_type") == BLACK_BOX_READY:
+        readiness_card = {
+            **readiness_card,
+            "case_type": BLACK_BOX_HYPOTHESIS,
+            "rationale": readiness_card.get("rationale", "") + "; black-box execution leaked white-box terms and needs rewrite",
+        }
+        for draft in test_case_drafts:
+            if draft.get("case_type") == BLACK_BOX_READY:
+                draft["case_type"] = BLACK_BOX_HYPOTHESIS
 
     result = {
         "kind": "function",
@@ -603,6 +675,11 @@ def _design_function_gap(
         "black_box_cases": black_box_cases,
         "gray_box": gray_box,
         "gray_box_required": gray_box_required,
+        "branch_fact_card": branch_fact_card,
+        "external_entry_card": external_entry_card,
+        "black_box_readiness": readiness_card,
+        "test_case_drafts": test_case_drafts,
+        "white_box_leak_check": white_box_leak_check,
         "evidence_gaps": evidence_gaps,
         "tool_status": tool_status,
         "confidence": _confidence_for_gap(scope, cgc_context, source_window, entry_paths),
@@ -800,6 +877,193 @@ def _observable_signals_for_hit(hit: FunctionHit) -> list[str]:
     if any(term in text for term in ("state", "start", "stop", "recover")):
         signals.append("state transition is externally observable")
     return signals
+
+
+def _build_branch_fact_card(
+    hit: FunctionHit,
+    source_window: dict | None,
+    trigger_branches: list[dict],
+) -> dict:
+    source_evidence = [
+        f"{hit.file_path}:{hit.line_start or '?'} hit_count={hit.hit_count}",
+    ]
+    if source_window and source_window.get("available"):
+        source_evidence.append(
+            "{path}:{start}-{end}".format(
+                path=source_window.get("path"),
+                start=source_window.get("start"),
+                end=source_window.get("end"),
+            )
+        )
+    branch_conditions = [
+        str(branch.get("condition"))
+        for branch in trigger_branches
+        if branch.get("condition")
+    ]
+    card = BranchFactCard(
+        uncovered_location=f"{hit.file_path}:{hit.line_start or '?'}-{hit.line_end or '?'}",
+        branch_conditions=branch_conditions[:8],
+        behavior_impact=_expected_behavior_for_hit(hit),
+        source_evidence=source_evidence,
+        possible_observable_signals=_observable_signals_for_hit(hit),
+    )
+    return asdict(card)
+
+
+def _build_external_entry_card(
+    entry_paths: list[dict],
+    evidence_gaps: list[str],
+) -> dict:
+    entries = [
+        {
+            "entry_kind": entry.get("entry_kind"),
+            "entry_label": entry.get("entry_label") or entry.get("entry_symbol") or entry.get("entry_kind"),
+            "input_hints": entry.get("input_hints") or [],
+            "evidence": entry.get("evidence"),
+        }
+        for entry in entry_paths[:6]
+    ]
+    return asdict(ExternalEntryCard(
+        has_external_entry=bool(entries),
+        entries=entries,
+        missing_evidence=evidence_gaps[:6],
+    ))
+
+
+def _build_readiness_card(
+    entry_card: dict,
+    branch_fact_card: dict,
+    evidence_gaps: list[str],
+    *,
+    gray_box_required: bool,
+) -> dict:
+    has_external_entry = bool(entry_card.get("has_external_entry"))
+    has_observable_signal = bool(branch_fact_card.get("possible_observable_signals"))
+    has_constructible_input = has_external_entry
+    if has_external_entry and has_constructible_input and has_observable_signal:
+        case_type = BLACK_BOX_READY
+        rationale = "external entry, input construction, and observable signals are all present"
+    elif gray_box_required:
+        case_type = GRAY_BOX_REQUIRED
+        rationale = "no confirmed external entry; use gray-box injection/observation"
+    else:
+        case_type = BLACK_BOX_HYPOTHESIS
+        rationale = "external behavior is plausible but evidence is incomplete"
+    if evidence_gaps and case_type == BLACK_BOX_READY:
+        rationale += "; evidence gaps remain in appendix"
+    return asdict(BlackBoxReadinessCard(
+        case_type=case_type,
+        has_external_entry=has_external_entry,
+        has_constructible_input=has_constructible_input,
+        has_observable_signal=has_observable_signal,
+        rationale=rationale,
+    ))
+
+
+def _safe_external_label(entry: dict) -> str:
+    label = str(entry.get("entry_label") or entry.get("entry_symbol") or entry.get("entry_kind") or "").strip()
+    if label.startswith("JSON-RPC "):
+        return label
+    kind = str(entry.get("entry_kind") or "public").strip()
+    return f"{kind} entry"
+
+
+def _lint_black_box_text(text: str) -> list[dict]:
+    findings: list[dict] = []
+    for rule, pattern in _WHITE_BOX_LEAK_RULES:
+        for match in pattern.finditer(text or ""):
+            findings.append({
+                "rule": rule,
+                "text": match.group(0)[:120],
+            })
+            break
+    return findings
+
+
+def _lint_test_case_drafts(drafts: list[dict]) -> dict:
+    findings: list[dict] = []
+    for idx, draft in enumerate(drafts):
+        if draft.get("case_type") != BLACK_BOX_READY:
+            continue
+        execution = draft.get("test_execution") or {}
+        text = "\n".join(
+            str(value)
+            for value in [
+                execution.get("title"),
+                execution.get("external_trigger"),
+                execution.get("preconditions"),
+                execution.get("inputs"),
+                *(execution.get("steps") or []),
+                execution.get("expected"),
+                *(execution.get("observable_signals") or []),
+            ]
+            if value
+        )
+        for finding in _lint_black_box_text(text):
+            findings.append({"case_index": idx, **finding})
+    action = "pass" if not findings else "downgrade_or_rewrite"
+    return asdict(WhiteBoxLeakCheckResult(
+        passed=not findings,
+        findings=findings,
+        action=action,
+    ))
+
+
+def _build_test_case_drafts(
+    hit: FunctionHit,
+    cases: list[dict],
+    gray_box: dict,
+    branch_fact_card: dict,
+    external_entry_card: dict,
+    readiness_card: dict,
+) -> list[dict]:
+    case_type = readiness_card.get("case_type") or GRAY_BOX_REQUIRED
+    drafts: list[dict] = []
+    if not cases:
+        cases = [{
+            "title": "Gray-box validation for unreachable coverage gap",
+            "entry_kind": "gray_box",
+            "preconditions": "No confirmed public entry reaches this behavior.",
+            "inputs": "Use a controlled injection point and externally observable signals.",
+            "steps": ["Inject the required condition", "Observe the documented result"],
+            "expected": _expected_behavior_for_hit(hit),
+            "observable_signals": _observable_signals_for_hit(hit),
+        }]
+
+    for case in cases[:5]:
+        entry_kind = case.get("entry_kind") or "public"
+        draft_case_type = (
+            GRAY_BOX_REQUIRED
+            if case_type == GRAY_BOX_REQUIRED
+            else case.get("case_type") or case_type
+        )
+        execution = {
+            "title": case.get("title"),
+            "external_trigger": case.get("external_trigger") or f"Drive the public {entry_kind} workflow.",
+            "preconditions": case.get("preconditions"),
+            "inputs": case.get("inputs"),
+            "steps": case.get("steps") or [],
+            "expected": case.get("expected"),
+            "observable_signals": case.get("observable_signals") or [],
+        }
+        drafts.append({
+            "case_type": draft_case_type,
+            "test_execution": execution,
+            "gray_box_aid": {
+                "required": bool(gray_box.get("required")),
+                "technique": gray_box.get("technique"),
+                "scheme": gray_box.get("scheme"),
+                "injection_points": gray_box.get("injection_points") or [],
+            },
+            "evidence_section": {
+                "coverage_gap": branch_fact_card.get("uncovered_location"),
+                "source_evidence": branch_fact_card.get("source_evidence") or [],
+                "branch_conditions": branch_fact_card.get("branch_conditions") or [],
+                "external_entries": external_entry_card.get("entries") or [],
+            },
+            "verification_gaps": external_entry_card.get("missing_evidence") or [],
+        })
+    return drafts
 
 
 def _confidence_for_context(scope: dict, cgc_context: dict) -> str:
@@ -1432,67 +1696,57 @@ def _build_black_box_cases(
     signals = _observable_signals_for_hit(hit)
 
     for entry in entry_paths[:3]:
-        chain = " -> ".join(entry.get("chain") or [])
-        entry_label = (
-            entry.get("entry_label")
-            or entry.get("entry_symbol")
-            or entry.get("entry_kind")
-        )
+        entry_label = _safe_external_label(entry)
         input_hints = [str(item) for item in (entry.get("input_hints") or []) if item]
         entry_inputs = (
-            f"通过 {entry_label} 的外部请求参数构造有效、边界和异常输入："
+            "Use externally supplied request/configuration parameters to prepare valid, boundary, and malformed input: "
             + ", ".join(input_hints)
             if input_hints else base_inputs
         )
         steps = [
-            f"从 {entry.get('entry_kind')} 入口 ({entry.get('entry_file')}) 发起 {entry_label} 请求/命令/消息",
+            f"Start the public {entry.get('entry_kind')} workflow through {entry_label}.",
         ]
         if input_hints:
-            steps.append("设置入口参数：" + ", ".join(input_hints))
-        steps.append(f"构造输入使调用沿 {chain} 到达 {hit.function_name}")
+            steps.append("Set the external parameters: " + ", ".join(input_hints))
+        steps.extend([
+            "Run the workflow with valid input, boundary input, and malformed input.",
+            "Observe the response, state, logs, and resource signals from outside the component.",
+        ])
         cases.append({
-            "title": f"经 {entry.get('entry_kind')} 入口触达 {hit.function_name}",
+            "case_type": BLACK_BOX_READY,
+            "title": f"Public {entry.get('entry_kind')} workflow handles the uncovered behavior",
             "entry_kind": entry.get("entry_kind"),
-            "preconditions": f"通过外部入口 {entry.get('entry_symbol') or entry.get('entry_kind')} 驱动调用链：{chain}",
-            "inputs": base_inputs,
-            "steps": [
-                f"从 {entry.get('entry_kind')} 入口 ({entry.get('entry_file')}) 发起请求/命令/消息",
-                f"构造输入使调用沿 {chain} 到达 {hit.function_name}",
-            ],
+            "external_trigger": f"Drive {entry_label} through its public interface.",
+            "preconditions": f"The public {entry.get('entry_kind')} entry is available and configured for this workflow.",
+            "inputs": entry_inputs,
+            "steps": steps,
             "expected": expected,
             "observable_signals": signals,
             "evidence": entry.get("evidence"),
         })
-        cases[-1].update({
-            "title": f"经 {entry.get('entry_kind')} 入口 {entry_label} 触达 {hit.function_name}",
-            "preconditions": f"通过外部入口 {entry_label} 驱动调用链：{chain}",
-            "inputs": entry_inputs,
-            "steps": steps,
-        })
 
     primary_entry = entry_paths[0] if entry_paths else {}
-    primary_entry_label = (
-        primary_entry.get("entry_label")
-        or primary_entry.get("entry_symbol")
-        or primary_entry.get("entry_kind")
-    )
+    primary_entry_label = _safe_external_label(primary_entry) if primary_entry else None
     primary_input_hints = [
         str(item) for item in (primary_entry.get("input_hints") or []) if item
     ]
-    primary_chain = " -> ".join(primary_entry.get("chain") or [])
 
     for branch in trigger_branches[:3]:
         if not branch.get("is_error_path") and branch.get("source") != "caller":
             continue
         cases.append({
-            "title": f"覆盖触发分支 {branch.get('condition')}",
+            "case_type": BLACK_BOX_READY if entry_paths else BLACK_BOX_HYPOTHESIS,
+            "title": "Public workflow handles the boundary or error condition",
             "entry_kind": entry_paths[0]["entry_kind"] if entry_paths else "unknown",
-            "preconditions": f"使外部输入/状态满足分支条件：{branch.get('condition')}",
+            "external_trigger": (
+                f"Drive {primary_entry_label} through its public interface."
+                if primary_entry_label else "Identify a public entry before executing this as black-box."
+            ),
+            "preconditions": "The external workflow exposes a controllable boundary, error, or state condition.",
             "inputs": base_inputs,
             "steps": [
-                f"构造数据令 {branch.get('file')}:{branch.get('line_number')} 处条件 "
-                f"`{branch.get('condition')}` 成立",
-                f"驱动到 {hit.function_name} 并观察行为",
+                "Prepare external input that exercises the boundary or failure behavior.",
+                "Run the public workflow and observe the externally visible result.",
             ],
             "expected": expected,
             "observable_signals": signals,
@@ -1501,42 +1755,35 @@ def _build_black_box_cases(
         })
         if primary_entry_label:
             branch_inputs = (
-                f"通过 {primary_entry_label} 调整外部请求参数/状态，使分支条件 "
-                f"`{branch.get('condition')}` 成立"
+                f"Adjust external request/configuration/state through {primary_entry_label} "
+                "to exercise the relevant boundary or failure behavior."
             )
             if primary_input_hints:
-                branch_inputs += "；可调入口参数：" + ", ".join(primary_input_hints)
+                branch_inputs += " External parameters: " + ", ".join(primary_input_hints)
             branch_steps = [
-                (
-                    f"从 {primary_entry.get('entry_kind')} 入口 "
-                    f"({primary_entry.get('entry_file')}) 发起 {primary_entry_label}"
-                ),
+                f"Start the public {primary_entry.get('entry_kind')} workflow through {primary_entry_label}.",
             ]
             if primary_input_hints:
-                branch_steps.append("设置入口参数：" + ", ".join(primary_input_hints))
-            branch_steps.append(
-                f"构造输入使 `{branch.get('condition')}` 成立，并沿 {primary_chain} "
-                f"到达 {hit.function_name}"
-            )
+                branch_steps.append("Set the external parameters: " + ", ".join(primary_input_hints))
+            branch_steps.append("Run the workflow with boundary/failure-oriented input.")
+            branch_steps.append("Verify the externally observable result and absence of silent success.")
             cases[-1].update({
-                "preconditions": (
-                    f"通过外部入口 {primary_entry_label} 覆盖分支："
-                    f"{branch.get('condition')}"
-                ),
                 "inputs": branch_inputs,
                 "steps": branch_steps,
             })
 
     if not cases:
-        # No source-backed entry/branch; still give a coverage-driven sketch.
+        # No source-backed entry/branch; emit a hypothesis, not a ready black-box case.
         cases.append({
-            "title": f"驱动拥有 {hit.function_name} 行为的最近公开入口",
+            "case_type": BLACK_BOX_HYPOTHESIS,
+            "title": "Identify a public workflow before black-box execution",
             "entry_kind": "unknown",
-            "preconditions": "需绑定工作区/源码以定位精确入口；当前基于覆盖率证据给出方向",
+            "external_trigger": "No confirmed public entry yet.",
+            "preconditions": "Bind workspace/source evidence or add entry mapping before treating this as black-box ready.",
             "inputs": base_inputs,
             "steps": [
-                "定位 API / CLI / 消息 / 配置 / 文件输入中负责该行为的入口",
-                f"构造输入触发 {hit.function_name} 所代表的路径",
+                "Locate the responsible API, CLI, message, configuration, or file input.",
+                "Map external input to observable behavior before writing execution steps.",
             ],
             "expected": expected,
             "observable_signals": signals,
@@ -1671,6 +1918,63 @@ def _build_branch_gaps(
         for raw in module.uncovered_branches[:40]:
             condition = _extract_branch_condition(str(raw))
             is_error = bool(_ERROR_CONDITION_RE.search(str(raw)))
+            branch_fact_card = {
+                "uncovered_location": module.module_path,
+                "branch_conditions": [condition],
+                "behavior_impact": "Branch behavior must be verified through an external contract or downgraded to gray-box.",
+                "source_evidence": [str(raw)],
+                "possible_observable_signals": ["return value / response code", "logs", "state transition"],
+            }
+            external_entry_card = {
+                "has_external_entry": False,
+                "entries": [],
+                "missing_evidence": (
+                    [] if workspace_bound else ["workspace/source binding is missing"]
+                ),
+            }
+            readiness_card = {
+                "case_type": BLACK_BOX_HYPOTHESIS,
+                "has_external_entry": False,
+                "has_constructible_input": False,
+                "has_observable_signal": True,
+                "rationale": "coverage branch exists, but no external entry mapping has been confirmed",
+            }
+            gray_box = {
+                "required": False,
+                "technique": "input_shaping",
+                "scheme": "通过外部输入直接构造分支条件；无法构造时短接守卫条件",
+                "injection_points": [f"分支条件 {condition}"],
+            }
+            case = {
+                "case_type": BLACK_BOX_HYPOTHESIS,
+                "title": "Verify externally visible behavior for an uncovered branch",
+                "entry_kind": "unknown",
+                "external_trigger": "Confirm the API, CLI, message, configuration, or file input before black-box execution.",
+                "preconditions": "External entry mapping is not confirmed yet.",
+                "inputs": "Prepare valid, boundary, and invalid data once the entry is confirmed.",
+                "steps": [
+                    "Map this coverage branch to a public workflow.",
+                    "Run the workflow with externally controlled input.",
+                    "Observe the documented result from outside the component.",
+                ],
+                "expected": "Both sides of the behavior produce documented, observable results; error side must not silently succeed.",
+                "observable_signals": ["return value / response code", "logs", "state transition"],
+            }
+            test_case_drafts = _build_test_case_drafts(
+                FunctionHit(
+                    function_name=str(module.module_path or "branch_gap"),
+                    file_path=str(module.module_path or ""),
+                    line_start=None,
+                    line_end=None,
+                    triggered=False,
+                    hit_count=0,
+                ),
+                [case],
+                gray_box,
+                branch_fact_card,
+                external_entry_card,
+                readiness_card,
+            )
             gaps.append({
                 "kind": "branch",
                 "module_path": module.module_path,
@@ -1678,24 +1982,14 @@ def _build_branch_gaps(
                 "condition": condition,
                 "category": _branch_category(str(raw)),
                 "risk_level": "high" if is_error else "medium",
-                "black_box_cases": [{
-                    "title": f"覆盖未触发分支：{condition}",
-                    "preconditions": f"构造输入/状态使分支条件成立：{condition}",
-                    "inputs": "为条件的真/假两侧分别准备数据（含边界值与非法值）",
-                    "steps": [
-                        f"令条件 `{condition}` 成立并执行",
-                        "再令其不成立，验证另一侧行为",
-                    ],
-                    "expected": "两侧分支均产生文档化的、可观测的结果；错误侧不得静默成功",
-                    "observable_signals": ["返回值/状态码", "日志", "状态迁移"],
-                }],
-                "gray_box": {
-                    "required": False,
-                    "technique": "input_shaping",
-                    "scheme": "通过外部输入直接构造分支条件；无法构造时短接守卫条件",
-                    "injection_points": [f"分支条件 {condition}"],
-                },
+                "black_box_cases": [case],
+                "gray_box": gray_box,
                 "gray_box_required": False,
+                "branch_fact_card": branch_fact_card,
+                "external_entry_card": external_entry_card,
+                "black_box_readiness": readiness_card,
+                "test_case_drafts": test_case_drafts,
+                "white_box_leak_check": _lint_test_case_drafts(test_case_drafts),
                 "evidence_gaps": (
                     [] if workspace_bound
                     else ["未绑定工作区：分支来自覆盖率文件，未做源码定位"]
@@ -1742,10 +2036,23 @@ async def build_coverage_test_design(
         "uncovered_function_count": len(function_gaps),
         "uncovered_branch_count": len(branch_gaps),
         "black_box_ready_count": sum(
-            1 for g in function_gaps if g.get("entry_paths")
+            1 for g in gaps
+            if (g.get("black_box_readiness") or {}).get("case_type") == BLACK_BOX_READY
+        ),
+        "black_box_hypothesis_count": sum(
+            1 for g in gaps
+            if (g.get("black_box_readiness") or {}).get("case_type") == BLACK_BOX_HYPOTHESIS
         ),
         "gray_box_required_count": sum(
-            1 for g in function_gaps if g.get("gray_box_required")
+            1 for g in gaps
+            if (
+                (g.get("black_box_readiness") or {}).get("case_type") == GRAY_BOX_REQUIRED
+                or g.get("gray_box_required")
+            )
+        ),
+        "white_box_lint_failed_count": sum(
+            1 for g in gaps
+            if not (g.get("white_box_leak_check") or {}).get("passed", True)
         ),
         "high_risk_count": sum(1 for g in gaps if g.get("risk_level") == "high"),
         "workspace_bound": workspace_bound,

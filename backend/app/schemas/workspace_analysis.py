@@ -186,9 +186,10 @@ DEFAULT_REPORT_TEMPLATES: list[dict] = [
 
 
 _DEFAULT_OBJECT_EXAMPLES: list[str] = [
-    "示例：核心业务的主流程登录/初始化",
-    "示例：错误处理与重试路径",
-    "示例：长时间运行的状态机与资源清理",
+    "external trigger path: how a user/API/protocol input reaches the target flow",
+    "exception propagation path: error return, retry, disconnect, or rollback behavior",
+    "state/resource cleanup path: state transition, allocation, release, and leak risk",
+    "boundary/concurrency/timeout path: limit value, race ordering, retry, or timeout case",
 ]
 
 

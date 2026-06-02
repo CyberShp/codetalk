@@ -5,8 +5,13 @@ import pytest
 
 from app.llm.base import BaseLLMClient, LLMResponse
 from app.prompts.templates import MODULE_MAP_PROMPT
-from app.schemas.workspace_analysis import AnalysisPlan, LLMLimits, ReportSpec
-from app.services.report_generator import ReportGenerator
+from app.schemas.workspace_analysis import (
+    AnalysisPlan,
+    LLMLimits,
+    ReportSpec,
+    build_default_plan,
+)
+from app.services.report_generator import ReportGenerator, build_coverage_test_design_section
 
 
 class CapturingLLM(BaseLLMClient):
@@ -76,6 +81,17 @@ def _plan(template_id: str) -> AnalysisPlan:
             retry_empty_output=0,
         ),
     )
+
+
+def test_default_plan_examples_are_black_gray_box_test_targets() -> None:
+    plan = build_default_plan(has_requirements=False, seed_examples=True)
+    examples = "\n".join(obj.text for obj in plan.analysis_objects)
+
+    assert "external trigger" in examples
+    assert "exception propagation" in examples
+    assert "state/resource cleanup" in examples
+    assert "boundary/concurrency/timeout" in examples
+    assert plan.focus.security_risk is False
 
 
 def test_plan_blueprints_do_not_delegate_layout_to_ai() -> None:
@@ -244,8 +260,123 @@ async def test_test_design_prompt_uses_developer_to_tester_contract(tmp_path: Pa
     assert "Developer-to-Tester Scenario Mode" in prompt
     assert "black-box trigger" in prompt
     assert "gray-box aid" in prompt
+    assert "source evidence chain" in prompt
     assert "function failure matrix" in prompt
+    assert "BranchFactCard" in prompt
+    assert "ExternalEntryCard" in prompt
+    assert "BlackBoxReadinessCard" in prompt
+    assert "TestCaseDraft" in prompt
+    assert "WhiteBoxLeakCheckResult" in prompt
+    assert "black_box_ready" in prompt
+    assert "black_box_hypothesis" in prompt
+    assert "gray_box_required" in prompt
+    assert "Test execution area" in prompt
+    assert "Gray-box aid area" in prompt
+    assert "Evidence area" in prompt
     assert "branch condition" in prompt
+    assert "expected result" in prompt
+    assert "observable signal" in prompt
+    assert "verification gap" in prompt
+
+
+@pytest.mark.asyncio
+async def test_test_design_prompt_marks_missing_evidence_as_verification_gap(
+    tmp_path: Path,
+) -> None:
+    llm = CapturingLLM("AI_CONTENT " * 40)
+    generator = ReportGenerator(llm, tmp_path, "task-missing-evidence")
+    plan = _plan("test_design")
+    section = ReportGenerator._section_blueprints()["test_design"][0]
+
+    await generator._render_section(
+        spec=plan.reports[0],
+        section=section,
+        plan=plan,
+        common_context={},
+        analysis_units=[],
+        evidence_cards=[],
+        section_idx=0,
+        sem=__import__("asyncio").Semaphore(1),
+    )
+
+    prompt = llm.prompts[0]
+    assert "When evidence is missing" in prompt
+    assert "gray-box required" in prompt
+    assert "do not invent a confident black-box path" in prompt
+    assert "待验证" in prompt
+
+
+def test_coverage_test_design_section_splits_execution_gray_and_evidence() -> None:
+    section = build_coverage_test_design_section({
+        "version": "coverage-test-design-v1",
+        "summary": {
+            "uncovered_function_count": 1,
+            "uncovered_branch_count": 0,
+            "black_box_ready_count": 1,
+            "black_box_hypothesis_count": 0,
+            "gray_box_required_count": 0,
+            "white_box_lint_failed_count": 0,
+            "high_risk_count": 1,
+            "workspace_bound": True,
+            "tool_status": {"gitnexus": "available"},
+        },
+        "gaps": [{
+            "kind": "function",
+            "function_name": "nvme_tcp_generate_tls_credentials",
+            "file_path": "lib/nvme/nvme_tcp.c",
+            "line_start": 2758,
+            "hit_count": 0,
+            "risk_level": "high",
+            "confidence": "high",
+            "gray_box_required": False,
+            "branch_fact_card": {
+                "uncovered_location": "lib/nvme/nvme_tcp.c:2758-2761",
+                "branch_conditions": ["psk_retained_hash == NVME_TCP_HASH_ALGORITHM_NONE"],
+                "source_evidence": ["lib/nvme/nvme_tcp.c:2758 hit_count=0"],
+                "possible_observable_signals": ["connect result", "logs"],
+            },
+            "external_entry_card": {
+                "has_external_entry": True,
+                "entries": [{"entry_kind": "cli", "entry_label": "spdk_nvme_perf --psk-path"}],
+                "missing_evidence": [],
+            },
+            "black_box_readiness": {
+                "case_type": "black_box_ready",
+                "rationale": "external entry, input construction, and observable signals are all present",
+            },
+            "white_box_leak_check": {"passed": True, "findings": [], "action": "pass"},
+            "gray_box": {
+                "required": False,
+                "technique": "trace",
+                "scheme": "Observe whether retained PSK derivation is skipped.",
+                "injection_points": ["nvme_tcp_derive_retained_psk"],
+            },
+            "test_case_drafts": [{
+                "case_type": "black_box_ready",
+                "test_execution": {
+                    "title": "Use no-hash NVMe TLS PSK to establish a secure channel",
+                    "external_trigger": "Drive spdk_nvme_perf --psk-path through its public interface.",
+                    "preconditions": "NVMe/TCP target secure channel is enabled.",
+                    "inputs": "Valid no-hash PSK file.",
+                    "steps": ["Connect", "Run discovery", "Run one simple I/O"],
+                    "expected": "Connection and I/O succeed without plaintext downgrade.",
+                    "observable_signals": ["exit code", "I/O completion", "logs"],
+                },
+                "gray_box_aid": {},
+                "evidence_section": {},
+                "verification_gaps": [],
+            }],
+            "evidence_gaps": [],
+        }],
+        "warnings": [],
+    })
+
+    assert "Test execution area" in section
+    assert "Gray-box aid area" in section
+    assert "Evidence area" in section
+    assert "black_box_ready" in section
+    assert "White-box leak lint: pass" in section
+    assert "psk_retained_hash == NVME_TCP_HASH_ALGORITHM_NONE" in section
 
 
 @pytest.mark.asyncio

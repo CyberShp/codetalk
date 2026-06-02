@@ -23,7 +23,7 @@ function inferPathHints(text: string): string[] {
 }
 
 const EXAMPLE_TEXT =
-  "iscsi target login path\niscsi target logout / disconnect / session cleanup\niscsi target error handling and retry path\nFC login and link recovery";
+  "external trigger path: API/protocol input reaches login flow\nexception propagation path: error return, retry, disconnect, rollback\nstate/resource cleanup path: state transition, allocation, release\nboundary/concurrency/timeout path: limit value, race ordering, timeout";
 
 export default function AnalysisObjectEditor({ objects, onChange }: Props) {
   const textValue = useMemo(
@@ -55,7 +55,7 @@ export default function AnalysisObjectEditor({ objects, onChange }: Props) {
     <div className="space-y-3">
       <div className="flex items-center justify-between">
         <label className="text-sm font-medium text-on-surface">
-          分析对象（每行一个，描述你想分析的业务流程或子系统）
+          Analysis objects (one test target per line: trigger, branch, state, cleanup, or observation path)
         </label>
         <button
           type="button"
@@ -74,8 +74,8 @@ export default function AnalysisObjectEditor({ objects, onChange }: Props) {
         className="w-full resize-y rounded-xl border border-outline-variant/30 bg-surface-container-low px-3 py-2 text-sm text-on-surface font-mono leading-relaxed focus:outline-none focus:border-primary/60"
       />
       <p className="text-xs text-on-surface-variant/70 leading-relaxed">
-        我们不会展示原始的 GitNexus 模块清单 — 请用自然语言描述你关心的业务流程，
-        系统会把每条对象解析到具体的文件、函数与 GitNexus 社区作为证据。
+        GitNexus modules stay internal. Describe the black-box or gray-box test path you care about;
+        CodeTalk resolves each line to source files, symbols, and graph evidence.
       </p>
       {objects.filter((o) => o.text).length > 0 && (
         <div className="rounded-xl border border-outline-variant/20 bg-surface-container/50 px-3 py-2 space-y-1">

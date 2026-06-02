@@ -16,6 +16,7 @@ from app.services.coverage_analyzer import (
     CoverageAnalyzer,
     _analyze_module,
     _build_black_box_function_recommendations,
+    _lint_test_case_drafts,
 )
 
 pytestmark = [pytest.mark.asyncio]
@@ -455,6 +456,20 @@ class TestCoverageTestDesign:
         assert any("rc < 0" in c for c in conditions)
         assert any("s == NULL" in c for c in conditions)
         assert gap["black_box_cases"]
+        assert gap["black_box_readiness"]["case_type"] == "black_box_ready"
+        assert gap["branch_fact_card"]["uncovered_location"].startswith("src/session.c")
+        assert gap["external_entry_card"]["has_external_entry"] is True
+        assert gap["test_case_drafts"]
+        assert gap["white_box_leak_check"]["passed"] is True
+        execution_text = "\n".join(
+            str(value)
+            for draft in gap["test_case_drafts"]
+            if draft["case_type"] == "black_box_ready"
+            for value in (draft["test_execution"].values())
+        )
+        assert "recover_session" not in execution_text
+        assert "src/session.c" not in execution_text
+        assert "if (" not in execution_text
         assert design["summary"]["black_box_ready_count"] == 1
 
     async def test_resolves_function_when_coverage_path_is_directory(self, tmp_path):
@@ -638,6 +653,8 @@ class TestCoverageTestDesign:
         gap = [g for g in design["gaps"] if g.get("kind") == "function"][0]
         assert gap["entry_paths"] == []
         assert gap["gray_box_required"] is True
+        assert gap["black_box_readiness"]["case_type"] == "gray_box_required"
+        assert gap["test_case_drafts"][0]["case_type"] == "gray_box_required"
         assert gap["gray_box"]["required"] is True
         assert gap["gray_box"]["scheme"]
         assert any("入口" in g for g in gap["evidence_gaps"])
@@ -699,4 +716,26 @@ class TestCoverageTestDesign:
         branch_gaps = [g for g in design["gaps"] if g.get("kind") == "branch"]
         assert len(branch_gaps) == 1
         assert branch_gaps[0]["black_box_cases"]
+        assert branch_gaps[0]["black_box_readiness"]["case_type"] == "black_box_hypothesis"
+        assert branch_gaps[0]["test_case_drafts"][0]["case_type"] == "black_box_hypothesis"
         assert design["summary"]["uncovered_branch_count"] == 1
+
+    async def test_white_box_leak_lint_flags_black_box_execution_terms(self):
+        drafts = [{
+            "case_type": "black_box_ready",
+            "test_execution": {
+                "title": "Cover parse_psk branch",
+                "external_trigger": "call nvme_tcp_parse_interchange_psk()",
+                "preconditions": "source lib/nvme/nvme_tcp.c:2758 exists",
+                "inputs": "set ctrlr->opts.tls_psk and make if (hash == 0) true",
+                "steps": ["mock internal function", "覆盖分支"],
+                "expected": "returns 0",
+                "observable_signals": ["logs"],
+            },
+        }]
+
+        result = _lint_test_case_drafts(drafts)
+
+        assert result["passed"] is False
+        rules = {finding["rule"] for finding in result["findings"]}
+        assert {"function_call", "source_path", "branch_expression", "private_member", "gray_box_action"} <= rules

@@ -175,10 +175,10 @@ export default function AnalysisTaskModal({
         <header className="flex items-center justify-between px-5 py-3 border-b border-outline-variant/20">
           <div>
             <h2 className="text-base font-semibold text-on-surface">
-              生成报告 · 分析任务
+              生成测试视角报告 · 分析任务
             </h2>
             <p className="text-[11px] text-on-surface-variant/70 mt-0.5">
-              定义分析对象 → 选择焦点与报告 → 预览范围 → 启动分析。
+              定义黑/灰盒测试目标 → 选择焦点与报告 → 预览证据范围 → 启动分析。
               GitNexus 仅用于导航，源码与材料是最终证据。
             </p>
           </div>
@@ -225,7 +225,7 @@ export default function AnalysisTaskModal({
                   value={plan.user_guidance}
                   onChange={(e) => handleGuidanceChange(e.target.value)}
                   rows={3}
-                  placeholder="可以补充背景信息或强调风格偏好。该字段只能补充强调，不能覆盖报告结构或质量约束。"
+                  placeholder="可以补充业务背景、外部入口、观测方式或重点风险。该字段只能补充强调，不能覆盖报告结构或质量约束。"
                   className="w-full resize-y rounded-xl border border-outline-variant/30 bg-surface-container-low px-3 py-2 text-sm text-on-surface focus:outline-none focus:border-primary/60"
                 />
               </div>
