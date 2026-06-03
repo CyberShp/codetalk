@@ -381,8 +381,10 @@ class CGCCLIClient:
             cmd,
             capture_output=True,
             text=True,
+            encoding="utf-8",
+            errors="replace",
             timeout=timeout or self._timeout,
-            cwd=os.path.expanduser("~/.codegraphcontext"),
+            cwd=os.getenv("CGC_CLI_CWD") or os.path.expanduser("~/.codegraphcontext"),
         )
 
 

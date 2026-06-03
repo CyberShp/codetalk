@@ -326,17 +326,17 @@ def _render_mermaid_diagram(
 ) -> str:
     labels = _unit_labels(analysis_units, common_context)
     heading = str(section.get("heading") or "").lower()
-    lines = ["### CodeTalk Diagram", "", "```mermaid"]
+    lines = ["### CodeTalk 图示", "", "```mermaid"]
     if "flow" in heading or "流程" in heading:
         lines.append("flowchart TD")
         previous = "Start"
-        lines.append('  Start(["Start"])')
+        lines.append('  Start(["开始"])')
         for idx, label in enumerate(labels, start=1):
             node = f"N{idx}"
             lines.append(f'  {node}["{_mermaid_label(label)}"]')
             lines.append(f"  {previous} --> {node}")
             previous = node
-        lines.append('  End(["Observable result"])')
+        lines.append('  End(["可观测结果"])')
         lines.append(f"  {previous} --> End")
     else:
         lines.append("graph TD")

@@ -28,6 +28,13 @@ from pydantic import BaseModel, Field, model_validator
 # ---------------------------------------------------------------------------
 
 
+class ScopeHint(BaseModel):
+    """Explicit source-scope role supplied by API callers."""
+
+    path: str = Field(min_length=1, max_length=1000)
+    role: Literal["primary", "supporting", "external"]
+
+
 class AnalysisObject(BaseModel):
     """A single user-defined analysis target (one row of the editor)."""
 
@@ -36,6 +43,7 @@ class AnalysisObject(BaseModel):
     kind: Literal["topic", "module", "flow", "file", "function", "mixed"] = "topic"
     priority: Literal["high", "medium", "low"] = "medium"
     path_hints: list[str] = Field(default_factory=list, max_length=16)
+    scope_hints: list[ScopeHint] = Field(default_factory=list, max_length=16)
 
 
 class FocusOptions(BaseModel):
@@ -103,6 +111,11 @@ class AnalysisPlan(BaseModel):
         for obj in self.analysis_objects:
             obj.text = obj.text.strip()
             obj.path_hints = [hint.strip() for hint in obj.path_hints if hint.strip()]
+            obj.scope_hints = [
+                hint for hint in obj.scope_hints if hint.path.strip()
+            ]
+            for hint in obj.scope_hints:
+                hint.path = hint.path.strip()
         self.user_guidance = self.user_guidance.strip()
         return self
 
@@ -123,7 +136,7 @@ class ScopeCandidate(BaseModel):
     source: Literal["gitnexus", "repo_search", "material", "manual"]
     confidence: Literal["high", "medium", "low"]
     reason: str
-    role: Literal["primary", "related", "external"] | None = None
+    role: Literal["primary", "supporting", "related", "external"] | None = None
 
 
 class ResolvedAnalysisObject(BaseModel):
@@ -186,10 +199,10 @@ DEFAULT_REPORT_TEMPLATES: list[dict] = [
 
 
 _DEFAULT_OBJECT_EXAMPLES: list[str] = [
-    "external trigger path: how a user/API/protocol input reaches the target flow",
-    "exception propagation path: error return, retry, disconnect, or rollback behavior",
-    "state/resource cleanup path: state transition, allocation, release, and leak risk",
-    "boundary/concurrency/timeout path: limit value, race ordering, retry, or timeout case",
+    "外部触发路径：请求、连接、配置或页面操作如何进入目标流程",
+    "异常传播路径：错误返回、重试、断开连接或回滚行为",
+    "状态与资源清理路径：状态切换、资源分配、释放与泄漏风险",
+    "边界、并发与超时路径：限制值、时序竞争、重试或超时场景",
 ]
 
 

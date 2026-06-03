@@ -48,8 +48,11 @@ from app.services.report_generator import (
     scrub_bdev_source_false_gaps,
 )
 from app.services.workspace_scope_resolver import (
+    WorkspaceScopeResolver,
+    _GraphIndex,
     _exact_symbol_repo_hits_blocking,
     estimate_evidence_cards,
+    _infer_scope_role,
     _looks_like_symbol,
     _path_hint_repo_hits_blocking,
 )
@@ -136,7 +139,7 @@ def test_path_hints_expand_source_directories_recursively(tmp_path) -> None:
     ]
 
 
-def test_default_evidence_budget_can_cover_medium_primary_module(tmp_path) -> None:
+def test_default_evidence_budget_caps_primary_module(tmp_path) -> None:
     module_dir = tmp_path / "net_mgmt" / "dpdknetmgmt"
     module_dir.mkdir(parents=True)
     candidates = []
@@ -163,8 +166,56 @@ def test_default_evidence_budget_can_cover_medium_primary_module(tmp_path) -> No
     cards = asyncio.run(builder.build_cards([resolved]))
     estimated = estimate_evidence_cards([resolved], limits)
 
-    assert len(cards) >= 16
+    assert len([card for card in cards if card.evidence_role == "primary"]) == 15
+    assert len(cards) == 15
     assert estimated >= 16
+
+
+def test_legacy_path_hint_role_inference() -> None:
+    assert _infer_scope_role("lib/iscsi") == "primary"
+    assert _infer_scope_role("src/session") == "primary"
+    assert _infer_scope_role("include/spdk") == "primary"
+    assert _infer_scope_role("app/iscsi_tgt") == "supporting"
+    assert _infer_scope_role("test/iscsi_tgt") == "supporting"
+    assert _infer_scope_role("doc/iscsi.md") == "external"
+
+
+def test_scope_hints_explicit_roles_reach_resolved_candidates(tmp_path) -> None:
+    for rel in ("lib/iscsi/conn.c", "app/iscsi_tgt/iscsi_tgt.c", "test/iscsi_tgt/login.c"):
+        path = tmp_path / rel
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text("int login_flow(void) { return 0; }\n", encoding="utf-8")
+
+    obj = AnalysisObject(
+        id="iscsi",
+        text="login flow",
+        kind="topic",
+        path_hints=["lib/iscsi", "app/iscsi_tgt", "test/iscsi_tgt"],
+        scope_hints=[
+            {"path": "lib/iscsi", "role": "primary"},
+            {"path": "app/iscsi_tgt", "role": "supporting"},
+            {"path": "test/iscsi_tgt", "role": "supporting"},
+        ],
+    )
+    resolved = asyncio.run(
+        WorkspaceScopeResolver()._resolve_object(
+            obj=obj,
+            ws_id="ws",
+            repo_path=str(tmp_path),
+            index=_GraphIndex(None),
+            limits=LLMLimits(),
+            gitnexus_available=False,
+        )
+    )
+
+    by_path = {
+        Path(c.path).relative_to(tmp_path).as_posix(): c.role
+        for c in resolved.candidate_files
+        if c.path
+    }
+    assert by_path["lib/iscsi/conn.c"] == "primary"
+    assert by_path["app/iscsi_tgt/iscsi_tgt.c"] == "supporting"
+    assert by_path["test/iscsi_tgt/login.c"] == "supporting"
 
 
 def test_symbol_evidence_snippet_focuses_on_definition() -> None:

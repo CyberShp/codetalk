@@ -56,6 +56,8 @@ _SOURCE_EXTS = frozenset({
     ".kt", ".swift", ".m", ".scala",
 })
 
+_SCOPE_ROLES = {"primary", "supporting", "external"}
+
 # Stopwords pruned from analysis-object text before keyword search.
 # We mix English and Chinese; case is folded for English only.
 _STOPWORDS_EN = frozenset({
@@ -533,6 +535,36 @@ def _path_hint_repo_hits_blocking(
     return results
 
 
+def _infer_scope_role(path_hint: str) -> str:
+    """Infer a conservative evidence role for legacy path_hints."""
+    value = _normalize_path_hint(path_hint).lower().strip("/")
+    if not value:
+        return "supporting"
+    first = value.split("/", 1)[0]
+    if first in {"lib", "src", "source", "include"}:
+        return "primary"
+    if first in {"app", "apps", "cli", "cmd", "test", "tests", "example", "examples"}:
+        return "supporting"
+    if first in {"doc", "docs", "manual", "tutorial"}:
+        return "external"
+    return "supporting"
+
+
+def _scope_role_for_path(path: str, hints: list[tuple[str, str]]) -> str:
+    """Return the strongest explicit/inferred role matching a file path."""
+    normalized = _normalize_path_hint(path).lower()
+    best: str | None = None
+    rank = {"primary": 3, "supporting": 2, "external": 1}
+    for hint, role in hints:
+        h = _normalize_path_hint(hint).lower()
+        if not h:
+            continue
+        if normalized == h or normalized.startswith(h.rstrip("/") + "/") or h in normalized:
+            if best is None or rank.get(role, 0) > rank.get(best, 0):
+                best = role
+    return best or "supporting"
+
+
 def _normalize_path_hint(hint: str) -> str:
     """Normalize UI/user path hints before comparing with repo paths."""
     value = (hint or "").strip()
@@ -744,7 +776,18 @@ class WorkspaceScopeResolver:
         normalized_path_hints = [
             h for h in (_normalize_path_hint(hint) for hint in obj.path_hints) if h
         ]
-        path_filter: list[str] | None = normalized_path_hints or None
+        explicit_scope_hints = [
+            (_normalize_path_hint(hint.path), hint.role)
+            for hint in getattr(obj, "scope_hints", []) or []
+            if _normalize_path_hint(hint.path) and hint.role in _SCOPE_ROLES
+        ]
+        if explicit_scope_hints:
+            role_hints = explicit_scope_hints
+            search_hints = [path for path, _role in explicit_scope_hints]
+        else:
+            role_hints = [(hint, _infer_scope_role(hint)) for hint in normalized_path_hints]
+            search_hints = normalized_path_hints
+        path_filter: list[str] | None = search_hints or None
 
         if not keywords:
             obj_warnings.append("分析对象过于笼统，未提取到可检索关键字。")
@@ -760,7 +803,7 @@ class WorkspaceScopeResolver:
         seen_keys: set[tuple[str, str]] = set()
 
         for hit in _path_hint_repo_hits_blocking(
-            repo_path, normalized_path_hints, limits.max_files_per_object
+            repo_path, search_hints, limits.max_files_per_object
         ):
             key = ("file", normalize_file_key(repo_path, hit))
             if key in seen_keys:
@@ -772,7 +815,7 @@ class WorkspaceScopeResolver:
                     source="repo_search",
                     confidence="high",
                     reason="分析对象 path_hints 精确命中源码文件",
-                    role="primary",
+                    role=_scope_role_for_path(hit, role_hints),
                 )
             )
 
@@ -792,7 +835,7 @@ class WorkspaceScopeResolver:
                         source="gitnexus",
                         confidence="high" if hits > 1 else "medium",
                         reason=f"GitNexus 文件命中关键字 ({hits} 次)",
-                        role="primary" if path_filter else "related",
+                        role=_scope_role_for_path(path, role_hints) if path_filter else "related",
                     )
                 )
             for node, hits in index.search_symbols(
@@ -811,7 +854,7 @@ class WorkspaceScopeResolver:
                         source="gitnexus",
                         confidence="high" if hits > 1 else "medium",
                         reason=f"GitNexus 符号命中关键字 ({hits} 次)",
-                        role="primary" if path_filter else "related",
+                        role=_scope_role_for_path(_node_path(node) or "", role_hints) if path_filter else "related",
                     )
                 )
 

@@ -224,6 +224,12 @@ export type AnalysisObjectKind =
   | "function"
   | "mixed";
 export type AnalysisObjectPriority = "high" | "medium" | "low";
+export type ScopeHintRole = "primary" | "supporting" | "external";
+
+export interface ScopeHint {
+  path: string;
+  role: ScopeHintRole;
+}
 
 export interface AnalysisObject {
   id: string;
@@ -231,6 +237,7 @@ export interface AnalysisObject {
   kind: AnalysisObjectKind;
   priority: AnalysisObjectPriority;
   path_hints?: string[];
+  scope_hints?: ScopeHint[];
 }
 
 export interface FocusOptions {
@@ -294,7 +301,7 @@ export interface ScopeCandidate {
   source: ScopeCandidateSource;
   confidence: ScopeCandidateConfidence;
   reason: string;
-  role?: "primary" | "related" | "external" | null;
+  role?: "primary" | "supporting" | "related" | "external" | null;
 }
 
 export interface ResolvedAnalysisObject {
@@ -442,6 +449,35 @@ export interface CoverageToolStatus {
   source?: string;
 }
 
+export interface CoverageSfmea {
+  failure_mode?: string;
+  trigger_condition?: string;
+  propagation_effect?: string;
+  observable_effect?: string;
+  recommended_test?: string;
+}
+
+export interface CoverageTestScenario {
+  version?: string;
+  scenario_id: string;
+  priority: "high" | "medium" | "low" | string;
+  case_type: "black_box_ready" | "black_box_hypothesis" | "gray_box_required" | string;
+  flow_purpose: string;
+  external_trigger: string;
+  input_construction: string;
+  normal_path: string;
+  error_path: string;
+  key_call_chain: string[];
+  expected_result: string;
+  observable_signals: string[];
+  gray_box_aid: string;
+  sfmea: CoverageSfmea;
+  evidence_refs: string[];
+  related_gaps: string[];
+  confidence: "high" | "medium" | "low" | string;
+  verification_gaps: string[];
+}
+
 export interface CoverageModuleResult {
   module_path: string;
   line_rate: number;
@@ -472,6 +508,7 @@ export interface CoverageModuleResult {
   black_box_cases?: CoverageBlackBoxCase[];
   gray_box?: CoverageGrayBox | null;
   gray_box_required?: boolean;
+  test_scenarios?: CoverageTestScenario[];
   evidence_gaps?: string[];
   tool_status?: CoverageToolStatus;
   // branch-gap fields

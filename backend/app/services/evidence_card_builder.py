@@ -61,6 +61,7 @@ class EvidenceCard:
     confidence: str  # 'high' | 'medium' | 'low'
     file_path: str | None = None
     symbol: str | None = None
+    evidence_role: str = "supporting"
     snippet: str = ""
     notes: list[str] = field(default_factory=list)
     needs_verification: bool = False
@@ -74,6 +75,7 @@ class EvidenceCard:
             "confidence": self.confidence,
             "file_path": self.file_path,
             "symbol": self.symbol,
+            "evidence_role": self.evidence_role,
             "snippet": self.snippet,
             "notes": self.notes,
             "needs_verification": self.needs_verification,
@@ -83,6 +85,7 @@ class EvidenceCard:
         verify = " [待验证]" if self.needs_verification else ""
         head = f"#### {self.title}{verify}"
         meta_parts = [f"来源: {self.source}", f"置信度: {self.confidence}"]
+        meta_parts.append(f"证据角色: {self.evidence_role}")
         if self.file_path:
             meta_parts.append(f"文件: `{self.file_path}`")
         if self.symbol:
@@ -531,13 +534,32 @@ class EvidenceCardBuilder:
         resolved: ResolvedAnalysisObject,
     ) -> list[EvidenceCard]:
         seen: set[tuple[str, str]] = set()
-        per_object_cap = max(2, self._limits.max_files_per_object)
         cards: list[EvidenceCard] = []
+        role_budgets = {
+            "primary": min(15, self._limits.max_files_per_object),
+            "supporting": min(6, self._limits.max_files_per_object),
+            "related": min(6, self._limits.max_files_per_object),
+            "external": min(3, self._limits.max_files_per_object),
+        }
+        role_counts = {role: 0 for role in role_budgets}
 
-        # Files first — they ground the LLM in real source.
-        for cand in resolved.candidate_files:
-            if len(cards) >= per_object_cap:
-                break
+        def _role(cand: ScopeCandidate) -> str:
+            role = cand.role or "supporting"
+            return role if role in role_budgets else "supporting"
+
+        ordered_files = sorted(
+            resolved.candidate_files,
+            key=lambda cand: (
+                {"primary": 0, "supporting": 1, "related": 1, "external": 2}.get(_role(cand), 1),
+                cand.path or "",
+            ),
+        )
+
+        # Files first — they ground the LLM in real source, with primary scope protected.
+        for cand in ordered_files:
+            role = _role(cand)
+            if role_counts[role] >= role_budgets[role]:
+                continue
             card = await self._card_for_file(resolved, cand)
             if card is None:
                 continue
@@ -545,12 +567,14 @@ class EvidenceCardBuilder:
             if key in seen:
                 continue
             seen.add(key)
+            role_counts[role] += 1
             cards.append(card)
 
         # Symbols add structural pointers even without snippets.
         for cand in resolved.candidate_symbols[: self._limits.max_functions_per_object]:
-            if len(cards) >= per_object_cap + 4:
-                break
+            role = _role(cand)
+            if role_counts[role] >= role_budgets[role]:
+                continue
             sym = cand.symbol or "(unknown symbol)"
             key = ("symbol", sym)
             if key in seen:
@@ -565,11 +589,13 @@ class EvidenceCardBuilder:
                     confidence=cand.confidence,
                     file_path=cand.path,
                     symbol=sym,
+                    evidence_role=role,
                     snippet="",
                     notes=[cand.reason],
                     needs_verification=cand.source != "gitnexus",
                 )
             )
+            role_counts[role] += 1
 
         if resolved.related_communities:
             cards.append(
@@ -583,6 +609,7 @@ class EvidenceCardBuilder:
                         "GitNexus 社区命名仅作导航参考，最终结论须以源码为准。",
                         "命中社区：" + ", ".join(resolved.related_communities),
                     ],
+                    evidence_role="external",
                     needs_verification=True,
                 )
             )
@@ -599,6 +626,7 @@ class EvidenceCardBuilder:
                         "未在 GitNexus、源码或材料中找到证据；"
                         "建议在描述中加入具体函数名或文件名。",
                     ],
+                    evidence_role="external",
                     needs_verification=True,
                 )
             )
@@ -647,6 +675,7 @@ class EvidenceCardBuilder:
             confidence=cand.confidence,
             file_path=str(full),
             symbol=cand.symbol,
+            evidence_role=cand.role or "supporting",
             snippet=snippet,
             notes=notes,
             needs_verification=cand.source != "gitnexus" and not snippet,

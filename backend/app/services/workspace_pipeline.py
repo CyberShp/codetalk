@@ -192,13 +192,19 @@ class WorkspacePipeline:
             if not modules:
                 return
 
+            output_dir = settings.outputs_path / task_id
             design = await build_coverage_test_design(
-                modules, workspace_id=ws_id, repo_path=repo_path
+                modules,
+                workspace_id=ws_id,
+                repo_path=repo_path,
+                use_ai=True,
+                artifact_dir=output_dir,
+                analysis_id=task_id,
+                report_output_dir=output_dir,
             )
             if not design.get("gaps"):
                 return
 
-            output_dir = settings.outputs_path / task_id
             await write_coverage_test_design(output_dir, design)
 
             section = build_coverage_test_design_section(design)

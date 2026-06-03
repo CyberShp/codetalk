@@ -31,13 +31,41 @@ from app.llm.base import BaseLLMClient
 from app.llm.factory import create_llm_client_from_active
 
 logger = logging.getLogger(__name__)
-WORKSPACE_SCOPE_ENRICHMENT_TIMEOUT_SECONDS = 5.0
+WORKSPACE_SCOPE_ENRICHMENT_TIMEOUT_SECONDS = 25.0
 
 # Coverage gap test-design constants (coverage-test-design-v1).
 COVERAGE_TEST_DESIGN_VERSION = "coverage-test-design-v1"
+COVERAGE_TEST_CONTEXT_VERSION = "coverage-test-context-v1"
+AI_TEST_DESIGN_VERSION = "coverage-ai-test-scenarios-v1"
 BLACK_BOX_READY = "black_box_ready"
 BLACK_BOX_HYPOTHESIS = "black_box_hypothesis"
 GRAY_BOX_REQUIRED = "gray_box_required"
+AI_REQUIRED_SCENARIO_FIELDS = (
+    "scenario_id",
+    "priority",
+    "case_type",
+    "flow_purpose",
+    "external_trigger",
+    "input_construction",
+    "normal_path",
+    "error_path",
+    "key_call_chain",
+    "expected_result",
+    "observable_signals",
+    "gray_box_aid",
+    "sfmea",
+    "evidence_refs",
+    "related_gaps",
+    "confidence",
+    "verification_gaps",
+)
+AI_REQUIRED_SFMEA_FIELDS = (
+    "failure_mode",
+    "trigger_condition",
+    "propagation_effect",
+    "observable_effect",
+    "recommended_test",
+)
 # Entry-oriented layered tracing: how far up the caller chain we walk to find an
 # external entry (CLI / API / message handler / config / file input) before we
 # fall back to a gray-box injection scheme.
@@ -316,6 +344,30 @@ def _coverage_bytes(content: str | bytes) -> bytes:
     return content.encode("utf-8")
 
 
+def _coverage_totals(modules: list[ModuleCoverage], source_format: str) -> tuple[float, float, float]:
+    """Return aggregate rates.
+
+    Internal function-hit reports do not contain real line/branch counters.  For
+    those uploads, the honest aggregate is covered functions / total functions;
+    branch coverage is unavailable and kept at 0 for backward-compatible API
+    fields.
+    """
+    if source_format == "internal_function_hits":
+        total = 0
+        covered = 0
+        for module in modules:
+            hits = module.function_hits or [hit for f in module.files for hit in f.function_hits]
+            total += len(hits)
+            covered += sum(1 for hit in hits if hit.triggered or hit.hit_count > 0)
+        function_rate = (covered / total) if total else 0.0
+        return function_rate, 0.0, function_rate
+
+    total_line = sum(m.line_rate for m in modules) / len(modules)
+    total_branch = sum(m.branch_rate for m in modules) / len(modules)
+    total_func = sum(m.function_rate for m in modules) / len(modules)
+    return total_line, total_branch, total_func
+
+
 class CoverageAnalyzer:
     """Orchestrates coverage parsing and AI analysis."""
 
@@ -368,9 +420,9 @@ class CoverageAnalyzer:
         if not merged_modules:
             raise ValueError("未能从上传文件中解析到任何覆盖率数据")
 
-        total_line = sum(m.line_rate for m in merged_modules) / len(merged_modules)
-        total_branch = sum(m.branch_rate for m in merged_modules) / len(merged_modules)
-        total_func = sum(m.function_rate for m in merged_modules) / len(merged_modules)
+        total_line, total_branch, total_func = _coverage_totals(
+            merged_modules, source_format
+        )
 
         merged_report = CoverageReport(
             overall_line_rate=total_line,
@@ -451,11 +503,15 @@ class CoverageAnalyzer:
         modules = [_dict_to_module(d) for d in modules_data]
 
         if record.get("source_format") == "internal_function_hits":
-            results = await _build_black_box_function_recommendations(
+            design = await build_coverage_test_design(
                 modules,
                 workspace_id=record.get("workspace_id"),
                 repo_path=record.get("repo_path"),
+                use_ai=True,
+                artifact_dir=settings.outputs_path / "coverage" / analysis_id,
+                analysis_id=analysis_id,
             )
+            results = design.get("gaps") or []
             now = datetime.now(timezone.utc).isoformat()
             async with aiosqlite.connect(settings.sqlite_db) as db:
                 await db.execute(
@@ -847,35 +903,33 @@ def _risk_level_for_hit(hit: FunctionHit) -> str:
 
 def _scenario_for_hit(hit: FunctionHit) -> str:
     name = hit.function_name.replace("_", " ")
-    return f"Exercise the external workflow that should reach the behavior represented by `{name}`."
+    return f"补充能够从外部触发 `{name}` 对应行为的测试流程。"
 
 
 def _input_conditions_for_hit(hit: FunctionHit) -> str:
     text = hit.function_name.lower()
     if any(term in text for term in ("error", "fail", "recover", "rollback")):
-        return "Use an externally visible failure condition: invalid input, unavailable dependency, timeout, or retry exhaustion."
+        return "构造外部可见的失败条件：非法输入、依赖不可用、超时或重试耗尽。"
     if any(term in text for term in ("cleanup", "free", "close", "stop")):
-        return "Run the workflow through normal completion and forced interruption so resource release can be observed."
+        return "让流程分别走正常完成和强制中断，观察资源释放和状态回收。"
     if any(term in text for term in ("parse", "validate", "config")):
-        return "Prepare valid, boundary, malformed, and missing configuration or request data."
-    return "Drive the nearest public API, CLI command, UI action, message, or file input that owns this behavior."
+        return "准备合法、边界、畸形和缺失的配置或请求数据。"
+    return "通过最近的公开 API、CLI、页面操作、消息、配置或文件输入触发该行为。"
 
 
 def _expected_behavior_for_hit(hit: FunctionHit) -> str:
     return (
-        "The user-visible workflow completes with the documented result or a controlled "
-        "error response; no silent success, crash, hang, leaked resource, or inconsistent "
-        "state is acceptable."
+        "用户可见流程应返回文档化结果或受控错误；不能静默成功、崩溃、卡死、泄漏资源或留下不一致状态。"
     )
 
 
 def _observable_signals_for_hit(hit: FunctionHit) -> list[str]:
-    signals = ["return value / response code", "user-visible status", "logs"]
+    signals = ["返回值/响应码", "用户可见状态", "日志"]
     text = hit.function_name.lower()
     if any(term in text for term in ("cleanup", "free", "close")):
-        signals.append("resource count returns to baseline")
+        signals.append("资源计数回到基线")
     if any(term in text for term in ("state", "start", "stop", "recover")):
-        signals.append("state transition is externally observable")
+        signals.append("状态切换可从外部观察")
     return signals
 
 
@@ -1021,11 +1075,11 @@ def _build_test_case_drafts(
     drafts: list[dict] = []
     if not cases:
         cases = [{
-            "title": "Gray-box validation for unreachable coverage gap",
+            "title": "无法从外部触达的覆盖率缺口灰盒验证",
             "entry_kind": "gray_box",
-            "preconditions": "No confirmed public entry reaches this behavior.",
-            "inputs": "Use a controlled injection point and externally observable signals.",
-            "steps": ["Inject the required condition", "Observe the documented result"],
+            "preconditions": "尚未确认能够触达该行为的公开入口。",
+            "inputs": "使用受控注入点，并准备外部可观察信号。",
+            "steps": ["注入目标条件", "观察文档化结果"],
             "expected": _expected_behavior_for_hit(hit),
             "observable_signals": _observable_signals_for_hit(hit),
         }]
@@ -1039,7 +1093,7 @@ def _build_test_case_drafts(
         )
         execution = {
             "title": case.get("title"),
-            "external_trigger": case.get("external_trigger") or f"Drive the public {entry_kind} workflow.",
+            "external_trigger": case.get("external_trigger") or f"触发公开 {entry_kind} 流程。",
             "preconditions": case.get("preconditions"),
             "inputs": case.get("inputs"),
             "steps": case.get("steps") or [],
@@ -1697,27 +1751,28 @@ def _build_black_box_cases(
 
     for entry in entry_paths[:3]:
         entry_label = _safe_external_label(entry)
+        entry_kind = str(entry.get("entry_kind") or "外部")
         input_hints = [str(item) for item in (entry.get("input_hints") or []) if item]
         entry_inputs = (
-            "Use externally supplied request/configuration parameters to prepare valid, boundary, and malformed input: "
+            "使用外部请求/配置参数构造合法值、边界值和畸形值："
             + ", ".join(input_hints)
             if input_hints else base_inputs
         )
         steps = [
-            f"Start the public {entry.get('entry_kind')} workflow through {entry_label}.",
+            f"通过公开{entry_kind}入口 {entry_label} 触发流程。",
         ]
         if input_hints:
-            steps.append("Set the external parameters: " + ", ".join(input_hints))
+            steps.append("设置外部参数：" + ", ".join(input_hints))
         steps.extend([
-            "Run the workflow with valid input, boundary input, and malformed input.",
-            "Observe the response, state, logs, and resource signals from outside the component.",
+            "分别执行合法输入、边界输入和畸形输入。",
+            "从组件外部观察响应、状态、日志和资源信号。",
         ])
         cases.append({
             "case_type": BLACK_BOX_READY,
-            "title": f"Public {entry.get('entry_kind')} workflow handles the uncovered behavior",
+            "title": f"公开{entry_kind}流程覆盖未命中行为",
             "entry_kind": entry.get("entry_kind"),
-            "external_trigger": f"Drive {entry_label} through its public interface.",
-            "preconditions": f"The public {entry.get('entry_kind')} entry is available and configured for this workflow.",
+            "external_trigger": f"通过公开接口触发 {entry_label}。",
+            "preconditions": f"公开{entry_kind}入口可用，且测试环境已完成该流程所需配置。",
             "inputs": entry_inputs,
             "steps": steps,
             "expected": expected,
@@ -1736,17 +1791,17 @@ def _build_black_box_cases(
             continue
         cases.append({
             "case_type": BLACK_BOX_READY if entry_paths else BLACK_BOX_HYPOTHESIS,
-            "title": "Public workflow handles the boundary or error condition",
+            "title": "公开流程覆盖边界或错误条件",
             "entry_kind": entry_paths[0]["entry_kind"] if entry_paths else "unknown",
             "external_trigger": (
-                f"Drive {primary_entry_label} through its public interface."
-                if primary_entry_label else "Identify a public entry before executing this as black-box."
+                f"通过公开接口触发 {primary_entry_label}。"
+                if primary_entry_label else "先确认公开入口，再作为黑盒用例执行。"
             ),
-            "preconditions": "The external workflow exposes a controllable boundary, error, or state condition.",
+            "preconditions": "外部流程能构造可控的边界、错误或状态条件。",
             "inputs": base_inputs,
             "steps": [
-                "Prepare external input that exercises the boundary or failure behavior.",
-                "Run the public workflow and observe the externally visible result.",
+                "准备能触发边界或失败行为的外部输入。",
+                "执行公开流程并观察外部可见结果。",
             ],
             "expected": expected,
             "observable_signals": signals,
@@ -1755,18 +1810,17 @@ def _build_black_box_cases(
         })
         if primary_entry_label:
             branch_inputs = (
-                f"Adjust external request/configuration/state through {primary_entry_label} "
-                "to exercise the relevant boundary or failure behavior."
+                f"通过 {primary_entry_label} 调整外部请求、配置或状态，触发相关边界或失败行为。"
             )
             if primary_input_hints:
-                branch_inputs += " External parameters: " + ", ".join(primary_input_hints)
+                branch_inputs += " 外部参数：" + ", ".join(primary_input_hints)
             branch_steps = [
-                f"Start the public {primary_entry.get('entry_kind')} workflow through {primary_entry_label}.",
+                f"通过 {primary_entry_label} 启动公开{primary_entry.get('entry_kind')}流程。",
             ]
             if primary_input_hints:
-                branch_steps.append("Set the external parameters: " + ", ".join(primary_input_hints))
-            branch_steps.append("Run the workflow with boundary/failure-oriented input.")
-            branch_steps.append("Verify the externally observable result and absence of silent success.")
+                branch_steps.append("设置外部参数：" + ", ".join(primary_input_hints))
+            branch_steps.append("使用面向边界/失败的输入执行流程。")
+            branch_steps.append("验证外部可观测结果，并确认没有静默成功。")
             cases[-1].update({
                 "inputs": branch_inputs,
                 "steps": branch_steps,
@@ -1776,14 +1830,14 @@ def _build_black_box_cases(
         # No source-backed entry/branch; emit a hypothesis, not a ready black-box case.
         cases.append({
             "case_type": BLACK_BOX_HYPOTHESIS,
-            "title": "Identify a public workflow before black-box execution",
+            "title": "先确认公开流程再执行黑盒测试",
             "entry_kind": "unknown",
-            "external_trigger": "No confirmed public entry yet.",
-            "preconditions": "Bind workspace/source evidence or add entry mapping before treating this as black-box ready.",
+            "external_trigger": "尚未确认公开入口。",
+            "preconditions": "绑定工作区/源码证据或补充入口映射后，才能标记为黑盒可执行。",
             "inputs": base_inputs,
             "steps": [
-                "Locate the responsible API, CLI, message, configuration, or file input.",
-                "Map external input to observable behavior before writing execution steps.",
+                "定位负责该行为的 API、CLI、消息、配置或文件输入。",
+                "先把外部输入映射到可观测行为，再编写执行步骤。",
             ],
             "expected": expected,
             "observable_signals": signals,
@@ -1921,15 +1975,15 @@ def _build_branch_gaps(
             branch_fact_card = {
                 "uncovered_location": module.module_path,
                 "branch_conditions": [condition],
-                "behavior_impact": "Branch behavior must be verified through an external contract or downgraded to gray-box.",
+                "behavior_impact": "该分支行为必须通过外部契约验证；无法映射外部入口时降级为灰盒辅助。",
                 "source_evidence": [str(raw)],
-                "possible_observable_signals": ["return value / response code", "logs", "state transition"],
+                "possible_observable_signals": ["返回值/响应码", "日志", "状态切换"],
             }
             external_entry_card = {
                 "has_external_entry": False,
                 "entries": [],
                 "missing_evidence": (
-                    [] if workspace_bound else ["workspace/source binding is missing"]
+                    [] if workspace_bound else ["缺少工作区/源码绑定"]
                 ),
             }
             readiness_card = {
@@ -1937,7 +1991,7 @@ def _build_branch_gaps(
                 "has_external_entry": False,
                 "has_constructible_input": False,
                 "has_observable_signal": True,
-                "rationale": "coverage branch exists, but no external entry mapping has been confirmed",
+                "rationale": "覆盖率分支存在，但尚未确认外部入口映射",
             }
             gray_box = {
                 "required": False,
@@ -1947,18 +2001,18 @@ def _build_branch_gaps(
             }
             case = {
                 "case_type": BLACK_BOX_HYPOTHESIS,
-                "title": "Verify externally visible behavior for an uncovered branch",
+                "title": "验证未覆盖分支的外部可见行为",
                 "entry_kind": "unknown",
-                "external_trigger": "Confirm the API, CLI, message, configuration, or file input before black-box execution.",
-                "preconditions": "External entry mapping is not confirmed yet.",
-                "inputs": "Prepare valid, boundary, and invalid data once the entry is confirmed.",
+                "external_trigger": "先确认 API、CLI、消息、配置或文件输入，再执行黑盒测试。",
+                "preconditions": "外部入口映射尚未确认。",
+                "inputs": "入口确认后准备合法值、边界值和非法值。",
                 "steps": [
-                    "Map this coverage branch to a public workflow.",
-                    "Run the workflow with externally controlled input.",
-                    "Observe the documented result from outside the component.",
+                    "把该覆盖率分支映射到公开流程。",
+                    "使用外部可控输入执行流程。",
+                    "从组件外部观察文档化结果。",
                 ],
-                "expected": "Both sides of the behavior produce documented, observable results; error side must not silently succeed.",
-                "observable_signals": ["return value / response code", "logs", "state transition"],
+                "expected": "分支两侧都应产生文档化、可观察的结果；错误侧不能静默成功。",
+                "observable_signals": ["返回值/响应码", "日志", "状态切换"],
             }
             test_case_drafts = _build_test_case_drafts(
                 FunctionHit(
@@ -2000,11 +2054,565 @@ def _build_branch_gaps(
     return gaps
 
 
+async def build_coverage_test_context(
+    modules: list[ModuleCoverage],
+    *,
+    workspace_id: str | None,
+    repo_path: str | None,
+    deterministic_gaps: list[dict],
+    report_output_dir: Path | None = None,
+) -> dict:
+    """Build the evidence package used by AI test-case generation."""
+    reports = await _load_coverage_report_context(workspace_id, report_output_dir)
+    materials = await _load_coverage_material_context(workspace_id)
+    coverage = _coverage_context_from_modules(modules)
+    source = _source_context_from_gaps(deterministic_gaps)
+    gitnexus = _tool_context_from_gaps(deterministic_gaps, "gitnexus_scope")
+    cgc = _tool_context_from_gaps(deterministic_gaps, "cgc")
+    evidence_counts = {
+        "coverage": len(coverage.get("uncovered_functions") or []) + len(coverage.get("uncovered_branches") or []),
+        "source": len(source),
+        "gitnexus": len(gitnexus),
+        "cgc": len(cgc),
+        "report": len(reports),
+        "material": len(materials),
+    }
+    return {
+        "version": COVERAGE_TEST_CONTEXT_VERSION,
+        "workspace_id": workspace_id,
+        "repo_path": repo_path,
+        "generated_at": datetime.now(timezone.utc).isoformat(),
+        "coverage": coverage,
+        "source": source,
+        "gitnexus": gitnexus,
+        "cgc": cgc,
+        "reports": reports,
+        "materials": materials,
+        "deterministic_gaps": _context_safe_gaps(deterministic_gaps),
+        "evidence_source_counts": evidence_counts,
+        "warnings": _coverage_context_warnings(evidence_counts),
+    }
+
+
+async def _load_coverage_report_context(
+    workspace_id: str | None,
+    report_output_dir: Path | None,
+) -> list[dict]:
+    reports: list[dict] = []
+    if report_output_dir and report_output_dir.exists():
+        for path in sorted(report_output_dir.glob("*.md"))[:8]:
+            try:
+                text = path.read_text(encoding="utf-8", errors="replace")
+            except OSError:
+                continue
+            if not text.strip():
+                continue
+            reports.append({
+                "source": "output_dir",
+                "report_id": path.stem,
+                "report_type": _guess_report_type(path.name),
+                "title": path.stem,
+                "task_id": report_output_dir.name,
+                "excerpt": _excerpt(text, 1600),
+            })
+    if workspace_id:
+        try:
+            async with aiosqlite.connect(settings.sqlite_db) as db:
+                db.row_factory = aiosqlite.Row
+                rows = await db.execute_fetchall(
+                    """SELECT id, report_type, title, content, status, task_id, created_at
+                       FROM workspace_reports
+                       WHERE workspace_id = ? AND status IN ('completed', 'partial')
+                       ORDER BY created_at DESC
+                       LIMIT 12""",
+                    (workspace_id,),
+                )
+        except Exception as exc:
+            logger.info("Coverage report context unavailable: %s", exc)
+            rows = []
+        for row in rows:
+            data = dict(row)
+            content = data.get("content") or ""
+            if not content.strip():
+                continue
+            reports.append({
+                "source": "workspace_reports",
+                "report_id": data.get("id"),
+                "report_type": data.get("report_type"),
+                "title": data.get("title") or data.get("report_type"),
+                "task_id": data.get("task_id"),
+                "status": data.get("status"),
+                "excerpt": _excerpt(content, 1800),
+            })
+    return _dedupe_context_items(reports, ("report_id", "title"))[:10]
+
+
+async def _load_coverage_material_context(workspace_id: str | None) -> list[dict]:
+    if not workspace_id:
+        return []
+    try:
+        async with aiosqlite.connect(settings.sqlite_db) as db:
+            db.row_factory = aiosqlite.Row
+            rows = await db.execute_fetchall(
+                """SELECT id, filename, content_type, file_path
+                   FROM workspace_materials
+                   WHERE workspace_id = ? AND is_active = 1
+                   ORDER BY created_at DESC
+                   LIMIT 8""",
+                (workspace_id,),
+            )
+    except Exception as exc:
+        logger.info("Coverage material context unavailable: %s", exc)
+        return []
+    materials: list[dict] = []
+    for row in rows:
+        data = dict(row)
+        excerpt = ""
+        try:
+            path = Path(data.get("file_path") or "")
+            if path.exists() and path.is_file():
+                excerpt = _excerpt(path.read_text(encoding="utf-8", errors="replace"), 1600)
+        except OSError:
+            excerpt = ""
+        materials.append({
+            "material_id": data.get("id"),
+            "filename": data.get("filename"),
+            "content_type": data.get("content_type"),
+            "excerpt": excerpt,
+        })
+    return materials
+
+
+def _coverage_context_from_modules(modules: list[ModuleCoverage]) -> dict:
+    uncovered_functions: list[dict] = []
+    uncovered_branches: list[dict] = []
+    total_functions = 0
+    covered_functions = 0
+    for module in modules:
+        hits = module.function_hits or [hit for f in module.files for hit in f.function_hits]
+        total_functions += len(hits)
+        covered_functions += sum(1 for hit in hits if hit.triggered or hit.hit_count > 0)
+        for hit in hits:
+            if hit.triggered or hit.hit_count > 0:
+                continue
+            uncovered_functions.append({
+                "module_path": module.module_path,
+                "feature_name": hit.feature_name,
+                "file_path": hit.file_path,
+                "function_name": hit.function_name,
+                "line_start": hit.line_start,
+                "line_end": hit.line_end,
+                "hit_count": hit.hit_count,
+            })
+        for branch in module.uncovered_branches[:40]:
+            uncovered_branches.append({
+                "module_path": module.module_path,
+                "branch": str(branch),
+            })
+    return {
+        "module_count": len(modules),
+        "function_total": total_functions,
+        "function_covered": covered_functions,
+        "function_rate": covered_functions / total_functions if total_functions else 0.0,
+        "branch_coverage_available": any(m.uncovered_branches for m in modules),
+        "uncovered_functions": uncovered_functions[:80],
+        "uncovered_branches": uncovered_branches[:80],
+    }
+
+
+def _source_context_from_gaps(gaps: list[dict]) -> list[dict]:
+    source: list[dict] = []
+    for gap in gaps[:80]:
+        window = gap.get("source_window") or {}
+        if isinstance(window, dict) and window.get("available"):
+            source.append({
+                "gap": gap.get("function_name") or gap.get("condition"),
+                "file_path": window.get("path"),
+                "start": window.get("start"),
+                "end": window.get("end"),
+                "excerpt": _excerpt(window.get("text") or "", 1200),
+            })
+    return source
+
+
+def _tool_context_from_gaps(gaps: list[dict], key: str) -> list[dict]:
+    items: list[dict] = []
+    for gap in gaps[:80]:
+        evidence = gap.get("evidence") or {}
+        value = evidence.get(key) if isinstance(evidence, dict) else None
+        if value:
+            items.append({
+                "gap": gap.get("function_name") or gap.get("condition"),
+                "evidence": value,
+            })
+    return items[:24]
+
+
+def _context_safe_gaps(gaps: list[dict]) -> list[dict]:
+    safe: list[dict] = []
+    for gap in gaps[:80]:
+        safe.append({
+            "kind": gap.get("kind"),
+            "module_path": gap.get("module_path"),
+            "function_name": gap.get("function_name"),
+            "file_path": gap.get("file_path"),
+            "risk_level": gap.get("risk_level"),
+            "entry_paths": gap.get("entry_paths") or [],
+            "trigger_branches": gap.get("trigger_branches") or [],
+            "gray_box_required": gap.get("gray_box_required"),
+            "evidence_gaps": gap.get("evidence_gaps") or [],
+        })
+    return safe
+
+
+def _coverage_context_warnings(counts: dict) -> list[str]:
+    warnings: list[str] = []
+    if counts.get("report", 0) == 0:
+        warnings.append("未找到已生成分析报告：AI 用例只能基于覆盖率、源码和工具证据，业务语义需要人工确认。")
+    if counts.get("material", 0) == 0:
+        warnings.append("未找到工作区材料：需求/设计语义不足，不能把推断当成最终事实。")
+    if counts.get("gitnexus", 0) == 0:
+        warnings.append("GitNexus 证据未进入覆盖率上下文：调用/模块结论需要降级处理。")
+    if counts.get("cgc", 0) == 0:
+        warnings.append("CGC 证据未进入覆盖率上下文：调用链可能不完整。")
+    return warnings
+
+
+def _guess_report_type(filename: str) -> str:
+    lowered = filename.lower()
+    if "源码" in filename or "source" in lowered:
+        return "source_reading"
+    if "流程" in filename or "business" in lowered:
+        return "business_flow"
+    if "测试" in filename or "test" in lowered:
+        return "test_design"
+    return "report"
+
+
+def _excerpt(text: str, limit: int) -> str:
+    clean = "\n".join(line.rstrip() for line in str(text or "").splitlines())
+    return clean[:limit]
+
+
+def _dedupe_context_items(items: list[dict], keys: tuple[str, ...]) -> list[dict]:
+    seen: set[tuple] = set()
+    out: list[dict] = []
+    for item in items:
+        key = tuple(item.get(k) for k in keys)
+        if key in seen:
+            continue
+        seen.add(key)
+        out.append(item)
+    return out
+
+
+async def _generate_ai_test_scenarios(
+    llm: BaseLLMClient,
+    context: dict,
+) -> dict:
+    prompt = _coverage_ai_prompt(context)
+    messages = [
+        {
+            "role": "system",
+            "content": (
+                "你是面向测试人员的代码覆盖率分析助手。只能依据输入证据生成测试场景；"
+                "黑盒步骤必须使用外部触发方式，不能要求调用内部函数、进入源码分支或修改内部变量。"
+                "只输出 JSON，不输出 Markdown。"
+            ),
+        },
+        {"role": "user", "content": prompt},
+    ]
+    resp = await llm.complete(
+        messages,
+        max_tokens=min(8192, max(4096, settings.llm_max_output_tokens)),
+        temperature=0.1,
+    )
+    parsed = _parse_json_object(resp.content)
+    parse_error = parsed.get("_parse_error") if isinstance(parsed, dict) else None
+    scenarios = parsed.get("scenarios") if isinstance(parsed, dict) else []
+    if not isinstance(scenarios, list):
+        scenarios = []
+    accepted: list[dict] = []
+    rejected: list[dict] = []
+    for idx, raw in enumerate(scenarios):
+        scenario = raw if isinstance(raw, dict) else {}
+        reason = _scenario_rejection_reason(scenario)
+        if reason:
+            rejected.append({
+                "scenario_id": scenario.get("scenario_id") or f"scenario_{idx + 1}",
+                "reason": reason,
+            })
+            continue
+        accepted.append(_normalize_ai_scenario(scenario))
+    if not scenarios:
+        rejected.append({
+            "scenario_id": "response",
+            "reason": parse_error or "AI 响应中没有 scenarios 数组",
+        })
+    return {
+        "prompt": prompt,
+        "raw_response": resp.content,
+        "model": getattr(resp, "model", ""),
+        "accepted": accepted,
+        "rejected": rejected,
+    }
+
+
+def _coverage_ai_prompt(context: dict) -> str:
+    compact = {
+        "version": context.get("version"),
+        "workspace_id": context.get("workspace_id"),
+        "repo_path": context.get("repo_path"),
+        "coverage": context.get("coverage"),
+        "deterministic_gaps": context.get("deterministic_gaps"),
+        "reports": context.get("reports"),
+        "materials": context.get("materials"),
+        "source": context.get("source"),
+        "gitnexus": context.get("gitnexus"),
+        "cgc": context.get("cgc"),
+        "warnings": context.get("warnings"),
+    }
+    return (
+        "请基于以下 CodeTalk 覆盖率上下文，生成测试人员可执行的覆盖率补充用例。\n"
+        "要求：\n"
+        "1. 不要套用具体协议或项目模板，要从证据中识别外部触发面、输入面、状态面、配置环境面、时序面和可观测面。\n"
+        "2. 只生成 3 到 4 个最高价值场景，优先覆盖不同外部触发面和不同故障模式，避免输出过长导致 JSON 截断。\n"
+        "3. 最终 scenarios 中至少 70% 必须是 `black_box_ready`，最多 30% 可以是 `gray_box_required`；不要把可从外部执行的场景标成 `black_box_hypothesis`。\n"
+        "4. 每个 high 优先级场景必须回答：流程做什么、外部怎么触发、输入怎么构造、正常路径、异常路径、预期结果、可观测信号、灰盒辅助、SFMEA。\n"
+        "5. normal_path/error_path/external_trigger/input_construction/expected_result 只能写测试人员从外部执行和观察的步骤，不要写函数名、源码文件、源码行号、内部变量或“调用 xxx”。源码函数/文件只能放在 key_call_chain/evidence_refs/gray_box_aid。\n"
+        "6. 只有确实无法从外部触发、必须靠注入/trace/内部状态辅助观察时，才使用 `gray_box_required`；这种场景最多 1 个。`black_box_hypothesis` 只作为无法分类的临时状态，最终验收会失败。\n"
+        "7. 只输出 JSON，格式为 {\"scenarios\": [...]}，禁止输出 Markdown 或解释文字。\n"
+        f"必填字段：{', '.join(AI_REQUIRED_SCENARIO_FIELDS)}。\n"
+        f"sfmea 必填字段：{', '.join(AI_REQUIRED_SFMEA_FIELDS)}。\n\n"
+        "上下文 JSON：\n"
+        + json.dumps(compact, ensure_ascii=False)[:50000]
+    )
+
+
+def _parse_json_object(text: str) -> dict:
+    raw = str(text or "").strip()
+    if raw.startswith("```"):
+        raw = re.sub(r"^```(?:json)?\s*", "", raw)
+        raw = re.sub(r"\s*```$", "", raw)
+    try:
+        parsed = json.loads(raw)
+        return parsed if isinstance(parsed, dict) else {}
+    except json.JSONDecodeError as first_exc:
+        start = raw.find("{")
+        end = raw.rfind("}")
+        if start >= 0 and end > start:
+            try:
+                parsed = json.loads(raw[start:end + 1])
+                return parsed if isinstance(parsed, dict) else {}
+            except json.JSONDecodeError as second_exc:
+                return {"_parse_error": f"AI 响应不是完整 JSON：{second_exc}"}
+        return {"_parse_error": f"AI 响应不是完整 JSON：{first_exc}"}
+    return {"_parse_error": "AI 响应为空或不是 JSON 对象"}
+
+
+def _scenario_rejection_reason(scenario: dict) -> str | None:
+    case_type = scenario.get("case_type")
+    missing = [
+        field for field in AI_REQUIRED_SCENARIO_FIELDS
+        if field not in scenario
+        or (
+            scenario.get(field) in (None, "")
+            and not (
+                field == "verification_gaps"
+                or (field == "gray_box_aid" and case_type == BLACK_BOX_READY)
+            )
+        )
+        or (
+            scenario.get(field) == []
+            and field not in {"verification_gaps"}
+        )
+    ]
+    if missing:
+        return "缺少必填字段：" + ", ".join(missing)
+    sfmea = scenario.get("sfmea")
+    if not isinstance(sfmea, dict):
+        return "sfmea 必须是对象"
+    sfmea_missing = [
+        field for field in AI_REQUIRED_SFMEA_FIELDS
+        if field not in sfmea or sfmea.get(field) in (None, "", [])
+    ]
+    if sfmea_missing:
+        return "SFMEA 缺少必填字段：" + ", ".join(sfmea_missing)
+    if case_type not in {BLACK_BOX_READY, BLACK_BOX_HYPOTHESIS, GRAY_BOX_REQUIRED}:
+        return f"case_type 不合法：{case_type}"
+    if case_type in {BLACK_BOX_READY, BLACK_BOX_HYPOTHESIS} and _black_box_scenario_has_white_box_leak(scenario):
+        return "黑盒步骤包含内部函数、源码路径、分支或内部变量操作"
+    if len([s for s in scenario.get("observable_signals") or [] if str(s).strip()]) < 1:
+        return "缺少可观测信号"
+    return None
+
+
+def _black_box_scenario_has_white_box_leak(scenario: dict) -> bool:
+    text = "\n".join(
+        str(scenario.get(key) or "")
+        for key in (
+            "external_trigger",
+            "input_construction",
+            "normal_path",
+            "error_path",
+            "expected_result",
+        )
+    )
+    for value in scenario.get("observable_signals") or []:
+        text += "\n" + str(value)
+    leak_rules = (
+        re.compile(r"\b(call|invoke)\s+[A-Za-z_]\w*\s*\(", re.IGNORECASE),
+        re.compile(r"调用\s*[A-Za-z_]\w*\s*\("),
+        re.compile(r"调用\s*[A-Za-z_]\w*\b"),
+        re.compile(r"\b[\w./\\-]+\.(?:c|h|cc|cpp|py|go|rs|java|js|ts)(?::\d+)?\b"),
+        re.compile(r"\bif\s*\(|进入.*分支|覆盖.*分支"),
+        re.compile(r"\b[A-Za-z_]\w*->[A-Za-z_]\w*\b"),
+        re.compile(r"修改.*内部变量|设置.*内部变量"),
+    )
+    return any(rule.search(text) for rule in leak_rules)
+
+
+def _normalize_ai_scenario(scenario: dict) -> dict:
+    normalized = {field: scenario.get(field) for field in AI_REQUIRED_SCENARIO_FIELDS}
+    normalized["version"] = AI_TEST_DESIGN_VERSION
+    normalized["key_call_chain"] = _coerce_string_list(scenario.get("key_call_chain"))
+    normalized["observable_signals"] = _coerce_string_list(scenario.get("observable_signals"))
+    normalized["evidence_refs"] = _coerce_string_list(scenario.get("evidence_refs"))
+    normalized["related_gaps"] = _coerce_string_list(scenario.get("related_gaps"))
+    normalized["verification_gaps"] = [
+        item for item in _coerce_string_list(scenario.get("verification_gaps"))
+        if not _is_no_gap_marker(item)
+    ]
+    if normalized.get("case_type") == BLACK_BOX_READY and not str(normalized.get("gray_box_aid") or "").strip():
+        normalized["gray_box_aid"] = "不需要灰盒辅助；可按外部触发、预期结果和可观测信号执行。"
+    if (
+        normalized.get("case_type") == BLACK_BOX_HYPOTHESIS
+        and _scenario_is_executable_black_box(normalized)
+        and not _verification_gap_requires_gray(normalized.get("verification_gaps"))
+    ):
+        normalized["case_type"] = BLACK_BOX_READY
+        normalized["classification_reason"] = (
+            "模型原始标记为 black_box_hypothesis，但外部触发、输入、正常/异常路径、"
+            "预期结果和可观测信号完整，且黑盒步骤无白盒泄漏；已归一化为 black_box_ready。"
+        )
+    return normalized
+
+
+def _scenario_is_executable_black_box(scenario: dict) -> bool:
+    required = (
+        "external_trigger",
+        "input_construction",
+        "normal_path",
+        "error_path",
+        "expected_result",
+    )
+    if any(not str(scenario.get(field) or "").strip() for field in required):
+        return False
+    if not _coerce_string_list(scenario.get("observable_signals")):
+        return False
+    if _black_box_scenario_has_white_box_leak(scenario):
+        return False
+    text = "\n".join(str(scenario.get(field) or "") for field in required)
+    blockers = (
+        "尚未确认公开入口",
+        "无法从外部",
+        "必须灰盒",
+        "需要灰盒",
+        "内部变量",
+        "源码分支",
+        "mock",
+        "stub",
+        "hook",
+    )
+    return not any(token in text for token in blockers)
+
+
+def _verification_gap_requires_gray(value: object) -> bool:
+    text = "\n".join(_coerce_string_list(value)).lower()
+    blockers = (
+        "需要确认外部入口",
+        "尚未确认公开入口",
+        "无法从外部",
+        "需要灰盒",
+        "必须灰盒",
+        "需要注入",
+        "mock",
+        "stub",
+        "hook",
+        "内部变量",
+    )
+    return any(token.lower() in text for token in blockers)
+
+
+def _is_no_gap_marker(value: object) -> bool:
+    return str(value or "").strip().lower() in {"", "无", "none", "n/a", "na", "no"}
+
+
+def _coerce_string_list(value: object) -> list[str]:
+    if value is None:
+        return []
+    if isinstance(value, str):
+        return [value] if value.strip() else []
+    if isinstance(value, (list, tuple, set)):
+        return [str(item) for item in value if str(item).strip()]
+    return [str(value)]
+
+
+def _attach_scenarios_to_gaps(gaps: list[dict], scenarios: list[dict]) -> None:
+    for gap in gaps:
+        name = str(gap.get("function_name") or gap.get("condition") or "")
+        related: list[dict] = []
+        for scenario in scenarios:
+            related_gaps = {str(item) for item in scenario.get("related_gaps") or []}
+            chain = {str(item) for item in scenario.get("key_call_chain") or []}
+            if name and (name in related_gaps or name in chain):
+                related.append(scenario)
+        if related:
+            gap["test_scenarios"] = related[:5]
+
+
+async def _write_coverage_design_artifacts(
+    artifact_dir: Path | None,
+    *,
+    context: dict,
+    design: dict,
+    ai_debug: dict | None,
+) -> None:
+    if artifact_dir is None:
+        return
+    artifact_dir.mkdir(parents=True, exist_ok=True)
+
+    def _write() -> None:
+        (artifact_dir / "coverage_test_context.json").write_text(
+            json.dumps(context, ensure_ascii=False, indent=2),
+            encoding="utf-8",
+        )
+        (artifact_dir / "coverage_test_design.json").write_text(
+            json.dumps(design, ensure_ascii=False, indent=2),
+            encoding="utf-8",
+        )
+        if ai_debug:
+            debug_dir = artifact_dir / "debug"
+            debug_dir.mkdir(parents=True, exist_ok=True)
+            ts = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%S%f")[:17]
+            (debug_dir / f"coverage_ai_{ts}.json").write_text(
+                json.dumps(ai_debug, ensure_ascii=False, indent=2),
+                encoding="utf-8",
+            )
+
+    await asyncio.to_thread(_write)
+
+
 async def build_coverage_test_design(
     modules: list[ModuleCoverage],
     *,
     workspace_id: str | None,
     repo_path: str | None,
+    use_ai: bool = False,
+    llm: BaseLLMClient | None = None,
+    artifact_dir: Path | None = None,
+    analysis_id: str | None = None,
+    report_output_dir: Path | None = None,
 ) -> dict:
     """Build the ``coverage-test-design-v1`` structure for a coverage report.
 
@@ -2021,6 +2629,13 @@ async def build_coverage_test_design(
     )
     branch_gaps = _build_branch_gaps(modules, workspace_bound=workspace_bound)
     gaps = [*function_gaps, *branch_gaps]
+    context = await build_coverage_test_context(
+        modules,
+        workspace_id=workspace_id,
+        repo_path=repo_path,
+        deterministic_gaps=gaps,
+        report_output_dir=report_output_dir,
+    )
 
     tool_status = _aggregate_tool_status(function_gaps, repo_path=repo_path)
     warnings = _design_warnings(
@@ -2030,26 +2645,61 @@ async def build_coverage_test_design(
         tool_status=tool_status,
         function_gaps=function_gaps,
     )
+    warnings.extend(context.get("warnings") or [])
+
+    ai_status = "skipped"
+    ai_debug: dict | None = None
+    test_scenarios: list[dict] = []
+    rejected_scenarios: list[dict] = []
+    if use_ai:
+        try:
+            active_llm = llm or await create_llm_client_from_active()
+            ai_debug = await _generate_ai_test_scenarios(active_llm, context)
+            test_scenarios = ai_debug.get("accepted") or []
+            rejected_scenarios = ai_debug.get("rejected") or []
+            ai_status = "available"
+        except ValueError as exc:
+            ai_status = "unavailable"
+            warnings.append(f"真实 AI 未配置或不可用：{exc}")
+        except Exception as exc:
+            ai_status = "failed"
+            warnings.append(f"真实 AI 覆盖率用例生成失败：{exc}")
+            logger.warning("Coverage AI scenario generation failed: %s", exc)
+    _attach_scenarios_to_gaps(gaps, test_scenarios)
+
+    gap_black_box_ready_count = sum(
+        1 for g in gaps
+        if (g.get("black_box_readiness") or {}).get("case_type") == BLACK_BOX_READY
+    )
+    gap_black_box_hypothesis_count = sum(
+        1 for g in gaps
+        if (g.get("black_box_readiness") or {}).get("case_type") == BLACK_BOX_HYPOTHESIS
+    )
+    gap_gray_box_required_count = sum(
+        1 for g in gaps
+        if (
+            (g.get("black_box_readiness") or {}).get("case_type") == GRAY_BOX_REQUIRED
+            or g.get("gray_box_required")
+        )
+    )
+    scenario_source = test_scenarios if test_scenarios else gaps
+
+    def _case_type(item: dict) -> str | None:
+        return (
+            item.get("case_type")
+            or (item.get("black_box_readiness") or {}).get("case_type")
+        )
 
     summary = {
         "module_count": len(modules),
         "uncovered_function_count": len(function_gaps),
         "uncovered_branch_count": len(branch_gaps),
-        "black_box_ready_count": sum(
-            1 for g in gaps
-            if (g.get("black_box_readiness") or {}).get("case_type") == BLACK_BOX_READY
-        ),
-        "black_box_hypothesis_count": sum(
-            1 for g in gaps
-            if (g.get("black_box_readiness") or {}).get("case_type") == BLACK_BOX_HYPOTHESIS
-        ),
-        "gray_box_required_count": sum(
-            1 for g in gaps
-            if (
-                (g.get("black_box_readiness") or {}).get("case_type") == GRAY_BOX_REQUIRED
-                or g.get("gray_box_required")
-            )
-        ),
+        "black_box_ready_count": sum(1 for s in scenario_source if _case_type(s) == BLACK_BOX_READY),
+        "black_box_hypothesis_count": sum(1 for s in scenario_source if _case_type(s) == BLACK_BOX_HYPOTHESIS),
+        "gray_box_required_count": sum(1 for s in scenario_source if _case_type(s) == GRAY_BOX_REQUIRED),
+        "gap_black_box_ready_count": gap_black_box_ready_count,
+        "gap_black_box_hypothesis_count": gap_black_box_hypothesis_count,
+        "gap_gray_box_required_count": gap_gray_box_required_count,
         "white_box_lint_failed_count": sum(
             1 for g in gaps
             if not (g.get("white_box_leak_check") or {}).get("passed", True)
@@ -2057,17 +2707,40 @@ async def build_coverage_test_design(
         "high_risk_count": sum(1 for g in gaps if g.get("risk_level") == "high"),
         "workspace_bound": workspace_bound,
         "tool_status": tool_status,
+        "ai_status": ai_status,
+        "ai_scenario_count": len(test_scenarios),
+        "ai_rejected_scenario_count": len(rejected_scenarios),
+        "evidence_source_counts": context.get("evidence_source_counts") or {},
     }
 
-    return {
+    design = {
         "version": COVERAGE_TEST_DESIGN_VERSION,
+        "analysis_id": analysis_id,
         "workspace_id": workspace_id,
         "repo_path": repo_path,
         "generated_at": datetime.now(timezone.utc).isoformat(),
         "summary": summary,
+        "test_context": {
+            "version": context.get("version"),
+            "evidence_source_counts": context.get("evidence_source_counts") or {},
+            "warnings": context.get("warnings") or [],
+        },
+        "test_scenarios": test_scenarios,
+        "test_scenario_validation": {
+            "accepted_count": len(test_scenarios),
+            "rejected_count": len(rejected_scenarios),
+            "rejected": rejected_scenarios,
+        },
         "gaps": gaps,
         "warnings": warnings,
     }
+    await _write_coverage_design_artifacts(
+        artifact_dir,
+        context=context,
+        design=design,
+        ai_debug=ai_debug,
+    )
+    return design
 
 
 def _aggregate_tool_status(function_gaps: list[dict], *, repo_path: str | None) -> dict:

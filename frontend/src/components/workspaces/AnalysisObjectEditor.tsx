@@ -23,7 +23,7 @@ function inferPathHints(text: string): string[] {
 }
 
 const EXAMPLE_TEXT =
-  "external trigger path: API/protocol input reaches login flow\nexception propagation path: error return, retry, disconnect, rollback\nstate/resource cleanup path: state transition, allocation, release\nboundary/concurrency/timeout path: limit value, race ordering, timeout";
+  "外部触发路径：请求、连接、配置或页面操作如何进入目标流程\n异常传播路径：错误返回、重试、断开连接或回滚行为\n状态与资源清理路径：状态切换、资源分配、释放与泄漏风险\n边界、并发与超时路径：限制值、时序竞争、重试或超时场景";
 
 export default function AnalysisObjectEditor({ objects, onChange }: Props) {
   const textValue = useMemo(
@@ -55,7 +55,7 @@ export default function AnalysisObjectEditor({ objects, onChange }: Props) {
     <div className="space-y-3">
       <div className="flex items-center justify-between">
         <label className="text-sm font-medium text-on-surface">
-          Analysis objects (one test target per line: trigger, branch, state, cleanup, or observation path)
+          分析对象（每行一个测试目标：触发、分支、状态、清理或观察路径）
         </label>
         <button
           type="button"
@@ -74,8 +74,8 @@ export default function AnalysisObjectEditor({ objects, onChange }: Props) {
         className="w-full resize-y rounded-xl border border-outline-variant/30 bg-surface-container-low px-3 py-2 text-sm text-on-surface font-mono leading-relaxed focus:outline-none focus:border-primary/60"
       />
       <p className="text-xs text-on-surface-variant/70 leading-relaxed">
-        GitNexus modules stay internal. Describe the black-box or gray-box test path you care about;
-        CodeTalk resolves each line to source files, symbols, and graph evidence.
+        GitNexus 模块只作为内部证据。请描述你关心的黑盒或灰盒测试路径；
+        CodeTalk 会把每一行解析到源码文件、符号和图谱证据。
       </p>
       {objects.filter((o) => o.text).length > 0 && (
         <div className="rounded-xl border border-outline-variant/20 bg-surface-container/50 px-3 py-2 space-y-1">

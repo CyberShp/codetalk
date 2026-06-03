@@ -21,6 +21,7 @@ import type {
   CoverageAnalysis,
   CoverageDetail,
   CoverageModuleResult,
+  CoverageTestScenario,
   Workspace,
 } from "@/lib/types";
 
@@ -78,6 +79,81 @@ function entryKindLabel(kind: string): string {
   return ENTRY_KIND_LABEL[kind] ?? kind;
 }
 
+const CASE_TYPE_LABEL: Record<string, string> = {
+  black_box_ready: "黑盒可执行",
+  black_box_hypothesis: "黑盒假设",
+  gray_box_required: "需要灰盒辅助",
+};
+
+const LEVEL_LABEL: Record<string, string> = {
+  high: "高",
+  medium: "中",
+  low: "低",
+};
+
+function levelLabel(level?: string): string {
+  if (!level) return "";
+  return LEVEL_LABEL[level] ?? level;
+}
+
+function caseTypeLabel(type?: string): string {
+  if (!type) return "";
+  return CASE_TYPE_LABEL[type] ?? type;
+}
+
+function TestScenarioCard({ scenario }: { scenario: CoverageTestScenario }) {
+  return (
+    <div className="rounded-lg bg-surface-container-high/70 p-3 space-y-2">
+      <div className="flex flex-wrap items-center gap-2">
+        <span className="text-xs px-2 py-0.5 rounded-full bg-primary/15 text-primary">
+          {caseTypeLabel(scenario.case_type)}
+        </span>
+        <span className="text-xs px-2 py-0.5 rounded-full bg-surface-container text-on-surface-variant">
+          优先级：{levelLabel(scenario.priority)}
+        </span>
+        <span className="text-xs px-2 py-0.5 rounded-full bg-surface-container text-on-surface-variant">
+          置信度：{levelLabel(scenario.confidence)}
+        </span>
+      </div>
+      <div className="text-sm font-medium text-on-surface">
+        {scenario.flow_purpose}
+      </div>
+      <div className="grid gap-2 sm:grid-cols-2 text-[11px] text-on-surface-variant">
+        <div><span className="text-on-surface">外部触发：</span>{scenario.external_trigger}</div>
+        <div><span className="text-on-surface">输入构造：</span>{scenario.input_construction}</div>
+        <div><span className="text-on-surface">正常路径：</span>{scenario.normal_path}</div>
+        <div><span className="text-on-surface">异常路径：</span>{scenario.error_path}</div>
+        <div><span className="text-on-surface">预期结果：</span>{scenario.expected_result}</div>
+        <div>
+          <span className="text-on-surface">可观测信号：</span>
+          {(scenario.observable_signals ?? []).join("、") || "待补充"}
+        </div>
+      </div>
+      {scenario.gray_box_aid && (
+        <div className="text-[11px] text-amber-300/90">
+          灰盒辅助：{scenario.gray_box_aid}
+        </div>
+      )}
+      {scenario.sfmea && (
+        <div className="text-[11px] text-on-surface-variant/90 border-t border-outline-variant/10 pt-2">
+          <span className="text-on-surface">SFMEA：</span>
+          故障模式 {scenario.sfmea.failure_mode || "待确认"}；
+          触发条件 {scenario.sfmea.trigger_condition || "待确认"}；
+          传播影响 {scenario.sfmea.propagation_effect || "待确认"}；
+          可观测现象 {scenario.sfmea.observable_effect || "待确认"}；
+          推荐测试 {scenario.sfmea.recommended_test || "待确认"}
+        </div>
+      )}
+      {(scenario.evidence_refs?.length || scenario.verification_gaps?.length) ? (
+        <div className="text-[10px] text-on-surface-variant/70">
+          {scenario.evidence_refs?.length ? `证据：${scenario.evidence_refs.join("、")}` : ""}
+          {scenario.verification_gaps?.length ? ` 待确认：${scenario.verification_gaps.join("、")}` : ""}
+        </div>
+      ) : null}
+    </div>
+  );
+}
+
 /**
  * Structured render of the coverage-test-design-v1 enrichment for one uncovered
  * function: trigger conditions, external entry paths, black-box cases, gray-box
@@ -87,6 +163,7 @@ function GapDesignDetail({ mr }: { mr: CoverageModuleResult }) {
   const triggers = mr.trigger_branches ?? [];
   const entries = mr.entry_paths ?? [];
   const cases = mr.black_box_cases ?? [];
+  const scenarios = mr.test_scenarios ?? [];
   const gaps = mr.evidence_gaps ?? [];
   const sw = mr.source_window ?? null;
   const grayRequired = mr.gray_box_required ?? false;
@@ -95,6 +172,7 @@ function GapDesignDetail({ mr }: { mr: CoverageModuleResult }) {
     triggers.length > 0 ||
     entries.length > 0 ||
     cases.length > 0 ||
+    scenarios.length > 0 ||
     gaps.length > 0 ||
     grayRequired;
   if (!hasDesign) return null;
@@ -185,6 +263,17 @@ function GapDesignDetail({ mr }: { mr: CoverageModuleResult }) {
         </div>
       ) : null}
 
+      {scenarios.length > 0 && (
+        <div>
+          <div className="text-xs font-medium text-on-surface mb-1">AI 生成的测试场景</div>
+          <div className="space-y-2">
+            {scenarios.map((scenario) => (
+              <TestScenarioCard key={scenario.scenario_id} scenario={scenario} />
+            ))}
+          </div>
+        </div>
+      )}
+
       {/* Black-box / gray-box test cases */}
       {cases.length > 0 && (
         <div>
@@ -271,9 +360,25 @@ export default function CoveragePage() {
   );
   const [expandedModule, setExpandedModule] = useState<string | null>(null);
   const [uploadName, setUploadName] = useState("");
+  const [selectedFiles, setSelectedFiles] = useState<File[]>([]);
   const [workspaces, setWorkspaces] = useState<Workspace[]>([]);
   const [selectedWorkspaceId, setSelectedWorkspaceId] = useState("");
   const fileInputRef = useRef<HTMLInputElement>(null);
+  const autoExpandedRef = useRef(false);
+
+  const applyDetail = useCallback((id: string, d: CoverageDetail) => {
+    setDetail(d);
+    if (d.analysis_results_json) {
+      try {
+        setModuleResults(JSON.parse(d.analysis_results_json));
+      } catch {
+        setModuleResults([]);
+      }
+    } else {
+      setModuleResults([]);
+    }
+    setExpandedId(id);
+  }, []);
 
   const loadList = useCallback(async () => {
     try {
@@ -300,18 +405,47 @@ export default function CoveragePage() {
     loadWorkspaces();
   }, [loadList, loadWorkspaces]);
 
-  const handleUpload = async (fileList: FileList | null) => {
-    if (!fileList || fileList.length === 0) return;
+  useEffect(() => {
+    if (!selectedWorkspaceId && workspaces.length === 1) {
+      setSelectedWorkspaceId(workspaces[0].id);
+    }
+  }, [selectedWorkspaceId, workspaces]);
+
+  useEffect(() => {
+    if (autoExpandedRef.current || expandedId || analyses.length === 0) {
+      return;
+    }
+    const latest =
+      analyses.find((item) => item.status === "analyzed") ?? analyses[0];
+    if (!latest) return;
+    autoExpandedRef.current = true;
+    api.coverage
+      .get(latest.id)
+      .then((d) => applyDetail(latest.id, d))
+      .catch(() => {
+        autoExpandedRef.current = false;
+      });
+  }, [analyses, applyDetail, expandedId]);
+
+  const handleFileSelect = (fileList: FileList | null) => {
+    setSelectedFiles(fileList ? Array.from(fileList) : []);
+  };
+
+  const handleUpload = async () => {
+    if (selectedFiles.length === 0) {
+      setError("请先选择覆盖率文件");
+      return;
+    }
     setUploading(true);
     setError("");
     try {
-      const files = Array.from(fileList);
       await api.coverage.upload(
-        files,
+        selectedFiles,
         uploadName || undefined,
         selectedWorkspaceId || undefined,
       );
       setUploadName("");
+      setSelectedFiles([]);
       if (fileInputRef.current) fileInputRef.current.value = "";
       await loadList();
     } catch (e) {
@@ -326,7 +460,11 @@ export default function CoveragePage() {
     setError("");
     try {
       const result = await api.coverage.analyze(id);
-      const d = await api.coverage.get(id);
+      let d = await api.coverage.get(id);
+      for (let i = 0; d.status === "analyzing" && i < 30; i += 1) {
+        await new Promise((resolve) => setTimeout(resolve, 1000));
+        d = await api.coverage.get(id);
+      }
       setDetail(d);
       if (result.results?.length) {
         setModuleResults(result.results);
@@ -335,7 +473,7 @@ export default function CoveragePage() {
       } else {
         setModuleResults([]);
       }
-      setExpandedId(id);
+      applyDetail(id, d);
       await loadList();
     } catch (e) {
       setError(e instanceof Error ? e.message : "分析失败");
@@ -367,13 +505,7 @@ export default function CoveragePage() {
     }
     try {
       const d = await api.coverage.get(id);
-      setDetail(d);
-      if (d.analysis_results_json) {
-        setModuleResults(JSON.parse(d.analysis_results_json));
-      } else {
-        setModuleResults([]);
-      }
-      setExpandedId(id);
+      applyDetail(id, d);
     } catch (e) {
       setError(e instanceof Error ? e.message : "加载详情失败");
     }
@@ -387,7 +519,7 @@ export default function CoveragePage() {
           精准测试覆盖率分析
         </h1>
         <p className="text-sm text-on-surface-variant mt-1">
-          上传覆盖率报告（XML/HTML/CSV/TSV/TXT），AI 分析未覆盖代码并推荐测试用例
+          上传覆盖率报告（XML/HTML/CSV/TSV/TXT/XLSX/XLS），AI 结合工作区报告、源码和工具证据推荐测试用例
         </p>
       </div>
 
@@ -410,26 +542,46 @@ export default function CoveragePage() {
             onChange={(e) => setSelectedWorkspaceId(e.target.value)}
             className="w-full px-3 py-2 rounded-lg bg-surface-container border border-outline-variant/30 text-sm text-on-surface focus:outline-none focus:ring-1 focus:ring-primary"
           >
-            <option value="">No workspace binding</option>
+            <option value="">不绑定工作区</option>
             {workspaces.map((ws) => (
               <option key={ws.id} value={ws.id}>
                 {ws.name} - {ws.repo_path}
               </option>
             ))}
           </select>
-          <div className="flex items-center gap-3">
+          <div className="flex flex-col gap-3 sm:flex-row sm:items-center">
             <input
               ref={fileInputRef}
               type="file"
               multiple
               accept=".xml,.html,.htm,.csv,.tsv,.txt,.xlsx,.xls"
-              onChange={(e) => handleUpload(e.target.files)}
-              className="flex-1 text-sm text-on-surface-variant file:mr-3 file:py-2 file:px-4 file:rounded-lg file:border-0 file:bg-primary/10 file:text-primary file:text-sm file:font-medium file:cursor-pointer hover:file:bg-primary/20"
+              onChange={(e) => handleFileSelect(e.target.files)}
+              className="sr-only"
               disabled={uploading}
             />
-            {uploading && (
-              <Loader2 size={18} className="animate-spin text-primary" />
-            )}
+            <button
+              type="button"
+              onClick={() => fileInputRef.current?.click()}
+              disabled={uploading}
+              className="inline-flex items-center justify-center gap-2 px-4 py-2 rounded-lg bg-surface-container text-on-surface-variant text-sm hover:bg-surface-container-high disabled:opacity-50"
+            >
+              <Upload size={14} />
+              选择文件
+            </button>
+            <div className="flex-1 min-w-0 text-xs text-on-surface-variant">
+              {selectedFiles.length > 0
+                ? selectedFiles.map((f) => f.name).join("、")
+                : "尚未选择文件"}
+            </div>
+            <button
+              type="button"
+              onClick={handleUpload}
+              disabled={uploading || selectedFiles.length === 0}
+              className="inline-flex items-center justify-center gap-2 px-4 py-2 rounded-lg bg-primary/10 text-primary text-sm hover:bg-primary/20 disabled:opacity-50"
+            >
+              {uploading ? <Loader2 size={14} className="animate-spin" /> : <Upload size={14} />}
+              上传并解析
+            </button>
           </div>
           <p className="text-xs text-on-surface-variant/60">
             支持 Cobertura XML、JaCoCo XML、HTML 覆盖率报告，以及内网函数命中表（CSV/TSV/TXT/XLSX，兼容文本导出的 XLS）。可多文件上传（按模块目录分类）
@@ -473,10 +625,10 @@ export default function CoveragePage() {
               className="bg-surface-container-low rounded-xl border border-outline-variant/20 overflow-hidden"
             >
               {/* Summary row */}
-              <div className="p-4 flex items-center gap-4">
+              <div className="p-4 flex flex-col gap-4 lg:flex-row lg:items-center">
                 <button
                   onClick={() => handleExpand(a.id)}
-                  className="flex-1 flex items-center gap-4 text-left"
+                  className="flex-1 flex flex-col gap-3 text-left sm:flex-row sm:items-center"
                 >
                   <div className="flex-1 min-w-0">
                     <div className="flex items-center gap-2">
@@ -494,7 +646,7 @@ export default function CoveragePage() {
                       <span>{a.module_count} 个模块</span>
                       <span>格式: {a.source_format}</span>
                       {a.workspace_id && (
-                        <span>workspace: {a.workspace_id.slice(0, 8)}</span>
+                        <span>工作区：{a.workspace_id.slice(0, 8)}</span>
                       )}
                       <span>
                         {new Date(a.created_at).toLocaleString("zh-CN")}
@@ -503,7 +655,7 @@ export default function CoveragePage() {
                   </div>
 
                   {/* Mini rates */}
-                  <div className="flex items-center gap-4 shrink-0">
+                  <div className="flex flex-wrap items-center gap-4 shrink-0">
                     <div className="text-center">
                       <div
                         className={`text-sm font-mono ${rateColor(a.overall_line_rate)}`}
@@ -518,7 +670,9 @@ export default function CoveragePage() {
                       <div
                         className={`text-sm font-mono ${rateColor(a.overall_branch_rate)}`}
                       >
-                        {pct(a.overall_branch_rate)}
+                        {a.source_format === "internal_function_hits"
+                          ? "无数据"
+                          : pct(a.overall_branch_rate)}
                       </div>
                       <div className="text-[10px] text-on-surface-variant">
                         分支
@@ -547,7 +701,7 @@ export default function CoveragePage() {
                 </button>
 
                 {/* Actions */}
-                <div className="flex items-center gap-2 shrink-0">
+                <div className="flex flex-wrap items-center gap-2 shrink-0">
                   {a.status === "parsed" && (
                     <button
                       onClick={() => handleAnalyze(a.id)}
@@ -595,10 +749,16 @@ export default function CoveragePage() {
                       rate={detail.overall_line_rate}
                       label="行覆盖"
                     />
-                    <RateBar
-                      rate={detail.overall_branch_rate}
-                      label="分支覆盖"
-                    />
+                    {detail.source_format === "internal_function_hits" ? (
+                      <div className="text-xs text-on-surface-variant">
+                        分支覆盖：无数据（当前文件只包含函数命中信息）
+                      </div>
+                    ) : (
+                      <RateBar
+                        rate={detail.overall_branch_rate}
+                        label="分支覆盖"
+                      />
+                    )}
                     <RateBar
                       rate={detail.overall_function_rate}
                       label="函数覆盖"
@@ -642,21 +802,32 @@ export default function CoveragePage() {
                                 <div className="mt-1 text-xs text-on-surface-variant">
                                   {mr.file_path}
                                   {mr.line_start ? `:${mr.line_start}` : ""}
-                                  {mr.risk_level ? ` · risk ${mr.risk_level}` : ""}
-                                  {mr.confidence ? ` · confidence ${mr.confidence}` : ""}
+                                  {mr.risk_level ? ` · 风险：${levelLabel(mr.risk_level)}` : ""}
+                                  {mr.confidence ? ` · 证据置信：${levelLabel(mr.confidence)}` : ""}
                                 </div>
                               )}
-                              <div className="flex items-center gap-3 mt-1 text-xs">
-                                <span className={rateColor(mr.line_rate)}>
-                                  行 {pct(mr.line_rate)}
-                                </span>
-                                <span className={rateColor(mr.branch_rate)}>
-                                  分支 {pct(mr.branch_rate)}
-                                </span>
-                                <span className={rateColor(mr.function_rate)}>
-                                  函数 {pct(mr.function_rate)}
-                                </span>
-                              </div>
+                              {mr.kind === "function" || mr.function_name ? (
+                                <div className="flex flex-wrap items-center gap-3 mt-1 text-xs">
+                                  <span className="text-red-300">
+                                    未覆盖 · hit_count={mr.hit_count ?? 0}
+                                  </span>
+                                  <span className="text-on-surface-variant">
+                                    模块：{mr.module_path}
+                                  </span>
+                                </div>
+                              ) : (
+                                <div className="flex flex-wrap items-center gap-3 mt-1 text-xs">
+                                  <span className={rateColor(mr.line_rate)}>
+                                    行 {pct(mr.line_rate)}
+                                  </span>
+                                  <span className={rateColor(mr.branch_rate)}>
+                                    分支 {pct(mr.branch_rate)}
+                                  </span>
+                                  <span className={rateColor(mr.function_rate)}>
+                                    函数 {pct(mr.function_rate)}
+                                  </span>
+                                </div>
+                              )}
                             </div>
                             {expandedModule === resultId ? (
                               <ChevronUp
