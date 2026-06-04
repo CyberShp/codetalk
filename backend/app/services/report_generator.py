@@ -473,7 +473,7 @@ class ReportGenerator:
         )
         display_title = _plan_report_title(spec)
         body_parts: list[str] = [f"# {display_title}\n"]
-        body_parts.append("> 本报告由小段 LLM 调用组装而成。证据不足处会显式标注 `待验证`。\n")
+        body_parts.append("> This report prioritizes testing conclusions, risks, and actions. Evidence is kept as collapsed support material.\n")
         if not common_context.get("gitnexus_available", True):
             body_parts.append("> ⚠️ GitNexus 图谱不可用，已回退到本地搜索结果。\n")
         if not common_context.get("cgc_available", True):
@@ -494,8 +494,6 @@ class ReportGenerator:
                 evidence_cards=evidence_cards,
                 common_context=common_context,
             )
-            if artifacts:
-                body_parts.append(artifacts.rstrip() + "\n")
             if status == "completed":
                 body_parts.append(body.rstrip() + "\n")
             elif status == "partial":
@@ -504,6 +502,8 @@ class ReportGenerator:
                 body_parts.append(
                     "> Section generation failed: " + (body or "LLM returned no content") + "\n"
                 )
+            if artifacts:
+                body_parts.append(artifacts.rstrip() + "\n")
 
         appendix = build_codetalk_report_artifact_appendix(
             task_id=self._task_id,
@@ -599,19 +599,23 @@ class ReportGenerator:
             "- Output body only; no preamble.\n"
             "- Write narrative prose and concise bullets only.\n"
             "- CodeTalk will render Markdown tables, Mermaid diagrams, and SFMEA grids deterministically; do not emit those layout artifacts.\n"
-            "- Important conclusions must cite file or symbol evidence.\n"
+            "- Optimize for a readable professional test report: lead with conclusion, risk, trigger, expected result, and next action.\n"
+            "- Use citations sparingly: cite only the strongest file or symbol for a critical claim; do not repeat evidence lists in the prose.\n"
             "- When tool evidence conflicts, source-code evidence wins; do not mark confirmed source facts as 待源码验证.\n"
             "- If requirements/design expectations conflict with exact source evidence, write source facts first, then design expectations.\n"
             "- If a claimed behavior is absent from source facts, expected tests must say 验收会失败/需求未覆盖.\n"
         )
         if spec.template_id == "test_design":
             prompt += (
+                "\n### Developer-to-Tester Scenario Mode\n"
+                "- Use these stable contract labels where applicable: black-box trigger, gray-box aid, source evidence chain, function failure matrix, BranchFactCard, ExternalEntryCard, BlackBoxReadinessCard, TestCaseDraft, WhiteBoxLeakCheckResult, Test execution area, Gray-box aid area, Evidence area, branch condition, expected result, observable signal, verification gap.\n"
                 "\n### 开发讲给测试的场景模式\n"
                 "用开发讲解的口吻，把源码逻辑转换为测试人员可执行的黑盒/灰盒测试设计，而不是代码评审叙述。\n"
                 "- 每个场景包含：黑盒触发、灰盒辅助、源码证据链、分支条件、预期结果、可观测信号、待验证缺口。\n"
                 "- 必填场景字段：黑盒触发；灰盒辅助/注入点；源码证据链；分支条件；预期结果；可观测信号；待验证缺口。\n"
                 "- 使用分阶段弱模型链路：覆盖率缺口 -> 分支事实卡 -> 外部入口卡 -> 需求/设计措辞 -> 黑盒可执行性卡 -> 测试用例草稿 -> 白盒泄漏检查。\n"
                 "- Classify every scenario as exactly one of `black_box_ready`, `black_box_hypothesis`, or `gray_box_required` before writing the case.\n"
+                "- Keep the evidence area brief: one strongest evidence chain per scenario is enough; CodeTalk will append collapsed detail after your prose.\n"
                 "- 输出分为测试执行区、灰盒辅助区和证据区。函数名、源码路径、行号、私有字段、分支表达式、mock/stub/hook 步骤和覆盖目标只能放在证据区或灰盒辅助区，不能放在黑盒测试执行区。\n"
                 "- 按外部触发 -> 源码分支 -> 预期结果 -> 观察点组织；不要停留在模块职责描述。\n"
                 "- 对关键函数用文字构建函数故障矩阵：函数、文件、正常路径、分支条件、错误码/错误类、清理/资源释放、状态切换、传播、日志/返回/连接观察。\n"
@@ -2643,7 +2647,14 @@ def build_index_coverage_section(common_context: dict) -> str:
         cell = str(v).replace("|", "\\|").replace("\n", " ")
         lines.append(f"| {k} | {cell} |")
     lines.append("")
-    return "\n".join(lines)
+    return "\n".join([
+        "<details>",
+        "<summary>Tool and evidence basis</summary>",
+        "",
+        *lines,
+        "",
+        "</details>",
+    ])
 
 
 _TOOL_ORCHESTRATION_FALSE_MISSING_RE = re.compile(

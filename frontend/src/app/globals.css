@@ -54,3 +54,108 @@ body {
 ::-webkit-scrollbar-track { background: var(--surface-container-low); }
 ::-webkit-scrollbar-thumb { background: var(--outline-variant); border-radius: 3px; }
 ::-webkit-scrollbar-thumb:hover { background: var(--on-surface-variant); }
+
+/* Bright report reading skin: scoped so the rest of the app can stay dark. */
+.prose-report {
+  color: #172033;
+  font-family: var(--font-ui);
+}
+
+.prose-report h1 {
+  color: #0f172a !important;
+  font-size: 1.9rem !important;
+  line-height: 1.18 !important;
+  margin-top: 0.5rem !important;
+  padding-bottom: 0.85rem;
+  border-bottom: 1px solid #d8e3ef;
+}
+
+.prose-report h2 {
+  color: #0f3b66 !important;
+  background: linear-gradient(90deg, #eaf5ff 0%, #f7fbff 78%);
+  border-left-color: #1f8ccf !important;
+  border-radius: 6px;
+  padding: 0.55rem 0.75rem !important;
+  margin-top: 1.6rem !important;
+}
+
+.prose-report h3 {
+  color: #0f766e !important;
+  border-left-color: #16a3a3 !important;
+  background: #f2fbfb;
+  border-radius: 6px;
+  padding: 0.4rem 0.65rem !important;
+}
+
+.prose-report h4 {
+  color: #334155 !important;
+}
+
+.prose-report p,
+.prose-report li,
+.prose-report td {
+  color: #263548 !important;
+}
+
+.prose-report a {
+  color: #0b73b9 !important;
+}
+
+.prose-report code {
+  background: #edf6ff !important;
+  color: #075985 !important;
+  border: 1px solid #cfe8ff;
+}
+
+.prose-report pre {
+  background: #f8fbff !important;
+  border: 1px solid #d7e5f3;
+  border-radius: 8px !important;
+}
+
+.prose-report pre code,
+.prose-report .hljs {
+  background: transparent !important;
+  color: #1e293b !important;
+  border: 0;
+}
+
+.prose-report .hljs * {
+  color: inherit !important;
+}
+
+.prose-report table {
+  background: #ffffff;
+}
+
+.prose-report th {
+  background: #e9f3fb !important;
+  color: #0f3b66 !important;
+  letter-spacing: 0 !important;
+}
+
+.prose-report tr {
+  border-color: #dce7f2 !important;
+}
+
+.prose-report tbody tr:nth-child(even) {
+  background: #f7fbff !important;
+}
+
+.prose-report blockquote {
+  background: #eef9f6 !important;
+  border-left-color: #0f9f8f !important;
+  color: #24524d !important;
+}
+
+.prose-report details {
+  background: #f8fbff !important;
+  border: 1px solid #d7e5f3 !important;
+  border-radius: 8px !important;
+  color: #334155 !important;
+}
+
+.prose-report summary {
+  color: #0f3b66 !important;
+  font-weight: 600 !important;
+}

@@ -85,12 +85,12 @@ class ReportSpec(BaseModel):
 class LLMLimits(BaseModel):
     """Hard caps applied during scope resolution and analysis fan-out."""
 
-    max_evidence_cards: int = Field(default=96, ge=1, le=256)
+    max_evidence_cards: int = Field(default=48, ge=1, le=256)
     max_files_per_object: int = Field(default=24, ge=1, le=64)
     max_functions_per_object: int = Field(default=30, ge=1, le=128)
     max_communities_per_object: int = Field(default=8, ge=1, le=32)
-    max_cards_per_report_section: int = Field(default=24, ge=1, le=64)
-    max_output_chars_per_section: int = Field(default=2400, ge=200, le=8000)
+    max_cards_per_report_section: int = Field(default=8, ge=1, le=64)
+    max_output_chars_per_section: int = Field(default=1800, ge=200, le=8000)
     retry_empty_output: int = Field(default=1, ge=0, le=3)
     max_analysis_units: int = Field(default=16, ge=1, le=64)
 
@@ -199,10 +199,10 @@ DEFAULT_REPORT_TEMPLATES: list[dict] = [
 
 
 _DEFAULT_OBJECT_EXAMPLES: list[str] = [
-    "外部触发路径：请求、连接、配置或页面操作如何进入目标流程",
-    "异常传播路径：错误返回、重试、断开连接或回滚行为",
-    "状态与资源清理路径：状态切换、资源分配、释放与泄漏风险",
-    "边界、并发与超时路径：限制值、时序竞争、重试或超时场景",
+    "外部触发路径（external trigger）：请求、连接、配置或页面操作如何进入目标流程",
+    "异常传播路径（exception propagation）：错误返回、重试、断开连接或回滚行为",
+    "状态与资源清理路径（state/resource cleanup）：状态切换、资源分配、释放与泄漏风险",
+    "边界、并发与超时路径（boundary/concurrency/timeout）：限制值、时序竞争、重试或超时场景",
 ]
 
 

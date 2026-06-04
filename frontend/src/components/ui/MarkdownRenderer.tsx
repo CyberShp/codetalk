@@ -57,6 +57,7 @@ function extractText(node: React.ReactNode): string {
  */
 const FILE_CITATION_RE = /^([\w./\-]+\.\w+)(?::(\d+)-(\d+))?$/;
 const NUMERIC_CITATION_RE = /^\[(\d+)\]$/;
+type MarkdownVariant = "default" | "report";
 
 export default function MarkdownRenderer({
   content,
@@ -64,6 +65,7 @@ export default function MarkdownRenderer({
   anchorBaseUrl,
   onCitationClick,
   enableNumericCitations = true,
+  variant = "default",
 }: {
   content: string;
   rehypePlugins?: PluggableList;
@@ -85,6 +87,7 @@ export default function MarkdownRenderer({
    * pages should not route them into file preview APIs.
    */
   enableNumericCitations?: boolean;
+  variant?: MarkdownVariant;
 }) {
   const components: Components = useMemo(
     () => ({
@@ -348,7 +351,11 @@ export default function MarkdownRenderer({
   );
 
   return (
-    <div className="prose-kinetic max-w-full overflow-hidden break-words">
+    <div
+      className={`prose-kinetic max-w-full overflow-hidden break-words ${
+        variant === "report" ? "prose-report" : ""
+      }`}
+    >
       <ReactMarkdown
         remarkPlugins={[remarkGfm]}
         rehypePlugins={appliedRehypePlugins}

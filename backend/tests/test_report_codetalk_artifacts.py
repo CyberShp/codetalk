@@ -106,6 +106,14 @@ def test_plan_blueprints_do_not_delegate_layout_to_ai() -> None:
     assert "CodeTalk will render" in instructions
 
 
+def test_default_llm_limits_keep_report_evidence_compact() -> None:
+    limits = LLMLimits()
+
+    assert limits.max_evidence_cards == 48
+    assert limits.max_cards_per_report_section == 8
+    assert limits.max_output_chars_per_section == 1800
+
+
 @pytest.mark.asyncio
 async def test_codetalk_adds_diagram_and_tables_when_ai_returns_prose(tmp_path: Path) -> None:
     llm = CapturingLLM(
@@ -134,6 +142,9 @@ async def test_codetalk_adds_diagram_and_tables_when_ai_returns_prose(tmp_path: 
 
     output = (tmp_path / entry["filename"]).read_text(encoding="utf-8")
     assert entry["status"] == "completed"
+    assert output.index("AI_CONTENT") < output.index("### CodeTalk Evidence Table")
+    assert "<summary>Evidence snapshot</summary>" in output
+    assert "<summary>Tool and evidence basis</summary>" in output
     assert "### CodeTalk Evidence Table" in output
     assert "### CodeTalk Diagram" in output
     assert "```mermaid" in output
@@ -194,6 +205,7 @@ async def test_plan_report_contains_traceability_failure_and_branch_appendix(tmp
 
     output = (tmp_path / entry["filename"]).read_text(encoding="utf-8")
     assert "## 90 CodeTalk Traceability Artifacts" in output
+    assert "<summary>Detailed traceability appendix</summary>" in output
     assert "### CodeTalk Claim-Evidence Map" in output
     assert "claim:obj-tls" in output
     assert "TLS timeout retry policy" in output
@@ -234,6 +246,9 @@ async def test_section_prompt_delegates_layout_to_codetalk(tmp_path: Path) -> No
     assert llm.prompts
     prompt = llm.prompts[0]
     assert "CodeTalk will render Markdown tables, Mermaid diagrams, and SFMEA grids" in prompt
+    assert "Use citations sparingly" in prompt
+    assert "do not repeat evidence lists in the prose" in prompt
+    assert "Important conclusions must cite file or symbol evidence" not in prompt
     assert "This section must include at least one Mermaid" not in prompt
     assert "This section must include an SFMEA table" not in prompt
 

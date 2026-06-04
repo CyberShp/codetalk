@@ -18,14 +18,14 @@ def build_codetalk_section_artifacts(
     analysis_units: list[dict],
     evidence_cards: list[Any],
     common_context: dict,
-    max_rows: int = 16,
+    max_rows: int = 6,
 ) -> str:
     """Return Markdown artifacts for one report section.
 
-    Every section gets a compact evidence table.  Sections that declare
-    ``requires_mermaid`` or ``requires_sfmea`` get deterministic graph/table
-    blocks as well, so the LLM does not have to maintain fragile Markdown
-    structures.
+    Every section gets a collapsed, compact evidence snapshot.  Sections that
+    declare ``requires_mermaid`` or ``requires_sfmea`` get deterministic
+    graph/table blocks as well, so the LLM does not have to maintain fragile
+    Markdown structures.
     """
 
     parts: list[str] = []
@@ -36,7 +36,10 @@ def build_codetalk_section_artifacts(
         common_context,
         max_rows=max_rows,
     )
-    parts.append(_render_evidence_table(evidence_rows))
+    parts.append(_wrap_details(
+        "Evidence snapshot",
+        _render_evidence_table(evidence_rows),
+    ))
 
     if section.get("requires_mermaid"):
         parts.append(_render_mermaid_diagram(section, analysis_units, common_context))
@@ -53,7 +56,7 @@ def build_codetalk_report_artifact_appendix(
     analysis_units: list[dict],
     evidence_cards: list[Any],
     common_context: dict,
-    max_rows: int = 24,
+    max_rows: int = 12,
 ) -> str:
     """Return report-level traceability artifacts.
 
@@ -86,7 +89,8 @@ def build_codetalk_report_artifact_appendix(
         "",
         _render_branch_deep_dive(bundle.get("branch_deep_dive") or {}, max_rows=max_rows),
     ]
-    return "\n".join(part for part in parts if str(part).strip()).strip()
+    appendix = "\n".join(part for part in parts if str(part).strip()).strip()
+    return _wrap_details("Detailed traceability appendix", appendix)
 
 
 def _evidence_rows(
@@ -319,6 +323,19 @@ def _render_evidence_table(rows: list[tuple[str, str, str, str]]) -> str:
     return "\n".join(lines)
 
 
+def _wrap_details(summary: str, body: str) -> str:
+    if not body.strip():
+        return ""
+    return "\n".join([
+        "<details>",
+        f"<summary>{_cell(summary)}</summary>",
+        "",
+        body.strip(),
+        "",
+        "</details>",
+    ])
+
+
 def _render_mermaid_diagram(
     section: dict,
     analysis_units: list[dict],
@@ -326,7 +343,7 @@ def _render_mermaid_diagram(
 ) -> str:
     labels = _unit_labels(analysis_units, common_context)
     heading = str(section.get("heading") or "").lower()
-    lines = ["### CodeTalk 图示", "", "```mermaid"]
+    lines = ["### CodeTalk Diagram", "", "```mermaid"]
     if "flow" in heading or "流程" in heading:
         lines.append("flowchart TD")
         previous = "Start"

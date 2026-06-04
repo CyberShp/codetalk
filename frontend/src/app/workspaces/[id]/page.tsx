@@ -202,10 +202,11 @@ function ReportCard({ report, wsId }: { report: WorkspaceReportMeta; wsId: strin
               {`该报告无正文内容（状态：${report.status}）。可能因截断或证据不足被标记为 partial/failed。`}
             </div>
           ) : (
-            <div className="mt-3 max-h-[560px] overflow-auto rounded-lg bg-surface-container-lowest/40 p-4">
+            <div className="mt-3 max-h-[560px] overflow-auto rounded-lg border border-[#d7e5f3] bg-[#f6f9fc] p-4 shadow-sm">
               <MarkdownRenderer
                 content={content ?? "（暂无内容）"}
                 enableNumericCitations={false}
+                variant="report"
               />
             </div>
           )}

@@ -103,31 +103,31 @@ export default function ReportPage() {
   }
 
   return (
-    <div className="flex gap-6 items-start">
+    <div className="flex flex-col xl:flex-row gap-6 items-stretch xl:items-start rounded-2xl bg-[#f3f7fb] p-4 text-[#172033]">
       {/* Left: header + tabs + report content */}
-      <div className="flex-1 min-w-0">
-        <div className="flex items-center justify-between mb-6">
+      <div className="w-full flex-1 min-w-0">
+        <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between mb-6">
           <div className="flex items-center gap-3">
             <Link
               href={`/tasks/${taskId}`}
-              className="p-1.5 rounded-lg hover:bg-surface-container text-on-surface-variant hover:text-on-surface transition-colors"
+              className="p-1.5 rounded-lg text-[#55708a] hover:bg-white hover:text-[#0f3b66] transition-colors"
             >
               <ArrowLeft size={18} />
             </Link>
             <div>
-              <h1 className="font-display text-2xl font-bold text-on-surface">
+              <h1 className="font-display text-2xl font-bold text-[#0f172a]">
                 分析报告
               </h1>
-              <p className="text-sm text-on-surface-variant mt-0.5">
+              <p className="text-sm text-[#5a7188] mt-0.5">
                 查看各工具的分析结果
               </p>
             </div>
           </div>
-          <div className="flex items-center gap-2">
+          <div className="flex items-center gap-2 flex-wrap">
             {tabKeys.length > 0 && (
               <button
                 onClick={() => setChatCollapsed((prev) => !prev)}
-                className="flex items-center gap-2 px-3 py-2 text-sm font-medium bg-surface-container-high text-on-surface-variant rounded-lg border border-outline-variant/30 hover:bg-surface-container hover:text-on-surface transition-colors"
+                className="flex items-center gap-2 px-3 py-2 text-sm font-medium bg-white text-[#55708a] rounded-lg border border-[#d7e5f3] hover:bg-[#eaf5ff] hover:text-[#0f3b66] transition-colors"
                 title={chatCollapsed ? "展开 AI 助手" : "收起 AI 助手"}
               >
                 {chatCollapsed ? <PanelRightOpen size={14} /> : <PanelRightClose size={14} />}
@@ -136,7 +136,7 @@ export default function ReportPage() {
             )}
             <Link
               href={`/tasks/${taskId}/export`}
-              className="flex items-center gap-2 px-4 py-2 text-sm font-medium bg-surface-container-high text-on-surface rounded-lg border border-outline-variant/30 hover:bg-surface-container transition-colors"
+              className="flex items-center gap-2 px-4 py-2 text-sm font-medium bg-[#0f7db8] text-white rounded-lg border border-[#0f7db8] hover:bg-[#0b679a] transition-colors shadow-sm"
             >
               <Download size={14} />
               导出
@@ -145,15 +145,15 @@ export default function ReportPage() {
         </div>
 
         {tabKeys.length > 1 && (
-          <div className="flex gap-1 mb-6 bg-surface-container rounded-lg p-1 border border-outline-variant/20 flex-wrap">
+          <div className="flex gap-1 mb-6 bg-white rounded-lg p-1 border border-[#d7e5f3] flex-wrap shadow-sm">
             {tabKeys.map((key) => (
               <button
                 key={key}
                 onClick={() => setActiveTab(key)}
                 className={`px-4 py-2 text-sm rounded-md transition-colors ${
                   activeTab === key
-                    ? "bg-primary/10 text-primary font-medium"
-                    : "text-on-surface-variant hover:text-on-surface"
+                    ? "bg-[#e0f2fe] text-[#0f3b66] font-medium"
+                    : "text-[#5a7188] hover:bg-[#f3f9ff] hover:text-[#0f3b66]"
                 }`}
               >
                 {getTabLabel(key)}
@@ -163,7 +163,7 @@ export default function ReportPage() {
         )}
 
         {tabKeys.length === 0 ? (
-          <div className="text-center py-16 bg-surface-container rounded-xl border border-outline-variant/20">
+          <div className="text-center py-16 bg-white rounded-xl border border-[#d7e5f3] shadow-sm">
             <p className="text-on-surface-variant mb-2">暂无报告数据</p>
             <p className="text-sm text-on-surface-variant/70 mb-4">
               {taskStatus === "running"
@@ -183,8 +183,11 @@ export default function ReportPage() {
             </Link>
           </div>
         ) : (
-          <div className="bg-surface-container rounded-xl border border-outline-variant/20 p-6">
-            <MarkdownRenderer content={stripFrontmatter(outputs[activeTab] ?? "")} />
+          <div className="bg-white rounded-xl border border-[#d7e5f3] p-7 shadow-sm">
+            <MarkdownRenderer
+              content={stripFrontmatter(outputs[activeTab] ?? "")}
+              variant="report"
+            />
           </div>
         )}
       </div>
@@ -192,7 +195,7 @@ export default function ReportPage() {
       {/* Right: AI chat panel — collapsible */}
       {tabKeys.length > 0 && !chatCollapsed && (
         <div
-          className="flex-1 sticky top-4"
+          className="w-full xl:flex-1 xl:sticky xl:top-4"
           style={{ height: "calc(100vh - 8rem)" }}
         >
           <ReportChatPanel taskId={taskId} />

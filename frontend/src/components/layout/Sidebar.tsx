@@ -38,9 +38,9 @@ export default function Sidebar() {
   const pathname = usePathname();
 
   return (
-    <aside className="fixed left-0 top-0 h-screen w-56 bg-surface-container-low flex flex-col z-40 border-r border-outline-variant/30">
+    <aside className="sticky top-0 w-full bg-surface-container-low flex flex-col z-40 border-b border-outline-variant/30 md:fixed md:left-0 md:top-0 md:h-screen md:w-56 md:border-r md:border-b-0">
       {/* Logo */}
-      <div className="px-5 pt-6 pb-4">
+      <div className="px-4 pt-4 pb-3 md:px-5 md:pt-6 md:pb-4">
         <h1 className="font-display text-lg font-bold text-primary tracking-wider">
           CODETALK
         </h1>
@@ -50,14 +50,14 @@ export default function Sidebar() {
       </div>
 
       {/* Navigation */}
-      <nav className="flex-1 px-3 space-y-0.5">
+      <nav className="px-3 pb-3 flex gap-1 overflow-x-auto md:flex-1 md:block md:space-y-0.5 md:pb-0">
         {navItems.map((item) => {
           const active = isActive(pathname, item.href);
           return (
             <Link
               key={item.href}
               href={item.href}
-              className={`flex items-center gap-3 px-3 py-2.5 rounded-lg text-sm transition-colors ${
+              className={`flex shrink-0 items-center gap-2 md:gap-3 px-3 py-2.5 rounded-lg text-sm transition-colors ${
                 active
                   ? "bg-primary/10 text-primary font-medium"
                   : "text-on-surface-variant hover:bg-surface-container hover:text-on-surface"
@@ -71,7 +71,7 @@ export default function Sidebar() {
       </nav>
 
       {/* Footer */}
-      <div className="px-5 py-4 border-t border-outline-variant/20">
+      <div className="hidden md:block px-5 py-4 border-t border-outline-variant/20">
         <p className="text-[10px] text-on-surface-variant/50">
           CodeTalk v1.0
         </p>
