@@ -2363,6 +2363,29 @@ def _ctd_case_type_label(case_type: object) -> str:
     return mapping.get(str(case_type or ""), str(case_type or "unknown"))
 
 
+def _ctd_entry_discovery_summary(gap: dict) -> str:
+    discovery = gap.get("entry_discovery") or {}
+    candidates = discovery.get("candidate_external_entries") or []
+    if candidates:
+        return "；".join(
+            "[{kind}] {label}".format(
+                kind=item.get("entry_type") or item.get("entry_kind") or "external",
+                label=item.get("entry_label") or item.get("entry_symbol") or "外部入口候选",
+            )
+            for item in candidates[:3]
+        )
+    status = discovery.get("entry_trace_status") or gap.get("entry_trace_status")
+    status_label = {
+        "entry_found": "已确认外部入口",
+        "source_read_ok_entry_not_found": "源码已读，入口仍需确认",
+        "source_not_found": "未读到源码窗口",
+        "workspace_not_bound": "未绑定工作区",
+        "trace_skipped_by_cap": "超过追踪上限",
+        "tool_unavailable": "工具不可用",
+    }.get(str(status or ""), str(status or "入口发现状态未知"))
+    return status_label
+
+
 def _ctd_render_test_case_drafts(lines: list[str], gap: dict) -> None:
     drafts = gap.get("test_case_drafts") or []
     if not drafts:
@@ -2444,8 +2467,8 @@ def build_coverage_test_design_section(design: dict | None) -> str:
     lines: list[str] = ["## 覆盖率缺口驱动测试设计"]
     lines.append(
         "> 本节由覆盖率缺口确定性生成（未经 LLM 改写）。未覆盖分支直接依据分支条件设计；"
-        "未覆盖函数经入口导向分层追踪（≤4 跳）反推外部触发入口，"
-        "找不到外部入口时给出灰盒注入方案并标注 `灰盒必需`。"
+        "未覆盖函数先进入多源入口发现，综合源码、GitNexus、CGC、报告和材料判断外部触发面；"
+        "只有入口发现仍无法确认外部触发方式时，才把灰盒辅助作为测试观察或注入方案。"
     )
     if not summary.get("workspace_bound", False):
         lines.append(
@@ -2477,7 +2500,7 @@ def build_coverage_test_design_section(design: dict | None) -> str:
             "",
             "### 覆盖率缺口测试设计矩阵",
             "",
-            "| 未覆盖函数 | 文件 | 类型 | 风险 | 外部入口 | 测试执行区 | 灰盒方案 | 证据 | 待验证 |",
+            "| 未覆盖函数 | 文件 | 类型 | 风险 | 入口发现 | 测试执行区 | 灰盒方案 | 证据 | 待验证 |",
             "| --- | --- | --- | --- | --- | --- | --- | --- | --- |",
         ])
         for gap in function_gaps[:60]:
@@ -2488,7 +2511,7 @@ def build_coverage_test_design_section(design: dict | None) -> str:
                 for e in (gap.get("entry_paths") or [])[:2]
             )
             if not entries:
-                entries = "（4 跳内未找到，灰盒必需）" if gap.get("gray_box_required") else "-"
+                entries = _ctd_entry_discovery_summary(gap)
             cases = "；".join(
                 (draft.get("test_execution") or {}).get("title", "")
                 for draft in (gap.get("test_case_drafts") or [])[:2]
@@ -2522,6 +2545,12 @@ def build_coverage_test_design_section(design: dict | None) -> str:
                 f"- 风险等级：{gap.get('risk_level')}；置信度：{gap.get('confidence')}；"
                 f"覆盖次数：{gap.get('hit_count')}"
             )
+            discovery = gap.get("entry_discovery") or {}
+            if discovery:
+                lines.append(f"- 入口发现状态：{_ctd_entry_discovery_summary(gap)}")
+                reasons = discovery.get("unresolved_reasons") or []
+                if reasons:
+                    lines.append("  - 仍需验证：" + "；".join(_ctd_cell(item) for item in reasons[:4]))
             if gap.get("test_case_drafts"):
                 _ctd_render_test_case_drafts(lines, gap)
                 _ctd_render_gray_and_evidence(lines, gap)

@@ -36,6 +36,7 @@ WORKSPACE_SCOPE_ENRICHMENT_TIMEOUT_SECONDS = 25.0
 # Coverage gap test-design constants (coverage-test-design-v1).
 COVERAGE_TEST_DESIGN_VERSION = "coverage-test-design-v1"
 COVERAGE_TEST_CONTEXT_VERSION = "coverage-test-context-v1"
+COVERAGE_ENTRY_DISCOVERY_VERSION = "coverage-entry-discovery-v1"
 AI_TEST_DESIGN_VERSION = "coverage-ai-test-scenarios-v1"
 BLACK_BOX_READY = "black_box_ready"
 BLACK_BOX_HYPOTHESIS = "black_box_hypothesis"
@@ -188,6 +189,25 @@ _SIGNATURE_RE = re.compile(
     r"(?P<name>[A-Za-z_]\w*)\s*\([^;{}]*\)\s*(?:\{|;|$)"
 )
 _REQ_FIELD_RE = re.compile(r"\b(?:req|attrs|opts|ctx)\.([A-Za-z_]\w*)\b")
+_REGISTRATION_LINE_RE = re.compile(
+    r"\b(?:[A-Z0-9_]*REGISTER[A-Z0-9_]*|register_[A-Za-z0-9_]+)\s*\(",
+    re.IGNORECASE,
+)
+_CALLBACK_ASSIGN_RE = re.compile(
+    r"\.(?:[A-Za-z_]\w*(?:cb|callback|handler|fn|op|ops)|(?:cb|callback|handler|fn|op|ops))\s*="
+    r"\s*(?P<symbol>[A-Za-z_]\w*)",
+    re.IGNORECASE,
+)
+_ENTRY_DISCOVERY_KIND_LABELS = {
+    "api": "公开 API/请求入口",
+    "cli": "命令行入口",
+    "message": "消息/事件入口",
+    "config": "配置入口",
+    "file": "文件输入入口",
+    "callback": "注册回调入口",
+    "timer": "定时任务入口",
+    "service": "服务启动入口",
+}
 
 _WHITE_BOX_LEAK_RULES: tuple[tuple[str, re.Pattern], ...] = (
     ("source_path", re.compile(r"\b[\w./\\-]+\.(?:c|h|cc|cpp|cxx|hpp|py|go|rs|java|js|jsx|ts|tsx)(?::\d+)?\b")),
@@ -655,8 +675,6 @@ def _design_function_gap(
         )
         trigger_branches = _dedupe_branches([*caller_branches, *self_branches])
 
-    has_black_box_entry = bool(entry_paths)
-    gray_box_required = not has_black_box_entry
     tool_status = _gap_tool_status(
         repo_root=repo_root,
         rg_available=rg_available,
@@ -664,6 +682,15 @@ def _design_function_gap(
         cgc_context=cgc_context,
         scope=scope,
     )
+    entry_trace_status = _entry_trace_status(
+        workspace_bound=repo_root is not None and bool(workspace_id),
+        trace=trace,
+        source_window=source_window,
+        entry_paths=entry_paths,
+        tool_status=tool_status,
+    )
+    has_black_box_entry = bool(entry_paths)
+    gray_box_required = entry_trace_status == "source_read_ok_entry_not_found"
     evidence_gaps = _function_evidence_gaps(
         workspace_bound=repo_root is not None and bool(workspace_id),
         source_window=source_window,
@@ -731,6 +758,7 @@ def _design_function_gap(
         "black_box_cases": black_box_cases,
         "gray_box": gray_box,
         "gray_box_required": gray_box_required,
+        "entry_trace_status": entry_trace_status,
         "branch_fact_card": branch_fact_card,
         "external_entry_card": external_entry_card,
         "black_box_readiness": readiness_card,
@@ -759,6 +787,27 @@ def _design_function_gap(
     }
     result["analysis"] = _recommendation_markdown(result)
     return result
+
+
+def _entry_trace_status(
+    *,
+    workspace_bound: bool,
+    trace: bool,
+    source_window: dict | None,
+    entry_paths: list[dict],
+    tool_status: dict,
+) -> str:
+    if not workspace_bound:
+        return "workspace_not_bound"
+    if not trace:
+        return "trace_skipped_by_cap"
+    if not source_window:
+        return "source_not_found"
+    if entry_paths:
+        return "entry_found"
+    if tool_status.get("ripgrep") != "available":
+        return "tool_unavailable"
+    return "source_read_ok_entry_not_found"
 
 
 def _collect_uncovered_function_hits(
@@ -1159,7 +1208,8 @@ def _recommendation_markdown(result: dict) -> str:
     elif result.get("gray_box_required"):
         gray = result.get("gray_box") or {}
         lines.append(
-            "- 未找到 4 跳内的外部入口，需灰盒方案: " + (gray.get("scheme") or "桩件/故障注入")
+            "- 确定性追踪未确认外部入口，需结合入口发现继续验证；灰盒仅作为辅助方案: "
+            + (gray.get("scheme") or "桩件/故障注入")
         )
     gaps = result.get("evidence_gaps") or []
     if gaps:
@@ -1172,10 +1222,10 @@ def _recommendation_markdown(result: dict) -> str:
 # Entry-oriented layered tracing for uncovered functions:
 #   1. read the function's source window,
 #   2. extract its own + its callers' guarding branch conditions,
-#   3. walk up the caller chain (<= ENTRY_TRACE_MAX_HOPS) until an external
-#      entry (CLI / API / message / config / file input) is reached,
-#   4. if no external entry is reachable, emit a gray-box injection scheme and
-#      mark ``gray_box_required`` instead of fabricating a black-box path.
+#   3. walk up the caller chain (<= ENTRY_TRACE_MAX_HOPS) and then combine
+#      report/material/GitNexus/CGC/source clues to discover external entries,
+#   4. use gray-box guidance only when multi-source entry discovery still cannot
+#      validate an external trigger.
 #
 # Joern is the preferred backend but is not wired up yet, so the engine runs on
 # CGC callers when available and degrades to ripgrep text search otherwise.  All
@@ -1547,6 +1597,8 @@ def _caller_context(abs_file: str, line_number: int) -> tuple[str | None, dict |
 
 def _classify_entry(file_path: str, enclosing_fn: str | None, line_text: str) -> str | None:
     """Classify a call site as an external entry kind, or None for internal."""
+    if _callback_symbol_from_assignment(line_text):
+        return "callback"
     blob = " ".join(filter(None, [file_path or "", enclosing_fn or "", line_text or ""])).lower()
     if enclosing_fn and enclosing_fn.lower() in {"main", "_main", "wmain"}:
         return "cli"
@@ -1701,8 +1753,19 @@ def _trace_entry_paths(
                     branch = dict(guard)
                     branch.update({"source": "caller", "file": site["file"]})
                     caller_branches.append(branch)
-                entry_kind = _classify_entry(site["file"], enclosing, site["text"])
                 caller_chain = ([enclosing, *chain] if enclosing else chain)
+                registration_entry = _registration_entry_for_site(
+                    repo_root,
+                    site["abs_file"],
+                    site["line_number"],
+                    enclosing,
+                    site["text"],
+                    caller_chain,
+                )
+                if registration_entry:
+                    entry_paths.append(registration_entry)
+                    continue
+                entry_kind = _classify_entry(site["file"], enclosing, site["text"])
                 if entry_kind:
                     metadata = _entry_metadata_for_site(
                         site["abs_file"], site["line_number"], enclosing
@@ -1736,6 +1799,79 @@ def _trace_entry_paths(
         seen.add(key)
         unique_entries.append(entry)
     return unique_entries[:6], _dedupe_branches(caller_branches)
+
+
+def _registration_entry_for_site(
+    repo_root: Path,
+    abs_file: str,
+    line_number: int,
+    enclosing: str | None,
+    site_text: str,
+    caller_chain: list[str],
+) -> dict | None:
+    symbol = enclosing or _callback_symbol_from_assignment(site_text)
+    if not symbol:
+        return None
+    try:
+        path = Path(abs_file)
+        lines = path.read_text(encoding="utf-8", errors="replace").splitlines()
+    except OSError:
+        return None
+
+    idx = max(0, line_number - 1)
+    start = max(0, idx - 12)
+    end = min(len(lines), idx + 28)
+    window = lines[start:end]
+    assignment_seen = any(
+        _callback_symbol_from_assignment(line) == symbol
+        or re.search(rf"\b{re.escape(symbol)}\b", line)
+        for line in window
+    )
+    registration_line = next(
+        (line.strip() for line in window if _REGISTRATION_LINE_RE.search(line)),
+        "",
+    )
+    callback_like = any(
+        token in " ".join(window).lower()
+        for token in ("callback", "_cb", "handler", "ops", "poller", "timer", "event")
+    )
+    if not (assignment_seen and registration_line and callback_like):
+        return None
+
+    rel_file = _relative_path(repo_root, path)
+    entry_type = _registered_entry_type(registration_line, window)
+    return {
+        "entry_kind": entry_type,
+        "entry_symbol": symbol,
+        "entry_file": rel_file,
+        "call_line": line_number,
+        "chain": caller_chain,
+        "depth": max(0, len(caller_chain) - 1),
+        "evidence": f"{rel_file}:{line_number} {site_text.strip()} | {registration_line}",
+        "tool": "source-registration",
+        "entry_label": f"{_ENTRY_DISCOVERY_KIND_LABELS.get(entry_type, '外部入口')} {symbol}",
+        "input_hints": [],
+    }
+
+
+def _callback_symbol_from_assignment(text: str) -> str | None:
+    match = _CALLBACK_ASSIGN_RE.search(text or "")
+    return match.group("symbol") if match else None
+
+
+def _registered_entry_type(registration_line: str, window: list[str]) -> str:
+    text = (registration_line + "\n" + "\n".join(window)).lower()
+    if "service_register" in text or "ops" in text or "callback" in text or "_cb" in text:
+        return "callback"
+    if "rpc" in text or "api" in text or "request" in text:
+        return "api"
+    if "cli" in text or "cmd" in text:
+        return "cli"
+    if "poller" in text or "timer" in text or "timeout" in text:
+        return "timer"
+    if "message" in text or "event" in text:
+        return "message"
+    return "callback"
 
 
 def _build_black_box_cases(
@@ -1931,7 +2067,8 @@ def _function_evidence_gaps(
         gaps.append("未在源码窗口/调用点发现显式守卫分支，触发条件需人工确认")
     if not entry_paths:
         gaps.append(
-            f"在 {ENTRY_TRACE_MAX_HOPS} 跳内未追踪到外部入口（CLI/API/消息/配置/文件），需灰盒注入"
+            f"确定性 {ENTRY_TRACE_MAX_HOPS} 跳追踪未确认外部入口，已进入多源入口发现；"
+            "是否灰盒需结合报告、材料、GitNexus、CGC 和源码线索继续验证"
         )
     if tool_status.get("joern") != "available":
         gaps.append("Joern 未接入：缺少精确分支/错误路径/边界值分析，结果为降级模式")
@@ -2069,6 +2206,16 @@ async def build_coverage_test_context(
     source = _source_context_from_gaps(deterministic_gaps)
     gitnexus = _tool_context_from_gaps(deterministic_gaps, "gitnexus_scope")
     cgc = _tool_context_from_gaps(deterministic_gaps, "cgc")
+    external_trigger_candidates = _external_trigger_candidates(
+        deterministic_gaps,
+        reports=reports,
+        materials=materials,
+    )
+    entry_discovery = _build_coverage_entry_discovery(
+        deterministic_gaps,
+        reports=reports,
+        materials=materials,
+    )
     evidence_counts = {
         "coverage": len(coverage.get("uncovered_functions") or []) + len(coverage.get("uncovered_branches") or []),
         "source": len(source),
@@ -2076,6 +2223,7 @@ async def build_coverage_test_context(
         "cgc": len(cgc),
         "report": len(reports),
         "material": len(materials),
+        "entry_discovery": len(entry_discovery.get("cards") or []),
     }
     return {
         "version": COVERAGE_TEST_CONTEXT_VERSION,
@@ -2088,10 +2236,307 @@ async def build_coverage_test_context(
         "cgc": cgc,
         "reports": reports,
         "materials": materials,
+        "external_trigger_candidates": external_trigger_candidates,
+        "entry_discovery": entry_discovery,
         "deterministic_gaps": _context_safe_gaps(deterministic_gaps),
         "evidence_source_counts": evidence_counts,
         "warnings": _coverage_context_warnings(evidence_counts),
     }
+
+
+_TRIGGER_SURFACE_PATTERNS: tuple[tuple[str, re.Pattern], ...] = (
+    ("api", re.compile(r"\b(api|rpc|rest|http|endpoint|request|controller|route|handler)\b|接口|请求", re.IGNORECASE)),
+    ("cli", re.compile(r"\b(cli|command|cmd|shell|console)\b|命令行|命令|脚本", re.IGNORECASE)),
+    ("config", re.compile(r"\b(config|setting|option|env|yaml|json|toml|ini)\b|配置|环境变量|参数", re.IGNORECASE)),
+    ("file", re.compile(r"\b(file|csv|xlsx|xml|upload|download|import|export)\b|文件|上传|导入|导出", re.IGNORECASE)),
+    ("message", re.compile(r"\b(message|event|queue|topic|consumer|producer|timer|scheduler|job)\b|消息|事件|队列|定时|任务", re.IGNORECASE)),
+    ("connection", re.compile(r"\b(connect|connection|login|logout|session|socket|network|timeout|retry)\b|连接|登录|会话|网络|超时|重试", re.IGNORECASE)),
+    ("ui", re.compile(r"\b(ui|page|button|form|screen|web)\b|页面|按钮|表单|点击", re.IGNORECASE)),
+    ("resource", re.compile(r"\b(memory|disk|quota|resource|pool|limit|capacity)\b|资源|内存|磁盘|限额|容量", re.IGNORECASE)),
+)
+
+
+def _external_trigger_candidates(
+    gaps: list[dict],
+    *,
+    reports: list[dict],
+    materials: list[dict],
+) -> list[dict]:
+    """Infer broad external trigger surfaces for AI classification.
+
+    These are hints, not proof.  They prevent the deterministic caller tracer's
+    "no entry within N hops" result from becoming an automatic gray-box verdict.
+    """
+    candidates: list[dict] = []
+
+    def add(surface: str, trigger: str, evidence: str, confidence: str = "medium") -> None:
+        item = {
+            "surface": surface,
+            "trigger": trigger[:180],
+            "evidence": evidence[:180],
+            "confidence": confidence,
+        }
+        key = (item["surface"], item["trigger"], item["evidence"])
+        if key not in {
+            (old["surface"], old["trigger"], old["evidence"])
+            for old in candidates
+        }:
+            candidates.append(item)
+
+    for gap in gaps[:40]:
+        for entry in gap.get("entry_paths") or []:
+            label = entry.get("entry_label") or entry.get("entry_symbol") or entry.get("entry_kind")
+            if label:
+                add(
+                    str(entry.get("entry_kind") or "public"),
+                    str(label),
+                    str(entry.get("evidence") or gap.get("function_name") or gap.get("file_path") or "entry_path"),
+                    "high",
+                )
+        symbol_text = " ".join(
+            str(value or "")
+            for value in (
+                gap.get("function_name"),
+                gap.get("file_path"),
+                gap.get("module_path"),
+                gap.get("feature_name"),
+            )
+        )
+        for surface, pattern in _TRIGGER_SURFACE_PATTERNS:
+            if pattern.search(symbol_text):
+                add(
+                    surface,
+                    f"从覆盖率符号/路径推断可能存在 {surface} 触发面",
+                    str(gap.get("function_name") or gap.get("file_path") or "coverage_gap"),
+                    "low",
+                )
+
+    for source_name, items in (("report", reports), ("material", materials)):
+        for item in items[:12]:
+            text = " ".join(
+                str(item.get(key) or "")
+                for key in ("title", "filename", "report_type", "excerpt")
+            )
+            for surface, pattern in _TRIGGER_SURFACE_PATTERNS:
+                if pattern.search(text):
+                    title = item.get("title") or item.get("filename") or item.get("report_id") or source_name
+                    add(
+                        surface,
+                        f"{source_name} 中出现 {surface} 触发线索：{_excerpt(text, 140)}",
+                        f"{source_name}:{title}",
+                        "medium",
+                    )
+    return candidates[:20]
+
+
+def _build_coverage_entry_discovery(
+    gaps: list[dict],
+    *,
+    reports: list[dict],
+    materials: list[dict],
+) -> dict:
+    cards: list[dict] = []
+    for gap in gaps:
+        if gap.get("kind") != "function":
+            continue
+        card = _entry_discovery_card_for_gap(
+            gap,
+            reports=reports,
+            materials=materials,
+        )
+        gap["entry_discovery"] = card
+        cards.append(card)
+    return {
+        "version": COVERAGE_ENTRY_DISCOVERY_VERSION,
+        "cards": cards,
+        "summary": {
+            "card_count": len(cards),
+            "entry_found_count": sum(
+                1 for card in cards
+                if card.get("entry_trace_status") == "entry_found"
+            ),
+            "candidate_entry_count": sum(
+                len(card.get("candidate_external_entries") or [])
+                for card in cards
+            ),
+        },
+    }
+
+
+def _entry_discovery_card_for_gap(
+    gap: dict,
+    *,
+    reports: list[dict],
+    materials: list[dict],
+) -> dict:
+    source_window = gap.get("source_window") or None
+    evidence = gap.get("evidence") or {}
+    gitnexus_scope = evidence.get("gitnexus_scope") if isinstance(evidence, dict) else {}
+    cgc = evidence.get("cgc") if isinstance(evidence, dict) else {}
+    candidates = _entry_candidates_from_paths(gap.get("entry_paths") or [])
+    report_material_clues = _report_material_entry_clues(
+        gap,
+        reports=reports,
+        materials=materials,
+    )
+    if not candidates:
+        candidates.extend(_entry_candidates_from_clues(report_material_clues))
+    status = gap.get("entry_trace_status") or _entry_trace_status(
+        workspace_bound=bool((evidence.get("coverage") or {}).get("workspace_id"))
+        if isinstance(evidence, dict) else False,
+        trace=True,
+        source_window=source_window,
+        entry_paths=gap.get("entry_paths") or [],
+        tool_status=gap.get("tool_status") or {},
+    )
+    unresolved = _entry_discovery_unresolved_reasons(gap, candidates, status)
+    return {
+        "function_name": gap.get("function_name"),
+        "file_path": gap.get("file_path"),
+        "module_path": gap.get("module_path"),
+        "entry_trace_status": status,
+        "source_window": {
+            "available": bool(source_window),
+            "path": source_window.get("path") if isinstance(source_window, dict) else None,
+            "start": source_window.get("start") if isinstance(source_window, dict) else None,
+            "end": source_window.get("end") if isinstance(source_window, dict) else None,
+        },
+        "candidate_external_entries": candidates[:8],
+        "gitnexus_scope": _compact_gitnexus_scope(gitnexus_scope),
+        "cgc": _compact_cgc_context(cgc),
+        "report_material_clues": report_material_clues[:8],
+        "source_verification_status": (
+            "source_backed" if any(c.get("source_verification") == "source_backed" for c in candidates)
+            else "needs_source_verification" if candidates
+            else "no_external_entry_candidate"
+        ),
+        "unresolved_reasons": unresolved,
+        "gray_box_allowed": not candidates and status in {
+            "source_read_ok_entry_not_found",
+            "source_not_found",
+            "tool_unavailable",
+        },
+    }
+
+
+def _entry_candidates_from_paths(entry_paths: list[dict]) -> list[dict]:
+    candidates: list[dict] = []
+    for entry in entry_paths:
+        entry_type = str(entry.get("entry_kind") or "external")
+        tool = str(entry.get("tool") or "")
+        candidates.append({
+            "entry_type": entry_type,
+            "entry_symbol": entry.get("entry_symbol") or entry.get("entry_label"),
+            "entry_file": entry.get("entry_file"),
+            "entry_label": entry.get("entry_label")
+            or _ENTRY_DISCOVERY_KIND_LABELS.get(entry_type, "外部入口"),
+            "chain": entry.get("chain") or [],
+            "evidence": entry.get("evidence"),
+            "confidence": "high" if tool in {"ripgrep", "source-registration"} else "medium",
+            "source_verification": "source_backed" if tool != "cgc" else "graph_backed",
+            "tool": tool,
+        })
+    return candidates
+
+
+def _entry_candidates_from_clues(clues: list[dict]) -> list[dict]:
+    candidates: list[dict] = []
+    for clue in clues:
+        surface = str(clue.get("surface") or "external")
+        candidates.append({
+            "entry_type": surface,
+            "entry_symbol": clue.get("trigger") or clue.get("title"),
+            "entry_file": None,
+            "entry_label": clue.get("trigger") or _ENTRY_DISCOVERY_KIND_LABELS.get(surface, "外部入口"),
+            "chain": [],
+            "evidence": clue.get("evidence"),
+            "confidence": clue.get("confidence") or "low",
+            "source_verification": "needs_source_verification",
+            "tool": clue.get("source") or "report_material",
+        })
+    return candidates
+
+
+def _report_material_entry_clues(
+    gap: dict,
+    *,
+    reports: list[dict],
+    materials: list[dict],
+) -> list[dict]:
+    needles = [
+        str(gap.get("function_name") or ""),
+        str(gap.get("module_path") or ""),
+        str(gap.get("feature_name") or ""),
+        Path(str(gap.get("file_path") or "")).stem,
+    ]
+    needles = [needle for needle in needles if needle]
+    clues: list[dict] = []
+    for source_name, items in (("report", reports), ("material", materials)):
+        for item in items[:16]:
+            text = " ".join(
+                str(item.get(key) or "")
+                for key in ("title", "filename", "report_type", "excerpt")
+            )
+            if needles and not any(needle in text for needle in needles):
+                if not any(pattern.search(text) for _, pattern in _TRIGGER_SURFACE_PATTERNS):
+                    continue
+            for surface, pattern in _TRIGGER_SURFACE_PATTERNS:
+                if pattern.search(text):
+                    title = item.get("title") or item.get("filename") or item.get("report_id") or source_name
+                    clues.append({
+                        "source": source_name,
+                        "surface": surface,
+                        "title": title,
+                        "trigger": f"{source_name} 提到 {surface} 触发面",
+                        "evidence": _excerpt(text, 240),
+                        "confidence": "medium",
+                    })
+    return _dedupe_context_items(clues, ("source", "surface", "title"))[:10]
+
+
+def _compact_gitnexus_scope(scope: object) -> dict:
+    if not isinstance(scope, dict):
+        return {}
+    return {
+        "gitnexus_available": scope.get("gitnexus_available"),
+        "candidate_files": scope.get("candidate_files") or [],
+        "candidate_symbols": scope.get("candidate_symbols") or [],
+        "related_communities": scope.get("related_communities") or [],
+        "warnings": scope.get("warnings") or [],
+    }
+
+
+def _compact_cgc_context(cgc: object) -> dict:
+    if not isinstance(cgc, dict):
+        return {}
+    return {
+        "available": cgc.get("available"),
+        "callers": cgc.get("callers") or [],
+        "callees": cgc.get("callees") or [],
+    }
+
+
+def _entry_discovery_unresolved_reasons(
+    gap: dict,
+    candidates: list[dict],
+    status: str,
+) -> list[str]:
+    reasons = list(gap.get("evidence_gaps") or [])
+    if candidates:
+        if any(c.get("source_verification") == "needs_source_verification" for c in candidates):
+            reasons.append("存在外部入口线索，但仍需源码确认触发链。")
+        return reasons
+    if status == "workspace_not_bound":
+        reasons.append("覆盖率未绑定工作区，无法读取源码和工具索引。")
+    elif status == "trace_skipped_by_cap":
+        reasons.append("该缺口超过源码追踪上限，本轮未展开入口发现。")
+    elif status == "source_not_found":
+        reasons.append("覆盖率路径或函数名未能解析到真实源码窗口。")
+    elif status == "tool_unavailable":
+        reasons.append("源码可读，但 CGC/ripgrep 不可用，无法完成入口追踪。")
+    elif status == "source_read_ok_entry_not_found":
+        reasons.append("源码窗口已读取，但多源入口发现仍未确认外部触发入口。")
+    return _coerce_string_list(reasons)
 
 
 async def _load_coverage_report_context(
@@ -2260,6 +2705,8 @@ def _context_safe_gaps(gaps: list[dict]) -> list[dict]:
             "entry_paths": gap.get("entry_paths") or [],
             "trigger_branches": gap.get("trigger_branches") or [],
             "gray_box_required": gap.get("gray_box_required"),
+            "entry_trace_status": gap.get("entry_trace_status"),
+            "entry_discovery": gap.get("entry_discovery"),
             "evidence_gaps": gap.get("evidence_gaps") or [],
         })
     return safe
@@ -2349,6 +2796,7 @@ async def _generate_ai_test_scenarios(
             "scenario_id": "response",
             "reason": parse_error or "AI 响应中没有 scenarios 数组",
         })
+    _enforce_ai_scenario_batch_gate(context, accepted, rejected)
     return {
         "prompt": prompt,
         "raw_response": resp.content,
@@ -2370,6 +2818,8 @@ def _coverage_ai_prompt(context: dict) -> str:
         "source": context.get("source"),
         "gitnexus": context.get("gitnexus"),
         "cgc": context.get("cgc"),
+        "external_trigger_candidates": context.get("external_trigger_candidates"),
+        "entry_discovery": context.get("entry_discovery"),
         "warnings": context.get("warnings"),
     }
     return (
@@ -2377,16 +2827,55 @@ def _coverage_ai_prompt(context: dict) -> str:
         "要求：\n"
         "1. 不要套用具体协议或项目模板，要从证据中识别外部触发面、输入面、状态面、配置环境面、时序面和可观测面。\n"
         "2. 只生成 3 到 4 个最高价值场景，优先覆盖不同外部触发面和不同故障模式，避免输出过长导致 JSON 截断。\n"
-        "3. 最终 scenarios 中至少 70% 必须是 `black_box_ready`，最多 30% 可以是 `gray_box_required`；不要把可从外部执行的场景标成 `black_box_hypothesis`。\n"
-        "4. 每个 high 优先级场景必须回答：流程做什么、外部怎么触发、输入怎么构造、正常路径、异常路径、预期结果、可观测信号、灰盒辅助、SFMEA。\n"
-        "5. normal_path/error_path/external_trigger/input_construction/expected_result 只能写测试人员从外部执行和观察的步骤，不要写函数名、源码文件、源码行号、内部变量或“调用 xxx”。源码函数/文件只能放在 key_call_chain/evidence_refs/gray_box_aid。\n"
-        "6. 只有确实无法从外部触发、必须靠注入/trace/内部状态辅助观察时，才使用 `gray_box_required`；这种场景最多 1 个。`black_box_hypothesis` 只作为无法分类的临时状态，最终验收会失败。\n"
-        "7. 只输出 JSON，格式为 {\"scenarios\": [...]}，禁止输出 Markdown 或解释文字。\n"
+        "3. 必须先阅读 entry_discovery.cards：候选外部入口、入口类型、源码验证状态和 unresolved_reasons 是判定黑盒/灰盒的主依据。\n"
+        "4. deterministic_gaps 里的 gray_box_required 只表示确定性追踪没找到入口，不是最终灰盒结论；必须先结合 entry_discovery、reports、materials、external_trigger_candidates、GitNexus、CGC 和 source 证据重新判断外部触发方式。\n"
+        "5. 如果入口发现卡、报告、文档或工具证据能说明测试人员可通过请求、连接、配置、文件、消息、页面、服务重启、异常输入、网络异常或资源不足触发，就优先生成 `black_box_ready`，不要因为调用链追踪不完整而降级灰盒。\n"
+        "6. 最终 scenarios 中至少 70% 必须是 `black_box_ready`，最多 30% 可以是 `gray_box_required`；不要把可从外部执行的场景标成 `black_box_hypothesis`。\n"
+        "7. 每个 high 优先级场景必须回答：流程做什么、外部怎么触发、输入怎么构造、正常路径、异常路径、预期结果、可观测信号、灰盒辅助、SFMEA。\n"
+        "8. normal_path/error_path/external_trigger/input_construction/expected_result 只能写测试人员从外部执行和观察的步骤，不要写函数名、源码文件、源码行号、内部变量或“调用 xxx”。源码函数/文件只能放在 key_call_chain/evidence_refs/gray_box_aid。\n"
+        "9. 只有 entry_discovery 明确显示没有外部入口候选，或必须靠注入/trace/内部状态辅助观察时，才使用 `gray_box_required`；这种场景最多 1 个。`black_box_hypothesis` 只作为无法分类的临时状态，最终验收会失败。\n"
+        "10. 只输出 JSON，格式为 {\"scenarios\": [...]}，禁止输出 Markdown 或解释文字。\n"
         f"必填字段：{', '.join(AI_REQUIRED_SCENARIO_FIELDS)}。\n"
         f"sfmea 必填字段：{', '.join(AI_REQUIRED_SFMEA_FIELDS)}。\n\n"
         "上下文 JSON：\n"
         + json.dumps(compact, ensure_ascii=False)[:50000]
     )
+
+
+def _enforce_ai_scenario_batch_gate(
+    context: dict,
+    accepted: list[dict],
+    rejected: list[dict],
+) -> None:
+    if not accepted:
+        return
+    black_box_count = sum(1 for item in accepted if item.get("case_type") == BLACK_BOX_READY)
+    gray_box_count = sum(1 for item in accepted if item.get("case_type") == GRAY_BOX_REQUIRED)
+    black_box_ratio = black_box_count / max(1, len(accepted))
+    has_external_trigger_hint = any(
+        str(item.get("trigger") or "").strip()
+        for item in context.get("external_trigger_candidates") or []
+        if isinstance(item, dict)
+    )
+    if black_box_ratio >= 0.7 and gray_box_count <= 1:
+        return
+
+    if has_external_trigger_hint:
+        reason = (
+            "黑盒比例不足：上下文已有外部触发线索，但 AI 输出没有达到 70% black_box_ready，"
+            "不能把可外部触发的场景整批降级为灰盒。"
+        )
+    else:
+        reason = (
+            "黑盒比例不足：AI 输出没有达到 70% black_box_ready，"
+            "不能作为正式覆盖率推荐用例。"
+        )
+    for scenario in accepted:
+        rejected.append({
+            "scenario_id": scenario.get("scenario_id") or "scenario",
+            "reason": reason,
+        })
+    accepted.clear()
 
 
 def _parse_json_object(text: str) -> dict:
@@ -2561,20 +3050,54 @@ def _coerce_string_list(value: object) -> list[str]:
 def _attach_scenarios_to_gaps(gaps: list[dict], scenarios: list[dict]) -> None:
     for gap in gaps:
         name = str(gap.get("function_name") or gap.get("condition") or "")
+        file_path = str(gap.get("file_path") or "")
         related: list[dict] = []
         for scenario in scenarios:
-            related_gaps = {str(item) for item in scenario.get("related_gaps") or []}
-            chain = {str(item) for item in scenario.get("key_call_chain") or []}
-            if name and (name in related_gaps or name in chain):
+            related_gaps = [str(item) for item in scenario.get("related_gaps") or []]
+            chain = [str(item) for item in scenario.get("key_call_chain") or []]
+            evidence_refs = [str(item) for item in scenario.get("evidence_refs") or []]
+            haystack = "\n".join([*related_gaps, *chain, *evidence_refs])
+            if name and (
+                name in haystack
+                or any(name == item for item in related_gaps)
+                or any(name == item for item in chain)
+            ):
+                related.append(scenario)
+            elif file_path and file_path in haystack:
                 related.append(scenario)
         if related:
             gap["test_scenarios"] = related[:5]
+
+
+def _annotate_ai_recommendation_status(
+    gaps: list[dict],
+    *,
+    use_ai: bool,
+    ai_status: str,
+    scenarios: list[dict],
+) -> None:
+    if not use_ai:
+        return
+    for gap in gaps:
+        related = gap.get("test_scenarios") or []
+        gap["ai_generation_status"] = ai_status
+        gap["ai_scenario_count"] = len(related)
+        gap["deterministic_case_role"] = "evidence_scaffold"
+        if related:
+            gap["ai_recommendation_status"] = "has_ai_scenarios"
+        elif ai_status == "available" and not scenarios:
+            gap["ai_recommendation_status"] = "no_valid_ai_scenarios"
+        elif ai_status in {"failed", "unavailable"}:
+            gap["ai_recommendation_status"] = f"ai_{ai_status}"
+        else:
+            gap["ai_recommendation_status"] = "no_related_ai_scenario"
 
 
 async def _write_coverage_design_artifacts(
     artifact_dir: Path | None,
     *,
     context: dict,
+    entry_discovery: dict,
     design: dict,
     ai_debug: dict | None,
 ) -> None:
@@ -2585,6 +3108,10 @@ async def _write_coverage_design_artifacts(
     def _write() -> None:
         (artifact_dir / "coverage_test_context.json").write_text(
             json.dumps(context, ensure_ascii=False, indent=2),
+            encoding="utf-8",
+        )
+        (artifact_dir / "coverage_entry_discovery.json").write_text(
+            json.dumps(entry_discovery, ensure_ascii=False, indent=2),
             encoding="utf-8",
         )
         (artifact_dir / "coverage_test_design.json").write_text(
@@ -2636,6 +3163,11 @@ async def build_coverage_test_design(
         deterministic_gaps=gaps,
         report_output_dir=report_output_dir,
     )
+    entry_discovery = context.get("entry_discovery") or {
+        "version": COVERAGE_ENTRY_DISCOVERY_VERSION,
+        "cards": [],
+        "summary": {},
+    }
 
     tool_status = _aggregate_tool_status(function_gaps, repo_path=repo_path)
     warnings = _design_warnings(
@@ -2666,6 +3198,12 @@ async def build_coverage_test_design(
             warnings.append(f"真实 AI 覆盖率用例生成失败：{exc}")
             logger.warning("Coverage AI scenario generation failed: %s", exc)
     _attach_scenarios_to_gaps(gaps, test_scenarios)
+    _annotate_ai_recommendation_status(
+        gaps,
+        use_ai=use_ai,
+        ai_status=ai_status,
+        scenarios=test_scenarios,
+    )
 
     gap_black_box_ready_count = sum(
         1 for g in gaps
@@ -2682,7 +3220,12 @@ async def build_coverage_test_design(
             or g.get("gray_box_required")
         )
     )
-    scenario_source = test_scenarios if test_scenarios else gaps
+    if use_ai:
+        recommendation_source = test_scenarios
+        recommendation_source_label = "ai_scenarios" if test_scenarios else "none"
+    else:
+        recommendation_source = gaps
+        recommendation_source_label = "deterministic_gaps"
 
     def _case_type(item: dict) -> str | None:
         return (
@@ -2694,9 +3237,10 @@ async def build_coverage_test_design(
         "module_count": len(modules),
         "uncovered_function_count": len(function_gaps),
         "uncovered_branch_count": len(branch_gaps),
-        "black_box_ready_count": sum(1 for s in scenario_source if _case_type(s) == BLACK_BOX_READY),
-        "black_box_hypothesis_count": sum(1 for s in scenario_source if _case_type(s) == BLACK_BOX_HYPOTHESIS),
-        "gray_box_required_count": sum(1 for s in scenario_source if _case_type(s) == GRAY_BOX_REQUIRED),
+        "black_box_ready_count": sum(1 for s in recommendation_source if _case_type(s) == BLACK_BOX_READY),
+        "black_box_hypothesis_count": sum(1 for s in recommendation_source if _case_type(s) == BLACK_BOX_HYPOTHESIS),
+        "gray_box_required_count": sum(1 for s in recommendation_source if _case_type(s) == GRAY_BOX_REQUIRED),
+        "recommendation_source": recommendation_source_label,
         "gap_black_box_ready_count": gap_black_box_ready_count,
         "gap_black_box_hypothesis_count": gap_black_box_hypothesis_count,
         "gap_gray_box_required_count": gap_gray_box_required_count,
@@ -2725,6 +3269,7 @@ async def build_coverage_test_design(
             "evidence_source_counts": context.get("evidence_source_counts") or {},
             "warnings": context.get("warnings") or [],
         },
+        "entry_discovery": entry_discovery,
         "test_scenarios": test_scenarios,
         "test_scenario_validation": {
             "accepted_count": len(test_scenarios),
@@ -2737,6 +3282,7 @@ async def build_coverage_test_design(
     await _write_coverage_design_artifacts(
         artifact_dir,
         context=context,
+        entry_discovery=entry_discovery,
         design=design,
         ai_debug=ai_debug,
     )
@@ -2789,7 +3335,8 @@ def _design_warnings(
     gray_only = [g for g in function_gaps if g.get("gray_box_required")]
     if gray_only:
         warnings.append(
-            f"{len(gray_only)} 个未覆盖函数在 {ENTRY_TRACE_MAX_HOPS} 跳内未找到外部入口，已给出灰盒注入方案"
+            f"{len(gray_only)} 个未覆盖函数的多源入口发现仍未确认外部触发，"
+            "已给出灰盒辅助观察方案"
         )
     return warnings
 

@@ -329,6 +329,17 @@ def test_coverage_test_design_section_splits_execution_gray_and_evidence() -> No
             "risk_level": "high",
             "confidence": "high",
             "gray_box_required": False,
+            "entry_trace_status": "entry_found",
+            "entry_discovery": {
+                "entry_trace_status": "entry_found",
+                "candidate_external_entries": [{
+                    "entry_type": "cli",
+                    "entry_label": "spdk_nvme_perf --psk-path",
+                    "confidence": "high",
+                    "source_verification": "source_backed",
+                }],
+                "unresolved_reasons": [],
+            },
             "branch_fact_card": {
                 "uncovered_location": "lib/nvme/nvme_tcp.c:2758-2761",
                 "branch_conditions": ["psk_retained_hash == NVME_TCP_HASH_ALGORITHM_NONE"],
@@ -371,11 +382,13 @@ def test_coverage_test_design_section_splits_execution_gray_and_evidence() -> No
         "warnings": [],
     })
 
-    assert "Test execution area" in section
-    assert "Gray-box aid area" in section
-    assert "Evidence area" in section
+    assert "测试执行区" in section
+    assert "灰盒辅助区" in section
+    assert "证据区" in section
+    assert "入口发现" in section
+    assert "spdk_nvme_perf --psk-path" in section
     assert "black_box_ready" in section
-    assert "White-box leak lint: pass" in section
+    assert "白盒泄漏检查：通过" in section
     assert "psk_retained_hash == NVME_TCP_HASH_ALGORITHM_NONE" in section
 
 

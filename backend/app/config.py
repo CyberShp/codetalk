@@ -85,7 +85,21 @@ class Settings(BaseSettings):
 
     @property
     def cors_origins_list(self) -> list[str]:
-        return [o.strip() for o in self.cors_origins.split(",") if o.strip()]
+        origins = [o.strip() for o in self.cors_origins.split(",") if o.strip()]
+        dev_origins = [
+            "http://localhost:3005",
+            "http://127.0.0.1:3005",
+            "http://localhost:3205",
+            "http://127.0.0.1:3205",
+            "http://localhost:3218",
+            "http://127.0.0.1:3218",
+            "http://localhost:3219",
+            "http://127.0.0.1:3219",
+        ]
+        for origin in dev_origins:
+            if origin not in origins:
+                origins.append(origin)
+        return origins
 
     @property
     def data_path(self) -> Path:

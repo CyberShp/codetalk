@@ -601,6 +601,164 @@ error_recovery,src/service.c:40-55,false,0
         assert (output_dir / "coverage_test_design.json").exists()
         assert any(output_dir.glob("debug/coverage_ai_*.json"))
 
+    async def test_ai_prompt_warns_trace_gap_is_not_final_gray_box(self, tmp_path):
+        from app.services.coverage_analyzer import (
+            _coverage_ai_prompt,
+            build_coverage_test_context,
+        )
+
+        gap = {
+            "kind": "function",
+            "function_name": "recover_session",
+            "file_path": "src/session.c",
+            "line_start": 1,
+            "line_end": 6,
+            "gray_box_required": True,
+            "entry_paths": [],
+            "black_box_readiness": {"case_type": "gray_box_required"},
+            "evidence_gaps": ["4 跳内未追踪到外部入口"],
+            "source_window": {
+                "available": True,
+                "path": "src/session.c",
+                "start": 1,
+                "end": 6,
+                "text": "int recover_session(void) { return 0; }",
+            },
+            "evidence": {},
+        }
+
+        context = await build_coverage_test_context(
+            [],
+            workspace_id=None,
+            repo_path=str(tmp_path),
+            deterministic_gaps=[gap],
+        )
+        context["reports"] = [{
+            "report_type": "business_flow",
+            "title": "业务流程",
+            "excerpt": "测试人员通过公开 API 发起恢复请求，异常时观察返回码、日志和资源计数。",
+        }]
+        context["external_trigger_candidates"] = [{
+            "surface": "api",
+            "trigger": "公开 API 请求",
+            "evidence": "report:业务流程",
+            "confidence": "medium",
+        }]
+        context["entry_discovery"] = {
+            "cards": [{
+                "function_name": "recover_session",
+                "entry_trace_status": "entry_found",
+                "candidate_external_entries": [{
+                    "entry_type": "api",
+                    "entry_symbol": "公开 API 请求",
+                    "evidence": "report:业务流程",
+                    "confidence": "medium",
+                }],
+            }],
+        }
+
+        prompt = _coverage_ai_prompt(context)
+
+        assert "确定性追踪没找到入口" in prompt
+        assert "不是最终灰盒结论" in prompt
+        assert "external_trigger_candidates" in prompt
+        assert "entry_discovery" in prompt
+        assert "公开 API 请求" in prompt
+
+    async def test_ai_failure_marks_no_valid_recommendation_instead_of_templates(
+        self, tmp_path
+    ):
+        from app.services.coverage_analyzer import build_coverage_test_design
+
+        src = tmp_path / "src"
+        src.mkdir()
+        (src / "session.c").write_text(
+            "void internal_helper(void) {\n"
+            "    return;\n"
+            "}\n",
+            encoding="utf-8",
+        )
+
+        class EmptyLLM:
+            async def complete(self, messages, max_tokens=4096, temperature=0.1):
+                return LLMResponse(content='{"scenarios": []}', model="fake", usage={})
+
+        modules = self._modules(
+            "feature,module,code_location,function,triggered,hit_count\n"
+            "rec,session,src/session.c:1-3,internal_helper,false,0\n"
+        )
+        design = await build_coverage_test_design(
+            modules,
+            workspace_id="ws-ai-empty",
+            repo_path=str(tmp_path),
+            use_ai=True,
+            llm=EmptyLLM(),
+        )
+
+        gap = [g for g in design["gaps"] if g.get("kind") == "function"][0]
+        assert design["summary"]["ai_status"] == "available"
+        assert design["summary"]["ai_scenario_count"] == 0
+        assert design["summary"]["ai_rejected_scenario_count"] == 1
+        assert design["summary"]["recommendation_source"] == "none"
+        assert design["summary"]["black_box_ready_count"] == 0
+        assert design["summary"]["gray_box_required_count"] == 0
+        assert design["summary"]["gap_gray_box_required_count"] == 1
+        assert gap["ai_generation_status"] == "available"
+        assert gap["ai_recommendation_status"] == "no_valid_ai_scenarios"
+        assert gap["deterministic_case_role"] == "evidence_scaffold"
+
+    async def test_ai_rejects_all_gray_box_batch_when_external_trigger_exists(self):
+        from app.services.coverage_analyzer import _generate_ai_test_scenarios
+
+        gray_scenario = {
+            "scenario_id": "S-gray",
+            "priority": "high",
+            "case_type": "gray_box_required",
+            "flow_purpose": "验证服务请求失败后的恢复行为。",
+            "external_trigger": "通过公开 API 发起请求。",
+            "input_construction": "构造会触发失败响应的请求参数。",
+            "normal_path": "发送有效请求后，服务返回成功并保持连接状态。",
+            "error_path": "发送异常请求后，服务返回受控错误并记录日志。",
+            "key_call_chain": ["recover_session"],
+            "expected_result": "客户端收到受控错误，服务端保持可继续处理后续请求。",
+            "observable_signals": ["返回码", "日志关键字", "连接状态"],
+            "gray_box_aid": "辅助查看 trace 日志，不作为执行步骤。",
+            "sfmea": {
+                "failure_mode": "恢复路径未执行",
+                "trigger_condition": "请求处理失败",
+                "propagation_effect": "连接状态残留",
+                "observable_effect": "返回码、日志和连接状态异常",
+                "recommended_test": "构造失败请求并观察外部结果",
+            },
+            "evidence_refs": ["coverage:recover_session"],
+            "related_gaps": ["recover_session"],
+            "confidence": "high",
+            "verification_gaps": [],
+        }
+
+        class GrayLLM:
+            async def complete(self, messages, max_tokens=4096, temperature=0.1):
+                return LLMResponse(
+                    content=json.dumps({"scenarios": [gray_scenario, {**gray_scenario, "scenario_id": "S-gray-2"}]}),
+                    model="fake",
+                    usage={},
+                )
+
+        result = await _generate_ai_test_scenarios(
+            GrayLLM(),
+            {
+                "external_trigger_candidates": [{
+                    "surface": "api",
+                    "trigger": "公开 API 请求",
+                    "evidence": "report:业务流程",
+                    "confidence": "medium",
+                }]
+            },
+        )
+
+        assert result["accepted"] == []
+        assert any("黑盒比例不足" in item["reason"] for item in result["rejected"])
+
     async def test_workspace_scope_timeout_does_not_block_recommendations(
         self, sqlite_db, tmp_path
     ):
@@ -935,6 +1093,103 @@ class TestCoverageTestDesign:
         assert "optimal_open_zones" in case_text
         assert "Drive the nearest public API" not in case_text
 
+    async def test_callback_registration_entry_discovery_prevents_final_gray_box(
+        self, tmp_path
+    ):
+        from app.services.coverage_analyzer import build_coverage_test_design
+
+        src = tmp_path / "src"
+        src.mkdir()
+        (src / "session.c").write_text(
+            "void internal_recover(void *ctx) {\n"
+            "    if (ctx == 0) {\n"
+            "        return;\n"
+            "    }\n"
+            "    cleanup(ctx);\n"
+            "}\n",
+            encoding="utf-8",
+        )
+        (src / "service.c").write_text(
+            "static void on_session_timeout(void *ctx) {\n"
+            "    internal_recover(ctx);\n"
+            "}\n\n"
+            "static struct service_ops ops = {\n"
+            "    .timeout_cb = on_session_timeout,\n"
+            "};\n\n"
+            "SERVICE_REGISTER(\"session\", &ops);\n",
+            encoding="utf-8",
+        )
+        modules = self._modules(
+            "feature,module,code_location,function,triggered,hit_count\n"
+            "recover,session,src/session.c:1-6,internal_recover,false,0\n"
+        )
+
+        design = await build_coverage_test_design(
+            modules, workspace_id="ws-1", repo_path=str(tmp_path)
+        )
+
+        gap = [g for g in design["gaps"] if g.get("kind") == "function"][0]
+        card = design["entry_discovery"]["cards"][0]
+        assert gap["gray_box_required"] is False
+        assert gap["entry_trace_status"] == "entry_found"
+        assert gap["entry_discovery"]["entry_trace_status"] == "entry_found"
+        assert card["function_name"] == "internal_recover"
+        assert card["candidate_external_entries"]
+        assert card["candidate_external_entries"][0]["entry_symbol"] == "on_session_timeout"
+        assert card["candidate_external_entries"][0]["entry_type"] == "callback"
+        assert "SERVICE_REGISTER" in card["candidate_external_entries"][0]["evidence"]
+
+    async def test_entry_discovery_artifact_and_context_are_written(self, tmp_path):
+        from app.services.coverage_analyzer import build_coverage_test_design
+
+        self._make_repo(tmp_path)
+        artifact_dir = tmp_path / "artifacts"
+        modules = self._modules(
+            "feature,module,code_location,function,triggered,hit_count\n"
+            "rec,session,src/session.c:1-6,recover_session,false,0\n"
+        )
+
+        design = await build_coverage_test_design(
+            modules,
+            workspace_id="ws-1",
+            repo_path=str(tmp_path),
+            artifact_dir=artifact_dir,
+        )
+
+        assert design["entry_discovery"]["cards"]
+        entry_path = artifact_dir / "coverage_entry_discovery.json"
+        context_path = artifact_dir / "coverage_test_context.json"
+        assert entry_path.exists()
+        assert context_path.exists()
+        entry_data = json.loads(entry_path.read_text(encoding="utf-8"))
+        context = json.loads(context_path.read_text(encoding="utf-8"))
+        assert entry_data["cards"][0]["function_name"] == "recover_session"
+        assert context["entry_discovery"]["cards"][0]["function_name"] == "recover_session"
+        assert context["evidence_source_counts"]["entry_discovery"] >= 1
+
+    async def test_ai_scenario_related_gap_substring_attaches_to_function_gap(self):
+        from app.services.coverage_analyzer import _attach_scenarios_to_gaps
+
+        gaps = [
+            {
+                "kind": "function",
+                "function_name": "iscsi_conn_write_pdu",
+                "file_path": "lib/iscsi/conn.c",
+            }
+        ]
+        scenarios = [
+            {
+                "case_type": "black_box_ready",
+                "related_gaps": ["iscsi_conn_write_pdu 未覆盖"],
+                "key_call_chain": ["iscsi_pdu_hdr_op_login -> iscsi_conn_write_pdu"],
+                "evidence_refs": ["lib/iscsi/conn.c:787-842"],
+            }
+        ]
+
+        _attach_scenarios_to_gaps(gaps, scenarios)
+
+        assert gaps[0]["test_scenarios"] == scenarios
+
     async def test_gray_box_when_no_external_entry(self, tmp_path):
         from app.services.coverage_analyzer import build_coverage_test_design
 
@@ -1003,7 +1258,9 @@ class TestCoverageTestDesign:
         # Source window still works (filesystem read), but no caller trace.
         gap = [g for g in design["gaps"] if g.get("kind") == "function"][0]
         assert gap["entry_paths"] == []
-        assert gap["gray_box_required"] is True
+        assert gap["gray_box_required"] is False
+        assert gap["entry_trace_status"] == "tool_unavailable"
+        assert gap["entry_discovery"]["entry_trace_status"] == "tool_unavailable"
 
     async def test_branch_gaps_designed_from_conditions(self, tmp_path):
         from app.adapters.coverage import ModuleCoverage

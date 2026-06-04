@@ -402,14 +402,39 @@ export interface CoverageTriggerBranch {
 }
 
 export interface CoverageEntryPath {
-  entry_kind: string; // cli | api | message | config | file
+  entry_kind: string; // cli | api | message | config | file | callback | timer | service
   entry_symbol?: string | null;
   entry_file?: string | null;
+  entry_label?: string | null;
   chain?: string[];
   depth?: number;
   call_line?: number | null;
   evidence?: string | null;
   tool?: string;
+}
+
+export interface CoverageEntryDiscoveryCandidate {
+  entry_type: string;
+  entry_symbol?: string | null;
+  entry_file?: string | null;
+  entry_label?: string | null;
+  chain?: string[];
+  evidence?: string | null;
+  confidence?: string;
+  source_verification?: string;
+  tool?: string;
+}
+
+export interface CoverageEntryDiscoveryCard {
+  function_name?: string | null;
+  file_path?: string | null;
+  module_path?: string | null;
+  entry_trace_status?: string;
+  candidate_external_entries?: CoverageEntryDiscoveryCandidate[];
+  report_material_clues?: Array<Record<string, unknown>>;
+  source_verification_status?: string;
+  unresolved_reasons?: string[];
+  gray_box_allowed?: boolean;
 }
 
 export interface CoverageBlackBoxCase {
@@ -508,7 +533,13 @@ export interface CoverageModuleResult {
   black_box_cases?: CoverageBlackBoxCase[];
   gray_box?: CoverageGrayBox | null;
   gray_box_required?: boolean;
+  entry_trace_status?: string;
+  entry_discovery?: CoverageEntryDiscoveryCard;
   test_scenarios?: CoverageTestScenario[];
+  ai_generation_status?: string;
+  ai_recommendation_status?: string;
+  ai_scenario_count?: number;
+  deterministic_case_role?: string;
   evidence_gaps?: string[];
   tool_status?: CoverageToolStatus;
   // branch-gap fields

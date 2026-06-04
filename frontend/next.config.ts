@@ -15,6 +15,7 @@ const nextConfig: NextConfig = {
   ...(process.env.CODETALK_NEXT_DIST_DIR
     ? { distDir: process.env.CODETALK_NEXT_DIST_DIR }
     : {}),
+  allowedDevOrigins: ["127.0.0.1"],
 };
 
 export default nextConfig;

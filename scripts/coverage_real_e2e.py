@@ -300,18 +300,34 @@ def _artifact_dir(coverage_id: str) -> Path:
 def _validate_design(repo: Path, coverage_id: str, detail: dict, out_dir: Path) -> dict:
     artifact_dir = _artifact_dir(coverage_id)
     context_path = artifact_dir / "coverage_test_context.json"
+    entry_path = artifact_dir / "coverage_entry_discovery.json"
     design_path = artifact_dir / "coverage_test_design.json"
-    if not context_path.exists() or not design_path.exists():
-        raise RuntimeError(f"缺少覆盖率产物：{context_path} / {design_path}")
+    if not context_path.exists() or not entry_path.exists() or not design_path.exists():
+        raise RuntimeError(f"缺少覆盖率产物：{context_path} / {entry_path} / {design_path}")
     context = json.loads(context_path.read_text(encoding="utf-8"))
+    entry_discovery = json.loads(entry_path.read_text(encoding="utf-8"))
     design = json.loads(design_path.read_text(encoding="utf-8"))
     _json_dump(out_dir / "coverage_test_context.json", context)
+    _json_dump(out_dir / "coverage_entry_discovery.json", entry_discovery)
     _json_dump(out_dir / "coverage_test_design.json", design)
 
     counts = context.get("evidence_source_counts") or {}
-    for key in ("coverage", "source", "gitnexus", "cgc", "report"):
+    for key in ("coverage", "source", "gitnexus", "cgc", "report", "entry_discovery"):
         if counts.get(key, 0) <= 0:
             raise RuntimeError(f"上下文缺少 {key} 证据：{counts}")
+    entry_cards = entry_discovery.get("cards") or []
+    if not entry_cards:
+        raise RuntimeError("coverage_entry_discovery.json 未生成入口发现卡")
+    entry_candidate_count = sum(
+        len(card.get("candidate_external_entries") or [])
+        for card in entry_cards
+    )
+    if entry_candidate_count <= 0:
+        raise RuntimeError("入口发现没有产生任何外部入口候选")
+    if not ((context.get("entry_discovery") or {}).get("cards")):
+        raise RuntimeError("coverage_test_context.json 未包含 entry_discovery")
+    if not ((design.get("entry_discovery") or {}).get("cards")):
+        raise RuntimeError("coverage_test_design.json 未包含 entry_discovery")
     if design.get("summary", {}).get("ai_status") != "available":
         raise RuntimeError(f"真实 AI 未参与覆盖率推荐：{design.get('summary')}")
     scenarios = design.get("test_scenarios") or []
@@ -401,6 +417,8 @@ def _validate_design(repo: Path, coverage_id: str, detail: dict, out_dir: Path) 
         "Evidence Basis",
         "Test execution area",
         "CodeTalk Diagram",
+        "4 跳内未追踪到外部入口",
+        "需灰盒注入",
         "???",
     ]
     hits = [item for item in banned if item in raw]

@@ -15,6 +15,7 @@ import {
   GitBranch,
   FlaskConical,
   LogIn,
+  Search,
 } from "lucide-react";
 import { api } from "@/lib/api";
 import type {
@@ -72,11 +73,28 @@ const ENTRY_KIND_LABEL: Record<string, string> = {
   message: "消息",
   config: "配置",
   file: "文件",
+  callback: "注册回调",
+  timer: "定时任务",
+  service: "服务入口",
   unknown: "未知",
 };
 
 function entryKindLabel(kind: string): string {
   return ENTRY_KIND_LABEL[kind] ?? kind;
+}
+
+const ENTRY_TRACE_STATUS_LABEL: Record<string, string> = {
+  entry_found: "已确认外部入口",
+  source_read_ok_entry_not_found: "源码已读，入口仍需确认",
+  source_not_found: "未读到源码窗口",
+  workspace_not_bound: "未绑定工作区",
+  trace_skipped_by_cap: "超过追踪上限",
+  tool_unavailable: "工具不可用",
+};
+
+function entryTraceStatusLabel(status?: string): string {
+  if (!status) return "入口发现状态未知";
+  return ENTRY_TRACE_STATUS_LABEL[status] ?? status;
 }
 
 const CASE_TYPE_LABEL: Record<string, string> = {
@@ -162,15 +180,26 @@ function TestScenarioCard({ scenario }: { scenario: CoverageTestScenario }) {
 function GapDesignDetail({ mr }: { mr: CoverageModuleResult }) {
   const triggers = mr.trigger_branches ?? [];
   const entries = mr.entry_paths ?? [];
-  const cases = mr.black_box_cases ?? [];
   const scenarios = mr.test_scenarios ?? [];
+  const aiAttempted =
+    Boolean(mr.ai_generation_status) && mr.ai_generation_status !== "skipped";
+  const cases = aiAttempted ? [] : mr.black_box_cases ?? [];
   const gaps = mr.evidence_gaps ?? [];
   const sw = mr.source_window ?? null;
   const grayRequired = mr.gray_box_required ?? false;
+  const discovery = mr.entry_discovery ?? null;
+  const discoveryCandidates = discovery?.candidate_external_entries ?? [];
+  const discoveryReasons = discovery?.unresolved_reasons ?? [];
+  const hasBlackBoxEntry =
+    entries.length > 0 ||
+    discoveryCandidates.length > 0 ||
+    scenarios.some((scenario) => scenario.case_type === "black_box_ready");
 
   const hasDesign =
     triggers.length > 0 ||
     entries.length > 0 ||
+    discoveryCandidates.length > 0 ||
+    discoveryReasons.length > 0 ||
     cases.length > 0 ||
     scenarios.length > 0 ||
     gaps.length > 0 ||
@@ -183,11 +212,15 @@ function GapDesignDetail({ mr }: { mr: CoverageModuleResult }) {
       <div className="flex flex-wrap items-center gap-2">
         {grayRequired ? (
           <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full bg-amber-500/15 text-amber-300 text-xs">
-            <FlaskConical size={12} /> 灰盒必需
+            <FlaskConical size={12} /> 需要灰盒辅助
           </span>
-        ) : (
+        ) : hasBlackBoxEntry ? (
           <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full bg-green-500/15 text-green-300 text-xs">
             <LogIn size={12} /> 黑盒可触达
+          </span>
+        ) : (
+          <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full bg-surface-container-high text-on-surface-variant text-xs">
+            <Search size={12} /> 入口待确认
           </span>
         )}
         {sw?.available && (
@@ -197,6 +230,54 @@ function GapDesignDetail({ mr }: { mr: CoverageModuleResult }) {
           </span>
         )}
       </div>
+
+      {discovery && (
+        <div className="rounded-lg bg-surface-container-high/50 p-3 space-y-2">
+          <div className="flex flex-wrap items-center gap-2 text-xs">
+            <span className="font-medium text-on-surface">入口发现</span>
+            <span className="px-1.5 py-0.5 rounded bg-primary/10 text-primary">
+              {entryTraceStatusLabel(discovery.entry_trace_status ?? mr.entry_trace_status)}
+            </span>
+            {discovery.source_verification_status && (
+              <span className="text-on-surface-variant/70">
+                {discovery.source_verification_status}
+              </span>
+            )}
+          </div>
+          {discoveryCandidates.length > 0 && (
+            <ul className="space-y-1">
+              {discoveryCandidates.slice(0, 4).map((candidate, i) => (
+                <li
+                  key={`disc-${i}-${candidate.entry_symbol ?? ""}`}
+                  className="text-xs text-on-surface-variant"
+                >
+                  <span className="px-1.5 py-0.5 rounded bg-green-500/10 text-green-300 text-[10px] mr-1">
+                    {entryKindLabel(candidate.entry_type)}
+                  </span>
+                  <span className="text-on-surface">
+                    {candidate.entry_label ?? candidate.entry_symbol ?? "外部入口候选"}
+                  </span>
+                  {candidate.confidence && (
+                    <span className="opacity-60"> · {candidate.confidence}</span>
+                  )}
+                  {candidate.evidence && (
+                    <div className="opacity-60 mt-0.5 font-mono">{candidate.evidence}</div>
+                  )}
+                </li>
+              ))}
+            </ul>
+          )}
+          {discoveryReasons.length > 0 && (
+            <ul className="space-y-1">
+              {discoveryReasons.slice(0, 3).map((reason, i) => (
+                <li key={`disc-reason-${i}`} className="text-xs text-amber-200/90">
+                  {reason}
+                </li>
+              ))}
+            </ul>
+          )}
+        </div>
+      )}
 
       {/* Trigger conditions / branches */}
       {triggers.length > 0 && (
@@ -254,7 +335,7 @@ function GapDesignDetail({ mr }: { mr: CoverageModuleResult }) {
         </div>
       ) : grayRequired && mr.gray_box ? (
         <div className="text-xs text-amber-300/90">
-          4 跳内未找到外部入口，建议灰盒方案：{mr.gray_box.scheme}
+          确定性追踪未确认外部入口，入口发现仍需验证；必要时使用灰盒辅助方案：{mr.gray_box.scheme}
           {mr.gray_box.injection_points && mr.gray_box.injection_points.length > 0 && (
             <div className="opacity-70 mt-0.5">
               注入点：{mr.gray_box.injection_points.join("；")}
@@ -271,6 +352,12 @@ function GapDesignDetail({ mr }: { mr: CoverageModuleResult }) {
               <TestScenarioCard key={scenario.scenario_id} scenario={scenario} />
             ))}
           </div>
+        </div>
+      )}
+
+      {aiAttempted && scenarios.length === 0 && (
+        <div className="rounded-lg border border-amber-400/30 bg-amber-500/10 p-3 text-xs text-amber-200">
+          AI 没有生成通过结构校验和反白盒校验的推荐用例。当前只展示覆盖率证据、源码窗口和缺口原因，不把确定性模板草稿伪装成可执行用例。
         </div>
       )}
 
