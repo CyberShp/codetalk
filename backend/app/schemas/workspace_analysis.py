@@ -133,7 +133,7 @@ class ScopeCandidate(BaseModel):
 
     path: str | None = None
     symbol: str | None = None
-    source: Literal["gitnexus", "repo_search", "material", "manual"]
+    source: Literal["gitnexus", "repo_search", "material", "manual", "external_agent"]
     confidence: Literal["high", "medium", "low"]
     reason: str
     role: Literal["primary", "supporting", "related", "external"] | None = None
@@ -155,6 +155,10 @@ class ScopePreview(BaseModel):
     estimated_evidence_cards: int = 0
     warnings: list[str] = Field(default_factory=list)
     gitnexus_available: bool = True
+    external_agent_status: dict[str, str] = Field(default_factory=dict)
+    external_agent_warnings: list[str] = Field(default_factory=list)
+    agent_discovery_session_id: str | None = None
+    external_agent_turn_count: int = 0
 
 
 # ---------------------------------------------------------------------------

@@ -57,7 +57,11 @@ class WorkspacePipeline:
                 from app.services.workspace_scope_resolver import WorkspaceScopeResolver
 
                 scope_preview = await WorkspaceScopeResolver().resolve(
-                    ws_id=ws_id, repo_path=repo_path, plan=plan,
+                    ws_id=ws_id,
+                    repo_path=repo_path,
+                    plan=plan,
+                    task_id=task_id,
+                    artifact_dir=settings.outputs_path / task_id,
                 )
             except Exception as exc:
                 logger.warning(

@@ -29,6 +29,16 @@ from app.adapters.coverage import (
 from app.config import settings
 from app.llm.base import BaseLLMClient
 from app.llm.factory import create_llm_client_from_active
+from app.services.external_agent_discovery import (
+    AgentDiscoveryRequest,
+    run_external_agent_discovery,
+    validate_agent_candidate_file,
+)
+from app.services.agent_discovery_session import (
+    AgentContextPacketInput,
+    AgentDiscoverySession,
+    create_agent_discovery_session,
+)
 
 logger = logging.getLogger(__name__)
 WORKSPACE_SCOPE_ENRICHMENT_TIMEOUT_SECONDS = 25.0
@@ -597,6 +607,7 @@ async def _build_black_box_function_recommendations(
     *,
     workspace_id: str | None,
     repo_path: str | None,
+    agent_session: AgentDiscoverySession | None = None,
 ) -> list[dict]:
     """Build entry-oriented test recommendations for uncovered function-hit rows.
 
@@ -610,6 +621,9 @@ async def _build_black_box_function_recommendations(
         uncovered, workspace_id=workspace_id, repo_path=repo_path
     )
     cgc_by_function = await _resolve_cgc_context_for_hits(uncovered, repo_path=repo_path)
+    agent_by_function = await _resolve_external_agent_entries_for_hits(
+        uncovered, repo_path=repo_path, agent_session=agent_session
+    )
 
     repo_root = _existing_repo_root(repo_path)
     rg_available = shutil.which("rg") is not None
@@ -618,6 +632,7 @@ async def _build_black_box_function_recommendations(
     for idx, (module, hit) in enumerate(uncovered[:50]):
         scope = scope_by_function.get(_hit_key(hit), {})
         cgc_context = cgc_by_function.get(_hit_key(hit), {})
+        agent_context = agent_by_function.get(_hit_key(hit), {})
         # Only the first N gaps get the expensive source-window + caller-chain
         # trace; the long tail still gets coverage + heuristic guidance.
         trace = idx < MAX_TRACED_FUNCTION_GAPS
@@ -631,6 +646,7 @@ async def _build_black_box_function_recommendations(
             rg_available=rg_available,
             scope=scope,
             cgc_context=cgc_context,
+            agent_context=agent_context,
             trace=trace,
         )
         results.append(result)
@@ -651,6 +667,7 @@ def _design_function_gap(
     rg_available: bool,
     scope: dict,
     cgc_context: dict,
+    agent_context: dict | None = None,
     trace: bool,
 ) -> dict:
     """Build one uncovered-function gap with source-backed trigger analysis.
@@ -673,6 +690,7 @@ def _design_function_gap(
             rg_available=rg_available,
             cgc_callers=cgc_callers,
         )
+        entry_paths = _merge_agent_entry_paths(entry_paths, agent_context, hit)
         trigger_branches = _dedupe_branches([*caller_branches, *self_branches])
 
     tool_status = _gap_tool_status(
@@ -680,6 +698,7 @@ def _design_function_gap(
         rg_available=rg_available,
         source_window=source_window,
         cgc_context=cgc_context,
+        agent_context=agent_context or {},
         scope=scope,
     )
     entry_trace_status = _entry_trace_status(
@@ -783,10 +802,54 @@ def _design_function_gap(
             },
             "gitnexus_scope": scope,
             "cgc": cgc_context,
+            "external_agent": agent_context or {},
         },
     }
     result["analysis"] = _recommendation_markdown(result)
     return result
+
+
+def _merge_agent_entry_paths(
+    entry_paths: list[dict],
+    agent_context: dict | None,
+    hit: FunctionHit,
+) -> list[dict]:
+    if not isinstance(agent_context, dict):
+        return entry_paths
+    merged = list(entry_paths)
+    seen = {
+        (
+            str(entry.get("entry_symbol") or ""),
+            str(entry.get("entry_file") or ""),
+            str(entry.get("tool") or ""),
+        )
+        for entry in merged
+    }
+    for item in agent_context.get("validated_entries") or []:
+        key = (
+            str(item.get("entry_symbol") or ""),
+            str(item.get("entry_file") or ""),
+            str(item.get("provider") or ""),
+        )
+        if key in seen:
+            continue
+        seen.add(key)
+        chain = [str(x) for x in (item.get("chain") or []) if x]
+        if hit.function_name and hit.function_name not in chain:
+            chain.append(hit.function_name)
+        merged.append({
+            "entry_kind": item.get("entry_kind") or "external",
+            "entry_symbol": item.get("entry_symbol") or item.get("entry_label"),
+            "entry_file": item.get("entry_file"),
+            "entry_label": item.get("external_trigger")
+            or item.get("entry_symbol")
+            or "External agent entry",
+            "chain": chain,
+            "evidence": item.get("reason") or item.get("external_trigger"),
+            "tool": item.get("provider") or "external_agent",
+            "input_hints": item.get("input_hints") or [],
+        })
+    return merged
 
 
 def _entry_trace_status(
@@ -912,6 +975,206 @@ async def _resolve_cgc_context_for_hits(
     except Exception as exc:
         logger.info("Coverage CGC enrichment unavailable: %s", exc)
         return {}
+
+
+async def _resolve_external_agent_entries_for_hits(
+    uncovered: list[tuple[ModuleCoverage, FunctionHit]],
+    *,
+    repo_path: str | None,
+    agent_session: AgentDiscoverySession | None = None,
+) -> dict[str, dict]:
+    repo_root = _existing_repo_root(repo_path)
+    if repo_root is None or not uncovered or not settings.external_agents_enabled:
+        return {}
+
+    async def _one(module: ModuleCoverage, hit: FunctionHit) -> tuple[str, dict]:
+        object_id = _hit_key(hit)
+        if agent_session is not None:
+            agent_session.objects.append({
+                "object_id": object_id,
+                "function_name": hit.function_name,
+                "file_path": hit.file_path,
+                "module_path": module.module_path,
+                "goal": "coverage_entry",
+            })
+            context_packet = agent_session.build_context_packet(
+                AgentContextPacketInput(
+                    object_id=object_id,
+                    current_goal="coverage_entry",
+                    analysis_object_text=hit.function_name,
+                    expanded_terms=[hit.function_name, hit.file_path, module.module_path],
+                    path_hints=[hit.file_path] if hit.file_path else [],
+                    coverage_hit={
+                        "function_name": hit.function_name,
+                        "file_path": hit.file_path,
+                        "line_start": hit.line_start,
+                        "module_path": module.module_path,
+                    },
+                    round_index=1,
+                )
+            )
+        else:
+            context_packet = None
+        request = AgentDiscoveryRequest(
+            request_id=f"coverage:{object_id}",
+            repo_path=str(repo_root),
+            analysis_object_text=hit.function_name,
+            path_hints=[hit.file_path] if hit.file_path else [],
+            coverage_hit={
+                "function_name": hit.function_name,
+                "file_path": hit.file_path,
+                "line_start": hit.line_start,
+                "module_path": module.module_path,
+            },
+            existing_candidates=[],
+            context_packet=context_packet,
+            goal="coverage_entry",
+        )
+        try:
+            results = await run_external_agent_discovery(request, session=agent_session)
+        except Exception as exc:
+            logger.info("Coverage external-agent discovery failed for %s: %s", hit.function_name, exc)
+            return object_id, {"status": "error", "warnings": [str(exc)]}
+
+        validated_entries: list[dict] = []
+        unverified_entries: list[dict] = []
+        status_by_provider: dict[str, str] = {}
+        raw_results: list[dict] = []
+        _collect_agent_entry_results(
+            results,
+            repo_root=repo_root,
+            object_id=object_id,
+            agent_session=agent_session,
+            validated_entries=validated_entries,
+            unverified_entries=unverified_entries,
+            status_by_provider=status_by_provider,
+            raw_results=raw_results,
+        )
+        if (
+            agent_session is not None
+            and settings.agent_discovery_max_rounds > 1
+            and any(result.need_source_slices for result in results)
+            and not validated_entries
+        ):
+            for result in results:
+                if result.need_source_slices:
+                    agent_session.add_source_slices_from_requests(
+                        result.need_source_slices,
+                        object_id=object_id,
+                    )
+            round2_packet = agent_session.build_context_packet(
+                AgentContextPacketInput(
+                    object_id=object_id,
+                    current_goal="coverage_entry",
+                    analysis_object_text=hit.function_name,
+                    expanded_terms=[hit.function_name, hit.file_path, module.module_path],
+                    path_hints=[hit.file_path] if hit.file_path else [],
+                    coverage_hit={
+                        "function_name": hit.function_name,
+                        "file_path": hit.file_path,
+                        "line_start": hit.line_start,
+                        "module_path": module.module_path,
+                    },
+                    round_index=2,
+                )
+            )
+            round2_results = await run_external_agent_discovery(
+                AgentDiscoveryRequest(
+                    request_id=f"coverage:{object_id}:round2",
+                    repo_path=str(repo_root),
+                    analysis_object_text=hit.function_name,
+                    path_hints=[hit.file_path] if hit.file_path else [],
+                    coverage_hit={
+                        "function_name": hit.function_name,
+                        "file_path": hit.file_path,
+                        "line_start": hit.line_start,
+                        "module_path": module.module_path,
+                    },
+                    context_packet=round2_packet,
+                    goal="coverage_entry",
+                ),
+                session=agent_session,
+            )
+            _collect_agent_entry_results(
+                round2_results,
+                repo_root=repo_root,
+                object_id=object_id,
+                agent_session=agent_session,
+                validated_entries=validated_entries,
+                unverified_entries=unverified_entries,
+                status_by_provider=status_by_provider,
+                raw_results=raw_results,
+            )
+        return object_id, {
+            "status": "available" if any(s == "ok" for s in status_by_provider.values()) else "unavailable",
+            "provider_status": status_by_provider,
+            "validated_entries": validated_entries,
+            "unverified_entries": unverified_entries,
+            "raw_results": raw_results,
+        }
+
+    pairs = await asyncio.gather(*[
+        _one(module, hit) for module, hit in uncovered[:MAX_TRACED_FUNCTION_GAPS]
+    ])
+    return {key: value for key, value in pairs}
+
+
+def _collect_agent_entry_results(
+    results: list,
+    *,
+    repo_root: Path,
+    object_id: str,
+    agent_session: AgentDiscoverySession | None,
+    validated_entries: list[dict],
+    unverified_entries: list[dict],
+    status_by_provider: dict[str, str],
+    raw_results: list[dict],
+) -> None:
+    for result in results:
+        status_by_provider[result.provider] = result.status
+        raw_results.append({
+            "provider": result.provider,
+            "status": result.status,
+            "candidate_file_count": len(result.candidate_files),
+            "candidate_entry_count": len(result.candidate_entries),
+            "need_source_slice_count": len(getattr(result, "need_source_slices", []) or []),
+            "warnings": result.warnings,
+            "raw_summary": result.raw_summary,
+        })
+        for entry in result.candidate_entries:
+            item = {
+                "object_id": object_id,
+                "provider": result.provider,
+                "entry_kind": entry.entry_kind,
+                "entry_symbol": entry.entry_symbol,
+                "entry_file": entry.entry_file,
+                "chain": entry.chain,
+                "external_trigger": entry.external_trigger,
+                "reason": entry.reason,
+                "validation_error": entry.validation_error,
+            }
+            if entry.entry_file:
+                validation = validate_agent_candidate_file(repo_root, entry.entry_file)
+                item["entry_file"] = validation.path or entry.entry_file
+                if validation.validated:
+                    validated_entries.append(item)
+                    if agent_session is not None:
+                        agent_session.ledger.add_validated_entry(item)
+                else:
+                    item["validation_error"] = validation.validation_error
+                    unverified_entries.append(item)
+                    if agent_session is not None:
+                        agent_session.ledger.add_rejected_entry(item)
+            elif entry.validated:
+                validated_entries.append(item)
+                if agent_session is not None:
+                    agent_session.ledger.add_validated_entry(item)
+            else:
+                unverified_entries.append(item)
+                if agent_session is not None:
+                    agent_session.ledger.add_rejected_entry(item)
+    if agent_session is not None:
+        agent_session.save()
 
 
 def _summarize_cgc_items(items: object) -> list[dict]:
@@ -2033,15 +2296,24 @@ def _gap_tool_status(
     rg_available: bool,
     source_window: dict | None,
     cgc_context: dict,
+    agent_context: dict,
     scope: dict,
 ) -> dict:
     cgc_ok = bool(isinstance(cgc_context, dict) and cgc_context.get("available"))
     gitnexus_ok = bool(isinstance(scope, dict) and scope.get("gitnexus_available"))
+    external_agent_status = "unavailable"
+    if isinstance(agent_context, dict):
+        provider_status = agent_context.get("provider_status") or {}
+        if any(status == "ok" for status in provider_status.values()):
+            external_agent_status = "available"
+        elif any(status == "timeout" for status in provider_status.values()):
+            external_agent_status = "timeout"
     return {
         # Joern is reserved but not yet wired up.
         "joern": "unavailable_reserved",
         "cgc": "available" if cgc_ok else "unavailable",
         "gitnexus": "available" if gitnexus_ok else "unavailable",
+        "external_agent": external_agent_status,
         "ripgrep": "available" if rg_available else "unavailable",
         "source": "available" if source_window else (
             "available_no_match" if repo_root is not None else "unavailable"
@@ -2373,7 +2645,12 @@ def _entry_discovery_card_for_gap(
     evidence = gap.get("evidence") or {}
     gitnexus_scope = evidence.get("gitnexus_scope") if isinstance(evidence, dict) else {}
     cgc = evidence.get("cgc") if isinstance(evidence, dict) else {}
+    external_agent = evidence.get("external_agent") if isinstance(evidence, dict) else {}
     candidates = _entry_candidates_from_paths(gap.get("entry_paths") or [])
+    if isinstance(external_agent, dict):
+        candidates.extend(_entry_candidates_from_agent_unverified(
+            external_agent.get("unverified_entries") or []
+        ))
     report_material_clues = _report_material_entry_clues(
         gap,
         reports=reports,
@@ -2404,6 +2681,7 @@ def _entry_discovery_card_for_gap(
         "candidate_external_entries": candidates[:8],
         "gitnexus_scope": _compact_gitnexus_scope(gitnexus_scope),
         "cgc": _compact_cgc_context(cgc),
+        "external_agent": _compact_external_agent_context(external_agent),
         "report_material_clues": report_material_clues[:8],
         "source_verification_status": (
             "source_backed" if any(c.get("source_verification") == "source_backed" for c in candidates)
@@ -2435,6 +2713,29 @@ def _entry_candidates_from_paths(entry_paths: list[dict]) -> list[dict]:
             "confidence": "high" if tool in {"ripgrep", "source-registration"} else "medium",
             "source_verification": "source_backed" if tool != "cgc" else "graph_backed",
             "tool": tool,
+        })
+    return candidates
+
+
+def _entry_candidates_from_agent_unverified(entries: list[dict]) -> list[dict]:
+    candidates: list[dict] = []
+    for entry in entries:
+        if not isinstance(entry, dict):
+            continue
+        entry_type = str(entry.get("entry_kind") or "external")
+        candidates.append({
+            "entry_type": entry_type,
+            "entry_symbol": entry.get("entry_symbol"),
+            "entry_file": entry.get("entry_file"),
+            "entry_label": entry.get("external_trigger")
+            or entry.get("entry_symbol")
+            or _ENTRY_DISCOVERY_KIND_LABELS.get(entry_type, "external entry"),
+            "chain": entry.get("chain") or [],
+            "evidence": entry.get("reason"),
+            "confidence": "low",
+            "source_verification": "needs_source_verification",
+            "tool": entry.get("provider") or "external_agent",
+            "validation_error": entry.get("validation_error"),
         })
     return candidates
 
@@ -2513,6 +2814,17 @@ def _compact_cgc_context(cgc: object) -> dict:
         "available": cgc.get("available"),
         "callers": cgc.get("callers") or [],
         "callees": cgc.get("callees") or [],
+    }
+
+
+def _compact_external_agent_context(context: object) -> dict:
+    if not isinstance(context, dict):
+        return {}
+    return {
+        "status": context.get("status"),
+        "provider_status": context.get("provider_status") or {},
+        "validated_entry_count": len(context.get("validated_entries") or []),
+        "unverified_entries": (context.get("unverified_entries") or [])[:8],
     }
 
 
@@ -3114,6 +3426,11 @@ async def _write_coverage_design_artifacts(
             json.dumps(entry_discovery, ensure_ascii=False, indent=2),
             encoding="utf-8",
         )
+        external_agent = _coverage_external_agent_artifact(design)
+        (artifact_dir / "coverage_external_agent_discovery.json").write_text(
+            json.dumps(external_agent, ensure_ascii=False, indent=2),
+            encoding="utf-8",
+        )
         (artifact_dir / "coverage_test_design.json").write_text(
             json.dumps(design, ensure_ascii=False, indent=2),
             encoding="utf-8",
@@ -3128,6 +3445,35 @@ async def _write_coverage_design_artifacts(
             )
 
     await asyncio.to_thread(_write)
+
+
+def _coverage_external_agent_artifact(design: dict) -> dict:
+    rows: list[dict] = []
+    for gap in design.get("gaps") or []:
+        if gap.get("kind") != "function":
+            continue
+        evidence = gap.get("evidence") or {}
+        context = evidence.get("external_agent") if isinstance(evidence, dict) else {}
+        if not isinstance(context, dict) or not context:
+            continue
+        rows.append({
+            "function_name": gap.get("function_name"),
+            "file_path": gap.get("file_path"),
+            "provider_status": context.get("provider_status") or {},
+            "validated_entries": context.get("validated_entries") or [],
+            "unverified_entries": context.get("unverified_entries") or [],
+            "raw_results": context.get("raw_results") or [],
+        })
+    return {
+        "version": "coverage-external-agent-discovery-v1",
+        "agent_discovery_session_id": design.get("agent_discovery_session_id"),
+        "items": rows,
+        "summary": {
+            "function_count": len(rows),
+            "validated_entry_count": sum(len(row.get("validated_entries") or []) for row in rows),
+            "unverified_entry_count": sum(len(row.get("unverified_entries") or []) for row in rows),
+        },
+    }
 
 
 async def build_coverage_test_design(
@@ -3150,9 +3496,25 @@ async def build_coverage_test_design(
     trigger paths are fabricated — only parse-level guidance is returned.
     """
     workspace_bound = _existing_repo_root(repo_path) is not None and bool(workspace_id)
+    agent_session: AgentDiscoverySession | None = None
+    if (
+        settings.agent_discovery_session_enabled
+        and artifact_dir is not None
+        and _existing_repo_root(repo_path) is not None
+    ):
+        agent_session = create_agent_discovery_session(
+            repo_path=str(_existing_repo_root(repo_path)),
+            goal="coverage_entry",
+            artifact_dir=artifact_dir,
+            coverage_analysis_id=analysis_id,
+            workspace_id=workspace_id,
+        )
 
     function_gaps = await _build_black_box_function_recommendations(
-        modules, workspace_id=workspace_id, repo_path=repo_path
+        modules,
+        workspace_id=workspace_id,
+        repo_path=repo_path,
+        agent_session=agent_session,
     )
     branch_gaps = _build_branch_gaps(modules, workspace_bound=workspace_bound)
     gaps = [*function_gaps, *branch_gaps]
@@ -3264,6 +3626,7 @@ async def build_coverage_test_design(
         "repo_path": repo_path,
         "generated_at": datetime.now(timezone.utc).isoformat(),
         "summary": summary,
+        "agent_discovery_session_id": agent_session.session_id if agent_session else None,
         "test_context": {
             "version": context.get("version"),
             "evidence_source_counts": context.get("evidence_source_counts") or {},
@@ -3298,11 +3661,21 @@ def _aggregate_tool_status(function_gaps: list[dict], *, repo_path: str | None) 
     gitnexus_ok = any(
         (g.get("tool_status") or {}).get("gitnexus") == "available" for g in function_gaps
     )
+    external_agent_statuses = [
+        (g.get("tool_status") or {}).get("external_agent") for g in function_gaps
+    ]
+    if any(status == "available" for status in external_agent_statuses):
+        external_agent = "available"
+    elif any(status == "timeout" for status in external_agent_statuses):
+        external_agent = "timeout"
+    else:
+        external_agent = "unavailable"
     source_ok = any(g.get("source_window") for g in function_gaps)
     return {
         "joern": "unavailable_reserved",
         "cgc": "available" if cgc_ok else "unavailable",
         "gitnexus": "available" if gitnexus_ok else "unavailable",
+        "external_agent": external_agent,
         "ripgrep": "available" if rg_available else "unavailable",
         "source": "available" if source_ok else (
             "available_no_match" if repo_root is not None else "unavailable"

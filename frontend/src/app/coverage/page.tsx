@@ -83,6 +83,14 @@ function entryKindLabel(kind: string): string {
   return ENTRY_KIND_LABEL[kind] ?? kind;
 }
 
+function providerLabel(tool?: string): string {
+  if (!tool) return "";
+  if (tool === "claude-code") return "claude-code";
+  if (tool === "opencode") return "opencode";
+  if (tool === "source-registration") return "source-registration";
+  return tool;
+}
+
 const ENTRY_TRACE_STATUS_LABEL: Record<string, string> = {
   entry_found: "已确认外部入口",
   source_read_ok_entry_not_found: "源码已读，入口仍需确认",
@@ -183,7 +191,7 @@ function GapDesignDetail({ mr }: { mr: CoverageModuleResult }) {
   const scenarios = mr.test_scenarios ?? [];
   const aiAttempted =
     Boolean(mr.ai_generation_status) && mr.ai_generation_status !== "skipped";
-  const cases = aiAttempted ? [] : mr.black_box_cases ?? [];
+  const cases = mr.black_box_cases ?? [];
   const gaps = mr.evidence_gaps ?? [];
   const sw = mr.source_window ?? null;
   const grayRequired = mr.gray_box_required ?? false;
@@ -260,6 +268,12 @@ function GapDesignDetail({ mr }: { mr: CoverageModuleResult }) {
                   {candidate.confidence && (
                     <span className="opacity-60"> · {candidate.confidence}</span>
                   )}
+                  {candidate.tool && (
+                    <span className="opacity-60"> via {providerLabel(candidate.tool)}</span>
+                  )}
+                  {candidate.validation_error && (
+                    <span className="opacity-60"> {candidate.validation_error}</span>
+                  )}
                   {candidate.evidence && (
                     <div className="opacity-60 mt-0.5 font-mono">{candidate.evidence}</div>
                   )}
@@ -323,6 +337,11 @@ function GapDesignDetail({ mr }: { mr: CoverageModuleResult }) {
                 <span className="px-1.5 py-0.5 rounded bg-primary/15 text-primary text-[10px] mr-1">
                   {entryKindLabel(e.entry_kind)}
                 </span>
+                {e.tool && (
+                  <span className="px-1.5 py-0.5 rounded bg-surface-container-high text-[10px] mr-1">
+                    {providerLabel(e.tool)}
+                  </span>
+                )}
                 <span className="font-mono text-on-surface">
                   {(e.chain ?? []).join(" → ")}
                 </span>

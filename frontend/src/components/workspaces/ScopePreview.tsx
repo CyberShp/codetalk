@@ -22,6 +22,18 @@ function countFileRoles(
   );
 }
 
+function countFileSources(
+  files: ScopePreview["resolved_objects"][number]["candidate_files"],
+): Record<string, number> {
+  return files.reduce(
+    (acc, file) => {
+      acc[file.source] = (acc[file.source] ?? 0) + 1;
+      return acc;
+    },
+    {} as Record<string, number>,
+  );
+}
+
 export default function ScopePreviewPanel({ preview, loading }: Props) {
   if (loading) {
     return (
@@ -46,6 +58,11 @@ export default function ScopePreviewPanel({ preview, loading }: Props) {
           预计分析单元 {preview.estimated_analysis_units} · 证据卡 {preview.estimated_evidence_cards}
         </span>
       </div>
+      {preview.agent_discovery_session_id && (
+        <div className="text-[10px] text-on-surface-variant/70">
+          Agent session {preview.agent_discovery_session_id} 路 turns {preview.external_agent_turn_count ?? 0}
+        </div>
+      )}
       {!preview.gitnexus_available && (
         <div className="flex items-start gap-2 rounded-md bg-amber-400/10 border border-amber-400/30 px-2 py-1.5 text-amber-500">
           <AlertTriangle size={12} className="mt-0.5" />
@@ -59,9 +76,17 @@ export default function ScopePreviewPanel({ preview, loading }: Props) {
           ))}
         </ul>
       )}
+      {preview.external_agent_warnings && preview.external_agent_warnings.length > 0 && (
+        <ul className="list-disc list-inside text-amber-500/90 space-y-0.5">
+          {preview.external_agent_warnings.map((w, i) => (
+            <li key={`external-agent-${i}`}>{w}</li>
+          ))}
+        </ul>
+      )}
       <div className="space-y-2 max-h-56 overflow-y-auto pr-1">
         {preview.resolved_objects.map((obj) => {
           const roleCounts = countFileRoles(obj.candidate_files);
+          const sourceCounts = countFileSources(obj.candidate_files);
           return (
             <div
               key={obj.object_id}
@@ -85,6 +110,9 @@ export default function ScopePreviewPanel({ preview, loading }: Props) {
                     范围：primary {roleCounts.primary ?? 0} / related {roleCounts.related ?? 0} / external {roleCounts.external ?? 0}
                   </span>
                 )}
+                {sourceCounts.external_agent ? (
+                  <span>Agent {sourceCounts.external_agent}</span>
+                ) : null}
               </div>
               {obj.warnings.length > 0 && (
                 <div className="mt-1 text-[10px] text-amber-500/90">

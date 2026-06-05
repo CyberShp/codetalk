@@ -291,6 +291,7 @@ export interface AnalysisPlan {
 export type ScopeCandidateSource =
   | "gitnexus"
   | "repo_search"
+  | "external_agent"
   | "material"
   | "manual";
 export type ScopeCandidateConfidence = "high" | "medium" | "low";
@@ -320,6 +321,10 @@ export interface ScopePreview {
   estimated_evidence_cards: number;
   warnings: string[];
   gitnexus_available: boolean;
+  external_agent_status?: Record<string, string>;
+  external_agent_warnings?: string[];
+  agent_discovery_session_id?: string | null;
+  external_agent_turn_count?: number;
 }
 
 export interface ChatRequest {
@@ -423,6 +428,7 @@ export interface CoverageEntryDiscoveryCandidate {
   confidence?: string;
   source_verification?: string;
   tool?: string;
+  validation_error?: string | null;
 }
 
 export interface CoverageEntryDiscoveryCard {
@@ -470,6 +476,7 @@ export interface CoverageToolStatus {
   joern?: string;
   cgc?: string;
   gitnexus?: string;
+  external_agent?: string;
   ripgrep?: string;
   source?: string;
 }

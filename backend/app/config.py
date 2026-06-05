@@ -1,7 +1,7 @@
 import os
 from pathlib import Path
 
-from pydantic import model_validator
+from pydantic import Field, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 _CL100K_BPE = "9b5ad71b2ce5302211f9c61530b329a4922fc6a4"
@@ -57,6 +57,25 @@ class Settings(BaseSettings):
     gitnexus_cli_timeout: int = 20    # seconds for short GitNexus CLI source reads
     cgc_cli_python: str = ""          # optional python executable for `python -m codegraphcontext`
     cgc_cli_timeout: int = 1800       # seconds for CGC CLI indexing / graph queries
+    external_agents_enabled: bool = True
+    external_agent_timeout_sec: int = 90
+    external_agent_max_parallel: int = 2
+    external_agent_max_output_chars: int = 120000
+    external_agent_command_allowlist: list[str] = Field(default_factory=lambda: [
+        "rg", "git grep", "git ls-files", "Get-ChildItem", "Get-Content",
+        "dir", "type", "python -c",
+    ])
+    agent_discovery_session_enabled: bool = True
+    agent_discovery_max_rounds: int = 2
+    agent_discovery_context_packet_max_chars: int = 180000
+    agent_discovery_max_source_slices: int = 24
+    agent_discovery_source_slice_lines: int = 120
+    agent_discovery_store_prompts: bool = True
+    agent_discovery_store_raw_outputs: bool = True
+    agent_discovery_store_source_slices: bool = True
+    agent_discovery_workspace_reuse_enabled: bool = False
+    claude_code_command: str = "ccr code"
+    opencode_command: str = "opencode"
     tiktoken_cache_dir: str = ""     # override path for tiktoken BPE cache (TIKTOKEN_CACHE_DIR)
     tool_health_interval: int = 30   # seconds between health checks
 

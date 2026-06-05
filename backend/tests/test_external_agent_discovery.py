@@ -1,0 +1,499 @@
+import asyncio
+import json
+from pathlib import Path
+
+from app.schemas.workspace_analysis import AnalysisObject, LLMLimits
+from app.services.workspace_scope_resolver import WorkspaceScopeResolver, _GraphIndex
+
+
+def test_nvme_tcp_tls_query_expands_to_nvmf_transport_variants():
+    from app.services.external_agent_discovery import expand_agent_query_terms
+
+    terms = expand_agent_query_terms("nvme-tcp-tls")
+
+    assert "nvme_tcp_tls" in terms
+    assert "nvmf_tcp_tls" in terms
+    assert "nvmf_tcp/transport/tls" in terms
+    assert "transport/tls" in terms
+
+
+def test_agent_json_output_is_parsed_and_validated(tmp_path):
+    from app.services.external_agent_discovery import parse_agent_output
+
+    src = tmp_path / "nof" / "nvmf_tcp" / "transport" / "tls"
+    src.mkdir(parents=True)
+    (src / "tls.c").write_text("int tls_handshake(void) { return 0; }\n", encoding="utf-8")
+    raw = json.dumps({
+        "candidate_files": [
+            {
+                "path": "nof/nvmf_tcp/transport/tls/tls.c",
+                "reason": "path and content match",
+                "confidence": "high",
+                "evidence_excerpt": "tls_handshake",
+            }
+        ],
+        "candidate_entries": [],
+        "commands": ["rg --files"],
+        "raw_summary": "found tls source",
+    })
+
+    result = parse_agent_output("claude-code", raw, tmp_path)
+
+    assert result.status == "ok"
+    assert result.candidate_files[0].validated is True
+    assert result.candidate_files[0].path == "nof/nvmf_tcp/transport/tls/tls.c"
+
+
+def test_invalid_json_does_not_enter_candidate_merge(tmp_path):
+    from app.services.external_agent_discovery import parse_agent_output
+
+    result = parse_agent_output("opencode", "not json", tmp_path)
+
+    assert result.status == "invalid_output"
+    assert result.candidate_files == []
+    assert "not json" in result.raw_summary
+
+
+def test_agent_output_parses_requested_source_slices(tmp_path):
+    from app.services.external_agent_discovery import parse_agent_output
+
+    raw = json.dumps({
+        "need_source_slices": [
+            {
+                "file_path": "src/tls.c",
+                "symbol": "tls_entry",
+                "reason": "need caller context",
+            }
+        ]
+    })
+
+    result = parse_agent_output("claude-code", raw, tmp_path)
+
+    assert result.need_source_slices[0]["file_path"] == "src/tls.c"
+    assert result.need_source_slices[0]["reason"] == "need caller context"
+
+
+def test_prompt_uses_context_packet_when_present(tmp_path):
+    from app.services.external_agent_discovery import AgentDiscoveryRequest, build_agent_prompt
+
+    request = AgentDiscoveryRequest(
+        request_id="r1",
+        repo_path=str(tmp_path),
+        analysis_object_text="nvme-tcp-tls",
+        goal="source_scope",
+        context_packet={
+            "validated_facts": {"files": [{"path": "src/tls.c"}]},
+            "rejected_facts": {"files": [{"path": "missing.c", "reason": "file_not_found"}]},
+            "raw_summary": "must not be treated as memory",
+        },
+    )
+
+    prompt = build_agent_prompt(request)
+
+    assert "validated_facts" in prompt
+    assert "missing.c" in prompt
+    assert "must not be treated as memory" not in prompt
+
+
+def test_missing_cli_returns_unavailable(monkeypatch):
+    from app.services.external_agent_discovery import check_provider_health
+
+    monkeypatch.setattr("app.services.external_agent_discovery.shutil.which", lambda _cmd: None)
+
+    health = check_provider_health("claude-code", "claude")
+
+    assert health["status"] == "unavailable"
+    assert "claude" in health["reason"]
+
+
+def test_provider_command_supports_subcommand_style(monkeypatch):
+    from app.services.external_agent_discovery import check_provider_health, split_agent_command
+
+    monkeypatch.setattr(
+        "app.services.external_agent_discovery.shutil.which",
+        lambda cmd: "C:/tools/ccr.exe" if cmd == "ccr" else None,
+    )
+
+    assert split_agent_command("ccr code") == ["ccr", "code"]
+    health = check_provider_health("claude-code", "ccr code")
+
+    assert health["status"] == "available"
+    assert health["argv"] == ["ccr", "code"]
+
+
+def test_candidate_outside_repo_and_non_source_are_rejected(tmp_path):
+    from app.services.external_agent_discovery import validate_agent_candidate_file
+
+    outside = tmp_path.parent / "outside.c"
+    outside.write_text("int outside;\n", encoding="utf-8")
+    readme = tmp_path / "README.md"
+    readme.write_text("docs\n", encoding="utf-8")
+
+    assert validate_agent_candidate_file(tmp_path, str(outside)).validated is False
+    assert validate_agent_candidate_file(tmp_path, "README.md").validated is False
+
+
+def test_duplicate_gitnexus_and_agent_candidate_merges_with_boost(tmp_path):
+    from app.schemas.workspace_analysis import ScopeCandidate
+    from app.services.external_agent_discovery import (
+        AgentCandidateFile,
+        AgentDiscoveryResult,
+        merge_source_candidates,
+    )
+
+    src = tmp_path / "nof" / "nvmf_tcp" / "transport" / "tls"
+    src.mkdir(parents=True)
+    source = src / "tls.c"
+    source.write_text("int tls;\n", encoding="utf-8")
+
+    existing = [
+        ScopeCandidate(
+            path=str(source),
+            source="gitnexus",
+            confidence="medium",
+            reason="graph match",
+            role="related",
+        )
+    ]
+    agent = AgentDiscoveryResult(
+        provider="claude-code",
+        status="ok",
+        candidate_files=[
+            AgentCandidateFile(
+                path="nof/nvmf_tcp/transport/tls/tls.c",
+                reason="agent verified module",
+                confidence="high",
+                validated=True,
+            )
+        ],
+    )
+
+    merged, warnings = merge_source_candidates(tmp_path, existing, [agent])
+
+    assert warnings == []
+    assert len(merged) == 1
+    assert merged[0].source == "external_agent"
+    assert merged[0].confidence == "high"
+    assert "claude-code" in merged[0].reason
+
+
+def _write_tls_repo(root: Path) -> Path:
+    tls_dir = root / "nof" / "nvmf_tcp" / "transport" / "tls"
+    tls_dir.mkdir(parents=True)
+    source = tls_dir / "tls.c"
+    source.write_text("int nvmf_tcp_tls_handshake(void) { return 0; }\n", encoding="utf-8")
+    return source
+
+
+async def _resolve_nvme_tls(repo_root: Path):
+    obj = AnalysisObject(id="obj_tls", text="nvme-tcp-tls", kind="module")
+    return await WorkspaceScopeResolver()._resolve_object(
+        obj=obj,
+        ws_id="ws",
+        repo_path=str(repo_root),
+        index=_GraphIndex(None),
+        limits=LLMLimits(max_files_per_object=8),
+        gitnexus_available=False,
+    )
+
+
+def test_workspace_resolver_uses_external_agent_when_frontend_is_repo_root(tmp_path, monkeypatch):
+    from app.services.external_agent_discovery import AgentCandidateFile, AgentDiscoveryResult
+
+    source = _write_tls_repo(tmp_path)
+
+    async def fake_discovery(_request, **_kwargs):
+        return [
+            AgentDiscoveryResult(
+                provider="claude-code",
+                status="ok",
+                candidate_files=[
+                    AgentCandidateFile(
+                        path=source.relative_to(tmp_path).as_posix(),
+                        reason="agent path search found transport/tls",
+                        confidence="high",
+                        validated=True,
+                    )
+                ],
+            )
+        ]
+
+    monkeypatch.setattr(
+        "app.services.workspace_scope_resolver.run_external_agent_discovery",
+        fake_discovery,
+    )
+
+    resolved = asyncio.run(_resolve_nvme_tls(tmp_path))
+
+    assert resolved.candidate_files
+    assert resolved.candidate_files[0].source == "external_agent"
+    assert resolved.candidate_files[0].role == "primary"
+    assert resolved.candidate_files[0].path.replace("\\", "/").endswith(
+        "nof/nvmf_tcp/transport/tls/tls.c"
+    )
+
+
+def test_workspace_resolver_local_path_expansion_finds_nvme_tls_without_agent(tmp_path, monkeypatch):
+    _write_tls_repo(tmp_path)
+
+    async def fake_discovery(_request, **_kwargs):
+        return []
+
+    monkeypatch.setattr(
+        "app.services.workspace_scope_resolver.run_external_agent_discovery",
+        fake_discovery,
+    )
+
+    resolved = asyncio.run(_resolve_nvme_tls(tmp_path))
+    paths = [c.path.replace("\\", "/") for c in resolved.candidate_files if c.path]
+
+    assert any(path.endswith("nof/nvmf_tcp/transport/tls/tls.c") for path in paths)
+    assert not resolved.warnings
+
+
+def test_workspace_resolver_writes_agent_session_artifacts(tmp_path, monkeypatch):
+    from app.schemas.workspace_analysis import AnalysisPlan
+    from app.services.external_agent_discovery import AgentDiscoveryResult
+
+    _write_tls_repo(tmp_path)
+
+    async def fake_discovery(_request, **kwargs):
+        session = kwargs.get("session")
+        if session is not None:
+            session.record_turn(
+                provider="claude-code",
+                goal="source_scope",
+                prompt="prompt",
+                raw_output="",
+                parsed_result={},
+                validation_result={},
+                status="unavailable",
+            )
+        return [AgentDiscoveryResult(provider="claude-code", status="unavailable")]
+
+    monkeypatch.setattr(
+        "app.services.workspace_scope_resolver.run_external_agent_discovery",
+        fake_discovery,
+    )
+    plan = AnalysisPlan(
+        analysis_objects=[AnalysisObject(id="obj_tls", text="nvme-tcp-tls", kind="module")]
+    )
+    artifact_dir = tmp_path / "artifacts"
+
+    preview = asyncio.run(
+        WorkspaceScopeResolver().resolve(
+            ws_id="ws",
+            repo_path=str(tmp_path),
+            plan=plan,
+            task_id="task-1",
+            artifact_dir=artifact_dir,
+        )
+    )
+
+    assert preview.agent_discovery_session_id
+    assert preview.external_agent_turn_count >= 1
+    assert (artifact_dir / "agent_discovery_session.json").exists()
+    assert (artifact_dir / "agent_discovery_ledger.json").exists()
+
+
+def _coverage_modules(csv_text):
+    from app.adapters.coverage import parse_internal_function_hits
+
+    return parse_internal_function_hits(csv_text).modules
+
+
+def test_coverage_agent_verified_entry_makes_gap_black_box_ready(tmp_path, monkeypatch):
+    import app.services.coverage_analyzer as coverage_mod
+    from app.services.coverage_analyzer import build_coverage_test_design
+    from app.services.external_agent_discovery import AgentCandidateEntry, AgentDiscoveryResult
+
+    src = tmp_path / "src"
+    src.mkdir()
+    (src / "session.c").write_text(
+        "void internal_recover(void *ctx) {\n"
+        "    if (ctx == 0) { return; }\n"
+        "    cleanup(ctx);\n"
+        "}\n",
+        encoding="utf-8",
+    )
+    (src / "rpc.c").write_text(
+        "void rpc_recover_session(struct req *req) { enqueue_recovery(req); }\n",
+        encoding="utf-8",
+    )
+
+    async def fake_discovery(_request, **_kwargs):
+        return [
+            AgentDiscoveryResult(
+                provider="claude-code",
+                status="ok",
+                candidate_entries=[
+                    AgentCandidateEntry(
+                        entry_kind="rpc",
+                        entry_symbol="rpc_recover_session",
+                        entry_file="src/rpc.c",
+                        chain=["rpc_recover_session", "internal_recover"],
+                        external_trigger="RPC recover-session",
+                        reason="public RPC handler reaches internal function",
+                        validated=True,
+                    )
+                ],
+            )
+        ]
+
+    monkeypatch.setattr(coverage_mod, "run_external_agent_discovery", fake_discovery, raising=False)
+    modules = _coverage_modules(
+        "feature,module,code_location,function,triggered,hit_count\n"
+        "rec,session,src/session.c:1-4,internal_recover,false,0\n"
+    )
+
+    design = asyncio.run(
+        build_coverage_test_design(modules, workspace_id="ws-1", repo_path=str(tmp_path))
+    )
+
+    gap = [g for g in design["gaps"] if g.get("kind") == "function"][0]
+    assert gap["gray_box_required"] is False
+    assert gap["black_box_readiness"]["case_type"] == "black_box_ready"
+    assert gap["entry_paths"][0]["tool"] == "claude-code"
+    assert gap["entry_paths"][0]["entry_symbol"] == "rpc_recover_session"
+    assert gap["black_box_cases"]
+
+
+def test_coverage_agent_unverified_entry_stays_pending(tmp_path, monkeypatch):
+    import app.services.coverage_analyzer as coverage_mod
+    from app.services.coverage_analyzer import build_coverage_test_design
+    from app.services.external_agent_discovery import AgentCandidateEntry, AgentDiscoveryResult
+
+    src = tmp_path / "src"
+    src.mkdir()
+    (src / "util.c").write_text(
+        "void internal_helper(void) {\n"
+        "    if (1) { return; }\n"
+        "}\n",
+        encoding="utf-8",
+    )
+
+    async def fake_discovery(_request, **_kwargs):
+        return [
+            AgentDiscoveryResult(
+                provider="opencode",
+                status="ok",
+                candidate_entries=[
+                    AgentCandidateEntry(
+                        entry_kind="cli",
+                        entry_symbol="maybe_cli",
+                        entry_file="missing/cli.c",
+                        chain=["maybe_cli", "internal_helper"],
+                        external_trigger="CLI maybe",
+                        reason="unverified guess",
+                        validated=False,
+                        validation_error="file_not_found",
+                    )
+                ],
+            )
+        ]
+
+    monkeypatch.setattr(coverage_mod, "run_external_agent_discovery", fake_discovery, raising=False)
+    modules = _coverage_modules(
+        "feature,module,code_location,function,triggered,hit_count\n"
+        "h,util,src/util.c:1-3,internal_helper,false,0\n"
+    )
+
+    design = asyncio.run(
+        build_coverage_test_design(modules, workspace_id="ws-1", repo_path=str(tmp_path))
+    )
+
+    gap = [g for g in design["gaps"] if g.get("kind") == "function"][0]
+    assert gap["entry_paths"] == []
+    assert gap["black_box_readiness"]["case_type"] != "black_box_ready"
+    card = design["entry_discovery"]["cards"][0]
+    assert card["candidate_external_entries"][0]["tool"] == "opencode"
+    assert card["candidate_external_entries"][0]["source_verification"] == "needs_source_verification"
+
+
+def test_coverage_agent_source_slice_round2_finds_verified_entry(tmp_path, monkeypatch):
+    import app.services.coverage_analyzer as coverage_mod
+    from app.services.coverage_analyzer import build_coverage_test_design
+    from app.services.external_agent_discovery import AgentCandidateEntry, AgentDiscoveryResult
+
+    src = tmp_path / "src"
+    src.mkdir()
+    (src / "internal.c").write_text(
+        "void internal_tls_gap(void) {\n"
+        "    if (1) { return; }\n"
+        "}\n",
+        encoding="utf-8",
+    )
+    (src / "rpc.c").write_text(
+        "void rpc_tls_entry(void) { dispatch_tls(); }\n",
+        encoding="utf-8",
+    )
+    calls = []
+
+    async def fake_discovery(request, **kwargs):
+        calls.append(request.request_id)
+        session = kwargs.get("session")
+        if session is not None:
+            session.record_turn(
+                provider="claude-code",
+                goal="coverage_entry",
+                prompt="prompt",
+                raw_output="{}",
+                parsed_result={},
+                validation_result={},
+                status="ok",
+            )
+        if "round2" not in request.request_id:
+            return [
+                AgentDiscoveryResult(
+                    provider="claude-code",
+                    status="ok",
+                    need_source_slices=[
+                        {
+                            "file_path": "src/rpc.c",
+                            "symbol": "rpc_tls_entry",
+                            "reason": "need entry context",
+                        }
+                    ],
+                )
+            ]
+        return [
+            AgentDiscoveryResult(
+                provider="claude-code",
+                status="ok",
+                candidate_entries=[
+                    AgentCandidateEntry(
+                        entry_kind="rpc",
+                        entry_symbol="rpc_tls_entry",
+                        entry_file="src/rpc.c",
+                        chain=["rpc_tls_entry", "internal_tls_gap"],
+                        external_trigger="RPC tls-entry",
+                        reason="source slice shows public entry candidate",
+                        validated=True,
+                    )
+                ],
+            )
+        ]
+
+    monkeypatch.setattr(coverage_mod, "run_external_agent_discovery", fake_discovery, raising=False)
+    modules = _coverage_modules(
+        "feature,module,code_location,function,triggered,hit_count\n"
+        "tls,internal,src/internal.c:1-3,internal_tls_gap,false,0\n"
+    )
+    artifact_dir = tmp_path / "artifacts"
+
+    design = asyncio.run(
+        build_coverage_test_design(
+            modules,
+            workspace_id="ws-1",
+            repo_path=str(tmp_path),
+            artifact_dir=artifact_dir,
+            analysis_id="cov-1",
+        )
+    )
+
+    gap = [g for g in design["gaps"] if g.get("kind") == "function"][0]
+    assert any("round2" in call for call in calls)
+    assert gap["black_box_readiness"]["case_type"] == "black_box_ready"
+    assert gap["entry_paths"][0]["tool"] == "claude-code"
+    assert (artifact_dir / "agent_discovery_session.json").exists()
+    assert (artifact_dir / "external_agent_source_slices" / "slice_001.json").exists()

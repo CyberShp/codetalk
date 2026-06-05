@@ -40,6 +40,7 @@ def _register_defaults() -> None:
     from app.adapters.cgc import CGCAdapter
     from app.adapters.codecompass import CodeCompassAdapter
     from app.adapters.deepwiki import DeepwikiAdapter
+    from app.adapters.external_agent import ExternalAgentAdapter
     from app.adapters.gitnexus import GitNexusAdapter
     from app.adapters.joern import JoernAdapter
 
@@ -58,11 +59,19 @@ def _register_defaults() -> None:
     def codecompass_factory() -> CodeCompassAdapter:
         return CodeCompassAdapter(base_url=settings.codecompass_base_url)
 
+    def claude_code_factory() -> ExternalAgentAdapter:
+        return ExternalAgentAdapter("claude-code", "claude_code_command")
+
+    def opencode_factory() -> ExternalAgentAdapter:
+        return ExternalAgentAdapter("opencode", "opencode_command")
+
     register_adapter(cgc_factory(), factory=cgc_factory)
     register_adapter(deepwiki_factory(), factory=deepwiki_factory)
     register_adapter(gitnexus_factory(), factory=gitnexus_factory)
     register_adapter(joern_factory(), factory=joern_factory)
     register_adapter(codecompass_factory(), factory=codecompass_factory)
+    register_adapter(claude_code_factory(), factory=claude_code_factory)
+    register_adapter(opencode_factory(), factory=opencode_factory)
 
 
 _register_defaults()

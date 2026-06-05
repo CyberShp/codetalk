@@ -40,6 +40,18 @@ from app.schemas.workspace_analysis import (
     ScopeCandidate,
     ScopePreview,
 )
+from app.services.external_agent_discovery import (
+    AgentDiscoveryRequest,
+    expand_agent_query_terms,
+    merge_source_candidates,
+    run_external_agent_discovery,
+    validate_agent_candidate_file,
+)
+from app.services.agent_discovery_session import (
+    AgentContextPacketInput,
+    AgentDiscoverySession,
+    create_agent_discovery_session,
+)
 from app.utils.repo_paths import to_tool_repo_path
 
 logger = logging.getLogger(__name__)
@@ -397,6 +409,52 @@ def _bounded_repo_search_blocking(
     return out[:limit]
 
 
+def _path_keyword_repo_hits_blocking(
+    repo_path: str, keywords: list[str], limit: int
+) -> list[str]:
+    """Rank source files by path tokens, not content.
+
+    This is the local deterministic half of agentic discovery: a fuzzy string
+    like ``nvme-tcp-tls`` should match ``nof/nvmf_tcp/transport/tls/tls.c`` even
+    when the file content does not contain the exact spelling.
+    """
+    if not repo_path or not keywords or limit <= 0:
+        return []
+    root = Path(repo_path)
+    if not root.is_dir():
+        return []
+    folded = [kw.lower().replace("\\", "/") for kw in keywords if kw]
+    results: list[tuple[str, int]] = []
+    for walk_root, dirs, files in _walk(root):
+        dirs[:] = [d for d in dirs if d not in _DIR_SKIP and not d.startswith(".")]
+        for fname in files:
+            full = Path(walk_root) / fname
+            if full.suffix.lower() not in _SOURCE_EXTS:
+                continue
+            rel = full.relative_to(root).as_posix().lower()
+            rel_tokenized = re.sub(r"[-_]+", "/", rel)
+            score = 0
+            for kw in folded:
+                kw_tokenized = re.sub(r"[-_]+", "/", kw)
+                if kw in rel:
+                    score += 4
+                elif kw_tokenized in rel_tokenized:
+                    score += 4
+                else:
+                    parts = [p for p in re.split(r"[/_-]+", kw) if p]
+                    hit_count = sum(1 for part in parts if part in rel_tokenized)
+                    if len(parts) >= 2 and hit_count >= 2:
+                        score += hit_count
+            if score:
+                if "/transport/tls/" in rel:
+                    score += 8
+                if "/nvmf_tcp/" in rel or "/nvme_tcp/" in rel:
+                    score += 6
+                results.append((str(full), score))
+    results.sort(key=lambda item: (-item[1], item[0].lower()))
+    return [path for path, _score in results[:limit]]
+
+
 def _exact_symbol_repo_hits_blocking(
     repo_path: str, symbol: str, limit: int
 ) -> list[str]:
@@ -565,6 +623,108 @@ def _scope_role_for_path(path: str, hints: list[tuple[str, str]]) -> str:
     return best or "supporting"
 
 
+def _record_agent_scope_file(
+    session: AgentDiscoverySession | None,
+    *,
+    object_id: str,
+    repo_path: str,
+    path: str,
+    provider: str,
+    reason: str,
+    confidence: str = "medium",
+    validated: bool = False,
+) -> None:
+    if session is None:
+        return
+    validation = validate_agent_candidate_file(repo_path, path)
+    normalized = validation.path or normalize_file_key(repo_path, path)
+    target = (
+        session.ledger.gitnexus_candidates
+        if provider == "gitnexus"
+        else session.ledger.local_candidates
+    )
+    target.append({
+        "object_id": object_id,
+        "path": normalized,
+        "provider": provider,
+        "reason": reason,
+        "confidence": confidence,
+    })
+    if validated:
+        session.ledger.add_validated_file(
+            object_id=object_id,
+            path=normalized,
+            provider=provider,
+            reason=reason,
+            confidence=confidence,
+        )
+
+
+def _record_agent_scope_results(
+    session: AgentDiscoverySession | None,
+    *,
+    object_id: str,
+    repo_path: str,
+    results: list,
+) -> None:
+    if session is None:
+        return
+    for result in results:
+        session.ledger.provider_status[result.provider] = result.status
+        for command in result.commands:
+            session.ledger.command_history.append({
+                "object_id": object_id,
+                "provider": result.provider,
+                "command": command,
+            })
+        for file in result.candidate_files:
+            validation = validate_agent_candidate_file(repo_path, file.path)
+            if validation.validated and validation.path:
+                session.ledger.add_validated_file(
+                    object_id=object_id,
+                    path=validation.path,
+                    provider=result.provider,
+                    reason=file.reason or "agent validated source",
+                    confidence=file.confidence,
+                )
+            else:
+                session.ledger.add_rejected_file(
+                    object_id=object_id,
+                    path=file.path,
+                    provider=result.provider,
+                    reason=validation.validation_error or file.validation_error or "invalid_agent_file",
+                )
+        for entry in result.candidate_entries:
+            item = {
+                "object_id": object_id,
+                "provider": result.provider,
+                "entry_kind": entry.entry_kind,
+                "entry_symbol": entry.entry_symbol,
+                "entry_file": entry.entry_file,
+                "chain": entry.chain,
+                "reason": entry.reason,
+                "validation_error": entry.validation_error,
+            }
+            if entry.validated:
+                session.ledger.add_validated_entry(item)
+            else:
+                session.ledger.add_rejected_entry(item)
+    session.save()
+
+
+def _agent_requests_source_slices(results: list) -> bool:
+    return any(getattr(result, "need_source_slices", None) for result in results)
+
+
+def _agent_has_rejected_files(session: AgentDiscoverySession | None, object_id: str) -> bool:
+    if session is None:
+        return False
+    return any(
+        item.get("object_id") in {"", object_id}
+        for item in session.ledger.rejected_files
+    )
+
+
 def _normalize_path_hint(hint: str) -> str:
     """Normalize UI/user path hints before comparing with repo paths."""
     value = (hint or "").strip()
@@ -618,6 +778,14 @@ async def _bounded_repo_search(
 ) -> list[str]:
     return await asyncio.to_thread(
         _bounded_repo_search_blocking, repo_path, keywords, limit
+    )
+
+
+async def _path_keyword_repo_hits(
+    repo_path: str, keywords: list[str], limit: int
+) -> list[str]:
+    return await asyncio.to_thread(
+        _path_keyword_repo_hits_blocking, repo_path, keywords, limit
     )
 
 
@@ -689,8 +857,23 @@ class WorkspaceScopeResolver:
         ws_id: str,
         repo_path: str,
         plan: AnalysisPlan,
+        task_id: str | None = None,
+        artifact_dir: Path | None = None,
     ) -> ScopePreview:
         limits = plan.llm_limits
+        agent_session: AgentDiscoverySession | None = None
+        if settings.agent_discovery_session_enabled:
+            session_dir = artifact_dir or (
+                settings.outputs_path / task_id if task_id else None
+            )
+            if session_dir is not None:
+                agent_session = create_agent_discovery_session(
+                    repo_path=repo_path,
+                    goal="workspace_scope",
+                    task_id=task_id,
+                    workspace_id=ws_id,
+                    artifact_dir=session_dir,
+                )
 
         graph = await _load_cached_gitnexus_graph(repo_path)
         used_cache = graph is not None
@@ -720,6 +903,7 @@ class WorkspaceScopeResolver:
                 index=index,
                 limits=limits,
                 gitnexus_available=gitnexus_available,
+                agent_session=agent_session,
             )
             resolved.append(resolved_obj)
             total_candidates += (
@@ -758,6 +942,12 @@ class WorkspaceScopeResolver:
             estimated_evidence_cards=est_cards,
             warnings=warnings,
             gitnexus_available=gitnexus_available,
+            external_agent_status=(
+                dict(agent_session.ledger.provider_status) if agent_session else {}
+            ),
+            external_agent_warnings=[],
+            agent_discovery_session_id=agent_session.session_id if agent_session else None,
+            external_agent_turn_count=len(agent_session.turns) if agent_session else 0,
         )
 
     async def _resolve_object(
@@ -769,8 +959,11 @@ class WorkspaceScopeResolver:
         index: _GraphIndex,
         limits,
         gitnexus_available: bool,
-    ) -> ResolvedAnalysisObject:
+        agent_session: AgentDiscoverySession | None = None,
+        ) -> ResolvedAnalysisObject:
         keywords = _tokenize(obj.text)
+        expanded_terms = expand_agent_query_terms(obj.text)
+        expanded_keywords = list(dict.fromkeys([*keywords, *expanded_terms]))[:32]
         obj_warnings: list[str] = []
         # P0-004: path_hints narrow scope to specific path prefixes
         normalized_path_hints = [
@@ -788,8 +981,46 @@ class WorkspaceScopeResolver:
             role_hints = [(hint, _infer_scope_role(hint)) for hint in normalized_path_hints]
             search_hints = normalized_path_hints
         path_filter: list[str] | None = search_hints or None
+        if agent_session is not None:
+            agent_session.objects.append({
+                "object_id": obj.id,
+                "text": obj.text,
+                "kind": obj.kind,
+                "goal": "source_scope",
+            })
+            context_packet = agent_session.build_context_packet(
+                AgentContextPacketInput(
+                    object_id=obj.id,
+                    current_goal="source_scope",
+                    analysis_object_text=obj.text,
+                    expanded_terms=expanded_keywords,
+                    path_hints=search_hints,
+                    scope_hints=[
+                        {"path": path, "role": role} for path, role in role_hints
+                    ],
+                    round_index=1,
+                )
+            )
+        else:
+            context_packet = None
+        agent_task = asyncio.create_task(run_external_agent_discovery(
+            AgentDiscoveryRequest(
+                request_id=f"{ws_id}:{obj.id}",
+                repo_path=repo_path,
+                analysis_object_text=obj.text,
+                path_hints=search_hints,
+                scope_hints=[
+                    {"path": path, "role": role} for path, role in role_hints
+                ],
+                existing_candidates=[],
+                context_packet=context_packet,
+                goal="source_scope",
+            ),
+            session=agent_session,
+        ))
 
-        if not keywords:
+        if not expanded_keywords:
+            agent_task.cancel()
             obj_warnings.append("分析对象过于笼统，未提取到可检索关键字。")
             return ResolvedAnalysisObject(
                 object_id=obj.id,
@@ -809,6 +1040,16 @@ class WorkspaceScopeResolver:
             if key in seen_keys:
                 continue
             seen_keys.add(key)
+            _record_agent_scope_file(
+                agent_session,
+                object_id=obj.id,
+                repo_path=repo_path,
+                path=hit,
+                provider="local",
+                reason="path_hints exact source match",
+                confidence="high",
+                validated=True,
+            )
             file_candidates.append(
                 ScopeCandidate(
                     path=hit,
@@ -819,15 +1060,52 @@ class WorkspaceScopeResolver:
                 )
             )
 
+        path_hits = await _path_keyword_repo_hits(
+            repo_path, expanded_keywords, limits.max_files_per_object
+        )
+        for hit in path_hits:
+            key = ("file", normalize_file_key(repo_path, hit))
+            if key in seen_keys:
+                continue
+            seen_keys.add(key)
+            _record_agent_scope_file(
+                agent_session,
+                object_id=obj.id,
+                repo_path=repo_path,
+                path=hit,
+                provider="local",
+                reason="local path expansion matched fuzzy module name",
+                confidence="high",
+                validated=True,
+            )
+            file_candidates.append(
+                ScopeCandidate(
+                    path=hit,
+                    source="repo_search",
+                    confidence="high",
+                    reason="local path expansion matched fuzzy module name",
+                    role="primary" if "transport/tls" in hit.replace("\\", "/").lower() else "related",
+                )
+            )
+
         if gitnexus_available:
             for node, hits in index.search_files(
-                keywords, limits.max_files_per_object, path_filter=path_filter
+                expanded_keywords, limits.max_files_per_object, path_filter=path_filter
             ):
                 path = _node_path(node)
                 key = ("file", normalize_file_key(repo_path, path))
                 if key in seen_keys:
                     continue
                 seen_keys.add(key)
+                _record_agent_scope_file(
+                    agent_session,
+                    object_id=obj.id,
+                    repo_path=repo_path,
+                    path=path,
+                    provider="gitnexus",
+                    reason="gitnexus file keyword match",
+                    confidence="high" if hits > 1 else "medium",
+                )
                 related_nodes.append(node.get("id", ""))
                 file_candidates.append(
                     ScopeCandidate(
@@ -839,13 +1117,22 @@ class WorkspaceScopeResolver:
                     )
                 )
             for node, hits in index.search_symbols(
-                keywords, limits.max_functions_per_object, path_filter=path_filter
+                expanded_keywords, limits.max_functions_per_object, path_filter=path_filter
             ):
                 sym = node.get("properties", {}).get("name") or node.get("id")
                 key = ("symbol", sym)
                 if key in seen_keys:
                     continue
                 seen_keys.add(key)
+                if agent_session is not None:
+                    agent_session.ledger.gitnexus_candidates.append({
+                        "object_id": obj.id,
+                        "symbol": sym,
+                        "path": _node_path(node) or None,
+                        "provider": "gitnexus",
+                        "reason": "gitnexus symbol keyword match",
+                        "confidence": "high" if hits > 1 else "medium",
+                    })
                 related_nodes.append(node.get("id", ""))
                 symbol_candidates.append(
                     ScopeCandidate(
@@ -872,6 +1159,16 @@ class WorkspaceScopeResolver:
                 if key in seen_keys:
                     continue
                 seen_keys.add(key)
+                _record_agent_scope_file(
+                    agent_session,
+                    object_id=obj.id,
+                    repo_path=repo_path,
+                    path=hit,
+                    provider="local",
+                    reason="exact local symbol match",
+                    confidence="high",
+                    validated=True,
+                )
                 exact_candidates.append(
                     ScopeCandidate(
                         path=hit,
@@ -890,13 +1187,22 @@ class WorkspaceScopeResolver:
         # If GitNexus is empty OR returned nothing, fall back to repo search.
         if not file_candidates:
             repo_hits = await _bounded_repo_search(
-                repo_path, keywords, limits.max_files_per_object
+                repo_path, expanded_keywords, limits.max_files_per_object
             )
             for hit in repo_hits:
                 key = ("file", normalize_file_key(repo_path, hit))
                 if key in seen_keys:
                     continue
                 seen_keys.add(key)
+                _record_agent_scope_file(
+                    agent_session,
+                    object_id=obj.id,
+                    repo_path=repo_path,
+                    path=hit,
+                    provider="local",
+                    reason="local content search matched keywords",
+                    confidence="medium",
+                )
                 file_candidates.append(
                     ScopeCandidate(
                         path=hit,
@@ -907,9 +1213,91 @@ class WorkspaceScopeResolver:
                     )
                 )
 
+        agent_results = await agent_task
+        _record_agent_scope_results(
+            agent_session,
+            object_id=obj.id,
+            repo_path=repo_path,
+            results=agent_results,
+        )
+        if (
+            agent_session is not None
+            and settings.agent_discovery_max_rounds > 1
+            and (
+                (not file_candidates and any(r.status == "ok" for r in agent_results))
+                or _agent_requests_source_slices(agent_results)
+                or (_agent_has_rejected_files(agent_session, obj.id) and bool(file_candidates))
+            )
+        ):
+            for result in agent_results:
+                if result.need_source_slices:
+                    agent_session.add_source_slices_from_requests(
+                        result.need_source_slices,
+                        object_id=obj.id,
+                    )
+            context_packet = agent_session.build_context_packet(
+                AgentContextPacketInput(
+                    object_id=obj.id,
+                    current_goal="source_scope",
+                    analysis_object_text=obj.text,
+                    expanded_terms=expanded_keywords,
+                    path_hints=search_hints,
+                    scope_hints=[
+                        {"path": path, "role": role} for path, role in role_hints
+                    ],
+                    existing_tool_candidates=[
+                        {
+                            "path": cand.path,
+                            "symbol": cand.symbol,
+                            "source": cand.source,
+                            "confidence": cand.confidence,
+                            "reason": cand.reason,
+                        }
+                        for cand in [*file_candidates[:12], *symbol_candidates[:8]]
+                    ],
+                    round_index=2,
+                )
+            )
+            round2_results = await run_external_agent_discovery(
+                AgentDiscoveryRequest(
+                    request_id=f"{ws_id}:{obj.id}:round2",
+                    repo_path=repo_path,
+                    analysis_object_text=obj.text,
+                    path_hints=search_hints,
+                    scope_hints=[
+                        {"path": path, "role": role} for path, role in role_hints
+                    ],
+                    context_packet=context_packet,
+                    goal="source_scope",
+                ),
+                session=agent_session,
+            )
+            _record_agent_scope_results(
+                agent_session,
+                object_id=obj.id,
+                repo_path=repo_path,
+                results=round2_results,
+            )
+            agent_results = [*agent_results, *round2_results]
+        if agent_results:
+            merged_files, agent_warnings = merge_source_candidates(
+                repo_path, file_candidates, agent_results
+            )
+            file_candidates = merged_files[: limits.max_files_per_object]
+            obj_warnings.extend(agent_warnings)
+            for result in agent_results:
+                if result.status not in {"ok", "unavailable"}:
+                    obj_warnings.append(f"external agent {result.provider}: {result.status}")
+                for file in result.candidate_files:
+                    if file.validated:
+                        validation = validate_agent_candidate_file(repo_path, file.path)
+                        if validation.validated and validation.resolved_path:
+                            key = ("file", normalize_file_key(repo_path, validation.resolved_path))
+                            seen_keys.add(key)
+
         # Materials are always consulted but kept low-priority.
         mat_candidates = await _candidate_materials(
-            ws_id, keywords, max(2, limits.max_files_per_object // 4)
+            ws_id, expanded_keywords, max(2, limits.max_files_per_object // 4)
         )
         for cand in mat_candidates:
             key = ("material", cand.path or "")
