@@ -38,7 +38,7 @@ export default function Sidebar() {
   const pathname = usePathname();
 
   return (
-    <aside className="sticky top-0 w-full bg-surface-container-low flex flex-col z-40 border-b border-outline-variant/30 md:fixed md:left-0 md:top-0 md:h-screen md:w-56 md:border-r md:border-b-0">
+    <aside className="sticky top-0 w-full bg-surface-container-low flex flex-col z-40 border-b border-outline-variant/70 shadow-sm md:fixed md:left-0 md:top-0 md:h-screen md:w-56 md:border-r md:border-b-0">
       {/* Logo */}
       <div className="px-4 pt-4 pb-3 md:px-5 md:pt-6 md:pb-4">
         <h1 className="font-display text-lg font-bold text-primary tracking-wider">
@@ -59,8 +59,8 @@ export default function Sidebar() {
               href={item.href}
               className={`flex shrink-0 items-center gap-2 md:gap-3 px-3 py-2.5 rounded-lg text-sm transition-colors ${
                 active
-                  ? "bg-primary/10 text-primary font-medium"
-                  : "text-on-surface-variant hover:bg-surface-container hover:text-on-surface"
+                  ? "bg-primary text-on-primary font-medium shadow-sm"
+                  : "text-on-surface-variant hover:bg-surface-container-high hover:text-on-surface"
               }`}
             >
               {item.icon}
@@ -71,8 +71,8 @@ export default function Sidebar() {
       </nav>
 
       {/* Footer */}
-      <div className="hidden md:block px-5 py-4 border-t border-outline-variant/20">
-        <p className="text-[10px] text-on-surface-variant/50">
+      <div className="hidden md:block px-5 py-4 border-t border-outline-variant/60 bg-surface-container-lowest">
+        <p className="text-[10px] text-on-surface-variant/70">
           CodeTalk v1.0
         </p>
       </div>

@@ -23,7 +23,7 @@ export default function WorkspacesPage() {
 
   return (
     <div className="w-full px-4 xl:px-6">
-      <div className="flex items-center justify-between mb-8">
+      <div className="flex flex-col gap-4 mb-8 sm:flex-row sm:items-center sm:justify-between">
         <div>
           <h1 className="text-2xl font-bold text-on-surface">工作空间</h1>
           <p className="text-sm text-on-surface-variant mt-1">
@@ -32,7 +32,7 @@ export default function WorkspacesPage() {
         </div>
         <Link
           href="/workspaces/new"
-          className="flex items-center gap-2 px-4 py-2 bg-primary text-on-primary rounded-lg text-sm font-medium hover:opacity-90 transition-opacity"
+          className="flex w-full items-center justify-center gap-2 whitespace-nowrap px-4 py-2 bg-primary text-on-primary rounded-lg text-sm font-medium hover:opacity-90 transition-opacity sm:w-auto"
         >
           <Plus size={16} />
           新建工作空间

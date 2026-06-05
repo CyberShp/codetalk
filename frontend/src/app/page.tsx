@@ -104,27 +104,27 @@ export default function WorkbenchPage() {
   return (
     <div className="w-full px-4 xl:px-6">
       {/* Header */}
-      <div className="flex items-center justify-between mb-6">
+      <div className="flex flex-col gap-4 mb-6 sm:flex-row sm:items-center sm:justify-between">
         <div>
-          <h1 className="font-display text-2xl font-bold text-on-surface">
+          <h1 className="font-display text-xl font-bold text-on-surface sm:text-2xl">
             CodeTalk 工作台
           </h1>
           <p className="text-sm text-on-surface-variant mt-1">
             代码分析与知识工作台
           </p>
         </div>
-        <div className="flex items-center gap-3">
+        <div className="flex w-full items-center gap-3 sm:w-auto">
           <button
             onClick={loadData}
             aria-label="刷新数据"
-            className="flex items-center gap-2 px-3 py-2 text-sm text-on-surface-variant hover:text-on-surface bg-surface-container rounded-lg transition-colors"
+            className="flex flex-1 items-center justify-center gap-2 whitespace-nowrap px-3 py-2 text-sm text-on-surface-variant hover:text-on-surface bg-surface-container rounded-lg transition-colors sm:flex-none"
           >
             <RefreshCw size={14} />
             刷新
           </button>
           <Link
             href="/workspaces/new"
-            className="flex items-center gap-2 px-4 py-2 text-sm font-medium bg-primary text-on-primary rounded-lg hover:opacity-90 transition-opacity"
+            className="flex flex-1 items-center justify-center gap-2 whitespace-nowrap px-4 py-2 text-sm font-medium bg-primary text-on-primary rounded-lg hover:opacity-90 transition-opacity sm:flex-none"
           >
             <Plus size={16} />
             新建工作空间

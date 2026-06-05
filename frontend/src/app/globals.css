@@ -1,24 +1,27 @@
 @import url('https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@400;500;600;700&family=Inter:wght@300;400;500;600&family=JetBrains+Mono:wght@400;500&display=swap');
 @import "tailwindcss";
 
-/* Kinetic Shadow Framework — always dark */
+/* CodeTalk Bright QA Workbench */
 :root {
-  --surface: #10141A;
-  --surface-container-low: #181C22;
-  --surface-container: #1C2026;
-  --surface-container-high: #262A31;
-  --surface-container-lowest: #0C0F14;
-  --primary: #A4E6FF;
-  --on-primary: #003544;
-  --primary-container: #00687F;
-  --primary-fixed-dim: #5AB8D6;
-  --secondary: #ECFFE3;
-  --secondary-fixed-dim: #8FD680;
-  --tertiary: #FFD1CD;
-  --tertiary-container: #8C1D18;
-  --on-surface: #DFE2EB;
-  --on-surface-variant: #BFC5D0;
-  --outline-variant: #44474E;
+  --surface: #f5f8fb;
+  --surface-container-lowest: #fbfdff;
+  --surface-container-low: #ffffff;
+  --surface-container: #ffffff;
+  --surface-container-high: #edf4fa;
+  --surface-container-highest: #e4eef7;
+  --primary: #0f7db8;
+  --on-primary: #ffffff;
+  --primary-container: #dff3ff;
+  --primary-fixed-dim: #096b9f;
+  --secondary: #0f9f8f;
+  --secondary-fixed-dim: #0d9488;
+  --tertiary: #b45309;
+  --tertiary-container: #fff4df;
+  --error: #b91c1c;
+  --error-container: #fee2e2;
+  --on-surface: #172033;
+  --on-surface-variant: #5f7084;
+  --outline-variant: #d8e3ef;
 }
 
 @theme inline {
@@ -26,6 +29,7 @@
   --color-surface-container-low: var(--surface-container-low);
   --color-surface-container: var(--surface-container);
   --color-surface-container-high: var(--surface-container-high);
+  --color-surface-container-highest: var(--surface-container-highest);
   --color-surface-container-lowest: var(--surface-container-lowest);
   --color-primary: var(--primary);
   --color-on-primary: var(--on-primary);
@@ -35,6 +39,8 @@
   --color-secondary-fixed-dim: var(--secondary-fixed-dim);
   --color-tertiary: var(--tertiary);
   --color-tertiary-container: var(--tertiary-container);
+  --color-error: var(--error);
+  --color-error-container: var(--error-container);
   --color-on-surface: var(--on-surface);
   --color-on-surface-variant: var(--on-surface-variant);
   --color-outline-variant: var(--outline-variant);
@@ -44,18 +50,123 @@
 }
 
 body {
-  background: var(--surface);
+  background-color: var(--surface);
+  background-image:
+    linear-gradient(180deg, #fbfdff 0%, #f5f8fb 42%, #eef5fa 100%);
   color: var(--on-surface);
   font-family: var(--font-ui);
 }
 
 /* Scrollbar styling */
 ::-webkit-scrollbar { width: 6px; height: 6px; }
-::-webkit-scrollbar-track { background: var(--surface-container-low); }
-::-webkit-scrollbar-thumb { background: var(--outline-variant); border-radius: 3px; }
-::-webkit-scrollbar-thumb:hover { background: var(--on-surface-variant); }
+::-webkit-scrollbar-track { background: #eef5fa; }
+::-webkit-scrollbar-thumb { background: #bfd2e4; border-radius: 3px; }
+::-webkit-scrollbar-thumb:hover { background: #8ca8c0; }
 
-/* Bright report reading skin: scoped so the rest of the app can stay dark. */
+::selection {
+  background: #bdeafe;
+  color: #0f172a;
+}
+
+button,
+input,
+select,
+textarea {
+  font: inherit;
+}
+
+input,
+select,
+textarea {
+  color-scheme: light;
+}
+
+button:focus-visible,
+a:focus-visible,
+input:focus-visible,
+select:focus-visible,
+textarea:focus-visible {
+  outline: 2px solid rgba(15, 125, 184, 0.38);
+  outline-offset: 2px;
+}
+
+/* Re-map legacy dark-theme status utilities to light QA status colors. */
+.text-green-300,
+.text-green-400,
+.hover\:text-green-400:hover {
+  color: #15803d !important;
+}
+
+.text-amber-200,
+.text-amber-300,
+.text-amber-400,
+.text-yellow-400,
+.hover\:text-amber-400:hover {
+  color: #b45309 !important;
+}
+
+.text-red-300,
+.text-red-400,
+.text-red-500,
+.hover\:text-red-400:hover {
+  color: #b91c1c !important;
+}
+
+.text-blue-400,
+.text-indigo-400 {
+  color: #0f7db8 !important;
+}
+
+.bg-green-400\/10,
+.bg-green-500\/10,
+.bg-green-500\/15 {
+  background-color: #dcfce7 !important;
+}
+
+.bg-amber-400\/10,
+.bg-amber-500\/10,
+.bg-amber-500\/15,
+.bg-yellow-400\/10 {
+  background-color: #fff7ed !important;
+}
+
+.bg-red-400\/5,
+.bg-red-400\/10,
+.bg-red-500\/10 {
+  background-color: #fef2f2 !important;
+}
+
+.bg-blue-400\/10,
+.bg-indigo-400\/10 {
+  background-color: #e0f2fe !important;
+}
+
+.border-green-400\/20,
+.border-green-400\/30 {
+  border-color: #bbf7d0 !important;
+}
+
+.border-amber-400\/20,
+.border-amber-400\/30 {
+  border-color: #fed7aa !important;
+}
+
+.border-red-400\/20,
+.border-red-500\/20 {
+  border-color: #fecaca !important;
+}
+
+.border-blue-400\/20,
+.border-indigo-400\/20 {
+  border-color: #bae6fd !important;
+}
+
+.rounded-xl,
+.rounded-2xl {
+  border-radius: 8px !important;
+}
+
+/* Bright report reading skin for generated analysis reports. */
 .prose-report {
   color: #172033;
   font-family: var(--font-ui);

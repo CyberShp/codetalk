@@ -326,16 +326,16 @@ export default function TaskDetailPage() {
       {steps.length > 0 && (
         <div className="bg-surface-container rounded-xl border border-outline-variant/20 p-5 mb-6">
           <h2 className="text-sm font-medium text-on-surface mb-3">分析进度日志</h2>
-          <div className="bg-[#0d1117] rounded-lg p-3 max-h-64 overflow-y-auto font-mono">
+          <div className="bg-surface-container-lowest border border-outline-variant/30 rounded-lg p-3 max-h-64 overflow-y-auto font-mono">
             {steps.map((s, i) => (
               <div key={i} className="flex items-start gap-2 text-xs leading-5 mb-0.5">
-                <span className="text-on-surface-variant/40 shrink-0 tabular-nums">
+                <span className="text-on-surface-variant/70 shrink-0 tabular-nums">
                   {new Date(s.timestamp).toLocaleTimeString("zh-CN", { hour12: false })}
                 </span>
-                <span className="text-amber-400/70 shrink-0 tabular-nums w-8 text-right">
+                <span className="text-amber-400 shrink-0 tabular-nums w-8 text-right">
                   {s.progress}%
                 </span>
-                <span className="text-green-400/90 break-all">{s.step}</span>
+                <span className="text-on-surface break-all">{s.step}</span>
               </div>
             ))}
             <div ref={stepsEndRef} />

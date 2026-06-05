@@ -8,7 +8,7 @@ import type { PluggableList } from "unified";
 import type { Components } from "react-markdown";
 import { FileCode, ExternalLink } from "lucide-react";
 import hljs from "highlight.js/lib/common";
-import "highlight.js/styles/github-dark.css";
+import "highlight.js/styles/github.css";
 import MermaidRenderer from "./MermaidRenderer";
 
 function escapeHtml(s: string): string {
@@ -159,13 +159,13 @@ export default function MarkdownRenderer({
           return (
             <div className="relative mb-4">
               {lang && (
-                <span className="absolute top-0 right-0 text-[10px] font-mono text-[#8b949e] bg-[#161b22] px-2.5 py-1 rounded-bl-lg rounded-tr-xl border-b border-l border-[#30363d] select-none z-10">
+                <span className="absolute top-0 right-0 text-[10px] font-mono text-on-surface-variant bg-surface-container-high px-2.5 py-1 rounded-bl-lg rounded-tr-lg border-b border-l border-outline-variant/40 select-none z-10">
                   {lang}
                 </span>
               )}
-              <pre className="bg-[#0d1117] rounded-xl p-4 overflow-x-auto">
+              <pre className="bg-surface-container-lowest rounded-lg p-4 overflow-x-auto border border-outline-variant/40">
                 <code
-                  className="font-data text-xs hljs"
+                  className="font-data text-xs hljs text-on-surface"
                   dangerouslySetInnerHTML={{ __html: highlighted }}
                 />
               </pre>
@@ -173,7 +173,7 @@ export default function MarkdownRenderer({
           );
         }
         return (
-          <code className="font-data text-xs bg-surface-container-high px-1.5 py-0.5 rounded text-primary-fixed-dim">
+          <code className="font-data text-xs bg-primary-container px-1.5 py-0.5 rounded text-primary-fixed-dim border border-primary/10">
             {children}
           </code>
         );
@@ -192,7 +192,7 @@ export default function MarkdownRenderer({
         <li className="leading-relaxed">{children}</li>
       ),
       table: ({ children }) => (
-        <div className="overflow-x-auto mb-4 rounded-lg border border-outline-variant/25">
+        <div className="overflow-x-auto mb-4 rounded-lg border border-outline-variant/40 bg-surface-container-low">
           <table className="w-full text-sm border-collapse">{children}</table>
         </div>
       ),
@@ -208,7 +208,7 @@ export default function MarkdownRenderer({
         </tr>
       ),
       th: ({ children }) => (
-        <th className="text-left text-xs font-semibold text-on-surface-variant/70 uppercase tracking-wide py-2.5 px-3 bg-surface-container-highest/40 border-b border-outline-variant/25">
+        <th className="text-left text-xs font-semibold text-on-surface-variant/80 uppercase tracking-wide py-2.5 px-3 bg-surface-container-high border-b border-outline-variant/35">
           {children}
         </th>
       ),

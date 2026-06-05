@@ -59,7 +59,7 @@ export default function TasksPage() {
 
   return (
     <div className="w-full px-4 xl:px-6">
-      <div className="flex items-center justify-between mb-6">
+      <div className="flex flex-col gap-4 mb-6 sm:flex-row sm:items-center sm:justify-between">
         <div>
           <h1 className="font-display text-2xl font-bold text-on-surface flex items-center gap-3">
             <Archive size={22} className="text-on-surface-variant" />
@@ -72,7 +72,7 @@ export default function TasksPage() {
         <button
           onClick={loadTasks}
           aria-label="刷新"
-          className="flex items-center gap-2 px-3 py-2 text-sm text-on-surface-variant hover:text-on-surface bg-surface-container rounded-lg transition-colors"
+          className="flex w-full items-center justify-center gap-2 whitespace-nowrap px-3 py-2 text-sm text-on-surface-variant hover:text-on-surface bg-surface-container rounded-lg transition-colors sm:w-auto"
         >
           <RefreshCw size={14} />
           刷新

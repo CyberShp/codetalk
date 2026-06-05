@@ -942,7 +942,7 @@ export default function CoveragePage() {
                                       <summary className="text-xs text-on-surface-variant/70 cursor-pointer hover:text-on-surface">
                                         原始建议（Markdown）
                                       </summary>
-                                      <div className="mt-2 prose prose-invert prose-sm max-w-none text-on-surface-variant leading-relaxed whitespace-pre-wrap">
+                                      <div className="mt-2 prose prose-sm max-w-none text-on-surface-variant leading-relaxed whitespace-pre-wrap">
                                         {mr.analysis}
                                       </div>
                                     </details>
