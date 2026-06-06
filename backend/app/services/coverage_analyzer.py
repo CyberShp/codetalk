@@ -2676,10 +2676,14 @@ def _entry_discovery_card_for_gap(
     gitnexus_scope = evidence.get("gitnexus_scope") if isinstance(evidence, dict) else {}
     cgc = evidence.get("cgc") if isinstance(evidence, dict) else {}
     external_agent = evidence.get("external_agent") if isinstance(evidence, dict) else {}
-    candidates = _entry_candidates_from_paths(gap.get("entry_paths") or [])
+    entry_paths = gap.get("entry_paths") or []
+    candidates = _entry_candidates_from_paths(entry_paths)
     if isinstance(external_agent, dict):
         candidates.extend(_entry_candidates_from_agent_unverified(
-            external_agent.get("unverified_entries") or []
+            _filter_resolved_agent_unverified_entries(
+                external_agent.get("unverified_entries") or [],
+                entry_paths,
+            )
         ))
     report_material_clues = _report_material_entry_clues(
         gap,
@@ -2725,6 +2729,37 @@ def _entry_discovery_card_for_gap(
             "tool_unavailable",
         },
     }
+
+
+def _filter_resolved_agent_unverified_entries(
+    unverified_entries: list[dict],
+    entry_paths: list[dict],
+) -> list[dict]:
+    resolved_keys: set[tuple[str, str, str]] = set()
+    for entry in entry_paths:
+        if not isinstance(entry, dict):
+            continue
+        provider = str(entry.get("provider") or entry.get("tool") or "")
+        symbol = str(entry.get("entry_symbol") or entry.get("entry_label") or "")
+        file_path = str(entry.get("entry_file") or "")
+        if symbol:
+            resolved_keys.add((provider, "symbol", symbol))
+        if file_path:
+            resolved_keys.add((provider, "file", file_path))
+
+    filtered: list[dict] = []
+    for entry in unverified_entries:
+        if not isinstance(entry, dict):
+            continue
+        provider = str(entry.get("provider") or "")
+        symbol = str(entry.get("entry_symbol") or "")
+        file_path = str(entry.get("entry_file") or "")
+        if symbol and (provider, "symbol", symbol) in resolved_keys:
+            continue
+        if file_path and (provider, "file", file_path) in resolved_keys:
+            continue
+        filtered.append(entry)
+    return filtered
 
 
 def _entry_candidates_from_paths(entry_paths: list[dict]) -> list[dict]:

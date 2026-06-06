@@ -1794,3 +1794,11 @@ def test_coverage_agent_unverified_entry_without_file_triggers_round2(tmp_path, 
     assert any("round2" in call for call in calls)
     assert gap["black_box_readiness"]["case_type"] == "black_box_ready"
     assert gap["entry_paths"][0]["entry_symbol"] == "rpc_tls_entry"
+    card = design["entry_discovery"]["cards"][0]
+    same_symbol_candidates = [
+        candidate for candidate in card["candidate_external_entries"]
+        if candidate.get("entry_symbol") == "rpc_tls_entry"
+    ]
+    assert [candidate["source_verification"] for candidate in same_symbol_candidates] == [
+        "source_backed"
+    ]
