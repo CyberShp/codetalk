@@ -503,7 +503,7 @@ def validate_agent_candidate_file(
     allow_directory_candidates: bool = True,
 ) -> CandidateValidation:
     root = Path(repo_path).resolve()
-    raw = (path or "").strip().strip('"').strip("'").strip("`")
+    raw = _normalize_agent_path_text(path)
     if not raw:
         return CandidateValidation(input_path=path, validation_error="empty_path")
     normalized = raw.replace("\\", "/")
@@ -550,6 +550,16 @@ def validate_agent_candidate_file(
         resolved_path=str(resolved),
         validated=True,
     )
+
+
+def _normalize_agent_path_text(path: str) -> str:
+    raw = (path or "").strip().strip('"').strip("'").strip("`")
+    raw = re.sub(
+        rf"(?i)({'|'.join(re.escape(ext) for ext in SOURCE_EXTS)})(?::\d+(?::\d+)?|#L\d+)$",
+        lambda match: match.group(1),
+        raw,
+    )
+    return raw
 
 
 def _resolve_existing_or_suffix(root: Path, candidate: Path, normalized: str) -> Path | None:
