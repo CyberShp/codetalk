@@ -1153,7 +1153,7 @@ def _collect_agent_entry_results(
             item = {
                 "object_id": object_id,
                 "provider": result.provider,
-                "turn_id": turn_id,
+                "turn_id": getattr(result, "turn_id", None) or turn_id,
                 "entry_kind": entry.entry_kind,
                 "entry_symbol": entry.entry_symbol,
                 "entry_file": entry.entry_file,

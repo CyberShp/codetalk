@@ -94,6 +94,7 @@ class AgentDiscoveryRequest:
 class AgentDiscoveryResult:
     provider: str
     status: AgentStatus
+    turn_id: str | None = None
     candidate_files: list[AgentCandidateFile] = field(default_factory=list)
     candidate_symbols: list[dict] = field(default_factory=list)
     candidate_entries: list[AgentCandidateEntry] = field(default_factory=list)
@@ -940,7 +941,7 @@ def _record_agent_turn(
     if session is None or not hasattr(session, "record_turn"):
         return
     try:
-        session.record_turn(
+        turn = session.record_turn(
             provider=provider,
             goal=request.goal,
             prompt=prompt,
@@ -955,5 +956,6 @@ def _record_agent_turn(
             },
             status=result.status,
         )
+        result.turn_id = getattr(turn, "turn_id", None)
     except Exception:
         return

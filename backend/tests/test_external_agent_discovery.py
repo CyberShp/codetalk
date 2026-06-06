@@ -388,6 +388,41 @@ def test_run_provider_reports_nonzero_exit_with_stderr(tmp_path, monkeypatch):
     assert "auth failed" in results[0].raw_summary
 
 
+def test_run_provider_result_uses_session_turn_id(tmp_path, monkeypatch):
+    from app.services.agent_discovery_session import create_agent_discovery_session
+    from app.services.external_agent_discovery import AgentDiscoveryRequest, run_external_agent_discovery
+
+    agent = tmp_path / "agent_ok.py"
+    agent.write_text(
+        "import sys\n"
+        "sys.stdin.read()\n"
+        "print('{\"candidate_files\": []}')\n",
+        encoding="utf-8",
+    )
+    session = create_agent_discovery_session(
+        repo_path=str(tmp_path),
+        goal="coverage_entry",
+        artifact_dir=tmp_path / "artifacts",
+        coverage_analysis_id="cov-1",
+    )
+    monkeypatch.setattr("app.services.external_agent_discovery.settings.claude_code_command", f"{sys.executable} {agent}")
+    monkeypatch.setattr("app.services.external_agent_discovery.settings.claude_code_fallback_commands", [])
+
+    results = asyncio.run(run_external_agent_discovery(
+        AgentDiscoveryRequest(
+            request_id="turn-id",
+            repo_path=str(tmp_path),
+            analysis_object_text="tls",
+            goal="coverage_entry",
+        ),
+        providers=["claude-code"],
+        session=session,
+    ))
+
+    assert results[0].turn_id == "turn_001_claude_code"
+    assert session.turns[0].turn_id == results[0].turn_id
+
+
 def test_run_provider_waits_for_process_after_timeout(tmp_path, monkeypatch):
     from app.services.external_agent_discovery import AgentDiscoveryRequest, run_external_agent_discovery
 
@@ -1133,6 +1168,47 @@ def test_coverage_verified_agent_entry_card_keeps_provider_turn_and_validation(t
     assert candidate["turn_id"] == "coverage:src/session.c:internal_recover:1"
     assert candidate["source_verification"] == "source_backed"
     assert candidate["validation_error"] is None
+
+
+def test_coverage_agent_entry_collect_prefers_result_turn_id(tmp_path):
+    import app.services.coverage_analyzer as coverage_mod
+    from app.services.external_agent_discovery import AgentCandidateEntry, AgentDiscoveryResult
+
+    src = tmp_path / "src"
+    src.mkdir()
+    (src / "rpc.c").write_text("void rpc_recover_session(void) {}\n", encoding="utf-8")
+    result = AgentDiscoveryResult(
+        provider="claude-code",
+        status="ok",
+        candidate_entries=[
+            AgentCandidateEntry(
+                entry_kind="rpc",
+                entry_symbol="rpc_recover_session",
+                entry_file="src/rpc.c",
+                chain=["rpc_recover_session", "internal_recover"],
+                external_trigger="RPC recover-session",
+                reason="source backed",
+                validated=True,
+            )
+        ],
+    )
+    result.turn_id = "turn_001_claude_code"
+    validated: list[dict] = []
+    unverified: list[dict] = []
+
+    coverage_mod._collect_agent_entry_results(
+        [result],
+        repo_root=tmp_path,
+        object_id="src/session.c:internal_recover:1",
+        turn_id="coverage:src/session.c:internal_recover:1",
+        agent_session=None,
+        validated_entries=validated,
+        unverified_entries=unverified,
+        status_by_provider={},
+        raw_results=[],
+    )
+
+    assert validated[0]["turn_id"] == "turn_001_claude_code"
 
 
 def test_coverage_scope_enrichment_does_not_start_source_scope_agent(tmp_path, monkeypatch):
