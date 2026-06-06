@@ -330,6 +330,10 @@ def test_missing_cli_returns_unavailable(tmp_path, monkeypatch):
     from app.services.external_agent_discovery import check_provider_health
 
     monkeypatch.setattr("app.services.external_agent_discovery.shutil.which", lambda _cmd: None)
+    monkeypatch.setattr(
+        "app.services.external_agent_discovery._probe_windows_shell_command",
+        lambda _executable: None,
+    )
     monkeypatch.setenv("APPDATA", str(tmp_path / "missing-appdata"))
     monkeypatch.setenv("USERPROFILE", str(tmp_path / "missing-userprofile"))
 
@@ -545,6 +549,20 @@ def test_provider_health_uses_powershell_fallback_for_shell_only_ccr(monkeypatch
     assert "--allowedTools" in health["argv"][-1]
 
 
+def test_find_powershell_uses_systemroot_when_service_path_is_thin(tmp_path, monkeypatch):
+    from app.services.external_agent_discovery import _find_powershell
+
+    powershell = tmp_path / "Windows" / "System32" / "WindowsPowerShell" / "v1.0" / "powershell.exe"
+    powershell.parent.mkdir(parents=True)
+    powershell.write_text("", encoding="utf-8")
+
+    monkeypatch.setattr("app.services.external_agent_discovery.platform.system", lambda: "Windows")
+    monkeypatch.setattr("app.services.external_agent_discovery.shutil.which", lambda _cmd: None)
+    monkeypatch.setenv("SystemRoot", str(tmp_path / "Windows"))
+
+    assert _find_powershell() == str(powershell)
+
+
 def test_external_agent_adapter_health_reports_launch_kind(monkeypatch):
     from app.adapters import external_agent as adapter_mod
 
@@ -573,6 +591,10 @@ def test_provider_health_reports_all_attempted_commands_when_unavailable(tmp_pat
     from app.services.external_agent_discovery import check_provider_health
 
     monkeypatch.setattr("app.services.external_agent_discovery.shutil.which", lambda _cmd: None)
+    monkeypatch.setattr(
+        "app.services.external_agent_discovery._probe_windows_shell_command",
+        lambda _executable: None,
+    )
     monkeypatch.setenv("APPDATA", str(tmp_path / "missing-appdata"))
     monkeypatch.setenv("USERPROFILE", str(tmp_path / "missing-userprofile"))
 

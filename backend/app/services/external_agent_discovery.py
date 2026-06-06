@@ -391,6 +391,23 @@ def _find_powershell() -> str | None:
         found = shutil.which(name)
         if found:
             return found
+    if platform.system().lower().startswith("win"):
+        for env_name in ("SystemRoot", "WINDIR"):
+            root = os.environ.get(env_name)
+            if not root:
+                continue
+            candidate = (
+                Path(root)
+                / "System32"
+                / "WindowsPowerShell"
+                / "v1.0"
+                / "powershell.exe"
+            )
+            try:
+                if candidate.is_file():
+                    return str(candidate)
+            except OSError:
+                continue
     return None
 
 
