@@ -1176,23 +1176,45 @@ def _collect_agent_entry_results(
                 if validation.validated:
                     item["source_verification"] = "source_backed"
                     item["validation_error"] = None
-                    validated_entries.append(item)
+                    _upsert_agent_entry(validated_entries, item)
                     if agent_session is not None:
                         agent_session.ledger.add_validated_entry(item)
                 else:
                     item["source_verification"] = "needs_source_verification"
                     item["validation_error"] = validation.validation_error
-                    unverified_entries.append(item)
+                    _upsert_agent_entry(unverified_entries, item)
                     if agent_session is not None:
                         agent_session.ledger.add_rejected_entry(item)
             else:
                 item["source_verification"] = "needs_source_verification"
                 item["validation_error"] = item.get("validation_error") or "entry_file_missing"
-                unverified_entries.append(item)
+                _upsert_agent_entry(unverified_entries, item)
                 if agent_session is not None:
                     agent_session.ledger.add_rejected_entry(item)
     if agent_session is not None:
         agent_session.save()
+
+
+def _upsert_agent_entry(target: list[dict], item: dict) -> None:
+    key = (
+        str(item.get("object_id") or ""),
+        str(item.get("provider") or ""),
+        str(item.get("entry_symbol") or ""),
+        str(item.get("entry_file") or ""),
+        str(item.get("validation_error") or ""),
+    )
+    for existing in target:
+        existing_key = (
+            str(existing.get("object_id") or ""),
+            str(existing.get("provider") or ""),
+            str(existing.get("entry_symbol") or ""),
+            str(existing.get("entry_file") or ""),
+            str(existing.get("validation_error") or ""),
+        )
+        if existing_key == key:
+            existing.update(item)
+            return
+    target.append(item)
 
 
 def _summarize_cgc_items(items: object) -> list[dict]:
