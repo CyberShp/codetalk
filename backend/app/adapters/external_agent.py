@@ -37,11 +37,22 @@ class ExternalAgentAdapter(BaseToolAdapter):
         ok = health.get("status") == "available"
         attempts = health.get("attempts") or []
         attempt_summary = "; ".join(
-            f"{item.get('command')} => {item.get('status')}"
+            _format_attempt_summary(item)
             for item in attempts
             if isinstance(item, dict)
         )
-        last_check = str(health.get("reason") or attempt_summary or "")
+        launch = str(health.get("launch_kind") or "").strip()
+        launch_summary = f"launch={launch}" if launch else ""
+        details = [
+            part
+            for part in [
+                str(health.get("reason") or "").strip(),
+                launch_summary,
+                attempt_summary,
+            ]
+            if part
+        ]
+        last_check = "; ".join(details)
         return ToolHealth(
             is_healthy=ok,
             container_status="available" if ok else "unavailable",
@@ -77,3 +88,9 @@ class ExternalAgentAdapter(BaseToolAdapter):
         if False:
             yield run_id
         return
+
+
+def _format_attempt_summary(item: dict) -> str:
+    launch = item.get("launch_kind")
+    launch_suffix = f" ({launch})" if launch else ""
+    return f"{item.get('command')} => {item.get('status')}{launch_suffix}"

@@ -1,5 +1,7 @@
 import asyncio
 import json
+import platform
+import shutil
 import sys
 from pathlib import Path
 
@@ -320,6 +322,30 @@ def test_provider_health_uses_powershell_fallback_for_shell_only_ccr(monkeypatch
     assert "--allowedTools" in health["argv"][-1]
 
 
+def test_external_agent_adapter_health_reports_launch_kind(monkeypatch):
+    from app.adapters import external_agent as adapter_mod
+
+    def fake_health(provider, command, fallback_commands=None):
+        return {
+            "provider": provider,
+            "status": "available",
+            "path": "PowerShell function ccr",
+            "launch_kind": "powershell",
+            "attempts": [
+                {"command": "ccr code -p", "status": "available", "launch_kind": "powershell"},
+            ],
+        }
+
+    monkeypatch.setattr(adapter_mod, "check_provider_health", fake_health)
+
+    health = asyncio.run(
+        adapter_mod.ExternalAgentAdapter("claude-code", "claude_code_command").health_check()
+    )
+
+    assert health.is_healthy is True
+    assert "launch=powershell" in health.last_check
+
+
 def test_provider_health_reports_all_attempted_commands_when_unavailable(monkeypatch):
     from app.services.external_agent_discovery import check_provider_health
 
@@ -360,6 +386,47 @@ def test_run_provider_reports_nonzero_exit_with_stderr(tmp_path, monkeypatch):
     assert results[0].status == "error"
     assert "exit code 7" in results[0].raw_summary
     assert "auth failed" in results[0].raw_summary
+
+
+def test_run_provider_uses_powershell_wrapper_stdin(tmp_path, monkeypatch):
+    if not platform.system().lower().startswith("win") or not shutil.which("powershell.exe"):
+        import pytest
+
+        pytest.skip("PowerShell wrapper is Windows-specific")
+
+    from app.services.external_agent_discovery import AgentDiscoveryRequest, run_external_agent_discovery
+
+    agent = tmp_path / "agent.ps1"
+    agent.write_text(
+        "$prompt = ($input | Out-String)\n"
+        "$hasPrompt = $prompt.Contains('analysis_object_text')\n"
+        "Write-Output ('{\"candidate_files\":[],\"warnings\":[\"stdin=' + $hasPrompt.ToString().ToLowerInvariant() + '\"]}')\n",
+        encoding="utf-8",
+    )
+    powershell = shutil.which("powershell.exe")
+
+    def fake_which(cmd):
+        return powershell if cmd.lower() == "powershell.exe" else None
+
+    monkeypatch.setattr("app.services.external_agent_discovery.shutil.which", fake_which)
+    monkeypatch.setattr("app.services.external_agent_discovery.settings.claude_code_command", str(agent))
+    monkeypatch.setattr("app.services.external_agent_discovery.settings.claude_code_fallback_commands", [])
+    monkeypatch.setattr(
+        "app.services.external_agent_discovery._probe_windows_shell_command",
+        lambda executable: str(agent),
+    )
+
+    results = asyncio.run(run_external_agent_discovery(
+        AgentDiscoveryRequest(
+            request_id="powershell-stdin",
+            repo_path=str(tmp_path),
+            analysis_object_text="tls",
+        ),
+        providers=["claude-code"],
+    ))
+
+    assert results[0].status == "ok"
+    assert results[0].warnings == ["stdin=true"]
 
 
 def test_candidate_outside_repo_and_non_source_are_rejected(tmp_path):
