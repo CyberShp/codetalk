@@ -2,6 +2,30 @@ import { expect, test } from "@playwright/test";
 
 const backendBase = `http://localhost:${process.env.CODETALK_BACKEND_PORT ?? "8100"}`;
 
+test("tools page renders readable management copy", async ({ page }) => {
+  await page.route(`${backendBase}/api/tools/procs`, async (route) => {
+    await route.fulfill({
+      json: [
+        {
+          name: "claude-code",
+          display_name: "Claude Code",
+          healthy: true,
+          status: "available",
+          managed: false,
+          message: "claude-code available",
+          capabilities: ["code_search"],
+        },
+      ],
+    });
+  });
+
+  await page.goto("/tools", { waitUntil: "domcontentloaded" });
+
+  await expect(page.getByRole("heading", { name: "工具状态" })).toBeVisible();
+  await expect(page.getByText("查看和管理分析工具进程")).toBeVisible();
+  await expect(page.getByRole("button", { name: "刷新" })).toBeVisible();
+});
+
 test("external agent tool card can run a startup probe", async ({ page }) => {
   test.setTimeout(60_000);
 

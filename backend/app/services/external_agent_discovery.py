@@ -205,6 +205,17 @@ def _resolve_provider_command_attempt(command: str, provider: str | None = None)
             "reason": "empty command",
         }
     executable = argv[0]
+    configured_path = _resolve_configured_executable_path(executable)
+    if configured_path:
+        resolved_argv = [configured_path, *argv[1:]]
+        return {
+            "command": command,
+            "status": "available",
+            "argv": apply_readonly_cli_guard(provider, resolved_argv),
+            "executable": executable,
+            "path": configured_path,
+            "launch_kind": "exec",
+        }
     if platform.system().lower().startswith("win"):
         resolved = shutil.which(executable)
         if not resolved:
@@ -254,14 +265,36 @@ def _resolve_provider_command_attempt(command: str, provider: str | None = None)
     }
 
 
+def _resolve_configured_executable_path(executable: str) -> str | None:
+    value = (executable or "").strip().strip('"').strip("'")
+    if not value or not any(sep in value for sep in ("/", "\\")):
+        return None
+    candidate = Path(value).expanduser()
+    try:
+        if platform.system().lower().startswith("win") and candidate.suffix.lower() == ".ps1":
+            return None
+        if candidate.is_file():
+            return str(candidate.resolve())
+    except OSError:
+        return None
+    return None
+
+
 def split_agent_command(command: str) -> list[str]:
     value = (command or "").strip()
     if not value:
         return []
     try:
-        return shlex.split(value, posix=os.name != "nt")
+        parts = shlex.split(value, posix=os.name != "nt")
     except ValueError:
-        return value.split()
+        parts = value.split()
+    return [_strip_wrapping_quotes(part) for part in parts]
+
+
+def _strip_wrapping_quotes(value: str) -> str:
+    if len(value) >= 2 and value[0] == value[-1] and value[0] in {"'", '"'}:
+        return value[1:-1]
+    return value
 
 
 def _resolve_windows_common_command_path(executable: str) -> str | None:

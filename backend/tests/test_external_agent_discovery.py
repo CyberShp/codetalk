@@ -273,6 +273,25 @@ def test_provider_command_supports_subcommand_style(monkeypatch):
     assert health["argv"][1] == "code"
 
 
+def test_provider_command_strips_quotes_from_absolute_executable_path(tmp_path, monkeypatch):
+    from app.services.external_agent_discovery import check_provider_health, split_agent_command
+
+    agent_dir = tmp_path / "Program Files" / "ccr"
+    agent_dir.mkdir(parents=True)
+    agent = agent_dir / "ccr.cmd"
+    agent.write_text("@echo off\n", encoding="utf-8")
+    command = f'"{agent}" code -p --output-format json'
+
+    monkeypatch.setattr("app.services.external_agent_discovery.shutil.which", lambda _cmd: None)
+
+    assert split_agent_command(command)[0] == str(agent)
+    health = check_provider_health("claude-code", command)
+
+    assert health["status"] == "available"
+    assert health["argv"][0] == str(agent)
+    assert health["argv"][1:5] == ["code", "-p", "--output-format", "json"]
+
+
 def test_provider_health_appends_claude_readonly_cli_guard(monkeypatch):
     from app.services.external_agent_discovery import check_provider_health
 
