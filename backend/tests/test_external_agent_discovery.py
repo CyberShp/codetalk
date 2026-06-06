@@ -1,5 +1,6 @@
 import asyncio
 import json
+import sys
 from pathlib import Path
 
 from app.schemas.workspace_analysis import AnalysisObject, LLMLimits
@@ -111,6 +112,22 @@ def test_agent_output_unwraps_claude_print_json_result(tmp_path):
     assert result.candidate_entries[0].entry_file == "src/entry.c"
 
 
+def test_agent_output_marks_claude_error_wrapper_as_error(tmp_path):
+    from app.services.external_agent_discovery import parse_agent_output
+
+    raw = json.dumps({
+        "type": "result",
+        "subtype": "error_max_turns",
+        "is_error": True,
+        "result": "permission denied while reading workspace",
+    })
+
+    result = parse_agent_output("claude-code", raw, tmp_path)
+
+    assert result.status == "error"
+    assert "permission denied" in result.raw_summary
+
+
 def test_agent_output_parses_requested_source_slices(tmp_path):
     from app.services.external_agent_discovery import parse_agent_output
 
@@ -206,6 +223,35 @@ def test_provider_health_reports_all_attempted_commands_when_unavailable(monkeyp
     assert "ccr code -p" in health["reason"]
     assert "claude -p" in health["reason"]
     assert [attempt["executable"] for attempt in health["attempts"]] == ["ccr", "claude"]
+
+
+def test_run_provider_reports_nonzero_exit_with_stderr(tmp_path, monkeypatch):
+    from app.services.external_agent_discovery import AgentDiscoveryRequest, run_external_agent_discovery
+
+    agent = tmp_path / "agent_exit.py"
+    agent.write_text(
+        "import sys\n"
+        "sys.stdin.read()\n"
+        "print('{\"candidate_files\": []}')\n"
+        "print('auth failed', file=sys.stderr)\n"
+        "raise SystemExit(7)\n",
+        encoding="utf-8",
+    )
+    monkeypatch.setattr("app.services.external_agent_discovery.settings.claude_code_command", f"{sys.executable} {agent}")
+    monkeypatch.setattr("app.services.external_agent_discovery.settings.claude_code_fallback_commands", [])
+
+    results = asyncio.run(run_external_agent_discovery(
+        AgentDiscoveryRequest(
+            request_id="nonzero",
+            repo_path=str(tmp_path),
+            analysis_object_text="tls",
+        ),
+        providers=["claude-code"],
+    ))
+
+    assert results[0].status == "error"
+    assert "exit code 7" in results[0].raw_summary
+    assert "auth failed" in results[0].raw_summary
 
 
 def test_candidate_outside_repo_and_non_source_are_rejected(tmp_path):

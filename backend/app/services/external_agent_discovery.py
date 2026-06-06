@@ -304,6 +304,14 @@ def _resolve_existing_or_suffix(root: Path, candidate: Path, normalized: str) ->
 
 def parse_agent_output(provider: str, raw_output: str, repo_path: str | Path) -> AgentDiscoveryResult:
     raw = (raw_output or "")[: settings.external_agent_max_output_chars]
+    cli_error = _extract_cli_error(raw)
+    if cli_error:
+        return AgentDiscoveryResult(
+            provider=provider,
+            status="error",
+            raw_summary=cli_error,
+            warnings=[cli_error],
+        )
     try:
         payload = _load_agent_json_payload(raw)
     except json.JSONDecodeError as exc:
@@ -382,6 +390,24 @@ def parse_agent_output(provider: str, raw_output: str, repo_path: str | Path) ->
         raw_summary=str(payload.get("raw_summary") or payload.get("summary") or "")[:4000],
         warnings=[str(w) for w in payload.get("warnings") or [] if w],
     )
+
+
+def _extract_cli_error(raw: str) -> str | None:
+    try:
+        payload = json.loads((raw or "").strip())
+    except json.JSONDecodeError:
+        return None
+    if not isinstance(payload, dict):
+        return None
+    if payload.get("is_error") is not True and not str(payload.get("subtype") or "").startswith("error"):
+        return None
+    parts = [
+        str(payload.get("subtype") or "").strip(),
+        str(payload.get("api_error_status") or "").strip(),
+        str(payload.get("result") or payload.get("error") or "").strip(),
+    ]
+    summary = "; ".join(part for part in parts if part)
+    return summary[:4000] if summary else "external agent reported an error"
 
 
 def _load_agent_json_payload(raw: str) -> object:
@@ -599,11 +625,22 @@ async def _run_provider(
         _record_agent_turn(session, provider, request, prompt, result.raw_summary, result)
         return result
     raw = stdout.decode("utf-8", errors="replace")
+    stderr_text = stderr.decode("utf-8", errors="replace")
+    if proc.returncode not in {0, None}:
+        summary = _format_process_error_summary(proc.returncode, stderr_text, raw)
+        result = AgentDiscoveryResult(
+            provider=provider,
+            status="error",
+            raw_summary=summary,
+            warnings=[summary],
+        )
+        _record_agent_turn(session, provider, request, prompt, raw + stderr_text, result)
+        return result
     if not raw.strip() and stderr:
         result = AgentDiscoveryResult(
             provider=provider,
             status="error",
-            raw_summary=stderr.decode("utf-8", errors="replace")[:4000],
+            raw_summary=stderr_text[:4000],
         )
         _record_agent_turn(session, provider, request, prompt, result.raw_summary, result)
         return result
@@ -612,6 +649,17 @@ async def _run_provider(
         result.warnings.append(str(health.get("reason") or "used fallback agent command"))
     _record_agent_turn(session, provider, request, prompt, raw, result)
     return result
+
+
+def _format_process_error_summary(returncode: int | None, stderr_text: str, stdout_text: str) -> str:
+    parts = [f"external agent exited with exit code {returncode}"]
+    stderr_text = (stderr_text or "").strip()
+    stdout_text = (stdout_text or "").strip()
+    if stderr_text:
+        parts.append(f"stderr: {stderr_text[:3000]}")
+    if stdout_text:
+        parts.append(f"stdout: {stdout_text[:1000]}")
+    return "; ".join(parts)[:4000]
 
 
 def build_agent_prompt(request: AgentDiscoveryRequest) -> str:
