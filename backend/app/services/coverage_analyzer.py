@@ -847,6 +847,10 @@ def _merge_agent_entry_paths(
             "chain": chain,
             "evidence": item.get("reason") or item.get("external_trigger"),
             "tool": item.get("provider") or "external_agent",
+            "provider": item.get("provider") or "external_agent",
+            "turn_id": item.get("turn_id"),
+            "source_verification": item.get("source_verification") or "source_backed",
+            "validation_error": item.get("validation_error"),
             "input_hints": item.get("input_hints") or [],
         })
     return merged
@@ -1045,6 +1049,7 @@ async def _resolve_external_agent_entries_for_hits(
             results,
             repo_root=repo_root,
             object_id=object_id,
+            turn_id=f"coverage:{object_id}",
             agent_session=agent_session,
             validated_entries=validated_entries,
             unverified_entries=unverified_entries,
@@ -1100,6 +1105,7 @@ async def _resolve_external_agent_entries_for_hits(
                 round2_results,
                 repo_root=repo_root,
                 object_id=object_id,
+                turn_id=f"coverage:{object_id}:round2",
                 agent_session=agent_session,
                 validated_entries=validated_entries,
                 unverified_entries=unverified_entries,
@@ -1125,6 +1131,7 @@ def _collect_agent_entry_results(
     *,
     repo_root: Path,
     object_id: str,
+    turn_id: str,
     agent_session: AgentDiscoverySession | None,
     validated_entries: list[dict],
     unverified_entries: list[dict],
@@ -1146,31 +1153,39 @@ def _collect_agent_entry_results(
             item = {
                 "object_id": object_id,
                 "provider": result.provider,
+                "turn_id": turn_id,
                 "entry_kind": entry.entry_kind,
                 "entry_symbol": entry.entry_symbol,
                 "entry_file": entry.entry_file,
                 "chain": entry.chain,
                 "external_trigger": entry.external_trigger,
                 "reason": entry.reason,
+                "source_verification": "source_backed" if entry.validated else "needs_source_verification",
                 "validation_error": entry.validation_error,
             }
             if entry.entry_file:
                 validation = validate_agent_candidate_file(repo_root, entry.entry_file)
                 item["entry_file"] = validation.path or entry.entry_file
                 if validation.validated:
+                    item["source_verification"] = "source_backed"
+                    item["validation_error"] = None
                     validated_entries.append(item)
                     if agent_session is not None:
                         agent_session.ledger.add_validated_entry(item)
                 else:
+                    item["source_verification"] = "needs_source_verification"
                     item["validation_error"] = validation.validation_error
                     unverified_entries.append(item)
                     if agent_session is not None:
                         agent_session.ledger.add_rejected_entry(item)
             elif entry.validated:
+                item["source_verification"] = "source_backed"
+                item["validation_error"] = None
                 validated_entries.append(item)
                 if agent_session is not None:
                     agent_session.ledger.add_validated_entry(item)
             else:
+                item["source_verification"] = "needs_source_verification"
                 unverified_entries.append(item)
                 if agent_session is not None:
                     agent_session.ledger.add_rejected_entry(item)
@@ -2700,6 +2715,10 @@ def _entry_candidates_from_paths(entry_paths: list[dict]) -> list[dict]:
     for entry in entry_paths:
         entry_type = str(entry.get("entry_kind") or "external")
         tool = str(entry.get("tool") or "")
+        source_verification = (
+            entry.get("source_verification")
+            or ("source_backed" if tool != "cgc" else "graph_backed")
+        )
         candidates.append({
             "entry_type": entry_type,
             "entry_symbol": entry.get("entry_symbol") or entry.get("entry_label"),
@@ -2709,8 +2728,11 @@ def _entry_candidates_from_paths(entry_paths: list[dict]) -> list[dict]:
             "chain": entry.get("chain") or [],
             "evidence": entry.get("evidence"),
             "confidence": "high" if tool in {"ripgrep", "source-registration"} else "medium",
-            "source_verification": "source_backed" if tool != "cgc" else "graph_backed",
+            "source_verification": source_verification,
             "tool": tool,
+            "provider": entry.get("provider") or (tool if tool in {"claude-code", "opencode"} else None),
+            "turn_id": entry.get("turn_id"),
+            "validation_error": entry.get("validation_error"),
         })
     return candidates
 
