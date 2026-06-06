@@ -244,10 +244,12 @@ def test_prompt_uses_context_packet_when_present(tmp_path):
     assert "must not be treated as memory" not in prompt
 
 
-def test_missing_cli_returns_unavailable(monkeypatch):
+def test_missing_cli_returns_unavailable(tmp_path, monkeypatch):
     from app.services.external_agent_discovery import check_provider_health
 
     monkeypatch.setattr("app.services.external_agent_discovery.shutil.which", lambda _cmd: None)
+    monkeypatch.setenv("APPDATA", str(tmp_path / "missing-appdata"))
+    monkeypatch.setenv("USERPROFILE", str(tmp_path / "missing-userprofile"))
 
     health = check_provider_health("claude-code", "claude")
 
@@ -341,6 +343,26 @@ def test_provider_health_uses_claude_fallback_when_ccr_missing(monkeypatch):
     assert health["attempts"][0]["executable"] == "ccr"
 
 
+def test_provider_health_finds_windows_npm_command_when_service_path_misses_it(tmp_path, monkeypatch):
+    from app.services.external_agent_discovery import check_provider_health
+
+    npm_dir = tmp_path / "npm"
+    npm_dir.mkdir()
+    ccr_cmd = npm_dir / "ccr.cmd"
+    ccr_cmd.write_text("@echo off\n", encoding="utf-8")
+
+    monkeypatch.setattr("app.services.external_agent_discovery.platform.system", lambda: "Windows")
+    monkeypatch.setattr("app.services.external_agent_discovery.shutil.which", lambda _cmd: None)
+    monkeypatch.setenv("APPDATA", str(tmp_path))
+    monkeypatch.setenv("PATH", "C:/Windows/System32")
+
+    health = check_provider_health("claude-code", "ccr code -p --output-format json")
+
+    assert health["status"] == "available"
+    assert health["argv"][0] == str(ccr_cmd)
+    assert health["argv"][1:5] == ["code", "-p", "--output-format", "json"]
+
+
 def test_provider_health_uses_powershell_fallback_for_shell_only_ccr(monkeypatch):
     from app.services.external_agent_discovery import check_provider_health
 
@@ -393,10 +415,12 @@ def test_external_agent_adapter_health_reports_launch_kind(monkeypatch):
     assert "launch=powershell" in health.last_check
 
 
-def test_provider_health_reports_all_attempted_commands_when_unavailable(monkeypatch):
+def test_provider_health_reports_all_attempted_commands_when_unavailable(tmp_path, monkeypatch):
     from app.services.external_agent_discovery import check_provider_health
 
     monkeypatch.setattr("app.services.external_agent_discovery.shutil.which", lambda _cmd: None)
+    monkeypatch.setenv("APPDATA", str(tmp_path / "missing-appdata"))
+    monkeypatch.setenv("USERPROFILE", str(tmp_path / "missing-userprofile"))
 
     health = check_provider_health("claude-code", "ccr code -p", fallback_commands=["claude -p"])
 
@@ -406,11 +430,13 @@ def test_provider_health_reports_all_attempted_commands_when_unavailable(monkeyp
     assert [attempt["executable"] for attempt in health["attempts"]] == ["ccr", "claude"]
 
 
-def test_provider_health_includes_runtime_diagnostic_when_unavailable(monkeypatch):
+def test_provider_health_includes_runtime_diagnostic_when_unavailable(tmp_path, monkeypatch):
     from app.services.external_agent_discovery import check_provider_health
 
     monkeypatch.setattr("app.services.external_agent_discovery.shutil.which", lambda _cmd: None)
     monkeypatch.setattr("app.services.external_agent_discovery.os.getcwd", lambda: "E:/svc/codetalk")
+    monkeypatch.setenv("APPDATA", str(tmp_path / "missing-appdata"))
+    monkeypatch.setenv("USERPROFILE", str(tmp_path / "missing-userprofile"))
     monkeypatch.setenv("PATH", "C:/agent-bin;D:/tools")
 
     health = check_provider_health("claude-code", "ccr code -p", fallback_commands=["claude -p"])

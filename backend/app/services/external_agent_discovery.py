@@ -218,6 +218,8 @@ def _resolve_provider_command_attempt(command: str, provider: str | None = None)
                     resolved = first or None
                 except Exception:
                     resolved = None
+        if not resolved:
+            resolved = _resolve_windows_common_command_path(executable)
     else:
         resolved = shutil.which(executable)
     if not resolved:
@@ -260,6 +262,41 @@ def split_agent_command(command: str) -> list[str]:
         return shlex.split(value, posix=os.name != "nt")
     except ValueError:
         return value.split()
+
+
+def _resolve_windows_common_command_path(executable: str) -> str | None:
+    """Find user-level command shims that service PATH often misses on Windows."""
+    value = (executable or "").strip().strip('"')
+    if not value or any(sep in value for sep in ("/", "\\")):
+        return None
+
+    base_dirs: list[Path] = []
+    appdata = os.environ.get("APPDATA")
+    if appdata:
+        base_dirs.append(Path(appdata) / "npm")
+    userprofile = os.environ.get("USERPROFILE")
+    if userprofile:
+        base_dirs.append(Path(userprofile) / "AppData" / "Roaming" / "npm")
+
+    suffix = Path(value).suffix
+    names = [value] if suffix else [
+        f"{value}.cmd",
+        f"{value}.exe",
+        f"{value}.bat",
+        value,
+        f"{value}.ps1",
+    ]
+    seen_dirs: set[str] = set()
+    for base_dir in base_dirs:
+        key = str(base_dir).lower()
+        if key in seen_dirs:
+            continue
+        seen_dirs.add(key)
+        for name in names:
+            candidate = base_dir / name
+            if candidate.is_file():
+                return str(candidate)
+    return None
 
 
 def _agent_runtime_diagnostic(max_path_entries: int = 12) -> dict:
