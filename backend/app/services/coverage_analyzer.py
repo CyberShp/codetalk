@@ -1139,9 +1139,11 @@ def _collect_agent_entry_results(
     raw_results: list[dict],
 ) -> None:
     for result in results:
+        result_turn_id = getattr(result, "turn_id", None) or turn_id
         status_by_provider[result.provider] = result.status
         raw_results.append({
             "provider": result.provider,
+            "turn_id": result_turn_id,
             "status": result.status,
             "candidate_file_count": len(result.candidate_files),
             "candidate_entry_count": len(result.candidate_entries),
@@ -1153,7 +1155,7 @@ def _collect_agent_entry_results(
             item = {
                 "object_id": object_id,
                 "provider": result.provider,
-                "turn_id": getattr(result, "turn_id", None) or turn_id,
+                "turn_id": result_turn_id,
                 "entry_kind": entry.entry_kind,
                 "entry_symbol": entry.entry_symbol,
                 "entry_file": entry.entry_file,
@@ -1814,12 +1816,14 @@ def _ripgrep_call_sites(repo_root: Path, function_name: str) -> list[dict]:
              "-e", pattern, str(repo_root)],
             capture_output=True,
             text=True,
+            encoding="utf-8",
+            errors="replace",
             timeout=RIPGREP_TIMEOUT_SECONDS,
         )
     except (subprocess.SubprocessError, OSError):
         return []
     sites: list[dict] = []
-    for raw in proc.stdout.splitlines():
+    for raw in (proc.stdout or "").splitlines():
         # Windows paths include a drive separator (for example ``E:\``), so
         # split from the right to preserve the full path before line/text.
         parts = raw.rsplit(":", 2)

@@ -1195,6 +1195,7 @@ def test_coverage_agent_entry_collect_prefers_result_turn_id(tmp_path):
     result.turn_id = "turn_001_claude_code"
     validated: list[dict] = []
     unverified: list[dict] = []
+    raw_results: list[dict] = []
 
     coverage_mod._collect_agent_entry_results(
         [result],
@@ -1205,10 +1206,11 @@ def test_coverage_agent_entry_collect_prefers_result_turn_id(tmp_path):
         validated_entries=validated,
         unverified_entries=unverified,
         status_by_provider={},
-        raw_results=[],
+        raw_results=raw_results,
     )
 
     assert validated[0]["turn_id"] == "turn_001_claude_code"
+    assert raw_results[0]["turn_id"] == "turn_001_claude_code"
 
 
 def test_coverage_scope_enrichment_does_not_start_source_scope_agent(tmp_path, monkeypatch):
