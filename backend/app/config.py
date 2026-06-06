@@ -74,8 +74,8 @@ class Settings(BaseSettings):
     agent_discovery_store_raw_outputs: bool = True
     agent_discovery_store_source_slices: bool = True
     agent_discovery_workspace_reuse_enabled: bool = False
-    claude_code_command: str = "ccr code -p"
-    claude_code_fallback_commands: list[str] = Field(default_factory=lambda: ["claude -p"])
+    claude_code_command: str = "ccr code -p --output-format json"
+    claude_code_fallback_commands: list[str] = Field(default_factory=lambda: ["claude -p --output-format json"])
     opencode_command: str = "opencode"
     opencode_fallback_commands: list[str] = Field(default_factory=list)
     tiktoken_cache_dir: str = ""     # override path for tiktoken BPE cache (TIKTOKEN_CACHE_DIR)

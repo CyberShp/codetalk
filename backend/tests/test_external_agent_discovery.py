@@ -54,6 +54,63 @@ def test_invalid_json_does_not_enter_candidate_merge(tmp_path):
     assert "not json" in result.raw_summary
 
 
+def test_agent_output_extracts_json_from_markdown_fence(tmp_path):
+    from app.services.external_agent_discovery import parse_agent_output
+
+    src = tmp_path / "src"
+    src.mkdir()
+    (src / "tls.c").write_text("int tls;\n", encoding="utf-8")
+    raw = (
+        "```json\n"
+        + json.dumps({
+            "candidate_files": [
+                {
+                    "path": "src/tls.c",
+                    "reason": "real source path",
+                    "confidence": "high",
+                }
+            ]
+        })
+        + "\n```"
+    )
+
+    result = parse_agent_output("claude-code", raw, tmp_path)
+
+    assert result.status == "ok"
+    assert result.candidate_files[0].validated is True
+    assert result.candidate_files[0].path == "src/tls.c"
+
+
+def test_agent_output_unwraps_claude_print_json_result(tmp_path):
+    from app.services.external_agent_discovery import parse_agent_output
+
+    src = tmp_path / "src"
+    src.mkdir()
+    (src / "entry.c").write_text("void rpc_entry(void) {}\n", encoding="utf-8")
+    discovery_payload = json.dumps({
+        "candidate_entries": [
+            {
+                "entry_kind": "rpc",
+                "entry_symbol": "rpc_entry",
+                "entry_file": "src/entry.c",
+                "chain": ["rpc_entry", "target_fn"],
+                "external_trigger": "RPC request",
+            }
+        ]
+    })
+    raw = json.dumps({
+        "type": "result",
+        "subtype": "success",
+        "result": discovery_payload,
+    })
+
+    result = parse_agent_output("claude-code", raw, tmp_path)
+
+    assert result.status == "ok"
+    assert result.candidate_entries[0].validated is True
+    assert result.candidate_entries[0].entry_file == "src/entry.c"
+
+
 def test_agent_output_parses_requested_source_slices(tmp_path):
     from app.services.external_agent_discovery import parse_agent_output
 

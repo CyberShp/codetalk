@@ -305,7 +305,7 @@ def _resolve_existing_or_suffix(root: Path, candidate: Path, normalized: str) ->
 def parse_agent_output(provider: str, raw_output: str, repo_path: str | Path) -> AgentDiscoveryResult:
     raw = (raw_output or "")[: settings.external_agent_max_output_chars]
     try:
-        payload = json.loads(raw)
+        payload = _load_agent_json_payload(raw)
     except json.JSONDecodeError as exc:
         return AgentDiscoveryResult(
             provider=provider,
@@ -382,6 +382,93 @@ def parse_agent_output(provider: str, raw_output: str, repo_path: str | Path) ->
         raw_summary=str(payload.get("raw_summary") or payload.get("summary") or "")[:4000],
         warnings=[str(w) for w in payload.get("warnings") or [] if w],
     )
+
+
+def _load_agent_json_payload(raw: str) -> object:
+    raw = (raw or "").strip()
+    payload = _json_loads_flexible(raw)
+    return _unwrap_agent_payload(payload)
+
+
+def _json_loads_flexible(raw: str) -> object:
+    if not raw:
+        raise json.JSONDecodeError("empty output", raw, 0)
+    try:
+        return json.loads(raw)
+    except json.JSONDecodeError as original_exc:
+        fenced = _extract_fenced_json(raw)
+        if fenced is not None:
+            return json.loads(fenced)
+        balanced = _extract_first_json_object(raw)
+        if balanced is not None:
+            return json.loads(balanced)
+        raise original_exc
+
+
+def _unwrap_agent_payload(payload: object) -> object:
+    if not isinstance(payload, dict):
+        return payload
+    discovery_keys = {
+        "candidate_files",
+        "candidate_symbols",
+        "candidate_entries",
+        "need_source_slices",
+        "commands",
+    }
+    if any(key in payload for key in discovery_keys):
+        return payload
+    result = payload.get("result")
+    if isinstance(result, dict):
+        return _unwrap_agent_payload(result)
+    if isinstance(result, str):
+        return _unwrap_agent_payload(_json_loads_flexible(result))
+    message = payload.get("message")
+    if isinstance(message, dict):
+        content = message.get("content")
+        if isinstance(content, str):
+            return _unwrap_agent_payload(_json_loads_flexible(content))
+        if isinstance(content, list):
+            text = "\n".join(
+                str(item.get("text") or "")
+                for item in content
+                if isinstance(item, dict)
+            ).strip()
+            if text:
+                return _unwrap_agent_payload(_json_loads_flexible(text))
+    return payload
+
+
+def _extract_fenced_json(raw: str) -> str | None:
+    match = re.search(r"```(?:json)?\s*(\{.*?\})\s*```", raw, flags=re.IGNORECASE | re.DOTALL)
+    return match.group(1) if match else None
+
+
+def _extract_first_json_object(raw: str) -> str | None:
+    start = raw.find("{")
+    if start < 0:
+        return None
+    depth = 0
+    in_string = False
+    escaped = False
+    for index in range(start, len(raw)):
+        char = raw[index]
+        if in_string:
+            if escaped:
+                escaped = False
+            elif char == "\\":
+                escaped = True
+            elif char == '"':
+                in_string = False
+            continue
+        if char == '"':
+            in_string = True
+        elif char == "{":
+            depth += 1
+        elif char == "}":
+            depth -= 1
+            if depth == 0:
+                return raw[start:index + 1]
+    return None
 
 
 def merge_source_candidates(
