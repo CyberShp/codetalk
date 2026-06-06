@@ -336,7 +336,11 @@ class AgentDiscoverySession:
         max_valid = max(0, settings.agent_discovery_max_source_slices - len(self.ledger.source_slices))
         valid_added = 0
         seen_valid = {
-            (str(item.get("file_path") or ""), str(item.get("symbol") or ""))
+            (
+                str(item.get("object_id") or ""),
+                str(item.get("file_path") or ""),
+                str(item.get("symbol") or ""),
+            )
             for item in self.ledger.source_slices
         }
         seen_invalid = {
@@ -360,8 +364,9 @@ class AgentDiscoverySession:
                 path,
                 allow_directory_candidates=False,
             )
-            key = (str(validation.path or ""), str(symbol or ""))
-            if validation.validated and key in seen_valid:
+            key = (object_id, str(validation.path or ""), str(symbol or ""))
+            global_key = ("", str(validation.path or ""), str(symbol or ""))
+            if validation.validated and (key in seen_valid or global_key in seen_valid):
                 continue
             if not validation.validated:
                 invalid_key = (
@@ -379,7 +384,7 @@ class AgentDiscoverySession:
             )
             refs.append(ref)
             if ref.validated:
-                seen_valid.add((ref.file_path, str(ref.symbol or "")))
+                seen_valid.add((ref.object_id, ref.file_path, str(ref.symbol or "")))
                 valid_added += 1
             else:
                 seen_invalid.add((

@@ -366,6 +366,43 @@ def test_duplicate_source_slice_requests_do_not_consume_read_budget(tmp_path, mo
     ]
 
 
+def test_duplicate_source_slice_requests_are_deduped_per_object(tmp_path, monkeypatch):
+    from app.services.agent_discovery_session import create_agent_discovery_session
+
+    monkeypatch.setattr(
+        "app.services.agent_discovery_session.settings.agent_discovery_max_source_slices",
+        4,
+        raising=False,
+    )
+    src = tmp_path / "src"
+    src.mkdir()
+    (src / "shared.c").write_text("int shared_entry(void) { return 1; }\n", encoding="utf-8")
+    session = create_agent_discovery_session(
+        repo_path=str(tmp_path),
+        goal="coverage_entry",
+        artifact_dir=tmp_path / "artifacts",
+    )
+
+    refs_a = session.add_source_slices_from_requests(
+        [{"file_path": "src/shared.c", "symbol": "shared_entry", "reason": "obj-a"}],
+        object_id="obj-a",
+    )
+    refs_b = session.add_source_slices_from_requests(
+        [{"file_path": "src/shared.c", "symbol": "shared_entry", "reason": "obj-b"}],
+        object_id="obj-b",
+    )
+
+    assert [ref.object_id for ref in refs_a if ref.validated] == ["obj-a"]
+    assert [ref.object_id for ref in refs_b if ref.validated] == ["obj-b"]
+    assert [
+        (item["object_id"], item["file_path"], item["symbol"])
+        for item in session.ledger.source_slices
+    ] == [
+        ("obj-a", "src/shared.c", "shared_entry"),
+        ("obj-b", "src/shared.c", "shared_entry"),
+    ]
+
+
 def test_duplicate_invalid_source_slice_requests_do_not_duplicate_rejections(tmp_path, monkeypatch):
     from app.services.agent_discovery_session import create_agent_discovery_session
 
