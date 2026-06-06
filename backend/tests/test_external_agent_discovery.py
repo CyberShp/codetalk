@@ -660,6 +660,41 @@ def test_run_provider_reports_nonzero_exit_with_stderr(tmp_path, monkeypatch):
     assert "auth failed" in results[0].raw_summary
 
 
+def test_run_provider_nonzero_exit_prefers_structured_agent_error(tmp_path, monkeypatch):
+    from app.services.external_agent_discovery import AgentDiscoveryRequest, run_external_agent_discovery
+
+    agent = tmp_path / "agent_error_wrapper.py"
+    agent.write_text(
+        "import json, sys\n"
+        "sys.stdin.read()\n"
+        "print(json.dumps({"
+        "'type':'result',"
+        "'subtype':'error_during_execution',"
+        "'is_error':True,"
+        "'api_error_status':'403',"
+        "'result':'network access blocked in intranet'"
+        "}))\n"
+        "raise SystemExit(1)\n",
+        encoding="utf-8",
+    )
+    monkeypatch.setattr("app.services.external_agent_discovery.settings.claude_code_command", f"{sys.executable} {agent}")
+    monkeypatch.setattr("app.services.external_agent_discovery.settings.claude_code_fallback_commands", [])
+
+    results = asyncio.run(run_external_agent_discovery(
+        AgentDiscoveryRequest(
+            request_id="nonzero-error-wrapper",
+            repo_path=str(tmp_path),
+            analysis_object_text="tls",
+        ),
+        providers=["claude-code"],
+    ))
+
+    assert results[0].status == "error"
+    assert "error_during_execution" in results[0].raw_summary
+    assert "network access blocked" in results[0].raw_summary
+    assert "stdout: {\"type\"" not in results[0].raw_summary
+
+
 def test_run_provider_result_uses_session_turn_id(tmp_path, monkeypatch):
     from app.services.agent_discovery_session import create_agent_discovery_session
     from app.services.external_agent_discovery import AgentDiscoveryRequest, run_external_agent_discovery

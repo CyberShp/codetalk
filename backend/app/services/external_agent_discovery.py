@@ -1173,7 +1173,8 @@ async def _run_provider(
     raw = stdout.decode("utf-8", errors="replace")
     stderr_text = stderr.decode("utf-8", errors="replace")
     if proc.returncode not in {0, None}:
-        summary = _format_process_error_summary(proc.returncode, stderr_text, raw)
+        cli_error = _extract_cli_error(raw) or _extract_cli_error(stderr_text)
+        summary = cli_error or _format_process_error_summary(proc.returncode, stderr_text, raw)
         result = AgentDiscoveryResult(
             provider=provider,
             status="error",
