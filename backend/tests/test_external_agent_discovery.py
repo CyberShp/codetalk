@@ -1627,6 +1627,38 @@ def test_coverage_external_agent_warnings_use_raw_summary_when_warnings_missing(
     assert warnings == ["claude-code: spawn failed: ccr is not on backend PATH"]
 
 
+def test_agent_entry_upsert_preserves_existing_input_hints():
+    from app.services.coverage_analyzer import _upsert_agent_entry
+
+    entries = [
+        {
+            "object_id": "gap1",
+            "provider": "claude-code",
+            "entry_symbol": "rpc_tls_entry",
+            "entry_file": "src/rpc.c",
+            "validation_error": "",
+            "input_hints": ["invalid TLS PSK", "oversized capsule"],
+            "chain": ["rpc_tls_entry", "tls_handshake"],
+        }
+    ]
+
+    _upsert_agent_entry(
+        entries,
+        {
+            "object_id": "gap1",
+            "provider": "claude-code",
+            "entry_symbol": "rpc_tls_entry",
+            "entry_file": "src/rpc.c",
+            "validation_error": "",
+            "input_hints": [],
+            "chain": ["rpc_tls_entry", "tls_handshake"],
+        },
+    )
+
+    assert len(entries) == 1
+    assert entries[0]["input_hints"] == ["invalid TLS PSK", "oversized capsule"]
+
+
 def _write_tls_repo(root: Path) -> Path:
     tls_dir = root / "nof" / "nvmf_tcp" / "transport" / "tls"
     tls_dir.mkdir(parents=True)

@@ -1213,9 +1213,35 @@ def _upsert_agent_entry(target: list[dict], item: dict) -> None:
             str(existing.get("validation_error") or ""),
         )
         if existing_key == key:
+            item = {
+                **item,
+                "input_hints": _merge_ordered_strings(
+                    existing.get("input_hints"),
+                    item.get("input_hints"),
+                ),
+                "chain": _merge_ordered_strings(
+                    existing.get("chain"),
+                    item.get("chain"),
+                ),
+            }
             existing.update(item)
             return
     target.append(item)
+
+
+def _merge_ordered_strings(*values: object) -> list[str]:
+    merged: list[str] = []
+    seen: set[str] = set()
+    for value in values:
+        if not isinstance(value, list):
+            continue
+        for item in value:
+            text = str(item).strip()
+            if not text or text in seen:
+                continue
+            seen.add(text)
+            merged.append(text)
+    return merged
 
 
 def _summarize_cgc_items(items: object) -> list[dict]:
