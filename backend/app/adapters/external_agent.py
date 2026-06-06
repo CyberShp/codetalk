@@ -49,6 +49,7 @@ class ExternalAgentAdapter(BaseToolAdapter):
                 str(health.get("reason") or "").strip(),
                 launch_summary,
                 attempt_summary,
+                _format_runtime_diagnostic(health.get("diagnostic")),
             ]
             if part
         ]
@@ -94,3 +95,9 @@ def _format_attempt_summary(item: dict) -> str:
     launch = item.get("launch_kind")
     launch_suffix = f" ({launch})" if launch else ""
     return f"{item.get('command')} => {item.get('status')}{launch_suffix}"
+
+
+def _format_runtime_diagnostic(value: object) -> str:
+    if not isinstance(value, dict):
+        return ""
+    return str(value.get("summary") or "").strip()

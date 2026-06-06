@@ -161,6 +161,8 @@ async def get_tool_health(tool_name: str) -> dict[str, Any]:
             "healthy": health.is_healthy,
             "container_status": health.container_status,
             "version": health.version,
+            "last_check": health.last_check,
+            "message": health.last_check or health.version,
         }
     except asyncio.TimeoutError:
         return {
@@ -168,6 +170,8 @@ async def get_tool_health(tool_name: str) -> dict[str, Any]:
             "healthy": True,
             "container_status": "busy",
             "version": None,
+            "last_check": "health check timed out",
+            "message": "health check timed out",
         }
     except Exception:
         return {
@@ -175,6 +179,8 @@ async def get_tool_health(tool_name: str) -> dict[str, Any]:
             "healthy": False,
             "container_status": "error",
             "version": None,
+            "last_check": None,
+            "message": None,
         }
 
 

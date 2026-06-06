@@ -127,6 +127,37 @@ class TestRestartToolSuccess:
         assert "gitnexus" in body["message"]
 
 
+async def test_tool_health_exposes_adapter_last_check(tools_client, monkeypatch):
+    """Direct health endpoint should expose the same diagnostic message as tools page."""
+    from app.adapters.base import ToolCapability, ToolHealth
+
+    class FakeAgentAdapter:
+        def name(self):
+            return "claude-code"
+
+        def capabilities(self):
+            return [ToolCapability.CODE_SEARCH]
+
+        async def health_check(self):
+            return ToolHealth(
+                False,
+                "unavailable",
+                version="no agent command found",
+                last_check="ccr code -p => unavailable; PATH entries: C:/agent-bin",
+            )
+
+    client, _mock_pm = tools_client
+    monkeypatch.setattr(tools, "get_adapter", lambda _name: FakeAgentAdapter())
+
+    resp = await client.get("/api/tools/claude-code/health")
+
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["healthy"] is False
+    assert body["message"] == "ccr code -p => unavailable; PATH entries: C:/agent-bin"
+    assert body["last_check"] == body["message"]
+
+
 async def test_deepwiki_registry_uses_venv_launcher_and_declared_ports(tmp_path, monkeypatch):
     """DeepWiki native process config should start the real venv launcher on configured ports."""
     from app.config import settings

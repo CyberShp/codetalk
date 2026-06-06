@@ -359,6 +359,21 @@ def test_provider_health_reports_all_attempted_commands_when_unavailable(monkeyp
     assert [attempt["executable"] for attempt in health["attempts"]] == ["ccr", "claude"]
 
 
+def test_provider_health_includes_runtime_diagnostic_when_unavailable(monkeypatch):
+    from app.services.external_agent_discovery import check_provider_health
+
+    monkeypatch.setattr("app.services.external_agent_discovery.shutil.which", lambda _cmd: None)
+    monkeypatch.setattr("app.services.external_agent_discovery.os.getcwd", lambda: "E:/svc/codetalk")
+    monkeypatch.setenv("PATH", "C:/agent-bin;D:/tools")
+
+    health = check_provider_health("claude-code", "ccr code -p", fallback_commands=["claude -p"])
+
+    diagnostic = health["diagnostic"]
+    assert diagnostic["cwd"] == "E:/svc/codetalk"
+    assert diagnostic["path_entries"] == ["C:/agent-bin", "D:/tools"]
+    assert "PATH entries: C:/agent-bin | D:/tools" in diagnostic["summary"]
+
+
 def test_run_provider_reports_nonzero_exit_with_stderr(tmp_path, monkeypatch):
     from app.services.external_agent_discovery import AgentDiscoveryRequest, run_external_agent_discovery
 

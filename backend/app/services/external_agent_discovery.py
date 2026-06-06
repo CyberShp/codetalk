@@ -185,11 +185,13 @@ def check_provider_health(
         return health
 
     attempted = ", ".join(str(cmd).strip() for cmd in commands if str(cmd).strip()) or "<empty>"
+    diagnostic = _agent_runtime_diagnostic()
     return {
         "provider": provider,
         "status": "unavailable",
         "reason": f"no agent command found; attempted: {attempted}",
         "attempts": attempts,
+        "diagnostic": diagnostic,
     }
 
 
@@ -258,6 +260,25 @@ def split_agent_command(command: str) -> list[str]:
         return shlex.split(value, posix=os.name != "nt")
     except ValueError:
         return value.split()
+
+
+def _agent_runtime_diagnostic(max_path_entries: int = 12) -> dict:
+    try:
+        cwd = os.getcwd()
+    except OSError:
+        cwd = "<unavailable>"
+    path_env = os.environ.get("PATH") or ""
+    all_entries = [part for part in path_env.split(os.pathsep) if part]
+    visible_entries = all_entries[:max(0, max_path_entries)]
+    path_summary = " | ".join(visible_entries) if visible_entries else "<empty>"
+    if len(all_entries) > len(visible_entries):
+        path_summary = f"{path_summary} | ... (+{len(all_entries) - len(visible_entries)} more)"
+    return {
+        "cwd": cwd,
+        "path_entries": visible_entries,
+        "path_entry_count": len(all_entries),
+        "summary": f"cwd: {cwd}; PATH entries: {path_summary}",
+    }
 
 
 def _probe_windows_shell_command(executable: str) -> str | None:
