@@ -463,6 +463,7 @@ export interface CoverageEntryDiscoveryCandidate {
   entry_symbol?: string | null;
   entry_file?: string | null;
   entry_label?: string | null;
+  external_trigger?: string | null;
   chain?: string[];
   evidence?: string | null;
   confidence?: string;

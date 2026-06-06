@@ -34,6 +34,7 @@ test("coverage entry discovery renders source file, chain, and input hints", asy
             entry_symbol: "rpc_recover_session",
             entry_file: "src/rpc.c",
             entry_label: "RPC recover-session",
+            external_trigger: "RPC recover-session with invalid TLS PSK",
             chain: ["rpc_recover_session", "internal_recover"],
             evidence: "public RPC handler reaches internal function",
             confidence: "high",
@@ -87,6 +88,7 @@ test("coverage entry discovery renders source file, chain, and input hints", asy
   await page.getByRole("button", { name: /internal_recover/ }).click();
 
   await expect(page.getByText("RPC recover-session")).toBeVisible();
+  await expect(page.getByText("trigger: RPC recover-session with invalid TLS PSK")).toBeVisible();
   await expect(page.getByText("src/rpc.c")).toBeVisible();
   await expect(page.getByText("rpc_recover_session → internal_recover").first()).toBeVisible();
   await expect(page.getByText("expired auth token")).toBeVisible();

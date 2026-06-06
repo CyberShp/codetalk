@@ -337,6 +337,12 @@ function GapDesignDetail({ mr }: { mr: CoverageModuleResult }) {
                   {candidate.evidence && (
                     <div className="opacity-60 mt-0.5 font-mono">{candidate.evidence}</div>
                   )}
+                  {candidate.external_trigger &&
+                    candidate.external_trigger !== candidate.entry_label && (
+                      <div className="opacity-70 mt-0.5">
+                        trigger: {candidate.external_trigger}
+                      </div>
+                    )}
                   {(candidate.entry_file || (candidate.chain && candidate.chain.length > 0)) && (
                     <div className="mt-1 space-y-0.5 font-mono text-[10px] text-on-surface-variant/80">
                       {candidate.entry_file && <div>{candidate.entry_file}</div>}

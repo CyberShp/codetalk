@@ -2083,6 +2083,58 @@ def test_coverage_verified_agent_entry_card_keeps_provider_turn_and_validation(t
     assert candidate["validation_error"] is None
 
 
+def test_coverage_verified_agent_entry_card_keeps_external_trigger(tmp_path, monkeypatch):
+    import app.services.coverage_analyzer as coverage_mod
+    from app.services.coverage_analyzer import build_coverage_test_design
+    from app.services.external_agent_discovery import AgentCandidateEntry, AgentDiscoveryResult
+
+    src = tmp_path / "src"
+    src.mkdir()
+    (src / "session.c").write_text(
+        "void internal_recover(void *ctx) {\n"
+        "    if (ctx == 0) { return; }\n"
+        "}\n",
+        encoding="utf-8",
+    )
+    (src / "rpc.c").write_text(
+        "void rpc_recover_session(struct req *req) { enqueue_recovery(req); }\n",
+        encoding="utf-8",
+    )
+
+    async def fake_discovery(_request, **_kwargs):
+        return [
+            AgentDiscoveryResult(
+                provider="claude-code",
+                status="ok",
+                candidate_entries=[
+                    AgentCandidateEntry(
+                        entry_kind="rpc",
+                        entry_symbol="rpc_recover_session",
+                        entry_file="src/rpc.c",
+                        chain=["rpc_recover_session", "internal_recover"],
+                        external_trigger="RPC recover-session with invalid TLS PSK",
+                        reason="public RPC handler reaches internal function",
+                        validated=True,
+                    )
+                ],
+            )
+        ]
+
+    monkeypatch.setattr(coverage_mod, "run_external_agent_discovery", fake_discovery, raising=False)
+    modules = _coverage_modules(
+        "feature,module,code_location,function,triggered,hit_count\n"
+        "rec,session,src/session.c:1-4,internal_recover,false,0\n"
+    )
+
+    design = asyncio.run(
+        build_coverage_test_design(modules, workspace_id="ws-1", repo_path=str(tmp_path))
+    )
+
+    card = design["entry_discovery"]["cards"][0]
+    candidate = card["candidate_external_entries"][0]
+    assert candidate["external_trigger"] == "RPC recover-session with invalid TLS PSK"
+
+
 def test_coverage_agent_entry_collect_prefers_result_turn_id(tmp_path):
     import app.services.coverage_analyzer as coverage_mod
     from app.services.external_agent_discovery import AgentCandidateEntry, AgentDiscoveryResult

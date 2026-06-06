@@ -844,6 +844,7 @@ def _merge_agent_entry_paths(
             "entry_label": item.get("external_trigger")
             or item.get("entry_symbol")
             or "External agent entry",
+            "external_trigger": item.get("external_trigger"),
             "chain": chain,
             "evidence": item.get("reason") or item.get("external_trigger"),
             "tool": item.get("provider") or "external_agent",
@@ -2841,6 +2842,7 @@ def _entry_candidates_from_paths(entry_paths: list[dict]) -> list[dict]:
             "entry_file": entry.get("entry_file"),
             "entry_label": entry.get("entry_label")
             or _ENTRY_DISCOVERY_KIND_LABELS.get(entry_type, "外部入口"),
+            "external_trigger": entry.get("external_trigger"),
             "chain": entry.get("chain") or [],
             "evidence": entry.get("evidence"),
             "confidence": "high" if tool in {"ripgrep", "source-registration"} else "medium",
@@ -2867,6 +2869,7 @@ def _entry_candidates_from_agent_unverified(entries: list[dict]) -> list[dict]:
             "entry_label": entry.get("external_trigger")
             or entry.get("entry_symbol")
             or _ENTRY_DISCOVERY_KIND_LABELS.get(entry_type, "external entry"),
+            "external_trigger": entry.get("external_trigger"),
             "chain": entry.get("chain") or [],
             "evidence": entry.get("reason"),
             "confidence": "low",
