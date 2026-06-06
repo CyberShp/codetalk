@@ -431,12 +431,21 @@ export interface CoverageEntryDiscoveryCandidate {
   validation_error?: string | null;
 }
 
+export interface CoverageExternalAgentContext {
+  status?: string;
+  provider_status?: Record<string, string>;
+  validated_entry_count?: number;
+  unverified_entries?: CoverageEntryDiscoveryCandidate[];
+  warnings?: string[];
+}
+
 export interface CoverageEntryDiscoveryCard {
   function_name?: string | null;
   file_path?: string | null;
   module_path?: string | null;
   entry_trace_status?: string;
   candidate_external_entries?: CoverageEntryDiscoveryCandidate[];
+  external_agent?: CoverageExternalAgentContext;
   report_material_clues?: Array<Record<string, unknown>>;
   source_verification_status?: string;
   unresolved_reasons?: string[];

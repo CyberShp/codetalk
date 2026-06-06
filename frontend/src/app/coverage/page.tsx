@@ -91,6 +91,16 @@ function providerLabel(tool?: string): string {
   return tool;
 }
 
+function agentStatusClass(status?: string): string {
+  if (status === "available" || status === "ok") {
+    return "bg-green-500/10 text-green-300";
+  }
+  if (status === "timeout" || status === "invalid_output" || status === "error") {
+    return "bg-amber-500/15 text-amber-300";
+  }
+  return "bg-surface-container-high text-on-surface-variant";
+}
+
 const ENTRY_TRACE_STATUS_LABEL: Record<string, string> = {
   entry_found: "已确认外部入口",
   source_read_ok_entry_not_found: "源码已读，入口仍需确认",
@@ -198,6 +208,9 @@ function GapDesignDetail({ mr }: { mr: CoverageModuleResult }) {
   const discovery = mr.entry_discovery ?? null;
   const discoveryCandidates = discovery?.candidate_external_entries ?? [];
   const discoveryReasons = discovery?.unresolved_reasons ?? [];
+  const externalAgent = discovery?.external_agent ?? null;
+  const externalAgentProviderStatus = externalAgent?.provider_status ?? {};
+  const externalAgentWarnings = externalAgent?.warnings ?? [];
   const hasBlackBoxEntry =
     entries.length > 0 ||
     discoveryCandidates.length > 0 ||
@@ -251,7 +264,38 @@ function GapDesignDetail({ mr }: { mr: CoverageModuleResult }) {
                 {discovery.source_verification_status}
               </span>
             )}
+            {externalAgent?.status && (
+              <span className={`px-1.5 py-0.5 rounded ${agentStatusClass(externalAgent.status)}`}>
+                Agent {externalAgent.status}
+              </span>
+            )}
           </div>
+          {(Object.keys(externalAgentProviderStatus).length > 0 ||
+            externalAgentWarnings.length > 0) && (
+            <div className="space-y-1 rounded-md bg-surface-container/50 px-2 py-1.5">
+              {Object.keys(externalAgentProviderStatus).length > 0 && (
+                <div className="flex flex-wrap gap-1 text-[10px]">
+                  {Object.entries(externalAgentProviderStatus).map(([provider, status]) => (
+                    <span
+                      key={`${provider}-${status}`}
+                      className={`px-1.5 py-0.5 rounded ${agentStatusClass(status)}`}
+                    >
+                      {providerLabel(provider)}={status}
+                    </span>
+                  ))}
+                </div>
+              )}
+              {externalAgentWarnings.length > 0 && (
+                <ul className="space-y-0.5">
+                  {externalAgentWarnings.slice(0, 3).map((warning, i) => (
+                    <li key={`agent-warning-${i}`} className="text-[10px] text-amber-200/90">
+                      {warning}
+                    </li>
+                  ))}
+                </ul>
+              )}
+            </div>
+          )}
           {discoveryCandidates.length > 0 && (
             <ul className="space-y-1">
               {discoveryCandidates.slice(0, 4).map((candidate, i) => (
