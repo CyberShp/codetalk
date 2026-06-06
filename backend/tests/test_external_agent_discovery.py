@@ -1341,6 +1341,33 @@ def test_agent_directory_candidate_validates_to_source_file(tmp_path):
     assert validation.path == "nvmf_tcp/transport/tls/tls.c"
 
 
+def test_agent_cxx_candidate_file_validates(tmp_path):
+    from app.services.external_agent_discovery import validate_agent_candidate_file
+
+    src = tmp_path / "src"
+    src.mkdir()
+    (src / "transport.cxx").write_text("int transport;\n", encoding="utf-8")
+
+    validation = validate_agent_candidate_file(tmp_path, "src/transport.cxx")
+
+    assert validation.validated is True
+    assert validation.path == "src/transport.cxx"
+
+
+def test_agent_directory_candidate_prefers_cxx_source_file(tmp_path):
+    from app.services.external_agent_discovery import validate_agent_candidate_file
+
+    src = tmp_path / "src"
+    src.mkdir()
+    (src / "README.md").write_text("docs\n", encoding="utf-8")
+    (src / "transport.cxx").write_text("int transport;\n", encoding="utf-8")
+
+    validation = validate_agent_candidate_file(tmp_path, "src")
+
+    assert validation.validated is True
+    assert validation.path == "src/transport.cxx"
+
+
 def test_duplicate_gitnexus_and_agent_candidate_merges_with_boost(tmp_path):
     from app.schemas.workspace_analysis import ScopeCandidate
     from app.services.external_agent_discovery import (
