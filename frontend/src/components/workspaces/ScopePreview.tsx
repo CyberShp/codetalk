@@ -34,6 +34,16 @@ function countFileSources(
   );
 }
 
+function agentStatusClass(status: string): string {
+  if (status === "ok" || status === "available") {
+    return "bg-green-500/10 text-green-300";
+  }
+  if (status === "timeout" || status === "invalid_output" || status === "error") {
+    return "bg-amber-500/15 text-amber-300";
+  }
+  return "bg-surface-container-high text-on-surface-variant";
+}
+
 export default function ScopePreviewPanel({ preview, loading }: Props) {
   if (loading) {
     return (
@@ -61,6 +71,18 @@ export default function ScopePreviewPanel({ preview, loading }: Props) {
       {preview.agent_discovery_session_id && (
         <div className="text-[10px] text-on-surface-variant/70">
           Agent session {preview.agent_discovery_session_id} 路 turns {preview.external_agent_turn_count ?? 0}
+        </div>
+      )}
+      {preview.external_agent_status && Object.keys(preview.external_agent_status).length > 0 && (
+        <div className="flex flex-wrap gap-1 text-[10px]">
+          {Object.entries(preview.external_agent_status).map(([provider, status]) => (
+            <span
+              key={`${provider}-${status}`}
+              className={`px-1.5 py-0.5 rounded ${agentStatusClass(status)}`}
+            >
+              {provider}={status}
+            </span>
+          ))}
         </div>
       )}
       {!preview.gitnexus_available && (
