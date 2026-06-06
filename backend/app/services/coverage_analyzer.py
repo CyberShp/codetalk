@@ -1344,10 +1344,23 @@ def _build_readiness_card(
 
 def _safe_external_label(entry: dict) -> str:
     label = str(entry.get("entry_label") or entry.get("entry_symbol") or entry.get("entry_kind") or "").strip()
-    if label.startswith("JSON-RPC "):
+    if label and _safe_external_label_text(label):
         return label
     kind = str(entry.get("entry_kind") or "public").strip()
     return f"{kind} entry"
+
+
+def _safe_external_label_text(label: str) -> bool:
+    text = str(label or "").strip()
+    if not text:
+        return False
+    if text.startswith("JSON-RPC "):
+        return True
+    if _lint_black_box_text(text):
+        return False
+    if re.fullmatch(r"[A-Za-z_]\w*", text) and "_" in text:
+        return False
+    return True
 
 
 def _lint_black_box_text(text: str) -> list[dict]:

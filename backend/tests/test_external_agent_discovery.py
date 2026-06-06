@@ -1059,6 +1059,25 @@ def test_coverage_agent_verified_entry_makes_gap_black_box_ready(tmp_path, monke
     assert gap["entry_paths"][0]["tool"] == "claude-code"
     assert gap["entry_paths"][0]["entry_symbol"] == "rpc_recover_session"
     assert gap["black_box_cases"]
+    case_text = json.dumps(gap["black_box_cases"], ensure_ascii=False)
+    assert "RPC recover-session" in case_text
+
+
+def test_safe_external_label_preserves_trigger_but_rejects_internal_symbol():
+    from app.services.coverage_analyzer import _safe_external_label
+
+    assert _safe_external_label({
+        "entry_kind": "rpc",
+        "entry_label": "RPC recover-session",
+    }) == "RPC recover-session"
+    assert _safe_external_label({
+        "entry_kind": "rpc",
+        "entry_label": "rpc_recover_session",
+    }) == "rpc entry"
+    assert _safe_external_label({
+        "entry_kind": "api",
+        "entry_label": "src/rpc.c:12",
+    }) == "api entry"
 
 
 def test_coverage_verified_agent_entry_card_keeps_provider_turn_and_validation(tmp_path, monkeypatch):
