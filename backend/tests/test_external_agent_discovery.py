@@ -621,6 +621,48 @@ def test_coverage_agent_unverified_entry_stays_pending(tmp_path, monkeypatch):
     assert card["candidate_external_entries"][0]["source_verification"] == "needs_source_verification"
 
 
+def test_coverage_agent_invalid_output_is_visible_in_entry_discovery(tmp_path, monkeypatch):
+    import app.services.coverage_analyzer as coverage_mod
+    from app.services.coverage_analyzer import build_coverage_test_design
+    from app.services.external_agent_discovery import AgentDiscoveryResult
+
+    src = tmp_path / "src"
+    src.mkdir()
+    (src / "util.c").write_text(
+        "void internal_helper(void) {\n"
+        "    if (1) { return; }\n"
+        "}\n",
+        encoding="utf-8",
+    )
+
+    async def fake_discovery(_request, **_kwargs):
+        return [
+            AgentDiscoveryResult(
+                provider="claude-code",
+                status="invalid_output",
+                raw_summary="I do not see a task yet",
+                warnings=["agent output did not contain discovery JSON"],
+            )
+        ]
+
+    monkeypatch.setattr(coverage_mod, "run_external_agent_discovery", fake_discovery, raising=False)
+    modules = _coverage_modules(
+        "feature,module,code_location,function,triggered,hit_count\n"
+        "h,util,src/util.c:1-3,internal_helper,false,0\n"
+    )
+
+    design = asyncio.run(
+        build_coverage_test_design(modules, workspace_id="ws-1", repo_path=str(tmp_path))
+    )
+
+    gap = [g for g in design["gaps"] if g.get("kind") == "function"][0]
+    card = design["entry_discovery"]["cards"][0]
+
+    assert gap["tool_status"]["external_agent"] == "invalid_output"
+    assert card["external_agent"]["provider_status"]["claude-code"] == "invalid_output"
+    assert card["external_agent"]["warnings"] == ["claude-code: agent output did not contain discovery JSON"]
+
+
 def test_coverage_agent_source_slice_round2_finds_verified_entry(tmp_path, monkeypatch):
     import app.services.coverage_analyzer as coverage_mod
     from app.services.coverage_analyzer import build_coverage_test_design

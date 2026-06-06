@@ -1106,7 +1106,7 @@ async def _resolve_external_agent_entries_for_hits(
                 raw_results=raw_results,
             )
         return object_id, {
-            "status": "available" if any(s == "ok" for s in status_by_provider.values()) else "unavailable",
+            "status": _external_agent_status_from_provider_status(status_by_provider),
             "provider_status": status_by_provider,
             "validated_entries": validated_entries,
             "unverified_entries": unverified_entries,
@@ -2304,10 +2304,7 @@ def _gap_tool_status(
     external_agent_status = "unavailable"
     if isinstance(agent_context, dict):
         provider_status = agent_context.get("provider_status") or {}
-        if any(status == "ok" for status in provider_status.values()):
-            external_agent_status = "available"
-        elif any(status == "timeout" for status in provider_status.values()):
-            external_agent_status = "timeout"
+        external_agent_status = _external_agent_status_from_provider_status(provider_status)
     return {
         # Joern is reserved but not yet wired up.
         "joern": "unavailable_reserved",
@@ -2820,12 +2817,43 @@ def _compact_cgc_context(cgc: object) -> dict:
 def _compact_external_agent_context(context: object) -> dict:
     if not isinstance(context, dict):
         return {}
+    raw_results = context.get("raw_results") or []
     return {
         "status": context.get("status"),
         "provider_status": context.get("provider_status") or {},
         "validated_entry_count": len(context.get("validated_entries") or []),
         "unverified_entries": (context.get("unverified_entries") or [])[:8],
+        "warnings": _external_agent_warnings(raw_results),
     }
+
+
+def _external_agent_status_from_provider_status(provider_status: object) -> str:
+    if not isinstance(provider_status, dict) or not provider_status:
+        return "unavailable"
+    statuses = {str(status) for status in provider_status.values() if status}
+    if "ok" in statuses:
+        return "available"
+    for status in ("invalid_output", "error", "timeout", "rejected_command"):
+        if status in statuses:
+            return status
+    return "unavailable"
+
+
+def _external_agent_warnings(raw_results: object) -> list[str]:
+    warnings: list[str] = []
+    if not isinstance(raw_results, list):
+        return warnings
+    for item in raw_results:
+        if not isinstance(item, dict):
+            continue
+        provider = str(item.get("provider") or "external_agent")
+        for warning in item.get("warnings") or []:
+            text = str(warning).strip()
+            if text:
+                warnings.append(f"{provider}: {text}")
+        if len(warnings) >= 12:
+            break
+    return warnings[:12]
 
 
 def _entry_discovery_unresolved_reasons(
@@ -3666,8 +3694,14 @@ def _aggregate_tool_status(function_gaps: list[dict], *, repo_path: str | None) 
     ]
     if any(status == "available" for status in external_agent_statuses):
         external_agent = "available"
+    elif any(status == "invalid_output" for status in external_agent_statuses):
+        external_agent = "invalid_output"
+    elif any(status == "error" for status in external_agent_statuses):
+        external_agent = "error"
     elif any(status == "timeout" for status in external_agent_statuses):
         external_agent = "timeout"
+    elif any(status == "rejected_command" for status in external_agent_statuses):
+        external_agent = "rejected_command"
     else:
         external_agent = "unavailable"
     source_ok = any(g.get("source_window") for g in function_gaps)
