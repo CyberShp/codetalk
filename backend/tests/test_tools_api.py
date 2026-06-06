@@ -212,6 +212,32 @@ async def test_external_agent_startup_probe_endpoint_returns_diagnostics(tools_c
     assert body["message"] == "startup_probe_ok at E:/repo"
 
 
+async def test_external_agent_startup_probe_exception_returns_diagnostics(tools_client, monkeypatch):
+    """Startup probe adapter failures should be visible as structured diagnostics."""
+
+    class BrokenAgentAdapter:
+        def name(self):
+            return "claude-code"
+
+        async def startup_probe(self, repo_path=None):
+            raise RuntimeError("spawn failed: ccr is not on backend PATH")
+
+    client, _mock_pm = tools_client
+    monkeypatch.setattr(tools, "get_adapter", lambda _name: BrokenAgentAdapter())
+
+    resp = await client.post(
+        "/api/tools/claude-code/startup-probe",
+        params={"repo_path": "E:/repo"},
+    )
+
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["provider"] == "claude-code"
+    assert body["healthy"] is False
+    assert body["status"] == "error"
+    assert body["message"] == "spawn failed: ccr is not on backend PATH"
+
+
 async def test_startup_probe_rejects_tools_without_probe_support(tools_client, monkeypatch):
     class FakeAdapter:
         def name(self):

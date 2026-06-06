@@ -209,6 +209,13 @@ async def startup_probe_tool(tool_name: str, repo_path: str | None = None) -> di
             "status": "timeout",
             "message": "startup probe timed out",
         }
+    except Exception as exc:
+        return {
+            "provider": tool_name,
+            "healthy": False,
+            "status": "error",
+            "message": str(exc),
+        }
 
 
 @router.post("/{tool_name}/start")
