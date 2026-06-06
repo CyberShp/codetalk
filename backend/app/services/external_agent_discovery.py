@@ -579,7 +579,11 @@ def parse_agent_output(provider: str, raw_output: str, repo_path: str | Path) ->
             reason=str(item.get("reason") or ""),
         )
         if entry.entry_file:
-            validation = validate_agent_candidate_file(repo_path, entry.entry_file)
+            validation = validate_agent_candidate_file(
+                repo_path,
+                entry.entry_file,
+                allow_directory_candidates=False,
+            )
             entry.validated = validation.validated
             entry.validation_error = validation.validation_error
             if validation.path:
