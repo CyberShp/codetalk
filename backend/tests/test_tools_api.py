@@ -86,6 +86,7 @@ class TestGetPmFromAppState:
         assert agent["healthy"] is True
         assert agent["status"] == "available"
         assert "fallback" in agent["message"]
+        assert agent["last_check"] == "primary command unavailable; using fallback: claude -p"
 
 
 class TestStartToolSuccess:
@@ -155,6 +156,29 @@ async def test_tool_health_exposes_adapter_last_check(tools_client, monkeypatch)
     body = resp.json()
     assert body["healthy"] is False
     assert body["message"] == "ccr code -p => unavailable; PATH entries: C:/agent-bin"
+    assert body["last_check"] == body["message"]
+
+
+async def test_tool_health_exception_exposes_diagnostic_message(tools_client, monkeypatch):
+    """Health endpoint errors should remain actionable instead of returning null text."""
+
+    class BrokenAgentAdapter:
+        def name(self):
+            return "claude-code"
+
+        async def health_check(self):
+            raise RuntimeError("settings parse failed: CLAUDE_CODE_FALLBACK_COMMANDS")
+
+    client, _mock_pm = tools_client
+    monkeypatch.setattr(tools, "get_adapter", lambda _name: BrokenAgentAdapter())
+
+    resp = await client.get("/api/tools/claude-code/health")
+
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["healthy"] is False
+    assert body["container_status"] == "error"
+    assert body["message"] == "settings parse failed: CLAUDE_CODE_FALLBACK_COMMANDS"
     assert body["last_check"] == body["message"]
 
 

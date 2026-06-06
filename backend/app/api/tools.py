@@ -68,6 +68,7 @@ async def _adapter_proc_status(adapter) -> dict[str, Any]:
             "managed": False,
             "capabilities": [c.value for c in adapter.capabilities()],
             "version": health.version,
+            "last_check": health.last_check,
             "message": health.last_check or health.version,
         }
     except asyncio.TimeoutError:
@@ -78,6 +79,7 @@ async def _adapter_proc_status(adapter) -> dict[str, Any]:
             "status": "busy",
             "managed": False,
             "capabilities": [c.value for c in adapter.capabilities()],
+            "last_check": "health check timed out",
             "message": "health check timed out",
         }
     except Exception as exc:
@@ -88,6 +90,7 @@ async def _adapter_proc_status(adapter) -> dict[str, Any]:
             "status": "error",
             "managed": False,
             "capabilities": [c.value for c in adapter.capabilities()],
+            "last_check": str(exc),
             "message": str(exc),
         }
 
@@ -173,14 +176,15 @@ async def get_tool_health(tool_name: str) -> dict[str, Any]:
             "last_check": "health check timed out",
             "message": "health check timed out",
         }
-    except Exception:
+    except Exception as exc:
+        message = str(exc)
         return {
             "name": adapter.name(),
             "healthy": False,
             "container_status": "error",
             "version": None,
-            "last_check": None,
-            "message": None,
+            "last_check": message,
+            "message": message,
         }
 
 
