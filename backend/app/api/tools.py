@@ -184,6 +184,29 @@ async def get_tool_health(tool_name: str) -> dict[str, Any]:
         }
 
 
+@router.post("/{tool_name}/startup-probe")
+async def startup_probe_tool(tool_name: str, repo_path: str | None = None) -> dict[str, Any]:
+    """Actually start an adapter-only external agent once and report diagnostics."""
+    try:
+        adapter = get_adapter(tool_name)
+    except KeyError:
+        raise HTTPException(status_code=404, detail=f"Unknown tool: {tool_name}")
+
+    probe = getattr(adapter, "startup_probe", None)
+    if not callable(probe):
+        raise HTTPException(status_code=400, detail=f"Tool does not support startup probe: {tool_name}")
+
+    try:
+        return await probe(repo_path=repo_path)
+    except asyncio.TimeoutError:
+        return {
+            "provider": tool_name,
+            "healthy": False,
+            "status": "timeout",
+            "message": "startup probe timed out",
+        }
+
+
 @router.post("/{tool_name}/start")
 async def start_tool(tool_name: str, request: Request) -> dict[str, Any]:
     """Start a tool process by name."""

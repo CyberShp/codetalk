@@ -158,6 +158,50 @@ async def test_tool_health_exposes_adapter_last_check(tools_client, monkeypatch)
     assert body["last_check"] == body["message"]
 
 
+async def test_external_agent_startup_probe_endpoint_returns_diagnostics(tools_client, monkeypatch):
+    """Startup probe should actually delegate to the adapter diagnostic method."""
+
+    class FakeAgentAdapter:
+        def name(self):
+            return "claude-code"
+
+        async def startup_probe(self, repo_path=None):
+            return {
+                "provider": "claude-code",
+                "healthy": True,
+                "status": "ok",
+                "message": f"startup_probe_ok at {repo_path}",
+            }
+
+    client, _mock_pm = tools_client
+    monkeypatch.setattr(tools, "get_adapter", lambda _name: FakeAgentAdapter())
+
+    resp = await client.post(
+        "/api/tools/claude-code/startup-probe",
+        params={"repo_path": "E:/repo"},
+    )
+
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["healthy"] is True
+    assert body["status"] == "ok"
+    assert body["message"] == "startup_probe_ok at E:/repo"
+
+
+async def test_startup_probe_rejects_tools_without_probe_support(tools_client, monkeypatch):
+    class FakeAdapter:
+        def name(self):
+            return "gitnexus"
+
+    client, _mock_pm = tools_client
+    monkeypatch.setattr(tools, "get_adapter", lambda _name: FakeAdapter())
+
+    resp = await client.post("/api/tools/gitnexus/startup-probe")
+
+    assert resp.status_code == 400
+    assert "does not support startup probe" in resp.json()["detail"]
+
+
 async def test_deepwiki_registry_uses_venv_launcher_and_declared_ports(tmp_path, monkeypatch):
     """DeepWiki native process config should start the real venv launcher on configured ports."""
     from app.config import settings

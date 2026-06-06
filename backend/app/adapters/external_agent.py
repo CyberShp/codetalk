@@ -11,6 +11,7 @@ from app.config import settings
 from app.services.external_agent_discovery import (
     AgentDiscoveryRequest,
     check_provider_health,
+    probe_external_agent_startup,
     provider_fallback_commands,
     run_external_agent_discovery,
 )
@@ -60,6 +61,9 @@ class ExternalAgentAdapter(BaseToolAdapter):
             version=str(health.get("path") or health.get("reason") or ""),
             last_check=last_check,
         )
+
+    async def startup_probe(self, repo_path: str | None = None) -> dict:
+        return await probe_external_agent_startup(self._provider, repo_path=repo_path)
 
     async def prepare(self, request: AnalysisRequest) -> None:
         return None

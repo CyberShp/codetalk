@@ -888,6 +888,128 @@ async def run_external_agent_discovery(
     return await asyncio.gather(*tasks)
 
 
+async def probe_external_agent_startup(
+    provider: str,
+    repo_path: str | Path | None = None,
+) -> dict:
+    """Start one provider with a minimal stdin probe and report diagnostics."""
+    command_attr = PROVIDER_COMMANDS.get(provider)
+    if not command_attr:
+        return {
+            "provider": provider,
+            "healthy": False,
+            "status": "unavailable",
+            "message": "unknown provider",
+        }
+
+    command = str(getattr(settings, command_attr, "") or "")
+    health = check_provider_health(
+        provider,
+        command,
+        fallback_commands=provider_fallback_commands(provider),
+    )
+    if health.get("status") != "available":
+        message = _format_unavailable_health_summary(health)
+        return {
+            "provider": provider,
+            "healthy": False,
+            "status": "unavailable",
+            "message": message,
+            "health": health,
+        }
+
+    argv = [str(item) for item in health.get("argv") or []]
+    cwd = Path(repo_path or os.getcwd()).resolve()
+    if not cwd.exists() or not cwd.is_dir():
+        return {
+            "provider": provider,
+            "healthy": False,
+            "status": "error",
+            "message": f"probe cwd does not exist: {cwd}",
+            "health": health,
+        }
+
+    prompt = _build_startup_probe_prompt()
+    env = os.environ.copy()
+    env["CODETALK_AGENT_READONLY"] = "1"
+    env["CODETALK_REPO_PATH"] = str(cwd)
+    try:
+        proc = await asyncio.create_subprocess_exec(
+            *argv,
+            cwd=str(cwd),
+            stdin=asyncio.subprocess.PIPE,
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.PIPE,
+            env=env,
+        )
+    except OSError as exc:
+        return {
+            "provider": provider,
+            "healthy": False,
+            "status": "error",
+            "message": str(exc),
+            "health": health,
+        }
+
+    try:
+        stdout, stderr = await asyncio.wait_for(
+            proc.communicate(prompt.encode("utf-8")),
+            timeout=max(1, settings.external_agent_startup_probe_timeout_sec),
+        )
+        await _wait_for_process_exit(proc)
+    except asyncio.CancelledError:
+        await _kill_and_wait_process(proc)
+        raise
+    except asyncio.TimeoutError:
+        await _kill_and_wait_process(proc)
+        return {
+            "provider": provider,
+            "healthy": False,
+            "status": "timeout",
+            "message": "startup probe timed out",
+            "health": health,
+        }
+
+    raw = stdout.decode("utf-8", errors="replace")
+    stderr_text = stderr.decode("utf-8", errors="replace")
+    if proc.returncode not in {0, None}:
+        message = _format_process_error_summary(proc.returncode, stderr_text, raw)
+        return {
+            "provider": provider,
+            "healthy": False,
+            "status": "error",
+            "message": message,
+            "health": health,
+            "stderr": stderr_text[:4000],
+            "stdout": raw[:4000],
+        }
+
+    result = parse_agent_output(provider, raw, cwd)
+    message = result.raw_summary or (result.warnings[0] if result.warnings else result.status)
+    if health.get("used_fallback"):
+        message = f"{message}; {health.get('reason')}"
+    return {
+        "provider": provider,
+        "healthy": result.status == "ok",
+        "status": result.status,
+        "message": message[:4000],
+        "health": health,
+        "warnings": result.warnings,
+        "stdout": raw[:4000],
+        "stderr": stderr_text[:4000],
+    }
+
+
+def _build_startup_probe_prompt() -> str:
+    return (
+        "CodeTalk external-agent startup probe. Do not inspect files, do not run commands, "
+        "do not use network, and do not modify anything. Return ONLY this JSON object with "
+        "the same schema and no markdown:\n"
+        '{"candidate_files":[],"candidate_symbols":[],"candidate_entries":[],'
+        '"need_source_slices":[],"commands":[],"raw_summary":"startup_probe_ok"}'
+    )
+
+
 async def _run_provider(
     provider: str,
     request: AgentDiscoveryRequest,

@@ -59,6 +59,7 @@ class Settings(BaseSettings):
     cgc_cli_timeout: int = 1800       # seconds for CGC CLI indexing / graph queries
     external_agents_enabled: bool = True
     external_agent_timeout_sec: int = 90
+    external_agent_startup_probe_timeout_sec: int = 30
     external_agent_max_parallel: int = 2
     external_agent_max_output_chars: int = 120000
     external_agent_enforce_readonly_cli: bool = True

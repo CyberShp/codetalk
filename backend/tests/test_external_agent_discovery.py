@@ -804,6 +804,75 @@ def test_run_provider_uses_powershell_wrapper_stdin(tmp_path, monkeypatch):
     assert results[0].warnings == ["stdin=true"]
 
 
+def test_startup_probe_unavailable_includes_health_diagnostics(tmp_path, monkeypatch):
+    from app.services.external_agent_discovery import probe_external_agent_startup
+
+    monkeypatch.setattr(
+        "app.services.external_agent_discovery.check_provider_health",
+        lambda provider, command, fallback_commands=None: {
+            "status": "unavailable",
+            "reason": "no agent command found; attempted: ccr code -p, claude -p",
+            "diagnostic": {"summary": "PATH entries: C:/agent-bin"},
+        },
+    )
+
+    result = asyncio.run(probe_external_agent_startup("claude-code", repo_path=tmp_path))
+
+    assert result["healthy"] is False
+    assert result["status"] == "unavailable"
+    assert "no agent command found" in result["message"]
+    assert result["health"]["diagnostic"]["summary"] == "PATH entries: C:/agent-bin"
+
+
+def test_startup_probe_launches_agent_and_parses_json(tmp_path, monkeypatch):
+    from app.services.external_agent_discovery import probe_external_agent_startup
+
+    captured: dict = {}
+
+    class FakeProc:
+        returncode = 0
+
+        async def communicate(self, data):
+            captured["stdin"] = data.decode("utf-8")
+            return (
+                b'{"candidate_files":[],"candidate_symbols":[],"candidate_entries":[],'
+                b'"need_source_slices":[],"commands":[],"raw_summary":"startup_probe_ok"}',
+                b"",
+            )
+
+        async def wait(self):
+            return self.returncode
+
+    async def fake_create_subprocess_exec(*args, **kwargs):
+        captured["argv"] = args
+        captured["cwd"] = kwargs.get("cwd")
+        captured["env"] = kwargs.get("env")
+        return FakeProc()
+
+    monkeypatch.setattr(
+        "app.services.external_agent_discovery.check_provider_health",
+        lambda provider, command, fallback_commands=None: {
+            "status": "available",
+            "argv": ["fake-agent", "-p"],
+            "path": "fake-agent",
+        },
+    )
+    monkeypatch.setattr(
+        "app.services.external_agent_discovery.asyncio.create_subprocess_exec",
+        fake_create_subprocess_exec,
+    )
+
+    result = asyncio.run(probe_external_agent_startup("claude-code", repo_path=tmp_path))
+
+    assert result["healthy"] is True
+    assert result["status"] == "ok"
+    assert result["message"] == "startup_probe_ok"
+    assert captured["argv"] == ("fake-agent", "-p")
+    assert captured["cwd"] == str(tmp_path.resolve())
+    assert captured["env"]["CODETALK_AGENT_READONLY"] == "1"
+    assert "startup probe" in captured["stdin"]
+
+
 def test_candidate_outside_repo_and_non_source_are_rejected(tmp_path):
     from app.services.external_agent_discovery import validate_agent_candidate_file
 
