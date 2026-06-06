@@ -60,6 +60,42 @@ def test_rejected_file_enters_context_do_not_repeat(tmp_path):
     assert (tmp_path / "artifacts" / "external_agent_context_packets" / "packet_001.json").exists()
 
 
+def test_context_packet_treats_legacy_facts_without_object_id_as_global(tmp_path):
+    from app.services.agent_discovery_session import (
+        AgentContextPacketInput,
+        create_agent_discovery_session,
+    )
+
+    session = create_agent_discovery_session(
+        repo_path=str(tmp_path),
+        goal="workspace_scope",
+        artifact_dir=tmp_path / "artifacts",
+    )
+    session.ledger.validated_files.append({
+        "path": "src/legacy.c",
+        "provider": "claude-code",
+        "reason": "legacy artifact before object_id existed",
+    })
+    session.ledger.rejected_files.append({
+        "path": "src/missing.c",
+        "provider": "claude-code",
+        "reason": "file_not_found",
+    })
+
+    packet = session.build_context_packet(
+        AgentContextPacketInput(
+            object_id="obj-new",
+            current_goal="source_scope",
+            analysis_object_text="legacy",
+            expanded_terms=["legacy"],
+        )
+    )
+
+    assert packet["validated_facts"]["files"][0]["path"] == "src/legacy.c"
+    assert packet["rejected_facts"]["files"][0]["path"] == "src/missing.c"
+    assert "src/missing.c" in packet["do_not_repeat"]["paths"]
+
+
 def test_rejected_entry_file_enters_context_do_not_repeat(tmp_path):
     from app.services.agent_discovery_session import (
         AgentContextPacketInput,

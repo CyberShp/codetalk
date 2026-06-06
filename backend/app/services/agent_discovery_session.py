@@ -460,14 +460,14 @@ def _find_symbol_line(lines: list[str], symbol: str | None) -> int:
 def _filter_by_object(items: list[dict], object_id: str) -> list[dict]:
     return [
         item for item in items
-        if not object_id or item.get("object_id") in {"", object_id}
+        if not object_id or item.get("object_id") in {None, "", object_id}
     ]
 
 
 def _source_slices_for_object(source_slices: list[dict], object_id: str) -> list[dict]:
     relevant = [
         item for item in source_slices
-        if not object_id or item.get("object_id") in {"", object_id}
+        if not object_id or item.get("object_id") in {None, "", object_id}
     ]
     return relevant[-settings.agent_discovery_max_source_slices:]
 
