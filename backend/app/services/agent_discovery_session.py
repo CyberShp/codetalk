@@ -373,11 +373,7 @@ class AgentDiscoverySession:
             "relevant_source_slices": self.ledger.source_slices[-settings.agent_discovery_max_source_slices:],
             "previous_agent_findings": _verified_agent_findings(self.ledger, data.object_id),
             "do_not_repeat": {
-                "paths": sorted({
-                    str(item.get("path") or "")
-                    for item in self.ledger.rejected_files
-                    if not data.object_id or item.get("object_id") in {"", data.object_id}
-                } - {""}),
+                "paths": _do_not_repeat_paths(self.ledger, data.object_id),
             },
             "requested_output_schema": _agent_output_schema(),
             "context_overflow": {
@@ -411,6 +407,15 @@ def _filter_by_object(items: list[dict], object_id: str) -> list[dict]:
         item for item in items
         if not object_id or item.get("object_id") in {"", object_id}
     ]
+
+
+def _do_not_repeat_paths(ledger: AgentDiscoveryLedger, object_id: str) -> list[str]:
+    values: set[str] = set()
+    for item in _filter_by_object(ledger.rejected_files, object_id):
+        values.add(str(item.get("path") or ""))
+    for item in _filter_by_object(ledger.rejected_entries, object_id):
+        values.add(str(item.get("entry_file") or ""))
+    return sorted(values - {""})
 
 
 def _verified_agent_findings(ledger: AgentDiscoveryLedger, object_id: str) -> list[dict]:

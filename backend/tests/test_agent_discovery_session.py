@@ -60,6 +60,38 @@ def test_rejected_file_enters_context_do_not_repeat(tmp_path):
     assert (tmp_path / "artifacts" / "external_agent_context_packets" / "packet_001.json").exists()
 
 
+def test_rejected_entry_file_enters_context_do_not_repeat(tmp_path):
+    from app.services.agent_discovery_session import (
+        AgentContextPacketInput,
+        create_agent_discovery_session,
+    )
+
+    session = create_agent_discovery_session(
+        repo_path=str(tmp_path),
+        goal="coverage_entry",
+        artifact_dir=tmp_path / "artifacts",
+    )
+    session.ledger.add_rejected_entry({
+        "object_id": "obj_rpc",
+        "provider": "claude-code",
+        "entry_symbol": "rpc_entry",
+        "entry_file": "src",
+        "validation_error": "directory_candidate_not_allowed",
+    })
+
+    packet = session.build_context_packet(
+        AgentContextPacketInput(
+            object_id="obj_rpc",
+            current_goal="coverage_entry",
+            analysis_object_text="internal_gap",
+            expanded_terms=["internal_gap"],
+        )
+    )
+
+    assert "src" in packet["do_not_repeat"]["paths"]
+    assert packet["rejected_facts"]["entries"][0]["validation_error"] == "directory_candidate_not_allowed"
+
+
 def test_raw_output_is_not_used_as_fact_in_context_packet(tmp_path):
     from app.services.agent_discovery_session import (
         AgentContextPacketInput,
