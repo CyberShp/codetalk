@@ -585,7 +585,8 @@ def parse_agent_output(provider: str, raw_output: str, repo_path: str | Path) ->
             if validation.path:
                 entry.entry_file = validation.path
         else:
-            entry.validated = bool(entry.entry_symbol and entry.chain)
+            entry.validated = False
+            entry.validation_error = "entry_file_missing"
         entries.append(entry)
 
     commands = [str(c) for c in payload.get("commands") or [] if c]

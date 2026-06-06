@@ -114,6 +114,27 @@ def test_agent_output_unwraps_claude_print_json_result(tmp_path):
     assert result.candidate_entries[0].entry_file == "src/entry.c"
 
 
+def test_agent_entry_without_source_file_is_not_validated(tmp_path):
+    from app.services.external_agent_discovery import parse_agent_output
+
+    raw = json.dumps({
+        "candidate_entries": [
+            {
+                "entry_kind": "rpc",
+                "entry_symbol": "rpc_entry",
+                "chain": ["rpc_entry", "target_fn"],
+                "external_trigger": "RPC request",
+            }
+        ]
+    })
+
+    result = parse_agent_output("claude-code", raw, tmp_path)
+
+    assert result.status == "ok"
+    assert result.candidate_entries[0].validated is False
+    assert result.candidate_entries[0].validation_error == "entry_file_missing"
+
+
 def test_agent_output_reports_success_wrapper_without_discovery_json(tmp_path):
     from app.services.external_agent_discovery import parse_agent_output
 
@@ -1331,6 +1352,46 @@ def test_coverage_agent_entry_collect_rejects_directory_entry_file(tmp_path):
     assert unverified[0]["entry_file"] == "src"
     assert unverified[0]["source_verification"] == "needs_source_verification"
     assert unverified[0]["validation_error"] == "directory_candidate_not_allowed"
+
+
+def test_coverage_agent_entry_collect_rejects_entry_without_file(tmp_path):
+    import app.services.coverage_analyzer as coverage_mod
+    from app.services.external_agent_discovery import AgentCandidateEntry, AgentDiscoveryResult
+
+    result = AgentDiscoveryResult(
+        provider="claude-code",
+        status="ok",
+        candidate_entries=[
+            AgentCandidateEntry(
+                entry_kind="rpc",
+                entry_symbol="rpc_entry",
+                entry_file=None,
+                chain=["rpc_entry", "internal_gap"],
+                external_trigger="RPC entry",
+                reason="agent returned no source file",
+                validated=True,
+            )
+        ],
+    )
+    validated: list[dict] = []
+    unverified: list[dict] = []
+
+    coverage_mod._collect_agent_entry_results(
+        [result],
+        repo_root=tmp_path,
+        object_id="src/internal.c:internal_gap:1",
+        turn_id="coverage:src/internal.c:internal_gap:1",
+        agent_session=None,
+        validated_entries=validated,
+        unverified_entries=unverified,
+        status_by_provider={},
+        raw_results=[],
+    )
+
+    assert validated == []
+    assert unverified[0]["entry_file"] is None
+    assert unverified[0]["source_verification"] == "needs_source_verification"
+    assert unverified[0]["validation_error"] == "entry_file_missing"
 
 
 def test_coverage_scope_enrichment_does_not_start_source_scope_agent(tmp_path, monkeypatch):

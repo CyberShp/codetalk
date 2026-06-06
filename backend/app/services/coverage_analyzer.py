@@ -1184,14 +1184,9 @@ def _collect_agent_entry_results(
                     unverified_entries.append(item)
                     if agent_session is not None:
                         agent_session.ledger.add_rejected_entry(item)
-            elif entry.validated:
-                item["source_verification"] = "source_backed"
-                item["validation_error"] = None
-                validated_entries.append(item)
-                if agent_session is not None:
-                    agent_session.ledger.add_validated_entry(item)
             else:
                 item["source_verification"] = "needs_source_verification"
+                item["validation_error"] = item.get("validation_error") or "entry_file_missing"
                 unverified_entries.append(item)
                 if agent_session is not None:
                     agent_session.ledger.add_rejected_entry(item)
