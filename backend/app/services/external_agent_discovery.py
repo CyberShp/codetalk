@@ -13,6 +13,7 @@ import platform
 import re
 import shlex
 import shutil
+import subprocess
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
 from typing import Literal
@@ -174,6 +175,7 @@ def check_provider_health(
             "configured_command": candidate_command,
             "argv": attempt["argv"],
             "path": attempt["path"],
+            "launch_kind": attempt.get("launch_kind") or "exec",
             "used_fallback": index > 0,
             "attempts": attempts,
         }
@@ -206,8 +208,6 @@ def _resolve_provider_command_attempt(command: str, provider: str | None = None)
             where = shutil.which("where.exe")
             if where:
                 try:
-                    import subprocess
-
                     proc = subprocess.run(
                         [where, executable], capture_output=True, text=True, timeout=3
                     )
@@ -218,6 +218,19 @@ def _resolve_provider_command_attempt(command: str, provider: str | None = None)
     else:
         resolved = shutil.which(executable)
     if not resolved:
+        shell_resolution = _probe_windows_shell_command(executable)
+        if shell_resolution:
+            guarded_argv = apply_readonly_cli_guard(provider, argv)
+            shell_argv = _windows_shell_agent_argv(guarded_argv)
+            return {
+                "command": command,
+                "status": "available",
+                "argv": shell_argv,
+                "configured_argv": guarded_argv,
+                "executable": executable,
+                "path": shell_resolution,
+                "launch_kind": "powershell",
+            }
         return {
             "command": command,
             "argv": argv,
@@ -225,12 +238,14 @@ def _resolve_provider_command_attempt(command: str, provider: str | None = None)
             "status": "unavailable",
             "reason": f"command not found: {executable}",
         }
+    resolved_argv = [resolved, *argv[1:]]
     return {
         "command": command,
         "status": "available",
-        "argv": apply_readonly_cli_guard(provider, argv),
+        "argv": apply_readonly_cli_guard(provider, resolved_argv),
         "executable": executable,
         "path": resolved,
+        "launch_kind": "exec",
     }
 
 
@@ -242,6 +257,64 @@ def split_agent_command(command: str) -> list[str]:
         return shlex.split(value, posix=os.name != "nt")
     except ValueError:
         return value.split()
+
+
+def _probe_windows_shell_command(executable: str) -> str | None:
+    if not settings.external_agent_windows_shell_fallback_enabled:
+        return None
+    if not platform.system().lower().startswith("win"):
+        return None
+    powershell = _find_powershell()
+    if not powershell:
+        return None
+    try:
+        proc = subprocess.run(
+            [
+                powershell,
+                "-NoLogo",
+                "-NonInteractive",
+                "-Command",
+                (
+                    "$cmd = Get-Command -ErrorAction SilentlyContinue "
+                    f"{_powershell_single_quote(executable)}; "
+                    "if ($cmd) { $cmd.Source; if (-not $cmd.Source) { $cmd.Definition } }"
+                ),
+            ],
+            capture_output=True,
+            text=True,
+            timeout=3,
+        )
+    except Exception:
+        return None
+    if proc.returncode != 0:
+        return None
+    summary = (proc.stdout or "").strip()
+    return summary or f"PowerShell command: {executable}"
+
+
+def _find_powershell() -> str | None:
+    for name in ("powershell.exe", "pwsh.exe"):
+        found = shutil.which(name)
+        if found:
+            return found
+    return None
+
+
+def _windows_shell_agent_argv(argv: list[str]) -> list[str]:
+    powershell = _find_powershell() or "powershell.exe"
+    base = [powershell, "-NoLogo", "-NonInteractive", "-ExecutionPolicy", "Bypass"]
+    if not settings.external_agent_windows_shell_load_profile:
+        base.append("-NoProfile")
+    quoted = " ".join(_powershell_single_quote(item) for item in argv)
+    script = (
+        "$__codetalkPrompt = [Console]::In.ReadToEnd(); "
+        f"$__codetalkPrompt | & {quoted}"
+    )
+    return [*base, "-Command", script]
+
+
+def _powershell_single_quote(value: str) -> str:
+    return "'" + str(value).replace("'", "''") + "'"
 
 
 def provider_fallback_commands(provider: str) -> list[str]:

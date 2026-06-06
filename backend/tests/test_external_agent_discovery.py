@@ -218,7 +218,8 @@ def test_provider_command_supports_subcommand_style(monkeypatch):
     health = check_provider_health("claude-code", "ccr code")
 
     assert health["status"] == "available"
-    assert health["argv"][:2] == ["ccr", "code"]
+    assert health["argv"][0] == "C:/tools/ccr.exe"
+    assert health["argv"][1] == "code"
 
 
 def test_provider_health_appends_claude_readonly_cli_guard(monkeypatch):
@@ -238,6 +239,21 @@ def test_provider_health_appends_claude_readonly_cli_guard(monkeypatch):
     assert "Bash(git grep:*)" in allowed
     assert "--disallowedTools" in health["argv"]
     assert "Edit,Write,NotebookEdit" in health["argv"]
+
+
+def test_provider_health_launches_resolved_windows_command_path(monkeypatch):
+    from app.services.external_agent_discovery import check_provider_health
+
+    monkeypatch.setattr(
+        "app.services.external_agent_discovery.shutil.which",
+        lambda cmd: "C:/Users/me/AppData/Roaming/npm/claude.CMD" if cmd == "claude" else None,
+    )
+
+    health = check_provider_health("claude-code", "claude -p --output-format json")
+
+    assert health["status"] == "available"
+    assert health["argv"][0] == "C:/Users/me/AppData/Roaming/npm/claude.CMD"
+    assert health["attempts"][0]["argv"][0] == "C:/Users/me/AppData/Roaming/npm/claude.CMD"
 
 
 def test_provider_health_does_not_duplicate_explicit_readonly_guard(monkeypatch):
@@ -269,10 +285,39 @@ def test_provider_health_uses_claude_fallback_when_ccr_missing(monkeypatch):
     health = check_provider_health("claude-code", "ccr code -p", fallback_commands=["claude -p"])
 
     assert health["status"] == "available"
-    assert health["argv"][:2] == ["claude", "-p"]
+    assert health["argv"][0] == "C:/tools/claude.cmd"
+    assert health["argv"][1] == "-p"
     assert health["used_fallback"] is True
     assert health["attempts"][0]["status"] == "unavailable"
     assert health["attempts"][0]["executable"] == "ccr"
+
+
+def test_provider_health_uses_powershell_fallback_for_shell_only_ccr(monkeypatch):
+    from app.services.external_agent_discovery import check_provider_health
+
+    monkeypatch.setattr(
+        "app.services.external_agent_discovery.shutil.which",
+        lambda cmd: "C:/Windows/System32/WindowsPowerShell/v1.0/powershell.exe"
+        if cmd.lower() == "powershell.exe"
+        else None,
+    )
+    monkeypatch.setattr(
+        "app.services.external_agent_discovery.platform.system",
+        lambda: "Windows",
+    )
+    monkeypatch.setattr(
+        "app.services.external_agent_discovery._probe_windows_shell_command",
+        lambda executable: "PowerShell function ccr",
+        raising=False,
+    )
+
+    health = check_provider_health("claude-code", "ccr code -p --output-format json")
+
+    assert health["status"] == "available"
+    assert health["launch_kind"] == "powershell"
+    assert health["argv"][0].endswith("powershell.exe")
+    assert "& 'ccr' 'code' '-p' '--output-format' 'json'" in health["argv"][-1]
+    assert "--allowedTools" in health["argv"][-1]
 
 
 def test_provider_health_reports_all_attempted_commands_when_unavailable(monkeypatch):
