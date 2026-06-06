@@ -794,7 +794,12 @@ def merge_source_candidates(
         validation = validate_agent_candidate_file(repo_path, cand.path)
         if not validation.validated or not validation.path:
             continue
-        by_key[validation.path.lower()] = cand.model_copy(update={"path": validation.resolved_path or cand.path})
+        key = validation.path.lower()
+        normalized = cand.model_copy(update={"path": validation.resolved_path or cand.path})
+        if key in by_key:
+            by_key[key] = _merge_existing_source_candidate(by_key[key], normalized)
+        else:
+            by_key[key] = normalized
 
     for result in agent_results:
         if result.status != "ok":
@@ -855,6 +860,20 @@ def _source_candidate_priority(source: str) -> int:
         "gitnexus": 2,
         "material": 3,
     }.get(str(source or ""), 9)
+
+
+def _merge_existing_source_candidate(current: ScopeCandidate, incoming: ScopeCandidate) -> ScopeCandidate:
+    current_priority = _source_candidate_priority(current.source)
+    incoming_priority = _source_candidate_priority(incoming.source)
+    keep = current if current_priority <= incoming_priority else incoming
+    other = incoming if keep is current else current
+    confidence = "high" if "high" in {keep.confidence, other.confidence} else keep.confidence
+    other_source = str(other.source or "candidate")
+    other_reason = str(other.reason or "also matched")
+    return keep.model_copy(update={
+        "confidence": confidence,
+        "reason": f"{keep.reason}; {other_source} also matched: {other_reason}",
+    })
 
 
 async def run_external_agent_discovery(

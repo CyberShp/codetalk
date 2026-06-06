@@ -936,6 +936,41 @@ def test_duplicate_local_and_agent_candidate_keeps_local_source(tmp_path):
     assert "claude-code" in merged[0].reason
 
 
+def test_duplicate_existing_candidates_keep_best_source_priority(tmp_path):
+    from app.schemas.workspace_analysis import ScopeCandidate
+    from app.services.external_agent_discovery import merge_source_candidates
+
+    src = tmp_path / "nof" / "nvmf_tcp" / "transport" / "tls"
+    src.mkdir(parents=True)
+    source = src / "tls.c"
+    source.write_text("int tls;\n", encoding="utf-8")
+
+    existing = [
+        ScopeCandidate(
+            path=str(source),
+            source="repo_search",
+            confidence="medium",
+            reason="local content search matched transport/tls",
+            role="primary",
+        ),
+        ScopeCandidate(
+            path=str(source),
+            source="gitnexus",
+            confidence="high",
+            reason="graph duplicate",
+            role="related",
+        ),
+    ]
+
+    merged, warnings = merge_source_candidates(tmp_path, existing, [])
+
+    assert warnings == []
+    assert len(merged) == 1
+    assert merged[0].source == "repo_search"
+    assert merged[0].confidence == "high"
+    assert "gitnexus" in merged[0].reason
+
+
 def test_workspace_resolver_cancels_agent_task_when_scope_resolution_is_cancelled(tmp_path, monkeypatch):
     import app.services.workspace_scope_resolver as scope_mod
 
