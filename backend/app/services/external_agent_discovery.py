@@ -940,7 +940,7 @@ def merge_source_candidates(
     for result in agent_results:
         if result.status != "ok":
             if result.status != "unavailable":
-                detail = result.warnings[0] if result.warnings else ""
+                detail = result.warnings[0] if result.warnings else result.raw_summary
                 suffix = f" - {detail}" if detail else ""
                 warnings.append(f"{result.provider}: {result.status}{suffix}")
             continue

@@ -2953,6 +2953,10 @@ def _external_agent_warnings(raw_results: object) -> list[str]:
             text = str(warning).strip()
             if text:
                 warnings.append(f"{provider}: {text}")
+        if not item.get("warnings"):
+            text = str(item.get("raw_summary") or "").strip()
+            if text:
+                warnings.append(f"{provider}: {text}")
         if len(warnings) >= 12:
             break
     return warnings[:12]

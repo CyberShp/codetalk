@@ -1597,6 +1597,36 @@ def test_merge_source_candidates_includes_agent_warning_detail(tmp_path):
     assert warnings == ["claude-code: invalid_output - agent output did not contain discovery JSON"]
 
 
+def test_merge_source_candidates_uses_raw_summary_when_warnings_missing(tmp_path):
+    from app.services.external_agent_discovery import AgentDiscoveryResult, merge_source_candidates
+
+    result = AgentDiscoveryResult(
+        provider="claude-code",
+        status="error",
+        raw_summary="spawn failed: ccr is not on backend PATH",
+    )
+
+    merged, warnings = merge_source_candidates(tmp_path, [], [result])
+
+    assert merged == []
+    assert warnings == ["claude-code: error - spawn failed: ccr is not on backend PATH"]
+
+
+def test_coverage_external_agent_warnings_use_raw_summary_when_warnings_missing():
+    from app.services.coverage_analyzer import _external_agent_warnings
+
+    warnings = _external_agent_warnings([
+        {
+            "provider": "claude-code",
+            "status": "error",
+            "warnings": [],
+            "raw_summary": "spawn failed: ccr is not on backend PATH",
+        }
+    ])
+
+    assert warnings == ["claude-code: spawn failed: ccr is not on backend PATH"]
+
+
 def _write_tls_repo(root: Path) -> Path:
     tls_dir = root / "nof" / "nvmf_tcp" / "transport" / "tls"
     tls_dir.mkdir(parents=True)
