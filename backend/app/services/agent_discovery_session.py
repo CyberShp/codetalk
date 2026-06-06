@@ -333,19 +333,34 @@ class AgentDiscoverySession:
         refs: list[SourceSliceRef] = []
         max_valid = max(0, settings.agent_discovery_max_source_slices - len(self.ledger.source_slices))
         valid_added = 0
+        seen_valid = {
+            (str(item.get("file_path") or ""), str(item.get("symbol") or ""))
+            for item in self.ledger.source_slices
+        }
         for item in requests:
             if valid_added >= max_valid:
                 break
             if not isinstance(item, dict):
                 continue
+            path = str(item.get("file_path") or item.get("path") or "")
+            symbol = str(item.get("symbol") or "") or None
+            validation = validate_agent_candidate_file(
+                self.repo_path,
+                path,
+                allow_directory_candidates=False,
+            )
+            key = (str(validation.path or ""), str(symbol or ""))
+            if validation.validated and key in seen_valid:
+                continue
             ref = self.add_source_slice(
-                str(item.get("file_path") or item.get("path") or ""),
-                symbol=str(item.get("symbol") or "") or None,
+                path,
+                symbol=symbol,
                 reason=str(item.get("reason") or "agent requested source slice"),
                 object_id=object_id,
             )
             refs.append(ref)
             if ref.validated:
+                seen_valid.add((ref.file_path, str(ref.symbol or "")))
                 valid_added += 1
         return refs
 

@@ -248,6 +248,37 @@ def test_invalid_source_slice_requests_do_not_consume_read_budget(tmp_path, monk
     assert session.ledger.source_slices[0]["file_path"] == "src/tls.c"
 
 
+def test_duplicate_source_slice_requests_do_not_consume_read_budget(tmp_path, monkeypatch):
+    from app.services.agent_discovery_session import create_agent_discovery_session
+
+    monkeypatch.setattr(
+        "app.services.agent_discovery_session.settings.agent_discovery_max_source_slices",
+        2,
+        raising=False,
+    )
+    src = tmp_path / "src"
+    src.mkdir()
+    (src / "tls.c").write_text("int tls;\n", encoding="utf-8")
+    (src / "rpc.c").write_text("int rpc;\n", encoding="utf-8")
+    session = create_agent_discovery_session(
+        repo_path=str(tmp_path),
+        goal="coverage_entry",
+        artifact_dir=tmp_path / "artifacts",
+    )
+
+    refs = session.add_source_slices_from_requests([
+        {"file_path": "src/tls.c", "symbol": "tls", "reason": "first"},
+        {"file_path": "src/tls.c", "symbol": "tls", "reason": "duplicate"},
+        {"file_path": "src/rpc.c", "symbol": "rpc", "reason": "second unique"},
+    ])
+
+    assert [ref.file_path for ref in refs if ref.validated] == ["src/tls.c", "src/rpc.c"]
+    assert [item["file_path"] for item in session.ledger.source_slices] == [
+        "src/tls.c",
+        "src/rpc.c",
+    ]
+
+
 def test_context_packet_overflow_requests_next_round(tmp_path, monkeypatch):
     from app.services.agent_discovery_session import (
         AgentContextPacketInput,
