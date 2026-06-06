@@ -206,6 +206,10 @@ def test_provider_health_appends_claude_readonly_cli_guard(monkeypatch):
     health = check_provider_health("claude-code", "claude -p --output-format json")
 
     assert health["status"] == "available"
+    assert "--allowedTools" in health["argv"]
+    allowed = health["argv"][health["argv"].index("--allowedTools") + 1]
+    assert "Bash(rg:*)" in allowed
+    assert "Bash(git grep:*)" in allowed
     assert "--disallowedTools" in health["argv"]
     assert "Edit,Write,NotebookEdit" in health["argv"]
 

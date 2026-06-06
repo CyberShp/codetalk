@@ -78,7 +78,22 @@ class Settings(BaseSettings):
     claude_code_command: str = "ccr code -p --output-format json"
     claude_code_fallback_commands: list[str] = Field(default_factory=lambda: ["claude -p --output-format json"])
     claude_code_readonly_args: list[str] = Field(
-        default_factory=lambda: ["--disallowedTools", "Edit,Write,NotebookEdit"]
+        default_factory=lambda: [
+            "--allowedTools",
+            (
+                "Read,Glob,Grep,"
+                "Bash(rg:*),"
+                "Bash(git grep:*),"
+                "Bash(git ls-files:*),"
+                "Bash(Get-ChildItem:*),"
+                "Bash(Get-Content:*),"
+                "Bash(dir:*),"
+                "Bash(type:*),"
+                "Bash(python -c:*)"
+            ),
+            "--disallowedTools",
+            "Edit,Write,NotebookEdit",
+        ]
     )
     opencode_command: str = "opencode"
     opencode_fallback_commands: list[str] = Field(default_factory=list)
