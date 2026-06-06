@@ -1713,6 +1713,57 @@ def test_agent_entry_upsert_preserves_existing_trigger_and_reason():
     assert entries[0]["reason"] == "public RPC handler reaches TLS handshake"
 
 
+def test_filter_resolved_unverified_entries_keeps_distinct_symbol_in_same_file():
+    from app.services.coverage_analyzer import _filter_resolved_agent_unverified_entries
+
+    filtered = _filter_resolved_agent_unverified_entries(
+        [
+            {
+                "provider": "claude-code",
+                "entry_symbol": "rpc_tls_entry",
+                "entry_file": "src/rpc.c",
+            },
+            {
+                "provider": "claude-code",
+                "entry_symbol": "rpc_admin_entry",
+                "entry_file": "src/rpc.c",
+            },
+        ],
+        [
+            {
+                "provider": "claude-code",
+                "entry_symbol": "rpc_tls_entry",
+                "entry_file": "src/rpc.c",
+            }
+        ],
+    )
+
+    assert [entry["entry_symbol"] for entry in filtered] == ["rpc_admin_entry"]
+
+
+def test_filter_resolved_unverified_entries_drops_symbolless_same_file_candidate():
+    from app.services.coverage_analyzer import _filter_resolved_agent_unverified_entries
+
+    filtered = _filter_resolved_agent_unverified_entries(
+        [
+            {
+                "provider": "claude-code",
+                "entry_symbol": "",
+                "entry_file": "src/rpc.c",
+            }
+        ],
+        [
+            {
+                "provider": "claude-code",
+                "entry_symbol": "",
+                "entry_file": "src/rpc.c",
+            }
+        ],
+    )
+
+    assert filtered == []
+
+
 def _write_tls_repo(root: Path) -> Path:
     tls_dir = root / "nof" / "nvmf_tcp" / "transport" / "tls"
     tls_dir.mkdir(parents=True)

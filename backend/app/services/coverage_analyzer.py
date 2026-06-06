@@ -2809,7 +2809,7 @@ def _filter_resolved_agent_unverified_entries(
         file_path = str(entry.get("entry_file") or "")
         if symbol:
             resolved_keys.add((provider, "symbol", symbol))
-        if file_path:
+        elif file_path:
             resolved_keys.add((provider, "file", file_path))
 
     filtered: list[dict] = []
@@ -2821,7 +2821,7 @@ def _filter_resolved_agent_unverified_entries(
         file_path = str(entry.get("entry_file") or "")
         if symbol and (provider, "symbol", symbol) in resolved_keys:
             continue
-        if file_path and (provider, "file", file_path) in resolved_keys:
+        if not symbol and file_path and (provider, "file", file_path) in resolved_keys:
             continue
         filtered.append(entry)
     return filtered
