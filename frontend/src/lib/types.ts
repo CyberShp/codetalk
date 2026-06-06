@@ -127,6 +127,38 @@ export interface ToolInfo {
   capabilities?: string[];
 }
 
+export interface ExternalAgentProbeAttempt {
+  command?: string;
+  status?: string;
+  reason?: string;
+  launch_kind?: string;
+}
+
+export interface ExternalAgentStartupProbeResult {
+  provider: string;
+  healthy: boolean;
+  status: string;
+  message: string;
+  warnings?: string[];
+  stdout?: string;
+  stderr?: string;
+  health?: {
+    reason?: string;
+    command?: string;
+    configured_command?: string;
+    path?: string;
+    launch_kind?: string;
+    used_fallback?: boolean;
+    attempts?: ExternalAgentProbeAttempt[];
+    diagnostic?: {
+      summary?: string;
+      cwd?: string;
+      path_entries?: string[];
+      path_entry_count?: number;
+    };
+  };
+}
+
 export type ExportFormat = "md" | "docx" | "xml";
 
 export interface ChatMessage {

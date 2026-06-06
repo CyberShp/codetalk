@@ -22,6 +22,7 @@ import type {
   DeepWikiRepoCreate,
   AnalysisPlan,
   ScopePreview,
+  ExternalAgentStartupProbeResult,
 } from "./types";
 
 const CONFIGURED_API_BASE = process.env.NEXT_PUBLIC_API_URL?.replace(/\/$/, "");
@@ -244,6 +245,16 @@ export const api = {
         `/api/tools/${name}/restart`,
         { method: "POST" },
       ),
+
+    startupProbe: (name: string, repoPath?: string) => {
+      const suffix = repoPath
+        ? `?${new URLSearchParams({ repo_path: repoPath }).toString()}`
+        : "";
+      return request<ExternalAgentStartupProbeResult>(
+        `/api/tools/${name}/startup-probe${suffix}`,
+        { method: "POST" },
+      );
+    },
   },
 
   // ── 覆盖率分析 ──

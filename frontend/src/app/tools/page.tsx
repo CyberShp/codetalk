@@ -11,9 +11,10 @@ import {
   HelpCircle,
   Rocket,
   ExternalLink,
+  Activity,
 } from "lucide-react";
 import { api } from "@/lib/api";
-import type { ToolInfo } from "@/lib/types";
+import type { ExternalAgentStartupProbeResult, ToolInfo } from "@/lib/types";
 
 const STATUS_DISPLAY: Record<
   string,
@@ -70,6 +71,10 @@ export default function ToolsPage() {
   const [restartingTool, setRestartingTool] = useState<string | null>(null);
   const [startingTool, setStartingTool] = useState<string | null>(null);
   const [stoppingTool, setStoppingTool] = useState<string | null>(null);
+  const [probingTool, setProbingTool] = useState<string | null>(null);
+  const [probeResults, setProbeResults] = useState<
+    Record<string, ExternalAgentStartupProbeResult>
+  >({});
 
   const loadTools = useCallback(async () => {
     setLoading(true);
@@ -134,6 +139,19 @@ export default function ToolsPage() {
     },
     [loadTools],
   );
+
+  const handleStartupProbe = useCallback(async (name: string) => {
+    setProbingTool(name);
+    setError(null);
+    try {
+      const result = await api.tools.startupProbe(name);
+      setProbeResults((current) => ({ ...current, [name]: result }));
+    } catch (err: unknown) {
+      setError(err instanceof Error ? err.message : "Startup probe failed");
+    } finally {
+      setProbingTool(null);
+    }
+  }, []);
 
   return (
     <div className="w-full px-4 xl:px-6">
@@ -231,7 +249,9 @@ export default function ToolsPage() {
             const isRestarting = restartingTool === tool.name;
             const isStarting = startingTool === tool.name;
             const isStopping = stoppingTool === tool.name;
-            const isBusy = isRestarting || isStarting || isStopping;
+            const isProbing = probingTool === tool.name;
+            const isBusy = isRestarting || isStarting || isStopping || isProbing;
+            const probeResult = probeResults[tool.name];
 
             return (
               <div
@@ -309,8 +329,74 @@ export default function ToolsPage() {
 
                 <div className="flex items-center gap-2">
                   {!managed ? (
-                    <div className="text-xs text-on-surface-variant/80">
-                      Agent CLI is started on demand by CodeTalk; no long-running process is managed here.
+                    <div className="flex flex-col gap-3">
+                      <div className="flex flex-wrap items-center gap-2">
+                        <div className="text-xs text-on-surface-variant/80">
+                          Agent CLI is started on demand by CodeTalk; no long-running process is managed here.
+                        </div>
+                        <button
+                          onClick={() => handleStartupProbe(tool.name)}
+                          disabled={isBusy}
+                          className="inline-flex items-center gap-2 px-3 py-1.5 text-xs bg-surface-container-high text-on-surface rounded-lg border border-outline-variant/30 hover:bg-surface-container transition-colors disabled:opacity-50"
+                        >
+                          {isProbing ? (
+                            <Loader2 size={13} className="animate-spin" />
+                          ) : (
+                            <Activity size={13} />
+                          )}
+                          Startup probe
+                        </button>
+                      </div>
+                      {probeResult && (
+                        <div className="rounded-lg border border-outline-variant/30 bg-surface px-3 py-2 text-xs">
+                          <div className="flex flex-wrap items-center gap-2 mb-2">
+                            <span
+                              className={`inline-flex items-center rounded-full px-2 py-0.5 font-medium ${
+                                probeResult.healthy
+                                  ? "bg-green-400/10 text-green-500"
+                                  : "bg-red-400/10 text-red-500"
+                              }`}
+                            >
+                              {probeResult.status}
+                            </span>
+                            <span className="text-on-surface-variant">
+                              {probeResult.provider}
+                            </span>
+                          </div>
+                          <p className="break-words text-on-surface">
+                            {probeResult.message}
+                          </p>
+                          {probeResult.health?.attempts &&
+                            probeResult.health.attempts.length > 0 && (
+                              <div className="mt-2 space-y-1">
+                                {probeResult.health.attempts.map((attempt, index) => (
+                                  <div
+                                    key={`${attempt.command ?? "attempt"}-${index}`}
+                                    className="flex flex-wrap items-center gap-2 text-on-surface-variant"
+                                  >
+                                    <code className="max-w-full break-words rounded bg-surface-container px-1.5 py-0.5 font-data text-[11px] text-on-surface">
+                                      {attempt.command ?? "unknown command"}
+                                    </code>
+                                    <span>{attempt.status ?? "unknown"}</span>
+                                    {attempt.launch_kind && (
+                                      <span>{attempt.launch_kind}</span>
+                                    )}
+                                    {attempt.reason && (
+                                      <span className="break-words">
+                                        {attempt.reason}
+                                      </span>
+                                    )}
+                                  </div>
+                                ))}
+                              </div>
+                            )}
+                          {probeResult.health?.diagnostic?.summary && (
+                            <p className="mt-2 break-words text-on-surface-variant">
+                              {probeResult.health.diagnostic.summary}
+                            </p>
+                          )}
+                        </div>
+                      )}
                     </div>
                   ) : tool.healthy ? (
                     <>
