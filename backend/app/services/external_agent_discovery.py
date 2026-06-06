@@ -503,7 +503,7 @@ def validate_agent_candidate_file(
     allow_directory_candidates: bool = True,
 ) -> CandidateValidation:
     root = Path(repo_path).resolve()
-    raw = (path or "").strip().strip('"')
+    raw = (path or "").strip().strip('"').strip("'").strip("`")
     if not raw:
         return CandidateValidation(input_path=path, validation_error="empty_path")
     normalized = raw.replace("\\", "/")
