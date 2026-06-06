@@ -892,6 +892,50 @@ def test_duplicate_gitnexus_and_agent_candidate_merges_with_boost(tmp_path):
     assert "claude-code" in merged[0].reason
 
 
+def test_duplicate_local_and_agent_candidate_keeps_local_source(tmp_path):
+    from app.schemas.workspace_analysis import ScopeCandidate
+    from app.services.external_agent_discovery import (
+        AgentCandidateFile,
+        AgentDiscoveryResult,
+        merge_source_candidates,
+    )
+
+    src = tmp_path / "nof" / "nvmf_tcp" / "transport" / "tls"
+    src.mkdir(parents=True)
+    source = src / "tls.c"
+    source.write_text("int tls;\n", encoding="utf-8")
+
+    existing = [
+        ScopeCandidate(
+            path=str(source),
+            source="repo_search",
+            confidence="medium",
+            reason="local content search matched transport/tls",
+            role="primary",
+        )
+    ]
+    agent = AgentDiscoveryResult(
+        provider="claude-code",
+        status="ok",
+        candidate_files=[
+            AgentCandidateFile(
+                path="nof/nvmf_tcp/transport/tls/tls.c",
+                reason="agent also found transport/tls",
+                confidence="high",
+                validated=True,
+            )
+        ],
+    )
+
+    merged, warnings = merge_source_candidates(tmp_path, existing, [agent])
+
+    assert warnings == []
+    assert len(merged) == 1
+    assert merged[0].source == "repo_search"
+    assert merged[0].confidence == "high"
+    assert "claude-code" in merged[0].reason
+
+
 def test_workspace_resolver_cancels_agent_task_when_scope_resolution_is_cancelled(tmp_path, monkeypatch):
     import app.services.workspace_scope_resolver as scope_mod
 
@@ -1026,7 +1070,7 @@ async def _resolve_nvme_tls(repo_root: Path):
     )
 
 
-def test_workspace_resolver_uses_external_agent_when_frontend_is_repo_root(tmp_path, monkeypatch):
+def test_workspace_resolver_keeps_local_candidate_when_agent_matches_same_file(tmp_path, monkeypatch):
     from app.services.external_agent_discovery import AgentCandidateFile, AgentDiscoveryResult
 
     source = _write_tls_repo(tmp_path)
@@ -1055,8 +1099,9 @@ def test_workspace_resolver_uses_external_agent_when_frontend_is_repo_root(tmp_p
     resolved = asyncio.run(_resolve_nvme_tls(tmp_path))
 
     assert resolved.candidate_files
-    assert resolved.candidate_files[0].source == "external_agent"
+    assert resolved.candidate_files[0].source == "repo_search"
     assert resolved.candidate_files[0].role == "primary"
+    assert "claude-code" in resolved.candidate_files[0].reason
     assert resolved.candidate_files[0].path.replace("\\", "/").endswith(
         "nof/nvmf_tcp/transport/tls/tls.c"
     )

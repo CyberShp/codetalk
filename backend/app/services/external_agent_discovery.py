@@ -821,6 +821,12 @@ def merge_source_candidates(
                     "confidence": confidence,
                     "reason": by_key[key].reason + f"; {result.provider} also matched",
                 })
+            elif key in by_key and _source_candidate_priority(by_key[key].source) <= _source_candidate_priority("external_agent"):
+                existing_confidence = by_key[key].confidence
+                by_key[key] = by_key[key].model_copy(update={
+                    "confidence": "high" if "high" in {existing_confidence, confidence} else existing_confidence,
+                    "reason": by_key[key].reason + f"; {result.provider} also matched",
+                })
             else:
                 by_key[key] = ScopeCandidate(
                     path=validation.resolved_path,
@@ -833,12 +839,22 @@ def merge_source_candidates(
     merged = sorted(
         by_key.values(),
         key=lambda c: (
-            0 if c.source == "external_agent" else 1,
+            _source_candidate_priority(c.source),
             0 if c.confidence == "high" else 1,
             str(c.path or "").lower(),
         ),
     )
     return merged, warnings
+
+
+def _source_candidate_priority(source: str) -> int:
+    return {
+        "manual": 0,
+        "repo_search": 0,
+        "external_agent": 1,
+        "gitnexus": 2,
+        "material": 3,
+    }.get(str(source or ""), 9)
 
 
 async def run_external_agent_discovery(
