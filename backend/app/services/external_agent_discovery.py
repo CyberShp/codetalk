@@ -555,7 +555,7 @@ def validate_agent_candidate_file(
 def _normalize_agent_path_text(path: str) -> str:
     raw = (path or "").strip().strip('"').strip("'").strip("`")
     raw = re.sub(
-        rf"(?i)({'|'.join(re.escape(ext) for ext in SOURCE_EXTS)})(?::\d+(?::\d+)?|#L\d+)$",
+        rf"(?i)({'|'.join(re.escape(ext) for ext in SOURCE_EXTS)})(?::\d+(?::\d+|-\d+)?|#L\d+(?:-L\d+)?)$",
         lambda match: match.group(1),
         raw,
     )
