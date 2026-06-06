@@ -312,12 +312,28 @@ function GapDesignDetail({ mr }: { mr: CoverageModuleResult }) {
                   {candidate.confidence && (
                     <span className="opacity-60"> · {candidate.confidence}</span>
                   )}
-                  {candidate.tool && (
-                    <span className="opacity-60"> via {providerLabel(candidate.tool)}</span>
-                  )}
-                  {candidate.validation_error && (
-                    <span className="opacity-60"> {candidate.validation_error}</span>
-                  )}
+                  <div className="mt-1 flex flex-wrap gap-1 text-[10px]">
+                    {(candidate.provider || candidate.tool) && (
+                      <span className="rounded bg-surface-container-high px-1.5 py-0.5 text-on-surface-variant">
+                        {providerLabel(candidate.provider ?? candidate.tool)}
+                      </span>
+                    )}
+                    {candidate.turn_id && (
+                      <span className="rounded bg-surface-container-high px-1.5 py-0.5 text-on-surface-variant">
+                        {candidate.turn_id}
+                      </span>
+                    )}
+                    {candidate.source_verification && (
+                      <span className="rounded bg-primary/10 px-1.5 py-0.5 text-primary">
+                        {candidate.source_verification}
+                      </span>
+                    )}
+                    {candidate.validation_error && (
+                      <span className="rounded bg-amber-500/15 px-1.5 py-0.5 text-amber-300">
+                        {candidate.validation_error}
+                      </span>
+                    )}
+                  </div>
                   {candidate.evidence && (
                     <div className="opacity-60 mt-0.5 font-mono">{candidate.evidence}</div>
                   )}

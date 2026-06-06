@@ -419,6 +419,10 @@ export interface CoverageEntryPath {
   call_line?: number | null;
   evidence?: string | null;
   tool?: string;
+  provider?: string | null;
+  turn_id?: string | null;
+  source_verification?: string;
+  validation_error?: string | null;
 }
 
 export interface CoverageEntryDiscoveryCandidate {
@@ -431,6 +435,8 @@ export interface CoverageEntryDiscoveryCandidate {
   confidence?: string;
   source_verification?: string;
   tool?: string;
+  provider?: string | null;
+  turn_id?: string | null;
   validation_error?: string | null;
 }
 
