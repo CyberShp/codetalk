@@ -17,6 +17,7 @@ import subprocess
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
 from typing import Literal
+from urllib.parse import unquote, urlparse
 
 from app.config import settings
 from app.schemas.workspace_analysis import ScopeCandidate
@@ -554,12 +555,25 @@ def validate_agent_candidate_file(
 
 def _normalize_agent_path_text(path: str) -> str:
     raw = (path or "").strip().strip('"').strip("'").strip("`")
+    raw = _normalize_file_uri_path(raw)
     raw = re.sub(
         rf"(?i)({'|'.join(re.escape(ext) for ext in SOURCE_EXTS)})(?::\d+(?::\d+|-\d+)?|#L\d+(?:-L\d+)?)$",
         lambda match: match.group(1),
         raw,
     )
     return raw
+
+
+def _normalize_file_uri_path(raw: str) -> str:
+    parsed = urlparse(raw)
+    if parsed.scheme.lower() != "file":
+        return raw
+    path = unquote(parsed.path or "")
+    if parsed.netloc and parsed.netloc.lower() != "localhost":
+        path = f"//{parsed.netloc}{path}"
+    if re.match(r"^/[A-Za-z]:/", path):
+        path = path[1:]
+    return path
 
 
 def _resolve_existing_or_suffix(root: Path, candidate: Path, normalized: str) -> Path | None:

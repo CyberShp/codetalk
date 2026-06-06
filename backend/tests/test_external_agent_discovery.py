@@ -1188,6 +1188,48 @@ def test_agent_candidate_path_with_github_line_range_suffix_validates(tmp_path):
     assert validation.path == "nvmf_tcp/transport/tls/tls.c"
 
 
+def test_agent_candidate_path_with_file_uri_validates(tmp_path):
+    from app.services.external_agent_discovery import validate_agent_candidate_file
+
+    tls_dir = tmp_path / "nvmf_tcp" / "transport" / "tls"
+    tls_dir.mkdir(parents=True)
+    source = tls_dir / "tls.c"
+    source.write_text("int tls;\n", encoding="utf-8")
+
+    validation = validate_agent_candidate_file(tmp_path, source.as_uri())
+
+    assert validation.validated is True
+    assert validation.path == "nvmf_tcp/transport/tls/tls.c"
+
+
+def test_agent_candidate_path_with_file_uri_line_fragment_validates(tmp_path):
+    from app.services.external_agent_discovery import validate_agent_candidate_file
+
+    tls_dir = tmp_path / "nvmf_tcp" / "transport" / "tls"
+    tls_dir.mkdir(parents=True)
+    source = tls_dir / "tls.c"
+    source.write_text("int tls;\n", encoding="utf-8")
+
+    validation = validate_agent_candidate_file(tmp_path, f"{source.as_uri()}#L42-L50")
+
+    assert validation.validated is True
+    assert validation.path == "nvmf_tcp/transport/tls/tls.c"
+
+
+def test_agent_candidate_path_with_encoded_file_uri_validates(tmp_path):
+    from app.services.external_agent_discovery import validate_agent_candidate_file
+
+    tls_dir = tmp_path / "nvmf tcp" / "transport" / "tls"
+    tls_dir.mkdir(parents=True)
+    source = tls_dir / "tls.c"
+    source.write_text("int tls;\n", encoding="utf-8")
+
+    validation = validate_agent_candidate_file(tmp_path, source.as_uri())
+
+    assert validation.validated is True
+    assert validation.path == "nvmf tcp/transport/tls/tls.c"
+
+
 def test_agent_directory_candidate_validates_to_source_file(tmp_path):
     from app.services.external_agent_discovery import validate_agent_candidate_file
 
