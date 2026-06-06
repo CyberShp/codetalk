@@ -891,6 +891,46 @@ def test_workspace_resolver_cancels_agent_task_when_scope_resolution_is_cancelle
     assert asyncio.run(scenario()) is True
 
 
+def test_workspace_agent_scope_ledger_rejects_directory_entry_file(tmp_path):
+    import app.services.workspace_scope_resolver as scope_mod
+    from app.services.agent_discovery_session import create_agent_discovery_session
+    from app.services.external_agent_discovery import AgentCandidateEntry, AgentDiscoveryResult
+
+    src = tmp_path / "src"
+    src.mkdir()
+    (src / "rpc.c").write_text("void rpc_entry(void) {}\n", encoding="utf-8")
+    session = create_agent_discovery_session(
+        repo_path=str(tmp_path),
+        goal="workspace_scope",
+        artifact_dir=tmp_path / "artifacts",
+    )
+    result = AgentDiscoveryResult(
+        provider="claude-code",
+        status="ok",
+        candidate_entries=[
+            AgentCandidateEntry(
+                entry_kind="rpc",
+                entry_symbol="rpc_entry",
+                entry_file="src",
+                chain=["rpc_entry", "target"],
+                reason="directory is not a source-backed entry file",
+                validated=True,
+            )
+        ],
+    )
+
+    scope_mod._record_agent_scope_results(
+        session=session,
+        object_id="obj",
+        repo_path=str(tmp_path),
+        results=[result],
+    )
+
+    assert session.ledger.validated_entries == []
+    assert session.ledger.rejected_entries[0]["entry_file"] == "src"
+    assert session.ledger.rejected_entries[0]["validation_error"] == "directory_candidate_not_allowed"
+
+
 def test_merge_source_candidates_includes_agent_warning_detail(tmp_path):
     from app.services.external_agent_discovery import AgentDiscoveryResult, merge_source_candidates
 

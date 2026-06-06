@@ -738,7 +738,19 @@ def _record_agent_scope_results(
                 "reason": entry.reason,
                 "validation_error": entry.validation_error,
             }
-            if entry.validated:
+            if entry.entry_file:
+                validation = validate_agent_candidate_file(
+                    repo_path,
+                    entry.entry_file,
+                    allow_directory_candidates=False,
+                )
+                item["entry_file"] = validation.path or entry.entry_file
+                item["validation_error"] = validation.validation_error
+            else:
+                validation = None
+                item["validation_error"] = item.get("validation_error") or "entry_file_missing"
+            if validation is not None and validation.validated:
+                item["validation_error"] = None
                 session.ledger.add_validated_entry(item)
             else:
                 session.ledger.add_rejected_entry(item)
