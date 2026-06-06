@@ -26,6 +26,7 @@ import logging
 import re
 import shutil
 import subprocess
+from contextlib import suppress
 from pathlib import Path
 from typing import Iterable
 
@@ -608,6 +609,23 @@ def _scope_external_agent_warnings(resolved: list[ResolvedAnalysisObject]) -> li
     return warnings
 
 
+async def _await_with_agent_cleanup(awaitable, agent_task: asyncio.Task | None):
+    try:
+        return await awaitable
+    except asyncio.CancelledError:
+        await _cancel_and_drain_task(agent_task)
+        raise
+
+
+async def _cancel_and_drain_task(task: asyncio.Task | None) -> None:
+    if task is None:
+        return
+    if not task.done():
+        task.cancel()
+    with suppress(asyncio.CancelledError, Exception):
+        await task
+
+
 def _infer_scope_role(path_hint: str) -> str:
     """Infer a conservative evidence role for legacy path_hints."""
     value = _normalize_path_hint(path_hint).lower().strip("/")
@@ -874,10 +892,16 @@ class WorkspaceScopeResolver:
         plan: AnalysisPlan,
         task_id: str | None = None,
         artifact_dir: Path | None = None,
+        external_agents_enabled: bool | None = None,
     ) -> ScopePreview:
         limits = plan.llm_limits
+        use_external_agents = (
+            settings.external_agents_enabled
+            if external_agents_enabled is None
+            else external_agents_enabled
+        )
         agent_session: AgentDiscoverySession | None = None
-        if settings.agent_discovery_session_enabled:
+        if use_external_agents and settings.agent_discovery_session_enabled:
             session_dir = artifact_dir or (
                 settings.outputs_path / task_id if task_id else None
             )
@@ -919,6 +943,7 @@ class WorkspaceScopeResolver:
                 limits=limits,
                 gitnexus_available=gitnexus_available,
                 agent_session=agent_session,
+                external_agents_enabled=use_external_agents,
             )
             resolved.append(resolved_obj)
             total_candidates += (
@@ -976,6 +1001,7 @@ class WorkspaceScopeResolver:
         limits,
         gitnexus_available: bool,
         agent_session: AgentDiscoverySession | None = None,
+        external_agents_enabled: bool = True,
         ) -> ResolvedAnalysisObject:
         keywords = _tokenize(obj.text)
         expanded_terms = expand_agent_query_terms(obj.text)
@@ -1019,24 +1045,26 @@ class WorkspaceScopeResolver:
             )
         else:
             context_packet = None
-        agent_task = asyncio.create_task(run_external_agent_discovery(
-            AgentDiscoveryRequest(
-                request_id=f"{ws_id}:{obj.id}",
-                repo_path=repo_path,
-                analysis_object_text=obj.text,
-                path_hints=search_hints,
-                scope_hints=[
-                    {"path": path, "role": role} for path, role in role_hints
-                ],
-                existing_candidates=[],
-                context_packet=context_packet,
-                goal="source_scope",
-            ),
-            session=agent_session,
-        ))
+        agent_task: asyncio.Task | None = None
+        if external_agents_enabled:
+            agent_task = asyncio.create_task(run_external_agent_discovery(
+                AgentDiscoveryRequest(
+                    request_id=f"{ws_id}:{obj.id}",
+                    repo_path=repo_path,
+                    analysis_object_text=obj.text,
+                    path_hints=search_hints,
+                    scope_hints=[
+                        {"path": path, "role": role} for path, role in role_hints
+                    ],
+                    existing_candidates=[],
+                    context_packet=context_packet,
+                    goal="source_scope",
+                ),
+                session=agent_session,
+            ))
 
         if not expanded_keywords:
-            agent_task.cancel()
+            await _cancel_and_drain_task(agent_task)
             obj_warnings.append("分析对象过于笼统，未提取到可检索关键字。")
             return ResolvedAnalysisObject(
                 object_id=obj.id,
@@ -1076,8 +1104,11 @@ class WorkspaceScopeResolver:
                 )
             )
 
-        path_hits = await _path_keyword_repo_hits(
-            repo_path, expanded_keywords, limits.max_files_per_object
+        path_hits = await _await_with_agent_cleanup(
+            _path_keyword_repo_hits(
+                repo_path, expanded_keywords, limits.max_files_per_object
+            ),
+            agent_task,
         )
         for hit in path_hits:
             key = ("file", normalize_file_key(repo_path, hit))
@@ -1166,8 +1197,11 @@ class WorkspaceScopeResolver:
         # a same-named repo) must not be able to hide the real implementation
         # files (log_flags.c / log_deprecated.c were silently missed).
         if _looks_like_symbol(obj.text):
-            exact_hits = await _exact_symbol_repo_hits(
-                repo_path, obj.text.strip(), limits.max_files_per_object
+            exact_hits = await _await_with_agent_cleanup(
+                _exact_symbol_repo_hits(
+                    repo_path, obj.text.strip(), limits.max_files_per_object
+                ),
+                agent_task,
             )
             exact_candidates: list[ScopeCandidate] = []
             for hit in exact_hits:
@@ -1202,8 +1236,11 @@ class WorkspaceScopeResolver:
 
         # If GitNexus is empty OR returned nothing, fall back to repo search.
         if not file_candidates:
-            repo_hits = await _bounded_repo_search(
-                repo_path, expanded_keywords, limits.max_files_per_object
+            repo_hits = await _await_with_agent_cleanup(
+                _bounded_repo_search(
+                    repo_path, expanded_keywords, limits.max_files_per_object
+                ),
+                agent_task,
             )
             for hit in repo_hits:
                 key = ("file", normalize_file_key(repo_path, hit))
@@ -1229,7 +1266,7 @@ class WorkspaceScopeResolver:
                     )
                 )
 
-        agent_results = await agent_task
+        agent_results = await agent_task if agent_task is not None else []
         _record_agent_scope_results(
             agent_session,
             object_id=obj.id,

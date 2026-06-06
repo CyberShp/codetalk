@@ -924,6 +924,7 @@ async def _resolve_workspace_scope_for_hits(
                 ws_id=workspace_id,
                 repo_path=repo_path,
                 plan=plan,
+                external_agents_enabled=False,
             ),
             timeout=WORKSPACE_SCOPE_ENRICHMENT_TIMEOUT_SECONDS,
         )

@@ -388,6 +388,228 @@ def test_run_provider_reports_nonzero_exit_with_stderr(tmp_path, monkeypatch):
     assert "auth failed" in results[0].raw_summary
 
 
+def test_run_provider_waits_for_process_after_timeout(tmp_path, monkeypatch):
+    from app.services.external_agent_discovery import AgentDiscoveryRequest, run_external_agent_discovery
+
+    class FakeProc:
+        returncode = None
+
+        def __init__(self):
+            self.killed = False
+            self.waited = False
+
+        async def communicate(self, data):
+            return b"", b""
+
+        def kill(self):
+            self.killed = True
+
+        async def wait(self):
+            self.waited = True
+            self.returncode = -9
+            return self.returncode
+
+    fake_proc = FakeProc()
+
+    async def fake_create_subprocess_exec(*args, **kwargs):
+        return fake_proc
+
+    async def fake_wait_for(awaitable, timeout):
+        close = getattr(awaitable, "close", None)
+        if close:
+            close()
+        raise asyncio.TimeoutError
+
+    monkeypatch.setattr(
+        "app.services.external_agent_discovery.check_provider_health",
+        lambda provider, command, fallback_commands=None: {
+            "status": "available",
+            "argv": ["fake-agent"],
+            "path": "fake-agent",
+        },
+    )
+    monkeypatch.setattr(
+        "app.services.external_agent_discovery.asyncio.create_subprocess_exec",
+        fake_create_subprocess_exec,
+    )
+    monkeypatch.setattr("app.services.external_agent_discovery.asyncio.wait_for", fake_wait_for)
+
+    results = asyncio.run(run_external_agent_discovery(
+        AgentDiscoveryRequest(
+            request_id="timeout-cleanup",
+            repo_path=str(tmp_path),
+            analysis_object_text="tls",
+        ),
+        providers=["claude-code"],
+    ))
+
+    assert results[0].status == "timeout"
+    assert fake_proc.killed is True
+    assert fake_proc.waited is True
+
+
+def test_run_provider_waits_for_process_after_successful_communicate(tmp_path, monkeypatch):
+    from app.services.external_agent_discovery import AgentDiscoveryRequest, run_external_agent_discovery
+
+    class FakeProc:
+        returncode = 0
+
+        def __init__(self):
+            self.waited = False
+
+        async def communicate(self, data):
+            return b'{"candidate_files": []}', b""
+
+        async def wait(self):
+            self.waited = True
+            return self.returncode
+
+    fake_proc = FakeProc()
+
+    async def fake_create_subprocess_exec(*args, **kwargs):
+        return fake_proc
+
+    monkeypatch.setattr(
+        "app.services.external_agent_discovery.check_provider_health",
+        lambda provider, command, fallback_commands=None: {
+            "status": "available",
+            "argv": ["fake-agent"],
+            "path": "fake-agent",
+        },
+    )
+    monkeypatch.setattr(
+        "app.services.external_agent_discovery.asyncio.create_subprocess_exec",
+        fake_create_subprocess_exec,
+    )
+
+    results = asyncio.run(run_external_agent_discovery(
+        AgentDiscoveryRequest(
+            request_id="success-cleanup",
+            repo_path=str(tmp_path),
+            analysis_object_text="tls",
+        ),
+        providers=["claude-code"],
+    ))
+
+    assert results[0].status == "ok"
+    assert fake_proc.waited is True
+
+
+def test_run_provider_yields_after_process_wait_on_windows(tmp_path, monkeypatch):
+    from app.services.external_agent_discovery import AgentDiscoveryRequest, run_external_agent_discovery
+
+    class FakeProc:
+        returncode = 0
+
+        async def communicate(self, data):
+            return b'{"candidate_files": []}', b""
+
+        async def wait(self):
+            return self.returncode
+
+    sleeps: list[float] = []
+
+    async def fake_create_subprocess_exec(*args, **kwargs):
+        return FakeProc()
+
+    async def fake_sleep(delay):
+        sleeps.append(delay)
+
+    monkeypatch.setattr(
+        "app.services.external_agent_discovery.check_provider_health",
+        lambda provider, command, fallback_commands=None: {
+            "status": "available",
+            "argv": ["fake-agent"],
+            "path": "fake-agent",
+        },
+    )
+    monkeypatch.setattr(
+        "app.services.external_agent_discovery.asyncio.create_subprocess_exec",
+        fake_create_subprocess_exec,
+    )
+    monkeypatch.setattr("app.services.external_agent_discovery.platform.system", lambda: "Windows")
+    monkeypatch.setattr("app.services.external_agent_discovery.asyncio.sleep", fake_sleep)
+
+    results = asyncio.run(run_external_agent_discovery(
+        AgentDiscoveryRequest(
+            request_id="windows-cleanup-yield",
+            repo_path=str(tmp_path),
+            analysis_object_text="tls",
+        ),
+        providers=["claude-code"],
+    ))
+
+    assert results[0].status == "ok"
+    assert sleeps
+
+
+def test_run_provider_kills_process_when_cancelled(tmp_path, monkeypatch):
+    from app.services.external_agent_discovery import AgentDiscoveryRequest, run_external_agent_discovery
+
+    started: asyncio.Event
+
+    class FakeProc:
+        returncode = None
+
+        def __init__(self):
+            self.killed = False
+            self.waited = False
+
+        async def communicate(self, data):
+            started.set()
+            await asyncio.Event().wait()
+            return b"", b""
+
+        def kill(self):
+            self.killed = True
+
+        async def wait(self):
+            self.waited = True
+            self.returncode = -9
+            return self.returncode
+
+    fake_proc = FakeProc()
+
+    async def fake_create_subprocess_exec(*args, **kwargs):
+        return fake_proc
+
+    monkeypatch.setattr(
+        "app.services.external_agent_discovery.check_provider_health",
+        lambda provider, command, fallback_commands=None: {
+            "status": "available",
+            "argv": ["fake-agent"],
+            "path": "fake-agent",
+        },
+    )
+    monkeypatch.setattr(
+        "app.services.external_agent_discovery.asyncio.create_subprocess_exec",
+        fake_create_subprocess_exec,
+    )
+
+    async def scenario():
+        nonlocal started
+        started = asyncio.Event()
+        task = asyncio.create_task(run_external_agent_discovery(
+            AgentDiscoveryRequest(
+                request_id="cancel-cleanup",
+                repo_path=str(tmp_path),
+                analysis_object_text="tls",
+            ),
+            providers=["claude-code"],
+        ))
+        await started.wait()
+        task.cancel()
+        try:
+            await task
+        except asyncio.CancelledError:
+            pass
+
+    asyncio.run(scenario())
+
+    assert fake_proc.killed is True
+    assert fake_proc.waited is True
+
+
 def test_run_provider_uses_powershell_wrapper_stdin(tmp_path, monkeypatch):
     if not platform.system().lower().startswith("win") or not shutil.which("powershell.exe"):
         import pytest
@@ -483,6 +705,57 @@ def test_duplicate_gitnexus_and_agent_candidate_merges_with_boost(tmp_path):
     assert merged[0].source == "external_agent"
     assert merged[0].confidence == "high"
     assert "claude-code" in merged[0].reason
+
+
+def test_workspace_resolver_cancels_agent_task_when_scope_resolution_is_cancelled(tmp_path, monkeypatch):
+    import app.services.workspace_scope_resolver as scope_mod
+
+    _write_tls_repo(tmp_path)
+    agent_started: asyncio.Event
+    agent_cancelled: asyncio.Event
+    local_search_started: asyncio.Event
+
+    async def fake_discovery(*args, **kwargs):
+        agent_started.set()
+        try:
+            await asyncio.Event().wait()
+        except asyncio.CancelledError:
+            agent_cancelled.set()
+            raise
+
+    async def fake_path_keyword_repo_hits(*args, **kwargs):
+        local_search_started.set()
+        await asyncio.Event().wait()
+        return []
+
+    monkeypatch.setattr(scope_mod, "run_external_agent_discovery", fake_discovery)
+    monkeypatch.setattr(scope_mod, "_path_keyword_repo_hits", fake_path_keyword_repo_hits)
+
+    async def scenario():
+        nonlocal agent_started, agent_cancelled, local_search_started
+        agent_started = asyncio.Event()
+        agent_cancelled = asyncio.Event()
+        local_search_started = asyncio.Event()
+        task = asyncio.create_task(
+            WorkspaceScopeResolver()._resolve_object(
+                obj=AnalysisObject(id="obj_tls", text="nvme-tcp-tls", kind="module"),
+                ws_id="ws",
+                repo_path=str(tmp_path),
+                index=_GraphIndex(None),
+                limits=LLMLimits(),
+                gitnexus_available=False,
+            )
+        )
+        await agent_started.wait()
+        await local_search_started.wait()
+        task.cancel()
+        try:
+            await task
+        except asyncio.CancelledError:
+            pass
+        return agent_cancelled.is_set()
+
+    assert asyncio.run(scenario()) is True
 
 
 def test_merge_source_candidates_includes_agent_warning_detail(tmp_path):
@@ -786,6 +1059,37 @@ def test_coverage_agent_verified_entry_makes_gap_black_box_ready(tmp_path, monke
     assert gap["entry_paths"][0]["tool"] == "claude-code"
     assert gap["entry_paths"][0]["entry_symbol"] == "rpc_recover_session"
     assert gap["black_box_cases"]
+
+
+def test_coverage_scope_enrichment_does_not_start_source_scope_agent(tmp_path, monkeypatch):
+    import app.services.coverage_analyzer as coverage_mod
+    import app.services.workspace_scope_resolver as scope_mod
+
+    src = tmp_path / "src"
+    src.mkdir()
+    (src / "util.c").write_text("void internal_helper(void) {}\n", encoding="utf-8")
+    modules = _coverage_modules(
+        "feature,module,code_location,function,triggered,hit_count\n"
+        "h,util,src/util.c:1-1,internal_helper,false,0\n"
+    )
+    hit = modules[0].function_hits[0]
+    called = False
+
+    async def forbidden_source_scope_agent(*args, **kwargs):
+        nonlocal called
+        called = True
+        return []
+
+    monkeypatch.setattr(scope_mod, "run_external_agent_discovery", forbidden_source_scope_agent)
+
+    result = asyncio.run(coverage_mod._resolve_workspace_scope_for_hits(
+        [(modules[0], hit)],
+        workspace_id="ws-1",
+        repo_path=str(tmp_path),
+    ))
+
+    assert result
+    assert called is False
 
 
 def test_coverage_agent_unverified_entry_stays_pending(tmp_path, monkeypatch):

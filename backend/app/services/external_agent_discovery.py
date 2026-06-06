@@ -768,8 +768,12 @@ async def _run_provider(
             proc.communicate(prompt.encode("utf-8")),
             timeout=max(1, settings.external_agent_timeout_sec),
         )
+        await _wait_for_process_exit(proc)
+    except asyncio.CancelledError:
+        await _kill_and_wait_process(proc)
+        raise
     except asyncio.TimeoutError:
-        proc.kill()
+        await _kill_and_wait_process(proc)
         result = AgentDiscoveryResult(provider=provider, status="timeout", raw_summary="timeout")
         _record_agent_turn(session, provider, request, prompt, result.raw_summary, result)
         return result
@@ -809,6 +813,34 @@ def _format_process_error_summary(returncode: int | None, stderr_text: str, stdo
     if stdout_text:
         parts.append(f"stdout: {stdout_text[:1000]}")
     return "; ".join(parts)[:4000]
+
+
+async def _kill_and_wait_process(proc: object) -> None:
+    try:
+        kill = getattr(proc, "kill")
+        kill()
+    except ProcessLookupError:
+        return
+    except Exception:
+        return
+    await _wait_for_process_exit(proc)
+
+
+async def _wait_for_process_exit(proc: object, timeout: float = 5) -> None:
+    wait = getattr(proc, "wait", None)
+    if wait is None:
+        return
+    try:
+        async with asyncio.timeout(timeout):
+            await wait()
+        await _yield_windows_subprocess_cleanup()
+    except Exception:
+        return
+
+
+async def _yield_windows_subprocess_cleanup() -> None:
+    if platform.system().lower().startswith("win"):
+        await asyncio.sleep(0.05)
 
 
 def build_agent_prompt(request: AgentDiscoveryRequest) -> str:
