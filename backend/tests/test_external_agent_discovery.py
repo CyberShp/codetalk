@@ -121,6 +121,36 @@ def test_provider_command_supports_subcommand_style(monkeypatch):
     assert health["argv"] == ["ccr", "code"]
 
 
+def test_provider_health_uses_claude_fallback_when_ccr_missing(monkeypatch):
+    from app.services.external_agent_discovery import check_provider_health
+
+    monkeypatch.setattr(
+        "app.services.external_agent_discovery.shutil.which",
+        lambda cmd: "C:/tools/claude.cmd" if cmd in {"claude", "where.exe"} else None,
+    )
+
+    health = check_provider_health("claude-code", "ccr code -p", fallback_commands=["claude -p"])
+
+    assert health["status"] == "available"
+    assert health["argv"] == ["claude", "-p"]
+    assert health["used_fallback"] is True
+    assert health["attempts"][0]["status"] == "unavailable"
+    assert health["attempts"][0]["executable"] == "ccr"
+
+
+def test_provider_health_reports_all_attempted_commands_when_unavailable(monkeypatch):
+    from app.services.external_agent_discovery import check_provider_health
+
+    monkeypatch.setattr("app.services.external_agent_discovery.shutil.which", lambda _cmd: None)
+
+    health = check_provider_health("claude-code", "ccr code -p", fallback_commands=["claude -p"])
+
+    assert health["status"] == "unavailable"
+    assert "ccr code -p" in health["reason"]
+    assert "claude -p" in health["reason"]
+    assert [attempt["executable"] for attempt in health["attempts"]] == ["ccr", "claude"]
+
+
 def test_candidate_outside_repo_and_non_source_are_rejected(tmp_path):
     from app.services.external_agent_discovery import validate_agent_candidate_file
 

@@ -11,6 +11,7 @@ from app.config import settings
 from app.services.external_agent_discovery import (
     AgentDiscoveryRequest,
     check_provider_health,
+    provider_fallback_commands,
     run_external_agent_discovery,
 )
 
@@ -28,7 +29,11 @@ class ExternalAgentAdapter(BaseToolAdapter):
 
     async def health_check(self) -> ToolHealth:
         command = str(getattr(settings, self._command_attr, "") or "")
-        health = check_provider_health(self._provider, command)
+        health = check_provider_health(
+            self._provider,
+            command,
+            fallback_commands=provider_fallback_commands(self._provider),
+        )
         ok = health.get("status") == "available"
         return ToolHealth(
             is_healthy=ok,

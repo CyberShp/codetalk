@@ -35,6 +35,11 @@ PROVIDER_COMMANDS = {
     "opencode": "opencode_command",
 }
 
+PROVIDER_FALLBACK_COMMANDS = {
+    "claude-code": "claude_code_fallback_commands",
+    "opencode": "opencode_fallback_commands",
+}
+
 
 @dataclass
 class AgentCandidateFile:
@@ -137,10 +142,50 @@ def expand_agent_query_terms(text: str) -> list[str]:
     return out[:48]
 
 
-def check_provider_health(provider: str, command: str) -> dict:
+def check_provider_health(
+    provider: str,
+    command: str,
+    fallback_commands: list[str] | None = None,
+) -> dict:
+    attempts: list[dict] = []
+    commands = [command, *(fallback_commands or [])]
+    for index, candidate_command in enumerate(commands):
+        attempt = _resolve_provider_command_attempt(candidate_command)
+        attempts.append(attempt)
+        if attempt.get("status") != "available":
+            continue
+        health = {
+            "provider": provider,
+            "status": "available",
+            "command": " ".join(attempt["argv"]),
+            "configured_command": candidate_command,
+            "argv": attempt["argv"],
+            "path": attempt["path"],
+            "used_fallback": index > 0,
+            "attempts": attempts,
+        }
+        if index > 0:
+            health["reason"] = f"primary command unavailable; using fallback: {candidate_command}"
+        return health
+
+    attempted = ", ".join(str(cmd).strip() for cmd in commands if str(cmd).strip()) or "<empty>"
+    return {
+        "provider": provider,
+        "status": "unavailable",
+        "reason": f"no agent command found; attempted: {attempted}",
+        "attempts": attempts,
+    }
+
+
+def _resolve_provider_command_attempt(command: str) -> dict:
     argv = split_agent_command(command)
     if not argv:
-        return {"provider": provider, "status": "unavailable", "reason": "empty command"}
+        return {
+            "command": command,
+            "argv": [],
+            "status": "unavailable",
+            "reason": "empty command",
+        }
     executable = argv[0]
     if platform.system().lower().startswith("win"):
         resolved = shutil.which(executable)
@@ -161,15 +206,17 @@ def check_provider_health(provider: str, command: str) -> dict:
         resolved = shutil.which(executable)
     if not resolved:
         return {
-            "provider": provider,
+            "command": command,
+            "argv": argv,
+            "executable": executable,
             "status": "unavailable",
             "reason": f"command not found: {executable}",
         }
     return {
-        "provider": provider,
+        "command": command,
         "status": "available",
-        "command": " ".join(argv),
         "argv": argv,
+        "executable": executable,
         "path": resolved,
     }
 
@@ -182,6 +229,23 @@ def split_agent_command(command: str) -> list[str]:
         return shlex.split(value, posix=os.name != "nt")
     except ValueError:
         return value.split()
+
+
+def provider_fallback_commands(provider: str) -> list[str]:
+    attr = PROVIDER_FALLBACK_COMMANDS.get(provider)
+    if not attr:
+        return []
+    return _coerce_command_list(getattr(settings, attr, []))
+
+
+def _coerce_command_list(value: object) -> list[str]:
+    if value is None:
+        return []
+    if isinstance(value, str):
+        return [part.strip() for part in re.split(r"[;\n]+", value) if part.strip()]
+    if isinstance(value, (list, tuple, set)):
+        return [str(part).strip() for part in value if str(part).strip()]
+    return [str(value).strip()] if str(value).strip() else []
 
 
 def validate_agent_candidate_file(repo_path: str | Path, path: str) -> CandidateValidation:
@@ -402,18 +466,20 @@ async def _run_provider(
     if not command_attr:
         return AgentDiscoveryResult(provider=provider, status="unavailable", raw_summary="unknown provider")
     command = str(getattr(settings, command_attr, "") or "")
-    health = check_provider_health(provider, command)
+    fallback_commands = provider_fallback_commands(provider)
+    health = check_provider_health(provider, command, fallback_commands=fallback_commands)
     if health.get("status") != "available":
+        reason = str(health.get("reason") or "")
         result = AgentDiscoveryResult(
             provider=provider,
             status="unavailable",
-            raw_summary=str(health.get("reason") or ""),
-            warnings=[str(health.get("reason") or "")],
+            raw_summary=reason,
+            warnings=[reason] if reason else [],
         )
         _record_agent_turn(session, provider, request, "", result.raw_summary, result)
         return result
     prompt = build_agent_prompt(request)
-    argv = split_agent_command(command)
+    argv = [str(item) for item in health.get("argv") or []]
     if not argv:
         result = AgentDiscoveryResult(provider=provider, status="unavailable", raw_summary="empty command")
         _record_agent_turn(session, provider, request, prompt, result.raw_summary, result)
@@ -455,6 +521,8 @@ async def _run_provider(
         _record_agent_turn(session, provider, request, prompt, result.raw_summary, result)
         return result
     result = parse_agent_output(provider, raw, request.repo_path)
+    if health.get("used_fallback"):
+        result.warnings.append(str(health.get("reason") or "used fallback agent command"))
     _record_agent_turn(session, provider, request, prompt, raw, result)
     return result
 
