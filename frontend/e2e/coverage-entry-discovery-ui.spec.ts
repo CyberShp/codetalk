@@ -11,7 +11,20 @@ test("coverage entry discovery renders source file, chain, and input hints", asy
       risk: "high",
       triggered: false,
       hit_count: 0,
-      entry_paths: [],
+      entry_paths: [
+        {
+          entry_kind: "rpc",
+          entry_symbol: "rpc_recover_session",
+          entry_file: "src/rpc.c",
+          entry_label: "RPC recover-session",
+          chain: ["rpc_recover_session", "internal_recover"],
+          evidence: "source-backed public RPC path",
+          tool: "claude-code",
+          provider: "claude-code",
+          source_verification: "source_backed",
+          input_hints: ["expired auth token"],
+        },
+      ],
       black_box_cases: [],
       entry_discovery: {
         entry_trace_status: "entry_found",
@@ -75,7 +88,8 @@ test("coverage entry discovery renders source file, chain, and input hints", asy
 
   await expect(page.getByText("RPC recover-session")).toBeVisible();
   await expect(page.getByText("src/rpc.c")).toBeVisible();
-  await expect(page.getByText("rpc_recover_session → internal_recover")).toBeVisible();
+  await expect(page.getByText("rpc_recover_session → internal_recover").first()).toBeVisible();
+  await expect(page.getByText("expired auth token")).toBeVisible();
   await expect(page.getByText("invalid TLS PSK")).toBeVisible();
   await expect(page.getByText("oversized capsule")).toBeVisible();
 });

@@ -455,6 +455,7 @@ export interface CoverageEntryPath {
   turn_id?: string | null;
   source_verification?: string;
   validation_error?: string | null;
+  input_hints?: string[];
 }
 
 export interface CoverageEntryDiscoveryCandidate {

@@ -419,6 +419,30 @@ def test_provider_fallback_command_list_preserves_semicolons_inside_quotes(tmp_p
     assert health["used_fallback"] is True
 
 
+def test_settings_accept_plain_string_fallback_commands(monkeypatch):
+    from app.config import Settings
+    from app.services.external_agent_discovery import _coerce_command_list
+
+    monkeypatch.setenv("CLAUDE_CODE_FALLBACK_COMMANDS", "claude -p --output-format json")
+
+    configured = Settings().claude_code_fallback_commands
+
+    assert configured == "claude -p --output-format json"
+    assert _coerce_command_list(configured) == ["claude -p --output-format json"]
+
+
+def test_settings_accept_empty_fallback_commands(monkeypatch):
+    from app.config import Settings
+    from app.services.external_agent_discovery import _coerce_command_list
+
+    monkeypatch.setenv("CLAUDE_CODE_FALLBACK_COMMANDS", "")
+
+    configured = Settings().claude_code_fallback_commands
+
+    assert configured == ""
+    assert _coerce_command_list(configured) == []
+
+
 def test_provider_health_finds_windows_npm_command_when_service_path_misses_it(tmp_path, monkeypatch):
     from app.services.external_agent_discovery import check_provider_health
 

@@ -428,6 +428,18 @@ function GapDesignDetail({ mr }: { mr: CoverageModuleResult }) {
                 {e.evidence && (
                   <div className="opacity-60 mt-0.5 font-mono">{e.evidence}</div>
                 )}
+                {e.input_hints && e.input_hints.length > 0 && (
+                  <div className="mt-1 flex flex-wrap gap-1">
+                    {e.input_hints.slice(0, 4).map((hint, hintIndex) => (
+                      <span
+                        key={`entry-hint-${i}-${hintIndex}-${hint}`}
+                        className="rounded bg-primary/10 px-1.5 py-0.5 text-[10px] text-primary"
+                      >
+                        {hint}
+                      </span>
+                    ))}
+                  </div>
+                )}
               </li>
             ))}
           </ul>
