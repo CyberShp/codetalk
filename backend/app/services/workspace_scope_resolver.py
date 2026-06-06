@@ -593,6 +593,21 @@ def _path_hint_repo_hits_blocking(
     return results
 
 
+def _scope_external_agent_warnings(resolved: list[ResolvedAnalysisObject]) -> list[str]:
+    warnings: list[str] = []
+    for obj in resolved:
+        for warning in obj.warnings:
+            text = str(warning).strip()
+            if not text:
+                continue
+            if "claude-code:" not in text and "opencode:" not in text and "external agent" not in text:
+                continue
+            warnings.append(f"{obj.object_id}: {text}")
+            if len(warnings) >= 16:
+                return warnings
+    return warnings
+
+
 def _infer_scope_role(path_hint: str) -> str:
     """Infer a conservative evidence role for legacy path_hints."""
     value = _normalize_path_hint(path_hint).lower().strip("/")
@@ -934,6 +949,7 @@ class WorkspaceScopeResolver:
         else:
             est_units = 0
         est_cards = estimate_evidence_cards(resolved, limits)
+        external_agent_warnings = _scope_external_agent_warnings(resolved)
 
         return ScopePreview(
             workspace_id=ws_id,
@@ -945,7 +961,7 @@ class WorkspaceScopeResolver:
             external_agent_status=(
                 dict(agent_session.ledger.provider_status) if agent_session else {}
             ),
-            external_agent_warnings=[],
+            external_agent_warnings=external_agent_warnings,
             agent_discovery_session_id=agent_session.session_id if agent_session else None,
             external_agent_turn_count=len(agent_session.turns) if agent_session else 0,
         )

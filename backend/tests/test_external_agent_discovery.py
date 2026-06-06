@@ -551,6 +551,44 @@ def test_workspace_resolver_writes_agent_session_artifacts(tmp_path, monkeypatch
     assert (artifact_dir / "agent_discovery_ledger.json").exists()
 
 
+def test_workspace_preview_summarizes_external_agent_warnings(tmp_path, monkeypatch):
+    from app.schemas.workspace_analysis import AnalysisPlan
+    from app.services.external_agent_discovery import AgentDiscoveryResult
+
+    _write_tls_repo(tmp_path)
+
+    async def fake_discovery(_request, **_kwargs):
+        return [
+            AgentDiscoveryResult(
+                provider="claude-code",
+                status="invalid_output",
+                warnings=["agent output did not contain discovery JSON"],
+            )
+        ]
+
+    monkeypatch.setattr(
+        "app.services.workspace_scope_resolver.run_external_agent_discovery",
+        fake_discovery,
+    )
+    plan = AnalysisPlan(
+        analysis_objects=[AnalysisObject(id="obj_tls", text="nvme-tcp-tls", kind="module")]
+    )
+
+    preview = asyncio.run(
+        WorkspaceScopeResolver().resolve(
+            ws_id="ws",
+            repo_path=str(tmp_path),
+            plan=plan,
+            task_id="task-1",
+            artifact_dir=tmp_path / "artifacts",
+        )
+    )
+
+    assert preview.external_agent_warnings == [
+        "obj_tls: claude-code: invalid_output - agent output did not contain discovery JSON"
+    ]
+
+
 def test_workspace_resolver_keeps_detailed_agent_warning_without_duplicate(tmp_path, monkeypatch):
     from app.services.external_agent_discovery import AgentDiscoveryResult
 
