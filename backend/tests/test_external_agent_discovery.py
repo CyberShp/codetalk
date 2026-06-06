@@ -362,6 +362,35 @@ def test_provider_health_uses_claude_fallback_when_ccr_missing(monkeypatch):
     assert health["attempts"][0]["executable"] == "ccr"
 
 
+def test_provider_fallback_command_list_preserves_semicolons_inside_quotes(tmp_path, monkeypatch):
+    from app.services import external_agent_discovery as discovery
+
+    agent_dir = tmp_path / "Tools;Beta"
+    agent_dir.mkdir()
+    agent = agent_dir / "ccr.cmd"
+    agent.write_text("@echo off\n", encoding="utf-8")
+
+    monkeypatch.setattr("app.services.external_agent_discovery.shutil.which", lambda _cmd: None)
+    monkeypatch.setattr(
+        discovery.settings,
+        "claude_code_fallback_commands",
+        f'"{agent}" code -p; claude -p',
+    )
+
+    commands = discovery.provider_fallback_commands("claude-code")
+    health = discovery.check_provider_health(
+        "claude-code",
+        "missing-agent",
+        fallback_commands=commands,
+    )
+
+    assert commands[0] == f'"{agent}" code -p'
+    assert commands[1] == "claude -p"
+    assert health["status"] == "available"
+    assert health["argv"][0] == str(agent)
+    assert health["used_fallback"] is True
+
+
 def test_provider_health_finds_windows_npm_command_when_service_path_misses_it(tmp_path, monkeypatch):
     from app.services.external_agent_discovery import check_provider_health
 

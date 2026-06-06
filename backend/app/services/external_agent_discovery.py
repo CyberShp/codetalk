@@ -453,10 +453,46 @@ def _coerce_command_list(value: object) -> list[str]:
     if value is None:
         return []
     if isinstance(value, str):
-        return [part.strip() for part in re.split(r"[;\n]+", value) if part.strip()]
+        return _split_command_list_string(value)
     if isinstance(value, (list, tuple, set)):
         return [str(part).strip() for part in value if str(part).strip()]
     return [str(value).strip()] if str(value).strip() else []
+
+
+def _split_command_list_string(value: str) -> list[str]:
+    parts: list[str] = []
+    current: list[str] = []
+    quote: str | None = None
+    escaped = False
+    for char in value:
+        if escaped:
+            current.append(char)
+            escaped = False
+            continue
+        if char == "\\":
+            current.append(char)
+            escaped = True
+            continue
+        if quote:
+            current.append(char)
+            if char == quote:
+                quote = None
+            continue
+        if char in {"'", '"'}:
+            current.append(char)
+            quote = char
+            continue
+        if char in {";", "\n", "\r"}:
+            part = "".join(current).strip()
+            if part:
+                parts.append(part)
+            current = []
+            continue
+        current.append(char)
+    part = "".join(current).strip()
+    if part:
+        parts.append(part)
+    return parts
 
 
 def validate_agent_candidate_file(
