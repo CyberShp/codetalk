@@ -1286,8 +1286,6 @@ class WorkspaceScopeResolver:
             file_candidates = merged_files[: limits.max_files_per_object]
             obj_warnings.extend(agent_warnings)
             for result in agent_results:
-                if result.status not in {"ok", "unavailable"}:
-                    obj_warnings.append(f"external agent {result.provider}: {result.status}")
                 for file in result.candidate_files:
                     if file.validated:
                         validation = validate_agent_candidate_file(repo_path, file.path)

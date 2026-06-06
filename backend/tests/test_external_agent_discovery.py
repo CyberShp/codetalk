@@ -396,6 +396,14 @@ def _write_tls_repo(root: Path) -> Path:
     return source
 
 
+def _write_tls_tree_at(root: Path, relative_tls_dir: str) -> Path:
+    tls_dir = root.joinpath(*relative_tls_dir.split("/"))
+    tls_dir.mkdir(parents=True)
+    source = tls_dir / "tls.c"
+    source.write_text("int nvmf_tcp_tls_handshake(void) { return 0; }\n", encoding="utf-8")
+    return source
+
+
 async def _resolve_nvme_tls(repo_root: Path):
     obj = AnalysisObject(id="obj_tls", text="nvme-tcp-tls", kind="module")
     return await WorkspaceScopeResolver()._resolve_object(
@@ -462,6 +470,42 @@ def test_workspace_resolver_local_path_expansion_finds_nvme_tls_without_agent(tm
     assert not resolved.warnings
 
 
+def test_workspace_resolver_finds_nvme_tls_from_nof_repo_root(tmp_path, monkeypatch):
+    _write_tls_tree_at(tmp_path, "nvmf_tcp/transport/tls")
+
+    async def fake_discovery(_request, **_kwargs):
+        return []
+
+    monkeypatch.setattr(
+        "app.services.workspace_scope_resolver.run_external_agent_discovery",
+        fake_discovery,
+    )
+
+    resolved = asyncio.run(_resolve_nvme_tls(tmp_path))
+    paths = [c.path.replace("\\", "/") for c in resolved.candidate_files if c.path]
+
+    assert any(path.endswith("nvmf_tcp/transport/tls/tls.c") for path in paths)
+    assert not resolved.warnings
+
+
+def test_workspace_resolver_finds_nvme_tls_from_nvmf_tcp_repo_root(tmp_path, monkeypatch):
+    _write_tls_tree_at(tmp_path, "transport/tls")
+
+    async def fake_discovery(_request, **_kwargs):
+        return []
+
+    monkeypatch.setattr(
+        "app.services.workspace_scope_resolver.run_external_agent_discovery",
+        fake_discovery,
+    )
+
+    resolved = asyncio.run(_resolve_nvme_tls(tmp_path))
+    paths = [c.path.replace("\\", "/") for c in resolved.candidate_files if c.path]
+
+    assert any(path.endswith("transport/tls/tls.c") for path in paths)
+    assert not resolved.warnings
+
+
 def test_workspace_resolver_writes_agent_session_artifacts(tmp_path, monkeypatch):
     from app.schemas.workspace_analysis import AnalysisPlan
     from app.services.external_agent_discovery import AgentDiscoveryResult
@@ -505,6 +549,31 @@ def test_workspace_resolver_writes_agent_session_artifacts(tmp_path, monkeypatch
     assert preview.external_agent_turn_count >= 1
     assert (artifact_dir / "agent_discovery_session.json").exists()
     assert (artifact_dir / "agent_discovery_ledger.json").exists()
+
+
+def test_workspace_resolver_keeps_detailed_agent_warning_without_duplicate(tmp_path, monkeypatch):
+    from app.services.external_agent_discovery import AgentDiscoveryResult
+
+    _write_tls_repo(tmp_path)
+
+    async def fake_discovery(_request, **_kwargs):
+        return [
+            AgentDiscoveryResult(
+                provider="claude-code",
+                status="invalid_output",
+                warnings=["agent output did not contain discovery JSON"],
+            )
+        ]
+
+    monkeypatch.setattr(
+        "app.services.workspace_scope_resolver.run_external_agent_discovery",
+        fake_discovery,
+    )
+
+    resolved = asyncio.run(_resolve_nvme_tls(tmp_path))
+
+    assert "claude-code: invalid_output - agent output did not contain discovery JSON" in resolved.warnings
+    assert "external agent claude-code: invalid_output" not in resolved.warnings
 
 
 def _coverage_modules(csv_text):
