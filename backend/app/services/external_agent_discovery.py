@@ -407,6 +407,17 @@ def validate_agent_candidate_file(repo_path: str | Path, path: str) -> Candidate
         rel = resolved.relative_to(root)
     except Exception:
         return CandidateValidation(input_path=path, validation_error="outside_repo")
+    if resolved.is_dir():
+        source_file = _preferred_source_file_under(resolved)
+        if source_file is None:
+            return CandidateValidation(
+                input_path=path,
+                resolved_path=str(resolved),
+                path=rel.as_posix(),
+                validation_error="directory_without_source_file",
+            )
+        resolved = source_file.resolve()
+        rel = resolved.relative_to(root)
     if resolved.suffix.lower() not in SOURCE_EXTS:
         return CandidateValidation(
             input_path=path,
@@ -441,6 +452,41 @@ def _resolve_existing_or_suffix(root: Path, candidate: Path, normalized: str) ->
                 matches.append(full)
     matches.sort(key=lambda p: len(p.relative_to(root).parts))
     return matches[0] if matches else None
+
+
+def _preferred_source_file_under(directory: Path) -> Path | None:
+    source_files: list[Path] = []
+    for walk_root, dirs, files in os.walk(directory):
+        dirs[:] = [d for d in dirs if d not in {".git", "node_modules", "build", "dist"}]
+        for name in files:
+            full = Path(walk_root) / name
+            if full.suffix.lower() in SOURCE_EXTS:
+                source_files.append(full)
+    if not source_files:
+        return None
+    priority = {
+        ".c": 0,
+        ".cc": 0,
+        ".cpp": 0,
+        ".cxx": 0,
+        ".h": 1,
+        ".hpp": 1,
+        ".py": 2,
+        ".go": 2,
+        ".rs": 2,
+        ".java": 2,
+        ".ts": 2,
+        ".tsx": 2,
+        ".js": 2,
+        ".jsx": 2,
+    }
+    source_files.sort(key=lambda p: (
+        len(p.relative_to(directory).parts),
+        priority.get(p.suffix.lower(), 9),
+        p.name.lower(),
+        p.as_posix().lower(),
+    ))
+    return source_files[0]
 
 
 def _candidate_suffixes_for_root(root: Path, normalized: str) -> list[str]:
