@@ -308,6 +308,43 @@ def test_duplicate_invalid_source_slice_requests_do_not_duplicate_rejections(tmp
     assert session.ledger.source_slices[0]["file_path"] == "src/tls.c"
 
 
+def test_invalid_source_slice_rejections_are_deduped_per_object(tmp_path, monkeypatch):
+    from app.services.agent_discovery_session import create_agent_discovery_session
+
+    monkeypatch.setattr(
+        "app.services.agent_discovery_session.settings.agent_discovery_max_source_slices",
+        1,
+        raising=False,
+    )
+    src = tmp_path / "src"
+    src.mkdir()
+    (src / "tls.c").write_text("int tls;\n", encoding="utf-8")
+    session = create_agent_discovery_session(
+        repo_path=str(tmp_path),
+        goal="coverage_entry",
+        artifact_dir=tmp_path / "artifacts",
+    )
+
+    first = session.add_source_slices_from_requests(
+        [{"file_path": "src", "reason": "directory"}],
+        object_id="obj-a",
+    )
+    second = session.add_source_slices_from_requests(
+        [{"file_path": "src", "reason": "directory"}],
+        object_id="obj-b",
+    )
+
+    assert [ref.validated for ref in first] == [False]
+    assert [ref.validated for ref in second] == [False]
+    assert [
+        (item["object_id"], item["path"], item["reason"])
+        for item in session.ledger.rejected_files
+    ] == [
+        ("obj-a", "src", "directory_candidate_not_allowed"),
+        ("obj-b", "src", "directory_candidate_not_allowed"),
+    ]
+
+
 def test_context_packet_overflow_requests_next_round(tmp_path, monkeypatch):
     from app.services.agent_discovery_session import (
         AgentContextPacketInput,

@@ -339,6 +339,7 @@ class AgentDiscoverySession:
         }
         seen_invalid = {
             (
+                str(item.get("object_id") or ""),
                 str(item.get("path") or "").replace("\\", "/"),
                 str(item.get("reason") or ""),
             )
@@ -362,6 +363,7 @@ class AgentDiscoverySession:
                 continue
             if not validation.validated:
                 invalid_key = (
+                    object_id,
                     str(validation.path or path).replace("\\", "/"),
                     str(validation.validation_error or "invalid_source_slice"),
                 )
@@ -379,6 +381,7 @@ class AgentDiscoverySession:
                 valid_added += 1
             else:
                 seen_invalid.add((
+                    object_id,
                     str(ref.file_path or path).replace("\\", "/"),
                     str(ref.validation_error or "invalid_source_slice"),
                 ))
