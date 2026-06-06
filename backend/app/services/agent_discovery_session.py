@@ -463,7 +463,11 @@ def _enforce_packet_budget(packet: dict) -> dict:
     encoded = json.dumps(packet, ensure_ascii=False)
     if len(encoded) > max_chars:
         packet["validated_facts"]["files"] = packet["validated_facts"].get("files", [])[:5]
+        packet["validated_facts"]["entries"] = packet["validated_facts"].get("entries", [])[:5]
         packet["rejected_facts"]["files"] = packet["rejected_facts"].get("files", [])[:10]
+        packet["rejected_facts"]["entries"] = packet["rejected_facts"].get("entries", [])[:10]
+        packet["do_not_repeat"]["paths"] = packet["do_not_repeat"].get("paths", [])[:20]
+        packet["do_not_repeat"]["entry_symbols"] = packet["do_not_repeat"].get("entry_symbols", [])[:10]
         packet["previous_agent_findings"] = packet.get("previous_agent_findings", [])[:5]
     return packet
 

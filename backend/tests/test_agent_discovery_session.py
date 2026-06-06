@@ -256,3 +256,43 @@ def test_context_packet_overflow_requests_next_round(tmp_path, monkeypatch):
 
     assert packet["context_overflow"]["overflow"] is True
     assert packet["context_overflow"]["policy"] == "request_more_in_next_round"
+
+
+def test_context_packet_overflow_trims_rejected_entries(tmp_path, monkeypatch):
+    from app.services.agent_discovery_session import (
+        AgentContextPacketInput,
+        create_agent_discovery_session,
+    )
+
+    monkeypatch.setattr(
+        "app.services.agent_discovery_session.settings.agent_discovery_context_packet_max_chars",
+        800,
+        raising=False,
+    )
+    session = create_agent_discovery_session(
+        repo_path=str(tmp_path),
+        goal="coverage_entry",
+        artifact_dir=tmp_path / "artifacts",
+    )
+    for idx in range(30):
+        session.ledger.add_rejected_entry({
+            "object_id": "obj",
+            "provider": "claude-code",
+            "entry_symbol": f"rpc_entry_{idx}",
+            "entry_file": f"src/missing_{idx}.c",
+            "validation_error": "file_not_found",
+            "reason": "x" * 120,
+        })
+
+    packet = session.build_context_packet(
+        AgentContextPacketInput(
+            object_id="obj",
+            current_goal="coverage_entry",
+            analysis_object_text="target",
+            expanded_terms=["target"],
+        )
+    )
+
+    assert packet["context_overflow"]["overflow"] is True
+    assert len(packet["rejected_facts"]["entries"]) <= 10
+    assert len(packet["do_not_repeat"]["entry_symbols"]) <= 10
