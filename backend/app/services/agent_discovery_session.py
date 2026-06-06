@@ -337,6 +337,14 @@ class AgentDiscoverySession:
             (str(item.get("file_path") or ""), str(item.get("symbol") or ""))
             for item in self.ledger.source_slices
         }
+        seen_invalid = {
+            (
+                str(item.get("path") or "").replace("\\", "/"),
+                str(item.get("reason") or ""),
+            )
+            for item in self.ledger.rejected_files
+            if str(item.get("provider") or "") == "source_slice"
+        }
         for item in requests:
             if valid_added >= max_valid:
                 break
@@ -352,6 +360,13 @@ class AgentDiscoverySession:
             key = (str(validation.path or ""), str(symbol or ""))
             if validation.validated and key in seen_valid:
                 continue
+            if not validation.validated:
+                invalid_key = (
+                    str(validation.path or path).replace("\\", "/"),
+                    str(validation.validation_error or "invalid_source_slice"),
+                )
+                if invalid_key in seen_invalid:
+                    continue
             ref = self.add_source_slice(
                 path,
                 symbol=symbol,
@@ -362,6 +377,11 @@ class AgentDiscoverySession:
             if ref.validated:
                 seen_valid.add((ref.file_path, str(ref.symbol or "")))
                 valid_added += 1
+            else:
+                seen_invalid.add((
+                    str(ref.file_path or path).replace("\\", "/"),
+                    str(ref.validation_error or "invalid_source_slice"),
+                ))
         return refs
 
     def build_context_packet(self, data: AgentContextPacketInput) -> dict:
