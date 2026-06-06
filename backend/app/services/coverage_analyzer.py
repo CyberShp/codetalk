@@ -1215,6 +1215,14 @@ def _upsert_agent_entry(target: list[dict], item: dict) -> None:
         if existing_key == key:
             item = {
                 **item,
+                "external_trigger": _prefer_non_empty_text(
+                    existing.get("external_trigger"),
+                    item.get("external_trigger"),
+                ),
+                "reason": _prefer_non_empty_text(
+                    existing.get("reason"),
+                    item.get("reason"),
+                ),
                 "input_hints": _merge_ordered_strings(
                     existing.get("input_hints"),
                     item.get("input_hints"),
@@ -1227,6 +1235,13 @@ def _upsert_agent_entry(target: list[dict], item: dict) -> None:
             existing.update(item)
             return
     target.append(item)
+
+
+def _prefer_non_empty_text(existing: object, incoming: object) -> str:
+    incoming_text = str(incoming).strip() if incoming is not None else ""
+    if incoming_text:
+        return incoming_text
+    return str(existing).strip() if existing is not None else ""
 
 
 def _merge_ordered_strings(*values: object) -> list[str]:

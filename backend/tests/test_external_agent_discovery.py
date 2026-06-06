@@ -1681,6 +1681,38 @@ def test_agent_entry_upsert_preserves_existing_input_hints():
     assert entries[0]["input_hints"] == ["invalid TLS PSK", "oversized capsule"]
 
 
+def test_agent_entry_upsert_preserves_existing_trigger_and_reason():
+    from app.services.coverage_analyzer import _upsert_agent_entry
+
+    entries = [
+        {
+            "object_id": "gap1",
+            "provider": "claude-code",
+            "entry_symbol": "rpc_tls_entry",
+            "entry_file": "src/rpc.c",
+            "validation_error": "",
+            "external_trigger": "RPC tls-entry",
+            "reason": "public RPC handler reaches TLS handshake",
+        }
+    ]
+
+    _upsert_agent_entry(
+        entries,
+        {
+            "object_id": "gap1",
+            "provider": "claude-code",
+            "entry_symbol": "rpc_tls_entry",
+            "entry_file": "src/rpc.c",
+            "validation_error": "",
+            "external_trigger": "",
+            "reason": "",
+        },
+    )
+
+    assert entries[0]["external_trigger"] == "RPC tls-entry"
+    assert entries[0]["reason"] == "public RPC handler reaches TLS handshake"
+
+
 def _write_tls_repo(root: Path) -> Path:
     tls_dir = root / "nof" / "nvmf_tcp" / "transport" / "tls"
     tls_dir.mkdir(parents=True)

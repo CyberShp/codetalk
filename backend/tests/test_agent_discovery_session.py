@@ -253,6 +253,48 @@ def test_entry_ledger_preserves_list_evidence_on_duplicate_update(tmp_path):
     assert entry["chain"] == ["rpc_tls_entry", "tls_handshake", "tls_error_path"]
 
 
+def test_entry_ledger_preserves_existing_trigger_and_reason(tmp_path):
+    from app.services.agent_discovery_session import (
+        AgentContextPacketInput,
+        create_agent_discovery_session,
+    )
+
+    session = create_agent_discovery_session(
+        repo_path=str(tmp_path),
+        goal="coverage_entry",
+        artifact_dir=tmp_path / "artifacts",
+    )
+    session.ledger.add_validated_entry({
+        "object_id": "obj",
+        "provider": "claude-code",
+        "entry_symbol": "rpc_tls_entry",
+        "entry_file": "src/rpc.c",
+        "external_trigger": "RPC tls-entry",
+        "reason": "public RPC handler reaches TLS handshake",
+    })
+    session.ledger.add_validated_entry({
+        "object_id": "obj",
+        "provider": "claude-code",
+        "entry_symbol": "rpc_tls_entry",
+        "entry_file": "src/rpc.c",
+        "external_trigger": "",
+        "reason": "",
+    })
+
+    packet = session.build_context_packet(
+        AgentContextPacketInput(
+            object_id="obj",
+            current_goal="coverage_entry",
+            analysis_object_text="tls_handshake",
+            expanded_terms=["tls_handshake"],
+        )
+    )
+
+    entry = packet["validated_facts"]["entries"][0]
+    assert entry["external_trigger"] == "RPC tls-entry"
+    assert entry["reason"] == "public RPC handler reaches TLS handshake"
+
+
 def test_raw_output_is_not_used_as_fact_in_context_packet(tmp_path):
     from app.services.agent_discovery_session import (
         AgentContextPacketInput,

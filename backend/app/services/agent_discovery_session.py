@@ -123,6 +123,12 @@ class AgentDiscoveryLedger:
         for existing in target:
             if tuple(str(existing.get(field) or "") for field in key_fields) == key:
                 item = dict(item)
+                for text_field in ("external_trigger", "reason"):
+                    if text_field in existing or text_field in item:
+                        item[text_field] = _prefer_non_empty_text(
+                            existing.get(text_field),
+                            item.get(text_field),
+                        )
                 for list_field in ("input_hints", "chain"):
                     if list_field in existing or list_field in item:
                         item[list_field] = _merge_ordered_strings(
@@ -469,6 +475,13 @@ def _filter_by_object(items: list[dict], object_id: str) -> list[dict]:
         item for item in items
         if not object_id or item.get("object_id") in {None, "", object_id}
     ]
+
+
+def _prefer_non_empty_text(existing: object, incoming: object) -> str:
+    incoming_text = str(incoming).strip() if incoming is not None else ""
+    if incoming_text:
+        return incoming_text
+    return str(existing).strip() if existing is not None else ""
 
 
 def _merge_ordered_strings(*values: object) -> list[str]:
