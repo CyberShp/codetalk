@@ -1515,6 +1515,9 @@ def test_coverage_agent_verified_entry_makes_gap_black_box_ready(tmp_path, monke
     assert "RPC recover-session" in case_text
     assert "invalid TLS PSK" in case_text
     assert "oversized capsule" in case_text
+    card = design["entry_discovery"]["cards"][0]
+    candidate = card["candidate_external_entries"][0]
+    assert candidate["input_hints"] == ["invalid TLS PSK", "oversized capsule"]
 
 
 def test_safe_external_label_preserves_trigger_but_rejects_internal_symbol():

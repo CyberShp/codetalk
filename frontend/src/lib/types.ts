@@ -470,6 +470,7 @@ export interface CoverageEntryDiscoveryCandidate {
   provider?: string | null;
   turn_id?: string | null;
   validation_error?: string | null;
+  input_hints?: string[];
 }
 
 export interface CoverageExternalAgentContext {

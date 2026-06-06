@@ -2808,6 +2808,7 @@ def _entry_candidates_from_paths(entry_paths: list[dict]) -> list[dict]:
             "provider": entry.get("provider") or (tool if tool in {"claude-code", "opencode"} else None),
             "turn_id": entry.get("turn_id"),
             "validation_error": entry.get("validation_error"),
+            "input_hints": entry.get("input_hints") or [],
         })
     return candidates
 
@@ -2833,6 +2834,7 @@ def _entry_candidates_from_agent_unverified(entries: list[dict]) -> list[dict]:
             "provider": entry.get("provider"),
             "turn_id": entry.get("turn_id"),
             "validation_error": entry.get("validation_error"),
+            "input_hints": entry.get("input_hints") or [],
         })
     return candidates
 
