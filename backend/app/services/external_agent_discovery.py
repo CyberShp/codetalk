@@ -40,6 +40,11 @@ PROVIDER_FALLBACK_COMMANDS = {
     "opencode": "opencode_fallback_commands",
 }
 
+PROVIDER_READONLY_ARGS = {
+    "claude-code": "claude_code_readonly_args",
+    "opencode": "opencode_readonly_args",
+}
+
 
 @dataclass
 class AgentCandidateFile:
@@ -150,7 +155,7 @@ def check_provider_health(
     attempts: list[dict] = []
     commands = [command, *(fallback_commands or [])]
     for index, candidate_command in enumerate(commands):
-        attempt = _resolve_provider_command_attempt(candidate_command)
+        attempt = _resolve_provider_command_attempt(candidate_command, provider=provider)
         attempts.append(attempt)
         if attempt.get("status") != "available":
             continue
@@ -177,7 +182,7 @@ def check_provider_health(
     }
 
 
-def _resolve_provider_command_attempt(command: str) -> dict:
+def _resolve_provider_command_attempt(command: str, provider: str | None = None) -> dict:
     argv = split_agent_command(command)
     if not argv:
         return {
@@ -215,7 +220,7 @@ def _resolve_provider_command_attempt(command: str) -> dict:
     return {
         "command": command,
         "status": "available",
-        "argv": argv,
+        "argv": apply_readonly_cli_guard(provider, argv),
         "executable": executable,
         "path": resolved,
     }
@@ -236,6 +241,39 @@ def provider_fallback_commands(provider: str) -> list[str]:
     if not attr:
         return []
     return _coerce_command_list(getattr(settings, attr, []))
+
+
+def provider_readonly_args(provider: str | None) -> list[str]:
+    if not provider:
+        return []
+    attr = PROVIDER_READONLY_ARGS.get(provider)
+    if not attr:
+        return []
+    return _coerce_command_list(getattr(settings, attr, []))
+
+
+def apply_readonly_cli_guard(provider: str | None, argv: list[str]) -> list[str]:
+    if not settings.external_agent_enforce_readonly_cli:
+        return list(argv)
+    return _append_missing_option_chunks(list(argv), provider_readonly_args(provider))
+
+
+def _append_missing_option_chunks(argv: list[str], extra_args: list[str]) -> list[str]:
+    if not extra_args:
+        return argv
+    result = list(argv)
+    index = 0
+    while index < len(extra_args):
+        token = extra_args[index]
+        chunk = [token]
+        index += 1
+        while index < len(extra_args) and not extra_args[index].startswith("-"):
+            chunk.append(extra_args[index])
+            index += 1
+        if token.startswith("-") and token in result:
+            continue
+        result.extend(chunk)
+    return result
 
 
 def _coerce_command_list(value: object) -> list[str]:

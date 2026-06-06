@@ -61,6 +61,7 @@ class Settings(BaseSettings):
     external_agent_timeout_sec: int = 90
     external_agent_max_parallel: int = 2
     external_agent_max_output_chars: int = 120000
+    external_agent_enforce_readonly_cli: bool = True
     external_agent_command_allowlist: list[str] = Field(default_factory=lambda: [
         "rg", "git grep", "git ls-files", "Get-ChildItem", "Get-Content",
         "dir", "type", "python -c",
@@ -76,8 +77,12 @@ class Settings(BaseSettings):
     agent_discovery_workspace_reuse_enabled: bool = False
     claude_code_command: str = "ccr code -p --output-format json"
     claude_code_fallback_commands: list[str] = Field(default_factory=lambda: ["claude -p --output-format json"])
+    claude_code_readonly_args: list[str] = Field(
+        default_factory=lambda: ["--disallowedTools", "Edit,Write,NotebookEdit"]
+    )
     opencode_command: str = "opencode"
     opencode_fallback_commands: list[str] = Field(default_factory=list)
+    opencode_readonly_args: list[str] = Field(default_factory=list)
     tiktoken_cache_dir: str = ""     # override path for tiktoken BPE cache (TIKTOKEN_CACHE_DIR)
     tool_health_interval: int = 30   # seconds between health checks
 

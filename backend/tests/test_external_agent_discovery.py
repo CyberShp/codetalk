@@ -192,7 +192,40 @@ def test_provider_command_supports_subcommand_style(monkeypatch):
     health = check_provider_health("claude-code", "ccr code")
 
     assert health["status"] == "available"
-    assert health["argv"] == ["ccr", "code"]
+    assert health["argv"][:2] == ["ccr", "code"]
+
+
+def test_provider_health_appends_claude_readonly_cli_guard(monkeypatch):
+    from app.services.external_agent_discovery import check_provider_health
+
+    monkeypatch.setattr(
+        "app.services.external_agent_discovery.shutil.which",
+        lambda cmd: "C:/tools/claude.cmd" if cmd == "claude" else None,
+    )
+
+    health = check_provider_health("claude-code", "claude -p --output-format json")
+
+    assert health["status"] == "available"
+    assert "--disallowedTools" in health["argv"]
+    assert "Edit,Write,NotebookEdit" in health["argv"]
+
+
+def test_provider_health_does_not_duplicate_explicit_readonly_guard(monkeypatch):
+    from app.services.external_agent_discovery import check_provider_health
+
+    monkeypatch.setattr(
+        "app.services.external_agent_discovery.shutil.which",
+        lambda cmd: "C:/tools/claude.cmd" if cmd == "claude" else None,
+    )
+
+    health = check_provider_health(
+        "claude-code",
+        "claude -p --output-format json --disallowedTools Write",
+    )
+
+    assert health["status"] == "available"
+    assert health["argv"].count("--disallowedTools") == 1
+    assert "Write" in health["argv"]
 
 
 def test_provider_health_uses_claude_fallback_when_ccr_missing(monkeypatch):
@@ -206,7 +239,7 @@ def test_provider_health_uses_claude_fallback_when_ccr_missing(monkeypatch):
     health = check_provider_health("claude-code", "ccr code -p", fallback_commands=["claude -p"])
 
     assert health["status"] == "available"
-    assert health["argv"] == ["claude", "-p"]
+    assert health["argv"][:2] == ["claude", "-p"]
     assert health["used_fallback"] is True
     assert health["attempts"][0]["status"] == "unavailable"
     assert health["attempts"][0]["executable"] == "ccr"
