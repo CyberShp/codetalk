@@ -1262,6 +1262,38 @@ def test_agent_candidate_path_with_angle_brackets_validates(tmp_path):
     assert validation.path == "nvmf_tcp/transport/tls/tls.c"
 
 
+def test_agent_candidate_path_with_bullet_prefix_validates(tmp_path):
+    from app.services.external_agent_discovery import validate_agent_candidate_file
+
+    tls_dir = tmp_path / "nvmf_tcp" / "transport" / "tls"
+    tls_dir.mkdir(parents=True)
+    (tls_dir / "tls.c").write_text("int tls;\n", encoding="utf-8")
+
+    validation = validate_agent_candidate_file(
+        tmp_path,
+        "- nvmf_tcp/transport/tls/tls.c",
+    )
+
+    assert validation.validated is True
+    assert validation.path == "nvmf_tcp/transport/tls/tls.c"
+
+
+def test_agent_candidate_path_with_label_prefix_validates(tmp_path):
+    from app.services.external_agent_discovery import validate_agent_candidate_file
+
+    tls_dir = tmp_path / "nvmf_tcp" / "transport" / "tls"
+    tls_dir.mkdir(parents=True)
+    (tls_dir / "tls.c").write_text("int tls;\n", encoding="utf-8")
+
+    validation = validate_agent_candidate_file(
+        tmp_path,
+        "path: nvmf_tcp/transport/tls/tls.c",
+    )
+
+    assert validation.validated is True
+    assert validation.path == "nvmf_tcp/transport/tls/tls.c"
+
+
 def test_agent_directory_candidate_validates_to_source_file(tmp_path):
     from app.services.external_agent_discovery import validate_agent_candidate_file
 
