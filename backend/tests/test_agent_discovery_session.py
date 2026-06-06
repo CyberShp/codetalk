@@ -113,6 +113,27 @@ def test_source_slice_rejects_outside_repo_and_non_source(tmp_path):
     assert len(session.ledger.rejected_files) == 2
 
 
+def test_source_slice_rejects_directory_candidate(tmp_path):
+    from app.services.agent_discovery_session import create_agent_discovery_session
+
+    src = tmp_path / "src"
+    src.mkdir()
+    (src / "tls.c").write_text("int tls;\n", encoding="utf-8")
+    session = create_agent_discovery_session(
+        repo_path=str(tmp_path),
+        goal="coverage_entry",
+        artifact_dir=tmp_path / "artifacts",
+    )
+
+    ref = session.add_source_slice("src", symbol=None, reason="directory request")
+
+    assert ref.validated is False
+    assert ref.file_path == "src"
+    assert ref.validation_error == "directory_candidate_not_allowed"
+    assert session.ledger.source_slices == []
+    assert session.ledger.rejected_files[0]["reason"] == "directory_candidate_not_allowed"
+
+
 def test_source_slice_saves_hash_and_excerpt(tmp_path):
     from app.services.agent_discovery_session import create_agent_discovery_session
 

@@ -270,7 +270,11 @@ class AgentDiscoverySession:
         reason: str,
         object_id: str = "",
     ) -> SourceSliceRef:
-        validation = validate_agent_candidate_file(self.repo_path, path)
+        validation = validate_agent_candidate_file(
+            self.repo_path,
+            path,
+            allow_directory_candidates=False,
+        )
         if not validation.validated or not validation.resolved_path or not validation.path:
             self.ledger.add_rejected_file(
                 object_id=object_id,
