@@ -122,6 +122,13 @@ class AgentDiscoveryLedger:
         key = tuple(str(item.get(field) or "") for field in key_fields)
         for existing in target:
             if tuple(str(existing.get(field) or "") for field in key_fields) == key:
+                item = dict(item)
+                for list_field in ("input_hints", "chain"):
+                    if list_field in existing or list_field in item:
+                        item[list_field] = _merge_ordered_strings(
+                            existing.get(list_field),
+                            item.get(list_field),
+                        )
                 existing.update(item)
                 return
         target.append(item)
@@ -462,6 +469,21 @@ def _filter_by_object(items: list[dict], object_id: str) -> list[dict]:
         item for item in items
         if not object_id or item.get("object_id") in {None, "", object_id}
     ]
+
+
+def _merge_ordered_strings(*values: object) -> list[str]:
+    merged: list[str] = []
+    seen: set[str] = set()
+    for value in values:
+        if not isinstance(value, list):
+            continue
+        for item in value:
+            text = str(item).strip()
+            if not text or text in seen:
+                continue
+            seen.add(text)
+            merged.append(text)
+    return merged
 
 
 def _source_slices_for_object(source_slices: list[dict], object_id: str) -> list[dict]:

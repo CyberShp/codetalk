@@ -211,6 +211,48 @@ def test_entry_ledger_dedupes_per_object(tmp_path):
     assert packet_b["validated_facts"]["entries"][0]["object_id"] == "obj-b"
 
 
+def test_entry_ledger_preserves_list_evidence_on_duplicate_update(tmp_path):
+    from app.services.agent_discovery_session import (
+        AgentContextPacketInput,
+        create_agent_discovery_session,
+    )
+
+    session = create_agent_discovery_session(
+        repo_path=str(tmp_path),
+        goal="coverage_entry",
+        artifact_dir=tmp_path / "artifacts",
+    )
+    session.ledger.add_validated_entry({
+        "object_id": "obj",
+        "provider": "claude-code",
+        "entry_symbol": "rpc_tls_entry",
+        "entry_file": "src/rpc.c",
+        "input_hints": ["invalid TLS PSK", "oversized capsule"],
+        "chain": ["rpc_tls_entry", "tls_handshake"],
+    })
+    session.ledger.add_validated_entry({
+        "object_id": "obj",
+        "provider": "claude-code",
+        "entry_symbol": "rpc_tls_entry",
+        "entry_file": "src/rpc.c",
+        "input_hints": [],
+        "chain": ["tls_handshake", "tls_error_path"],
+    })
+
+    packet = session.build_context_packet(
+        AgentContextPacketInput(
+            object_id="obj",
+            current_goal="coverage_entry",
+            analysis_object_text="tls_handshake",
+            expanded_terms=["tls_handshake"],
+        )
+    )
+
+    entry = packet["validated_facts"]["entries"][0]
+    assert entry["input_hints"] == ["invalid TLS PSK", "oversized capsule"]
+    assert entry["chain"] == ["rpc_tls_entry", "tls_handshake", "tls_error_path"]
+
+
 def test_raw_output_is_not_used_as_fact_in_context_packet(tmp_path):
     from app.services.agent_discovery_session import (
         AgentContextPacketInput,
