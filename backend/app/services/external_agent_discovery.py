@@ -563,6 +563,11 @@ def _normalize_agent_path_text(path: str) -> str:
     raw = raw.strip("<>")
     raw = _normalize_file_uri_path(raw)
     raw = re.sub(
+        rf"(?i)({'|'.join(re.escape(ext) for ext in SOURCE_EXTS)}(?:\:\d+(?:\:\d+|-\d+)?|#L\d+(?:-L\d+)?)?)[,.;]+$",
+        lambda match: match.group(1),
+        raw,
+    )
+    raw = re.sub(
         rf"(?i)({'|'.join(re.escape(ext) for ext in SOURCE_EXTS)})(?::\d+(?::\d+|-\d+)?|#L\d+(?:-L\d+)?)$",
         lambda match: match.group(1),
         raw,
