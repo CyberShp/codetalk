@@ -374,6 +374,36 @@ def test_provider_health_includes_runtime_diagnostic_when_unavailable(monkeypatc
     assert "PATH entries: C:/agent-bin | D:/tools" in diagnostic["summary"]
 
 
+def test_run_provider_unavailable_keeps_runtime_diagnostic_in_result(tmp_path, monkeypatch):
+    from app.services.external_agent_discovery import AgentDiscoveryRequest, run_external_agent_discovery
+
+    monkeypatch.setattr(
+        "app.services.external_agent_discovery.check_provider_health",
+        lambda provider, command, fallback_commands=None: {
+            "status": "unavailable",
+            "reason": "no agent command found; attempted: ccr code -p, claude -p",
+            "diagnostic": {
+                "summary": "cwd: E:/svc/codetalk; PATH entries: C:/agent-bin | D:/tools"
+            },
+        },
+    )
+
+    results = asyncio.run(run_external_agent_discovery(
+        AgentDiscoveryRequest(
+            request_id="unavailable-diagnostic",
+            repo_path=str(tmp_path),
+            analysis_object_text="nvme-tcp-tls",
+        ),
+        providers=["claude-code"],
+    ))
+
+    result = results[0]
+    assert result.status == "unavailable"
+    assert "no agent command found" in result.raw_summary
+    assert "PATH entries: C:/agent-bin | D:/tools" in result.raw_summary
+    assert result.warnings == [result.raw_summary]
+
+
 def test_run_provider_reports_nonzero_exit_with_stderr(tmp_path, monkeypatch):
     from app.services.external_agent_discovery import AgentDiscoveryRequest, run_external_agent_discovery
 

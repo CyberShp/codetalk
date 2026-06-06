@@ -753,7 +753,7 @@ async def _run_provider(
     fallback_commands = provider_fallback_commands(provider)
     health = check_provider_health(provider, command, fallback_commands=fallback_commands)
     if health.get("status") != "available":
-        reason = str(health.get("reason") or "")
+        reason = _format_unavailable_health_summary(health)
         result = AgentDiscoveryResult(
             provider=provider,
             status="unavailable",
@@ -835,6 +835,14 @@ def _format_process_error_summary(returncode: int | None, stderr_text: str, stdo
     if stdout_text:
         parts.append(f"stdout: {stdout_text[:1000]}")
     return "; ".join(parts)[:4000]
+
+
+def _format_unavailable_health_summary(health: dict) -> str:
+    parts = [str(health.get("reason") or "").strip()]
+    diagnostic = health.get("diagnostic")
+    if isinstance(diagnostic, dict):
+        parts.append(str(diagnostic.get("summary") or "").strip())
+    return "; ".join(part for part in parts if part)[:4000]
 
 
 async def _kill_and_wait_process(proc: object) -> None:
