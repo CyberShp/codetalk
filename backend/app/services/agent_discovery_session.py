@@ -462,6 +462,12 @@ def _enforce_packet_budget(packet: dict) -> dict:
     packet["existing_tool_candidates"] = packet.get("existing_tool_candidates", [])[:3]
     encoded = json.dumps(packet, ensure_ascii=False)
     if len(encoded) > max_chars:
+        _add_dropped_sections(packet, [
+            "validated_facts",
+            "rejected_facts",
+            "do_not_repeat",
+            "previous_agent_findings",
+        ])
         packet["validated_facts"]["files"] = packet["validated_facts"].get("files", [])[:5]
         packet["validated_facts"]["entries"] = packet["validated_facts"].get("entries", [])[:5]
         packet["rejected_facts"]["files"] = packet["rejected_facts"].get("files", [])[:10]
@@ -469,7 +475,54 @@ def _enforce_packet_budget(packet: dict) -> dict:
         packet["do_not_repeat"]["paths"] = packet["do_not_repeat"].get("paths", [])[:20]
         packet["do_not_repeat"]["entry_symbols"] = packet["do_not_repeat"].get("entry_symbols", [])[:10]
         packet["previous_agent_findings"] = packet.get("previous_agent_findings", [])[:5]
+    encoded = json.dumps(packet, ensure_ascii=False)
+    if len(encoded) > max_chars:
+        _add_dropped_sections(packet, [
+            "expanded_terms",
+            "path_hints",
+            "scope_hints",
+            "requested_output_schema",
+        ])
+        packet["expanded_terms"] = packet.get("expanded_terms", [])[:8]
+        current = packet.get("current_object") or {}
+        current["path_hints"] = (current.get("path_hints") or [])[:3]
+        current["scope_hints"] = (current.get("scope_hints") or [])[:3]
+        packet["validated_facts"] = {"files": [], "symbols": [], "entries": []}
+        packet["rejected_facts"]["files"] = packet["rejected_facts"].get("files", [])[:3]
+        packet["rejected_facts"]["entries"] = packet["rejected_facts"].get("entries", [])[:3]
+        packet["do_not_repeat"]["paths"] = packet["do_not_repeat"].get("paths", [])[:5]
+        packet["do_not_repeat"]["entry_symbols"] = packet["do_not_repeat"].get("entry_symbols", [])[:5]
+        packet["previous_agent_findings"] = []
+        packet["requested_output_schema"] = _compact_agent_output_schema()
+    encoded = json.dumps(packet, ensure_ascii=False)
+    if len(encoded) > max_chars:
+        _add_dropped_sections(packet, ["rejected_facts", "do_not_repeat"])
+        packet["expanded_terms"] = packet.get("expanded_terms", [])[:3]
+        packet["rejected_facts"] = {"files": [], "entries": []}
+        packet["do_not_repeat"] = {"paths": [], "entry_symbols": []}
+    encoded = json.dumps(packet, ensure_ascii=False)
+    if len(encoded) > max_chars:
+        _add_dropped_sections(packet, ["expanded_terms", "requested_output_schema"])
+        packet["expanded_terms"] = []
+        packet["requested_output_schema"] = {}
     return packet
+
+
+def _add_dropped_sections(packet: dict, sections: list[str]) -> None:
+    overflow = packet.setdefault("context_overflow", {})
+    existing = list(overflow.get("dropped_sections") or [])
+    for section in sections:
+        if section not in existing:
+            existing.append(section)
+    overflow["dropped_sections"] = existing
+
+
+def _compact_agent_output_schema() -> dict:
+    return {
+        "candidate_files": [{"path": "repo/relative/source.c"}],
+        "candidate_entries": [{"entry_symbol": "...", "entry_file": "repo/relative/source.c"}],
+        "need_source_slices": [{"file_path": "repo/relative/source.c"}],
+    }
 
 
 def _agent_output_schema() -> dict:
