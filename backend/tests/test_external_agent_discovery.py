@@ -1702,3 +1702,95 @@ def test_coverage_agent_source_slice_round2_finds_verified_entry(tmp_path, monke
     assert gap["entry_paths"][0]["tool"] == "claude-code"
     assert (artifact_dir / "agent_discovery_session.json").exists()
     assert (artifact_dir / "external_agent_source_slices" / "slice_001.json").exists()
+
+
+def test_coverage_agent_unverified_entry_without_file_triggers_round2(tmp_path, monkeypatch):
+    import app.services.coverage_analyzer as coverage_mod
+    from app.services.coverage_analyzer import build_coverage_test_design
+    from app.services.external_agent_discovery import AgentCandidateEntry, AgentDiscoveryResult
+
+    src = tmp_path / "src"
+    src.mkdir()
+    (src / "internal.c").write_text(
+        "void internal_tls_gap(void) {\n"
+        "    if (1) { return; }\n"
+        "}\n",
+        encoding="utf-8",
+    )
+    (src / "rpc.c").write_text(
+        "void rpc_tls_entry(void) { dispatch_tls(); }\n",
+        encoding="utf-8",
+    )
+    calls = []
+
+    async def fake_discovery(request, **kwargs):
+        calls.append(request.request_id)
+        session = kwargs.get("session")
+        if session is not None:
+            session.record_turn(
+                provider="claude-code",
+                goal="coverage_entry",
+                prompt="prompt",
+                raw_output="{}",
+                parsed_result={},
+                validation_result={},
+                status="ok",
+            )
+        if "round2" not in request.request_id:
+            return [
+                AgentDiscoveryResult(
+                    provider="claude-code",
+                    status="ok",
+                    candidate_entries=[
+                        AgentCandidateEntry(
+                            entry_kind="rpc",
+                            entry_symbol="rpc_tls_entry",
+                            entry_file=None,
+                            chain=["rpc_tls_entry", "internal_tls_gap"],
+                            external_trigger="RPC tls-entry",
+                            reason="candidate entry lacks source file and needs another search round",
+                            validated=False,
+                            validation_error="entry_file_missing",
+                        )
+                    ],
+                )
+            ]
+        return [
+            AgentDiscoveryResult(
+                provider="claude-code",
+                status="ok",
+                candidate_entries=[
+                    AgentCandidateEntry(
+                        entry_kind="rpc",
+                        entry_symbol="rpc_tls_entry",
+                        entry_file="src/rpc.c",
+                        chain=["rpc_tls_entry", "internal_tls_gap"],
+                        external_trigger="RPC tls-entry",
+                        reason="round 2 source context verified the public entry",
+                        validated=True,
+                    )
+                ],
+            )
+        ]
+
+    monkeypatch.setattr(coverage_mod, "run_external_agent_discovery", fake_discovery, raising=False)
+    modules = _coverage_modules(
+        "feature,module,code_location,function,triggered,hit_count\n"
+        "tls,internal,src/internal.c:1-3,internal_tls_gap,false,0\n"
+    )
+    artifact_dir = tmp_path / "artifacts"
+
+    design = asyncio.run(
+        build_coverage_test_design(
+            modules,
+            workspace_id="ws-1",
+            repo_path=str(tmp_path),
+            artifact_dir=artifact_dir,
+            analysis_id="cov-1",
+        )
+    )
+
+    gap = [g for g in design["gaps"] if g.get("kind") == "function"][0]
+    assert any("round2" in call for call in calls)
+    assert gap["black_box_readiness"]["case_type"] == "black_box_ready"
+    assert gap["entry_paths"][0]["entry_symbol"] == "rpc_tls_entry"

@@ -1056,11 +1056,12 @@ async def _resolve_external_agent_entries_for_hits(
             status_by_provider=status_by_provider,
             raw_results=raw_results,
         )
+        explicit_slice_requests = any(result.need_source_slices for result in results)
         if (
             agent_session is not None
             and settings.agent_discovery_max_rounds > 1
-            and any(result.need_source_slices for result in results)
             and not validated_entries
+            and (explicit_slice_requests or unverified_entries)
         ):
             for result in results:
                 if result.need_source_slices:
