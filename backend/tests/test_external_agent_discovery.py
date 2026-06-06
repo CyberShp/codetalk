@@ -1290,6 +1290,49 @@ def test_coverage_agent_entry_collect_prefers_result_turn_id(tmp_path):
     assert raw_results[0]["turn_id"] == "turn_001_claude_code"
 
 
+def test_coverage_agent_entry_collect_rejects_directory_entry_file(tmp_path):
+    import app.services.coverage_analyzer as coverage_mod
+    from app.services.external_agent_discovery import AgentCandidateEntry, AgentDiscoveryResult
+
+    src = tmp_path / "src"
+    src.mkdir()
+    (src / "rpc.c").write_text("void rpc_entry(void) {}\n", encoding="utf-8")
+    result = AgentDiscoveryResult(
+        provider="claude-code",
+        status="ok",
+        candidate_entries=[
+            AgentCandidateEntry(
+                entry_kind="rpc",
+                entry_symbol="rpc_entry",
+                entry_file="src",
+                chain=["rpc_entry", "internal_gap"],
+                external_trigger="RPC entry",
+                reason="agent returned only the containing directory",
+                validated=True,
+            )
+        ],
+    )
+    validated: list[dict] = []
+    unverified: list[dict] = []
+
+    coverage_mod._collect_agent_entry_results(
+        [result],
+        repo_root=tmp_path,
+        object_id="src/internal.c:internal_gap:1",
+        turn_id="coverage:src/internal.c:internal_gap:1",
+        agent_session=None,
+        validated_entries=validated,
+        unverified_entries=unverified,
+        status_by_provider={},
+        raw_results=[],
+    )
+
+    assert validated == []
+    assert unverified[0]["entry_file"] == "src"
+    assert unverified[0]["source_verification"] == "needs_source_verification"
+    assert unverified[0]["validation_error"] == "directory_candidate_not_allowed"
+
+
 def test_coverage_scope_enrichment_does_not_start_source_scope_agent(tmp_path, monkeypatch):
     import app.services.coverage_analyzer as coverage_mod
     import app.services.workspace_scope_resolver as scope_mod

@@ -1166,7 +1166,11 @@ def _collect_agent_entry_results(
                 "validation_error": entry.validation_error,
             }
             if entry.entry_file:
-                validation = validate_agent_candidate_file(repo_root, entry.entry_file)
+                validation = validate_agent_candidate_file(
+                    repo_root,
+                    entry.entry_file,
+                    allow_directory_candidates=False,
+                )
                 item["entry_file"] = validation.path or entry.entry_file
                 if validation.validated:
                     item["source_verification"] = "source_backed"

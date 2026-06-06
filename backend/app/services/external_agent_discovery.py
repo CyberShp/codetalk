@@ -389,7 +389,12 @@ def _coerce_command_list(value: object) -> list[str]:
     return [str(value).strip()] if str(value).strip() else []
 
 
-def validate_agent_candidate_file(repo_path: str | Path, path: str) -> CandidateValidation:
+def validate_agent_candidate_file(
+    repo_path: str | Path,
+    path: str,
+    *,
+    allow_directory_candidates: bool = True,
+) -> CandidateValidation:
     root = Path(repo_path).resolve()
     raw = (path or "").strip().strip('"')
     if not raw:
@@ -408,6 +413,13 @@ def validate_agent_candidate_file(repo_path: str | Path, path: str) -> Candidate
     except Exception:
         return CandidateValidation(input_path=path, validation_error="outside_repo")
     if resolved.is_dir():
+        if not allow_directory_candidates:
+            return CandidateValidation(
+                input_path=path,
+                resolved_path=str(resolved),
+                path=rel.as_posix(),
+                validation_error="directory_candidate_not_allowed",
+            )
         source_file = _preferred_source_file_under(resolved)
         if source_file is None:
             return CandidateValidation(
