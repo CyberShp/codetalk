@@ -38,6 +38,8 @@ test("external agent tool card can run a startup probe", async ({ page }) => {
           healthy: false,
           status: "unavailable",
           managed: false,
+          last_check:
+            "primary command unavailable; using fallback: claude -p --output-format json",
           message:
             "ccr code -p --output-format json => unavailable; claude -p --output-format json => unavailable",
           capabilities: ["code_search"],
@@ -76,6 +78,12 @@ test("external agent tool card can run a startup probe", async ({ page }) => {
   await page.goto("/tools", { waitUntil: "domcontentloaded" });
 
   await expect(page.getByRole("heading", { name: "Claude Code" })).toBeVisible();
+  await expect(
+    page.getByText(
+      "primary command unavailable; using fallback: claude -p --output-format json",
+    ),
+  ).toBeVisible();
+  await expect(page.getByText("Invalid Date")).toHaveCount(0);
   await page.getByRole("button", { name: "Startup probe" }).click();
 
   await expect(page.getByText("startup_probe_ok")).toBeVisible();

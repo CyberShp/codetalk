@@ -64,6 +64,18 @@ const STATUS_DISPLAY: Record<
   },
 };
 
+function formatLastCheck(value: string): string {
+  const timestamp = Date.parse(value);
+  if (Number.isNaN(timestamp)) {
+    return value;
+  }
+  return new Date(timestamp).toLocaleString("zh-CN", {
+    hour: "2-digit",
+    minute: "2-digit",
+    second: "2-digit",
+  });
+}
+
 export default function ToolsPage() {
   const [tools, setTools] = useState<ToolInfo[]>([]);
   const [loading, setLoading] = useState(true);
@@ -310,12 +322,8 @@ export default function ToolsPage() {
                       <p className="text-[10px] text-on-surface-variant uppercase tracking-wider mb-0.5">
                         上次检查
                       </p>
-                      <p className="text-xs text-on-surface font-data">
-                        {new Date(tool.last_check).toLocaleString("zh-CN", {
-                          hour: "2-digit",
-                          minute: "2-digit",
-                          second: "2-digit",
-                        })}
+                      <p className="break-words text-xs text-on-surface font-data">
+                        {formatLastCheck(tool.last_check)}
                       </p>
                     </div>
                   )}
