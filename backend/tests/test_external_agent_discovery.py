@@ -1651,6 +1651,11 @@ def test_coverage_agent_unverified_entry_stays_pending(tmp_path, monkeypatch):
     assert candidate["turn_id"] == "coverage:src/util.c:internal_helper:1"
     assert candidate["source_verification"] == "needs_source_verification"
     assert candidate["validation_error"] == "file_not_found"
+    same_symbol_candidates = [
+        item for item in card["candidate_external_entries"]
+        if item.get("entry_symbol") == "maybe_cli"
+    ]
+    assert len(same_symbol_candidates) == 1
 
 
 def test_coverage_agent_invalid_output_is_visible_in_entry_discovery(tmp_path, monkeypatch):

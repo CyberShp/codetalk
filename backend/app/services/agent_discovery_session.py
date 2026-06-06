@@ -106,14 +106,14 @@ class AgentDiscoveryLedger:
         self._append_unique(
             self.validated_entries,
             {**entry, "created_at": entry.get("created_at") or _now()},
-            key_fields=("entry_symbol", "entry_file", "provider"),
+            key_fields=("object_id", "entry_symbol", "entry_file", "provider"),
         )
 
     def add_rejected_entry(self, entry: dict) -> None:
         self._append_unique(
             self.rejected_entries,
             {**entry, "created_at": entry.get("created_at") or _now()},
-            key_fields=("entry_symbol", "entry_file", "provider", "validation_error"),
+            key_fields=("object_id", "entry_symbol", "entry_file", "provider", "validation_error"),
         )
 
     @staticmethod

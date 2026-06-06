@@ -123,6 +123,58 @@ def test_rejected_entry_symbol_enters_context_do_not_repeat(tmp_path):
     assert "rpc_entry" in packet["do_not_repeat"]["entry_symbols"]
 
 
+def test_entry_ledger_dedupes_per_object(tmp_path):
+    from app.services.agent_discovery_session import (
+        AgentContextPacketInput,
+        create_agent_discovery_session,
+    )
+
+    session = create_agent_discovery_session(
+        repo_path=str(tmp_path),
+        goal="coverage_entry",
+        artifact_dir=tmp_path / "artifacts",
+    )
+    for object_id in ("obj-a", "obj-b"):
+        session.ledger.add_rejected_entry({
+            "object_id": object_id,
+            "provider": "claude-code",
+            "entry_symbol": "rpc_entry",
+            "entry_file": None,
+            "validation_error": "entry_file_missing",
+        })
+        session.ledger.add_validated_entry({
+            "object_id": object_id,
+            "provider": "claude-code",
+            "entry_symbol": "rpc_entry",
+            "entry_file": "src/rpc.c",
+            "validation_error": None,
+        })
+
+    packet_a = session.build_context_packet(
+        AgentContextPacketInput(
+            object_id="obj-a",
+            current_goal="coverage_entry",
+            analysis_object_text="gap-a",
+            expanded_terms=["gap-a"],
+        )
+    )
+    packet_b = session.build_context_packet(
+        AgentContextPacketInput(
+            object_id="obj-b",
+            current_goal="coverage_entry",
+            analysis_object_text="gap-b",
+            expanded_terms=["gap-b"],
+        )
+    )
+
+    assert [item["object_id"] for item in session.ledger.rejected_entries] == ["obj-a", "obj-b"]
+    assert [item["object_id"] for item in session.ledger.validated_entries] == ["obj-a", "obj-b"]
+    assert packet_a["rejected_facts"]["entries"][0]["object_id"] == "obj-a"
+    assert packet_b["rejected_facts"]["entries"][0]["object_id"] == "obj-b"
+    assert packet_a["validated_facts"]["entries"][0]["object_id"] == "obj-a"
+    assert packet_b["validated_facts"]["entries"][0]["object_id"] == "obj-b"
+
+
 def test_raw_output_is_not_used_as_fact_in_context_packet(tmp_path):
     from app.services.agent_discovery_session import (
         AgentContextPacketInput,
