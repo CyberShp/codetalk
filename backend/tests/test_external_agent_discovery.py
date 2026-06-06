@@ -1307,8 +1307,12 @@ def test_coverage_agent_unverified_entry_stays_pending(tmp_path, monkeypatch):
     assert gap["entry_paths"] == []
     assert gap["black_box_readiness"]["case_type"] != "black_box_ready"
     card = design["entry_discovery"]["cards"][0]
-    assert card["candidate_external_entries"][0]["tool"] == "opencode"
-    assert card["candidate_external_entries"][0]["source_verification"] == "needs_source_verification"
+    candidate = card["candidate_external_entries"][0]
+    assert candidate["tool"] == "opencode"
+    assert candidate["provider"] == "opencode"
+    assert candidate["turn_id"] == "coverage:src/util.c:internal_helper:1"
+    assert candidate["source_verification"] == "needs_source_verification"
+    assert candidate["validation_error"] == "file_not_found"
 
 
 def test_coverage_agent_invalid_output_is_visible_in_entry_discovery(tmp_path, monkeypatch):

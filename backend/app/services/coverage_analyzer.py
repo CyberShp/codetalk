@@ -2772,6 +2772,8 @@ def _entry_candidates_from_agent_unverified(entries: list[dict]) -> list[dict]:
             "confidence": "low",
             "source_verification": "needs_source_verification",
             "tool": entry.get("provider") or "external_agent",
+            "provider": entry.get("provider"),
+            "turn_id": entry.get("turn_id"),
             "validation_error": entry.get("validation_error"),
         })
     return candidates
