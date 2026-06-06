@@ -1162,6 +1162,7 @@ def _collect_agent_entry_results(
                 "entry_file": entry.entry_file,
                 "chain": entry.chain,
                 "external_trigger": entry.external_trigger,
+                "input_hints": entry.input_hints,
                 "reason": entry.reason,
                 "source_verification": "source_backed" if entry.validated else "needs_source_verification",
                 "validation_error": entry.validation_error,

@@ -114,6 +114,34 @@ def test_agent_output_unwraps_claude_print_json_result(tmp_path):
     assert result.candidate_entries[0].entry_file == "src/entry.c"
 
 
+def test_agent_entry_input_hints_are_parsed_for_black_box_cases(tmp_path):
+    from app.services.external_agent_discovery import parse_agent_output
+
+    src = tmp_path / "src"
+    src.mkdir()
+    (src / "rpc.c").write_text("void rpc_entry(void) {}\n", encoding="utf-8")
+    raw = json.dumps({
+        "candidate_entries": [
+            {
+                "entry_kind": "rpc",
+                "entry_symbol": "rpc_entry",
+                "entry_file": "src/rpc.c",
+                "chain": ["rpc_entry", "target_fn"],
+                "external_trigger": "RPC request",
+                "input_hints": ["invalid TLS PSK", "oversized capsule"],
+            }
+        ]
+    })
+
+    result = parse_agent_output("claude-code", raw, tmp_path)
+
+    assert result.status == "ok"
+    assert result.candidate_entries[0].input_hints == [
+        "invalid TLS PSK",
+        "oversized capsule",
+    ]
+
+
 def test_agent_entry_without_source_file_is_not_validated(tmp_path):
     from app.services.external_agent_discovery import parse_agent_output
 
@@ -1458,6 +1486,7 @@ def test_coverage_agent_verified_entry_makes_gap_black_box_ready(tmp_path, monke
                         entry_file="src/rpc.c",
                         chain=["rpc_recover_session", "internal_recover"],
                         external_trigger="RPC recover-session",
+                        input_hints=["invalid TLS PSK", "oversized capsule"],
                         reason="public RPC handler reaches internal function",
                         validated=True,
                     )
@@ -1480,9 +1509,12 @@ def test_coverage_agent_verified_entry_makes_gap_black_box_ready(tmp_path, monke
     assert gap["black_box_readiness"]["case_type"] == "black_box_ready"
     assert gap["entry_paths"][0]["tool"] == "claude-code"
     assert gap["entry_paths"][0]["entry_symbol"] == "rpc_recover_session"
+    assert gap["entry_paths"][0]["input_hints"] == ["invalid TLS PSK", "oversized capsule"]
     assert gap["black_box_cases"]
     case_text = json.dumps(gap["black_box_cases"], ensure_ascii=False)
     assert "RPC recover-session" in case_text
+    assert "invalid TLS PSK" in case_text
+    assert "oversized capsule" in case_text
 
 
 def test_safe_external_label_preserves_trigger_but_rejects_internal_symbol():

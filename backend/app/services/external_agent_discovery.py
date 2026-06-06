@@ -72,6 +72,7 @@ class AgentCandidateEntry:
     entry_file: str | None = None
     chain: list[str] = field(default_factory=list)
     external_trigger: str = ""
+    input_hints: list[str] = field(default_factory=list)
     reason: str = ""
     validated: bool = False
     validation_error: str | None = None
@@ -682,6 +683,7 @@ def parse_agent_output(provider: str, raw_output: str, repo_path: str | Path) ->
             entry_file=str(item.get("entry_file") or item.get("file") or "") or None,
             chain=[str(x) for x in chain if x],
             external_trigger=str(item.get("external_trigger") or ""),
+            input_hints=[str(x) for x in (item.get("input_hints") or []) if x],
             reason=str(item.get("reason") or ""),
         )
         if entry.entry_file:
@@ -1254,6 +1256,7 @@ def build_agent_prompt(request: AgentDiscoveryRequest) -> str:
                 "entry_file": "repo/relative/source.c",
                 "chain": ["external_entry", "target_function"],
                 "external_trigger": "...",
+                "input_hints": ["externally controllable request/config/message values"],
                 "reason": "...",
             }
         ],
