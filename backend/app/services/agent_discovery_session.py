@@ -331,16 +331,22 @@ class AgentDiscoverySession:
         object_id: str = "",
     ) -> list[SourceSliceRef]:
         refs: list[SourceSliceRef] = []
-        remaining = max(0, settings.agent_discovery_max_source_slices - len(self.ledger.source_slices))
-        for item in requests[:remaining]:
+        max_valid = max(0, settings.agent_discovery_max_source_slices - len(self.ledger.source_slices))
+        valid_added = 0
+        for item in requests:
+            if valid_added >= max_valid:
+                break
             if not isinstance(item, dict):
                 continue
-            refs.append(self.add_source_slice(
+            ref = self.add_source_slice(
                 str(item.get("file_path") or item.get("path") or ""),
                 symbol=str(item.get("symbol") or "") or None,
                 reason=str(item.get("reason") or "agent requested source slice"),
                 object_id=object_id,
-            ))
+            )
+            refs.append(ref)
+            if ref.validated:
+                valid_added += 1
         return refs
 
     def build_context_packet(self, data: AgentContextPacketInput) -> dict:
