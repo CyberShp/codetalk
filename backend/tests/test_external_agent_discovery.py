@@ -743,6 +743,23 @@ def test_candidate_outside_repo_and_non_source_are_rejected(tmp_path):
     assert validate_agent_candidate_file(tmp_path, "README.md").validated is False
 
 
+def test_agent_candidate_path_with_parent_repo_prefix_validates_from_nested_root(tmp_path):
+    from app.services.external_agent_discovery import validate_agent_candidate_file
+
+    repo_root = tmp_path / "nof" / "nvmf_tcp"
+    tls_dir = repo_root / "transport" / "tls"
+    tls_dir.mkdir(parents=True)
+    (tls_dir / "tls.c").write_text("int tls;\n", encoding="utf-8")
+
+    validation = validate_agent_candidate_file(
+        repo_root,
+        "nof/nvmf_tcp/transport/tls/tls.c",
+    )
+
+    assert validation.validated is True
+    assert validation.path == "transport/tls/tls.c"
+
+
 def test_duplicate_gitnexus_and_agent_candidate_merges_with_boost(tmp_path):
     from app.schemas.workspace_analysis import ScopeCandidate
     from app.services.external_agent_discovery import (

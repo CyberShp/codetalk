@@ -428,8 +428,8 @@ def _resolve_existing_or_suffix(root: Path, candidate: Path, normalized: str) ->
             return candidate
     except OSError:
         return None
-    suffix = normalized.strip("/").lower()
-    if not suffix:
+    suffixes = _candidate_suffixes_for_root(root, normalized)
+    if not suffixes:
         return None
     matches: list[Path] = []
     for walk_root, dirs, files in os.walk(root):
@@ -437,10 +437,23 @@ def _resolve_existing_or_suffix(root: Path, candidate: Path, normalized: str) ->
         for name in files:
             full = Path(walk_root) / name
             rel = full.relative_to(root).as_posix().lower()
-            if rel.endswith(suffix):
+            if any(rel.endswith(suffix) for suffix in suffixes):
                 matches.append(full)
     matches.sort(key=lambda p: len(p.relative_to(root).parts))
     return matches[0] if matches else None
+
+
+def _candidate_suffixes_for_root(root: Path, normalized: str) -> list[str]:
+    suffix = normalized.strip("/").lower()
+    if not suffix:
+        return []
+    parts = [part for part in suffix.split("/") if part]
+    suffixes = [suffix]
+    root_name = root.name.lower()
+    for index, part in enumerate(parts):
+        if part == root_name and index + 1 < len(parts):
+            suffixes.append("/".join(parts[index + 1:]))
+    return list(dict.fromkeys(suffixes))
 
 
 def parse_agent_output(provider: str, raw_output: str, repo_path: str | Path) -> AgentDiscoveryResult:
