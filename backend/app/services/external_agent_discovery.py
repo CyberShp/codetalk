@@ -757,6 +757,9 @@ def _json_loads_flexible(raw: str) -> object:
         fenced = _extract_fenced_json(raw)
         if fenced is not None:
             return json.loads(fenced)
+        discovery = _extract_discovery_json_object(raw)
+        if discovery is not None:
+            return json.loads(discovery)
         balanced = _extract_first_json_object(raw)
         if balanced is not None:
             return json.loads(balanced)
@@ -822,32 +825,51 @@ def _extract_fenced_json(raw: str) -> str | None:
     return match.group(1) if match else None
 
 
-def _extract_first_json_object(raw: str) -> str | None:
-    start = raw.find("{")
-    if start < 0:
-        return None
-    depth = 0
-    in_string = False
-    escaped = False
-    for index in range(start, len(raw)):
-        char = raw[index]
-        if in_string:
-            if escaped:
-                escaped = False
-            elif char == "\\":
-                escaped = True
-            elif char == '"':
-                in_string = False
+def _extract_discovery_json_object(raw: str) -> str | None:
+    for candidate in _iter_json_objects(raw):
+        try:
+            payload = _unwrap_agent_payload(json.loads(candidate))
+        except json.JSONDecodeError:
             continue
-        if char == '"':
-            in_string = True
-        elif char == "{":
-            depth += 1
-        elif char == "}":
-            depth -= 1
-            if depth == 0:
-                return raw[start:index + 1]
+        if isinstance(payload, dict) and _has_discovery_schema(payload):
+            return candidate
     return None
+
+
+def _extract_first_json_object(raw: str) -> str | None:
+    for candidate in _iter_json_objects(raw):
+        return candidate
+    return None
+
+
+def _iter_json_objects(raw: str):
+    start = raw.find("{")
+    while start >= 0:
+        depth = 0
+        in_string = False
+        escaped = False
+        for index in range(start, len(raw)):
+            char = raw[index]
+            if in_string:
+                if escaped:
+                    escaped = False
+                elif char == "\\":
+                    escaped = True
+                elif char == '"':
+                    in_string = False
+                continue
+            if char == '"':
+                in_string = True
+            elif char == "{":
+                depth += 1
+            elif char == "}":
+                depth -= 1
+                if depth == 0:
+                    yield raw[start:index + 1]
+                    start = raw.find("{", index + 1)
+                    break
+        else:
+            return
 
 
 def merge_source_candidates(
