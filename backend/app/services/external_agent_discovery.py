@@ -45,6 +45,14 @@ PROVIDER_READONLY_ARGS = {
     "opencode": "opencode_readonly_args",
 }
 
+DISCOVERY_SCHEMA_KEYS = frozenset({
+    "candidate_files",
+    "candidate_symbols",
+    "candidate_entries",
+    "need_source_slices",
+    "commands",
+})
+
 
 @dataclass
 class AgentCandidateFile:
@@ -356,8 +364,8 @@ def parse_agent_output(provider: str, raw_output: str, repo_path: str | Path) ->
         return AgentDiscoveryResult(
             provider=provider,
             status="invalid_output",
-            raw_summary=raw,
-            warnings=[f"invalid JSON: {exc}"],
+            raw_summary=_invalid_output_summary(raw),
+            warnings=[_invalid_output_warning(raw, exc)],
         )
     if not isinstance(payload, dict):
         return AgentDiscoveryResult(
@@ -365,6 +373,13 @@ def parse_agent_output(provider: str, raw_output: str, repo_path: str | Path) ->
             status="invalid_output",
             raw_summary=raw,
             warnings=["agent JSON root must be an object"],
+        )
+    if not _has_discovery_schema(payload):
+        return AgentDiscoveryResult(
+            provider=provider,
+            status="invalid_output",
+            raw_summary=json.dumps(payload, ensure_ascii=False)[:4000],
+            warnings=["agent JSON schema missing discovery fields"],
         )
 
     files: list[AgentCandidateFile] = []
@@ -472,14 +487,7 @@ def _json_loads_flexible(raw: str) -> object:
 def _unwrap_agent_payload(payload: object) -> object:
     if not isinstance(payload, dict):
         return payload
-    discovery_keys = {
-        "candidate_files",
-        "candidate_symbols",
-        "candidate_entries",
-        "need_source_slices",
-        "commands",
-    }
-    if any(key in payload for key in discovery_keys):
+    if _has_discovery_schema(payload):
         return payload
     result = payload.get("result")
     if isinstance(result, dict):
@@ -500,6 +508,34 @@ def _unwrap_agent_payload(payload: object) -> object:
             if text:
                 return _unwrap_agent_payload(_json_loads_flexible(text))
     return payload
+
+
+def _has_discovery_schema(payload: dict) -> bool:
+    return any(key in payload for key in DISCOVERY_SCHEMA_KEYS)
+
+
+def _invalid_output_summary(raw: str) -> str:
+    wrapper_text = _extract_wrapper_text_result(raw)
+    if wrapper_text:
+        return wrapper_text[:4000]
+    return (raw or "")[:4000]
+
+
+def _invalid_output_warning(raw: str, exc: json.JSONDecodeError) -> str:
+    if _extract_wrapper_text_result(raw):
+        return f"agent output did not contain discovery JSON: {exc}"
+    return f"invalid JSON: {exc}"
+
+
+def _extract_wrapper_text_result(raw: str) -> str | None:
+    try:
+        payload = json.loads((raw or "").strip())
+    except json.JSONDecodeError:
+        return None
+    if not isinstance(payload, dict):
+        return None
+    result = payload.get("result")
+    return result.strip() if isinstance(result, str) and result.strip() else None
 
 
 def _extract_fenced_json(raw: str) -> str | None:
@@ -555,7 +591,9 @@ def merge_source_candidates(
     for result in agent_results:
         if result.status != "ok":
             if result.status != "unavailable":
-                warnings.append(f"{result.provider}: {result.status}")
+                detail = result.warnings[0] if result.warnings else ""
+                suffix = f" - {detail}" if detail else ""
+                warnings.append(f"{result.provider}: {result.status}{suffix}")
             continue
         for file in result.candidate_files:
             validation = validate_agent_candidate_file(repo_path, file.path)

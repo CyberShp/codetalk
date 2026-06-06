@@ -112,6 +112,32 @@ def test_agent_output_unwraps_claude_print_json_result(tmp_path):
     assert result.candidate_entries[0].entry_file == "src/entry.c"
 
 
+def test_agent_output_reports_success_wrapper_without_discovery_json(tmp_path):
+    from app.services.external_agent_discovery import parse_agent_output
+
+    raw = json.dumps({
+        "type": "result",
+        "subtype": "success",
+        "is_error": False,
+        "result": "I do not see a task yet. Startup checks found unrelated files.",
+    })
+
+    result = parse_agent_output("claude-code", raw, tmp_path)
+
+    assert result.status == "invalid_output"
+    assert "did not contain discovery JSON" in result.warnings[0]
+    assert "I do not see a task" in result.raw_summary
+
+
+def test_agent_output_rejects_json_without_discovery_schema(tmp_path):
+    from app.services.external_agent_discovery import parse_agent_output
+
+    result = parse_agent_output("claude-code", json.dumps({"foo": "bar"}), tmp_path)
+
+    assert result.status == "invalid_output"
+    assert "schema" in result.warnings[0]
+
+
 def test_agent_output_marks_claude_error_wrapper_as_error(tmp_path):
     from app.services.external_agent_discovery import parse_agent_output
 
@@ -345,6 +371,21 @@ def test_duplicate_gitnexus_and_agent_candidate_merges_with_boost(tmp_path):
     assert merged[0].source == "external_agent"
     assert merged[0].confidence == "high"
     assert "claude-code" in merged[0].reason
+
+
+def test_merge_source_candidates_includes_agent_warning_detail(tmp_path):
+    from app.services.external_agent_discovery import AgentDiscoveryResult, merge_source_candidates
+
+    result = AgentDiscoveryResult(
+        provider="claude-code",
+        status="invalid_output",
+        warnings=["agent output did not contain discovery JSON"],
+    )
+
+    merged, warnings = merge_source_candidates(tmp_path, [], [result])
+
+    assert merged == []
+    assert warnings == ["claude-code: invalid_output - agent output did not contain discovery JSON"]
 
 
 def _write_tls_repo(root: Path) -> Path:
