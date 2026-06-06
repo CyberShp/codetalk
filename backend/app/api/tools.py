@@ -108,29 +108,46 @@ async def get_tools_status() -> dict[str, dict[str, Any]]:
     """Return adapter health status keyed by tool name.
 
     Response shape per tool:
-        {"healthy": bool, "indexed_repos": int, "last_index_error": str | None}
+        {"healthy": bool, "indexed_repos": int, "last_index_error": str | None, ...}
     """
     adapters = get_all_adapters()
     results: dict[str, dict[str, Any]] = {}
     for adapter in adapters:
         try:
             health = await asyncio.wait_for(adapter.health_check(), timeout=_HEALTH_TIMEOUT)
+            last_check = health.last_check or ""
             results[adapter.name()] = {
                 "healthy": health.is_healthy,
                 "indexed_repos": health.indexed_repos,
                 "last_index_error": health.last_index_error,
+                "container_status": health.container_status,
+                "version": health.version,
+                "last_check": last_check,
+                "message": last_check or health.version or health.last_index_error,
+                "capabilities": [c.value for c in adapter.capabilities()],
             }
         except asyncio.TimeoutError:
             results[adapter.name()] = {
                 "healthy": True,
                 "indexed_repos": 0,
                 "last_index_error": None,
+                "container_status": "busy",
+                "version": None,
+                "last_check": "health check timed out",
+                "message": "health check timed out",
+                "capabilities": [c.value for c in adapter.capabilities()],
             }
         except Exception as exc:
+            message = str(exc)
             results[adapter.name()] = {
                 "healthy": False,
                 "indexed_repos": 0,
-                "last_index_error": str(exc),
+                "last_index_error": message,
+                "container_status": "error",
+                "version": None,
+                "last_check": message,
+                "message": message,
+                "capabilities": [c.value for c in adapter.capabilities()],
             }
     return results
 

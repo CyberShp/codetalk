@@ -159,6 +159,42 @@ async def test_tool_health_exposes_adapter_last_check(tools_client, monkeypatch)
     assert body["last_check"] == body["message"]
 
 
+async def test_tools_status_exposes_adapter_diagnostics(tools_client, monkeypatch):
+    """Status endpoint should keep old fields while exposing actionable diagnostics."""
+    from app.adapters.base import ToolCapability, ToolHealth
+
+    class FakeAgentAdapter:
+        def name(self):
+            return "claude-code"
+
+        def capabilities(self):
+            return [ToolCapability.CODE_SEARCH]
+
+        async def health_check(self):
+            return ToolHealth(
+                False,
+                "unavailable",
+                version="no agent command found",
+                last_check="ccr code -p => unavailable; PATH entries: C:/agent-bin",
+            )
+
+    client, _mock_pm = tools_client
+    monkeypatch.setattr(tools, "get_all_adapters", lambda: [FakeAgentAdapter()])
+
+    resp = await client.get("/api/tools/status")
+
+    assert resp.status_code == 200
+    body = resp.json()["claude-code"]
+    assert body["healthy"] is False
+    assert body["indexed_repos"] == 0
+    assert body["last_index_error"] is None
+    assert body["container_status"] == "unavailable"
+    assert body["version"] == "no agent command found"
+    assert body["last_check"] == "ccr code -p => unavailable; PATH entries: C:/agent-bin"
+    assert body["message"] == body["last_check"]
+    assert body["capabilities"] == ["code_search"]
+
+
 async def test_tool_health_exception_exposes_diagnostic_message(tools_client, monkeypatch):
     """Health endpoint errors should remain actionable instead of returning null text."""
 
