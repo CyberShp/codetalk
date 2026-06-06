@@ -374,6 +374,7 @@ class AgentDiscoverySession:
             "previous_agent_findings": _verified_agent_findings(self.ledger, data.object_id),
             "do_not_repeat": {
                 "paths": _do_not_repeat_paths(self.ledger, data.object_id),
+                "entry_symbols": _do_not_repeat_entry_symbols(self.ledger, data.object_id),
             },
             "requested_output_schema": _agent_output_schema(),
             "context_overflow": {
@@ -415,6 +416,14 @@ def _do_not_repeat_paths(ledger: AgentDiscoveryLedger, object_id: str) -> list[s
         values.add(str(item.get("path") or ""))
     for item in _filter_by_object(ledger.rejected_entries, object_id):
         values.add(str(item.get("entry_file") or ""))
+    return sorted(values - {""})
+
+
+def _do_not_repeat_entry_symbols(ledger: AgentDiscoveryLedger, object_id: str) -> list[str]:
+    values = {
+        str(item.get("entry_symbol") or "")
+        for item in _filter_by_object(ledger.rejected_entries, object_id)
+    }
     return sorted(values - {""})
 
 
