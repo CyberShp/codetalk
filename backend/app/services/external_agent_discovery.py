@@ -725,6 +725,14 @@ def parse_agent_output(provider: str, raw_output: str, repo_path: str | Path) ->
 
 
 def _extract_cli_error(raw: str) -> str | None:
+    for candidate in _iter_json_objects(raw or ""):
+        error = _extract_cli_error_from_payload_text(candidate)
+        if error:
+            return error
+    return _extract_cli_error_from_payload_text((raw or "").strip())
+
+
+def _extract_cli_error_from_payload_text(raw: str) -> str | None:
     try:
         payload = json.loads((raw or "").strip())
     except json.JSONDecodeError:

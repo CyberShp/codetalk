@@ -263,6 +263,28 @@ def test_agent_output_marks_claude_error_wrapper_as_error(tmp_path):
     assert "permission denied" in result.raw_summary
 
 
+def test_agent_output_marks_streamed_claude_error_wrapper_as_error(tmp_path):
+    from app.services.external_agent_discovery import parse_agent_output
+
+    raw = "\n".join([
+        json.dumps({"type": "system", "subtype": "init"}),
+        json.dumps({"type": "assistant", "message": {"content": []}}),
+        json.dumps({
+            "type": "result",
+            "subtype": "error_during_execution",
+            "is_error": True,
+            "api_error_status": "403",
+            "result": "network access blocked in intranet",
+        }),
+    ])
+
+    result = parse_agent_output("claude-code", raw, tmp_path)
+
+    assert result.status == "error"
+    assert "error_during_execution" in result.raw_summary
+    assert "network access blocked" in result.raw_summary
+
+
 def test_agent_output_parses_requested_source_slices(tmp_path):
     from app.services.external_agent_discovery import parse_agent_output
 
