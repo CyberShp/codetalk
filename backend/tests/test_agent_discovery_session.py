@@ -273,6 +273,41 @@ def test_source_slice_saves_hash_and_excerpt(tmp_path):
     assert (tmp_path / "artifacts" / "external_agent_source_slices").exists()
 
 
+def test_source_slices_are_scoped_to_context_object(tmp_path):
+    from app.services.agent_discovery_session import (
+        AgentContextPacketInput,
+        create_agent_discovery_session,
+    )
+
+    src = tmp_path / "src"
+    src.mkdir()
+    (src / "a.c").write_text("int only_for_a(void) { return 1; }\n", encoding="utf-8")
+    (src / "b.c").write_text("int only_for_b(void) { return 2; }\n", encoding="utf-8")
+    session = create_agent_discovery_session(
+        repo_path=str(tmp_path),
+        goal="coverage_entry",
+        artifact_dir=tmp_path / "artifacts",
+    )
+
+    session.add_source_slice(
+        "src/a.c",
+        symbol="only_for_a",
+        reason="obj-a requested context",
+        object_id="obj-a",
+    )
+
+    packet_b = session.build_context_packet(
+        AgentContextPacketInput(
+            object_id="obj-b",
+            current_goal="coverage_entry",
+            analysis_object_text="gap-b",
+            expanded_terms=["gap-b"],
+        )
+    )
+
+    assert packet_b["relevant_source_slices"] == []
+
+
 def test_invalid_source_slice_requests_do_not_consume_read_budget(tmp_path, monkeypatch):
     from app.services.agent_discovery_session import create_agent_discovery_session
 

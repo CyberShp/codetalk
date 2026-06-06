@@ -29,6 +29,7 @@ def _now() -> str:
 class SourceSliceRef:
     slice_id: str
     file_path: str
+    object_id: str = ""
     start_line: int | None = None
     end_line: int | None = None
     symbol: str | None = None
@@ -305,6 +306,7 @@ class AgentDiscoverySession:
         ref = SourceSliceRef(
             slice_id=slice_id,
             file_path=validation.path,
+            object_id=object_id,
             start_line=start,
             end_line=end,
             symbol=symbol,
@@ -414,7 +416,10 @@ class AgentDiscoverySession:
                 "entries": _filter_by_object(self.ledger.rejected_entries, data.object_id),
             },
             "existing_tool_candidates": data.existing_tool_candidates,
-            "relevant_source_slices": self.ledger.source_slices[-settings.agent_discovery_max_source_slices:],
+            "relevant_source_slices": _source_slices_for_object(
+                self.ledger.source_slices,
+                data.object_id,
+            ),
             "previous_agent_findings": _verified_agent_findings(self.ledger, data.object_id),
             "do_not_repeat": {
                 "paths": _do_not_repeat_paths(self.ledger, data.object_id),
@@ -452,6 +457,14 @@ def _filter_by_object(items: list[dict], object_id: str) -> list[dict]:
         item for item in items
         if not object_id or item.get("object_id") in {"", object_id}
     ]
+
+
+def _source_slices_for_object(source_slices: list[dict], object_id: str) -> list[dict]:
+    relevant = [
+        item for item in source_slices
+        if not object_id or item.get("object_id") in {"", object_id}
+    ]
+    return relevant[-settings.agent_discovery_max_source_slices:]
 
 
 def _do_not_repeat_paths(ledger: AgentDiscoveryLedger, object_id: str) -> list[str]:
