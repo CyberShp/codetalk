@@ -37,6 +37,24 @@ const STATUS_DISPLAY: Record<
     color: "text-amber-400",
     bg: "bg-amber-400/10",
   },
+  available: {
+    label: "available",
+    icon: CheckCircle2,
+    color: "text-green-400",
+    bg: "bg-green-400/10",
+  },
+  unavailable: {
+    label: "unavailable",
+    icon: XCircle,
+    color: "text-red-400",
+    bg: "bg-red-400/10",
+  },
+  busy: {
+    label: "busy",
+    icon: AlertTriangle,
+    color: "text-amber-400",
+    bg: "bg-amber-400/10",
+  },
   unknown: {
     label: "未知",
     icon: HelpCircle,
@@ -144,7 +162,7 @@ export default function ToolsPage() {
       )}
 
       {/* Deployment guide — shown when any tool is not running */}
-      {!loading && tools.some((t) => !t.healthy) && (
+      {!loading && tools.some((t) => t.managed !== false && !t.healthy) && (
         <div className="mb-6 bg-surface-container rounded-xl border border-outline-variant/20 p-5">
           <div className="flex items-start gap-3">
             <Rocket size={18} className="text-primary mt-0.5 shrink-0" />
@@ -202,7 +220,12 @@ export default function ToolsPage() {
       ) : (
         <div className="space-y-4">
           {tools.map((tool) => {
-            const statusKey = tool.healthy ? "running" : (tool.status || "unknown");
+            const managed = tool.managed !== false;
+            const statusKey = managed
+              ? tool.healthy
+                ? "running"
+                : tool.status || "unknown"
+              : tool.status || (tool.healthy ? "available" : "unavailable");
             const display = STATUS_DISPLAY[statusKey] ?? STATUS_DISPLAY.unknown;
             const Icon = display.icon;
             const isRestarting = restartingTool === tool.name;
@@ -285,7 +308,11 @@ export default function ToolsPage() {
                 )}
 
                 <div className="flex items-center gap-2">
-                  {tool.healthy ? (
+                  {!managed ? (
+                    <div className="text-xs text-on-surface-variant/80">
+                      Agent CLI is started on demand by CodeTalk; no long-running process is managed here.
+                    </div>
+                  ) : tool.healthy ? (
                     <>
                       <button
                         onClick={() => handleStop(tool.name)}

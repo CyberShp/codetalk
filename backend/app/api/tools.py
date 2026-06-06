@@ -14,6 +14,7 @@ logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/api/tools", tags=["tools"])
 
 _HEALTH_TIMEOUT = 4.0  # seconds; adapters slower than this are reported as busy
+_ADAPTER_ONLY_TOOL_NAMES = {"claude-code", "opencode"}
 
 
 def _get_pm(request: Request) -> ProcessManager:
@@ -46,6 +47,48 @@ async def _check_health(adapter) -> dict[str, Any]:
             "capabilities": [c.value for c in adapter.capabilities()],
             "healthy": False,
             "container_status": "error",
+        }
+
+
+def _display_name(name: str) -> str:
+    return {
+        "claude-code": "Claude Code",
+        "opencode": "OpenCode",
+    }.get(name, name)
+
+
+async def _adapter_proc_status(adapter) -> dict[str, Any]:
+    try:
+        health = await asyncio.wait_for(adapter.health_check(), timeout=_HEALTH_TIMEOUT)
+        return {
+            "name": adapter.name(),
+            "display_name": _display_name(adapter.name()),
+            "healthy": health.is_healthy,
+            "status": health.container_status,
+            "managed": False,
+            "capabilities": [c.value for c in adapter.capabilities()],
+            "version": health.version,
+            "message": health.last_check or health.version,
+        }
+    except asyncio.TimeoutError:
+        return {
+            "name": adapter.name(),
+            "display_name": _display_name(adapter.name()),
+            "healthy": True,
+            "status": "busy",
+            "managed": False,
+            "capabilities": [c.value for c in adapter.capabilities()],
+            "message": "health check timed out",
+        }
+    except Exception as exc:
+        return {
+            "name": adapter.name(),
+            "display_name": _display_name(adapter.name()),
+            "healthy": False,
+            "status": "error",
+            "managed": False,
+            "capabilities": [c.value for c in adapter.capabilities()],
+            "message": str(exc),
         }
 
 
@@ -93,7 +136,14 @@ async def get_tools_status() -> dict[str, dict[str, Any]]:
 async def get_tool_procs(request: Request) -> list[dict[str, Any]]:
     """Return live status of all registered tool processes (process manager view)."""
     pm = _get_pm(request)
-    return await pm.get_all_status()
+    process_status = await pm.get_all_status()
+    managed_names = {str(item.get("name")) for item in process_status if isinstance(item, dict)}
+    adapter_status = await asyncio.gather(*[
+        _adapter_proc_status(adapter)
+        for adapter in get_all_adapters()
+        if adapter.name() in _ADAPTER_ONLY_TOOL_NAMES and adapter.name() not in managed_names
+    ])
+    return [*process_status, *adapter_status]
 
 
 @router.get("/{tool_name}/health")

@@ -118,10 +118,13 @@ export interface ToolInfo {
   display_name: string;
   healthy: boolean;
   status: string;
+  managed?: boolean;
   pid?: number;
   health_url?: string;
   last_check?: string;
   message?: string;
+  version?: string | null;
+  capabilities?: string[];
 }
 
 export type ExportFormat = "md" | "docx" | "xml";

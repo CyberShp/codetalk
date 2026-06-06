@@ -35,10 +35,18 @@ class ExternalAgentAdapter(BaseToolAdapter):
             fallback_commands=provider_fallback_commands(self._provider),
         )
         ok = health.get("status") == "available"
+        attempts = health.get("attempts") or []
+        attempt_summary = "; ".join(
+            f"{item.get('command')} => {item.get('status')}"
+            for item in attempts
+            if isinstance(item, dict)
+        )
+        last_check = str(health.get("reason") or attempt_summary or "")
         return ToolHealth(
             is_healthy=ok,
             container_status="available" if ok else "unavailable",
             version=str(health.get("path") or health.get("reason") or ""),
+            last_check=last_check,
         )
 
     async def prepare(self, request: AnalysisRequest) -> None:

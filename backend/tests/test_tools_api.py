@@ -55,6 +55,38 @@ class TestGetPmFromAppState:
         assert resp.status_code == 200
         mock_pm.get_all_status.assert_called_once()
 
+    async def test_procs_includes_adapter_only_external_agents(self, tools_client, monkeypatch):
+        """Adapter-only tools such as claude-code should appear in the tools page."""
+        from app.adapters.base import ToolCapability, ToolHealth
+
+        class FakeAgentAdapter:
+            def name(self):
+                return "claude-code"
+
+            def capabilities(self):
+                return [ToolCapability.CODE_SEARCH]
+
+            async def health_check(self):
+                return ToolHealth(
+                    True,
+                    "available",
+                    version="C:/tools/claude.cmd",
+                    last_check="primary command unavailable; using fallback: claude -p",
+                )
+
+        client, mock_pm = tools_client
+        monkeypatch.setattr(tools, "get_all_adapters", lambda: [FakeAgentAdapter()])
+
+        resp = await client.get("/api/tools/procs")
+
+        assert resp.status_code == 200
+        body = resp.json()
+        agent = next(item for item in body if item["name"] == "claude-code")
+        assert agent["managed"] is False
+        assert agent["healthy"] is True
+        assert agent["status"] == "available"
+        assert "fallback" in agent["message"]
+
 
 class TestStartToolSuccess:
     async def test_start_returns_success(self, tools_client):
