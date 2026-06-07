@@ -1269,6 +1269,22 @@ def _collect_agent_entry_results(
                     entry.entry_file,
                     allow_directory_candidates=False,
                 )
+                if (
+                    not validation.validated
+                    and validation.validation_error == "directory_candidate_not_allowed"
+                    and entry.entry_symbol
+                    and validation.resolved_path
+                ):
+                    resolved_entry_file = _resolve_entry_file_from_directory_symbol(
+                        repo_root,
+                        Path(validation.resolved_path),
+                        entry.entry_symbol,
+                    )
+                    if resolved_entry_file is not None:
+                        validation.path = _relative_path(repo_root, resolved_entry_file)
+                        validation.resolved_path = str(resolved_entry_file)
+                        validation.validated = True
+                        validation.validation_error = None
                 item["entry_file"] = validation.path or entry.entry_file
                 if validation.validated:
                     item["source_verification"] = "source_backed"
@@ -1290,6 +1306,23 @@ def _collect_agent_entry_results(
                     agent_session.ledger.add_rejected_entry(item)
     if agent_session is not None:
         agent_session.save()
+
+
+def _resolve_entry_file_from_directory_symbol(
+    repo_root: Path,
+    directory: Path,
+    entry_symbol: str,
+) -> Path | None:
+    try:
+        resolved_dir = directory.resolve()
+        if not resolved_dir.is_dir() or not _is_within(repo_root, resolved_dir):
+            return None
+    except OSError:
+        return None
+    found = _find_source_file_defining_function(repo_root, resolved_dir, entry_symbol)
+    if found is None:
+        return None
+    return found.resolve()
 
 
 def _record_agent_round_error(
