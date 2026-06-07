@@ -1307,6 +1307,7 @@ def test_run_provider_does_not_fallback_after_ccr_config_error(tmp_path, monkeyp
 
 
 def test_run_provider_does_not_fallback_after_ccr_preflight_config_error(tmp_path, monkeypatch):
+    from app.services.agent_discovery_session import create_agent_discovery_session
     from app.services.external_agent_discovery import AgentDiscoveryRequest, run_external_agent_discovery
 
     ccr = tmp_path / "bin" / "ccr.cmd"
@@ -1332,6 +1333,11 @@ def test_run_provider_does_not_fallback_after_ccr_preflight_config_error(tmp_pat
         "app.services.external_agent_discovery.settings.claude_code_fallback_commands",
         [f'"{sys.executable}" "{ok_agent}"'],
     )
+    session = create_agent_discovery_session(
+        repo_path=str(tmp_path),
+        goal="workspace_scope",
+        artifact_dir=tmp_path / "artifacts",
+    )
 
     results = asyncio.run(run_external_agent_discovery(
         AgentDiscoveryRequest(
@@ -1340,13 +1346,21 @@ def test_run_provider_does_not_fallback_after_ccr_preflight_config_error(tmp_pat
             analysis_object_text="tls",
         ),
         providers=["claude-code"],
+        session=session,
     ))
+    loaded = create_agent_discovery_session.load(tmp_path / "artifacts")
+    runtime_attempts = [
+        item for item in loaded.ledger.command_history
+        if item.get("kind") == "runtime_attempt"
+    ]
 
     assert results[0].status == "unavailable"
     assert "ccr config file not found" in results[0].raw_summary
     assert "fallback_ok" not in results[0].raw_summary
     assert len(results[0].runtime_attempts) == 1
     assert results[0].runtime_attempts[0]["status"] == "configuration_error"
+    assert results[0].runtime_attempts[0]["config_path"].endswith("config-router.json")
+    assert runtime_attempts == results[0].runtime_attempts
 
 
 def test_run_provider_fallback_preserves_primary_invalid_json_warning(tmp_path, monkeypatch):
