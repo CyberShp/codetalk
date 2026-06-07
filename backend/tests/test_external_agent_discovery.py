@@ -4065,6 +4065,56 @@ def test_coverage_agent_self_symbol_does_not_generate_black_box_ready(tmp_path, 
     assert gap["black_box_readiness"]["case_type"] != "black_box_ready"
 
 
+def test_coverage_agent_plain_function_entry_does_not_generate_black_box_ready(tmp_path, monkeypatch):
+    import asyncio
+    import app.services.coverage_analyzer as coverage_mod
+    from app.services.coverage_analyzer import build_coverage_test_design
+    from app.services.external_agent_discovery import AgentCandidateEntry, AgentDiscoveryResult
+
+    src = tmp_path / "src"
+    src.mkdir()
+    (src / "internal.c").write_text(
+        "void helper_wrapper(void) { internal_gap(); }\n"
+        "void internal_gap(void) {\n"
+        "    if (1) { return; }\n"
+        "}\n",
+        encoding="utf-8",
+    )
+
+    async def fake_discovery(_request, **_kwargs):
+        return [
+            AgentDiscoveryResult(
+                provider="claude-code",
+                status="ok",
+                candidate_entries=[
+                    AgentCandidateEntry(
+                        entry_kind="function",
+                        entry_symbol="helper_wrapper",
+                        entry_file="src/internal.c",
+                        chain=["helper_wrapper", "internal_gap"],
+                        external_trigger="helper function",
+                        reason="agent returned an internal helper caller, not a public trigger",
+                        validated=True,
+                    )
+                ],
+            )
+        ]
+
+    monkeypatch.setattr(coverage_mod, "run_external_agent_discovery", fake_discovery, raising=False)
+    modules = _coverage_modules(
+        "feature,module,code_location,function,triggered,hit_count\n"
+        "h,internal,src/internal.c:2-4,internal_gap,false,0\n"
+    )
+
+    design = asyncio.run(
+        build_coverage_test_design(modules, workspace_id="ws-1", repo_path=str(tmp_path))
+    )
+
+    gap = [g for g in design["gaps"] if g.get("kind") == "function"][0]
+    assert gap["entry_paths"] == []
+    assert gap["black_box_readiness"]["case_type"] != "black_box_ready"
+
+
 def test_coverage_scope_enrichment_does_not_start_source_scope_agent(tmp_path, monkeypatch):
     import app.services.coverage_analyzer as coverage_mod
     import app.services.workspace_scope_resolver as scope_mod

@@ -857,6 +857,8 @@ def _merge_agent_entry_paths(
     for item in agent_context.get("validated_entries") or []:
         if _agent_entry_is_self_target(item, hit):
             continue
+        if not _agent_entry_has_public_trigger_surface(item):
+            continue
         key = (
             str(item.get("entry_symbol") or ""),
             str(item.get("entry_file") or ""),
@@ -903,6 +905,32 @@ def _agent_entry_is_self_target(item: dict, hit: FunctionHit) -> bool:
     if entry_file and hit_file and entry_file != hit_file and not hit_file.endswith(entry_file):
         return False
     return bool(entry_symbol == function_name or chain == [function_name])
+
+
+def _agent_entry_has_public_trigger_surface(item: dict) -> bool:
+    kind = str(item.get("entry_kind") or "").strip().lower()
+    public_kinds = {
+        *_ENTRY_DISCOVERY_KIND_LABELS.keys(),
+        "rpc",
+        "http",
+        "rest",
+        "grpc",
+        "event",
+        "connection",
+        "ui",
+        "resource",
+        "external",
+        "public",
+    }
+    if kind in public_kinds:
+        return True
+    trigger = str(item.get("external_trigger") or item.get("entry_label") or "").lower()
+    if trigger and any(token in trigger for token in (
+        "rpc", "api", "cli", "command", "config", "message", "event", "timer",
+        "callback", "service", "connection", "socket", "http", "request",
+    )):
+        return True
+    return False
 
 
 def _entry_trace_status(
