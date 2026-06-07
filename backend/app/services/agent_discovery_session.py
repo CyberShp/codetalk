@@ -308,7 +308,26 @@ class AgentDiscoverySession:
             )
 
         source_path = Path(validation.resolved_path)
-        text = source_path.read_text(encoding="utf-8", errors="replace")
+        try:
+            text = source_path.read_text(encoding="utf-8", errors="replace")
+        except OSError as exc:
+            reason_text = str(exc).strip() or exc.__class__.__name__
+            validation_error = f"source_read_failed: {reason_text}"
+            self.ledger.add_rejected_file(
+                object_id=object_id,
+                path=validation.path,
+                provider="source_slice",
+                reason=validation_error,
+            )
+            self.save()
+            return SourceSliceRef(
+                slice_id=f"slice_{len(self.ledger.source_slices) + 1:03d}",
+                file_path=validation.path,
+                symbol=symbol,
+                reason=reason,
+                validated=False,
+                validation_error=validation_error,
+            )
         lines = text.splitlines()
         center = _find_symbol_line(lines, symbol) if symbol else 1
         half = max(1, settings.agent_discovery_source_slice_lines // 2)

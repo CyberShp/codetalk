@@ -655,6 +655,41 @@ def test_source_slice_request_accepts_source_file_alias(tmp_path):
     assert session.ledger.source_slices[0]["file_path"] == "src/tls.c"
 
 
+def test_source_slice_read_failure_is_recorded_without_raising(tmp_path, monkeypatch):
+    from pathlib import Path
+
+    from app.services.agent_discovery_session import create_agent_discovery_session
+
+    src = tmp_path / "src"
+    src.mkdir()
+    (src / "tls.c").write_text("int tls(void) { return 0; }\n", encoding="utf-8")
+    session = create_agent_discovery_session(
+        repo_path=str(tmp_path),
+        goal="workspace_scope",
+        artifact_dir=tmp_path / "artifacts",
+    )
+    original_read_text = Path.read_text
+
+    def flaky_read_text(self, *args, **kwargs):
+        if self.name == "tls.c":
+            raise OSError("permission denied")
+        return original_read_text(self, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "read_text", flaky_read_text)
+
+    refs = session.add_source_slices_from_requests([
+        {"file_path": "src/tls.c", "reason": "read failure should be non-fatal"},
+    ])
+
+    assert len(refs) == 1
+    assert refs[0].validated is False
+    assert refs[0].file_path == "src/tls.c"
+    assert "permission denied" in refs[0].validation_error
+    assert session.ledger.source_slices == []
+    assert session.ledger.rejected_files[0]["path"] == "src/tls.c"
+    assert "permission denied" in session.ledger.rejected_files[0]["reason"]
+
+
 def test_context_packet_overflow_requests_next_round(tmp_path, monkeypatch):
     from app.services.agent_discovery_session import (
         AgentContextPacketInput,
