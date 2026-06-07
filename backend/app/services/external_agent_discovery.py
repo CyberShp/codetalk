@@ -1357,7 +1357,7 @@ def _unwrap_agent_payload(payload: object) -> object:
         return unwrapped
     output = payload.get("output")
     if isinstance(output, list):
-        for item in output:
+        for item in reversed(output):
             if not isinstance(item, dict):
                 continue
             unwrapped = _unwrap_agent_content(item.get("content"))
