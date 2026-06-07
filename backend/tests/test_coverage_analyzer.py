@@ -1672,6 +1672,43 @@ class TestCoverageTestDesign:
         assert card["candidate_external_entries"][0]["entry_type"] == "callback"
         assert "SERVICE_REGISTER" in card["candidate_external_entries"][0]["evidence"]
 
+    async def test_event_dispatcher_register_entry_prevents_final_gray_box(self, tmp_path):
+        from app.services.coverage_analyzer import build_coverage_test_design
+
+        src = tmp_path / "src"
+        src.mkdir()
+        (src / "payments.py").write_text(
+            "def process_payment(event):\n"
+            "    if not event:\n"
+            "        return 'missing'\n"
+            "    return 'processed'\n",
+            encoding="utf-8",
+        )
+        (src / "bootstrap.py").write_text(
+            "from payments import process_payment\n\n"
+            "def consume(payload):\n"
+            "    return process_payment(payload)\n\n"
+            "registry.register('payment.created', consume)\n",
+            encoding="utf-8",
+        )
+        modules = self._modules(
+            "feature,module,code_location,function,triggered,hit_count\n"
+            "payments,payments,src/payments.py:1-4,process_payment,false,0\n"
+        )
+
+        design = await build_coverage_test_design(
+            modules, workspace_id="ws-1", repo_path=str(tmp_path)
+        )
+
+        gap = [g for g in design["gaps"] if g.get("kind") == "function"][0]
+        card = design["entry_discovery"]["cards"][0]
+        assert gap["gray_box_required"] is False
+        assert gap["black_box_readiness"]["case_type"] == "black_box_ready"
+        assert gap["entry_paths"][0]["entry_symbol"] == "consume"
+        assert gap["entry_paths"][0]["entry_kind"] in {"callback", "message"}
+        assert card["candidate_external_entries"][0]["entry_symbol"] == "consume"
+        assert "registry.register" in card["candidate_external_entries"][0]["evidence"]
+
     async def test_entry_discovery_artifact_and_context_are_written(self, tmp_path):
         from app.services.coverage_analyzer import build_coverage_test_design
 

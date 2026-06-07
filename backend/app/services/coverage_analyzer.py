@@ -241,7 +241,8 @@ _REQUEST_DESTRUCTURE_RE = re.compile(
     r"\.(?:json|args|form|query|body|data|params|headers|cookies|values|files)\b"
 )
 _REGISTRATION_LINE_RE = re.compile(
-    r"\b(?:[A-Z0-9_]*REGISTER[A-Z0-9_]*|register_[A-Za-z0-9_]+)\s*\(",
+    r"\b(?:[A-Z0-9_]*REGISTER[A-Z0-9_]*|register_[A-Za-z0-9_]+)\s*\("
+    r"|\.[ \t]*(?:register|subscribe|add_listener|add_handler|add_job|schedule)\s*\(",
     re.IGNORECASE,
 )
 _CALLBACK_ASSIGN_RE = re.compile(
@@ -2945,14 +2946,19 @@ def _registration_entry_for_site(
     )
     callback_like = any(
         token in " ".join(window).lower()
-        for token in ("callback", "_cb", "handler", "ops", "poller", "timer", "event")
+        for token in (
+            "callback", "_cb", "handler", "ops", "poller", "timer", "event",
+            "register", "subscribe", "listener", "schedule", "scheduler", "job",
+        )
     )
     if not (assignment_seen and registration_line and callback_like):
         return None
 
     rel_file = _relative_path(repo_root, path)
     entry_type = _registered_entry_type(registration_line, window)
-    return {
+    metadata = _entry_metadata_for_site(str(path), line_number, symbol)
+    entry_label = metadata.pop("entry_label", None)
+    entry = {
         "entry_kind": entry_type,
         "entry_symbol": symbol,
         "entry_file": rel_file,
@@ -2964,6 +2970,13 @@ def _registration_entry_for_site(
         "entry_label": f"{_ENTRY_DISCOVERY_KIND_LABELS.get(entry_type, '外部入口')} {symbol}",
         "input_hints": [],
     }
+    if entry_label:
+        entry["entry_label"] = entry_label
+    input_hints = metadata.pop("input_hints", [])
+    if input_hints:
+        entry["input_hints"] = input_hints
+    entry.update(metadata)
+    return entry
 
 
 def _callback_symbol_from_assignment(text: str) -> str | None:
