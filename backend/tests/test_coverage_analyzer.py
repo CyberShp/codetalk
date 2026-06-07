@@ -1329,6 +1329,73 @@ class TestCoverageTestDesign:
         assert any("入口" in g for g in gap["evidence_gaps"])
         assert design["summary"]["gray_box_required_count"] == 1
 
+    async def test_agent_entry_budget_prioritizes_late_high_risk_hits(self, tmp_path, monkeypatch):
+        import app.services.coverage_analyzer as coverage_mod
+        from app.config import settings
+        from app.services.coverage_analyzer import build_coverage_test_design
+        from app.services.external_agent_discovery import AgentCandidateEntry, AgentDiscoveryResult
+
+        monkeypatch.setattr(settings, "external_agents_enabled", True)
+
+        src = tmp_path / "src"
+        src.mkdir()
+        rows = ["feature,module,code_location,function,triggered,hit_count"]
+        for idx in range(24):
+            (src / f"helper_{idx}.c").write_text(
+                f"void helper_{idx}(void) {{}}\n",
+                encoding="utf-8",
+            )
+            rows.append(f"h,util,src/helper_{idx}.c:1-1,helper_{idx},false,0")
+        (src / "zz_tls.c").write_text(
+            "void tls_recover_session(void) {\n"
+            "    if (1) { return; }\n"
+            "}\n",
+            encoding="utf-8",
+        )
+        (src / "rpc.c").write_text(
+            "void rpc_recover_tls(void) { tls_recover_session(); }\n",
+            encoding="utf-8",
+        )
+        rows.append("h,zz_tls,src/zz_tls.c:1-3,tls_recover_session,false,0")
+        modules = self._modules("\n".join(rows) + "\n")
+        requested: list[str] = []
+
+        async def fake_discovery(request, **_kwargs):
+            requested.append(request.analysis_object_text)
+            if request.analysis_object_text != "tls_recover_session":
+                return [AgentDiscoveryResult(provider="claude-code", status="ok")]
+            return [
+                AgentDiscoveryResult(
+                    provider="claude-code",
+                    status="ok",
+                    candidate_entries=[
+                        AgentCandidateEntry(
+                            entry_kind="rpc",
+                            entry_symbol="rpc_recover_tls",
+                            entry_file="src/rpc.c",
+                            chain=["rpc_recover_tls", "tls_recover_session"],
+                            external_trigger="RPC recover TLS session",
+                            reason="public RPC handler reaches TLS recovery",
+                            validated=True,
+                        )
+                    ],
+                )
+            ]
+
+        monkeypatch.setattr(coverage_mod, "run_external_agent_discovery", fake_discovery, raising=False)
+
+        design = await build_coverage_test_design(
+            modules,
+            workspace_id="ws-1",
+            repo_path=str(tmp_path),
+        )
+
+        assert "tls_recover_session" in requested
+        gap = next(g for g in design["gaps"] if g.get("function_name") == "tls_recover_session")
+        assert gap["entry_paths"]
+        assert gap["black_box_readiness"]["case_type"] == "black_box_ready"
+        assert gap["black_box_cases"]
+
     async def test_unbound_workspace_does_not_fabricate_paths(self, tmp_path):
         from app.services.coverage_analyzer import build_coverage_test_design
 

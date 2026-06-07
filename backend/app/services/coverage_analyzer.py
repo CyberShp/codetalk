@@ -617,25 +617,32 @@ async def _build_black_box_function_recommendations(
     ``trigger_branches``, ``entry_paths``, ``black_box_cases``, ``gray_box`` …).
     """
     uncovered = _collect_uncovered_function_hits(modules)
+    prioritized = _prioritize_uncovered_hits(uncovered)
+    design_targets = prioritized[:50]
+    traced_keys = {
+        _hit_key(hit)
+        for _module, hit in prioritized[:MAX_TRACED_FUNCTION_GAPS]
+    }
     scope_by_function = await _resolve_workspace_scope_for_hits(
-        uncovered, workspace_id=workspace_id, repo_path=repo_path
+        prioritized, workspace_id=workspace_id, repo_path=repo_path
     )
-    cgc_by_function = await _resolve_cgc_context_for_hits(uncovered, repo_path=repo_path)
+    cgc_by_function = await _resolve_cgc_context_for_hits(prioritized, repo_path=repo_path)
     agent_by_function = await _resolve_external_agent_entries_for_hits(
-        uncovered, repo_path=repo_path, agent_session=agent_session
+        prioritized, repo_path=repo_path, agent_session=agent_session
     )
 
     repo_root = _existing_repo_root(repo_path)
     rg_available = shutil.which("rg") is not None
 
     results: list[dict] = []
-    for idx, (module, hit) in enumerate(uncovered[:50]):
+    for module, hit in design_targets:
         scope = scope_by_function.get(_hit_key(hit), {})
         cgc_context = cgc_by_function.get(_hit_key(hit), {})
         agent_context = agent_by_function.get(_hit_key(hit), {})
-        # Only the first N gaps get the expensive source-window + caller-chain
-        # trace; the long tail still gets coverage + heuristic guidance.
-        trace = idx < MAX_TRACED_FUNCTION_GAPS
+        # Only the highest-priority N gaps get the expensive source-window +
+        # caller-chain trace; low-risk CSV rows must not starve later risky
+        # recovery/error/auth functions of entry discovery.
+        trace = _hit_key(hit) in traced_keys
         result = await asyncio.to_thread(
             _design_function_gap,
             module,
@@ -655,6 +662,18 @@ async def _build_black_box_function_recommendations(
         results,
         key=lambda r: {"high": 0, "medium": 1, "low": 2}[r["risk_level"]],
     )
+
+
+def _prioritize_uncovered_hits(
+    uncovered: list[tuple[ModuleCoverage, FunctionHit]],
+) -> list[tuple[ModuleCoverage, FunctionHit]]:
+    risk_order = {"high": 0, "medium": 1, "low": 2}
+    ranked: list[tuple[int, int, tuple[ModuleCoverage, FunctionHit]]] = []
+    for idx, item in enumerate(uncovered):
+        _module, hit = item
+        ranked.append((risk_order[_risk_level_for_hit(hit)], idx, item))
+    ranked.sort(key=lambda item: (item[0], item[1]))
+    return [item for _risk, _idx, item in ranked]
 
 
 def _design_function_gap(
