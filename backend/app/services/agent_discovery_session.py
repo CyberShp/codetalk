@@ -371,7 +371,7 @@ class AgentDiscoverySession:
                 break
             if not isinstance(item, dict):
                 continue
-            path = str(item.get("file_path") or item.get("path") or "")
+            path = _source_slice_path_value(item)
             symbol = str(item.get("symbol") or "") or None
             validation = validate_agent_candidate_file(
                 self.repo_path,
@@ -536,6 +536,14 @@ def _source_slices_for_object(source_slices: list[dict], object_id: str) -> list
         if not object_id or item.get("object_id") in {None, "", object_id}
     ]
     return relevant[-settings.agent_discovery_max_source_slices:]
+
+
+def _source_slice_path_value(item: dict) -> str:
+    for key in ("file_path", "path", "file", "source_file", "source_path"):
+        value = item.get(key)
+        if value:
+            return str(value)
+    return ""
 
 
 def _do_not_repeat_paths(ledger: AgentDiscoveryLedger, object_id: str) -> list[str]:

@@ -815,7 +815,7 @@ def parse_agent_output(provider: str, raw_output: str, repo_path: str | Path) ->
     commands = _coerce_string_list(payload.get("commands"))
     need_source_slices = [
         {
-            "file_path": str(item.get("file_path") or item.get("path") or ""),
+            "file_path": _candidate_path_value(item, "file_path"),
             "symbol": str(item.get("symbol") or "") or None,
             "reason": str(item.get("reason") or ""),
         }

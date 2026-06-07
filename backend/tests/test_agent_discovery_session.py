@@ -633,6 +633,28 @@ def test_invalid_source_slice_rejections_are_deduped_per_object(tmp_path, monkey
     ]
 
 
+def test_source_slice_request_accepts_source_file_alias(tmp_path):
+    from app.services.agent_discovery_session import create_agent_discovery_session
+
+    src = tmp_path / "src"
+    src.mkdir()
+    (src / "tls.c").write_text("int tls(void) { return 0; }\n", encoding="utf-8")
+    session = create_agent_discovery_session(
+        repo_path=str(tmp_path),
+        goal="workspace_scope",
+        artifact_dir=tmp_path / "artifacts",
+    )
+
+    refs = session.add_source_slices_from_requests([
+        {"source_file": "src/tls.c", "reason": "alias request"},
+    ])
+
+    assert len(refs) == 1
+    assert refs[0].validated is True
+    assert refs[0].file_path == "src/tls.c"
+    assert session.ledger.source_slices[0]["file_path"] == "src/tls.c"
+
+
 def test_context_packet_overflow_requests_next_round(tmp_path, monkeypatch):
     from app.services.agent_discovery_session import (
         AgentContextPacketInput,
