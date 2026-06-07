@@ -5341,6 +5341,61 @@ def test_coverage_agent_generic_external_with_rpc_trigger_generates_black_box_re
     assert gap["entry_paths"][0]["entry_file"] == "src/rpc.c"
 
 
+def test_coverage_agent_webhook_entry_generates_black_box_ready(tmp_path, monkeypatch):
+    import asyncio
+    import app.services.coverage_analyzer as coverage_mod
+    from app.services.coverage_analyzer import build_coverage_test_design
+    from app.services.external_agent_discovery import AgentCandidateEntry, AgentDiscoveryResult
+
+    src = tmp_path / "src"
+    src.mkdir()
+    (src / "billing.py").write_text(
+        "def reconcile_invoice(payload):\n"
+        "    if not payload:\n"
+        "        return 'missing'\n",
+        encoding="utf-8",
+    )
+    (src / "webhooks.py").write_text(
+        "def stripe_webhook(request):\n"
+        "    return reconcile_invoice(request.json)\n",
+        encoding="utf-8",
+    )
+
+    async def fake_discovery(_request, **_kwargs):
+        return [
+            AgentDiscoveryResult(
+                provider="claude-code",
+                status="ok",
+                candidate_entries=[
+                    AgentCandidateEntry(
+                        entry_kind="webhook",
+                        entry_symbol="stripe_webhook",
+                        entry_file="src/webhooks.py",
+                        chain=["stripe_webhook", "reconcile_invoice"],
+                        external_trigger="payment provider webhook delivery",
+                        reason="public webhook handler reaches invoice reconciliation",
+                        validated=True,
+                    )
+                ],
+            )
+        ]
+
+    monkeypatch.setattr(coverage_mod, "run_external_agent_discovery", fake_discovery, raising=False)
+    modules = _coverage_modules(
+        "feature,module,code_location,function,triggered,hit_count\n"
+        "billing,billing,src/billing.py:1-3,reconcile_invoice,false,0\n"
+    )
+
+    design = asyncio.run(
+        build_coverage_test_design(modules, workspace_id="ws-1", repo_path=str(tmp_path))
+    )
+
+    gap = [g for g in design["gaps"] if g.get("kind") == "function"][0]
+    assert gap["black_box_readiness"]["case_type"] == "black_box_ready"
+    assert gap["entry_paths"][0]["entry_kind"] == "webhook"
+    assert gap["entry_paths"][0]["entry_file"] == "src/webhooks.py"
+
+
 def test_coverage_scope_enrichment_does_not_start_source_scope_agent(tmp_path, monkeypatch):
     import app.services.coverage_analyzer as coverage_mod
     import app.services.workspace_scope_resolver as scope_mod

@@ -212,12 +212,45 @@ _ENTRY_DISCOVERY_KIND_LABELS = {
     "api": "公开 API/请求入口",
     "cli": "命令行入口",
     "message": "消息/事件入口",
+    "webhook": "Webhook 入口",
+    "route": "路由/端点入口",
+    "endpoint": "路由/端点入口",
+    "queue": "队列入口",
+    "job": "任务入口",
+    "scheduler": "调度入口",
     "config": "配置入口",
     "file": "文件输入入口",
     "callback": "注册回调入口",
     "timer": "定时任务入口",
     "service": "服务启动入口",
 }
+
+_PUBLIC_ENTRY_KIND_ALIASES = {
+    "rpc",
+    "http",
+    "rest",
+    "grpc",
+    "event",
+    "connection",
+    "ui",
+    "resource",
+    "public",
+    "controller",
+    "consumer",
+    "subscriber",
+    "producer",
+    "listener",
+    "cron",
+    "worker",
+}
+
+_PUBLIC_TRIGGER_SURFACE_TOKENS = (
+    "rpc", "api", "cli", "command", "config", "message", "event", "timer",
+    "callback", "service", "connection", "socket", "http", "request",
+    "route", "router", "endpoint", "controller", "webhook", "hook delivery",
+    "queue", "topic", "consumer", "subscriber", "producer", "job",
+    "scheduler", "schedule", "cron", "worker", "listener", "notification",
+)
 
 _WHITE_BOX_LEAK_RULES: tuple[tuple[str, re.Pattern], ...] = (
     ("source_path", re.compile(r"\b[\w./\\-]+\.(?:c|h|cc|cpp|cxx|hpp|py|go|rs|java|js|jsx|ts|tsx)(?::\d+)?\b")),
@@ -997,25 +1030,10 @@ def _agent_entry_is_self_target(item: dict, hit: FunctionHit) -> bool:
 
 def _agent_entry_has_public_trigger_surface(item: dict) -> bool:
     kind = str(item.get("entry_kind") or "").strip().lower()
-    public_kinds = {
-        *_ENTRY_DISCOVERY_KIND_LABELS.keys(),
-        "rpc",
-        "http",
-        "rest",
-        "grpc",
-        "event",
-        "connection",
-        "ui",
-        "resource",
-        "public",
-    }
-    if kind in public_kinds:
+    if kind in _ENTRY_DISCOVERY_KIND_LABELS or kind in _PUBLIC_ENTRY_KIND_ALIASES:
         return True
     trigger = str(item.get("external_trigger") or item.get("entry_label") or "").lower()
-    if trigger and any(token in trigger for token in (
-        "rpc", "api", "cli", "command", "config", "message", "event", "timer",
-        "callback", "service", "connection", "socket", "http", "request",
-    )):
+    if trigger and any(token in trigger for token in _PUBLIC_TRIGGER_SURFACE_TOKENS):
         return True
     return False
 
