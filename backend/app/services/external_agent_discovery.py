@@ -1418,6 +1418,7 @@ def merge_source_candidates(
         key=lambda c: (
             _source_candidate_priority(c.source),
             0 if c.confidence == "high" else 1,
+            _source_role_priority(c.role),
             str(c.path or "").lower(),
         ),
     )
@@ -1432,6 +1433,14 @@ def _source_candidate_priority(source: str) -> int:
         "gitnexus": 2,
         "material": 3,
     }.get(str(source or ""), 9)
+
+
+def _source_role_priority(role: str | None) -> int:
+    return {
+        "primary": 0,
+        "related": 1,
+        "context": 2,
+    }.get(str(role or ""), 3)
 
 
 def _merge_existing_source_candidate(current: ScopeCandidate, incoming: ScopeCandidate) -> ScopeCandidate:

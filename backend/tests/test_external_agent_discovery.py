@@ -2895,6 +2895,43 @@ def test_duplicate_existing_candidates_keep_best_source_priority(tmp_path):
     assert "gitnexus" in merged[0].reason
 
 
+def test_merge_source_candidates_ranks_primary_role_before_related(tmp_path):
+    from app.schemas.workspace_analysis import ScopeCandidate
+    from app.services.external_agent_discovery import merge_source_candidates
+
+    related_dir = tmp_path / "aaa_examples" / "transport" / "tls"
+    primary_dir = tmp_path / "zzz_real" / "transport" / "tls"
+    related_dir.mkdir(parents=True)
+    primary_dir.mkdir(parents=True)
+    related_source = related_dir / "tls.c"
+    primary_source = primary_dir / "tls.c"
+    related_source.write_text("int example_tls;\n", encoding="utf-8")
+    primary_source.write_text("int real_tls;\n", encoding="utf-8")
+
+    existing = [
+        ScopeCandidate(
+            path=str(related_source),
+            source="repo_search",
+            confidence="high",
+            reason="example path also matched tls",
+            role="related",
+        ),
+        ScopeCandidate(
+            path=str(primary_source),
+            source="repo_search",
+            confidence="high",
+            reason="primary module path matched tls",
+            role="primary",
+        ),
+    ]
+
+    merged, warnings = merge_source_candidates(tmp_path, existing, [])
+
+    assert warnings == []
+    assert merged[0].role == "primary"
+    assert merged[0].path.replace("\\", "/").endswith("zzz_real/transport/tls/tls.c")
+
+
 def test_workspace_resolver_cancels_agent_task_when_scope_resolution_is_cancelled(tmp_path, monkeypatch):
     import app.services.workspace_scope_resolver as scope_mod
 
