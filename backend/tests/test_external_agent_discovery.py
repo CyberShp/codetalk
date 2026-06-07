@@ -3563,6 +3563,28 @@ def test_workspace_path_hint_with_parent_dirs_finds_tls_from_nof_repo_root(tmp_p
     assert any(hit.replace("\\", "/").endswith("nvmf_tcp/transport/tls/tls.c") for hit in hits)
 
 
+def test_workspace_path_hint_prioritizes_module_named_source_when_limited(tmp_path):
+    from app.services.workspace_scope_resolver import _path_hint_repo_hits_blocking
+
+    tls_dir = tmp_path / "nvmf_tcp" / "transport" / "tls"
+    tls_dir.mkdir(parents=True)
+    for index in range(8):
+        (tls_dir / f"alpha_{index}.c").write_text(
+            f"int alpha_{index}(void) {{ return {index}; }}\n",
+            encoding="utf-8",
+        )
+    (tls_dir / "tls.c").write_text("int nvmf_tcp_tls_handshake(void) { return 0; }\n", encoding="utf-8")
+
+    hits = _path_hint_repo_hits_blocking(
+        str(tmp_path),
+        ["nvmf_tcp/transport/tls"],
+        3,
+    )
+    rel_hits = [Path(hit).relative_to(tmp_path).as_posix() for hit in hits]
+
+    assert rel_hits[0] == "nvmf_tcp/transport/tls/tls.c"
+
+
 def test_workspace_path_keyword_ranking_prioritizes_module_named_source(tmp_path):
     from app.services.workspace_scope_resolver import _path_keyword_repo_hits_blocking
 

@@ -584,7 +584,11 @@ def _path_hint_repo_hits_blocking(
                 full = Path(walk_root) / name
                 if full.suffix.lower() in _SOURCE_EXTS:
                     files.append(full)
-        files.sort(key=lambda p: p.relative_to(root).as_posix().lower())
+        module_name = directory.name.lower()
+        files.sort(key=lambda p: (
+            0 if p.parent == directory and p.stem.lower() == module_name else 1,
+            p.relative_to(root).as_posix().lower(),
+        ))
         return files
 
     def _candidate_paths_for_hint(normalized_hint: str) -> list[Path]:
