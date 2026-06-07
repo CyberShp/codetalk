@@ -613,7 +613,9 @@ def _provider_command_configuration_error(
 ) -> dict[str, str] | None:
     if provider != "claude-code" or not _looks_like_ccr_code_command(argv):
         return None
-    config_path = _ccr_config_path_from_argv(argv)
+    config_path = _explicit_ccr_config_path_from_argv(argv)
+    if not config_path:
+        return None
     try:
         if Path(config_path).expanduser().is_file():
             return None
@@ -643,7 +645,7 @@ def _looks_like_ccr_code_command(argv: list[str]) -> bool:
     return "code" in {str(token).lower() for token in argv[1:]}
 
 
-def _ccr_config_path_from_argv(argv: list[str]) -> str:
+def _explicit_ccr_config_path_from_argv(argv: list[str]) -> str | None:
     for index, token in enumerate(argv):
         value = str(token)
         if value in {"-c", "--config"} and index + 1 < len(argv):
@@ -654,7 +656,7 @@ def _ccr_config_path_from_argv(argv: list[str]) -> str:
     env_path = os.environ.get("CCR_CONFIG_PATH")
     if env_path:
         return env_path
-    return str(Path.home() / ".claude-code-router" / "config-router.json")
+    return None
 
 
 def _find_powershell() -> str | None:

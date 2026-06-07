@@ -699,7 +699,7 @@ def test_provider_health_uses_claude_fallback_when_ccr_missing(tmp_path, monkeyp
     assert health["attempts"][0]["executable"] == "ccr"
 
 
-def test_provider_health_uses_fallback_after_missing_ccr_config(tmp_path, monkeypatch):
+def test_provider_health_does_not_block_ccr_for_missing_default_config(tmp_path, monkeypatch):
     from app.services.external_agent_discovery import check_provider_health
 
     ccr = tmp_path / "bin" / "ccr.cmd"
@@ -727,11 +727,46 @@ def test_provider_health_uses_fallback_after_missing_ccr_config(tmp_path, monkey
     )
 
     assert health["status"] == "available"
+    assert health["argv"][0] == str(ccr)
+    assert health["used_fallback"] is False
+    assert len(health["attempts"]) == 1
+    assert health["attempts"][0]["status"] == "available"
+
+
+def test_provider_health_uses_fallback_after_explicit_missing_ccr_config(tmp_path, monkeypatch):
+    from app.services.external_agent_discovery import check_provider_health
+
+    ccr = tmp_path / "bin" / "ccr.cmd"
+    claude = tmp_path / "bin" / "claude.cmd"
+    ccr.parent.mkdir()
+    ccr.write_text("@echo off\n", encoding="utf-8")
+    claude.write_text("@echo off\n", encoding="utf-8")
+    missing_config = tmp_path / "missing" / "config-router.json"
+
+    def fake_which(cmd):
+        if cmd == "ccr":
+            return str(ccr)
+        if cmd == "claude":
+            return str(claude)
+        return None
+
+    monkeypatch.setattr("app.services.external_agent_discovery.platform.system", lambda: "Windows")
+    monkeypatch.setattr("app.services.external_agent_discovery.shutil.which", fake_which)
+    monkeypatch.delenv("CCR_CONFIG_PATH", raising=False)
+
+    health = check_provider_health(
+        "claude-code",
+        f'ccr code --config "{missing_config}" -p --output-format json',
+        fallback_commands=["claude -p --output-format json"],
+    )
+
+    assert health["status"] == "available"
     assert health["argv"][0] == str(claude)
     assert health["used_fallback"] is True
     assert "ccr config file not found" in health["reason"]
     assert len(health["attempts"]) == 2
     assert health["attempts"][0]["status"] == "configuration_error"
+    assert health["attempts"][0]["config_path"] == str(missing_config)
     assert health["attempts"][1]["status"] == "available"
 
 
@@ -1326,7 +1361,7 @@ def test_run_provider_uses_fallback_after_ccr_config_error(tmp_path, monkeypatch
     assert results[0].runtime_attempts[1]["run_status"] == "ok"
 
 
-def test_run_provider_uses_fallback_after_ccr_preflight_config_error(tmp_path, monkeypatch):
+def test_run_provider_uses_fallback_after_default_ccr_run_invalid_output(tmp_path, monkeypatch):
     from app.services.agent_discovery_session import create_agent_discovery_session
     from app.services.external_agent_discovery import AgentDiscoveryRequest, run_external_agent_discovery
 
@@ -1376,10 +1411,11 @@ def test_run_provider_uses_fallback_after_ccr_preflight_config_error(tmp_path, m
 
     assert results[0].status == "ok"
     assert results[0].raw_summary == "fallback_ok"
-    assert any("ccr config file not found" in item for item in results[0].warnings)
+    assert any("primary command failed; using fallback" in item for item in results[0].warnings)
+    assert any("invalid JSON: empty output" in item for item in results[0].warnings)
     assert len(results[0].runtime_attempts) == 2
-    assert results[0].runtime_attempts[0]["status"] == "configuration_error"
-    assert results[0].runtime_attempts[0]["config_path"].endswith("config-router.json")
+    assert results[0].runtime_attempts[0]["status"] == "available"
+    assert results[0].runtime_attempts[0]["run_status"] == "invalid_output"
     assert results[0].runtime_attempts[1]["run_status"] == "ok"
     assert runtime_attempts == results[0].runtime_attempts
 
@@ -2316,7 +2352,7 @@ def test_startup_probe_uses_fallback_after_ccr_config_error(tmp_path, monkeypatc
     assert attempts[1]["probe_status"] == "ok"
 
 
-def test_startup_probe_uses_fallback_after_ccr_preflight_config_error(tmp_path, monkeypatch):
+def test_startup_probe_uses_fallback_after_default_ccr_run_invalid_output(tmp_path, monkeypatch):
     from app.services.external_agent_discovery import probe_external_agent_startup
 
     ccr = tmp_path / "bin" / "ccr.cmd"
@@ -2349,10 +2385,11 @@ def test_startup_probe_uses_fallback_after_ccr_preflight_config_error(tmp_path, 
     assert result["status"] == "ok"
     assert result["message"] == "startup_probe_ok"
     assert result["health"]["used_fallback"] is True
-    assert "ccr config file not found" in result["health"]["reason"]
+    assert "primary command failed; using fallback" in result["health"]["reason"]
     attempts = result["health"]["attempts"]
     assert len(attempts) == 2
-    assert attempts[0]["status"] == "configuration_error"
+    assert attempts[0]["status"] == "available"
+    assert attempts[0]["probe_status"] == "invalid_output"
     assert attempts[1]["probe_status"] == "ok"
 
 
