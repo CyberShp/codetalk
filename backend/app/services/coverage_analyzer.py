@@ -318,12 +318,17 @@ _REGISTRATION_LINE_RE = re.compile(
     r"|\.[ \t]*(?:register|subscribe|add_listener|add_handler|add_job|schedule)\s*\(",
     re.IGNORECASE,
 )
-_DECORATOR_LINE_RE = re.compile(r"^\s*@(?P<decorator>[A-Za-z_][\w.]*)\b(?P<rest>.*)$")
+_DECORATOR_LINE_RE = re.compile(
+    r"^\s*(?:@(?P<decorator>[A-Za-z_][\w.]*)\b(?P<rest>.*)"
+    r"|\[(?P<attribute>[A-Za-z_][\w.]*)\b[^\]]*\]\s*)$"
+)
 _ENTRY_DECORATOR_KIND_TOKENS: tuple[tuple[str, tuple[str, ...]], ...] = (
     ("webhook", ("webhook", "hook")),
     ("route", ("route", "router", "endpoint", "controller", "view",
                "requestmapping", "getmapping", "postmapping", "putmapping",
                "patchmapping", "deletemapping", "headmapping", "optionsmapping",
+               "httpget", "httppost", "httpput", "httppatch", "httpdelete",
+               "httphead", "httpoptions",
                ".get", ".post", ".put", ".patch", ".delete", ".head", ".options",
                ".api_route")),
     ("api", ("api", "rpc", "grpc", "http", "request")),

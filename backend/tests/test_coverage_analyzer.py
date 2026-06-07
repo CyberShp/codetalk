@@ -1890,6 +1890,41 @@ class TestCoverageTestDesign:
         assert entry["tool"] == "source-decorator"
         assert "@PostMapping" in entry["evidence"]
 
+    async def test_aspnet_http_attribute_is_black_box_route_without_caller(self, tmp_path):
+        from app.services.coverage_analyzer import build_coverage_test_design
+
+        src = tmp_path / "src"
+        src.mkdir()
+        (src / "PaymentController.cs").write_text(
+            "public class PaymentController {\n"
+            "  [HttpPost(\"/payments\")]\n"
+            "  public IActionResult ProcessPayment(PaymentRequest request) {\n"
+            "    if (request == null) {\n"
+            "      return BadRequest();\n"
+            "    }\n"
+            "    return Ok();\n"
+            "  }\n"
+            "}\n",
+            encoding="utf-8",
+        )
+        modules = self._modules(
+            "feature,module,code_location,function,triggered,hit_count\n"
+            "payments,controller,src/PaymentController.cs:3-8,ProcessPayment,false,0\n"
+        )
+
+        design = await build_coverage_test_design(
+            modules, workspace_id="ws-1", repo_path=str(tmp_path)
+        )
+
+        gap = [g for g in design["gaps"] if g.get("kind") == "function"][0]
+        assert gap["gray_box_required"] is False
+        assert gap["black_box_readiness"]["case_type"] == "black_box_ready"
+        entry = gap["entry_paths"][0]
+        assert entry["entry_kind"] == "route"
+        assert entry["entry_symbol"] == "ProcessPayment"
+        assert entry["tool"] == "source-decorator"
+        assert "[HttpPost" in entry["evidence"]
+
     async def test_decorated_message_consumer_is_black_box_entry_without_caller(self, tmp_path):
         from app.services.coverage_analyzer import build_coverage_test_design
 
