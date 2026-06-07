@@ -459,9 +459,15 @@ def _path_keyword_repo_hits_blocking(
                     score += 3
                 if full.suffix.lower() in {".c", ".cc", ".cpp", ".cxx", ".py", ".go", ".rs", ".java", ".ts", ".tsx", ".js", ".jsx"}:
                     score += 2
-                if "/transport/tls/" in rel:
+                if rel.startswith("transport/tls/"):
+                    score += 14
+                elif rel.startswith(("nvmf_tcp/transport/tls/", "nvme_tcp/transport/tls/")):
+                    score += 14
+                elif "/transport/tls/" in rel:
                     score += 8
-                if "/nvmf_tcp/" in rel or "/nvme_tcp/" in rel:
+                if rel.startswith(("nvmf_tcp/", "nvme_tcp/")):
+                    score += 10
+                elif "/nvmf_tcp/" in rel or "/nvme_tcp/" in rel:
                     score += 6
                 results.append((str(full), score))
     results.sort(key=lambda item: (-item[1], item[0].lower()))

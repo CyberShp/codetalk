@@ -3292,6 +3292,26 @@ def test_workspace_path_keyword_ranking_prioritizes_module_named_source(tmp_path
     assert rel_hits[0] == "nof/nvmf_tcp/transport/tls/tls.c"
 
 
+def test_workspace_path_keyword_ranking_prioritizes_root_transport_tls_over_examples(tmp_path):
+    from app.services.workspace_scope_resolver import _path_keyword_repo_hits_blocking
+
+    real_tls = tmp_path / "transport" / "tls"
+    example_tls = tmp_path / "examples" / "transport" / "tls"
+    real_tls.mkdir(parents=True)
+    example_tls.mkdir(parents=True)
+    (real_tls / "tls.c").write_text("int real_tls(void) { return 0; }\n", encoding="utf-8")
+    (example_tls / "tls.c").write_text("int example_tls(void) { return 0; }\n", encoding="utf-8")
+
+    hits = _path_keyword_repo_hits_blocking(
+        str(tmp_path),
+        ["nvme", "tcp", "tls", "nvmf_tcp/transport/tls", "transport/tls"],
+        1,
+    )
+    rel_hits = [Path(hit).relative_to(tmp_path).as_posix() for hit in hits]
+
+    assert rel_hits == ["transport/tls/tls.c"]
+
+
 def test_workspace_resolver_finds_nvme_tls_from_nvmf_tcp_repo_root(tmp_path, monkeypatch):
     _write_tls_tree_at(tmp_path, "transport/tls")
 
