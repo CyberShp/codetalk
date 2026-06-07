@@ -229,6 +229,11 @@ _REQUEST_FIELD_RES = (
         r"(?:\.(?:json|args|form|query|body|data|params))?"
         r"\.get\s*\(\s*['\"]([A-Za-z_][\w-]*)['\"]"
     ),
+    re.compile(
+        r"\b(?:request|req)"
+        r"\.(?:json|args|form|query|body|data|params)"
+        r"\.(?!get\b)([A-Za-z_][\w-]*)\b"
+    ),
 )
 _REGISTRATION_LINE_RE = re.compile(
     r"\b(?:[A-Z0-9_]*REGISTER[A-Z0-9_]*|register_[A-Za-z0-9_]+)\s*\(",
