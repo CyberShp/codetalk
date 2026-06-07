@@ -3814,6 +3814,7 @@ def _coverage_ai_prompt(context: dict) -> str:
         "7. 每个 high 优先级场景必须回答：流程做什么、外部怎么触发、输入怎么构造、正常路径、异常路径、预期结果、可观测信号、灰盒辅助、SFMEA。\n"
         "8. normal_path/error_path/external_trigger/input_construction/expected_result 只能写测试人员从外部执行和观察的步骤，不要写函数名、源码文件、源码行号、内部变量或“调用 xxx”。源码函数/文件只能放在 key_call_chain/evidence_refs/gray_box_aid。\n"
         "9. 只有 entry_discovery 明确显示没有外部入口候选，或必须靠注入/trace/内部状态辅助观察时，才使用 `gray_box_required`；这种场景最多 1 个。`black_box_hypothesis` 只作为无法分类的临时状态，最终验收会失败。\n"
+        "9b. If entry_discovery shows source_verification_status=no_external_entry_candidate or rejected_external_entry_candidate, or gray_box_allowed=true, gray_box_required is valid; candidates with validation_error are rejected evidence, not actionable external entries.\n"
         "10. 只输出 JSON，格式为 {\"scenarios\": [...]}，禁止输出 Markdown 或解释文字。\n"
         f"必填字段：{', '.join(AI_REQUIRED_SCENARIO_FIELDS)}。\n"
         f"sfmea 必填字段：{', '.join(AI_REQUIRED_SFMEA_FIELDS)}。\n\n"
@@ -3832,12 +3833,14 @@ def _enforce_ai_scenario_batch_gate(
     black_box_count = sum(1 for item in accepted if item.get("case_type") == BLACK_BOX_READY)
     gray_box_count = sum(1 for item in accepted if item.get("case_type") == GRAY_BOX_REQUIRED)
     black_box_ratio = black_box_count / max(1, len(accepted))
-    has_external_trigger_hint = any(
-        str(item.get("trigger") or "").strip()
-        for item in context.get("external_trigger_candidates") or []
-        if isinstance(item, dict)
-    )
+    has_external_trigger_hint = _context_has_actionable_external_trigger_hint(context)
     if black_box_ratio >= 0.7 and gray_box_count <= 1:
+        return
+    if (
+        not has_external_trigger_hint
+        and gray_box_count == len(accepted)
+        and _context_allows_gray_box_without_actionable_entry(context)
+    ):
         return
 
     if has_external_trigger_hint:
@@ -3856,6 +3859,43 @@ def _enforce_ai_scenario_batch_gate(
             "reason": reason,
         })
     accepted.clear()
+
+
+def _context_has_actionable_external_trigger_hint(context: dict) -> bool:
+    for item in context.get("external_trigger_candidates") or []:
+        if not isinstance(item, dict):
+            continue
+        confidence = str(item.get("confidence") or "").strip().lower()
+        if str(item.get("trigger") or "").strip() and confidence != "low":
+            return True
+    entry_discovery = context.get("entry_discovery") or {}
+    for card in entry_discovery.get("cards") or []:
+        if not isinstance(card, dict):
+            continue
+        if card.get("entry_trace_status") == "entry_found":
+            return True
+        for candidate in card.get("candidate_external_entries") or []:
+            if isinstance(candidate, dict) and _entry_discovery_candidate_is_actionable(candidate):
+                return True
+    return False
+
+
+def _context_allows_gray_box_without_actionable_entry(context: dict) -> bool:
+    entry_discovery = context.get("entry_discovery") or {}
+    cards = entry_discovery.get("cards") or []
+    if not cards:
+        return False
+    for card in cards:
+        if not isinstance(card, dict):
+            continue
+        if card.get("gray_box_allowed") is True:
+            return True
+        if card.get("source_verification_status") in {
+            "no_external_entry_candidate",
+            "rejected_external_entry_candidate",
+        }:
+            return True
+    return False
 
 
 def _parse_json_object(text: str) -> dict:
