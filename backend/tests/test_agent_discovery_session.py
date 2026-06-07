@@ -690,6 +690,40 @@ def test_source_slice_read_failure_is_recorded_without_raising(tmp_path, monkeyp
     assert "permission denied" in session.ledger.rejected_files[0]["reason"]
 
 
+def test_source_slice_artifact_write_failure_is_recorded_without_raising(tmp_path, monkeypatch):
+    from pathlib import Path
+
+    from app.services.agent_discovery_session import create_agent_discovery_session
+
+    src = tmp_path / "src"
+    src.mkdir()
+    (src / "tls.c").write_text("int tls(void) { return 0; }\n", encoding="utf-8")
+    session = create_agent_discovery_session(
+        repo_path=str(tmp_path),
+        goal="workspace_scope",
+        artifact_dir=tmp_path / "artifacts",
+    )
+    original_write_text = Path.write_text
+
+    def flaky_write_text(self, *args, **kwargs):
+        if self.name == "slice_001.json":
+            raise OSError("artifact disk full")
+        return original_write_text(self, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "write_text", flaky_write_text)
+
+    refs = session.add_source_slices_from_requests([
+        {"file_path": "src/tls.c", "reason": "artifact write failure should be non-fatal"},
+    ])
+
+    assert len(refs) == 1
+    assert refs[0].validated is True
+    assert session.ledger.source_slices[0]["file_path"] == "src/tls.c"
+    assert session.ledger.unresolved_items[0]["kind"] == "source_slice_artifact_write_failed"
+    assert session.ledger.unresolved_items[0]["slice_id"] == "slice_001"
+    assert "artifact disk full" in session.ledger.unresolved_items[0]["reason"]
+
+
 def test_context_packet_overflow_requests_next_round(tmp_path, monkeypatch):
     from app.services.agent_discovery_session import (
         AgentContextPacketInput,

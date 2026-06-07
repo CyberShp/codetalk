@@ -352,10 +352,20 @@ class AgentDiscoverySession:
         if settings.agent_discovery_store_source_slices:
             slice_dir = self.artifact_dir / "external_agent_source_slices"
             slice_dir.mkdir(parents=True, exist_ok=True)
-            (slice_dir / f"{slice_id}.json").write_text(
-                json.dumps(asdict(ref), ensure_ascii=False, indent=2),
-                encoding="utf-8",
-            )
+            try:
+                (slice_dir / f"{slice_id}.json").write_text(
+                    json.dumps(asdict(ref), ensure_ascii=False, indent=2),
+                    encoding="utf-8",
+                )
+            except OSError as exc:
+                reason_text = str(exc).strip() or exc.__class__.__name__
+                self.ledger.unresolved_items.append({
+                    "kind": "source_slice_artifact_write_failed",
+                    "slice_id": slice_id,
+                    "file_path": validation.path,
+                    "reason": reason_text,
+                    "created_at": _now(),
+                })
         self.save()
         return ref
 
