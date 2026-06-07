@@ -3816,7 +3816,8 @@ async def build_coverage_test_design(
     workspace_bound = _existing_repo_root(repo_path) is not None and bool(workspace_id)
     agent_session: AgentDiscoverySession | None = None
     if (
-        settings.agent_discovery_session_enabled
+        settings.external_agents_enabled
+        and settings.agent_discovery_session_enabled
         and artifact_dir is not None
         and _existing_repo_root(repo_path) is not None
     ):

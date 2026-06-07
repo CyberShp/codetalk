@@ -1175,6 +1175,27 @@ class TestCoverageTestDesign:
         assert context["entry_discovery"]["cards"][0]["function_name"] == "recover_session"
         assert context["evidence_source_counts"]["entry_discovery"] >= 1
 
+    async def test_disabled_external_agents_do_not_create_empty_agent_session(self, tmp_path):
+        from app.services.coverage_analyzer import build_coverage_test_design
+
+        self._make_repo(tmp_path)
+        artifact_dir = tmp_path / "artifacts"
+        modules = self._modules(
+            "feature,module,code_location,function,triggered,hit_count\n"
+            "rec,session,src/session.c:1-6,recover_session,false,0\n"
+        )
+
+        design = await build_coverage_test_design(
+            modules,
+            workspace_id="ws-1",
+            repo_path=str(tmp_path),
+            artifact_dir=artifact_dir,
+        )
+
+        assert design["agent_discovery_session_id"] is None
+        assert not (artifact_dir / "agent_discovery_session.json").exists()
+        assert not (artifact_dir / "agent_discovery_ledger.json").exists()
+
     async def test_ai_debug_artifact_write_failure_does_not_drop_design(self, tmp_path):
         from app.services.coverage_analyzer import build_coverage_test_design
 
