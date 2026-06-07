@@ -2899,6 +2899,22 @@ def test_agent_candidate_path_with_outer_workspace_prefix_validates_from_nested_
     assert validation.path == "nvmf_tcp/transport/tls/tls.c"
 
 
+def test_agent_candidate_suffix_prefers_product_source_over_examples(tmp_path):
+    from app.services.external_agent_discovery import validate_agent_candidate_file
+
+    example_src = tmp_path / "examples" / "src"
+    product_src = tmp_path / "services" / "src"
+    example_src.mkdir(parents=True)
+    product_src.mkdir(parents=True)
+    (example_src / "auth.py").write_text("def example_auth():\n    pass\n", encoding="utf-8")
+    (product_src / "auth.py").write_text("def product_auth():\n    pass\n", encoding="utf-8")
+
+    validation = validate_agent_candidate_file(tmp_path, "src/auth.py")
+
+    assert validation.validated is True
+    assert validation.path == "services/src/auth.py"
+
+
 def test_agent_candidate_path_with_markdown_backticks_validates(tmp_path):
     from app.services.external_agent_discovery import validate_agent_candidate_file
 

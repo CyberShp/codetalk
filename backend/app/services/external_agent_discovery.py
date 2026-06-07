@@ -1117,8 +1117,22 @@ def _resolve_existing_or_suffix(root: Path, candidate: Path, normalized: str) ->
             rel = full.relative_to(root).as_posix().lower()
             if any(rel.endswith(suffix) for suffix in suffixes):
                 matches.append(full)
-    matches.sort(key=lambda p: len(p.relative_to(root).parts))
+    matches.sort(key=lambda p: _agent_candidate_path_sort_key(root, p))
     return matches[0] if matches else None
+
+
+def _agent_candidate_path_sort_key(root: Path, path: Path) -> tuple[int, int, str]:
+    try:
+        rel = path.relative_to(root)
+    except ValueError:
+        return (100, len(path.parts), path.as_posix().lower())
+    parts = [part.lower() for part in rel.parts]
+    non_product_dirs = {
+        "example", "examples", "sample", "samples",
+        "test", "tests", "doc", "docs",
+    }
+    penalty = 30 if any(part in non_product_dirs for part in parts[:-1]) else 0
+    return (penalty, len(rel.parts), rel.as_posix().lower())
 
 
 def _preferred_source_file_under(directory: Path) -> Path | None:
