@@ -2895,6 +2895,41 @@ def test_duplicate_existing_candidates_keep_best_source_priority(tmp_path):
     assert "gitnexus" in merged[0].reason
 
 
+def test_duplicate_existing_candidates_keep_best_role_priority(tmp_path):
+    from app.schemas.workspace_analysis import ScopeCandidate
+    from app.services.external_agent_discovery import merge_source_candidates
+
+    src = tmp_path / "nof" / "nvmf_tcp" / "transport" / "tls"
+    src.mkdir(parents=True)
+    source = src / "tls.c"
+    source.write_text("int tls;\n", encoding="utf-8")
+
+    existing = [
+        ScopeCandidate(
+            path=str(source),
+            source="repo_search",
+            confidence="medium",
+            reason="broad local match",
+            role="related",
+        ),
+        ScopeCandidate(
+            path=str(source),
+            source="repo_search",
+            confidence="medium",
+            reason="path hint matched primary module",
+            role="primary",
+        ),
+    ]
+
+    merged, warnings = merge_source_candidates(tmp_path, existing, [])
+
+    assert warnings == []
+    assert len(merged) == 1
+    assert merged[0].source == "repo_search"
+    assert merged[0].role == "primary"
+    assert "path hint matched primary module" in merged[0].reason
+
+
 def test_merge_source_candidates_ranks_primary_role_before_related(tmp_path):
     from app.schemas.workspace_analysis import ScopeCandidate
     from app.services.external_agent_discovery import merge_source_candidates

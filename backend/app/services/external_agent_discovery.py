@@ -1446,13 +1446,21 @@ def _source_role_priority(role: str | None) -> int:
 def _merge_existing_source_candidate(current: ScopeCandidate, incoming: ScopeCandidate) -> ScopeCandidate:
     current_priority = _source_candidate_priority(current.source)
     incoming_priority = _source_candidate_priority(incoming.source)
-    keep = current if current_priority <= incoming_priority else incoming
+    if current_priority == incoming_priority:
+        keep = (
+            current
+            if _source_role_priority(current.role) <= _source_role_priority(incoming.role)
+            else incoming
+        )
+    else:
+        keep = current if current_priority < incoming_priority else incoming
     other = incoming if keep is current else current
     confidence = "high" if "high" in {keep.confidence, other.confidence} else keep.confidence
     other_source = str(other.source or "candidate")
     other_reason = str(other.reason or "also matched")
     return keep.model_copy(update={
         "confidence": confidence,
+        "role": keep.role,
         "reason": f"{keep.reason}; {other_source} also matched: {other_reason}",
     })
 
