@@ -1040,7 +1040,22 @@ async def _resolve_external_agent_entries_for_hits(
             results = await run_external_agent_discovery(request, session=agent_session)
         except Exception as exc:
             logger.info("Coverage external-agent discovery failed for %s: %s", hit.function_name, exc)
-            return object_id, {"status": "error", "warnings": [str(exc)]}
+            status_by_provider: dict[str, str] = {}
+            raw_results: list[dict] = []
+            _record_agent_round_error(
+                provider_status=status_by_provider,
+                raw_results=raw_results,
+                turn_id=f"coverage:{object_id}",
+                exc=exc,
+            )
+            return object_id, {
+                "status": "error",
+                "provider_status": status_by_provider,
+                "validated_entries": [],
+                "unverified_entries": [],
+                "raw_results": raw_results,
+                "warnings": [str(exc)],
+            }
 
         validated_entries: list[dict] = []
         unverified_entries: list[dict] = []
@@ -3000,13 +3015,31 @@ def _compact_external_agent_context(context: object) -> dict:
     if not isinstance(context, dict):
         return {}
     raw_results = context.get("raw_results") or []
+    warnings = [
+        str(item).strip()
+        for item in (context.get("warnings") or [])
+        if str(item).strip()
+    ]
+    for warning in _external_agent_warnings(raw_results):
+        if not _warning_already_present(warnings, warning):
+            warnings.append(warning)
     return {
         "status": context.get("status"),
         "provider_status": context.get("provider_status") or {},
         "validated_entry_count": len(context.get("validated_entries") or []),
         "unverified_entries": (context.get("unverified_entries") or [])[:8],
-        "warnings": _external_agent_warnings(raw_results),
+        "warnings": warnings[:12],
     }
+
+
+def _warning_already_present(warnings: list[str], candidate: str) -> bool:
+    text = str(candidate or "").strip()
+    if not text:
+        return True
+    if text in warnings:
+        return True
+    suffix = text.split(":", 1)[1].strip() if ":" in text else text
+    return any(existing == suffix or existing.endswith(suffix) for existing in warnings)
 
 
 def _external_agent_status_from_provider_status(provider_status: object) -> str:
