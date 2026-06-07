@@ -2990,14 +2990,14 @@ def _registered_entry_type(registration_line: str, window: list[str]) -> str:
         return "api"
     if "cli" in text or "cmd" in text:
         return "cli"
+    if any(token in text for token in ("subscribe", "subscriber", "topic", "queue", "message", "event", "listener")):
+        return "message"
     if "service_register" in text or "ops" in text or "callback" in text or "_cb" in text:
         return "callback"
     if any(token in text for token in ("scheduler", "schedule", "scheduled", "cron", "add_job", ".job", " job")):
         return "scheduler"
     if "poller" in text or "timer" in text or "timeout" in text:
         return "timer"
-    if "message" in text or "event" in text:
-        return "message"
     return "callback"
 
 

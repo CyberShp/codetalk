@@ -1744,6 +1744,41 @@ class TestCoverageTestDesign:
         assert gap["entry_paths"][0]["entry_kind"] == "scheduler"
         assert "scheduler.add_job" in gap["entry_paths"][0]["evidence"]
 
+    async def test_message_subscribe_registration_keeps_message_entry_kind(self, tmp_path):
+        from app.services.coverage_analyzer import build_coverage_test_design
+
+        src = tmp_path / "src"
+        src.mkdir()
+        (src / "invoices.py").write_text(
+            "def reconcile_invoice(payload):\n"
+            "    if not payload:\n"
+            "        return 'missing'\n"
+            "    return 'reconciled'\n",
+            encoding="utf-8",
+        )
+        (src / "subscriptions.py").write_text(
+            "from invoices import reconcile_invoice\n\n"
+            "def consume(payload):\n"
+            "    return reconcile_invoice(payload)\n\n"
+            "bus.subscribe('invoice.created', consume)\n",
+            encoding="utf-8",
+        )
+        modules = self._modules(
+            "feature,module,code_location,function,triggered,hit_count\n"
+            "invoices,invoices,src/invoices.py:1-4,reconcile_invoice,false,0\n"
+        )
+
+        design = await build_coverage_test_design(
+            modules, workspace_id="ws-1", repo_path=str(tmp_path)
+        )
+
+        gap = [g for g in design["gaps"] if g.get("kind") == "function"][0]
+        assert gap["gray_box_required"] is False
+        assert gap["black_box_readiness"]["case_type"] == "black_box_ready"
+        assert gap["entry_paths"][0]["entry_symbol"] == "consume"
+        assert gap["entry_paths"][0]["entry_kind"] == "message"
+        assert "bus.subscribe" in gap["entry_paths"][0]["evidence"]
+
     async def test_entry_discovery_artifact_and_context_are_written(self, tmp_path):
         from app.services.coverage_analyzer import build_coverage_test_design
 
