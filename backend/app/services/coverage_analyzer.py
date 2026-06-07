@@ -3296,7 +3296,9 @@ def _entry_discovery_source_verification_status(candidates: list[dict]) -> str:
 
 
 def _entry_discovery_candidate_is_actionable(candidate: dict) -> bool:
-    return not str(candidate.get("validation_error") or "").strip()
+    if str(candidate.get("validation_error") or "").strip():
+        return False
+    return str(candidate.get("confidence") or "").strip().lower() != "low"
 
 
 def _entry_candidates_from_agent_rejected_validated(

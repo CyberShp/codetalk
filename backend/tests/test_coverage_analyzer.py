@@ -831,6 +831,68 @@ error_recovery,src/service.c:40-55,false,0
             "S-gray-rejected-entry"
         ]
 
+    async def test_ai_accepts_gray_box_batch_when_entry_candidate_is_low_confidence(self):
+        from app.services.coverage_analyzer import _generate_ai_test_scenarios
+
+        gray_scenario = {
+            "scenario_id": "S-gray-low-confidence-entry",
+            "priority": "high",
+            "case_type": "gray_box_required",
+            "flow_purpose": "verify behavior when only weak entry evidence exists",
+            "external_trigger": "no verified public entry; use a test fixture or injection point",
+            "input_construction": "construct the target state through gray-box assistance",
+            "normal_path": "set a normal state and observe stable state",
+            "error_path": "set an abnormal state and observe recovery signals",
+            "key_call_chain": ["internal_gap"],
+            "expected_result": "the abnormal state is logged and recovered without silent success",
+            "observable_signals": ["log signal", "state counter"],
+            "gray_box_aid": "requires injection or a test fixture; not a black-box step",
+            "sfmea": {
+                "failure_mode": "recovery path is not executed",
+                "trigger_condition": "low-confidence external entry evidence",
+                "propagation_effect": "abnormal state remains",
+                "observable_effect": "logs and state counters diverge",
+                "recommended_test": "trigger target state with a fixture and observe recovery",
+            },
+            "evidence_refs": ["entry_discovery:low_confidence_candidate"],
+            "related_gaps": ["internal_gap"],
+            "confidence": "medium",
+            "verification_gaps": ["no verified public entry"],
+        }
+
+        class GrayLLM:
+            async def complete(self, messages, max_tokens=4096, temperature=0.1):
+                return LLMResponse(
+                    content=json.dumps({"scenarios": [gray_scenario]}),
+                    model="fake",
+                    usage={},
+                )
+
+        result = await _generate_ai_test_scenarios(
+            GrayLLM(),
+            {
+                "external_trigger_candidates": [],
+                "entry_discovery": {
+                    "cards": [{
+                        "function_name": "internal_gap",
+                        "source_verification_status": "needs_source_verification",
+                        "gray_box_allowed": True,
+                        "candidate_external_entries": [{
+                            "entry_type": "api",
+                            "entry_symbol": "maybe_public_api",
+                            "confidence": "low",
+                            "source_verification": "needs_source_verification",
+                        }],
+                    }],
+                },
+            },
+        )
+
+        assert result["rejected"] == []
+        assert [item["scenario_id"] for item in result["accepted"]] == [
+            "S-gray-low-confidence-entry"
+        ]
+
     async def test_workspace_scope_timeout_does_not_block_recommendations(
         self, sqlite_db, tmp_path
     ):
