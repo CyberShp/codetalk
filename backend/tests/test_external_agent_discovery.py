@@ -711,6 +711,55 @@ def test_run_provider_unavailable_keeps_runtime_diagnostic_in_result(tmp_path, m
     assert result.warnings == [result.raw_summary]
 
 
+def test_run_provider_spawn_error_keeps_launch_diagnostics(tmp_path, monkeypatch):
+    from app.services.external_agent_discovery import AgentDiscoveryRequest, run_external_agent_discovery
+
+    async def fake_create_subprocess_exec(*_args, **_kwargs):
+        raise OSError("CreateProcess failed")
+
+    monkeypatch.setattr(
+        "app.services.external_agent_discovery.check_provider_health",
+        lambda provider, command, fallback_commands=None: {
+            "status": "available",
+            "argv": ["powershell.exe", "-Command", "& 'ccr' 'code' '-p'"],
+            "configured_command": "ccr code -p",
+            "configured_argv": ["ccr", "code", "-p"],
+            "path": "PowerShell function ccr",
+            "launch_kind": "powershell",
+            "used_fallback": False,
+            "attempts": [
+                {
+                    "command": "ccr code -p",
+                    "status": "available",
+                    "launch_kind": "powershell",
+                    "path": "PowerShell function ccr",
+                }
+            ],
+        },
+    )
+    monkeypatch.setattr(
+        "app.services.external_agent_discovery.asyncio.create_subprocess_exec",
+        fake_create_subprocess_exec,
+    )
+
+    results = asyncio.run(run_external_agent_discovery(
+        AgentDiscoveryRequest(
+            request_id="spawn-error-diagnostic",
+            repo_path=str(tmp_path),
+            analysis_object_text="nvme-tcp-tls",
+        ),
+        providers=["claude-code"],
+    ))
+
+    result = results[0]
+    assert result.status == "error"
+    assert "CreateProcess failed" in result.raw_summary
+    assert "launch=powershell" in result.raw_summary
+    assert "configured=ccr code -p" in result.raw_summary
+    assert "PowerShell function ccr" in result.raw_summary
+    assert result.warnings == [result.raw_summary]
+
+
 def test_run_provider_reports_nonzero_exit_with_stderr(tmp_path, monkeypatch):
     from app.services.external_agent_discovery import AgentDiscoveryRequest, run_external_agent_discovery
 

@@ -1232,7 +1232,13 @@ async def _run_provider(
             env=env,
         )
     except OSError as exc:
-        result = AgentDiscoveryResult(provider=provider, status="error", raw_summary=str(exc))
+        summary = _format_spawn_error_summary(exc, health)
+        result = AgentDiscoveryResult(
+            provider=provider,
+            status="error",
+            raw_summary=summary,
+            warnings=[summary],
+        )
         _record_agent_turn(session, provider, request, prompt, result.raw_summary, result)
         return result
 
@@ -1287,6 +1293,52 @@ def _format_process_error_summary(returncode: int | None, stderr_text: str, stdo
     if stdout_text:
         parts.append(f"stdout: {stdout_text[:1000]}")
     return "; ".join(parts)[:4000]
+
+
+def _format_spawn_error_summary(exc: OSError, health: dict) -> str:
+    parts = [str(exc).strip() or "external agent spawn failed"]
+    launch = str(health.get("launch_kind") or "").strip()
+    if launch:
+        parts.append(f"launch={launch}")
+    configured = str(health.get("configured_command") or "").strip()
+    if configured:
+        parts.append(f"configured={configured}")
+    path = str(health.get("path") or "").strip()
+    if path:
+        parts.append(f"path={path}")
+    configured_argv = health.get("configured_argv")
+    if isinstance(configured_argv, list) and configured_argv:
+        parts.append("configured_argv=" + " ".join(str(item) for item in configured_argv)[:1000])
+    attempts = health.get("attempts")
+    if isinstance(attempts, list) and attempts:
+        attempt_summary = ", ".join(
+            _format_health_attempt_for_error(attempt)
+            for attempt in attempts
+            if isinstance(attempt, dict)
+        )
+        if attempt_summary:
+            parts.append(f"attempts={attempt_summary[:1500]}")
+    diagnostic = health.get("diagnostic")
+    if isinstance(diagnostic, dict):
+        diag = str(diagnostic.get("summary") or "").strip()
+        if diag:
+            parts.append(diag)
+    return "; ".join(part for part in parts if part)[:4000]
+
+
+def _format_health_attempt_for_error(attempt: dict) -> str:
+    command = str(attempt.get("command") or "").strip()
+    status = str(attempt.get("status") or "").strip()
+    launch = str(attempt.get("launch_kind") or "").strip()
+    path = str(attempt.get("path") or "").strip()
+    details = [command]
+    if status:
+        details.append(f"status={status}")
+    if launch:
+        details.append(f"launch={launch}")
+    if path:
+        details.append(f"path={path}")
+    return " ".join(part for part in details if part)
 
 
 def _format_unavailable_health_summary(health: dict) -> str:
