@@ -1254,6 +1254,8 @@ def test_run_provider_records_runtime_attempts_in_session_ledger(tmp_path, monke
     assert runtime_attempts[0]["run_status"] == "invalid_output"
     assert "invalid JSON" in runtime_attempts[0]["run_message"]
     assert runtime_attempts[1]["run_status"] == "ok"
+    assert runtime_attempts[0]["prompt_transport"] == "stdin"
+    assert runtime_attempts[1]["prompt_transport"] == "stdin"
     assert parsed_attempts == runtime_attempts
     assert loaded_attempts == runtime_attempts
 

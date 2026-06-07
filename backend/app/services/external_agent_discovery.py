@@ -229,6 +229,7 @@ def _runtime_attempt_records(
         "executable",
         "path",
         "launch_kind",
+        "prompt_transport",
         "run_status",
         "run_message",
         "probe_status",
