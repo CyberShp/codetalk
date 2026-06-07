@@ -1054,6 +1054,7 @@ class TestCoverageTestDesign:
                 "external_trigger": "RPC rpc_tls_entry",
                 "reason": "agent confirmed the same public RPC reaches TLS recovery",
                 "source_verification": "source_backed",
+                "input_hints": ["tenant_id", "amount"],
             }]
         }
 
@@ -1067,10 +1068,13 @@ class TestCoverageTestDesign:
         assert merged[0]["turn_id"] == "coverage:tls_recover_session"
         assert merged[0]["confirming_providers"] == ["claude-code"]
         assert merged[0]["confirming_turn_ids"] == ["coverage:tls_recover_session"]
+        assert merged[0]["input_hints"] == ["tenant_id", "amount"]
         cases = _build_black_box_cases(hit, merged, [])
         assert cases[0]["provider"] == "claude-code"
         assert cases[0]["confirming_providers"] == ["claude-code"]
         assert cases[0]["confirming_turn_ids"] == ["coverage:tls_recover_session"]
+        assert "tenant_id" in cases[0]["inputs"]
+        assert "amount" in cases[0]["inputs"]
 
     async def test_traces_external_entry_and_builds_black_box(self, tmp_path):
         from app.services.coverage_analyzer import build_coverage_test_design

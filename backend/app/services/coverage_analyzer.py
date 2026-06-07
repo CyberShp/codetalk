@@ -1029,6 +1029,9 @@ def _merge_agent_entry_confirmation(existing: dict, agent_entry: dict) -> None:
     source_verification = str(agent_entry.get("source_verification") or "").strip()
     if source_verification and not existing.get("source_verification"):
         existing["source_verification"] = source_verification
+    input_hints = _merge_ordered_strings(existing.get("input_hints"), agent_entry.get("input_hints"))
+    if input_hints:
+        existing["input_hints"] = input_hints
     reason = str(agent_entry.get("reason") or "").strip()
     if reason:
         confirmations = list(existing.get("confirming_evidence") or [])
