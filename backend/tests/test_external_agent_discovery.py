@@ -379,6 +379,30 @@ def test_agent_entry_string_input_hint_is_not_split_into_characters(tmp_path):
     assert result.candidate_entries[0].input_hints == ["invalid TLS PSK"]
 
 
+def test_agent_entry_text_chain_is_normalized_to_nodes(tmp_path):
+    from app.services.external_agent_discovery import parse_agent_output
+
+    src = tmp_path / "src"
+    src.mkdir()
+    (src / "rpc.c").write_text("void rpc_entry(void) {}\n", encoding="utf-8")
+    raw = json.dumps({
+        "candidate_entries": [
+            {
+                "entry_kind": "rpc",
+                "entry_symbol": "rpc_entry",
+                "entry_file": "src/rpc.c",
+                "chain": "rpc_entry -> target_fn",
+                "external_trigger": "RPC request",
+            }
+        ]
+    })
+
+    result = parse_agent_output("claude-code", raw, tmp_path)
+
+    assert result.status == "ok"
+    assert result.candidate_entries[0].chain == ["rpc_entry", "target_fn"]
+
+
 def test_agent_string_commands_and_warnings_are_not_split_into_characters(tmp_path):
     from app.services.external_agent_discovery import parse_agent_output
 

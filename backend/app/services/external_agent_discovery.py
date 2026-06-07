@@ -917,6 +917,29 @@ def _coerce_string_list(value: object) -> list[str]:
     return [text] if text else []
 
 
+def _coerce_entry_chain(value: object) -> list[str]:
+    chain: list[str] = []
+    seen: set[str] = set()
+    for item in _coerce_string_list(value):
+        for segment in _split_entry_chain_text(item):
+            if segment in seen:
+                continue
+            seen.add(segment)
+            chain.append(segment)
+    return chain
+
+
+def _split_entry_chain_text(value: object) -> list[str]:
+    text = str(value or "").strip()
+    if not text:
+        return []
+    return [
+        segment.strip()
+        for segment in re.split(r"\s*(?:->|=>|\u2192|\u21d2|,|;|\||\r?\n)\s*", text)
+        if segment.strip()
+    ]
+
+
 def _coerce_dict_items(value: object) -> list[dict]:
     if isinstance(value, dict):
         return [value]
@@ -1199,7 +1222,7 @@ def parse_agent_output(provider: str, raw_output: str, repo_path: str | Path) ->
             entry_kind=str(item.get("entry_kind") or item.get("entry_type") or "external"),
             entry_symbol=str(item.get("entry_symbol") or item.get("symbol") or ""),
             entry_file=_candidate_path_value(item, "entry_file") or None,
-            chain=_coerce_string_list(item.get("chain")),
+            chain=_coerce_entry_chain(item.get("chain")),
             external_trigger=str(item.get("external_trigger") or ""),
             input_hints=_coerce_string_list(item.get("input_hints")),
             reason=str(item.get("reason") or ""),
