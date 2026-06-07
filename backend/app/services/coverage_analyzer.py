@@ -855,6 +855,8 @@ def _merge_agent_entry_paths(
         for entry in merged
     }
     for item in agent_context.get("validated_entries") or []:
+        if _agent_entry_is_self_target(item, hit):
+            continue
         key = (
             str(item.get("entry_symbol") or ""),
             str(item.get("entry_file") or ""),
@@ -884,6 +886,23 @@ def _merge_agent_entry_paths(
             "input_hints": _coerce_string_list(item.get("input_hints")),
         })
     return merged
+
+
+def _agent_entry_is_self_target(item: dict, hit: FunctionHit) -> bool:
+    function_name = str(hit.function_name or "").strip()
+    if not function_name:
+        return False
+    entry_symbol = str(item.get("entry_symbol") or item.get("entry_label") or "").strip()
+    if entry_symbol and entry_symbol != function_name:
+        return False
+    chain = [str(value).strip() for value in (item.get("chain") or []) if str(value).strip()]
+    if chain and any(value != function_name for value in chain):
+        return False
+    entry_file = str(item.get("entry_file") or "").replace("\\", "/")
+    hit_file = str(hit.file_path or "").replace("\\", "/")
+    if entry_file and hit_file and entry_file != hit_file and not hit_file.endswith(entry_file):
+        return False
+    return bool(entry_symbol == function_name or chain == [function_name])
 
 
 def _entry_trace_status(
