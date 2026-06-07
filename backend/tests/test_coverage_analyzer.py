@@ -1482,6 +1482,43 @@ class TestCoverageTestDesign:
         assert "amount" in case_text
         assert "currency" in case_text
 
+    async def test_route_header_cookie_fields_feed_black_box_input_hints(self, tmp_path):
+        from app.services.coverage_analyzer import build_coverage_test_design
+
+        src = tmp_path / "src"
+        src.mkdir()
+        (src / "sessions.py").write_text(
+            "def validate_session(payload):\n"
+            "    if not payload:\n"
+            "        return 'missing'\n"
+            "    return 'ok'\n",
+            encoding="utf-8",
+        )
+        (src / "routes.py").write_text(
+            "def session_route(request):\n"
+            "    payload = {\n"
+            "        'user_id': request.headers.get('X-User-Id'),\n"
+            "        'session_id': request.cookies['session_id'],\n"
+            "    }\n"
+            "    return validate_session(payload)\n",
+            encoding="utf-8",
+        )
+        modules = self._modules(
+            "feature,module,code_location,function,triggered,hit_count\n"
+            "sessions,sessions,src/sessions.py:1-4,validate_session,false,0\n"
+        )
+
+        design = await build_coverage_test_design(
+            modules, workspace_id="ws-1", repo_path=str(tmp_path)
+        )
+
+        gap = [g for g in design["gaps"] if g.get("kind") == "function"][0]
+        assert gap["black_box_readiness"]["case_type"] == "black_box_ready"
+        assert gap["entry_paths"][0]["input_hints"] == ["X-User-Id", "session_id"]
+        case_text = json.dumps(gap["black_box_cases"], ensure_ascii=False)
+        assert "X-User-Id" in case_text
+        assert "session_id" in case_text
+
     async def test_route_registration_reference_becomes_black_box_entry_without_agent(self, tmp_path):
         from app.services.coverage_analyzer import build_coverage_test_design
 

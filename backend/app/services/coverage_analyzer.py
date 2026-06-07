@@ -221,24 +221,24 @@ _REQ_FIELD_RE = re.compile(r"\b(?:req|attrs|opts|ctx)\.([A-Za-z_]\w*)\b")
 _REQUEST_FIELD_RES = (
     re.compile(
         r"\b(?:request|req|payload|body|params|query|data)"
-        r"(?:\.(?:json|args|form|query|body|data|params))?"
+        r"(?:\.(?:json|args|form|query|body|data|params|headers|cookies|values|files))?"
         r"\s*\[\s*['\"]([A-Za-z_][\w-]*)['\"]\s*\]"
     ),
     re.compile(
         r"\b(?:request|req|payload|body|params|query|data)"
-        r"(?:\.(?:json|args|form|query|body|data|params))?"
+        r"(?:\.(?:json|args|form|query|body|data|params|headers|cookies|values|files))?"
         r"\.get\s*\(\s*['\"]([A-Za-z_][\w-]*)['\"]"
     ),
     re.compile(
         r"\b(?:request|req)"
-        r"\.(?:json|args|form|query|body|data|params)"
+        r"\.(?:json|args|form|query|body|data|params|headers|cookies|values|files)"
         r"\.(?!get\b)([A-Za-z_][\w-]*)\b"
     ),
 )
 _REQUEST_DESTRUCTURE_RE = re.compile(
     r"\{(?P<fields>[^{}]+)\}\s*=\s*"
     r"\b(?:request|req)"
-    r"\.(?:json|args|form|query|body|data|params)\b"
+    r"\.(?:json|args|form|query|body|data|params|headers|cookies|values|files)\b"
 )
 _REGISTRATION_LINE_RE = re.compile(
     r"\b(?:[A-Z0-9_]*REGISTER[A-Z0-9_]*|register_[A-Za-z0-9_]+)\s*\(",
@@ -2541,6 +2541,11 @@ def _ripgrep_call_sites(repo_root: Path, function_name: str) -> list[dict]:
         if parsed is None:
             continue
         file_str, line_number, text = parsed
+        site_path = Path(file_str)
+        if site_path.suffix.lower() not in _SOURCE_FILE_EXTS:
+            continue
+        if not _is_within(repo_root, site_path):
+            continue
         stripped = text.strip()
         # Skip the definition itself and obvious comment lines.
         if _is_definition_or_declaration_site(file_str, line_number, function_name):
@@ -2659,20 +2664,20 @@ def _request_field_hints(abs_file: str, line_number: int) -> list[str]:
         statement.append(text)
         if pos >= idx and ";" in text:
             break
+    statement_text = " ".join(statement)
+    positioned_fields: list[tuple[int, str]] = []
+    for match in _REQ_FIELD_RE.finditer(statement_text):
+        positioned_fields.append((match.start(), match.group(1)))
+    for pattern in _REQUEST_FIELD_RES:
+        for match in pattern.finditer(statement_text):
+            positioned_fields.append((match.start(), match.group(1)))
     seen: set[str] = set()
     hints: list[str] = []
-    for match in _REQ_FIELD_RE.finditer(" ".join(statement)):
-        field = match.group(1)
+    for _, field in sorted(positioned_fields, key=lambda item: item[0]):
         if field not in seen:
             seen.add(field)
             hints.append(field)
-    for pattern in _REQUEST_FIELD_RES:
-        for match in pattern.finditer(" ".join(statement)):
-            field = match.group(1)
-            if field not in seen:
-                seen.add(field)
-                hints.append(field)
-    for field in _request_destructured_fields(" ".join(statement)):
+    for field in _request_destructured_fields(statement_text):
         if field not in seen:
             seen.add(field)
             hints.append(field)
