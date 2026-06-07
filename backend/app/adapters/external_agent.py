@@ -1,4 +1,5 @@
 from collections.abc import AsyncIterator
+from dataclasses import asdict
 
 from app.adapters.base import (
     AnalysisRequest,
@@ -82,7 +83,7 @@ class ExternalAgentAdapter(BaseToolAdapter):
             ),
             providers=[self._provider],
         )
-        data = [result.__dict__ for result in results]
+        data = [asdict(result) for result in results]
         return UnifiedResult(
             tool_name=self._provider,
             capability=ToolCapability.CODE_SEARCH,

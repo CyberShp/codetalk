@@ -769,6 +769,45 @@ def test_external_agent_adapter_health_reports_launch_kind(monkeypatch):
     assert "launch=powershell" in health.last_check
 
 
+def test_external_agent_adapter_analyze_returns_json_safe_nested_results(tmp_path, monkeypatch):
+    from app.adapters import external_agent as adapter_mod
+    from app.adapters.base import AnalysisRequest
+    from app.services.external_agent_discovery import AgentCandidateEntry, AgentDiscoveryResult
+
+    async def fake_discovery(_request, **_kwargs):
+        return [
+            AgentDiscoveryResult(
+                provider="claude-code",
+                status="ok",
+                candidate_entries=[
+                    AgentCandidateEntry(
+                        entry_kind="rpc",
+                        entry_symbol="rpc_entry",
+                        entry_file="src/rpc.c",
+                        chain=["rpc_entry", "target_fn"],
+                        external_trigger="RPC request",
+                        input_hints=["invalid TLS PSK"],
+                        reason="public RPC entry",
+                        validated=True,
+                    )
+                ],
+            )
+        ]
+
+    monkeypatch.setattr(adapter_mod, "run_external_agent_discovery", fake_discovery)
+
+    result = asyncio.run(
+        adapter_mod.ExternalAgentAdapter("claude-code", "claude_code_command").analyze(
+            AnalysisRequest(repo_local_path=str(tmp_path))
+        )
+    )
+
+    json.dumps(result.data)
+    entry = result.data["results"][0]["candidate_entries"][0]
+    assert entry["entry_symbol"] == "rpc_entry"
+    assert entry["input_hints"] == ["invalid TLS PSK"]
+
+
 def test_provider_health_reports_all_attempted_commands_when_unavailable(tmp_path, monkeypatch):
     from app.services.external_agent_discovery import check_provider_health
 
