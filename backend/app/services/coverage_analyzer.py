@@ -869,7 +869,7 @@ def _merge_agent_entry_paths(
         if key in seen:
             continue
         seen.add(key)
-        chain = [str(x) for x in (item.get("chain") or []) if x]
+        chain = _normalize_agent_entry_chain(item.get("chain"))
         if hit.function_name and not chain:
             chain.append(hit.function_name)
         entry_kind = item.get("entry_kind") or "external"
@@ -902,7 +902,7 @@ def _agent_entry_is_self_target(item: dict, hit: FunctionHit) -> bool:
     entry_symbol = str(item.get("entry_symbol") or item.get("entry_label") or "").strip()
     if entry_symbol and entry_symbol != function_name:
         return False
-    chain = [str(value).strip() for value in (item.get("chain") or []) if str(value).strip()]
+    chain = _normalize_agent_entry_chain(item.get("chain"))
     if chain and any(value != function_name for value in chain):
         return False
     entry_file = str(item.get("entry_file") or "").replace("\\", "/")
@@ -941,8 +941,31 @@ def _agent_entry_chain_missing_target(item: dict, function_name: object) -> bool
     target = str(function_name or "").strip()
     if not target:
         return False
-    chain = [str(value).strip() for value in (item.get("chain") or []) if str(value).strip()]
+    chain = _normalize_agent_entry_chain(item.get("chain"))
     return bool(chain and target not in chain)
+
+
+def _normalize_agent_entry_chain(value: object) -> list[str]:
+    chain: list[str] = []
+    seen: set[str] = set()
+    for item in _coerce_string_list(value):
+        for segment in _split_agent_entry_chain_text(item):
+            if segment in seen:
+                continue
+            seen.add(segment)
+            chain.append(segment)
+    return chain
+
+
+def _split_agent_entry_chain_text(value: object) -> list[str]:
+    text = str(value or "").strip()
+    if not text:
+        return []
+    return [
+        segment.strip()
+        for segment in re.split(r"\s*(?:->|=>|\u2192|\u21d2|,|;|\||\r?\n)\s*", text)
+        if segment.strip()
+    ]
 
 
 def _entry_trace_status(
@@ -3385,7 +3408,7 @@ def _agent_entry_is_self_target_for_gap(entry: dict, gap: dict) -> bool:
     entry_symbol = str(entry.get("entry_symbol") or entry.get("entry_label") or "").strip()
     if entry_symbol and entry_symbol != function_name:
         return False
-    chain = [str(value).strip() for value in (entry.get("chain") or []) if str(value).strip()]
+    chain = _normalize_agent_entry_chain(entry.get("chain"))
     if chain and any(value != function_name for value in chain):
         return False
     entry_file = str(entry.get("entry_file") or "").replace("\\", "/")
