@@ -4067,6 +4067,8 @@ def test_coverage_agent_self_symbol_does_not_generate_black_box_ready(tmp_path, 
     candidate = card["candidate_external_entries"][0]
     assert candidate["entry_symbol"] == "internal_gap"
     assert candidate["validation_error"] == "self_target_entry"
+    assert card["source_verification_status"] == "rejected_external_entry_candidate"
+    assert card["gray_box_allowed"] is True
 
 
 def test_coverage_agent_plain_function_entry_does_not_generate_black_box_ready(tmp_path, monkeypatch):
@@ -4121,6 +4123,8 @@ def test_coverage_agent_plain_function_entry_does_not_generate_black_box_ready(t
     candidate = card["candidate_external_entries"][0]
     assert candidate["entry_symbol"] == "helper_wrapper"
     assert candidate["validation_error"] == "not_public_trigger_surface"
+    assert card["source_verification_status"] == "rejected_external_entry_candidate"
+    assert card["gray_box_allowed"] is True
 
 
 def test_coverage_agent_generic_external_helper_does_not_generate_black_box_ready(tmp_path, monkeypatch):
@@ -4175,6 +4179,8 @@ def test_coverage_agent_generic_external_helper_does_not_generate_black_box_read
     candidate = card["candidate_external_entries"][0]
     assert candidate["entry_symbol"] == "helper_wrapper"
     assert candidate["validation_error"] == "not_public_trigger_surface"
+    assert card["source_verification_status"] == "rejected_external_entry_candidate"
+    assert card["gray_box_allowed"] is True
 
 
 def test_coverage_agent_generic_external_with_rpc_trigger_generates_black_box_ready(tmp_path, monkeypatch):

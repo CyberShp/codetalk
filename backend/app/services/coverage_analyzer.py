@@ -3134,6 +3134,10 @@ def _entry_discovery_card_for_gap(
     )
     if not candidates:
         candidates.extend(_entry_candidates_from_clues(report_material_clues))
+    actionable_candidates = [
+        candidate for candidate in candidates
+        if _entry_discovery_candidate_is_actionable(candidate)
+    ]
     status = gap.get("entry_trace_status") or _entry_trace_status(
         workspace_bound=bool((evidence.get("coverage") or {}).get("workspace_id"))
         if isinstance(evidence, dict) else False,
@@ -3159,13 +3163,9 @@ def _entry_discovery_card_for_gap(
         "cgc": _compact_cgc_context(cgc),
         "external_agent": _compact_external_agent_context(external_agent),
         "report_material_clues": report_material_clues[:8],
-        "source_verification_status": (
-            "source_backed" if any(c.get("source_verification") == "source_backed" for c in candidates)
-            else "needs_source_verification" if candidates
-            else "no_external_entry_candidate"
-        ),
+        "source_verification_status": _entry_discovery_source_verification_status(candidates),
         "unresolved_reasons": unresolved,
-        "gray_box_allowed": not candidates and status in {
+        "gray_box_allowed": not actionable_candidates and status in {
             "source_read_ok_entry_not_found",
             "source_not_found",
             "tool_unavailable",
@@ -3202,6 +3202,24 @@ def _filter_resolved_agent_unverified_entries(
             continue
         filtered.append(entry)
     return filtered
+
+
+def _entry_discovery_source_verification_status(candidates: list[dict]) -> str:
+    actionable = [
+        candidate for candidate in candidates
+        if _entry_discovery_candidate_is_actionable(candidate)
+    ]
+    if any(candidate.get("source_verification") == "source_backed" for candidate in actionable):
+        return "source_backed"
+    if actionable:
+        return "needs_source_verification"
+    if candidates:
+        return "rejected_external_entry_candidate"
+    return "no_external_entry_candidate"
+
+
+def _entry_discovery_candidate_is_actionable(candidate: dict) -> bool:
+    return not str(candidate.get("validation_error") or "").strip()
 
 
 def _entry_candidates_from_agent_rejected_validated(
