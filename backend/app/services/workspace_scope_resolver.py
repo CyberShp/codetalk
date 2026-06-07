@@ -680,24 +680,6 @@ def _path_hint_repo_hits_blocking(
         except Exception:
             return []
 
-    def _path_hint_variants(normalized_hint: str) -> list[str]:
-        hint = normalized_hint.strip("/")
-        if not hint:
-            return []
-        variants = [hint]
-        replacements = (
-            ("/of/vmf_tcp/", "/nof/nvmf_tcp/"),
-            ("of/vmf_tcp/", "nof/nvmf_tcp/"),
-            ("/vmf_tcp/", "/nvmf_tcp/"),
-            ("vmf_tcp/", "nvmf_tcp/"),
-            ("/nvme_tcp/", "/nvmf_tcp/"),
-            ("nvme_tcp/", "nvmf_tcp/"),
-        )
-        for source, target in replacements:
-            if source in hint:
-                variants.append(hint.replace(source, target))
-        return list(dict.fromkeys(variants))
-
     for hint in path_hints:
         normalized_hint = _normalize_path_hint(hint)
         if not normalized_hint:
@@ -938,6 +920,75 @@ def _normalize_path_hint(hint: str) -> str:
     value = value.replace("\\", "/")
     value = re.sub(r"/+", "/", value)
     return value.rstrip("/")
+
+
+def _path_hint_variants(normalized_hint: str) -> list[str]:
+    """Return legacy typo/domain variants for a normalized path hint.
+
+    Generic parent-directory stripping is handled by
+    ``_path_hint_search_variants`` below; this helper is intentionally limited
+    to known historical spellings so protocol-specific aliases are not the only
+    way a path hint can recover.
+    """
+    hint = normalized_hint.strip("/")
+    if not hint:
+        return []
+    variants = [hint]
+    replacements = (
+        ("/of/vmf_tcp/", "/nof/nvmf_tcp/"),
+        ("of/vmf_tcp/", "nof/nvmf_tcp/"),
+        ("/vmf_tcp/", "/nvmf_tcp/"),
+        ("vmf_tcp/", "nvmf_tcp/"),
+        ("/nvme_tcp/", "/nvmf_tcp/"),
+        ("nvme_tcp/", "nvmf_tcp/"),
+    )
+    for source, target in replacements:
+        if source in hint:
+            variants.append(hint.replace(source, target))
+    return list(dict.fromkeys(variants))
+
+
+def _path_hint_search_variants(hints: list[str]) -> list[str]:
+    """Expand path hints for all discovery backends.
+
+    The important generic rule is suffix matching: when the UI sends a path
+    rooted too high or too low (for example ``frontend/app/payments/refund``),
+    GitNexus/local/Agent discovery should also try ``app/payments/refund`` and
+    ``payments/refund``.  Domain-specific repairs are optional variants, not the
+    primary mechanism.
+    """
+    expanded: list[str] = []
+    seen: set[str] = set()
+
+    def add(value: str) -> None:
+        value = value.strip("/")
+        if not value or value in seen:
+            return
+        seen.add(value)
+        expanded.append(value)
+
+    for hint in hints:
+        for variant in _path_hint_variants(hint):
+            add(variant)
+            parts = [part for part in variant.split("/") if part]
+            for index in range(1, max(1, len(parts) - 1)):
+                suffix = "/".join(parts[index:])
+                if "/" in suffix:
+                    add(suffix)
+    return expanded
+
+
+def _expand_role_hints(role_hints: list[tuple[str, str]]) -> list[tuple[str, str]]:
+    expanded: list[tuple[str, str]] = []
+    seen: set[tuple[str, str]] = set()
+    for hint, role in role_hints:
+        for variant in _path_hint_search_variants([hint]):
+            key = (variant, role)
+            if key in seen:
+                continue
+            seen.add(key)
+            expanded.append(key)
+    return expanded
 
 
 def _score_symbol_hit(path: str, line: str, symbol: str) -> int:
@@ -1188,11 +1239,12 @@ class WorkspaceScopeResolver:
             if _normalize_path_hint(hint.path) and hint.role in _SCOPE_ROLES
         ]
         if explicit_scope_hints:
-            role_hints = explicit_scope_hints
-            search_hints = [path for path, _role in explicit_scope_hints]
+            role_hints = _expand_role_hints(explicit_scope_hints)
         else:
-            role_hints = [(hint, _infer_scope_role(hint)) for hint in normalized_path_hints]
-            search_hints = normalized_path_hints
+            role_hints = _expand_role_hints(
+                [(hint, _infer_scope_role(hint)) for hint in normalized_path_hints]
+            )
+        search_hints = _path_hint_search_variants([path for path, _role in role_hints])
         path_filter: list[str] | None = search_hints or None
         if agent_session is not None:
             agent_session.objects.append({

@@ -3943,6 +3943,90 @@ def test_workspace_resolver_uses_repaired_split_tls_path_hint(tmp_path, monkeypa
     assert not resolved.warnings
 
 
+def test_workspace_resolver_uses_repaired_tls_path_hint_for_gitnexus_filter(tmp_path, monkeypatch):
+    async def fake_discovery(_request, **_kwargs):
+        return []
+
+    monkeypatch.setattr(
+        "app.services.workspace_scope_resolver.run_external_agent_discovery",
+        fake_discovery,
+    )
+    graph = {
+        "nodes": [
+            {
+                "id": "file_tls",
+                "label": "File",
+                "properties": {
+                    "name": "tls.c",
+                    "filePath": "nof/nvmf_tcp/transport/tls/tls.c",
+                },
+            }
+        ],
+        "relationships": [],
+    }
+    obj = AnalysisObject(
+        id="obj_tls_gitnexus_bad_hint",
+        text="nvme-tcp-tls",
+        kind="module",
+        path_hints=["frontend\nof\nvmf_tcp\\transport\\tls"],
+    )
+
+    resolved = asyncio.run(WorkspaceScopeResolver()._resolve_object(
+        obj=obj,
+        ws_id="ws",
+        repo_path=str(tmp_path),
+        index=_GraphIndex(graph),
+        limits=LLMLimits(max_files_per_object=8),
+        gitnexus_available=True,
+    ))
+    paths = [c.path.replace("\\", "/") for c in resolved.candidate_files if c.path]
+
+    assert "nof/nvmf_tcp/transport/tls/tls.c" in paths
+    assert not resolved.warnings
+
+
+def test_workspace_resolver_uses_generic_suffix_path_hint_for_gitnexus_filter(tmp_path, monkeypatch):
+    async def fake_discovery(_request, **_kwargs):
+        return []
+
+    monkeypatch.setattr(
+        "app.services.workspace_scope_resolver.run_external_agent_discovery",
+        fake_discovery,
+    )
+    graph = {
+        "nodes": [
+            {
+                "id": "file_refund_handler",
+                "label": "File",
+                "properties": {
+                    "name": "handler.py",
+                    "filePath": "services/payments/refund/handler.py",
+                },
+            }
+        ],
+        "relationships": [],
+    }
+    obj = AnalysisObject(
+        id="obj_refund",
+        text="refund handling",
+        kind="module",
+        path_hints=["frontend/app/payments/refund"],
+    )
+
+    resolved = asyncio.run(WorkspaceScopeResolver()._resolve_object(
+        obj=obj,
+        ws_id="ws",
+        repo_path=str(tmp_path),
+        index=_GraphIndex(graph),
+        limits=LLMLimits(max_files_per_object=8),
+        gitnexus_available=True,
+    ))
+    paths = [c.path.replace("\\", "/") for c in resolved.candidate_files if c.path]
+
+    assert "services/payments/refund/handler.py" in paths
+    assert not resolved.warnings
+
+
 def test_workspace_path_hint_prioritizes_module_named_source_when_limited(tmp_path):
     from app.services.workspace_scope_resolver import _path_hint_repo_hits_blocking
 
