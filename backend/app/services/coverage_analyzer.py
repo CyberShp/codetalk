@@ -1913,14 +1913,20 @@ def _read_source_window_from_scope(
 def _scope_candidate_source_paths(scope: dict) -> list[str]:
     paths: list[str] = []
     seen: set[str] = set()
-    for candidate in scope.get("candidate_files") or []:
-        if not isinstance(candidate, dict):
-            continue
-        path = str(candidate.get("path") or "").strip()
-        if not path or path in seen:
-            continue
-        seen.add(path)
-        paths.append(path)
+    for bucket in ("candidate_files", "candidate_symbols"):
+        for candidate in scope.get(bucket) or []:
+            if not isinstance(candidate, dict):
+                continue
+            path = str(
+                candidate.get("path")
+                or candidate.get("file_path")
+                or candidate.get("file")
+                or ""
+            ).strip()
+            if not path or path in seen:
+                continue
+            seen.add(path)
+            paths.append(path)
     return paths[:8]
 
 
