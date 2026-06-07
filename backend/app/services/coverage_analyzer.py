@@ -235,6 +235,11 @@ _REQUEST_FIELD_RES = (
         r"\.(?!get\b)([A-Za-z_][\w-]*)\b"
     ),
 )
+_REQUEST_DESTRUCTURE_RE = re.compile(
+    r"\{(?P<fields>[^{}]+)\}\s*=\s*"
+    r"\b(?:request|req)"
+    r"\.(?:json|args|form|query|body|data|params)\b"
+)
 _REGISTRATION_LINE_RE = re.compile(
     r"\b(?:[A-Z0-9_]*REGISTER[A-Z0-9_]*|register_[A-Za-z0-9_]+)\s*\(",
     re.IGNORECASE,
@@ -2659,7 +2664,25 @@ def _request_field_hints(abs_file: str, line_number: int) -> list[str]:
             if field not in seen:
                 seen.add(field)
                 hints.append(field)
+    for field in _request_destructured_fields(" ".join(statement)):
+        if field not in seen:
+            seen.add(field)
+            hints.append(field)
     return hints[:12]
+
+
+def _request_destructured_fields(text: str) -> list[str]:
+    fields: list[str] = []
+    for match in _REQUEST_DESTRUCTURE_RE.finditer(text or ""):
+        raw_fields = match.group("fields")
+        for raw_field in raw_fields.split(","):
+            field = raw_field.strip()
+            if not field or "..." in field or "{" in field or "}" in field:
+                continue
+            field = field.split(":", 1)[0].split("=", 1)[0].strip()
+            if re.match(r"^[A-Za-z_][\w-]*$", field):
+                fields.append(field)
+    return fields
 
 
 def _split_cgc_location(location: object) -> tuple[str | None, int | None]:

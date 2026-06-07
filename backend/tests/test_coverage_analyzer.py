@@ -1412,6 +1412,43 @@ class TestCoverageTestDesign:
         assert "amount" in case_text
         assert "user_id" in case_text
 
+    async def test_route_destructured_request_fields_feed_black_box_input_hints(self, tmp_path):
+        from app.services.coverage_analyzer import build_coverage_test_design
+
+        src = tmp_path / "src"
+        src.mkdir()
+        (src / "refunds.js").write_text(
+            "function processRefund(payload) {\n"
+            "  if (!payload) {\n"
+            "    return 'missing';\n"
+            "  }\n"
+            "  return 'refunded';\n"
+            "}\n",
+            encoding="utf-8",
+        )
+        (src / "routes.js").write_text(
+            "function refundRoute(request) {\n"
+            "  const { amount, user_id } = request.body;\n"
+            "  return processRefund({ amount, user_id });\n"
+            "}\n",
+            encoding="utf-8",
+        )
+        modules = self._modules(
+            "feature,module,code_location,function,triggered,hit_count\n"
+            "refunds,refunds,src/refunds.js:1-6,processRefund,false,0\n"
+        )
+
+        design = await build_coverage_test_design(
+            modules, workspace_id="ws-1", repo_path=str(tmp_path)
+        )
+
+        gap = [g for g in design["gaps"] if g.get("kind") == "function"][0]
+        assert gap["black_box_readiness"]["case_type"] == "black_box_ready"
+        assert gap["entry_paths"][0]["input_hints"] == ["amount", "user_id"]
+        case_text = json.dumps(gap["black_box_cases"], ensure_ascii=False)
+        assert "amount" in case_text
+        assert "user_id" in case_text
+
     async def test_route_registration_reference_becomes_black_box_entry_without_agent(self, tmp_path):
         from app.services.coverage_analyzer import build_coverage_test_design
 
