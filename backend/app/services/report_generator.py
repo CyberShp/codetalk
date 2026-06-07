@@ -2371,13 +2371,27 @@ def _ctd_entry_discovery_summary(gap: dict) -> str:
     discovery = gap.get("entry_discovery") or {}
     candidates = discovery.get("candidate_external_entries") or []
     if candidates:
-        return "；".join(
-            "[{kind}] {label}".format(
-                kind=item.get("entry_type") or item.get("entry_kind") or "external",
-                label=item.get("entry_label") or item.get("entry_symbol") or "外部入口候选",
+        parts: list[str] = []
+        for item in candidates[:3]:
+            metadata: list[str] = []
+            provider = item.get("provider") or item.get("tool")
+            verification = item.get("source_verification")
+            turn_id = item.get("turn_id")
+            if provider:
+                metadata.append(f"provider={_ctd_cell(provider)}")
+            if verification:
+                metadata.append(f"verification={_ctd_cell(verification)}")
+            if turn_id:
+                metadata.append(f"turn={_ctd_cell(turn_id)}")
+            suffix = f" ({'; '.join(metadata)})" if metadata else ""
+            parts.append(
+                "[{kind}] {label}{suffix}".format(
+                    kind=item.get("entry_type") or item.get("entry_kind") or "external",
+                    label=item.get("entry_label") or item.get("entry_symbol") or "外部入口候选",
+                    suffix=suffix,
+                )
             )
-            for item in candidates[:3]
-        )
+        return "；".join(parts)
     status = discovery.get("entry_trace_status") or gap.get("entry_trace_status")
     status_label = {
         "entry_found": "已确认外部入口",

@@ -352,6 +352,8 @@ def test_coverage_test_design_section_splits_execution_gray_and_evidence() -> No
                     "entry_label": "spdk_nvme_perf --psk-path",
                     "confidence": "high",
                     "source_verification": "source_backed",
+                    "provider": "claude-code",
+                    "turn_id": "coverage:lib/nvme/nvme_tcp.c:nvme_tcp_generate_tls_credentials:1",
                 }],
                 "unresolved_reasons": [],
             },
@@ -402,6 +404,8 @@ def test_coverage_test_design_section_splits_execution_gray_and_evidence() -> No
     assert "证据区" in section
     assert "入口发现" in section
     assert "spdk_nvme_perf --psk-path" in section
+    assert "claude-code" in section
+    assert "source_backed" in section
     assert "black_box_ready" in section
     assert "白盒泄漏检查：通过" in section
     assert "psk_retained_hash == NVME_TCP_HASH_ALGORITHM_NONE" in section
