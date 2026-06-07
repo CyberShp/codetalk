@@ -708,6 +708,15 @@ def test_settings_accept_plain_string_fallback_commands(monkeypatch):
     assert _coerce_command_list(configured) == ["claude -p --output-format json"]
 
 
+def test_command_list_accepts_json_array_string():
+    from app.services.external_agent_discovery import _coerce_command_list
+
+    assert _coerce_command_list('["ccr code -p", "claude -p --output-format json"]') == [
+        "ccr code -p",
+        "claude -p --output-format json",
+    ]
+
+
 def test_settings_accept_empty_fallback_commands(monkeypatch):
     from app.config import Settings
     from app.services.external_agent_discovery import _coerce_command_list

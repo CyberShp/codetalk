@@ -669,6 +669,14 @@ def _coerce_command_list(value: object) -> list[str]:
     if value is None:
         return []
     if isinstance(value, str):
+        text = value.strip()
+        if text.startswith("["):
+            try:
+                parsed = json.loads(text)
+            except json.JSONDecodeError:
+                parsed = None
+            if isinstance(parsed, list):
+                return _coerce_command_list(parsed)
         return _split_command_list_string(value)
     if isinstance(value, (list, tuple, set)):
         return [str(part).strip() for part in value if str(part).strip()]
