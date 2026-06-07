@@ -1929,6 +1929,8 @@ def _resolve_source_file(
         candidate = repo_root / (rel + ext)
         try:
             if candidate.is_file() and _is_within(repo_root, candidate):
+                if function_name and not _source_file_defines_function(candidate, function_name):
+                    continue
                 return candidate
             if candidate.is_dir() and function_name and _is_within(repo_root, candidate):
                 found = _find_source_file_defining_function(repo_root, candidate, function_name)
@@ -1946,7 +1948,8 @@ def _resolve_source_file(
                 return found
     suffix_match = _resolve_source_file_by_suffix(repo_root, rel)
     if suffix_match is not None:
-        return suffix_match
+        if not function_name or _source_file_defines_function(suffix_match, function_name):
+            return suffix_match
     basename = Path(rel).name
     if not basename:
         return (

@@ -1730,6 +1730,40 @@ class TestCoverageTestDesign:
         assert gap["source_window"]["start"] >= 78
         assert "nvmf_tcp_tls_recover" in json.dumps(gap["source_window"], ensure_ascii=False)
 
+    async def test_source_window_falls_back_when_existing_coverage_file_lacks_function(self, tmp_path):
+        from app.services.coverage_analyzer import _read_source_window
+
+        stale = tmp_path / "stale" / "generated"
+        stale.mkdir(parents=True)
+        (stale / "tls.c").write_text(
+            "void unrelated_tls(void) {\n"
+            "    return;\n"
+            "}\n",
+            encoding="utf-8",
+        )
+        actual = tmp_path / "zzz"
+        actual.mkdir()
+        (actual / "tls.c").write_text(
+            "void nvmf_tcp_tls_recover(void) {\n"
+            "    recover_tls_state();\n"
+            "}\n",
+            encoding="utf-8",
+        )
+        hit = FunctionHit(
+            function_name="nvmf_tcp_tls_recover",
+            file_path="stale/generated/tls.c",
+            line_start=1,
+            line_end=3,
+            triggered=False,
+            hit_count=0,
+        )
+
+        window = _read_source_window(tmp_path, hit)
+
+        assert window is not None
+        assert window["path"] == "zzz/tls.c"
+        assert "recover_tls_state" in window["text"]
+
     async def test_external_agent_entry_discovery_respects_global_parallel_limit(
         self,
         tmp_path,
