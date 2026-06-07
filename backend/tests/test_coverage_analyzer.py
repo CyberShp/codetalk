@@ -1274,6 +1274,38 @@ class TestCoverageTestDesign:
         assert "optimal_open_zones" in case_text
         assert "Drive the nearest public API" not in case_text
 
+    async def test_python_webhook_call_site_becomes_black_box_entry_without_agent(self, tmp_path):
+        from app.services.coverage_analyzer import build_coverage_test_design
+
+        src = tmp_path / "src"
+        src.mkdir()
+        (src / "billing.py").write_text(
+            "def reconcile_invoice(payload):\n"
+            "    if not payload:\n"
+            "        return 'missing'\n"
+            "    return 'ok'\n",
+            encoding="utf-8",
+        )
+        (src / "webhooks.py").write_text(
+            "def payment_webhook(request):\n"
+            "    return reconcile_invoice(request.json)\n",
+            encoding="utf-8",
+        )
+        modules = self._modules(
+            "feature,module,code_location,function,triggered,hit_count\n"
+            "billing,billing,src/billing.py:1-4,reconcile_invoice,false,0\n"
+        )
+
+        design = await build_coverage_test_design(
+            modules, workspace_id="ws-1", repo_path=str(tmp_path)
+        )
+
+        gap = [g for g in design["gaps"] if g.get("kind") == "function"][0]
+        assert gap["gray_box_required"] is False
+        assert gap["black_box_readiness"]["case_type"] == "black_box_ready"
+        assert gap["entry_paths"][0]["entry_kind"] == "webhook"
+        assert gap["entry_paths"][0]["entry_symbol"] == "payment_webhook"
+
     async def test_callback_registration_entry_discovery_prevents_final_gray_box(
         self, tmp_path
     ):

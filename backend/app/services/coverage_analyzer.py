@@ -118,10 +118,23 @@ _NON_FUNCTION_NAMES = {
     "sizeof", "catch", "except", "do", "goto", "typedef", "struct", "union",
     "enum", "when", "guard", "with", "and", "or", "not", "in", "is",
 }
+_EXPRESSION_CALL_PREFIXES = (
+    "return ",
+    "yield ",
+    "await ",
+    "raise ",
+    "throw ",
+)
 
 
 def _match_def_name(line: str) -> str | None:
     """Return the defined function's name if ``line`` is a definition, else None."""
+    stripped = line.strip()
+    if stripped.startswith(_EXPRESSION_CALL_PREFIXES):
+        return None
+    before_paren = stripped.split("(", 1)[0]
+    if "=" in before_paren and not stripped.startswith("def "):
+        return None
     match = _FUNC_DEF_RE.match(line)
     if not match:
         return None
@@ -138,6 +151,12 @@ def _match_multiline_def_name(lines: list[str], idx: int) -> str | None:
     previous non-empty line.
     """
     if idx < 0 or idx >= len(lines):
+        return None
+    stripped = lines[idx].strip()
+    if stripped.startswith(_EXPRESSION_CALL_PREFIXES):
+        return None
+    before_paren = stripped.split("(", 1)[0]
+    if "=" in before_paren and not stripped.startswith("def "):
         return None
     line_name = re.search(r"\b([A-Za-z_]\w*)\s*\(", lines[idx])
     if not line_name or line_name.group(1) in _NON_FUNCTION_NAMES:
@@ -297,6 +316,7 @@ class WhiteBoxLeakCheckResult:
 # Entry classification heuristics: path/symbol fragments -> external entry kind.
 _ENTRY_SIGNATURES: tuple[tuple[str, tuple[str, ...]], ...] = (
     ("cli", ("cli", "/cmd", "command", "argv", "getopt", "main(", "_main", "console", "shell")),
+    ("webhook", ("webhook", "webhooks", "hook_handler", "hook_delivery")),
     ("api", ("/api", "api_", "_api", "route", "router", "handler", "handle_request",
              "controller", "endpoint", "server", "rest", "grpc", "http", "rpc",
              "view", "/web", "servlet")),
