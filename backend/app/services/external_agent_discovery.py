@@ -123,7 +123,8 @@ def expand_agent_query_terms(text: str) -> list[str]:
     must also try the known ``transport/tls`` shape.
     """
     original = (text or "").strip()
-    raw_parts = [p.lower() for p in re.split(r"[-_/\\\s]+", original) if p.strip()]
+    split_ready = _split_ready_agent_query_text(original)
+    raw_parts = [p.lower() for p in re.split(r"[-_/\\\s]+", split_ready) if p.strip()]
     seen: set[str] = set()
     out: list[str] = []
 
@@ -140,6 +141,16 @@ def expand_agent_query_terms(text: str) -> list[str]:
     if raw_parts:
         add("_".join(raw_parts))
         add("/".join(raw_parts))
+
+    for index, part in enumerate(raw_parts):
+        if part in {"nvme", "nvmf"} and index + 2 < len(raw_parts):
+            if raw_parts[index + 1:index + 3] == ["tcp", "tls"]:
+                add("transport/tls")
+                for prefix in ("nvme", "nvmf"):
+                    add(f"{prefix}_tcp/transport/tls")
+                    add(f"{prefix}_tcp_tls")
+        if part == "tcp" and index + 1 < len(raw_parts) and raw_parts[index + 1] == "tls":
+            add("transport/tls")
 
     variants: list[list[str]] = [[]]
     aliases = {"nvme": ["nvme", "nvmf"], "nvmf": ["nvmf", "nvme"]}
@@ -158,6 +169,14 @@ def expand_agent_query_terms(text: str) -> list[str]:
         if "tls" in variant:
             add("tls")
     return out[:48]
+
+
+def _split_ready_agent_query_text(text: str) -> str:
+    value = text or ""
+    value = re.sub(r"([A-Za-z0-9]+)([^\x00-\x7F])", r"\1 \2", value)
+    value = re.sub(r"([^\x00-\x7F])([A-Za-z0-9]+)", r"\1 \2", value)
+    value = re.sub(r"[^\w/\\\-\s]+", " ", value, flags=re.UNICODE)
+    return value
 
 
 def check_provider_health(
