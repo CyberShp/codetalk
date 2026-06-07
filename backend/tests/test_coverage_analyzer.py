@@ -1855,6 +1855,35 @@ class TestCoverageTestDesign:
         assert "@app.post" in entry["evidence"]
         assert gap["black_box_cases"][0]["case_type"] == "black_box_ready"
 
+    async def test_decorated_route_path_params_feed_black_box_input_hints(self, tmp_path):
+        from app.services.coverage_analyzer import build_coverage_test_design
+
+        src = tmp_path / "src"
+        src.mkdir()
+        (src / "routes.py").write_text(
+            "@app.get('/accounts/{account_id}/payments/:payment_id')\n"
+            "def get_payment():\n"
+            "    if not load_payment():\n"
+            "        return 'missing'\n"
+            "    return 'ok'\n",
+            encoding="utf-8",
+        )
+        modules = self._modules(
+            "feature,module,code_location,function,triggered,hit_count\n"
+            "payments,routes,src/routes.py:2-5,get_payment,false,0\n"
+        )
+
+        design = await build_coverage_test_design(
+            modules, workspace_id="ws-1", repo_path=str(tmp_path)
+        )
+
+        gap = [g for g in design["gaps"] if g.get("kind") == "function"][0]
+        assert gap["black_box_readiness"]["case_type"] == "black_box_ready"
+        assert gap["entry_paths"][0]["input_hints"] == ["account_id", "payment_id"]
+        case_text = json.dumps(gap["black_box_cases"], ensure_ascii=False)
+        assert "account_id" in case_text
+        assert "payment_id" in case_text
+
     async def test_spring_mapping_annotation_is_black_box_route_without_caller(self, tmp_path):
         from app.services.coverage_analyzer import build_coverage_test_design
 

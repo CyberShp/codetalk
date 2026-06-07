@@ -3071,6 +3071,13 @@ def _decorated_entry_for_symbol(
     decorator_line_number, decorator_text = decorators[-1]
     rel_file = _relative_path(repo_root, source_file)
     metadata = _entry_metadata_for_site(str(source_file), definition_line, function_name)
+    if entry_kind == "route":
+        route_hints = _route_template_input_hints([text for _, text in decorators])
+        if route_hints:
+            metadata["input_hints"] = _merge_ordered_strings(
+                metadata.get("input_hints"),
+                route_hints,
+            )
     entry_label = metadata.pop("entry_label", None)
     entry = {
         "entry_kind": entry_kind,
@@ -3112,6 +3119,23 @@ def _classify_entry_decorator(decorator_lines: list[str]) -> str | None:
         if any(token in text for token in tokens):
             return kind
     return None
+
+
+def _route_template_input_hints(decorator_lines: list[str]) -> list[str]:
+    text = " ".join(line.strip() for line in decorator_lines)
+    hints: list[str] = []
+    seen: set[str] = set()
+    for pattern in (
+        r"\{([A-Za-z_][\w-]*)\}",
+        r"/:([A-Za-z_][\w-]*)\b",
+        r"<(?:[A-Za-z_][\w.]*:)?([A-Za-z_][\w-]*)>",
+    ):
+        for match in re.finditer(pattern, text):
+            name = match.group(1)
+            if name not in seen:
+                seen.add(name)
+                hints.append(name)
+    return hints[:12]
 
 
 def _trace_entry_paths(
