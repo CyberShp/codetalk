@@ -1614,8 +1614,14 @@ def _build_external_entry_card(
         {
             "entry_kind": entry.get("entry_kind"),
             "entry_label": entry.get("entry_label") or entry.get("entry_symbol") or entry.get("entry_kind"),
+            "external_trigger": entry.get("external_trigger"),
             "input_hints": entry.get("input_hints") or [],
             "evidence": entry.get("evidence"),
+            "tool": entry.get("tool"),
+            "provider": entry.get("provider"),
+            "turn_id": entry.get("turn_id"),
+            "source_verification": entry.get("source_verification"),
+            "validation_error": entry.get("validation_error"),
         }
         for entry in entry_paths[:6]
     ]

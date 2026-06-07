@@ -3737,6 +3737,13 @@ def test_coverage_verified_agent_entry_card_keeps_provider_turn_and_validation(t
     assert candidate["source_verification"] == "source_backed"
     assert candidate["validation_error"] is None
 
+    gap = next(g for g in design["gaps"] if g.get("function_name") == "internal_recover")
+    entry_card_item = gap["external_entry_card"]["entries"][0]
+    assert entry_card_item["provider"] == "claude-code"
+    assert entry_card_item["turn_id"] == "coverage:src/session.c:internal_recover:1"
+    assert entry_card_item["source_verification"] == "source_backed"
+    assert entry_card_item["validation_error"] is None
+
 
 def test_coverage_verified_agent_entry_card_keeps_external_trigger(tmp_path, monkeypatch):
     import app.services.coverage_analyzer as coverage_mod
