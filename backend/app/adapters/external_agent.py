@@ -100,8 +100,10 @@ class ExternalAgentAdapter(BaseToolAdapter):
 def _format_attempt_summary(item: dict) -> str:
     launch = item.get("launch_kind")
     launch_suffix = f" ({launch})" if launch else ""
+    reason = str(item.get("reason") or "").strip()
+    reason_suffix = f": {reason}" if reason else ""
     return redact_agent_diagnostic_text(
-        f"{item.get('command')} => {item.get('status')}{launch_suffix}"
+        f"{item.get('command')} => {item.get('status')}{launch_suffix}{reason_suffix}"
     )
 
 

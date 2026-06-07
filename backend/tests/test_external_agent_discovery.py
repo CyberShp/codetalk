@@ -849,8 +849,10 @@ def test_external_agent_adapter_health_reports_launch_kind(monkeypatch):
             "status": "available",
             "path": "PowerShell function ccr",
             "launch_kind": "powershell",
+            "reason": "primary command unavailable; using fallback: claude -p",
             "attempts": [
-                {"command": "ccr code -p", "status": "available", "launch_kind": "powershell"},
+                {"command": "ccr code -p", "status": "unavailable", "reason": "command not found: ccr"},
+                {"command": "claude -p", "status": "available", "launch_kind": "powershell"},
             ],
         }
 
@@ -862,6 +864,7 @@ def test_external_agent_adapter_health_reports_launch_kind(monkeypatch):
 
     assert health.is_healthy is True
     assert "launch=powershell" in health.last_check
+    assert "command not found: ccr" in health.last_check
 
 
 def test_external_agent_adapter_analyze_returns_json_safe_nested_results(tmp_path, monkeypatch):
