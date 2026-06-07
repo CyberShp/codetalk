@@ -600,6 +600,50 @@ def _path_hint_repo_hits_blocking(
         ))
         return files
 
+    def _path_hint_candidate_sort_key(path: Path) -> tuple[int, int, str]:
+        try:
+            rel = path.resolve().relative_to(root).as_posix().lower()
+        except Exception:
+            rel = path.as_posix().lower()
+        score = 0
+        if rel.startswith(("nof/nvmf_tcp/", "nof/nvme_tcp/")):
+            score -= 30
+        elif rel.startswith(("frontend/nof/nvmf_tcp/", "frontend/nof/nvme_tcp/")):
+            score -= 30
+        if rel.startswith((
+            "example/", "examples/", "sample/", "samples/",
+            "test/", "tests/", "doc/", "docs/",
+        )):
+            score += 30
+        return (score, rel.count("/"), rel)
+
+    def _suffix_candidate_paths(normalized_hint: str) -> list[Path]:
+        hint = normalized_hint.lower().strip("/")
+        if not hint:
+            return []
+        matches: list[Path] = []
+        for walk_root, dirs, names in _walk(root):
+            dirs[:] = [d for d in dirs if d not in _DIR_SKIP and not d.startswith(".")]
+            current = Path(walk_root)
+            try:
+                rel_dir = current.relative_to(root).as_posix().lower()
+            except Exception:
+                continue
+            if rel_dir == hint or rel_dir.endswith("/" + hint):
+                matches.append(current)
+            for name in names:
+                full = current / name
+                if full.suffix.lower() not in _SOURCE_EXTS:
+                    continue
+                try:
+                    rel_file = full.relative_to(root).as_posix().lower()
+                except Exception:
+                    continue
+                if rel_file == hint or rel_file.endswith("/" + hint):
+                    matches.append(full)
+        matches.sort(key=_path_hint_candidate_sort_key)
+        return matches[:64]
+
     def _candidate_paths_for_hint(normalized_hint: str) -> list[Path]:
         try:
             candidate = Path(normalized_hint)
@@ -607,6 +651,7 @@ def _path_hint_repo_hits_blocking(
                 return [candidate.resolve()]
             parts = [part for part in normalized_hint.split("/") if part]
             candidates = [root.joinpath(*parts).resolve()]
+            seen_candidates = {str(candidates[0])}
             for index in range(1, len(parts)):
                 suffix = parts[index:]
                 if not suffix:
@@ -614,9 +659,23 @@ def _path_hint_repo_hits_blocking(
                 suffix_candidate = root.joinpath(*suffix)
                 try:
                     if suffix_candidate.exists():
-                        candidates.append(suffix_candidate.resolve())
+                        resolved_suffix = suffix_candidate.resolve()
+                        key = str(resolved_suffix)
+                        if key not in seen_candidates:
+                            seen_candidates.add(key)
+                            candidates.append(resolved_suffix)
                 except OSError:
                     continue
+            for suffix_candidate in _suffix_candidate_paths(normalized_hint):
+                try:
+                    resolved_suffix = suffix_candidate.resolve()
+                except OSError:
+                    continue
+                key = str(resolved_suffix)
+                if key in seen_candidates:
+                    continue
+                seen_candidates.add(key)
+                candidates.append(resolved_suffix)
             return candidates
         except Exception:
             return []
