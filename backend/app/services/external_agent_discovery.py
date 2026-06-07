@@ -568,11 +568,18 @@ def _powershell_agent_command_with_prompt_arg(
         return None
     tokens: list[str] = []
     inserted = False
-    for token in argv:
+    skip_next = False
+    for index, token in enumerate(argv):
+        if skip_next:
+            skip_next = False
+            continue
         tokens.append(_powershell_single_quote(token))
         if token in {"-p", "--print"} and not inserted:
             tokens.append(prompt_variable)
             inserted = True
+            next_token = argv[index + 1] if index + 1 < len(argv) else None
+            if next_token is not None and not next_token.startswith("-"):
+                skip_next = True
     if not inserted:
         return None
     return "& " + " ".join(tokens)

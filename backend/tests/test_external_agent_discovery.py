@@ -768,6 +768,35 @@ def test_provider_health_uses_powershell_fallback_for_shell_only_ccr(monkeypatch
     assert "--allowedTools" in health["argv"][-1]
 
 
+def test_provider_health_powershell_print_mode_replaces_placeholder(monkeypatch):
+    from app.services.external_agent_discovery import check_provider_health
+
+    monkeypatch.setattr(
+        "app.services.external_agent_discovery.shutil.which",
+        lambda cmd: "C:/Windows/System32/WindowsPowerShell/v1.0/powershell.exe"
+        if cmd.lower() == "powershell.exe"
+        else None,
+    )
+    monkeypatch.setattr(
+        "app.services.external_agent_discovery.platform.system",
+        lambda: "Windows",
+    )
+    monkeypatch.setattr(
+        "app.services.external_agent_discovery._probe_windows_shell_command",
+        lambda executable: "PowerShell function ccr",
+        raising=False,
+    )
+
+    health = check_provider_health(
+        "claude-code",
+        "ccr code -p configured-placeholder --output-format json",
+    )
+
+    assert health["status"] == "available"
+    assert "& 'ccr' 'code' '-p' $__codetalkPrompt '--output-format' 'json'" in health["argv"][-1]
+    assert "configured-placeholder" not in health["argv"][-1]
+
+
 def test_provider_health_probes_shell_only_ccr_with_execution_policy_bypass(monkeypatch):
     from app.services.external_agent_discovery import check_provider_health
 
