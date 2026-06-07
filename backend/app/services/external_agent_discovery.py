@@ -1403,14 +1403,10 @@ def _unwrap_aggregated_choice_content(choices: list[object]) -> object | None:
             continue
         message = choice.get("message")
         if isinstance(message, dict):
-            content = message.get("content")
-            if isinstance(content, str):
-                text_parts.append(content)
+            text_parts.extend(_agent_content_text_parts(message.get("content")))
         delta = choice.get("delta")
         if isinstance(delta, dict):
-            content = delta.get("content")
-            if isinstance(content, str):
-                text_parts.append(content)
+            text_parts.extend(_agent_content_text_parts(delta.get("content")))
     text = "".join(text_parts).strip()
     if not text:
         return None
