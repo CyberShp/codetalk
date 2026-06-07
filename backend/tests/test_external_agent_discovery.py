@@ -4514,6 +4514,60 @@ def test_coverage_agent_unverified_entry_stays_pending(tmp_path, monkeypatch):
     assert len(same_symbol_candidates) == 1
 
 
+def test_coverage_agent_unverified_symbol_without_trigger_keeps_public_label(tmp_path, monkeypatch):
+    import app.services.coverage_analyzer as coverage_mod
+    from app.services.coverage_analyzer import build_coverage_test_design
+    from app.services.external_agent_discovery import AgentCandidateEntry, AgentDiscoveryResult
+
+    src = tmp_path / "src"
+    src.mkdir()
+    (src / "util.c").write_text(
+        "void internal_helper(void) {\n"
+        "    if (1) { return; }\n"
+        "}\n",
+        encoding="utf-8",
+    )
+
+    async def fake_discovery(_request, **_kwargs):
+        return [
+            AgentDiscoveryResult(
+                provider="opencode",
+                status="ok",
+                candidate_entries=[
+                    AgentCandidateEntry(
+                        entry_kind="cli",
+                        entry_symbol="maybe_cli",
+                        entry_file="missing/cli.c",
+                        chain=["maybe_cli", "internal_helper"],
+                        external_trigger="",
+                        reason="unverified CLI symbol only",
+                        validated=False,
+                        validation_error="file_not_found",
+                    )
+                ],
+            )
+        ]
+
+    monkeypatch.setattr(coverage_mod, "run_external_agent_discovery", fake_discovery, raising=False)
+    modules = _coverage_modules(
+        "feature,module,code_location,function,triggered,hit_count\n"
+        "h,util,src/util.c:1-3,internal_helper,false,0\n"
+    )
+
+    design = asyncio.run(
+        build_coverage_test_design(modules, workspace_id="ws-1", repo_path=str(tmp_path))
+    )
+
+    gap = [g for g in design["gaps"] if g.get("kind") == "function"][0]
+    card = design["entry_discovery"]["cards"][0]
+    candidate = card["candidate_external_entries"][0]
+
+    assert gap["entry_paths"] == []
+    assert gap["black_box_readiness"]["case_type"] != "black_box_ready"
+    assert candidate["entry_label"] == "CLI maybe_cli"
+    assert candidate["validation_error"] == "file_not_found"
+
+
 def test_coverage_agent_first_round_failure_is_visible_in_entry_card(tmp_path, monkeypatch):
     import app.services.coverage_analyzer as coverage_mod
     from app.services.coverage_analyzer import build_coverage_test_design

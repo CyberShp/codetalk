@@ -3303,12 +3303,14 @@ def _entry_candidates_from_agent_rejected_validated(
         if not rejection:
             continue
         entry_type = str(entry.get("entry_kind") or "external")
+        entry_symbol = entry.get("entry_symbol")
         candidates.append({
             "entry_type": entry_type,
-            "entry_symbol": entry.get("entry_symbol"),
+            "entry_symbol": entry_symbol,
             "entry_file": entry.get("entry_file"),
             "entry_label": entry.get("external_trigger")
-            or entry.get("entry_symbol")
+            or _public_entry_label(entry_type, entry_symbol)
+            or entry_symbol
             or _ENTRY_DISCOVERY_KIND_LABELS.get(entry_type, "external entry"),
             "external_trigger": entry.get("external_trigger"),
             "chain": entry.get("chain") or [],
@@ -3396,12 +3398,14 @@ def _entry_candidates_from_agent_unverified(entries: list[dict]) -> list[dict]:
         if not isinstance(entry, dict):
             continue
         entry_type = str(entry.get("entry_kind") or "external")
+        entry_symbol = entry.get("entry_symbol")
         candidates.append({
             "entry_type": entry_type,
-            "entry_symbol": entry.get("entry_symbol"),
+            "entry_symbol": entry_symbol,
             "entry_file": entry.get("entry_file"),
             "entry_label": entry.get("external_trigger")
-            or entry.get("entry_symbol")
+            or _public_entry_label(entry_type, entry_symbol)
+            or entry_symbol
             or _ENTRY_DISCOVERY_KIND_LABELS.get(entry_type, "external entry"),
             "external_trigger": entry.get("external_trigger"),
             "chain": entry.get("chain") or [],
