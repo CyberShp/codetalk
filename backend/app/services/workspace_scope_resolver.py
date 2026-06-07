@@ -1045,6 +1045,19 @@ def _is_symbol_definition_line(line: str, symbol: str) -> bool:
         line,
     ):
         return True
+    if re.match(
+        rf"^(?:(?:public|private|protected|static|readonly)\s+)*{escaped}"
+        rf"(?:\s*:\s*[^=]+)?\s*=\s*(?:async\s*)?"
+        rf"(?:(?:\([^)]*\)|[A-Za-z_$][\w$]*)\s*=>|function\b)",
+        line,
+    ):
+        return True
+    if re.match(
+        rf"^{escaped}\s*:\s*(?:async\s*)?"
+        rf"(?:(?:\([^)]*\)|[A-Za-z_$][\w$]*)\s*=>|function\b)",
+        line,
+    ):
+        return True
     if re.match(rf"^{escaped}\s*=\s*lambda\b", line):
         return True
     if re.match(
