@@ -649,13 +649,19 @@ def test_provider_health_does_not_duplicate_explicit_readonly_guard(monkeypatch)
     assert "Write" in health["argv"]
 
 
-def test_provider_health_uses_claude_fallback_when_ccr_missing(monkeypatch):
+def test_provider_health_uses_claude_fallback_when_ccr_missing(tmp_path, monkeypatch):
     from app.services.external_agent_discovery import check_provider_health
 
     monkeypatch.setattr(
         "app.services.external_agent_discovery.shutil.which",
         lambda cmd: "C:/tools/claude.cmd" if cmd in {"claude", "where.exe"} else None,
     )
+    monkeypatch.setattr(
+        "app.services.external_agent_discovery._probe_windows_shell_command",
+        lambda _executable: None,
+    )
+    monkeypatch.setenv("APPDATA", str(tmp_path / "missing-appdata"))
+    monkeypatch.setenv("USERPROFILE", str(tmp_path / "missing-userprofile"))
 
     health = check_provider_health("claude-code", "ccr code -p", fallback_commands=["claude -p"])
 
@@ -749,7 +755,7 @@ def test_provider_health_finds_windows_npm_command_when_service_path_misses_it(t
     assert health["argv"][1:5] == ["code", "-p", "--output-format", "json"]
 
 
-def test_provider_health_uses_powershell_fallback_for_shell_only_ccr(monkeypatch):
+def test_provider_health_uses_powershell_fallback_for_shell_only_ccr(tmp_path, monkeypatch):
     from app.services.external_agent_discovery import check_provider_health
 
     monkeypatch.setattr(
@@ -767,6 +773,8 @@ def test_provider_health_uses_powershell_fallback_for_shell_only_ccr(monkeypatch
         lambda executable: "PowerShell function ccr",
         raising=False,
     )
+    monkeypatch.setenv("APPDATA", str(tmp_path / "missing-appdata"))
+    monkeypatch.setenv("USERPROFILE", str(tmp_path / "missing-userprofile"))
 
     health = check_provider_health("claude-code", "ccr code -p --output-format json")
 
@@ -777,7 +785,7 @@ def test_provider_health_uses_powershell_fallback_for_shell_only_ccr(monkeypatch
     assert "--allowedTools" in health["argv"][-1]
 
 
-def test_provider_health_powershell_print_mode_replaces_placeholder(monkeypatch):
+def test_provider_health_powershell_print_mode_replaces_placeholder(tmp_path, monkeypatch):
     from app.services.external_agent_discovery import check_provider_health
 
     monkeypatch.setattr(
@@ -795,6 +803,8 @@ def test_provider_health_powershell_print_mode_replaces_placeholder(monkeypatch)
         lambda executable: "PowerShell function ccr",
         raising=False,
     )
+    monkeypatch.setenv("APPDATA", str(tmp_path / "missing-appdata"))
+    monkeypatch.setenv("USERPROFILE", str(tmp_path / "missing-userprofile"))
 
     health = check_provider_health(
         "claude-code",
@@ -806,7 +816,7 @@ def test_provider_health_powershell_print_mode_replaces_placeholder(monkeypatch)
     assert "configured-placeholder" not in health["argv"][-1]
 
 
-def test_provider_health_probes_shell_only_ccr_with_execution_policy_bypass(monkeypatch):
+def test_provider_health_probes_shell_only_ccr_with_execution_policy_bypass(tmp_path, monkeypatch):
     from app.services.external_agent_discovery import check_provider_health
 
     captured: dict = {}
@@ -829,6 +839,8 @@ def test_provider_health_probes_shell_only_ccr_with_execution_policy_bypass(monk
     monkeypatch.setattr("app.services.external_agent_discovery.platform.system", lambda: "Windows")
     monkeypatch.setattr("app.services.external_agent_discovery.shutil.which", fake_which)
     monkeypatch.setattr("app.services.external_agent_discovery.subprocess.run", fake_run)
+    monkeypatch.setenv("APPDATA", str(tmp_path / "missing-appdata"))
+    monkeypatch.setenv("USERPROFILE", str(tmp_path / "missing-userprofile"))
 
     health = check_provider_health("claude-code", "ccr code -p --output-format json")
 
@@ -1171,6 +1183,51 @@ def test_run_provider_tries_fallback_when_primary_command_exits_nonzero(tmp_path
     assert results[0].candidate_files[0].validated is True
     assert any("primary command failed; using fallback" in item for item in results[0].warnings)
     assert any("ccr wrapper rejected args" in item for item in results[0].warnings)
+
+
+def test_run_provider_does_not_fallback_after_ccr_config_error(tmp_path, monkeypatch):
+    from app.services.external_agent_discovery import AgentDiscoveryRequest, run_external_agent_discovery
+
+    bad_agent = tmp_path / "ccr_config_error.py"
+    bad_agent.write_text(
+        "import sys\n"
+        "sys.stdin.read()\n"
+        "print('Config file not found at C:/Users/me/.claude-code-router/config-router.json')\n"
+        "raise SystemExit(1)\n",
+        encoding="utf-8",
+    )
+    ok_agent = tmp_path / "ok_agent.py"
+    ok_agent.write_text(
+        "import json, sys\n"
+        "sys.stdin.read()\n"
+        "print(json.dumps({'candidate_files':[],'candidate_symbols':[],"
+        "'candidate_entries':[],'need_source_slices':[],"
+        "'commands':[],'raw_summary':'fallback_ok'}))\n",
+        encoding="utf-8",
+    )
+
+    monkeypatch.setattr(
+        "app.services.external_agent_discovery.settings.claude_code_command",
+        f'"{sys.executable}" "{bad_agent}"',
+    )
+    monkeypatch.setattr(
+        "app.services.external_agent_discovery.settings.claude_code_fallback_commands",
+        [f'"{sys.executable}" "{ok_agent}"'],
+    )
+
+    results = asyncio.run(run_external_agent_discovery(
+        AgentDiscoveryRequest(
+            request_id="ccr-config-error",
+            repo_path=str(tmp_path),
+            analysis_object_text="tls",
+        ),
+        providers=["claude-code"],
+    ))
+
+    assert results[0].status == "error"
+    assert "Config file not found" in results[0].raw_summary
+    assert "fallback_ok" not in results[0].raw_summary
+    assert len(results[0].runtime_attempts) == 1
 
 
 def test_run_provider_fallback_preserves_primary_invalid_json_warning(tmp_path, monkeypatch):
@@ -2062,6 +2119,46 @@ def test_startup_probe_tries_fallback_when_primary_command_exits_nonzero(tmp_pat
     assert result["health"]["used_fallback"] is True
 
 
+def test_startup_probe_does_not_fallback_after_ccr_config_error(tmp_path, monkeypatch):
+    from app.services.external_agent_discovery import probe_external_agent_startup
+
+    bad_agent = tmp_path / "ccr_config_error.py"
+    bad_agent.write_text(
+        "import sys\n"
+        "sys.stdin.read()\n"
+        "print('Config file not found at C:/Users/me/.claude-code-router/config-router.json')\n"
+        "raise SystemExit(1)\n",
+        encoding="utf-8",
+    )
+    ok_agent = tmp_path / "ok_agent.py"
+    ok_agent.write_text(
+        "import sys\n"
+        "sys.stdin.read()\n"
+        "print('{\"candidate_files\":[],\"candidate_symbols\":[],"
+        "\"candidate_entries\":[],\"need_source_slices\":[],"
+        "\"commands\":[],\"raw_summary\":\"startup_probe_ok\"}')\n",
+        encoding="utf-8",
+    )
+
+    monkeypatch.setattr(
+        "app.services.external_agent_discovery.settings.claude_code_command",
+        f'"{sys.executable}" "{bad_agent}"',
+    )
+    monkeypatch.setattr(
+        "app.services.external_agent_discovery.settings.claude_code_fallback_commands",
+        [f'"{sys.executable}" "{ok_agent}"'],
+    )
+
+    result = asyncio.run(probe_external_agent_startup("claude-code", repo_path=tmp_path))
+
+    assert result["healthy"] is False
+    assert result["status"] == "error"
+    assert "Config file not found" in result["message"]
+    attempts = result["health"]["attempts"]
+    assert len(attempts) == 1
+    assert attempts[0]["probe_status"] == "error"
+
+
 def test_startup_probe_tries_fallback_when_primary_outputs_invalid_json(tmp_path, monkeypatch):
     from app.services.external_agent_discovery import probe_external_agent_startup
 
@@ -2328,6 +2425,22 @@ def test_agent_candidate_path_with_label_prefix_validates(tmp_path):
     validation = validate_agent_candidate_file(
         tmp_path,
         "path: nvmf_tcp/transport/tls/tls.c",
+    )
+
+    assert validation.validated is True
+    assert validation.path == "nvmf_tcp/transport/tls/tls.c"
+
+
+def test_agent_candidate_path_with_structured_label_prefix_validates(tmp_path):
+    from app.services.external_agent_discovery import validate_agent_candidate_file
+
+    tls_dir = tmp_path / "nvmf_tcp" / "transport" / "tls"
+    tls_dir.mkdir(parents=True)
+    (tls_dir / "tls.c").write_text("int tls;\n", encoding="utf-8")
+
+    validation = validate_agent_candidate_file(
+        tmp_path,
+        "file_path: nvmf_tcp/transport/tls/tls.c",
     )
 
     assert validation.validated is True

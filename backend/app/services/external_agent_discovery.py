@@ -814,7 +814,11 @@ def validate_agent_candidate_file(
 def _normalize_agent_path_text(path: str) -> str:
     raw = (path or "").strip().strip('"').strip("'").strip("`")
     raw = re.sub(r"^(?:[-*+]\s+|\d+[.)]\s+)", "", raw).strip()
-    raw = re.sub(r"(?i)^(?:path|file|source|entry_file)\s*:\s+", "", raw).strip()
+    raw = re.sub(
+        r"(?i)^(?:path|file|file[_\s-]?path|source|source[_\s-]?(?:file|path)|entry[_\s-]?file)\s*:\s+",
+        "",
+        raw,
+    ).strip()
     markdown_match = re.fullmatch(r"\[[^\]]+\]\(([^)]+)\)", raw)
     if markdown_match:
         raw = markdown_match.group(1).strip()
@@ -1455,6 +1459,8 @@ async def probe_external_agent_startup(
                 "stderr": stderr_text[:4000],
                 "stdout": raw[:4000],
             }
+            if _is_terminal_agent_configuration_error(message):
+                return _redact_probe_response(last_failure)
             continue
 
         result = parse_agent_output(provider, raw, cwd)
@@ -1628,6 +1634,15 @@ async def _run_provider(
                 warnings=[summary],
             )
             last_raw = raw + stderr_text
+            if _is_terminal_agent_configuration_error(summary):
+                last_result.runtime_attempts = _runtime_attempt_records(
+                    provider,
+                    request.request_id,
+                    attempts,
+                    phase="discovery",
+                )
+                _record_agent_turn(session, provider, request, prompt, last_raw, last_result)
+                return last_result
             continue
         if not raw.strip() and stderr:
             summary = stderr_text[:4000]
@@ -1706,6 +1721,19 @@ def _format_process_error_summary(returncode: int | None, stderr_text: str, stdo
     if stdout_text:
         parts.append(f"stdout: {_redact_agent_diagnostic_text(stdout_text)[:1000]}")
     return "; ".join(parts)[:4000]
+
+
+def _is_terminal_agent_configuration_error(message: str) -> bool:
+    text = (message or "").lower()
+    terminal_markers = (
+        "config file not found",
+        "failed to load configuration",
+        "failed to parse configuration",
+        "invalid configuration",
+        "missing configuration",
+        "config-router.json",
+    )
+    return any(marker in text for marker in terminal_markers)
 
 
 def _format_spawn_error_summary(exc: OSError, health: dict) -> str:
