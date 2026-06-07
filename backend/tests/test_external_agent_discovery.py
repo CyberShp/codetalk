@@ -2349,6 +2349,83 @@ def test_coverage_agent_verified_entry_makes_gap_black_box_ready(tmp_path, monke
     assert candidate["input_hints"] == ["invalid TLS PSK", "oversized capsule"]
 
 
+def test_coverage_agent_one_hit_processing_failure_keeps_other_hit_context(tmp_path, monkeypatch):
+    import app.services.coverage_analyzer as coverage_mod
+    from app.adapters.coverage import FunctionHit, ModuleCoverage
+    from app.services.external_agent_discovery import AgentCandidateEntry, AgentDiscoveryResult
+
+    src = tmp_path / "src"
+    src.mkdir()
+    (src / "bad.c").write_text("void bad_recover(void) {}\n", encoding="utf-8")
+    (src / "good.c").write_text("void good_recover(void) {}\n", encoding="utf-8")
+    (src / "rpc.c").write_text("void rpc_recover(void) {}\n", encoding="utf-8")
+
+    bad_hit = FunctionHit(
+        function_name="bad_recover",
+        file_path="src/bad.c",
+        line_start=1,
+        triggered=False,
+        hit_count=0,
+    )
+    good_hit = FunctionHit(
+        function_name="good_recover",
+        file_path="src/good.c",
+        line_start=1,
+        triggered=False,
+        hit_count=0,
+    )
+    module = ModuleCoverage(
+        module_path="src",
+        line_rate=0.0,
+        branch_rate=0.0,
+        function_rate=0.0,
+        function_hits=[bad_hit, good_hit],
+    )
+
+    async def fake_discovery(_request, **_kwargs):
+        return [
+            AgentDiscoveryResult(
+                provider="claude-code",
+                status="ok",
+                candidate_entries=[
+                    AgentCandidateEntry(
+                        entry_kind="rpc",
+                        entry_symbol="rpc_recover",
+                        entry_file="src/rpc.c",
+                        chain=["rpc_recover"],
+                        reason="public RPC entry",
+                        validated=True,
+                    )
+                ],
+            )
+        ]
+
+    original_collect = coverage_mod._collect_agent_entry_results
+
+    def flaky_collect(*args, object_id, **kwargs):
+        if "bad_recover" in object_id:
+            raise RuntimeError("entry collection crashed")
+        return original_collect(*args, object_id=object_id, **kwargs)
+
+    monkeypatch.setattr(coverage_mod, "run_external_agent_discovery", fake_discovery, raising=False)
+    monkeypatch.setattr(coverage_mod, "_collect_agent_entry_results", flaky_collect)
+
+    contexts = asyncio.run(
+        coverage_mod._resolve_external_agent_entries_for_hits(
+            [(module, bad_hit), (module, good_hit)],
+            repo_path=str(tmp_path),
+        )
+    )
+
+    bad_context = contexts["src/bad.c:bad_recover:1"]
+    good_context = contexts["src/good.c:good_recover:1"]
+
+    assert bad_context["status"] == "error"
+    assert any("entry collection crashed" in item["raw_summary"] for item in bad_context["raw_results"])
+    assert good_context["status"] == "available"
+    assert good_context["validated_entries"][0]["entry_symbol"] == "rpc_recover"
+
+
 def test_safe_external_label_preserves_trigger_but_rejects_internal_symbol():
     from app.services.coverage_analyzer import _safe_external_label
 

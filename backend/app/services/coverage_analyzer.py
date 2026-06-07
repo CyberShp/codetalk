@@ -1152,8 +1152,37 @@ async def _resolve_external_agent_entries_for_hits(
             "raw_results": raw_results,
         }
 
+    async def _one_safe(module: ModuleCoverage, hit: FunctionHit) -> tuple[str, dict]:
+        try:
+            return await _one(module, hit)
+        except asyncio.CancelledError:
+            raise
+        except Exception as exc:
+            object_id = _hit_key(hit)
+            logger.info(
+                "Coverage external-agent processing failed for %s: %s",
+                hit.function_name,
+                exc,
+            )
+            status_by_provider: dict[str, str] = {}
+            raw_results: list[dict] = []
+            _record_agent_round_error(
+                provider_status=status_by_provider,
+                raw_results=raw_results,
+                turn_id=f"coverage:{object_id}",
+                exc=exc,
+            )
+            return object_id, {
+                "status": "error",
+                "provider_status": status_by_provider,
+                "validated_entries": [],
+                "unverified_entries": [],
+                "raw_results": raw_results,
+                "warnings": [str(exc)],
+            }
+
     pairs = await asyncio.gather(*[
-        _one(module, hit) for module, hit in uncovered[:MAX_TRACED_FUNCTION_GAPS]
+        _one_safe(module, hit) for module, hit in uncovered[:MAX_TRACED_FUNCTION_GAPS]
     ])
     return {key: value for key, value in pairs}
 
