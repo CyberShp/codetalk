@@ -2757,6 +2757,48 @@ def test_startup_probe_tries_fallback_when_primary_outputs_invalid_json(tmp_path
     assert result["health"]["reason"].startswith("primary command failed")
 
 
+def test_startup_probe_preserves_available_health_when_all_launches_fail(tmp_path, monkeypatch):
+    from app.services.external_agent_discovery import probe_external_agent_startup
+
+    first_agent = tmp_path / "first_bad_agent.py"
+    first_agent.write_text(
+        "import sys\n"
+        "sys.stdin.read()\n"
+        "print('first agent failed after launch', file=sys.stderr)\n"
+        "raise SystemExit(7)\n",
+        encoding="utf-8",
+    )
+    second_agent = tmp_path / "second_bad_agent.py"
+    second_agent.write_text(
+        "import sys\n"
+        "sys.stdin.read()\n"
+        "print('second agent failed after launch', file=sys.stderr)\n"
+        "raise SystemExit(8)\n",
+        encoding="utf-8",
+    )
+
+    monkeypatch.setattr(
+        "app.services.external_agent_discovery.settings.claude_code_command",
+        f'"{sys.executable}" "{first_agent}"',
+    )
+    monkeypatch.setattr(
+        "app.services.external_agent_discovery.settings.claude_code_fallback_commands",
+        [f'"{sys.executable}" "{second_agent}"'],
+    )
+
+    result = asyncio.run(probe_external_agent_startup("claude-code", repo_path=tmp_path))
+
+    assert result["healthy"] is False
+    assert result["status"] == "error"
+    assert result["health"]["status"] == "available"
+    assert "no agent command found" not in result["health"].get("reason", "")
+    assert result["health"]["path"] == sys.executable
+    attempts = result["health"]["attempts"]
+    assert len(attempts) == 2
+    assert attempts[0]["probe_status"] == "error"
+    assert attempts[1]["probe_status"] == "error"
+
+
 def test_candidate_outside_repo_and_non_source_are_rejected(tmp_path):
     from app.services.external_agent_discovery import validate_agent_candidate_file
 

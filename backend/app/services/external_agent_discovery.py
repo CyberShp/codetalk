@@ -1779,7 +1779,13 @@ async def probe_external_agent_startup(
     health = last_unavailable_health or _unavailable_health_from_attempts(provider, commands, attempts)
     health["attempts"] = list(attempts)
     if last_failure:
-        last_failure["health"] = health | {"status": "available", "attempts": attempts}
+        failure_health = last_failure.get("health")
+        if isinstance(failure_health, dict):
+            failure_health = dict(failure_health)
+            failure_health["attempts"] = list(attempts)
+            last_failure["health"] = failure_health
+        else:
+            last_failure["health"] = health
         return _redact_probe_response(last_failure)
     message = _format_unavailable_health_summary(health)
     return _redact_probe_response({
