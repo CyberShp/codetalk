@@ -812,6 +812,33 @@ def test_run_provider_unavailable_keeps_runtime_diagnostic_in_result(tmp_path, m
     assert result.warnings == [result.raw_summary]
 
 
+def test_run_external_agent_discovery_keeps_other_provider_when_one_crashes(tmp_path, monkeypatch):
+    import app.services.external_agent_discovery as agent_mod
+    from app.services.external_agent_discovery import AgentDiscoveryRequest, AgentDiscoveryResult
+
+    async def fake_run_provider(provider, _request, **_kwargs):
+        if provider == "opencode":
+            raise RuntimeError("opencode wrapper crashed")
+        return AgentDiscoveryResult(provider=provider, status="ok", raw_summary="usable result")
+
+    monkeypatch.setattr(agent_mod, "_run_provider", fake_run_provider)
+
+    results = asyncio.run(agent_mod.run_external_agent_discovery(
+        AgentDiscoveryRequest(
+            request_id="req",
+            repo_path=str(tmp_path),
+            analysis_object_text="nvme-tcp-tls",
+        ),
+        providers=["claude-code", "opencode"],
+    ))
+
+    by_provider = {result.provider: result for result in results}
+
+    assert by_provider["claude-code"].status == "ok"
+    assert by_provider["opencode"].status == "error"
+    assert "opencode wrapper crashed" in by_provider["opencode"].raw_summary
+
+
 def test_run_provider_spawn_error_keeps_launch_diagnostics(tmp_path, monkeypatch):
     from app.services.external_agent_discovery import AgentDiscoveryRequest, run_external_agent_discovery
 

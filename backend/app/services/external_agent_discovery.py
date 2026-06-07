@@ -1106,7 +1106,24 @@ async def run_external_agent_discovery(
         return []
     selected = (providers or list(PROVIDER_COMMANDS))[: max(1, settings.external_agent_max_parallel)]
     tasks = [_run_provider(provider, request, session=session) for provider in selected]
-    return await asyncio.gather(*tasks)
+    gathered = await asyncio.gather(*tasks, return_exceptions=True)
+    results: list[AgentDiscoveryResult] = []
+    for provider, item in zip(selected, gathered):
+        if isinstance(item, asyncio.CancelledError):
+            raise item
+        if isinstance(item, Exception):
+            summary = str(item).strip() or item.__class__.__name__
+            result = AgentDiscoveryResult(
+                provider=provider,
+                status="error",
+                raw_summary=summary,
+                warnings=[summary],
+            )
+            _record_agent_turn(session, provider, request, "", summary, result)
+            results.append(result)
+            continue
+        results.append(item)
+    return results
 
 
 async def probe_external_agent_startup(
