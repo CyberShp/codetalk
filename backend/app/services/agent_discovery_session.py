@@ -10,7 +10,7 @@ from __future__ import annotations
 import hashlib
 import json
 import uuid
-from dataclasses import asdict, dataclass, field
+from dataclasses import asdict, dataclass, field, fields
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Literal
@@ -222,10 +222,11 @@ class AgentDiscoverySession:
             updated_at=session_data.get("updated_at") or _now(),
             objects=session_data.get("objects") or [],
             turns=[
-                AgentDiscoveryTurn(**turn)
+                _coerce_agent_discovery_turn(turn)
                 for turn in session_data.get("turns") or []
+                if isinstance(turn, dict)
             ],
-            ledger=AgentDiscoveryLedger(**ledger_data),
+            ledger=_coerce_agent_discovery_ledger(ledger_data),
         )
         return session
 
@@ -497,6 +498,36 @@ def _merge_ordered_strings(*values: object) -> list[str]:
             seen.add(text)
             merged.append(text)
     return merged
+
+
+def _coerce_agent_discovery_ledger(data: object) -> AgentDiscoveryLedger:
+    if not isinstance(data, dict):
+        return AgentDiscoveryLedger()
+    return AgentDiscoveryLedger(**_filter_dataclass_kwargs(AgentDiscoveryLedger, data))
+
+
+def _coerce_agent_discovery_turn(data: dict) -> AgentDiscoveryTurn:
+    defaults = {
+        "turn_id": "",
+        "provider": "",
+        "goal": "",
+        "prompt_path": None,
+        "raw_output_path": None,
+        "parsed_result": {},
+        "validation_result": {},
+        "status": "",
+        "started_at": "",
+        "finished_at": "",
+    }
+    return AgentDiscoveryTurn(**{
+        **defaults,
+        **_filter_dataclass_kwargs(AgentDiscoveryTurn, data),
+    })
+
+
+def _filter_dataclass_kwargs(cls: type, data: dict) -> dict:
+    allowed = {item.name for item in fields(cls)}
+    return {key: value for key, value in data.items() if key in allowed}
 
 
 def _source_slices_for_object(source_slices: list[dict], object_id: str) -> list[dict]:

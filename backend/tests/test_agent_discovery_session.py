@@ -28,6 +28,50 @@ def test_session_can_save_and_load_ledger(tmp_path):
     assert (tmp_path / "artifacts" / "agent_discovery_ledger.json").exists()
 
 
+def test_session_load_tolerates_legacy_and_future_artifact_fields(tmp_path):
+    from app.services.agent_discovery_session import create_agent_discovery_session
+
+    artifact_dir = tmp_path / "artifacts"
+    artifact_dir.mkdir()
+    (artifact_dir / "agent_discovery_session.json").write_text(
+        json.dumps({
+            "session_id": "sess-legacy",
+            "repo_path": str(tmp_path),
+            "goal": "coverage_entry",
+            "artifact_dir": str(artifact_dir),
+            "turns": [{
+                "turn_id": "turn_001_claude_code",
+                "provider": "claude-code",
+                "goal": "coverage_entry",
+                "status": "ok",
+                "parsed_result": {"raw_summary": "legacy artifact"},
+                "future_turn_field": "ignored",
+            }],
+            "future_session_field": "ignored",
+        }),
+        encoding="utf-8",
+    )
+    (artifact_dir / "agent_discovery_ledger.json").write_text(
+        json.dumps({
+            "validated_files": [{
+                "object_id": "obj",
+                "path": "src/tls.c",
+                "provider": "claude-code",
+            }],
+            "future_ledger_field": [{"ignored": True}],
+        }),
+        encoding="utf-8",
+    )
+
+    loaded = create_agent_discovery_session.load(artifact_dir)
+
+    assert loaded.session_id == "sess-legacy"
+    assert loaded.turns[0].validation_result == {}
+    assert loaded.turns[0].prompt_path is None
+    assert loaded.ledger.validated_files[0]["path"] == "src/tls.c"
+    assert not hasattr(loaded.ledger, "future_ledger_field")
+
+
 def test_rejected_file_enters_context_do_not_repeat(tmp_path):
     from app.services.agent_discovery_session import (
         AgentContextPacketInput,
