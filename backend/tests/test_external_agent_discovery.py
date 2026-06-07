@@ -4063,6 +4063,10 @@ def test_coverage_agent_self_symbol_does_not_generate_black_box_ready(tmp_path, 
     gap = [g for g in design["gaps"] if g.get("kind") == "function"][0]
     assert gap["entry_paths"] == []
     assert gap["black_box_readiness"]["case_type"] != "black_box_ready"
+    card = design["entry_discovery"]["cards"][0]
+    candidate = card["candidate_external_entries"][0]
+    assert candidate["entry_symbol"] == "internal_gap"
+    assert candidate["validation_error"] == "self_target_entry"
 
 
 def test_coverage_agent_plain_function_entry_does_not_generate_black_box_ready(tmp_path, monkeypatch):
@@ -4113,6 +4117,10 @@ def test_coverage_agent_plain_function_entry_does_not_generate_black_box_ready(t
     gap = [g for g in design["gaps"] if g.get("kind") == "function"][0]
     assert gap["entry_paths"] == []
     assert gap["black_box_readiness"]["case_type"] != "black_box_ready"
+    card = design["entry_discovery"]["cards"][0]
+    candidate = card["candidate_external_entries"][0]
+    assert candidate["entry_symbol"] == "helper_wrapper"
+    assert candidate["validation_error"] == "not_public_trigger_surface"
 
 
 def test_coverage_agent_generic_external_helper_does_not_generate_black_box_ready(tmp_path, monkeypatch):
@@ -4163,6 +4171,10 @@ def test_coverage_agent_generic_external_helper_does_not_generate_black_box_read
     gap = [g for g in design["gaps"] if g.get("kind") == "function"][0]
     assert gap["entry_paths"] == []
     assert gap["black_box_readiness"]["case_type"] != "black_box_ready"
+    card = design["entry_discovery"]["cards"][0]
+    candidate = card["candidate_external_entries"][0]
+    assert candidate["entry_symbol"] == "helper_wrapper"
+    assert candidate["validation_error"] == "not_public_trigger_surface"
 
 
 def test_coverage_agent_generic_external_with_rpc_trigger_generates_black_box_ready(tmp_path, monkeypatch):

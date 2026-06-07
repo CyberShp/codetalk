@@ -3116,6 +3116,11 @@ def _entry_discovery_card_for_gap(
     entry_paths = gap.get("entry_paths") or []
     candidates = _entry_candidates_from_paths(entry_paths)
     if isinstance(external_agent, dict):
+        candidates.extend(_entry_candidates_from_agent_rejected_validated(
+            gap,
+            external_agent.get("validated_entries") or [],
+            entry_paths,
+        ))
         candidates.extend(_entry_candidates_from_agent_unverified(
             _filter_resolved_agent_unverified_entries(
                 external_agent.get("unverified_entries") or [],
@@ -3197,6 +3202,83 @@ def _filter_resolved_agent_unverified_entries(
             continue
         filtered.append(entry)
     return filtered
+
+
+def _entry_candidates_from_agent_rejected_validated(
+    gap: dict,
+    entries: list[dict],
+    entry_paths: list[dict],
+) -> list[dict]:
+    accepted_keys = _entry_candidate_keys(entry_paths)
+    candidates: list[dict] = []
+    for entry in entries:
+        if not isinstance(entry, dict):
+            continue
+        provider = str(entry.get("provider") or "external_agent")
+        symbol = str(entry.get("entry_symbol") or entry.get("entry_label") or "")
+        file_path = str(entry.get("entry_file") or "")
+        if (provider, symbol, file_path) in accepted_keys:
+            continue
+        rejection = _agent_entry_rejection_reason_for_gap(entry, gap)
+        if not rejection:
+            continue
+        entry_type = str(entry.get("entry_kind") or "external")
+        candidates.append({
+            "entry_type": entry_type,
+            "entry_symbol": entry.get("entry_symbol"),
+            "entry_file": entry.get("entry_file"),
+            "entry_label": entry.get("external_trigger")
+            or entry.get("entry_symbol")
+            or _ENTRY_DISCOVERY_KIND_LABELS.get(entry_type, "external entry"),
+            "external_trigger": entry.get("external_trigger"),
+            "chain": entry.get("chain") or [],
+            "evidence": entry.get("reason") or entry.get("external_trigger"),
+            "confidence": "medium",
+            "source_verification": entry.get("source_verification") or "source_backed",
+            "tool": provider,
+            "provider": provider,
+            "turn_id": entry.get("turn_id"),
+            "validation_error": rejection,
+            "input_hints": _coerce_string_list(entry.get("input_hints")),
+        })
+    return candidates
+
+
+def _entry_candidate_keys(entries: list[dict]) -> set[tuple[str, str, str]]:
+    keys: set[tuple[str, str, str]] = set()
+    for entry in entries:
+        if not isinstance(entry, dict):
+            continue
+        provider = str(entry.get("provider") or entry.get("tool") or "")
+        symbol = str(entry.get("entry_symbol") or entry.get("entry_label") or "")
+        file_path = str(entry.get("entry_file") or "")
+        keys.add((provider, symbol, file_path))
+    return keys
+
+
+def _agent_entry_rejection_reason_for_gap(entry: dict, gap: dict) -> str | None:
+    if _agent_entry_is_self_target_for_gap(entry, gap):
+        return "self_target_entry"
+    if not _agent_entry_has_public_trigger_surface(entry):
+        return "not_public_trigger_surface"
+    return None
+
+
+def _agent_entry_is_self_target_for_gap(entry: dict, gap: dict) -> bool:
+    function_name = str(gap.get("function_name") or "").strip()
+    if not function_name:
+        return False
+    entry_symbol = str(entry.get("entry_symbol") or entry.get("entry_label") or "").strip()
+    if entry_symbol and entry_symbol != function_name:
+        return False
+    chain = [str(value).strip() for value in (entry.get("chain") or []) if str(value).strip()]
+    if chain and any(value != function_name for value in chain):
+        return False
+    entry_file = str(entry.get("entry_file") or "").replace("\\", "/")
+    gap_file = str(gap.get("file_path") or "").replace("\\", "/")
+    if entry_file and gap_file and entry_file != gap_file and not gap_file.endswith(entry_file):
+        return False
+    return bool(entry_symbol == function_name or chain == [function_name])
 
 
 def _entry_candidates_from_paths(entry_paths: list[dict]) -> list[dict]:
