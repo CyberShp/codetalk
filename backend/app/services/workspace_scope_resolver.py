@@ -43,6 +43,7 @@ from app.schemas.workspace_analysis import (
 )
 from app.services.external_agent_discovery import (
     AgentDiscoveryRequest,
+    AgentDiscoveryResult,
     expand_agent_query_terms,
     merge_source_candidates,
     run_external_agent_discovery,
@@ -757,6 +758,34 @@ def _record_agent_scope_results(
     session.save()
 
 
+def _agent_scope_error_result(
+    session: AgentDiscoverySession | None,
+    *,
+    goal: str,
+    turn_id: str,
+    exc: Exception,
+) -> AgentDiscoveryResult:
+    summary = str(exc).strip() or exc.__class__.__name__
+    result = AgentDiscoveryResult(
+        provider="external_agent",
+        status="error",
+        turn_id=turn_id,
+        raw_summary=summary,
+        warnings=[summary],
+    )
+    if session is not None:
+        session.record_turn(
+            provider=result.provider,
+            goal=goal,
+            prompt=f"{turn_id} failed before provider results were returned",
+            raw_output=summary,
+            parsed_result={},
+            validation_result={"error": summary},
+            status=result.status,
+        )
+    return result
+
+
 def _agent_requests_source_slices(results: list) -> bool:
     return any(getattr(result, "need_source_slices", None) for result in results)
 
@@ -1278,7 +1307,17 @@ class WorkspaceScopeResolver:
                     )
                 )
 
-        agent_results = await agent_task if agent_task is not None else []
+        try:
+            agent_results = await agent_task if agent_task is not None else []
+        except Exception as exc:
+            agent_results = [
+                _agent_scope_error_result(
+                    agent_session,
+                    goal="source_scope",
+                    turn_id=f"{ws_id}:{obj.id}",
+                    exc=exc,
+                )
+            ]
         _record_agent_scope_results(
             agent_session,
             object_id=obj.id,
@@ -1323,20 +1362,30 @@ class WorkspaceScopeResolver:
                     round_index=2,
                 )
             )
-            round2_results = await run_external_agent_discovery(
-                AgentDiscoveryRequest(
-                    request_id=f"{ws_id}:{obj.id}:round2",
-                    repo_path=repo_path,
-                    analysis_object_text=obj.text,
-                    path_hints=search_hints,
-                    scope_hints=[
-                        {"path": path, "role": role} for path, role in role_hints
-                    ],
-                    context_packet=context_packet,
-                    goal="source_scope",
-                ),
-                session=agent_session,
-            )
+            try:
+                round2_results = await run_external_agent_discovery(
+                    AgentDiscoveryRequest(
+                        request_id=f"{ws_id}:{obj.id}:round2",
+                        repo_path=repo_path,
+                        analysis_object_text=obj.text,
+                        path_hints=search_hints,
+                        scope_hints=[
+                            {"path": path, "role": role} for path, role in role_hints
+                        ],
+                        context_packet=context_packet,
+                        goal="source_scope",
+                    ),
+                    session=agent_session,
+                )
+            except Exception as exc:
+                round2_results = [
+                    _agent_scope_error_result(
+                        agent_session,
+                        goal="source_scope",
+                        turn_id=f"{ws_id}:{obj.id}:round2",
+                        exc=exc,
+                    )
+                ]
             _record_agent_scope_results(
                 agent_session,
                 object_id=obj.id,

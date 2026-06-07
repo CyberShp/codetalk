@@ -2199,6 +2199,58 @@ def test_workspace_resolver_keeps_detailed_agent_warning_without_duplicate(tmp_p
     assert "external agent claude-code: invalid_output" not in resolved.warnings
 
 
+def test_workspace_resolver_round2_failure_keeps_local_source_candidate(tmp_path, monkeypatch):
+    from app.schemas.workspace_analysis import AnalysisPlan
+    from app.services.external_agent_discovery import AgentCandidateFile, AgentDiscoveryResult
+
+    _write_tls_repo(tmp_path)
+    calls: list[str] = []
+
+    async def fake_discovery(request, **_kwargs):
+        calls.append(request.request_id)
+        if "round2" in request.request_id:
+            raise RuntimeError("round2 agent crashed")
+        return [
+            AgentDiscoveryResult(
+                provider="claude-code",
+                status="ok",
+                candidate_files=[
+                    AgentCandidateFile(
+                        path="nof/nvmf_tcp/transport/tls/missing.c",
+                        reason="stale agent path",
+                        confidence="high",
+                    )
+                ],
+            )
+        ]
+
+    monkeypatch.setattr(
+        "app.services.workspace_scope_resolver.run_external_agent_discovery",
+        fake_discovery,
+    )
+    plan = AnalysisPlan(
+        analysis_objects=[AnalysisObject(id="obj_tls", text="nvme-tcp-tls", kind="module")]
+    )
+
+    preview = asyncio.run(
+        WorkspaceScopeResolver().resolve(
+            ws_id="ws",
+            repo_path=str(tmp_path),
+            plan=plan,
+            task_id="task-1",
+            artifact_dir=tmp_path / "artifacts",
+        )
+    )
+
+    resolved = preview.resolved_objects[0]
+    paths = [c.path.replace("\\", "/") for c in resolved.candidate_files if c.path]
+
+    assert any(path.endswith("nof/nvmf_tcp/transport/tls/tls.c") for path in paths)
+    assert any("round2" in call for call in calls)
+    assert any("round2 agent crashed" in warning for warning in resolved.warnings)
+    assert preview.external_agent_status["external_agent"] == "error"
+
+
 def _coverage_modules(csv_text):
     from app.adapters.coverage import parse_internal_function_hits
 
