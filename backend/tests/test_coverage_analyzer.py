@@ -1025,6 +1025,53 @@ class TestCoverageTestDesign:
         from app.adapters.coverage import parse_internal_function_hits
         return parse_internal_function_hits(csv_text).modules
 
+    async def test_agent_duplicate_entry_confirms_existing_path_without_duplicate_case(self):
+        from app.services.coverage_analyzer import _build_black_box_cases, _merge_agent_entry_paths
+
+        hit = FunctionHit(
+            function_name="tls_recover_session",
+            file_path="src/tls.c",
+            line_start=1,
+            triggered=False,
+            hit_count=0,
+        )
+        existing = [{
+            "entry_kind": "rpc",
+            "entry_symbol": "rpc_tls_entry",
+            "entry_file": "src/rpc.c",
+            "entry_label": "RPC rpc_tls_entry",
+            "chain": ["rpc_tls_entry", "tls_recover_session"],
+            "tool": "cgc",
+        }]
+        agent_context = {
+            "validated_entries": [{
+                "provider": "claude-code",
+                "turn_id": "coverage:tls_recover_session",
+                "entry_kind": "rpc",
+                "entry_symbol": "rpc_tls_entry",
+                "entry_file": "src/rpc.c",
+                "chain": ["rpc_tls_entry", "tls_recover_session"],
+                "external_trigger": "RPC rpc_tls_entry",
+                "reason": "agent confirmed the same public RPC reaches TLS recovery",
+                "source_verification": "source_backed",
+            }]
+        }
+
+        merged = _merge_agent_entry_paths(existing, agent_context, hit)
+
+        assert len(merged) == 1
+        assert merged[0]["tool"] == "cgc"
+        assert merged[0]["entry_kind"] == "rpc"
+        assert merged[0]["entry_label"] == "RPC rpc_tls_entry"
+        assert merged[0]["provider"] == "claude-code"
+        assert merged[0]["turn_id"] == "coverage:tls_recover_session"
+        assert merged[0]["confirming_providers"] == ["claude-code"]
+        assert merged[0]["confirming_turn_ids"] == ["coverage:tls_recover_session"]
+        cases = _build_black_box_cases(hit, merged, [])
+        assert cases[0]["provider"] == "claude-code"
+        assert cases[0]["confirming_providers"] == ["claude-code"]
+        assert cases[0]["confirming_turn_ids"] == ["coverage:tls_recover_session"]
+
     async def test_traces_external_entry_and_builds_black_box(self, tmp_path):
         from app.services.coverage_analyzer import build_coverage_test_design
 

@@ -846,13 +846,10 @@ def _merge_agent_entry_paths(
     if not isinstance(agent_context, dict):
         return entry_paths
     merged = list(entry_paths)
-    seen = {
-        (
-            str(entry.get("entry_symbol") or ""),
-            str(entry.get("entry_file") or ""),
-            str(entry.get("tool") or ""),
-        )
+    by_entry_key = {
+        _entry_execution_key(entry): entry
         for entry in merged
+        if _entry_execution_key(entry)
     }
     for item in agent_context.get("validated_entries") or []:
         if _agent_entry_is_self_target(item, hit):
@@ -861,20 +858,16 @@ def _merge_agent_entry_paths(
             continue
         if not _agent_entry_has_public_trigger_surface(item):
             continue
-        key = (
-            str(item.get("entry_symbol") or ""),
-            str(item.get("entry_file") or ""),
-            str(item.get("provider") or ""),
-        )
-        if key in seen:
+        key = _entry_execution_key(item)
+        if key and key in by_entry_key:
+            _merge_agent_entry_confirmation(by_entry_key[key], item)
             continue
-        seen.add(key)
         chain = _normalize_agent_entry_chain(item.get("chain"))
         if hit.function_name and not chain:
             chain.append(hit.function_name)
         entry_kind = item.get("entry_kind") or "external"
         entry_symbol = item.get("entry_symbol") or item.get("entry_label")
-        merged.append({
+        new_entry = {
             "entry_kind": entry_kind,
             "entry_symbol": entry_symbol,
             "entry_file": item.get("entry_file"),
@@ -891,8 +884,69 @@ def _merge_agent_entry_paths(
             "source_verification": item.get("source_verification") or "source_backed",
             "validation_error": item.get("validation_error"),
             "input_hints": _coerce_string_list(item.get("input_hints")),
-        })
+        }
+        merged.append(new_entry)
+        if key:
+            by_entry_key[key] = new_entry
     return merged
+
+
+def _entry_execution_key(entry: dict) -> tuple[str, str] | None:
+    symbol = str(entry.get("entry_symbol") or entry.get("entry_label") or "").strip()
+    file_path = str(entry.get("entry_file") or "").replace("\\", "/").strip().lower()
+    if not symbol or not file_path:
+        return None
+    return (symbol, file_path)
+
+
+def _merge_agent_entry_confirmation(existing: dict, agent_entry: dict) -> None:
+    _merge_agent_entry_label_confirmation(existing, agent_entry)
+    provider = str(agent_entry.get("provider") or "external_agent").strip()
+    if provider:
+        if not existing.get("provider"):
+            existing["provider"] = provider
+        providers = list(existing.get("confirming_providers") or [])
+        if provider not in providers:
+            providers.append(provider)
+        existing["confirming_providers"] = providers
+    turn_id = str(agent_entry.get("turn_id") or "").strip()
+    if turn_id:
+        if not existing.get("turn_id"):
+            existing["turn_id"] = turn_id
+        turn_ids = list(existing.get("confirming_turn_ids") or [])
+        if turn_id not in turn_ids:
+            turn_ids.append(turn_id)
+        existing["confirming_turn_ids"] = turn_ids
+    source_verification = str(agent_entry.get("source_verification") or "").strip()
+    if source_verification and not existing.get("source_verification"):
+        existing["source_verification"] = source_verification
+    reason = str(agent_entry.get("reason") or "").strip()
+    if reason:
+        confirmations = list(existing.get("confirming_evidence") or [])
+        if reason not in confirmations:
+            confirmations.append(reason)
+        existing["confirming_evidence"] = confirmations[:4]
+
+
+def _merge_agent_entry_label_confirmation(existing: dict, agent_entry: dict) -> None:
+    agent_kind = str(agent_entry.get("entry_kind") or "").strip().lower()
+    agent_symbol = agent_entry.get("entry_symbol") or agent_entry.get("entry_label")
+    agent_label = (
+        str(agent_entry.get("external_trigger") or "").strip()
+        or _public_entry_label(agent_kind, agent_symbol)
+    )
+    if not agent_kind or not agent_label:
+        return
+    current_kind = str(existing.get("entry_kind") or "").strip().lower()
+    if current_kind in {"", "api", "external", "public"} and agent_kind not in {
+        "api",
+        "external",
+        "public",
+    }:
+        existing["entry_kind"] = agent_kind
+        existing["entry_label"] = agent_label
+    elif not str(existing.get("entry_label") or "").strip():
+        existing["entry_label"] = agent_label
 
 
 def _agent_entry_is_self_target(item: dict, hit: FunctionHit) -> bool:
@@ -2725,6 +2779,9 @@ def _entry_case_provenance(entry: dict) -> dict:
         "entry_file",
         "entry_symbol",
         "entry_label",
+        "confirming_providers",
+        "confirming_turn_ids",
+        "confirming_evidence",
     ):
         value = entry.get(key)
         if value is not None and value != "":
