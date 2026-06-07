@@ -2091,6 +2091,43 @@ class TestCoverageTestDesign:
         assert gap["entry_paths"][0]["entry_kind"] == "queue"
         assert gap["entry_paths"][0]["entry_symbol"] == "invoice_queue_consumer"
 
+    async def test_argparse_main_entry_feeds_black_box_input_hints(self, tmp_path):
+        from app.services.coverage_analyzer import build_coverage_test_design
+
+        src = tmp_path / "src"
+        src.mkdir()
+        (src / "cli.py").write_text(
+            "import argparse\n\n"
+            "def process_payment(config, tenant_id):\n"
+            "    if not config:\n"
+            "        return 'missing'\n"
+            "    return tenant_id\n\n"
+            "def main(argv=None):\n"
+            "    parser = argparse.ArgumentParser()\n"
+            "    parser.add_argument('--config', required=True)\n"
+            "    parser.add_argument('--tenant-id', dest='tenant_id')\n"
+            "    args = parser.parse_args(argv)\n"
+            "    return process_payment(args.config, args.tenant_id)\n",
+            encoding="utf-8",
+        )
+        modules = self._modules(
+            "feature,module,code_location,function,triggered,hit_count\n"
+            "payments,cli,src/cli.py:3-6,process_payment,false,0\n"
+        )
+
+        design = await build_coverage_test_design(
+            modules, workspace_id="ws-1", repo_path=str(tmp_path)
+        )
+
+        gap = [g for g in design["gaps"] if g.get("kind") == "function"][0]
+        assert gap["black_box_readiness"]["case_type"] == "black_box_ready"
+        assert gap["entry_paths"][0]["entry_kind"] == "cli"
+        assert gap["entry_paths"][0]["entry_symbol"] == "main"
+        assert gap["entry_paths"][0]["input_hints"] == ["--config", "--tenant-id"]
+        case_text = json.dumps(gap["black_box_cases"], ensure_ascii=False)
+        assert "--config" in case_text
+        assert "--tenant-id" in case_text
+
     async def test_callback_registration_entry_discovery_prevents_final_gray_box(
         self, tmp_path
     ):

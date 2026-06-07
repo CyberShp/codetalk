@@ -2737,6 +2737,8 @@ def _entry_metadata_for_site(abs_file: str, line_number: int, enclosing_fn: str 
     for hint in _handler_signature_input_hints(abs_file, enclosing_fn):
         if hint not in hints:
             hints.append(hint)
+    if _is_cli_entry_symbol(enclosing_fn):
+        hints = _merge_ordered_strings(hints, _cli_option_input_hints(abs_file, enclosing_fn))
     if hints:
         metadata["input_hints"] = hints
     return metadata
@@ -2954,7 +2956,7 @@ def _signature_input_params(signature: str) -> list[str]:
         return []
     framework_params = {
         "self", "cls", "request", "req", "response", "res", "next",
-        "context", "ctx", "scope", "receive", "send",
+        "context", "ctx", "scope", "receive", "send", "argv", "argc",
         "httpcontext", "cancellationtoken", "modelstate",
     }
     hints: list[str] = []
@@ -2982,6 +2984,52 @@ def _signature_param_name(raw_param: str) -> str | None:
         return param
     identifiers = re.findall(r"[A-Za-z_][\w-]*", param)
     return identifiers[-1] if identifiers else None
+
+
+def _is_cli_entry_symbol(symbol: str | None) -> bool:
+    return bool(symbol and symbol.lower() in {"main", "_main", "wmain"})
+
+
+def _cli_option_input_hints(abs_file: str, enclosing_fn: str | None) -> list[str]:
+    if not enclosing_fn:
+        return []
+    try:
+        lines = Path(abs_file).read_text(encoding="utf-8", errors="replace").splitlines()
+    except OSError:
+        return []
+    fn_start: int | None = None
+    for idx, line in enumerate(lines):
+        if _match_def_name(line) == enclosing_fn:
+            fn_start = idx
+            break
+    if fn_start is None:
+        return []
+    fn_end = len(lines)
+    for pos in range(fn_start + 1, len(lines)):
+        if _is_sibling_definition_boundary(lines, fn_start, pos):
+            fn_end = pos
+            break
+    return _cli_option_input_hints_from_text("\n".join(lines[fn_start:fn_end]))
+
+
+def _cli_option_input_hints_from_text(text: str) -> list[str]:
+    hints: list[str] = []
+    seen: set[str] = set()
+    for match in re.finditer(
+        r"(?:add_argument|click\.(?:option|argument))\s*\((?P<args>[^)]*)\)",
+        text or "",
+        flags=re.DOTALL,
+    ):
+        quoted = re.findall(r"['\"]([^'\"]+)['\"]", match.group("args"))
+        if not quoted:
+            continue
+        hint = next((item for item in quoted if item.startswith("--")), None)
+        if hint is None:
+            hint = next((item for item in quoted if not item.startswith("-")), None)
+        if hint and hint not in seen:
+            seen.add(hint)
+            hints.append(hint)
+    return hints[:12]
 
 
 def _split_cgc_location(location: object) -> tuple[str | None, int | None]:
