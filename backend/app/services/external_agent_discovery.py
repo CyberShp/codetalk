@@ -1921,7 +1921,11 @@ async def _run_provider(
         stderr_text = stderr.decode("utf-8", errors="replace")
         if proc.returncode not in {0, None}:
             cli_error = _extract_cli_error(raw) or _extract_cli_error(stderr_text)
-            summary = cli_error or _format_process_error_summary(proc.returncode, stderr_text, raw, health)
+            summary = (
+                _append_health_diagnostics(cli_error, health)
+                if cli_error
+                else _format_process_error_summary(proc.returncode, stderr_text, raw, health)
+            )
             attempt["run_status"] = "error"
             attempt["run_message"] = summary[:4000]
             prior_failures.append(summary)
@@ -2026,6 +2030,13 @@ def _format_process_error_summary(
     if isinstance(health, dict):
         parts.extend(_health_diagnostic_parts(health))
     return "; ".join(parts)[:4000]
+
+
+def _append_health_diagnostics(summary: str, health: dict | None) -> str:
+    parts = [str(summary or "").strip()]
+    if isinstance(health, dict):
+        parts.extend(_health_diagnostic_parts(health))
+    return "; ".join(part for part in parts if part)[:4000]
 
 
 def _health_diagnostic_parts(health: dict) -> list[str]:
