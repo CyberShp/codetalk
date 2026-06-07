@@ -9,6 +9,14 @@ from app.schemas.workspace_analysis import AnalysisObject, LLMLimits
 from app.services.workspace_scope_resolver import WorkspaceScopeResolver, _GraphIndex
 
 
+def _set_existing_ccr_config(tmp_path, monkeypatch) -> Path:
+    config = tmp_path / "router" / "config-router.json"
+    config.parent.mkdir(parents=True, exist_ok=True)
+    config.write_text('{"server":{"host":"127.0.0.1","port":3456}}\n', encoding="utf-8")
+    monkeypatch.setenv("CCR_CONFIG_PATH", str(config))
+    return config
+
+
 def test_nvme_tcp_tls_query_expands_to_nvmf_transport_variants():
     from app.services.external_agent_discovery import expand_agent_query_terms
 
@@ -562,9 +570,10 @@ def test_missing_cli_returns_unavailable(tmp_path, monkeypatch):
     assert "claude" in health["reason"]
 
 
-def test_provider_command_supports_subcommand_style(monkeypatch):
+def test_provider_command_supports_subcommand_style(tmp_path, monkeypatch):
     from app.services.external_agent_discovery import check_provider_health, split_agent_command
 
+    _set_existing_ccr_config(tmp_path, monkeypatch)
     monkeypatch.setattr(
         "app.services.external_agent_discovery.shutil.which",
         lambda cmd: "C:/tools/ccr.exe" if cmd == "ccr" else None,
@@ -587,6 +596,7 @@ def test_provider_command_strips_quotes_from_absolute_executable_path(tmp_path, 
     agent.write_text("@echo off\n", encoding="utf-8")
     command = f'"{agent}" code -p --output-format json'
 
+    _set_existing_ccr_config(tmp_path, monkeypatch)
     monkeypatch.setattr("app.services.external_agent_discovery.shutil.which", lambda _cmd: None)
 
     assert split_agent_command(command)[0] == str(agent)
@@ -673,6 +683,66 @@ def test_provider_health_uses_claude_fallback_when_ccr_missing(tmp_path, monkeyp
     assert health["attempts"][0]["executable"] == "ccr"
 
 
+def test_provider_health_reports_missing_ccr_config_before_fallback(tmp_path, monkeypatch):
+    from app.services.external_agent_discovery import check_provider_health
+
+    ccr = tmp_path / "bin" / "ccr.cmd"
+    claude = tmp_path / "bin" / "claude.cmd"
+    ccr.parent.mkdir()
+    ccr.write_text("@echo off\n", encoding="utf-8")
+    claude.write_text("@echo off\n", encoding="utf-8")
+
+    def fake_which(cmd):
+        if cmd == "ccr":
+            return str(ccr)
+        if cmd == "claude":
+            return str(claude)
+        return None
+
+    monkeypatch.setattr("app.services.external_agent_discovery.platform.system", lambda: "Windows")
+    monkeypatch.setattr("app.services.external_agent_discovery.shutil.which", fake_which)
+    monkeypatch.delenv("CCR_CONFIG_PATH", raising=False)
+    monkeypatch.setenv("USERPROFILE", str(tmp_path / "home"))
+
+    health = check_provider_health(
+        "claude-code",
+        "ccr code -p --output-format json",
+        fallback_commands=["claude -p --output-format json"],
+    )
+
+    assert health["status"] == "unavailable"
+    assert "ccr config file not found" in health["reason"]
+    assert "config-router.json" in health["reason"]
+    assert len(health["attempts"]) == 1
+    assert health["attempts"][0]["status"] == "configuration_error"
+
+
+def test_provider_health_accepts_existing_ccr_config_path(tmp_path, monkeypatch):
+    from app.services.external_agent_discovery import check_provider_health
+
+    ccr = tmp_path / "bin" / "ccr.cmd"
+    config = tmp_path / "router" / "config-router.json"
+    ccr.parent.mkdir()
+    config.parent.mkdir()
+    ccr.write_text("@echo off\n", encoding="utf-8")
+    config.write_text('{"server":{"host":"127.0.0.1","port":3456}}\n', encoding="utf-8")
+
+    monkeypatch.setattr("app.services.external_agent_discovery.platform.system", lambda: "Windows")
+    monkeypatch.setattr(
+        "app.services.external_agent_discovery.shutil.which",
+        lambda cmd: str(ccr) if cmd == "ccr" else None,
+    )
+
+    health = check_provider_health(
+        "claude-code",
+        f'ccr code --config "{config}" -p --output-format json',
+    )
+
+    assert health["status"] == "available"
+    assert health["argv"][0] == str(ccr)
+    assert "--config" in health["argv"]
+
+
 def test_provider_fallback_command_list_preserves_semicolons_inside_quotes(tmp_path, monkeypatch):
     from app.services import external_agent_discovery as discovery
 
@@ -681,6 +751,7 @@ def test_provider_fallback_command_list_preserves_semicolons_inside_quotes(tmp_p
     agent = agent_dir / "ccr.cmd"
     agent.write_text("@echo off\n", encoding="utf-8")
 
+    _set_existing_ccr_config(tmp_path, monkeypatch)
     monkeypatch.setattr("app.services.external_agent_discovery.shutil.which", lambda _cmd: None)
     monkeypatch.setattr(
         discovery.settings,
@@ -743,6 +814,7 @@ def test_provider_health_finds_windows_npm_command_when_service_path_misses_it(t
     ccr_cmd = npm_dir / "ccr.cmd"
     ccr_cmd.write_text("@echo off\n", encoding="utf-8")
 
+    _set_existing_ccr_config(tmp_path, monkeypatch)
     monkeypatch.setattr("app.services.external_agent_discovery.platform.system", lambda: "Windows")
     monkeypatch.setattr("app.services.external_agent_discovery.shutil.which", lambda _cmd: None)
     monkeypatch.setenv("APPDATA", str(tmp_path))
@@ -758,6 +830,7 @@ def test_provider_health_finds_windows_npm_command_when_service_path_misses_it(t
 def test_provider_health_uses_powershell_fallback_for_shell_only_ccr(tmp_path, monkeypatch):
     from app.services.external_agent_discovery import check_provider_health
 
+    _set_existing_ccr_config(tmp_path, monkeypatch)
     monkeypatch.setattr(
         "app.services.external_agent_discovery.shutil.which",
         lambda cmd: "C:/Windows/System32/WindowsPowerShell/v1.0/powershell.exe"
@@ -788,6 +861,7 @@ def test_provider_health_uses_powershell_fallback_for_shell_only_ccr(tmp_path, m
 def test_provider_health_powershell_print_mode_replaces_placeholder(tmp_path, monkeypatch):
     from app.services.external_agent_discovery import check_provider_health
 
+    _set_existing_ccr_config(tmp_path, monkeypatch)
     monkeypatch.setattr(
         "app.services.external_agent_discovery.shutil.which",
         lambda cmd: "C:/Windows/System32/WindowsPowerShell/v1.0/powershell.exe"
@@ -819,6 +893,7 @@ def test_provider_health_powershell_print_mode_replaces_placeholder(tmp_path, mo
 def test_provider_health_probes_shell_only_ccr_with_execution_policy_bypass(tmp_path, monkeypatch):
     from app.services.external_agent_discovery import check_provider_health
 
+    _set_existing_ccr_config(tmp_path, monkeypatch)
     captured: dict = {}
 
     class Completed:
@@ -858,6 +933,7 @@ def test_provider_health_wraps_windows_ps1_agent_with_powershell(tmp_path, monke
     ccr_ps1 = npm_dir / "ccr.ps1"
     ccr_ps1.write_text("param($Prompt)\n", encoding="utf-8")
 
+    _set_existing_ccr_config(tmp_path, monkeypatch)
     def fake_which(cmd):
         if cmd.lower() == "powershell.exe":
             return "C:/Windows/System32/WindowsPowerShell/v1.0/powershell.exe"

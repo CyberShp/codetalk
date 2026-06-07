@@ -171,6 +171,13 @@ def check_provider_health(
         attempt = _resolve_provider_command_attempt(candidate_command, provider=provider)
         attempts.append(attempt)
         if attempt.get("status") != "available":
+            if attempt.get("status") == "configuration_error":
+                return {
+                    "provider": provider,
+                    "status": "unavailable",
+                    "reason": str(attempt.get("reason") or "agent command configuration error"),
+                    "attempts": attempts,
+                }
             continue
         health = {
             "provider": provider,
@@ -326,6 +333,18 @@ def _resolve_provider_command_attempt(command: str, provider: str | None = None)
     if configured_path:
         resolved_argv = [configured_path, *argv[1:]]
         guarded_argv = apply_readonly_cli_guard(provider, resolved_argv)
+        config_error = _provider_command_configuration_error(provider, guarded_argv)
+        if config_error:
+            return {
+                "command": command,
+                "status": "configuration_error",
+                "argv": guarded_argv,
+                "configured_argv": guarded_argv,
+                "executable": executable,
+                "path": configured_path,
+                "reason": config_error["reason"],
+                "config_path": config_error["config_path"],
+            }
         if _is_windows_powershell_script(configured_path):
             return {
                 "command": command,
@@ -365,6 +384,19 @@ def _resolve_provider_command_attempt(command: str, provider: str | None = None)
         shell_resolution = _probe_windows_shell_command(executable)
         if shell_resolution:
             guarded_argv = apply_readonly_cli_guard(provider, argv)
+            config_error = _provider_command_configuration_error(provider, guarded_argv)
+            if config_error:
+                return {
+                    "command": command,
+                    "status": "configuration_error",
+                    "argv": guarded_argv,
+                    "configured_argv": guarded_argv,
+                    "executable": executable,
+                    "path": shell_resolution,
+                    "launch_kind": "powershell",
+                    "reason": config_error["reason"],
+                    "config_path": config_error["config_path"],
+                }
             shell_argv = _windows_shell_agent_argv(guarded_argv, provider=provider)
             return {
                 "command": command,
@@ -384,6 +416,17 @@ def _resolve_provider_command_attempt(command: str, provider: str | None = None)
         }
     resolved_argv = [resolved, *argv[1:]]
     guarded_argv = apply_readonly_cli_guard(provider, resolved_argv)
+    config_error = _provider_command_configuration_error(provider, guarded_argv)
+    if config_error:
+        return {
+            "command": command,
+            "status": "configuration_error",
+            "argv": guarded_argv,
+            "executable": executable,
+            "path": resolved,
+            "reason": config_error["reason"],
+            "config_path": config_error["config_path"],
+        }
     if _is_windows_powershell_script(resolved):
         return {
             "command": command,
@@ -521,6 +564,56 @@ def _probe_windows_shell_command(executable: str) -> str | None:
         return None
     summary = (proc.stdout or "").strip()
     return summary or f"PowerShell command: {executable}"
+
+
+def _provider_command_configuration_error(
+    provider: str | None,
+    argv: list[str],
+) -> dict[str, str] | None:
+    if provider != "claude-code" or not _looks_like_ccr_code_command(argv):
+        return None
+    config_path = _ccr_config_path_from_argv(argv)
+    try:
+        if Path(config_path).expanduser().is_file():
+            return None
+    except OSError:
+        pass
+    return {
+        "reason": f"ccr config file not found: {config_path}",
+        "config_path": config_path,
+    }
+
+
+def _looks_like_ccr_code_command(argv: list[str]) -> bool:
+    if not argv:
+        return False
+    executable_name = Path(str(argv[0])).name.lower()
+    if executable_name not in {
+        "ccr",
+        "ccr.cmd",
+        "ccr.exe",
+        "ccr.ps1",
+        "claude-code-router",
+        "claude-code-router.cmd",
+        "claude-code-router.exe",
+        "claude-code-router.ps1",
+    }:
+        return False
+    return "code" in {str(token).lower() for token in argv[1:]}
+
+
+def _ccr_config_path_from_argv(argv: list[str]) -> str:
+    for index, token in enumerate(argv):
+        value = str(token)
+        if value in {"-c", "--config"} and index + 1 < len(argv):
+            return str(argv[index + 1])
+        for prefix in ("--config=", "-c="):
+            if value.startswith(prefix):
+                return value[len(prefix):]
+    env_path = os.environ.get("CCR_CONFIG_PATH")
+    if env_path:
+        return env_path
+    return str(Path.home() / ".claude-code-router" / "config-router.json")
 
 
 def _find_powershell() -> str | None:
