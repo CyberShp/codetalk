@@ -181,6 +181,40 @@ def test_agent_output_unwraps_responses_output_text(tmp_path):
     assert result.candidate_entries[0].entry_file == "src/rpc.c"
 
 
+def test_agent_output_unwraps_root_content_blocks(tmp_path):
+    from app.services.external_agent_discovery import parse_agent_output
+
+    src = tmp_path / "src"
+    src.mkdir()
+    (src / "tls.c").write_text("int tls;\n", encoding="utf-8")
+    discovery_payload = json.dumps({
+        "candidate_files": [
+            {
+                "path": "src/tls.c",
+                "reason": "root content block returned discovery JSON",
+                "confidence": "high",
+            }
+        ],
+        "raw_summary": "root content parsed",
+    })
+    raw = json.dumps({
+        "type": "message",
+        "content": [
+            {
+                "type": "text",
+                "text": discovery_payload,
+            }
+        ],
+    })
+
+    result = parse_agent_output("claude-code", raw, tmp_path)
+
+    assert result.status == "ok"
+    assert result.raw_summary == "root content parsed"
+    assert result.candidate_files[0].validated is True
+    assert result.candidate_files[0].path == "src/tls.c"
+
+
 def test_agent_output_prefers_discovery_json_after_stream_metadata(tmp_path):
     from app.services.external_agent_discovery import parse_agent_output
 

@@ -864,6 +864,9 @@ def _unwrap_agent_payload(payload: object) -> object:
         return _unwrap_agent_payload(result)
     if isinstance(result, str):
         return _unwrap_agent_payload(_json_loads_flexible(result))
+    unwrapped = _unwrap_agent_content(payload.get("content"))
+    if unwrapped is not None:
+        return unwrapped
     output_text = payload.get("output_text")
     unwrapped = _unwrap_agent_content(output_text)
     if unwrapped is not None:
