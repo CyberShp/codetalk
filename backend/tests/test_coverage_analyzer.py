@@ -707,13 +707,14 @@ error_recovery,src/service.c:40-55,false,0
         assert design["summary"]["ai_status"] == "available"
         assert design["summary"]["ai_scenario_count"] == 0
         assert design["summary"]["ai_rejected_scenario_count"] == 1
-        assert design["summary"]["recommendation_source"] == "none"
+        assert design["summary"]["recommendation_source"] == "deterministic_fallback"
         assert design["summary"]["black_box_ready_count"] == 0
-        assert design["summary"]["gray_box_required_count"] == 0
+        assert design["summary"]["gray_box_required_count"] == 1
         assert design["summary"]["gap_gray_box_required_count"] == 1
+        assert design["test_scenarios"] == []
         assert gap["ai_generation_status"] == "available"
         assert gap["ai_recommendation_status"] == "no_valid_ai_scenarios"
-        assert gap["deterministic_case_role"] == "evidence_scaffold"
+        assert gap["deterministic_case_role"] == "fallback_recommendation"
 
     async def test_ai_rejects_all_gray_box_batch_when_external_trigger_exists(self):
         from app.services.coverage_analyzer import _generate_ai_test_scenarios

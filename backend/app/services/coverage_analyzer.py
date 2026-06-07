@@ -4095,6 +4095,7 @@ def _annotate_ai_recommendation_status(
     use_ai: bool,
     ai_status: str,
     scenarios: list[dict],
+    deterministic_fallback: bool = False,
 ) -> None:
     if not use_ai:
         return
@@ -4102,7 +4103,9 @@ def _annotate_ai_recommendation_status(
         related = gap.get("test_scenarios") or []
         gap["ai_generation_status"] = ai_status
         gap["ai_scenario_count"] = len(related)
-        gap["deterministic_case_role"] = "evidence_scaffold"
+        gap["deterministic_case_role"] = (
+            "fallback_recommendation" if deterministic_fallback else "evidence_scaffold"
+        )
         if related:
             gap["ai_recommendation_status"] = "has_ai_scenarios"
         elif ai_status == "available" and not scenarios:
@@ -4318,6 +4321,7 @@ async def build_coverage_test_design(
         use_ai=use_ai,
         ai_status=ai_status,
         scenarios=test_scenarios,
+        deterministic_fallback=use_ai and not test_scenarios,
     )
 
     gap_black_box_ready_count = sum(
@@ -4336,8 +4340,12 @@ async def build_coverage_test_design(
         )
     )
     if use_ai:
-        recommendation_source = test_scenarios
-        recommendation_source_label = "ai_scenarios" if test_scenarios else "none"
+        if test_scenarios:
+            recommendation_source = test_scenarios
+            recommendation_source_label = "ai_scenarios"
+        else:
+            recommendation_source = gaps
+            recommendation_source_label = "deterministic_fallback"
     else:
         recommendation_source = gaps
         recommendation_source_label = "deterministic_gaps"
