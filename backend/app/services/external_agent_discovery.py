@@ -265,6 +265,18 @@ def _runtime_attempt_records(
     return records
 
 
+def _health_has_configuration_error(health: dict) -> bool:
+    if health.get("status") == "configuration_error":
+        return True
+    attempts = health.get("attempts")
+    if not isinstance(attempts, list):
+        return False
+    return any(
+        isinstance(attempt, dict) and attempt.get("status") == "configuration_error"
+        for attempt in attempts
+    )
+
+
 _SECRET_ASSIGNMENT_RE = re.compile(
     r"(?i)(--?(?:api[-_]?key|token|access[-_]?token|secret|password)(?:\s+|=))(['\"]?)([^\s\"']+)(['\"]?)"
 )
@@ -1475,6 +1487,15 @@ async def probe_external_agent_startup(
         if health.get("status") != "available":
             last_unavailable_health = dict(health)
             last_unavailable_health["attempts"] = list(attempts)
+            if _health_has_configuration_error(last_unavailable_health):
+                message = _format_unavailable_health_summary(last_unavailable_health)
+                return _redact_probe_response({
+                    "provider": provider,
+                    "healthy": False,
+                    "status": "unavailable",
+                    "message": message,
+                    "health": last_unavailable_health,
+                })
             continue
 
         health = dict(health)
@@ -1645,6 +1666,22 @@ async def _run_provider(
         if health.get("status") != "available":
             last_unavailable_health = dict(health)
             last_unavailable_health["attempts"] = list(attempts)
+            if _health_has_configuration_error(last_unavailable_health):
+                reason = _format_unavailable_health_summary(last_unavailable_health)
+                result = AgentDiscoveryResult(
+                    provider=provider,
+                    status="unavailable",
+                    raw_summary=reason,
+                    warnings=[reason] if reason else [],
+                    runtime_attempts=_runtime_attempt_records(
+                        provider,
+                        request.request_id,
+                        attempts,
+                        phase="discovery",
+                    ),
+                )
+                _record_agent_turn(session, provider, request, "", result.raw_summary, result)
+                return result
             continue
 
         health = dict(health)

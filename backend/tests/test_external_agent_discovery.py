@@ -1306,6 +1306,49 @@ def test_run_provider_does_not_fallback_after_ccr_config_error(tmp_path, monkeyp
     assert len(results[0].runtime_attempts) == 1
 
 
+def test_run_provider_does_not_fallback_after_ccr_preflight_config_error(tmp_path, monkeypatch):
+    from app.services.external_agent_discovery import AgentDiscoveryRequest, run_external_agent_discovery
+
+    ccr = tmp_path / "bin" / "ccr.cmd"
+    ccr.parent.mkdir()
+    ccr.write_text("@echo off\n", encoding="utf-8")
+    ok_agent = tmp_path / "ok_agent.py"
+    ok_agent.write_text(
+        "import json, sys\n"
+        "sys.stdin.read()\n"
+        "print(json.dumps({'candidate_files':[],'candidate_symbols':[],"
+        "'candidate_entries':[],'need_source_slices':[],"
+        "'commands':[],'raw_summary':'fallback_ok'}))\n",
+        encoding="utf-8",
+    )
+
+    monkeypatch.delenv("CCR_CONFIG_PATH", raising=False)
+    monkeypatch.setenv("USERPROFILE", str(tmp_path / "home"))
+    monkeypatch.setattr(
+        "app.services.external_agent_discovery.settings.claude_code_command",
+        f'"{ccr}" code -p --output-format json',
+    )
+    monkeypatch.setattr(
+        "app.services.external_agent_discovery.settings.claude_code_fallback_commands",
+        [f'"{sys.executable}" "{ok_agent}"'],
+    )
+
+    results = asyncio.run(run_external_agent_discovery(
+        AgentDiscoveryRequest(
+            request_id="ccr-preflight-config-error",
+            repo_path=str(tmp_path),
+            analysis_object_text="tls",
+        ),
+        providers=["claude-code"],
+    ))
+
+    assert results[0].status == "unavailable"
+    assert "ccr config file not found" in results[0].raw_summary
+    assert "fallback_ok" not in results[0].raw_summary
+    assert len(results[0].runtime_attempts) == 1
+    assert results[0].runtime_attempts[0]["status"] == "configuration_error"
+
+
 def test_run_provider_fallback_preserves_primary_invalid_json_warning(tmp_path, monkeypatch):
     from app.services.external_agent_discovery import AgentDiscoveryRequest, run_external_agent_discovery
 
@@ -2233,6 +2276,43 @@ def test_startup_probe_does_not_fallback_after_ccr_config_error(tmp_path, monkey
     attempts = result["health"]["attempts"]
     assert len(attempts) == 1
     assert attempts[0]["probe_status"] == "error"
+
+
+def test_startup_probe_does_not_fallback_after_ccr_preflight_config_error(tmp_path, monkeypatch):
+    from app.services.external_agent_discovery import probe_external_agent_startup
+
+    ccr = tmp_path / "bin" / "ccr.cmd"
+    ccr.parent.mkdir()
+    ccr.write_text("@echo off\n", encoding="utf-8")
+    ok_agent = tmp_path / "ok_agent.py"
+    ok_agent.write_text(
+        "import sys\n"
+        "sys.stdin.read()\n"
+        "print('{\"candidate_files\":[],\"candidate_symbols\":[],"
+        "\"candidate_entries\":[],\"need_source_slices\":[],"
+        "\"commands\":[],\"raw_summary\":\"startup_probe_ok\"}')\n",
+        encoding="utf-8",
+    )
+
+    monkeypatch.delenv("CCR_CONFIG_PATH", raising=False)
+    monkeypatch.setenv("USERPROFILE", str(tmp_path / "home"))
+    monkeypatch.setattr(
+        "app.services.external_agent_discovery.settings.claude_code_command",
+        f'"{ccr}" code -p --output-format json',
+    )
+    monkeypatch.setattr(
+        "app.services.external_agent_discovery.settings.claude_code_fallback_commands",
+        [f'"{sys.executable}" "{ok_agent}"'],
+    )
+
+    result = asyncio.run(probe_external_agent_startup("claude-code", repo_path=tmp_path))
+
+    assert result["healthy"] is False
+    assert result["status"] == "unavailable"
+    assert "ccr config file not found" in result["message"]
+    attempts = result["health"]["attempts"]
+    assert len(attempts) == 1
+    assert attempts[0]["status"] == "configuration_error"
 
 
 def test_startup_probe_tries_fallback_when_primary_outputs_invalid_json(tmp_path, monkeypatch):
