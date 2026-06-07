@@ -919,7 +919,6 @@ def _agent_entry_has_public_trigger_surface(item: dict) -> bool:
         "connection",
         "ui",
         "resource",
-        "external",
         "public",
     }
     if kind in public_kinds:
