@@ -1576,6 +1576,46 @@ def test_startup_probe_tries_fallback_when_primary_command_exits_nonzero(tmp_pat
     assert result["health"]["used_fallback"] is True
 
 
+def test_startup_probe_tries_fallback_when_primary_outputs_invalid_json(tmp_path, monkeypatch):
+    from app.services.external_agent_discovery import probe_external_agent_startup
+
+    bad_agent = tmp_path / "bad_json_agent.py"
+    bad_agent.write_text(
+        "import sys\n"
+        "sys.stdin.read()\n"
+        "print('ccr banner before json')\n",
+        encoding="utf-8",
+    )
+    ok_agent = tmp_path / "ok_agent.py"
+    ok_agent.write_text(
+        "import sys\n"
+        "sys.stdin.read()\n"
+        "print('{\"candidate_files\":[],\"candidate_symbols\":[],"
+        "\"candidate_entries\":[],\"need_source_slices\":[],"
+        "\"commands\":[],\"raw_summary\":\"startup_probe_ok\"}')\n",
+        encoding="utf-8",
+    )
+
+    monkeypatch.setattr(
+        "app.services.external_agent_discovery.settings.claude_code_command",
+        f'"{sys.executable}" "{bad_agent}"',
+    )
+    monkeypatch.setattr(
+        "app.services.external_agent_discovery.settings.claude_code_fallback_commands",
+        [f'"{sys.executable}" "{ok_agent}"'],
+    )
+
+    result = asyncio.run(probe_external_agent_startup("claude-code", repo_path=tmp_path))
+
+    assert result["healthy"] is True
+    assert result["status"] == "ok"
+    attempts = result["health"]["attempts"]
+    assert attempts[0]["probe_status"] == "invalid_output"
+    assert "invalid JSON" in attempts[0]["probe_message"]
+    assert attempts[1]["probe_status"] == "ok"
+    assert result["health"]["reason"].startswith("primary command failed")
+
+
 def test_candidate_outside_repo_and_non_source_are_rejected(tmp_path):
     from app.services.external_agent_discovery import validate_agent_candidate_file
 

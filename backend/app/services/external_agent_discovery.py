@@ -1300,9 +1300,24 @@ async def probe_external_agent_startup(
             continue
 
         result = parse_agent_output(provider, raw, cwd)
-        message = result.raw_summary or (result.warnings[0] if result.warnings else result.status)
+        if result.status == "ok":
+            message = result.raw_summary or (result.warnings[0] if result.warnings else result.status)
+        else:
+            message = result.warnings[0] if result.warnings else (result.raw_summary or result.status)
         attempt["probe_status"] = result.status
         attempt["probe_message"] = message[:4000]
+        if result.status != "ok" and index < len(commands) - 1:
+            last_failure = {
+                "provider": provider,
+                "healthy": False,
+                "status": result.status,
+                "message": message[:4000],
+                "health": health,
+                "warnings": result.warnings,
+                "stdout": raw[:4000],
+                "stderr": stderr_text[:4000],
+            }
+            continue
         health["attempts"] = list(attempts)
         if health.get("used_fallback"):
             health["reason"] = _fallback_reason(candidate_command, attempts[:-1])
