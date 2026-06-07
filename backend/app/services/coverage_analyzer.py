@@ -3212,6 +3212,13 @@ def _trace_entry_paths(
                     if anonymous_metadata.get("input_hints"):
                         metadata["input_hints"] = anonymous_metadata["input_hints"]
                     anonymous_evidence = anonymous_metadata.pop("_anonymous_entry_evidence", None)
+                    if entry_kind == "route":
+                        route_hints = _route_template_input_hints([site["text"]])
+                        if route_hints:
+                            metadata["input_hints"] = _merge_ordered_strings(
+                                metadata.get("input_hints"),
+                                route_hints,
+                            )
                     entry_paths.append({
                         "entry_kind": entry_kind,
                         "entry_symbol": entry_symbol,
@@ -3291,6 +3298,13 @@ def _registration_entry_for_site(
     rel_file = _relative_path(repo_root, path)
     entry_type = _registered_entry_type(registration_line, window)
     metadata = _entry_metadata_for_symbol(repo_root, str(path), line_number, enclosing, symbol)
+    if entry_type == "route":
+        route_hints = _route_template_input_hints([site_text, registration_line])
+        if route_hints:
+            metadata["input_hints"] = _merge_ordered_strings(
+                metadata.get("input_hints"),
+                route_hints,
+            )
     entry_label = metadata.pop("entry_label", None)
     entry = {
         "entry_kind": entry_type,
