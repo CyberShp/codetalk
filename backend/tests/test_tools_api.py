@@ -256,7 +256,7 @@ async def test_external_agent_startup_probe_exception_returns_diagnostics(tools_
             return "claude-code"
 
         async def startup_probe(self, repo_path=None):
-            raise RuntimeError("spawn failed: ccr is not on backend PATH")
+            raise RuntimeError("spawn failed: ccr --api-key sk-tool-secret-123 is not on backend PATH")
 
     client, _mock_pm = tools_client
     monkeypatch.setattr(tools, "get_adapter", lambda _name: BrokenAgentAdapter())
@@ -271,7 +271,9 @@ async def test_external_agent_startup_probe_exception_returns_diagnostics(tools_
     assert body["provider"] == "claude-code"
     assert body["healthy"] is False
     assert body["status"] == "error"
-    assert body["message"] == "spawn failed: ccr is not on backend PATH"
+    assert "spawn failed" in body["message"]
+    assert "sk-tool-secret-123" not in body["message"]
+    assert "<redacted>" in body["message"]
 
 
 async def test_startup_probe_rejects_tools_without_probe_support(tools_client, monkeypatch):

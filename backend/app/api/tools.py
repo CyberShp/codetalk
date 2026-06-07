@@ -7,6 +7,7 @@ from typing import Any
 from fastapi import APIRouter, HTTPException, Request
 
 from app.adapters import get_adapter, get_all_adapters
+from app.services.external_agent_discovery import redact_agent_diagnostic_text
 from app.services.process_manager import ProcessManager
 
 logger = logging.getLogger(__name__)
@@ -227,11 +228,12 @@ async def startup_probe_tool(tool_name: str, repo_path: str | None = None) -> di
             "message": "startup probe timed out",
         }
     except Exception as exc:
+        message = redact_agent_diagnostic_text(str(exc))
         return {
             "provider": tool_name,
             "healthy": False,
             "status": "error",
-            "message": str(exc),
+            "message": message,
         }
 
 
