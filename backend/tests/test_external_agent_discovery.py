@@ -2676,6 +2676,69 @@ def test_coverage_agent_repeated_unverified_entry_across_rounds_is_deduped(tmp_p
     assert same_symbol_candidates[0]["turn_id"].endswith(":round2")
 
 
+def test_coverage_agent_round2_failure_keeps_round1_candidate(tmp_path, monkeypatch):
+    import app.services.coverage_analyzer as coverage_mod
+    from app.services.coverage_analyzer import build_coverage_test_design
+    from app.services.external_agent_discovery import AgentCandidateEntry, AgentDiscoveryResult
+
+    src = tmp_path / "src"
+    src.mkdir()
+    (src / "util.c").write_text(
+        "void internal_helper(void) {\n"
+        "    if (1) { return; }\n"
+        "}\n",
+        encoding="utf-8",
+    )
+    calls: list[str] = []
+
+    async def fake_discovery(request, **_kwargs):
+        calls.append(request.request_id)
+        if "round2" in request.request_id:
+            raise RuntimeError("round2 agent crashed")
+        return [
+            AgentDiscoveryResult(
+                provider="opencode",
+                status="ok",
+                candidate_entries=[
+                    AgentCandidateEntry(
+                        entry_kind="cli",
+                        entry_symbol="maybe_cli",
+                        entry_file=None,
+                        chain=["maybe_cli", "internal_helper"],
+                        external_trigger="CLI maybe",
+                        reason="round 1 candidate still useful",
+                        validated=False,
+                        validation_error="entry_file_missing",
+                    )
+                ],
+            )
+        ]
+
+    monkeypatch.setattr(coverage_mod, "run_external_agent_discovery", fake_discovery, raising=False)
+    modules = _coverage_modules(
+        "feature,module,code_location,function,triggered,hit_count\n"
+        "h,util,src/util.c:1-3,internal_helper,false,0\n"
+    )
+
+    design = asyncio.run(
+        build_coverage_test_design(
+            modules,
+            workspace_id="ws-1",
+            repo_path=str(tmp_path),
+            artifact_dir=tmp_path / "artifacts",
+            analysis_id="cov-1",
+        )
+    )
+
+    assert any("round2" in call for call in calls)
+    gap = [g for g in design["gaps"] if g.get("kind") == "function"][0]
+    card = design["entry_discovery"]["cards"][0]
+    assert gap["entry_paths"] == []
+    assert card["candidate_external_entries"][0]["entry_symbol"] == "maybe_cli"
+    raw_results = gap["evidence"]["external_agent"]["raw_results"]
+    assert any(item["status"] == "error" and "round2 agent crashed" in item["raw_summary"] for item in raw_results)
+
+
 def test_coverage_agent_invalid_output_is_visible_in_entry_discovery(tmp_path, monkeypatch):
     import app.services.coverage_analyzer as coverage_mod
     from app.services.coverage_analyzer import build_coverage_test_design

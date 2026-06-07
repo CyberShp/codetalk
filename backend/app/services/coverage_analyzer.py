@@ -1086,34 +1086,49 @@ async def _resolve_external_agent_entries_for_hits(
                     round_index=2,
                 )
             )
-            round2_results = await run_external_agent_discovery(
-                AgentDiscoveryRequest(
-                    request_id=f"coverage:{object_id}:round2",
-                    repo_path=str(repo_root),
-                    analysis_object_text=hit.function_name,
-                    path_hints=[hit.file_path] if hit.file_path else [],
-                    coverage_hit={
-                        "function_name": hit.function_name,
-                        "file_path": hit.file_path,
-                        "line_start": hit.line_start,
-                        "module_path": module.module_path,
-                    },
-                    context_packet=round2_packet,
-                    goal="coverage_entry",
-                ),
-                session=agent_session,
-            )
-            _collect_agent_entry_results(
-                round2_results,
-                repo_root=repo_root,
-                object_id=object_id,
-                turn_id=f"coverage:{object_id}:round2",
-                agent_session=agent_session,
-                validated_entries=validated_entries,
-                unverified_entries=unverified_entries,
-                status_by_provider=status_by_provider,
-                raw_results=raw_results,
-            )
+            round2_turn_id = f"coverage:{object_id}:round2"
+            try:
+                round2_results = await run_external_agent_discovery(
+                    AgentDiscoveryRequest(
+                        request_id=round2_turn_id,
+                        repo_path=str(repo_root),
+                        analysis_object_text=hit.function_name,
+                        path_hints=[hit.file_path] if hit.file_path else [],
+                        coverage_hit={
+                            "function_name": hit.function_name,
+                            "file_path": hit.file_path,
+                            "line_start": hit.line_start,
+                            "module_path": module.module_path,
+                        },
+                        context_packet=round2_packet,
+                        goal="coverage_entry",
+                    ),
+                    session=agent_session,
+                )
+            except Exception as exc:
+                logger.info(
+                    "Coverage external-agent round2 discovery failed for %s: %s",
+                    hit.function_name,
+                    exc,
+                )
+                _record_agent_round_error(
+                    provider_status=status_by_provider,
+                    raw_results=raw_results,
+                    turn_id=round2_turn_id,
+                    exc=exc,
+                )
+            else:
+                _collect_agent_entry_results(
+                    round2_results,
+                    repo_root=repo_root,
+                    object_id=object_id,
+                    turn_id=round2_turn_id,
+                    agent_session=agent_session,
+                    validated_entries=validated_entries,
+                    unverified_entries=unverified_entries,
+                    status_by_provider=status_by_provider,
+                    raw_results=raw_results,
+                )
         return object_id, {
             "status": _external_agent_status_from_provider_status(status_by_provider),
             "provider_status": status_by_provider,
@@ -1195,6 +1210,27 @@ def _collect_agent_entry_results(
                     agent_session.ledger.add_rejected_entry(item)
     if agent_session is not None:
         agent_session.save()
+
+
+def _record_agent_round_error(
+    *,
+    provider_status: dict[str, str],
+    raw_results: list[dict],
+    turn_id: str,
+    exc: Exception,
+) -> None:
+    summary = str(exc).strip() or exc.__class__.__name__
+    provider_status["external_agent"] = "error"
+    raw_results.append({
+        "provider": "external_agent",
+        "turn_id": turn_id,
+        "status": "error",
+        "candidate_file_count": 0,
+        "candidate_entry_count": 0,
+        "need_source_slice_count": 0,
+        "warnings": [summary],
+        "raw_summary": summary,
+    })
 
 
 def _upsert_agent_entry(target: list[dict], item: dict) -> None:
