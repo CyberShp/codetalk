@@ -280,6 +280,22 @@ def redact_agent_diagnostic_text(value: str) -> str:
     return _redact_agent_diagnostic_text(value)
 
 
+def _redact_agent_diagnostics(value: object) -> object:
+    if isinstance(value, str):
+        return _redact_agent_diagnostic_text(value)
+    if isinstance(value, list):
+        return [_redact_agent_diagnostics(item) for item in value]
+    if isinstance(value, tuple):
+        return [_redact_agent_diagnostics(item) for item in value]
+    if isinstance(value, dict):
+        return {str(key): _redact_agent_diagnostics(item) for key, item in value.items()}
+    return value
+
+
+def _redact_probe_response(payload: dict) -> dict:
+    return _redact_agent_diagnostics(payload) if isinstance(payload, dict) else payload
+
+
 def _unavailable_health_from_attempts(
     provider: str,
     commands: list[str],
@@ -1260,22 +1276,22 @@ async def probe_external_agent_startup(
     """Start one provider with a minimal stdin probe and report diagnostics."""
     command_attr = PROVIDER_COMMANDS.get(provider)
     if not command_attr:
-        return {
+        return _redact_probe_response({
             "provider": provider,
             "healthy": False,
             "status": "unavailable",
             "message": "unknown provider",
-        }
+        })
 
     command = str(getattr(settings, command_attr, "") or "")
     cwd = Path(repo_path or os.getcwd()).resolve()
     if not cwd.exists() or not cwd.is_dir():
-        return {
+        return _redact_probe_response({
             "provider": provider,
             "healthy": False,
             "status": "error",
             "message": f"probe cwd does not exist: {cwd}",
-        }
+        })
 
     prompt = _build_startup_probe_prompt()
     commands = _provider_candidate_commands(command, provider_fallback_commands(provider))
@@ -1390,7 +1406,7 @@ async def probe_external_agent_startup(
         health["attempts"] = list(attempts)
         if health.get("used_fallback"):
             health["reason"] = _fallback_reason(candidate_command, attempts[:-1])
-        return {
+        return _redact_probe_response({
             "provider": provider,
             "healthy": result.status == "ok",
             "status": result.status,
@@ -1399,21 +1415,21 @@ async def probe_external_agent_startup(
             "warnings": result.warnings,
             "stdout": raw[:4000],
             "stderr": stderr_text[:4000],
-        }
+        })
 
     health = last_unavailable_health or _unavailable_health_from_attempts(provider, commands, attempts)
     health["attempts"] = list(attempts)
     if last_failure:
         last_failure["health"] = health | {"status": "available", "attempts": attempts}
-        return last_failure
+        return _redact_probe_response(last_failure)
     message = _format_unavailable_health_summary(health)
-    return {
+    return _redact_probe_response({
         "provider": provider,
         "healthy": False,
         "status": "unavailable",
         "message": message,
         "health": health,
-    }
+    })
 
 
 def _build_startup_probe_prompt() -> str:

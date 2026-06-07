@@ -1799,6 +1799,38 @@ def test_startup_probe_launches_agent_and_parses_json(tmp_path, monkeypatch):
     assert "startup probe" in captured["stdin"]
 
 
+def test_startup_probe_redacts_secret_values_from_response(tmp_path, monkeypatch):
+    from app.services.external_agent_discovery import probe_external_agent_startup
+
+    agent = tmp_path / "agent.py"
+    agent.write_text(
+        "import sys\n"
+        "sys.stdin.read()\n"
+        "print('{\"candidate_files\":[],\"candidate_symbols\":[],"
+        "\"candidate_entries\":[],\"need_source_slices\":[],"
+        "\"commands\":[],\"raw_summary\":\"startup_probe_ok\"}')\n",
+        encoding="utf-8",
+    )
+    secret = "sk-startup-secret-123"
+
+    monkeypatch.setattr(
+        "app.services.external_agent_discovery.settings.claude_code_command",
+        f'"{sys.executable}" "{agent}" --api-key "{secret}"',
+    )
+    monkeypatch.setattr(
+        "app.services.external_agent_discovery.settings.claude_code_fallback_commands",
+        [],
+    )
+
+    result = asyncio.run(probe_external_agent_startup("claude-code", repo_path=tmp_path))
+    serialized = json.dumps(result, ensure_ascii=False)
+
+    assert result["healthy"] is True
+    assert result["status"] == "ok"
+    assert secret not in serialized
+    assert "<redacted>" in serialized
+
+
 def test_startup_probe_tries_fallback_when_primary_command_exits_nonzero(tmp_path, monkeypatch):
     from app.services.external_agent_discovery import probe_external_agent_startup
 
