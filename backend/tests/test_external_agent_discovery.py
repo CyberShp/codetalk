@@ -1026,6 +1026,10 @@ def test_run_provider_spawn_error_keeps_launch_diagnostics(tmp_path, monkeypatch
         "app.services.external_agent_discovery.asyncio.create_subprocess_exec",
         fake_create_subprocess_exec,
     )
+    monkeypatch.setattr(
+        "app.services.external_agent_discovery.settings.claude_code_fallback_commands",
+        [],
+    )
 
     results = asyncio.run(run_external_agent_discovery(
         AgentDiscoveryRequest(
@@ -1072,6 +1076,60 @@ def test_run_provider_reports_nonzero_exit_with_stderr(tmp_path, monkeypatch):
     assert results[0].status == "error"
     assert "exit code 7" in results[0].raw_summary
     assert "auth failed" in results[0].raw_summary
+
+
+def test_run_provider_tries_fallback_when_primary_command_exits_nonzero(tmp_path, monkeypatch):
+    from app.services.external_agent_discovery import AgentDiscoveryRequest, run_external_agent_discovery
+
+    bad_agent = tmp_path / "bad_agent.py"
+    bad_agent.write_text(
+        "import sys\n"
+        "sys.stdin.read()\n"
+        "print('ccr wrapper rejected args', file=sys.stderr)\n"
+        "raise SystemExit(9)\n",
+        encoding="utf-8",
+    )
+    src = tmp_path / "src"
+    src.mkdir()
+    (src / "tls.c").write_text("int tls_entry(void) { return 0; }\n", encoding="utf-8")
+    ok_agent = tmp_path / "ok_agent.py"
+    ok_agent.write_text(
+        "import json, sys\n"
+        "sys.stdin.read()\n"
+        "print(json.dumps({"
+        "'candidate_files':[{'path':'src/tls.c','reason':'fallback found it','confidence':'high'}],"
+        "'candidate_symbols':[],"
+        "'candidate_entries':[],"
+        "'need_source_slices':[],"
+        "'commands':['rg --files'],"
+        "'raw_summary':'fallback_ok'"
+        "}))\n",
+        encoding="utf-8",
+    )
+
+    monkeypatch.setattr(
+        "app.services.external_agent_discovery.settings.claude_code_command",
+        f'"{sys.executable}" "{bad_agent}"',
+    )
+    monkeypatch.setattr(
+        "app.services.external_agent_discovery.settings.claude_code_fallback_commands",
+        [f'"{sys.executable}" "{ok_agent}"'],
+    )
+
+    results = asyncio.run(run_external_agent_discovery(
+        AgentDiscoveryRequest(
+            request_id="fallback-run",
+            repo_path=str(tmp_path),
+            analysis_object_text="tls",
+        ),
+        providers=["claude-code"],
+    ))
+
+    assert results[0].status == "ok"
+    assert results[0].raw_summary == "fallback_ok"
+    assert results[0].candidate_files[0].validated is True
+    assert any("primary command failed; using fallback" in item for item in results[0].warnings)
+    assert any("ccr wrapper rejected args" in item for item in results[0].warnings)
 
 
 def test_run_provider_nonzero_exit_prefers_structured_agent_error(tmp_path, monkeypatch):
@@ -1474,6 +1532,48 @@ def test_startup_probe_launches_agent_and_parses_json(tmp_path, monkeypatch):
     assert captured["cwd"] == str(tmp_path.resolve())
     assert captured["env"]["CODETALK_AGENT_READONLY"] == "1"
     assert "startup probe" in captured["stdin"]
+
+
+def test_startup_probe_tries_fallback_when_primary_command_exits_nonzero(tmp_path, monkeypatch):
+    from app.services.external_agent_discovery import probe_external_agent_startup
+
+    bad_agent = tmp_path / "bad_agent.py"
+    bad_agent.write_text(
+        "import sys\n"
+        "sys.stdin.read()\n"
+        "print('ccr wrapper rejected args', file=sys.stderr)\n"
+        "raise SystemExit(9)\n",
+        encoding="utf-8",
+    )
+    ok_agent = tmp_path / "ok_agent.py"
+    ok_agent.write_text(
+        "import sys\n"
+        "sys.stdin.read()\n"
+        "print('{\"candidate_files\":[],\"candidate_symbols\":[],"
+        "\"candidate_entries\":[],\"need_source_slices\":[],"
+        "\"commands\":[],\"raw_summary\":\"startup_probe_ok\"}')\n",
+        encoding="utf-8",
+    )
+
+    monkeypatch.setattr(
+        "app.services.external_agent_discovery.settings.claude_code_command",
+        f'"{sys.executable}" "{bad_agent}"',
+    )
+    monkeypatch.setattr(
+        "app.services.external_agent_discovery.settings.claude_code_fallback_commands",
+        [f'"{sys.executable}" "{ok_agent}"'],
+    )
+
+    result = asyncio.run(probe_external_agent_startup("claude-code", repo_path=tmp_path))
+
+    assert result["healthy"] is True
+    assert result["status"] == "ok"
+    assert result["message"] == "startup_probe_ok"
+    attempts = result["health"]["attempts"]
+    assert attempts[0]["probe_status"] == "error"
+    assert "ccr wrapper rejected args" in attempts[0]["probe_message"]
+    assert attempts[1]["probe_status"] == "ok"
+    assert result["health"]["used_fallback"] is True
 
 
 def test_candidate_outside_repo_and_non_source_are_rejected(tmp_path):
