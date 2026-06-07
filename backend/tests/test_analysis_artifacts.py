@@ -321,7 +321,10 @@ class TestCoverageTestDesignArtifact:
             "confidence": "high",
             "trigger_branches": [{"source": "caller", "condition": "if (rc < 0)"}],
             "entry_paths": [{"entry_kind": "api",
-                             "chain": ["api_handle_request", "recover_session"]}],
+                             "chain": ["api_handle_request", "recover_session"],
+                             "provider": "claude-code",
+                             "turn_id": "coverage:recover_session",
+                             "source_verification": "source_backed"}],
             "black_box_cases": [{"title": "经 api 入口触达 recover_session"}],
             "gray_box": {"scheme": "fault injection"},
             "gray_box_required": False,
@@ -357,6 +360,9 @@ class TestCoverageTestDesignArtifact:
         assert "Coverage Gap Test Design" in rendered
         assert "recover_session" in rendered
         assert "api_handle_request" in rendered  # entry path surfaced
+        assert "claude-code" in rendered  # accepted agent provenance surfaced
+        assert "coverage:recover_session" in rendered
+        assert "source_backed" in rendered
         assert "if (rc < 0)" in rendered  # trigger condition surfaced
 
     def test_format_empty_design_returns_blank(self):

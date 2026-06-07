@@ -421,6 +421,28 @@ def format_artifacts_for_report_qa(
     return "\n".join(lines).strip()
 
 
+def _coverage_entry_for_qa(entry: dict) -> str:
+    chain = " -> ".join(str(part) for part in (entry.get("chain") or []) if part)
+    label = chain or str(entry.get("entry_label") or entry.get("entry_symbol") or "entry")
+    parts = [f"[{entry.get('entry_kind') or 'external'}] {label}"]
+    metadata: list[str] = []
+    provider = entry.get("provider") or entry.get("tool")
+    verification = entry.get("source_verification") or entry.get("source_verification_status")
+    turn_id = entry.get("turn_id")
+    validation_error = entry.get("validation_error")
+    if provider:
+        metadata.append(f"provider={provider}")
+    if verification:
+        metadata.append(f"verification={verification}")
+    if turn_id:
+        metadata.append(f"turn={turn_id}")
+    if validation_error:
+        metadata.append(f"validation_error={validation_error}")
+    if metadata:
+        parts.append("(" + "; ".join(metadata) + ")")
+    return _one_line(" ".join(parts))
+
+
 def format_coverage_test_design_for_qa(
     design: dict,
     query: str | None = None,
@@ -456,7 +478,7 @@ def format_coverage_test_design_for_qa(
     function_gaps = [g for g in design.get("gaps") or [] if g.get("kind") == "function"]
     for gap in _rank_items(function_gaps, query_terms)[:max_gaps]:
         entries = "; ".join(
-            f"[{e.get('entry_kind')}] {' -> '.join(e.get('chain') or [])}"
+            _coverage_entry_for_qa(e)
             for e in (gap.get("entry_paths") or [])[:3]
         ) or ("gray_box_required" if gap.get("gray_box_required") else "none")
         triggers = "; ".join(
