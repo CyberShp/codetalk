@@ -1258,6 +1258,58 @@ def test_run_provider_records_runtime_attempts_in_session_ledger(tmp_path, monke
     assert loaded_attempts == runtime_attempts
 
 
+def test_runtime_attempt_artifacts_redact_secret_command_values(tmp_path, monkeypatch):
+    from app.services.agent_discovery_session import create_agent_discovery_session
+    from app.services.external_agent_discovery import AgentDiscoveryRequest, run_external_agent_discovery
+
+    agent = tmp_path / "agent.py"
+    agent.write_text(
+        "import json, sys\n"
+        "sys.stdin.read()\n"
+        "print(json.dumps({"
+        "'candidate_files':[],"
+        "'candidate_symbols':[],"
+        "'candidate_entries':[],"
+        "'need_source_slices':[],"
+        "'commands':[],"
+        "'raw_summary':'ok'"
+        "}))\n",
+        encoding="utf-8",
+    )
+    session = create_agent_discovery_session(
+        repo_path=str(tmp_path),
+        goal="workspace_scope",
+        artifact_dir=tmp_path / "artifacts",
+    )
+    secret = "sk-test-secret-123"
+
+    monkeypatch.setattr(
+        "app.services.external_agent_discovery.settings.claude_code_command",
+        f'"{sys.executable}" "{agent}" --api-key {secret} --token={secret}',
+    )
+    monkeypatch.setattr(
+        "app.services.external_agent_discovery.settings.claude_code_fallback_commands",
+        [],
+    )
+
+    results = asyncio.run(run_external_agent_discovery(
+        AgentDiscoveryRequest(
+            request_id="obj_tls",
+            repo_path=str(tmp_path),
+            analysis_object_text="tls",
+        ),
+        providers=["claude-code"],
+        session=session,
+    ))
+
+    loaded = create_agent_discovery_session.load(tmp_path / "artifacts")
+    serialized = json.dumps(loaded.ledger.command_history, ensure_ascii=False)
+
+    assert results[0].status == "ok"
+    assert secret not in serialized
+    assert "<redacted>" in serialized
+
+
 def test_run_provider_nonzero_exit_prefers_structured_agent_error(tmp_path, monkeypatch):
     from app.services.external_agent_discovery import AgentDiscoveryRequest, run_external_agent_discovery
 
