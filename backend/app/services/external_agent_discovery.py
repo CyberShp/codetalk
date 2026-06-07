@@ -208,6 +208,12 @@ def _fallback_reason(candidate_command: str, prior_attempts: list[dict]) -> str:
     return f"primary command unavailable; using fallback: {candidate_command}"
 
 
+def _agent_result_diagnostic(result: AgentDiscoveryResult) -> str:
+    if result.status == "ok":
+        return result.raw_summary or (result.warnings[0] if result.warnings else result.status)
+    return result.warnings[0] if result.warnings else (result.raw_summary or result.status)
+
+
 def _unavailable_health_from_attempts(
     provider: str,
     commands: list[str],
@@ -1300,10 +1306,7 @@ async def probe_external_agent_startup(
             continue
 
         result = parse_agent_output(provider, raw, cwd)
-        if result.status == "ok":
-            message = result.raw_summary or (result.warnings[0] if result.warnings else result.status)
-        else:
-            message = result.warnings[0] if result.warnings else (result.raw_summary or result.status)
+        message = _agent_result_diagnostic(result)
         attempt["probe_status"] = result.status
         attempt["probe_message"] = message[:4000]
         if result.status != "ok" and index < len(commands) - 1:
@@ -1483,9 +1486,9 @@ async def _run_provider(
 
         result = parse_agent_output(provider, raw, request.repo_path)
         attempt["run_status"] = result.status
-        attempt["run_message"] = (result.raw_summary or result.status)[:4000]
+        attempt["run_message"] = _agent_result_diagnostic(result)[:4000]
         if result.status != "ok" and index < len(commands) - 1:
-            summary = result.raw_summary or result.status
+            summary = _agent_result_diagnostic(result)
             prior_failures.append(summary)
             last_result = result
             last_raw = raw

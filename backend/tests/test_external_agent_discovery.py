@@ -1132,6 +1132,59 @@ def test_run_provider_tries_fallback_when_primary_command_exits_nonzero(tmp_path
     assert any("ccr wrapper rejected args" in item for item in results[0].warnings)
 
 
+def test_run_provider_fallback_preserves_primary_invalid_json_warning(tmp_path, monkeypatch):
+    from app.services.external_agent_discovery import AgentDiscoveryRequest, run_external_agent_discovery
+
+    bad_agent = tmp_path / "bad_json_agent.py"
+    bad_agent.write_text(
+        "import sys\n"
+        "sys.stdin.read()\n"
+        "print('ccr login banner')\n",
+        encoding="utf-8",
+    )
+    src = tmp_path / "src"
+    src.mkdir()
+    (src / "tls.c").write_text("int tls_entry(void) { return 0; }\n", encoding="utf-8")
+    ok_agent = tmp_path / "ok_agent.py"
+    ok_agent.write_text(
+        "import json, sys\n"
+        "sys.stdin.read()\n"
+        "print(json.dumps({"
+        "'candidate_files':[{'path':'src/tls.c','reason':'fallback found it','confidence':'high'}],"
+        "'candidate_symbols':[],"
+        "'candidate_entries':[],"
+        "'need_source_slices':[],"
+        "'commands':['rg --files'],"
+        "'raw_summary':'fallback_ok'"
+        "}))\n",
+        encoding="utf-8",
+    )
+
+    monkeypatch.setattr(
+        "app.services.external_agent_discovery.settings.claude_code_command",
+        f'"{sys.executable}" "{bad_agent}"',
+    )
+    monkeypatch.setattr(
+        "app.services.external_agent_discovery.settings.claude_code_fallback_commands",
+        [f'"{sys.executable}" "{ok_agent}"'],
+    )
+
+    results = asyncio.run(run_external_agent_discovery(
+        AgentDiscoveryRequest(
+            request_id="fallback-invalid-json",
+            repo_path=str(tmp_path),
+            analysis_object_text="tls",
+        ),
+        providers=["claude-code"],
+    ))
+
+    assert results[0].status == "ok"
+    assert results[0].candidate_files[0].validated is True
+    assert any("primary command failed; using fallback" in item for item in results[0].warnings)
+    assert any("invalid JSON" in item for item in results[0].warnings)
+    assert not any(item.strip() == "ccr login banner" for item in results[0].warnings)
+
+
 def test_run_provider_nonzero_exit_prefers_structured_agent_error(tmp_path, monkeypatch):
     from app.services.external_agent_discovery import AgentDiscoveryRequest, run_external_agent_discovery
 
