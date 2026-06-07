@@ -469,6 +469,15 @@ def _path_keyword_repo_hits_blocking(
                     score += 10
                 elif "/nvmf_tcp/" in rel or "/nvme_tcp/" in rel:
                     score += 6
+                if rel.startswith(("nof/nvmf_tcp/", "nof/nvme_tcp/")):
+                    score += 12
+                elif rel.startswith(("frontend/nof/nvmf_tcp/", "frontend/nof/nvme_tcp/")):
+                    score += 12
+                if rel.startswith((
+                    "example/", "examples/", "sample/", "samples/",
+                    "test/", "tests/", "doc/", "docs/",
+                )):
+                    score -= 8
                 results.append((str(full), score))
     results.sort(key=lambda item: (-item[1], item[0].lower()))
     return [path for path, _score in results[:limit]]
