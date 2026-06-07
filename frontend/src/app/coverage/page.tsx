@@ -201,6 +201,8 @@ function GapDesignDetail({ mr }: { mr: CoverageModuleResult }) {
   const scenarios = mr.test_scenarios ?? [];
   const aiAttempted =
     Boolean(mr.ai_generation_status) && mr.ai_generation_status !== "skipped";
+  const deterministicFallback =
+    mr.deterministic_case_role === "fallback_recommendation";
   const cases = mr.black_box_cases ?? [];
   const gaps = mr.evidence_gaps ?? [];
   const sw = mr.source_window ?? null;
@@ -474,7 +476,9 @@ function GapDesignDetail({ mr }: { mr: CoverageModuleResult }) {
 
       {aiAttempted && scenarios.length === 0 && (
         <div className="rounded-lg border border-amber-400/30 bg-amber-500/10 p-3 text-xs text-amber-200">
-          AI 没有生成通过结构校验和反白盒校验的推荐用例。当前只展示覆盖率证据、源码窗口和缺口原因，不把确定性模板草稿伪装成可执行用例。
+          {deterministicFallback
+            ? "AI 没有生成通过结构校验和反白盒校验的推荐用例；当前已回退展示确定性 coverage 推荐，请按下方测试用例或灰盒辅助方案执行，并结合证据缺口复核。"
+            : "AI 没有生成通过结构校验和反白盒校验的推荐用例。当前只展示覆盖率证据、源码窗口和缺口原因，不把确定性模板草稿伪装成可执行用例。"}
         </div>
       )}
 
