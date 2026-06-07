@@ -4062,6 +4062,11 @@ def test_safe_external_label_preserves_trigger_but_rejects_internal_symbol():
 
     assert _safe_external_label({
         "entry_kind": "rpc",
+        "entry_symbol": "rpc_recover_session",
+        "external_trigger": "RPC recover-session with invalid TLS PSK",
+    }) == "RPC recover-session with invalid TLS PSK"
+    assert _safe_external_label({
+        "entry_kind": "rpc",
         "entry_label": "RPC recover-session",
     }) == "RPC recover-session"
     assert _safe_external_label({

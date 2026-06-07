@@ -1696,9 +1696,10 @@ def _build_readiness_card(
 
 
 def _safe_external_label(entry: dict) -> str:
-    label = str(entry.get("entry_label") or entry.get("entry_symbol") or entry.get("entry_kind") or "").strip()
-    if label and _safe_external_label_text(label):
-        return label
+    for key in ("entry_label", "external_trigger", "entry_symbol"):
+        label = str(entry.get(key) or "").strip()
+        if label and _safe_external_label_text(label):
+            return label
     kind = str(entry.get("entry_kind") or "public").strip()
     return f"{kind} entry"
 
