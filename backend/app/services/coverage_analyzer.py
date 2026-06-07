@@ -2811,6 +2811,15 @@ def _build_gray_box_scheme(
             )
     if not injection_points:
         injection_points.append(f"目标符号 {hit.function_name} ({hit.file_path})")
+    guard_conditions = [
+        str(branch.get("condition")).strip()
+        for branch in trigger_branches[:3]
+        if str(branch.get("condition") or "").strip()
+    ]
+    source_detail = f"目标 {hit.function_name} @ {hit.file_path}"
+    if guard_conditions:
+        source_detail += "；优先控制守卫条件：" + "；".join(guard_conditions)
+    scheme = f"{scheme}。{source_detail}"
 
     return {
         "required": required,

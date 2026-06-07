@@ -1390,6 +1390,8 @@ class TestCoverageTestDesign:
         assert gap["test_case_drafts"][0]["case_type"] == "gray_box_required"
         assert gap["gray_box"]["required"] is True
         assert gap["gray_box"]["scheme"]
+        assert "internal_helper" in gap["gray_box"]["scheme"]
+        assert "c->flag" in gap["gray_box"]["scheme"]
         assert any("入口" in g for g in gap["evidence_gaps"])
         assert design["summary"]["gray_box_required_count"] == 1
 
