@@ -893,10 +893,14 @@ def _merge_agent_entry_paths(
 
 def _entry_execution_key(entry: dict) -> tuple[str, str] | None:
     symbol = str(entry.get("entry_symbol") or entry.get("entry_label") or "").strip()
-    file_path = str(entry.get("entry_file") or "").replace("\\", "/").strip().lower()
+    file_path = _entry_file_key(entry)
     if not symbol or not file_path:
         return None
     return (symbol, file_path)
+
+
+def _entry_file_key(entry: dict) -> str:
+    return str(entry.get("entry_file") or "").replace("\\", "/").strip().lower()
 
 
 def _merge_agent_entry_confirmation(existing: dict, agent_entry: dict) -> None:
@@ -3368,28 +3372,26 @@ def _filter_resolved_agent_unverified_entries(
     unverified_entries: list[dict],
     entry_paths: list[dict],
 ) -> list[dict]:
-    resolved_keys: set[tuple[str, str, str]] = set()
+    resolved_execution_keys: set[tuple[str, str]] = set()
+    resolved_file_keys: set[str] = set()
     for entry in entry_paths:
         if not isinstance(entry, dict):
             continue
-        provider = str(entry.get("provider") or entry.get("tool") or "")
-        symbol = str(entry.get("entry_symbol") or entry.get("entry_label") or "")
-        file_path = str(entry.get("entry_file") or "")
-        if symbol:
-            resolved_keys.add((provider, "symbol", symbol))
-        elif file_path:
-            resolved_keys.add((provider, "file", file_path))
+        execution_key = _entry_execution_key(entry)
+        if execution_key:
+            resolved_execution_keys.add(execution_key)
+        file_key = _entry_file_key(entry)
+        if file_key:
+            resolved_file_keys.add(file_key)
 
     filtered: list[dict] = []
     for entry in unverified_entries:
         if not isinstance(entry, dict):
             continue
-        provider = str(entry.get("provider") or "")
-        symbol = str(entry.get("entry_symbol") or "")
-        file_path = str(entry.get("entry_file") or "")
-        if symbol and (provider, "symbol", symbol) in resolved_keys:
+        execution_key = _entry_execution_key(entry)
+        if execution_key and execution_key in resolved_execution_keys:
             continue
-        if not symbol and file_path and (provider, "file", file_path) in resolved_keys:
+        if not execution_key and _entry_file_key(entry) in resolved_file_keys:
             continue
         filtered.append(entry)
     return filtered
@@ -3426,9 +3428,7 @@ def _entry_candidates_from_agent_rejected_validated(
         if not isinstance(entry, dict):
             continue
         provider = str(entry.get("provider") or "external_agent")
-        symbol = str(entry.get("entry_symbol") or entry.get("entry_label") or "")
-        file_path = str(entry.get("entry_file") or "")
-        if (provider, symbol, file_path) in accepted_keys:
+        if _entry_execution_key(entry) in accepted_keys:
             continue
         rejection = _agent_entry_rejection_reason_for_gap(entry, gap)
         if not rejection:
@@ -3457,15 +3457,14 @@ def _entry_candidates_from_agent_rejected_validated(
     return candidates
 
 
-def _entry_candidate_keys(entries: list[dict]) -> set[tuple[str, str, str]]:
-    keys: set[tuple[str, str, str]] = set()
+def _entry_candidate_keys(entries: list[dict]) -> set[tuple[str, str]]:
+    keys: set[tuple[str, str]] = set()
     for entry in entries:
         if not isinstance(entry, dict):
             continue
-        provider = str(entry.get("provider") or entry.get("tool") or "")
-        symbol = str(entry.get("entry_symbol") or entry.get("entry_label") or "")
-        file_path = str(entry.get("entry_file") or "")
-        keys.add((provider, symbol, file_path))
+        key = _entry_execution_key(entry)
+        if key:
+            keys.add(key)
     return keys
 
 

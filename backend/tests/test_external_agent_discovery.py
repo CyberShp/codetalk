@@ -3676,6 +3676,62 @@ def test_filter_resolved_unverified_entries_drops_symbolless_same_file_candidate
     assert filtered == []
 
 
+def test_filter_resolved_unverified_entries_drops_cross_provider_same_entry():
+    from app.services.coverage_analyzer import _filter_resolved_agent_unverified_entries
+
+    filtered = _filter_resolved_agent_unverified_entries(
+        [
+            {
+                "provider": "claude-code",
+                "entry_symbol": "rpc_tls_entry",
+                "entry_file": "src/rpc.c",
+                "validation_error": "needs_source_verification",
+            }
+        ],
+        [
+            {
+                "tool": "cgc",
+                "entry_symbol": "rpc_tls_entry",
+                "entry_file": "src/rpc.c",
+            }
+        ],
+    )
+
+    assert filtered == []
+
+
+def test_rejected_agent_validated_entry_is_suppressed_when_same_entry_accepted():
+    from app.services.coverage_analyzer import _entry_candidates_from_agent_rejected_validated
+
+    candidates = _entry_candidates_from_agent_rejected_validated(
+        {
+            "function_name": "tls_recover_session",
+            "file_path": "src/tls.c",
+        },
+        [
+            {
+                "provider": "claude-code",
+                "entry_kind": "internal_helper",
+                "entry_symbol": "rpc_tls_entry",
+                "entry_file": "src/rpc.c",
+                "chain": ["rpc_tls_entry", "tls_recover_session"],
+                "reason": "agent lacked public trigger evidence for the same entry",
+            }
+        ],
+        [
+            {
+                "tool": "cgc",
+                "entry_kind": "rpc",
+                "entry_symbol": "rpc_tls_entry",
+                "entry_file": "src/rpc.c",
+                "chain": ["rpc_tls_entry", "tls_recover_session"],
+            }
+        ],
+    )
+
+    assert candidates == []
+
+
 def _write_tls_repo(root: Path) -> Path:
     tls_dir = root / "nof" / "nvmf_tcp" / "transport" / "tls"
     tls_dir.mkdir(parents=True)
