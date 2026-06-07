@@ -1310,6 +1310,72 @@ def test_runtime_attempt_artifacts_redact_secret_command_values(tmp_path, monkey
     assert "<redacted>" in serialized
 
 
+def test_run_provider_redacts_secret_values_from_error_summary(tmp_path, monkeypatch):
+    from app.services.external_agent_discovery import AgentDiscoveryRequest, run_external_agent_discovery
+
+    secret = "sk-test-secret-456"
+    agent = tmp_path / "agent_error.py"
+    agent.write_text(
+        "import sys\n"
+        "sys.stdin.read()\n"
+        f"print('auth failed token={secret}', file=sys.stderr)\n"
+        "raise SystemExit(5)\n",
+        encoding="utf-8",
+    )
+
+    monkeypatch.setattr(
+        "app.services.external_agent_discovery.settings.claude_code_command",
+        f'"{sys.executable}" "{agent}" --api-key {secret}',
+    )
+    monkeypatch.setattr(
+        "app.services.external_agent_discovery.settings.claude_code_fallback_commands",
+        [],
+    )
+
+    results = asyncio.run(run_external_agent_discovery(
+        AgentDiscoveryRequest(
+            request_id="secret-error",
+            repo_path=str(tmp_path),
+            analysis_object_text="tls",
+        ),
+        providers=["claude-code"],
+    ))
+
+    serialized = json.dumps(results[0].__dict__, ensure_ascii=False)
+
+    assert results[0].status == "error"
+    assert secret not in serialized
+    assert "<redacted>" in serialized
+
+
+def test_external_agent_adapter_health_redacts_secret_attempts(monkeypatch):
+    from app.adapters import external_agent as adapter_mod
+
+    secret = "sk-test-secret-789"
+
+    def fake_health(provider, command, fallback_commands=None):
+        return {
+            "status": "available",
+            "path": "agent",
+            "attempts": [
+                {
+                    "command": f"ccr code --api-key {secret}",
+                    "status": "available",
+                    "launch_kind": "exec",
+                }
+            ],
+        }
+
+    monkeypatch.setattr(adapter_mod, "check_provider_health", fake_health)
+
+    health = asyncio.run(
+        adapter_mod.ExternalAgentAdapter("claude-code", "claude_code_command").health_check()
+    )
+
+    assert secret not in health.last_check
+    assert "<redacted>" in health.last_check
+
+
 def test_run_provider_nonzero_exit_prefers_structured_agent_error(tmp_path, monkeypatch):
     from app.services.external_agent_discovery import AgentDiscoveryRequest, run_external_agent_discovery
 

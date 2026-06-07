@@ -276,6 +276,10 @@ def _redact_agent_diagnostic_text(value: str) -> str:
     return text
 
 
+def redact_agent_diagnostic_text(value: str) -> str:
+    return _redact_agent_diagnostic_text(value)
+
+
 def _unavailable_health_from_attempts(
     provider: str,
     commands: list[str],
@@ -1606,26 +1610,27 @@ def _format_process_error_summary(returncode: int | None, stderr_text: str, stdo
     stderr_text = (stderr_text or "").strip()
     stdout_text = (stdout_text or "").strip()
     if stderr_text:
-        parts.append(f"stderr: {stderr_text[:3000]}")
+        parts.append(f"stderr: {_redact_agent_diagnostic_text(stderr_text)[:3000]}")
     if stdout_text:
-        parts.append(f"stdout: {stdout_text[:1000]}")
+        parts.append(f"stdout: {_redact_agent_diagnostic_text(stdout_text)[:1000]}")
     return "; ".join(parts)[:4000]
 
 
 def _format_spawn_error_summary(exc: OSError, health: dict) -> str:
-    parts = [str(exc).strip() or "external agent spawn failed"]
+    parts = [_redact_agent_diagnostic_text(str(exc).strip()) or "external agent spawn failed"]
     launch = str(health.get("launch_kind") or "").strip()
     if launch:
         parts.append(f"launch={launch}")
     configured = str(health.get("configured_command") or "").strip()
     if configured:
-        parts.append(f"configured={configured}")
+        parts.append(f"configured={_redact_agent_diagnostic_text(configured)}")
     path = str(health.get("path") or "").strip()
     if path:
-        parts.append(f"path={path}")
+        parts.append(f"path={_redact_agent_diagnostic_text(path)}")
     configured_argv = health.get("configured_argv")
     if isinstance(configured_argv, list) and configured_argv:
-        parts.append("configured_argv=" + " ".join(str(item) for item in configured_argv)[:1000])
+        argv_summary = " ".join(_redact_agent_diagnostic_text(str(item)) for item in configured_argv)
+        parts.append("configured_argv=" + argv_summary[:1000])
     attempts = health.get("attempts")
     if isinstance(attempts, list) and attempts:
         attempt_summary = ", ".join(
@@ -1639,15 +1644,15 @@ def _format_spawn_error_summary(exc: OSError, health: dict) -> str:
     if isinstance(diagnostic, dict):
         diag = str(diagnostic.get("summary") or "").strip()
         if diag:
-            parts.append(diag)
+            parts.append(_redact_agent_diagnostic_text(diag))
     return "; ".join(part for part in parts if part)[:4000]
 
 
 def _format_health_attempt_for_error(attempt: dict) -> str:
-    command = str(attempt.get("command") or "").strip()
+    command = _redact_agent_diagnostic_text(str(attempt.get("command") or "").strip())
     status = str(attempt.get("status") or "").strip()
     launch = str(attempt.get("launch_kind") or "").strip()
-    path = str(attempt.get("path") or "").strip()
+    path = _redact_agent_diagnostic_text(str(attempt.get("path") or "").strip())
     details = [command]
     if status:
         details.append(f"status={status}")
@@ -1659,10 +1664,10 @@ def _format_health_attempt_for_error(attempt: dict) -> str:
 
 
 def _format_unavailable_health_summary(health: dict) -> str:
-    parts = [str(health.get("reason") or "").strip()]
+    parts = [_redact_agent_diagnostic_text(str(health.get("reason") or "").strip())]
     diagnostic = health.get("diagnostic")
     if isinstance(diagnostic, dict):
-        parts.append(str(diagnostic.get("summary") or "").strip())
+        parts.append(_redact_agent_diagnostic_text(str(diagnostic.get("summary") or "").strip()))
     return "; ".join(part for part in parts if part)[:4000]
 
 

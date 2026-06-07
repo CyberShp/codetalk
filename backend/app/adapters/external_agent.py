@@ -14,6 +14,7 @@ from app.services.external_agent_discovery import (
     check_provider_health,
     probe_external_agent_startup,
     provider_fallback_commands,
+    redact_agent_diagnostic_text,
     run_external_agent_discovery,
 )
 
@@ -59,8 +60,8 @@ class ExternalAgentAdapter(BaseToolAdapter):
         return ToolHealth(
             is_healthy=ok,
             container_status="available" if ok else "unavailable",
-            version=str(health.get("path") or health.get("reason") or ""),
-            last_check=last_check,
+            version=redact_agent_diagnostic_text(str(health.get("path") or health.get("reason") or "")),
+            last_check=redact_agent_diagnostic_text(last_check),
         )
 
     async def startup_probe(self, repo_path: str | None = None) -> dict:
@@ -99,10 +100,12 @@ class ExternalAgentAdapter(BaseToolAdapter):
 def _format_attempt_summary(item: dict) -> str:
     launch = item.get("launch_kind")
     launch_suffix = f" ({launch})" if launch else ""
-    return f"{item.get('command')} => {item.get('status')}{launch_suffix}"
+    return redact_agent_diagnostic_text(
+        f"{item.get('command')} => {item.get('status')}{launch_suffix}"
+    )
 
 
 def _format_runtime_diagnostic(value: object) -> str:
     if not isinstance(value, dict):
         return ""
-    return str(value.get("summary") or "").strip()
+    return redact_agent_diagnostic_text(str(value.get("summary") or "").strip())
