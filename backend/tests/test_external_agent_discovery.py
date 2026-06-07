@@ -2162,6 +2162,20 @@ def test_workspace_resolver_finds_nvme_tls_from_nof_repo_root(tmp_path, monkeypa
     assert not resolved.warnings
 
 
+def test_workspace_path_hint_with_parent_dirs_finds_tls_from_nof_repo_root(tmp_path, monkeypatch):
+    from app.services.workspace_scope_resolver import _path_hint_repo_hits_blocking
+
+    _write_tls_tree_at(tmp_path, "nvmf_tcp/transport/tls")
+
+    hits = _path_hint_repo_hits_blocking(
+        str(tmp_path),
+        ["frontend/nof/nvmf_tcp/transport/tls"],
+        8,
+    )
+
+    assert any(hit.replace("\\", "/").endswith("nvmf_tcp/transport/tls/tls.c") for hit in hits)
+
+
 def test_workspace_resolver_finds_nvme_tls_from_nvmf_tcp_repo_root(tmp_path, monkeypatch):
     _write_tls_tree_at(tmp_path, "transport/tls")
 

@@ -570,26 +570,46 @@ def _path_hint_repo_hits_blocking(
         files.sort(key=lambda p: p.relative_to(root).as_posix().lower())
         return files
 
+    def _candidate_paths_for_hint(normalized_hint: str) -> list[Path]:
+        try:
+            candidate = Path(normalized_hint)
+            if candidate.is_absolute():
+                return [candidate.resolve()]
+            parts = [part for part in normalized_hint.split("/") if part]
+            candidates = [root.joinpath(*parts).resolve()]
+            for index in range(1, len(parts)):
+                suffix = parts[index:]
+                if not suffix:
+                    continue
+                suffix_candidate = root.joinpath(*suffix)
+                try:
+                    if suffix_candidate.exists():
+                        candidates.append(suffix_candidate.resolve())
+                except OSError:
+                    continue
+            return candidates
+        except Exception:
+            return []
+
     for hint in path_hints:
         normalized_hint = _normalize_path_hint(hint)
         if not normalized_hint:
             continue
-        try:
-            candidate = Path(normalized_hint)
-            if not candidate.is_absolute():
-                candidate = root.joinpath(*[part for part in normalized_hint.split("/") if part])
-            candidate = candidate.resolve()
-            candidate.relative_to(root)
-        except Exception:
-            continue
+        for candidate in _candidate_paths_for_hint(normalized_hint):
+            try:
+                candidate.relative_to(root)
+            except Exception:
+                continue
 
-        if candidate.is_file():
-            _append_source(candidate)
-        elif candidate.is_dir():
-            for source in _source_files_under(candidate):
-                _append_source(source)
-                if len(results) >= limit:
-                    break
+            if candidate.is_file():
+                _append_source(candidate)
+            elif candidate.is_dir():
+                for source in _source_files_under(candidate):
+                    _append_source(source)
+                    if len(results) >= limit:
+                        break
+            if len(results) >= limit:
+                break
         if len(results) >= limit:
             break
     return results
