@@ -1803,7 +1803,7 @@ class TestCoverageTestDesign:
             encoding="utf-8",
         )
         (src / "routes.js").write_text(
-            "app.post('/payments', (request) => {\n"
+            "app.post('/accounts/{account_id}/payments/:payment_id', (request) => {\n"
             "  const payload = {\n"
             "    amount: request.body.amount,\n"
             "    currency: request.query.currency,\n"
@@ -1825,11 +1825,13 @@ class TestCoverageTestDesign:
         assert gap["black_box_readiness"]["case_type"] == "black_box_ready"
         entry = gap["entry_paths"][0]
         assert entry["entry_kind"] == "route"
-        assert entry["input_hints"] == ["amount", "currency"]
+        assert entry["input_hints"] == ["amount", "currency", "account_id", "payment_id"]
         assert "app.post" in entry["evidence"]
         case_text = json.dumps(gap["black_box_cases"], ensure_ascii=False)
         assert "amount" in case_text
         assert "currency" in case_text
+        assert "account_id" in case_text
+        assert "payment_id" in case_text
 
     async def test_ts_class_field_handler_is_read_as_source_window(self, tmp_path):
         from app.services.coverage_analyzer import build_coverage_test_design

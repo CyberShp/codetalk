@@ -2808,7 +2808,9 @@ def _anonymous_entry_metadata_for_site(
 
     end_idx = _call_expression_window_end(lines, start_idx, call_idx)
     window = lines[start_idx:end_idx]
-    hints = _request_field_hints_from_text(" ".join(line.strip() for line in window))
+    window_text = " ".join(line.strip() for line in window)
+    hints = _request_field_hints_from_text(window_text)
+    hints = _merge_ordered_strings(hints, _route_template_input_hints([window_text]))
     evidence = f"{_relative_path(repo_root, path)}:{start_idx + 1} {lines[start_idx].strip()}"
     metadata: dict = {
         "_anonymous_entry_evidence": evidence,
