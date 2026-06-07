@@ -1374,7 +1374,7 @@ def _unwrap_agent_payload(payload: object) -> object:
             return unwrapped
     choices = payload.get("choices")
     if isinstance(choices, list):
-        for choice in choices:
+        for choice in reversed(choices):
             if not isinstance(choice, dict):
                 continue
             choice_message = choice.get("message")

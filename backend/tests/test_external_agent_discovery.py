@@ -209,6 +209,55 @@ def test_agent_output_unwraps_openai_choices_message_content(tmp_path):
     assert result.candidate_files[0].path == "src/tls.c"
 
 
+def test_agent_output_prefers_final_openai_choice_over_early_empty_schema(tmp_path):
+    from app.services.external_agent_discovery import parse_agent_output
+
+    src = tmp_path / "src"
+    src.mkdir()
+    (src / "tls.c").write_text("int tls;\n", encoding="utf-8")
+    final_payload = json.dumps({
+        "candidate_files": [
+            {
+                "path": "src/tls.c",
+                "reason": "final choice found source",
+                "confidence": "high",
+            }
+        ],
+        "raw_summary": "final choice parsed",
+    })
+    raw = json.dumps({
+        "id": "chatcmpl-agent",
+        "choices": [
+            {
+                "index": 0,
+                "message": {
+                    "role": "assistant",
+                    "content": json.dumps({
+                        "candidate_files": [],
+                        "candidate_entries": [],
+                        "commands": [],
+                        "raw_summary": "early choice empty draft",
+                    }),
+                },
+            },
+            {
+                "index": 1,
+                "message": {
+                    "role": "assistant",
+                    "content": final_payload,
+                },
+            },
+        ],
+    })
+
+    result = parse_agent_output("opencode", raw, tmp_path)
+
+    assert result.status == "ok"
+    assert result.raw_summary == "final choice parsed"
+    assert result.candidate_files[0].validated is True
+    assert result.candidate_files[0].path == "src/tls.c"
+
+
 def test_agent_output_unwraps_responses_output_text(tmp_path):
     from app.services.external_agent_discovery import parse_agent_output
 
