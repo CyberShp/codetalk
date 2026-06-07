@@ -150,11 +150,9 @@ def _match_def_name(line: str) -> str | None:
     stripped = line.strip()
     if stripped.startswith(_EXPRESSION_CALL_PREFIXES):
         return None
-    for pattern in _ASSIGNED_FUNCTION_DEF_RES:
-        assigned = pattern.match(line)
-        if assigned:
-            name = assigned.group("name")
-            return None if name in _NON_FUNCTION_NAMES else name
+    assigned_name = _match_assigned_function_def_name(line)
+    if assigned_name:
+        return assigned_name
     before_paren = stripped.split("(", 1)[0]
     if "=" in before_paren and not stripped.startswith("def "):
         return None
@@ -163,6 +161,15 @@ def _match_def_name(line: str) -> str | None:
         return None
     name = match.group(1)
     return None if name in _NON_FUNCTION_NAMES else name
+
+
+def _match_assigned_function_def_name(line: str) -> str | None:
+    for pattern in _ASSIGNED_FUNCTION_DEF_RES:
+        assigned = pattern.match(line)
+        if assigned:
+            name = assigned.group("name")
+            return None if name in _NON_FUNCTION_NAMES else name
+    return None
 
 
 def _match_multiline_def_name(lines: list[str], idx: int) -> str | None:
@@ -217,6 +224,39 @@ def _previous_nonempty_line(lines: list[str], idx: int) -> str | None:
         if text:
             return text
     return None
+
+
+def _line_indent(line: str) -> int:
+    return len(line) - len(line.lstrip(" \t"))
+
+
+def _definition_encloses_line(lines: list[str], def_idx: int, target_idx: int) -> bool:
+    if def_idx < 0 or def_idx >= len(lines) or target_idx <= def_idx:
+        return True
+    if not _match_assigned_function_def_name(lines[def_idx]):
+        return True
+
+    balance = 0
+    saw_block = False
+    for idx in range(def_idx, min(target_idx, len(lines) - 1) + 1):
+        text = lines[idx]
+        balance += text.count("{") - text.count("}")
+        if "{" in text:
+            saw_block = True
+        if idx < target_idx and ";" in text and balance <= 0:
+            return False
+    return saw_block and balance > 0
+
+
+def _is_sibling_definition_boundary(lines: list[str], fn_start: int, pos: int) -> bool:
+    if pos <= fn_start or pos >= len(lines):
+        return False
+    if _line_indent(lines[pos]) > _line_indent(lines[fn_start]):
+        return False
+    return (
+        _match_def_name(lines[pos]) is not None
+        or _match_multiline_def_name(lines, pos) is not None
+    )
 _BRANCH_KEYWORD_RE = re.compile(
     r"\b(if|else\s+if|elif|switch|case|default|while|for|catch|except|when|guard)\b"
     r"|return\s+-[A-Za-z0-9_]+|goto\s+\w+",
@@ -2629,7 +2669,7 @@ def _caller_context(abs_file: str, line_number: int) -> tuple[str | None, dict |
     enclosing: str | None = None
     for idx in range(upper, -1, -1):
         name = _match_def_name(lines[idx]) or _match_multiline_def_name(lines, idx)
-        if name:
+        if name and _definition_encloses_line(lines, idx, upper):
             enclosing = name
             break
 
@@ -2638,8 +2678,11 @@ def _caller_context(abs_file: str, line_number: int) -> tuple[str | None, dict |
     for idx in range(upper, low - 1, -1):
         text = lines[idx]
         if (
-            _match_def_name(text) is not None
-            or _match_multiline_def_name(lines, idx) is not None
+            (
+                _match_def_name(text) is not None
+                or _match_multiline_def_name(lines, idx) is not None
+            )
+            and _definition_encloses_line(lines, idx, upper)
         ):
             break  # reached the enclosing definition without a guard
         if _CALLER_GUARD_RE.search(text):
@@ -2790,15 +2833,14 @@ def _request_hint_scan_bounds(
     fn_start: int | None = None
     for pos in range(call_idx, -1, -1):
         line_def = _match_def_name(lines[pos]) or _match_multiline_def_name(lines, pos)
-        if line_def == enclosing_fn:
+        if line_def == enclosing_fn and _definition_encloses_line(lines, pos, call_idx):
             fn_start = pos
             break
     if fn_start is None:
         return fallback
     fn_end = len(lines)
     for pos in range(fn_start + 1, len(lines)):
-        line_def = _match_def_name(lines[pos]) or _match_multiline_def_name(lines, pos)
-        if line_def is not None:
+        if _is_sibling_definition_boundary(lines, fn_start, pos):
             fn_end = pos
             break
     return max(fn_start + 1, call_idx - 8), min(fn_end, call_idx + 8)
