@@ -2068,7 +2068,7 @@ def build_agent_prompt(request: AgentDiscoveryRequest) -> str:
 
 
 def _normalize_confidence(value: object) -> str:
-    text = str(value or "medium").lower()
+    text = str(value or "medium").strip().lower()
     if text in {"high", "medium", "low"}:
         return text
     return "medium"

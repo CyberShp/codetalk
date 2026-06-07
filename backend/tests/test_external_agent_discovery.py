@@ -71,6 +71,29 @@ def test_agent_json_output_is_parsed_and_validated(tmp_path):
     assert result.candidate_files[0].path == "nof/nvmf_tcp/transport/tls/tls.c"
 
 
+def test_agent_json_confidence_is_trimmed_and_normalized(tmp_path):
+    from app.services.external_agent_discovery import parse_agent_output
+
+    src = tmp_path / "src"
+    src.mkdir()
+    (src / "tls.c").write_text("int tls;\n", encoding="utf-8")
+    raw = json.dumps({
+        "candidate_files": [
+            {
+                "path": "src/tls.c",
+                "reason": "source path found",
+                "confidence": " HIGH ",
+            }
+        ],
+        "candidate_entries": [],
+    })
+
+    result = parse_agent_output("claude-code", raw, tmp_path)
+
+    assert result.status == "ok"
+    assert result.candidate_files[0].confidence == "high"
+
+
 def test_invalid_json_does_not_enter_candidate_merge(tmp_path):
     from app.services.external_agent_discovery import parse_agent_output
 
