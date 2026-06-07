@@ -151,6 +151,36 @@ def test_agent_output_unwraps_openai_choices_message_content(tmp_path):
     assert result.candidate_files[0].path == "src/tls.c"
 
 
+def test_agent_output_unwraps_responses_output_text(tmp_path):
+    from app.services.external_agent_discovery import parse_agent_output
+
+    src = tmp_path / "src"
+    src.mkdir()
+    (src / "rpc.c").write_text("void rpc_entry(void) {}\n", encoding="utf-8")
+    discovery_payload = json.dumps({
+        "candidate_entries": [
+            {
+                "entry_kind": "rpc",
+                "entry_symbol": "rpc_entry",
+                "entry_file": "src/rpc.c",
+                "chain": ["rpc_entry", "target_fn"],
+                "external_trigger": "RPC request",
+            }
+        ],
+        "commands": ["rg rpc_entry"],
+    })
+    raw = json.dumps({
+        "id": "resp_agent",
+        "output_text": discovery_payload,
+    })
+
+    result = parse_agent_output("opencode", raw, tmp_path)
+
+    assert result.status == "ok"
+    assert result.candidate_entries[0].validated is True
+    assert result.candidate_entries[0].entry_file == "src/rpc.c"
+
+
 def test_agent_output_prefers_discovery_json_after_stream_metadata(tmp_path):
     from app.services.external_agent_discovery import parse_agent_output
 
