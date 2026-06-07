@@ -30,6 +30,14 @@ from app.services.coverage_analyzer import (
 
 pytestmark = [pytest.mark.asyncio]
 
+
+@pytest.fixture(autouse=True)
+def _disable_real_external_agents_by_default(monkeypatch):
+    from app.config import settings
+
+    monkeypatch.setattr(settings, "external_agents_enabled", False)
+
+
 _MINIMAL_LOW_COVERAGE_XML = """<?xml version="1.0" ?>
 <coverage line-rate="0.5" branch-rate="0.4" version="1.0">
   <packages>
