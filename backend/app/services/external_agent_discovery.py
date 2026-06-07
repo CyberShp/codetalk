@@ -792,7 +792,7 @@ def parse_agent_output(provider: str, raw_output: str, repo_path: str | Path) ->
             entry.validation_error = "entry_file_missing"
         entries.append(entry)
 
-    commands = [str(c) for c in payload.get("commands") or [] if c]
+    commands = _coerce_string_list(payload.get("commands"))
     need_source_slices = [
         {
             "file_path": str(item.get("file_path") or item.get("path") or ""),
@@ -811,7 +811,7 @@ def parse_agent_output(provider: str, raw_output: str, repo_path: str | Path) ->
         need_source_slices=need_source_slices,
         commands=commands,
         raw_summary=str(payload.get("raw_summary") or payload.get("summary") or "")[:4000],
-        warnings=[str(w) for w in payload.get("warnings") or [] if w],
+        warnings=_coerce_string_list(payload.get("warnings")),
     )
 
 

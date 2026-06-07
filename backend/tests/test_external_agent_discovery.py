@@ -298,6 +298,24 @@ def test_agent_entry_string_input_hint_is_not_split_into_characters(tmp_path):
     assert result.candidate_entries[0].input_hints == ["invalid TLS PSK"]
 
 
+def test_agent_string_commands_and_warnings_are_not_split_into_characters(tmp_path):
+    from app.services.external_agent_discovery import parse_agent_output
+
+    src = tmp_path / "src"
+    src.mkdir()
+    (src / "tls.c").write_text("int tls;\n", encoding="utf-8")
+    raw = json.dumps({
+        "candidate_files": [{"path": "src/tls.c"}],
+        "commands": "rg --files src",
+        "warnings": "used fallback command",
+    })
+
+    result = parse_agent_output("claude-code", raw, tmp_path)
+
+    assert result.commands == ["rg --files src"]
+    assert result.warnings == ["used fallback command"]
+
+
 def test_agent_entry_without_source_file_is_not_validated(tmp_path):
     from app.services.external_agent_discovery import parse_agent_output
 
