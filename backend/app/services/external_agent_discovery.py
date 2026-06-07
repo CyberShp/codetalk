@@ -1145,7 +1145,9 @@ def _preferred_source_file_under(directory: Path) -> Path | None:
         ".js": 2,
         ".jsx": 2,
     }
+    module_name = directory.name.lower()
     source_files.sort(key=lambda p: (
+        0 if p.parent == directory and p.stem.lower() == module_name else 1,
         len(p.relative_to(directory).parts),
         priority.get(p.suffix.lower(), 9),
         p.name.lower(),

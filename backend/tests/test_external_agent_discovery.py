@@ -2964,6 +2964,23 @@ def test_agent_directory_candidate_prefers_cxx_source_file(tmp_path):
     assert validation.path == "src/transport.cxx"
 
 
+def test_agent_directory_candidate_prefers_module_named_source_file(tmp_path):
+    from app.services.external_agent_discovery import validate_agent_candidate_file
+
+    tls_dir = tmp_path / "nvmf_tcp" / "transport" / "tls"
+    tls_dir.mkdir(parents=True)
+    for name in ("alpha.c", "beta.c", "tls.c"):
+        (tls_dir / name).write_text(
+            f"int {Path(name).stem}(void) {{ return 0; }}\n",
+            encoding="utf-8",
+        )
+
+    validation = validate_agent_candidate_file(tmp_path, "nvmf_tcp/transport/tls")
+
+    assert validation.validated is True
+    assert validation.path == "nvmf_tcp/transport/tls/tls.c"
+
+
 def test_duplicate_gitnexus_and_agent_candidate_merges_with_boost(tmp_path):
     from app.schemas.workspace_analysis import ScopeCandidate
     from app.services.external_agent_discovery import (
