@@ -329,7 +329,7 @@ def _resolve_provider_command_attempt(command: str, provider: str | None = None)
             return {
                 "command": command,
                 "status": "available",
-                "argv": _windows_shell_agent_argv(guarded_argv),
+                "argv": _windows_shell_agent_argv(guarded_argv, provider=provider),
                 "configured_argv": guarded_argv,
                 "executable": executable,
                 "path": configured_path,
@@ -364,7 +364,7 @@ def _resolve_provider_command_attempt(command: str, provider: str | None = None)
         shell_resolution = _probe_windows_shell_command(executable)
         if shell_resolution:
             guarded_argv = apply_readonly_cli_guard(provider, argv)
-            shell_argv = _windows_shell_agent_argv(guarded_argv)
+            shell_argv = _windows_shell_agent_argv(guarded_argv, provider=provider)
             return {
                 "command": command,
                 "status": "available",
@@ -387,7 +387,7 @@ def _resolve_provider_command_attempt(command: str, provider: str | None = None)
         return {
             "command": command,
             "status": "available",
-            "argv": _windows_shell_agent_argv(guarded_argv),
+            "argv": _windows_shell_agent_argv(guarded_argv, provider=provider),
             "configured_argv": guarded_argv,
             "executable": executable,
             "path": resolved,
@@ -547,15 +547,64 @@ def _find_powershell() -> str | None:
     return None
 
 
-def _windows_shell_agent_argv(argv: list[str]) -> list[str]:
+def _windows_shell_agent_argv(argv: list[str], provider: str | None = None) -> list[str]:
     powershell = _find_powershell() or "powershell.exe"
     base = _windows_powershell_base_argv(powershell)
-    quoted = " ".join(_powershell_single_quote(item) for item in argv)
-    script = (
-        "$__codetalkPrompt = [Console]::In.ReadToEnd(); "
-        f"$__codetalkPrompt | & {quoted}"
-    )
+    command = _powershell_agent_command_with_prompt_arg(provider, argv, "$__codetalkPrompt")
+    if command is None:
+        quoted = " ".join(_powershell_single_quote(item) for item in argv)
+        command = f"$__codetalkPrompt | & {quoted}"
+    script = "$__codetalkPrompt = [Console]::In.ReadToEnd(); " + command
     return [*base, "-Command", script]
+
+
+def _powershell_agent_command_with_prompt_arg(
+    provider: str | None,
+    argv: list[str],
+    prompt_variable: str,
+) -> str | None:
+    if not _should_pass_prompt_as_claude_print_arg(provider, argv):
+        return None
+    tokens: list[str] = []
+    inserted = False
+    for token in argv:
+        tokens.append(_powershell_single_quote(token))
+        if token in {"-p", "--print"} and not inserted:
+            tokens.append(prompt_variable)
+            inserted = True
+    if not inserted:
+        return None
+    return "& " + " ".join(tokens)
+
+
+def _agent_process_invocation(
+    provider: str,
+    argv: list[str],
+    prompt: str,
+) -> tuple[list[str], bytes, str]:
+    if _should_pass_prompt_as_claude_print_arg(provider, argv):
+        return _insert_claude_print_prompt_arg(argv, prompt), b"", "argv"
+    return list(argv), prompt.encode("utf-8"), "stdin"
+
+
+def _should_pass_prompt_as_claude_print_arg(provider: str | None, argv: list[str]) -> bool:
+    if provider != "claude-code":
+        return False
+    return any(token in {"-p", "--print"} for token in argv)
+
+
+def _insert_claude_print_prompt_arg(argv: list[str], prompt: str) -> list[str]:
+    result: list[str] = []
+    inserted = False
+    for index, token in enumerate(argv):
+        result.append(token)
+        if token not in {"-p", "--print"} or inserted:
+            continue
+        next_token = argv[index + 1] if index + 1 < len(argv) else None
+        if next_token is None or next_token.startswith("-"):
+            result.append(prompt)
+            inserted = True
+    return result
 
 
 def _windows_powershell_base_argv(powershell: str) -> list[str]:
@@ -1322,12 +1371,18 @@ async def probe_external_agent_startup(
         if index > 0:
             health["reason"] = _fallback_reason(candidate_command, attempts[:-1])
         argv = [str(item) for item in health.get("argv") or []]
+        process_argv, stdin_payload, prompt_transport = _agent_process_invocation(
+            provider,
+            argv,
+            prompt,
+        )
+        attempt["prompt_transport"] = prompt_transport
         env = os.environ.copy()
         env["CODETALK_AGENT_READONLY"] = "1"
         env["CODETALK_REPO_PATH"] = str(cwd)
         try:
             proc = await asyncio.create_subprocess_exec(
-                *argv,
+                *process_argv,
                 cwd=str(cwd),
                 stdin=asyncio.subprocess.PIPE,
                 stdout=asyncio.subprocess.PIPE,
@@ -1349,7 +1404,7 @@ async def probe_external_agent_startup(
 
         try:
             stdout, stderr = await asyncio.wait_for(
-                proc.communicate(prompt.encode("utf-8")),
+                proc.communicate(stdin_payload),
                 timeout=max(1, settings.external_agent_startup_probe_timeout_sec),
             )
             await _wait_for_process_exit(proc)
@@ -1491,13 +1546,19 @@ async def _run_provider(
             prior_failures.append(summary)
             last_result = AgentDiscoveryResult(provider=provider, status="unavailable", raw_summary=summary)
             continue
+        process_argv, stdin_payload, prompt_transport = _agent_process_invocation(
+            provider,
+            argv,
+            prompt,
+        )
+        attempt["prompt_transport"] = prompt_transport
 
         env = os.environ.copy()
         env["CODETALK_AGENT_READONLY"] = "1"
         env["CODETALK_REPO_PATH"] = str(Path(request.repo_path).resolve())
         try:
             proc = await asyncio.create_subprocess_exec(
-                *argv,
+                *process_argv,
                 cwd=request.repo_path,
                 stdin=asyncio.subprocess.PIPE,
                 stdout=asyncio.subprocess.PIPE,
@@ -1520,7 +1581,7 @@ async def _run_provider(
 
         try:
             stdout, stderr = await asyncio.wait_for(
-                proc.communicate(prompt.encode("utf-8")),
+                proc.communicate(stdin_payload),
                 timeout=max(1, settings.external_agent_timeout_sec),
             )
             await _wait_for_process_exit(proc)

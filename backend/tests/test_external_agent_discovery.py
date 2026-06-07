@@ -764,7 +764,7 @@ def test_provider_health_uses_powershell_fallback_for_shell_only_ccr(monkeypatch
     assert health["status"] == "available"
     assert health["launch_kind"] == "powershell"
     assert health["argv"][0].endswith("powershell.exe")
-    assert "& 'ccr' 'code' '-p' '--output-format' 'json'" in health["argv"][-1]
+    assert "& 'ccr' 'code' '-p' $__codetalkPrompt '--output-format' 'json'" in health["argv"][-1]
     assert "--allowedTools" in health["argv"][-1]
 
 
@@ -1759,7 +1759,7 @@ def test_startup_probe_launches_agent_and_parses_json(tmp_path, monkeypatch):
         returncode = 0
 
         async def communicate(self, data):
-            captured["stdin"] = data.decode("utf-8")
+            captured["stdin"] = data.decode("utf-8") if data else ""
             return (
                 b'{"candidate_files":[],"candidate_symbols":[],"candidate_entries":[],'
                 b'"need_source_slices":[],"commands":[],"raw_summary":"startup_probe_ok"}',
@@ -1779,7 +1779,7 @@ def test_startup_probe_launches_agent_and_parses_json(tmp_path, monkeypatch):
         "app.services.external_agent_discovery.check_provider_health",
         lambda provider, command, fallback_commands=None: {
             "status": "available",
-            "argv": ["fake-agent", "-p"],
+            "argv": ["fake-agent", "-p", "--output-format", "json"],
             "path": "fake-agent",
         },
     )
@@ -1793,10 +1793,69 @@ def test_startup_probe_launches_agent_and_parses_json(tmp_path, monkeypatch):
     assert result["healthy"] is True
     assert result["status"] == "ok"
     assert result["message"] == "startup_probe_ok"
-    assert captured["argv"] == ("fake-agent", "-p")
+    assert captured["argv"][0:2] == ("fake-agent", "-p")
+    assert "startup probe" in captured["argv"][2]
+    assert captured["argv"][3:] == ("--output-format", "json")
     assert captured["cwd"] == str(tmp_path.resolve())
     assert captured["env"]["CODETALK_AGENT_READONLY"] == "1"
-    assert "startup probe" in captured["stdin"]
+    assert captured["stdin"] == ""
+
+
+def test_run_provider_claude_print_mode_passes_prompt_as_argument(tmp_path, monkeypatch):
+    from app.services.external_agent_discovery import AgentDiscoveryRequest, run_external_agent_discovery
+
+    captured: dict = {}
+
+    class FakeProc:
+        returncode = 0
+
+        async def communicate(self, data):
+            captured["stdin"] = data.decode("utf-8") if data else ""
+            return (
+                b'{"candidate_files":[],"candidate_symbols":[],"candidate_entries":[],'
+                b'"need_source_slices":[],"commands":[],"raw_summary":"ok"}',
+                b"",
+            )
+
+        async def wait(self):
+            return self.returncode
+
+    async def fake_create_subprocess_exec(*args, **kwargs):
+        captured["argv"] = args
+        return FakeProc()
+
+    monkeypatch.setattr(
+        "app.services.external_agent_discovery.check_provider_health",
+        lambda provider, command, fallback_commands=None: {
+            "status": "available",
+            "argv": ["fake-agent", "-p", "--output-format", "json"],
+            "path": "fake-agent",
+            "attempts": [{"command": command, "status": "available"}],
+        },
+    )
+    monkeypatch.setattr(
+        "app.services.external_agent_discovery.asyncio.create_subprocess_exec",
+        fake_create_subprocess_exec,
+    )
+    monkeypatch.setattr(
+        "app.services.external_agent_discovery.settings.claude_code_fallback_commands",
+        [],
+    )
+
+    results = asyncio.run(run_external_agent_discovery(
+        AgentDiscoveryRequest(
+            request_id="print-mode",
+            repo_path=str(tmp_path),
+            analysis_object_text="nvme-tcp-tls",
+        ),
+        providers=["claude-code"],
+    ))
+
+    assert results[0].status == "ok"
+    assert captured["argv"][0:2] == ("fake-agent", "-p")
+    assert "analysis_object_text" in captured["argv"][2]
+    assert captured["argv"][3:] == ("--output-format", "json")
+    assert captured["stdin"] == ""
 
 
 def test_startup_probe_redacts_secret_values_from_response(tmp_path, monkeypatch):
