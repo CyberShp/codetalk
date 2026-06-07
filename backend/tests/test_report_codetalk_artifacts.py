@@ -473,6 +473,81 @@ def test_coverage_test_design_section_labels_deterministic_fallback_source() -> 
     assert "Deterministic case role: fallback_recommendation" in section
 
 
+def test_coverage_test_design_section_keeps_accepted_agent_entry_provenance() -> None:
+    section = build_coverage_test_design_section({
+        "version": "coverage-test-design-v1",
+        "summary": {
+            "uncovered_function_count": 1,
+            "uncovered_branch_count": 0,
+            "black_box_ready_count": 1,
+            "black_box_hypothesis_count": 0,
+            "gray_box_required_count": 0,
+            "white_box_lint_failed_count": 0,
+            "high_risk_count": 1,
+            "workspace_bound": True,
+        },
+        "gaps": [{
+            "kind": "function",
+            "function_name": "nvmf_tcp_tls_handshake",
+            "file_path": "nof/nvmf_tcp/transport/tls/tls.c",
+            "line_start": 42,
+            "hit_count": 0,
+            "risk_level": "high",
+            "confidence": "high",
+            "gray_box_required": False,
+            "entry_paths": [{
+                "entry_kind": "rpc",
+                "entry_symbol": "nvmf_rpc_listen",
+                "entry_label": "nvmf listen RPC",
+                "chain": ["nvmf_rpc_listen", "nvmf_tcp_tls_handshake"],
+                "provider": "opencode",
+                "turn_id": "coverage:nvmf_tcp_tls_handshake:round2",
+                "source_verification": "source_backed",
+                "validation_error": None,
+            }],
+            "entry_discovery": {
+                "entry_trace_status": "entry_found",
+                "candidate_external_entries": [],
+            },
+            "external_entry_card": {
+                "has_external_entry": True,
+                "entries": [{
+                    "entry_kind": "rpc",
+                    "entry_label": "nvmf listen RPC",
+                    "provider": "opencode",
+                    "turn_id": "coverage:nvmf_tcp_tls_handshake:round2",
+                    "source_verification": "source_backed",
+                    "validation_error": None,
+                }],
+                "missing_evidence": [],
+            },
+            "black_box_readiness": {
+                "case_type": "black_box_ready",
+                "rationale": "verified external entry",
+            },
+            "white_box_leak_check": {"passed": True, "findings": [], "action": "pass"},
+            "gray_box": {"required": False},
+            "test_case_drafts": [{
+                "case_type": "black_box_ready",
+                "test_execution": {
+                    "title": "Drive TLS handshake through RPC",
+                    "external_trigger": "Call nvmf listen RPC.",
+                    "preconditions": "TLS transport enabled.",
+                    "inputs": "TLS listen options.",
+                    "steps": ["Call RPC", "Connect host"],
+                    "expected": "Handshake completes.",
+                },
+            }],
+            "evidence_gaps": [],
+        }],
+        "warnings": [],
+    })
+
+    assert "opencode" in section
+    assert "coverage:nvmf_tcp_tls_handshake:round2" in section
+    assert "source_backed" in section
+
+
 @pytest.mark.asyncio
 async def test_legacy_report_prompts_and_outputs_use_codetalk_layout(tmp_path: Path) -> None:
     llm = CapturingLLM(

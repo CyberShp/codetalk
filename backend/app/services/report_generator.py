@@ -2368,6 +2368,33 @@ def _ctd_case_type_label(case_type: object) -> str:
     return mapping.get(str(case_type or ""), str(case_type or "unknown"))
 
 
+def _ctd_entry_metadata(item: dict) -> str:
+    metadata: list[str] = []
+    provider = item.get("provider") or item.get("tool")
+    verification = item.get("source_verification") or item.get("source_verification_status")
+    turn_id = item.get("turn_id")
+    validation_error = item.get("validation_error")
+    if provider:
+        metadata.append(f"provider={_ctd_cell(provider)}")
+    if verification:
+        metadata.append(f"verification={_ctd_cell(verification)}")
+    if turn_id:
+        metadata.append(f"turn={_ctd_cell(turn_id)}")
+    if validation_error:
+        metadata.append(f"validation_error={_ctd_cell(validation_error)}")
+    return f" ({'; '.join(metadata)})" if metadata else ""
+
+
+def _ctd_entry_label(item: dict) -> str:
+    kind = item.get("entry_type") or item.get("entry_kind") or "external"
+    chain = item.get("chain") or []
+    if chain:
+        label = " -> ".join(_ctd_cell(part) for part in chain if part)
+    else:
+        label = item.get("entry_label") or item.get("entry_symbol") or "external entry"
+    return f"[{_ctd_cell(kind)}] {_ctd_cell(label)}{_ctd_entry_metadata(item)}"
+
+
 def _ctd_entry_discovery_summary(gap: dict) -> str:
     discovery = gap.get("entry_discovery") or {}
     candidates = discovery.get("candidate_external_entries") or []
@@ -2378,12 +2405,15 @@ def _ctd_entry_discovery_summary(gap: dict) -> str:
             provider = item.get("provider") or item.get("tool")
             verification = item.get("source_verification")
             turn_id = item.get("turn_id")
+            validation_error = item.get("validation_error")
             if provider:
                 metadata.append(f"provider={_ctd_cell(provider)}")
             if verification:
                 metadata.append(f"verification={_ctd_cell(verification)}")
             if turn_id:
                 metadata.append(f"turn={_ctd_cell(turn_id)}")
+            if validation_error:
+                metadata.append(f"validation_error={_ctd_cell(validation_error)}")
             suffix = f" ({'; '.join(metadata)})" if metadata else ""
             parts.append(
                 "[{kind}] {label}{suffix}".format(
@@ -2456,10 +2486,7 @@ def _ctd_render_gray_and_evidence(lines: list[str], gap: dict) -> None:
         ))
     entries = entry_card.get("entries") or []
     if entries:
-        labels = [
-            f"[{entry.get('entry_kind')}] {entry.get('entry_label')}"
-            for entry in entries[:4]
-        ]
+        labels = [_ctd_entry_label(entry) for entry in entries[:4]]
         lines.append("  - External entry evidence: " + "; ".join(_ctd_cell(label) for label in labels))
     if gap.get("evidence_gaps"):
         lines.append("  - Verification gaps: " + "; ".join(_ctd_cell(item) for item in gap.get("evidence_gaps")[:6]))
@@ -2545,6 +2572,9 @@ def build_coverage_test_design_section(design: dict | None) -> str:
                 f"[{e.get('entry_kind')}] {' → '.join(e.get('chain') or [])}"
                 for e in (gap.get("entry_paths") or [])[:2]
             )
+            entry_path_labels = [_ctd_entry_label(e) for e in (gap.get("entry_paths") or [])[:2]]
+            if entry_path_labels:
+                entries = "; ".join(entry_path_labels)
             if not entries:
                 entries = _ctd_entry_discovery_summary(gap)
             cases = "；".join(
@@ -2683,7 +2713,7 @@ def build_index_coverage_section(common_context: dict) -> str:
     lines.append("")
     return "\n".join([
         "<details>",
-        "<summary>Tool Orchestration and evidence basis</summary>",
+        "<summary>Tool and evidence basis</summary>",
         "",
         *lines,
         "",
