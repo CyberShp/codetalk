@@ -411,6 +411,68 @@ def test_coverage_test_design_section_splits_execution_gray_and_evidence() -> No
     assert "psk_retained_hash == NVME_TCP_HASH_ALGORITHM_NONE" in section
 
 
+def test_coverage_test_design_section_labels_deterministic_fallback_source() -> None:
+    section = build_coverage_test_design_section({
+        "version": "coverage-test-design-v1",
+        "summary": {
+            "uncovered_function_count": 1,
+            "uncovered_branch_count": 0,
+            "black_box_ready_count": 0,
+            "black_box_hypothesis_count": 0,
+            "gray_box_required_count": 1,
+            "white_box_lint_failed_count": 0,
+            "high_risk_count": 1,
+            "workspace_bound": True,
+            "recommendation_source": "deterministic_fallback",
+            "ai_scenario_count": 0,
+            "ai_rejected_scenario_count": 1,
+        },
+        "gaps": [{
+            "kind": "function",
+            "function_name": "nvmf_tcp_tls_handshake",
+            "file_path": "nof/nvmf_tcp/transport/tls/tls.c",
+            "line_start": 42,
+            "hit_count": 0,
+            "risk_level": "high",
+            "confidence": "medium",
+            "gray_box_required": True,
+            "deterministic_case_role": "fallback_recommendation",
+            "entry_discovery": {
+                "entry_trace_status": "source_read_ok_entry_not_found",
+                "unresolved_reasons": ["no verified external entry"],
+            },
+            "black_box_readiness": {
+                "case_type": "gray_box_required",
+                "rationale": "no verified external entry",
+            },
+            "gray_box": {
+                "required": True,
+                "technique": "instrumentation",
+                "scheme": "Observe handshake state transitions.",
+            },
+            "test_case_drafts": [{
+                "case_type": "gray_box_required",
+                "test_execution": {
+                    "title": "Exercise TLS handshake with instrumentation",
+                    "external_trigger": "Start an NVMe/TCP TLS connection.",
+                    "preconditions": "TLS transport is enabled.",
+                    "inputs": "TLS connect request.",
+                    "steps": ["Connect", "Observe state"],
+                    "expected": "Handshake reaches a terminal state.",
+                },
+            }],
+            "evidence_gaps": ["external entry not verified"],
+        }],
+        "warnings": [],
+    })
+
+    assert "Recommendation source: deterministic_fallback" in section
+    assert "deterministic coverage fallback" in section
+    assert "AI accepted scenarios=0" in section
+    assert "AI rejected scenarios=1" in section
+    assert "Deterministic case role: fallback_recommendation" in section
+
+
 @pytest.mark.asyncio
 async def test_legacy_report_prompts_and_outputs_use_codetalk_layout(tmp_path: Path) -> None:
     llm = CapturingLLM(

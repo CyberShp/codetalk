@@ -2506,6 +2506,22 @@ def build_coverage_test_design_section(design: dict | None) -> str:
             hr=summary.get("high_risk_count", 0),
         )
     )
+    recommendation_source = summary.get("recommendation_source")
+    if recommendation_source:
+        source_line = f"- Recommendation source: {_ctd_cell(recommendation_source)}"
+        if recommendation_source == "deterministic_fallback":
+            source_line += (
+                " (AI/external agents produced no accepted scenarios; "
+                "deterministic coverage fallback recommendations are rendered.)"
+            )
+        ai_counts: list[str] = []
+        if "ai_scenario_count" in summary:
+            ai_counts.append(f"AI accepted scenarios={summary.get('ai_scenario_count', 0)}")
+        if "ai_rejected_scenario_count" in summary:
+            ai_counts.append(f"AI rejected scenarios={summary.get('ai_rejected_scenario_count', 0)}")
+        if ai_counts:
+            source_line += " " + "; ".join(ai_counts) + "."
+        lines.append(source_line)
     if tool_status:
         lines.append(
             "- 工具状态（降级会影响精度）：" + "，".join(
@@ -2563,6 +2579,9 @@ def build_coverage_test_design_section(design: dict | None) -> str:
                 f"- 风险等级：{gap.get('risk_level')}；置信度：{gap.get('confidence')}；"
                 f"覆盖次数：{gap.get('hit_count')}"
             )
+            deterministic_role = gap.get("deterministic_case_role")
+            if deterministic_role:
+                lines.append(f"- Deterministic case role: {_ctd_cell(deterministic_role)}")
             discovery = gap.get("entry_discovery") or {}
             if discovery:
                 lines.append(f"- 入口发现状态：{_ctd_entry_discovery_summary(gap)}")
