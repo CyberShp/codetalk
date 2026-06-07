@@ -1671,6 +1671,77 @@ class TestCoverageTestDesign:
         assert "amount" in case_text
         assert "currency" in case_text
 
+    async def test_js_arrow_route_handler_is_source_backed_with_input_hints(self, tmp_path):
+        from app.services.coverage_analyzer import build_coverage_test_design
+
+        src = tmp_path / "src"
+        src.mkdir()
+        (src / "payments.js").write_text(
+            "export const processPayment = async (request) => {\n"
+            "  const { amount, currency } = request.body;\n"
+            "  if (!amount) {\n"
+            "    return { status: 400 };\n"
+            "  }\n"
+            "  return { amount, currency };\n"
+            "};\n",
+            encoding="utf-8",
+        )
+        (src / "routes.js").write_text(
+            "import { processPayment } from './payments';\n"
+            "app.post('/payments', processPayment);\n",
+            encoding="utf-8",
+        )
+        modules = self._modules(
+            "feature,module,code_location,function,triggered,hit_count\n"
+            "payments,payments,src/payments.js:1-7,processPayment,false,0\n"
+        )
+
+        design = await build_coverage_test_design(
+            modules, workspace_id="ws-1", repo_path=str(tmp_path)
+        )
+
+        gap = [g for g in design["gaps"] if g.get("kind") == "function"][0]
+        assert gap["source_window"]["available"] is True
+        assert gap["black_box_readiness"]["case_type"] == "black_box_ready"
+        entry = gap["entry_paths"][0]
+        assert entry["entry_kind"] == "route"
+        assert entry["entry_symbol"] == "processPayment"
+        assert entry["input_hints"] == ["amount", "currency"]
+        case_text = json.dumps(gap["black_box_cases"], ensure_ascii=False)
+        assert "amount" in case_text
+        assert "currency" in case_text
+
+    async def test_ts_class_field_handler_is_read_as_source_window(self, tmp_path):
+        from app.services.coverage_analyzer import build_coverage_test_design
+
+        src = tmp_path / "src"
+        src.mkdir()
+        (src / "controller.ts").write_text(
+            "class PaymentController {\n"
+            "  public processPayment = async (request: Request) => {\n"
+            "    const amount = request.body.amount;\n"
+            "    if (!amount) {\n"
+            "      return { status: 400 };\n"
+            "    }\n"
+            "    return { amount };\n"
+            "  };\n"
+            "}\n",
+            encoding="utf-8",
+        )
+        modules = self._modules(
+            "feature,module,code_location,function,triggered,hit_count\n"
+            "payments,controller,src/controller.ts:2-8,processPayment,false,0\n"
+        )
+
+        design = await build_coverage_test_design(
+            modules, workspace_id="ws-1", repo_path=str(tmp_path)
+        )
+
+        gap = [g for g in design["gaps"] if g.get("kind") == "function"][0]
+        assert gap["source_window"]["available"] is True
+        assert gap["source_window"]["definition_line"] == 2
+        assert "public processPayment" in gap["source_window"]["text"]
+
     async def test_decorated_route_function_is_black_box_entry_without_caller(self, tmp_path):
         from app.services.coverage_analyzer import build_coverage_test_design
 

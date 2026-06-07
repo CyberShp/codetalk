@@ -111,6 +111,24 @@ _RIPGREP_EXCLUDE_GLOBS = tuple(
 _FUNC_DEF_RE = re.compile(
     r"^[\w\s\*&:<>,~\[\]]*?\b([A-Za-z_]\w*)\s*\([^;{}]*\)\s*(?:\{|:|$)"
 )
+_ASSIGNED_FUNCTION_DEF_RES = (
+    re.compile(
+        r"^\s*(?:export\s+)?(?:const|let|var)\s+(?P<name>[A-Za-z_$][\w$]*)"
+        r"(?:\s*:\s*[^=]+)?\s*=\s*(?:async\s*)?"
+        r"(?:(?:\([^)]*\)|[A-Za-z_$][\w$]*)\s*=>|function\b)"
+    ),
+    re.compile(
+        r"^\s*(?:(?:public|private|protected|static|readonly)\s+)*"
+        r"(?P<name>[A-Za-z_$][\w$]*)"
+        r"(?:\s*:\s*[^=]+)?\s*=\s*(?:async\s*)?"
+        r"(?:(?:\([^)]*\)|[A-Za-z_$][\w$]*)\s*=>|function\b)"
+    ),
+    re.compile(
+        r"^\s*(?P<name>[A-Za-z_$][\w$]*)\s*:\s*(?:async\s*)?"
+        r"(?:(?:\([^)]*\)|[A-Za-z_$][\w$]*)\s*=>|function\b)"
+    ),
+    re.compile(r"^\s*(?P<name>[A-Za-z_$][\w$]*)\s*=\s*lambda\b"),
+)
 # Control-flow / declaration keywords that look like a call but are not a
 # function definition.
 _NON_FUNCTION_NAMES = {
@@ -132,6 +150,11 @@ def _match_def_name(line: str) -> str | None:
     stripped = line.strip()
     if stripped.startswith(_EXPRESSION_CALL_PREFIXES):
         return None
+    for pattern in _ASSIGNED_FUNCTION_DEF_RES:
+        assigned = pattern.match(line)
+        if assigned:
+            name = assigned.group("name")
+            return None if name in _NON_FUNCTION_NAMES else name
     before_paren = stripped.split("(", 1)[0]
     if "=" in before_paren and not stripped.startswith("def "):
         return None
@@ -2414,9 +2437,8 @@ def _find_definition_line(lines: list[str], function_name: str) -> int | None:
 def _find_strict_definition_line(lines: list[str], function_name: str) -> int | None:
     if not function_name:
         return None
-    name_re = re.compile(rf"\b{re.escape(function_name)}\s*\(")
     for idx, line in enumerate(lines):
-        if name_re.search(line) and (
+        if (
             _match_def_name(line) == function_name
             or _match_multiline_def_name(lines, idx) == function_name
         ):
