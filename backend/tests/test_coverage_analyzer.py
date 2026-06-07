@@ -1496,6 +1496,7 @@ class TestCoverageTestDesign:
                 AgentDiscoveryResult(
                     provider="claude-code",
                     status="ok",
+                    turn_id="coverage:tls_recover_session",
                     candidate_entries=[
                         AgentCandidateEntry(
                             entry_kind="rpc",
@@ -1523,6 +1524,13 @@ class TestCoverageTestDesign:
         assert gap["entry_paths"]
         assert gap["black_box_readiness"]["case_type"] == "black_box_ready"
         assert gap["black_box_cases"]
+        agent_cases = [
+            case for case in gap["black_box_cases"]
+            if case.get("provider") == "claude-code"
+        ]
+        assert agent_cases
+        assert agent_cases[0]["turn_id"] == "coverage:tls_recover_session"
+        assert agent_cases[0]["source_verification"] == "source_backed"
 
     async def test_source_window_prefers_path_suffix_over_duplicate_basename(self, tmp_path):
         from app.services.coverage_analyzer import build_coverage_test_design

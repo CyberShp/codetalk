@@ -2714,6 +2714,24 @@ def _registered_entry_type(registration_line: str, window: list[str]) -> str:
     return "callback"
 
 
+def _entry_case_provenance(entry: dict) -> dict:
+    provenance: dict = {}
+    for key in (
+        "tool",
+        "provider",
+        "turn_id",
+        "source_verification",
+        "validation_error",
+        "entry_file",
+        "entry_symbol",
+        "entry_label",
+    ):
+        value = entry.get(key)
+        if value is not None and value != "":
+            provenance[key] = value
+    return provenance
+
+
 def _build_black_box_cases(
     hit: FunctionHit,
     entry_paths: list[dict],
@@ -2754,6 +2772,7 @@ def _build_black_box_cases(
             "expected": expected,
             "observable_signals": signals,
             "evidence": entry.get("evidence"),
+            **_entry_case_provenance(entry),
         })
 
     primary_entry = entry_paths[0] if entry_paths else {}
@@ -2781,6 +2800,7 @@ def _build_black_box_cases(
             "observable_signals": signals,
             "evidence": (f"{branch.get('file')}:{branch.get('line_number')}"
                          if branch.get("file") else None),
+            **(_entry_case_provenance(primary_entry) if primary_entry else {}),
         })
         if primary_entry_label:
             branch_inputs = (
