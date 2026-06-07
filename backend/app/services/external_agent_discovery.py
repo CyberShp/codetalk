@@ -1753,9 +1753,9 @@ async def _kill_and_wait_process(proc: object) -> None:
         kill = getattr(proc, "kill")
         kill()
     except ProcessLookupError:
-        return
+        pass
     except Exception:
-        return
+        pass
     await _wait_for_process_exit(proc)
 
 

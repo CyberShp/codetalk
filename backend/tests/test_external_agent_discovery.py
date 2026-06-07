@@ -1689,6 +1689,35 @@ def test_run_provider_kills_process_when_cancelled(tmp_path, monkeypatch):
     assert fake_proc.waited is True
 
 
+def test_kill_and_wait_process_still_waits_when_process_already_exited(monkeypatch):
+    from app.services import external_agent_discovery as discovery
+
+    sleeps: list[float] = []
+
+    class FakeProc:
+        def __init__(self):
+            self.waited = False
+
+        def kill(self):
+            raise ProcessLookupError("already exited")
+
+        async def wait(self):
+            self.waited = True
+            return 0
+
+    async def fake_sleep(delay):
+        sleeps.append(delay)
+
+    fake_proc = FakeProc()
+    monkeypatch.setattr(discovery.platform, "system", lambda: "Windows")
+    monkeypatch.setattr(discovery.asyncio, "sleep", fake_sleep)
+
+    asyncio.run(discovery._kill_and_wait_process(fake_proc))
+
+    assert fake_proc.waited is True
+    assert sleeps
+
+
 def test_run_provider_uses_powershell_wrapper_stdin(tmp_path, monkeypatch):
     if not platform.system().lower().startswith("win") or not shutil.which("powershell.exe"):
         import pytest
