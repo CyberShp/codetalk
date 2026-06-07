@@ -518,6 +518,14 @@ def _coerce_string_list(value: object) -> list[str]:
     return [text] if text else []
 
 
+def _coerce_dict_items(value: object) -> list[dict]:
+    if isinstance(value, dict):
+        return [value]
+    if isinstance(value, (list, tuple, set)):
+        return [item for item in value if isinstance(item, dict)]
+    return []
+
+
 def _split_command_list_string(value: str) -> list[str]:
     parts: list[str] = []
     current: list[str] = []
@@ -748,9 +756,7 @@ def parse_agent_output(provider: str, raw_output: str, repo_path: str | Path) ->
         )
 
     files: list[AgentCandidateFile] = []
-    for item in payload.get("candidate_files") or []:
-        if not isinstance(item, dict):
-            continue
+    for item in _coerce_dict_items(payload.get("candidate_files")):
         candidate = AgentCandidateFile(
             path=str(item.get("path") or ""),
             reason=str(item.get("reason") or ""),
@@ -765,9 +771,7 @@ def parse_agent_output(provider: str, raw_output: str, repo_path: str | Path) ->
         files.append(candidate)
 
     entries: list[AgentCandidateEntry] = []
-    for item in payload.get("candidate_entries") or []:
-        if not isinstance(item, dict):
-            continue
+    for item in _coerce_dict_items(payload.get("candidate_entries")):
         entry = AgentCandidateEntry(
             entry_kind=str(item.get("entry_kind") or item.get("entry_type") or "external"),
             entry_symbol=str(item.get("entry_symbol") or item.get("symbol") or ""),
@@ -799,14 +803,13 @@ def parse_agent_output(provider: str, raw_output: str, repo_path: str | Path) ->
             "symbol": str(item.get("symbol") or "") or None,
             "reason": str(item.get("reason") or ""),
         }
-        for item in (payload.get("need_source_slices") or [])
-        if isinstance(item, dict)
+        for item in _coerce_dict_items(payload.get("need_source_slices"))
     ]
     return AgentDiscoveryResult(
         provider=provider,
         status="ok",
         candidate_files=files,
-        candidate_symbols=[s for s in payload.get("candidate_symbols") or [] if isinstance(s, dict)],
+        candidate_symbols=_coerce_dict_items(payload.get("candidate_symbols")),
         candidate_entries=entries,
         need_source_slices=need_source_slices,
         commands=commands,
