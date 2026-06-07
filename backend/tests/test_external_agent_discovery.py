@@ -2816,6 +2816,38 @@ def test_duplicate_gitnexus_and_agent_candidate_merges_with_boost(tmp_path):
     assert "claude-code" in merged[0].reason
 
 
+def test_merge_source_candidates_normalizes_agent_confidence_case(tmp_path):
+    from app.services.external_agent_discovery import (
+        AgentCandidateFile,
+        AgentDiscoveryResult,
+        merge_source_candidates,
+    )
+
+    src = tmp_path / "nof" / "nvmf_tcp" / "transport" / "tls"
+    src.mkdir(parents=True)
+    source = src / "tls.c"
+    source.write_text("int tls;\n", encoding="utf-8")
+
+    agent = AgentDiscoveryResult(
+        provider="claude-code",
+        status="ok",
+        candidate_files=[
+            AgentCandidateFile(
+                path="nof/nvmf_tcp/transport/tls/tls.c",
+                reason="agent verified module",
+                confidence="HIGH",
+                validated=True,
+            )
+        ],
+    )
+
+    merged, warnings = merge_source_candidates(tmp_path, [], [agent])
+
+    assert warnings == []
+    assert len(merged) == 1
+    assert merged[0].confidence == "high"
+
+
 def test_duplicate_local_and_agent_candidate_keeps_local_source(tmp_path):
     from app.schemas.workspace_analysis import ScopeCandidate
     from app.services.external_agent_discovery import (

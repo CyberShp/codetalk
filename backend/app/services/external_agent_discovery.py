@@ -1390,7 +1390,7 @@ def merge_source_candidates(
             key = validation.path.lower()
             providers_by_key.setdefault(key, set()).add(result.provider)
             reason = f"external agent {result.provider}: {file.reason or 'validated source path'}"
-            confidence = "high" if file.confidence == "high" else "medium"
+            confidence = "high" if _normalize_confidence(file.confidence) == "high" else "medium"
             if key in by_key and by_key[key].source == "external_agent":
                 if len(providers_by_key[key]) > 1:
                     confidence = "high"
