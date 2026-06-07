@@ -203,7 +203,9 @@ async def test_tool_health_exception_exposes_diagnostic_message(tools_client, mo
             return "claude-code"
 
         async def health_check(self):
-            raise RuntimeError("settings parse failed: CLAUDE_CODE_FALLBACK_COMMANDS")
+            raise RuntimeError(
+                "settings parse failed: CLAUDE_CODE_FALLBACK_COMMANDS --api-key sk-health-secret-123"
+            )
 
     client, _mock_pm = tools_client
     monkeypatch.setattr(tools, "get_adapter", lambda _name: BrokenAgentAdapter())
@@ -214,8 +216,66 @@ async def test_tool_health_exception_exposes_diagnostic_message(tools_client, mo
     body = resp.json()
     assert body["healthy"] is False
     assert body["container_status"] == "error"
-    assert body["message"] == "settings parse failed: CLAUDE_CODE_FALLBACK_COMMANDS"
+    assert "settings parse failed" in body["message"]
+    assert "sk-health-secret-123" not in body["message"]
+    assert "<redacted>" in body["message"]
     assert body["last_check"] == body["message"]
+
+
+async def test_tools_status_exception_redacts_diagnostic_message(tools_client, monkeypatch):
+    """Status endpoint adapter failures should not leak command secrets."""
+
+    from app.adapters.base import ToolCapability
+
+    class BrokenAgentAdapter:
+        def name(self):
+            return "claude-code"
+
+        def capabilities(self):
+            return [ToolCapability.CODE_SEARCH]
+
+        async def health_check(self):
+            raise RuntimeError("adapter failed --token sk-status-secret-123")
+
+    client, _mock_pm = tools_client
+    monkeypatch.setattr(tools, "get_all_adapters", lambda: [BrokenAgentAdapter()])
+
+    resp = await client.get("/api/tools/status")
+
+    assert resp.status_code == 200
+    body = resp.json()["claude-code"]
+    assert body["container_status"] == "error"
+    assert "adapter failed" in body["message"]
+    assert "sk-status-secret-123" not in body["message"]
+    assert "<redacted>" in body["message"]
+
+
+async def test_tools_procs_adapter_exception_redacts_diagnostic_message(tools_client, monkeypatch):
+    """Tools page adapter-only status should redact failed health-check details."""
+
+    from app.adapters.base import ToolCapability
+
+    class BrokenAgentAdapter:
+        def name(self):
+            return "claude-code"
+
+        def capabilities(self):
+            return [ToolCapability.CODE_SEARCH]
+
+        async def health_check(self):
+            raise RuntimeError("adapter failed --api-key sk-procs-secret-123")
+
+    client, _mock_pm = tools_client
+    monkeypatch.setattr(tools, "get_all_adapters", lambda: [BrokenAgentAdapter()])
+
+    resp = await client.get("/api/tools/procs")
+
+    assert resp.status_code == 200
+    agent = next(item for item in resp.json() if item["name"] == "claude-code")
+    assert agent["status"] == "error"
+    assert "adapter failed" in agent["message"]
+    assert "sk-procs-secret-123" not in agent["message"]
+    assert "<redacted>" in agent["message"]
 
 
 async def test_external_agent_startup_probe_endpoint_returns_diagnostics(tools_client, monkeypatch):

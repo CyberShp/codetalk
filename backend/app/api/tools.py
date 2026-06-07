@@ -84,6 +84,7 @@ async def _adapter_proc_status(adapter) -> dict[str, Any]:
             "message": "health check timed out",
         }
     except Exception as exc:
+        message = redact_agent_diagnostic_text(str(exc))
         return {
             "name": adapter.name(),
             "display_name": _display_name(adapter.name()),
@@ -91,8 +92,8 @@ async def _adapter_proc_status(adapter) -> dict[str, Any]:
             "status": "error",
             "managed": False,
             "capabilities": [c.value for c in adapter.capabilities()],
-            "last_check": str(exc),
-            "message": str(exc),
+            "last_check": message,
+            "message": message,
         }
 
 
@@ -139,7 +140,7 @@ async def get_tools_status() -> dict[str, dict[str, Any]]:
                 "capabilities": [c.value for c in adapter.capabilities()],
             }
         except Exception as exc:
-            message = str(exc)
+            message = redact_agent_diagnostic_text(str(exc))
             results[adapter.name()] = {
                 "healthy": False,
                 "indexed_repos": 0,
@@ -195,7 +196,7 @@ async def get_tool_health(tool_name: str) -> dict[str, Any]:
             "message": "health check timed out",
         }
     except Exception as exc:
-        message = str(exc)
+        message = redact_agent_diagnostic_text(str(exc))
         return {
             "name": adapter.name(),
             "healthy": False,
