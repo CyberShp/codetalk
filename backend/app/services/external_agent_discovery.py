@@ -1730,7 +1730,7 @@ async def probe_external_agent_startup(
         raw = stdout.decode("utf-8", errors="replace")
         stderr_text = stderr.decode("utf-8", errors="replace")
         if proc.returncode not in {0, None}:
-            message = _format_process_error_summary(proc.returncode, stderr_text, raw)
+            message = _format_process_error_summary(proc.returncode, stderr_text, raw, health)
             attempt["probe_status"] = "error"
             attempt["probe_message"] = message[:4000]
             last_failure = {
@@ -1921,7 +1921,7 @@ async def _run_provider(
         stderr_text = stderr.decode("utf-8", errors="replace")
         if proc.returncode not in {0, None}:
             cli_error = _extract_cli_error(raw) or _extract_cli_error(stderr_text)
-            summary = cli_error or _format_process_error_summary(proc.returncode, stderr_text, raw)
+            summary = cli_error or _format_process_error_summary(proc.returncode, stderr_text, raw, health)
             attempt["run_status"] = "error"
             attempt["run_message"] = summary[:4000]
             prior_failures.append(summary)
@@ -2010,7 +2010,12 @@ async def _run_provider(
     return result
 
 
-def _format_process_error_summary(returncode: int | None, stderr_text: str, stdout_text: str) -> str:
+def _format_process_error_summary(
+    returncode: int | None,
+    stderr_text: str,
+    stdout_text: str,
+    health: dict | None = None,
+) -> str:
     parts = [f"external agent exited with exit code {returncode}"]
     stderr_text = (stderr_text or "").strip()
     stdout_text = (stdout_text or "").strip()
@@ -2018,7 +2023,36 @@ def _format_process_error_summary(returncode: int | None, stderr_text: str, stdo
         parts.append(f"stderr: {_redact_agent_diagnostic_text(stderr_text)[:3000]}")
     if stdout_text:
         parts.append(f"stdout: {_redact_agent_diagnostic_text(stdout_text)[:1000]}")
+    if isinstance(health, dict):
+        parts.extend(_health_diagnostic_parts(health))
     return "; ".join(parts)[:4000]
+
+
+def _health_diagnostic_parts(health: dict) -> list[str]:
+    parts: list[str] = []
+    launch = str(health.get("launch_kind") or "").strip()
+    if launch:
+        parts.append(f"launch={launch}")
+    configured = str(health.get("configured_command") or "").strip()
+    if configured:
+        parts.append(f"configured={_redact_agent_diagnostic_text(configured)}")
+    path = str(health.get("path") or "").strip()
+    if path:
+        parts.append(f"path={_redact_agent_diagnostic_text(path)}")
+    configured_argv = health.get("configured_argv")
+    if isinstance(configured_argv, list) and configured_argv:
+        argv_summary = " ".join(_redact_agent_diagnostic_text(str(item)) for item in configured_argv)
+        parts.append("configured_argv=" + argv_summary[:1000])
+    attempts = health.get("attempts")
+    if isinstance(attempts, list):
+        hints = [
+            _redact_agent_diagnostic_text(str(attempt.get("config_hint") or "").strip())
+            for attempt in attempts
+            if isinstance(attempt, dict) and str(attempt.get("config_hint") or "").strip()
+        ]
+        if hints:
+            parts.append("config_hint=" + hints[-1][:1000])
+    return parts
 
 
 def _is_terminal_agent_configuration_error(message: str) -> bool:

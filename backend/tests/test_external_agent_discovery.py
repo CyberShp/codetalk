@@ -1393,6 +1393,68 @@ def test_run_provider_reports_nonzero_exit_with_stderr(tmp_path, monkeypatch):
     assert "auth failed" in results[0].raw_summary
 
 
+def test_run_provider_nonzero_exit_keeps_ccr_config_hint(tmp_path, monkeypatch):
+    from app.services.external_agent_discovery import AgentDiscoveryRequest, run_external_agent_discovery
+
+    class FakeProc:
+        returncode = 1
+
+        async def communicate(self, _data):
+            return b"", b"ccr failed before routing request\n"
+
+        async def wait(self):
+            return self.returncode
+
+    async def fake_create_subprocess_exec(*_args, **_kwargs):
+        return FakeProc()
+
+    monkeypatch.setattr(
+        "app.services.external_agent_discovery.check_provider_health",
+        lambda provider, command, fallback_commands=None: {
+            "status": "available",
+            "argv": ["ccr", "code", "-p", "--output-format", "json"],
+            "configured_command": "ccr code",
+            "configured_argv": ["ccr", "code"],
+            "path": "C:/tools/ccr.cmd",
+            "launch_kind": "exec",
+            "attempts": [
+                {
+                    "command": "ccr code",
+                    "status": "available",
+                    "launch_kind": "exec",
+                    "config_hint": (
+                        "CCR_CONFIG_PATH is not set and default config not found: "
+                        "C:/Users/me/.claude-code-router/config-router.json"
+                    ),
+                }
+            ],
+        },
+    )
+    monkeypatch.setattr(
+        "app.services.external_agent_discovery.asyncio.create_subprocess_exec",
+        fake_create_subprocess_exec,
+    )
+    monkeypatch.setattr(
+        "app.services.external_agent_discovery.settings.claude_code_fallback_commands",
+        [],
+    )
+
+    results = asyncio.run(run_external_agent_discovery(
+        AgentDiscoveryRequest(
+            request_id="ccr-config-hint-on-exit",
+            repo_path=str(tmp_path),
+            analysis_object_text="nvme-tcp-tls",
+        ),
+        providers=["claude-code"],
+    ))
+
+    assert results[0].status == "error"
+    assert "ccr failed before routing request" in results[0].raw_summary
+    assert "configured=ccr code" in results[0].raw_summary
+    assert "default config not found" in results[0].raw_summary
+    assert "C:/Users/me/.claude-code-router/config-router.json" in results[0].raw_summary
+
+
 def test_run_provider_tries_fallback_when_primary_command_exits_nonzero(tmp_path, monkeypatch):
     from app.services.external_agent_discovery import AgentDiscoveryRequest, run_external_agent_discovery
 
