@@ -1285,6 +1285,15 @@ def _collect_agent_entry_results(
                         validation.resolved_path = str(resolved_entry_file)
                         validation.validated = True
                         validation.validation_error = None
+                if validation.validated and entry.entry_symbol and validation.resolved_path:
+                    rebound_entry_file = _rebind_entry_file_to_symbol_definition(
+                        repo_root,
+                        Path(validation.resolved_path),
+                        entry.entry_symbol,
+                    )
+                    if rebound_entry_file is not None:
+                        validation.path = _relative_path(repo_root, rebound_entry_file)
+                        validation.resolved_path = str(rebound_entry_file)
                 item["entry_file"] = validation.path or entry.entry_file
                 if validation.validated:
                     item["source_verification"] = "source_backed"
@@ -1344,6 +1353,25 @@ def _resolve_entry_file_from_symbol(repo_root: Path, entry_symbol: str) -> Path 
     if found is None:
         return None
     return found.resolve()
+
+
+def _rebind_entry_file_to_symbol_definition(
+    repo_root: Path,
+    current_file: Path,
+    entry_symbol: str,
+) -> Path | None:
+    try:
+        resolved_current = current_file.resolve()
+        if not resolved_current.is_file() or not _is_within(repo_root, resolved_current):
+            return None
+    except OSError:
+        return None
+    if _source_file_defines_function(resolved_current, entry_symbol):
+        return None
+    symbol_file = _resolve_entry_file_from_symbol(repo_root, entry_symbol)
+    if symbol_file is None or symbol_file == resolved_current:
+        return None
+    return symbol_file
 
 
 def _record_agent_round_error(

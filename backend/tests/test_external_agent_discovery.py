@@ -3921,6 +3921,50 @@ def test_coverage_agent_entry_collect_resolves_symbol_without_entry_file(tmp_pat
     assert validated[0]["validation_error"] is None
 
 
+def test_coverage_agent_entry_collect_rebinds_wrong_file_to_entry_symbol_definition(tmp_path):
+    import app.services.coverage_analyzer as coverage_mod
+    from app.services.external_agent_discovery import AgentCandidateEntry, AgentDiscoveryResult
+
+    src = tmp_path / "src"
+    src.mkdir()
+    (src / "wrong.c").write_text("void unrelated_entry(void) {}\n", encoding="utf-8")
+    (src / "rpc.c").write_text("void rpc_entry(void) {}\n", encoding="utf-8")
+    result = AgentDiscoveryResult(
+        provider="claude-code",
+        status="ok",
+        candidate_entries=[
+            AgentCandidateEntry(
+                entry_kind="rpc",
+                entry_symbol="rpc_entry",
+                entry_file="src/wrong.c",
+                chain=["rpc_entry", "internal_gap"],
+                external_trigger="RPC entry",
+                reason="agent returned a stale source file for the entry symbol",
+                validated=True,
+            )
+        ],
+    )
+    validated: list[dict] = []
+    unverified: list[dict] = []
+
+    coverage_mod._collect_agent_entry_results(
+        [result],
+        repo_root=tmp_path,
+        object_id="src/internal.c:internal_gap:1",
+        turn_id="coverage:src/internal.c:internal_gap:1",
+        agent_session=None,
+        validated_entries=validated,
+        unverified_entries=unverified,
+        status_by_provider={},
+        raw_results=[],
+    )
+
+    assert unverified == []
+    assert validated[0]["entry_file"] == "src/rpc.c"
+    assert validated[0]["source_verification"] == "source_backed"
+    assert validated[0]["validation_error"] is None
+
+
 def test_coverage_agent_symbol_without_file_generates_black_box_ready(tmp_path, monkeypatch):
     import asyncio
     import app.services.coverage_analyzer as coverage_mod
