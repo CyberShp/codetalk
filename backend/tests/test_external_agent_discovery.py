@@ -386,6 +386,53 @@ def test_agent_output_prefers_final_stream_result_over_early_empty_schema(tmp_pa
     assert result.candidate_files[0].path == "src/tls.c"
 
 
+def test_agent_output_prefers_final_jsonl_result_over_early_empty_schema(tmp_path):
+    from app.services.external_agent_discovery import parse_agent_output
+
+    src = tmp_path / "src"
+    src.mkdir()
+    (src / "tls.c").write_text("int tls;\n", encoding="utf-8")
+    final_payload = json.dumps({
+        "candidate_files": [
+            {
+                "path": "src/tls.c",
+                "reason": "final jsonl result found source",
+                "confidence": "high",
+            }
+        ],
+        "raw_summary": "final jsonl result parsed",
+    })
+    raw = "\n".join([
+        json.dumps({"type": "system", "subtype": "init"}),
+        json.dumps({
+            "type": "assistant",
+            "message": {
+                "content": [{
+                    "type": "text",
+                    "text": json.dumps({
+                        "candidate_files": [],
+                        "candidate_entries": [],
+                        "commands": [],
+                        "raw_summary": "early jsonl empty draft",
+                    }),
+                }],
+            },
+        }),
+        json.dumps({
+            "type": "result",
+            "subtype": "success",
+            "result": final_payload,
+        }),
+    ])
+
+    result = parse_agent_output("claude-code", raw, tmp_path)
+
+    assert result.status == "ok"
+    assert result.raw_summary == "final jsonl result parsed"
+    assert result.candidate_files[0].validated is True
+    assert result.candidate_files[0].path == "src/tls.c"
+
+
 def test_agent_entry_input_hints_are_parsed_for_black_box_cases(tmp_path):
     from app.services.external_agent_discovery import parse_agent_output
 

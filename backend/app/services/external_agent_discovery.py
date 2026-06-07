@@ -1438,14 +1438,15 @@ def _extract_fenced_json(raw: str) -> str | None:
 
 
 def _extract_discovery_json_object(raw: str) -> str | None:
+    last_discovery: str | None = None
     for candidate in _iter_json_objects(raw):
         try:
             payload = _unwrap_agent_payload(json.loads(candidate))
         except json.JSONDecodeError:
             continue
         if isinstance(payload, dict) and _has_discovery_schema(payload):
-            return candidate
-    return None
+            last_discovery = candidate
+    return last_discovery
 
 
 def _extract_first_json_object(raw: str) -> str | None:
