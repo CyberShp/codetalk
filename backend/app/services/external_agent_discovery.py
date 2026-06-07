@@ -566,23 +566,13 @@ def _powershell_agent_command_with_prompt_arg(
 ) -> str | None:
     if not _should_pass_prompt_as_claude_print_arg(provider, argv):
         return None
-    tokens: list[str] = []
-    inserted = False
-    skip_next = False
-    for index, token in enumerate(argv):
-        if skip_next:
-            skip_next = False
-            continue
-        tokens.append(_powershell_single_quote(token))
-        if token in {"-p", "--print"} and not inserted:
-            tokens.append(prompt_variable)
-            inserted = True
-            next_token = argv[index + 1] if index + 1 < len(argv) else None
-            if next_token is not None and not next_token.startswith("-"):
-                skip_next = True
-    if not inserted:
+    tokens = _claude_print_prompt_tokens(argv, prompt_variable)
+    if not any(is_prompt for _, is_prompt in tokens):
         return None
-    return "& " + " ".join(tokens)
+    return "& " + " ".join(
+        token if is_prompt else _powershell_single_quote(token)
+        for token, is_prompt in tokens
+    )
 
 
 def _agent_process_invocation(
@@ -602,18 +592,22 @@ def _should_pass_prompt_as_claude_print_arg(provider: str | None, argv: list[str
 
 
 def _insert_claude_print_prompt_arg(argv: list[str], prompt: str) -> list[str]:
-    result: list[str] = []
+    return [token for token, _is_prompt in _claude_print_prompt_tokens(argv, prompt)]
+
+
+def _claude_print_prompt_tokens(argv: list[str], prompt: str) -> list[tuple[str, bool]]:
+    result: list[tuple[str, bool]] = []
     inserted = False
     skip_next = False
     for index, token in enumerate(argv):
         if skip_next:
             skip_next = False
             continue
-        result.append(token)
+        result.append((token, False))
         if token not in {"-p", "--print"} or inserted:
             continue
         next_token = argv[index + 1] if index + 1 < len(argv) else None
-        result.append(prompt)
+        result.append((prompt, True))
         inserted = True
         if next_token is not None and not next_token.startswith("-"):
             skip_next = True
