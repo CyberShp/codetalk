@@ -680,23 +680,44 @@ def _path_hint_repo_hits_blocking(
         except Exception:
             return []
 
+    def _path_hint_variants(normalized_hint: str) -> list[str]:
+        hint = normalized_hint.strip("/")
+        if not hint:
+            return []
+        variants = [hint]
+        replacements = (
+            ("/of/vmf_tcp/", "/nof/nvmf_tcp/"),
+            ("of/vmf_tcp/", "nof/nvmf_tcp/"),
+            ("/vmf_tcp/", "/nvmf_tcp/"),
+            ("vmf_tcp/", "nvmf_tcp/"),
+            ("/nvme_tcp/", "/nvmf_tcp/"),
+            ("nvme_tcp/", "nvmf_tcp/"),
+        )
+        for source, target in replacements:
+            if source in hint:
+                variants.append(hint.replace(source, target))
+        return list(dict.fromkeys(variants))
+
     for hint in path_hints:
         normalized_hint = _normalize_path_hint(hint)
         if not normalized_hint:
             continue
-        for candidate in _candidate_paths_for_hint(normalized_hint):
-            try:
-                candidate.relative_to(root)
-            except Exception:
-                continue
+        for variant in _path_hint_variants(normalized_hint):
+            for candidate in _candidate_paths_for_hint(variant):
+                try:
+                    candidate.relative_to(root)
+                except Exception:
+                    continue
 
-            if candidate.is_file():
-                _append_source(candidate)
-            elif candidate.is_dir():
-                for source in _source_files_under(candidate):
-                    _append_source(source)
-                    if len(results) >= limit:
-                        break
+                if candidate.is_file():
+                    _append_source(candidate)
+                elif candidate.is_dir():
+                    for source in _source_files_under(candidate):
+                        _append_source(source)
+                        if len(results) >= limit:
+                            break
+                if len(results) >= limit:
+                    break
             if len(results) >= limit:
                 break
         if len(results) >= limit:

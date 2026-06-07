@@ -3841,6 +3841,52 @@ def test_workspace_path_hint_suffix_finds_nof_tls_from_frontend_root(tmp_path):
     assert rel_hits[0] == "nof/nvmf_tcp/transport/tls/tls.c"
 
 
+def test_workspace_path_hint_repairs_split_nof_nvmf_tls_hint(tmp_path):
+    from app.services.workspace_scope_resolver import _path_hint_repo_hits_blocking
+
+    _write_tls_tree_at(tmp_path, "nof/nvmf_tcp/transport/tls")
+
+    hits = _path_hint_repo_hits_blocking(
+        str(tmp_path),
+        ["frontend\nof\nvmf_tcp\\transport\\tls"],
+        8,
+    )
+    rel_hits = [Path(hit).relative_to(tmp_path).as_posix() for hit in hits]
+
+    assert rel_hits[0] == "nof/nvmf_tcp/transport/tls/tls.c"
+
+
+def test_workspace_resolver_uses_repaired_split_tls_path_hint(tmp_path, monkeypatch):
+    _write_tls_tree_at(tmp_path, "nof/nvmf_tcp/transport/tls")
+
+    async def fake_discovery(_request, **_kwargs):
+        return []
+
+    monkeypatch.setattr(
+        "app.services.workspace_scope_resolver.run_external_agent_discovery",
+        fake_discovery,
+    )
+    obj = AnalysisObject(
+        id="obj_tls_broken_hint",
+        text="nvme-tcp-tls",
+        kind="module",
+        path_hints=["frontend\nof\nvmf_tcp\\transport\\tls"],
+    )
+
+    resolved = asyncio.run(WorkspaceScopeResolver()._resolve_object(
+        obj=obj,
+        ws_id="ws",
+        repo_path=str(tmp_path),
+        index=_GraphIndex(None),
+        limits=LLMLimits(max_files_per_object=8),
+        gitnexus_available=False,
+    ))
+    paths = [c.path.replace("\\", "/") for c in resolved.candidate_files if c.path]
+
+    assert any(path.endswith("nof/nvmf_tcp/transport/tls/tls.c") for path in paths)
+    assert not resolved.warnings
+
+
 def test_workspace_path_hint_prioritizes_module_named_source_when_limited(tmp_path):
     from app.services.workspace_scope_resolver import _path_hint_repo_hits_blocking
 
