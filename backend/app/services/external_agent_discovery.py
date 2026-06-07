@@ -997,6 +997,10 @@ def _resolve_existing_or_suffix(root: Path, candidate: Path, normalized: str) ->
     matches: list[Path] = []
     for walk_root, dirs, files in os.walk(root):
         dirs[:] = [d for d in dirs if d not in {".git", "node_modules", "build", "dist"}]
+        current_dir = Path(walk_root)
+        current_rel = current_dir.relative_to(root).as_posix().lower()
+        if current_rel != "." and any(current_rel.endswith(suffix) for suffix in suffixes):
+            matches.append(current_dir)
         for name in files:
             full = Path(walk_root) / name
             rel = full.relative_to(root).as_posix().lower()

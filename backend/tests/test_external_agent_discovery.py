@@ -2728,6 +2728,23 @@ def test_agent_directory_candidate_validates_to_source_file(tmp_path):
     assert validation.path == "nvmf_tcp/transport/tls/tls.c"
 
 
+def test_agent_directory_candidate_with_outer_workspace_prefix_validates(tmp_path):
+    from app.services.external_agent_discovery import validate_agent_candidate_file
+
+    repo_root = tmp_path / "frontend" / "nof"
+    tls_dir = repo_root / "nvmf_tcp" / "transport" / "tls"
+    tls_dir.mkdir(parents=True)
+    (tls_dir / "tls.c").write_text("int tls_c;\n", encoding="utf-8")
+
+    validation = validate_agent_candidate_file(
+        repo_root,
+        "frontend/nof/nvmf_tcp/transport/tls",
+    )
+
+    assert validation.validated is True
+    assert validation.path == "nvmf_tcp/transport/tls/tls.c"
+
+
 def test_agent_cxx_candidate_file_validates(tmp_path):
     from app.services.external_agent_discovery import validate_agent_candidate_file
 
