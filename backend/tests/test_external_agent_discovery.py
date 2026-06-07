@@ -3848,9 +3848,9 @@ def test_coverage_agent_entry_collect_rejects_entry_without_file(tmp_path):
         candidate_entries=[
             AgentCandidateEntry(
                 entry_kind="rpc",
-                entry_symbol="rpc_entry",
+                entry_symbol="",
                 entry_file=None,
-                chain=["rpc_entry", "internal_gap"],
+                chain=["internal_gap"],
                 external_trigger="RPC entry",
                 reason="agent returned no source file",
                 validated=True,
@@ -3876,6 +3876,100 @@ def test_coverage_agent_entry_collect_rejects_entry_without_file(tmp_path):
     assert unverified[0]["entry_file"] is None
     assert unverified[0]["source_verification"] == "needs_source_verification"
     assert unverified[0]["validation_error"] == "entry_file_missing"
+
+
+def test_coverage_agent_entry_collect_resolves_symbol_without_entry_file(tmp_path):
+    import app.services.coverage_analyzer as coverage_mod
+    from app.services.external_agent_discovery import AgentCandidateEntry, AgentDiscoveryResult
+
+    src = tmp_path / "src"
+    src.mkdir()
+    (src / "rpc.c").write_text("void rpc_entry(void) {}\n", encoding="utf-8")
+    result = AgentDiscoveryResult(
+        provider="claude-code",
+        status="ok",
+        candidate_entries=[
+            AgentCandidateEntry(
+                entry_kind="rpc",
+                entry_symbol="rpc_entry",
+                entry_file=None,
+                chain=["rpc_entry", "internal_gap"],
+                external_trigger="RPC entry",
+                reason="agent returned symbol without source file",
+                validated=True,
+            )
+        ],
+    )
+    validated: list[dict] = []
+    unverified: list[dict] = []
+
+    coverage_mod._collect_agent_entry_results(
+        [result],
+        repo_root=tmp_path,
+        object_id="src/internal.c:internal_gap:1",
+        turn_id="coverage:src/internal.c:internal_gap:1",
+        agent_session=None,
+        validated_entries=validated,
+        unverified_entries=unverified,
+        status_by_provider={},
+        raw_results=[],
+    )
+
+    assert unverified == []
+    assert validated[0]["entry_file"] == "src/rpc.c"
+    assert validated[0]["source_verification"] == "source_backed"
+    assert validated[0]["validation_error"] is None
+
+
+def test_coverage_agent_symbol_without_file_generates_black_box_ready(tmp_path, monkeypatch):
+    import asyncio
+    import app.services.coverage_analyzer as coverage_mod
+    from app.services.coverage_analyzer import build_coverage_test_design
+    from app.services.external_agent_discovery import AgentCandidateEntry, AgentDiscoveryResult
+
+    src = tmp_path / "src"
+    src.mkdir()
+    (src / "internal.c").write_text(
+        "void internal_gap(void) {\n"
+        "    if (1) { return; }\n"
+        "}\n",
+        encoding="utf-8",
+    )
+    (src / "rpc.c").write_text("void rpc_entry(void) { internal_gap(); }\n", encoding="utf-8")
+
+    async def fake_discovery(_request, **_kwargs):
+        return [
+            AgentDiscoveryResult(
+                provider="claude-code",
+                status="ok",
+                candidate_entries=[
+                    AgentCandidateEntry(
+                        entry_kind="rpc",
+                        entry_symbol="rpc_entry",
+                        entry_file=None,
+                        chain=["rpc_entry", "internal_gap"],
+                        external_trigger="RPC entry",
+                        reason="agent returned symbol only",
+                        validated=True,
+                    )
+                ],
+            )
+        ]
+
+    monkeypatch.setattr(coverage_mod, "run_external_agent_discovery", fake_discovery, raising=False)
+    modules = _coverage_modules(
+        "feature,module,code_location,function,triggered,hit_count\n"
+        "h,internal,src/internal.c:1-3,internal_gap,false,0\n"
+    )
+
+    design = asyncio.run(
+        build_coverage_test_design(modules, workspace_id="ws-1", repo_path=str(tmp_path))
+    )
+
+    gap = [g for g in design["gaps"] if g.get("kind") == "function"][0]
+    assert gap["black_box_readiness"]["case_type"] == "black_box_ready"
+    assert gap["entry_paths"][0]["entry_file"] == "src/rpc.c"
+    assert gap["black_box_cases"]
 
 
 def test_coverage_scope_enrichment_does_not_start_source_scope_agent(tmp_path, monkeypatch):
@@ -4307,9 +4401,9 @@ def test_coverage_agent_unverified_entry_without_file_triggers_round2(tmp_path, 
                     candidate_entries=[
                         AgentCandidateEntry(
                             entry_kind="rpc",
-                            entry_symbol="rpc_tls_entry",
+                            entry_symbol="maybe_rpc_tls_entry",
                             entry_file=None,
-                            chain=["rpc_tls_entry", "internal_tls_gap"],
+                            chain=["maybe_rpc_tls_entry", "internal_tls_gap"],
                             external_trigger="RPC tls-entry",
                             reason="candidate entry lacks source file and needs another search round",
                             validated=False,

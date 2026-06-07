@@ -1299,11 +1299,23 @@ def _collect_agent_entry_results(
                     if agent_session is not None:
                         agent_session.ledger.add_rejected_entry(item)
             else:
-                item["source_verification"] = "needs_source_verification"
-                item["validation_error"] = item.get("validation_error") or "entry_file_missing"
-                _upsert_agent_entry(unverified_entries, item)
-                if agent_session is not None:
-                    agent_session.ledger.add_rejected_entry(item)
+                resolved_entry_file = (
+                    _resolve_entry_file_from_symbol(repo_root, entry.entry_symbol)
+                    if entry.entry_symbol else None
+                )
+                if resolved_entry_file is not None:
+                    item["entry_file"] = _relative_path(repo_root, resolved_entry_file)
+                    item["source_verification"] = "source_backed"
+                    item["validation_error"] = None
+                    _upsert_agent_entry(validated_entries, item)
+                    if agent_session is not None:
+                        agent_session.ledger.add_validated_entry(item)
+                else:
+                    item["source_verification"] = "needs_source_verification"
+                    item["validation_error"] = item.get("validation_error") or "entry_file_missing"
+                    _upsert_agent_entry(unverified_entries, item)
+                    if agent_session is not None:
+                        agent_session.ledger.add_rejected_entry(item)
     if agent_session is not None:
         agent_session.save()
 
@@ -1320,6 +1332,15 @@ def _resolve_entry_file_from_directory_symbol(
     except OSError:
         return None
     found = _find_source_file_defining_function(repo_root, resolved_dir, entry_symbol)
+    if found is None:
+        return None
+    return found.resolve()
+
+
+def _resolve_entry_file_from_symbol(repo_root: Path, entry_symbol: str) -> Path | None:
+    if not entry_symbol:
+        return None
+    found = _find_source_file_defining_function(repo_root, repo_root, entry_symbol)
     if found is None:
         return None
     return found.resolve()
