@@ -1167,6 +1167,49 @@ class TestCoverageTestDesign:
         assert context["entry_discovery"]["cards"][0]["function_name"] == "recover_session"
         assert context["evidence_source_counts"]["entry_discovery"] >= 1
 
+    async def test_coverage_external_agent_artifact_summarizes_provider_status(self):
+        from app.services.coverage_analyzer import _coverage_external_agent_artifact
+
+        artifact = _coverage_external_agent_artifact({
+            "agent_discovery_session_id": "agent-session-1",
+            "gaps": [
+                {
+                    "kind": "function",
+                    "function_name": "tls_gap_a",
+                    "file_path": "src/tls.c",
+                    "evidence": {
+                        "external_agent": {
+                            "provider_status": {
+                                "claude-code": "ok",
+                                "opencode": "unavailable",
+                            },
+                            "validated_entries": [{"entry_symbol": "rpc_tls"}],
+                        }
+                    },
+                },
+                {
+                    "kind": "function",
+                    "function_name": "tls_gap_b",
+                    "file_path": "src/tls.c",
+                    "evidence": {
+                        "external_agent": {
+                            "provider_status": {
+                                "claude-code": "timeout",
+                                "opencode": "unavailable",
+                            },
+                            "unverified_entries": [{"entry_symbol": "maybe_rpc"}],
+                        }
+                    },
+                },
+            ],
+        })
+
+        assert artifact["summary"]["provider_status_counts"] == {
+            "claude-code": {"ok": 1, "timeout": 1},
+            "opencode": {"unavailable": 2},
+        }
+        assert artifact["summary"]["provider_count"] == 2
+
     async def test_ai_scenario_related_gap_substring_attaches_to_function_gap(self):
         from app.services.coverage_analyzer import _attach_scenarios_to_gaps
 

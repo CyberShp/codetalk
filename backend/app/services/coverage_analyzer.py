@@ -3627,6 +3627,7 @@ async def _write_coverage_design_artifacts(
 
 def _coverage_external_agent_artifact(design: dict) -> dict:
     rows: list[dict] = []
+    provider_status_counts: dict[str, dict[str, int]] = {}
     for gap in design.get("gaps") or []:
         if gap.get("kind") != "function":
             continue
@@ -3634,10 +3635,17 @@ def _coverage_external_agent_artifact(design: dict) -> dict:
         context = evidence.get("external_agent") if isinstance(evidence, dict) else {}
         if not isinstance(context, dict) or not context:
             continue
+        provider_status = context.get("provider_status") or {}
+        if isinstance(provider_status, dict):
+            for provider, status in provider_status.items():
+                provider_name = str(provider or "external_agent")
+                status_name = str(status or "unknown")
+                bucket = provider_status_counts.setdefault(provider_name, {})
+                bucket[status_name] = bucket.get(status_name, 0) + 1
         rows.append({
             "function_name": gap.get("function_name"),
             "file_path": gap.get("file_path"),
-            "provider_status": context.get("provider_status") or {},
+            "provider_status": provider_status if isinstance(provider_status, dict) else {},
             "validated_entries": context.get("validated_entries") or [],
             "unverified_entries": context.get("unverified_entries") or [],
             "raw_results": context.get("raw_results") or [],
@@ -3650,6 +3658,8 @@ def _coverage_external_agent_artifact(design: dict) -> dict:
             "function_count": len(rows),
             "validated_entry_count": sum(len(row.get("validated_entries") or []) for row in rows),
             "unverified_entry_count": sum(len(row.get("unverified_entries") or []) for row in rows),
+            "provider_count": len(provider_status_counts),
+            "provider_status_counts": provider_status_counts,
         },
     }
 
