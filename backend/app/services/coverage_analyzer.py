@@ -218,6 +218,18 @@ _SIGNATURE_RE = re.compile(
     r"(?P<name>[A-Za-z_]\w*)\s*\([^;{}]*\)\s*(?:\{|;|$)"
 )
 _REQ_FIELD_RE = re.compile(r"\b(?:req|attrs|opts|ctx)\.([A-Za-z_]\w*)\b")
+_REQUEST_FIELD_RES = (
+    re.compile(
+        r"\b(?:request|req|payload|body|params|query|data)"
+        r"(?:\.(?:json|args|form|query|body|data|params))?"
+        r"\s*\[\s*['\"]([A-Za-z_][\w-]*)['\"]\s*\]"
+    ),
+    re.compile(
+        r"\b(?:request|req|payload|body|params|query|data)"
+        r"(?:\.(?:json|args|form|query|body|data|params))?"
+        r"\.get\s*\(\s*['\"]([A-Za-z_][\w-]*)['\"]"
+    ),
+)
 _REGISTRATION_LINE_RE = re.compile(
     r"\b(?:[A-Z0-9_]*REGISTER[A-Z0-9_]*|register_[A-Za-z0-9_]+)\s*\(",
     re.IGNORECASE,
@@ -2621,12 +2633,13 @@ def _request_field_hints(abs_file: str, line_number: int) -> list[str]:
     if idx < 0 or idx >= len(lines):
         return []
     statement: list[str] = []
-    for pos in range(idx, min(len(lines), idx + 8)):
+    start = max(0, idx - 8)
+    for pos in range(start, min(len(lines), idx + 8)):
         text = lines[pos].strip()
         if not text:
             continue
         statement.append(text)
-        if ";" in text:
+        if pos >= idx and ";" in text:
             break
     seen: set[str] = set()
     hints: list[str] = []
@@ -2635,6 +2648,12 @@ def _request_field_hints(abs_file: str, line_number: int) -> list[str]:
         if field not in seen:
             seen.add(field)
             hints.append(field)
+    for pattern in _REQUEST_FIELD_RES:
+        for match in pattern.finditer(" ".join(statement)):
+            field = match.group(1)
+            if field not in seen:
+                seen.add(field)
+                hints.append(field)
     return hints[:12]
 
 

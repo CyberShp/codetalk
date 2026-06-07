@@ -1338,6 +1338,43 @@ class TestCoverageTestDesign:
         assert gap["entry_paths"][0]["entry_kind"] == "route"
         assert gap["entry_paths"][0]["entry_symbol"] == "refund_route"
 
+    async def test_route_json_request_fields_feed_black_box_input_hints(self, tmp_path):
+        from app.services.coverage_analyzer import build_coverage_test_design
+
+        src = tmp_path / "src"
+        src.mkdir()
+        (src / "refunds.py").write_text(
+            "def process_refund(payload):\n"
+            "    if not payload:\n"
+            "        return 'missing'\n"
+            "    return 'refunded'\n",
+            encoding="utf-8",
+        )
+        (src / "routes.py").write_text(
+            "def refund_route(request):\n"
+            "    payload = {\n"
+            "        'amount': request.json['amount'],\n"
+            "        'currency': request.json.get('currency'),\n"
+            "    }\n"
+            "    return process_refund(payload)\n",
+            encoding="utf-8",
+        )
+        modules = self._modules(
+            "feature,module,code_location,function,triggered,hit_count\n"
+            "refunds,refunds,src/refunds.py:1-4,process_refund,false,0\n"
+        )
+
+        design = await build_coverage_test_design(
+            modules, workspace_id="ws-1", repo_path=str(tmp_path)
+        )
+
+        gap = [g for g in design["gaps"] if g.get("kind") == "function"][0]
+        assert gap["black_box_readiness"]["case_type"] == "black_box_ready"
+        assert gap["entry_paths"][0]["input_hints"] == ["amount", "currency"]
+        case_text = json.dumps(gap["black_box_cases"], ensure_ascii=False)
+        assert "amount" in case_text
+        assert "currency" in case_text
+
     async def test_route_registration_reference_becomes_black_box_entry_without_agent(self, tmp_path):
         from app.services.coverage_analyzer import build_coverage_test_design
 
