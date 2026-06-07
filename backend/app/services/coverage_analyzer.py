@@ -3686,39 +3686,73 @@ async def _write_coverage_design_artifacts(
     entry_discovery: dict,
     design: dict,
     ai_debug: dict | None,
-) -> None:
+) -> list[str]:
     if artifact_dir is None:
-        return
-    artifact_dir.mkdir(parents=True, exist_ok=True)
+        return []
 
-    def _write() -> None:
-        (artifact_dir / "coverage_test_context.json").write_text(
-            json.dumps(context, ensure_ascii=False, indent=2),
-            encoding="utf-8",
+    def _write() -> list[str]:
+        artifact_warnings: list[str] = []
+
+        def write_json(path: Path, payload: dict, *, label: str) -> None:
+            try:
+                path.write_text(
+                    json.dumps(payload, ensure_ascii=False, indent=2),
+                    encoding="utf-8",
+                )
+            except OSError as exc:
+                artifact_warnings.append(_coverage_artifact_warning(label, path, exc))
+
+        try:
+            artifact_dir.mkdir(parents=True, exist_ok=True)
+        except OSError as exc:
+            return [_coverage_artifact_warning("artifact_dir", artifact_dir, exc)]
+
+        write_json(
+            artifact_dir / "coverage_test_context.json",
+            context,
+            label="coverage_test_context",
         )
-        (artifact_dir / "coverage_entry_discovery.json").write_text(
-            json.dumps(entry_discovery, ensure_ascii=False, indent=2),
-            encoding="utf-8",
+        write_json(
+            artifact_dir / "coverage_entry_discovery.json",
+            entry_discovery,
+            label="coverage_entry_discovery",
         )
         external_agent = _coverage_external_agent_artifact(design)
-        (artifact_dir / "coverage_external_agent_discovery.json").write_text(
-            json.dumps(external_agent, ensure_ascii=False, indent=2),
-            encoding="utf-8",
-        )
-        (artifact_dir / "coverage_test_design.json").write_text(
-            json.dumps(design, ensure_ascii=False, indent=2),
-            encoding="utf-8",
+        write_json(
+            artifact_dir / "coverage_external_agent_discovery.json",
+            external_agent,
+            label="coverage_external_agent_discovery",
         )
         if ai_debug:
             debug_dir = artifact_dir / "debug"
-            debug_dir.mkdir(parents=True, exist_ok=True)
-            ts = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%S%f")[:17]
-            (debug_dir / f"coverage_ai_{ts}.json").write_text(
-                json.dumps(ai_debug, ensure_ascii=False, indent=2),
-                encoding="utf-8",
-            )
+            try:
+                debug_dir.mkdir(parents=True, exist_ok=True)
+                ts = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%S%f")[:17]
+                write_json(
+                    debug_dir / f"coverage_ai_{ts}.json",
+                    ai_debug,
+                    label="coverage_ai_debug",
+                )
+            except OSError as exc:
+                artifact_warnings.append(_coverage_artifact_warning("coverage_ai_debug", debug_dir, exc))
+        if artifact_warnings:
+            design.setdefault("warnings", []).extend(artifact_warnings)
+        write_json(
+            artifact_dir / "coverage_test_design.json",
+            design,
+            label="coverage_test_design",
+        )
+        return artifact_warnings
 
-    await asyncio.to_thread(_write)
+    return await asyncio.to_thread(_write)
+
+
+def _coverage_artifact_warning(label: str, path: Path, exc: OSError) -> str:
+    reason = str(exc).strip() or exc.__class__.__name__
+    return (
+        "coverage artifact write failed: "
+        f"{label} at {path}: {reason}"
+    )
 
 
 def _coverage_external_agent_artifact(design: dict) -> dict:
@@ -3926,13 +3960,16 @@ async def build_coverage_test_design(
         "gaps": gaps,
         "warnings": warnings,
     }
-    await _write_coverage_design_artifacts(
+    artifact_warnings = await _write_coverage_design_artifacts(
         artifact_dir,
         context=context,
         entry_discovery=entry_discovery,
         design=design,
         ai_debug=ai_debug,
     )
+    for warning in artifact_warnings:
+        if warning not in warnings:
+            warnings.append(warning)
     return design
 
 

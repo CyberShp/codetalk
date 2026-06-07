@@ -1167,6 +1167,41 @@ class TestCoverageTestDesign:
         assert context["entry_discovery"]["cards"][0]["function_name"] == "recover_session"
         assert context["evidence_source_counts"]["entry_discovery"] >= 1
 
+    async def test_ai_debug_artifact_write_failure_does_not_drop_design(self, tmp_path):
+        from app.services.coverage_analyzer import build_coverage_test_design
+
+        class FakeLLM:
+            async def complete(self, messages, max_tokens=4096, temperature=0.1):
+                return LLMResponse(
+                    content=json.dumps({"scenarios": []}, ensure_ascii=False),
+                    model="fake-llm",
+                    usage={},
+                )
+
+        self._make_repo(tmp_path)
+        artifact_dir = tmp_path / "artifacts"
+        artifact_dir.mkdir()
+        (artifact_dir / "debug").write_text("not a directory\n", encoding="utf-8")
+        modules = self._modules(
+            "feature,module,code_location,function,triggered,hit_count\n"
+            "rec,session,src/session.c:1-6,recover_session,false,0\n"
+        )
+
+        design = await build_coverage_test_design(
+            modules,
+            workspace_id="ws-1",
+            repo_path=str(tmp_path),
+            use_ai=True,
+            llm=FakeLLM(),
+            artifact_dir=artifact_dir,
+        )
+
+        assert design["version"] == "coverage-test-design-v1"
+        assert design["summary"]["ai_status"] == "available"
+        assert any("coverage artifact write failed" in item for item in design["warnings"])
+        assert (artifact_dir / "coverage_test_design.json").exists()
+        assert (artifact_dir / "coverage_entry_discovery.json").exists()
+
     async def test_coverage_external_agent_artifact_summarizes_provider_status(self):
         from app.services.coverage_analyzer import _coverage_external_agent_artifact
 
