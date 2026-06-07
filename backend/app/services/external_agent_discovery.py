@@ -177,6 +177,7 @@ def check_provider_health(
             "command": " ".join(attempt["argv"]),
             "configured_command": candidate_command,
             "argv": attempt["argv"],
+            "configured_argv": attempt.get("configured_argv"),
             "path": attempt["path"],
             "launch_kind": attempt.get("launch_kind") or "exec",
             "used_fallback": index > 0,
@@ -210,10 +211,21 @@ def _resolve_provider_command_attempt(command: str, provider: str | None = None)
     configured_path = _resolve_configured_executable_path(executable)
     if configured_path:
         resolved_argv = [configured_path, *argv[1:]]
+        guarded_argv = apply_readonly_cli_guard(provider, resolved_argv)
+        if _is_windows_powershell_script(configured_path):
+            return {
+                "command": command,
+                "status": "available",
+                "argv": _windows_shell_agent_argv(guarded_argv),
+                "configured_argv": guarded_argv,
+                "executable": executable,
+                "path": configured_path,
+                "launch_kind": "powershell-script",
+            }
         return {
             "command": command,
             "status": "available",
-            "argv": apply_readonly_cli_guard(provider, resolved_argv),
+            "argv": guarded_argv,
             "executable": executable,
             "path": configured_path,
             "launch_kind": "exec",
@@ -257,10 +269,21 @@ def _resolve_provider_command_attempt(command: str, provider: str | None = None)
             "reason": f"command not found: {executable}",
         }
     resolved_argv = [resolved, *argv[1:]]
+    guarded_argv = apply_readonly_cli_guard(provider, resolved_argv)
+    if _is_windows_powershell_script(resolved):
+        return {
+            "command": command,
+            "status": "available",
+            "argv": _windows_shell_agent_argv(guarded_argv),
+            "configured_argv": guarded_argv,
+            "executable": executable,
+            "path": resolved,
+            "launch_kind": "powershell-script",
+        }
     return {
         "command": command,
         "status": "available",
-        "argv": apply_readonly_cli_guard(provider, resolved_argv),
+        "argv": guarded_argv,
         "executable": executable,
         "path": resolved,
         "launch_kind": "exec",
@@ -273,13 +296,15 @@ def _resolve_configured_executable_path(executable: str) -> str | None:
         return None
     candidate = Path(value).expanduser()
     try:
-        if platform.system().lower().startswith("win") and candidate.suffix.lower() == ".ps1":
-            return None
         if candidate.is_file():
             return str(candidate.resolve())
     except OSError:
         return None
     return None
+
+
+def _is_windows_powershell_script(path: str) -> bool:
+    return platform.system().lower().startswith("win") and Path(path).suffix.lower() == ".ps1"
 
 
 def split_agent_command(command: str) -> list[str]:
@@ -364,9 +389,7 @@ def _probe_windows_shell_command(executable: str) -> str | None:
     try:
         proc = subprocess.run(
             [
-                powershell,
-                "-NoLogo",
-                "-NonInteractive",
+                *_windows_powershell_base_argv(powershell),
                 "-Command",
                 (
                     "$cmd = Get-Command -ErrorAction SilentlyContinue "
@@ -413,15 +436,20 @@ def _find_powershell() -> str | None:
 
 def _windows_shell_agent_argv(argv: list[str]) -> list[str]:
     powershell = _find_powershell() or "powershell.exe"
-    base = [powershell, "-NoLogo", "-NonInteractive", "-ExecutionPolicy", "Bypass"]
-    if not settings.external_agent_windows_shell_load_profile:
-        base.append("-NoProfile")
+    base = _windows_powershell_base_argv(powershell)
     quoted = " ".join(_powershell_single_quote(item) for item in argv)
     script = (
         "$__codetalkPrompt = [Console]::In.ReadToEnd(); "
         f"$__codetalkPrompt | & {quoted}"
     )
     return [*base, "-Command", script]
+
+
+def _windows_powershell_base_argv(powershell: str) -> list[str]:
+    base = [powershell, "-NoLogo", "-NonInteractive", "-ExecutionPolicy", "Bypass"]
+    if not settings.external_agent_windows_shell_load_profile:
+        base.append("-NoProfile")
+    return base
 
 
 def _powershell_single_quote(value: str) -> str:

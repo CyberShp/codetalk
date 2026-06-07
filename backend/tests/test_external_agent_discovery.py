@@ -549,6 +549,64 @@ def test_provider_health_uses_powershell_fallback_for_shell_only_ccr(monkeypatch
     assert "--allowedTools" in health["argv"][-1]
 
 
+def test_provider_health_probes_shell_only_ccr_with_execution_policy_bypass(monkeypatch):
+    from app.services.external_agent_discovery import check_provider_health
+
+    captured: dict = {}
+
+    class Completed:
+        returncode = 0
+        stdout = "Function ccr\n"
+
+    def fake_which(cmd):
+        if cmd.lower() == "powershell.exe":
+            return "C:/Windows/System32/WindowsPowerShell/v1.0/powershell.exe"
+        return None
+
+    def fake_run(args, **kwargs):
+        captured["args"] = args
+        if "-ExecutionPolicy" not in args or "Bypass" not in args:
+            raise AssertionError("PowerShell probe must bypass execution policy")
+        return Completed()
+
+    monkeypatch.setattr("app.services.external_agent_discovery.platform.system", lambda: "Windows")
+    monkeypatch.setattr("app.services.external_agent_discovery.shutil.which", fake_which)
+    monkeypatch.setattr("app.services.external_agent_discovery.subprocess.run", fake_run)
+
+    health = check_provider_health("claude-code", "ccr code -p --output-format json")
+
+    assert health["status"] == "available"
+    assert health["launch_kind"] == "powershell"
+    assert "-ExecutionPolicy" in captured["args"]
+    assert "-NoProfile" not in captured["args"]
+
+
+def test_provider_health_wraps_windows_ps1_agent_with_powershell(tmp_path, monkeypatch):
+    from app.services.external_agent_discovery import check_provider_health
+
+    npm_dir = tmp_path / "npm"
+    npm_dir.mkdir()
+    ccr_ps1 = npm_dir / "ccr.ps1"
+    ccr_ps1.write_text("param($Prompt)\n", encoding="utf-8")
+
+    def fake_which(cmd):
+        if cmd.lower() == "powershell.exe":
+            return "C:/Windows/System32/WindowsPowerShell/v1.0/powershell.exe"
+        return None
+
+    monkeypatch.setattr("app.services.external_agent_discovery.platform.system", lambda: "Windows")
+    monkeypatch.setattr("app.services.external_agent_discovery.shutil.which", fake_which)
+    monkeypatch.setenv("APPDATA", str(tmp_path))
+    monkeypatch.setenv("PATH", "C:/Windows/System32")
+
+    health = check_provider_health("claude-code", "ccr code -p --output-format json")
+
+    assert health["status"] == "available"
+    assert health["launch_kind"] == "powershell-script"
+    assert health["configured_argv"][0] == str(ccr_ps1)
+    assert "& '" + str(ccr_ps1).replace("'", "''") + "'" in health["argv"][-1]
+
+
 def test_find_powershell_uses_systemroot_when_service_path_is_thin(tmp_path, monkeypatch):
     from app.services.external_agent_discovery import _find_powershell
 
