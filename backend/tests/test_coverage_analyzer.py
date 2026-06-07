@@ -1338,6 +1338,38 @@ class TestCoverageTestDesign:
         assert gap["entry_paths"][0]["entry_kind"] == "route"
         assert gap["entry_paths"][0]["entry_symbol"] == "refund_route"
 
+    async def test_route_registration_reference_becomes_black_box_entry_without_agent(self, tmp_path):
+        from app.services.coverage_analyzer import build_coverage_test_design
+
+        src = tmp_path / "src"
+        src.mkdir()
+        (src / "refunds.py").write_text(
+            "def process_refund(request):\n"
+            "    if not request:\n"
+            "        return 'missing'\n"
+            "    return 'refunded'\n",
+            encoding="utf-8",
+        )
+        (src / "routes.py").write_text(
+            "from refunds import process_refund\n"
+            "app.add_url_rule('/refunds', view_func=process_refund, methods=['POST'])\n",
+            encoding="utf-8",
+        )
+        modules = self._modules(
+            "feature,module,code_location,function,triggered,hit_count\n"
+            "refunds,refunds,src/refunds.py:1-4,process_refund,false,0\n"
+        )
+
+        design = await build_coverage_test_design(
+            modules, workspace_id="ws-1", repo_path=str(tmp_path)
+        )
+
+        gap = [g for g in design["gaps"] if g.get("kind") == "function"][0]
+        assert gap["gray_box_required"] is False
+        assert gap["black_box_readiness"]["case_type"] == "black_box_ready"
+        assert gap["entry_paths"][0]["entry_kind"] == "route"
+        assert gap["entry_paths"][0]["entry_symbol"] == "process_refund"
+
     async def test_queue_worker_call_site_keeps_queue_entry_kind_without_agent(self, tmp_path):
         from app.services.coverage_analyzer import build_coverage_test_design
 

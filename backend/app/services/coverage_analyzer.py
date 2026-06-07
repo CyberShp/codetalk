@@ -2467,11 +2467,23 @@ def _is_definition_or_declaration_site(
     )
 
 
+def _is_non_executable_symbol_reference(line_text: str, function_name: str) -> bool:
+    stripped = (line_text or "").strip()
+    if not stripped:
+        return True
+    lowered = stripped.lower()
+    if lowered.startswith(("import ", "from ", "#include", "using ", "package ")):
+        return True
+    if re.match(rf"^(?:extern\s+)?[A-Za-z_][\w\s\*&:<>,~\[\]]*\b{re.escape(function_name)}\s*[;=]", stripped):
+        return True
+    return False
+
+
 def _ripgrep_call_sites(repo_root: Path, function_name: str) -> list[dict]:
     """Find textual call sites of ``function_name`` via ripgrep (degraded mode)."""
     if not function_name or shutil.which("rg") is None:
         return []
-    pattern = rf"\b{re.escape(function_name)}\s*\("
+    pattern = rf"\b{re.escape(function_name)}\b"
     exclude_args = [
         item
         for glob in _RIPGREP_EXCLUDE_GLOBS
@@ -2507,6 +2519,8 @@ def _ripgrep_call_sites(repo_root: Path, function_name: str) -> list[dict]:
         if _is_definition_or_declaration_site(file_str, line_number, function_name):
             continue
         if stripped.startswith(("//", "#", "*", "/*")):
+            continue
+        if _is_non_executable_symbol_reference(stripped, function_name):
             continue
         sites.append({
             "file": _relative_path(repo_root, Path(file_str)),
@@ -2735,11 +2749,12 @@ def _trace_entry_paths(
                     metadata = _entry_metadata_for_site(
                         site["abs_file"], site["line_number"], enclosing
                     )
+                    entry_symbol = enclosing or symbol
                     entry_paths.append({
                         "entry_kind": entry_kind,
-                        "entry_symbol": enclosing,
+                        "entry_symbol": entry_symbol,
                         "entry_file": site["file"],
-                        "entry_label": _public_entry_label(entry_kind, enclosing),
+                        "entry_label": _public_entry_label(entry_kind, entry_symbol),
                         "call_line": site["line_number"],
                         "chain": caller_chain,
                         "depth": len(caller_chain) - 1,
