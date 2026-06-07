@@ -424,7 +424,8 @@ def format_artifacts_for_report_qa(
 def _coverage_entry_for_qa(entry: dict) -> str:
     chain = " -> ".join(str(part) for part in (entry.get("chain") or []) if part)
     label = chain or str(entry.get("entry_label") or entry.get("entry_symbol") or "entry")
-    parts = [f"[{entry.get('entry_kind') or 'external'}] {label}"]
+    entry_kind = entry.get("entry_kind") or entry.get("entry_type") or "external"
+    parts = [f"[{entry_kind}] {label}"]
     metadata: list[str] = []
     provider = entry.get("provider") or entry.get("tool")
     verification = entry.get("source_verification") or entry.get("source_verification_status")
@@ -441,6 +442,30 @@ def _coverage_entry_for_qa(entry: dict) -> str:
     if metadata:
         parts.append("(" + "; ".join(metadata) + ")")
     return _one_line(" ".join(parts))
+
+
+def _coverage_entry_discovery_for_qa(gap: dict) -> str:
+    discovery = gap.get("entry_discovery") or {}
+    if not isinstance(discovery, dict):
+        return "none"
+    parts: list[str] = []
+    status = discovery.get("entry_trace_status")
+    verification = discovery.get("source_verification_status")
+    if status:
+        parts.append(f"status={status}")
+    if verification:
+        parts.append(f"verification_status={verification}")
+    candidates = [
+        _coverage_entry_for_qa(candidate)
+        for candidate in (discovery.get("candidate_external_entries") or [])[:3]
+        if isinstance(candidate, dict)
+    ]
+    if candidates:
+        parts.append("candidates=" + "; ".join(candidates))
+    unresolved = _join_limited(discovery.get("unresolved_reasons"), limit=3)
+    if unresolved and unresolved != "none":
+        parts.append("unresolved=" + unresolved)
+    return _one_line(" | ".join(parts)) if parts else "none"
 
 
 def format_coverage_test_design_for_qa(
@@ -489,15 +514,17 @@ def format_coverage_test_design_for_qa(
             _one_line(c.get("title")) for c in (gap.get("black_box_cases") or [])[:2]
         ) or "none"
         gray = gap.get("gray_box") or {}
+        entry_discovery = _coverage_entry_discovery_for_qa(gap)
         lines.append(
             "- {file}::{fn}; risk={risk}; confidence={conf}; entries={entries}; "
-            "triggers={triggers}; black_box={cases}; gray_box={gray}; "
+            "entry_discovery={entry_discovery}; triggers={triggers}; black_box={cases}; gray_box={gray}; "
             "evidence={evi}; evidence_gaps={gaps}".format(
                 file=gap.get("file_path") or "(unknown_file)",
                 fn=gap.get("function_name") or "(unknown_function)",
                 risk=gap.get("risk_level") or "unknown",
                 conf=gap.get("confidence") or "unknown",
                 entries=entries,
+                entry_discovery=entry_discovery,
                 triggers=triggers,
                 cases=cases,
                 gray=(_one_line(gray.get("scheme")) if gap.get("gray_box_required") else "not_required"),

@@ -365,6 +365,61 @@ class TestCoverageTestDesignArtifact:
         assert "source_backed" in rendered
         assert "if (rc < 0)" in rendered  # trigger condition surfaced
 
+    async def test_report_qa_includes_rejected_agent_entry_candidates(self, tmp_path):
+        from app.services.analysis_artifacts import (
+            write_coverage_test_design,
+            load_analysis_artifact_bundle,
+            format_artifacts_for_report_qa,
+        )
+
+        design = {
+            "version": "coverage-test-design-v1",
+            "summary": {
+                "uncovered_function_count": 1,
+                "uncovered_branch_count": 0,
+                "black_box_ready_count": 0,
+                "gray_box_required_count": 1,
+                "workspace_bound": True,
+            },
+            "gaps": [{
+                "kind": "function",
+                "function_name": "tls_recover_session",
+                "file_path": "src/tls.c",
+                "line_start": 10,
+                "hit_count": 0,
+                "risk_level": "high",
+                "confidence": "medium",
+                "entry_paths": [],
+                "entry_discovery": {
+                    "entry_trace_status": "source_read_ok_entry_not_found",
+                    "source_verification_status": "rejected_external_entry_candidate",
+                    "candidate_external_entries": [{
+                        "entry_type": "callback",
+                        "entry_label": "internal timeout callback",
+                        "provider": "claude-code",
+                        "turn_id": "coverage:tls_recover_session",
+                        "source_verification": "needs_source_verification",
+                        "validation_error": "not_public_trigger_surface",
+                    }],
+                    "unresolved_reasons": ["no verified public trigger"],
+                },
+                "black_box_cases": [],
+                "gray_box": {"scheme": "instrument callback state"},
+                "gray_box_required": True,
+                "evidence_gaps": ["external entry rejected"],
+            }],
+        }
+
+        await write_coverage_test_design(tmp_path, design)
+        bundle = load_analysis_artifact_bundle(tmp_path)
+        rendered = format_artifacts_for_report_qa(bundle, "tls_recover_session")
+
+        assert "tls_recover_session" in rendered
+        assert "internal timeout callback" in rendered
+        assert "claude-code" in rendered
+        assert "not_public_trigger_surface" in rendered
+        assert "no verified public trigger" in rendered
+
     def test_format_empty_design_returns_blank(self):
         from app.services.analysis_artifacts import format_coverage_test_design_for_qa
 
