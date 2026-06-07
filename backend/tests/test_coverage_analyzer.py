@@ -1632,6 +1632,69 @@ class TestCoverageTestDesign:
         assert gap["entry_paths"][0]["entry_kind"] == "route"
         assert gap["entry_paths"][0]["entry_symbol"] == "process_refund"
 
+    async def test_decorated_route_function_is_black_box_entry_without_caller(self, tmp_path):
+        from app.services.coverage_analyzer import build_coverage_test_design
+
+        src = tmp_path / "src"
+        src.mkdir()
+        (src / "routes.py").write_text(
+            "@app.post('/payments')\n"
+            "def process_payment(request):\n"
+            "    if not request:\n"
+            "        return 'missing'\n"
+            "    return 'processed'\n",
+            encoding="utf-8",
+        )
+        modules = self._modules(
+            "feature,module,code_location,function,triggered,hit_count\n"
+            "payments,routes,src/routes.py:2-5,process_payment,false,0\n"
+        )
+
+        design = await build_coverage_test_design(
+            modules, workspace_id="ws-1", repo_path=str(tmp_path)
+        )
+
+        gap = [g for g in design["gaps"] if g.get("kind") == "function"][0]
+        assert gap["gray_box_required"] is False
+        assert gap["black_box_readiness"]["case_type"] == "black_box_ready"
+        entry = gap["entry_paths"][0]
+        assert entry["entry_kind"] == "route"
+        assert entry["entry_symbol"] == "process_payment"
+        assert entry["tool"] == "source-decorator"
+        assert "@app.post" in entry["evidence"]
+        assert gap["black_box_cases"][0]["case_type"] == "black_box_ready"
+
+    async def test_decorated_message_consumer_is_black_box_entry_without_caller(self, tmp_path):
+        from app.services.coverage_analyzer import build_coverage_test_design
+
+        src = tmp_path / "src"
+        src.mkdir()
+        (src / "consumers.py").write_text(
+            "@bus.subscribe('invoice.created')\n"
+            "def consume_invoice(event):\n"
+            "    if not event:\n"
+            "        return 'missing'\n"
+            "    return 'consumed'\n",
+            encoding="utf-8",
+        )
+        modules = self._modules(
+            "feature,module,code_location,function,triggered,hit_count\n"
+            "billing,consumers,src/consumers.py:2-5,consume_invoice,false,0\n"
+        )
+
+        design = await build_coverage_test_design(
+            modules, workspace_id="ws-1", repo_path=str(tmp_path)
+        )
+
+        gap = [g for g in design["gaps"] if g.get("kind") == "function"][0]
+        assert gap["gray_box_required"] is False
+        assert gap["black_box_readiness"]["case_type"] == "black_box_ready"
+        entry = gap["entry_paths"][0]
+        assert entry["entry_kind"] == "message"
+        assert entry["entry_symbol"] == "consume_invoice"
+        assert entry["tool"] == "source-decorator"
+        assert "@bus.subscribe" in entry["evidence"]
+
     async def test_queue_worker_call_site_keeps_queue_entry_kind_without_agent(self, tmp_path):
         from app.services.coverage_analyzer import build_coverage_test_design
 

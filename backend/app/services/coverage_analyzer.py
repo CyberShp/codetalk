@@ -255,6 +255,18 @@ _REGISTRATION_LINE_RE = re.compile(
     r"|\.[ \t]*(?:register|subscribe|add_listener|add_handler|add_job|schedule)\s*\(",
     re.IGNORECASE,
 )
+_DECORATOR_LINE_RE = re.compile(r"^\s*@(?P<decorator>[A-Za-z_][\w.]*)\b(?P<rest>.*)$")
+_ENTRY_DECORATOR_KIND_TOKENS: tuple[tuple[str, tuple[str, ...]], ...] = (
+    ("webhook", ("webhook", "hook")),
+    ("route", ("route", "router", "endpoint", "controller", "view", ".get", ".post", ".put",
+               ".patch", ".delete", ".head", ".options", ".api_route")),
+    ("api", ("api", "rpc", "grpc", "http", "request")),
+    ("message", ("subscribe", "subscriber", "topic", "queue", "message", "event", "listener",
+                 ".on", ".listen", "consumer")),
+    ("scheduler", ("schedule", "scheduler", "scheduled", "cron", "job", ".task")),
+    ("timer", ("timer", "timeout", "poller", "interval")),
+    ("callback", ("callback", ".callback")),
+)
 _CALLBACK_ASSIGN_RE = re.compile(
     r"\.(?:[A-Za-z_]\w*(?:cb|callback|handler|fn|op|ops)|(?:cb|callback|handler|fn|op|ops))\s*="
     r"\s*(?P<symbol>[A-Za-z_]\w*)",
@@ -807,6 +819,7 @@ def _design_function_gap(
         entry_paths, caller_branches = _trace_entry_paths(
             repo_root,
             hit.function_name,
+            source_file_hint=hit.file_path,
             rg_available=rg_available,
             cgc_callers=cgc_callers,
         )
@@ -2840,10 +2853,86 @@ def _cgc_caller_seed_paths(
     return entries, frontier
 
 
+def _decorated_entry_for_symbol(
+    repo_root: Path,
+    function_name: str,
+    source_file_hint: str | None,
+) -> dict | None:
+    if not function_name:
+        return None
+    source_file = (
+        _resolve_source_file(repo_root, source_file_hint or "", function_name)
+        if source_file_hint else None
+    )
+    if source_file is None:
+        source_file = _resolve_entry_file_from_symbol(repo_root, function_name)
+    if source_file is None or source_file.suffix.lower() not in _SOURCE_FILE_EXTS:
+        return None
+    try:
+        lines = source_file.read_text(encoding="utf-8", errors="replace").splitlines()
+    except OSError:
+        return None
+    definition_line = _find_strict_definition_line(lines, function_name)
+    if not definition_line:
+        return None
+    decorators = _decorator_lines_before_definition(lines, definition_line)
+    if not decorators:
+        return None
+    entry_kind = _classify_entry_decorator([text for _, text in decorators])
+    if not entry_kind:
+        return None
+
+    decorator_line_number, decorator_text = decorators[-1]
+    rel_file = _relative_path(repo_root, source_file)
+    metadata = _entry_metadata_for_site(str(source_file), definition_line, function_name)
+    entry_label = metadata.pop("entry_label", None)
+    entry = {
+        "entry_kind": entry_kind,
+        "entry_symbol": function_name,
+        "entry_file": rel_file,
+        "entry_label": entry_label or _public_entry_label(entry_kind, function_name),
+        "call_line": definition_line,
+        "chain": [function_name],
+        "depth": 0,
+        "evidence": f"{rel_file}:{decorator_line_number} {decorator_text.strip()}",
+        "tool": "source-decorator",
+    }
+    entry.update(metadata)
+    return entry
+
+
+def _decorator_lines_before_definition(
+    lines: list[str],
+    definition_line: int,
+) -> list[tuple[int, str]]:
+    decorators: list[tuple[int, str]] = []
+    for idx in range(definition_line - 2, -1, -1):
+        text = lines[idx]
+        stripped = text.strip()
+        if not stripped:
+            break
+        if not _DECORATOR_LINE_RE.match(text):
+            break
+        decorators.append((idx + 1, text))
+    decorators.reverse()
+    return decorators
+
+
+def _classify_entry_decorator(decorator_lines: list[str]) -> str | None:
+    text = " ".join(line.strip() for line in decorator_lines).lower()
+    if not text:
+        return None
+    for kind, tokens in _ENTRY_DECORATOR_KIND_TOKENS:
+        if any(token in text for token in tokens):
+            return kind
+    return None
+
+
 def _trace_entry_paths(
     repo_root: Path | None,
     function_name: str,
     *,
+    source_file_hint: str | None = None,
     rg_available: bool,
     cgc_callers: object,
 ) -> tuple[list[dict], list[dict]]:
@@ -2858,6 +2947,9 @@ def _trace_entry_paths(
     caller_branches: list[dict] = []
     entry_paths: list[dict] = []
     visited: set[str] = {function_name}
+    decorated_entry = _decorated_entry_for_symbol(repo_root, function_name, source_file_hint)
+    if decorated_entry:
+        entry_paths.append(decorated_entry)
     # BFS frontier of (chain_so_far, current_symbol).
     frontier: list[tuple[list[str], str]] = [([function_name], function_name)]
     cgc_entries, cgc_frontier = _cgc_caller_seed_paths(function_name, cgc_callers)
