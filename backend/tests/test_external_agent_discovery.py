@@ -1376,6 +1376,27 @@ def test_external_agent_adapter_health_redacts_secret_attempts(monkeypatch):
     assert "<redacted>" in health.last_check
 
 
+def test_agent_diagnostic_redaction_handles_quoted_and_bearer_values():
+    from app.services.external_agent_discovery import redact_agent_diagnostic_text
+
+    text = (
+        "ccr code --api-key 'plain-secret-1' "
+        '--token="plain-secret-2" '
+        "Authorization: Bearer plainSecretToken123 "
+        "password=plain-secret-3 "
+        "sk-test-secret-quoted"
+    )
+
+    redacted = redact_agent_diagnostic_text(text)
+
+    assert "plain-secret-1" not in redacted
+    assert "plain-secret-2" not in redacted
+    assert "plainSecretToken123" not in redacted
+    assert "plain-secret-3" not in redacted
+    assert "sk-test-secret-quoted" not in redacted
+    assert redacted.count("<redacted>") >= 5
+
+
 def test_run_provider_nonzero_exit_prefers_structured_agent_error(tmp_path, monkeypatch):
     from app.services.external_agent_discovery import AgentDiscoveryRequest, run_external_agent_discovery
 

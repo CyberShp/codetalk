@@ -258,10 +258,10 @@ def _runtime_attempt_records(
 
 
 _SECRET_ASSIGNMENT_RE = re.compile(
-    r"(?i)(--?(?:api[-_]?key|token|access[-_]?token|secret|password)(?:\s+|=))([^\s\"']+)"
+    r"(?i)(--?(?:api[-_]?key|token|access[-_]?token|secret|password)(?:\s+|=))(['\"]?)([^\s\"']+)(['\"]?)"
 )
 _SECRET_KV_RE = re.compile(
-    r"(?i)\b((?:api[-_]?key|token|access[-_]?token|secret|password)=)([^\s\"']+)"
+    r"(?i)\b((?:api[-_]?key|token|access[-_]?token|secret|password)=)(['\"]?)([^\s\"']+)(['\"]?)"
 )
 _BEARER_RE = re.compile(r"(?i)(bearer\s+)([A-Za-z0-9._~+/=-]{8,})")
 _OPENAI_STYLE_KEY_RE = re.compile(r"\bsk-[A-Za-z0-9][A-Za-z0-9._-]{6,}\b")
@@ -269,8 +269,8 @@ _OPENAI_STYLE_KEY_RE = re.compile(r"\bsk-[A-Za-z0-9][A-Za-z0-9._-]{6,}\b")
 
 def _redact_agent_diagnostic_text(value: str) -> str:
     text = value
-    text = _SECRET_ASSIGNMENT_RE.sub(r"\1<redacted>", text)
-    text = _SECRET_KV_RE.sub(r"\1<redacted>", text)
+    text = _SECRET_ASSIGNMENT_RE.sub(r"\1\2<redacted>\4", text)
+    text = _SECRET_KV_RE.sub(r"\1\2<redacted>\4", text)
     text = _BEARER_RE.sub(r"\1<redacted>", text)
     text = _OPENAI_STYLE_KEY_RE.sub("<redacted>", text)
     return text
