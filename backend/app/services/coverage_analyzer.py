@@ -317,6 +317,8 @@ class WhiteBoxLeakCheckResult:
 _ENTRY_SIGNATURES: tuple[tuple[str, tuple[str, ...]], ...] = (
     ("cli", ("cli", "/cmd", "command", "argv", "getopt", "main(", "_main", "console", "shell")),
     ("webhook", ("webhook", "webhooks", "hook_handler", "hook_delivery")),
+    ("route", ("route", "routes", "router", "controller", "view")),
+    ("endpoint", ("endpoint", "endpoints", "servlet")),
     ("api", ("/api", "api_", "_api", "route", "router", "handler", "handle_request",
              "controller", "endpoint", "server", "rest", "grpc", "http", "rpc",
              "view", "/web", "servlet")),
