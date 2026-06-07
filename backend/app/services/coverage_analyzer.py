@@ -870,12 +870,15 @@ def _merge_agent_entry_paths(
         chain = [str(x) for x in (item.get("chain") or []) if x]
         if hit.function_name and hit.function_name not in chain:
             chain.append(hit.function_name)
+        entry_kind = item.get("entry_kind") or "external"
+        entry_symbol = item.get("entry_symbol") or item.get("entry_label")
         merged.append({
-            "entry_kind": item.get("entry_kind") or "external",
-            "entry_symbol": item.get("entry_symbol") or item.get("entry_label"),
+            "entry_kind": entry_kind,
+            "entry_symbol": entry_symbol,
             "entry_file": item.get("entry_file"),
             "entry_label": item.get("external_trigger")
-            or item.get("entry_symbol")
+            or _public_entry_label(entry_kind, entry_symbol)
+            or entry_symbol
             or "External agent entry",
             "external_trigger": item.get("external_trigger"),
             "chain": chain,
@@ -1659,6 +1662,33 @@ def _safe_external_label(entry: dict) -> str:
         return label
     kind = str(entry.get("entry_kind") or "public").strip()
     return f"{kind} entry"
+
+
+def _public_entry_label(entry_kind: object, symbol: object) -> str | None:
+    symbol_text = str(symbol or "").strip()
+    if not symbol_text:
+        return None
+    kind = str(entry_kind or "").strip().lower()
+    labels = {
+        "rpc": "RPC",
+        "api": "API",
+        "http": "HTTP",
+        "rest": "REST",
+        "grpc": "gRPC",
+        "cli": "CLI",
+        "command": "CLI",
+        "config": "config",
+        "file": "file input",
+        "message": "message",
+        "event": "event",
+        "timer": "timer",
+        "callback": "callback",
+        "service": "service",
+        "connection": "connection",
+        "public": "public",
+    }
+    label = labels.get(kind)
+    return f"{label} {symbol_text}" if label else None
 
 
 def _safe_external_label_text(label: str) -> bool:
@@ -2467,6 +2497,7 @@ def _cgc_caller_seed_paths(
                 "entry_kind": entry_kind,
                 "entry_symbol": name,
                 "entry_file": location,
+                "entry_label": _public_entry_label(entry_kind, name),
                 "call_line": line_number,
                 "chain": chain,
                 "depth": len(chain) - 1,
@@ -2539,6 +2570,7 @@ def _trace_entry_paths(
                         "entry_kind": entry_kind,
                         "entry_symbol": enclosing,
                         "entry_file": site["file"],
+                        "entry_label": _public_entry_label(entry_kind, enclosing),
                         "call_line": site["line_number"],
                         "chain": caller_chain,
                         "depth": len(caller_chain) - 1,
