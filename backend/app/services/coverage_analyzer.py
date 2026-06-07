@@ -3986,7 +3986,9 @@ def _aggregate_tool_status(function_gaps: list[dict], *, repo_path: str | None) 
     external_agent_statuses = [
         (g.get("tool_status") or {}).get("external_agent") for g in function_gaps
     ]
-    if any(status == "available" for status in external_agent_statuses):
+    if not settings.external_agents_enabled:
+        external_agent = "disabled"
+    elif any(status == "available" for status in external_agent_statuses):
         external_agent = "available"
     elif any(status == "invalid_output" for status in external_agent_statuses):
         external_agent = "invalid_output"

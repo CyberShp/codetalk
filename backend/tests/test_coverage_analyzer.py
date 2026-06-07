@@ -1193,6 +1193,7 @@ class TestCoverageTestDesign:
         )
 
         assert design["agent_discovery_session_id"] is None
+        assert design["summary"]["tool_status"]["external_agent"] == "disabled"
         assert not (artifact_dir / "agent_discovery_session.json").exists()
         assert not (artifact_dir / "agent_discovery_ledger.json").exists()
 
