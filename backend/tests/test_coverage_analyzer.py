@@ -1464,6 +1464,63 @@ class TestCoverageTestDesign:
         assert gap["source_window"]["path"] == "zzz/tls.c"
         assert "nvmf_tcp_tls_recover" in json.dumps(gap["source_window"], ensure_ascii=False)
 
+    async def test_external_agent_entry_discovery_respects_global_parallel_limit(
+        self,
+        tmp_path,
+        monkeypatch,
+    ):
+        import app.services.coverage_analyzer as coverage_mod
+        from app.adapters.coverage import FunctionHit, ModuleCoverage
+        from app.config import settings
+        from app.services.external_agent_discovery import AgentDiscoveryResult
+
+        monkeypatch.setattr(settings, "external_agents_enabled", True)
+        monkeypatch.setattr(settings, "external_agent_max_parallel", 2)
+
+        src = tmp_path / "src"
+        src.mkdir()
+        hits: list[FunctionHit] = []
+        for idx in range(6):
+            (src / f"recover_{idx}.c").write_text(
+                f"void recover_{idx}(void) {{}}\n",
+                encoding="utf-8",
+            )
+            hits.append(
+                FunctionHit(
+                    function_name=f"recover_{idx}",
+                    file_path=f"src/recover_{idx}.c",
+                    line_start=1,
+                    triggered=False,
+                    hit_count=0,
+                )
+            )
+        module = ModuleCoverage(
+            module_path="src",
+            line_rate=0.0,
+            branch_rate=0.0,
+            function_rate=0.0,
+            function_hits=hits,
+        )
+        active = 0
+        max_active = 0
+
+        async def fake_discovery(_request, **_kwargs):
+            nonlocal active, max_active
+            active += 1
+            max_active = max(max_active, active)
+            await asyncio.sleep(0.02)
+            active -= 1
+            return [AgentDiscoveryResult(provider="claude-code", status="ok")]
+
+        monkeypatch.setattr(coverage_mod, "run_external_agent_discovery", fake_discovery, raising=False)
+
+        await coverage_mod._resolve_external_agent_entries_for_hits(
+            [(module, hit) for hit in hits],
+            repo_path=str(tmp_path),
+        )
+
+        assert max_active <= 2
+
     async def test_unbound_workspace_does_not_fabricate_paths(self, tmp_path):
         from app.services.coverage_analyzer import build_coverage_test_design
 

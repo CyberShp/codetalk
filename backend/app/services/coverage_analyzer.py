@@ -1171,9 +1171,16 @@ async def _resolve_external_agent_entries_for_hits(
             "raw_results": raw_results,
         }
 
+    try:
+        parallel_limit = int(getattr(settings, "external_agent_max_parallel", 2) or 1)
+    except (TypeError, ValueError):
+        parallel_limit = 1
+    agent_semaphore = asyncio.Semaphore(max(1, parallel_limit))
+
     async def _one_safe(module: ModuleCoverage, hit: FunctionHit) -> tuple[str, dict]:
         try:
-            return await _one(module, hit)
+            async with agent_semaphore:
+                return await _one(module, hit)
         except asyncio.CancelledError:
             raise
         except Exception as exc:
