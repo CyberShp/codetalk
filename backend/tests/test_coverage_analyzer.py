@@ -1805,6 +1805,28 @@ class TestCoverageTestDesign:
         rules = {finding["rule"] for finding in result["findings"]}
         assert {"function_call", "source_path", "branch_expression", "private_member", "gray_box_action"} <= rules
 
+    async def test_white_box_lint_allows_public_rpc_and_cli_entry_names(self):
+        drafts = [{
+            "case_type": "black_box_ready",
+            "test_execution": {
+                "title": "Exercise public NVMe/TCP TLS setup entry",
+                "external_trigger": "Send JSON-RPC bdev_malloc_create() through the management API.",
+                "preconditions": "The public RPC service and NVMe/TCP target are running.",
+                "inputs": "Use a valid JSON-RPC request and a boundary TLS PSK value.",
+                "steps": [
+                    "Run CLI spdk_nvme_perf(...) with the documented TLS parameters.",
+                    "Observe the client-visible connection result and logs.",
+                ],
+                "expected": "The request returns a controlled success or validation error.",
+                "observable_signals": ["JSON-RPC response", "CLI exit code", "target logs"],
+            },
+        }]
+
+        result = _lint_test_case_drafts(drafts)
+
+        assert result["passed"] is True
+        assert result["findings"] == []
+
     async def test_ai_black_box_hypothesis_rejects_internal_call_in_steps(self):
         scenario = {
             "scenario_id": "S-hyp",

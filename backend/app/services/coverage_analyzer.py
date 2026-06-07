@@ -1678,12 +1678,42 @@ def _lint_black_box_text(text: str) -> list[dict]:
     findings: list[dict] = []
     for rule, pattern in _WHITE_BOX_LEAK_RULES:
         for match in pattern.finditer(text or ""):
+            if rule == "function_call" and _function_call_looks_like_public_surface(text or "", match):
+                continue
             findings.append({
                 "rule": rule,
                 "text": match.group(0)[:120],
             })
             break
     return findings
+
+
+def _function_call_looks_like_public_surface(text: str, match: re.Match) -> bool:
+    prefix = text[max(0, match.start() - 40): match.start()].lower()
+    if re.search(r"(?:\bcall|\binvoke|调用)\s*$", prefix):
+        return False
+    window = text[max(0, match.start() - 80): min(len(text), match.end() + 60)].lower()
+    public_tokens = (
+        "json-rpc",
+        "rpc",
+        "cli",
+        "command",
+        "api",
+        "http",
+        "rest",
+        "grpc",
+        "endpoint",
+        "request",
+        "management",
+        "client",
+        "public",
+        "公开",
+        "命令",
+        "接口",
+        "请求",
+        "客户端",
+    )
+    return any(token in window for token in public_tokens)
 
 
 def _lint_test_case_drafts(drafts: list[dict]) -> dict:
