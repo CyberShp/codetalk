@@ -1396,6 +1396,74 @@ class TestCoverageTestDesign:
         assert gap["black_box_readiness"]["case_type"] == "black_box_ready"
         assert gap["black_box_cases"]
 
+    async def test_source_window_prefers_path_suffix_over_duplicate_basename(self, tmp_path):
+        from app.services.coverage_analyzer import build_coverage_test_design
+
+        decoy = tmp_path / "aaa"
+        decoy.mkdir()
+        (decoy / "tls.c").write_text(
+            "void unrelated_tls(void) {\n"
+            "    return;\n"
+            "}\n",
+            encoding="utf-8",
+        )
+        tls_dir = tmp_path / "nvmf_tcp" / "transport" / "tls"
+        tls_dir.mkdir(parents=True)
+        (tls_dir / "tls.c").write_text(
+            "void nvmf_tcp_tls_recover(void) {\n"
+            "    recover_tls_state();\n"
+            "}\n",
+            encoding="utf-8",
+        )
+        modules = self._modules(
+            "feature,module,code_location,function,triggered,hit_count\n"
+            "tls,nvmf_tcp,frontend/nof/nvmf_tcp/transport/tls/tls.c:1-3,nvmf_tcp_tls_recover,false,0\n"
+        )
+
+        design = await build_coverage_test_design(
+            modules,
+            workspace_id="ws-1",
+            repo_path=str(tmp_path),
+        )
+
+        gap = next(g for g in design["gaps"] if g.get("function_name") == "nvmf_tcp_tls_recover")
+        assert gap["source_window"]["path"] == "nvmf_tcp/transport/tls/tls.c"
+        assert "nvmf_tcp_tls_recover" in json.dumps(gap["source_window"], ensure_ascii=False)
+
+    async def test_source_window_basename_fallback_prefers_matching_function(self, tmp_path):
+        from app.services.coverage_analyzer import build_coverage_test_design
+
+        decoy = tmp_path / "aaa"
+        decoy.mkdir()
+        (decoy / "tls.c").write_text(
+            "void unrelated_tls(void) {\n"
+            "    return;\n"
+            "}\n",
+            encoding="utf-8",
+        )
+        target = tmp_path / "zzz"
+        target.mkdir()
+        (target / "tls.c").write_text(
+            "void nvmf_tcp_tls_recover(void) {\n"
+            "    recover_tls_state();\n"
+            "}\n",
+            encoding="utf-8",
+        )
+        modules = self._modules(
+            "feature,module,code_location,function,triggered,hit_count\n"
+            "tls,nvmf_tcp,tls.c:1-3,nvmf_tcp_tls_recover,false,0\n"
+        )
+
+        design = await build_coverage_test_design(
+            modules,
+            workspace_id="ws-1",
+            repo_path=str(tmp_path),
+        )
+
+        gap = next(g for g in design["gaps"] if g.get("function_name") == "nvmf_tcp_tls_recover")
+        assert gap["source_window"]["path"] == "zzz/tls.c"
+        assert "nvmf_tcp_tls_recover" in json.dumps(gap["source_window"], ensure_ascii=False)
+
     async def test_unbound_workspace_does_not_fabricate_paths(self, tmp_path):
         from app.services.coverage_analyzer import build_coverage_test_design
 

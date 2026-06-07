@@ -1733,6 +1733,9 @@ def _resolve_source_file(
             found = _find_source_file_defining_function(repo_root, hinted_parent, function_name)
             if found is not None:
                 return found
+    suffix_match = _resolve_source_file_by_suffix(repo_root, rel)
+    if suffix_match is not None:
+        return suffix_match
     basename = Path(rel).name
     if not basename:
         return (
@@ -1743,15 +1746,65 @@ def _resolve_source_file(
     for ext in _SOURCE_EXTENSION_CANDIDATES:
         target = basename + ext
         matches = 0
+        first_match: Path | None = None
         for candidate in _iter_source_files(repo_root, name_filter=target, limit=50):
             matches += 1
             if candidate.is_file() and _is_within(repo_root, candidate):
-                return candidate
+                if first_match is None:
+                    first_match = candidate
+                if function_name:
+                    if _source_file_defines_function(candidate, function_name):
+                        return candidate
+                else:
+                    return candidate
             if matches >= 50:
                 break
+        if first_match is not None and not function_name:
+            return first_match
     if function_name:
         return _find_source_file_defining_function(repo_root, repo_root, function_name)
     return None
+
+
+def _resolve_source_file_by_suffix(repo_root: Path, rel: str) -> Path | None:
+    """Resolve paths that include parent directories outside the bound repo.
+
+    Coverage exports often preserve the submitter's working directory, e.g.
+    ``frontend/nof/nvmf_tcp/transport/tls/tls.c`` while the bound repo root is
+    already ``nof``.  Prefer the longest repo-internal suffix before falling
+    back to basename search, otherwise duplicate names such as ``tls.c`` can
+    silently bind to an unrelated file.
+    """
+    suffixes = _source_path_suffixes(rel)
+    for suffix in suffixes:
+        if "/" not in suffix:
+            continue
+        for ext in _SOURCE_EXTENSION_CANDIDATES:
+            target_suffix = f"{suffix}{ext}".lower()
+            if not target_suffix or "/" not in target_suffix:
+                continue
+            name_filter = Path(target_suffix).name
+            for candidate in _iter_source_files(repo_root, name_filter=name_filter, limit=500):
+                try:
+                    candidate_rel = candidate.relative_to(repo_root).as_posix().lower()
+                except ValueError:
+                    continue
+                if candidate_rel.endswith(target_suffix) and _is_within(repo_root, candidate):
+                    return candidate
+    return None
+
+
+def _source_path_suffixes(rel: str) -> list[str]:
+    normalized = str(rel or "").replace("\\", "/").strip("/")
+    if not normalized:
+        return []
+    parts = [part for part in normalized.split("/") if part]
+    suffixes: list[str] = []
+    for index in range(len(parts)):
+        suffix = "/".join(parts[index:])
+        if suffix and suffix not in suffixes:
+            suffixes.append(suffix)
+    return suffixes
 
 
 def _iter_source_files(
@@ -1793,16 +1846,23 @@ def _find_source_file_defining_function(
         try:
             if not _is_within(repo_root, candidate):
                 continue
-            lines = candidate.read_text(encoding="utf-8", errors="replace").splitlines()
         except OSError:
             continue
-        if any(
-            _match_def_name(line) == function_name
-            or _match_multiline_def_name(lines, idx) == function_name
-            for idx, line in enumerate(lines)
-        ):
+        if _source_file_defines_function(candidate, function_name):
             return candidate
     return None
+
+
+def _source_file_defines_function(candidate: Path, function_name: str) -> bool:
+    try:
+        lines = candidate.read_text(encoding="utf-8", errors="replace").splitlines()
+    except OSError:
+        return False
+    return any(
+        _match_def_name(line) == function_name
+        or _match_multiline_def_name(lines, idx) == function_name
+        for idx, line in enumerate(lines)
+    )
 
 
 def _is_within(root: Path, candidate: Path) -> bool:
