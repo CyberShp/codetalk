@@ -2625,7 +2625,7 @@ def _entry_metadata_for_site(abs_file: str, line_number: int, enclosing_fn: str 
     rpc_method = _spdk_rpc_method_for_handler(abs_file, enclosing_fn)
     if rpc_method:
         metadata["entry_label"] = f"JSON-RPC {rpc_method}"
-    hints = _request_field_hints(abs_file, line_number)
+    hints = _request_field_hints(abs_file, line_number, enclosing_fn)
     for hint in _handler_signature_input_hints(abs_file, enclosing_fn):
         if hint not in hints:
             hints.append(hint)
@@ -2647,7 +2647,7 @@ def _spdk_rpc_method_for_handler(abs_file: str, handler_name: str) -> str | None
     return match.group(1) if match else None
 
 
-def _request_field_hints(abs_file: str, line_number: int) -> list[str]:
+def _request_field_hints(abs_file: str, line_number: int, enclosing_fn: str | None = None) -> list[str]:
     try:
         lines = Path(abs_file).read_text(encoding="utf-8", errors="replace").splitlines()
     except OSError:
@@ -2656,8 +2656,8 @@ def _request_field_hints(abs_file: str, line_number: int) -> list[str]:
     if idx < 0 or idx >= len(lines):
         return []
     statement: list[str] = []
-    start = max(0, idx - 8)
-    for pos in range(start, min(len(lines), idx + 8)):
+    start, end = _request_hint_scan_bounds(lines, idx, enclosing_fn)
+    for pos in range(start, end):
         text = lines[pos].strip()
         if not text:
             continue
@@ -2682,6 +2682,31 @@ def _request_field_hints(abs_file: str, line_number: int) -> list[str]:
             seen.add(field)
             hints.append(field)
     return hints[:12]
+
+
+def _request_hint_scan_bounds(
+    lines: list[str],
+    call_idx: int,
+    enclosing_fn: str | None,
+) -> tuple[int, int]:
+    fallback = (max(0, call_idx - 8), min(len(lines), call_idx + 8))
+    if not enclosing_fn:
+        return fallback
+    fn_start: int | None = None
+    for pos in range(call_idx, -1, -1):
+        line_def = _match_def_name(lines[pos]) or _match_multiline_def_name(lines, pos)
+        if line_def == enclosing_fn:
+            fn_start = pos
+            break
+    if fn_start is None:
+        return fallback
+    fn_end = len(lines)
+    for pos in range(fn_start + 1, len(lines)):
+        line_def = _match_def_name(lines[pos]) or _match_multiline_def_name(lines, pos)
+        if line_def is not None:
+            fn_end = pos
+            break
+    return max(fn_start + 1, call_idx - 8), min(fn_end, call_idx + 8)
 
 
 def _request_destructured_fields(text: str) -> list[str]:
