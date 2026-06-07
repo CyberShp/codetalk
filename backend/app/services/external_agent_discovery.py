@@ -1786,6 +1786,10 @@ async def probe_external_agent_startup(
             last_failure["health"] = failure_health
         else:
             last_failure["health"] = health
+        last_failure["message"] = _startup_probe_failure_message_with_prior_context(
+            str(last_failure.get("message") or ""),
+            attempts,
+        )
         return _redact_probe_response(last_failure)
     message = _format_unavailable_health_summary(health)
     return _redact_probe_response({
@@ -2138,6 +2142,31 @@ def _format_unavailable_health_summary(health: dict) -> str:
     if isinstance(diagnostic, dict):
         parts.append(_redact_agent_diagnostic_text(str(diagnostic.get("summary") or "").strip()))
     return "; ".join(part for part in parts if part)[:4000]
+
+
+def _startup_probe_failure_message_with_prior_context(message: str, attempts: list[dict]) -> str:
+    current = _redact_agent_diagnostic_text(str(message or "").strip())
+    prior_messages: list[str] = []
+    seen = {current} if current else set()
+    for attempt in attempts[:-1]:
+        if not isinstance(attempt, dict):
+            continue
+        probe_message = _redact_agent_diagnostic_text(
+            str(attempt.get("probe_message") or "").strip()
+        )
+        if not probe_message or probe_message in seen:
+            continue
+        seen.add(probe_message)
+        prior_messages.append(probe_message[:1000])
+    if not prior_messages:
+        return current[:4000]
+    return "; ".join(
+        part for part in [
+            current,
+            "previous attempt failures: " + " | ".join(prior_messages),
+        ]
+        if part
+    )[:4000]
 
 
 async def _kill_and_wait_process(proc: object) -> None:

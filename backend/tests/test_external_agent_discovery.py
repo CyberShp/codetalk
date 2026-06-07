@@ -2799,6 +2799,49 @@ def test_startup_probe_preserves_available_health_when_all_launches_fail(tmp_pat
     assert attempts[1]["probe_status"] == "error"
 
 
+def test_startup_probe_timeout_message_keeps_prior_failure_context(tmp_path, monkeypatch):
+    from app.services.external_agent_discovery import probe_external_agent_startup
+
+    bad_config_agent = tmp_path / "bad_config_agent.py"
+    bad_config_agent.write_text(
+        "import sys\n"
+        "sys.stdin.read()\n"
+        "print('Config file not found at C:/Users/me/.claude-code-router/config-router.json')\n"
+        "raise SystemExit(1)\n",
+        encoding="utf-8",
+    )
+    slow_agent = tmp_path / "slow_agent.py"
+    slow_agent.write_text(
+        "import sys, time\n"
+        "sys.stdin.read()\n"
+        "time.sleep(5)\n",
+        encoding="utf-8",
+    )
+
+    monkeypatch.setattr(
+        "app.services.external_agent_discovery.settings.claude_code_command",
+        f'"{sys.executable}" "{bad_config_agent}"',
+    )
+    monkeypatch.setattr(
+        "app.services.external_agent_discovery.settings.claude_code_fallback_commands",
+        [f'"{sys.executable}" "{slow_agent}"'],
+    )
+    monkeypatch.setattr(
+        "app.services.external_agent_discovery.settings.external_agent_startup_probe_timeout_sec",
+        1,
+    )
+
+    result = asyncio.run(probe_external_agent_startup("claude-code", repo_path=tmp_path))
+
+    assert result["healthy"] is False
+    assert result["status"] == "timeout"
+    assert "startup probe timed out" in result["message"]
+    assert "Config file not found" in result["message"]
+    attempts = result["health"]["attempts"]
+    assert attempts[0]["probe_status"] == "error"
+    assert attempts[1]["probe_status"] == "timeout"
+
+
 def test_candidate_outside_repo_and_non_source_are_rejected(tmp_path):
     from app.services.external_agent_discovery import validate_agent_candidate_file
 
