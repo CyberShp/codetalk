@@ -1573,6 +1573,35 @@ class TestCoverageTestDesign:
         assert gap["source_window"]["path"] == "src/symbol_tls.c"
         assert "legacy_recover_tls_state" not in json.dumps(gap["source_window"], ensure_ascii=False)
 
+    async def test_source_window_anchors_on_definition_when_coverage_line_is_stale(self, tmp_path):
+        from app.services.coverage_analyzer import build_coverage_test_design
+
+        src = tmp_path / "src"
+        src.mkdir()
+        padding = "\n".join(f"int pad_{idx};" for idx in range(80))
+        (src / "tls.c").write_text(
+            padding
+            + "\nvoid nvmf_tcp_tls_recover(void) {\n"
+            "    if (1) { recover_tls_state(); }\n"
+            "}\n",
+            encoding="utf-8",
+        )
+        modules = self._modules(
+            "feature,module,code_location,function,triggered,hit_count\n"
+            "tls,nvmf_tcp,src/tls.c:1-3,nvmf_tcp_tls_recover,false,0\n"
+        )
+
+        design = await build_coverage_test_design(
+            modules,
+            workspace_id="ws-1",
+            repo_path=str(tmp_path),
+        )
+
+        gap = next(g for g in design["gaps"] if g.get("function_name") == "nvmf_tcp_tls_recover")
+        assert gap["source_window"]["definition_line"] == 81
+        assert gap["source_window"]["start"] >= 78
+        assert "nvmf_tcp_tls_recover" in json.dumps(gap["source_window"], ensure_ascii=False)
+
     async def test_external_agent_entry_discovery_respects_global_parallel_limit(
         self,
         tmp_path,

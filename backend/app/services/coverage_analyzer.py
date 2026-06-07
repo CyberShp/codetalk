@@ -2018,9 +2018,9 @@ def _read_source_window_for_path(
     definition_line = _find_strict_definition_line(lines, hit.function_name)
     if hit.function_name and not definition_line:
         return None
-    start_line = hit.line_start
+    start_line = definition_line or hit.line_start
     if not start_line or start_line < 1 or start_line > total:
-        start_line = definition_line
+        start_line = None
     if not start_line:
         # Function not locatable in this file — treat as no usable window.
         return None
@@ -2036,7 +2036,7 @@ def _read_source_window_for_path(
     return {
         "available": True,
         "path": rel_path,
-        "definition_line": start_line,
+        "definition_line": definition_line or start_line,
         "start": window_start,
         "end": window_end,
         "lines": window_lines,
