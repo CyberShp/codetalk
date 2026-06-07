@@ -372,7 +372,8 @@ def _resolve_provider_command_attempt(command: str, provider: str | None = None)
     executable = argv[0]
     configured_path = _resolve_configured_executable_path(executable)
     if configured_path:
-        resolved_argv = [configured_path, *argv[1:]]
+        configured_argv = [configured_path, *argv[1:]]
+        resolved_argv = _normalize_agent_automation_argv(provider, configured_argv)
         guarded_argv = apply_readonly_cli_guard(provider, resolved_argv)
         config_error = _provider_command_configuration_error(provider, guarded_argv)
         if config_error:
@@ -400,6 +401,7 @@ def _resolve_provider_command_attempt(command: str, provider: str | None = None)
             "command": command,
             "status": "available",
             "argv": guarded_argv,
+            "configured_argv": configured_argv,
             "executable": executable,
             "path": configured_path,
             "launch_kind": "exec",
@@ -424,7 +426,8 @@ def _resolve_provider_command_attempt(command: str, provider: str | None = None)
     if not resolved:
         shell_resolution = _probe_windows_shell_command(executable)
         if shell_resolution:
-            guarded_argv = apply_readonly_cli_guard(provider, argv)
+            normalized_argv = _normalize_agent_automation_argv(provider, argv)
+            guarded_argv = apply_readonly_cli_guard(provider, normalized_argv)
             config_error = _provider_command_configuration_error(provider, guarded_argv)
             if config_error:
                 return {
@@ -455,7 +458,8 @@ def _resolve_provider_command_attempt(command: str, provider: str | None = None)
             "status": "unavailable",
             "reason": f"command not found: {executable}",
         }
-    resolved_argv = [resolved, *argv[1:]]
+    configured_argv = [resolved, *argv[1:]]
+    resolved_argv = _normalize_agent_automation_argv(provider, configured_argv)
     guarded_argv = apply_readonly_cli_guard(provider, resolved_argv)
     config_error = _provider_command_configuration_error(provider, guarded_argv)
     if config_error:
@@ -482,6 +486,7 @@ def _resolve_provider_command_attempt(command: str, provider: str | None = None)
         "command": command,
         "status": "available",
         "argv": guarded_argv,
+        "configured_argv": configured_argv,
         "executable": executable,
         "path": resolved,
         "launch_kind": "exec",
@@ -643,6 +648,45 @@ def _looks_like_ccr_code_command(argv: list[str]) -> bool:
     }:
         return False
     return "code" in {str(token).lower() for token in argv[1:]}
+
+
+def _normalize_agent_automation_argv(provider: str | None, argv: list[str]) -> list[str]:
+    result = list(argv)
+    if provider != "claude-code":
+        return result
+    if not _looks_like_claude_print_capable_command(result):
+        return result
+    if not _has_claude_print_mode(result):
+        result.append("-p")
+    if not _has_cli_option(result, "--output-format"):
+        result.extend(["--output-format", "json"])
+    return result
+
+
+def _looks_like_claude_print_capable_command(argv: list[str]) -> bool:
+    if not argv:
+        return False
+    executable_name = Path(str(argv[0])).name.lower()
+    if executable_name in {
+        "claude",
+        "claude.cmd",
+        "claude.exe",
+        "claude.ps1",
+        "claude-code",
+        "claude-code.cmd",
+        "claude-code.exe",
+        "claude-code.ps1",
+    }:
+        return True
+    return _looks_like_ccr_code_command(argv)
+
+
+def _has_claude_print_mode(argv: list[str]) -> bool:
+    return any(str(token) in {"-p", "--print"} for token in argv)
+
+
+def _has_cli_option(argv: list[str], option: str) -> bool:
+    return any(str(token) == option or str(token).startswith(f"{option}=") for token in argv)
 
 
 def _explicit_ccr_config_path_from_argv(argv: list[str]) -> str | None:

@@ -626,6 +626,23 @@ def test_provider_command_supports_subcommand_style(tmp_path, monkeypatch):
     assert health["argv"][1] == "code"
 
 
+def test_provider_health_normalizes_bare_ccr_code_for_noninteractive_json(tmp_path, monkeypatch):
+    from app.services.external_agent_discovery import check_provider_health
+
+    _set_existing_ccr_config(tmp_path, monkeypatch)
+    monkeypatch.setattr(
+        "app.services.external_agent_discovery.shutil.which",
+        lambda cmd: "C:/tools/ccr.exe" if cmd == "ccr" else None,
+    )
+
+    health = check_provider_health("claude-code", "ccr code")
+
+    assert health["status"] == "available"
+    assert health["argv"][0:4] == ["C:/tools/ccr.exe", "code", "-p", "--output-format"]
+    assert health["argv"][4] == "json"
+    assert health["configured_argv"][0:2] == ["C:/tools/ccr.exe", "code"]
+
+
 def test_provider_command_strips_quotes_from_absolute_executable_path(tmp_path, monkeypatch):
     from app.services.external_agent_discovery import check_provider_health, split_agent_command
 
@@ -2198,6 +2215,65 @@ def test_run_provider_claude_print_mode_passes_prompt_as_argument(tmp_path, monk
     assert "analysis_object_text" in captured["argv"][2]
     assert captured["argv"][3:] == ("--output-format", "json")
     assert captured["stdin"] == ""
+
+
+def test_run_provider_bare_ccr_code_uses_print_argument_transport(tmp_path, monkeypatch):
+    from app.services.external_agent_discovery import AgentDiscoveryRequest, run_external_agent_discovery
+
+    _set_existing_ccr_config(tmp_path, monkeypatch)
+    captured: dict = {}
+
+    class FakeProc:
+        returncode = 0
+
+        async def communicate(self, data):
+            captured["stdin"] = data.decode("utf-8") if data else ""
+            return (
+                b'{"candidate_files":[],"candidate_symbols":[],"candidate_entries":[],'
+                b'"need_source_slices":[],"commands":[],"raw_summary":"ok"}',
+                b"",
+            )
+
+        async def wait(self):
+            return self.returncode
+
+    async def fake_create_subprocess_exec(*args, **kwargs):
+        captured["argv"] = args
+        return FakeProc()
+
+    monkeypatch.setattr(
+        "app.services.external_agent_discovery.shutil.which",
+        lambda cmd: "C:/tools/ccr.exe" if cmd == "ccr" else None,
+    )
+    monkeypatch.setattr(
+        "app.services.external_agent_discovery.asyncio.create_subprocess_exec",
+        fake_create_subprocess_exec,
+    )
+    monkeypatch.setattr(
+        "app.services.external_agent_discovery.settings.claude_code_command",
+        "ccr code",
+    )
+    monkeypatch.setattr(
+        "app.services.external_agent_discovery.settings.claude_code_fallback_commands",
+        [],
+    )
+
+    results = asyncio.run(run_external_agent_discovery(
+        AgentDiscoveryRequest(
+            request_id="bare-ccr-code",
+            repo_path=str(tmp_path),
+            analysis_object_text="nvme-tcp-tls",
+        ),
+        providers=["claude-code"],
+    ))
+
+    assert results[0].status == "ok"
+    argv = list(captured["argv"])
+    assert argv[0:3] == ["C:/tools/ccr.exe", "code", "-p"]
+    assert "analysis_object_text" in argv[3]
+    assert argv[4:6] == ["--output-format", "json"]
+    assert captured["stdin"] == ""
+    assert results[0].runtime_attempts[0]["prompt_transport"] == "argv"
 
 
 def test_run_provider_replaces_configured_claude_print_placeholder(tmp_path, monkeypatch):
