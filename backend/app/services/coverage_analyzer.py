@@ -321,8 +321,11 @@ _REGISTRATION_LINE_RE = re.compile(
 _DECORATOR_LINE_RE = re.compile(r"^\s*@(?P<decorator>[A-Za-z_][\w.]*)\b(?P<rest>.*)$")
 _ENTRY_DECORATOR_KIND_TOKENS: tuple[tuple[str, tuple[str, ...]], ...] = (
     ("webhook", ("webhook", "hook")),
-    ("route", ("route", "router", "endpoint", "controller", "view", ".get", ".post", ".put",
-               ".patch", ".delete", ".head", ".options", ".api_route")),
+    ("route", ("route", "router", "endpoint", "controller", "view",
+               "requestmapping", "getmapping", "postmapping", "putmapping",
+               "patchmapping", "deletemapping", "headmapping", "optionsmapping",
+               ".get", ".post", ".put", ".patch", ".delete", ".head", ".options",
+               ".api_route")),
     ("api", ("api", "rpc", "grpc", "http", "request")),
     ("message", ("subscribe", "subscriber", "topic", "queue", "message", "event", "listener",
                  ".on", ".listen", "consumer")),
