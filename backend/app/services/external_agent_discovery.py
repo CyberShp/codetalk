@@ -526,6 +526,22 @@ def _coerce_dict_items(value: object) -> list[dict]:
     return []
 
 
+def _candidate_path_value(item: dict, *preferred_keys: str) -> str:
+    keys = [
+        *preferred_keys,
+        "path",
+        "file_path",
+        "file",
+        "source_file",
+        "source_path",
+    ]
+    for key in keys:
+        value = item.get(key)
+        if value:
+            return str(value)
+    return ""
+
+
 def _split_command_list_string(value: str) -> list[str]:
     parts: list[str] = []
     current: list[str] = []
@@ -758,7 +774,7 @@ def parse_agent_output(provider: str, raw_output: str, repo_path: str | Path) ->
     files: list[AgentCandidateFile] = []
     for item in _coerce_dict_items(payload.get("candidate_files")):
         candidate = AgentCandidateFile(
-            path=str(item.get("path") or ""),
+            path=_candidate_path_value(item),
             reason=str(item.get("reason") or ""),
             confidence=_normalize_confidence(item.get("confidence")),
             evidence_excerpt=str(item.get("evidence_excerpt") or ""),
@@ -775,7 +791,7 @@ def parse_agent_output(provider: str, raw_output: str, repo_path: str | Path) ->
         entry = AgentCandidateEntry(
             entry_kind=str(item.get("entry_kind") or item.get("entry_type") or "external"),
             entry_symbol=str(item.get("entry_symbol") or item.get("symbol") or ""),
-            entry_file=str(item.get("entry_file") or item.get("file") or "") or None,
+            entry_file=_candidate_path_value(item, "entry_file") or None,
             chain=_coerce_string_list(item.get("chain")),
             external_trigger=str(item.get("external_trigger") or ""),
             input_hints=_coerce_string_list(item.get("input_hints")),

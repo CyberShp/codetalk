@@ -345,6 +345,34 @@ def test_agent_single_object_candidate_fields_are_parsed(tmp_path):
     ]
 
 
+def test_agent_candidate_file_path_aliases_are_parsed(tmp_path):
+    from app.services.external_agent_discovery import parse_agent_output
+
+    src = tmp_path / "src"
+    src.mkdir()
+    (src / "tls.c").write_text("int tls;\n", encoding="utf-8")
+    (src / "rpc.c").write_text("void rpc_entry(void) {}\n", encoding="utf-8")
+    raw = json.dumps({
+        "candidate_files": [
+            {"file_path": "src/tls.c", "reason": "file_path alias"},
+        ],
+        "candidate_entries": [
+            {
+                "entry_kind": "rpc",
+                "entry_symbol": "rpc_entry",
+                "file_path": "src/rpc.c",
+            }
+        ],
+    })
+
+    result = parse_agent_output("claude-code", raw, tmp_path)
+
+    assert result.candidate_files[0].validated is True
+    assert result.candidate_files[0].path == "src/tls.c"
+    assert result.candidate_entries[0].validated is True
+    assert result.candidate_entries[0].entry_file == "src/rpc.c"
+
+
 def test_agent_entry_without_source_file_is_not_validated(tmp_path):
     from app.services.external_agent_discovery import parse_agent_output
 
