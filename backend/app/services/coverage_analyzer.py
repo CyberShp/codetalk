@@ -2661,6 +2661,49 @@ def _entry_metadata_for_site(abs_file: str, line_number: int, enclosing_fn: str 
     return metadata
 
 
+def _entry_metadata_for_symbol(
+    repo_root: Path,
+    abs_file: str,
+    line_number: int,
+    enclosing_fn: str | None,
+    entry_symbol: str | None,
+) -> dict:
+    metadata = _entry_metadata_for_site(abs_file, line_number, enclosing_fn)
+    if metadata.get("input_hints") or not entry_symbol:
+        return metadata
+
+    symbol_file: Path | None = None
+    current_file = Path(abs_file)
+    try:
+        if current_file.is_file() and _source_file_defines_function(current_file, entry_symbol):
+            symbol_file = current_file
+    except OSError:
+        symbol_file = None
+    if symbol_file is None:
+        symbol_file = _resolve_entry_file_from_symbol(repo_root, entry_symbol)
+    if symbol_file is None:
+        return metadata
+
+    try:
+        lines = symbol_file.read_text(encoding="utf-8", errors="replace").splitlines()
+    except OSError:
+        return metadata
+    definition_line = _find_strict_definition_line(lines, entry_symbol)
+    if not definition_line:
+        return metadata
+
+    rpc_method = _spdk_rpc_method_for_handler(str(symbol_file), entry_symbol)
+    if rpc_method and not metadata.get("entry_label"):
+        metadata["entry_label"] = f"JSON-RPC {rpc_method}"
+    hints = _request_field_hints(str(symbol_file), definition_line, entry_symbol)
+    for hint in _handler_signature_input_hints(str(symbol_file), entry_symbol):
+        if hint not in hints:
+            hints.append(hint)
+    if hints:
+        metadata["input_hints"] = hints
+    return metadata
+
+
 def _spdk_rpc_method_for_handler(abs_file: str, handler_name: str) -> str | None:
     try:
         text = Path(abs_file).read_text(encoding="utf-8", errors="replace")
@@ -2983,10 +3026,14 @@ def _trace_entry_paths(
                     continue
                 entry_kind = _classify_entry(site["file"], enclosing, site["text"])
                 if entry_kind:
-                    metadata = _entry_metadata_for_site(
-                        site["abs_file"], site["line_number"], enclosing
-                    )
                     entry_symbol = enclosing or symbol
+                    metadata = _entry_metadata_for_symbol(
+                        repo_root,
+                        site["abs_file"],
+                        site["line_number"],
+                        enclosing,
+                        entry_symbol,
+                    )
                     entry_paths.append({
                         "entry_kind": entry_kind,
                         "entry_symbol": entry_symbol,
@@ -3061,7 +3108,7 @@ def _registration_entry_for_site(
 
     rel_file = _relative_path(repo_root, path)
     entry_type = _registered_entry_type(registration_line, window)
-    metadata = _entry_metadata_for_site(str(path), line_number, symbol)
+    metadata = _entry_metadata_for_symbol(repo_root, str(path), line_number, enclosing, symbol)
     entry_label = metadata.pop("entry_label", None)
     entry = {
         "entry_kind": entry_type,
