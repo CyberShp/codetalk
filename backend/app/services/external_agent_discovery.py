@@ -597,14 +597,19 @@ def _should_pass_prompt_as_claude_print_arg(provider: str | None, argv: list[str
 def _insert_claude_print_prompt_arg(argv: list[str], prompt: str) -> list[str]:
     result: list[str] = []
     inserted = False
+    skip_next = False
     for index, token in enumerate(argv):
+        if skip_next:
+            skip_next = False
+            continue
         result.append(token)
         if token not in {"-p", "--print"} or inserted:
             continue
         next_token = argv[index + 1] if index + 1 < len(argv) else None
-        if next_token is None or next_token.startswith("-"):
-            result.append(prompt)
-            inserted = True
+        result.append(prompt)
+        inserted = True
+        if next_token is not None and not next_token.startswith("-"):
+            skip_next = True
     return result
 
 
