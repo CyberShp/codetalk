@@ -435,7 +435,9 @@ def _path_keyword_repo_hits_blocking(
                 continue
             rel = full.relative_to(root).as_posix().lower()
             rel_tokenized = re.sub(r"[-_]+", "/", rel)
+            stem = full.stem.lower()
             score = 0
+            matched_parts: set[str] = set()
             for kw in folded:
                 kw_tokenized = re.sub(r"[-_]+", "/", kw)
                 if kw in rel:
@@ -447,7 +449,16 @@ def _path_keyword_repo_hits_blocking(
                     hit_count = sum(1 for part in parts if part in rel_tokenized)
                     if len(parts) >= 2 and hit_count >= 2:
                         score += hit_count
+                for part in re.split(r"[/_-]+", kw):
+                    if part:
+                        matched_parts.add(part)
             if score:
+                if stem in matched_parts:
+                    score += 10
+                elif any(part and part in stem for part in matched_parts):
+                    score += 3
+                if full.suffix.lower() in {".c", ".cc", ".cpp", ".cxx", ".py", ".go", ".rs", ".java", ".ts", ".tsx", ".js", ".jsx"}:
+                    score += 2
                 if "/transport/tls/" in rel:
                     score += 8
                 if "/nvmf_tcp/" in rel or "/nvme_tcp/" in rel:
