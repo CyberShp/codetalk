@@ -167,17 +167,13 @@ def check_provider_health(
 ) -> dict:
     attempts: list[dict] = []
     commands = [command, *(fallback_commands or [])]
+    configuration_error: dict | None = None
     for index, candidate_command in enumerate(commands):
         attempt = _resolve_provider_command_attempt(candidate_command, provider=provider)
         attempts.append(attempt)
         if attempt.get("status") != "available":
             if attempt.get("status") == "configuration_error":
-                return {
-                    "provider": provider,
-                    "status": "unavailable",
-                    "reason": str(attempt.get("reason") or "agent command configuration error"),
-                    "attempts": attempts,
-                }
+                configuration_error = attempt
             continue
         health = {
             "provider": provider,
@@ -192,15 +188,19 @@ def check_provider_health(
             "attempts": attempts,
         }
         if index > 0:
-            health["reason"] = f"primary command unavailable; using fallback: {candidate_command}"
+            health["reason"] = _fallback_reason(candidate_command, attempts[:-1])
         return health
 
     attempted = ", ".join(str(cmd).strip() for cmd in commands if str(cmd).strip()) or "<empty>"
     diagnostic = _agent_runtime_diagnostic()
+    if configuration_error is not None:
+        reason = str(configuration_error.get("reason") or "agent command configuration error")
+    else:
+        reason = f"no agent command found; attempted: {attempted}"
     return {
         "provider": provider,
         "status": "unavailable",
-        "reason": f"no agent command found; attempted: {attempted}",
+        "reason": reason,
         "attempts": attempts,
         "diagnostic": diagnostic,
     }
@@ -211,6 +211,15 @@ def _provider_candidate_commands(command: str, fallback_commands: list[str] | No
 
 
 def _fallback_reason(candidate_command: str, prior_attempts: list[dict]) -> str:
+    configuration_errors = [
+        str(item.get("reason") or "").strip()
+        for item in prior_attempts
+        if isinstance(item, dict)
+        and item.get("status") == "configuration_error"
+        and str(item.get("reason") or "").strip()
+    ]
+    if configuration_errors:
+        return f"primary command configuration error ({configuration_errors[-1]}); using fallback: {candidate_command}"
     if any(str(item.get("probe_status") or item.get("run_status") or "") for item in prior_attempts):
         return f"primary command failed; using fallback: {candidate_command}"
     return f"primary command unavailable; using fallback: {candidate_command}"
@@ -1490,13 +1499,13 @@ async def probe_external_agent_startup(
             last_unavailable_health["attempts"] = list(attempts)
             if _health_has_configuration_error(last_unavailable_health):
                 message = _format_unavailable_health_summary(last_unavailable_health)
-                return _redact_probe_response({
+                last_failure = {
                     "provider": provider,
                     "healthy": False,
                     "status": "unavailable",
                     "message": message,
                     "health": last_unavailable_health,
-                })
+                }
             continue
 
         health = dict(health)
@@ -1574,7 +1583,7 @@ async def probe_external_agent_startup(
                 "stderr": stderr_text[:4000],
                 "stdout": raw[:4000],
             }
-            if _is_terminal_agent_configuration_error(message):
+            if _is_terminal_agent_configuration_error(message) and index >= len(commands) - 1:
                 return _redact_probe_response(last_failure)
             continue
 
@@ -1669,7 +1678,8 @@ async def _run_provider(
             last_unavailable_health["attempts"] = list(attempts)
             if _health_has_configuration_error(last_unavailable_health):
                 reason = _format_unavailable_health_summary(last_unavailable_health)
-                result = AgentDiscoveryResult(
+                prior_failures.append(reason)
+                last_result = AgentDiscoveryResult(
                     provider=provider,
                     status="unavailable",
                     raw_summary=reason,
@@ -1681,8 +1691,6 @@ async def _run_provider(
                         phase="discovery",
                     ),
                 )
-                _record_agent_turn(session, provider, request, "", result.raw_summary, result)
-                return result
             continue
 
         health = dict(health)
@@ -1765,7 +1773,7 @@ async def _run_provider(
                 warnings=[summary],
             )
             last_raw = raw + stderr_text
-            if _is_terminal_agent_configuration_error(summary):
+            if _is_terminal_agent_configuration_error(summary) and index >= len(commands) - 1:
                 last_result.runtime_attempts = _runtime_attempt_records(
                     provider,
                     request.request_id,
