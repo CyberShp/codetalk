@@ -104,6 +104,7 @@ class AgentDiscoveryResult:
     commands: list[str] = field(default_factory=list)
     raw_summary: str = ""
     warnings: list[str] = field(default_factory=list)
+    runtime_attempts: list[dict] = field(default_factory=list)
 
 
 @dataclass
@@ -212,6 +213,48 @@ def _agent_result_diagnostic(result: AgentDiscoveryResult) -> str:
     if result.status == "ok":
         return result.raw_summary or (result.warnings[0] if result.warnings else result.status)
     return result.warnings[0] if result.warnings else (result.raw_summary or result.status)
+
+
+def _runtime_attempt_records(
+    provider: str,
+    request_id: str,
+    attempts: list[dict],
+    *,
+    phase: str,
+) -> list[dict]:
+    fields_to_keep = (
+        "command",
+        "status",
+        "reason",
+        "executable",
+        "path",
+        "launch_kind",
+        "run_status",
+        "run_message",
+        "probe_status",
+        "probe_message",
+    )
+    records: list[dict] = []
+    for index, attempt in enumerate(attempts, start=1):
+        if not isinstance(attempt, dict):
+            continue
+        record = {
+            "kind": "runtime_attempt",
+            "object_id": request_id,
+            "provider": provider,
+            "phase": phase,
+            "attempt_index": index,
+        }
+        for key in fields_to_keep:
+            value = attempt.get(key)
+            if value is None:
+                continue
+            if isinstance(value, (str, int, float, bool)):
+                record[key] = value
+            else:
+                record[key] = str(value)
+        records.append(record)
+    return records
 
 
 def _unavailable_health_from_attempts(
@@ -1498,6 +1541,12 @@ async def _run_provider(
         for failure in prior_failures:
             if failure and failure not in result.warnings:
                 result.warnings.append(failure[:4000])
+        result.runtime_attempts = _runtime_attempt_records(
+            provider,
+            request.request_id,
+            attempts,
+            phase="discovery",
+        )
         _record_agent_turn(session, provider, request, prompt, raw, result)
         return result
 
@@ -1507,6 +1556,12 @@ async def _run_provider(
         for failure in prior_failures:
             if failure and failure not in last_result.warnings:
                 last_result.warnings.append(failure[:4000])
+        last_result.runtime_attempts = _runtime_attempt_records(
+            provider,
+            request.request_id,
+            attempts,
+            phase="discovery",
+        )
         _record_agent_turn(session, provider, request, prompt, last_raw or last_result.raw_summary, last_result)
         return last_result
 
@@ -1516,6 +1571,12 @@ async def _run_provider(
         status="unavailable",
         raw_summary=reason,
         warnings=[reason] if reason else [],
+        runtime_attempts=_runtime_attempt_records(
+            provider,
+            request.request_id,
+            attempts,
+            phase="discovery",
+        ),
     )
     _record_agent_turn(session, provider, request, "", result.raw_summary, result)
     return result
@@ -1712,6 +1773,36 @@ def _record_agent_turn(
     if session is None or not hasattr(session, "record_turn"):
         return
     try:
+        runtime_attempts = [
+            dict(item)
+            for item in getattr(result, "runtime_attempts", []) or []
+            if isinstance(item, dict)
+        ]
+        ledger = getattr(session, "ledger", None)
+        command_history = getattr(ledger, "command_history", None)
+        if isinstance(command_history, list):
+            existing_keys = {
+                (
+                    str(item.get("object_id") or ""),
+                    str(item.get("provider") or ""),
+                    str(item.get("phase") or ""),
+                    str(item.get("attempt_index") or ""),
+                    str(item.get("command") or ""),
+                )
+                for item in command_history
+                if isinstance(item, dict) and item.get("kind") == "runtime_attempt"
+            }
+            for attempt in runtime_attempts:
+                key = (
+                    str(attempt.get("object_id") or ""),
+                    str(attempt.get("provider") or ""),
+                    str(attempt.get("phase") or ""),
+                    str(attempt.get("attempt_index") or ""),
+                    str(attempt.get("command") or ""),
+                )
+                if key not in existing_keys:
+                    command_history.append(attempt)
+                    existing_keys.add(key)
         turn = session.record_turn(
             provider=provider,
             goal=request.goal,

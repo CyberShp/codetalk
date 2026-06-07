@@ -1185,6 +1185,79 @@ def test_run_provider_fallback_preserves_primary_invalid_json_warning(tmp_path, 
     assert not any(item.strip() == "ccr login banner" for item in results[0].warnings)
 
 
+def test_run_provider_records_runtime_attempts_in_session_ledger(tmp_path, monkeypatch):
+    from app.services.agent_discovery_session import create_agent_discovery_session
+    from app.services.external_agent_discovery import AgentDiscoveryRequest, run_external_agent_discovery
+
+    bad_agent = tmp_path / "bad_json_agent.py"
+    bad_agent.write_text(
+        "import sys\n"
+        "sys.stdin.read()\n"
+        "print('ccr login banner')\n",
+        encoding="utf-8",
+    )
+    src = tmp_path / "src"
+    src.mkdir()
+    (src / "tls.c").write_text("int tls_entry(void) { return 0; }\n", encoding="utf-8")
+    ok_agent = tmp_path / "ok_agent.py"
+    ok_agent.write_text(
+        "import json, sys\n"
+        "sys.stdin.read()\n"
+        "print(json.dumps({"
+        "'candidate_files':[{'path':'src/tls.c','reason':'fallback found it','confidence':'high'}],"
+        "'candidate_symbols':[],"
+        "'candidate_entries':[],"
+        "'need_source_slices':[],"
+        "'commands':['rg --files'],"
+        "'raw_summary':'fallback_ok'"
+        "}))\n",
+        encoding="utf-8",
+    )
+    session = create_agent_discovery_session(
+        repo_path=str(tmp_path),
+        goal="workspace_scope",
+        artifact_dir=tmp_path / "artifacts",
+    )
+
+    monkeypatch.setattr(
+        "app.services.external_agent_discovery.settings.claude_code_command",
+        f'"{sys.executable}" "{bad_agent}"',
+    )
+    monkeypatch.setattr(
+        "app.services.external_agent_discovery.settings.claude_code_fallback_commands",
+        [f'"{sys.executable}" "{ok_agent}"'],
+    )
+
+    results = asyncio.run(run_external_agent_discovery(
+        AgentDiscoveryRequest(
+            request_id="obj_tls",
+            repo_path=str(tmp_path),
+            analysis_object_text="tls",
+        ),
+        providers=["claude-code"],
+        session=session,
+    ))
+
+    runtime_attempts = [
+        item for item in session.ledger.command_history
+        if item.get("kind") == "runtime_attempt"
+    ]
+    parsed_attempts = session.turns[0].parsed_result.get("runtime_attempts")
+    loaded = create_agent_discovery_session.load(tmp_path / "artifacts")
+    loaded_attempts = [
+        item for item in loaded.ledger.command_history
+        if item.get("kind") == "runtime_attempt"
+    ]
+
+    assert results[0].status == "ok"
+    assert len(runtime_attempts) == 2
+    assert runtime_attempts[0]["run_status"] == "invalid_output"
+    assert "invalid JSON" in runtime_attempts[0]["run_message"]
+    assert runtime_attempts[1]["run_status"] == "ok"
+    assert parsed_attempts == runtime_attempts
+    assert loaded_attempts == runtime_attempts
+
+
 def test_run_provider_nonzero_exit_prefers_structured_agent_error(tmp_path, monkeypatch):
     from app.services.external_agent_discovery import AgentDiscoveryRequest, run_external_agent_discovery
 
