@@ -1334,7 +1334,7 @@ def _json_loads_flexible(raw: str) -> object:
 
 def _unwrap_agent_payload(payload: object) -> object:
     if isinstance(payload, list):
-        for item in payload:
+        for item in reversed(payload):
             unwrapped = _unwrap_agent_payload(item)
             if isinstance(unwrapped, dict) and _has_discovery_schema(unwrapped):
                 return unwrapped
