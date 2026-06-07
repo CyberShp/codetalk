@@ -4299,6 +4299,62 @@ def test_coverage_agent_symbol_without_file_generates_black_box_ready(tmp_path, 
     assert gap["black_box_cases"]
 
 
+def test_coverage_agent_entry_chain_missing_target_does_not_generate_black_box_ready(
+    tmp_path,
+    monkeypatch,
+):
+    import asyncio
+    import app.services.coverage_analyzer as coverage_mod
+    from app.services.coverage_analyzer import build_coverage_test_design
+    from app.services.external_agent_discovery import AgentCandidateEntry, AgentDiscoveryResult
+
+    src = tmp_path / "src"
+    src.mkdir()
+    (src / "internal.c").write_text(
+        "void internal_gap(void) {\n"
+        "    if (1) { return; }\n"
+        "}\n",
+        encoding="utf-8",
+    )
+    (src / "rpc.c").write_text("void rpc_entry(void) { other_gap(); }\n", encoding="utf-8")
+
+    async def fake_discovery(_request, **_kwargs):
+        return [
+            AgentDiscoveryResult(
+                provider="claude-code",
+                status="ok",
+                candidate_entries=[
+                    AgentCandidateEntry(
+                        entry_kind="rpc",
+                        entry_symbol="rpc_entry",
+                        entry_file="src/rpc.c",
+                        chain=["rpc_entry", "other_gap"],
+                        external_trigger="RPC entry",
+                        reason="public RPC handler reaches a different gap",
+                        validated=True,
+                    )
+                ],
+            )
+        ]
+
+    monkeypatch.setattr(coverage_mod, "run_external_agent_discovery", fake_discovery, raising=False)
+    modules = _coverage_modules(
+        "feature,module,code_location,function,triggered,hit_count\n"
+        "h,internal,src/internal.c:1-3,internal_gap,false,0\n"
+    )
+
+    design = asyncio.run(
+        build_coverage_test_design(modules, workspace_id="ws-1", repo_path=str(tmp_path))
+    )
+
+    gap = [g for g in design["gaps"] if g.get("kind") == "function"][0]
+    assert gap["entry_paths"] == []
+    assert gap["black_box_readiness"]["case_type"] != "black_box_ready"
+    card = design["entry_discovery"]["cards"][0]
+    candidate = card["candidate_external_entries"][0]
+    assert candidate["validation_error"] == "chain_missing_target"
+
+
 def test_coverage_agent_symbol_without_trigger_keeps_public_entry_label(tmp_path, monkeypatch):
     import asyncio
     import json

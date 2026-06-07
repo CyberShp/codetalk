@@ -857,6 +857,8 @@ def _merge_agent_entry_paths(
     for item in agent_context.get("validated_entries") or []:
         if _agent_entry_is_self_target(item, hit):
             continue
+        if _agent_entry_chain_missing_target(item, hit.function_name):
+            continue
         if not _agent_entry_has_public_trigger_surface(item):
             continue
         key = (
@@ -868,7 +870,7 @@ def _merge_agent_entry_paths(
             continue
         seen.add(key)
         chain = [str(x) for x in (item.get("chain") or []) if x]
-        if hit.function_name and hit.function_name not in chain:
+        if hit.function_name and not chain:
             chain.append(hit.function_name)
         entry_kind = item.get("entry_kind") or "external"
         entry_symbol = item.get("entry_symbol") or item.get("entry_label")
@@ -933,6 +935,14 @@ def _agent_entry_has_public_trigger_surface(item: dict) -> bool:
     )):
         return True
     return False
+
+
+def _agent_entry_chain_missing_target(item: dict, function_name: object) -> bool:
+    target = str(function_name or "").strip()
+    if not target:
+        return False
+    chain = [str(value).strip() for value in (item.get("chain") or []) if str(value).strip()]
+    return bool(chain and target not in chain)
 
 
 def _entry_trace_status(
@@ -3361,6 +3371,8 @@ def _entry_candidate_keys(entries: list[dict]) -> set[tuple[str, str, str]]:
 def _agent_entry_rejection_reason_for_gap(entry: dict, gap: dict) -> str | None:
     if _agent_entry_is_self_target_for_gap(entry, gap):
         return "self_target_entry"
+    if _agent_entry_chain_missing_target(entry, gap.get("function_name")):
+        return "chain_missing_target"
     if not _agent_entry_has_public_trigger_surface(entry):
         return "not_public_trigger_surface"
     return None
