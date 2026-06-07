@@ -474,6 +474,7 @@ class ReportGenerator:
         display_title = _plan_report_title(spec)
         body_parts: list[str] = [f"# {display_title}\n"]
         body_parts.append("> This report prioritizes testing conclusions, risks, and actions. Evidence is kept as collapsed support material.\n")
+        body_parts.append("> 本报告由小段 LLM 调用组装而成；CodeTalk 会在确定性区块中固定记录工具编排、索引覆盖与证据来源。\n")
         if not common_context.get("gitnexus_available", True):
             body_parts.append("> ⚠️ GitNexus 图谱不可用，已回退到本地搜索结果。\n")
         if not common_context.get("cgc_available", True):
@@ -2668,10 +2669,10 @@ def build_index_coverage_section(common_context: dict) -> str:
             graph_note += f"; expected {expected.get('nodes')} nodes / {expected.get('edges')} edges"
         if stats.get("matched") is False:
             graph_note += "（不匹配：已降级为 gitnexus_repo_ambiguous）"
-        rows.append(("GitNexus 图谱统计", graph_note))
+        rows.append(("GitNexus graph stats", graph_note))
     lines = [
-        "## 00 工具编排与证据基础",
-        "> 00 本轮依据与索引覆盖范围",
+        "## 00 Tool Orchestration / 工具编排与证据基础",
+        "> 00 本轮依据与索引覆盖范围；GitNexus/CGC products -> source reads -> LLM.",
         "",
         "| 项目 | 值 |",
         "| --- | --- |",
@@ -2682,7 +2683,7 @@ def build_index_coverage_section(common_context: dict) -> str:
     lines.append("")
     return "\n".join([
         "<details>",
-        "<summary>Tool and evidence basis</summary>",
+        "<summary>Tool Orchestration and evidence basis</summary>",
         "",
         *lines,
         "",
