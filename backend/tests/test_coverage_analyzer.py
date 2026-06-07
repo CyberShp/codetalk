@@ -1749,6 +1749,49 @@ class TestCoverageTestDesign:
         assert "amount" in case_text
         assert "currency" in case_text
 
+    async def test_multiline_anonymous_route_callback_feeds_input_hints(self, tmp_path):
+        from app.services.coverage_analyzer import build_coverage_test_design
+
+        src = tmp_path / "src"
+        src.mkdir()
+        (src / "payments.js").write_text(
+            "function processPayment(payload) {\n"
+            "  if (!payload) {\n"
+            "    return 'missing';\n"
+            "  }\n"
+            "  return 'processed';\n"
+            "}\n",
+            encoding="utf-8",
+        )
+        (src / "routes.js").write_text(
+            "app.post('/payments', (request) => {\n"
+            "  const payload = {\n"
+            "    amount: request.body.amount,\n"
+            "    currency: request.query.currency,\n"
+            "  };\n"
+            "  return processPayment(payload);\n"
+            "});\n",
+            encoding="utf-8",
+        )
+        modules = self._modules(
+            "feature,module,code_location,function,triggered,hit_count\n"
+            "payments,payments,src/payments.js:1-6,processPayment,false,0\n"
+        )
+
+        design = await build_coverage_test_design(
+            modules, workspace_id="ws-1", repo_path=str(tmp_path)
+        )
+
+        gap = [g for g in design["gaps"] if g.get("kind") == "function"][0]
+        assert gap["black_box_readiness"]["case_type"] == "black_box_ready"
+        entry = gap["entry_paths"][0]
+        assert entry["entry_kind"] == "route"
+        assert entry["input_hints"] == ["amount", "currency"]
+        assert "app.post" in entry["evidence"]
+        case_text = json.dumps(gap["black_box_cases"], ensure_ascii=False)
+        assert "amount" in case_text
+        assert "currency" in case_text
+
     async def test_ts_class_field_handler_is_read_as_source_window(self, tmp_path):
         from app.services.coverage_analyzer import build_coverage_test_design
 

@@ -330,6 +330,14 @@ _ENTRY_DECORATOR_KIND_TOKENS: tuple[tuple[str, tuple[str, ...]], ...] = (
     ("timer", ("timer", "timeout", "poller", "interval")),
     ("callback", ("callback", ".callback")),
 )
+_PUBLIC_CALLBACK_START_RE = re.compile(
+    r"\.\s*(?:"
+    r"get|post|put|patch|delete|head|options|route|use|"
+    r"subscribe|on|listen|add_listener|add_handler|register|"
+    r"add_job|schedule"
+    r")\s*\(",
+    re.IGNORECASE,
+)
 _CALLBACK_ASSIGN_RE = re.compile(
     r"\.(?:[A-Za-z_]\w*(?:cb|callback|handler|fn|op|ops)|(?:cb|callback|handler|fn|op|ops))\s*="
     r"\s*(?P<symbol>[A-Za-z_]\w*)",
@@ -2769,6 +2777,53 @@ def _entry_metadata_for_symbol(
     return metadata
 
 
+def _anonymous_entry_metadata_for_site(
+    repo_root: Path,
+    abs_file: str,
+    line_number: int,
+) -> dict:
+    try:
+        path = Path(abs_file)
+        lines = path.read_text(encoding="utf-8", errors="replace").splitlines()
+    except OSError:
+        return {}
+    call_idx = line_number - 1
+    if call_idx < 0 or call_idx >= len(lines):
+        return {}
+    start_idx: int | None = None
+    for idx in range(call_idx, max(-1, call_idx - 16), -1):
+        if _PUBLIC_CALLBACK_START_RE.search(lines[idx]):
+            start_idx = idx
+            break
+    if start_idx is None:
+        return {}
+
+    end_idx = _call_expression_window_end(lines, start_idx, call_idx)
+    window = lines[start_idx:end_idx]
+    hints = _request_field_hints_from_text(" ".join(line.strip() for line in window))
+    evidence = f"{_relative_path(repo_root, path)}:{start_idx + 1} {lines[start_idx].strip()}"
+    metadata: dict = {
+        "_anonymous_entry_evidence": evidence,
+    }
+    if hints:
+        metadata["input_hints"] = hints
+    return metadata
+
+
+def _call_expression_window_end(lines: list[str], start_idx: int, call_idx: int) -> int:
+    balance = 0
+    saw_open = False
+    upper = min(len(lines), start_idx + 40)
+    for idx in range(start_idx, upper):
+        text = lines[idx]
+        balance += text.count("(") - text.count(")")
+        if "(" in text:
+            saw_open = True
+        if idx >= call_idx and saw_open and balance <= 0:
+            return idx + 1
+    return min(len(lines), max(call_idx + 1, start_idx + 1))
+
+
 def _spdk_rpc_method_for_handler(abs_file: str, handler_name: str) -> str | None:
     try:
         text = Path(abs_file).read_text(encoding="utf-8", errors="replace")
@@ -2799,7 +2854,10 @@ def _request_field_hints(abs_file: str, line_number: int, enclosing_fn: str | No
         statement.append(text)
         if pos >= idx and ";" in text:
             break
-    statement_text = " ".join(statement)
+    return _request_field_hints_from_text(" ".join(statement))
+
+
+def _request_field_hints_from_text(statement_text: str) -> list[str]:
     positioned_fields: list[tuple[int, str]] = []
     for match in _REQ_FIELD_RE.finditer(statement_text):
         positioned_fields.append((match.start(), match.group(1)))
@@ -3098,6 +3156,17 @@ def _trace_entry_paths(
                         enclosing,
                         entry_symbol,
                     )
+                    anonymous_metadata = (
+                        _anonymous_entry_metadata_for_site(
+                            repo_root,
+                            site["abs_file"],
+                            site["line_number"],
+                        )
+                        if enclosing is None else {}
+                    )
+                    if anonymous_metadata.get("input_hints"):
+                        metadata["input_hints"] = anonymous_metadata["input_hints"]
+                    anonymous_evidence = anonymous_metadata.pop("_anonymous_entry_evidence", None)
                     entry_paths.append({
                         "entry_kind": entry_kind,
                         "entry_symbol": entry_symbol,
@@ -3106,7 +3175,11 @@ def _trace_entry_paths(
                         "call_line": site["line_number"],
                         "chain": caller_chain,
                         "depth": len(caller_chain) - 1,
-                        "evidence": f"{site['file']}:{site['line_number']} {site['text']}",
+                        "evidence": (
+                            f"{anonymous_evidence} | {site['file']}:{site['line_number']} {site['text']}"
+                            if anonymous_evidence
+                            else f"{site['file']}:{site['line_number']} {site['text']}"
+                        ),
                         "tool": "ripgrep" if rg_available else "cgc",
                         **metadata,
                     })
