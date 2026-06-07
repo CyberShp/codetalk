@@ -324,6 +324,50 @@ def test_agent_output_unwraps_responses_output_text(tmp_path):
     assert result.candidate_entries[0].entry_file == "src/rpc.c"
 
 
+def test_agent_output_aggregates_responses_output_fragments(tmp_path):
+    from app.services.external_agent_discovery import parse_agent_output
+
+    src = tmp_path / "src"
+    src.mkdir()
+    (src / "tls.c").write_text("int tls;\n", encoding="utf-8")
+    raw = json.dumps({
+        "id": "resp-agent-fragments",
+        "output": [
+            {
+                "type": "message",
+                "content": [{
+                    "type": "output_text",
+                    "text": '{"candidate_files": [',
+                }],
+            },
+            {
+                "type": "message",
+                "content": [{
+                    "type": "output_text",
+                    "text": (
+                        '{"path":"src/tls.c","reason":"responses output stream found source",'
+                        '"confidence":"high"}'
+                    ),
+                }],
+            },
+            {
+                "type": "message",
+                "content": [{
+                    "type": "output_text",
+                    "text": '], "candidate_entries": [], "raw_summary": "responses fragments parsed"}',
+                }],
+            },
+        ],
+    })
+
+    result = parse_agent_output("opencode", raw, tmp_path)
+
+    assert result.status == "ok"
+    assert result.raw_summary == "responses fragments parsed"
+    assert result.candidate_files[0].validated is True
+    assert result.candidate_files[0].path == "src/tls.c"
+
+
 def test_agent_output_unwraps_root_content_blocks(tmp_path):
     from app.services.external_agent_discovery import parse_agent_output
 

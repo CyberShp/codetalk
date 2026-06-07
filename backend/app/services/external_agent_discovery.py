@@ -1360,12 +1360,15 @@ def _unwrap_agent_payload(payload: object) -> object:
         for item in reversed(output):
             if not isinstance(item, dict):
                 continue
-            unwrapped = _unwrap_agent_content(item.get("content"))
-            if unwrapped is not None:
+            unwrapped = _try_unwrap_agent_content(item.get("content"))
+            if isinstance(unwrapped, dict) and _has_discovery_schema(unwrapped):
                 return unwrapped
-            unwrapped = _unwrap_agent_content(item.get("text"))
-            if unwrapped is not None:
+            unwrapped = _try_unwrap_agent_content(item.get("text"))
+            if isinstance(unwrapped, dict) and _has_discovery_schema(unwrapped):
                 return unwrapped
+        unwrapped = _unwrap_aggregated_output_content(output)
+        if unwrapped is not None:
+            return unwrapped
     message = payload.get("message")
     if isinstance(message, dict):
         content = message.get("content")
@@ -1415,6 +1418,39 @@ def _unwrap_aggregated_choice_content(choices: list[object]) -> object | None:
         return _unwrap_agent_payload(_json_loads_flexible(text))
     except json.JSONDecodeError:
         return None
+
+
+def _unwrap_aggregated_output_content(output: list[object]) -> object | None:
+    text_parts: list[str] = []
+    for item in output:
+        if not isinstance(item, dict):
+            continue
+        text_parts.extend(_agent_content_text_parts(item.get("content")))
+        text_parts.extend(_agent_content_text_parts(item.get("text")))
+    text = "".join(text_parts).strip()
+    if not text:
+        return None
+    try:
+        unwrapped = _unwrap_agent_payload(_json_loads_flexible(text))
+    except json.JSONDecodeError:
+        return None
+    if isinstance(unwrapped, dict) and _has_discovery_schema(unwrapped):
+        return unwrapped
+    return None
+
+
+def _agent_content_text_parts(content: object) -> list[str]:
+    if isinstance(content, str) and content:
+        return [content]
+    if isinstance(content, list):
+        return [
+            text
+            for item in content
+            if isinstance(item, dict)
+            for text in [item.get("text")]
+            if isinstance(text, str) and text
+        ]
+    return []
 
 
 def _try_unwrap_agent_content(content: object) -> object | None:
