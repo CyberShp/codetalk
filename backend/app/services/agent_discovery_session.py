@@ -249,17 +249,35 @@ class AgentDiscoverySession:
             prompt_dir = self.artifact_dir / "external_agent_prompts"
             prompt_dir.mkdir(parents=True, exist_ok=True)
             prompt_file = prompt_dir / f"{turn_id}.{provider}.json"
-            prompt_file.write_text(
-                json.dumps({"prompt": prompt}, ensure_ascii=False, indent=2),
-                encoding="utf-8",
-            )
-            prompt_path = str(prompt_file)
+            try:
+                prompt_file.write_text(
+                    json.dumps({"prompt": prompt}, ensure_ascii=False, indent=2),
+                    encoding="utf-8",
+                )
+                prompt_path = str(prompt_file)
+            except OSError as exc:
+                self._record_turn_artifact_write_failure(
+                    turn_id=turn_id,
+                    provider=provider,
+                    artifact="prompt",
+                    path=prompt_file,
+                    exc=exc,
+                )
         if settings.agent_discovery_store_raw_outputs:
             raw_dir = self.artifact_dir / "external_agent_raw"
             raw_dir.mkdir(parents=True, exist_ok=True)
             raw_file = raw_dir / f"{turn_id}.{provider}.txt"
-            raw_file.write_text(raw_output or "", encoding="utf-8")
-            raw_path = str(raw_file)
+            try:
+                raw_file.write_text(raw_output or "", encoding="utf-8")
+                raw_path = str(raw_file)
+            except OSError as exc:
+                self._record_turn_artifact_write_failure(
+                    turn_id=turn_id,
+                    provider=provider,
+                    artifact="raw_output",
+                    path=raw_file,
+                    exc=exc,
+                )
         turn = AgentDiscoveryTurn(
             turn_id=turn_id,
             provider=provider,
@@ -276,6 +294,26 @@ class AgentDiscoverySession:
         self.ledger.provider_status[provider] = status
         self.save()
         return turn
+
+    def _record_turn_artifact_write_failure(
+        self,
+        *,
+        turn_id: str,
+        provider: str,
+        artifact: str,
+        path: Path,
+        exc: OSError,
+    ) -> None:
+        reason_text = str(exc).strip() or exc.__class__.__name__
+        self.ledger.unresolved_items.append({
+            "kind": "agent_turn_artifact_write_failed",
+            "turn_id": turn_id,
+            "provider": provider,
+            "artifact": artifact,
+            "path": str(path),
+            "reason": reason_text,
+            "created_at": _now(),
+        })
 
     def add_source_slice(
         self,

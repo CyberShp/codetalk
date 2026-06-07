@@ -374,6 +374,88 @@ def test_raw_output_is_not_used_as_fact_in_context_packet(tmp_path):
     assert packet["previous_agent_findings"] == []
 
 
+def test_turn_prompt_artifact_write_failure_is_recorded_without_raising(tmp_path, monkeypatch):
+    from pathlib import Path
+
+    from app.services.agent_discovery_session import create_agent_discovery_session
+
+    session = create_agent_discovery_session(
+        repo_path=str(tmp_path),
+        goal="workspace_scope",
+        artifact_dir=tmp_path / "artifacts",
+    )
+    original_write_text = Path.write_text
+
+    def flaky_write_text(self, *args, **kwargs):
+        if "external_agent_prompts" in str(self):
+            raise OSError("prompt artifact disk full")
+        return original_write_text(self, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "write_text", flaky_write_text)
+
+    turn = session.record_turn(
+        provider="claude-code",
+        goal="source_scope",
+        prompt="prompt that should still be represented by the turn",
+        raw_output="raw output",
+        parsed_result={"raw_summary": "ok"},
+        validation_result={},
+        status="ok",
+    )
+    loaded = create_agent_discovery_session.load(tmp_path / "artifacts")
+
+    assert turn.prompt_path is None
+    assert turn.raw_output_path is not None
+    assert session.turns[0].turn_id == "turn_001_claude_code"
+    assert session.ledger.provider_status["claude-code"] == "ok"
+    assert session.ledger.unresolved_items[0]["kind"] == "agent_turn_artifact_write_failed"
+    assert session.ledger.unresolved_items[0]["artifact"] == "prompt"
+    assert "prompt artifact disk full" in session.ledger.unresolved_items[0]["reason"]
+    assert loaded.turns[0].prompt_path is None
+    assert loaded.ledger.unresolved_items[0]["artifact"] == "prompt"
+
+
+def test_turn_raw_artifact_write_failure_is_recorded_without_raising(tmp_path, monkeypatch):
+    from pathlib import Path
+
+    from app.services.agent_discovery_session import create_agent_discovery_session
+
+    session = create_agent_discovery_session(
+        repo_path=str(tmp_path),
+        goal="workspace_scope",
+        artifact_dir=tmp_path / "artifacts",
+    )
+    original_write_text = Path.write_text
+
+    def flaky_write_text(self, *args, **kwargs):
+        if "external_agent_raw" in str(self):
+            raise OSError("raw artifact disk full")
+        return original_write_text(self, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "write_text", flaky_write_text)
+
+    turn = session.record_turn(
+        provider="claude-code",
+        goal="source_scope",
+        prompt="prompt",
+        raw_output="raw output that should not block the analysis",
+        parsed_result={"raw_summary": "ok"},
+        validation_result={},
+        status="ok",
+    )
+    loaded = create_agent_discovery_session.load(tmp_path / "artifacts")
+
+    assert turn.prompt_path is not None
+    assert turn.raw_output_path is None
+    assert session.turns[0].turn_id == "turn_001_claude_code"
+    assert session.ledger.provider_status["claude-code"] == "ok"
+    assert session.ledger.unresolved_items[0]["kind"] == "agent_turn_artifact_write_failed"
+    assert session.ledger.unresolved_items[0]["artifact"] == "raw_output"
+    assert "raw artifact disk full" in session.ledger.unresolved_items[0]["reason"]
+    assert loaded.turns[0].raw_output_path is None
+    assert loaded.ledger.unresolved_items[0]["artifact"] == "raw_output"
+
+
 def test_source_slice_rejects_outside_repo_and_non_source(tmp_path):
     from app.services.agent_discovery_session import create_agent_discovery_session
 
