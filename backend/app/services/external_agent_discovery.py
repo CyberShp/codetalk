@@ -173,6 +173,8 @@ def expand_agent_query_terms(text: str) -> list[str]:
 
 def _split_ready_agent_query_text(text: str) -> str:
     value = text or ""
+    value = re.sub(r"([A-Z]+)([A-Z][a-z])", r"\1 \2", value)
+    value = re.sub(r"([a-z0-9])([A-Z])", r"\1 \2", value)
     value = re.sub(r"([A-Za-z0-9]+)([^\x00-\x7F])", r"\1 \2", value)
     value = re.sub(r"([^\x00-\x7F])([A-Za-z0-9]+)", r"\1 \2", value)
     value = re.sub(r"[^\w/\\\-\s]+", " ", value, flags=re.UNICODE)

@@ -44,6 +44,17 @@ def test_nvme_tcp_tls_query_expands_inside_chinese_text_without_spaces():
     assert "transport/tls" in terms
 
 
+def test_camel_case_query_expands_to_path_and_symbol_variants():
+    from app.services.external_agent_discovery import expand_agent_query_terms
+
+    terms = expand_agent_query_terms("PaymentWebhook")
+
+    assert "payment" in terms
+    assert "webhook" in terms
+    assert "payment_webhook" in terms
+    assert "payment/webhook" in terms
+
+
 def test_agent_json_output_is_parsed_and_validated(tmp_path):
     from app.services.external_agent_discovery import parse_agent_output
 
@@ -3860,6 +3871,38 @@ def test_workspace_resolver_finds_nvme_tls_from_nof_repo_root(tmp_path, monkeypa
     paths = [c.path.replace("\\", "/") for c in resolved.candidate_files if c.path]
 
     assert any(path.endswith("nvmf_tcp/transport/tls/tls.c") for path in paths)
+    assert not resolved.warnings
+
+
+def test_workspace_resolver_finds_camel_case_module_without_agent(tmp_path, monkeypatch):
+    source_dir = tmp_path / "src" / "payment_webhook"
+    source_dir.mkdir(parents=True)
+    (source_dir / "handler.py").write_text(
+        "def handle_payment_webhook(request):\n"
+        "    return request\n",
+        encoding="utf-8",
+    )
+
+    async def fake_discovery(_request, **_kwargs):
+        return []
+
+    monkeypatch.setattr(
+        "app.services.workspace_scope_resolver.run_external_agent_discovery",
+        fake_discovery,
+    )
+    obj = AnalysisObject(id="obj_payment_webhook", text="PaymentWebhook", kind="module")
+
+    resolved = asyncio.run(WorkspaceScopeResolver()._resolve_object(
+        obj=obj,
+        ws_id="ws",
+        repo_path=str(tmp_path),
+        index=_GraphIndex(None),
+        limits=LLMLimits(max_files_per_object=8),
+        gitnexus_available=False,
+    ))
+    paths = [c.path.replace("\\", "/") for c in resolved.candidate_files if c.path]
+
+    assert any(path.endswith("src/payment_webhook/handler.py") for path in paths)
     assert not resolved.warnings
 
 
