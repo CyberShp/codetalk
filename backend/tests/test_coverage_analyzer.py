@@ -1966,3 +1966,15 @@ class TestCoverageTestDesign:
         }
 
         assert _black_box_scenario_has_white_box_leak(scenario) is False
+
+    async def test_ai_black_box_leak_flags_bare_internal_function_call(self):
+        scenario = {
+            "external_trigger": "Send a public API request.",
+            "input_construction": "Use a boundary request value.",
+            "normal_path": "recover_session() returns success after the public request.",
+            "error_path": "The public request returns a controlled error.",
+            "expected_result": "The client sees a response and logs are emitted.",
+            "observable_signals": ["client response", "service logs"],
+        }
+
+        assert _black_box_scenario_has_white_box_leak(scenario) is True

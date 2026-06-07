@@ -4050,6 +4050,12 @@ def _black_box_scenario_has_white_box_leak(scenario: dict) -> bool:
     )
     for value in scenario.get("observable_signals") or []:
         text += "\n" + str(value)
+    for match in re.finditer(r"\b[A-Za-z_]\w*\s*\(", text or ""):
+        name = match.group(0).split("(", 1)[0].strip()
+        if name in _NON_FUNCTION_NAMES:
+            continue
+        if not _scenario_function_call_looks_like_public_surface(text or "", match):
+            return True
     leak_rules = (
         re.compile(r"\b(call|invoke)\s+[A-Za-z_]\w*\s*\(", re.IGNORECASE),
         re.compile(r"调用\s*[A-Za-z_]\w*\s*\("),
@@ -4060,6 +4066,28 @@ def _black_box_scenario_has_white_box_leak(scenario: dict) -> bool:
         re.compile(r"修改.*内部变量|设置.*内部变量"),
     )
     return any(rule.search(text) for rule in leak_rules)
+
+
+def _scenario_function_call_looks_like_public_surface(text: str, match: re.Match) -> bool:
+    line_start = text.rfind("\n", 0, match.start()) + 1
+    prefix = text[line_start:match.start()].lower()
+    if re.search(r"(?:\bcall|\binvoke)\s*$", prefix):
+        return False
+    public_tokens = (
+        "json-rpc",
+        "rpc",
+        "cli",
+        "command",
+        "api",
+        "http",
+        "rest",
+        "grpc",
+        "endpoint",
+        "management",
+        "client",
+        "public",
+    )
+    return any(token in prefix for token in public_tokens)
 
 
 def _normalize_ai_scenario(scenario: dict) -> dict:
