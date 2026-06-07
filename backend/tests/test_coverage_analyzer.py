@@ -1306,6 +1306,38 @@ class TestCoverageTestDesign:
         assert gap["entry_paths"][0]["entry_kind"] == "webhook"
         assert gap["entry_paths"][0]["entry_symbol"] == "payment_webhook"
 
+    async def test_queue_worker_call_site_keeps_queue_entry_kind_without_agent(self, tmp_path):
+        from app.services.coverage_analyzer import build_coverage_test_design
+
+        src = tmp_path / "src"
+        src.mkdir()
+        (src / "notifications.py").write_text(
+            "def send_receipt(event):\n"
+            "    if not event:\n"
+            "        return 'missing'\n"
+            "    return 'sent'\n",
+            encoding="utf-8",
+        )
+        (src / "queue_worker.py").write_text(
+            "def invoice_queue_consumer(event):\n"
+            "    return send_receipt(event)\n",
+            encoding="utf-8",
+        )
+        modules = self._modules(
+            "feature,module,code_location,function,triggered,hit_count\n"
+            "billing,notifications,src/notifications.py:1-4,send_receipt,false,0\n"
+        )
+
+        design = await build_coverage_test_design(
+            modules, workspace_id="ws-1", repo_path=str(tmp_path)
+        )
+
+        gap = [g for g in design["gaps"] if g.get("kind") == "function"][0]
+        assert gap["gray_box_required"] is False
+        assert gap["black_box_readiness"]["case_type"] == "black_box_ready"
+        assert gap["entry_paths"][0]["entry_kind"] == "queue"
+        assert gap["entry_paths"][0]["entry_symbol"] == "invoice_queue_consumer"
+
     async def test_callback_registration_entry_discovery_prevents_final_gray_box(
         self, tmp_path
     ):
