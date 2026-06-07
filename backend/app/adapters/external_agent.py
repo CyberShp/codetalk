@@ -101,7 +101,9 @@ def _format_attempt_summary(item: dict) -> str:
     launch = item.get("launch_kind")
     launch_suffix = f" ({launch})" if launch else ""
     reason = str(item.get("reason") or "").strip()
-    reason_suffix = f": {reason}" if reason else ""
+    config_hint = str(item.get("config_hint") or "").strip()
+    detail = reason or config_hint
+    reason_suffix = f": {detail}" if detail else ""
     return redact_agent_diagnostic_text(
         f"{item.get('command')} => {item.get('status')}{launch_suffix}{reason_suffix}"
     )

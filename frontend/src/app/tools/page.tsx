@@ -389,9 +389,9 @@ export default function ToolsPage() {
                                     {attempt.launch_kind && (
                                       <span>{attempt.launch_kind}</span>
                                     )}
-                                    {attempt.reason && (
+                                    {(attempt.reason || attempt.config_hint) && (
                                       <span className="break-words">
-                                        {attempt.reason}
+                                        {attempt.reason || attempt.config_hint}
                                       </span>
                                     )}
                                   </div>

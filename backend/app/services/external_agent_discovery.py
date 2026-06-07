@@ -396,6 +396,7 @@ def _resolve_provider_command_attempt(command: str, provider: str | None = None)
                 "executable": executable,
                 "path": configured_path,
                 "launch_kind": "powershell-script",
+                **_provider_command_configuration_hint(provider, guarded_argv),
             }
         return {
             "command": command,
@@ -405,6 +406,7 @@ def _resolve_provider_command_attempt(command: str, provider: str | None = None)
             "executable": executable,
             "path": configured_path,
             "launch_kind": "exec",
+            **_provider_command_configuration_hint(provider, guarded_argv),
         }
     if platform.system().lower().startswith("win"):
         resolved = shutil.which(executable)
@@ -450,6 +452,7 @@ def _resolve_provider_command_attempt(command: str, provider: str | None = None)
                 "executable": executable,
                 "path": shell_resolution,
                 "launch_kind": "powershell",
+                **_provider_command_configuration_hint(provider, guarded_argv),
             }
         return {
             "command": command,
@@ -481,6 +484,7 @@ def _resolve_provider_command_attempt(command: str, provider: str | None = None)
             "executable": executable,
             "path": resolved,
             "launch_kind": "powershell-script",
+            **_provider_command_configuration_hint(provider, guarded_argv),
         }
     return {
         "command": command,
@@ -490,6 +494,7 @@ def _resolve_provider_command_attempt(command: str, provider: str | None = None)
         "executable": executable,
         "path": resolved,
         "launch_kind": "exec",
+        **_provider_command_configuration_hint(provider, guarded_argv),
     }
 
 
@@ -630,6 +635,43 @@ def _provider_command_configuration_error(
         "reason": f"ccr config file not found: {config_path}",
         "config_path": config_path,
     }
+
+
+def _provider_command_configuration_hint(
+    provider: str | None,
+    argv: list[str],
+) -> dict[str, str]:
+    if provider != "claude-code" or not _looks_like_ccr_code_command(argv):
+        return {}
+    if _explicit_ccr_config_path_from_argv(argv):
+        return {}
+    config_path = _default_ccr_config_path()
+    if not config_path:
+        return {}
+    try:
+        if Path(config_path).expanduser().is_file():
+            return {}
+    except OSError:
+        pass
+    return {
+        "config_hint": (
+            "CCR_CONFIG_PATH is not set and default config not found: "
+            f"{config_path}"
+        ),
+        "config_path": config_path,
+    }
+
+
+def _default_ccr_config_path() -> str | None:
+    home = os.environ.get("USERPROFILE") or os.environ.get("HOME")
+    if not home:
+        try:
+            home = str(Path.home())
+        except Exception:
+            home = ""
+    if not home:
+        return None
+    return str(Path(home) / ".claude-code-router" / "config-router.json")
 
 
 def _looks_like_ccr_code_command(argv: list[str]) -> bool:

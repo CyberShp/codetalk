@@ -131,6 +131,7 @@ export interface ExternalAgentProbeAttempt {
   command?: string;
   status?: string;
   reason?: string;
+  config_hint?: string;
   launch_kind?: string;
 }
 

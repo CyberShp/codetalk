@@ -771,6 +771,10 @@ def test_provider_health_does_not_block_ccr_for_missing_default_config(tmp_path,
     assert health["used_fallback"] is False
     assert len(health["attempts"]) == 1
     assert health["attempts"][0]["status"] == "available"
+    assert "default config not found" in health["attempts"][0]["config_hint"]
+    assert str(tmp_path / "home" / ".claude-code-router" / "config-router.json") in (
+        health["attempts"][0]["config_hint"]
+    )
 
 
 def test_provider_health_uses_fallback_after_explicit_missing_ccr_config(tmp_path, monkeypatch):
@@ -1084,6 +1088,37 @@ def test_external_agent_adapter_health_reports_launch_kind(monkeypatch):
     assert health.is_healthy is True
     assert "launch=powershell" in health.last_check
     assert "command not found: ccr" in health.last_check
+
+
+def test_external_agent_adapter_health_reports_ccr_config_hint(monkeypatch):
+    from app.adapters import external_agent as adapter_mod
+
+    def fake_health(provider, command, fallback_commands=None):
+        return {
+            "provider": provider,
+            "status": "available",
+            "path": "C:/tools/ccr.cmd",
+            "launch_kind": "exec",
+            "attempts": [
+                {
+                    "command": "ccr code",
+                    "status": "available",
+                    "config_hint": (
+                        "CCR_CONFIG_PATH is not set and default config not found: "
+                        "C:/Users/me/.claude-code-router/config-router.json"
+                    ),
+                },
+            ],
+        }
+
+    monkeypatch.setattr(adapter_mod, "check_provider_health", fake_health)
+
+    health = asyncio.run(
+        adapter_mod.ExternalAgentAdapter("claude-code", "claude_code_command").health_check()
+    )
+
+    assert health.is_healthy is True
+    assert "default config not found" in health.last_check
 
 
 def test_external_agent_adapter_analyze_returns_json_safe_nested_results(tmp_path, monkeypatch):
