@@ -698,6 +698,16 @@ def _design_function_gap(
     cgc_callers = cgc_context.get("callers") if isinstance(cgc_context, dict) else None
 
     source_window = _read_source_window(repo_root, hit) if trace else None
+    if trace:
+        scoped_source_window = _read_source_window_from_scope(repo_root, hit, scope)
+        if (
+            source_window is None
+            or (
+                scoped_source_window is not None
+                and _source_window_is_function_fallback(repo_root, hit, source_window)
+            )
+        ):
+            source_window = scoped_source_window or source_window
     self_branches = _branches_from_window(source_window, source="self")
 
     entry_paths: list[dict] = []
@@ -1882,7 +1892,58 @@ def _is_within(root: Path, candidate: Path) -> bool:
 
 def _read_source_window(repo_root: Path | None, hit: FunctionHit) -> dict | None:
     """Return the source window around an uncovered function, or None."""
-    source_file = _resolve_source_file(repo_root, hit.file_path, hit.function_name)
+    return _read_source_window_for_path(repo_root, hit, hit.file_path)
+
+
+def _read_source_window_from_scope(
+    repo_root: Path | None,
+    hit: FunctionHit,
+    scope: dict,
+) -> dict | None:
+    if repo_root is None or not isinstance(scope, dict):
+        return None
+    for path in _scope_candidate_source_paths(scope):
+        window = _read_source_window_for_path(repo_root, hit, path)
+        if window is not None:
+            window["tool"] = "workspace_scope"
+            return window
+    return None
+
+
+def _scope_candidate_source_paths(scope: dict) -> list[str]:
+    paths: list[str] = []
+    seen: set[str] = set()
+    for candidate in scope.get("candidate_files") or []:
+        if not isinstance(candidate, dict):
+            continue
+        path = str(candidate.get("path") or "").strip()
+        if not path or path in seen:
+            continue
+        seen.add(path)
+        paths.append(path)
+    return paths[:8]
+
+
+def _source_window_is_function_fallback(
+    repo_root: Path | None,
+    hit: FunctionHit,
+    source_window: dict,
+) -> bool:
+    """Whether the current window came from broad function search, not path evidence."""
+    if repo_root is None or not isinstance(source_window, dict):
+        return False
+    resolved_from_hit = _resolve_source_file(repo_root, hit.file_path, None)
+    if resolved_from_hit is None:
+        return True
+    return _relative_path(repo_root, resolved_from_hit) != source_window.get("path")
+
+
+def _read_source_window_for_path(
+    repo_root: Path | None,
+    hit: FunctionHit,
+    file_path: str,
+) -> dict | None:
+    source_file = _resolve_source_file(repo_root, file_path, hit.function_name)
     if source_file is None:
         return None
     try:
@@ -1894,9 +1955,12 @@ def _read_source_window(repo_root: Path | None, hit: FunctionHit) -> dict | None
     if not total:
         return None
 
+    definition_line = _find_strict_definition_line(lines, hit.function_name)
+    if hit.function_name and not definition_line:
+        return None
     start_line = hit.line_start
     if not start_line or start_line < 1 or start_line > total:
-        start_line = _find_definition_line(lines, hit.function_name)
+        start_line = definition_line
     if not start_line:
         # Function not locatable in this file — treat as no usable window.
         return None
@@ -1922,6 +1986,20 @@ def _read_source_window(repo_root: Path | None, hit: FunctionHit) -> dict | None
 
 
 def _find_definition_line(lines: list[str], function_name: str) -> int | None:
+    strict = _find_strict_definition_line(lines, function_name)
+    if strict:
+        return strict
+    # Fallback: first textual occurrence of "name(".
+    if not function_name:
+        return None
+    name_re = re.compile(rf"\b{re.escape(function_name)}\s*\(")
+    for idx, line in enumerate(lines):
+        if name_re.search(line):
+            return idx + 1
+    return None
+
+
+def _find_strict_definition_line(lines: list[str], function_name: str) -> int | None:
     if not function_name:
         return None
     name_re = re.compile(rf"\b{re.escape(function_name)}\s*\(")
@@ -1930,10 +2008,6 @@ def _find_definition_line(lines: list[str], function_name: str) -> int | None:
             _match_def_name(line) == function_name
             or _match_multiline_def_name(lines, idx) == function_name
         ):
-            return idx + 1
-    # Fallback: first textual occurrence of "name(".
-    for idx, line in enumerate(lines):
-        if name_re.search(line):
             return idx + 1
     return None
 

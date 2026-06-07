@@ -1464,6 +1464,60 @@ class TestCoverageTestDesign:
         assert gap["source_window"]["path"] == "zzz/tls.c"
         assert "nvmf_tcp_tls_recover" in json.dumps(gap["source_window"], ensure_ascii=False)
 
+    async def test_source_window_uses_workspace_scope_candidate_when_coverage_path_is_stale(
+        self,
+        tmp_path,
+        monkeypatch,
+    ):
+        import app.services.coverage_analyzer as coverage_mod
+        from app.services.coverage_analyzer import build_coverage_test_design
+
+        legacy = tmp_path / "aaa_legacy"
+        legacy.mkdir()
+        (legacy / "legacy_tls.c").write_text(
+            "void nvmf_tcp_tls_recover(void) {\n"
+            "    legacy_recover_tls_state();\n"
+            "}\n",
+            encoding="utf-8",
+        )
+        src = tmp_path / "src"
+        src.mkdir()
+        (src / "actual_tls.c").write_text(
+            "void nvmf_tcp_tls_recover(void) {\n"
+            "    recover_tls_state();\n"
+            "}\n",
+            encoding="utf-8",
+        )
+        modules = self._modules(
+            "feature,module,code_location,function,triggered,hit_count\n"
+            "tls,nvmf_tcp,stale/generated/tls.c:1-3,nvmf_tcp_tls_recover,false,0\n"
+        )
+        hit_key = "stale/generated/tls.c:nvmf_tcp_tls_recover:1"
+
+        async def fake_scope(*_args, **_kwargs):
+            return {
+                hit_key: {
+                    "gitnexus_available": False,
+                    "candidate_files": [{"path": "src/actual_tls.c"}],
+                    "candidate_symbols": [],
+                    "related_communities": [],
+                    "warnings": [],
+                }
+            }
+
+        monkeypatch.setattr(coverage_mod, "_resolve_workspace_scope_for_hits", fake_scope)
+
+        design = await build_coverage_test_design(
+            modules,
+            workspace_id="ws-1",
+            repo_path=str(tmp_path),
+        )
+
+        gap = next(g for g in design["gaps"] if g.get("function_name") == "nvmf_tcp_tls_recover")
+        assert gap["source_window"]["path"] == "src/actual_tls.c"
+        assert "legacy_recover_tls_state" not in json.dumps(gap["source_window"], ensure_ascii=False)
+        assert gap["entry_trace_status"] != "source_not_found"
+
     async def test_external_agent_entry_discovery_respects_global_parallel_limit(
         self,
         tmp_path,
