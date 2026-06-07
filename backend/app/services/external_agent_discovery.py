@@ -867,17 +867,39 @@ def _unwrap_agent_payload(payload: object) -> object:
     message = payload.get("message")
     if isinstance(message, dict):
         content = message.get("content")
-        if isinstance(content, str):
-            return _unwrap_agent_payload(_json_loads_flexible(content))
-        if isinstance(content, list):
-            text = "\n".join(
-                str(item.get("text") or "")
-                for item in content
-                if isinstance(item, dict)
-            ).strip()
-            if text:
-                return _unwrap_agent_payload(_json_loads_flexible(text))
+        unwrapped = _unwrap_agent_content(content)
+        if unwrapped is not None:
+            return unwrapped
+    choices = payload.get("choices")
+    if isinstance(choices, list):
+        for choice in choices:
+            if not isinstance(choice, dict):
+                continue
+            choice_message = choice.get("message")
+            if isinstance(choice_message, dict):
+                unwrapped = _unwrap_agent_content(choice_message.get("content"))
+                if unwrapped is not None:
+                    return unwrapped
+            delta = choice.get("delta")
+            if isinstance(delta, dict):
+                unwrapped = _unwrap_agent_content(delta.get("content"))
+                if unwrapped is not None:
+                    return unwrapped
     return payload
+
+
+def _unwrap_agent_content(content: object) -> object | None:
+    if isinstance(content, str) and content.strip():
+        return _unwrap_agent_payload(_json_loads_flexible(content))
+    if isinstance(content, list):
+        text = "\n".join(
+            str(item.get("text") or "")
+            for item in content
+            if isinstance(item, dict)
+        ).strip()
+        if text:
+            return _unwrap_agent_payload(_json_loads_flexible(text))
+    return None
 
 
 def _has_discovery_schema(payload: dict) -> bool:

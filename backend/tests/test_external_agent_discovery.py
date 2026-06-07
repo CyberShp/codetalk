@@ -114,6 +114,43 @@ def test_agent_output_unwraps_claude_print_json_result(tmp_path):
     assert result.candidate_entries[0].entry_file == "src/entry.c"
 
 
+def test_agent_output_unwraps_openai_choices_message_content(tmp_path):
+    from app.services.external_agent_discovery import parse_agent_output
+
+    src = tmp_path / "src"
+    src.mkdir()
+    (src / "tls.c").write_text("int tls;\n", encoding="utf-8")
+    discovery_payload = json.dumps({
+        "candidate_files": [
+            {
+                "path": "src/tls.c",
+                "reason": "openai-compatible wrapper returned source path",
+                "confidence": "high",
+            }
+        ],
+        "commands": ["rg --files"],
+    })
+    raw = json.dumps({
+        "id": "chatcmpl-agent",
+        "choices": [
+            {
+                "index": 0,
+                "message": {
+                    "role": "assistant",
+                    "content": discovery_payload,
+                },
+                "finish_reason": "stop",
+            }
+        ],
+    })
+
+    result = parse_agent_output("opencode", raw, tmp_path)
+
+    assert result.status == "ok"
+    assert result.candidate_files[0].validated is True
+    assert result.candidate_files[0].path == "src/tls.c"
+
+
 def test_agent_output_prefers_discovery_json_after_stream_metadata(tmp_path):
     from app.services.external_agent_discovery import parse_agent_output
 
