@@ -2986,12 +2986,14 @@ def _callback_symbol_from_assignment(text: str) -> str | None:
 
 def _registered_entry_type(registration_line: str, window: list[str]) -> str:
     text = (registration_line + "\n" + "\n".join(window)).lower()
-    if "service_register" in text or "ops" in text or "callback" in text or "_cb" in text:
-        return "callback"
     if "rpc" in text or "api" in text or "request" in text:
         return "api"
     if "cli" in text or "cmd" in text:
         return "cli"
+    if "service_register" in text or "ops" in text or "callback" in text or "_cb" in text:
+        return "callback"
+    if any(token in text for token in ("scheduler", "schedule", "scheduled", "cron", "add_job", ".job", " job")):
+        return "scheduler"
     if "poller" in text or "timer" in text or "timeout" in text:
         return "timer"
     if "message" in text or "event" in text:

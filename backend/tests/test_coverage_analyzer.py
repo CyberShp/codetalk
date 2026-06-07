@@ -1709,6 +1709,41 @@ class TestCoverageTestDesign:
         assert card["candidate_external_entries"][0]["entry_symbol"] == "consume"
         assert "registry.register" in card["candidate_external_entries"][0]["evidence"]
 
+    async def test_scheduler_add_job_registration_keeps_scheduler_entry_kind(self, tmp_path):
+        from app.services.coverage_analyzer import build_coverage_test_design
+
+        src = tmp_path / "src"
+        src.mkdir()
+        (src / "cleanup.py").write_text(
+            "def purge_expired(payload):\n"
+            "    if not payload:\n"
+            "        return 'missing'\n"
+            "    return 'purged'\n",
+            encoding="utf-8",
+        )
+        (src / "jobs.py").write_text(
+            "from cleanup import purge_expired\n\n"
+            "def run(payload):\n"
+            "    return purge_expired(payload)\n\n"
+            "scheduler.add_job('nightly-cleanup', run)\n",
+            encoding="utf-8",
+        )
+        modules = self._modules(
+            "feature,module,code_location,function,triggered,hit_count\n"
+            "cleanup,cleanup,src/cleanup.py:1-4,purge_expired,false,0\n"
+        )
+
+        design = await build_coverage_test_design(
+            modules, workspace_id="ws-1", repo_path=str(tmp_path)
+        )
+
+        gap = [g for g in design["gaps"] if g.get("kind") == "function"][0]
+        assert gap["gray_box_required"] is False
+        assert gap["black_box_readiness"]["case_type"] == "black_box_ready"
+        assert gap["entry_paths"][0]["entry_symbol"] == "run"
+        assert gap["entry_paths"][0]["entry_kind"] == "scheduler"
+        assert "scheduler.add_job" in gap["entry_paths"][0]["evidence"]
+
     async def test_entry_discovery_artifact_and_context_are_written(self, tmp_path):
         from app.services.coverage_analyzer import build_coverage_test_design
 
