@@ -275,6 +275,29 @@ def test_agent_entry_input_hints_are_parsed_for_black_box_cases(tmp_path):
     ]
 
 
+def test_agent_entry_string_input_hint_is_not_split_into_characters(tmp_path):
+    from app.services.external_agent_discovery import parse_agent_output
+
+    src = tmp_path / "src"
+    src.mkdir()
+    (src / "rpc.c").write_text("void rpc_entry(void) {}\n", encoding="utf-8")
+    raw = json.dumps({
+        "candidate_entries": [
+            {
+                "entry_kind": "rpc",
+                "entry_symbol": "rpc_entry",
+                "entry_file": "src/rpc.c",
+                "external_trigger": "RPC request",
+                "input_hints": "invalid TLS PSK",
+            }
+        ]
+    })
+
+    result = parse_agent_output("claude-code", raw, tmp_path)
+
+    assert result.candidate_entries[0].input_hints == ["invalid TLS PSK"]
+
+
 def test_agent_entry_without_source_file_is_not_validated(tmp_path):
     from app.services.external_agent_discovery import parse_agent_output
 
@@ -2347,6 +2370,34 @@ def test_coverage_agent_verified_entry_makes_gap_black_box_ready(tmp_path, monke
     card = design["entry_discovery"]["cards"][0]
     candidate = card["candidate_external_entries"][0]
     assert candidate["input_hints"] == ["invalid TLS PSK", "oversized capsule"]
+
+
+def test_black_box_cases_keep_string_input_hint_as_single_hint():
+    from app.adapters.coverage import FunctionHit
+    from app.services.coverage_analyzer import _build_black_box_cases
+
+    cases = _build_black_box_cases(
+        FunctionHit(
+            function_name="recover_tls",
+            file_path="src/tls.c",
+            line_start=1,
+            triggered=False,
+            hit_count=0,
+        ),
+        [
+            {
+                "entry_kind": "rpc",
+                "entry_label": "RPC recover",
+                "input_hints": "invalid TLS PSK",
+            }
+        ],
+        [],
+    )
+
+    text = json.dumps(cases, ensure_ascii=False)
+
+    assert "invalid TLS PSK" in text
+    assert "i, n, v, a, l, i, d" not in text
 
 
 def test_coverage_agent_one_hit_processing_failure_keeps_other_hit_context(tmp_path, monkeypatch):

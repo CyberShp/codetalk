@@ -852,7 +852,7 @@ def _merge_agent_entry_paths(
             "turn_id": item.get("turn_id"),
             "source_verification": item.get("source_verification") or "source_backed",
             "validation_error": item.get("validation_error"),
-            "input_hints": item.get("input_hints") or [],
+            "input_hints": _coerce_string_list(item.get("input_hints")),
         })
     return merged
 
@@ -2329,7 +2329,7 @@ def _build_black_box_cases(
     for entry in entry_paths[:3]:
         entry_label = _safe_external_label(entry)
         entry_kind = str(entry.get("entry_kind") or "外部")
-        input_hints = [str(item) for item in (entry.get("input_hints") or []) if item]
+        input_hints = _coerce_string_list(entry.get("input_hints"))
         entry_inputs = (
             "使用外部请求/配置参数构造合法值、边界值和畸形值："
             + ", ".join(input_hints)
@@ -2359,9 +2359,7 @@ def _build_black_box_cases(
 
     primary_entry = entry_paths[0] if entry_paths else {}
     primary_entry_label = _safe_external_label(primary_entry) if primary_entry else None
-    primary_input_hints = [
-        str(item) for item in (primary_entry.get("input_hints") or []) if item
-    ]
+    primary_input_hints = _coerce_string_list(primary_entry.get("input_hints"))
 
     for branch in trigger_branches[:3]:
         if not branch.get("is_error_path") and branch.get("source") != "caller":
@@ -2931,7 +2929,7 @@ def _entry_candidates_from_paths(entry_paths: list[dict]) -> list[dict]:
             "provider": entry.get("provider") or (tool if tool in {"claude-code", "opencode"} else None),
             "turn_id": entry.get("turn_id"),
             "validation_error": entry.get("validation_error"),
-            "input_hints": entry.get("input_hints") or [],
+            "input_hints": _coerce_string_list(entry.get("input_hints")),
         })
     return candidates
 
@@ -2958,7 +2956,7 @@ def _entry_candidates_from_agent_unverified(entries: list[dict]) -> list[dict]:
             "provider": entry.get("provider"),
             "turn_id": entry.get("turn_id"),
             "validation_error": entry.get("validation_error"),
-            "input_hints": entry.get("input_hints") or [],
+            "input_hints": _coerce_string_list(entry.get("input_hints")),
         })
     return candidates
 

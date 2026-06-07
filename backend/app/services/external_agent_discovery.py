@@ -506,6 +506,18 @@ def _coerce_command_list(value: object) -> list[str]:
     return [str(value).strip()] if str(value).strip() else []
 
 
+def _coerce_string_list(value: object) -> list[str]:
+    if value is None:
+        return []
+    if isinstance(value, str):
+        text = value.strip()
+        return [text] if text else []
+    if isinstance(value, (list, tuple, set)):
+        return [str(part).strip() for part in value if str(part).strip()]
+    text = str(value).strip()
+    return [text] if text else []
+
+
 def _split_command_list_string(value: str) -> list[str]:
     parts: list[str] = []
     current: list[str] = []
@@ -756,14 +768,13 @@ def parse_agent_output(provider: str, raw_output: str, repo_path: str | Path) ->
     for item in payload.get("candidate_entries") or []:
         if not isinstance(item, dict):
             continue
-        chain = item.get("chain") or []
         entry = AgentCandidateEntry(
             entry_kind=str(item.get("entry_kind") or item.get("entry_type") or "external"),
             entry_symbol=str(item.get("entry_symbol") or item.get("symbol") or ""),
             entry_file=str(item.get("entry_file") or item.get("file") or "") or None,
-            chain=[str(x) for x in chain if x],
+            chain=_coerce_string_list(item.get("chain")),
             external_trigger=str(item.get("external_trigger") or ""),
-            input_hints=[str(x) for x in (item.get("input_hints") or []) if x],
+            input_hints=_coerce_string_list(item.get("input_hints")),
             reason=str(item.get("reason") or ""),
         )
         if entry.entry_file:
