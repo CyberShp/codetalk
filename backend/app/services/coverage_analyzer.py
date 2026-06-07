@@ -844,14 +844,16 @@ def _merge_agent_entry_paths(
     hit: FunctionHit,
 ) -> list[dict]:
     if not isinstance(agent_context, dict):
-        return entry_paths
-    merged = list(entry_paths)
+        return _filter_actionable_entry_paths(entry_paths)
+    merged = _filter_actionable_entry_paths(entry_paths)
     by_entry_key = {
         _entry_execution_key(entry): entry
         for entry in merged
         if _entry_execution_key(entry)
     }
     for item in agent_context.get("validated_entries") or []:
+        if not _entry_path_is_actionable(item):
+            continue
         if _agent_entry_is_self_target(item, hit):
             continue
         if _agent_entry_chain_missing_target(item, hit.function_name):
@@ -889,6 +891,29 @@ def _merge_agent_entry_paths(
         if key:
             by_entry_key[key] = new_entry
     return merged
+
+
+def _filter_actionable_entry_paths(entry_paths: list[dict]) -> list[dict]:
+    return [
+        entry for entry in entry_paths
+        if _entry_path_is_actionable(entry)
+    ]
+
+
+def _entry_path_is_actionable(entry: object) -> bool:
+    if not isinstance(entry, dict):
+        return False
+    if str(entry.get("validation_error") or "").strip():
+        return False
+    source_verification = str(entry.get("source_verification") or "").strip().lower()
+    if source_verification in {
+        "needs_source_verification",
+        "unverified",
+        "rejected",
+        "invalid",
+    }:
+        return False
+    return True
 
 
 def _entry_execution_key(entry: dict) -> tuple[str, str] | None:
@@ -1714,7 +1739,7 @@ def _build_external_entry_card(
             "source_verification": entry.get("source_verification"),
             "validation_error": entry.get("validation_error"),
         }
-        for entry in entry_paths[:6]
+        for entry in _filter_actionable_entry_paths(entry_paths)[:6]
     ]
     return asdict(ExternalEntryCard(
         has_external_entry=bool(entries),
@@ -2800,11 +2825,12 @@ def _build_black_box_cases(
 ) -> list[dict]:
     """Construct concrete black-box cases from entries + branch conditions."""
     cases: list[dict] = []
+    actionable_entry_paths = _filter_actionable_entry_paths(entry_paths)
     base_inputs = _input_conditions_for_hit(hit)
     expected = _expected_behavior_for_hit(hit)
     signals = _observable_signals_for_hit(hit)
 
-    for entry in entry_paths[:3]:
+    for entry in actionable_entry_paths[:3]:
         entry_label = _safe_external_label(entry)
         entry_kind = str(entry.get("entry_kind") or "外部")
         input_hints = _coerce_string_list(entry.get("input_hints"))
@@ -2836,7 +2862,7 @@ def _build_black_box_cases(
             **_entry_case_provenance(entry),
         })
 
-    primary_entry = entry_paths[0] if entry_paths else {}
+    primary_entry = actionable_entry_paths[0] if actionable_entry_paths else {}
     primary_entry_label = _safe_external_label(primary_entry) if primary_entry else None
     primary_input_hints = _coerce_string_list(primary_entry.get("input_hints"))
 
@@ -2844,9 +2870,9 @@ def _build_black_box_cases(
         if not branch.get("is_error_path") and branch.get("source") != "caller":
             continue
         cases.append({
-            "case_type": BLACK_BOX_READY if entry_paths else BLACK_BOX_HYPOTHESIS,
+            "case_type": BLACK_BOX_READY if actionable_entry_paths else BLACK_BOX_HYPOTHESIS,
             "title": "公开流程覆盖边界或错误条件",
-            "entry_kind": entry_paths[0]["entry_kind"] if entry_paths else "unknown",
+            "entry_kind": actionable_entry_paths[0]["entry_kind"] if actionable_entry_paths else "unknown",
             "external_trigger": (
                 f"通过公开接口触发 {primary_entry_label}。"
                 if primary_entry_label else "先确认公开入口，再作为黑盒用例执行。"

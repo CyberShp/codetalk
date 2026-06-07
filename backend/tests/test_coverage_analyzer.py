@@ -1504,6 +1504,61 @@ class TestCoverageTestDesign:
         assert any("入口" in g for g in gap["evidence_gaps"])
         assert design["summary"]["gray_box_required_count"] == 1
 
+    async def test_agent_entry_with_validation_error_does_not_become_black_box_ready(self, tmp_path):
+        from app.services.coverage_analyzer import _design_function_gap
+
+        src = tmp_path / "src"
+        src.mkdir()
+        (src / "tls.c").write_text(
+            "void tls_recover_session(void) {\n"
+            "    if (1) { return; }\n"
+            "}\n",
+            encoding="utf-8",
+        )
+        module = ModuleCoverage(
+            module_path="src",
+            line_rate=0.0,
+            branch_rate=0.0,
+            function_rate=0.0,
+            function_hits=[],
+        )
+        hit = FunctionHit(
+            function_name="tls_recover_session",
+            file_path="src/tls.c",
+            line_start=1,
+            triggered=False,
+            hit_count=0,
+        )
+
+        gap = _design_function_gap(
+            module,
+            hit,
+            workspace_id="ws-1",
+            repo_path=str(tmp_path),
+            repo_root=tmp_path,
+            rg_available=True,
+            scope={},
+            cgc_context={},
+            agent_context={
+                "validated_entries": [{
+                    "provider": "claude-code",
+                    "entry_kind": "rpc",
+                    "entry_symbol": "rpc_tls_recover",
+                    "entry_file": "src/rpc.c",
+                    "chain": ["rpc_tls_recover", "tls_recover_session"],
+                    "external_trigger": "RPC tls-recover",
+                    "reason": "agent entry still failed local source validation",
+                    "source_verification": "needs_source_verification",
+                    "validation_error": "entry_file_missing",
+                }]
+            },
+            trace=True,
+        )
+
+        assert gap["entry_paths"] == []
+        assert gap["black_box_readiness"]["case_type"] == "gray_box_required"
+        assert all(case["case_type"] != "black_box_ready" for case in gap["black_box_cases"])
+
     async def test_agent_entry_budget_prioritizes_late_high_risk_hits(self, tmp_path, monkeypatch):
         import app.services.coverage_analyzer as coverage_mod
         from app.config import settings
