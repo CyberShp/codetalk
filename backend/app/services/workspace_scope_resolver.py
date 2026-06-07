@@ -1039,6 +1039,15 @@ def _is_symbol_definition_line(line: str, symbol: str) -> bool:
     if re.match(rf"^(?:export\s+)?(?:async\s+)?function\s+{escaped}\s*\(", line):
         return True
     if re.match(
+        rf"^(?:export\s+)?(?:const|let|var)\s+{escaped}"
+        rf"(?:\s*:\s*[^=]+)?\s*=\s*(?:async\s*)?"
+        rf"(?:(?:\([^)]*\)|[A-Za-z_$][\w$]*)\s*=>|function\b)",
+        line,
+    ):
+        return True
+    if re.match(rf"^{escaped}\s*=\s*lambda\b", line):
+        return True
+    if re.match(
         rf"^(?:static\s+|inline\s+|extern\s+|const\s+|unsigned\s+|signed\s+|"
         rf"void\s+|bool\s+|char\s+|int\s+|long\s+|short\s+|size_t\s+|"
         rf"ssize_t\s+|uint\d+_t\s+|int\d+_t\s+|struct\s+\w+\s+|enum\s+\w+\s+)+"
