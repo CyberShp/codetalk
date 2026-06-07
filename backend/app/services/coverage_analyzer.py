@@ -2501,6 +2501,17 @@ def _is_non_executable_symbol_reference(line_text: str, function_name: str) -> b
     return False
 
 
+def _parse_ripgrep_line(raw: str) -> tuple[str, int, str] | None:
+    match = re.match(r"^(?P<file>.*?):(?P<line>\d+):(?P<text>.*)$", raw or "")
+    if not match:
+        return None
+    try:
+        line_number = int(match.group("line"))
+    except ValueError:
+        return None
+    return match.group("file"), line_number, match.group("text")
+
+
 def _ripgrep_call_sites(repo_root: Path, function_name: str) -> list[dict]:
     """Find textual call sites of ``function_name`` via ripgrep (degraded mode)."""
     if not function_name or shutil.which("rg") is None:
@@ -2526,16 +2537,10 @@ def _ripgrep_call_sites(repo_root: Path, function_name: str) -> list[dict]:
         return []
     sites: list[dict] = []
     for raw in (proc.stdout or "").splitlines():
-        # Windows paths include a drive separator (for example ``E:\``), so
-        # split from the right to preserve the full path before line/text.
-        parts = raw.rsplit(":", 2)
-        if len(parts) < 3:
+        parsed = _parse_ripgrep_line(raw)
+        if parsed is None:
             continue
-        file_str, line_str, text = parts
-        try:
-            line_number = int(line_str)
-        except ValueError:
-            continue
+        file_str, line_number, text = parsed
         stripped = text.strip()
         # Skip the definition itself and obvious comment lines.
         if _is_definition_or_declaration_site(file_str, line_number, function_name):
@@ -2616,6 +2621,9 @@ def _entry_metadata_for_site(abs_file: str, line_number: int, enclosing_fn: str 
     if rpc_method:
         metadata["entry_label"] = f"JSON-RPC {rpc_method}"
     hints = _request_field_hints(abs_file, line_number)
+    for hint in _handler_signature_input_hints(abs_file, enclosing_fn):
+        if hint not in hints:
+            hints.append(hint)
     if hints:
         metadata["input_hints"] = hints
     return metadata
@@ -2683,6 +2691,49 @@ def _request_destructured_fields(text: str) -> list[str]:
             if re.match(r"^[A-Za-z_][\w-]*$", field):
                 fields.append(field)
     return fields
+
+
+def _handler_signature_input_hints(abs_file: str, enclosing_fn: str | None) -> list[str]:
+    if not enclosing_fn or Path(abs_file).suffix.lower() not in {".py", ".js", ".jsx", ".ts", ".tsx"}:
+        return []
+    try:
+        lines = Path(abs_file).read_text(encoding="utf-8", errors="replace").splitlines()
+    except OSError:
+        return []
+    for idx, line in enumerate(lines):
+        if _match_def_name(line) != enclosing_fn:
+            continue
+        signature = line.strip()
+        while ")" not in signature and idx + 1 < len(lines):
+            idx += 1
+            signature += " " + lines[idx].strip()
+        return _signature_input_params(signature)
+    return []
+
+
+def _signature_input_params(signature: str) -> list[str]:
+    match = re.search(r"\((?P<params>[^)]*)\)", signature or "")
+    if not match:
+        return []
+    framework_params = {
+        "self", "cls", "request", "req", "response", "res", "next",
+        "context", "ctx", "scope", "receive", "send",
+    }
+    hints: list[str] = []
+    seen: set[str] = set()
+    for raw_param in match.group("params").split(","):
+        param = raw_param.strip()
+        if not param or param.startswith(("*", "...")):
+            continue
+        param = param.split("=", 1)[0].split(":", 1)[0].strip()
+        param = param.lstrip("*").strip()
+        if not re.match(r"^[A-Za-z_][\w-]*$", param):
+            continue
+        if param.lower() in framework_params or param in seen:
+            continue
+        seen.add(param)
+        hints.append(param)
+    return hints
 
 
 def _split_cgc_location(location: object) -> tuple[str | None, int | None]:
