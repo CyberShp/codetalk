@@ -456,6 +456,37 @@ def test_turn_raw_artifact_write_failure_is_recorded_without_raising(tmp_path, m
     assert loaded.ledger.unresolved_items[0]["artifact"] == "raw_output"
 
 
+def test_turn_prompt_artifact_dir_conflict_is_recorded_without_raising(tmp_path):
+    from app.services.agent_discovery_session import create_agent_discovery_session
+
+    artifact_dir = tmp_path / "artifacts"
+    artifact_dir.mkdir()
+    (artifact_dir / "external_agent_prompts").write_text("not a directory\n", encoding="utf-8")
+    session = create_agent_discovery_session(
+        repo_path=str(tmp_path),
+        goal="workspace_scope",
+        artifact_dir=artifact_dir,
+    )
+
+    turn = session.record_turn(
+        provider="claude-code",
+        goal="source_scope",
+        prompt="prompt",
+        raw_output="raw output",
+        parsed_result={"raw_summary": "ok"},
+        validation_result={},
+        status="ok",
+    )
+    loaded = create_agent_discovery_session.load(artifact_dir)
+
+    assert turn.prompt_path is None
+    assert turn.raw_output_path is not None
+    assert session.ledger.unresolved_items[0]["kind"] == "agent_turn_artifact_write_failed"
+    assert session.ledger.unresolved_items[0]["artifact"] == "prompt"
+    assert "external_agent_prompts" in session.ledger.unresolved_items[0]["path"]
+    assert loaded.turns[0].prompt_path is None
+
+
 def test_source_slice_rejects_outside_repo_and_non_source(tmp_path):
     from app.services.agent_discovery_session import create_agent_discovery_session
 
@@ -804,6 +835,66 @@ def test_source_slice_artifact_write_failure_is_recorded_without_raising(tmp_pat
     assert session.ledger.unresolved_items[0]["kind"] == "source_slice_artifact_write_failed"
     assert session.ledger.unresolved_items[0]["slice_id"] == "slice_001"
     assert "artifact disk full" in session.ledger.unresolved_items[0]["reason"]
+
+
+def test_source_slice_artifact_dir_conflict_is_recorded_without_raising(tmp_path):
+    from app.services.agent_discovery_session import create_agent_discovery_session
+
+    src = tmp_path / "src"
+    src.mkdir()
+    (src / "tls.c").write_text("int tls(void) { return 0; }\n", encoding="utf-8")
+    artifact_dir = tmp_path / "artifacts"
+    artifact_dir.mkdir()
+    (artifact_dir / "external_agent_source_slices").write_text("not a directory\n", encoding="utf-8")
+    session = create_agent_discovery_session(
+        repo_path=str(tmp_path),
+        goal="workspace_scope",
+        artifact_dir=artifact_dir,
+    )
+
+    refs = session.add_source_slices_from_requests([
+        {"file_path": "src/tls.c", "reason": "artifact dir conflict should be non-fatal"},
+    ])
+    loaded = create_agent_discovery_session.load(artifact_dir)
+
+    assert refs[0].validated is True
+    assert session.ledger.source_slices[0]["file_path"] == "src/tls.c"
+    assert session.ledger.unresolved_items[0]["kind"] == "source_slice_artifact_write_failed"
+    assert session.ledger.unresolved_items[0]["slice_id"] == "slice_001"
+    assert "external_agent_source_slices" in session.ledger.unresolved_items[0]["path"]
+    assert loaded.ledger.source_slices[0]["file_path"] == "src/tls.c"
+
+
+def test_context_packet_artifact_dir_conflict_is_recorded_without_raising(tmp_path):
+    from app.services.agent_discovery_session import (
+        AgentContextPacketInput,
+        create_agent_discovery_session,
+    )
+
+    artifact_dir = tmp_path / "artifacts"
+    artifact_dir.mkdir()
+    (artifact_dir / "external_agent_context_packets").write_text("not a directory\n", encoding="utf-8")
+    session = create_agent_discovery_session(
+        repo_path=str(tmp_path),
+        goal="workspace_scope",
+        artifact_dir=artifact_dir,
+    )
+
+    packet = session.build_context_packet(
+        AgentContextPacketInput(
+            object_id="obj_tls",
+            current_goal="source_scope",
+            analysis_object_text="nvme-tcp-tls",
+            expanded_terms=["tls"],
+        )
+    )
+    loaded = create_agent_discovery_session.load(artifact_dir)
+
+    assert packet["packet_id"] == "packet_001"
+    assert session.ledger.expanded_terms_by_object["obj_tls"] == ["tls"]
+    assert session.ledger.unresolved_items[0]["kind"] == "context_packet_artifact_write_failed"
+    assert "external_agent_context_packets" in session.ledger.unresolved_items[0]["path"]
+    assert loaded.ledger.expanded_terms_by_object["obj_tls"] == ["tls"]
 
 
 def test_context_packet_overflow_requests_next_round(tmp_path, monkeypatch):

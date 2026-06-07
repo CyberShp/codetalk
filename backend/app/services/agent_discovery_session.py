@@ -247,37 +247,24 @@ class AgentDiscoverySession:
         raw_path: str | None = None
         if settings.agent_discovery_store_prompts:
             prompt_dir = self.artifact_dir / "external_agent_prompts"
-            prompt_dir.mkdir(parents=True, exist_ok=True)
-            prompt_file = prompt_dir / f"{turn_id}.{provider}.json"
-            try:
-                prompt_file.write_text(
-                    json.dumps({"prompt": prompt}, ensure_ascii=False, indent=2),
-                    encoding="utf-8",
-                )
-                prompt_path = str(prompt_file)
-            except OSError as exc:
-                self._record_turn_artifact_write_failure(
-                    turn_id=turn_id,
-                    provider=provider,
-                    artifact="prompt",
-                    path=prompt_file,
-                    exc=exc,
-                )
+            prompt_path = self._write_optional_text_artifact(
+                directory=prompt_dir,
+                filename=f"{turn_id}.{provider}.json",
+                content=json.dumps({"prompt": prompt}, ensure_ascii=False, indent=2),
+                unresolved_kind="agent_turn_artifact_write_failed",
+                artifact="prompt",
+                extra={"turn_id": turn_id, "provider": provider},
+            )
         if settings.agent_discovery_store_raw_outputs:
             raw_dir = self.artifact_dir / "external_agent_raw"
-            raw_dir.mkdir(parents=True, exist_ok=True)
-            raw_file = raw_dir / f"{turn_id}.{provider}.txt"
-            try:
-                raw_file.write_text(raw_output or "", encoding="utf-8")
-                raw_path = str(raw_file)
-            except OSError as exc:
-                self._record_turn_artifact_write_failure(
-                    turn_id=turn_id,
-                    provider=provider,
-                    artifact="raw_output",
-                    path=raw_file,
-                    exc=exc,
-                )
+            raw_path = self._write_optional_text_artifact(
+                directory=raw_dir,
+                filename=f"{turn_id}.{provider}.txt",
+                content=raw_output or "",
+                unresolved_kind="agent_turn_artifact_write_failed",
+                artifact="raw_output",
+                extra={"turn_id": turn_id, "provider": provider},
+            )
         turn = AgentDiscoveryTurn(
             turn_id=turn_id,
             provider=provider,
@@ -295,25 +282,50 @@ class AgentDiscoverySession:
         self.save()
         return turn
 
-    def _record_turn_artifact_write_failure(
+    def _write_optional_text_artifact(
         self,
         *,
-        turn_id: str,
-        provider: str,
+        directory: Path,
+        filename: str,
+        content: str,
+        unresolved_kind: str,
+        artifact: str,
+        extra: dict | None = None,
+    ) -> str | None:
+        path = directory / filename
+        try:
+            directory.mkdir(parents=True, exist_ok=True)
+            path.write_text(content, encoding="utf-8")
+            return str(path)
+        except OSError as exc:
+            self._record_optional_artifact_write_failure(
+                kind=unresolved_kind,
+                artifact=artifact,
+                path=path,
+                exc=exc,
+                extra=extra,
+            )
+            return None
+
+    def _record_optional_artifact_write_failure(
+        self,
+        *,
+        kind: str,
         artifact: str,
         path: Path,
         exc: OSError,
+        extra: dict | None = None,
     ) -> None:
         reason_text = str(exc).strip() or exc.__class__.__name__
-        self.ledger.unresolved_items.append({
-            "kind": "agent_turn_artifact_write_failed",
-            "turn_id": turn_id,
-            "provider": provider,
+        item = {
+            "kind": kind,
+            **(extra or {}),
             "artifact": artifact,
             "path": str(path),
             "reason": reason_text,
             "created_at": _now(),
-        })
+        }
+        self.ledger.unresolved_items.append(item)
 
     def add_source_slice(
         self,
@@ -389,21 +401,14 @@ class AgentDiscoverySession:
         self.ledger.source_slices.append(asdict(ref))
         if settings.agent_discovery_store_source_slices:
             slice_dir = self.artifact_dir / "external_agent_source_slices"
-            slice_dir.mkdir(parents=True, exist_ok=True)
-            try:
-                (slice_dir / f"{slice_id}.json").write_text(
-                    json.dumps(asdict(ref), ensure_ascii=False, indent=2),
-                    encoding="utf-8",
-                )
-            except OSError as exc:
-                reason_text = str(exc).strip() or exc.__class__.__name__
-                self.ledger.unresolved_items.append({
-                    "kind": "source_slice_artifact_write_failed",
-                    "slice_id": slice_id,
-                    "file_path": validation.path,
-                    "reason": reason_text,
-                    "created_at": _now(),
-                })
+            self._write_optional_text_artifact(
+                directory=slice_dir,
+                filename=f"{slice_id}.json",
+                content=json.dumps(asdict(ref), ensure_ascii=False, indent=2),
+                unresolved_kind="source_slice_artifact_write_failed",
+                artifact="source_slice",
+                extra={"slice_id": slice_id, "file_path": validation.path},
+            )
         self.save()
         return ref
 
@@ -520,10 +525,13 @@ class AgentDiscoverySession:
         }
         packet = _enforce_packet_budget(packet)
         packet_dir = self.artifact_dir / "external_agent_context_packets"
-        packet_dir.mkdir(parents=True, exist_ok=True)
-        (packet_dir / f"{packet_id}.json").write_text(
-            json.dumps(packet, ensure_ascii=False, indent=2),
-            encoding="utf-8",
+        self._write_optional_text_artifact(
+            directory=packet_dir,
+            filename=f"{packet_id}.json",
+            content=json.dumps(packet, ensure_ascii=False, indent=2),
+            unresolved_kind="context_packet_artifact_write_failed",
+            artifact="context_packet",
+            extra={"packet_id": packet_id},
         )
         self.save()
         return packet
