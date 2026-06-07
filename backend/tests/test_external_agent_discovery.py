@@ -4126,6 +4126,33 @@ def test_workspace_path_keyword_ranking_prioritizes_module_named_source(tmp_path
     assert rel_hits[0] == "nof/nvmf_tcp/transport/tls/tls.c"
 
 
+def test_workspace_exact_symbol_search_keeps_definition_line_with_colons(tmp_path):
+    from app.services.workspace_scope_resolver import _exact_symbol_repo_hits_blocking
+
+    src = tmp_path / "src"
+    src.mkdir()
+    (src / "impl.py").write_text(
+        "def target_handler(config={'mode': 'safe'}):\n"
+        "    return config\n",
+        encoding="utf-8",
+    )
+    (src / "caller.py").write_text(
+        "from impl import target_handler\n"
+        "value = target_handler()\n",
+        encoding="utf-8",
+    )
+
+    hits = _exact_symbol_repo_hits_blocking(str(tmp_path), "target_handler", 4)
+    rel_hits = [
+        Path(hit).relative_to(tmp_path).as_posix()
+        for hit in hits
+        if Path(hit).exists()
+    ]
+
+    assert rel_hits[0] == "src/impl.py"
+    assert all(":def target_handler" not in hit for hit in hits)
+
+
 def test_workspace_path_keyword_ranking_prioritizes_root_transport_tls_over_examples(tmp_path):
     from app.services.workspace_scope_resolver import _path_keyword_repo_hits_blocking
 

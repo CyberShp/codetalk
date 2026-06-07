@@ -514,11 +514,10 @@ def _exact_symbol_repo_hits_blocking(
                 args, capture_output=True, text=True, timeout=15,
             )
             for line in proc.stdout.splitlines():
-                # Windows paths contain a drive colon, so split from the right.
-                try:
-                    path, lineno, text = line.rsplit(":", 2)
-                except ValueError:
+                parsed = _parse_ripgrep_line(line)
+                if parsed is None:
                     continue
+                path, _line_number, text = parsed
                 score = _score_symbol_hit(path, text, symbol)
                 hits[path] = max(hits.get(path, 0), score)
         except (subprocess.TimeoutExpired, OSError) as exc:
@@ -548,6 +547,17 @@ def _exact_symbol_repo_hits_blocking(
 
     ranked = sorted(hits.items(), key=lambda item: (-item[1], item[0].lower()))
     return [path for path, _ in ranked[:limit]]
+
+
+def _parse_ripgrep_line(raw: str) -> tuple[str, int, str] | None:
+    match = re.match(r"^(?P<path>.*?):(?P<line>\d+):(?P<text>.*)$", raw or "")
+    if not match:
+        return None
+    try:
+        line_number = int(match.group("line"))
+    except ValueError:
+        return None
+    return match.group("path"), line_number, match.group("text")
 
 
 def _path_hint_repo_hits_blocking(
@@ -998,7 +1008,9 @@ def _score_symbol_hit(path: str, line: str, symbol: str) -> int:
 
     starts_with_call = re.match(rf"^{re.escape(symbol)}\s*\(", stripped)
     has_statement_semicolon = ";" in stripped
-    if starts_with_call and not has_statement_semicolon:
+    if _is_symbol_definition_line(stripped, symbol):
+        score += 140
+    elif starts_with_call and not has_statement_semicolon:
         score += 120
     elif re.match(rf"^#\s*define\s+{re.escape(symbol)}\b", stripped):
         score += 110
@@ -1018,6 +1030,23 @@ def _score_symbol_hit(path: str, line: str, symbol: str) -> int:
     if "/app/" in folded_path or "/examples/" in folded_path or "/test/" in folded_path:
         score -= 15
     return score
+
+
+def _is_symbol_definition_line(line: str, symbol: str) -> bool:
+    escaped = re.escape(symbol)
+    if re.match(rf"^(?:async\s+)?def\s+{escaped}\s*\(", line):
+        return True
+    if re.match(rf"^(?:export\s+)?(?:async\s+)?function\s+{escaped}\s*\(", line):
+        return True
+    if re.match(
+        rf"^(?:static\s+|inline\s+|extern\s+|const\s+|unsigned\s+|signed\s+|"
+        rf"void\s+|bool\s+|char\s+|int\s+|long\s+|short\s+|size_t\s+|"
+        rf"ssize_t\s+|uint\d+_t\s+|int\d+_t\s+|struct\s+\w+\s+|enum\s+\w+\s+)+"
+        rf"[\w\s\*&:<>,~\[\]]*\b{escaped}\s*\([^;]*\)\s*(?:\{{|$)",
+        line,
+    ):
+        return True
+    return False
 
 
 def _walk(repo: Path):
