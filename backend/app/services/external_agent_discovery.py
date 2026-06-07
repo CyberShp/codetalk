@@ -1379,15 +1379,49 @@ def _unwrap_agent_payload(payload: object) -> object:
                 continue
             choice_message = choice.get("message")
             if isinstance(choice_message, dict):
-                unwrapped = _unwrap_agent_content(choice_message.get("content"))
-                if unwrapped is not None:
+                unwrapped = _try_unwrap_agent_content(choice_message.get("content"))
+                if isinstance(unwrapped, dict) and _has_discovery_schema(unwrapped):
                     return unwrapped
             delta = choice.get("delta")
             if isinstance(delta, dict):
-                unwrapped = _unwrap_agent_content(delta.get("content"))
-                if unwrapped is not None:
+                unwrapped = _try_unwrap_agent_content(delta.get("content"))
+                if isinstance(unwrapped, dict) and _has_discovery_schema(unwrapped):
                     return unwrapped
+        unwrapped = _unwrap_aggregated_choice_content(choices)
+        if unwrapped is not None:
+            return unwrapped
     return payload
+
+
+def _unwrap_aggregated_choice_content(choices: list[object]) -> object | None:
+    text_parts: list[str] = []
+    for choice in choices:
+        if not isinstance(choice, dict):
+            continue
+        message = choice.get("message")
+        if isinstance(message, dict):
+            content = message.get("content")
+            if isinstance(content, str):
+                text_parts.append(content)
+        delta = choice.get("delta")
+        if isinstance(delta, dict):
+            content = delta.get("content")
+            if isinstance(content, str):
+                text_parts.append(content)
+    text = "".join(text_parts).strip()
+    if not text:
+        return None
+    try:
+        return _unwrap_agent_payload(_json_loads_flexible(text))
+    except json.JSONDecodeError:
+        return None
+
+
+def _try_unwrap_agent_content(content: object) -> object | None:
+    try:
+        return _unwrap_agent_content(content)
+    except json.JSONDecodeError:
+        return None
 
 
 def _unwrap_agent_content(content: object) -> object | None:
