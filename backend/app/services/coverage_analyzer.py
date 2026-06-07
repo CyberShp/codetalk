@@ -2927,7 +2927,9 @@ def _request_destructured_fields(text: str) -> list[str]:
 
 
 def _handler_signature_input_hints(abs_file: str, enclosing_fn: str | None) -> list[str]:
-    if not enclosing_fn or Path(abs_file).suffix.lower() not in {".py", ".js", ".jsx", ".ts", ".tsx"}:
+    if not enclosing_fn or Path(abs_file).suffix.lower() not in {
+        ".py", ".js", ".jsx", ".ts", ".tsx", ".java", ".cs",
+    }:
         return []
     try:
         lines = Path(abs_file).read_text(encoding="utf-8", errors="replace").splitlines()
@@ -2951,22 +2953,33 @@ def _signature_input_params(signature: str) -> list[str]:
     framework_params = {
         "self", "cls", "request", "req", "response", "res", "next",
         "context", "ctx", "scope", "receive", "send",
+        "httpcontext", "cancellationtoken", "modelstate",
     }
     hints: list[str] = []
     seen: set[str] = set()
     for raw_param in match.group("params").split(","):
-        param = raw_param.strip()
-        if not param or param.startswith(("*", "...")):
-            continue
-        param = param.split("=", 1)[0].split(":", 1)[0].strip()
-        param = param.lstrip("*").strip()
-        if not re.match(r"^[A-Za-z_][\w-]*$", param):
+        param = _signature_param_name(raw_param)
+        if not param:
             continue
         if param.lower() in framework_params or param in seen:
             continue
         seen.add(param)
         hints.append(param)
     return hints
+
+
+def _signature_param_name(raw_param: str) -> str | None:
+    param = raw_param.strip()
+    if not param or param.startswith(("*", "...")):
+        return None
+    param = param.split("=", 1)[0].strip()
+    if ":" in param:
+        param = param.split(":", 1)[0].strip()
+    param = param.lstrip("*").strip()
+    if re.match(r"^[A-Za-z_][\w-]*$", param):
+        return param
+    identifiers = re.findall(r"[A-Za-z_][\w-]*", param)
+    return identifiers[-1] if identifiers else None
 
 
 def _split_cgc_location(location: object) -> tuple[str | None, int | None]:

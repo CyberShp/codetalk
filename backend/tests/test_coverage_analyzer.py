@@ -1925,6 +1925,39 @@ class TestCoverageTestDesign:
         assert entry["tool"] == "source-decorator"
         assert "[HttpPost" in entry["evidence"]
 
+    async def test_typed_route_signature_params_feed_black_box_input_hints(self, tmp_path):
+        from app.services.coverage_analyzer import build_coverage_test_design
+
+        src = tmp_path / "src"
+        src.mkdir()
+        (src / "PaymentController.cs").write_text(
+            "public class PaymentController {\n"
+            "  [HttpPost(\"/payments/{tenantId}\")]\n"
+            "  public IActionResult ProcessPayment(PaymentRequest paymentRequest, string tenantId) {\n"
+            "    if (paymentRequest == null) {\n"
+            "      return BadRequest();\n"
+            "    }\n"
+            "    return Ok();\n"
+            "  }\n"
+            "}\n",
+            encoding="utf-8",
+        )
+        modules = self._modules(
+            "feature,module,code_location,function,triggered,hit_count\n"
+            "payments,controller,src/PaymentController.cs:3-8,ProcessPayment,false,0\n"
+        )
+
+        design = await build_coverage_test_design(
+            modules, workspace_id="ws-1", repo_path=str(tmp_path)
+        )
+
+        gap = [g for g in design["gaps"] if g.get("kind") == "function"][0]
+        assert gap["black_box_readiness"]["case_type"] == "black_box_ready"
+        assert gap["entry_paths"][0]["input_hints"] == ["paymentRequest", "tenantId"]
+        case_text = json.dumps(gap["black_box_cases"], ensure_ascii=False)
+        assert "paymentRequest" in case_text
+        assert "tenantId" in case_text
+
     async def test_decorated_message_consumer_is_black_box_entry_without_caller(self, tmp_path):
         from app.services.coverage_analyzer import build_coverage_test_design
 
