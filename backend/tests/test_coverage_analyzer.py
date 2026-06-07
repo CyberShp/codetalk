@@ -1562,6 +1562,44 @@ class TestCoverageTestDesign:
         assert "amount" in case_text
         assert "Admin-Token" not in case_text
 
+    async def test_route_env_fields_feed_black_box_input_hints(self, tmp_path):
+        from app.services.coverage_analyzer import build_coverage_test_design
+
+        src = tmp_path / "src"
+        src.mkdir()
+        (src / "payments.py").write_text(
+            "def process_payment(payload):\n"
+            "    if not payload:\n"
+            "        return 'missing'\n"
+            "    return 'processed'\n",
+            encoding="utf-8",
+        )
+        (src / "routes.py").write_text(
+            "import os\n\n"
+            "def payment_route(request):\n"
+            "    payload = {\n"
+            "        'timeout': os.environ.get('PAYMENT_TIMEOUT'),\n"
+            "        'amount': request.json['amount'],\n"
+            "    }\n"
+            "    return process_payment(payload)\n",
+            encoding="utf-8",
+        )
+        modules = self._modules(
+            "feature,module,code_location,function,triggered,hit_count\n"
+            "payments,payments,src/payments.py:1-4,process_payment,false,0\n"
+        )
+
+        design = await build_coverage_test_design(
+            modules, workspace_id="ws-1", repo_path=str(tmp_path)
+        )
+
+        gap = [g for g in design["gaps"] if g.get("kind") == "function"][0]
+        assert gap["black_box_readiness"]["case_type"] == "black_box_ready"
+        assert gap["entry_paths"][0]["input_hints"] == ["PAYMENT_TIMEOUT", "amount"]
+        case_text = json.dumps(gap["black_box_cases"], ensure_ascii=False)
+        assert "PAYMENT_TIMEOUT" in case_text
+        assert "amount" in case_text
+
     async def test_route_registration_reference_becomes_black_box_entry_without_agent(self, tmp_path):
         from app.services.coverage_analyzer import build_coverage_test_design
 

@@ -240,6 +240,16 @@ _REQUEST_DESTRUCTURE_RE = re.compile(
     r"\b(?:request|req)"
     r"\.(?:json|args|form|query|body|data|params|headers|cookies|values|files)\b"
 )
+_ENV_FIELD_RES = (
+    re.compile(
+        r"\b(?:os\.)?environ"
+        r"(?:\.(?:get|getenv))?\s*(?:\[\s*|\(\s*)['\"]([A-Za-z_][\w.-]*)['\"]"
+    ),
+    re.compile(r"\b(?:os\.)?getenv\s*\(\s*['\"]([A-Za-z_][\w.-]*)['\"]"),
+    re.compile(r"\bprocess\.env\.([A-Za-z_][\w.-]*)\b"),
+    re.compile(r"\bprocess\.env\s*\[\s*['\"]([A-Za-z_][\w.-]*)['\"]\s*\]"),
+    re.compile(r"\bgetenv\s*\(\s*['\"]([A-Za-z_][\w.-]*)['\"]"),
+)
 _REGISTRATION_LINE_RE = re.compile(
     r"\b(?:[A-Z0-9_]*REGISTER[A-Z0-9_]*|register_[A-Za-z0-9_]+)\s*\("
     r"|\.[ \t]*(?:register|subscribe|add_listener|add_handler|add_job|schedule)\s*\(",
@@ -2673,6 +2683,9 @@ def _request_field_hints(abs_file: str, line_number: int, enclosing_fn: str | No
     for match in _REQ_FIELD_RE.finditer(statement_text):
         positioned_fields.append((match.start(), match.group(1)))
     for pattern in _REQUEST_FIELD_RES:
+        for match in pattern.finditer(statement_text):
+            positioned_fields.append((match.start(), match.group(1)))
+    for pattern in _ENV_FIELD_RES:
         for match in pattern.finditer(statement_text):
             positioned_fields.append((match.start(), match.group(1)))
     seen: set[str] = set()
