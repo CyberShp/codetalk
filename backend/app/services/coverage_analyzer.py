@@ -394,6 +394,8 @@ _PUBLIC_TRIGGER_SURFACE_TOKENS = (
     "route", "router", "endpoint", "controller", "webhook", "hook delivery",
     "queue", "topic", "consumer", "subscriber", "producer", "job",
     "scheduler", "schedule", "cron", "worker", "listener", "notification",
+    "file", "upload", "download", "import", "export", "stdin", "filesystem",
+    "watcher", "environment", "env var", "env",
 )
 
 _WHITE_BOX_LEAK_RULES: tuple[tuple[str, re.Pattern], ...] = (

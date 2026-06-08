@@ -5917,6 +5917,67 @@ def test_coverage_agent_webhook_entry_generates_black_box_ready(tmp_path, monkey
     assert gap["entry_paths"][0]["entry_file"] == "src/webhooks.py"
 
 
+def test_coverage_agent_generic_external_with_file_upload_trigger_generates_black_box_ready(
+    tmp_path,
+    monkeypatch,
+):
+    import asyncio
+    import app.services.coverage_analyzer as coverage_mod
+    from app.services.coverage_analyzer import build_coverage_test_design
+    from app.services.external_agent_discovery import AgentCandidateEntry, AgentDiscoveryResult
+
+    src = tmp_path / "src"
+    src.mkdir()
+    (src / "importer.py").write_text(
+        "def normalize_record(row):\n"
+        "    if not row:\n"
+        "        return 'missing'\n",
+        encoding="utf-8",
+    )
+    (src / "uploads.py").write_text(
+        "def import_csv_upload(file_obj):\n"
+        "    return normalize_record(file_obj.readline())\n",
+        encoding="utf-8",
+    )
+
+    async def fake_discovery(_request, **_kwargs):
+        return [
+            AgentDiscoveryResult(
+                provider="claude-code",
+                status="ok",
+                candidate_entries=[
+                    AgentCandidateEntry(
+                        entry_kind="external",
+                        entry_symbol="import_csv_upload",
+                        entry_file="src/uploads.py",
+                        chain=["import_csv_upload", "normalize_record"],
+                        external_trigger="CSV file upload/import workflow",
+                        reason="public file import reaches record normalization",
+                        validated=True,
+                        input_hints=["CSV file body", "empty row"],
+                    )
+                ],
+            )
+        ]
+
+    monkeypatch.setattr(coverage_mod, "run_external_agent_discovery", fake_discovery, raising=False)
+    modules = _coverage_modules(
+        "feature,module,code_location,function,triggered,hit_count\n"
+        "import,importer,src/importer.py:1-3,normalize_record,false,0\n"
+    )
+
+    design = asyncio.run(
+        build_coverage_test_design(modules, workspace_id="ws-1", repo_path=str(tmp_path))
+    )
+
+    gap = [g for g in design["gaps"] if g.get("kind") == "function"][0]
+    assert gap["black_box_readiness"]["case_type"] == "black_box_ready"
+    assert gap["entry_paths"][0]["entry_file"] == "src/uploads.py"
+    assert "CSV file body" in gap["entry_paths"][0]["input_hints"]
+    assert "empty row" in gap["entry_paths"][0]["input_hints"]
+    assert gap["entry_paths"][0]["confirming_providers"] == ["claude-code"]
+
+
 def test_coverage_scope_enrichment_does_not_start_source_scope_agent(tmp_path, monkeypatch):
     import app.services.coverage_analyzer as coverage_mod
     import app.services.workspace_scope_resolver as scope_mod
