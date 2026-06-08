@@ -2005,12 +2005,31 @@ def _lint_black_box_text(text: str) -> list[dict]:
         for match in pattern.finditer(text or ""):
             if rule == "function_call" and _function_call_looks_like_public_surface(text or "", match):
                 continue
+            if rule == "private_member" and _private_member_looks_like_public_surface(text or "", match):
+                continue
             findings.append({
                 "rule": rule,
                 "text": match.group(0)[:120],
             })
             break
     return findings
+
+
+def _private_member_looks_like_public_surface(text: str, match: re.Match) -> bool:
+    value = match.group(0).strip()
+    if "->" in value:
+        return False
+    window = text[max(0, match.start() - 100): min(len(text), match.end() + 80)].lower()
+    public_tokens = (
+        "message", "event", "topic", "queue", "channel", "subscription",
+        "subscriber", "consumer", "producer", "job", "scheduler", "cron",
+        "external", "input", "parameter", "public",
+        "消息", "事件", "主题", "队列", "通道", "任务", "调度", "外部", "参数", "输入",
+    )
+    internal_tokens = ("internal", "private", "内部", "私有")
+    return any(token in window for token in public_tokens) and not any(
+        token in window for token in internal_tokens
+    )
 
 
 def _function_call_looks_like_public_surface(text: str, match: re.Match) -> bool:
@@ -3230,6 +3249,20 @@ def _route_template_input_hints(decorator_lines: list[str]) -> list[str]:
     return hints[:12]
 
 
+def _registration_channel_input_hints(registration_line: str, entry_type: str) -> list[str]:
+    if entry_type not in {"message", "queue", "scheduler", "job", "timer"}:
+        return []
+    hints: list[str] = []
+    seen: set[str] = set()
+    for match in re.finditer(r"""(['"])(?P<value>(?:\\.|(?!\1).)*?)\1""", registration_line or ""):
+        value = match.group("value").strip()
+        if not value or value in seen:
+            continue
+        seen.add(value)
+        hints.append(value)
+    return hints[:8]
+
+
 def _trace_entry_paths(
     repo_root: Path | None,
     function_name: str,
@@ -3407,6 +3440,16 @@ def _registration_entry_for_site(
             metadata["input_hints"] = _merge_ordered_strings(
                 metadata.get("input_hints"),
                 route_hints,
+            )
+    else:
+        channel_hints = _registration_channel_input_hints(registration_line, entry_type)
+        if channel_hints:
+            metadata["input_hints"] = _merge_ordered_strings(
+                channel_hints,
+                metadata.get("input_hints"),
+            )
+            metadata["entry_label"] = (
+                f"{_ENTRY_DISCOVERY_KIND_LABELS.get(entry_type, '外部入口')} {channel_hints[0]}"
             )
     entry_label = metadata.pop("entry_label", None)
     entry = {

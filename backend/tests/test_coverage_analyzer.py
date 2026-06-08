@@ -2364,6 +2364,9 @@ class TestCoverageTestDesign:
         assert gap["entry_paths"][0]["entry_symbol"] == "consume"
         assert gap["entry_paths"][0]["entry_kind"] == "message"
         assert "bus.subscribe" in gap["entry_paths"][0]["evidence"]
+        assert gap["entry_paths"][0]["input_hints"] == ["invoice.created", "payload"]
+        case_text = json.dumps(gap["black_box_cases"], ensure_ascii=False)
+        assert "invoice.created" in case_text
 
     async def test_entry_discovery_artifact_and_context_are_written(self, tmp_path):
         from app.services.coverage_analyzer import build_coverage_test_design
