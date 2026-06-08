@@ -3032,7 +3032,42 @@ def _cli_option_input_hints_from_text(text: str) -> list[str]:
         if hint and hint not in seen:
             seen.add(hint)
             hints.append(hint)
+    for hint in _getopt_input_hints_from_text(text):
+        if hint not in seen:
+            seen.add(hint)
+            hints.append(hint)
     return hints[:12]
+
+
+def _getopt_input_hints_from_text(text: str) -> list[str]:
+    hints: list[str] = []
+    seen: set[str] = set()
+    for match in re.finditer(r'\{\s*"([A-Za-z_][\w-]*)"', text or ""):
+        hint = f"--{match.group(1)}"
+        if hint not in seen:
+            seen.add(hint)
+            hints.append(hint)
+    if hints:
+        return hints
+    for match in re.finditer(r"\bgetopt(?:_long)?\s*\([^)]*?['\"]([^'\"]+)['\"]", text or ""):
+        for opt in _short_getopt_hints(match.group(1)):
+            if opt not in seen:
+                seen.add(opt)
+                hints.append(opt)
+    return hints
+
+
+def _short_getopt_hints(spec: str) -> list[str]:
+    hints: list[str] = []
+    idx = 0
+    while idx < len(spec):
+        char = spec[idx]
+        if char.isalnum():
+            hints.append(f"-{char}")
+        idx += 1
+        while idx < len(spec) and spec[idx] == ":":
+            idx += 1
+    return hints
 
 
 def _split_cgc_location(location: object) -> tuple[str | None, int | None]:

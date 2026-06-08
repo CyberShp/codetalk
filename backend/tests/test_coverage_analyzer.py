@@ -2128,6 +2128,54 @@ class TestCoverageTestDesign:
         assert "--config" in case_text
         assert "--tenant-id" in case_text
 
+    async def test_getopt_long_main_entry_feeds_black_box_input_hints(self, tmp_path):
+        from app.services.coverage_analyzer import build_coverage_test_design
+
+        src = tmp_path / "src"
+        src.mkdir()
+        (src / "tool.c").write_text(
+            "#include <getopt.h>\n\n"
+            "int process_payment(const char *config, const char *tenant_id) {\n"
+            "    if (config == 0) {\n"
+            "        return -1;\n"
+            "    }\n"
+            "    return tenant_id != 0;\n"
+            "}\n\n"
+            "int main(int argc, char **argv) {\n"
+            "    static struct option long_options[] = {\n"
+            "        {\"config\", required_argument, 0, 'c'},\n"
+            "        {\"tenant-id\", required_argument, 0, 't'},\n"
+            "        {0, 0, 0, 0},\n"
+            "    };\n"
+            "    const char *config = 0;\n"
+            "    const char *tenant_id = 0;\n"
+            "    int opt;\n"
+            "    while ((opt = getopt_long(argc, argv, \"c:t:\", long_options, 0)) != -1) {\n"
+            "        if (opt == 'c') config = optarg;\n"
+            "        if (opt == 't') tenant_id = optarg;\n"
+            "    }\n"
+            "    return process_payment(config, tenant_id);\n"
+            "}\n",
+            encoding="utf-8",
+        )
+        modules = self._modules(
+            "feature,module,code_location,function,triggered,hit_count\n"
+            "payments,tool,src/tool.c:3-8,process_payment,false,0\n"
+        )
+
+        design = await build_coverage_test_design(
+            modules, workspace_id="ws-1", repo_path=str(tmp_path)
+        )
+
+        gap = [g for g in design["gaps"] if g.get("kind") == "function"][0]
+        assert gap["black_box_readiness"]["case_type"] == "black_box_ready"
+        assert gap["entry_paths"][0]["entry_kind"] == "cli"
+        assert gap["entry_paths"][0]["entry_symbol"] == "main"
+        assert gap["entry_paths"][0]["input_hints"] == ["--config", "--tenant-id"]
+        case_text = json.dumps(gap["black_box_cases"], ensure_ascii=False)
+        assert "--config" in case_text
+        assert "--tenant-id" in case_text
+
     async def test_click_command_decorator_feeds_black_box_input_hints(self, tmp_path):
         from app.services.coverage_analyzer import build_coverage_test_design
 
