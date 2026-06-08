@@ -1054,7 +1054,7 @@ class TestCoverageTestDesign:
                 "external_trigger": "RPC rpc_tls_entry",
                 "reason": "agent confirmed the same public RPC reaches TLS recovery",
                 "source_verification": "source_backed",
-                "input_hints": ["tenant_id", "amount"],
+                "input_hints": ["ctx", "tenant_id", "request", "amount"],
             }]
         }
 
