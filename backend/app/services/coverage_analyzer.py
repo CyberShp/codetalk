@@ -450,6 +450,7 @@ _ENTRY_SIGNATURES: tuple[tuple[str, tuple[str, ...]], ...] = (
     ("queue", ("queue", "topic", "consumer", "subscriber", "producer", "work_queue")),
     ("job", ("job", "jobs", "worker", "task", "background")),
     ("scheduler", ("scheduler", "schedule", "scheduled", "cron", "periodic")),
+    ("timer", ("timer", "timers", "poller", "polling", "timeout", "interval", "tick")),
     ("message", ("message", "/msg", "event", "consumer", "subscriber", "publish", "queue",
                  "kafka", "/mq", "callback", "signal", "/irq", "isr", "dispatch", "listener",
                  "notify", "on_")),
@@ -3286,12 +3287,15 @@ def _symbol_channel_input_hints(symbol: str | None, entry_type: str) -> list[str
     normalized = re.sub(r"[^a-z0-9]+", "_", normalized).strip("_")
     if not normalized:
         return []
-    surface_tokens = ("queue", "topic", "event", "message", "job", "task", "worker", "cron")
+    surface_tokens = (
+        "queue", "topic", "event", "message", "job", "task", "worker",
+        "cron", "timer", "poller", "timeout", "interval",
+    )
     if not any(token in normalized.split("_") for token in surface_tokens):
         return []
     suffix_tokens = (
         "consumer", "subscriber", "producer", "handler", "listener", "worker",
-        "processor", "process", "runner", "run", "callback", "cb",
+        "processor", "process", "runner", "run", "callback", "cb", "tick",
     )
     parts = [part for part in normalized.split("_") if part]
     while len(parts) > 1 and parts[-1] in suffix_tokens:

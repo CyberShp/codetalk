@@ -2097,6 +2097,41 @@ class TestCoverageTestDesign:
         case_text = json.dumps(gap["black_box_cases"], ensure_ascii=False)
         assert "invoice_queue" in case_text
 
+    async def test_timer_call_site_keeps_timer_entry_kind_without_agent(self, tmp_path):
+        from app.services.coverage_analyzer import build_coverage_test_design
+
+        src = tmp_path / "src"
+        src.mkdir()
+        (src / "sessions.py").write_text(
+            "def renew_session(ctx):\n"
+            "    if not ctx:\n"
+            "        return 'missing'\n"
+            "    return 'renewed'\n",
+            encoding="utf-8",
+        )
+        (src / "timers.py").write_text(
+            "def session_timer_tick(ctx):\n"
+            "    return renew_session(ctx)\n",
+            encoding="utf-8",
+        )
+        modules = self._modules(
+            "feature,module,code_location,function,triggered,hit_count\n"
+            "session,sessions,src/sessions.py:1-4,renew_session,false,0\n"
+        )
+
+        design = await build_coverage_test_design(
+            modules, workspace_id="ws-1", repo_path=str(tmp_path)
+        )
+
+        gap = [g for g in design["gaps"] if g.get("kind") == "function"][0]
+        assert gap["gray_box_required"] is False
+        assert gap["black_box_readiness"]["case_type"] == "black_box_ready"
+        assert gap["entry_paths"][0]["entry_kind"] == "timer"
+        assert gap["entry_paths"][0]["entry_symbol"] == "session_timer_tick"
+        assert gap["entry_paths"][0]["input_hints"] == ["session_timer"]
+        case_text = json.dumps(gap["black_box_cases"], ensure_ascii=False)
+        assert "session_timer" in case_text
+
     async def test_argparse_main_entry_feeds_black_box_input_hints(self, tmp_path):
         from app.services.coverage_analyzer import build_coverage_test_design
 
