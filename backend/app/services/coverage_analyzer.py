@@ -3276,6 +3276,32 @@ def _registration_channel_input_hints(registration_line: str, entry_type: str) -
     return hints[:8]
 
 
+def _symbol_channel_input_hints(symbol: str | None, entry_type: str) -> list[str]:
+    if entry_type not in {"message", "queue", "scheduler", "job", "timer"}:
+        return []
+    text = str(symbol or "").strip()
+    if not text:
+        return []
+    normalized = re.sub(r"(?<!^)(?=[A-Z])", "_", text).lower()
+    normalized = re.sub(r"[^a-z0-9]+", "_", normalized).strip("_")
+    if not normalized:
+        return []
+    surface_tokens = ("queue", "topic", "event", "message", "job", "task", "worker", "cron")
+    if not any(token in normalized.split("_") for token in surface_tokens):
+        return []
+    suffix_tokens = (
+        "consumer", "subscriber", "producer", "handler", "listener", "worker",
+        "processor", "process", "runner", "run", "callback", "cb",
+    )
+    parts = [part for part in normalized.split("_") if part]
+    while len(parts) > 1 and parts[-1] in suffix_tokens:
+        parts = parts[:-1]
+    candidate = "_".join(parts)
+    if not candidate or candidate == normalized and normalized in suffix_tokens:
+        return []
+    return [candidate]
+
+
 def _trace_entry_paths(
     repo_root: Path | None,
     function_name: str,
@@ -3368,11 +3394,22 @@ def _trace_entry_paths(
                                 metadata.get("input_hints"),
                                 route_hints,
                             )
+                    else:
+                        channel_hints = _symbol_channel_input_hints(entry_symbol, entry_kind)
+                        if channel_hints:
+                            metadata["input_hints"] = _merge_ordered_strings(
+                                channel_hints,
+                                metadata.get("input_hints"),
+                            )
+                            metadata["entry_label"] = (
+                                f"{_ENTRY_DISCOVERY_KIND_LABELS.get(entry_kind, '外部入口')} {channel_hints[0]}"
+                            )
                     entry_paths.append({
                         "entry_kind": entry_kind,
                         "entry_symbol": entry_symbol,
                         "entry_file": site["file"],
-                        "entry_label": _public_entry_label(entry_kind, entry_symbol),
+                        "entry_label": metadata.pop("entry_label", None)
+                        or _public_entry_label(entry_kind, entry_symbol),
                         "call_line": site["line_number"],
                         "chain": caller_chain,
                         "depth": len(caller_chain) - 1,

@@ -2093,6 +2093,9 @@ class TestCoverageTestDesign:
         assert gap["black_box_readiness"]["case_type"] == "black_box_ready"
         assert gap["entry_paths"][0]["entry_kind"] == "queue"
         assert gap["entry_paths"][0]["entry_symbol"] == "invoice_queue_consumer"
+        assert gap["entry_paths"][0]["input_hints"] == ["invoice_queue", "event"]
+        case_text = json.dumps(gap["black_box_cases"], ensure_ascii=False)
+        assert "invoice_queue" in case_text
 
     async def test_argparse_main_entry_feeds_black_box_input_hints(self, tmp_path):
         from app.services.coverage_analyzer import build_coverage_test_design
