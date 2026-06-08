@@ -2058,6 +2058,9 @@ class TestCoverageTestDesign:
         assert entry["entry_symbol"] == "consume_invoice"
         assert entry["tool"] == "source-decorator"
         assert "@bus.subscribe" in entry["evidence"]
+        assert entry["input_hints"] == ["invoice.created", "event"]
+        case_text = json.dumps(gap["black_box_cases"], ensure_ascii=False)
+        assert "invoice.created" in case_text
 
     async def test_queue_worker_call_site_keeps_queue_entry_kind_without_agent(self, tmp_path):
         from app.services.coverage_analyzer import build_coverage_test_design

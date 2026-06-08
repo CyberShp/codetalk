@@ -3189,6 +3189,19 @@ def _decorated_entry_for_symbol(
                 metadata.get("input_hints"),
                 route_hints,
             )
+    if entry_kind != "route":
+        channel_hints = _registration_channel_input_hints(
+            " ".join(text for _, text in decorators),
+            entry_kind,
+        )
+        if channel_hints:
+            metadata["input_hints"] = _merge_ordered_strings(
+                channel_hints,
+                metadata.get("input_hints"),
+            )
+            metadata["entry_label"] = (
+                f"{_ENTRY_DISCOVERY_KIND_LABELS.get(entry_kind, '外部入口')} {channel_hints[0]}"
+            )
     entry_label = metadata.pop("entry_label", None)
     entry = {
         "entry_kind": entry_kind,
