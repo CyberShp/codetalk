@@ -324,6 +324,7 @@ _DECORATOR_LINE_RE = re.compile(
 )
 _ENTRY_DECORATOR_KIND_TOKENS: tuple[tuple[str, tuple[str, ...]], ...] = (
     ("webhook", ("webhook", "hook")),
+    ("cli", ("click.command", "typer.command", "cli.command", ".command", "console")),
     ("route", ("route", "router", "endpoint", "controller", "view",
                "requestmapping", "getmapping", "postmapping", "putmapping",
                "patchmapping", "deletemapping", "headmapping", "optionsmapping",
@@ -3004,12 +3005,14 @@ def _cli_option_input_hints(abs_file: str, enclosing_fn: str | None) -> list[str
             break
     if fn_start is None:
         return []
+    decorators = _decorator_lines_before_definition(lines, fn_start + 1)
+    window_start = decorators[0][0] - 1 if decorators else fn_start
     fn_end = len(lines)
     for pos in range(fn_start + 1, len(lines)):
         if _is_sibling_definition_boundary(lines, fn_start, pos):
             fn_end = pos
             break
-    return _cli_option_input_hints_from_text("\n".join(lines[fn_start:fn_end]))
+    return _cli_option_input_hints_from_text("\n".join(lines[window_start:fn_end]))
 
 
 def _cli_option_input_hints_from_text(text: str) -> list[str]:
@@ -3121,6 +3124,10 @@ def _decorated_entry_for_symbol(
     decorator_line_number, decorator_text = decorators[-1]
     rel_file = _relative_path(repo_root, source_file)
     metadata = _entry_metadata_for_site(str(source_file), definition_line, function_name)
+    if entry_kind == "cli":
+        cli_hints = _cli_option_input_hints(str(source_file), function_name)
+        if cli_hints:
+            metadata["input_hints"] = cli_hints
     if entry_kind == "route":
         route_hints = _route_template_input_hints([text for _, text in decorators])
         if route_hints:
@@ -3241,6 +3248,17 @@ def _trace_entry_paths(
                 if registration_entry:
                     entry_paths.append(registration_entry)
                     continue
+                if enclosing:
+                    decorated_caller_entry = _decorated_entry_for_symbol(
+                        repo_root,
+                        enclosing,
+                        site["file"],
+                    )
+                    if decorated_caller_entry:
+                        decorated_caller_entry["chain"] = caller_chain
+                        decorated_caller_entry["depth"] = len(caller_chain) - 1
+                        entry_paths.append(decorated_caller_entry)
+                        continue
                 entry_kind = _classify_entry(site["file"], enclosing, site["text"])
                 if entry_kind:
                     entry_symbol = enclosing or symbol
