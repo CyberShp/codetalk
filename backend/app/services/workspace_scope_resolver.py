@@ -112,6 +112,32 @@ def _tokenize(text: str) -> list[str]:
     return out[:8]  # bound keyword count per object
 
 
+def _keyword_path_variants(keyword: str) -> list[str]:
+    value = (keyword or "").strip().replace("\\", "/")
+    if not value:
+        return []
+    variants: list[str] = []
+    seen: set[str] = set()
+
+    def add(item: str) -> None:
+        normalized = item.strip("/").lower()
+        if not normalized or normalized in seen:
+            return
+        seen.add(normalized)
+        variants.append(normalized)
+
+    add(value)
+    snake = re.sub(r"(?<=[a-z0-9])(?=[A-Z])", "_", value)
+    snake = re.sub(r"(?<=[A-Z])(?=[A-Z][a-z])", "_", snake)
+    add(snake)
+    add(snake.replace("_", "/"))
+    add(snake.replace("_", "-"))
+    compact = re.sub(r"[^A-Za-z0-9]+", "", value)
+    if compact != value:
+        add(compact)
+    return variants
+
+
 # ---------------------------------------------------------------------------
 # GitNexus cached-graph loader
 # ---------------------------------------------------------------------------
@@ -425,7 +451,11 @@ def _path_keyword_repo_hits_blocking(
     root = Path(repo_path)
     if not root.is_dir():
         return []
-    folded = [kw.lower().replace("\\", "/") for kw in keywords if kw]
+    folded = list(dict.fromkeys(
+        variant
+        for kw in keywords
+        for variant in _keyword_path_variants(kw)
+    ))
     results: list[tuple[str, int]] = []
     for walk_root, dirs, files in _walk(root):
         dirs[:] = [d for d in dirs if d not in _DIR_SKIP and not d.startswith(".")]
@@ -435,6 +465,7 @@ def _path_keyword_repo_hits_blocking(
                 continue
             rel = full.relative_to(root).as_posix().lower()
             rel_tokenized = re.sub(r"[-_]+", "/", rel)
+            dir_tokenized = re.sub(r"[-_]+", "/", str(Path(rel).parent).replace("\\", "/"))
             stem = full.stem.lower()
             score = 0
             matched_parts: set[str] = set()
@@ -449,12 +480,17 @@ def _path_keyword_repo_hits_blocking(
                     hit_count = sum(1 for part in parts if part in rel_tokenized)
                     if len(parts) >= 2 and hit_count >= 2:
                         score += hit_count
+                    dir_hit_count = sum(1 for part in parts if part in dir_tokenized)
+                    if len(parts) >= 2 and dir_hit_count == len(parts):
+                        score += 8
                 for part in re.split(r"[/_-]+", kw):
                     if part:
                         matched_parts.add(part)
             if score:
                 if stem in matched_parts:
                     score += 10
+                elif Path(rel).parent.name.lower() in matched_parts:
+                    score += 5
                 elif any(part and part in stem for part in matched_parts):
                     score += 3
                 if full.suffix.lower() in {".c", ".cc", ".cpp", ".cxx", ".py", ".go", ".rs", ".java", ".ts", ".tsx", ".js", ".jsx"}:

@@ -4448,6 +4448,62 @@ def test_workspace_path_keyword_ranking_prioritizes_module_named_source(tmp_path
     assert rel_hits[0] == "nof/nvmf_tcp/transport/tls/tls.c"
 
 
+def test_workspace_path_keyword_ranking_handles_generic_kebab_module(tmp_path):
+    from app.services.workspace_scope_resolver import _path_keyword_repo_hits_blocking
+
+    target_dir = tmp_path / "services" / "payments" / "webhook"
+    target_dir.mkdir(parents=True)
+    (target_dir / "handler.ts").write_text(
+        "export function handlePaymentWebhook() { return true; }\n",
+        encoding="utf-8",
+    )
+    (tmp_path / "docs").mkdir()
+    (tmp_path / "docs" / "payment-webhook.md").write_text(
+        "payment webhook docs\n",
+        encoding="utf-8",
+    )
+    (tmp_path / "examples").mkdir()
+    (tmp_path / "examples" / "payment_webhook_example.ts").write_text(
+        "export const sample = true;\n",
+        encoding="utf-8",
+    )
+
+    hits = _path_keyword_repo_hits_blocking(
+        str(tmp_path),
+        ["payment-webhook", "payments/webhook"],
+        3,
+    )
+    rel_hits = [Path(hit).relative_to(tmp_path).as_posix() for hit in hits]
+
+    assert rel_hits[0] == "services/payments/webhook/handler.ts"
+    assert "examples/payment_webhook_example.ts" not in rel_hits[:1]
+
+
+def test_workspace_path_keyword_ranking_handles_generic_camel_module(tmp_path):
+    from app.services.workspace_scope_resolver import _path_keyword_repo_hits_blocking
+
+    target_dir = tmp_path / "services" / "payments" / "webhook"
+    target_dir.mkdir(parents=True)
+    (target_dir / "handler.ts").write_text(
+        "export function handlePaymentWebhook() { return true; }\n",
+        encoding="utf-8",
+    )
+    (tmp_path / "services" / "payments" / "ledger").mkdir(parents=True)
+    (tmp_path / "services" / "payments" / "ledger" / "webhook.ts").write_text(
+        "export const unrelated = true;\n",
+        encoding="utf-8",
+    )
+
+    hits = _path_keyword_repo_hits_blocking(
+        str(tmp_path),
+        ["PaymentWebhook"],
+        3,
+    )
+    rel_hits = [Path(hit).relative_to(tmp_path).as_posix() for hit in hits]
+
+    assert rel_hits[0] == "services/payments/webhook/handler.ts"
+
+
 def test_workspace_exact_symbol_search_keeps_definition_line_with_colons(tmp_path):
     from app.services.workspace_scope_resolver import _exact_symbol_repo_hits_blocking
 
