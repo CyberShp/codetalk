@@ -105,6 +105,32 @@ def test_agent_json_confidence_is_trimmed_and_normalized(tmp_path):
     assert result.candidate_files[0].confidence == "high"
 
 
+def test_agent_json_validates_kotlin_source_file(tmp_path):
+    from app.services.external_agent_discovery import parse_agent_output
+
+    src = tmp_path / "src"
+    src.mkdir()
+    (src / "PaymentService.kt").write_text(
+        "suspend fun processPayment(request: PaymentRequest): PaymentResult = PaymentResult()\n",
+        encoding="utf-8",
+    )
+    raw = json.dumps({
+        "candidate_files": [
+            {
+                "path": "src/PaymentService.kt",
+                "reason": "Kotlin service source found",
+                "confidence": "high",
+            }
+        ],
+        "candidate_entries": [],
+    })
+
+    result = parse_agent_output("claude-code", raw, tmp_path)
+
+    assert result.status == "ok"
+    assert result.candidate_files[0].validated is True
+
+
 def test_invalid_json_does_not_enter_candidate_merge(tmp_path):
     from app.services.external_agent_discovery import parse_agent_output
 
@@ -4731,6 +4757,10 @@ def test_workspace_exact_symbol_definition_detection_handles_methods_and_rust_fu
         "pub async fn process_payment(req: PaymentRequest) -> Result<()> {",
         "process_payment",
     )
+    assert _is_symbol_definition_line(
+        "suspend fun processPayment(request: PaymentRequest): PaymentResult {",
+        "processPayment",
+    )
 
 
 def test_workspace_exact_symbol_search_prioritizes_cpp_method_definition(tmp_path):
@@ -4760,6 +4790,36 @@ def test_workspace_exact_symbol_search_prioritizes_cpp_method_definition(tmp_pat
     ]
 
     assert rel_hits[0] == "src/z_service.cpp"
+
+
+def test_workspace_exact_symbol_search_prioritizes_kotlin_method_definition(tmp_path):
+    from app.services.workspace_scope_resolver import _exact_symbol_repo_hits_blocking
+
+    src = tmp_path / "src"
+    src.mkdir()
+    (src / "a_routes.kt").write_text(
+        "fun route(service: PaymentService, request: PaymentRequest): PaymentResult {\n"
+        "    return service.processPayment(request)\n"
+        "}\n",
+        encoding="utf-8",
+    )
+    (src / "z_service.kt").write_text(
+        "class PaymentService {\n"
+        "    suspend fun processPayment(request: PaymentRequest): PaymentResult {\n"
+        "        return PaymentResult()\n"
+        "    }\n"
+        "}\n",
+        encoding="utf-8",
+    )
+
+    hits = _exact_symbol_repo_hits_blocking(str(tmp_path), "processPayment", 4)
+    rel_hits = [
+        Path(hit).relative_to(tmp_path).as_posix()
+        for hit in hits
+        if Path(hit).exists()
+    ]
+
+    assert rel_hits[0] == "src/z_service.kt"
 
 
 def test_workspace_path_keyword_ranking_prioritizes_root_transport_tls_over_examples(tmp_path):
