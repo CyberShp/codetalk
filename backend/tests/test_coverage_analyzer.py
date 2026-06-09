@@ -1849,6 +1849,43 @@ class TestCoverageTestDesign:
         assert "account_id" in case_text
         assert "payment_id" in case_text
 
+    async def test_direct_websocket_registration_becomes_black_box_route(self, tmp_path):
+        from app.services.coverage_analyzer import build_coverage_test_design
+
+        src = tmp_path / "src"
+        src.mkdir()
+        (src / "handlers.py").write_text(
+            "async def stream_updates(websocket, client_id):\n"
+            "    if not client_id:\n"
+            "        await websocket.close()\n"
+            "    return client_id\n",
+            encoding="utf-8",
+        )
+        (src / "gateway.py").write_text(
+            "from handlers import stream_updates\n"
+            "app.websocket('/ws/{client_id}', stream_updates)\n",
+            encoding="utf-8",
+        )
+        modules = self._modules(
+            "feature,module,code_location,function,triggered,hit_count\n"
+            "updates,handlers,src/handlers.py:1-4,stream_updates,false,0\n"
+        )
+
+        design = await build_coverage_test_design(
+            modules, workspace_id="ws-1", repo_path=str(tmp_path)
+        )
+
+        gap = [g for g in design["gaps"] if g.get("kind") == "function"][0]
+        assert gap["gray_box_required"] is False
+        assert gap["black_box_readiness"]["case_type"] == "black_box_ready"
+        entry = gap["entry_paths"][0]
+        assert entry["entry_kind"] == "route"
+        assert entry["entry_symbol"] == "stream_updates"
+        assert "app.websocket" in entry["evidence"]
+        assert "client_id" in entry["input_hints"]
+        case_text = json.dumps(gap["black_box_cases"], ensure_ascii=False)
+        assert "client_id" in case_text
+
     async def test_js_arrow_route_handler_is_source_backed_with_input_hints(self, tmp_path):
         from app.services.coverage_analyzer import build_coverage_test_design
 

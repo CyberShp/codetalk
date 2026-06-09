@@ -442,9 +442,9 @@ class WhiteBoxLeakCheckResult:
 
 # Entry classification heuristics: path/symbol fragments -> external entry kind.
 _ENTRY_SIGNATURES: tuple[tuple[str, tuple[str, ...]], ...] = (
-    ("cli", ("cli", "/cmd", "command", "argv", "getopt", "main(", "_main", "console", "shell")),
+    ("cli", ("/cli.", "/cli/", "_cli", "cli_", "/cmd", "command", "argv", "getopt", "main(", "_main", "console", "shell")),
     ("webhook", ("webhook", "webhooks", "hook_handler", "hook_delivery")),
-    ("route", ("route", "routes", "router", "controller", "view")),
+    ("route", ("route", "routes", "router", "controller", "view", ".websocket", "websocket(")),
     ("endpoint", ("endpoint", "endpoints", "servlet")),
     ("api", ("/api", "api_", "_api", "route", "router", "handler", "handle_request",
              "controller", "endpoint", "server", "rest", "grpc", "http", "rpc",
