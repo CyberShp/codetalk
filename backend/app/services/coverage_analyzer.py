@@ -1805,7 +1805,8 @@ def _merge_ordered_strings(*values: object) -> list[str]:
 _INTERNAL_INPUT_HINTS = {
     "self", "cls", "this", "ctx", "context", "request", "req", "response", "res",
     "next", "scope", "receive", "send", "argv", "argc", "env", "logger", "log",
-    "mock", "stub", "fixture", "helper",
+    "mock", "stub", "fixture", "helper", "file_obj", "file_object", "file_handle",
+    "stream", "reader",
 }
 
 
@@ -3354,6 +3355,49 @@ def _symbol_channel_input_hints(symbol: str | None, entry_type: str) -> list[str
     return [candidate]
 
 
+def _file_entry_input_hints(symbol: str | None) -> list[str]:
+    text = str(symbol or "").strip()
+    if not text:
+        return []
+    normalized = re.sub(r"(?<!^)(?=[A-Z])", "_", text).lower()
+    parts = [part for part in re.split(r"[^a-z0-9]+", normalized) if part]
+    if not parts:
+        return []
+    hints: list[str] = []
+    seen: set[str] = set()
+
+    def add(value: str) -> None:
+        if value and value not in seen:
+            seen.add(value)
+            hints.append(value)
+
+    format_labels = {
+        "csv": "CSV file",
+        "tsv": "TSV file",
+        "json": "JSON file",
+        "xml": "XML file",
+        "yaml": "YAML file",
+        "yml": "YAML file",
+        "xlsx": "XLSX file",
+        "xls": "XLS file",
+        "pdf": "PDF file",
+    }
+    for part in parts:
+        if part in format_labels:
+            add(format_labels[part])
+    if any(part in parts for part in ("upload", "uploaded")):
+        add("uploaded file")
+    if "import" in parts or "ingest" in parts:
+        add("import file")
+    if "download" in parts or "export" in parts:
+        add("download/export file")
+    if any(part in parts for part in ("watch", "watcher")):
+        add("watched file change")
+    if not hints and any(part in parts for part in ("file", "input", "stdin", "scan")):
+        add("input file")
+    return hints[:6]
+
+
 def _trace_entry_paths(
     repo_root: Path | None,
     function_name: str,
@@ -3456,6 +3500,11 @@ def _trace_entry_paths(
                             metadata["entry_label"] = (
                                 f"{_ENTRY_DISCOVERY_KIND_LABELS.get(entry_kind, '外部入口')} {channel_hints[0]}"
                             )
+                    if entry_kind == "file":
+                        metadata["input_hints"] = _merge_ordered_input_hints(
+                            _file_entry_input_hints(entry_symbol),
+                            metadata.get("input_hints"),
+                        )
                     entry_paths.append({
                         "entry_kind": entry_kind,
                         "entry_symbol": entry_symbol,
@@ -3618,6 +3667,25 @@ def _entry_case_provenance(entry: dict) -> dict:
     return provenance
 
 
+def _black_box_case_evidence(entry: dict) -> str | None:
+    tool = str(entry.get("tool") or entry.get("provider") or "").strip()
+    entry_label = _safe_external_label(entry)
+    entry_file = str(entry.get("entry_file") or entry.get("file_path") or "").strip()
+
+    parts: list[str] = []
+    if tool:
+        parts.append(f"{tool} confirmed")
+    else:
+        parts.append("Confirmed")
+    if entry_label:
+        parts.append(entry_label)
+    if entry_file:
+        parts.append(f"in {entry_file}")
+    if len(parts) <= 1:
+        return None
+    return " ".join(parts)
+
+
 def _build_black_box_cases(
     hit: FunctionHit,
     entry_paths: list[dict],
@@ -3658,7 +3726,7 @@ def _build_black_box_cases(
             "steps": steps,
             "expected": expected,
             "observable_signals": signals,
-            "evidence": entry.get("evidence"),
+            "evidence": _black_box_case_evidence(entry),
             **_entry_case_provenance(entry),
         })
 

@@ -1404,8 +1404,12 @@ class TestCoverageTestDesign:
         assert gap["black_box_readiness"]["case_type"] == "black_box_ready"
         assert gap["entry_paths"][0]["entry_kind"] == "file"
         assert gap["entry_paths"][0]["entry_symbol"] == "csv_upload"
+        assert "CSV file" in gap["entry_paths"][0]["input_hints"]
+        assert "file_obj" not in gap["entry_paths"][0]["input_hints"]
         case_text = json.dumps(gap["black_box_cases"], ensure_ascii=False)
         assert "csv_upload" in case_text
+        assert "CSV file" in case_text
+        assert "file_obj" not in case_text
 
     async def test_route_call_site_keeps_route_entry_kind_without_agent(self, tmp_path):
         from app.services.coverage_analyzer import build_coverage_test_design
