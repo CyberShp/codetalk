@@ -127,6 +127,10 @@ def _keyword_path_variants(keyword: str) -> list[str]:
         variants.append(normalized)
 
     add(value)
+    dotted = value.replace(".", "/")
+    add(dotted)
+    add(dotted.replace("/", "_"))
+    add(dotted.replace("/", "-"))
     snake = re.sub(r"(?<=[a-z0-9])(?=[A-Z])", "_", value)
     snake = re.sub(r"(?<=[A-Z])(?=[A-Z][a-z])", "_", snake)
     add(snake)
@@ -475,7 +479,12 @@ def _path_keyword_repo_hits_blocking(
                     score += 4
                 elif kw_tokenized in rel_tokenized:
                     score += 4
-                else:
+                if kw_tokenized and (
+                    dir_tokenized == kw_tokenized
+                    or dir_tokenized.endswith(f"/{kw_tokenized}")
+                ):
+                    score += 12
+                if kw not in rel and kw_tokenized not in rel_tokenized:
                     parts = [p for p in re.split(r"[/_-]+", kw) if p]
                     hit_count = sum(1 for part in parts if part in rel_tokenized)
                     if len(parts) >= 2 and hit_count >= 2:
