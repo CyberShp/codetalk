@@ -61,13 +61,18 @@ test("external agent tool card can run a startup probe", async ({ page }) => {
           attempts: [
             {
               command: "ccr code -p --output-format json",
-              status: "unavailable",
-              reason: "command not found: ccr",
+              status: "available",
+              launch_kind: "exec",
+              probe_status: "error",
+              probe_message:
+                "external agent exited with exit code 1; stdout: Config file not found at C:\\Users\\me\\.claude-code-router\\config-router.json",
             },
             {
               command: "claude -p --output-format json",
               status: "available",
               launch_kind: "exec",
+              probe_status: "timeout",
+              probe_message: "startup probe timed out",
             },
           ],
         },
@@ -93,4 +98,6 @@ test("external agent tool card can run a startup probe", async ({ page }) => {
   await expect(
     page.getByText("claude -p --output-format json", { exact: true }),
   ).toBeVisible();
+  await expect(page.getByText("Config file not found")).toBeVisible();
+  await expect(page.getByText("startup probe timed out")).toBeVisible();
 });

@@ -133,6 +133,10 @@ export interface ExternalAgentProbeAttempt {
   reason?: string;
   config_hint?: string;
   launch_kind?: string;
+  path?: string;
+  prompt_transport?: string;
+  probe_status?: string;
+  probe_message?: string;
 }
 
 export interface ExternalAgentStartupProbeResult {

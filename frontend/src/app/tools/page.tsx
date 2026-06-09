@@ -389,9 +389,20 @@ export default function ToolsPage() {
                                     {attempt.launch_kind && (
                                       <span>{attempt.launch_kind}</span>
                                     )}
+                                    {attempt.prompt_transport && (
+                                      <span>{attempt.prompt_transport}</span>
+                                    )}
+                                    {attempt.probe_status && (
+                                      <span>{attempt.probe_status}</span>
+                                    )}
                                     {(attempt.reason || attempt.config_hint) && (
                                       <span className="break-words">
                                         {attempt.reason || attempt.config_hint}
+                                      </span>
+                                    )}
+                                    {attempt.probe_message && (
+                                      <span className="basis-full break-words text-on-surface">
+                                        {attempt.probe_message}
                                       </span>
                                     )}
                                   </div>
