@@ -4529,6 +4529,31 @@ def test_workspace_path_keyword_ranking_handles_dotted_module_path(tmp_path):
     assert rel_hits[0] == "services/payments/webhook/handler.ts"
 
 
+def test_workspace_path_keyword_ranking_handles_singular_plural_module_path(tmp_path):
+    from app.services.workspace_scope_resolver import _path_keyword_repo_hits_blocking
+
+    target_dir = tmp_path / "services" / "payments" / "webhook"
+    target_dir.mkdir(parents=True)
+    (target_dir / "handler.ts").write_text(
+        "export function handlePaymentWebhook() { return true; }\n",
+        encoding="utf-8",
+    )
+    (tmp_path / "services" / "audit" / "webhooks").mkdir(parents=True)
+    (tmp_path / "services" / "audit" / "webhooks" / "handler.ts").write_text(
+        "export function handleAuditWebhook() { return true; }\n",
+        encoding="utf-8",
+    )
+
+    hits = _path_keyword_repo_hits_blocking(
+        str(tmp_path),
+        ["payment-webhooks"],
+        3,
+    )
+    rel_hits = [Path(hit).relative_to(tmp_path).as_posix() for hit in hits]
+
+    assert rel_hits[0] == "services/payments/webhook/handler.ts"
+
+
 def test_workspace_exact_symbol_search_keeps_definition_line_with_colons(tmp_path):
     from app.services.workspace_scope_resolver import _exact_symbol_repo_hits_blocking
 

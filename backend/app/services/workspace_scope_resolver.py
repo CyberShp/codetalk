@@ -112,6 +112,48 @@ def _tokenize(text: str) -> list[str]:
     return out[:8]  # bound keyword count per object
 
 
+def _path_token_singular_plural_variants(token: str) -> list[str]:
+    value = (token or "").strip().lower()
+    if not value or not re.fullmatch(r"[a-z][a-z0-9]*", value):
+        return [value] if value else []
+    variants = [value]
+    if value.endswith("ies") and len(value) > 4:
+        variants.append(value[:-3] + "y")
+    if value.endswith("es") and len(value) > 3:
+        variants.append(value[:-2])
+    if value.endswith("s") and len(value) > 3:
+        variants.append(value[:-1])
+    elif len(value) > 2:
+        variants.append(value + "s")
+    return list(dict.fromkeys(variants))
+
+
+def _path_singular_plural_variants(path_like: str) -> list[str]:
+    normalized = re.sub(r"[-_]+", "/", (path_like or "").strip("/").lower())
+    parts = [part for part in normalized.split("/") if part]
+    if not parts or len(parts) > 5:
+        return []
+    variants: list[list[str]] = [
+        _path_token_singular_plural_variants(part)[:3]
+        for part in parts
+    ]
+    out: list[str] = []
+
+    def visit(index: int, current: list[str]) -> None:
+        if len(out) >= 24:
+            return
+        if index >= len(variants):
+            value = "/".join(current)
+            if value != normalized:
+                out.append(value)
+            return
+        for item in variants[index]:
+            visit(index + 1, [*current, item])
+
+    visit(0, [])
+    return list(dict.fromkeys(out))
+
+
 def _keyword_path_variants(keyword: str) -> list[str]:
     value = (keyword or "").strip().replace("\\", "/")
     if not value:
@@ -131,6 +173,10 @@ def _keyword_path_variants(keyword: str) -> list[str]:
     add(dotted)
     add(dotted.replace("/", "_"))
     add(dotted.replace("/", "-"))
+    for singular_plural in _path_singular_plural_variants(dotted):
+        add(singular_plural)
+        add(singular_plural.replace("/", "_"))
+        add(singular_plural.replace("/", "-"))
     snake = re.sub(r"(?<=[a-z0-9])(?=[A-Z])", "_", value)
     snake = re.sub(r"(?<=[A-Z])(?=[A-Z][a-z])", "_", snake)
     add(snake)
