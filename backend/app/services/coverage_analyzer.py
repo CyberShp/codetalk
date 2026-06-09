@@ -3695,7 +3695,6 @@ def _entry_case_provenance(entry: dict) -> dict:
         "entry_label",
         "confirming_providers",
         "confirming_turn_ids",
-        "confirming_evidence",
     ):
         value = entry.get(key)
         if value is not None and value != "":

@@ -5059,6 +5059,41 @@ def test_black_box_cases_keep_string_input_hint_as_single_hint():
     assert "i, n, v, a, l, i, d" not in text
 
 
+def test_black_box_cases_do_not_include_internal_confirming_evidence():
+    from app.adapters.coverage import FunctionHit
+    from app.services.coverage_analyzer import _build_black_box_cases
+
+    cases = _build_black_box_cases(
+        FunctionHit(
+            function_name="normalize_record",
+            file_path="src/records.py",
+            line_start=1,
+            triggered=False,
+            hit_count=0,
+        ),
+        [
+            {
+                "entry_kind": "file",
+                "entry_label": "CSV upload",
+                "entry_symbol": "csv_upload",
+                "entry_file": "src/uploads.py",
+                "input_hints": ["CSV file"],
+                "confirming_evidence": [
+                    "src/uploads.py:2 return normalize_record(file_obj.readline())"
+                ],
+            }
+        ],
+        [],
+    )
+
+    text = json.dumps(cases, ensure_ascii=False)
+
+    assert "CSV upload" in text
+    assert "CSV file" in text
+    assert "file_obj" not in text
+    assert "confirming_evidence" not in text
+
+
 def test_coverage_agent_one_hit_processing_failure_keeps_other_hit_context(tmp_path, monkeypatch):
     import app.services.coverage_analyzer as coverage_mod
     from app.adapters.coverage import FunctionHit, ModuleCoverage
