@@ -446,7 +446,7 @@ _ENTRY_SIGNATURES: tuple[tuple[str, tuple[str, ...]], ...] = (
     ("webhook", ("webhook", "webhooks", "hook_handler", "hook_delivery")),
     ("route", ("route", "routes", "router", "controller", "view", ".websocket", "websocket(")),
     ("endpoint", ("endpoint", "endpoints", "servlet")),
-    ("api", ("/api", "api_", "_api", "route", "router", "handler", "handle_request",
+    ("api", ("/api", "api_", "_api", "route", "router", "handle_request",
              "controller", "endpoint", "server", "rest", "grpc", "http", "rpc",
              "view", "/web", "servlet")),
     ("queue", ("queue", "topic", "consumer", "subscriber", "producer", "work_queue")),

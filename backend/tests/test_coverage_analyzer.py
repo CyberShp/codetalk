@@ -2798,6 +2798,39 @@ class TestCoverageTestDesign:
         assert any("入口" in g for g in gap["evidence_gaps"])
         assert design["summary"]["gray_box_required_count"] == 1
 
+    async def test_internal_handler_name_alone_does_not_become_black_box_ready(self, tmp_path):
+        from app.services.coverage_analyzer import build_coverage_test_design
+
+        src = tmp_path / "src" / "helpers"
+        src.mkdir(parents=True)
+        (src / "records.py").write_text(
+            "def normalize_record(data):\n"
+            "    if not data:\n"
+            "        return None\n"
+            "    return data.strip()\n",
+            encoding="utf-8",
+        )
+        (src / "handlers.py").write_text(
+            "from records import normalize_record\n"
+            "def internal_handler(data):\n"
+            "    return normalize_record(data)\n",
+            encoding="utf-8",
+        )
+        modules = self._modules(
+            "feature,module,code_location,function,triggered,hit_count\n"
+            "records,helpers,src/helpers/records.py:1-4,normalize_record,false,0\n"
+        )
+
+        design = await build_coverage_test_design(
+            modules, workspace_id="ws-1", repo_path=str(tmp_path)
+        )
+
+        gap = [g for g in design["gaps"] if g.get("kind") == "function"][0]
+        assert gap["entry_paths"] == []
+        assert gap["gray_box_required"] is True
+        assert gap["black_box_readiness"]["case_type"] == "gray_box_required"
+        assert all(case["case_type"] != "black_box_ready" for case in gap["black_box_cases"])
+
     async def test_agent_entry_with_validation_error_does_not_become_black_box_ready(self, tmp_path):
         from app.services.coverage_analyzer import _design_function_gap
 
