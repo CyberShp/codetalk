@@ -4716,6 +4716,52 @@ def test_workspace_exact_symbol_search_prioritizes_ts_class_field_handler_defini
     assert rel_hits[0] == "src/z_controller.ts"
 
 
+def test_workspace_exact_symbol_definition_detection_handles_methods_and_rust_functions():
+    from app.services.workspace_scope_resolver import _is_symbol_definition_line
+
+    assert _is_symbol_definition_line(
+        "PaymentResult PaymentService::processPayment(const Request& req) {",
+        "processPayment",
+    )
+    assert _is_symbol_definition_line(
+        "func (s *PaymentService) ProcessPayment(req Request) Response {",
+        "ProcessPayment",
+    )
+    assert _is_symbol_definition_line(
+        "pub async fn process_payment(req: PaymentRequest) -> Result<()> {",
+        "process_payment",
+    )
+
+
+def test_workspace_exact_symbol_search_prioritizes_cpp_method_definition(tmp_path):
+    from app.services.workspace_scope_resolver import _exact_symbol_repo_hits_blocking
+
+    src = tmp_path / "src"
+    src.mkdir()
+    (src / "a_routes.cpp").write_text(
+        "#include \"service.h\"\n"
+        "PaymentResult route(PaymentService& service, const Request& req) {\n"
+        "    return service.processPayment(req);\n"
+        "}\n",
+        encoding="utf-8",
+    )
+    (src / "z_service.cpp").write_text(
+        "PaymentResult PaymentService::processPayment(const Request& req) {\n"
+        "    return PaymentResult{};\n"
+        "}\n",
+        encoding="utf-8",
+    )
+
+    hits = _exact_symbol_repo_hits_blocking(str(tmp_path), "processPayment", 4)
+    rel_hits = [
+        Path(hit).relative_to(tmp_path).as_posix()
+        for hit in hits
+        if Path(hit).exists()
+    ]
+
+    assert rel_hits[0] == "src/z_service.cpp"
+
+
 def test_workspace_path_keyword_ranking_prioritizes_root_transport_tls_over_examples(tmp_path):
     from app.services.workspace_scope_resolver import _path_keyword_repo_hits_blocking
 

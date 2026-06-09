@@ -1180,6 +1180,16 @@ def _is_symbol_definition_line(line: str, symbol: str) -> bool:
     if re.match(rf"^(?:export\s+)?(?:async\s+)?function\s+{escaped}\s*\(", line):
         return True
     if re.match(
+        rf"^(?:pub(?:\([^)]*\))?\s+)?(?:async\s+)?(?:unsafe\s+)?fn\s+{escaped}\s*\(",
+        line,
+    ):
+        return True
+    if re.match(
+        rf"^func\s+(?:\([^)]*\)\s+)?{escaped}\s*\(",
+        line,
+    ):
+        return True
+    if re.match(
         rf"^(?:export\s+)?(?:const|let|var)\s+{escaped}"
         rf"(?:\s*:\s*[^=]+)?\s*=\s*(?:async\s*)?"
         rf"(?:(?:\([^)]*\)|[A-Za-z_$][\w$]*)\s*=>|function\b)",
@@ -1206,6 +1216,12 @@ def _is_symbol_definition_line(line: str, symbol: str) -> bool:
         rf"void\s+|bool\s+|char\s+|int\s+|long\s+|short\s+|size_t\s+|"
         rf"ssize_t\s+|uint\d+_t\s+|int\d+_t\s+|struct\s+\w+\s+|enum\s+\w+\s+)+"
         rf"[\w\s\*&:<>,~\[\]]*\b{escaped}\s*\([^;]*\)\s*(?:\{{|$)",
+        line,
+    ):
+        return True
+    if re.match(
+        rf"^(?!(?:if|for|while|switch|return)\b)"
+        rf"[\w:<>,~\*&\s]+\s+(?:[\w:]+::)*{escaped}\s*\([^;]*\)\s*(?:\{{|$)",
         line,
     ):
         return True
