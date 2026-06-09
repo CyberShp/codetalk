@@ -547,6 +547,20 @@ def _resolve_windows_common_command_path(executable: str) -> str | None:
     userprofile = os.environ.get("USERPROFILE")
     if userprofile:
         base_dirs.append(Path(userprofile) / "AppData" / "Roaming" / "npm")
+        base_dirs.append(Path(userprofile) / ".npm-global" / "bin")
+        base_dirs.append(Path(userprofile) / "scoop" / "shims")
+        base_dirs.append(Path(userprofile) / ".yarn" / "bin")
+    localappdata = os.environ.get("LOCALAPPDATA")
+    if localappdata:
+        base_dirs.append(Path(localappdata) / "Volta" / "bin")
+        base_dirs.append(Path(localappdata) / "pnpm")
+    programdata = os.environ.get("ProgramData")
+    if programdata:
+        base_dirs.append(Path(programdata) / "scoop" / "shims")
+        base_dirs.append(Path(programdata) / "chocolatey" / "bin")
+    chocolatey = os.environ.get("ChocolateyInstall")
+    if chocolatey:
+        base_dirs.append(Path(chocolatey) / "bin")
 
     suffix = Path(value).suffix
     names = [value] if suffix else [

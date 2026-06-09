@@ -1315,6 +1315,29 @@ def test_provider_health_finds_windows_npm_command_when_service_path_misses_it(t
     assert health["argv"][1:5] == ["code", "-p", "--output-format", "json"]
 
 
+def test_provider_health_finds_windows_volta_command_when_service_path_misses_it(tmp_path, monkeypatch):
+    from app.services.external_agent_discovery import check_provider_health
+
+    volta_bin = tmp_path / "LocalAppData" / "Volta" / "bin"
+    volta_bin.mkdir(parents=True)
+    ccr_cmd = volta_bin / "ccr.exe"
+    ccr_cmd.write_text("", encoding="utf-8")
+
+    _set_existing_ccr_config(tmp_path, monkeypatch)
+    monkeypatch.setattr("app.services.external_agent_discovery.platform.system", lambda: "Windows")
+    monkeypatch.setattr("app.services.external_agent_discovery.shutil.which", lambda _cmd: None)
+    monkeypatch.setenv("LOCALAPPDATA", str(tmp_path / "LocalAppData"))
+    monkeypatch.setenv("APPDATA", str(tmp_path / "missing-appdata"))
+    monkeypatch.setenv("USERPROFILE", str(tmp_path / "home"))
+    monkeypatch.setenv("PATH", "C:/Windows/System32")
+
+    health = check_provider_health("claude-code", "ccr code -p --output-format json")
+
+    assert health["status"] == "available"
+    assert health["argv"][0] == str(ccr_cmd)
+    assert health["argv"][1:5] == ["code", "-p", "--output-format", "json"]
+
+
 def test_provider_health_uses_powershell_fallback_for_shell_only_ccr(tmp_path, monkeypatch):
     from app.services.external_agent_discovery import check_provider_health
 
