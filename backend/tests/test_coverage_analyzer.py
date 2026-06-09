@@ -893,6 +893,69 @@ error_recovery,src/service.c:40-55,false,0
             "S-gray-low-confidence-entry"
         ]
 
+    async def test_ai_accepts_gray_box_batch_when_entry_candidate_needs_source_verification(self):
+        from app.services.coverage_analyzer import _generate_ai_test_scenarios
+
+        gray_scenario = {
+            "scenario_id": "S-gray-unverified-entry",
+            "priority": "high",
+            "case_type": "gray_box_required",
+            "flow_purpose": "verify behavior while an external entry candidate is not source-backed",
+            "external_trigger": "no verified public entry; keep this as gray-box until source verification succeeds",
+            "input_construction": "construct the target state through gray-box assistance",
+            "normal_path": "set a normal state and observe stable state",
+            "error_path": "set an abnormal state and observe recovery signals",
+            "key_call_chain": ["maybe_public_api", "internal_gap"],
+            "expected_result": "the abnormal state is logged and recovered without silent success",
+            "observable_signals": ["log signal", "state counter"],
+            "gray_box_aid": "requires injection or a test fixture; the API candidate is not accepted evidence",
+            "sfmea": {
+                "failure_mode": "recovery path is not executed",
+                "trigger_condition": "unverified external entry evidence",
+                "propagation_effect": "abnormal state remains",
+                "observable_effect": "logs and state counters diverge",
+                "recommended_test": "trigger target state with a fixture and observe recovery",
+            },
+            "evidence_refs": ["entry_discovery:needs_source_verification"],
+            "related_gaps": ["internal_gap"],
+            "confidence": "medium",
+            "verification_gaps": ["external entry candidate still needs source verification"],
+        }
+
+        class GrayLLM:
+            async def complete(self, messages, max_tokens=4096, temperature=0.1):
+                return LLMResponse(
+                    content=json.dumps({"scenarios": [gray_scenario]}),
+                    model="fake",
+                    usage={},
+                )
+
+        result = await _generate_ai_test_scenarios(
+            GrayLLM(),
+            {
+                "external_trigger_candidates": [],
+                "entry_discovery": {
+                    "cards": [{
+                        "function_name": "internal_gap",
+                        "source_verification_status": "needs_source_verification",
+                        "gray_box_allowed": True,
+                        "candidate_external_entries": [{
+                            "entry_type": "api",
+                            "entry_symbol": "maybe_public_api",
+                            "confidence": "medium",
+                            "source_verification": "needs_source_verification",
+                            "validation_error": "",
+                        }],
+                    }],
+                },
+            },
+        )
+
+        assert result["rejected"] == []
+        assert [item["scenario_id"] for item in result["accepted"]] == [
+            "S-gray-unverified-entry"
+        ]
+
     async def test_workspace_scope_timeout_does_not_block_recommendations(
         self, sqlite_db, tmp_path
     ):

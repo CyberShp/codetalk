@@ -4158,6 +4158,10 @@ def _entry_discovery_card_for_gap(
         candidate for candidate in candidates
         if _entry_discovery_candidate_is_actionable(candidate)
     ]
+    verified_actionable_candidates = [
+        candidate for candidate in actionable_candidates
+        if _entry_discovery_candidate_is_verified_actionable(candidate)
+    ]
     status = gap.get("entry_trace_status") or _entry_trace_status(
         workspace_bound=bool((evidence.get("coverage") or {}).get("workspace_id"))
         if isinstance(evidence, dict) else False,
@@ -4185,7 +4189,7 @@ def _entry_discovery_card_for_gap(
         "report_material_clues": report_material_clues[:8],
         "source_verification_status": _entry_discovery_source_verification_status(candidates),
         "unresolved_reasons": unresolved,
-        "gray_box_allowed": not actionable_candidates and status in {
+        "gray_box_allowed": not verified_actionable_candidates and status in {
             "source_read_ok_entry_not_found",
             "source_not_found",
             "tool_unavailable",
@@ -4240,6 +4244,20 @@ def _entry_discovery_candidate_is_actionable(candidate: dict) -> bool:
     if str(candidate.get("validation_error") or "").strip():
         return False
     return str(candidate.get("confidence") or "").strip().lower() != "low"
+
+
+def _entry_discovery_candidate_is_verified_actionable(candidate: dict) -> bool:
+    if not _entry_discovery_candidate_is_actionable(candidate):
+        return False
+    source_verification = str(candidate.get("source_verification") or "").strip().lower()
+    if source_verification in {
+        "needs_source_verification",
+        "unverified",
+        "rejected",
+        "invalid",
+    }:
+        return False
+    return source_verification in {"source_backed", "graph_backed"}
 
 
 def _entry_candidates_from_agent_rejected_validated(
@@ -4898,7 +4916,10 @@ def _context_has_actionable_external_trigger_hint(context: dict) -> bool:
         if card.get("entry_trace_status") == "entry_found":
             return True
         for candidate in card.get("candidate_external_entries") or []:
-            if isinstance(candidate, dict) and _entry_discovery_candidate_is_actionable(candidate):
+            if (
+                isinstance(candidate, dict)
+                and _entry_discovery_candidate_is_verified_actionable(candidate)
+            ):
                 return True
     return False
 
