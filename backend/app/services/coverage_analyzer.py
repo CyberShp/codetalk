@@ -331,7 +331,7 @@ _ENTRY_DECORATOR_KIND_TOKENS: tuple[tuple[str, tuple[str, ...]], ...] = (
                "httpget", "httppost", "httpput", "httppatch", "httpdelete",
                "httphead", "httpoptions",
                ".get", ".post", ".put", ".patch", ".delete", ".head", ".options",
-               ".api_route")),
+               ".api_route", ".websocket", "websocket", "socket_route")),
     ("api", ("api", "rpc", "grpc", "http", "request")),
     ("message", ("subscribe", "subscriber", "topic", "queue", "message", "event", "listener",
                  ".on", ".listen", "consumer")),
