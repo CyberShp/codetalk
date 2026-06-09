@@ -882,6 +882,44 @@ def _scope_role_for_path(path: str, hints: list[tuple[str, str]]) -> str:
     return best or "supporting"
 
 
+def _scope_role_for_keyword_hit(repo_path: str, path: str, keywords: list[str]) -> str:
+    """Infer whether a fuzzy local path hit is primary evidence.
+
+    A path-expansion hit is primary when the matched file lives under a module
+    directory named by a multi-token query (for example PaymentWebhook ->
+    payment/webhook) or the file/directory stem directly matches a query token.
+    """
+    try:
+        rel = Path(path).resolve().relative_to(Path(repo_path).resolve()).as_posix().lower()
+    except Exception:
+        rel = str(path).replace("\\", "/").lower()
+    rel_tokenized = re.sub(r"[-_]+", "/", rel)
+    parent = Path(rel).parent.as_posix().lower()
+    parent_tokenized = re.sub(r"[-_]+", "/", parent)
+    stem = Path(rel).stem.lower()
+    parent_name = Path(parent).name.lower()
+
+    for keyword in keywords:
+        for variant in _keyword_path_variants(keyword):
+            variant_tokenized = re.sub(r"[-_]+", "/", variant.strip("/").lower())
+            if not variant_tokenized:
+                continue
+            parts = [part for part in variant_tokenized.split("/") if part]
+            if len(parts) >= 2 and (
+                parent_tokenized == variant_tokenized
+                or parent_tokenized.endswith(f"/{variant_tokenized}")
+                or f"/{variant_tokenized}/" in f"/{rel_tokenized}/"
+            ):
+                return "primary"
+            if len(parts) == 1 and (
+                stem == parts[0]
+                or parent_name == parts[0]
+                or f"/{parts[0]}/" in f"/{parent_tokenized}/"
+            ):
+                return "primary"
+    return "related"
+
+
 def _record_agent_scope_file(
     session: AgentDiscoverySession | None,
     *,
@@ -1508,7 +1546,7 @@ class WorkspaceScopeResolver:
                     source="repo_search",
                     confidence="high",
                     reason="local path expansion matched fuzzy module name",
-                    role="primary" if "transport/tls" in hit.replace("\\", "/").lower() else "related",
+                    role=_scope_role_for_keyword_hit(repo_path, hit, expanded_keywords),
                 )
             )
 

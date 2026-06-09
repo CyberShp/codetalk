@@ -4264,6 +4264,12 @@ def test_workspace_resolver_finds_camel_case_module_without_agent(tmp_path, monk
     paths = [c.path.replace("\\", "/") for c in resolved.candidate_files if c.path]
 
     assert any(path.endswith("src/payment_webhook/handler.py") for path in paths)
+    primary_paths = [
+        c.path.replace("\\", "/")
+        for c in resolved.candidate_files
+        if c.path and c.role == "primary"
+    ]
+    assert any(path.endswith("src/payment_webhook/handler.py") for path in primary_paths)
     assert not resolved.warnings
 
 
@@ -4525,6 +4531,30 @@ def test_workspace_path_keyword_ranking_handles_generic_camel_module(tmp_path):
     rel_hits = [Path(hit).relative_to(tmp_path).as_posix() for hit in hits]
 
     assert rel_hits[0] == "services/payments/webhook/handler.ts"
+
+
+def test_workspace_keyword_hit_role_uses_generic_module_path_match(tmp_path):
+    from app.services.workspace_scope_resolver import _scope_role_for_keyword_hit
+
+    target_dir = tmp_path / "services" / "payments" / "webhook"
+    target_dir.mkdir(parents=True)
+    source = target_dir / "handler.ts"
+    source.write_text("export function handlePaymentWebhook() { return true; }\n", encoding="utf-8")
+    unrelated_dir = tmp_path / "services" / "payments" / "ledger"
+    unrelated_dir.mkdir(parents=True)
+    unrelated = unrelated_dir / "webhook.ts"
+    unrelated.write_text("export const unrelated = true;\n", encoding="utf-8")
+
+    assert _scope_role_for_keyword_hit(
+        str(tmp_path),
+        str(source),
+        ["payment_webhook"],
+    ) == "primary"
+    assert _scope_role_for_keyword_hit(
+        str(tmp_path),
+        str(unrelated),
+        ["payment_webhook"],
+    ) == "related"
 
 
 def test_workspace_path_keyword_ranking_handles_dotted_module_path(tmp_path):
