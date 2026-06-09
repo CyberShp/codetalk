@@ -109,7 +109,7 @@ _RIPGREP_EXCLUDE_GLOBS = tuple(
 # (``{``), Python/label ``:``, or end of line.  Plain call sites end in ``;`` and
 # are rejected by the trailing-token requirement.
 _FUNC_DEF_RE = re.compile(
-    r"^[\w\s\*&:<>,~\[\]]*?\b([A-Za-z_]\w*)\s*\([^;{}]*\)\s*(?:\{|:|$)"
+    r"^[\w\s\*&:<>,~\[\]\?]*?\b([A-Za-z_]\w*)\s*\([^;{}]*\)\s*(?:\{|:|$)"
 )
 _ASSIGNED_FUNCTION_DEF_RES = (
     re.compile(
@@ -3035,11 +3035,47 @@ def _signature_input_params(signature: str) -> list[str]:
         param = _signature_param_name(raw_param)
         if not param:
             continue
-        if param.lower() in framework_params or param in seen:
+        if param.lower() in framework_params:
+            param = _signature_external_type_hint(raw_param, param, framework_params)
+            if not param:
+                continue
+        if param in seen:
             continue
         seen.add(param)
         hints.append(param)
     return hints
+
+
+def _signature_external_type_hint(
+    raw_param: str,
+    param_name: str,
+    framework_params: set[str],
+) -> str | None:
+    declaration = str(raw_param or "").split("=", 1)[0]
+    annotations = {
+        match.group(1).lower()
+        for match in re.finditer(r"@([A-Za-z_][\w]*)", declaration)
+    }
+    skip = set(framework_params) | annotations | {
+        "final", "readonly", "public", "private", "protected", "static",
+        "requestbody", "frombody", "fromroute", "fromquery", "requestparam",
+        "pathvariable", "valid", "validated", "notnull", "nullable",
+        "request", "httprequest", "httpservletrequest", "servletrequest",
+        "response", "httpresponse", "httpservletresponse", "servletresponse",
+        "map", "hashmap", "dict", "dictionary", "list", "arraylist", "object",
+        "string", "str", "int", "integer", "long", "float", "double", "decimal",
+        "boolean", "bool", "void", "none", "null", "true", "false",
+        "task", "responseentity", "iactionresult",
+    }
+    identifiers = re.findall(r"[A-Za-z_][\w]*", declaration)
+    for identifier in reversed(identifiers):
+        normalized = identifier.lower()
+        if identifier == param_name or normalized == param_name.lower():
+            continue
+        if normalized in skip:
+            continue
+        return identifier
+    return None
 
 
 def _signature_param_name(raw_param: str) -> str | None:
