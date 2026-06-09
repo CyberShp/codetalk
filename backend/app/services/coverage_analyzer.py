@@ -459,7 +459,8 @@ _ENTRY_SIGNATURES: tuple[tuple[str, tuple[str, ...]], ...] = (
     ("config", ("config", "/conf", "settings", "option", ".ini", ".yaml", ".yml", ".toml",
                 "parse_args", "load_config", "env")),
     ("file", ("readfile", "read_file", "loadfile", "load_file", "fread", "fopen", "open(",
-              "ingest", "import", "/io", "input", "stdin", "scan")),
+              "ingest", "import", "upload", "download", "export", "filesystem",
+              "watch", "watcher", "/io", "input", "stdin", "scan")),
 )
 
 COVERAGE_ANALYSIS_PROMPT = """\

@@ -1373,6 +1373,40 @@ class TestCoverageTestDesign:
         assert gap["entry_paths"][0]["entry_kind"] == "webhook"
         assert gap["entry_paths"][0]["entry_symbol"] == "payment_webhook"
 
+    async def test_file_upload_call_site_becomes_black_box_entry_without_agent(self, tmp_path):
+        from app.services.coverage_analyzer import build_coverage_test_design
+
+        src = tmp_path / "src"
+        src.mkdir()
+        (src / "records.py").write_text(
+            "def normalize_record(row):\n"
+            "    if not row:\n"
+            "        return 'missing'\n"
+            "    return 'ok'\n",
+            encoding="utf-8",
+        )
+        (src / "uploads.py").write_text(
+            "def csv_upload(file_obj):\n"
+            "    return normalize_record(file_obj.readline())\n",
+            encoding="utf-8",
+        )
+        modules = self._modules(
+            "feature,module,code_location,function,triggered,hit_count\n"
+            "records,records,src/records.py:1-4,normalize_record,false,0\n"
+        )
+
+        design = await build_coverage_test_design(
+            modules, workspace_id="ws-1", repo_path=str(tmp_path)
+        )
+
+        gap = [g for g in design["gaps"] if g.get("kind") == "function"][0]
+        assert gap["gray_box_required"] is False
+        assert gap["black_box_readiness"]["case_type"] == "black_box_ready"
+        assert gap["entry_paths"][0]["entry_kind"] == "file"
+        assert gap["entry_paths"][0]["entry_symbol"] == "csv_upload"
+        case_text = json.dumps(gap["black_box_cases"], ensure_ascii=False)
+        assert "csv_upload" in case_text
+
     async def test_route_call_site_keeps_route_entry_kind_without_agent(self, tmp_path):
         from app.services.coverage_analyzer import build_coverage_test_design
 
