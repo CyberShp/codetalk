@@ -4577,6 +4577,31 @@ def test_workspace_path_keyword_ranking_handles_singular_plural_module_path(tmp_
     assert rel_hits[0] == "services/payments/webhook/handler.ts"
 
 
+def test_workspace_bounded_repo_search_rg_filters_non_source_matches(tmp_path, monkeypatch):
+    from app.services.workspace_scope_resolver import _bounded_repo_search_blocking
+
+    docs = tmp_path / "docs"
+    src = tmp_path / "src"
+    docs.mkdir()
+    src.mkdir()
+    (docs / "payment.md").write_text("payment webhook docs\n", encoding="utf-8")
+    (src / "payment_handler.py").write_text("def payment_handler(): pass\n", encoding="utf-8")
+
+    class Completed:
+        stdout = (
+            f"{docs / 'payment.md'}\n"
+            f"{src / 'payment_handler.py'}\n"
+        )
+
+    monkeypatch.setattr("app.services.workspace_scope_resolver.shutil.which", lambda cmd: "rg" if cmd == "rg" else None)
+    monkeypatch.setattr("app.services.workspace_scope_resolver.subprocess.run", lambda *_args, **_kwargs: Completed())
+
+    hits = _bounded_repo_search_blocking(str(tmp_path), ["payment"], 4)
+    rel_hits = [Path(hit).relative_to(tmp_path).as_posix() for hit in hits]
+
+    assert rel_hits == ["src/payment_handler.py"]
+
+
 def test_workspace_exact_symbol_search_keeps_definition_line_with_colons(tmp_path):
     from app.services.workspace_scope_resolver import _exact_symbol_repo_hits_blocking
 

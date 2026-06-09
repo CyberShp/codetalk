@@ -446,7 +446,19 @@ def _bounded_repo_search_blocking(
             files = [
                 line.strip() for line in proc.stdout.splitlines() if line.strip()
             ]
-            return files[:limit]
+            source_files: list[str] = []
+            for file in files:
+                path = Path(file)
+                if path.suffix.lower() not in _SOURCE_EXTS:
+                    continue
+                try:
+                    path.resolve().relative_to(repo.resolve())
+                except Exception:
+                    continue
+                source_files.append(str(path))
+                if len(source_files) >= limit:
+                    break
+            return source_files
         except (subprocess.TimeoutExpired, OSError) as exc:
             logger.info("ripgrep fallback failed (%s); using python walker", exc)
 
