@@ -330,6 +330,11 @@ _REQUEST_FIELD_RES = (
         r"\.(?:json|args|form|query|body|data|params|headers|cookies|values|files)"
         r"\.(?!get\b)([A-Za-z_][\w-]*)\b"
     ),
+    re.compile(
+        r"\b(?:c|ctx|context)\."
+        r"(?:Param|Query|DefaultQuery|PostForm|DefaultPostForm|GetHeader)"
+        r"\s*\(\s*['\"]([A-Za-z_][\w-]*)['\"]"
+    ),
 )
 _REQUEST_DESTRUCTURE_RE = re.compile(
     r"\{(?P<fields>[^{}]+)\}\s*=\s*"
@@ -482,7 +487,9 @@ class WhiteBoxLeakCheckResult:
 _ENTRY_SIGNATURES: tuple[tuple[str, tuple[str, ...]], ...] = (
     ("cli", ("/cli.", "/cli/", "_cli", "cli_", "/cmd", "command", "argv", "getopt", "main(", "_main", "console", "shell")),
     ("webhook", ("webhook", "webhooks", "hook_handler", "hook_delivery")),
-    ("route", ("route", "routes", "router", "controller", "view", ".websocket", "websocket(")),
+    ("route", ("route", "routes", "router", "controller", "view",
+               ".get", ".post", ".put", ".patch", ".delete", ".head", ".options", ".any",
+               ".websocket", "websocket(")),
     ("endpoint", ("endpoint", "endpoints", "servlet")),
     ("api", ("/api", "api_", "_api", "route", "router", "handle_request",
              "controller", "endpoint", "server", "rest", "grpc", "http", "rpc",
@@ -2834,6 +2841,22 @@ def _classify_entry(file_path: str, enclosing_fn: str | None, line_text: str) ->
     return None
 
 
+def _entry_symbol_for_site(
+    entry_kind: str,
+    enclosing_fn: str | None,
+    traced_symbol: str,
+    line_text: str,
+) -> str:
+    if (
+        entry_kind == "route"
+        and traced_symbol
+        and _PUBLIC_CALLBACK_START_RE.search(line_text or "")
+        and re.search(rf"\b{re.escape(traced_symbol)}\b", line_text or "")
+    ):
+        return traced_symbol
+    return enclosing_fn or traced_symbol
+
+
 def _entry_metadata_for_site(abs_file: str, line_number: int, enclosing_fn: str | None) -> dict:
     metadata: dict = {}
     if not enclosing_fn:
@@ -3612,7 +3635,7 @@ def _trace_entry_paths(
                         continue
                 entry_kind = _classify_entry(site["file"], enclosing, site["text"])
                 if entry_kind:
-                    entry_symbol = enclosing or symbol
+                    entry_symbol = _entry_symbol_for_site(entry_kind, enclosing, symbol, site["text"])
                     metadata = _entry_metadata_for_symbol(
                         repo_root,
                         site["abs_file"],
@@ -3792,6 +3815,10 @@ def _registration_entry_for_site(
 
     rel_file = _relative_path(repo_root, path)
     entry_type = _registered_entry_type(registration_line, window)
+    if entry_type == "route":
+        route_symbol = _registered_route_symbol(site_text, caller_chain)
+        if route_symbol:
+            symbol = route_symbol
     metadata = _entry_metadata_for_symbol(repo_root, str(path), line_number, enclosing, symbol)
     if entry_type == "route":
         route_hints = _route_template_input_hints([site_text, registration_line])
@@ -3832,6 +3859,14 @@ def _registration_entry_for_site(
     return entry
 
 
+def _registered_route_symbol(site_text: str, caller_chain: list[str]) -> str | None:
+    for candidate in reversed(caller_chain or []):
+        if candidate and re.search(rf"\b{re.escape(candidate)}\b", site_text or ""):
+            return candidate
+    match = re.search(r"\b[A-Za-z_]\w*\.([A-Za-z_]\w*)\s*(?:,|\))", site_text or "")
+    return match.group(1) if match else None
+
+
 def _callback_symbol_from_assignment(text: str) -> str | None:
     match = _CALLBACK_ASSIGN_RE.search(text or "")
     return match.group("symbol") if match else None
@@ -3839,6 +3874,8 @@ def _callback_symbol_from_assignment(text: str) -> str | None:
 
 def _registered_entry_type(registration_line: str, window: list[str]) -> str:
     text = (registration_line + "\n" + "\n".join(window)).lower()
+    if re.search(r"\.\s*(?:get|post|put|patch|delete|head|options|any|route)\s*\(", text):
+        return "route"
     if "rpc" in text or "api" in text or "request" in text:
         return "api"
     if "cli" in text or "cmd" in text:
