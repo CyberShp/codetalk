@@ -29,7 +29,8 @@ AgentGoal = Literal["source_scope", "coverage_entry"]
 
 SOURCE_EXTS = frozenset({
     ".c", ".h", ".cc", ".cpp", ".cxx", ".hpp", ".py", ".go", ".rs", ".java",
-    ".ts", ".tsx", ".js", ".jsx", ".cs", ".kt", ".kts", ".swift", ".m", ".scala",
+    ".ts", ".tsx", ".js", ".jsx", ".cs", ".rb", ".php", ".kt", ".kts",
+    ".swift", ".m", ".scala",
 })
 
 PROVIDER_COMMANDS = {

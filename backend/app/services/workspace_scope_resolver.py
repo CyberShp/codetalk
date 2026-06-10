@@ -67,7 +67,7 @@ _DIR_SKIP = frozenset({
 _SOURCE_EXTS = frozenset({
     ".py", ".js", ".ts", ".tsx", ".jsx", ".go", ".rs", ".java",
     ".c", ".cpp", ".h", ".hpp", ".cc", ".cxx", ".cs", ".rb", ".php",
-    ".kt", ".swift", ".m", ".scala",
+    ".kt", ".kts", ".swift", ".m", ".scala",
 })
 
 _SCOPE_ROLES = {"primary", "supporting", "external"}

@@ -131,6 +131,33 @@ def test_agent_json_validates_kotlin_source_file(tmp_path):
     assert result.candidate_files[0].validated is True
 
 
+def test_agent_json_validates_ruby_and_php_source_files(tmp_path):
+    from app.services.external_agent_discovery import parse_agent_output
+
+    src = tmp_path / "src"
+    src.mkdir()
+    (src / "payment_service.rb").write_text(
+        "def process_payment(request)\n  request\nend\n",
+        encoding="utf-8",
+    )
+    (src / "payment_service.php").write_text(
+        "<?php function process_payment($request) { return $request; }\n",
+        encoding="utf-8",
+    )
+    raw = json.dumps({
+        "candidate_files": [
+            {"path": "src/payment_service.rb", "reason": "Ruby source", "confidence": "high"},
+            {"path": "src/payment_service.php", "reason": "PHP source", "confidence": "high"},
+        ],
+        "candidate_entries": [],
+    })
+
+    result = parse_agent_output("claude-code", raw, tmp_path)
+
+    assert result.status == "ok"
+    assert [candidate.validated for candidate in result.candidate_files] == [True, True]
+
+
 def test_invalid_json_does_not_enter_candidate_merge(tmp_path):
     from app.services.external_agent_discovery import parse_agent_output
 
@@ -4631,6 +4658,26 @@ def test_workspace_path_keyword_ranking_handles_singular_plural_module_path(tmp_
     rel_hits = [Path(hit).relative_to(tmp_path).as_posix() for hit in hits]
 
     assert rel_hits[0] == "services/payments/webhook/handler.ts"
+
+
+def test_workspace_path_keyword_ranking_includes_kts_source_files(tmp_path):
+    from app.services.workspace_scope_resolver import _path_keyword_repo_hits_blocking
+
+    target_dir = tmp_path / "services" / "payments" / "script"
+    target_dir.mkdir(parents=True)
+    (target_dir / "payment_script.kts").write_text(
+        "fun processPayment() = true\n",
+        encoding="utf-8",
+    )
+
+    hits = _path_keyword_repo_hits_blocking(
+        str(tmp_path),
+        ["payment-script"],
+        3,
+    )
+    rel_hits = [Path(hit).relative_to(tmp_path).as_posix() for hit in hits]
+
+    assert rel_hits[0] == "services/payments/script/payment_script.kts"
 
 
 def test_workspace_bounded_repo_search_rg_filters_non_source_matches(tmp_path, monkeypatch):
