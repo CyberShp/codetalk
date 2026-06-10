@@ -2057,6 +2057,16 @@ class TestCoverageTestDesign:
             "return service.processPayment(request)"
         ) is None
 
+    async def test_coverage_definition_detection_handles_objc_methods(self):
+        from app.services.coverage_analyzer import _match_def_name
+
+        assert _match_def_name(
+            "- (void)processPayment:(PaymentRequest *)request {"
+        ) == "processPayment"
+        assert _match_def_name(
+            "[service processPayment:request];"
+        ) is None
+
     async def test_decorated_route_function_is_black_box_entry_without_caller(self, tmp_path):
         from app.services.coverage_analyzer import build_coverage_test_design
 

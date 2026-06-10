@@ -114,6 +114,9 @@ _FUNC_DEF_RE = re.compile(
 )
 _ASSIGNED_FUNCTION_DEF_RES = (
     re.compile(
+        r"^\s*[-+]\s*\([^)]*\)\s*(?P<name>[A-Za-z_$][\w$]*)\s*(?::|\{)"
+    ),
+    re.compile(
         r"^\s*(?:(?:public|private|fileprivate|internal|open|static|class|"
         r"mutating|nonmutating|override|final|required|convenience)\s+)*"
         r"func\s+(?P<name>[A-Za-z_$][\w$]*)\s*\("
