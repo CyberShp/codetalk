@@ -2002,6 +2002,51 @@ class TestCoverageTestDesign:
         assert gap["source_window"]["definition_line"] == 2
         assert "public processPayment" in gap["source_window"]["text"]
 
+    async def test_ruby_function_without_extension_is_read_as_source_window(self, tmp_path):
+        from app.services.coverage_analyzer import build_coverage_test_design
+
+        src = tmp_path / "src"
+        src.mkdir()
+        (src / "payment_service.rb").write_text(
+            "def process_payment(request)\n"
+            "  return nil unless request\n"
+            "  request\n"
+            "end\n",
+            encoding="utf-8",
+        )
+        modules = self._modules(
+            "feature,module,code_location,function,triggered,hit_count\n"
+            "payments,service,src/payment_service:1-4,process_payment,false,0\n"
+        )
+
+        design = await build_coverage_test_design(
+            modules, workspace_id="ws-1", repo_path=str(tmp_path)
+        )
+
+        gap = [g for g in design["gaps"] if g.get("kind") == "function"][0]
+        assert gap["source_window"]["available"] is True
+        assert gap["source_window"]["definition_line"] == 1
+        assert "def process_payment" in gap["source_window"]["text"]
+
+    async def test_coverage_source_file_iterator_includes_supported_script_languages(self, tmp_path):
+        from app.services.coverage_analyzer import _iter_source_files
+
+        src = tmp_path / "src"
+        src.mkdir()
+        for name in ("payment_service.rb", "payment_service.php", "payment_script.kts"):
+            (src / name).write_text("source\n", encoding="utf-8")
+        (src / "payment.md").write_text("docs\n", encoding="utf-8")
+
+        rel_paths = {
+            path.relative_to(tmp_path).as_posix()
+            for path in _iter_source_files(tmp_path, limit=10)
+        }
+
+        assert "src/payment_service.rb" in rel_paths
+        assert "src/payment_service.php" in rel_paths
+        assert "src/payment_script.kts" in rel_paths
+        assert "src/payment.md" not in rel_paths
+
     async def test_decorated_route_function_is_black_box_entry_without_caller(self, tmp_path):
         from app.services.coverage_analyzer import build_coverage_test_design
 
