@@ -1204,7 +1204,7 @@ def _is_symbol_definition_line(line: str, symbol: str) -> bool:
         return True
     if re.match(
         rf"^(?:(?:private|protected|override|final|abstract|implicit|inline|"
-        rf"given|transparent)\s+)*def\s+{escaped}\s*\([^)]*\)"
+        rf"given|transparent)\s+)*def\s+{escaped}\s*(?:\([^)]*\))?"
         rf"\s*(?::\s*[^=]+)?\s*(?:=|\{{|$)",
         line,
     ):

@@ -124,6 +124,11 @@ _ASSIGNED_FUNCTION_DEF_RES = (
         r"^\s*[-+]\s*\([^)]*\)\s*(?P<name>[A-Za-z_$][\w$]*)\s*(?::|\{)"
     ),
     re.compile(
+        r"^\s*(?:(?:private|protected|override|final|abstract|implicit|inline|"
+        r"given|transparent)\s+)*def\s+(?P<name>[A-Za-z_$][\w$]*)"
+        r"\s*(?:\([^)]*\))?\s*(?::\s*[^=]+)?\s*(?:=|\{|$)"
+    ),
+    re.compile(
         r"^\s*(?:(?:public|private|fileprivate|internal|open|static|class|"
         r"mutating|nonmutating|override|final|required|convenience)\s+)*"
         r"func\s+(?P<name>[A-Za-z_$][\w$]*)\s*\("
@@ -337,6 +342,10 @@ _REGISTRATION_LINE_RE = re.compile(
 _DECORATOR_LINE_RE = re.compile(
     r"^\s*(?:@(?P<decorator>[A-Za-z_][\w.]*)\b(?P<rest>.*)"
     r"|\[(?P<attribute>[A-Za-z_][\w.]*)\b[^\]]*\]\s*)$"
+)
+_INLINE_ROUTE_DEFINITION_RE = re.compile(
+    r"\bAction(?:\.async)?\s*(?:\(|\{)",
+    re.IGNORECASE,
 )
 _ENTRY_DECORATOR_KIND_TOKENS: tuple[tuple[str, tuple[str, ...]], ...] = (
     ("webhook", ("webhook", "hook")),
@@ -3270,14 +3279,25 @@ def _decorated_entry_for_symbol(
     definition_line = _find_strict_definition_line(lines, function_name)
     if not definition_line:
         return None
+    definition_text = lines[definition_line - 1] if 0 < definition_line <= len(lines) else ""
     decorators = _decorator_lines_before_definition(lines, definition_line)
-    if not decorators:
-        return None
-    entry_kind = _classify_entry_decorator([text for _, text in decorators])
+    decorator_texts = [text for _, text in decorators]
+    entry_kind = _classify_entry_decorator(decorator_texts)
+    tool = "source-decorator"
+    if not entry_kind:
+        entry_kind = _classify_inline_entry_definition(
+            str(source_file),
+            function_name,
+            definition_text,
+        )
+        tool = "source-inline-entry"
     if not entry_kind:
         return None
 
-    decorator_line_number, decorator_text = decorators[-1]
+    evidence_line_number, evidence_text = (
+        decorators[-1] if decorators and tool == "source-decorator"
+        else (definition_line, definition_text)
+    )
     rel_file = _relative_path(repo_root, source_file)
     metadata = _entry_metadata_for_site(str(source_file), definition_line, function_name)
     if entry_kind == "cli":
@@ -3285,7 +3305,7 @@ def _decorated_entry_for_symbol(
         if cli_hints:
             metadata["input_hints"] = cli_hints
     if entry_kind == "route":
-        route_hints = _route_template_input_hints([text for _, text in decorators])
+        route_hints = _route_template_input_hints([*decorator_texts, definition_text])
         if route_hints:
             metadata["input_hints"] = _merge_ordered_strings(
                 metadata.get("input_hints"),
@@ -3313,8 +3333,8 @@ def _decorated_entry_for_symbol(
         "call_line": definition_line,
         "chain": [function_name],
         "depth": 0,
-        "evidence": f"{rel_file}:{decorator_line_number} {decorator_text.strip()}",
-        "tool": "source-decorator",
+        "evidence": f"{rel_file}:{evidence_line_number} {evidence_text.strip()}",
+        "tool": tool,
     }
     entry.update(metadata)
     return entry
@@ -3344,6 +3364,19 @@ def _classify_entry_decorator(decorator_lines: list[str]) -> str | None:
     for kind, tokens in _ENTRY_DECORATOR_KIND_TOKENS:
         if any(token in text for token in tokens):
             return kind
+    return None
+
+
+def _classify_inline_entry_definition(
+    file_path: str,
+    function_name: str | None,
+    definition_text: str,
+) -> str | None:
+    if not _INLINE_ROUTE_DEFINITION_RE.search(definition_text or ""):
+        return None
+    entry_kind = _classify_entry(file_path, function_name, definition_text)
+    if entry_kind in {"route", "endpoint", "api"}:
+        return "route"
     return None
 
 

@@ -2064,6 +2064,9 @@ class TestCoverageTestDesign:
             "private def processPayment(request: PaymentRequest): PaymentResult = {"
         ) == "processPayment"
         assert _match_def_name(
+            "def processPayment = Action(parse.json) { implicit request =>"
+        ) == "processPayment"
+        assert _match_def_name(
             "service.processPayment(request)"
         ) is None
 
@@ -2097,6 +2100,41 @@ class TestCoverageTestDesign:
         assert gap["source_window"]["available"] is True
         assert gap["source_window"]["definition_line"] == 2
         assert "private def processPayment" in gap["source_window"]["text"]
+
+    async def test_scala_play_action_is_black_box_route_without_caller(self, tmp_path):
+        from app.services.coverage_analyzer import build_coverage_test_design
+
+        src = tmp_path / "src"
+        src.mkdir()
+        (src / "PaymentController.scala").write_text(
+            "class PaymentController {\n"
+            "  def processPayment = Action(parse.json) { implicit request =>\n"
+            "    if (request.body == null) {\n"
+            "      BadRequest\n"
+            "    } else {\n"
+            "      Ok\n"
+            "    }\n"
+            "  }\n"
+            "}\n",
+            encoding="utf-8",
+        )
+        modules = self._modules(
+            "feature,module,code_location,function,triggered,hit_count\n"
+            "payments,controller,src/PaymentController.scala:2-8,processPayment,false,0\n"
+        )
+
+        design = await build_coverage_test_design(
+            modules, workspace_id="ws-1", repo_path=str(tmp_path)
+        )
+
+        gap = [g for g in design["gaps"] if g.get("kind") == "function"][0]
+        assert gap["gray_box_required"] is False
+        assert gap["black_box_readiness"]["case_type"] == "black_box_ready"
+        entry = gap["entry_paths"][0]
+        assert entry["entry_kind"] == "route"
+        assert entry["entry_symbol"] == "processPayment"
+        assert entry["tool"] == "source-inline-entry"
+        assert "Action(parse.json)" in entry["evidence"]
 
     async def test_coverage_definition_detection_handles_objc_methods(self):
         from app.services.coverage_analyzer import _match_def_name
