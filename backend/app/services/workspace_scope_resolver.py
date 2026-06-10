@@ -1174,6 +1174,7 @@ def _score_symbol_hit(path: str, line: str, symbol: str) -> int:
 
 
 def _is_symbol_definition_line(line: str, symbol: str) -> bool:
+    line = re.sub(r"^\s*<\?(?:php)?\s*", "", line, flags=re.IGNORECASE)
     escaped = re.escape(symbol)
     if re.match(rf"^(?:async\s+)?def\s+{escaped}\s*\(", line):
         return True
