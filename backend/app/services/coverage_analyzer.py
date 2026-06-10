@@ -128,6 +128,11 @@ _ASSIGNED_FUNCTION_DEF_RES = (
         r"(?P<name>[A-Za-z_$][\w$]*[!?=]?)\b"
     ),
     re.compile(
+        r"^\s*(?:module\.)?exports\.(?P<name>[A-Za-z_$][\w$]*)"
+        r"\s*=\s*(?:async\s*)?"
+        r"(?:function\b|(?:\([^)]*\)|[A-Za-z_$][\w$]*)\s*=>)"
+    ),
+    re.compile(
         r"^\s*(?:(?:private|protected|override|final|abstract|implicit|inline|"
         r"given|transparent)\s+)*def\s+(?P<name>[A-Za-z_$][\w$]*)"
         r"\s*(?:\([^)]*\))?\s*(?::\s*[^=]+)?\s*(?:=|\{|$)"
@@ -3620,15 +3625,75 @@ def _trace_entry_paths(
         frontier = next_frontier
 
     # De-duplicate entry paths by (kind, symbol, file).
-    seen: set[tuple] = set()
+    seen: dict[tuple, dict] = {}
     unique_entries: list[dict] = []
     for entry in entry_paths:
         key = (entry["entry_kind"], entry.get("entry_symbol"), entry.get("entry_file"))
         if key in seen:
+            existing = seen[key]
+            merged_hints = _merge_ordered_input_hints(
+                existing.get("input_hints"),
+                entry.get("input_hints"),
+            )
+            if merged_hints:
+                existing["input_hints"] = merged_hints
             continue
-        seen.add(key)
+        seen[key] = entry
         unique_entries.append(entry)
+    for entry in unique_entries:
+        _augment_entry_input_hints_from_symbol_source(repo_root, entry)
     return unique_entries[:6], _dedupe_branches(caller_branches)
+
+
+def _augment_entry_input_hints_from_symbol_source(
+    repo_root: Path,
+    entry: dict,
+) -> None:
+    entry_symbol = entry.get("entry_symbol")
+    entry_file = entry.get("entry_file")
+    if not entry_symbol or not entry_file:
+        return
+    try:
+        abs_file = (repo_root / str(entry_file)).resolve()
+    except OSError:
+        return
+    source_hints = _request_field_hints_for_symbol_source(
+        repo_root,
+        str(abs_file),
+        str(entry_symbol),
+    )
+    merged_hints = _merge_ordered_input_hints(
+        source_hints,
+        entry.get("input_hints"),
+    )
+    if merged_hints:
+        entry["input_hints"] = merged_hints
+
+
+def _request_field_hints_for_symbol_source(
+    repo_root: Path,
+    abs_file: str,
+    entry_symbol: str,
+) -> list[str]:
+    symbol_file: Path | None = None
+    current_file = Path(abs_file)
+    try:
+        if current_file.is_file() and _source_file_defines_function(current_file, entry_symbol):
+            symbol_file = current_file
+    except OSError:
+        symbol_file = None
+    if symbol_file is None:
+        symbol_file = _resolve_entry_file_from_symbol(repo_root, entry_symbol)
+    if symbol_file is None:
+        return []
+    try:
+        lines = symbol_file.read_text(encoding="utf-8", errors="replace").splitlines()
+    except OSError:
+        return []
+    definition_line = _find_strict_definition_line(lines, entry_symbol)
+    if not definition_line:
+        return []
+    return _request_field_hints(str(symbol_file), definition_line, entry_symbol)
 
 
 def _registration_entry_for_site(

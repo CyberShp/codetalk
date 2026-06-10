@@ -1236,6 +1236,12 @@ def _is_symbol_definition_line(line: str, symbol: str) -> bool:
     ):
         return True
     if re.match(
+        rf"^\s*(?:module\.)?exports\.{escaped}\s*=\s*(?:async\s*)?"
+        rf"(?:function\b|(?:\([^)]*\)|[A-Za-z_$][\w$]*)\s*=>)",
+        line,
+    ):
+        return True
+    if re.match(
         rf"^{escaped}\s*:\s*(?:async\s*)?"
         rf"(?:(?:\([^)]*\)|[A-Za-z_$][\w$]*)\s*=>|function\b)",
         line,

@@ -2084,6 +2084,44 @@ class TestCoverageTestDesign:
         assert gap["source_window"]["definition_line"] == 1
         assert "<?php function process_payment" in gap["source_window"]["text"]
 
+    async def test_commonjs_exported_handler_is_read_as_source_window(self, tmp_path):
+        from app.services.coverage_analyzer import build_coverage_test_design
+
+        src = tmp_path / "src"
+        src.mkdir()
+        (src / "handlers.js").write_text(
+            "module.exports.processPayment = async (request) => {\n"
+            "  const amount = request.body.amount;\n"
+            "  if (!amount) {\n"
+            "    return { status: 400 };\n"
+            "  }\n"
+            "  return { status: 200 };\n"
+            "};\n",
+            encoding="utf-8",
+        )
+        (src / "routes.js").write_text(
+            "const handlers = require('./handlers');\n"
+            "router.post('/payments/:payment_id', handlers.processPayment);\n",
+            encoding="utf-8",
+        )
+        modules = self._modules(
+            "feature,module,code_location,function,triggered,hit_count\n"
+            "payments,handlers,src/handlers.js:1-7,processPayment,false,0\n"
+        )
+
+        design = await build_coverage_test_design(
+            modules, workspace_id="ws-1", repo_path=str(tmp_path)
+        )
+
+        gap = [g for g in design["gaps"] if g.get("kind") == "function"][0]
+        assert gap["source_window"]["available"] is True
+        assert gap["source_window"]["definition_line"] == 1
+        assert gap["black_box_readiness"]["case_type"] == "black_box_ready"
+        entry = gap["entry_paths"][0]
+        assert entry["entry_kind"] == "route"
+        assert entry["entry_symbol"] == "processPayment"
+        assert entry["input_hints"] == ["amount", "payment_id"]
+
     async def test_coverage_source_file_iterator_includes_supported_script_languages(self, tmp_path):
         from app.services.coverage_analyzer import _iter_source_files
 
@@ -2114,6 +2152,15 @@ class TestCoverageTestDesign:
 
         assert _match_def_name("<?php function process_payment($request) {") == "process_payment"
         assert _match_def_name("process_payment($request);") is None
+
+    async def test_coverage_definition_detection_handles_commonjs_exports(self):
+        from app.services.coverage_analyzer import _match_def_name
+
+        assert _match_def_name("exports.processPayment = function(request) {") == "processPayment"
+        assert _match_def_name(
+            "module.exports.processPayment = async (request) => {"
+        ) == "processPayment"
+        assert _match_def_name("handlers.processPayment(request);") is None
 
     async def test_coverage_definition_detection_handles_swift_functions(self):
         from app.services.coverage_analyzer import _match_def_name
