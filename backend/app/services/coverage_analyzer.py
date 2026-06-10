@@ -94,6 +94,13 @@ _SOURCE_EXTENSION_CANDIDATES = (
     ".rb", ".php", ".kt", ".kts", ".swift", ".m", ".scala",
 )
 _SOURCE_FILE_EXTS = {ext for ext in _SOURCE_EXTENSION_CANDIDATES if ext}
+_SOURCE_PATH_EXTENSION_PATTERN = "|".join(
+    re.escape(ext.lstrip("."))
+    for ext in sorted(_SOURCE_FILE_EXTS, key=lambda value: (-len(value), value))
+)
+_SOURCE_PATH_RE = re.compile(
+    rf"\b[\w./\\-]+\.(?:{_SOURCE_PATH_EXTENSION_PATTERN})(?::\d+)?\b"
+)
 _DIR_SKIP = {
     ".git", ".hg", ".svn", "node_modules", "dist", "build", "out", "target",
     ".next", "vendor", "coverage", ".tox", ".mypy_cache", ".pytest_cache",
@@ -408,7 +415,7 @@ _PUBLIC_TRIGGER_SURFACE_TOKENS = (
 )
 
 _WHITE_BOX_LEAK_RULES: tuple[tuple[str, re.Pattern], ...] = (
-    ("source_path", re.compile(r"\b[\w./\\-]+\.(?:c|h|cc|cpp|cxx|hpp|py|go|rs|java|js|jsx|ts|tsx)(?::\d+)?\b")),
+    ("source_path", _SOURCE_PATH_RE),
     ("function_call", re.compile(r"\b[A-Za-z_]\w*\s*\(")),
     ("branch_expression", re.compile(r"\b(?:if|else\s+if|switch|while|for)\s*\(|\bcase\s+[^:]+:")),
     ("private_member", re.compile(r"\b[A-Za-z_]\w*(?:->|\.)[A-Za-z_]\w*\b")),
@@ -5136,7 +5143,7 @@ def _black_box_scenario_has_white_box_leak(scenario: dict) -> bool:
         re.compile(r"\b(call|invoke)\s+[A-Za-z_]\w*\s*\(", re.IGNORECASE),
         re.compile(r"调用\s*[A-Za-z_]\w*\s*\("),
         re.compile(r"调用\s*[A-Za-z_]\w*\b"),
-        re.compile(r"\b[\w./\\-]+\.(?:c|h|cc|cpp|py|go|rs|java|js|ts)(?::\d+)?\b"),
+        _SOURCE_PATH_RE,
         re.compile(r"\bif\s*\(|进入.*分支|覆盖.*分支"),
         re.compile(r"\b[A-Za-z_]\w*->[A-Za-z_]\w*\b"),
         re.compile(r"修改.*内部变量|设置.*内部变量"),

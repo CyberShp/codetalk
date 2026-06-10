@@ -3446,6 +3446,30 @@ class TestCoverageTestDesign:
         rules = {finding["rule"] for finding in result["findings"]}
         assert {"function_call", "source_path", "branch_expression", "private_member", "gray_box_action"} <= rules
 
+    async def test_white_box_leak_lint_flags_all_supported_source_paths(self):
+        drafts = [{
+            "case_type": "black_box_ready",
+            "test_execution": {
+                "title": "Cover payment branch",
+                "external_trigger": "Send a public API request.",
+                "preconditions": "source src/PaymentService.scala:42 exists",
+                "inputs": "Follow src/PaymentController.swift:15 and src/routes.kts:8",
+                "steps": ["Observe src/handler.rb:7 before retrying"],
+                "expected": "The request returns a controlled error.",
+                "observable_signals": ["logs mention src/Fallback.php:9"],
+            },
+        }]
+
+        result = _lint_test_case_drafts(drafts)
+
+        assert result["passed"] is False
+        source_findings = [
+            finding["text"]
+            for finding in result["findings"]
+            if finding["rule"] == "source_path"
+        ]
+        assert any(text.endswith(".scala:42") for text in source_findings)
+
     async def test_white_box_lint_allows_public_rpc_and_cli_entry_names(self):
         drafts = [{
             "case_type": "black_box_ready",
@@ -3605,6 +3629,18 @@ class TestCoverageTestDesign:
         }
 
         assert _black_box_scenario_has_white_box_leak(scenario) is False
+
+    async def test_ai_black_box_leak_flags_supported_source_paths(self):
+        scenario = {
+            "external_trigger": "Send a public API request.",
+            "input_construction": "Use boundary input from src/PaymentService.scala:42.",
+            "normal_path": "The public request succeeds.",
+            "error_path": "The public request returns a controlled error.",
+            "expected_result": "The client sees a response and logs are emitted.",
+            "observable_signals": ["service log references src/PaymentController.swift:15"],
+        }
+
+        assert _black_box_scenario_has_white_box_leak(scenario) is True
 
     async def test_ai_black_box_leak_flags_bare_internal_function_call(self):
         scenario = {
