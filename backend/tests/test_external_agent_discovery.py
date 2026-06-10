@@ -4871,6 +4871,36 @@ def test_workspace_exact_symbol_search_prioritizes_cpp_method_definition(tmp_pat
     assert rel_hits[0] == "src/z_service.cpp"
 
 
+def test_workspace_exact_symbol_search_prioritizes_go_receiver_method_definition(tmp_path):
+    from app.services.workspace_scope_resolver import _exact_symbol_repo_hits_blocking
+
+    src = tmp_path / "src"
+    src.mkdir()
+    (src / "a_routes.go").write_text(
+        "package payments\n\n"
+        "func route(service *PaymentService, req Request) Response {\n"
+        "    return service.ProcessPayment(req)\n"
+        "}\n",
+        encoding="utf-8",
+    )
+    (src / "z_service.go").write_text(
+        "package payments\n\n"
+        "func (s *PaymentService) ProcessPayment(req Request) Response {\n"
+        "    return Response{}\n"
+        "}\n",
+        encoding="utf-8",
+    )
+
+    hits = _exact_symbol_repo_hits_blocking(str(tmp_path), "ProcessPayment", 4)
+    rel_hits = [
+        Path(hit).relative_to(tmp_path).as_posix()
+        for hit in hits
+        if Path(hit).exists()
+    ]
+
+    assert rel_hits[0] == "src/z_service.go"
+
+
 def test_workspace_exact_symbol_search_prioritizes_kotlin_method_definition(tmp_path):
     from app.services.workspace_scope_resolver import _exact_symbol_repo_hits_blocking
 

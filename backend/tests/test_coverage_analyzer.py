@@ -2122,6 +2122,35 @@ class TestCoverageTestDesign:
         assert entry["entry_symbol"] == "processPayment"
         assert entry["input_hints"] == ["amount", "payment_id"]
 
+    async def test_go_receiver_method_is_read_as_source_window(self, tmp_path):
+        from app.services.coverage_analyzer import build_coverage_test_design
+
+        src = tmp_path / "src"
+        src.mkdir()
+        (src / "service.go").write_text(
+            "package payments\n\n"
+            "func (s *PaymentService) ProcessPayment(req Request) Response {\n"
+            "    if req.Amount == 0 {\n"
+            "        return Response{Status: 400}\n"
+            "    }\n"
+            "    return Response{Status: 200}\n"
+            "}\n",
+            encoding="utf-8",
+        )
+        modules = self._modules(
+            "feature,module,code_location,function,triggered,hit_count\n"
+            "payments,service,src/service.go:3-8,ProcessPayment,false,0\n"
+        )
+
+        design = await build_coverage_test_design(
+            modules, workspace_id="ws-1", repo_path=str(tmp_path)
+        )
+
+        gap = [g for g in design["gaps"] if g.get("kind") == "function"][0]
+        assert gap["source_window"]["available"] is True
+        assert gap["source_window"]["definition_line"] == 3
+        assert "func (s *PaymentService) ProcessPayment" in gap["source_window"]["text"]
+
     async def test_coverage_source_file_iterator_includes_supported_script_languages(self, tmp_path):
         from app.services.coverage_analyzer import _iter_source_files
 
@@ -2161,6 +2190,16 @@ class TestCoverageTestDesign:
             "module.exports.processPayment = async (request) => {"
         ) == "processPayment"
         assert _match_def_name("handlers.processPayment(request);") is None
+
+    async def test_coverage_definition_detection_handles_go_receiver_methods(self):
+        from app.services.coverage_analyzer import _match_def_name
+
+        assert _match_def_name(
+            "func (s *PaymentService) ProcessPayment(req Request) Response {"
+        ) == "ProcessPayment"
+        assert _match_def_name(
+            "return service.ProcessPayment(req)"
+        ) is None
 
     async def test_coverage_definition_detection_handles_swift_functions(self):
         from app.services.coverage_analyzer import _match_def_name

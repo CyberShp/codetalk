@@ -124,6 +124,9 @@ _ASSIGNED_FUNCTION_DEF_RES = (
         r"^\s*[-+]\s*\([^)]*\)\s*(?P<name>[A-Za-z_$][\w$]*)\s*(?::|\{)"
     ),
     re.compile(
+        r"^\s*func\s+\([^)]*\)\s+(?P<name>[A-Za-z_$][\w$]*)\s*\("
+    ),
+    re.compile(
         r"^\s*def\s+(?:(?:self|[A-Z][\w:]*)\.)"
         r"(?P<name>[A-Za-z_$][\w$]*[!?=]?)\b"
     ),
