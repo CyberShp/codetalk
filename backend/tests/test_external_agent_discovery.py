@@ -4813,6 +4813,10 @@ def test_workspace_exact_symbol_definition_detection_handles_methods_and_rust_fu
         "processPayment",
     )
     assert _is_symbol_definition_line(
+        "private def processPayment(request: PaymentRequest): PaymentResult = {",
+        "processPayment",
+    )
+    assert _is_symbol_definition_line(
         "- (void)processPayment:(PaymentRequest *)request {",
         "processPayment",
     )
@@ -4931,6 +4935,38 @@ def test_workspace_exact_symbol_search_prioritizes_swift_function_definition(tmp
     ]
 
     assert rel_hits[0] == "src/z_service.swift"
+
+
+def test_workspace_exact_symbol_search_prioritizes_scala_function_definition(tmp_path):
+    from app.services.workspace_scope_resolver import _exact_symbol_repo_hits_blocking
+
+    src = tmp_path / "src"
+    src.mkdir()
+    (src / "a_controller.scala").write_text(
+        "class PaymentController(service: PaymentService) {\n"
+        "  def route(request: PaymentRequest): PaymentResult = {\n"
+        "    service.processPayment(request)\n"
+        "  }\n"
+        "}\n",
+        encoding="utf-8",
+    )
+    (src / "z_service.scala").write_text(
+        "class PaymentService {\n"
+        "  private def processPayment(request: PaymentRequest): PaymentResult = {\n"
+        "    PaymentResult()\n"
+        "  }\n"
+        "}\n",
+        encoding="utf-8",
+    )
+
+    hits = _exact_symbol_repo_hits_blocking(str(tmp_path), "processPayment", 4)
+    rel_hits = [
+        Path(hit).relative_to(tmp_path).as_posix()
+        for hit in hits
+        if Path(hit).exists()
+    ]
+
+    assert rel_hits[0] == "src/z_service.scala"
 
 
 def test_workspace_path_keyword_ranking_prioritizes_root_transport_tls_over_examples(tmp_path):

@@ -2057,6 +2057,47 @@ class TestCoverageTestDesign:
             "return service.processPayment(request)"
         ) is None
 
+    async def test_coverage_definition_detection_handles_scala_functions(self):
+        from app.services.coverage_analyzer import _match_def_name
+
+        assert _match_def_name(
+            "private def processPayment(request: PaymentRequest): PaymentResult = {"
+        ) == "processPayment"
+        assert _match_def_name(
+            "service.processPayment(request)"
+        ) is None
+
+    async def test_coverage_source_window_resolves_scala_function_definition(self, tmp_path):
+        from app.services.coverage_analyzer import build_coverage_test_design
+
+        src = tmp_path / "src"
+        src.mkdir()
+        (src / "PaymentService.scala").write_text(
+            "class PaymentService {\n"
+            "  private def processPayment(request: PaymentRequest): PaymentResult = {\n"
+            "    if (request == null) {\n"
+            "      PaymentResult.failed\n"
+            "    } else {\n"
+            "      PaymentResult.ok\n"
+            "    }\n"
+            "  }\n"
+            "}\n",
+            encoding="utf-8",
+        )
+        modules = self._modules(
+            "feature,module,code_location,function,triggered,hit_count\n"
+            "payments,service,src/PaymentService.scala:2-8,processPayment,false,0\n"
+        )
+
+        design = await build_coverage_test_design(
+            modules, workspace_id="ws-1", repo_path=str(tmp_path)
+        )
+
+        gap = [g for g in design["gaps"] if g.get("kind") == "function"][0]
+        assert gap["source_window"]["available"] is True
+        assert gap["source_window"]["definition_line"] == 2
+        assert "private def processPayment" in gap["source_window"]["text"]
+
     async def test_coverage_definition_detection_handles_objc_methods(self):
         from app.services.coverage_analyzer import _match_def_name
 
