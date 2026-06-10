@@ -1210,6 +1210,12 @@ def _is_symbol_definition_line(line: str, symbol: str) -> bool:
     ):
         return True
     if re.match(
+        rf"^\s*def\s+(?:(?:self|[A-Z][\w:]*)\.)"
+        rf"{escaped}\b",
+        line,
+    ):
+        return True
+    if re.match(
         rf"^\s*[-+]\s*\([^)]*\)\s*{escaped}\s*(?::|\{{)",
         line,
     ):

@@ -2028,6 +2028,34 @@ class TestCoverageTestDesign:
         assert gap["source_window"]["definition_line"] == 1
         assert "def process_payment" in gap["source_window"]["text"]
 
+    async def test_ruby_class_method_is_read_as_source_window(self, tmp_path):
+        from app.services.coverage_analyzer import build_coverage_test_design
+
+        src = tmp_path / "src"
+        src.mkdir()
+        (src / "payment_service.rb").write_text(
+            "class PaymentService\n"
+            "  def self.process_payment(request)\n"
+            "    return nil unless request\n"
+            "    request\n"
+            "  end\n"
+            "end\n",
+            encoding="utf-8",
+        )
+        modules = self._modules(
+            "feature,module,code_location,function,triggered,hit_count\n"
+            "payments,service,src/payment_service.rb:2-5,process_payment,false,0\n"
+        )
+
+        design = await build_coverage_test_design(
+            modules, workspace_id="ws-1", repo_path=str(tmp_path)
+        )
+
+        gap = [g for g in design["gaps"] if g.get("kind") == "function"][0]
+        assert gap["source_window"]["available"] is True
+        assert gap["source_window"]["definition_line"] == 2
+        assert "def self.process_payment" in gap["source_window"]["text"]
+
     async def test_coverage_source_file_iterator_includes_supported_script_languages(self, tmp_path):
         from app.services.coverage_analyzer import _iter_source_files
 
@@ -2046,6 +2074,12 @@ class TestCoverageTestDesign:
         assert "src/payment_service.php" in rel_paths
         assert "src/payment_script.kts" in rel_paths
         assert "src/payment.md" not in rel_paths
+
+    async def test_coverage_definition_detection_handles_ruby_class_methods(self):
+        from app.services.coverage_analyzer import _match_def_name
+
+        assert _match_def_name("def self.process_payment(request)") == "process_payment"
+        assert _match_def_name("PaymentService.process_payment(request)") is None
 
     async def test_coverage_definition_detection_handles_swift_functions(self):
         from app.services.coverage_analyzer import _match_def_name
