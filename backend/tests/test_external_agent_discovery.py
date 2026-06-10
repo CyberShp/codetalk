@@ -1070,7 +1070,7 @@ def test_provider_command_supports_subcommand_style(tmp_path, monkeypatch):
     assert health["argv"][1] == "code"
 
 
-def test_provider_health_normalizes_bare_ccr_code_for_noninteractive_json(tmp_path, monkeypatch):
+def test_provider_health_normalizes_bare_ccr_code_for_noninteractive_prompt(tmp_path, monkeypatch):
     from app.services.external_agent_discovery import check_provider_health
 
     _set_existing_ccr_config(tmp_path, monkeypatch)
@@ -1082,8 +1082,10 @@ def test_provider_health_normalizes_bare_ccr_code_for_noninteractive_json(tmp_pa
     health = check_provider_health("claude-code", "ccr code")
 
     assert health["status"] == "available"
-    assert health["argv"][0:4] == ["C:/tools/ccr.exe", "code", "-p", "--output-format"]
-    assert health["argv"][4] == "json"
+    assert health["argv"][0:3] == ["C:/tools/ccr.exe", "code", "-p"]
+    assert "--output-format" not in health["argv"]
+    assert "--allowedTools" not in health["argv"]
+    assert "--disallowedTools" not in health["argv"]
     assert health["configured_argv"][0:2] == ["C:/tools/ccr.exe", "code"]
 
 
@@ -1219,6 +1221,34 @@ def test_provider_health_does_not_block_ccr_for_missing_default_config(tmp_path,
     assert str(tmp_path / "home" / ".claude-code-router" / "config-router.json") in (
         health["attempts"][0]["config_hint"]
     )
+
+
+def test_provider_health_finds_ccr_from_pnpm_home_when_backend_path_misses_it(tmp_path, monkeypatch):
+    from app.services.external_agent_discovery import check_provider_health
+
+    ccr = tmp_path / "pnpm-home" / "ccr.cmd"
+    ccr.parent.mkdir()
+    ccr.write_text("@echo off\n", encoding="utf-8")
+
+    _set_existing_ccr_config(tmp_path, monkeypatch)
+    monkeypatch.setattr("app.services.external_agent_discovery.platform.system", lambda: "Windows")
+    monkeypatch.setattr("app.services.external_agent_discovery.shutil.which", lambda _cmd: None)
+    monkeypatch.setenv("APPDATA", str(tmp_path / "missing-appdata"))
+    monkeypatch.setenv("USERPROFILE", str(tmp_path / "missing-userprofile"))
+    monkeypatch.setenv("LOCALAPPDATA", str(tmp_path / "missing-localappdata"))
+    monkeypatch.setenv("ProgramData", str(tmp_path / "missing-programdata"))
+    monkeypatch.delenv("ChocolateyInstall", raising=False)
+    monkeypatch.setenv("PNPM_HOME", str(ccr.parent))
+    monkeypatch.setattr(
+        "app.services.external_agent_discovery.settings.external_agent_windows_shell_fallback_enabled",
+        False,
+    )
+
+    health = check_provider_health("claude-code", "ccr code -p --output-format json")
+
+    assert health["status"] == "available"
+    assert health["argv"][0] == str(ccr)
+    assert health["attempts"][0]["path"] == str(ccr)
 
 
 def test_provider_health_uses_fallback_after_explicit_missing_ccr_config(tmp_path, monkeypatch):
@@ -1419,7 +1449,7 @@ def test_provider_health_uses_powershell_fallback_for_shell_only_ccr(tmp_path, m
     assert health["launch_kind"] == "powershell"
     assert health["argv"][0].endswith("powershell.exe")
     assert "& 'ccr' 'code' '-p' $__codetalkPrompt '--output-format' 'json'" in health["argv"][-1]
-    assert "--allowedTools" in health["argv"][-1]
+    assert "--allowedTools" not in health["argv"][-1]
 
 
 def test_provider_health_powershell_print_mode_replaces_placeholder(tmp_path, monkeypatch):
@@ -2086,10 +2116,10 @@ def test_run_provider_uses_fallback_after_default_ccr_run_invalid_output(tmp_pat
     assert results[0].status == "ok"
     assert results[0].raw_summary == "fallback_ok"
     assert any("primary command failed; using fallback" in item for item in results[0].warnings)
-    assert any("invalid JSON: empty output" in item for item in results[0].warnings)
+    assert any("external agent exited with exit code" in item for item in results[0].warnings)
     assert len(results[0].runtime_attempts) == 2
     assert results[0].runtime_attempts[0]["status"] == "available"
-    assert results[0].runtime_attempts[0]["run_status"] == "invalid_output"
+    assert results[0].runtime_attempts[0]["run_status"] == "error"
     assert results[0].runtime_attempts[1]["run_status"] == "ok"
     assert runtime_attempts == results[0].runtime_attempts
 
@@ -2905,9 +2935,24 @@ def test_run_provider_bare_ccr_code_uses_print_argument_transport(tmp_path, monk
     argv = list(captured["argv"])
     assert argv[0:3] == ["C:/tools/ccr.exe", "code", "-p"]
     assert "analysis_object_text" in argv[3]
-    assert argv[4:6] == ["--output-format", "json"]
+    assert "--output-format" not in argv
     assert captured["stdin"] == ""
     assert results[0].runtime_attempts[0]["prompt_transport"] == "argv"
+
+
+def test_claude_print_prompt_argument_escapes_raw_newlines_for_windows_cmd():
+    from app.services.external_agent_discovery import _agent_process_invocation
+
+    argv, stdin_payload, transport = _agent_process_invocation(
+        "claude-code",
+        ["C:/Users/me/AppData/Roaming/npm/ccr.CMD", "code", "-p", "--output-format", "json"],
+        "first line\nsecond line",
+    )
+
+    assert transport == "argv"
+    assert stdin_payload == b""
+    assert argv[3] == "first line\\nsecond line"
+    assert "\n" not in argv[3]
 
 
 def test_run_provider_replaces_configured_claude_print_placeholder(tmp_path, monkeypatch):

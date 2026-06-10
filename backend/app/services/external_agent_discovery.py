@@ -555,6 +555,23 @@ def _resolve_windows_common_command_path(executable: str) -> str | None:
     if localappdata:
         base_dirs.append(Path(localappdata) / "Volta" / "bin")
         base_dirs.append(Path(localappdata) / "pnpm")
+    pnpm_home = os.environ.get("PNPM_HOME")
+    if pnpm_home:
+        base_dirs.append(Path(pnpm_home))
+    npm_prefix = os.environ.get("NPM_CONFIG_PREFIX") or os.environ.get("npm_config_prefix")
+    if npm_prefix:
+        prefix = Path(npm_prefix)
+        base_dirs.append(prefix)
+        base_dirs.append(prefix / "bin")
+    bun_install = os.environ.get("BUN_INSTALL")
+    if bun_install:
+        base_dirs.append(Path(bun_install) / "bin")
+    cargo_home = os.environ.get("CARGO_HOME")
+    if cargo_home:
+        base_dirs.append(Path(cargo_home) / "bin")
+    volta_home = os.environ.get("VOLTA_HOME")
+    if volta_home:
+        base_dirs.append(Path(volta_home) / "bin")
     programdata = os.environ.get("ProgramData")
     if programdata:
         base_dirs.append(Path(programdata) / "scoop" / "shims")
@@ -717,6 +734,8 @@ def _normalize_agent_automation_argv(provider: str | None, argv: list[str]) -> l
         return result
     if not _has_claude_print_mode(result):
         result.append("-p")
+    if _looks_like_ccr_code_command(result):
+        return result
     if not _has_cli_option(result, "--output-format"):
         result.extend(["--output-format", "json"])
     return result
@@ -820,8 +839,12 @@ def _agent_process_invocation(
     prompt: str,
 ) -> tuple[list[str], bytes, str]:
     if _should_pass_prompt_as_claude_print_arg(provider, argv):
-        return _insert_claude_print_prompt_arg(argv, prompt), b"", "argv"
+        return _insert_claude_print_prompt_arg(argv, _prompt_as_cli_argument(prompt)), b"", "argv"
     return list(argv), prompt.encode("utf-8"), "stdin"
+
+
+def _prompt_as_cli_argument(prompt: str) -> str:
+    return str(prompt or "").replace("\r\n", "\\n").replace("\r", "\\n").replace("\n", "\\n")
 
 
 def _should_pass_prompt_as_claude_print_arg(provider: str | None, argv: list[str]) -> bool:
@@ -882,6 +905,8 @@ def provider_readonly_args(provider: str | None) -> list[str]:
 
 def apply_readonly_cli_guard(provider: str | None, argv: list[str]) -> list[str]:
     if not settings.external_agent_enforce_readonly_cli:
+        return list(argv)
+    if provider == "claude-code" and _looks_like_ccr_code_command(argv):
         return list(argv)
     return _append_missing_option_chunks(list(argv), provider_readonly_args(provider))
 
