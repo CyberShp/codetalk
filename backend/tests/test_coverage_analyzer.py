@@ -2047,6 +2047,16 @@ class TestCoverageTestDesign:
         assert "src/payment_script.kts" in rel_paths
         assert "src/payment.md" not in rel_paths
 
+    async def test_coverage_definition_detection_handles_swift_functions(self):
+        from app.services.coverage_analyzer import _match_def_name
+
+        assert _match_def_name(
+            "public func processPayment(_ request: PaymentRequest) -> PaymentResult {"
+        ) == "processPayment"
+        assert _match_def_name(
+            "return service.processPayment(request)"
+        ) is None
+
     async def test_decorated_route_function_is_black_box_entry_without_caller(self, tmp_path):
         from app.services.coverage_analyzer import build_coverage_test_design
 

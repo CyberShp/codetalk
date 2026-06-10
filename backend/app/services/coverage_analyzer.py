@@ -114,6 +114,11 @@ _FUNC_DEF_RE = re.compile(
 )
 _ASSIGNED_FUNCTION_DEF_RES = (
     re.compile(
+        r"^\s*(?:(?:public|private|fileprivate|internal|open|static|class|"
+        r"mutating|nonmutating|override|final|required|convenience)\s+)*"
+        r"func\s+(?P<name>[A-Za-z_$][\w$]*)\s*\("
+    ),
+    re.compile(
         r"^\s*(?:export\s+)?(?:const|let|var)\s+(?P<name>[A-Za-z_$][\w$]*)"
         r"(?:\s*:\s*[^=]+)?\s*=\s*(?:async\s*)?"
         r"(?:(?:\([^)]*\)|[A-Za-z_$][\w$]*)\s*=>|function\b)"
