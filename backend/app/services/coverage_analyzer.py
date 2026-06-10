@@ -339,6 +339,11 @@ _REQUEST_FIELD_RES = (
         r"\b(?:params|request\.params)"
         r"\s*\[\s*:([A-Za-z_][\w-]*)\s*\]"
     ),
+    re.compile(
+        r"\$(?:request|req)"
+        r"\s*->\s*(?:input|query|post|get|route|header|cookie)"
+        r"\s*\(\s*['\"]([A-Za-z_][\w-]*)['\"]"
+    ),
 )
 _REQUEST_DESTRUCTURE_RE = re.compile(
     r"\{(?P<fields>[^{}]+)\}\s*=\s*"

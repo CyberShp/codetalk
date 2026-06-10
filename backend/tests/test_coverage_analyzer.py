@@ -2374,6 +2374,47 @@ class TestCoverageTestDesign:
         assert entry["entry_symbol"] == "process"
         assert entry["input_hints"] == ["amount", "tenant_id"]
 
+    async def test_laravel_route_table_action_is_black_box_route_with_request_input(self, tmp_path):
+        from app.services.coverage_analyzer import build_coverage_test_design
+
+        controller = tmp_path / "app" / "Http" / "Controllers"
+        controller.mkdir(parents=True)
+        routes = tmp_path / "routes"
+        routes.mkdir()
+        (controller / "PaymentController.php").write_text(
+            "<?php\n"
+            "class PaymentController {\n"
+            "  public function process(Request $request) {\n"
+            "    $amount = $request->input('amount');\n"
+            "    if (!$amount) {\n"
+            "      return response()->json(['error' => $request->route('tenantId')], 400);\n"
+            "    }\n"
+            "    return response()->json(['ok' => true]);\n"
+            "  }\n"
+            "}\n",
+            encoding="utf-8",
+        )
+        (routes / "web.php").write_text(
+            "<?php\n"
+            "Route::post('/payments/{tenantId}', [PaymentController::class, 'process']);\n",
+            encoding="utf-8",
+        )
+        modules = self._modules(
+            "feature,module,code_location,function,triggered,hit_count\n"
+            "payments,controller,app/Http/Controllers/PaymentController.php:3-9,process,false,0\n"
+        )
+
+        design = await build_coverage_test_design(
+            modules, workspace_id="ws-1", repo_path=str(tmp_path)
+        )
+
+        gap = [g for g in design["gaps"] if g.get("kind") == "function"][0]
+        assert gap["black_box_readiness"]["case_type"] == "black_box_ready"
+        entry = gap["entry_paths"][0]
+        assert entry["entry_kind"] == "route"
+        assert entry["entry_symbol"] == "process"
+        assert entry["input_hints"] == ["amount", "tenantId"]
+
     async def test_coverage_definition_detection_handles_objc_methods(self):
         from app.services.coverage_analyzer import _match_def_name
 
