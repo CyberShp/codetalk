@@ -1190,6 +1190,13 @@ def _is_symbol_definition_line(line: str, symbol: str) -> bool:
     ):
         return True
     if re.match(
+        rf"^(?:(?:public|private|fileprivate|internal|open|static|class|"
+        rf"mutating|nonmutating|override|final|required|convenience)\s+)*"
+        rf"func\s+{escaped}\s*\(",
+        line,
+    ):
+        return True
+    if re.match(
         rf"^(?:(?:public|private|protected|internal|override|open|final|"
         rf"abstract|suspend|inline|operator|tailrec)\s+)*fun\s+{escaped}\s*\(",
         line,
