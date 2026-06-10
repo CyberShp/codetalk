@@ -335,6 +335,10 @@ _REQUEST_FIELD_RES = (
         r"(?:Param|Query|DefaultQuery|PostForm|DefaultPostForm|GetHeader)"
         r"\s*\(\s*['\"]([A-Za-z_][\w-]*)['\"]"
     ),
+    re.compile(
+        r"\b(?:params|request\.params)"
+        r"\s*\[\s*:([A-Za-z_][\w-]*)\s*\]"
+    ),
 )
 _REQUEST_DESTRUCTURE_RE = re.compile(
     r"\{(?P<fields>[^{}]+)\}\s*=\s*"
