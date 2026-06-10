@@ -367,6 +367,7 @@ _ENTRY_DECORATOR_KIND_TOKENS: tuple[tuple[str, tuple[str, ...]], ...] = (
                "patchmapping", "deletemapping", "headmapping", "optionsmapping",
                "httpget", "httppost", "httpput", "httppatch", "httpdelete",
                "httphead", "httpoptions",
+               "@get", "@post", "@put", "@patch", "@delete", "@head", "@options",
                ".get", ".post", ".put", ".patch", ".delete", ".head", ".options",
                ".api_route", ".websocket", "websocket", "socket_route")),
     ("api", ("api", "rpc", "grpc", "http", "request")),
@@ -3058,8 +3059,8 @@ def _handler_signature_input_hints(abs_file: str, enclosing_fn: str | None) -> l
 
 
 def _signature_input_params(signature: str) -> list[str]:
-    match = re.search(r"\((?P<params>[^)]*)\)", signature or "")
-    if not match:
+    params = _signature_param_section(signature or "")
+    if params is None:
         return []
     framework_params = {
         "self", "cls", "request", "req", "response", "res", "next",
@@ -3068,7 +3069,7 @@ def _signature_input_params(signature: str) -> list[str]:
     }
     hints: list[str] = []
     seen: set[str] = set()
-    for raw_param in match.group("params").split(","):
+    for raw_param in _split_signature_params(params):
         param = _signature_param_name(raw_param)
         if not param:
             continue
@@ -3081,6 +3082,51 @@ def _signature_input_params(signature: str) -> list[str]:
         seen.add(param)
         hints.append(param)
     return hints
+
+
+def _signature_param_section(signature: str) -> str | None:
+    start = signature.find("(")
+    if start < 0:
+        return None
+    depth = 0
+    for index in range(start, len(signature)):
+        char = signature[index]
+        if char == "(":
+            depth += 1
+        elif char == ")":
+            depth -= 1
+            if depth == 0:
+                return signature[start + 1:index]
+    return None
+
+
+def _split_signature_params(params: str) -> list[str]:
+    parts: list[str] = []
+    current: list[str] = []
+    depth = 0
+    quote: str | None = None
+    for char in params:
+        if quote:
+            current.append(char)
+            if char == quote:
+                quote = None
+            continue
+        if char in {"'", '"'}:
+            quote = char
+            current.append(char)
+            continue
+        if char in "([{":
+            depth += 1
+        elif char in ")]}" and depth > 0:
+            depth -= 1
+        if char == "," and depth == 0:
+            parts.append("".join(current).strip())
+            current = []
+            continue
+        current.append(char)
+    if current:
+        parts.append("".join(current).strip())
+    return parts
 
 
 def _signature_external_type_hint(
@@ -3120,6 +3166,11 @@ def _signature_param_name(raw_param: str) -> str | None:
     if not param or param.startswith(("*", "...")):
         return None
     param = param.split("=", 1)[0].strip()
+    param = re.sub(
+        r"^(?:@[A-Za-z_][\w.]*(?:\([^)]*\))?\s*)+",
+        "",
+        param,
+    ).strip()
     if ":" in param:
         param = param.split(":", 1)[0].strip()
     param = param.lstrip("*").strip()
