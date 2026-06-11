@@ -2618,15 +2618,49 @@ def _find_source_file_defining_function(
 
 
 def _source_file_defines_function(candidate: Path, function_name: str) -> bool:
+    names = _function_name_candidates(function_name)
     try:
         lines = candidate.read_text(encoding="utf-8", errors="replace").splitlines()
     except OSError:
         return False
     return any(
-        _match_def_name(line) == function_name
-        or _match_multiline_def_name(lines, idx) == function_name
-        for idx, line in enumerate(lines)
+        _definition_line_matches_any_name(lines, idx, names)
+        for idx, _line in enumerate(lines)
     )
+
+
+def _definition_line_matches_any_name(
+    lines: list[str],
+    idx: int,
+    names: list[str],
+) -> bool:
+    defined = _match_def_name(lines[idx]) or _match_multiline_def_name(lines, idx)
+    return bool(defined and defined in names)
+
+
+def _function_name_candidates(function_name: str | None) -> list[str]:
+    value = str(function_name or "").strip()
+    if not value:
+        return []
+    candidates: list[str] = []
+    seen: set[str] = set()
+
+    def add(candidate: str) -> None:
+        candidate = str(candidate or "").strip()
+        if candidate and candidate not in seen:
+            seen.add(candidate)
+            candidates.append(candidate)
+
+    add(value)
+    no_args = re.sub(r"\([^()]*\)\s*$", "", value).strip()
+    add(no_args)
+    normalized = no_args.replace("->", ".").replace("::", ".").replace("#", ".")
+    normalized = normalized.replace("/", ".").replace("\\", ".")
+    for match in reversed(re.findall(r"[A-Za-z_]\w*", normalized)):
+        if match not in _NON_FUNCTION_NAMES:
+            add(match)
+            break
+    return candidates
 
 
 def _is_within(root: Path, candidate: Path) -> bool:
@@ -2743,9 +2777,14 @@ def _find_definition_line(lines: list[str], function_name: str) -> int | None:
     if strict:
         return strict
     # Fallback: first textual occurrence of "name(".
-    if not function_name:
+    names = _function_name_candidates(function_name)
+    if not names:
         return None
-    name_re = re.compile(rf"\b{re.escape(function_name)}\s*\(")
+    name_re = re.compile(
+        r"\b(?:"
+        + "|".join(re.escape(name) for name in names)
+        + r")\s*\("
+    )
     for idx, line in enumerate(lines):
         if name_re.search(line):
             return idx + 1
@@ -2753,11 +2792,21 @@ def _find_definition_line(lines: list[str], function_name: str) -> int | None:
 
 
 def _find_strict_definition_line(lines: list[str], function_name: str) -> int | None:
-    if not function_name:
+    match = _find_strict_definition_match(lines, function_name)
+    return match[0] if match else None
+
+
+def _find_strict_definition_match(
+    lines: list[str],
+    function_name: str,
+) -> tuple[int, str] | None:
+    names = _function_name_candidates(function_name)
+    if not names:
         return None
     for idx, line in enumerate(lines):
-        if _line_matches_signature_name(lines, idx, function_name):
-            return idx + 1
+        for name in names:
+            if _line_matches_signature_name(lines, idx, name):
+                return idx + 1, name
     return None
 
 
@@ -4201,13 +4250,14 @@ def _decorated_entry_for_symbol(
         lines = source_file.read_text(encoding="utf-8", errors="replace").splitlines()
     except OSError:
         return None
-    definition_line = _find_strict_definition_line(lines, function_name)
-    if not definition_line:
+    definition_match = _find_strict_definition_match(lines, function_name)
+    if not definition_match:
         return None
+    definition_line, source_function_name = definition_match
     go_grpc_entry = _go_grpc_registration_entry_for_symbol(
         repo_root,
         source_file,
-        function_name,
+        source_function_name,
         lines,
         definition_line,
     )
@@ -4216,7 +4266,7 @@ def _decorated_entry_for_symbol(
     java_grpc_entry = _java_grpc_registration_entry_for_symbol(
         repo_root,
         source_file,
-        function_name,
+        source_function_name,
         lines,
         definition_line,
     )
@@ -4225,7 +4275,7 @@ def _decorated_entry_for_symbol(
     serverless_entry = _serverless_handler_entry_for_symbol(
         repo_root,
         source_file,
-        function_name,
+        source_function_name,
         lines,
         definition_line,
     )
@@ -4234,7 +4284,7 @@ def _decorated_entry_for_symbol(
     ruby_worker_entry = _ruby_worker_entry_for_symbol(
         repo_root,
         source_file,
-        function_name,
+        source_function_name,
         lines,
         definition_line,
     )
@@ -4243,7 +4293,7 @@ def _decorated_entry_for_symbol(
     php_job_entry = _php_queue_job_entry_for_symbol(
         repo_root,
         source_file,
-        function_name,
+        source_function_name,
         lines,
         definition_line,
     )
@@ -4257,7 +4307,7 @@ def _decorated_entry_for_symbol(
     if not entry_kind:
         entry_kind = _classify_inline_entry_definition(
             str(source_file),
-            function_name,
+            source_function_name,
             definition_text,
         )
         tool = "source-inline-entry"
@@ -4270,9 +4320,9 @@ def _decorated_entry_for_symbol(
     else:
         evidence_line_number, evidence_text = definition_line, definition_text
     rel_file = _relative_path(repo_root, source_file)
-    metadata = _entry_metadata_for_site(str(source_file), definition_line, function_name)
+    metadata = _entry_metadata_for_site(str(source_file), definition_line, source_function_name)
     if entry_kind == "cli":
-        cli_hints = _cli_option_input_hints(str(source_file), function_name)
+        cli_hints = _cli_option_input_hints(str(source_file), source_function_name)
         if cli_hints:
             metadata["input_hints"] = cli_hints
     if entry_kind in {"message", "queue"}:
@@ -4307,11 +4357,11 @@ def _decorated_entry_for_symbol(
     entry_label = metadata.pop("entry_label", None)
     entry = {
         "entry_kind": entry_kind,
-        "entry_symbol": function_name,
+        "entry_symbol": source_function_name,
         "entry_file": rel_file,
-        "entry_label": entry_label or _public_entry_label(entry_kind, function_name),
+        "entry_label": entry_label or _public_entry_label(entry_kind, source_function_name),
         "call_line": definition_line,
-        "chain": [function_name],
+        "chain": [source_function_name],
         "depth": 0,
         "evidence": f"{rel_file}:{evidence_line_number} {evidence_text.strip()}",
         "tool": tool,

@@ -1056,6 +1056,22 @@ recover_session,src/service.c:40-55,false,0
 class TestCoverageTestDesign:
     """coverage-test-design-v1 entry-oriented tracing engine."""
 
+    async def test_function_name_candidates_include_common_qualified_leaf_names(self):
+        from app.services.coverage_analyzer import _function_name_candidates
+
+        assert _function_name_candidates("InvoiceConsumer.consumeInvoice") == [
+            "InvoiceConsumer.consumeInvoice",
+            "consumeInvoice",
+        ]
+        assert _function_name_candidates("billing::InvoiceConsumer::consumeInvoice") == [
+            "billing::InvoiceConsumer::consumeInvoice",
+            "consumeInvoice",
+        ]
+        assert _function_name_candidates("(*PaymentServer).ProcessPayment") == [
+            "(*PaymentServer).ProcessPayment",
+            "ProcessPayment",
+        ]
+
     @staticmethod
     def _make_repo(tmp_path):
         src = tmp_path / "src"
@@ -3901,6 +3917,40 @@ class TestCoverageTestDesign:
         assert "KafkaListener" in entry["evidence"]
         assert "invoice.created" in entry["input_hints"]
         assert "PaymentEvent" in entry["input_hints"]
+
+    async def test_qualified_java_method_name_uses_leaf_for_entry_discovery(self, tmp_path):
+        from app.services.coverage_analyzer import build_coverage_test_design
+
+        src = tmp_path / "src"
+        src.mkdir()
+        (src / "InvoiceConsumer.java").write_text(
+            "public final class InvoiceConsumer {\n"
+            "  @KafkaListener(topics = \"invoice.created\")\n"
+            "  public void consumeInvoice(PaymentEvent event) {\n"
+            "    if (event == null) {\n"
+            "      throw new IllegalArgumentException(\"missing event\");\n"
+            "    }\n"
+            "  }\n"
+            "}\n",
+            encoding="utf-8",
+        )
+        modules = self._modules(
+            "feature,module,code_location,function,triggered,hit_count\n"
+            "billing,consumer,src/InvoiceConsumer.java:3-7,InvoiceConsumer.consumeInvoice,false,0\n"
+        )
+
+        design = await build_coverage_test_design(
+            modules, workspace_id="ws-1", repo_path=str(tmp_path)
+        )
+
+        gap = [g for g in design["gaps"] if g.get("kind") == "function"][0]
+        assert gap["gray_box_required"] is False
+        assert gap["black_box_readiness"]["case_type"] == "black_box_ready"
+        entry = gap["entry_paths"][0]
+        assert entry["entry_kind"] == "message"
+        assert entry["entry_symbol"] == "consumeInvoice"
+        assert entry["chain"] == ["consumeInvoice"]
+        assert "invoice.created" in entry["input_hints"]
 
     async def test_kafkajs_consumer_registration_is_message_entry_with_topic(self, tmp_path):
         from app.services.coverage_analyzer import build_coverage_test_design
