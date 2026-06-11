@@ -2060,6 +2060,54 @@ class TestCoverageTestDesign:
         assert entry["entry_symbol"] == "ProcessPayment"
         assert entry["input_hints"] == ["tenantId", "amount"]
 
+    async def test_gin_bind_json_struct_fields_feed_black_box_input_hints(self, tmp_path):
+        from app.services.coverage_analyzer import build_coverage_test_design
+
+        src = tmp_path / "src"
+        src.mkdir()
+        (src / "controller.go").write_text(
+            "package payments\n\n"
+            "type PaymentRequest struct {\n"
+            "    Amount int `json:\"amount\"`\n"
+            "    Currency string `json:\"currency,omitempty\"`\n"
+            "}\n\n"
+            "func (ctl *PaymentController) ProcessPayment(c *gin.Context) {\n"
+            "    tenantID := c.Param(\"tenantId\")\n"
+            "    var req PaymentRequest\n"
+            "    if err := c.ShouldBindJSON(&req); err != nil {\n"
+            "        c.JSON(400, gin.H{\"error\": tenantID})\n"
+            "        return\n"
+            "    }\n"
+            "    c.JSON(200, gin.H{\"amount\": req.Amount})\n"
+            "}\n",
+            encoding="utf-8",
+        )
+        (src / "server.go").write_text(
+            "package payments\n\n"
+            "func RegisterRoutes(r *gin.Engine, controller *PaymentController) {\n"
+            "    r.POST(\"/payments/:tenantId\", controller.ProcessPayment)\n"
+            "}\n",
+            encoding="utf-8",
+        )
+        modules = self._modules(
+            "feature,module,code_location,function,triggered,hit_count\n"
+            "payments,controller,src/controller.go:8-16,ProcessPayment,false,0\n"
+        )
+
+        design = await build_coverage_test_design(
+            modules, workspace_id="ws-1", repo_path=str(tmp_path)
+        )
+
+        gap = [g for g in design["gaps"] if g.get("kind") == "function"][0]
+        assert gap["black_box_readiness"]["case_type"] == "black_box_ready"
+        entry = gap["entry_paths"][0]
+        assert entry["entry_kind"] == "route"
+        assert entry["entry_symbol"] == "ProcessPayment"
+        assert entry["input_hints"] == ["tenantId", "amount", "currency"]
+        case_text = json.dumps(gap["black_box_cases"], ensure_ascii=False)
+        assert "amount" in case_text
+        assert "currency" in case_text
+
     async def test_direct_websocket_registration_becomes_black_box_route(self, tmp_path):
         from app.services.coverage_analyzer import build_coverage_test_design
 

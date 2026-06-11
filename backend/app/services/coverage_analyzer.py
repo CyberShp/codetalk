@@ -3125,7 +3125,14 @@ def _request_field_hints(abs_file: str, line_number: int, enclosing_fn: str | No
         statement.append(text)
         if pos >= idx and ";" in text:
             break
-    return _request_field_hints_from_text(" ".join(statement))
+    statement_text = " ".join(statement)
+    hints = _request_field_hints_from_text(statement_text)
+    if Path(abs_file).suffix.lower() == ".go":
+        hints = _merge_ordered_input_hints(
+            hints,
+            _go_bind_input_hints(lines, start, end),
+        )
+    return hints
 
 
 def _request_field_hints_from_text(statement_text: str) -> list[str]:
@@ -3395,6 +3402,8 @@ def _source_model_fields_by_class(lines: list[str], suffix: str) -> dict[str, li
         return _java_model_fields_by_class(lines)
     if suffix == ".cs":
         return _csharp_model_fields_by_class(lines)
+    if suffix == ".go":
+        return _go_model_fields_by_struct(lines)
     if suffix in {".ts", ".tsx", ".mts", ".cts"}:
         return _typescript_model_fields_by_class(lines)
     return {}
@@ -3518,6 +3527,95 @@ def _java_field_name_from_declaration(raw_line: str) -> str | None:
     if field and not field[0].isupper():
         return field
     return None
+
+
+def _go_bind_input_hints(lines: list[str], start: int, end: int) -> list[str]:
+    window = "\n".join(lines[start:end])
+    if not re.search(r"\b(?:ShouldBindJSON|BindJSON|ShouldBind|Bind)\s*\(", window):
+        return []
+    fields_by_struct = _go_model_fields_by_struct(lines)
+    if not fields_by_struct:
+        return []
+    type_by_var: dict[str, str] = {}
+    for match in re.finditer(r"\bvar\s+([A-Za-z_]\w*)\s+([A-Za-z_]\w*)\b", window):
+        type_by_var[match.group(1)] = match.group(2)
+    for match in re.finditer(
+        r"\b([A-Za-z_]\w*)\s*:=\s*(?:&\s*)?(?:new\s*\(\s*)?"
+        r"([A-Za-z_]\w*)\s*(?:\{\s*\}|\))",
+        window,
+    ):
+        type_by_var[match.group(1)] = match.group(2)
+
+    hints: list[str] = []
+    seen: set[str] = set()
+
+    def add_fields(type_name: str | None) -> None:
+        if not type_name:
+            return
+        for field in fields_by_struct.get(type_name, []):
+            if field not in seen:
+                seen.add(field)
+                hints.append(field)
+
+    for match in re.finditer(
+        r"\b(?:ShouldBindJSON|BindJSON|ShouldBind|Bind)"
+        r"\s*\(\s*&?\s*([A-Za-z_]\w*)\s*\)",
+        window,
+    ):
+        add_fields(type_by_var.get(match.group(1)))
+    for match in re.finditer(
+        r"\b(?:ShouldBindJSON|BindJSON|ShouldBind|Bind)\s*\(\s*&\s*([A-Za-z_]\w*)\s*\{",
+        window,
+    ):
+        add_fields(match.group(1))
+    return hints[:12]
+
+
+def _go_model_fields_by_struct(lines: list[str]) -> dict[str, list[str]]:
+    fields_by_struct: dict[str, list[str]] = {}
+    idx = 0
+    while idx < len(lines):
+        line = lines[idx]
+        match = re.match(r"^\s*type\s+([A-Za-z_]\w*)\s+struct\s*\{", line)
+        if not match:
+            idx += 1
+            continue
+        struct_name = match.group(1)
+        fields: list[str] = []
+        seen: set[str] = set()
+        pos = idx + 1
+        while pos < len(lines):
+            child = lines[pos].strip()
+            if child.startswith("}"):
+                break
+            field = _go_json_field_name_from_struct_line(child)
+            if field and field not in seen:
+                seen.add(field)
+                fields.append(field)
+                if len(fields) >= 12:
+                    break
+            pos += 1
+        if fields:
+            fields_by_struct[struct_name] = fields
+        idx = max(pos + 1, idx + 1)
+    return fields_by_struct
+
+
+def _go_json_field_name_from_struct_line(line: str) -> str | None:
+    if not line or line.startswith(("//", "/*", "*")):
+        return None
+    tag_match = re.search(r"`[^`]*\bjson:\"([^\",]+)", line)
+    if tag_match:
+        tag = tag_match.group(1).strip()
+        if tag and tag != "-":
+            return tag
+    tokens = re.findall(r"[A-Za-z_]\w*", line.split("`", 1)[0])
+    if len(tokens) < 2:
+        return None
+    field = tokens[0]
+    if not field or not field[0].isupper():
+        return None
+    return field[:1].lower() + field[1:]
 
 
 def _typescript_model_fields_by_class(lines: list[str]) -> dict[str, list[str]]:
