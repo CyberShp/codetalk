@@ -370,7 +370,7 @@ async def preview_analysis_scope(
 
     Rules (per §10.2 of the spec):
       * 404 if workspace missing
-      * 409 if not yet indexed
+      * local fallback if GitNexus indexing is not ready but repo_path is readable
       * 400 if plan has no analysis objects
       * 200 with warnings otherwise
     """

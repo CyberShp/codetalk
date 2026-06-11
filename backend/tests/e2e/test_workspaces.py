@@ -150,8 +150,10 @@ async def test_delete_material(e2e_client: AsyncClient, repo_path: str, tmp_path
 
 # -- Analyze --
 
-async def test_analyze_workspace_not_indexed(e2e_client: AsyncClient, repo_path: str):
-    """Analyze should fail if workspace is not fully indexed."""
+async def test_analyze_workspace_not_indexed_uses_local_fallback(
+    e2e_client: AsyncClient, repo_path: str
+):
+    """Analyze should start with a warning when GitNexus indexing is not ready."""
     create_resp = await e2e_client.post(
         "/api/workspaces",
         json={"name": "Analyze WS", "repo_path": repo_path},
@@ -159,7 +161,10 @@ async def test_analyze_workspace_not_indexed(e2e_client: AsyncClient, repo_path:
     ws_id = create_resp.json()["id"]
 
     resp = await e2e_client.post(f"/api/workspaces/{ws_id}/analyze")
-    assert resp.status_code == 409
+    assert resp.status_code == 202
+    body = resp.json()
+    assert body["status"] == "running"
+    assert any("GitNexus" in warning for warning in body["warnings"])
 
 
 # -- Reports --
