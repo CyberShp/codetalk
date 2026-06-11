@@ -114,6 +114,16 @@ def test_default_llm_limits_keep_report_evidence_compact() -> None:
     assert limits.max_output_chars_per_section == 1800
 
 
+def test_component_source_extensions_are_supported_across_report_chain() -> None:
+    from app.services import analysis_pipeline, evidence_card_builder, report_generator
+
+    component_exts = {".vue", ".svelte", ".astro", ".mdx"}
+
+    assert component_exts <= analysis_pipeline._SOURCE_EXTS
+    assert component_exts <= evidence_card_builder._SOURCE_EXTS
+    assert component_exts <= report_generator._SOURCE_EXTS
+
+
 @pytest.mark.asyncio
 async def test_codetalk_adds_diagram_and_tables_when_ai_returns_prose(tmp_path: Path) -> None:
     llm = CapturingLLM(

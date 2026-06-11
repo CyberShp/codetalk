@@ -30,7 +30,7 @@ AgentGoal = Literal["source_scope", "coverage_entry"]
 SOURCE_EXTS = frozenset({
     ".c", ".h", ".cc", ".cpp", ".cxx", ".hpp", ".py", ".go", ".rs", ".java",
     ".ts", ".tsx", ".js", ".jsx", ".cs", ".rb", ".php", ".kt", ".kts",
-    ".swift", ".m", ".scala", ".vue", ".svelte",
+    ".swift", ".m", ".scala", ".vue", ".svelte", ".astro", ".mdx",
 })
 
 PROVIDER_COMMANDS = {
@@ -1202,6 +1202,8 @@ def _preferred_source_file_under(directory: Path) -> Path | None:
         ".jsx": 2,
         ".vue": 2,
         ".svelte": 2,
+        ".astro": 2,
+        ".mdx": 2,
     }
     module_name = directory.name.lower()
     source_files.sort(key=lambda p: (

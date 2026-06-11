@@ -81,6 +81,8 @@ _DIR_SKIP = frozenset({
 _SOURCE_EXTS = frozenset({
     ".py", ".ts", ".tsx", ".js", ".jsx", ".java", ".go", ".rs",
     ".c", ".cpp", ".cc", ".cxx", ".h", ".hpp",
+    ".cs", ".rb", ".php", ".kt", ".kts", ".swift", ".m", ".scala",
+    ".vue", ".svelte", ".astro", ".mdx",
 })
 
 # CGC business-level query limits

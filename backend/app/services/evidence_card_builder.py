@@ -46,7 +46,7 @@ _MAX_SNIPPET_BYTES = 8_000  # enough room for branch/cleanup tails in medium C f
 _SOURCE_EXTS = frozenset({
     ".py", ".js", ".ts", ".tsx", ".jsx", ".go", ".rs", ".java",
     ".c", ".cpp", ".h", ".hpp", ".cc", ".cxx", ".cs", ".rb", ".php",
-    ".kt", ".swift", ".m", ".scala",
+    ".kt", ".kts", ".swift", ".m", ".scala", ".vue", ".svelte", ".astro", ".mdx",
 })
 
 
