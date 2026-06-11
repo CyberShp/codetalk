@@ -3004,6 +3004,42 @@ class TestCoverageTestDesign:
         assert "@app.post" in entry["evidence"]
         assert gap["black_box_cases"][0]["case_type"] == "black_box_ready"
 
+    async def test_fastapi_pydantic_body_model_fields_feed_black_box_input_hints(self, tmp_path):
+        from app.services.coverage_analyzer import build_coverage_test_design
+
+        src = tmp_path / "src"
+        src.mkdir()
+        (src / "routes.py").write_text(
+            "from pydantic import BaseModel\n\n"
+            "class PaymentRequest(BaseModel):\n"
+            "    amount: int\n"
+            "    currency: str = 'USD'\n\n"
+            "@app.post('/tenants/{tenant_id}/payments')\n"
+            "def create_payment(payload: PaymentRequest, tenant_id: str):\n"
+            "    if payload.amount <= 0:\n"
+            "        return {'status': 400}\n"
+            "    return {'status': 200, 'tenant_id': tenant_id}\n",
+            encoding="utf-8",
+        )
+        modules = self._modules(
+            "feature,module,code_location,function,triggered,hit_count\n"
+            "payments,routes,src/routes.py:8-11,create_payment,false,0\n"
+        )
+
+        design = await build_coverage_test_design(
+            modules, workspace_id="ws-1", repo_path=str(tmp_path)
+        )
+
+        gap = [g for g in design["gaps"] if g.get("kind") == "function"][0]
+        assert gap["black_box_readiness"]["case_type"] == "black_box_ready"
+        entry = gap["entry_paths"][0]
+        assert entry["entry_kind"] == "route"
+        assert entry["entry_symbol"] == "create_payment"
+        assert entry["input_hints"] == ["amount", "currency", "tenant_id"]
+        case_text = json.dumps(gap["black_box_cases"], ensure_ascii=False)
+        assert "amount" in case_text
+        assert "currency" in case_text
+
     async def test_decorated_route_path_params_feed_black_box_input_hints(self, tmp_path):
         from app.services.coverage_analyzer import build_coverage_test_design
 

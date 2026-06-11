@@ -3211,11 +3211,20 @@ def _handler_signature_input_hints(abs_file: str, enclosing_fn: str | None) -> l
         while ")" not in signature and idx + 1 < len(lines):
             idx += 1
             signature += " " + lines[idx].strip()
-        return _signature_input_params(signature)
+        model_fields_by_type = (
+            _python_model_fields_by_class(lines)
+            if Path(abs_file).suffix.lower() == ".py"
+            else {}
+        )
+        return _signature_input_params(signature, model_fields_by_type=model_fields_by_type)
     return []
 
 
-def _signature_input_params(signature: str) -> list[str]:
+def _signature_input_params(
+    signature: str,
+    *,
+    model_fields_by_type: dict[str, list[str]] | None = None,
+) -> list[str]:
     params = _signature_param_section(signature or "")
     if params is None:
         return []
@@ -3226,18 +3235,32 @@ def _signature_input_params(signature: str) -> list[str]:
     }
     hints: list[str] = []
     seen: set[str] = set()
+
+    def add_hint(value: str) -> None:
+        if value and value not in seen:
+            seen.add(value)
+            hints.append(value)
+
     for raw_param in _split_signature_params(params):
         param = _signature_param_name(raw_param)
         if not param:
+            continue
+        type_hint = _signature_param_type_hint(raw_param, param)
+        model_fields = (model_fields_by_type or {}).get(type_hint or "")
+        if model_fields:
+            for field in model_fields:
+                add_hint(field)
             continue
         if param.lower() in framework_params:
             param = _signature_external_type_hint(raw_param, param, framework_params)
             if not param:
                 continue
-        if param in seen:
-            continue
-        seen.add(param)
-        hints.append(param)
+            model_fields = (model_fields_by_type or {}).get(param)
+            if model_fields:
+                for field in model_fields:
+                    add_hint(field)
+                continue
+        add_hint(param)
     return hints
 
 
@@ -3284,6 +3307,75 @@ def _split_signature_params(params: str) -> list[str]:
     if current:
         parts.append("".join(current).strip())
     return parts
+
+
+def _signature_param_type_hint(raw_param: str, param_name: str) -> str | None:
+    declaration = str(raw_param or "").split("=", 1)[0].strip()
+    if ":" not in declaration:
+        return None
+    annotation = declaration.split(":", 1)[1]
+    skip = {
+        "annotated", "optional", "union", "list", "dict", "tuple", "set",
+        "sequence", "mapping", "body", "query", "path", "header", "cookie",
+        "str", "int", "float", "bool", "bytes", "none", "any",
+    }
+    for identifier in re.findall(r"[A-Za-z_][\w]*", annotation):
+        normalized = identifier.lower()
+        if normalized in skip or normalized == param_name.lower():
+            continue
+        return identifier
+    return None
+
+
+def _python_model_fields_by_class(lines: list[str]) -> dict[str, list[str]]:
+    fields_by_class: dict[str, list[str]] = {}
+    idx = 0
+    while idx < len(lines):
+        line = lines[idx]
+        match = re.match(
+            r"^(?P<indent>\s*)class\s+(?P<name>[A-Za-z_]\w*)"
+            r"\s*(?:\((?P<bases>[^)]*)\))?\s*:",
+            line,
+        )
+        if not match:
+            idx += 1
+            continue
+        class_name = match.group("name")
+        bases = match.group("bases") or ""
+        decorators = _decorator_lines_before_definition(lines, idx + 1)
+        decorator_text = "\n".join(text for _line_no, text in decorators).lower()
+        if "basemodel" not in bases.lower() and "dataclass" not in decorator_text:
+            idx += 1
+            continue
+        class_indent = len(match.group("indent"))
+        fields: list[str] = []
+        seen: set[str] = set()
+        pos = idx + 1
+        while pos < len(lines):
+            child = lines[pos]
+            if child.strip() and len(child) - len(child.lstrip()) <= class_indent:
+                break
+            field_match = re.match(
+                r"^\s+(?P<field>[A-Za-z_]\w*)\s*:\s*(?P<annotation>[^#=]+)",
+                child,
+            )
+            if field_match:
+                field = field_match.group("field")
+                annotation = field_match.group("annotation").strip()
+                if (
+                    not field.startswith("_")
+                    and field not in seen
+                    and not annotation.startswith(("ClassVar", "typing.ClassVar"))
+                ):
+                    seen.add(field)
+                    fields.append(field)
+                    if len(fields) >= 12:
+                        break
+            pos += 1
+        if fields:
+            fields_by_class[class_name] = fields
+        idx = max(pos, idx + 1)
+    return fields_by_class
 
 
 def _signature_external_type_hint(
