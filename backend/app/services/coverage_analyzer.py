@@ -419,6 +419,14 @@ _CALLBACK_ASSIGN_RE = re.compile(
     r"\s*(?P<symbol>[A-Za-z_]\w*)",
     re.IGNORECASE,
 )
+_DISPATCH_TABLE_ENTRY_RE = re.compile(
+    r"""(?P<quote>['"])(?P<key>[A-Za-z0-9_.:/-]{1,80})(?P=quote)\s*,\s*&?(?P<symbol>[A-Za-z_]\w*)\b"""
+)
+_DISPATCH_TABLE_CONTEXT_RE = re.compile(
+    r"\b(?:cmd|command|cli|rpc|api|request|handler|handlers|op|ops|operation|"
+    r"dispatch|route|endpoint|message|event|callback|table|registry)\b",
+    re.IGNORECASE,
+)
 _ENTRY_DISCOVERY_KIND_LABELS = {
     "api": "公开 API/请求入口",
     "cli": "命令行入口",
@@ -4008,6 +4016,17 @@ def _trace_entry_paths(
                 if kafka_entry:
                     entry_paths.append(kafka_entry)
                     continue
+                table_entry = _dispatch_table_entry_for_site(
+                    repo_root,
+                    site["abs_file"],
+                    site["line_number"],
+                    symbol,
+                    site["text"],
+                    caller_chain,
+                )
+                if table_entry:
+                    entry_paths.append(table_entry)
+                    continue
                 if enclosing:
                     decorated_caller_entry = _decorated_entry_for_symbol(
                         repo_root,
@@ -4397,6 +4416,83 @@ def _registration_entry_for_site(
         entry["input_hints"] = input_hints
     entry.update(metadata)
     return entry
+
+
+def _dispatch_table_entry_for_site(
+    repo_root: Path,
+    abs_file: str,
+    line_number: int,
+    traced_symbol: str,
+    site_text: str,
+    caller_chain: list[str],
+) -> dict | None:
+    if not traced_symbol:
+        return None
+    match = _dispatch_table_match_for_symbol(site_text, traced_symbol)
+    if not match:
+        return None
+    try:
+        path = Path(abs_file)
+        lines = path.read_text(encoding="utf-8", errors="replace").splitlines()
+    except OSError:
+        return None
+
+    idx = max(0, line_number - 1)
+    start = max(0, idx - 10)
+    end = min(len(lines), idx + 12)
+    window = lines[start:end]
+    context_text = "\n".join(window)
+    if not _DISPATCH_TABLE_CONTEXT_RE.search(context_text):
+        return None
+
+    key = match.group("key")
+    rel_file = _relative_path(repo_root, path)
+    entry_type = _dispatch_table_entry_type(context_text, window)
+    metadata = _entry_metadata_for_symbol(
+        repo_root,
+        str(path),
+        line_number,
+        None,
+        traced_symbol,
+    )
+    input_hints = _merge_ordered_strings([key], metadata.pop("input_hints", []))
+    entry = {
+        "entry_kind": entry_type,
+        "entry_symbol": traced_symbol,
+        "entry_file": rel_file,
+        "entry_label": _dispatch_table_entry_label(entry_type, key, traced_symbol),
+        "call_line": line_number,
+        "chain": caller_chain,
+        "depth": max(0, len(caller_chain) - 1),
+        "evidence": f"{rel_file}:{line_number} {site_text.strip()}",
+        "tool": "source-table",
+        "input_hints": input_hints,
+    }
+    entry.update(metadata)
+    return entry
+
+
+def _dispatch_table_match_for_symbol(site_text: str, traced_symbol: str) -> re.Match | None:
+    for match in _DISPATCH_TABLE_ENTRY_RE.finditer(site_text or ""):
+        if match.group("symbol") == traced_symbol:
+            return match
+    return None
+
+
+def _dispatch_table_entry_type(context_text: str, window: list[str]) -> str:
+    lowered = (context_text or "").lower()
+    if re.search(r"\b(?:cli|cmd|command)(?:s|_table|_entry)?\b", lowered):
+        return "cli"
+    return _registered_entry_type(context_text, window)
+
+
+def _dispatch_table_entry_label(entry_type: str, key: str, symbol: str) -> str:
+    label = _ENTRY_DISCOVERY_KIND_LABELS.get(entry_type, "external entry")
+    if entry_type == "cli":
+        return f"CLI command {key}"
+    if entry_type in {"api", "route", "endpoint"}:
+        return f"{label} {key}"
+    return f"{label} {key or symbol}"
 
 
 def _registered_route_symbol(site_text: str, caller_chain: list[str]) -> str | None:
