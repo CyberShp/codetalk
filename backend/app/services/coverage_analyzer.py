@@ -3132,6 +3132,11 @@ def _request_field_hints(abs_file: str, line_number: int, enclosing_fn: str | No
             hints,
             _go_bind_input_hints(lines, start, end),
         )
+    elif Path(abs_file).suffix.lower() == ".py":
+        hints = _merge_ordered_input_hints(
+            hints,
+            _python_serializer_input_hints(lines, start, end),
+        )
     return hints
 
 
@@ -3426,7 +3431,11 @@ def _python_model_fields_by_class(lines: list[str]) -> dict[str, list[str]]:
         bases = match.group("bases") or ""
         decorators = _decorator_lines_before_definition(lines, idx + 1)
         decorator_text = "\n".join(text for _line_no, text in decorators).lower()
-        if "basemodel" not in bases.lower() and "dataclass" not in decorator_text:
+        if (
+            "basemodel" not in bases.lower()
+            and "serializer" not in bases.lower()
+            and "dataclass" not in decorator_text
+        ):
             idx += 1
             continue
         class_indent = len(match.group("indent"))
@@ -3453,6 +3462,19 @@ def _python_model_fields_by_class(lines: list[str]) -> dict[str, list[str]]:
                     fields.append(field)
                     if len(fields) >= 12:
                         break
+            else:
+                serializer_field = re.match(
+                    r"^\s+(?P<field>[A-Za-z_]\w*)\s*=\s*"
+                    r"serializers\.[A-Za-z_]\w*Field\s*\(",
+                    child,
+                )
+                if serializer_field:
+                    field = serializer_field.group("field")
+                    if not field.startswith("_") and field not in seen:
+                        seen.add(field)
+                        fields.append(field)
+                        if len(fields) >= 12:
+                            break
             pos += 1
         if fields:
             fields_by_class[class_name] = fields
@@ -3569,6 +3591,28 @@ def _go_bind_input_hints(lines: list[str], start: int, end: int) -> list[str]:
     ):
         add_fields(match.group(1))
     return hints[:12]
+
+
+def _python_serializer_input_hints(lines: list[str], start: int, end: int) -> list[str]:
+    window = "\n".join(lines[start:end])
+    if "request.data" not in window and ".data" not in window:
+        return []
+    fields_by_class = _python_model_fields_by_class(lines)
+    if not fields_by_class:
+        return []
+    hints: list[str] = []
+    seen: set[str] = set()
+    for match in re.finditer(
+        r"\b([A-Za-z_]\w*Serializer)\s*\([^)]*\bdata\s*=\s*request\.data\b",
+        window,
+    ):
+        for field in fields_by_class.get(match.group(1), []):
+            if field not in seen:
+                seen.add(field)
+                hints.append(field)
+                if len(hints) >= 12:
+                    return hints
+    return hints
 
 
 def _go_model_fields_by_struct(lines: list[str]) -> dict[str, list[str]]:

@@ -3001,6 +3001,50 @@ class TestCoverageTestDesign:
         assert entry["entry_symbol"] == "process_payment"
         assert entry["input_hints"] == ["amount", "tenant_id"]
 
+    async def test_drf_serializer_fields_feed_black_box_input_hints(self, tmp_path):
+        from app.services.coverage_analyzer import build_coverage_test_design
+
+        app = tmp_path / "payments"
+        app.mkdir()
+        (app / "views.py").write_text(
+            "from rest_framework import serializers\n\n"
+            "class PaymentSerializer(serializers.Serializer):\n"
+            "    amount = serializers.IntegerField()\n"
+            "    currency = serializers.CharField(required=False)\n\n"
+            "def process_payment(request, tenant_id):\n"
+            "    serializer = PaymentSerializer(data=request.data)\n"
+            "    if not serializer.is_valid():\n"
+            "        return Response({'error': tenant_id}, status=400)\n"
+            "    return Response({'ok': True})\n",
+            encoding="utf-8",
+        )
+        (app / "urls.py").write_text(
+            "from django.urls import path\n"
+            "from .views import process_payment\n\n"
+            "urlpatterns = [\n"
+            "    path('payments/<str:tenant_id>/', process_payment, name='process-payment'),\n"
+            "]\n",
+            encoding="utf-8",
+        )
+        modules = self._modules(
+            "feature,module,code_location,function,triggered,hit_count\n"
+            "payments,views,payments/views.py:7-11,process_payment,false,0\n"
+        )
+
+        design = await build_coverage_test_design(
+            modules, workspace_id="ws-1", repo_path=str(tmp_path)
+        )
+
+        gap = [g for g in design["gaps"] if g.get("kind") == "function"][0]
+        assert gap["black_box_readiness"]["case_type"] == "black_box_ready"
+        entry = gap["entry_paths"][0]
+        assert entry["entry_kind"] == "route"
+        assert entry["entry_symbol"] == "process_payment"
+        assert entry["input_hints"] == ["amount", "currency", "tenant_id"]
+        case_text = json.dumps(gap["black_box_cases"], ensure_ascii=False)
+        assert "amount" in case_text
+        assert "currency" in case_text
+
     async def test_coverage_definition_detection_handles_objc_methods(self):
         from app.services.coverage_analyzer import _match_def_name
 
