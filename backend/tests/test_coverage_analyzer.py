@@ -2345,6 +2345,10 @@ class TestCoverageTestDesign:
         assert gap["source_window"]["available"] is True
         assert gap["source_window"]["definition_line"] == 1
         assert "def process_payment" in gap["source_window"]["text"]
+        assert any(
+            branch.get("condition") == "unless (request)"
+            for branch in gap["trigger_branches"]
+        )
 
     async def test_ruby_class_method_is_read_as_source_window(self, tmp_path):
         from app.services.coverage_analyzer import build_coverage_test_design
@@ -2923,6 +2927,7 @@ class TestCoverageTestDesign:
         assert _extract_branch_condition(
             "guard request.isValid else { return .badRequest }"
         ) == "guard (request.isValid)"
+        assert _extract_branch_condition("return nil unless request") == "unless (request)"
 
     async def test_decorated_route_function_is_black_box_entry_without_caller(self, tmp_path):
         from app.services.coverage_analyzer import build_coverage_test_design

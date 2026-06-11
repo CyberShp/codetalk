@@ -295,12 +295,12 @@ def _is_sibling_definition_boundary(lines: list[str], fn_start: int, pos: int) -
         or _match_multiline_def_name(lines, pos) is not None
     )
 _BRANCH_KEYWORD_RE = re.compile(
-    r"\b(if|else\s+if|elif|switch|case|default|while|for|catch|except|when|guard)\b"
+    r"\b(if|unless|else\s+if|elif|switch|case|default|while|for|catch|except|when|guard)\b"
     r"|return\s+-[A-Za-z0-9_]+|goto\s+\w+",
     re.IGNORECASE,
 )
 _CALLER_GUARD_RE = re.compile(
-    r"\b(if|else\s+if|elif|switch|case|default|while|for|catch|except|when|guard)\b",
+    r"\b(if|unless|else\s+if|elif|switch|case|default|while|for|catch|except|when|guard)\b",
     re.IGNORECASE,
 )
 _ERROR_CONDITION_RE = re.compile(
@@ -2722,13 +2722,23 @@ def _relative_path(repo_root: Path | None, path: Path) -> str:
 
 def _extract_branch_condition(line: str) -> str:
     clean = " ".join(line.split())
+    postfix_match = re.search(
+        r"\b(?P<keyword>unless|if)\b\s+(?P<condition>[^;{}]+)$",
+        clean,
+        re.IGNORECASE,
+    )
+    if postfix_match and not clean.lower().startswith(postfix_match.group("keyword").lower()):
+        keyword = postfix_match.group("keyword")
+        condition = _trim_bare_branch_condition(postfix_match.group("condition"))
+        if condition:
+            return f"{keyword} ({condition})"
     for keyword in ("if", "else if", "elif", "switch", "while", "for", "catch",
-                    "except", "when", "guard"):
+                    "except", "when", "guard", "unless"):
         match = re.search(rf"\b{keyword}\b\s*\(([^)]*)\)", clean, re.IGNORECASE)
         if match:
             return f"{keyword} ({match.group(1).strip()})"
     bare_match = re.search(
-        r"\b(?P<keyword>if|else\s+if|elif|while|for|catch|except|when|guard)\b\s+"
+        r"\b(?P<keyword>if|unless|else\s+if|elif|while|for|catch|except|when|guard)\b\s+"
         r"(?P<condition>.+)",
         clean,
         re.IGNORECASE,
