@@ -3009,6 +3009,38 @@ class TestCoverageTestDesign:
         assert "@app.task" in entry["evidence"]
         assert entry["input_hints"] == ["billing.process_invoice", "invoice_id"]
 
+    async def test_rq_job_decorator_is_black_box_job_with_queue_hint(self, tmp_path):
+        from app.services.coverage_analyzer import build_coverage_test_design
+
+        src = tmp_path / "src"
+        src.mkdir()
+        (src / "jobs.py").write_text(
+            "@job('invoice_queue')\n"
+            "def process_invoice(invoice_id):\n"
+            "    if not invoice_id:\n"
+            "        return 'missing'\n"
+            "    return 'processed'\n",
+            encoding="utf-8",
+        )
+        modules = self._modules(
+            "feature,module,code_location,function,triggered,hit_count\n"
+            "billing,jobs,src/jobs.py:2-5,process_invoice,false,0\n"
+        )
+
+        design = await build_coverage_test_design(
+            modules, workspace_id="ws-1", repo_path=str(tmp_path)
+        )
+
+        gap = [g for g in design["gaps"] if g.get("kind") == "function"][0]
+        assert gap["gray_box_required"] is False
+        assert gap["black_box_readiness"]["case_type"] == "black_box_ready"
+        entry = gap["entry_paths"][0]
+        assert entry["entry_kind"] == "job"
+        assert entry["entry_symbol"] == "process_invoice"
+        assert entry["tool"] == "source-decorator"
+        assert "@job" in entry["evidence"]
+        assert entry["input_hints"] == ["invoice_queue", "invoice_id"]
+
     async def test_queue_worker_call_site_keeps_queue_entry_kind_without_agent(self, tmp_path):
         from app.services.coverage_analyzer import build_coverage_test_design
 

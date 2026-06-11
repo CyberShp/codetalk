@@ -395,9 +395,12 @@ _ENTRY_DECORATOR_KIND_TOKENS: tuple[tuple[str, tuple[str, ...]], ...] = (
         "api", "rpc", "grpc", "http", "request",
         "graphql", "resolver", "query", "mutation", "subscription",
     )),
+    ("job", (
+        "celery", "shared_task", "dramatiq", "huey", "rq",
+        ".task", "@task", "@job", ".job",
+    )),
     ("message", ("subscribe", "subscriber", "topic", "queue", "message", "event", "listener",
                  ".on", ".listen", "consumer")),
-    ("job", ("celery", "shared_task", "dramatiq", "huey", "rq", ".task", "@task")),
     ("scheduler", ("schedule", "scheduler", "scheduled", "cron", "periodic")),
     ("timer", ("timer", "timeout", "poller", "interval")),
     ("callback", ("callback", ".callback")),
