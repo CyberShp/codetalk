@@ -1064,6 +1064,10 @@ def _design_function_gap(
             "case_type": BLACK_BOX_HYPOTHESIS,
             "rationale": readiness_card.get("rationale", "") + "; black-box execution leaked white-box terms and needs rewrite",
         }
+        black_box_cases = _downgrade_ready_black_box_cases(
+            black_box_cases,
+            "black-box execution leaked white-box terms and needs rewrite",
+        )
         for draft in test_case_drafts:
             if draft.get("case_type") == BLACK_BOX_READY:
                 draft["case_type"] = BLACK_BOX_HYPOTHESIS
@@ -2264,6 +2268,23 @@ def _lint_test_case_drafts(drafts: list[dict]) -> dict:
         findings=findings,
         action=action,
     ))
+
+
+def _downgrade_ready_black_box_cases(cases: list[dict], reason: str) -> list[dict]:
+    downgraded: list[dict] = []
+    for case in cases:
+        if not isinstance(case, dict):
+            downgraded.append(case)
+            continue
+        if case.get("case_type") != BLACK_BOX_READY:
+            downgraded.append(case)
+            continue
+        downgraded.append({
+            **case,
+            "case_type": BLACK_BOX_HYPOTHESIS,
+            "downgrade_reason": reason,
+        })
+    return downgraded
 
 
 def _build_test_case_drafts(

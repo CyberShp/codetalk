@@ -4574,6 +4574,81 @@ class TestCoverageTestDesign:
         assert gap["black_box_readiness"]["case_type"] == "gray_box_required"
         assert all(case["case_type"] != "black_box_ready" for case in gap["black_box_cases"])
 
+    async def test_white_box_leak_downgrades_black_box_cases_consistently(
+        self,
+        tmp_path,
+        monkeypatch,
+    ):
+        import app.services.coverage_analyzer as coverage_mod
+        from app.services.coverage_analyzer import _design_function_gap
+
+        src = tmp_path / "src"
+        src.mkdir()
+        (src / "session.c").write_text(
+            "void recover_session(void) {\n"
+            "    if (1) { return; }\n"
+            "}\n",
+            encoding="utf-8",
+        )
+        module = ModuleCoverage(
+            module_path="src",
+            line_rate=0.0,
+            branch_rate=0.0,
+            function_rate=0.0,
+            function_hits=[],
+        )
+        hit = FunctionHit(
+            function_name="recover_session",
+            file_path="src/session.c",
+            line_start=1,
+            triggered=False,
+            hit_count=0,
+        )
+
+        def leaky_cases(*_args, **_kwargs):
+            return [{
+                "case_type": "black_box_ready",
+                "title": "leaky ready case",
+                "entry_kind": "api",
+                "external_trigger": "Send a public API request.",
+                "preconditions": "Use source src/session.c:1 before executing.",
+                "inputs": "Use boundary input.",
+                "steps": ["Observe src/session.c:2 and then call recover_session()."],
+                "expected": "The request returns a controlled response.",
+                "observable_signals": ["client response", "service logs"],
+            }]
+
+        monkeypatch.setattr(coverage_mod, "_build_black_box_cases", leaky_cases)
+
+        gap = _design_function_gap(
+            module,
+            hit,
+            workspace_id="ws-1",
+            repo_path=str(tmp_path),
+            repo_root=tmp_path,
+            rg_available=True,
+            scope={},
+            cgc_context={},
+            agent_context={
+                "validated_entries": [{
+                    "provider": "claude-code",
+                    "entry_kind": "api",
+                    "entry_symbol": "public_recover_api",
+                    "entry_file": "src/api.c",
+                    "chain": ["public_recover_api", "recover_session"],
+                    "external_trigger": "public recovery API",
+                    "reason": "source-backed external entry reaches recovery",
+                    "source_verification": "source_backed",
+                }]
+            },
+            trace=True,
+        )
+
+        assert gap["white_box_leak_check"]["passed"] is False
+        assert gap["black_box_readiness"]["case_type"] == "black_box_hypothesis"
+        assert all(case["case_type"] == "black_box_hypothesis" for case in gap["black_box_cases"])
+        assert all(draft["case_type"] == "black_box_hypothesis" for draft in gap["test_case_drafts"])
+
     async def test_agent_entry_budget_prioritizes_late_high_risk_hits(self, tmp_path, monkeypatch):
         import app.services.coverage_analyzer as coverage_mod
         from app.config import settings
