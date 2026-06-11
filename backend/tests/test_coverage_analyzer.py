@@ -3354,6 +3354,49 @@ class TestCoverageTestDesign:
         assert "PaymentRequest" in case_text
         assert '"request"' not in case_text
 
+    async def test_spring_request_body_dto_fields_feed_black_box_input_hints(self, tmp_path):
+        from app.services.coverage_analyzer import build_coverage_test_design
+
+        src = tmp_path / "src"
+        src.mkdir()
+        (src / "PaymentController.java").write_text(
+            "public class PaymentController {\n"
+            "  @PostMapping(\"/tenants/{tenantId}/payments\")\n"
+            "  public ResponseEntity<?> processPayment(\n"
+            "      @RequestBody PaymentRequest request,\n"
+            "      @PathVariable String tenantId) {\n"
+            "    if (request.amount == null) {\n"
+            "      return ResponseEntity.badRequest().build();\n"
+            "    }\n"
+            "    return ResponseEntity.ok().build();\n"
+            "  }\n"
+            "}\n\n"
+            "class PaymentRequest {\n"
+            "  private BigDecimal amount;\n"
+            "  private String currency;\n"
+            "}\n",
+            encoding="utf-8",
+        )
+        modules = self._modules(
+            "feature,module,code_location,function,triggered,hit_count\n"
+            "payments,controller,src/PaymentController.java:3-8,processPayment,false,0\n"
+        )
+
+        design = await build_coverage_test_design(
+            modules, workspace_id="ws-1", repo_path=str(tmp_path)
+        )
+
+        gap = [g for g in design["gaps"] if g.get("kind") == "function"][0]
+        assert gap["black_box_readiness"]["case_type"] == "black_box_ready"
+        entry = gap["entry_paths"][0]
+        assert entry["entry_kind"] == "route"
+        assert entry["entry_symbol"] == "processPayment"
+        assert entry["input_hints"] == ["amount", "currency", "tenantId"]
+        case_text = json.dumps(gap["black_box_cases"], ensure_ascii=False)
+        assert "amount" in case_text
+        assert "currency" in case_text
+        assert "tenantId" in case_text
+
     async def test_decorated_message_consumer_is_black_box_entry_without_caller(self, tmp_path):
         from app.services.coverage_analyzer import build_coverage_test_design
 

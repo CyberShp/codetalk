@@ -1005,6 +1005,8 @@ def _design_function_gap(
             cgc_callers=cgc_callers,
         )
         entry_paths = _merge_agent_entry_paths(entry_paths, agent_context, hit)
+        if repo_root is not None:
+            _augment_entry_paths_input_hints(repo_root, entry_paths)
         trigger_branches = _dedupe_branches([*caller_branches, *self_branches])
 
     tool_status = _gap_tool_status(
@@ -2710,10 +2712,7 @@ def _find_strict_definition_line(lines: list[str], function_name: str) -> int | 
     if not function_name:
         return None
     for idx, line in enumerate(lines):
-        if (
-            _match_def_name(line) == function_name
-            or _match_multiline_def_name(lines, idx) == function_name
-        ):
+        if _line_matches_signature_name(lines, idx, function_name):
             return idx + 1
     return None
 
@@ -3205,19 +3204,35 @@ def _handler_signature_input_hints(abs_file: str, enclosing_fn: str | None) -> l
     except OSError:
         return []
     for idx, line in enumerate(lines):
-        if _match_def_name(line) != enclosing_fn:
+        if not _line_matches_signature_name(lines, idx, enclosing_fn):
             continue
         signature = line.strip()
         while ")" not in signature and idx + 1 < len(lines):
             idx += 1
             signature += " " + lines[idx].strip()
-        model_fields_by_type = (
-            _python_model_fields_by_class(lines)
-            if Path(abs_file).suffix.lower() == ".py"
-            else {}
+        model_fields_by_type = _source_model_fields_by_class(
+            lines, Path(abs_file).suffix.lower()
         )
         return _signature_input_params(signature, model_fields_by_type=model_fields_by_type)
     return []
+
+
+def _line_matches_signature_name(lines: list[str], idx: int, name: str) -> bool:
+    line = lines[idx] if 0 <= idx < len(lines) else ""
+    if _match_def_name(line) == name or _match_multiline_def_name(lines, idx) == name:
+        return True
+    stripped = line.strip()
+    if stripped.startswith(_EXPRESSION_CALL_PREFIXES):
+        return False
+    match = re.search(rf"\b{re.escape(name)}\s*\(", line)
+    if not match:
+        return False
+    prefix = stripped[: stripped.find(name)].strip()
+    if not prefix or prefix.endswith((".", "->")):
+        return False
+    if "=" in prefix and not stripped.startswith(("def ", "async def ")):
+        return False
+    return True
 
 
 def _signature_input_params(
@@ -3311,20 +3326,43 @@ def _split_signature_params(params: str) -> list[str]:
 
 def _signature_param_type_hint(raw_param: str, param_name: str) -> str | None:
     declaration = str(raw_param or "").split("=", 1)[0].strip()
-    if ":" not in declaration:
-        return None
-    annotation = declaration.split(":", 1)[1]
     skip = {
         "annotated", "optional", "union", "list", "dict", "tuple", "set",
         "sequence", "mapping", "body", "query", "path", "header", "cookie",
         "str", "int", "float", "bool", "bytes", "none", "any",
+        "final", "readonly", "public", "private", "protected", "static",
+        "requestbody", "frombody", "fromroute", "fromquery", "requestparam",
+        "pathvariable", "valid", "validated", "notnull", "nullable",
+        "string", "integer", "long", "double", "decimal", "boolean",
+        "responseentity", "iactionresult",
     }
-    for identifier in re.findall(r"[A-Za-z_][\w]*", annotation):
+    if ":" in declaration:
+        annotation = declaration.split(":", 1)[1]
+        for identifier in re.findall(r"[A-Za-z_][\w]*", annotation):
+            normalized = identifier.lower()
+            if normalized in skip or normalized == param_name.lower():
+                continue
+            return identifier
+        return None
+    annotations = {
+        match.group(1).lower()
+        for match in re.finditer(r"@([A-Za-z_][\w]*)", declaration)
+    }
+    identifiers = re.findall(r"[A-Za-z_][\w]*", declaration)
+    for identifier in identifiers:
         normalized = identifier.lower()
-        if normalized in skip or normalized == param_name.lower():
+        if normalized in skip or normalized in annotations or normalized == param_name.lower():
             continue
         return identifier
     return None
+
+
+def _source_model_fields_by_class(lines: list[str], suffix: str) -> dict[str, list[str]]:
+    if suffix == ".py":
+        return _python_model_fields_by_class(lines)
+    if suffix == ".java":
+        return _java_model_fields_by_class(lines)
+    return {}
 
 
 def _python_model_fields_by_class(lines: list[str]) -> dict[str, list[str]]:
@@ -3376,6 +3414,75 @@ def _python_model_fields_by_class(lines: list[str]) -> dict[str, list[str]]:
             fields_by_class[class_name] = fields
         idx = max(pos, idx + 1)
     return fields_by_class
+
+
+def _java_model_fields_by_class(lines: list[str]) -> dict[str, list[str]]:
+    fields_by_class: dict[str, list[str]] = {}
+    idx = 0
+    while idx < len(lines):
+        line = lines[idx]
+        match = re.match(
+            r"^\s*(?:(?:public|private|protected|static|final|abstract)\s+)*"
+            r"(?P<kind>class|record)\s+(?P<name>[A-Za-z_]\w*)"
+            r"(?:\s*\((?P<params>[^)]*)\))?",
+            line,
+        )
+        if not match:
+            idx += 1
+            continue
+        class_name = match.group("name")
+        fields: list[str] = []
+        seen: set[str] = set()
+
+        if match.group("kind") == "record":
+            for raw_param in _split_signature_params(match.group("params") or ""):
+                field = _java_field_name_from_declaration(raw_param)
+                if field and field not in seen:
+                    seen.add(field)
+                    fields.append(field)
+
+        brace_depth = line.count("{") - line.count("}")
+        pos = idx + 1
+        while pos < len(lines):
+            child = lines[pos]
+            if brace_depth <= 0 and child.strip():
+                break
+            if brace_depth == 1:
+                field = _java_field_name_from_declaration(child)
+                if field and field not in seen:
+                    seen.add(field)
+                    fields.append(field)
+                    if len(fields) >= 12:
+                        break
+            brace_depth += child.count("{") - child.count("}")
+            pos += 1
+        if fields:
+            fields_by_class[class_name] = fields
+        idx = max(pos, idx + 1)
+    return fields_by_class
+
+
+def _java_field_name_from_declaration(raw_line: str) -> str | None:
+    line = str(raw_line or "").strip()
+    if not line or line.startswith(("//", "*", "@")):
+        return None
+    if "(" in line and not line.startswith("record "):
+        return None
+    line = line.split("//", 1)[0].strip().rstrip(",;")
+    if "=" in line:
+        line = line.split("=", 1)[0].strip()
+    tokens = re.findall(r"[A-Za-z_]\w*", line)
+    skip = {
+        "public", "private", "protected", "static", "final", "transient",
+        "volatile", "class", "record", "extends", "implements", "new",
+    }
+    filtered = [token for token in tokens if token.lower() not in skip]
+    if len(filtered) < 2:
+        return None
+    field = filtered[-1]
+    if field and not field[0].isupper():
+        return field
+    return None
 
 
 def _signature_external_type_hint(
@@ -4339,12 +4446,21 @@ def _augment_entry_input_hints_from_symbol_source(
         str(abs_file),
         str(entry_symbol),
     )
+    source_hints = _merge_ordered_input_hints(
+        source_hints,
+        _handler_signature_input_hints(str(abs_file), str(entry_symbol)),
+    )
     merged_hints = _merge_ordered_input_hints(
         source_hints,
         entry.get("input_hints"),
     )
     if merged_hints:
         entry["input_hints"] = merged_hints
+
+
+def _augment_entry_paths_input_hints(repo_root: Path, entry_paths: list[dict]) -> None:
+    for entry in entry_paths:
+        _augment_entry_input_hints_from_symbol_source(repo_root, entry)
 
 
 def _request_field_hints_for_symbol_source(
