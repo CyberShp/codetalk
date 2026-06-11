@@ -174,6 +174,15 @@ def _keyword_path_variants(keyword: str) -> list[str]:
     add(dotted)
     add(dotted.replace("/", "_"))
     add(dotted.replace("/", "-"))
+    dotted_snake = "/".join(
+        _camel_segment_to_snake(part)
+        for part in dotted.split("/")
+        if part
+    )
+    add(dotted_snake)
+    add(dotted_snake.replace("/", "_"))
+    add(dotted_snake.replace("/", "-"))
+    add(dotted_snake.replace("/", "-").replace("_", "-"))
     for singular_plural in _path_singular_plural_variants(dotted):
         add(singular_plural)
         add(singular_plural.replace("/", "_"))
@@ -187,6 +196,16 @@ def _keyword_path_variants(keyword: str) -> list[str]:
     if compact != value:
         add(compact)
     return variants
+
+
+def _camel_segment_to_snake(value: str) -> str:
+    text = str(value or "").strip()
+    if not text:
+        return ""
+    text = re.sub(r"(?<=[a-z0-9])(?=[A-Z])", "_", text)
+    text = re.sub(r"(?<=[A-Z])(?=[A-Z][a-z])", "_", text)
+    text = re.sub(r"[-\s]+", "_", text)
+    return text.lower()
 
 
 # ---------------------------------------------------------------------------

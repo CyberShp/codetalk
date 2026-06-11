@@ -55,6 +55,16 @@ def test_camel_case_query_expands_to_path_and_symbol_variants():
     assert "payment/webhook" in terms
 
 
+def test_dotted_camel_path_keyword_expands_each_segment_to_snake_path():
+    from app.services.workspace_scope_resolver import _keyword_path_variants
+
+    variants = _keyword_path_variants("payments.service.PaymentService")
+
+    assert "payments/service/payment_service" in variants
+    assert "payments_service_payment_service" in variants
+    assert "payments-service-payment-service" in variants
+
+
 def test_agent_json_output_is_parsed_and_validated(tmp_path):
     from app.services.external_agent_discovery import parse_agent_output
 
