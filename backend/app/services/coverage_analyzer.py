@@ -2727,6 +2727,17 @@ def _extract_branch_condition(line: str) -> str:
         match = re.search(rf"\b{keyword}\b\s*\(([^)]*)\)", clean, re.IGNORECASE)
         if match:
             return f"{keyword} ({match.group(1).strip()})"
+    bare_match = re.search(
+        r"\b(?P<keyword>if|else\s+if|elif|while|for|catch|except|when|guard)\b\s+"
+        r"(?P<condition>.+)",
+        clean,
+        re.IGNORECASE,
+    )
+    if bare_match:
+        keyword = bare_match.group("keyword")
+        condition = _trim_bare_branch_condition(bare_match.group("condition"))
+        if condition:
+            return f"{keyword} ({condition})"
     case_match = re.search(r"\b(case\s+[^:]+:|default\s*:)", clean, re.IGNORECASE)
     if case_match:
         return case_match.group(1).strip()
@@ -2734,6 +2745,13 @@ def _extract_branch_condition(line: str) -> str:
     if goto_match:
         return goto_match.group(1).strip()
     return clean[:160]
+
+
+def _trim_bare_branch_condition(condition: str) -> str:
+    value = str(condition or "").strip()
+    value = re.split(r"\belse\b", value, maxsplit=1, flags=re.IGNORECASE)[0].strip()
+    value = re.split(r"[:{]", value, maxsplit=1)[0].strip()
+    return value[:160]
 
 
 def _branch_category(line: str) -> str:

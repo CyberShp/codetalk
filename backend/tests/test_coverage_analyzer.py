@@ -2880,6 +2880,14 @@ class TestCoverageTestDesign:
             "[service processPayment:request];"
         ) is None
 
+    async def test_branch_condition_extraction_handles_unparenthesized_guards(self):
+        from app.services.coverage_analyzer import _extract_branch_condition
+
+        assert _extract_branch_condition("    if not amount:") == "if (not amount)"
+        assert _extract_branch_condition(
+            "guard request.isValid else { return .badRequest }"
+        ) == "guard (request.isValid)"
+
     async def test_decorated_route_function_is_black_box_entry_without_caller(self, tmp_path):
         from app.services.coverage_analyzer import build_coverage_test_design
 
