@@ -2132,6 +2132,41 @@ class TestCoverageTestDesign:
         assert gap["source_window"]["definition_line"] == 2
         assert "def self.process_payment" in gap["source_window"]["text"]
 
+    async def test_sidekiq_worker_perform_is_black_box_job_entry(self, tmp_path):
+        from app.services.coverage_analyzer import build_coverage_test_design
+
+        workers = tmp_path / "app" / "workers"
+        workers.mkdir(parents=True)
+        (workers / "invoice_worker.rb").write_text(
+            "class InvoiceWorker\n"
+            "  include Sidekiq::Worker\n"
+            "  sidekiq_options queue: 'invoice_queue'\n\n"
+            "  def perform(invoice_id)\n"
+            "    return :missing unless invoice_id\n"
+            "    :processed\n"
+            "  end\n"
+            "end\n",
+            encoding="utf-8",
+        )
+        modules = self._modules(
+            "feature,module,code_location,function,triggered,hit_count\n"
+            "billing,worker,app/workers/invoice_worker.rb:5-8,perform,false,0\n"
+        )
+
+        design = await build_coverage_test_design(
+            modules, workspace_id="ws-1", repo_path=str(tmp_path)
+        )
+
+        gap = [g for g in design["gaps"] if g.get("kind") == "function"][0]
+        assert gap["gray_box_required"] is False
+        assert gap["black_box_readiness"]["case_type"] == "black_box_ready"
+        entry = gap["entry_paths"][0]
+        assert entry["entry_kind"] == "job"
+        assert entry["entry_symbol"] == "perform"
+        assert entry["tool"] == "source-ruby-worker"
+        assert "Sidekiq::Worker" in entry["evidence"]
+        assert entry["input_hints"] == ["invoice_queue", "invoice_id"]
+
     async def test_php_open_tag_function_is_read_as_source_window(self, tmp_path):
         from app.services.coverage_analyzer import build_coverage_test_design
 

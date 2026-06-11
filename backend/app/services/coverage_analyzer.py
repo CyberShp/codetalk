@@ -2095,6 +2095,7 @@ def _public_entry_label(entry_kind: object, symbol: object) -> str | None:
         "file": "file input",
         "message": "message",
         "event": "event",
+        "job": "job",
         "timer": "timer",
         "callback": "callback",
         "service": "service",
@@ -3087,7 +3088,7 @@ def _request_destructured_fields(text: str) -> list[str]:
 
 def _handler_signature_input_hints(abs_file: str, enclosing_fn: str | None) -> list[str]:
     if not enclosing_fn or Path(abs_file).suffix.lower() not in {
-        ".py", ".js", ".jsx", ".ts", ".tsx", ".java", ".cs",
+        ".py", ".js", ".jsx", ".ts", ".tsx", ".java", ".cs", ".rb",
     }:
         return []
     try:
@@ -3389,6 +3390,15 @@ def _decorated_entry_for_symbol(
     definition_line = _find_strict_definition_line(lines, function_name)
     if not definition_line:
         return None
+    ruby_worker_entry = _ruby_worker_entry_for_symbol(
+        repo_root,
+        source_file,
+        function_name,
+        lines,
+        definition_line,
+    )
+    if ruby_worker_entry:
+        return ruby_worker_entry
     definition_text = lines[definition_line - 1] if 0 < definition_line <= len(lines) else ""
     decorators = _decorator_lines_before_definition(lines, definition_line)
     decorator_texts = [text for _, text in decorators]
@@ -3448,6 +3458,114 @@ def _decorated_entry_for_symbol(
     }
     entry.update(metadata)
     return entry
+
+
+def _ruby_worker_entry_for_symbol(
+    repo_root: Path,
+    source_file: Path,
+    function_name: str,
+    lines: list[str],
+    definition_line: int,
+) -> dict | None:
+    if source_file.suffix.lower() != ".rb" or function_name != "perform":
+        return None
+    definition_idx = definition_line - 1
+    if definition_idx < 0 or definition_idx >= len(lines):
+        return None
+    class_start = _ruby_enclosing_class_start(lines, definition_idx)
+    if class_start is None:
+        return None
+    class_end = _ruby_class_context_end(lines, class_start)
+    class_lines = lines[class_start:class_end]
+    marker = _ruby_worker_marker(class_lines, class_start)
+    if marker is None:
+        return None
+    evidence_line, evidence_text = marker
+    rel_file = _relative_path(repo_root, source_file)
+    definition_text = lines[definition_idx]
+    queue_hints = _ruby_worker_queue_hints(class_lines)
+    signature_hints = _signature_input_params(definition_text.strip())
+    input_hints = _merge_ordered_strings(queue_hints, signature_hints)
+    entry = {
+        "entry_kind": "job",
+        "entry_symbol": function_name,
+        "entry_file": rel_file,
+        "entry_label": (
+            f"job {queue_hints[0]}" if queue_hints
+            else _public_entry_label("job", function_name)
+        ),
+        "call_line": definition_line,
+        "chain": [function_name],
+        "depth": 0,
+        "evidence": f"{rel_file}:{evidence_line} {evidence_text.strip()}",
+        "tool": "source-ruby-worker",
+    }
+    if input_hints:
+        entry["input_hints"] = input_hints
+    return entry
+
+
+def _ruby_enclosing_class_start(lines: list[str], definition_idx: int) -> int | None:
+    def_indent = _line_indent(lines[definition_idx])
+    for idx in range(definition_idx - 1, -1, -1):
+        stripped = lines[idx].strip()
+        if not stripped:
+            continue
+        if re.match(r"^(?:class|module)\s+[A-Za-z_:][\w:]*\b", stripped):
+            if _line_indent(lines[idx]) < def_indent:
+                return idx
+    return None
+
+
+def _ruby_class_context_end(lines: list[str], class_start: int) -> int:
+    depth = 0
+    block_start_re = re.compile(
+        r"^(?:class|module|def|if|unless|case|begin|while|until|for)\b"
+    )
+    for idx in range(class_start, len(lines)):
+        stripped = lines[idx].strip()
+        if not stripped:
+            continue
+        if block_start_re.match(stripped):
+            depth += 1
+        if stripped == "end" or stripped.startswith("end "):
+            depth -= 1
+            if depth <= 0:
+                return idx + 1
+    return len(lines)
+
+
+def _ruby_worker_marker(
+    class_lines: list[str],
+    class_start: int,
+) -> tuple[int, str] | None:
+    for offset, line in enumerate(class_lines):
+        text = line.strip()
+        if (
+            "Sidekiq::Worker" in text
+            or "Sidekiq::Job" in text
+            or text.startswith("sidekiq_options")
+        ):
+            return class_start + offset + 1, line
+    return None
+
+
+def _ruby_worker_queue_hints(class_lines: list[str]) -> list[str]:
+    hints: list[str] = []
+    seen: set[str] = set()
+    text = "\n".join(class_lines)
+    for pattern in (
+        r"\bqueue:\s*['\"](?P<queue>[^'\"]+)['\"]",
+        r"\bqueue:\s*:(?P<queue>[A-Za-z_]\w*)",
+        r"\bqueue_as\s+['\"](?P<queue>[^'\"]+)['\"]",
+        r"\bqueue_as\s+:(?P<queue>[A-Za-z_]\w*)",
+    ):
+        for match in re.finditer(pattern, text):
+            queue = match.group("queue").strip()
+            if queue and queue not in seen:
+                seen.add(queue)
+                hints.append(queue)
+    return hints[:4]
 
 
 def _decorator_lines_before_definition(
