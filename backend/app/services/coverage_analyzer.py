@@ -4849,6 +4849,13 @@ def _trace_entry_paths(
                             _file_entry_input_hints(entry_symbol),
                             metadata.get("input_hints"),
                         )
+                    config_evidence = (
+                        _config_operation_evidence_for_site(
+                            site["abs_file"],
+                            site["line_number"],
+                        )
+                        if entry_kind == "config" else ""
+                    )
                     entry_paths.append({
                         "entry_kind": entry_kind,
                         "entry_symbol": entry_symbol,
@@ -4861,7 +4868,11 @@ def _trace_entry_paths(
                         "evidence": (
                             f"{anonymous_evidence} | {site['file']}:{site['line_number']} {site['text']}"
                             if anonymous_evidence
-                            else f"{site['file']}:{site['line_number']} {site['text']}"
+                            else (
+                                f"{site['file']}:{site['line_number']} {site['text']} | {config_evidence}"
+                                if config_evidence
+                                else f"{site['file']}:{site['line_number']} {site['text']}"
+                            )
                         ),
                         "tool": "ripgrep" if rg_available else "cgc",
                         **metadata,
@@ -5051,6 +5062,33 @@ def _filesystem_operation_input_hints(window_text: str) -> list[str]:
     if not hints and any(token in lowered for token in ("read_text(", "read_bytes(", "open(")):
         add("input file")
     return hints[:6]
+
+
+_CONFIG_OPERATION_RE = re.compile(
+    r"\b(?:os\.)?environ\b"
+    r"|\b(?:os\.)?getenv\s*\("
+    r"|\bprocess\.env\b"
+    r"|\bgetenv\s*\("
+    r"|\b(?:load_config|read_config|parse_config)\s*\("
+    r"|\.ya?ml\b|\.toml\b|\.ini\b|\.conf\b",
+    re.IGNORECASE,
+)
+
+
+def _config_operation_evidence_for_site(abs_file: str, line_number: int) -> str:
+    try:
+        path = Path(abs_file)
+        lines = path.read_text(encoding="utf-8", errors="replace").splitlines()
+    except OSError:
+        return ""
+    idx = max(0, line_number - 1)
+    start = max(0, idx - 10)
+    end = min(len(lines), idx + 6)
+    for pos in range(start, end):
+        text = lines[pos].strip()
+        if text and _CONFIG_OPERATION_RE.search(text):
+            return text[:200]
+    return ""
 
 
 def _graphql_schema_entry_for_site(
