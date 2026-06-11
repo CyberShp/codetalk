@@ -33,6 +33,7 @@ SOURCE_EXTS = frozenset({
     ".ts", ".tsx", ".mts", ".cts", ".js", ".jsx", ".mjs", ".cjs",
     ".cs", ".rb", ".php", ".kt", ".kts",
     ".swift", ".m", ".scala", ".vue", ".svelte", ".astro", ".mdx",
+    ".proto", ".thrift",
 })
 
 PROVIDER_COMMANDS = {

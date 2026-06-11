@@ -203,6 +203,27 @@ def test_agent_json_validates_component_source_files(tmp_path):
     assert [candidate.validated for candidate in result.candidate_files] == [True, True, True, True]
 
 
+def test_agent_json_validates_idl_source_files(tmp_path):
+    from app.services.external_agent_discovery import parse_agent_output
+
+    src = tmp_path / "api"
+    src.mkdir()
+    (src / "billing.proto").write_text("service Billing {}\n", encoding="utf-8")
+    (src / "refund.thrift").write_text("service Refund {}\n", encoding="utf-8")
+    raw = json.dumps({
+        "candidate_files": [
+            {"path": "api/billing.proto", "reason": "protobuf source", "confidence": "high"},
+            {"path": "api/refund.thrift", "reason": "thrift source", "confidence": "high"},
+        ],
+        "candidate_entries": [],
+    })
+
+    result = parse_agent_output("claude-code", raw, tmp_path)
+
+    assert result.status == "ok"
+    assert [candidate.validated for candidate in result.candidate_files] == [True, True]
+
+
 def test_invalid_json_does_not_enter_candidate_merge(tmp_path):
     from app.services.external_agent_discovery import parse_agent_output
 
@@ -4450,6 +4471,18 @@ def _write_tls_tree_at(root: Path, relative_tls_dir: str) -> Path:
     return source
 
 
+def _write_billing_refund_repo(root: Path) -> Path:
+    source_dir = root / "services" / "billing" / "payment" / "refund"
+    source_dir.mkdir(parents=True)
+    source = source_dir / "refund_service.py"
+    source.write_text(
+        "def issue_refund(payment_id: str, amount: int) -> dict:\n"
+        "    return {'payment_id': payment_id, 'amount': amount}\n",
+        encoding="utf-8",
+    )
+    return source
+
+
 async def _resolve_nvme_tls(repo_root: Path):
     obj = AnalysisObject(id="obj_tls", text="nvme-tcp-tls", kind="module")
     return await WorkspaceScopeResolver()._resolve_object(
@@ -5478,6 +5511,21 @@ def test_workspace_path_keyword_ranking_prioritizes_nof_tls_over_examples(tmp_pa
     assert rel_hits[0] == "nof/nvmf_tcp/transport/tls/tls.c"
 
 
+def test_workspace_path_keyword_search_includes_idl_source_files(tmp_path):
+    from app.services.workspace_scope_resolver import _path_keyword_repo_hits_blocking
+
+    api_dir = tmp_path / "services" / "billing"
+    api_dir.mkdir(parents=True)
+    (api_dir / "billing.proto").write_text("service Billing {}\n", encoding="utf-8")
+    (api_dir / "refund.thrift").write_text("service Refund {}\n", encoding="utf-8")
+
+    hits = _path_keyword_repo_hits_blocking(str(tmp_path), ["billing"], 4)
+    rel_hits = [Path(hit).relative_to(tmp_path).as_posix() for hit in hits]
+
+    assert "services/billing/billing.proto" in rel_hits
+    assert "services/billing/refund.thrift" in rel_hits
+
+
 def test_workspace_resolver_finds_nvme_tls_from_nvmf_tcp_repo_root(tmp_path, monkeypatch):
     _write_tls_tree_at(tmp_path, "transport/tls")
 
@@ -5594,9 +5642,16 @@ def test_workspace_preview_keeps_local_source_when_gitnexus_and_agent_unavailabl
             )
         ]
 
+    async def fake_fetch_disabled(_repo_path):
+        return None, "GitNexus disabled in test"
+
     monkeypatch.setattr(
         "app.services.workspace_scope_resolver.run_external_agent_discovery",
         fake_discovery,
+    )
+    monkeypatch.setattr(
+        "app.services.workspace_scope_resolver._fetch_live_gitnexus_graph_with_warning",
+        fake_fetch_disabled,
     )
     plan = AnalysisPlan(
         analysis_objects=[AnalysisObject(id="obj_tls", text="nvme-tcp-tls", kind="module")]
@@ -5619,6 +5674,56 @@ def test_workspace_preview_keeps_local_source_when_gitnexus_and_agent_unavailabl
     ]
     assert any(path.endswith("nof/nvmf_tcp/transport/tls/tls.c") for path in paths)
     assert not any("未在 GitNexus" in warning for warning in resolved.warnings)
+
+
+def test_workspace_preview_finds_generic_hyphenated_business_path_without_tools(tmp_path, monkeypatch):
+    from app.schemas.workspace_analysis import AnalysisPlan
+    from app.services.external_agent_discovery import AgentDiscoveryResult
+
+    _write_billing_refund_repo(tmp_path)
+
+    async def fake_discovery(_request, **_kwargs):
+        return [
+            AgentDiscoveryResult(
+                provider="claude-code",
+                status="unavailable",
+                raw_summary="command not found: ccr",
+            )
+        ]
+
+    async def fake_fetch_disabled(_repo_path):
+        return None, "GitNexus disabled in test"
+
+    monkeypatch.setattr(
+        "app.services.workspace_scope_resolver.run_external_agent_discovery",
+        fake_discovery,
+    )
+    monkeypatch.setattr(
+        "app.services.workspace_scope_resolver._fetch_live_gitnexus_graph_with_warning",
+        fake_fetch_disabled,
+    )
+    plan = AnalysisPlan(
+        analysis_objects=[
+            AnalysisObject(id="obj_refund", text="billing-payment-refund", kind="module")
+        ]
+    )
+
+    preview = asyncio.run(
+        WorkspaceScopeResolver().resolve(
+            ws_id="ws",
+            repo_path=str(tmp_path),
+            plan=plan,
+        )
+    )
+    resolved = preview.resolved_objects[0]
+    paths = [c.path.replace("\\", "/") for c in resolved.candidate_files if c.path]
+
+    assert any(
+        path.endswith("services/billing/payment/refund/refund_service.py")
+        for path in paths
+    )
+    assert resolved.candidate_files[0].role == "primary"
+    assert not any("源码未找到" in warning for warning in resolved.warnings)
 
 
 def test_workspace_preview_reports_live_gitnexus_failure_reason(tmp_path, monkeypatch):
