@@ -1554,6 +1554,44 @@ class TestCoverageTestDesign:
         assert entry["tool"] == "source-registration"
         assert "add_PaymentServiceServicer_to_server" in entry["evidence"]
 
+    async def test_go_grpc_receiver_registration_becomes_black_box_api_entry(self, tmp_path):
+        from app.services.coverage_analyzer import build_coverage_test_design
+
+        src = tmp_path / "src"
+        src.mkdir()
+        (src / "payment_server.go").write_text(
+            "package payments\n\n"
+            "type PaymentServer struct{}\n\n"
+            "func (s *PaymentServer) ProcessPayment(ctx context.Context, req *pb.PaymentRequest) (*pb.PaymentReply, error) {\n"
+            "    if req.Amount == 0 {\n"
+            "        return nil, status.Error(codes.InvalidArgument, \"missing amount\")\n"
+            "    }\n"
+            "    return &pb.PaymentReply{}, nil\n"
+            "}\n\n"
+            "func Register(grpcServer *grpc.Server) {\n"
+            "    pb.RegisterPaymentServiceServer(grpcServer, &PaymentServer{})\n"
+            "}\n",
+            encoding="utf-8",
+        )
+        modules = self._modules(
+            "feature,module,code_location,function,triggered,hit_count\n"
+            "payments,grpc,src/payment_server.go:5-10,ProcessPayment,false,0\n"
+        )
+
+        design = await build_coverage_test_design(
+            modules, workspace_id="ws-1", repo_path=str(tmp_path)
+        )
+
+        gap = [g for g in design["gaps"] if g.get("kind") == "function"][0]
+        assert gap["gray_box_required"] is False
+        assert gap["black_box_readiness"]["case_type"] == "black_box_ready"
+        entry = gap["entry_paths"][0]
+        assert entry["entry_kind"] == "grpc"
+        assert entry["entry_symbol"] == "Register"
+        assert entry["tool"] == "source-grpc-registration"
+        assert "RegisterPaymentServiceServer" in entry["evidence"]
+        assert "PaymentRequest" in entry["input_hints"]
+
     async def test_python_webhook_call_site_becomes_black_box_entry_without_agent(self, tmp_path):
         from app.services.coverage_analyzer import build_coverage_test_design
 

@@ -4183,6 +4183,15 @@ def _decorated_entry_for_symbol(
     definition_line = _find_strict_definition_line(lines, function_name)
     if not definition_line:
         return None
+    go_grpc_entry = _go_grpc_registration_entry_for_symbol(
+        repo_root,
+        source_file,
+        function_name,
+        lines,
+        definition_line,
+    )
+    if go_grpc_entry:
+        return go_grpc_entry
     serverless_entry = _serverless_handler_entry_for_symbol(
         repo_root,
         source_file,
@@ -4269,6 +4278,100 @@ def _decorated_entry_for_symbol(
     }
     entry.update(metadata)
     return entry
+
+
+def _go_grpc_registration_entry_for_symbol(
+    repo_root: Path,
+    source_file: Path,
+    function_name: str,
+    lines: list[str],
+    definition_line: int,
+) -> dict | None:
+    if source_file.suffix.lower() != ".go":
+        return None
+    signature = _collect_go_signature_text(lines, definition_line)
+    receiver = _go_receiver_type_for_method(signature, function_name)
+    if not receiver:
+        return None
+    registration = _find_go_grpc_registration_for_receiver(repo_root, receiver)
+    if registration is None:
+        return None
+    reg_file, line_number, registration_line = registration
+    enclosing, _guard = _caller_context(str(reg_file), line_number)
+    rel_file = _relative_path(repo_root, reg_file)
+    method_hints = _go_grpc_request_type_hints(signature)
+    service_name = _go_grpc_service_name_from_registration(registration_line)
+    entry_label = f"gRPC {service_name}" if service_name else _public_entry_label("grpc", enclosing or receiver)
+    return {
+        "entry_kind": "grpc",
+        "entry_symbol": enclosing or receiver,
+        "entry_file": rel_file,
+        "entry_label": entry_label,
+        "call_line": line_number,
+        "chain": [enclosing, function_name] if enclosing else [function_name],
+        "depth": 1 if enclosing else 0,
+        "evidence": f"{rel_file}:{line_number} {registration_line.strip()}",
+        "tool": "source-grpc-registration",
+        "input_hints": method_hints,
+    }
+
+
+def _collect_go_signature_text(lines: list[str], definition_line: int) -> str:
+    idx = max(0, definition_line - 1)
+    parts: list[str] = []
+    paren_depth = 0
+    for line in lines[idx:min(len(lines), idx + 8)]:
+        stripped = line.strip()
+        parts.append(stripped)
+        paren_depth += stripped.count("(") - stripped.count(")")
+        if "{" in stripped and paren_depth <= 0:
+            break
+    return " ".join(parts)
+
+
+def _go_receiver_type_for_method(signature: str, function_name: str) -> str | None:
+    match = re.search(
+        rf"\bfunc\s*\(\s*\w+\s+\*?(?P<receiver>[A-Za-z_]\w*)\s*\)\s+{re.escape(function_name)}\s*\(",
+        signature or "",
+    )
+    return match.group("receiver") if match else None
+
+
+def _go_grpc_request_type_hints(signature: str) -> list[str]:
+    match = re.search(
+        r"\b\w+\s+\*?(?:[A-Za-z_]\w*\.)?(?P<type>[A-Za-z_]\w*Request)\b",
+        signature or "",
+    )
+    return [match.group("type")] if match else []
+
+
+def _find_go_grpc_registration_for_receiver(
+    repo_root: Path,
+    receiver: str,
+) -> tuple[Path, int, str] | None:
+    receiver_pattern = re.escape(receiver)
+    register_re = re.compile(
+        rf"\b(?:[A-Za-z_]\w*\.)?Register[A-Za-z_]\w*Server\s*\([^)]*(?:&\s*)?{receiver_pattern}\s*(?:\{{\s*\}})?",
+    )
+    for root, dirs, files in os.walk(repo_root):
+        dirs[:] = [d for d in dirs if d not in _DIR_SKIP and not d.startswith(".")]
+        for fname in files:
+            path = Path(root) / fname
+            if path.suffix.lower() != ".go":
+                continue
+            try:
+                lines = path.read_text(encoding="utf-8", errors="replace").splitlines()
+            except OSError:
+                continue
+            for idx, line in enumerate(lines, start=1):
+                if register_re.search(line):
+                    return path, idx, line
+    return None
+
+
+def _go_grpc_service_name_from_registration(registration_line: str) -> str | None:
+    match = re.search(r"\bRegister(?P<service>[A-Za-z_]\w*)Server\s*\(", registration_line or "")
+    return match.group("service") if match else None
 
 
 def _serverless_handler_entry_for_symbol(
