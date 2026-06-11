@@ -321,18 +321,18 @@ _REQ_FIELD_RE = re.compile(r"\b(?:req|attrs|opts|ctx)\.([A-Za-z_]\w*)\b")
 _REQUEST_FIELD_RES = (
     re.compile(
         r"\b(?:request|req|payload|body|params|query|data)"
-        r"(?:\.(?:json|args|form|query|body|data|params|headers|cookies|values|files))?"
-        r"\s*\[\s*['\"]([A-Za-z_][\w-]*)['\"]\s*\]"
+        r"(?:\??\.(?:json|args|form|query|body|data|params|headers|cookies|values|files))?"
+        r"(?:\??\.)?\s*\[\s*['\"]([A-Za-z_][\w-]*)['\"]\s*\]"
     ),
     re.compile(
         r"\b(?:request|req|payload|body|params|query|data)"
-        r"(?:\.(?:json|args|form|query|body|data|params|headers|cookies|values|files))?"
-        r"\.get\s*\(\s*['\"]([A-Za-z_][\w-]*)['\"]"
+        r"(?:\??\.(?:json|args|form|query|body|data|params|headers|cookies|values|files))?"
+        r"\??\.get\s*\(\s*['\"]([A-Za-z_][\w-]*)['\"]"
     ),
     re.compile(
         r"\b(?:request|req)"
-        r"\.(?:json|args|form|query|body|data|params|headers|cookies|values|files)"
-        r"\.(?!get\b)([A-Za-z_][\w-]*)\b"
+        r"\??\.(?:json|args|form|query|body|data|params|headers|cookies|values|files)"
+        r"\??\.(?!get\b)([A-Za-z_][\w-]*)\b"
     ),
     re.compile(
         r"\b(?:request|req)"
@@ -3304,9 +3304,15 @@ def _request_field_hints_from_text(statement_text: str) -> list[str]:
     for pattern in _ENV_FIELD_RES:
         for match in pattern.finditer(statement_text):
             positioned_fields.append((match.start(), match.group(1)))
+    container_fields = {
+        "json", "args", "form", "query", "body", "data", "params",
+        "headers", "cookies", "values", "files",
+    }
     seen: set[str] = set()
     hints: list[str] = []
     for _, field in sorted(positioned_fields, key=lambda item: item[0]):
+        if field in container_fields:
+            continue
         if field not in seen:
             seen.add(field)
             hints.append(field)
