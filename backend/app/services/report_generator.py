@@ -59,8 +59,9 @@ MAX_SOURCE_BYTES = 50_000
 
 _SOURCE_EXTS = frozenset({
     ".py", ".js", ".ts", ".tsx", ".jsx", ".go", ".rs", ".java", ".kt",
-    ".c", ".cpp", ".h", ".hpp", ".cs", ".rb", ".php", ".swift", ".vue",
-    ".svelte", ".astro", ".mdx", ".sh", ".bat", ".sql",
+    ".kts", ".c", ".cpp", ".cc", ".cxx", ".h", ".hpp", ".cs", ".rb",
+    ".php", ".swift", ".m", ".scala", ".vue", ".svelte", ".astro", ".mdx",
+    ".sh", ".bat", ".sql",
     ".yaml", ".yml", ".toml", ".json",
 })
 
