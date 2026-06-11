@@ -3403,6 +3403,20 @@ def test_candidate_outside_repo_and_non_source_are_rejected(tmp_path):
     assert validate_agent_candidate_file(tmp_path, "README.md").validated is False
 
 
+def test_agent_candidate_accepts_node_module_source_extensions(tmp_path):
+    from app.services.external_agent_discovery import validate_agent_candidate_file
+
+    src = tmp_path / "src"
+    src.mkdir()
+    source = src / "payments.mjs"
+    source.write_text("export function processPayment() {}\n", encoding="utf-8")
+
+    validation = validate_agent_candidate_file(tmp_path, "src/payments.mjs")
+
+    assert validation.validated is True
+    assert validation.path == "src/payments.mjs"
+
+
 def test_agent_candidate_path_with_parent_repo_prefix_validates_from_nested_root(tmp_path):
     from app.services.external_agent_discovery import validate_agent_candidate_file
 

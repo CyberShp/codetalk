@@ -2205,6 +2205,45 @@ class TestCoverageTestDesign:
         assert "amount" in case_text
         assert "currency" in case_text
 
+    async def test_node_mjs_route_handler_without_extension_is_source_backed(self, tmp_path):
+        from app.services.coverage_analyzer import build_coverage_test_design
+
+        src = tmp_path / "src"
+        src.mkdir()
+        (src / "payments.mjs").write_text(
+            "export async function processPayment(request) {\n"
+            "  const amount = request.body.amount;\n"
+            "  if (!amount) {\n"
+            "    return { status: 400 };\n"
+            "  }\n"
+            "  return { status: 200 };\n"
+            "}\n",
+            encoding="utf-8",
+        )
+        (src / "routes.mjs").write_text(
+            "import { processPayment } from './payments.mjs';\n"
+            "app.post('/payments/:payment_id', processPayment);\n",
+            encoding="utf-8",
+        )
+        modules = self._modules(
+            "feature,module,code_location,function,triggered,hit_count\n"
+            "payments,payments,src/payments:1-7,processPayment,false,0\n"
+        )
+
+        design = await build_coverage_test_design(
+            modules, workspace_id="ws-1", repo_path=str(tmp_path)
+        )
+
+        gap = [g for g in design["gaps"] if g.get("kind") == "function"][0]
+        assert gap["source_window"]["available"] is True
+        assert gap["source_window"]["path"] == "src/payments.mjs"
+        assert gap["gray_box_required"] is False
+        assert gap["black_box_readiness"]["case_type"] == "black_box_ready"
+        entry = gap["entry_paths"][0]
+        assert entry["entry_kind"] == "route"
+        assert entry["entry_symbol"] == "processPayment"
+        assert set(entry["input_hints"]) == {"payment_id", "amount"}
+
     async def test_multiline_anonymous_route_callback_feeds_input_hints(self, tmp_path):
         from app.services.coverage_analyzer import build_coverage_test_design
 

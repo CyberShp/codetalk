@@ -44,7 +44,7 @@ logger = logging.getLogger(__name__)
 
 _MAX_SNIPPET_BYTES = 8_000  # enough room for branch/cleanup tails in medium C functions
 _SOURCE_EXTS = frozenset({
-    ".py", ".js", ".ts", ".tsx", ".jsx", ".go", ".rs", ".java",
+    ".py", ".js", ".jsx", ".mjs", ".cjs", ".ts", ".tsx", ".mts", ".cts", ".go", ".rs", ".java",
     ".c", ".cpp", ".h", ".hpp", ".cc", ".cxx", ".cs", ".rb", ".php",
     ".kt", ".kts", ".swift", ".m", ".scala", ".vue", ".svelte", ".astro", ".mdx",
 })

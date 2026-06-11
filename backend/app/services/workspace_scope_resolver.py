@@ -65,7 +65,7 @@ _DIR_SKIP = frozenset({
 })
 
 _SOURCE_EXTS = frozenset({
-    ".py", ".js", ".ts", ".tsx", ".jsx", ".go", ".rs", ".java",
+    ".py", ".js", ".jsx", ".mjs", ".cjs", ".ts", ".tsx", ".mts", ".cts", ".go", ".rs", ".java",
     ".c", ".cpp", ".h", ".hpp", ".cc", ".cxx", ".cs", ".rb", ".php",
     ".kt", ".kts", ".swift", ".m", ".scala", ".vue", ".svelte", ".astro", ".mdx",
 })
@@ -560,7 +560,7 @@ def _path_keyword_repo_hits_blocking(
                     score += 5
                 elif any(part and part in stem for part in matched_parts):
                     score += 3
-                if full.suffix.lower() in {".c", ".cc", ".cpp", ".cxx", ".py", ".go", ".rs", ".java", ".ts", ".tsx", ".js", ".jsx"}:
+                if full.suffix.lower() in _SOURCE_EXTS:
                     score += 2
                 if rel.startswith("transport/tls/"):
                     score += 14

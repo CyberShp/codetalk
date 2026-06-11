@@ -58,7 +58,7 @@ MAX_OUTPUT_TOKENS = 8192
 MAX_SOURCE_BYTES = 50_000
 
 _SOURCE_EXTS = frozenset({
-    ".py", ".js", ".ts", ".tsx", ".jsx", ".go", ".rs", ".java", ".kt",
+    ".py", ".js", ".jsx", ".mjs", ".cjs", ".ts", ".tsx", ".mts", ".cts", ".go", ".rs", ".java", ".kt",
     ".kts", ".c", ".cpp", ".cc", ".cxx", ".h", ".hpp", ".cs", ".rb",
     ".php", ".swift", ".m", ".scala", ".vue", ".svelte", ".astro", ".mdx",
     ".sh", ".bat", ".sql",

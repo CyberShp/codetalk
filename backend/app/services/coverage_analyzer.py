@@ -90,7 +90,8 @@ SOURCE_WINDOW_AFTER = 60
 _SOURCE_EXTENSION_CANDIDATES = (
     "",
     ".c", ".h", ".cc", ".cpp", ".cxx", ".hpp",
-    ".py", ".go", ".rs", ".java", ".js", ".jsx", ".ts", ".tsx", ".cs",
+    ".py", ".go", ".rs", ".java",
+    ".js", ".jsx", ".mjs", ".cjs", ".ts", ".tsx", ".mts", ".cts", ".cs",
     ".rb", ".php", ".kt", ".kts", ".swift", ".m", ".scala",
     ".vue", ".svelte", ".astro", ".mdx",
 )

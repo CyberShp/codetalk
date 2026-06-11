@@ -79,7 +79,7 @@ _DIR_SKIP = frozenset({
 
 # Source file extensions for directory-structure module discovery
 _SOURCE_EXTS = frozenset({
-    ".py", ".ts", ".tsx", ".js", ".jsx", ".java", ".go", ".rs",
+    ".py", ".ts", ".tsx", ".mts", ".cts", ".js", ".jsx", ".mjs", ".cjs", ".java", ".go", ".rs",
     ".c", ".cpp", ".cc", ".cxx", ".h", ".hpp",
     ".cs", ".rb", ".php", ".kt", ".kts", ".swift", ".m", ".scala",
     ".vue", ".svelte", ".astro", ".mdx",
