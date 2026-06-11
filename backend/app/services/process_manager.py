@@ -82,6 +82,28 @@ def _deepwiki_ui_command(deepwiki_path: str) -> list[str]:
     return [npm_cmd, "run", "start"]
 
 
+def _resolve_spawn_command(command: list[str]) -> list[str]:
+    """Resolve Windows command shims before passing them to CreateProcess."""
+    if not command or sys.platform != "win32":
+        return list(command)
+
+    executable = command[0]
+    resolved = shutil.which(executable)
+    if not resolved:
+        return list(command)
+
+    resolved_path = Path(resolved)
+    if resolved_path.suffix:
+        return [str(resolved_path), *command[1:]]
+
+    for suffix in (".cmd", ".exe", ".bat"):
+        sibling = resolved_path.with_suffix(suffix)
+        if sibling.exists():
+            return [str(sibling), *command[1:]]
+
+    return [str(resolved_path), *command[1:]]
+
+
 def _deepwiki_api_env() -> dict[str, str]:
     return {
         "TIKTOKEN_CACHE_DIR": (
@@ -334,7 +356,7 @@ class ProcessManager:
             return True
 
         cfg = mp._config
-        cmd: list[str] = cfg["command"]
+        cmd: list[str] = _resolve_spawn_command(cfg["command"])
         cwd: str | None = cfg.get("cwd") or None
 
         # deepwiki-api requires a configured installation path to run

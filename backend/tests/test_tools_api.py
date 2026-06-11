@@ -278,6 +278,38 @@ async def test_tools_procs_adapter_exception_redacts_diagnostic_message(tools_cl
     assert "<redacted>" in agent["message"]
 
 
+async def test_external_agent_health_marks_missing_ccr_config_misconfigured(monkeypatch):
+    """Tools health should not report CCR as healthy when its required config is absent."""
+    from app.adapters.external_agent import ExternalAgentAdapter
+
+    monkeypatch.setattr(
+        "app.adapters.external_agent.check_provider_health",
+        lambda *_args, **_kwargs: {
+            "provider": "claude-code",
+            "status": "available",
+            "path": "C:/Users/me/AppData/Roaming/npm/ccr.cmd",
+            "launch_kind": "exec",
+            "attempts": [
+                {
+                    "command": "ccr code -p",
+                    "status": "available",
+                    "launch_kind": "exec",
+                    "config_hint": (
+                        "CCR_CONFIG_PATH is not set and default config not found: "
+                        "C:/Users/me/.claude-code-router/config-router.json"
+                    ),
+                }
+            ],
+        },
+    )
+
+    health = await ExternalAgentAdapter("claude-code", "claude_code_command").health_check()
+
+    assert health.is_healthy is False
+    assert health.container_status == "misconfigured"
+    assert "CCR_CONFIG_PATH" in health.last_check
+
+
 async def test_external_agent_startup_probe_endpoint_returns_diagnostics(tools_client, monkeypatch):
     """Startup probe should actually delegate to the adapter diagnostic method."""
 
@@ -403,6 +435,25 @@ async def test_deepwiki_process_env_loads_synced_dotenv(tmp_path, monkeypatch):
     assert env["OPENAI_BASE_URL"] == "http://internal.ai/v1"
     assert env["LLM_MODEL"] == "qwen-test"
     assert env["PORT"] == "8091"
+
+
+async def test_process_manager_resolves_windows_npm_shim_before_spawn(monkeypatch):
+    """Managed tools should spawn the real Windows wrapper instead of a bare npm shim."""
+    from app.services import process_manager
+
+    monkeypatch.setattr(process_manager.sys, "platform", "win32")
+    monkeypatch.setattr(
+        process_manager.shutil,
+        "which",
+        lambda command: "C:/Users/me/AppData/Roaming/npm/gitnexus.cmd"
+        if command == "gitnexus"
+        else None,
+    )
+
+    cmd = process_manager._resolve_spawn_command(["gitnexus", "serve", "--port", "7100"])
+
+    assert cmd[0].replace("\\", "/") == "C:/Users/me/AppData/Roaming/npm/gitnexus.cmd"
+    assert cmd[1:] == ["serve", "--port", "7100"]
 
 
 async def test_process_log_streams_write_to_named_files(tmp_path, monkeypatch):
