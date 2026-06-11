@@ -4101,6 +4101,35 @@ def test_merge_source_candidates_uses_raw_summary_when_warnings_missing(tmp_path
     assert warnings == ["claude-code: error - spawn failed: ccr is not on backend PATH"]
 
 
+def test_merge_source_candidates_reports_unavailable_agent_without_blocking_local_source(tmp_path):
+    from app.schemas.workspace_analysis import ScopeCandidate
+    from app.services.external_agent_discovery import AgentDiscoveryResult, merge_source_candidates
+
+    src = tmp_path / "src"
+    src.mkdir()
+    (src / "tls.c").write_text("int tls(void) { return 0; }\n", encoding="utf-8")
+    existing = [
+        ScopeCandidate(
+            path="src/tls.c",
+            source="repo_search",
+            confidence="high",
+            reason="local fallback found source",
+            role="primary",
+        )
+    ]
+    result = AgentDiscoveryResult(
+        provider="claude-code",
+        status="unavailable",
+        raw_summary="command not found: ccr",
+    )
+
+    merged, warnings = merge_source_candidates(tmp_path, existing, [result])
+
+    assert len(merged) == 1
+    assert merged[0].source == "repo_search"
+    assert warnings == ["claude-code: unavailable - command not found: ccr"]
+
+
 def test_coverage_external_agent_warnings_use_raw_summary_when_warnings_missing():
     from app.services.coverage_analyzer import _external_agent_warnings
 
@@ -5430,6 +5459,48 @@ def test_workspace_preview_summarizes_external_agent_warnings(tmp_path, monkeypa
     assert preview.external_agent_warnings == [
         "obj_tls: claude-code: invalid_output - agent output did not contain discovery JSON"
     ]
+
+
+def test_workspace_preview_keeps_local_source_when_gitnexus_and_agent_unavailable(tmp_path, monkeypatch):
+    from app.schemas.workspace_analysis import AnalysisPlan
+    from app.services.external_agent_discovery import AgentDiscoveryResult
+
+    _write_tls_repo(tmp_path)
+
+    async def fake_discovery(_request, **_kwargs):
+        return [
+            AgentDiscoveryResult(
+                provider="claude-code",
+                status="unavailable",
+                raw_summary="command not found: ccr",
+            )
+        ]
+
+    monkeypatch.setattr(
+        "app.services.workspace_scope_resolver.run_external_agent_discovery",
+        fake_discovery,
+    )
+    plan = AnalysisPlan(
+        analysis_objects=[AnalysisObject(id="obj_tls", text="nvme-tcp-tls", kind="module")]
+    )
+
+    preview = asyncio.run(
+        WorkspaceScopeResolver().resolve(
+            ws_id="ws",
+            repo_path=str(tmp_path),
+            plan=plan,
+        )
+    )
+    resolved = preview.resolved_objects[0]
+    paths = [c.path.replace("\\", "/") for c in resolved.candidate_files if c.path]
+
+    assert preview.gitnexus_available is False
+    assert preview.external_agent_status == {"claude-code": "unavailable"}
+    assert preview.external_agent_warnings == [
+        "obj_tls: claude-code: unavailable - command not found: ccr"
+    ]
+    assert any(path.endswith("nof/nvmf_tcp/transport/tls/tls.c") for path in paths)
+    assert not any("未在 GitNexus" in warning for warning in resolved.warnings)
 
 
 def test_workspace_resolver_keeps_detailed_agent_warning_without_duplicate(tmp_path, monkeypatch):

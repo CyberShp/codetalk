@@ -835,6 +835,45 @@ def _scope_external_agent_warnings(resolved: list[ResolvedAnalysisObject]) -> li
     return warnings
 
 
+def _scope_external_agent_status_from_warnings(
+    resolved: list[ResolvedAnalysisObject],
+) -> dict[str, str]:
+    """Recover provider status for preview-only runs without a persisted session."""
+    statuses: dict[str, str] = {}
+    valid_statuses = {
+        "ok",
+        "available",
+        "unavailable",
+        "timeout",
+        "invalid_output",
+        "rejected_command",
+        "error",
+    }
+    provider_re = re.compile(r"^(claude-code|opencode|external_agent):\s*([a-z_]+)\b")
+    rank = {
+        "ok": 0,
+        "available": 0,
+        "unavailable": 1,
+        "timeout": 2,
+        "invalid_output": 3,
+        "rejected_command": 4,
+        "error": 5,
+    }
+    for obj in resolved:
+        for warning in obj.warnings:
+            match = provider_re.match(str(warning).strip())
+            if not match:
+                continue
+            provider, status = match.groups()
+            if status not in valid_statuses:
+                continue
+            normalized = "available" if status == "ok" else status
+            current = statuses.get(provider)
+            if current is None or rank.get(normalized, 9) > rank.get(current, 9):
+                statuses[provider] = normalized
+    return statuses
+
+
 async def _await_with_agent_cleanup(awaitable, agent_task: asyncio.Task | None):
     try:
         return await awaitable
@@ -1443,6 +1482,11 @@ class WorkspaceScopeResolver:
             est_units = 0
         est_cards = estimate_evidence_cards(resolved, limits)
         external_agent_warnings = _scope_external_agent_warnings(resolved)
+        external_agent_status = (
+            dict(agent_session.ledger.provider_status)
+            if agent_session
+            else _scope_external_agent_status_from_warnings(resolved)
+        )
 
         return ScopePreview(
             workspace_id=ws_id,
@@ -1451,9 +1495,7 @@ class WorkspaceScopeResolver:
             estimated_evidence_cards=est_cards,
             warnings=warnings,
             gitnexus_available=gitnexus_available,
-            external_agent_status=(
-                dict(agent_session.ledger.provider_status) if agent_session else {}
-            ),
+            external_agent_status=external_agent_status,
             external_agent_warnings=external_agent_warnings,
             agent_discovery_session_id=agent_session.session_id if agent_session else None,
             external_agent_turn_count=len(agent_session.turns) if agent_session else 0,

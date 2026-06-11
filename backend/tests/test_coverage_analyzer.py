@@ -1184,6 +1184,48 @@ class TestCoverageTestDesign:
         assert "if (" not in execution_text
         assert design["summary"]["black_box_ready_count"] == 1
 
+    async def test_local_entry_trace_survives_gitnexus_and_agent_unavailable(
+        self,
+        tmp_path,
+        monkeypatch,
+    ):
+        import app.services.coverage_analyzer as coverage_mod
+        from app.config import settings
+        from app.services.coverage_analyzer import build_coverage_test_design
+        from app.services.external_agent_discovery import AgentDiscoveryResult
+
+        monkeypatch.setattr(settings, "external_agents_enabled", True)
+        self._make_repo(tmp_path)
+        modules = self._modules(
+            "feature,module,code_location,function,triggered,hit_count\n"
+            "rec,session,src/session.c:1-6,recover_session,false,0\n"
+        )
+
+        async def fake_discovery(_request, **_kwargs):
+            return [
+                AgentDiscoveryResult(
+                    provider="claude-code",
+                    status="unavailable",
+                    raw_summary="command not found: ccr",
+                )
+            ]
+
+        monkeypatch.setattr(coverage_mod, "run_external_agent_discovery", fake_discovery, raising=False)
+
+        design = await build_coverage_test_design(
+            modules, workspace_id="ws-1", repo_path=str(tmp_path)
+        )
+        gap = [g for g in design["gaps"] if g.get("kind") == "function"][0]
+
+        assert design["summary"]["tool_status"]["gitnexus"] == "unavailable"
+        assert design["summary"]["tool_status"]["external_agent"] == "unavailable"
+        assert gap["tool_status"]["gitnexus"] == "unavailable"
+        assert gap["tool_status"]["external_agent"] == "unavailable"
+        assert gap["entry_trace_status"] == "entry_found"
+        assert gap["black_box_readiness"]["case_type"] == "black_box_ready"
+        assert gap["black_box_cases"]
+        assert gap["evidence"]["external_agent"]["raw_results"][0]["status"] == "unavailable"
+
     async def test_resolves_function_when_coverage_path_is_directory(self, tmp_path):
         from app.services.coverage_analyzer import build_coverage_test_design
 

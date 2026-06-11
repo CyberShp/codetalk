@@ -1680,10 +1680,9 @@ def merge_source_candidates(
 
     for result in agent_results:
         if result.status != "ok":
-            if result.status != "unavailable":
-                detail = result.warnings[0] if result.warnings else result.raw_summary
-                suffix = f" - {detail}" if detail else ""
-                warnings.append(f"{result.provider}: {result.status}{suffix}")
+            detail = result.warnings[0] if result.warnings else result.raw_summary
+            suffix = f" - {detail}" if detail else ""
+            warnings.append(f"{result.provider}: {result.status}{suffix}")
             continue
         for file in result.candidate_files:
             validation = validate_agent_candidate_file(repo_path, file.path)
