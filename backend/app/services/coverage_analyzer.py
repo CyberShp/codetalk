@@ -2901,6 +2901,10 @@ def _definition_name_for_file(lines: list[str], idx: int, suffix: str) -> str | 
         or re.match(r"^(?:export\s+)?(?:async\s+)?function\s+", stripped)
     ):
         return None
+    if suffix == ".java":
+        java_name = _java_method_definition_name(line)
+        if java_name:
+            return java_name
     name = _match_def_name(line) or _match_multiline_def_name(lines, idx)
     if (
         name
@@ -2909,6 +2913,27 @@ def _definition_name_for_file(lines: list[str], idx: int, suffix: str) -> str | 
     ):
         return None
     return name
+
+
+def _java_method_definition_name(line: str) -> str | None:
+    stripped = line.strip()
+    if not stripped or stripped.startswith(_EXPRESSION_CALL_PREFIXES):
+        return None
+    if re.match(r"^(?:if|for|while|switch|catch|return|throw|new)\b", stripped):
+        return None
+    match = re.match(
+        r"^(?:@\w+(?:\([^)]*\))?\s*)*"
+        r"(?:(?:public|private|protected|static|final|synchronized|native|abstract|default)\s+)*"
+        r"(?:<[^>]+>\s*)?"
+        r"[\w.$<>,?\[\]\s]+\s+"
+        r"(?P<name>[A-Za-z_]\w*)\s*\([^;{}]*\)"
+        r"(?:\s+throws\s+[\w.$,\s]+)?\s*(?:\{|$)",
+        stripped,
+    )
+    if not match:
+        return None
+    name = match.group("name")
+    return None if name in _NON_FUNCTION_NAMES else name
 
 
 def _is_non_executable_symbol_reference(line_text: str, function_name: str) -> bool:
@@ -4192,6 +4217,15 @@ def _decorated_entry_for_symbol(
     )
     if go_grpc_entry:
         return go_grpc_entry
+    java_grpc_entry = _java_grpc_registration_entry_for_symbol(
+        repo_root,
+        source_file,
+        function_name,
+        lines,
+        definition_line,
+    )
+    if java_grpc_entry:
+        return java_grpc_entry
     serverless_entry = _serverless_handler_entry_for_symbol(
         repo_root,
         source_file,
@@ -4372,6 +4406,125 @@ def _find_go_grpc_registration_for_receiver(
 def _go_grpc_service_name_from_registration(registration_line: str) -> str | None:
     match = re.search(r"\bRegister(?P<service>[A-Za-z_]\w*)Server\s*\(", registration_line or "")
     return match.group("service") if match else None
+
+
+def _java_grpc_registration_entry_for_symbol(
+    repo_root: Path,
+    source_file: Path,
+    function_name: str,
+    lines: list[str],
+    definition_line: int,
+) -> dict | None:
+    if source_file.suffix.lower() != ".java":
+        return None
+    class_info = _java_enclosing_grpc_service_class(lines, definition_line)
+    if class_info is None:
+        return None
+    class_name, class_header = class_info
+    registration = _find_java_grpc_registration_for_class(repo_root, class_name)
+    if registration is None:
+        return None
+    reg_file, line_number, registration_line = registration
+    enclosing, _guard = _caller_context(str(reg_file), line_number)
+    rel_file = _relative_path(repo_root, reg_file)
+    signature = _collect_signature_text(lines, definition_line - 1)
+    method_hints = _signature_input_params(
+        signature,
+        model_fields_by_type=_source_model_fields_by_class(lines, ".java"),
+    )
+    service_name = _java_grpc_service_name_from_class_header(class_name, class_header)
+    entry_label = f"gRPC {service_name}" if service_name else _public_entry_label("grpc", enclosing or class_name)
+    return {
+        "entry_kind": "grpc",
+        "entry_symbol": enclosing or class_name,
+        "entry_file": rel_file,
+        "entry_label": entry_label,
+        "call_line": line_number,
+        "chain": [enclosing, function_name] if enclosing else [function_name],
+        "depth": 1 if enclosing else 0,
+        "evidence": f"{rel_file}:{line_number} {registration_line.strip()}",
+        "tool": "source-grpc-registration",
+        "input_hints": method_hints,
+    }
+
+
+def _java_enclosing_grpc_service_class(
+    lines: list[str],
+    definition_line: int,
+) -> tuple[str, str] | None:
+    definition_idx = definition_line - 1
+    for idx in range(definition_idx, -1, -1):
+        header = _java_collect_class_header(lines, idx)
+        if not header:
+            continue
+        match = re.search(r"\bclass\s+(?P<name>[A-Za-z_]\w*)\b", header)
+        if not match:
+            continue
+        if not _java_class_header_looks_like_grpc_service(header):
+            continue
+        return match.group("name"), header
+    return None
+
+
+def _java_collect_class_header(lines: list[str], idx: int) -> str | None:
+    if idx < 0 or idx >= len(lines):
+        return None
+    if not re.search(r"\bclass\s+[A-Za-z_]\w*\b", lines[idx]):
+        return None
+    parts: list[str] = []
+    for pos in range(idx, min(len(lines), idx + 8)):
+        text = lines[pos].strip()
+        if not text:
+            continue
+        parts.append(text)
+        if "{" in text:
+            break
+    return " ".join(parts)
+
+
+def _java_class_header_looks_like_grpc_service(header: str) -> bool:
+    if re.search(r"\bimplements\b[^{};]*\bBindableService\b", header):
+        return True
+    return bool(re.search(
+        r"\bextends\b[^{};]*\b[A-Za-z_]\w*Grpc\s*\.\s*[A-Za-z_]\w*ImplBase\b",
+        header,
+    ))
+
+
+def _find_java_grpc_registration_for_class(
+    repo_root: Path,
+    class_name: str,
+) -> tuple[Path, int, str] | None:
+    class_pattern = re.escape(class_name)
+    register_re = re.compile(
+        rf"\.addService\s*\(\s*new\s+{class_pattern}\s*\(",
+    )
+    for root, dirs, files in os.walk(repo_root):
+        dirs[:] = [d for d in dirs if d not in _DIR_SKIP and not d.startswith(".")]
+        for fname in files:
+            path = Path(root) / fname
+            if path.suffix.lower() != ".java":
+                continue
+            try:
+                lines = path.read_text(encoding="utf-8", errors="replace").splitlines()
+            except OSError:
+                continue
+            for idx, line in enumerate(lines, start=1):
+                if "addService" not in line:
+                    continue
+                window = " ".join(part.strip() for part in lines[idx - 1:min(len(lines), idx + 4)])
+                if register_re.search(window):
+                    return path, idx, line
+    return None
+
+
+def _java_grpc_service_name_from_class_header(class_name: str, class_header: str) -> str | None:
+    match = re.search(r"\bextends\b[^{};]*\b(?P<service>[A-Za-z_]\w*)Grpc\s*\.", class_header or "")
+    if match:
+        return match.group("service")
+    if class_name.endswith("Impl") and len(class_name) > len("Impl"):
+        return class_name[: -len("Impl")]
+    return class_name or None
 
 
 def _serverless_handler_entry_for_symbol(

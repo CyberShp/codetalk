@@ -1592,6 +1592,54 @@ class TestCoverageTestDesign:
         assert "RegisterPaymentServiceServer" in entry["evidence"]
         assert "PaymentRequest" in entry["input_hints"]
 
+    async def test_java_grpc_service_registration_becomes_black_box_api_entry(self, tmp_path):
+        from app.services.coverage_analyzer import build_coverage_test_design
+
+        src = tmp_path / "src"
+        src.mkdir()
+        (src / "PaymentServiceImpl.java").write_text(
+            "public final class PaymentServiceImpl extends PaymentServiceGrpc.PaymentServiceImplBase {\n"
+            "  @Override\n"
+            "  public void processPayment(PaymentRequest request, StreamObserver<PaymentReply> observer) {\n"
+            "    if (request.getAmount() == 0) {\n"
+            "      observer.onError(new IllegalArgumentException(\"missing amount\"));\n"
+            "      return;\n"
+            "    }\n"
+            "    observer.onNext(PaymentReply.newBuilder().build());\n"
+            "  }\n"
+            "}\n",
+            encoding="utf-8",
+        )
+        (src / "GrpcServer.java").write_text(
+            "public final class GrpcServer {\n"
+            "  public void start() throws Exception {\n"
+            "    Server server = ServerBuilder.forPort(9090)\n"
+            "      .addService(new PaymentServiceImpl())\n"
+            "      .build()\n"
+            "      .start();\n"
+            "  }\n"
+            "}\n",
+            encoding="utf-8",
+        )
+        modules = self._modules(
+            "feature,module,code_location,function,triggered,hit_count\n"
+            "payments,grpc,src/PaymentServiceImpl.java:3-9,processPayment,false,0\n"
+        )
+
+        design = await build_coverage_test_design(
+            modules, workspace_id="ws-1", repo_path=str(tmp_path)
+        )
+
+        gap = [g for g in design["gaps"] if g.get("kind") == "function"][0]
+        assert gap["gray_box_required"] is False
+        assert gap["black_box_readiness"]["case_type"] == "black_box_ready"
+        entry = gap["entry_paths"][0]
+        assert entry["entry_kind"] == "grpc"
+        assert entry["entry_symbol"] == "start"
+        assert entry["tool"] == "source-grpc-registration"
+        assert "addService(new PaymentServiceImpl())" in entry["evidence"]
+        assert "PaymentRequest" in entry["input_hints"]
+
     async def test_python_webhook_call_site_becomes_black_box_entry_without_agent(self, tmp_path):
         from app.services.coverage_analyzer import build_coverage_test_design
 
