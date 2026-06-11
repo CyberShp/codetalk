@@ -214,7 +214,10 @@ def check_provider_health(
         return health
 
     attempted = ", ".join(str(cmd).strip() for cmd in commands if str(cmd).strip()) or "<empty>"
-    diagnostic = _agent_runtime_diagnostic()
+    diagnostic = _agent_runtime_diagnostic(
+        provider=provider,
+        attempted_commands=commands,
+    )
     if configuration_error is not None:
         reason = str(configuration_error.get("reason") or "agent command configuration error")
     else:
@@ -359,7 +362,10 @@ def _unavailable_health_from_attempts(
         "status": "unavailable",
         "reason": f"no agent command found; attempted: {attempted}",
         "attempts": attempts,
-        "diagnostic": _agent_runtime_diagnostic(),
+        "diagnostic": _agent_runtime_diagnostic(
+            provider=provider,
+            attempted_commands=commands,
+        ),
     }
 
 
@@ -541,6 +547,30 @@ def _resolve_windows_common_command_path(executable: str) -> str | None:
     if not value or any(sep in value for sep in ("/", "\\")):
         return None
 
+    base_dirs = _windows_common_command_dirs()
+    suffix = Path(value).suffix
+    names = [value] if suffix else [
+        f"{value}.cmd",
+        f"{value}.exe",
+        f"{value}.bat",
+        value,
+        f"{value}.ps1",
+    ]
+    seen_dirs: set[str] = set()
+    for base_dir in base_dirs:
+        key = str(base_dir).lower()
+        if key in seen_dirs:
+            continue
+        seen_dirs.add(key)
+        for name in names:
+            candidate = base_dir / name
+            if candidate.is_file():
+                return str(candidate)
+    return None
+
+
+def _windows_common_command_dirs() -> list[Path]:
+    """User-level command shim locations often missing from service PATH."""
     base_dirs: list[Path] = []
     appdata = os.environ.get("APPDATA")
     if appdata:
@@ -580,28 +610,23 @@ def _resolve_windows_common_command_path(executable: str) -> str | None:
     if chocolatey:
         base_dirs.append(Path(chocolatey) / "bin")
 
-    suffix = Path(value).suffix
-    names = [value] if suffix else [
-        f"{value}.cmd",
-        f"{value}.exe",
-        f"{value}.bat",
-        value,
-        f"{value}.ps1",
-    ]
+    deduped: list[Path] = []
     seen_dirs: set[str] = set()
     for base_dir in base_dirs:
         key = str(base_dir).lower()
         if key in seen_dirs:
             continue
         seen_dirs.add(key)
-        for name in names:
-            candidate = base_dir / name
-            if candidate.is_file():
-                return str(candidate)
-    return None
+        deduped.append(base_dir)
+    return deduped
 
 
-def _agent_runtime_diagnostic(max_path_entries: int = 12) -> dict:
+def _agent_runtime_diagnostic(
+    max_path_entries: int = 12,
+    *,
+    provider: str | None = None,
+    attempted_commands: list[str] | None = None,
+) -> dict:
     try:
         cwd = os.getcwd()
     except OSError:
@@ -612,11 +637,47 @@ def _agent_runtime_diagnostic(max_path_entries: int = 12) -> dict:
     path_summary = " | ".join(visible_entries) if visible_entries else "<empty>"
     if len(all_entries) > len(visible_entries):
         path_summary = f"{path_summary} | ... (+{len(all_entries) - len(visible_entries)} more)"
-    return {
+    diagnostic = {
         "cwd": cwd,
         "path_entries": visible_entries,
         "path_entry_count": len(all_entries),
         "summary": f"cwd: {cwd}; PATH entries: {path_summary}",
+    }
+    if platform.system().lower().startswith("win"):
+        diagnostic["checked_common_dirs"] = [
+            str(path) for path in _windows_common_command_dirs()
+        ][:24]
+    command_hint = _agent_command_configuration_hint(provider, attempted_commands or [])
+    if command_hint:
+        diagnostic.update(command_hint)
+    return diagnostic
+
+
+def _agent_command_configuration_hint(
+    provider: str | None,
+    attempted_commands: list[str],
+) -> dict[str, str] | None:
+    attr = PROVIDER_COMMANDS.get(str(provider or ""))
+    if not attr:
+        return None
+    env_name = attr.upper()
+    primary = next((str(item).strip() for item in attempted_commands if str(item).strip()), "")
+    if not primary:
+        primary = str(getattr(settings, attr, "") or "").strip()
+    executable = split_agent_command(primary)[0] if primary else ""
+    example_name = "ccr.cmd" if executable.lower() in {"ccr", "ccr.cmd"} else (executable or "agent.cmd")
+    suffix = ""
+    if provider == "claude-code" and _looks_like_ccr_code_command(split_agent_command(primary)):
+        suffix = " code -p"
+    elif provider == "claude-code":
+        suffix = " -p"
+    example = f'C:\\path\\to\\{example_name}{suffix}'.strip()
+    return {
+        "command_hint_env": env_name,
+        "command_hint": (
+            f"If the agent works in your terminal but CodeTalk reports unavailable, "
+            f"set {env_name} to the full executable path, for example: {example}"
+        ),
     }
 
 
@@ -2268,6 +2329,7 @@ def _format_unavailable_health_summary(health: dict) -> str:
     diagnostic = health.get("diagnostic")
     if isinstance(diagnostic, dict):
         parts.append(_redact_agent_diagnostic_text(str(diagnostic.get("summary") or "").strip()))
+        parts.append(_redact_agent_diagnostic_text(str(diagnostic.get("command_hint") or "").strip()))
     return "; ".join(part for part in parts if part)[:4000]
 
 

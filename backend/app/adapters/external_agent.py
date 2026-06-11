@@ -112,4 +112,8 @@ def _format_attempt_summary(item: dict) -> str:
 def _format_runtime_diagnostic(value: object) -> str:
     if not isinstance(value, dict):
         return ""
-    return redact_agent_diagnostic_text(str(value.get("summary") or "").strip())
+    parts = [
+        str(value.get("summary") or "").strip(),
+        str(value.get("command_hint") or "").strip(),
+    ]
+    return redact_agent_diagnostic_text("; ".join(part for part in parts if part))

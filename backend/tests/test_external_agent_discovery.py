@@ -1078,6 +1078,32 @@ def test_missing_cli_returns_unavailable(tmp_path, monkeypatch):
     assert "claude" in health["reason"]
 
 
+def test_missing_ccr_health_includes_actionable_command_configuration_hint(tmp_path, monkeypatch):
+    from app.services.external_agent_discovery import check_provider_health
+
+    monkeypatch.setattr("app.services.external_agent_discovery.platform.system", lambda: "Windows")
+    monkeypatch.setattr("app.services.external_agent_discovery.shutil.which", lambda _cmd: None)
+    monkeypatch.setattr(
+        "app.services.external_agent_discovery._probe_windows_shell_command",
+        lambda _executable: None,
+    )
+    monkeypatch.setenv("APPDATA", str(tmp_path / "missing-appdata"))
+    monkeypatch.setenv("USERPROFILE", str(tmp_path / "missing-userprofile"))
+    monkeypatch.setenv("LOCALAPPDATA", str(tmp_path / "missing-localappdata"))
+    monkeypatch.setenv("ProgramData", str(tmp_path / "missing-programdata"))
+    monkeypatch.delenv("PNPM_HOME", raising=False)
+
+    health = check_provider_health("claude-code", "ccr code -p", fallback_commands=[])
+    diagnostic = health["diagnostic"]
+
+    assert health["status"] == "unavailable"
+    assert diagnostic["command_hint_env"] == "CLAUDE_CODE_COMMAND"
+    assert "CLAUDE_CODE_COMMAND" in diagnostic["command_hint"]
+    assert "ccr.cmd code -p" in diagnostic["command_hint"]
+    assert "checked_common_dirs" in diagnostic
+    assert "missing-appdata" in " ".join(diagnostic["checked_common_dirs"])
+
+
 def test_provider_command_supports_subcommand_style(tmp_path, monkeypatch):
     from app.services.external_agent_discovery import check_provider_health, split_agent_command
 
@@ -2393,6 +2419,40 @@ def test_external_agent_adapter_health_redacts_secret_attempts(monkeypatch):
 
     assert secret not in health.last_check
     assert "<redacted>" in health.last_check
+
+
+def test_external_agent_adapter_health_includes_command_configuration_hint(monkeypatch):
+    from app.adapters import external_agent as adapter_mod
+
+    def fake_health(provider, command, fallback_commands=None):
+        return {
+            "status": "unavailable",
+            "reason": "no agent command found; attempted: ccr code -p",
+            "diagnostic": {
+                "summary": "cwd: E:/repo; PATH entries: C:/agent-bin",
+                "command_hint": (
+                    "If the agent works in your terminal but CodeTalk reports unavailable, "
+                    "set CLAUDE_CODE_COMMAND to the full executable path, "
+                    "for example: C:\\path\\to\\ccr.cmd code -p"
+                ),
+            },
+            "attempts": [
+                {
+                    "command": "ccr code -p",
+                    "status": "unavailable",
+                }
+            ],
+        }
+
+    monkeypatch.setattr(adapter_mod, "check_provider_health", fake_health)
+
+    health = asyncio.run(
+        adapter_mod.ExternalAgentAdapter("claude-code", "claude_code_command").health_check()
+    )
+
+    assert health.is_healthy is False
+    assert "CLAUDE_CODE_COMMAND" in health.last_check
+    assert "ccr.cmd code -p" in health.last_check
 
 
 def test_agent_diagnostic_redaction_handles_quoted_and_bearer_values():
