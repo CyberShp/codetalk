@@ -422,6 +422,16 @@ _CALLBACK_ASSIGN_RE = re.compile(
 _DISPATCH_TABLE_ENTRY_RE = re.compile(
     r"""(?P<quote>['"])(?P<key>[A-Za-z0-9_.:/-]{1,80})(?P=quote)\s*,\s*&?(?P<symbol>[A-Za-z_]\w*)\b"""
 )
+_DISPATCH_TABLE_HANDLER_RE = re.compile(
+    r"\.(?:handler|handlers|callback|cb|fn|func|function|method|op|ops|entry)\s*="
+    r"\s*&?(?P<symbol>[A-Za-z_]\w*)\b",
+    re.IGNORECASE,
+)
+_DISPATCH_TABLE_KEY_RE = re.compile(
+    r"\.(?:name|cmd|command|key|op|operation|route|path|topic|event|message|type|id)\s*="
+    r"\s*(?P<quote>['\"])(?P<key>[A-Za-z0-9_.:/-]{1,80})(?P=quote)",
+    re.IGNORECASE,
+)
 _DISPATCH_TABLE_CONTEXT_RE = re.compile(
     r"\b(?:cmd|command|cli|rpc|api|request|handler|handlers|op|ops|operation|"
     r"dispatch|route|endpoint|message|event|callback|table|registry)\b",
@@ -4428,9 +4438,6 @@ def _dispatch_table_entry_for_site(
 ) -> dict | None:
     if not traced_symbol:
         return None
-    match = _dispatch_table_match_for_symbol(site_text, traced_symbol)
-    if not match:
-        return None
     try:
         path = Path(abs_file)
         lines = path.read_text(encoding="utf-8", errors="replace").splitlines()
@@ -4444,8 +4451,10 @@ def _dispatch_table_entry_for_site(
     context_text = "\n".join(window)
     if not _DISPATCH_TABLE_CONTEXT_RE.search(context_text):
         return None
+    key = _dispatch_table_key_for_symbol(site_text, traced_symbol, window)
+    if not key:
+        return None
 
-    key = match.group("key")
     rel_file = _relative_path(repo_root, path)
     entry_type = _dispatch_table_entry_type(context_text, window)
     metadata = _entry_metadata_for_symbol(
@@ -4472,11 +4481,49 @@ def _dispatch_table_entry_for_site(
     return entry
 
 
-def _dispatch_table_match_for_symbol(site_text: str, traced_symbol: str) -> re.Match | None:
+def _dispatch_table_key_for_symbol(
+    site_text: str,
+    traced_symbol: str,
+    window: list[str],
+) -> str | None:
     for match in _DISPATCH_TABLE_ENTRY_RE.finditer(site_text or ""):
         if match.group("symbol") == traced_symbol:
-            return match
+            return match.group("key")
+    handler_line_index = _dispatch_table_handler_line_index(window, traced_symbol)
+    if handler_line_index is None:
+        return None
+    block_text = _dispatch_table_initializer_block(window, handler_line_index)
+    key_match = _DISPATCH_TABLE_KEY_RE.search(block_text)
+    if key_match:
+        return key_match.group("key")
+    positional_match = _DISPATCH_TABLE_ENTRY_RE.search(block_text)
+    if positional_match and positional_match.group("symbol") == traced_symbol:
+        return positional_match.group("key")
     return None
+
+
+def _dispatch_table_handler_line_index(window: list[str], traced_symbol: str) -> int | None:
+    for index, line in enumerate(window):
+        for match in _DISPATCH_TABLE_HANDLER_RE.finditer(line or ""):
+            if match.group("symbol") == traced_symbol:
+                return index
+    return None
+
+
+def _dispatch_table_initializer_block(window: list[str], handler_line_index: int) -> str:
+    start = handler_line_index
+    while start > 0:
+        if "{" in window[start]:
+            break
+        start -= 1
+    end = handler_line_index
+    while end + 1 < len(window):
+        if "}" in window[end]:
+            break
+        end += 1
+        if "}" in window[end]:
+            break
+    return "\n".join(window[start:end + 1])
 
 
 def _dispatch_table_entry_type(context_text: str, window: list[str]) -> str:
