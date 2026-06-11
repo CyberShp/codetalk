@@ -174,6 +174,10 @@ def _keyword_path_variants(keyword: str) -> list[str]:
     add(dotted)
     add(dotted.replace("/", "_"))
     add(dotted.replace("/", "-"))
+    separator_path = re.sub(r"[-_\s]+", "/", dotted)
+    add(separator_path)
+    add(separator_path.replace("/", "_"))
+    add(separator_path.replace("/", "-"))
     dotted_snake = "/".join(
         _camel_segment_to_snake(part)
         for part in dotted.split("/")

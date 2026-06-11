@@ -65,6 +65,16 @@ def test_dotted_camel_path_keyword_expands_each_segment_to_snake_path():
     assert "payments-service-payment-service" in variants
 
 
+def test_hyphenated_keyword_expands_to_nested_path_variant():
+    from app.services.workspace_scope_resolver import _keyword_path_variants
+
+    variants = _keyword_path_variants("billing-payment-refund")
+
+    assert "billing/payment/refund" in variants
+    assert "billing_payment_refund" in variants
+    assert "billing-payment-refund" in variants
+
+
 def test_agent_json_output_is_parsed_and_validated(tmp_path):
     from app.services.external_agent_discovery import parse_agent_output
 
