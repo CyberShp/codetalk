@@ -405,14 +405,14 @@ _ENTRY_DECORATOR_KIND_TOKENS: tuple[tuple[str, tuple[str, ...]], ...] = (
         "api", "rpc", "grpc", "http", "request",
         "graphql", "resolver", "query", "mutation", "subscription",
     )),
+    ("scheduler", ("schedule", "scheduler", "scheduled", "cron", "periodic", "add_job")),
+    ("timer", ("timer", "timeout", "poller", "interval")),
     ("job", (
         "celery", "shared_task", "dramatiq", "huey", "rq",
-        ".task", "@task", "@job", ".job",
+        ".task", "@task", "@job", ".job", "job(",
     )),
     ("message", ("subscribe", "subscriber", "topic", "queue", "message", "event", "listener",
                  ".on", ".listen", "consumer")),
-    ("scheduler", ("schedule", "scheduler", "scheduled", "cron", "periodic")),
-    ("timer", ("timer", "timeout", "poller", "interval")),
     ("callback", ("callback", ".callback")),
 )
 _PUBLIC_CALLBACK_START_RE = re.compile(
@@ -547,9 +547,9 @@ _ENTRY_SIGNATURES: tuple[tuple[str, tuple[str, ...]], ...] = (
              "controller", "endpoint", "server", "rest", "grpc", "http", "rpc",
              "view", "/web", "servlet")),
     ("queue", ("queue", "topic", "consumer", "subscriber", "producer", "work_queue")),
-    ("job", ("job", "jobs", "worker", "task", "background")),
-    ("scheduler", ("scheduler", "schedule", "scheduled", "cron", "periodic")),
+    ("scheduler", ("scheduler", "schedule", "scheduled", "cron", "periodic", "add_job")),
     ("timer", ("timer", "timers", "poller", "polling", "timeout", "interval", "tick")),
+    ("job", ("job", "jobs", "worker", "task", "background")),
     ("message", ("message", "/msg", "event", "consumer", "subscriber", "publish", "queue",
                  "kafka", "/mq", "callback", "signal", "/irq", "isr", "dispatch", "listener",
                  "notify", "on_")),
@@ -4555,6 +4555,15 @@ def _registration_channel_input_hints(registration_line: str, entry_type: str) -
         return []
     hints: list[str] = []
     seen: set[str] = set()
+    if entry_type in {"scheduler", "job", "timer"}:
+        for match in re.finditer(
+            r"""\b(?:id|job_id|name|task_id)\s*=\s*(['"])(?P<value>(?:\\.|(?!\1).)*?)\1""",
+            registration_line or "",
+        ):
+            value = match.group("value").strip()
+            if value and value not in seen:
+                seen.add(value)
+                hints.append(value)
     for match in re.finditer(r"""(['"])(?P<value>(?:\\.|(?!\1).)*?)\1""", registration_line or ""):
         value = match.group("value").strip()
         if not value or value in seen:
@@ -4780,6 +4789,7 @@ def _trace_entry_paths(
                             )
                     else:
                         channel_hints = _merge_ordered_strings(
+                            _registration_channel_input_hints(site["text"], entry_kind),
                             _queue_registration_input_hints(site["text"], entry_kind),
                             _symbol_channel_input_hints(entry_symbol, entry_kind),
                         )
@@ -4864,8 +4874,8 @@ def _augment_entry_input_hints_from_symbol_source(
         _handler_signature_input_hints(str(abs_file), str(entry_symbol)),
     )
     merged_hints = _merge_ordered_input_hints(
-        source_hints,
         entry.get("input_hints"),
+        source_hints,
     )
     if merged_hints:
         entry["input_hints"] = merged_hints
