@@ -2548,12 +2548,46 @@ class TestCoverageTestDesign:
         assert gap["source_window"]["definition_line"] == 3
         assert "func (s *PaymentService) ProcessPayment" in gap["source_window"]["text"]
 
+    async def test_cpp_hh_header_without_extension_is_read_as_source_window(self, tmp_path):
+        from app.services.coverage_analyzer import build_coverage_test_design
+
+        include = tmp_path / "include"
+        include.mkdir()
+        (include / "payment_service.hh").write_text(
+            "inline bool processPayment(const PaymentRequest& request) {\n"
+            "    if (!request.amount) {\n"
+            "        return false;\n"
+            "    }\n"
+            "    return true;\n"
+            "}\n",
+            encoding="utf-8",
+        )
+        modules = self._modules(
+            "feature,module,code_location,function,triggered,hit_count\n"
+            "payments,service,include/payment_service:1-6,processPayment,false,0\n"
+        )
+
+        design = await build_coverage_test_design(
+            modules, workspace_id="ws-1", repo_path=str(tmp_path)
+        )
+
+        gap = [g for g in design["gaps"] if g.get("kind") == "function"][0]
+        assert gap["source_window"]["available"] is True
+        assert gap["source_window"]["path"] == "include/payment_service.hh"
+        assert "inline bool processPayment" in gap["source_window"]["text"]
+
     async def test_coverage_source_file_iterator_includes_supported_script_languages(self, tmp_path):
         from app.services.coverage_analyzer import _iter_source_files
 
         src = tmp_path / "src"
         src.mkdir()
-        for name in ("payment_service.rb", "payment_service.php", "payment_script.kts"):
+        for name in (
+            "payment_service.rb",
+            "payment_service.php",
+            "payment_script.kts",
+            "payment_service.hh",
+            "payment_service.hxx",
+        ):
             (src / name).write_text("source\n", encoding="utf-8")
         (src / "payment.md").write_text("docs\n", encoding="utf-8")
 
@@ -2565,6 +2599,8 @@ class TestCoverageTestDesign:
         assert "src/payment_service.rb" in rel_paths
         assert "src/payment_service.php" in rel_paths
         assert "src/payment_script.kts" in rel_paths
+        assert "src/payment_service.hh" in rel_paths
+        assert "src/payment_service.hxx" in rel_paths
         assert "src/payment.md" not in rel_paths
 
     async def test_coverage_definition_detection_handles_ruby_class_methods(self):

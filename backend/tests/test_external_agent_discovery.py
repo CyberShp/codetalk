@@ -3417,6 +3417,20 @@ def test_agent_candidate_accepts_node_module_source_extensions(tmp_path):
     assert validation.path == "src/payments.mjs"
 
 
+def test_agent_candidate_accepts_cpp_header_source_extensions(tmp_path):
+    from app.services.external_agent_discovery import validate_agent_candidate_file
+
+    include = tmp_path / "include"
+    include.mkdir()
+    source = include / "payment_service.hxx"
+    source.write_text("inline bool processPayment() { return true; }\n", encoding="utf-8")
+
+    validation = validate_agent_candidate_file(tmp_path, "include/payment_service.hxx")
+
+    assert validation.validated is True
+    assert validation.path == "include/payment_service.hxx"
+
+
 def test_agent_candidate_path_with_parent_repo_prefix_validates_from_nested_root(tmp_path):
     from app.services.external_agent_discovery import validate_agent_candidate_file
 
