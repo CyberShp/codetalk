@@ -3393,6 +3393,8 @@ def _source_model_fields_by_class(lines: list[str], suffix: str) -> dict[str, li
         return _python_model_fields_by_class(lines)
     if suffix == ".java":
         return _java_model_fields_by_class(lines)
+    if suffix == ".cs":
+        return _csharp_model_fields_by_class(lines)
     if suffix in {".ts", ".tsx", ".mts", ".cts"}:
         return _typescript_model_fields_by_class(lines)
     return {}
@@ -3556,6 +3558,76 @@ def _typescript_model_fields_by_class(lines: list[str]) -> dict[str, list[str]]:
             fields_by_type[type_name] = fields
         idx = max(pos, idx + 1)
     return fields_by_type
+
+
+def _csharp_model_fields_by_class(lines: list[str]) -> dict[str, list[str]]:
+    fields_by_class: dict[str, list[str]] = {}
+    idx = 0
+    while idx < len(lines):
+        line = lines[idx]
+        match = re.match(
+            r"^\s*(?:(?:public|private|protected|internal|static|sealed|partial|abstract)\s+)*"
+            r"(?P<kind>class|record)\s+(?P<name>[A-Za-z_]\w*)"
+            r"(?:\s*\((?P<params>[^)]*)\))?",
+            line,
+        )
+        if not match:
+            idx += 1
+            continue
+        class_name = match.group("name")
+        fields: list[str] = []
+        seen: set[str] = set()
+
+        if match.group("kind") == "record":
+            for raw_param in _split_signature_params(match.group("params") or ""):
+                field = _csharp_member_name_from_declaration(raw_param)
+                if field and field not in seen:
+                    seen.add(field)
+                    fields.append(field)
+
+        brace_depth = line.count("{") - line.count("}")
+        pos = idx + 1
+        while pos < len(lines):
+            child = lines[pos]
+            if brace_depth <= 0 and child.strip():
+                break
+            if brace_depth == 1:
+                field = _csharp_member_name_from_declaration(child)
+                if field and field not in seen:
+                    seen.add(field)
+                    fields.append(field)
+                    if len(fields) >= 12:
+                        break
+            brace_depth += child.count("{") - child.count("}")
+            pos += 1
+        if fields:
+            fields_by_class[class_name] = fields
+        idx = max(pos, idx + 1)
+    return fields_by_class
+
+
+def _csharp_member_name_from_declaration(raw_line: str) -> str | None:
+    line = str(raw_line or "").strip()
+    if not line or line.startswith(("//", "/*", "*", "[")):
+        return None
+    if "(" in line and "{" not in line:
+        return None
+    line = line.split("//", 1)[0].strip().rstrip(";")
+    if "=" in line:
+        line = line.split("=", 1)[0].strip()
+    tokens = re.findall(r"[A-Za-z_]\w*", line)
+    skip = {
+        "public", "private", "protected", "internal", "static", "readonly",
+        "required", "virtual", "override", "sealed", "partial", "class", "record",
+        "get", "set", "init", "new",
+    }
+    filtered = [token for token in tokens if token.lower() not in skip]
+    if len(filtered) < 2:
+        return None
+    member = filtered[-1]
+    if member and member[0].isupper():
+        return member
+    return None
 
 
 def _typescript_field_name_from_declaration(raw_line: str) -> str | None:
