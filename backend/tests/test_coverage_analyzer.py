@@ -1341,6 +1341,41 @@ class TestCoverageTestDesign:
         assert "optimal_open_zones" in case_text
         assert "Drive the nearest public API" not in case_text
 
+    async def test_grpc_servicer_registration_becomes_black_box_api_entry(self, tmp_path):
+        from app.services.coverage_analyzer import build_coverage_test_design
+
+        src = tmp_path / "src"
+        src.mkdir()
+        (src / "payment_service.py").write_text(
+            "class PaymentService:\n"
+            "    def ProcessPayment(self, request, context):\n"
+            "        if not request.amount:\n"
+            "            return PaymentReply(status='missing')\n"
+            "        return PaymentReply(status='ok')\n\n"
+            "def serve(server):\n"
+            "    service = PaymentService()\n"
+            "    service.ProcessPayment(HealthCheck(amount=1), None)\n"
+            "    payment_pb2_grpc.add_PaymentServiceServicer_to_server(service, server)\n",
+            encoding="utf-8",
+        )
+        modules = self._modules(
+            "feature,module,code_location,function,triggered,hit_count\n"
+            "payments,grpc,src/payment_service.py:2-5,ProcessPayment,false,0\n"
+        )
+
+        design = await build_coverage_test_design(
+            modules, workspace_id="ws-1", repo_path=str(tmp_path)
+        )
+
+        gap = [g for g in design["gaps"] if g.get("kind") == "function"][0]
+        assert gap["gray_box_required"] is False
+        assert gap["black_box_readiness"]["case_type"] == "black_box_ready"
+        entry = gap["entry_paths"][0]
+        assert entry["entry_kind"] == "api"
+        assert entry["entry_symbol"] == "serve"
+        assert entry["tool"] == "source-registration"
+        assert "add_PaymentServiceServicer_to_server" in entry["evidence"]
+
     async def test_python_webhook_call_site_becomes_black_box_entry_without_agent(self, tmp_path):
         from app.services.coverage_analyzer import build_coverage_test_design
 
