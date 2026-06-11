@@ -2795,6 +2795,49 @@ class TestCoverageTestDesign:
         assert "@Mutation" in entry["evidence"]
         assert entry["input_hints"] == ["amount", "tenantId"]
 
+    async def test_graphql_resolver_map_becomes_black_box_api_entry(self, tmp_path):
+        from app.services.coverage_analyzer import build_coverage_test_design
+
+        src = tmp_path / "src"
+        src.mkdir()
+        (src / "payment_service.ts").write_text(
+            "export async function processPayment(args) {\n"
+            "  if (!args.amount) {\n"
+            "    return { status: 'missing' };\n"
+            "  }\n"
+            "  return { status: 'ok' };\n"
+            "}\n",
+            encoding="utf-8",
+        )
+        (src / "schema.ts").write_text(
+            "import { makeExecutableSchema } from '@graphql-tools/schema';\n"
+            "import { processPayment } from './payment_service';\n\n"
+            "const resolvers = {\n"
+            "  Mutation: {\n"
+            "    processPayment,\n"
+            "  },\n"
+            "};\n\n"
+            "export const schema = makeExecutableSchema({ typeDefs, resolvers });\n",
+            encoding="utf-8",
+        )
+        modules = self._modules(
+            "feature,module,code_location,function,triggered,hit_count\n"
+            "payments,service,src/payment_service.ts:1-6,processPayment,false,0\n"
+        )
+
+        design = await build_coverage_test_design(
+            modules, workspace_id="ws-1", repo_path=str(tmp_path)
+        )
+
+        gap = [g for g in design["gaps"] if g.get("kind") == "function"][0]
+        assert gap["gray_box_required"] is False
+        assert gap["black_box_readiness"]["case_type"] == "black_box_ready"
+        entry = gap["entry_paths"][0]
+        assert entry["entry_kind"] == "api"
+        assert entry["entry_symbol"] == "processPayment"
+        assert entry["tool"] == "source-graphql-schema"
+        assert "Mutation" in entry["evidence"]
+
     async def test_typed_route_signature_params_feed_black_box_input_hints(self, tmp_path):
         from app.services.coverage_analyzer import build_coverage_test_design
 

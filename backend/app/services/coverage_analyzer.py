@@ -3642,6 +3642,17 @@ def _trace_entry_paths(
                 if registration_entry:
                     entry_paths.append(registration_entry)
                     continue
+                graphql_entry = _graphql_schema_entry_for_site(
+                    repo_root,
+                    site["abs_file"],
+                    site["line_number"],
+                    symbol,
+                    site["text"],
+                    caller_chain,
+                )
+                if graphql_entry:
+                    entry_paths.append(graphql_entry)
+                    continue
                 if enclosing:
                     decorated_caller_entry = _decorated_entry_for_symbol(
                         repo_root,
@@ -3791,6 +3802,82 @@ def _request_field_hints_for_symbol_source(
     if not definition_line:
         return []
     return _request_field_hints(str(symbol_file), definition_line, entry_symbol)
+
+
+def _graphql_schema_entry_for_site(
+    repo_root: Path,
+    abs_file: str,
+    line_number: int,
+    symbol: str,
+    site_text: str,
+    caller_chain: list[str],
+) -> dict | None:
+    if not symbol or not re.search(rf"\b{re.escape(symbol)}\b", site_text or ""):
+        return None
+    try:
+        path = Path(abs_file)
+        lines = path.read_text(encoding="utf-8", errors="replace").splitlines()
+    except OSError:
+        return None
+
+    idx = max(0, line_number - 1)
+    start = max(0, idx - 12)
+    end = min(len(lines), idx + 28)
+    window = lines[start:end]
+    window_text = "\n".join(window)
+    lowered = window_text.lower()
+    graphql_surface = (
+        "graphql" in lowered
+        or "makeexecutableschema" in lowered
+        or "apolloserver" in lowered
+        or "graphqlhttp" in lowered
+        or "buildschema" in lowered
+    )
+    resolver_surface = any(
+        token in lowered
+        for token in (
+            "resolver", "resolvers", "rootvalue",
+            "mutation", "query", "subscription",
+        )
+    )
+    if not (graphql_surface and resolver_surface):
+        return None
+
+    operation = _graphql_operation_from_window(window, idx - start)
+    rel_file = _relative_path(repo_root, path)
+    metadata = _entry_metadata_for_symbol(repo_root, str(path), line_number, None, symbol)
+    entry_label = metadata.pop("entry_label", None)
+    entry = {
+        "entry_kind": "api",
+        "entry_symbol": symbol,
+        "entry_file": rel_file,
+        "call_line": line_number,
+        "chain": caller_chain,
+        "depth": max(0, len(caller_chain) - 1),
+        "evidence": (
+            f"{rel_file}:{line_number} GraphQL {operation} {site_text.strip()}"
+            if operation else f"{rel_file}:{line_number} {site_text.strip()}"
+        ),
+        "tool": "source-graphql-schema",
+        "entry_label": entry_label or f"GraphQL {operation or 'resolver'} {symbol}",
+    }
+    input_hints = metadata.pop("input_hints", [])
+    if input_hints:
+        entry["input_hints"] = input_hints
+    entry.update(metadata)
+    return entry
+
+
+def _graphql_operation_from_window(window: list[str], relative_idx: int) -> str | None:
+    for idx in range(relative_idx, -1, -1):
+        match = re.search(r"\b(Mutation|Query|Subscription)\b", window[idx] or "")
+        if match:
+            return match.group(1)
+    for line in window:
+        match = re.search(r"\b(Mutation|Query|Subscription)\b", line or "")
+        if match:
+            return match.group(1)
+    return None
 
 
 def _registration_entry_for_site(
