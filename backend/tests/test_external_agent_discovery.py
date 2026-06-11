@@ -158,6 +158,27 @@ def test_agent_json_validates_ruby_and_php_source_files(tmp_path):
     assert [candidate.validated for candidate in result.candidate_files] == [True, True]
 
 
+def test_agent_json_validates_vue_and_svelte_source_files(tmp_path):
+    from app.services.external_agent_discovery import parse_agent_output
+
+    src = tmp_path / "src" / "components"
+    src.mkdir(parents=True)
+    (src / "PaymentWidget.vue").write_text("<script setup>const ok = true</script>\n", encoding="utf-8")
+    (src / "PaymentPanel.svelte").write_text("<script>export let amount;</script>\n", encoding="utf-8")
+    raw = json.dumps({
+        "candidate_files": [
+            {"path": "src/components/PaymentWidget.vue", "reason": "Vue source", "confidence": "high"},
+            {"path": "src/components/PaymentPanel.svelte", "reason": "Svelte source", "confidence": "high"},
+        ],
+        "candidate_entries": [],
+    })
+
+    result = parse_agent_output("claude-code", raw, tmp_path)
+
+    assert result.status == "ok"
+    assert [candidate.validated for candidate in result.candidate_files] == [True, True]
+
+
 def test_invalid_json_does_not_enter_candidate_merge(tmp_path):
     from app.services.external_agent_discovery import parse_agent_output
 
@@ -4723,6 +4744,26 @@ def test_workspace_path_keyword_ranking_includes_kts_source_files(tmp_path):
     rel_hits = [Path(hit).relative_to(tmp_path).as_posix() for hit in hits]
 
     assert rel_hits[0] == "services/payments/script/payment_script.kts"
+
+
+def test_workspace_path_keyword_ranking_includes_vue_source_files(tmp_path):
+    from app.services.workspace_scope_resolver import _path_keyword_repo_hits_blocking
+
+    target_dir = tmp_path / "frontend" / "components" / "payments"
+    target_dir.mkdir(parents=True)
+    (target_dir / "PaymentWidget.vue").write_text(
+        "<script setup>const amount = 1</script>\n",
+        encoding="utf-8",
+    )
+
+    hits = _path_keyword_repo_hits_blocking(
+        str(tmp_path),
+        ["payment-widget"],
+        3,
+    )
+    rel_hits = [Path(hit).relative_to(tmp_path).as_posix() for hit in hits]
+
+    assert rel_hits[0] == "frontend/components/payments/PaymentWidget.vue"
 
 
 def test_workspace_bounded_repo_search_rg_filters_non_source_matches(tmp_path, monkeypatch):

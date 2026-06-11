@@ -2415,6 +2415,36 @@ class TestCoverageTestDesign:
         assert entry["entry_symbol"] == "process"
         assert entry["input_hints"] == ["amount", "tenantId"]
 
+    async def test_coverage_source_window_reads_vue_component_script(self, tmp_path):
+        from app.services.coverage_analyzer import build_coverage_test_design
+
+        src = tmp_path / "src" / "components"
+        src.mkdir(parents=True)
+        (src / "PaymentWidget.vue").write_text(
+            "<script setup lang=\"ts\">\n"
+            "function processPayment(amount: number) {\n"
+            "  if (!amount) {\n"
+            "    return 'missing'\n"
+            "  }\n"
+            "  return 'ok'\n"
+            "}\n"
+            "</script>\n",
+            encoding="utf-8",
+        )
+        modules = self._modules(
+            "feature,module,code_location,function,triggered,hit_count\n"
+            "payments,component,src/components/PaymentWidget.vue:2-7,processPayment,false,0\n"
+        )
+
+        design = await build_coverage_test_design(
+            modules, workspace_id="ws-1", repo_path=str(tmp_path)
+        )
+
+        gap = [g for g in design["gaps"] if g.get("kind") == "function"][0]
+        assert gap["source_window"]["available"] is True
+        assert gap["source_window"]["path"] == "src/components/PaymentWidget.vue"
+        assert "function processPayment" in gap["source_window"]["text"]
+
     async def test_django_urlpattern_view_is_black_box_route_with_query_input(self, tmp_path):
         from app.services.coverage_analyzer import build_coverage_test_design
 
