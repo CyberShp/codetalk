@@ -359,6 +359,13 @@ _REQUEST_DESTRUCTURE_RE = re.compile(
     r"\b(?:request|req)"
     r"\.(?:json|args|form|query|body|data|params|headers|cookies|values|files)\b"
 )
+_RAILS_STRONG_PARAM_REQUIRE_RE = re.compile(
+    r"\bparams\s*\.\s*require\s*\(\s*:([A-Za-z_][\w-]*)\s*\)"
+)
+_RAILS_STRONG_PARAM_PERMIT_RE = re.compile(
+    r"\.\s*permit\s*\((?P<fields>[^)]*)\)"
+)
+_RUBY_SYMBOL_ARG_RE = re.compile(r":([A-Za-z_][\w-]*)")
 _ENV_FIELD_RES = (
     re.compile(
         r"\b(?:os\.)?environ"
@@ -3129,6 +3136,11 @@ def _request_field_hints_from_text(statement_text: str) -> list[str]:
     for pattern in _REQUEST_FIELD_RES:
         for match in pattern.finditer(statement_text):
             positioned_fields.append((match.start(), match.group(1)))
+    for match in _RAILS_STRONG_PARAM_REQUIRE_RE.finditer(statement_text):
+        positioned_fields.append((match.start(), match.group(1)))
+    for match in _RAILS_STRONG_PARAM_PERMIT_RE.finditer(statement_text):
+        for field_match in _RUBY_SYMBOL_ARG_RE.finditer(match.group("fields")):
+            positioned_fields.append((match.start() + field_match.start(), field_match.group(1)))
     for pattern in _ENV_FIELD_RES:
         for match in pattern.finditer(statement_text):
             positioned_fields.append((match.start(), match.group(1)))

@@ -2771,6 +2771,49 @@ class TestCoverageTestDesign:
         assert entry["entry_symbol"] == "process"
         assert entry["input_hints"] == ["amount", "tenant_id"]
 
+    async def test_rails_strong_parameters_feed_black_box_input_hints(self, tmp_path):
+        from app.services.coverage_analyzer import build_coverage_test_design
+
+        app = tmp_path / "app" / "controllers"
+        app.mkdir(parents=True)
+        config = tmp_path / "config"
+        config.mkdir()
+        (app / "payments_controller.rb").write_text(
+            "class PaymentsController < ApplicationController\n"
+            "  def create\n"
+            "    attrs = params.require(:payment).permit(:amount, :currency)\n"
+            "    if attrs[:amount].blank?\n"
+            "      render json: { error: params[:tenant_id] }, status: :bad_request\n"
+            "      return\n"
+            "    end\n"
+            "    render json: { ok: true }\n"
+            "  end\n"
+            "end\n",
+            encoding="utf-8",
+        )
+        (config / "routes.rb").write_text(
+            "Rails.application.routes.draw do\n"
+            "  post '/tenants/:tenant_id/payments', to: 'payments#create'\n"
+            "end\n",
+            encoding="utf-8",
+        )
+        modules = self._modules(
+            "feature,module,code_location,function,triggered,hit_count\n"
+            "payments,controller,app/controllers/payments_controller.rb:2-9,create,false,0\n"
+        )
+
+        design = await build_coverage_test_design(
+            modules, workspace_id="ws-1", repo_path=str(tmp_path)
+        )
+
+        gap = [g for g in design["gaps"] if g.get("kind") == "function"][0]
+        assert gap["gray_box_required"] is False
+        assert gap["black_box_readiness"]["case_type"] == "black_box_ready"
+        entry = gap["entry_paths"][0]
+        assert entry["entry_kind"] == "route"
+        assert entry["entry_symbol"] == "create"
+        assert entry["input_hints"] == ["payment", "amount", "currency", "tenant_id"]
+
     async def test_laravel_route_table_action_is_black_box_route_with_request_input(self, tmp_path):
         from app.services.coverage_analyzer import build_coverage_test_design
 
