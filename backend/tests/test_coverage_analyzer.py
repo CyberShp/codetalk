@@ -2195,6 +2195,50 @@ class TestCoverageTestDesign:
         assert gap["source_window"]["definition_line"] == 1
         assert "<?php function process_payment" in gap["source_window"]["text"]
 
+    async def test_laravel_should_queue_job_handle_is_black_box_job_entry(self, tmp_path):
+        from app.services.coverage_analyzer import build_coverage_test_design
+
+        jobs = tmp_path / "app" / "Jobs"
+        jobs.mkdir(parents=True)
+        (jobs / "ProcessInvoice.php").write_text(
+            "<?php\n"
+            "namespace App\\Jobs;\n\n"
+            "use Illuminate\\Bus\\Queueable;\n"
+            "use Illuminate\\Contracts\\Queue\\ShouldQueue;\n\n"
+            "class ProcessInvoice implements ShouldQueue\n"
+            "{\n"
+            "    use Queueable;\n\n"
+            "    public $queue = 'invoice_queue';\n\n"
+            "    public function __construct(public int $invoiceId) {}\n\n"
+            "    public function handle(): void\n"
+            "    {\n"
+            "        if (!$this->invoiceId) {\n"
+            "            return;\n"
+            "        }\n"
+            "        app('billing')->process($this->invoiceId);\n"
+            "    }\n"
+            "}\n",
+            encoding="utf-8",
+        )
+        modules = self._modules(
+            "feature,module,code_location,function,triggered,hit_count\n"
+            "billing,job,app/Jobs/ProcessInvoice.php:14-20,handle,false,0\n"
+        )
+
+        design = await build_coverage_test_design(
+            modules, workspace_id="ws-1", repo_path=str(tmp_path)
+        )
+
+        gap = [g for g in design["gaps"] if g.get("kind") == "function"][0]
+        assert gap["gray_box_required"] is False
+        assert gap["black_box_readiness"]["case_type"] == "black_box_ready"
+        entry = gap["entry_paths"][0]
+        assert entry["entry_kind"] == "job"
+        assert entry["entry_symbol"] == "handle"
+        assert entry["tool"] == "source-php-job"
+        assert "ShouldQueue" in entry["evidence"]
+        assert entry["input_hints"] == ["invoice_queue", "invoiceId"]
+
     async def test_commonjs_exported_handler_is_read_as_source_window(self, tmp_path):
         from app.services.coverage_analyzer import build_coverage_test_design
 
@@ -2291,6 +2335,7 @@ class TestCoverageTestDesign:
         from app.services.coverage_analyzer import _match_def_name
 
         assert _match_def_name("<?php function process_payment($request) {") == "process_payment"
+        assert _match_def_name("    public function handle(): void") == "handle"
         assert _match_def_name("process_payment($request);") is None
 
     async def test_coverage_definition_detection_handles_commonjs_exports(self):

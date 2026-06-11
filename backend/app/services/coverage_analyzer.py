@@ -118,7 +118,8 @@ _RIPGREP_EXCLUDE_GLOBS = tuple(
 # (``{``), Python/label ``:``, or end of line.  Plain call sites end in ``;`` and
 # are rejected by the trailing-token requirement.
 _FUNC_DEF_RE = re.compile(
-    r"^[\w\s\*&:<>,~\[\]\?]*?\b([A-Za-z_]\w*)\s*\([^;{}]*\)\s*(?:\{|:|$)"
+    r"^[\w\s\*&:<>,~\[\]\?]*?\b([A-Za-z_]\w*)\s*\([^;{}]*\)"
+    r"\s*(?::\s*[\w\\|?\[\]]+)?\s*(?:\{|:|$)"
 )
 _ASSIGNED_FUNCTION_DEF_RES = (
     re.compile(
@@ -3399,6 +3400,15 @@ def _decorated_entry_for_symbol(
     )
     if ruby_worker_entry:
         return ruby_worker_entry
+    php_job_entry = _php_queue_job_entry_for_symbol(
+        repo_root,
+        source_file,
+        function_name,
+        lines,
+        definition_line,
+    )
+    if php_job_entry:
+        return php_job_entry
     definition_text = lines[definition_line - 1] if 0 < definition_line <= len(lines) else ""
     decorators = _decorator_lines_before_definition(lines, definition_line)
     decorator_texts = [text for _, text in decorators]
@@ -3566,6 +3576,121 @@ def _ruby_worker_queue_hints(class_lines: list[str]) -> list[str]:
                 seen.add(queue)
                 hints.append(queue)
     return hints[:4]
+
+
+def _php_queue_job_entry_for_symbol(
+    repo_root: Path,
+    source_file: Path,
+    function_name: str,
+    lines: list[str],
+    definition_line: int,
+) -> dict | None:
+    if source_file.suffix.lower() != ".php" or function_name != "handle":
+        return None
+    definition_idx = definition_line - 1
+    if definition_idx < 0 or definition_idx >= len(lines):
+        return None
+    class_start = _php_enclosing_class_start(lines, definition_idx)
+    if class_start is None:
+        return None
+    class_end = _php_class_context_end(lines, class_start)
+    if definition_idx >= class_end:
+        return None
+    class_lines = lines[class_start:class_end]
+    marker = _php_queue_job_marker(class_lines, class_start)
+    if marker is None:
+        return None
+    evidence_line, evidence_text = marker
+    rel_file = _relative_path(repo_root, source_file)
+    queue_hints = _php_queue_job_queue_hints(class_lines)
+    constructor_hints = _php_constructor_input_hints(class_lines)
+    handle_hints = _signature_input_params(lines[definition_idx].strip())
+    input_hints = _merge_ordered_strings(queue_hints, constructor_hints, handle_hints)
+    entry = {
+        "entry_kind": "job",
+        "entry_symbol": function_name,
+        "entry_file": rel_file,
+        "entry_label": (
+            f"job {queue_hints[0]}" if queue_hints
+            else _public_entry_label("job", function_name)
+        ),
+        "call_line": definition_line,
+        "chain": [function_name],
+        "depth": 0,
+        "evidence": f"{rel_file}:{evidence_line} {evidence_text.strip()}",
+        "tool": "source-php-job",
+    }
+    if input_hints:
+        entry["input_hints"] = input_hints
+    return entry
+
+
+def _php_enclosing_class_start(lines: list[str], definition_idx: int) -> int | None:
+    for idx in range(definition_idx - 1, -1, -1):
+        stripped = lines[idx].strip()
+        if not stripped:
+            continue
+        if re.match(r"^(?:abstract\s+|final\s+)?class\s+[A-Za-z_]\w*\b", stripped):
+            return idx
+    return None
+
+
+def _php_class_context_end(lines: list[str], class_start: int) -> int:
+    depth = 0
+    saw_class_open = False
+    for idx in range(class_start, len(lines)):
+        text = lines[idx]
+        depth += text.count("{")
+        if "{" in text:
+            saw_class_open = True
+        depth -= text.count("}")
+        if saw_class_open and depth <= 0:
+            return idx + 1
+    return len(lines)
+
+
+def _php_queue_job_marker(
+    class_lines: list[str],
+    class_start: int,
+) -> tuple[int, str] | None:
+    marker_tokens = (
+        "ShouldQueue",
+        "ShouldBeUnique",
+        "ShouldBeEncrypted",
+        "ShouldQueueAfterCommit",
+    )
+    for offset, line in enumerate(class_lines):
+        if any(token in line for token in marker_tokens):
+            return class_start + offset + 1, line
+    return None
+
+
+def _php_queue_job_queue_hints(class_lines: list[str]) -> list[str]:
+    hints: list[str] = []
+    seen: set[str] = set()
+    text = "\n".join(class_lines)
+    for pattern in (
+        r"\$(?:queue|connection)\s*=\s*['\"](?P<queue>[^'\"]+)['\"]",
+        r"->onQueue\(\s*['\"](?P<queue>[^'\"]+)['\"]\s*\)",
+    ):
+        for match in re.finditer(pattern, text):
+            queue = match.group("queue").strip()
+            if queue and queue not in seen:
+                seen.add(queue)
+                hints.append(queue)
+    return hints[:4]
+
+
+def _php_constructor_input_hints(class_lines: list[str]) -> list[str]:
+    for idx, line in enumerate(class_lines):
+        if _match_def_name(line) != "__construct":
+            continue
+        signature = line.strip()
+        while ")" not in signature and idx + 1 < len(class_lines):
+            idx += 1
+            signature += " " + class_lines[idx].strip()
+        return _signature_input_params(signature)
+    return []
 
 
 def _decorator_lines_before_definition(
