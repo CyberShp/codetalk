@@ -4163,6 +4163,40 @@ class TestCoverageTestDesign:
         assert gap["source_window"]["path"] == "zzz/tls.c"
         assert "nvmf_tcp_tls_recover" in json.dumps(gap["source_window"], ensure_ascii=False)
 
+    async def test_source_window_decodes_file_uri_before_suffix_resolution(self, tmp_path):
+        from app.adapters.coverage import FunctionHit
+        from app.services.coverage_analyzer import _read_source_window
+
+        decoy = tmp_path / "aaa"
+        decoy.mkdir()
+        (decoy / "payment service.py").write_text(
+            "def process_payment(request):\n"
+            "    return 'wrong file'\n",
+            encoding="utf-8",
+        )
+        src = tmp_path / "src"
+        src.mkdir()
+        target = src / "payment service.py"
+        target.write_text(
+            "def process_payment(request):\n"
+            "    return 'correct file'\n",
+            encoding="utf-8",
+        )
+        hit = FunctionHit(
+            function_name="process_payment",
+            file_path=target.as_uri(),
+            line_start=1,
+            triggered=False,
+            hit_count=0,
+        )
+
+        window = _read_source_window(tmp_path, hit)
+
+        assert window is not None
+        assert window["path"] == "src/payment service.py"
+        assert "correct file" in window["text"]
+        assert "wrong file" not in window["text"]
+
     async def test_source_window_uses_workspace_scope_candidate_when_coverage_path_is_stale(
         self,
         tmp_path,

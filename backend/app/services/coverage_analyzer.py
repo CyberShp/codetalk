@@ -13,6 +13,7 @@ import subprocess
 from dataclasses import asdict, dataclass
 from datetime import datetime, timezone
 from pathlib import Path
+from urllib.parse import unquote, urlparse
 
 import aiosqlite
 
@@ -2372,7 +2373,11 @@ def _resolve_source_file(
     """
     if repo_root is None or not file_path:
         return None
-    rel = file_path.replace("\\", "/").lstrip("/")
+    rel = _normalize_coverage_source_path(file_path)
+    absolute_source = _resolve_absolute_coverage_source(repo_root, rel, function_name)
+    if absolute_source is not None:
+        return absolute_source
+    rel = rel.replace("\\", "/").lstrip("/")
     for ext in _SOURCE_EXTENSION_CANDIDATES:
         candidate = repo_root / (rel + ext)
         try:
@@ -2425,6 +2430,50 @@ def _resolve_source_file(
             return first_match
     if function_name:
         return _find_source_file_defining_function(repo_root, repo_root, function_name)
+    return None
+
+
+def _normalize_coverage_source_path(file_path: str) -> str:
+    value = str(file_path or "").strip().strip('"').strip("'")
+    if not value:
+        return ""
+    parsed = urlparse(value)
+    if parsed.scheme.lower() == "file":
+        if parsed.netloc:
+            value = f"//{parsed.netloc}{parsed.path}"
+        else:
+            value = parsed.path
+    else:
+        value = value.split("#", 1)[0].split("?", 1)[0]
+    value = unquote(value).replace("\\", "/")
+    if re.match(r"^/[A-Za-z]:/", value):
+        value = value[1:]
+    value = re.sub(r":\d+(?:-\d+)?$", "", value)
+    return value
+
+
+def _resolve_absolute_coverage_source(
+    repo_root: Path,
+    normalized_path: str,
+    function_name: str | None,
+) -> Path | None:
+    if not normalized_path:
+        return None
+    if not (Path(normalized_path).is_absolute() or re.match(r"^[A-Za-z]:/", normalized_path)):
+        return None
+    for ext in _SOURCE_EXTENSION_CANDIDATES:
+        candidate = Path(f"{normalized_path}{ext}")
+        try:
+            if candidate.is_file() and _is_within(repo_root, candidate):
+                if function_name and not _source_file_defines_function(candidate, function_name):
+                    continue
+                return candidate
+            if candidate.is_dir() and function_name and _is_within(repo_root, candidate):
+                found = _find_source_file_defining_function(repo_root, candidate, function_name)
+                if found is not None:
+                    return found
+        except OSError:
+            continue
     return None
 
 
