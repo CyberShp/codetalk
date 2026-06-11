@@ -1139,6 +1139,49 @@ class TestCoverageTestDesign:
         assert "tenant_id" in cases[0]["inputs"]
         assert "amount" in cases[0]["inputs"]
 
+    async def test_black_box_cases_filter_internal_symbols_from_input_hints(self):
+        from app.services.coverage_analyzer import _build_black_box_cases
+
+        hit = FunctionHit(
+            function_name="recover_session",
+            file_path="src/session.c",
+            line_start=1,
+            triggered=False,
+            hit_count=0,
+        )
+        entry_paths = [{
+            "entry_kind": "api",
+            "entry_symbol": "api_handle_request",
+            "entry_label": "public recovery API",
+            "chain": ["api_handle_request", "recover_session"],
+            "input_hints": [
+                "recover_session",
+                "recover_session()",
+                "api_handle_request",
+                "api_handle_request()",
+                "tenant_id",
+                "payload",
+            ],
+        }]
+
+        cases = _build_black_box_cases(hit, entry_paths, [])
+        execution_text = json.dumps(
+            [
+                {
+                    "inputs": case.get("inputs"),
+                    "steps": case.get("steps"),
+                    "external_trigger": case.get("external_trigger"),
+                }
+                for case in cases
+            ],
+            ensure_ascii=False,
+        )
+
+        assert "tenant_id" in execution_text
+        assert "payload" in execution_text
+        assert "recover_session" not in execution_text
+        assert "api_handle_request" not in execution_text
+
     async def test_traces_external_entry_and_builds_black_box(self, tmp_path):
         from app.services.coverage_analyzer import build_coverage_test_design
 

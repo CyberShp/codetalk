@@ -1940,6 +1940,25 @@ def _merge_ordered_input_hints(*values: object) -> list[str]:
     ])
 
 
+def _black_box_input_hints(entry: dict, hit: FunctionHit) -> list[str]:
+    banned = {
+        _input_hint_dedupe_key(value)
+        for value in [
+            hit.function_name,
+            entry.get("entry_symbol"),
+            *_coerce_string_list(entry.get("chain")),
+        ]
+        if str(value or "").strip()
+    }
+    hints: list[str] = []
+    for hint in _coerce_input_hints(entry.get("input_hints")):
+        normalized = _input_hint_dedupe_key(re.sub(r"\(\s*\)$", "", hint.strip()))
+        if normalized in banned:
+            continue
+        hints.append(hint)
+    return hints
+
+
 def _input_hint_is_internal_context(value: str) -> bool:
     text = str(value or "").strip()
     if not text:
@@ -5530,7 +5549,7 @@ def _build_black_box_cases(
     for entry in actionable_entry_paths[:3]:
         entry_label = _safe_external_label(entry)
         entry_kind = str(entry.get("entry_kind") or "外部")
-        input_hints = _coerce_input_hints(entry.get("input_hints"))
+        input_hints = _black_box_input_hints(entry, hit)
         entry_inputs = (
             "使用外部请求/配置参数构造合法值、边界值和畸形值："
             + ", ".join(input_hints)
@@ -5561,7 +5580,7 @@ def _build_black_box_cases(
 
     primary_entry = actionable_entry_paths[0] if actionable_entry_paths else {}
     primary_entry_label = _safe_external_label(primary_entry) if primary_entry else None
-    primary_input_hints = _coerce_input_hints(primary_entry.get("input_hints"))
+    primary_input_hints = _black_box_input_hints(primary_entry, hit) if primary_entry else []
 
     for branch in trigger_branches[:3]:
         if not branch.get("is_error_path") and branch.get("source") != "caller":
