@@ -3137,6 +3137,13 @@ def _request_field_hints(abs_file: str, line_number: int, enclosing_fn: str | No
             hints,
             _python_serializer_input_hints(lines, start, end),
         )
+    elif Path(abs_file).suffix.lower() in {
+        ".js", ".jsx", ".ts", ".tsx", ".mjs", ".cjs", ".mts", ".cts",
+    }:
+        hints = _merge_ordered_input_hints(
+            hints,
+            _javascript_schema_input_hints(lines, start, end),
+        )
     return hints
 
 
@@ -3613,6 +3620,101 @@ def _python_serializer_input_hints(lines: list[str], start: int, end: int) -> li
                 if len(hints) >= 12:
                     return hints
     return hints
+
+
+def _javascript_schema_input_hints(lines: list[str], start: int, end: int) -> list[str]:
+    window = "\n".join(lines[start:end])
+    if not re.search(
+        r"\b(?:parse|safeParse|validate|validateSync)\s*\(\s*(?:request|req)\.body\b",
+        window,
+    ):
+        return []
+    schema_fields = _javascript_object_schema_fields(lines)
+    if not schema_fields:
+        return []
+    hints: list[str] = []
+    seen: set[str] = set()
+    for match in re.finditer(
+        r"\b([A-Za-z_]\w*)\s*\.\s*(?:parse|safeParse|validate|validateSync)"
+        r"\s*\(\s*(?:request|req)\.body\b",
+        window,
+    ):
+        for field in schema_fields.get(match.group(1), []):
+            if field not in seen:
+                seen.add(field)
+                hints.append(field)
+                if len(hints) >= 12:
+                    return hints
+    return hints
+
+
+def _javascript_object_schema_fields(lines: list[str]) -> dict[str, list[str]]:
+    text = "\n".join(lines)
+    fields_by_schema: dict[str, list[str]] = {}
+    schema_re = re.compile(
+        r"\b(?:const|let|var)\s+([A-Za-z_]\w*)\s*=\s*"
+        r"(?:z|Joi|joi|yup)\.object\s*\(\s*\{",
+        re.MULTILINE,
+    )
+    for match in schema_re.finditer(text):
+        body_start = match.end() - 1
+        body_end = _balanced_block_end(text, body_start, "{", "}")
+        if body_end is None:
+            continue
+        fields = _javascript_schema_fields_from_object_body(text[body_start + 1:body_end])
+        if fields:
+            fields_by_schema[match.group(1)] = fields
+    return fields_by_schema
+
+
+def _balanced_block_end(
+    text: str,
+    start: int,
+    open_char: str,
+    close_char: str,
+) -> int | None:
+    depth = 0
+    quote: str | None = None
+    escape = False
+    for index in range(start, len(text)):
+        char = text[index]
+        if quote:
+            if escape:
+                escape = False
+            elif char == "\\":
+                escape = True
+            elif char == quote:
+                quote = None
+            continue
+        if char in {"'", '"', "`"}:
+            quote = char
+            continue
+        if char == open_char:
+            depth += 1
+        elif char == close_char:
+            depth -= 1
+            if depth == 0:
+                return index
+    return None
+
+
+def _javascript_schema_fields_from_object_body(body: str) -> list[str]:
+    fields: list[str] = []
+    seen: set[str] = set()
+    for line in body.splitlines():
+        stripped = line.strip()
+        if not stripped or stripped.startswith(("//", "/*", "*")):
+            continue
+        match = re.match(r"^['\"]?([A-Za-z_][\w-]*)['\"]?\s*:", stripped)
+        if not match:
+            continue
+        field = match.group(1)
+        if field not in seen:
+            seen.add(field)
+            fields.append(field)
+            if len(fields) >= 12:
+                break
+    return fields
 
 
 def _go_model_fields_by_struct(lines: list[str]) -> dict[str, list[str]]:
