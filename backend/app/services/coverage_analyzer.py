@@ -397,7 +397,8 @@ _ENTRY_DECORATOR_KIND_TOKENS: tuple[tuple[str, tuple[str, ...]], ...] = (
     )),
     ("message", ("subscribe", "subscriber", "topic", "queue", "message", "event", "listener",
                  ".on", ".listen", "consumer")),
-    ("scheduler", ("schedule", "scheduler", "scheduled", "cron", "job", ".task")),
+    ("job", ("celery", "shared_task", "dramatiq", "huey", "rq", ".task", "@task")),
+    ("scheduler", ("schedule", "scheduler", "scheduled", "cron", "periodic")),
     ("timer", ("timer", "timeout", "poller", "interval")),
     ("callback", ("callback", ".callback")),
 )
