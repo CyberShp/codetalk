@@ -42,13 +42,21 @@ def background_tasks(monkeypatch):
 # ---------------------------------------------------------------------------
 
 
-async def _seed_ws(db_path: str, ws_id: str, indexed: int = 1) -> str:
+async def _seed_ws(
+    db_path: str,
+    ws_id: str,
+    indexed: int = 1,
+    *,
+    repo_path: str = "/repo",
+    last_index_error: str | None = None,
+) -> str:
     now = datetime.now(timezone.utc).isoformat()
     async with aiosqlite.connect(db_path) as db:
         await db.execute(
-            "INSERT INTO workspaces (id, name, repo_path, indexed, created_at, updated_at) "
-            "VALUES (?, 'test-ws', '/repo', ?, ?, ?)",
-            (ws_id, indexed, now, now),
+            "INSERT INTO workspaces "
+            "(id, name, repo_path, indexed, last_index_error, created_at, updated_at) "
+            "VALUES (?, 'test-ws', ?, ?, ?, ?, ?)",
+            (ws_id, repo_path, indexed, last_index_error, now, now),
         )
         await db.commit()
     return ws_id
@@ -172,6 +180,32 @@ class TestIndexAndAnalyze:
         await _seed_ws(sqlite_db, "ws-noidx", indexed=0)
         resp = await client_v2.post("/api/workspaces/ws-noidx/analyze")
         assert resp.status_code == 409
+
+    async def test_analyze_allows_gitnexus_failed_when_local_repo_is_readable(
+        self,
+        client_v2,
+        sqlite_db,
+        tmp_path,
+        background_tasks,
+    ):
+        repo = tmp_path / "repo"
+        repo.mkdir()
+        (repo / "service.py").write_text("def handle_request(req):\n    return req\n", encoding="utf-8")
+        await _seed_ws(
+            sqlite_db,
+            "ws-local-fallback",
+            indexed=-1,
+            repo_path=str(repo),
+            last_index_error="GitNexus unavailable",
+        )
+
+        resp = await client_v2.post("/api/workspaces/ws-local-fallback/analyze")
+
+        assert resp.status_code == 202
+        body = resp.json()
+        assert any("GitNexus" in warning for warning in body["warnings"])
+        assert any("local" in warning.lower() for warning in body["warnings"])
+        assert any("_run_workspace_analysis" in c for c in background_tasks)
 
     async def test_analyze_ok_when_indexed(self, client_v2, sqlite_db, background_tasks):
         await _seed_ws(sqlite_db, "ws-az", indexed=1)
@@ -1006,3 +1040,53 @@ class TestAnalyzeCoverageGapFlags:
         assert resp.status_code == 202
         assert m.call_args.kwargs["include_coverage_gaps"] is True
         assert m.call_args.kwargs["coverage_analysis_ids"] is None
+
+
+class TestWorkspaceScopePreviewFallback:
+    async def test_preview_allows_gitnexus_failed_when_local_repo_is_readable(
+        self,
+        client_v2,
+        sqlite_db,
+        tmp_path,
+    ):
+        from app.schemas.workspace_analysis import ScopePreview
+
+        repo = tmp_path / "repo"
+        repo.mkdir()
+        await _seed_ws(
+            sqlite_db,
+            "ws-preview-local-fallback",
+            indexed=-1,
+            repo_path=str(repo),
+            last_index_error="GitNexus unavailable",
+        )
+        preview = ScopePreview(
+            workspace_id="ws-preview-local-fallback",
+            resolved_objects=[],
+            warnings=[],
+            gitnexus_available=False,
+        )
+
+        with patch(
+            "app.services.workspace_scope_resolver.WorkspaceScopeResolver.resolve",
+            AsyncMock(return_value=preview),
+        ):
+            resp = await client_v2.post(
+                "/api/workspaces/ws-preview-local-fallback/analysis/preview",
+                json={
+                    "plan": {
+                        "analysis_objects": [
+                            {
+                                "id": "obj",
+                                "text": "payment-webhook",
+                                "kind": "module",
+                            }
+                        ]
+                    }
+                },
+            )
+
+        assert resp.status_code == 200
+        body = resp.json()
+        assert any("GitNexus" in warning for warning in body["warnings"])
+        assert any("local" in warning.lower() for warning in body["warnings"])

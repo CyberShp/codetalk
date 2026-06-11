@@ -110,6 +110,30 @@ async def _get_workspace_or_404(ws_id: str, db: aiosqlite.Connection) -> dict:
     return _row_to_workspace(row)
 
 
+def _workspace_index_fallback_warning(ws: dict) -> str | None:
+    if int(ws.get("indexed", 0)) == 1:
+        return None
+    detail = str(ws.get("last_index_error") or "").strip()
+    suffix = f": {detail}" if detail else ""
+    return (
+        "GitNexus index is not ready"
+        f"{suffix}; using local repository fallback for source discovery and analysis."
+    )
+
+
+def _workspace_index_warning_or_409(ws: dict, *, action: str) -> str | None:
+    warning = _workspace_index_fallback_warning(ws)
+    if warning is None:
+        return None
+    repo = Path(str(ws.get("repo_path") or ""))
+    if repo.exists() and repo.is_dir():
+        return warning
+    raise HTTPException(
+        status_code=409,
+        detail=f"工作空间尚未完成索引，且本地代码路径不可读，无法{action}",
+    )
+
+
 # --- Background task: T6 GitNexus indexing ---
 
 def _classify_index_error(exc: Exception, base_url: str) -> str:
@@ -351,11 +375,7 @@ async def preview_analysis_scope(
       * 200 with warnings otherwise
     """
     ws = await _get_workspace_or_404(ws_id, db)
-    if ws["indexed"] != 1:
-        raise HTTPException(
-            status_code=409,
-            detail="工作空间尚未完成索引，请等待索引完成后再预览分析范围",
-        )
+    index_warning = _workspace_index_warning_or_409(ws, action="预览分析范围")
     if not body.plan.analysis_objects:
         raise HTTPException(
             status_code=400,
@@ -365,11 +385,14 @@ async def preview_analysis_scope(
     from app.services.workspace_scope_resolver import WorkspaceScopeResolver
 
     resolver = WorkspaceScopeResolver()
-    return await resolver.resolve(
+    preview = await resolver.resolve(
         ws_id=ws_id,
         repo_path=ws["repo_path"],
         plan=body.plan,
     )
+    if index_warning and index_warning not in preview.warnings:
+        preview.warnings.insert(0, index_warning)
+    return preview
 
 
 @router.post("/{ws_id}/analyze", status_code=202)
@@ -379,8 +402,7 @@ async def analyze_workspace(
     db: aiosqlite.Connection = Depends(get_db),
 ):
     ws = await _get_workspace_or_404(ws_id, db)
-    if ws["indexed"] != 1:
-        raise HTTPException(status_code=409, detail="工作空间尚未完成索引，请等待索引完成后再生成报告")
+    index_warning = _workspace_index_warning_or_409(ws, action="生成报告")
     if ws.get("analyze_status") == "running":
         raise HTTPException(status_code=409, detail="报告生成正在进行中")
 
@@ -468,6 +490,7 @@ async def analyze_workspace(
         ),
         "plan_persisted": True,
         "preview_persisted": False,
+        "warnings": [index_warning] if index_warning else [],
     }
 
 
