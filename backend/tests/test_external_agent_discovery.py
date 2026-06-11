@@ -1407,6 +1407,15 @@ def test_settings_accept_plain_string_fallback_commands(monkeypatch):
     assert _coerce_command_list(configured) == ["claude -p --output-format json"]
 
 
+def test_settings_default_claude_code_fallback_commands_are_empty_for_intranet():
+    from app.config import Settings
+    from app.services.external_agent_discovery import _coerce_command_list
+
+    configured = Settings().claude_code_fallback_commands
+
+    assert _coerce_command_list(configured) == []
+
+
 def test_command_list_accepts_json_array_string():
     from app.services.external_agent_discovery import _coerce_command_list
 
@@ -1665,7 +1674,8 @@ def test_external_agent_adapter_health_reports_ccr_config_hint(monkeypatch):
         adapter_mod.ExternalAgentAdapter("claude-code", "claude_code_command").health_check()
     )
 
-    assert health.is_healthy is True
+    assert health.is_healthy is False
+    assert health.container_status == "misconfigured"
     assert "default config not found" in health.last_check
 
 
