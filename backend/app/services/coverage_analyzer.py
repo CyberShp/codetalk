@@ -3671,6 +3671,17 @@ def _trace_entry_paths(
                 if graphql_entry:
                     entry_paths.append(graphql_entry)
                     continue
+                kafka_entry = _kafka_consumer_entry_for_site(
+                    repo_root,
+                    site["abs_file"],
+                    site["line_number"],
+                    symbol,
+                    site["text"],
+                    caller_chain,
+                )
+                if kafka_entry:
+                    entry_paths.append(kafka_entry)
+                    continue
                 if enclosing:
                     decorated_caller_entry = _decorated_entry_for_symbol(
                         repo_root,
@@ -3899,6 +3910,80 @@ def _graphql_operation_from_window(window: list[str], relative_idx: int) -> str 
         if match:
             return match.group(1)
     return None
+
+
+def _kafka_consumer_entry_for_site(
+    repo_root: Path,
+    abs_file: str,
+    line_number: int,
+    symbol: str,
+    site_text: str,
+    caller_chain: list[str],
+) -> dict | None:
+    if not symbol or not re.search(rf"\b{re.escape(symbol)}\b", site_text or ""):
+        return None
+    try:
+        path = Path(abs_file)
+        lines = path.read_text(encoding="utf-8", errors="replace").splitlines()
+    except OSError:
+        return None
+
+    idx = max(0, line_number - 1)
+    start = max(0, idx - 12)
+    end = min(len(lines), idx + 28)
+    window = lines[start:end]
+    window_text = "\n".join(window)
+    lowered = window_text.lower()
+    if not (
+        "kafka" in lowered
+        and "consumer.subscribe" in lowered
+        and ("eachmessage" in lowered or "consumer.run" in lowered)
+    ):
+        return None
+
+    topic_hints = _kafka_topic_input_hints(window_text)
+    rel_file = _relative_path(repo_root, path)
+    metadata = _entry_metadata_for_symbol(repo_root, str(path), line_number, None, symbol)
+    merged_hints = _merge_ordered_input_hints(
+        topic_hints,
+        metadata.pop("input_hints", []),
+    )
+    entry_label = metadata.pop("entry_label", None)
+    label = (
+        entry_label
+        or (f"Kafka topic {topic_hints[0]}" if topic_hints else f"Kafka consumer {symbol}")
+    )
+    entry = {
+        "entry_kind": "message",
+        "entry_symbol": symbol,
+        "entry_file": rel_file,
+        "call_line": line_number,
+        "chain": caller_chain,
+        "depth": max(0, len(caller_chain) - 1),
+        "evidence": f"{rel_file}:{line_number} Kafka consumer {site_text.strip()}",
+        "tool": "source-kafka-consumer",
+        "entry_label": label,
+    }
+    if merged_hints:
+        entry["input_hints"] = merged_hints
+    entry.update(metadata)
+    return entry
+
+
+def _kafka_topic_input_hints(window_text: str) -> list[str]:
+    hints: list[str] = []
+    seen: set[str] = set()
+    patterns = (
+        r"\btopics?\s*:\s*\[\s*(['\"])(?P<value>(?:\\.|(?!\1).)*?)\1",
+        r"\btopic\s*:\s*(['\"])(?P<value>(?:\\.|(?!\1).)*?)\1",
+    )
+    for pattern in patterns:
+        for match in re.finditer(pattern, window_text or "", re.IGNORECASE):
+            value = match.group("value").strip()
+            if value and value not in seen:
+                seen.add(value)
+                hints.append(value)
+    return hints[:6]
 
 
 def _registration_entry_for_site(

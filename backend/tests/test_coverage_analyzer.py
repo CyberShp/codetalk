@@ -2938,6 +2938,45 @@ class TestCoverageTestDesign:
         case_text = json.dumps(gap["black_box_cases"], ensure_ascii=False)
         assert "invoice.created" in case_text
 
+    async def test_kafkajs_consumer_registration_is_message_entry_with_topic(self, tmp_path):
+        from app.services.coverage_analyzer import build_coverage_test_design
+
+        src = tmp_path / "src"
+        src.mkdir()
+        (src / "processor.ts").write_text(
+            "export async function processInvoice(message) {\n"
+            "  if (!message.value) {\n"
+            "    return { status: 'missing' };\n"
+            "  }\n"
+            "  return { status: 'processed' };\n"
+            "}\n",
+            encoding="utf-8",
+        )
+        (src / "consumer.ts").write_text(
+            "import { processInvoice } from './processor';\n\n"
+            "const consumer = kafka.consumer({ groupId: 'billing' });\n"
+            "await consumer.subscribe({ topic: 'invoice.created' });\n"
+            "await consumer.run({ eachMessage: processInvoice });\n",
+            encoding="utf-8",
+        )
+        modules = self._modules(
+            "feature,module,code_location,function,triggered,hit_count\n"
+            "billing,processor,src/processor.ts:1-6,processInvoice,false,0\n"
+        )
+
+        design = await build_coverage_test_design(
+            modules, workspace_id="ws-1", repo_path=str(tmp_path)
+        )
+
+        gap = [g for g in design["gaps"] if g.get("kind") == "function"][0]
+        assert gap["gray_box_required"] is False
+        assert gap["black_box_readiness"]["case_type"] == "black_box_ready"
+        entry = gap["entry_paths"][0]
+        assert entry["entry_kind"] == "message"
+        assert entry["entry_symbol"] == "processInvoice"
+        assert entry["tool"] == "source-kafka-consumer"
+        assert entry["input_hints"] == ["invoice.created", "message"]
+
     async def test_celery_task_decorator_is_black_box_job_without_caller(self, tmp_path):
         from app.services.coverage_analyzer import build_coverage_test_design
 
