@@ -1581,6 +1581,47 @@ class TestCoverageTestDesign:
         assert "CSV file" in case_text
         assert "file_obj" not in case_text
 
+    async def test_filesystem_glob_worker_becomes_black_box_file_entry(self, tmp_path):
+        from app.services.coverage_analyzer import build_coverage_test_design
+
+        src = tmp_path / "src"
+        src.mkdir()
+        (src / "orders.py").write_text(
+            "def process_order(payload):\n"
+            "    if not payload:\n"
+            "        return 'missing'\n"
+            "    return 'processed'\n",
+            encoding="utf-8",
+        )
+        (src / "worker.py").write_text(
+            "from pathlib import Path\n"
+            "from orders import process_order\n\n"
+            "def run_once(inbox_dir):\n"
+            "    for path in Path(inbox_dir).glob('*.json'):\n"
+            "        process_order(path.read_text())\n",
+            encoding="utf-8",
+        )
+        modules = self._modules(
+            "feature,module,code_location,function,triggered,hit_count\n"
+            "orders,orders,src/orders.py:1-4,process_order,false,0\n"
+        )
+
+        design = await build_coverage_test_design(
+            modules, workspace_id="ws-1", repo_path=str(tmp_path)
+        )
+
+        gap = [g for g in design["gaps"] if g.get("kind") == "function"][0]
+        assert gap["gray_box_required"] is False
+        assert gap["black_box_readiness"]["case_type"] == "black_box_ready"
+        entry = gap["entry_paths"][0]
+        assert entry["entry_kind"] == "file"
+        assert entry["entry_symbol"] == "run_once"
+        assert "Path(inbox_dir).glob('*.json')" in entry["evidence"]
+        assert entry["input_hints"] == ["JSON file", "input directory", "inbox_dir"]
+        case_text = json.dumps(gap["black_box_cases"], ensure_ascii=False)
+        assert "JSON file" in case_text
+        assert "inbox_dir" in case_text
+
     async def test_route_call_site_keeps_route_entry_kind_without_agent(self, tmp_path):
         from app.services.coverage_analyzer import build_coverage_test_design
 

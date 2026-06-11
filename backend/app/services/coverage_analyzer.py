@@ -1918,10 +1918,18 @@ def _coerce_input_hints(value: object) -> list[str]:
             continue
         if _input_hint_is_internal_context(text):
             continue
-        if text not in seen:
-            seen.add(text)
+        key = _input_hint_dedupe_key(text)
+        if key not in seen:
+            seen.add(key)
             hints.append(text)
     return hints
+
+
+def _input_hint_dedupe_key(value: str) -> str:
+    text = str(value or "").strip().lower()
+    text = re.sub(r"^-+", "", text)
+    text = re.sub(r"[^a-z0-9]+", "_", text).strip("_")
+    return text or str(value or "").strip()
 
 
 def _merge_ordered_input_hints(*values: object) -> list[str]:
@@ -2830,11 +2838,37 @@ def _is_definition_or_declaration_site(
     idx = line_number - 1
     if idx < 0 or idx >= len(lines):
         return False
-    line = lines[idx]
     return (
-        _match_def_name(line) == function_name
-        or _match_multiline_def_name(lines, idx) == function_name
+        _definition_name_for_file(lines, idx, Path(abs_file).suffix.lower()) == function_name
     )
+
+
+def _definition_name_for_file(lines: list[str], idx: int, suffix: str) -> str | None:
+    if idx < 0 or idx >= len(lines):
+        return None
+    line = lines[idx]
+    stripped = line.strip()
+    if suffix == ".py" and not (
+        re.match(r"^(?:async\s+)?def\s+", stripped)
+        or re.search(r"=\s*lambda\b", stripped)
+    ):
+        return None
+    if suffix == ".rb" and not stripped.startswith("def "):
+        return None
+    if suffix in {".js", ".jsx", ".ts", ".tsx"} and not (
+        re.search(r"\bfunction\b", stripped)
+        or "=>" in stripped
+        or re.match(r"^(?:export\s+)?(?:async\s+)?function\s+", stripped)
+    ):
+        return None
+    name = _match_def_name(line) or _match_multiline_def_name(lines, idx)
+    if (
+        name
+        and suffix in {".py", ".js", ".jsx", ".ts", ".tsx", ".rb"}
+        and re.match(rf"^\s*{re.escape(name)}\s*\(", line)
+    ):
+        return None
+    return name
 
 
 def _is_non_executable_symbol_reference(line_text: str, function_name: str) -> bool:
@@ -2924,10 +2958,11 @@ def _caller_context(abs_file: str, line_number: int) -> tuple[str | None, dict |
     except OSError:
         return None, None
     upper = min(line_number, len(lines)) - 1
+    suffix = Path(abs_file).suffix.lower()
 
     enclosing: str | None = None
     for idx in range(upper, -1, -1):
-        name = _match_def_name(lines[idx]) or _match_multiline_def_name(lines, idx)
+        name = _definition_name_for_file(lines, idx, suffix)
         if name and _definition_encloses_line(lines, idx, upper):
             enclosing = name
             break
@@ -2937,10 +2972,7 @@ def _caller_context(abs_file: str, line_number: int) -> tuple[str | None, dict |
     for idx in range(upper, low - 1, -1):
         text = lines[idx]
         if (
-            (
-                _match_def_name(text) is not None
-                or _match_multiline_def_name(lines, idx) is not None
-            )
+            _definition_name_for_file(lines, idx, suffix) is not None
             and _definition_encloses_line(lines, idx, upper)
         ):
             break  # reached the enclosing definition without a guard
@@ -4748,6 +4780,17 @@ def _trace_entry_paths(
                 if table_entry:
                     entry_paths.append(table_entry)
                     continue
+                filesystem_entry = _filesystem_entry_for_site(
+                    repo_root,
+                    site["abs_file"],
+                    site["line_number"],
+                    enclosing,
+                    site["text"],
+                    caller_chain,
+                )
+                if filesystem_entry:
+                    entry_paths.append(filesystem_entry)
+                    continue
                 if enclosing:
                     decorated_caller_entry = _decorated_entry_for_symbol(
                         repo_root,
@@ -4910,6 +4953,104 @@ def _request_field_hints_for_symbol_source(
     if not definition_line:
         return []
     return _request_field_hints(str(symbol_file), definition_line, entry_symbol)
+
+
+_FILESYSTEM_OPERATION_RE = re.compile(
+    r"\b(?:glob|rglob|iterdir|listdir|scandir|walk)\s*\("
+    r"|\.read_text\s*\("
+    r"|\.read_bytes\s*\("
+    r"|\bopen\s*\(",
+    re.IGNORECASE,
+)
+
+
+def _filesystem_entry_for_site(
+    repo_root: Path,
+    abs_file: str,
+    line_number: int,
+    enclosing: str | None,
+    site_text: str,
+    caller_chain: list[str],
+) -> dict | None:
+    if not enclosing:
+        return None
+    try:
+        path = Path(abs_file)
+        lines = path.read_text(encoding="utf-8", errors="replace").splitlines()
+    except OSError:
+        return None
+
+    idx = max(0, line_number - 1)
+    start = max(0, idx - 8)
+    end = min(len(lines), idx + 8)
+    window = lines[start:end]
+    evidence_line = next(
+        (line.strip() for line in window if _FILESYSTEM_OPERATION_RE.search(line)),
+        "",
+    )
+    if not evidence_line:
+        return None
+
+    rel_file = _relative_path(repo_root, path)
+    metadata = _entry_metadata_for_symbol(
+        repo_root,
+        str(path),
+        line_number,
+        enclosing,
+        enclosing,
+    )
+    fs_hints = _filesystem_operation_input_hints("\n".join(window))
+    input_hints = _merge_ordered_input_hints(fs_hints, metadata.pop("input_hints", []))
+    entry_label = metadata.pop("entry_label", None)
+    entry = {
+        "entry_kind": "file",
+        "entry_symbol": enclosing,
+        "entry_file": rel_file,
+        "call_line": line_number,
+        "chain": caller_chain,
+        "depth": max(0, len(caller_chain) - 1),
+        "evidence": f"{rel_file}:{line_number} {site_text.strip()} | {evidence_line}",
+        "tool": "source-filesystem",
+        "entry_label": entry_label or _public_entry_label("file", enclosing),
+    }
+    if input_hints:
+        entry["input_hints"] = input_hints
+    entry.update(metadata)
+    return entry
+
+
+def _filesystem_operation_input_hints(window_text: str) -> list[str]:
+    hints: list[str] = []
+    seen: set[str] = set()
+
+    def add(value: str) -> None:
+        if value and value not in seen:
+            seen.add(value)
+            hints.append(value)
+
+    format_labels = {
+        "csv": "CSV file",
+        "tsv": "TSV file",
+        "json": "JSON file",
+        "jsonl": "JSONL file",
+        "xml": "XML file",
+        "yaml": "YAML file",
+        "yml": "YAML file",
+        "xlsx": "XLSX file",
+        "xls": "XLS file",
+        "txt": "text file",
+        "log": "log file",
+    }
+    for match in re.finditer(r"""\*\.(?P<ext>[A-Za-z0-9]+)""", window_text or ""):
+        label = format_labels.get(match.group("ext").lower())
+        if label:
+            add(label)
+    lowered = (window_text or "").lower()
+    if any(token in lowered for token in ("glob(", "rglob(", "iterdir(", "listdir(", "scandir(", "walk(")):
+        add("input directory")
+    if not hints and any(token in lowered for token in ("read_text(", "read_bytes(", "open(")):
+        add("input file")
+    return hints[:6]
 
 
 def _graphql_schema_entry_for_site(
