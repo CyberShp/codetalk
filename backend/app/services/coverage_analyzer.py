@@ -331,6 +331,11 @@ _REQUEST_FIELD_RES = (
         r"\.(?!get\b)([A-Za-z_][\w-]*)\b"
     ),
     re.compile(
+        r"\b(?:request|req)"
+        r"\.(?:GET|POST|FILES|COOKIES|headers|META)"
+        r"(?:\s*\[\s*|\s*\.get\s*\(\s*)['\"]([A-Za-z_][\w-]*)['\"]"
+    ),
+    re.compile(
         r"\b(?:c|ctx|context)\."
         r"(?:Param|Query|DefaultQuery|PostForm|DefaultPostForm|GetHeader)"
         r"\s*\(\s*['\"]([A-Za-z_][\w-]*)['\"]"
@@ -392,11 +397,11 @@ _ENTRY_DECORATOR_KIND_TOKENS: tuple[tuple[str, tuple[str, ...]], ...] = (
     ("callback", ("callback", ".callback")),
 )
 _PUBLIC_CALLBACK_START_RE = re.compile(
-    r"\.\s*(?:"
+    r"(?:\.\s*(?:"
     r"get|post|put|patch|delete|head|options|route|use|"
     r"subscribe|on|listen|add_listener|add_handler|register|"
     r"add_job|schedule"
-    r")\s*\(",
+    r")|(?:^|\b)(?:path|re_path))\s*\(",
     re.IGNORECASE,
 )
 _CALLBACK_ASSIGN_RE = re.compile(
@@ -498,6 +503,7 @@ _ENTRY_SIGNATURES: tuple[tuple[str, tuple[str, ...]], ...] = (
     ("webhook", ("webhook", "webhooks", "hook_handler", "hook_delivery")),
     ("route", ("route", "routes", "router", "controller", "view",
                ".get", ".post", ".put", ".patch", ".delete", ".head", ".options", ".any",
+               "path(", "re_path(", "urlpatterns",
                ".websocket", "websocket(")),
     ("endpoint", ("endpoint", "endpoints", "servlet")),
     ("api", ("/api", "api_", "_api", "route", "router", "handle_request",

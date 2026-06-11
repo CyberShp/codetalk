@@ -2415,6 +2415,43 @@ class TestCoverageTestDesign:
         assert entry["entry_symbol"] == "process"
         assert entry["input_hints"] == ["amount", "tenantId"]
 
+    async def test_django_urlpattern_view_is_black_box_route_with_query_input(self, tmp_path):
+        from app.services.coverage_analyzer import build_coverage_test_design
+
+        app = tmp_path / "payments"
+        app.mkdir()
+        (app / "views.py").write_text(
+            "def process_payment(request, tenant_id):\n"
+            "    amount = request.GET.get('amount')\n"
+            "    if not amount:\n"
+            "        return JsonResponse({'error': tenant_id}, status=400)\n"
+            "    return JsonResponse({'ok': True})\n",
+            encoding="utf-8",
+        )
+        (app / "urls.py").write_text(
+            "from django.urls import path\n"
+            "from .views import process_payment\n\n"
+            "urlpatterns = [\n"
+            "    path('payments/<str:tenant_id>/', process_payment, name='process-payment'),\n"
+            "]\n",
+            encoding="utf-8",
+        )
+        modules = self._modules(
+            "feature,module,code_location,function,triggered,hit_count\n"
+            "payments,views,payments/views.py:1-5,process_payment,false,0\n"
+        )
+
+        design = await build_coverage_test_design(
+            modules, workspace_id="ws-1", repo_path=str(tmp_path)
+        )
+
+        gap = [g for g in design["gaps"] if g.get("kind") == "function"][0]
+        assert gap["black_box_readiness"]["case_type"] == "black_box_ready"
+        entry = gap["entry_paths"][0]
+        assert entry["entry_kind"] == "route"
+        assert entry["entry_symbol"] == "process_payment"
+        assert entry["input_hints"] == ["amount", "tenant_id"]
+
     async def test_coverage_definition_detection_handles_objc_methods(self):
         from app.services.coverage_analyzer import _match_def_name
 
