@@ -1920,18 +1920,23 @@ async def probe_external_agent_startup(
         stderr_text = stderr.decode("utf-8", errors="replace")
         if proc.returncode not in {0, None}:
             message = _format_process_error_summary(proc.returncode, stderr_text, raw, health)
-            attempt["probe_status"] = "error"
+            probe_status = (
+                "configuration_error"
+                if _is_terminal_agent_configuration_error(message) and index >= len(commands) - 1
+                else "error"
+            )
+            attempt["probe_status"] = probe_status
             attempt["probe_message"] = message[:4000]
             last_failure = {
                 "provider": provider,
                 "healthy": False,
-                "status": "error",
+                "status": probe_status,
                 "message": message,
                 "health": health,
                 "stderr": stderr_text[:4000],
                 "stdout": raw[:4000],
             }
-            if _is_terminal_agent_configuration_error(message) and index >= len(commands) - 1:
+            if probe_status == "configuration_error":
                 return _redact_probe_response(last_failure)
             continue
 

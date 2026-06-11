@@ -19,6 +19,7 @@ from app.schemas.workspace_analysis import (
     ScopePreview,
     build_default_plan,
 )
+from app.services.process_manager import ProcessManager
 
 router = APIRouter(prefix="/api/workspaces", tags=["工作空间"])
 logger = logging.getLogger(__name__)
@@ -154,6 +155,22 @@ def _classify_index_error(exc: Exception, base_url: str) -> str:
     return msg
 
 
+async def _try_start_gitnexus_and_recheck(adapter, initial_health):
+    """Start managed GitNexus once when the service exists but is not running."""
+    try:
+        started = await ProcessManager.get_instance().start("gitnexus")
+    except Exception as exc:
+        logger.warning("GitNexus auto-start failed before workspace indexing: %s", exc)
+        return initial_health
+    if not started:
+        return initial_health
+    try:
+        return await adapter.health_check()
+    except Exception as exc:
+        logger.warning("GitNexus health recheck failed after auto-start: %s", exc)
+        return initial_health
+
+
 async def _index_workspace(ws_id: str, repo_path: str) -> None:
     """Index a workspace repo via GitNexusAdapter; updates indexed: 0=running, 1=done, -1=failed."""
     from app.adapters.base import AnalysisRequest
@@ -180,6 +197,8 @@ async def _index_workspace(ws_id: str, repo_path: str) -> None:
 
         # T3: 健康预检 — 避免等待 connect timeout 才报错
         health = await adapter.health_check()
+        if not health.is_healthy:
+            health = await _try_start_gitnexus_and_recheck(adapter, health)
         if not health.is_healthy:
             detail = health.last_check or health.container_status or "unreachable"
             error_msg = f"GitNexus 服务未运行，请先启动 GitNexus（{detail}）"
