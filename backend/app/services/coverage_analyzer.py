@@ -390,7 +390,10 @@ _ENTRY_DECORATOR_KIND_TOKENS: tuple[tuple[str, tuple[str, ...]], ...] = (
                "@get", "@post", "@put", "@patch", "@delete", "@head", "@options",
                ".get", ".post", ".put", ".patch", ".delete", ".head", ".options",
                ".api_route", ".websocket", "websocket", "socket_route")),
-    ("api", ("api", "rpc", "grpc", "http", "request")),
+    ("api", (
+        "api", "rpc", "grpc", "http", "request",
+        "graphql", "resolver", "query", "mutation", "subscription",
+    )),
     ("message", ("subscribe", "subscriber", "topic", "queue", "message", "event", "listener",
                  ".on", ".listen", "consumer")),
     ("scheduler", ("schedule", "scheduler", "scheduled", "cron", "job", ".task")),

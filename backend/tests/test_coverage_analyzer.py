@@ -2724,6 +2724,42 @@ class TestCoverageTestDesign:
         assert "@Post" in entry["evidence"]
         assert entry["input_hints"] == ["paymentRequest", "tenantId"]
 
+    async def test_graphql_mutation_decorator_is_black_box_api_without_caller(self, tmp_path):
+        from app.services.coverage_analyzer import build_coverage_test_design
+
+        src = tmp_path / "src"
+        src.mkdir()
+        (src / "payment.resolver.ts").write_text(
+            "export class PaymentResolver {\n"
+            "  @Mutation(() => PaymentResult)\n"
+            "  async processPayment(@Args('amount') amount: number, @Args('tenantId') tenantId: string) {\n"
+            "    if (!amount) {\n"
+            "      return { status: 'missing' };\n"
+            "    }\n"
+            "    return { status: 'ok', tenantId };\n"
+            "  }\n"
+            "}\n",
+            encoding="utf-8",
+        )
+        modules = self._modules(
+            "feature,module,code_location,function,triggered,hit_count\n"
+            "payments,resolver,src/payment.resolver.ts:3-8,processPayment,false,0\n"
+        )
+
+        design = await build_coverage_test_design(
+            modules, workspace_id="ws-1", repo_path=str(tmp_path)
+        )
+
+        gap = [g for g in design["gaps"] if g.get("kind") == "function"][0]
+        assert gap["gray_box_required"] is False
+        assert gap["black_box_readiness"]["case_type"] == "black_box_ready"
+        entry = gap["entry_paths"][0]
+        assert entry["entry_kind"] == "api"
+        assert entry["entry_symbol"] == "processPayment"
+        assert entry["tool"] == "source-decorator"
+        assert "@Mutation" in entry["evidence"]
+        assert entry["input_hints"] == ["amount", "tenantId"]
+
     async def test_typed_route_signature_params_feed_black_box_input_hints(self, tmp_path):
         from app.services.coverage_analyzer import build_coverage_test_design
 
