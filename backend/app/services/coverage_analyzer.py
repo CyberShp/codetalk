@@ -3486,7 +3486,7 @@ def _serverless_handler_entry_for_symbol(
     lines: list[str],
     definition_line: int,
 ) -> dict | None:
-    if source_file.suffix.lower() != ".py":
+    if source_file.suffix.lower() not in {".py", ".js", ".jsx", ".ts", ".tsx"}:
         return None
     definition_idx = definition_line - 1
     if definition_idx < 0 or definition_idx >= len(lines):
@@ -3537,9 +3537,12 @@ def _event_payload_input_hints(lines: list[str], definition_idx: int) -> list[st
     for pattern in (
         r"\bevent\s*\.\s*get\s*\(\s*['\"]([A-Za-z_][\w-]*)['\"]",
         r"\bevent\s*\[\s*['\"]([A-Za-z_][\w-]*)['\"]\s*\]",
+        r"\bevent\s*\??\.\s*([A-Za-z_][\w-]*)\b",
     ):
         for match in re.finditer(pattern, text):
             value = match.group(1).strip()
+            if value in {"get", "body", "headers", "queryStringParameters", "pathParameters"}:
+                continue
             if not value or value in seen:
                 continue
             seen.add(value)

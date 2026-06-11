@@ -1996,6 +1996,40 @@ class TestCoverageTestDesign:
         case_text = json.dumps(gap["black_box_cases"], ensure_ascii=False)
         assert "invoice_id" in case_text
 
+    async def test_node_lambda_exports_handler_is_black_box_event_entry(self, tmp_path):
+        from app.services.coverage_analyzer import build_coverage_test_design
+
+        src = tmp_path / "functions"
+        src.mkdir()
+        (src / "billing.js").write_text(
+            "exports.handler = async (event, context) => {\n"
+            "  const invoiceId = event.invoice_id;\n"
+            "  if (!invoiceId) {\n"
+            "    return { statusCode: 400 };\n"
+            "  }\n"
+            "  return { statusCode: 200, invoiceId };\n"
+            "};\n",
+            encoding="utf-8",
+        )
+        modules = self._modules(
+            "feature,module,code_location,function,triggered,hit_count\n"
+            "billing,lambda,functions/billing.js:1-7,handler,false,0\n"
+        )
+
+        design = await build_coverage_test_design(
+            modules, workspace_id="ws-1", repo_path=str(tmp_path)
+        )
+
+        gap = [g for g in design["gaps"] if g.get("kind") == "function"][0]
+        assert gap["gray_box_required"] is False
+        assert gap["black_box_readiness"]["case_type"] == "black_box_ready"
+        entry = gap["entry_paths"][0]
+        assert entry["entry_kind"] == "event"
+        assert entry["entry_symbol"] == "handler"
+        assert entry["tool"] == "source-serverless-handler"
+        assert "exports.handler" in entry["evidence"]
+        assert entry["input_hints"] == ["invoice_id", "event"]
+
     async def test_js_arrow_route_handler_is_source_backed_with_input_hints(self, tmp_path):
         from app.services.coverage_analyzer import build_coverage_test_design
 
