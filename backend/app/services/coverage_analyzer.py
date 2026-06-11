@@ -3391,6 +3391,15 @@ def _decorated_entry_for_symbol(
     definition_line = _find_strict_definition_line(lines, function_name)
     if not definition_line:
         return None
+    serverless_entry = _serverless_handler_entry_for_symbol(
+        repo_root,
+        source_file,
+        function_name,
+        lines,
+        definition_line,
+    )
+    if serverless_entry:
+        return serverless_entry
     ruby_worker_entry = _ruby_worker_entry_for_symbol(
         repo_root,
         source_file,
@@ -3468,6 +3477,74 @@ def _decorated_entry_for_symbol(
     }
     entry.update(metadata)
     return entry
+
+
+def _serverless_handler_entry_for_symbol(
+    repo_root: Path,
+    source_file: Path,
+    function_name: str,
+    lines: list[str],
+    definition_line: int,
+) -> dict | None:
+    if source_file.suffix.lower() != ".py":
+        return None
+    definition_idx = definition_line - 1
+    if definition_idx < 0 or definition_idx >= len(lines):
+        return None
+    definition_text = lines[definition_idx].strip()
+    params = _signature_input_params(definition_text)
+    normalized_params = {param.lower() for param in params}
+    if "event" not in normalized_params:
+        return None
+
+    path_text = source_file.as_posix().lower()
+    symbol = function_name.lower()
+    strong_path = any(
+        token in path_text
+        for token in ("/lambda/", "/lambdas/", "/functions/", "/serverless/")
+    )
+    if symbol != "lambda_handler" and not (symbol == "handler" and strong_path):
+        return None
+
+    rel_file = _relative_path(repo_root, source_file)
+    event_hints = _event_payload_input_hints(lines, definition_idx)
+    input_hints = _merge_ordered_strings(event_hints, ["event"])
+    entry = {
+        "entry_kind": "event",
+        "entry_symbol": function_name,
+        "entry_file": rel_file,
+        "entry_label": "serverless event handler",
+        "call_line": definition_line,
+        "chain": [function_name],
+        "depth": 0,
+        "evidence": f"{rel_file}:{definition_line} {definition_text}",
+        "tool": "source-serverless-handler",
+    }
+    if input_hints:
+        entry["input_hints"] = input_hints
+    return entry
+
+
+def _event_payload_input_hints(lines: list[str], definition_idx: int) -> list[str]:
+    hints: list[str] = []
+    seen: set[str] = set()
+    fn_end = len(lines)
+    for pos in range(definition_idx + 1, len(lines)):
+        if _is_sibling_definition_boundary(lines, definition_idx, pos):
+            fn_end = pos
+            break
+    text = "\n".join(lines[definition_idx:fn_end])
+    for pattern in (
+        r"\bevent\s*\.\s*get\s*\(\s*['\"]([A-Za-z_][\w-]*)['\"]",
+        r"\bevent\s*\[\s*['\"]([A-Za-z_][\w-]*)['\"]\s*\]",
+    ):
+        for match in re.finditer(pattern, text):
+            value = match.group(1).strip()
+            if not value or value in seen:
+                continue
+            seen.add(value)
+            hints.append(value)
+    return hints[:12]
 
 
 def _ruby_worker_entry_for_symbol(
