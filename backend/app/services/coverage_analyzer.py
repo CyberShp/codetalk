@@ -3518,6 +3518,23 @@ def _registration_channel_input_hints(registration_line: str, entry_type: str) -
     return hints[:8]
 
 
+def _queue_registration_input_hints(site_text: str, entry_type: str) -> list[str]:
+    if entry_type != "queue":
+        return []
+    text = site_text or ""
+    if not re.search(r"\b(?:new\s+Worker|Worker\s*\(|Queue\s*\(|\.process\s*\()", text):
+        return []
+    hints: list[str] = []
+    seen: set[str] = set()
+    for match in re.finditer(r"""(['"])(?P<value>(?:\\.|(?!\1).)*?)\1""", text):
+        value = match.group("value").strip()
+        if not value or value in seen:
+            continue
+        seen.add(value)
+        hints.append(value)
+    return hints[:4]
+
+
 def _symbol_channel_input_hints(symbol: str | None, entry_type: str) -> list[str]:
     if entry_type not in {"message", "queue", "scheduler", "job", "timer"}:
         return []
@@ -3694,7 +3711,10 @@ def _trace_entry_paths(
                                 route_hints,
                             )
                     else:
-                        channel_hints = _symbol_channel_input_hints(entry_symbol, entry_kind)
+                        channel_hints = _merge_ordered_strings(
+                            _queue_registration_input_hints(site["text"], entry_kind),
+                            _symbol_channel_input_hints(entry_symbol, entry_kind),
+                        )
                         if channel_hints:
                             metadata["input_hints"] = _merge_ordered_strings(
                                 channel_hints,

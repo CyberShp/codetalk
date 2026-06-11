@@ -3005,6 +3005,44 @@ class TestCoverageTestDesign:
         case_text = json.dumps(gap["black_box_cases"], ensure_ascii=False)
         assert "invoice_queue" in case_text
 
+    async def test_bullmq_worker_registration_feeds_queue_input_hint(self, tmp_path):
+        from app.services.coverage_analyzer import build_coverage_test_design
+
+        src = tmp_path / "src"
+        src.mkdir()
+        (src / "processor.ts").write_text(
+            "export async function processInvoice(job) {\n"
+            "  if (!job.data.invoiceId) {\n"
+            "    return { status: 'missing' };\n"
+            "  }\n"
+            "  return { status: 'processed' };\n"
+            "}\n",
+            encoding="utf-8",
+        )
+        (src / "worker.ts").write_text(
+            "import { Worker } from 'bullmq';\n"
+            "import { processInvoice } from './processor';\n\n"
+            "export const invoiceWorker = new Worker('invoice_queue', processInvoice);\n",
+            encoding="utf-8",
+        )
+        modules = self._modules(
+            "feature,module,code_location,function,triggered,hit_count\n"
+            "billing,processor,src/processor.ts:1-6,processInvoice,false,0\n"
+        )
+
+        design = await build_coverage_test_design(
+            modules, workspace_id="ws-1", repo_path=str(tmp_path)
+        )
+
+        gap = [g for g in design["gaps"] if g.get("kind") == "function"][0]
+        assert gap["gray_box_required"] is False
+        assert gap["black_box_readiness"]["case_type"] == "black_box_ready"
+        entry = gap["entry_paths"][0]
+        assert entry["entry_kind"] == "queue"
+        assert entry["entry_symbol"] == "processInvoice"
+        assert "invoice_queue" in entry["input_hints"]
+        assert "invoice_queue" in json.dumps(gap["black_box_cases"], ensure_ascii=False)
+
     async def test_timer_call_site_keeps_timer_entry_kind_without_agent(self, tmp_path):
         from app.services.coverage_analyzer import build_coverage_test_design
 
