@@ -223,6 +223,12 @@ async def _load_cached_gitnexus_graph(repo_path: str) -> dict | None:
 
 async def _fetch_live_gitnexus_graph(repo_path: str) -> dict | None:
     """Best-effort live fetch from GitNexus.  None on any error."""
+    graph, _warning = await _fetch_live_gitnexus_graph_with_warning(repo_path)
+    return graph
+
+
+async def _fetch_live_gitnexus_graph_with_warning(repo_path: str) -> tuple[dict | None, str]:
+    """Best-effort live fetch from GitNexus with a user-facing diagnostic."""
     try:
         tool_path = to_tool_repo_path(
             repo_path,
@@ -231,8 +237,8 @@ async def _fetch_live_gitnexus_graph(repo_path: str) -> dict | None:
             local_host_path=settings.local_repos_host_path,
             local_container_path=settings.local_repos_container_path,
         )
-    except Exception:
-        return None
+    except Exception as exc:
+        return None, f"GitNexus repo path translation failed: {_short_error(exc)}"
 
     repo_name = Path(tool_path).name
     try:
@@ -260,10 +266,21 @@ async def _fetch_live_gitnexus_graph(repo_path: str) -> dict | None:
             if resp.status_code == 404:
                 resp = await client.get("/api/graph")
             resp.raise_for_status()
-            return resp.json()
+            return resp.json(), ""
     except Exception as exc:
         logger.info("Live GitNexus graph fetch failed: %s", exc)
-        return None
+        return (
+            None,
+            f"GitNexus live graph fetch failed from {settings.gitnexus_base_url}: {_short_error(exc)}",
+        )
+
+
+def _short_error(exc: Exception, limit: int = 240) -> str:
+    text = str(exc).strip() or exc.__class__.__name__
+    text = " ".join(text.split())
+    if len(text) > limit:
+        return text[: limit - 3].rstrip() + "..."
+    return text
 
 
 # ---------------------------------------------------------------------------
@@ -1424,8 +1441,9 @@ class WorkspaceScopeResolver:
 
         graph = await _load_cached_gitnexus_graph(repo_path)
         used_cache = graph is not None
+        live_gitnexus_warning = ""
         if graph is None:
-            graph = await _fetch_live_gitnexus_graph(repo_path)
+            graph, live_gitnexus_warning = await _fetch_live_gitnexus_graph_with_warning(repo_path)
         index = _GraphIndex(graph)
         gitnexus_available = not index.is_empty
 
@@ -1434,6 +1452,8 @@ class WorkspaceScopeResolver:
             warnings.append(
                 "GitNexus 图谱当前不可用，已退回到本地代码搜索；结果可能不完整。"
             )
+            if live_gitnexus_warning:
+                warnings.append(live_gitnexus_warning)
         elif not used_cache:
             warnings.append(
                 "GitNexus 缓存不存在，已实时拉取；若仓库尚未完成索引建议先重新索引。"

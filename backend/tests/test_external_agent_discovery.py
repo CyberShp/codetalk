@@ -1647,7 +1647,7 @@ def test_external_agent_adapter_health_reports_launch_kind(monkeypatch):
     assert "command not found: ccr" in health.last_check
 
 
-def test_external_agent_adapter_health_reports_ccr_config_hint(monkeypatch):
+def test_external_agent_adapter_health_keeps_default_ccr_config_hint_non_blocking(monkeypatch):
     from app.adapters import external_agent as adapter_mod
 
     def fake_health(provider, command, fallback_commands=None):
@@ -1674,9 +1674,39 @@ def test_external_agent_adapter_health_reports_ccr_config_hint(monkeypatch):
         adapter_mod.ExternalAgentAdapter("claude-code", "claude_code_command").health_check()
     )
 
+    assert health.is_healthy is True
+    assert health.container_status == "available"
+    assert "default config not found" in health.last_check
+
+
+def test_external_agent_adapter_health_marks_explicit_ccr_config_error_misconfigured(monkeypatch):
+    from app.adapters import external_agent as adapter_mod
+
+    def fake_health(provider, command, fallback_commands=None):
+        return {
+            "provider": provider,
+            "status": "configuration_error",
+            "reason": "ccr config file not found: C:/missing/config-router.json",
+            "path": "C:/tools/ccr.cmd",
+            "launch_kind": "exec",
+            "attempts": [
+                {
+                    "command": "ccr code --config C:/missing/config-router.json",
+                    "status": "configuration_error",
+                    "reason": "ccr config file not found: C:/missing/config-router.json",
+                },
+            ],
+        }
+
+    monkeypatch.setattr(adapter_mod, "check_provider_health", fake_health)
+
+    health = asyncio.run(
+        adapter_mod.ExternalAgentAdapter("claude-code", "claude_code_command").health_check()
+    )
+
     assert health.is_healthy is False
     assert health.container_status == "misconfigured"
-    assert "default config not found" in health.last_check
+    assert "ccr config file not found" in health.last_check
 
 
 def test_external_agent_adapter_analyze_returns_json_safe_nested_results(tmp_path, monkeypatch):
@@ -5539,6 +5569,41 @@ def test_workspace_preview_keeps_local_source_when_gitnexus_and_agent_unavailabl
     ]
     assert any(path.endswith("nof/nvmf_tcp/transport/tls/tls.c") for path in paths)
     assert not any("未在 GitNexus" in warning for warning in resolved.warnings)
+
+
+def test_workspace_preview_reports_live_gitnexus_failure_reason(tmp_path, monkeypatch):
+    from app.schemas.workspace_analysis import AnalysisPlan
+
+    _write_tls_repo(tmp_path)
+
+    async def fake_fetch(_repo_path):
+        return None, "GET http://localhost:7100/api/graph failed: connection refused"
+
+    async def fake_discovery(_request, **_kwargs):
+        return []
+
+    monkeypatch.setattr(
+        "app.services.workspace_scope_resolver._fetch_live_gitnexus_graph_with_warning",
+        fake_fetch,
+    )
+    monkeypatch.setattr(
+        "app.services.workspace_scope_resolver.run_external_agent_discovery",
+        fake_discovery,
+    )
+    plan = AnalysisPlan(
+        analysis_objects=[AnalysisObject(id="obj_tls", text="nvme-tcp-tls", kind="module")]
+    )
+
+    preview = asyncio.run(
+        WorkspaceScopeResolver().resolve(
+            ws_id="ws",
+            repo_path=str(tmp_path),
+            plan=plan,
+        )
+    )
+
+    assert preview.gitnexus_available is False
+    assert any("connection refused" in warning for warning in preview.warnings)
 
 
 def test_workspace_resolver_keeps_detailed_agent_warning_without_duplicate(tmp_path, monkeypatch):

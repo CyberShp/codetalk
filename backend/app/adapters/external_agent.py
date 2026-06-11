@@ -38,7 +38,7 @@ class ExternalAgentAdapter(BaseToolAdapter):
             fallback_commands=provider_fallback_commands(self._provider),
         )
         attempts = health.get("attempts") or []
-        misconfigured = _active_attempt_has_configuration_hint(health)
+        misconfigured = _active_attempt_has_configuration_error(health)
         ok = health.get("status") == "available" and not misconfigured
         attempt_summary = "; ".join(
             _format_attempt_summary(item)
@@ -110,9 +110,11 @@ def _format_attempt_summary(item: dict) -> str:
     )
 
 
-def _active_attempt_has_configuration_hint(health: object) -> bool:
+def _active_attempt_has_configuration_error(health: object) -> bool:
     if not isinstance(health, dict):
         return False
+    if health.get("status") == "configuration_error":
+        return True
     attempts = health.get("attempts")
     if not isinstance(attempts, list):
         return False
@@ -120,11 +122,11 @@ def _active_attempt_has_configuration_hint(health: object) -> bool:
         active_attempts = [attempts[-1]] if attempts else []
     else:
         active_attempts = attempts
-    return any(_has_configuration_hint(item) for item in active_attempts)
+    return any(_has_configuration_error(item) for item in active_attempts)
 
 
-def _has_configuration_hint(item: object) -> bool:
-    return isinstance(item, dict) and bool(str(item.get("config_hint") or "").strip())
+def _has_configuration_error(item: object) -> bool:
+    return isinstance(item, dict) and item.get("status") == "configuration_error"
 
 
 def _format_runtime_diagnostic(value: object) -> str:
