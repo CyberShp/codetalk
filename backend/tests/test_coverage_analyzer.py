@@ -3209,6 +3209,50 @@ class TestCoverageTestDesign:
         assert "@Post" in entry["evidence"]
         assert entry["input_hints"] == ["paymentRequest", "tenantId"]
 
+    async def test_nestjs_body_dto_fields_feed_black_box_input_hints(self, tmp_path):
+        from app.services.coverage_analyzer import build_coverage_test_design
+
+        src = tmp_path / "src"
+        src.mkdir()
+        (src / "payment.controller.ts").write_text(
+            "interface PaymentRequest {\n"
+            "  amount: number;\n"
+            "  currency?: string;\n"
+            "}\n\n"
+            "export class PaymentController {\n"
+            "  @Post('/payments/:tenantId')\n"
+            "  async processPayment(\n"
+            "    @Body() paymentRequest: PaymentRequest,\n"
+            "    @Param('tenantId') tenantId: string,\n"
+            "  ) {\n"
+            "    if (!paymentRequest.amount) {\n"
+            "      return { status: 400 };\n"
+            "    }\n"
+            "    return { status: 200, tenantId };\n"
+            "  }\n"
+            "}\n",
+            encoding="utf-8",
+        )
+        modules = self._modules(
+            "feature,module,code_location,function,triggered,hit_count\n"
+            "payments,controller,src/payment.controller.ts:9-16,processPayment,false,0\n"
+        )
+
+        design = await build_coverage_test_design(
+            modules, workspace_id="ws-1", repo_path=str(tmp_path)
+        )
+
+        gap = [g for g in design["gaps"] if g.get("kind") == "function"][0]
+        assert gap["gray_box_required"] is False
+        assert gap["black_box_readiness"]["case_type"] == "black_box_ready"
+        entry = gap["entry_paths"][0]
+        assert entry["entry_kind"] == "route"
+        assert entry["entry_symbol"] == "processPayment"
+        assert entry["input_hints"] == ["amount", "currency", "tenantId"]
+        case_text = json.dumps(gap["black_box_cases"], ensure_ascii=False)
+        assert "amount" in case_text
+        assert "currency" in case_text
+
     async def test_graphql_mutation_decorator_is_black_box_api_without_caller(self, tmp_path):
         from app.services.coverage_analyzer import build_coverage_test_design
 

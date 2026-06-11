@@ -3206,15 +3206,36 @@ def _handler_signature_input_hints(abs_file: str, enclosing_fn: str | None) -> l
     for idx, line in enumerate(lines):
         if not _line_matches_signature_name(lines, idx, enclosing_fn):
             continue
-        signature = line.strip()
-        while ")" not in signature and idx + 1 < len(lines):
-            idx += 1
-            signature += " " + lines[idx].strip()
+        signature = _collect_signature_text(lines, idx)
         model_fields_by_type = _source_model_fields_by_class(
             lines, Path(abs_file).suffix.lower()
         )
         return _signature_input_params(signature, model_fields_by_type=model_fields_by_type)
     return []
+
+
+def _collect_signature_text(lines: list[str], start_idx: int) -> str:
+    if start_idx < 0 or start_idx >= len(lines):
+        return ""
+    parts: list[str] = []
+    depth = 0
+    started = False
+    for pos in range(start_idx, min(len(lines), start_idx + 12)):
+        text = lines[pos].strip()
+        if not text:
+            continue
+        parts.append(text)
+        for char in text:
+            if char == "(":
+                depth += 1
+                started = True
+            elif char == ")" and depth > 0:
+                depth -= 1
+        if started and depth == 0:
+            break
+        if "{" in text and started:
+            break
+    return " ".join(parts)
 
 
 def _line_matches_signature_name(lines: list[str], idx: int, name: str) -> bool:
@@ -3325,7 +3346,7 @@ def _split_signature_params(params: str) -> list[str]:
 
 
 def _signature_param_type_hint(raw_param: str, param_name: str) -> str | None:
-    declaration = str(raw_param or "").split("=", 1)[0].strip()
+    declaration = _strip_parameter_decorators(str(raw_param or "").split("=", 1)[0].strip())
     skip = {
         "annotated", "optional", "union", "list", "dict", "tuple", "set",
         "sequence", "mapping", "body", "query", "path", "header", "cookie",
@@ -3340,7 +3361,7 @@ def _signature_param_type_hint(raw_param: str, param_name: str) -> str | None:
         annotation = declaration.split(":", 1)[1]
         for identifier in re.findall(r"[A-Za-z_][\w]*", annotation):
             normalized = identifier.lower()
-            if normalized in skip or normalized == param_name.lower():
+            if normalized in skip or identifier == param_name:
                 continue
             return identifier
         return None
@@ -3357,11 +3378,23 @@ def _signature_param_type_hint(raw_param: str, param_name: str) -> str | None:
     return None
 
 
+def _strip_parameter_decorators(declaration: str) -> str:
+    text = declaration
+    pattern = re.compile(r"^\s*@[A-Za-z_][\w.]*(?:\([^()]*\))?\s*")
+    while True:
+        stripped = pattern.sub("", text, count=1).strip()
+        if stripped == text:
+            return stripped
+        text = stripped
+
+
 def _source_model_fields_by_class(lines: list[str], suffix: str) -> dict[str, list[str]]:
     if suffix == ".py":
         return _python_model_fields_by_class(lines)
     if suffix == ".java":
         return _java_model_fields_by_class(lines)
+    if suffix in {".ts", ".tsx", ".mts", ".cts"}:
+        return _typescript_model_fields_by_class(lines)
     return {}
 
 
@@ -3483,6 +3516,70 @@ def _java_field_name_from_declaration(raw_line: str) -> str | None:
     if field and not field[0].isupper():
         return field
     return None
+
+
+def _typescript_model_fields_by_class(lines: list[str]) -> dict[str, list[str]]:
+    fields_by_type: dict[str, list[str]] = {}
+    idx = 0
+    while idx < len(lines):
+        line = lines[idx]
+        match = re.match(
+            r"^\s*(?:export\s+)?(?P<kind>interface|class)\s+(?P<name>[A-Za-z_]\w*)\b",
+            line,
+        )
+        type_match = re.match(
+            r"^\s*(?:export\s+)?type\s+(?P<name>[A-Za-z_]\w*)\s*=\s*\{",
+            line,
+        )
+        if not match and not type_match:
+            idx += 1
+            continue
+        type_name = (match or type_match).group("name")
+        fields: list[str] = []
+        seen: set[str] = set()
+        brace_depth = line.count("{") - line.count("}")
+        pos = idx + 1
+        while pos < len(lines):
+            child = lines[pos]
+            if brace_depth <= 0 and child.strip():
+                break
+            if brace_depth == 1:
+                field = _typescript_field_name_from_declaration(child)
+                if field and field not in seen:
+                    seen.add(field)
+                    fields.append(field)
+                    if len(fields) >= 12:
+                        break
+            brace_depth += child.count("{") - child.count("}")
+            pos += 1
+        if fields:
+            fields_by_type[type_name] = fields
+        idx = max(pos, idx + 1)
+    return fields_by_type
+
+
+def _typescript_field_name_from_declaration(raw_line: str) -> str | None:
+    line = str(raw_line or "").strip()
+    if not line or line.startswith(("//", "/*", "*", "@")):
+        return None
+    if "(" in line:
+        return None
+    line = line.split("//", 1)[0].strip().rstrip(",;")
+    if ":" not in line:
+        return None
+    left = line.split(":", 1)[0].strip()
+    left = re.sub(
+        r"^(?:public|private|protected|readonly|static|declare|abstract)\s+",
+        "",
+        left,
+    ).strip()
+    match = re.match(r"^['\"]?([A-Za-z_][\w-]*)['\"]?\??$", left)
+    if not match:
+        return None
+    field = match.group(1)
+    if field.startswith("_"):
+        return None
+    return field
 
 
 def _signature_external_type_hint(
