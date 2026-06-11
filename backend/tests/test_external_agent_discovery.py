@@ -1140,7 +1140,8 @@ def test_missing_ccr_health_includes_actionable_command_configuration_hint(tmp_p
     assert health["status"] == "unavailable"
     assert diagnostic["command_hint_env"] == "CLAUDE_CODE_COMMAND"
     assert "CLAUDE_CODE_COMMAND" in diagnostic["command_hint"]
-    assert "ccr.cmd code -p" in diagnostic["command_hint"]
+    assert "ccr.cmd code" in diagnostic["command_hint"]
+    assert "ccr.cmd code -p" not in diagnostic["command_hint"]
     assert "checked_common_dirs" in diagnostic
     assert "missing-appdata" in " ".join(diagnostic["checked_common_dirs"])
 
@@ -1174,7 +1175,7 @@ def test_provider_health_normalizes_bare_ccr_code_for_noninteractive_prompt(tmp_
     health = check_provider_health("claude-code", "ccr code")
 
     assert health["status"] == "available"
-    assert health["argv"][0:3] == ["C:/tools/ccr.exe", "code", "-p"]
+    assert health["argv"][0:4] == ["C:/tools/ccr.exe", "code", "--", "-p"]
     assert "--output-format" not in health["argv"]
     assert "--allowedTools" not in health["argv"]
     assert "--disallowedTools" not in health["argv"]
@@ -3099,8 +3100,8 @@ def test_run_provider_bare_ccr_code_uses_print_argument_transport(tmp_path, monk
 
     assert results[0].status == "ok"
     argv = list(captured["argv"])
-    assert argv[0:3] == ["C:/tools/ccr.exe", "code", "-p"]
-    assert "analysis_object_text" in argv[3]
+    assert argv[0:4] == ["C:/tools/ccr.exe", "code", "--", "-p"]
+    assert "analysis_object_text" in argv[4]
     assert "--output-format" not in argv
     assert captured["stdin"] == ""
     assert results[0].runtime_attempts[0]["prompt_transport"] == "argv"
@@ -3111,14 +3112,14 @@ def test_claude_print_prompt_argument_escapes_raw_newlines_for_windows_cmd():
 
     argv, stdin_payload, transport = _agent_process_invocation(
         "claude-code",
-        ["C:/Users/me/AppData/Roaming/npm/ccr.CMD", "code", "-p", "--output-format", "json"],
+        ["C:/Users/me/AppData/Roaming/npm/ccr.CMD", "code", "--", "-p"],
         "first line\nsecond line",
     )
 
     assert transport == "argv"
     assert stdin_payload == b""
-    assert argv[3] == "first line\\nsecond line"
-    assert "\n" not in argv[3]
+    assert argv[4] == "first line\\nsecond line"
+    assert "\n" not in argv[4]
 
 
 def test_run_provider_replaces_configured_claude_print_placeholder(tmp_path, monkeypatch):

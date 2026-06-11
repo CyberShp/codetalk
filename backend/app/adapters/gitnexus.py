@@ -227,8 +227,8 @@ class GitNexusAdapter(BaseToolAdapter):
     _indexed_repo_by_path: dict[tuple[str, str], str] = {}
     _prepare_locks: dict[tuple[str, str, int], asyncio.Lock] = {}
 
-    def __init__(self, base_url: str = "http://gitnexus:7100"):
-        self.base_url = base_url
+    def __init__(self, base_url: str | None = None):
+        self.base_url = base_url or settings.gitnexus_base_url
         self._client: httpx.AsyncClient | None = None
         self._repo_name: str = ""
         # Resolved on-disk path of the indexed repo — used to disambiguate

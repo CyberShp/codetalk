@@ -671,7 +671,7 @@ def _agent_command_configuration_hint(
     example_name = "ccr.cmd" if executable.lower() in {"ccr", "ccr.cmd"} else (executable or "agent.cmd")
     suffix = ""
     if provider == "claude-code" and _looks_like_ccr_code_command(split_agent_command(primary)):
-        suffix = " code -p"
+        suffix = " code"
     elif provider == "claude-code":
         suffix = " -p"
     example = f'C:\\path\\to\\{example_name}{suffix}'.strip()
@@ -794,12 +794,12 @@ def _normalize_agent_automation_argv(provider: str | None, argv: list[str]) -> l
     result = list(argv)
     if provider != "claude-code":
         return result
+    if _looks_like_ccr_code_command(result):
+        return _normalize_ccr_code_print_argv(result)
     if not _looks_like_claude_print_capable_command(result):
         return result
     if not _has_claude_print_mode(result):
         result.append("-p")
-    if _looks_like_ccr_code_command(result):
-        return result
     if not _has_cli_option(result, "--output-format"):
         result.extend(["--output-format", "json"])
     return result
@@ -825,6 +825,24 @@ def _looks_like_claude_print_capable_command(argv: list[str]) -> bool:
 
 def _has_claude_print_mode(argv: list[str]) -> bool:
     return any(str(token) in {"-p", "--print"} for token in argv)
+
+
+def _normalize_ccr_code_print_argv(argv: list[str]) -> list[str]:
+    result = list(argv)
+    if _ccr_code_has_claude_print_mode(result):
+        return result
+    if result and str(result[-1]) in {"-p", "--print"}:
+        result.pop()
+    result.extend(["--", "-p"])
+    return result
+
+
+def _ccr_code_has_claude_print_mode(argv: list[str]) -> bool:
+    try:
+        separator = list(argv).index("--")
+    except ValueError:
+        return False
+    return any(str(token) in {"-p", "--print"} for token in argv[separator + 1:])
 
 
 def _has_cli_option(argv: list[str], option: str) -> bool:
@@ -914,6 +932,8 @@ def _prompt_as_cli_argument(prompt: str) -> str:
 def _should_pass_prompt_as_claude_print_arg(provider: str | None, argv: list[str]) -> bool:
     if provider != "claude-code":
         return False
+    if _looks_like_ccr_code_command(argv):
+        return _ccr_code_has_claude_print_mode(argv)
     return any(token in {"-p", "--print"} for token in argv)
 
 

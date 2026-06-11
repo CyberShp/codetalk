@@ -3,6 +3,7 @@ from unittest.mock import patch
 
 from app.adapters.base import AnalysisRequest
 from app.adapters.gitnexus import GitNexusAdapter
+from app.config import settings
 
 
 class _FakeResponse:
@@ -42,6 +43,14 @@ class _FakeAsyncClient:
             return _FakeResponse(202, {"jobId": "embed-job"})
         assert self.post_responses, f"unexpected POST {path}"
         return self.post_responses.pop(0)
+
+
+class GitNexusAdapterConfigTests(unittest.TestCase):
+    def test_default_base_url_uses_runtime_settings(self) -> None:
+        with patch.object(settings, "gitnexus_base_url", "http://127.0.0.1:7100"):
+            adapter = GitNexusAdapter()
+
+        self.assertEqual(adapter.base_url, "http://127.0.0.1:7100")
 
 
 class GitNexusAdapterPrepareTests(unittest.IsolatedAsyncioTestCase):
