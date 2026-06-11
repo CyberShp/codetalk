@@ -382,10 +382,6 @@ _REGISTRATION_LINE_RE = re.compile(
     r"|\.[ \t]*(?:register|subscribe|add_listener|add_handler|add_job|schedule)\s*\(",
     re.IGNORECASE,
 )
-_DECORATOR_LINE_RE = re.compile(
-    r"^\s*(?:@(?P<decorator>[A-Za-z_][\w.]*)\b(?P<rest>.*)"
-    r"|\[(?P<attribute>[A-Za-z_][\w.]*)\b[^\]]*\]\s*)$"
-)
 _INLINE_ROUTE_DEFINITION_RE = re.compile(
     r"\bAction(?:\.async)?\s*(?:\(|\{)",
     re.IGNORECASE,
@@ -4268,16 +4264,26 @@ def _decorated_entry_for_symbol(
     if not entry_kind:
         return None
 
-    evidence_line_number, evidence_text = (
-        decorators[-1] if decorators and tool == "source-decorator"
-        else (definition_line, definition_text)
-    )
+    if decorators and tool == "source-decorator":
+        evidence_line_number = decorators[0][0]
+        evidence_text = " ".join(text.strip() for _, text in decorators)
+    else:
+        evidence_line_number, evidence_text = definition_line, definition_text
     rel_file = _relative_path(repo_root, source_file)
     metadata = _entry_metadata_for_site(str(source_file), definition_line, function_name)
     if entry_kind == "cli":
         cli_hints = _cli_option_input_hints(str(source_file), function_name)
         if cli_hints:
             metadata["input_hints"] = cli_hints
+    if entry_kind in {"message", "queue"}:
+        payload_type_hints = _message_payload_type_input_hints(
+            _collect_signature_text(lines, definition_line - 1)
+        )
+        if payload_type_hints:
+            metadata["input_hints"] = _merge_ordered_strings(
+                payload_type_hints,
+                metadata.get("input_hints"),
+            )
     if entry_kind == "route":
         route_hints = _route_template_input_hints([*decorator_texts, definition_text])
         if route_hints:
@@ -4826,16 +4832,55 @@ def _decorator_lines_before_definition(
     definition_line: int,
 ) -> list[tuple[int, str]]:
     decorators: list[tuple[int, str]] = []
-    for idx in range(definition_line - 2, -1, -1):
-        text = lines[idx]
-        stripped = text.strip()
-        if not stripped:
+    idx = definition_line - 2
+    while idx >= 0:
+        if not lines[idx].strip():
             break
-        if not _DECORATOR_LINE_RE.match(text):
+        block = _decorator_block_ending_at(lines, idx)
+        if not block:
             break
-        decorators.append((idx + 1, text))
-    decorators.reverse()
+        start_idx, block_lines = block
+        decorators[0:0] = block_lines
+        idx = start_idx - 1
     return decorators
+
+
+def _decorator_block_ending_at(
+    lines: list[str],
+    end_idx: int,
+) -> tuple[int, list[tuple[int, str]]] | None:
+    max_start = max(0, end_idx - 24)
+    for start_idx in range(end_idx, max_start - 1, -1):
+        if not lines[start_idx].strip():
+            break
+        if not _decorator_start_line(lines[start_idx]):
+            continue
+        block_texts = lines[start_idx:end_idx + 1]
+        if not _decorator_block_is_balanced(block_texts):
+            continue
+        return (
+            start_idx,
+            [(idx + 1, lines[idx]) for idx in range(start_idx, end_idx + 1)],
+        )
+    return None
+
+
+def _decorator_start_line(line: str) -> bool:
+    stripped = line.strip()
+    return bool(
+        re.match(r"^@[A-Za-z_][\w.]*\b", stripped)
+        or re.match(r"^\[[A-Za-z_][\w.]*\b", stripped)
+    )
+
+
+def _decorator_block_is_balanced(lines: list[str]) -> bool:
+    joined = "\n".join(lines)
+    balances = {
+        "(": joined.count("(") - joined.count(")"),
+        "[": joined.count("[") - joined.count("]"),
+        "{": joined.count("{") - joined.count("}"),
+    }
+    return all(value == 0 for value in balances.values())
 
 
 def _classify_entry_decorator(decorator_lines: list[str]) -> str | None:
@@ -4876,6 +4921,27 @@ def _route_template_input_hints(decorator_lines: list[str]) -> list[str]:
                 seen.add(name)
                 hints.append(name)
     return hints[:12]
+
+
+def _message_payload_type_input_hints(signature: str) -> list[str]:
+    params = _signature_param_section(signature or "")
+    if params is None:
+        return []
+    payload_param_names = {
+        "event", "evt", "message", "msg", "payload", "record", "consumerrecord",
+    }
+    hints: list[str] = []
+    seen: set[str] = set()
+    for raw_param in _split_signature_params(params):
+        param = _signature_param_name(raw_param)
+        if not param or param.lower() not in payload_param_names:
+            continue
+        type_hint = _signature_param_type_hint(raw_param, param)
+        if not type_hint or type_hint in seen:
+            continue
+        seen.add(type_hint)
+        hints.append(type_hint)
+    return hints[:4]
 
 
 def _registration_channel_input_hints(registration_line: str, entry_type: str) -> list[str]:

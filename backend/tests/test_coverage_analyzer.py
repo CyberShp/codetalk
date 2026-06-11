@@ -3863,6 +3863,45 @@ class TestCoverageTestDesign:
         case_text = json.dumps(gap["black_box_cases"], ensure_ascii=False)
         assert "invoice.created" in case_text
 
+    async def test_multiline_java_message_listener_annotation_is_black_box_entry(self, tmp_path):
+        from app.services.coverage_analyzer import build_coverage_test_design
+
+        src = tmp_path / "src"
+        src.mkdir()
+        (src / "InvoiceConsumer.java").write_text(
+            "public final class InvoiceConsumer {\n"
+            "  @KafkaListener(\n"
+            "    topics = \"invoice.created\",\n"
+            "    groupId = \"billing-workers\"\n"
+            "  )\n"
+            "  public void consumeInvoice(PaymentEvent event) {\n"
+            "    if (event == null) {\n"
+            "      throw new IllegalArgumentException(\"missing event\");\n"
+            "    }\n"
+            "  }\n"
+            "}\n",
+            encoding="utf-8",
+        )
+        modules = self._modules(
+            "feature,module,code_location,function,triggered,hit_count\n"
+            "billing,consumer,src/InvoiceConsumer.java:6-10,consumeInvoice,false,0\n"
+        )
+
+        design = await build_coverage_test_design(
+            modules, workspace_id="ws-1", repo_path=str(tmp_path)
+        )
+
+        gap = [g for g in design["gaps"] if g.get("kind") == "function"][0]
+        assert gap["gray_box_required"] is False
+        assert gap["black_box_readiness"]["case_type"] == "black_box_ready"
+        entry = gap["entry_paths"][0]
+        assert entry["entry_kind"] == "message"
+        assert entry["entry_symbol"] == "consumeInvoice"
+        assert entry["tool"] == "source-decorator"
+        assert "KafkaListener" in entry["evidence"]
+        assert "invoice.created" in entry["input_hints"]
+        assert "PaymentEvent" in entry["input_hints"]
+
     async def test_kafkajs_consumer_registration_is_message_entry_with_topic(self, tmp_path):
         from app.services.coverage_analyzer import build_coverage_test_design
 
