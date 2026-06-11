@@ -357,11 +357,14 @@ async def test_run_task_already_running(client, tmp_path, db):
     assert response.status_code == 409
 
 
-async def test_run_task_gitnexus_health_fail(client, tmp_path):
-    created = await client.post("/api/tasks", json=_task_payload(tmp_path))
+async def test_run_task_gitnexus_health_fail_starts_with_degradation_warning(client, tmp_path):
+    created = await client.post("/api/tasks", json=_task_payload(tmp_path, tools=["gitnexus"]))
     task_id = created.json()["id"]
 
-    with patch("app.api.tasks.httpx.AsyncClient") as mock_cls:
+    with patch("app.api.tasks.httpx.AsyncClient") as mock_cls, patch(
+        "app.services.analysis_pipeline.AnalysisPipeline.run",
+        new_callable=AsyncMock,
+    ):
         mock_client = AsyncMock()
         mock_client.__aenter__ = AsyncMock(return_value=mock_client)
         mock_client.__aexit__ = AsyncMock(return_value=False)
@@ -369,8 +372,12 @@ async def test_run_task_gitnexus_health_fail(client, tmp_path):
         mock_cls.return_value = mock_client
 
         response = await client.post(f"/api/tasks/{task_id}/run")
-    assert response.status_code == 503
-    assert "GitNexus" in response.json()["detail"]
+    assert response.status_code == 200
+    data = response.json()
+    assert data["status"] == "running"
+    assert data["task_id"] == task_id
+    assert "GitNexus" in data["warnings"][0]
+    assert "refused" in data["warnings"][0]
 
 
 async def test_run_task_success_launches_pipeline(client, tmp_path):

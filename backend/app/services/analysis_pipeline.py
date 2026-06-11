@@ -2370,6 +2370,8 @@ class AnalysisPipeline:
         current_step: str | None = None,
     ) -> None:
         """Update task progress, status, and current step in SQLite."""
+        if not task_id:
+            return
         now = datetime.now(timezone.utc).isoformat()
         async with aiosqlite.connect(settings.sqlite_db) as db:
             if error_message is not None:

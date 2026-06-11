@@ -1,6 +1,7 @@
 ﻿"""E2E tests for /api/tasks endpoints."""
 
 import uuid
+from unittest.mock import AsyncMock, patch
 
 from httpx import AsyncClient
 
@@ -115,25 +116,55 @@ async def test_task_output_empty(e2e_client: AsyncClient, repo_path: str):
     assert resp.json() == []
 
 
-async def test_task_run_tools_unavailable(e2e_client: AsyncClient, repo_path: str):
-    """Running a task should fail if tool services are unavailable."""
+async def test_task_run_tools_unavailable_starts_with_warnings(e2e_client: AsyncClient, repo_path: str):
+    """Running a task should start even if optional tool services are unavailable."""
     create_resp = await e2e_client.post("/api/tasks", json=_task_payload(repo_path))
     task_id = create_resp.json()["id"]
 
-    resp = await e2e_client.post(f"/api/tasks/{task_id}/run")
-    assert resp.status_code == 503
+    with patch("app.api.tasks.httpx.AsyncClient") as mock_cls, patch(
+        "app.services.analysis_pipeline.AnalysisPipeline.run",
+        new_callable=AsyncMock,
+    ):
+        mock_client = AsyncMock()
+        mock_client.__aenter__ = AsyncMock(return_value=mock_client)
+        mock_client.__aexit__ = AsyncMock(return_value=False)
+        mock_client.get = AsyncMock(side_effect=ConnectionError("refused"))
+        mock_cls.return_value = mock_client
+
+        resp = await e2e_client.post(f"/api/tasks/{task_id}/run")
+
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["status"] == "running"
+    assert any("GitNexus" in warning for warning in body["warnings"])
 
 
-async def test_task_run_deepwiki_only_unavailable_returns_503(e2e_client: AsyncClient, repo_path: str):
-    """Running a task with only deepwiki selected exercises the deepwiki health check path."""
+async def test_task_run_deepwiki_only_unavailable_starts_with_warning(e2e_client: AsyncClient, repo_path: str):
+    """Running with only deepwiki selected still starts and reports degraded wiki context."""
     create_resp = await e2e_client.post(
         "/api/tasks",
         json=_task_payload(repo_path, tools=["deepwiki"]),
     )
     task_id = create_resp.json()["id"]
 
-    resp = await e2e_client.post(f"/api/tasks/{task_id}/run")
-    assert resp.status_code == 503
+    with patch("app.api.tasks.httpx.AsyncClient") as mock_cls, patch(
+        "app.services.analysis_pipeline.AnalysisPipeline.run",
+        new_callable=AsyncMock,
+    ):
+        mock_client = AsyncMock()
+        mock_client.__aenter__ = AsyncMock(return_value=mock_client)
+        mock_client.__aexit__ = AsyncMock(return_value=False)
+        mock_client.get = AsyncMock(side_effect=ConnectionError("refused"))
+        mock_cls.return_value = mock_client
+
+        resp = await e2e_client.post(f"/api/tasks/{task_id}/run")
+
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["status"] == "running"
+    assert body["warnings"] == [
+        "DeepWiki service is not available; pipeline will continue without wiki context: refused"
+    ]
 
 
 async def test_task_crud_roundtrip(e2e_client: AsyncClient, repo_path: str):

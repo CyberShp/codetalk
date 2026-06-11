@@ -149,8 +149,10 @@ async def run_task(
     if task["status"] == "running":
         raise HTTPException(status_code=409, detail="任务正在运行中")
 
-    # Health check: verify selected tools are reachable before starting pipeline
+    # Best-effort health checks: the pipeline has its own fallback modes, so a
+    # tool outage must not prevent local/LLM-based analysis from starting.
     tools = json.loads(task.get("tools") or "[]")
+    degradation_warnings: list[str] = []
     if "gitnexus" in tools:
         try:
             async with httpx.AsyncClient(timeout=httpx.Timeout(settings.health_check_timeout), trust_env=False) as hc_client:
@@ -159,9 +161,8 @@ async def run_task(
                     hc_resp.raise_for_status()
         except Exception as exc:
             logger.warning("GitNexus health check failed: %s", exc)
-            raise HTTPException(
-                status_code=503,
-                detail="GitNexus service is not available",
+            degradation_warnings.append(
+                f"GitNexus service is not available; pipeline will use fallback mode: {exc}"
             )
 
     if "deepwiki" in tools:
@@ -171,9 +172,8 @@ async def run_task(
                 hc_resp.raise_for_status()  # pragma: no cover
         except Exception as exc:
             logger.warning("DeepWiki health check failed: %s", exc)
-            raise HTTPException(
-                status_code=503,
-                detail="DeepWiki service is not available",
+            degradation_warnings.append(
+                f"DeepWiki service is not available; pipeline will continue without wiki context: {exc}"
             )
 
     # Reset status
@@ -200,7 +200,12 @@ async def run_task(
 
     background_tasks.add_task(_run_and_cleanup)
 
-    return {"task_id": task_id, "status": "running", "message": "分析管道已启动"}
+    return {
+        "task_id": task_id,
+        "status": "running",
+        "message": "分析管道已启动",
+        "warnings": degradation_warnings,
+    }
 
 
 @router.post("/{task_id}/cancel")
