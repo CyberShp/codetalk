@@ -3227,8 +3227,32 @@ def _classify_entry(file_path: str, enclosing_fn: str | None, line_text: str) ->
         return "cli"
     for kind, needles in _ENTRY_SIGNATURES:
         if any(needle in blob for needle in needles):
+            if kind == "message" and not _has_explicit_message_entry_surface(
+                file_path,
+                line_text,
+            ):
+                continue
             return kind
     return None
+
+
+def _has_explicit_message_entry_surface(file_path: str, line_text: str) -> bool:
+    """Avoid treating internal helpers named *event/message* as public entries."""
+    text = " ".join([str(file_path or ""), str(line_text or "")]).lower()
+    if re.search(
+        r"(?:\.\s*(?:subscribe|on|once|listen|add(?:event)?listener|consumer)\s*\()"
+        r"|\b(?:subscribe|subscriber|topic|queue|message[_ -]?bus|event[_ -]?bus|"
+        r"listener|consumer|kafka|rabbit|sqs|pubsub|webhook)\b",
+        text,
+        re.IGNORECASE,
+    ):
+        return True
+    parts = {
+        part
+        for part in re.split(r"[/\\._\-\s]+", str(file_path or "").lower())
+        if part
+    }
+    return bool(parts & {"consumer", "consumers", "subscriber", "subscribers", "listener", "listeners"})
 
 
 def _entry_symbol_for_site(

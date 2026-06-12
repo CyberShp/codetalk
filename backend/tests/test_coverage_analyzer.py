@@ -1680,6 +1680,37 @@ class TestCoverageTestDesign:
         assert entry["entry_symbol"] == "handle_recover"
         assert entry["input_hints"] == ["recover"]
 
+    async def test_internal_event_named_helper_is_not_black_box_entry_without_registration(self, tmp_path):
+        from app.services.coverage_analyzer import build_coverage_test_design
+
+        src = tmp_path / "src"
+        src.mkdir()
+        (src / "service.c").write_text(
+            "void recover_session(struct session *s) {\n"
+            "    if (s == 0) {\n"
+            "        return;\n"
+            "    }\n"
+            "    cleanup_session(s);\n"
+            "}\n"
+            "static void process_event_cache(struct session *s) {\n"
+            "    recover_session(s);\n"
+            "}\n",
+            encoding="utf-8",
+        )
+        modules = self._modules(
+            "feature,module,code_location,function,triggered,hit_count\n"
+            "rec,service,src/service.c:1-5,recover_session,false,0\n"
+        )
+
+        design = await build_coverage_test_design(
+            modules, workspace_id="ws-1", repo_path=str(tmp_path)
+        )
+        gap = [g for g in design["gaps"] if g.get("kind") == "function"][0]
+
+        assert gap["entry_paths"] == []
+        assert gap["black_box_readiness"]["case_type"] != "black_box_ready"
+        assert all(case["case_type"] != "black_box_ready" for case in gap["black_box_cases"])
+
     async def test_resolves_function_when_coverage_path_is_directory(self, tmp_path):
         from app.services.coverage_analyzer import build_coverage_test_design
 
