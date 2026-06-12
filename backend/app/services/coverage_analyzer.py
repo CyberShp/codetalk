@@ -2526,31 +2526,35 @@ def _resolve_source_file(
     if absolute_source is not None:
         return absolute_source
     rel = rel.replace("\\", "/").lstrip("/")
-    for ext in _SOURCE_EXTENSION_CANDIDATES:
-        candidate = repo_root / (rel + ext)
-        try:
-            if candidate.is_file() and _is_within(repo_root, candidate):
-                if function_name and not _source_file_defines_function(candidate, function_name):
-                    continue
-                return candidate
-            if candidate.is_dir() and function_name and _is_within(repo_root, candidate):
-                found = _find_source_file_defining_function(repo_root, candidate, function_name)
+    rel_variants = _coverage_source_path_variants(rel, function_name)
+    for rel_variant in rel_variants:
+        for ext in _SOURCE_EXTENSION_CANDIDATES:
+            candidate = repo_root / (rel_variant + ext)
+            try:
+                if candidate.is_file() and _is_within(repo_root, candidate):
+                    if function_name and not _source_file_defines_function(candidate, function_name):
+                        continue
+                    return candidate
+                if candidate.is_dir() and function_name and _is_within(repo_root, candidate):
+                    found = _find_source_file_defining_function(repo_root, candidate, function_name)
+                    if found is not None:
+                        return found
+            except OSError:
+                continue
+    if function_name:
+        for rel_variant in rel_variants:
+            hinted_parent = repo_root / rel_variant
+            if hinted_parent.is_file():
+                hinted_parent = hinted_parent.parent
+            if hinted_parent.is_dir() and _is_within(repo_root, hinted_parent):
+                found = _find_source_file_defining_function(repo_root, hinted_parent, function_name)
                 if found is not None:
                     return found
-        except OSError:
-            continue
-    if function_name:
-        hinted_parent = repo_root / rel
-        if hinted_parent.is_file():
-            hinted_parent = hinted_parent.parent
-        if hinted_parent.is_dir() and _is_within(repo_root, hinted_parent):
-            found = _find_source_file_defining_function(repo_root, hinted_parent, function_name)
-            if found is not None:
-                return found
-    suffix_match = _resolve_source_file_by_suffix(repo_root, rel)
-    if suffix_match is not None:
-        if not function_name or _source_file_defines_function(suffix_match, function_name):
-            return suffix_match
+    for rel_variant in rel_variants:
+        suffix_match = _resolve_source_file_by_suffix(repo_root, rel_variant)
+        if suffix_match is not None:
+            if not function_name or _source_file_defines_function(suffix_match, function_name):
+                return suffix_match
     basename = Path(rel).name
     if not basename:
         return (
@@ -2579,6 +2583,76 @@ def _resolve_source_file(
     if function_name:
         return _find_source_file_defining_function(repo_root, repo_root, function_name)
     return None
+
+
+def _coverage_source_path_variants(rel: str, function_name: str | None = None) -> list[str]:
+    normalized = str(rel or "").replace("\\", "/").strip("/")
+    if not normalized:
+        return []
+    variants: list[str] = []
+
+    def add(value: str) -> None:
+        value = str(value or "").replace("\\", "/").strip("/")
+        if value and value not in variants:
+            variants.append(value)
+
+    add(normalized)
+    base, symbol = _split_trailing_coverage_symbol(normalized)
+    if base != normalized:
+        add(base)
+    for dotted in _dotted_module_path_variants(base, function_name, symbol):
+        add(dotted)
+    return variants
+
+
+def _split_trailing_coverage_symbol(value: str) -> tuple[str, str]:
+    match = re.match(
+        r"^(?P<base>(?:[A-Za-z]:/)?[^:]+):(?P<symbol>[^/\\:]+)$",
+        str(value or ""),
+    )
+    if not match:
+        return value, ""
+    symbol = (match.group("symbol") or "").strip()
+    if not symbol or re.fullmatch(r"\d+(?::\d+)?(?:-\d+)?", symbol):
+        return value, ""
+    return match.group("base"), symbol
+
+
+def _dotted_module_path_variants(
+    value: str,
+    function_name: str | None,
+    symbol: str = "",
+) -> list[str]:
+    normalized = str(value or "").replace("\\", "/").strip("/")
+    if not normalized or "." not in normalized:
+        return []
+    if Path(normalized).suffix.lower() in _SOURCE_FILE_EXTS:
+        return []
+    converted = "/".join(part.replace(".", "/") for part in normalized.split("/"))
+    variants = [converted] if converted != normalized else []
+    symbol_names = _coverage_symbol_simple_names(function_name, symbol)
+    parts = [part for part in converted.split("/") if part]
+    if len(parts) > 1 and parts[-1].lower() in symbol_names:
+        parent = "/".join(parts[:-1])
+        if parent and parent not in variants:
+            variants.append(parent)
+    return variants
+
+
+def _coverage_symbol_simple_names(*values: str | None) -> set[str]:
+    names: set[str] = set()
+    for value in values:
+        text = str(value or "").strip()
+        if not text:
+            continue
+        text = re.sub(r"\(.*\)$", "", text).strip()
+        for separator in ("::", ".", "#"):
+            if separator in text:
+                text = text.rsplit(separator, 1)[-1]
+        text = text.strip()
+        if text:
+            names.add(text.lower())
+    return names
 
 
 def _normalize_coverage_source_path(file_path: str) -> str:

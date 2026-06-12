@@ -6543,6 +6543,39 @@ class TestCoverageTestDesign:
         assert "correct file" in window["text"]
         assert "wrong file" not in window["text"]
 
+    async def test_source_window_resolves_dotted_module_symbol_before_global_fallback(self, tmp_path):
+        from app.adapters.coverage import FunctionHit
+        from app.services.coverage_analyzer import _read_source_window
+
+        decoy = tmp_path / "aaa"
+        decoy.mkdir()
+        (decoy / "other.py").write_text(
+            "def handle(request):\n"
+            "    return 'wrong file'\n",
+            encoding="utf-8",
+        )
+        pkg = tmp_path / "pkg"
+        pkg.mkdir()
+        (pkg / "module.py").write_text(
+            "def handle(request):\n"
+            "    return 'correct module file'\n",
+            encoding="utf-8",
+        )
+        hit = FunctionHit(
+            function_name="handle",
+            file_path="pkg.module:handle",
+            line_start=1,
+            triggered=False,
+            hit_count=0,
+        )
+
+        window = _read_source_window(tmp_path, hit)
+
+        assert window is not None
+        assert window["path"] == "pkg/module.py"
+        assert "correct module file" in window["text"]
+        assert "wrong file" not in window["text"]
+
     async def test_source_window_normalizes_remote_code_urls(self, tmp_path):
         from app.adapters.coverage import FunctionHit
         from app.services.coverage_analyzer import _normalize_coverage_source_path, _read_source_window
