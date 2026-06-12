@@ -2899,7 +2899,12 @@ def _definition_line_matches_any_name(
     idx: int,
     names: list[str],
 ) -> bool:
-    defined = _match_def_name(lines[idx]) or _match_multiline_def_name(lines, idx)
+    defined = (
+        _match_def_name(lines[idx])
+        or _match_multiline_def_name(lines, idx)
+        or _javascript_method_definition_name(lines, idx)
+        or _java_method_definition_name(lines[idx])
+    )
     return bool(defined and defined in names)
 
 
@@ -3205,12 +3210,19 @@ def _definition_name_for_file(lines: list[str], idx: int, suffix: str) -> str | 
         return None
     if suffix == ".rb" and not stripped.startswith("def "):
         return None
+    js_method_name = (
+        _javascript_method_definition_name(lines, idx)
+        if suffix in {".js", ".jsx", ".ts", ".tsx"} else None
+    )
     if suffix in {".js", ".jsx", ".ts", ".tsx"} and not (
         re.search(r"\bfunction\b", stripped)
         or "=>" in stripped
         or re.match(r"^(?:export\s+)?(?:async\s+)?function\s+", stripped)
+        or js_method_name
     ):
         return None
+    if js_method_name:
+        return js_method_name
     if suffix == ".java":
         java_name = _java_method_definition_name(line)
         if java_name:
@@ -3221,6 +3233,32 @@ def _definition_name_for_file(lines: list[str], idx: int, suffix: str) -> str | 
         and suffix in {".py", ".js", ".jsx", ".ts", ".tsx", ".rb"}
         and re.match(rf"^\s*{re.escape(name)}\s*\(", line)
     ):
+        return None
+    return name
+
+
+def _javascript_method_definition_name(lines: list[str], idx: int) -> str | None:
+    if idx < 0 or idx >= len(lines):
+        return None
+    stripped = lines[idx].strip()
+    if not stripped or stripped.startswith(_EXPRESSION_CALL_PREFIXES):
+        return None
+    if re.match(r"^(?:if|for|while|switch|catch|return|throw|new|await)\b", stripped):
+        return None
+    match = re.match(
+        r"^(?:(?:public|private|protected|static|async|override|abstract|readonly)\s+)*"
+        r"(?P<name>[A-Za-z_$][\w$]*)\s*\(",
+        stripped,
+    )
+    if not match:
+        return None
+    name = match.group("name")
+    if name in _NON_FUNCTION_NAMES:
+        return None
+    signature = _collect_signature_text(lines, idx)
+    if "{" not in signature:
+        return None
+    if re.search(r"=>|=\s*|;\s*$", signature):
         return None
     return name
 
@@ -3789,6 +3827,8 @@ def _line_matches_signature_name(lines: list[str], idx: int, name: str) -> bool:
     if not match:
         return False
     prefix = stripped[: stripped.find(name)].strip()
+    if not prefix and _javascript_method_definition_name(lines, idx) == name:
+        return True
     if not prefix or prefix.endswith((".", "->")):
         return False
     if "=" in prefix and not stripped.startswith(("def ", "async def ")):

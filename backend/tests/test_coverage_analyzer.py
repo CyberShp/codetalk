@@ -4681,6 +4681,54 @@ class TestCoverageTestDesign:
         assert "amount" in case_text
         assert "currency" in case_text
 
+    async def test_nestjs_controller_decorator_feeds_route_and_dto_input_hints(self, tmp_path):
+        from app.services.coverage_analyzer import build_coverage_test_design
+
+        src = tmp_path / "src"
+        src.mkdir()
+        (src / "payments.controller.ts").write_text(
+            "import { Body, Controller, Param, Post } from '@nestjs/common';\n\n"
+            "class CreatePaymentDto {\n"
+            "  amount: number;\n"
+            "  currency: string;\n"
+            "}\n\n"
+            "@Controller('tenants/:tenantId/payments')\n"
+            "export class PaymentsController {\n"
+            "  @Post('process')\n"
+            "  processPayment(\n"
+            "    @Param('tenantId') tenantId: string,\n"
+            "    @Body() payload: CreatePaymentDto,\n"
+            "  ) {\n"
+            "    if (!payload.amount) {\n"
+            "      return { status: 'missing' };\n"
+            "    }\n"
+            "    return { tenantId };\n"
+            "  }\n"
+            "}\n",
+            encoding="utf-8",
+        )
+        modules = self._modules(
+            "feature,module,code_location,function,triggered,hit_count\n"
+            "payments,controller,src/payments.controller.ts:11-19,processPayment,false,0\n"
+        )
+
+        design = await build_coverage_test_design(
+            modules, workspace_id="ws-1", repo_path=str(tmp_path)
+        )
+
+        gap = [g for g in design["gaps"] if g.get("kind") == "function"][0]
+        assert gap["gray_box_required"] is False
+        assert gap["black_box_readiness"]["case_type"] == "black_box_ready"
+        entry = gap["entry_paths"][0]
+        assert entry["entry_kind"] == "route"
+        assert entry["entry_symbol"] == "processPayment"
+        assert entry["external_trigger"] == "POST /tenants/:tenantId/payments/process"
+        assert entry["input_hints"] == ["amount", "tenantId", "currency"]
+        case_text = json.dumps(gap["black_box_cases"], ensure_ascii=False)
+        assert "tenantId" in case_text
+        assert "amount" in case_text
+        assert "currency" in case_text
+
     async def test_fastapi_pydantic_field_aliases_feed_external_body_hints(self, tmp_path):
         from app.services.coverage_analyzer import build_coverage_test_design
 
