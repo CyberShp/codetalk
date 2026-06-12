@@ -96,6 +96,8 @@ def _resolve_spawn_command(command: list[str]) -> list[str]:
 
     resolved_path = Path(resolved)
     if resolved_path.suffix:
+        if resolved_path.suffix.lower() == ".ps1":
+            return _wrap_windows_powershell_script(str(resolved_path), command[1:])
         return [str(resolved_path), *command[1:]]
 
     for suffix in (".cmd", ".exe", ".bat"):
@@ -103,7 +105,49 @@ def _resolve_spawn_command(command: list[str]) -> list[str]:
         if sibling.exists():
             return [str(sibling), *command[1:]]
 
+    ps1_sibling = resolved_path.with_suffix(".ps1")
+    if ps1_sibling.exists():
+        return _wrap_windows_powershell_script(str(ps1_sibling), command[1:])
+
     return [str(resolved_path), *command[1:]]
+
+
+def _wrap_windows_powershell_script(script_path: str, args: list[str]) -> list[str]:
+    powershell = _find_windows_powershell()
+    return [
+        powershell,
+        "-NoLogo",
+        "-NonInteractive",
+        "-ExecutionPolicy",
+        "Bypass",
+        "-File",
+        script_path,
+        *args,
+    ]
+
+
+def _find_windows_powershell() -> str:
+    for name in ("powershell.exe", "pwsh.exe"):
+        found = shutil.which(name)
+        if found:
+            return found
+    for env_name in ("SystemRoot", "WINDIR"):
+        root = os.environ.get(env_name)
+        if not root:
+            continue
+        candidate = (
+            Path(root)
+            / "System32"
+            / "WindowsPowerShell"
+            / "v1.0"
+            / "powershell.exe"
+        )
+        try:
+            if candidate.is_file():
+                return str(candidate)
+        except OSError:
+            continue
+    return "powershell.exe"
 
 
 def _resolve_windows_common_command_path(executable: str) -> str | None:

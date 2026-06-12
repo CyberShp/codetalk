@@ -603,6 +603,30 @@ async def test_process_manager_finds_windows_npm_shim_when_service_path_misses_i
     assert cmd[1:] == ["serve", "--port", "7100"]
 
 
+async def test_process_manager_wraps_windows_powershell_shim_before_spawn(
+    tmp_path, monkeypatch
+):
+    """PowerShell-only shims must be launched through PowerShell, not CreateProcess."""
+    from app.services import process_manager
+
+    npm_dir = tmp_path / "AppData" / "Roaming" / "npm"
+    npm_dir.mkdir(parents=True)
+    shim = npm_dir / "gitnexus.ps1"
+    shim.write_text("Write-Output gitnexus\n", encoding="utf-8")
+
+    monkeypatch.setattr(process_manager.sys, "platform", "win32")
+    monkeypatch.setattr(process_manager.shutil, "which", lambda _command: None)
+    monkeypatch.setenv("APPDATA", str(tmp_path / "AppData" / "Roaming"))
+    monkeypatch.setenv("SystemRoot", "C:/Windows")
+
+    cmd = process_manager._resolve_spawn_command(["gitnexus", "serve", "--port", "7100"])
+
+    assert cmd[0].endswith("powershell.exe")
+    assert cmd[1:5] == ["-NoLogo", "-NonInteractive", "-ExecutionPolicy", "Bypass"]
+    assert cmd[5:7] == ["-File", str(shim)]
+    assert cmd[7:] == ["serve", "--port", "7100"]
+
+
 async def test_process_log_streams_write_to_named_files(tmp_path, monkeypatch):
     """Managed subprocess stdout/stderr should be inspectable from log files."""
     from app.config import settings
