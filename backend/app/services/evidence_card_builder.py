@@ -48,6 +48,7 @@ _SOURCE_EXTS = frozenset({
     ".c", ".h", ".hh", ".hpp", ".hxx", ".cc", ".cpp", ".cxx", ".ipp", ".inl",
     ".cs", ".rb", ".php",
     ".kt", ".kts", ".swift", ".m", ".scala", ".vue", ".svelte", ".astro", ".mdx",
+    ".proto", ".thrift",
 })
 
 

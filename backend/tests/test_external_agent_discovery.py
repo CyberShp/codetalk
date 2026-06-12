@@ -5636,6 +5636,46 @@ def test_workspace_path_keyword_search_includes_idl_source_files(tmp_path):
     assert "services/billing/refund.thrift" in rel_hits
 
 
+def test_evidence_builder_reads_idl_source_candidates(tmp_path):
+    from app.schemas.workspace_analysis import ResolvedAnalysisObject, ScopeCandidate
+    from app.services.evidence_card_builder import EvidenceCardBuilder
+
+    proto = tmp_path / "services" / "billing" / "billing.proto"
+    proto.parent.mkdir(parents=True)
+    proto.write_text(
+        "syntax = \"proto3\";\n"
+        "service Billing {\n"
+        "  rpc Refund(RefundRequest) returns (RefundReply);\n"
+        "}\n",
+        encoding="utf-8",
+    )
+    resolved = ResolvedAnalysisObject(
+        object_id="obj_billing",
+        text="billing refund api",
+        candidate_files=[
+            ScopeCandidate(
+                path=str(proto),
+                source="repo_search",
+                confidence="high",
+                reason="local path expansion matched IDL source",
+                role="primary",
+            )
+        ],
+    )
+
+    cards = asyncio.run(
+        EvidenceCardBuilder(
+            repo_path=str(tmp_path),
+            limits=LLMLimits(max_files_per_object=4, max_evidence_cards=4),
+        ).build_cards([resolved])
+    )
+
+    assert cards
+    assert cards[0].snippet
+    assert "service Billing" in cards[0].snippet
+    assert cards[0].needs_verification is False
+
+
 def test_workspace_resolver_finds_nvme_tls_from_nvmf_tcp_repo_root(tmp_path, monkeypatch):
     _write_tls_tree_at(tmp_path, "transport/tls")
 
