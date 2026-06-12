@@ -257,6 +257,33 @@ def test_agent_json_validates_idl_source_files(tmp_path):
     assert [candidate.validated for candidate in result.candidate_files] == [True, True]
 
 
+def test_agent_json_validates_graphql_schema_source_files(tmp_path):
+    from app.services.external_agent_discovery import parse_agent_output
+
+    src = tmp_path / "api"
+    src.mkdir()
+    (src / "billing.graphql").write_text(
+        "type Mutation { refundPayment(id: ID!): RefundResult }\n",
+        encoding="utf-8",
+    )
+    (src / "refund.gql").write_text(
+        "type RefundResult { ok: Boolean! }\n",
+        encoding="utf-8",
+    )
+    raw = json.dumps({
+        "candidate_files": [
+            {"path": "api/billing.graphql", "reason": "graphql schema", "confidence": "high"},
+            {"path": "api/refund.gql", "reason": "graphql schema", "confidence": "high"},
+        ],
+        "candidate_entries": [],
+    })
+
+    result = parse_agent_output("claude-code", raw, tmp_path)
+
+    assert result.status == "ok"
+    assert [candidate.validated for candidate in result.candidate_files] == [True, True]
+
+
 def test_invalid_json_does_not_enter_candidate_merge(tmp_path):
     from app.services.external_agent_discovery import parse_agent_output
 
@@ -6137,6 +6164,27 @@ def test_workspace_path_keyword_search_includes_idl_source_files(tmp_path):
 
     assert "services/billing/billing.proto" in rel_hits
     assert "services/billing/refund.thrift" in rel_hits
+
+
+def test_workspace_path_keyword_search_includes_graphql_schema_source_files(tmp_path):
+    from app.services.workspace_scope_resolver import _path_keyword_repo_hits_blocking
+
+    api_dir = tmp_path / "services" / "billing"
+    api_dir.mkdir(parents=True)
+    (api_dir / "billing.graphql").write_text(
+        "type Mutation { refundPayment(id: ID!): RefundResult }\n",
+        encoding="utf-8",
+    )
+    (api_dir / "refund.gql").write_text(
+        "type RefundResult { ok: Boolean! }\n",
+        encoding="utf-8",
+    )
+
+    hits = _path_keyword_repo_hits_blocking(str(tmp_path), ["billing"], 4)
+    rel_hits = [Path(hit).relative_to(tmp_path).as_posix() for hit in hits]
+
+    assert "services/billing/billing.graphql" in rel_hits
+    assert "services/billing/refund.gql" in rel_hits
 
 
 def test_evidence_builder_reads_idl_source_candidates(tmp_path):
