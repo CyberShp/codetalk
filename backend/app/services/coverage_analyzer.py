@@ -2055,7 +2055,10 @@ def _input_hint_is_internal_context(value: str) -> bool:
     normalized = re.sub(r"[^a-z0-9]+", "_", text.lower()).strip("_")
     if normalized in _INTERNAL_INPUT_HINTS:
         return True
-    prefix_match = re.match(r"^([A-Za-z_][A-Za-z0-9_]*)\s*(?:\.|->)", text)
+    prefix_match = re.match(
+        r"^([A-Za-z_][A-Za-z0-9_]*)\s*(?:\?\.|\.|->|\[\s*['\"])",
+        text,
+    )
     if prefix_match and prefix_match.group(1).lower() in _INTERNAL_CONTEXT_HINT_PREFIXES:
         return True
     if normalized.endswith(("_ctx", "_context")):
