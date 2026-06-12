@@ -819,6 +819,39 @@ def _default_ccr_config_path() -> str | None:
     return str(Path(home) / ".claude-code-router" / "config-router.json")
 
 
+def _existing_ccr_config_path() -> str | None:
+    configured = str(getattr(settings, "claude_code_config_path", "") or "").strip()
+    if configured:
+        return configured
+
+    home = os.environ.get("USERPROFILE") or os.environ.get("HOME")
+    if not home:
+        try:
+            home = str(Path.home())
+        except Exception:
+            home = ""
+    if not home:
+        return None
+
+    home_path = Path(home)
+    candidates = [
+        home_path / ".claude-code-router" / "config-router.json",
+        home_path / ".claude-code-router" / "config.json",
+        home_path / ".claude-code-router" / "ccr.json",
+        home_path / ".config" / "claude-code-router" / "config-router.json",
+        home_path / ".config" / "claude-code-router" / "config.json",
+        home_path / ".config" / "ccr" / "config-router.json",
+        home_path / ".config" / "ccr" / "config.json",
+    ]
+    for candidate in candidates:
+        try:
+            if candidate.expanduser().is_file():
+                return str(candidate)
+        except OSError:
+            continue
+    return None
+
+
 def _looks_like_ccr_code_command(argv: list[str]) -> bool:
     if not argv:
         return False
@@ -889,7 +922,7 @@ def _inject_configured_ccr_config_path(argv: list[str]) -> list[str]:
         return list(argv)
     if _has_cli_option(argv, "--config") or _has_cli_option(argv, "-c"):
         return list(argv)
-    config_path = str(getattr(settings, "claude_code_config_path", "") or "").strip()
+    config_path = _existing_ccr_config_path()
     if not config_path:
         return list(argv)
     result = list(argv)

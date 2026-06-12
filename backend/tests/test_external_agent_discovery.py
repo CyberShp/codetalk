@@ -1203,6 +1203,28 @@ def test_provider_health_injects_configured_ccr_config_path(tmp_path, monkeypatc
     assert health["argv"][4:6] == ["--", "-p"]
 
 
+def test_provider_health_auto_discovers_existing_ccr_config_path(tmp_path, monkeypatch):
+    from app.config import settings
+    from app.services.external_agent_discovery import check_provider_health
+
+    config = tmp_path / "home" / ".claude-code-router" / "config.json"
+    config.parent.mkdir(parents=True)
+    config.write_text('{"Providers":[]}\n', encoding="utf-8")
+    monkeypatch.delenv("CCR_CONFIG_PATH", raising=False)
+    monkeypatch.setenv("USERPROFILE", str(tmp_path / "home"))
+    monkeypatch.setattr(settings, "claude_code_config_path", "")
+    monkeypatch.setattr(
+        "app.services.external_agent_discovery.shutil.which",
+        lambda cmd: "C:/tools/ccr.exe" if cmd == "ccr" else None,
+    )
+
+    health = check_provider_health("claude-code", "ccr code")
+
+    assert health["status"] == "available"
+    assert health["argv"][0:4] == ["C:/tools/ccr.exe", "code", "--config", str(config)]
+    assert health["argv"][4:6] == ["--", "-p"]
+
+
 def test_provider_command_strips_quotes_from_absolute_executable_path(tmp_path, monkeypatch):
     from app.services.external_agent_discovery import check_provider_health, split_agent_command
 

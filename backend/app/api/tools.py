@@ -2,6 +2,7 @@
 
 import asyncio
 import logging
+from inspect import isawaitable
 from typing import Any
 
 from fastapi import APIRouter, HTTPException, Request
@@ -321,6 +322,14 @@ async def _managed_tool_startup_probe(tool_name: str, pm: ProcessManager) -> dic
 async def start_tool(tool_name: str, request: Request) -> dict[str, Any]:
     """Start a tool process by name."""
     pm = _get_pm(request)
+    existing_health = await _existing_healthy_managed_tool(pm, tool_name)
+    if existing_health is not None:
+        return {
+            "success": True,
+            "message": f"{tool_name} already running",
+            "health": existing_health,
+        }
+
     ok = await pm.start(tool_name)
     if not ok:
         detail = f"Failed to start tool: {tool_name}"
@@ -330,6 +339,21 @@ async def start_tool(tool_name: str, request: Request) -> dict[str, Any]:
             detail = f"{detail}: {last_error}"
         raise HTTPException(status_code=400, detail=detail)
     return {"success": True, "message": f"{tool_name} started"}
+
+
+async def _existing_healthy_managed_tool(pm: ProcessManager, tool_name: str) -> dict[str, Any] | None:
+    health_check = getattr(pm, "health_check", None)
+    if not callable(health_check):
+        return None
+    try:
+        result = health_check(tool_name)
+        if isawaitable(result):
+            result = await result
+    except Exception:
+        return None
+    if not isinstance(result, dict) or not bool(result.get("healthy")):
+        return None
+    return result
 
 
 @router.post("/{tool_name}/stop")

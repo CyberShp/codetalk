@@ -99,6 +99,29 @@ class TestStartToolSuccess:
         assert body["success"] is True
         assert "gitnexus" in body["message"]
 
+    async def test_start_reuses_existing_healthy_managed_service(self):
+        """Starting an already reachable GitNexus should not spawn a second copy."""
+        mock_pm = MagicMock()
+        mock_pm.health_check = AsyncMock(return_value={
+            "name": "gitnexus",
+            "healthy": True,
+            "status": "running",
+        })
+        mock_pm.start = AsyncMock(return_value=True)
+
+        app = _make_app(mock_pm)
+        async with AsyncClient(
+            transport=ASGITransport(app=app), base_url="http://test"
+        ) as client:
+            resp = await client.post("/api/tools/gitnexus/start")
+
+        assert resp.status_code == 200
+        body = resp.json()
+        assert body["success"] is True
+        assert "already running" in body["message"]
+        mock_pm.health_check.assert_awaited_once_with("gitnexus")
+        mock_pm.start.assert_not_awaited()
+
     async def test_start_failure_includes_process_last_error(self):
         """Failed starts should surface ProcessManager.last_error to the UI."""
         mock_pm = MagicMock()
