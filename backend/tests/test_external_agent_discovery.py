@@ -1381,7 +1381,7 @@ def test_provider_health_uses_claude_fallback_when_ccr_missing(tmp_path, monkeyp
     assert health["attempts"][0]["executable"] == "ccr"
 
 
-def test_provider_health_uses_fallback_when_ccr_default_config_is_missing(tmp_path, monkeypatch):
+def test_provider_health_keeps_ccr_available_when_default_config_is_not_discovered(tmp_path, monkeypatch):
     from app.services.external_agent_discovery import check_provider_health
 
     ccr = tmp_path / "bin" / "ccr.cmd"
@@ -1413,15 +1413,16 @@ def test_provider_health_uses_fallback_when_ccr_default_config_is_missing(tmp_pa
     )
 
     assert health["status"] == "available"
-    assert health["argv"][0] == str(claude)
-    assert health["used_fallback"] is True
-    assert len(health["attempts"]) == 2
-    assert health["attempts"][0]["status"] == "configuration_error"
-    assert "ccr config file not found" in health["attempts"][0]["reason"]
+    assert health["launch_kind"] == "powershell-profile"
+    assert health["configured_argv"][0] == str(ccr)
+    assert str(ccr).replace("'", "''") in health["argv"][-1]
+    assert health.get("used_fallback") is False
+    assert len(health["attempts"]) == 1
+    assert health["attempts"][0]["status"] == "available"
+    assert "default config not found" in health["attempts"][0]["config_hint"]
     assert str(tmp_path / "home" / ".claude-code-router" / "config-router.json") == (
         health["attempts"][0]["config_path"]
     )
-    assert health["attempts"][1]["status"] == "available"
 
 
 def test_provider_health_allows_ccr_when_profile_exposes_config(tmp_path, monkeypatch):
@@ -1860,7 +1861,7 @@ def test_external_agent_adapter_health_reports_launch_kind(monkeypatch):
     assert "command not found: ccr" in health.last_check
 
 
-def test_external_agent_adapter_health_marks_default_ccr_config_hint_misconfigured(monkeypatch):
+def test_external_agent_adapter_health_keeps_default_ccr_config_hint_available(monkeypatch):
     from app.adapters import external_agent as adapter_mod
 
     def fake_health(provider, command, fallback_commands=None):
@@ -1887,8 +1888,8 @@ def test_external_agent_adapter_health_marks_default_ccr_config_hint_misconfigur
         adapter_mod.ExternalAgentAdapter("claude-code", "claude_code_command").health_check()
     )
 
-    assert health.is_healthy is False
-    assert health.container_status == "misconfigured"
+    assert health.is_healthy is True
+    assert health.container_status == "available"
     assert "default config not found" in health.last_check
 
 
@@ -2508,10 +2509,10 @@ def test_run_provider_uses_fallback_after_default_ccr_run_invalid_output(tmp_pat
 
     assert results[0].status == "ok"
     assert results[0].raw_summary == "fallback_ok"
-    assert any("primary command configuration error" in item for item in results[0].warnings)
+    assert any("primary command failed" in item for item in results[0].warnings)
     assert len(results[0].runtime_attempts) == 2
-    assert results[0].runtime_attempts[0]["status"] == "configuration_error"
-    assert results[0].runtime_attempts[0]["run_status"] == "configuration_error"
+    assert results[0].runtime_attempts[0]["status"] == "available"
+    assert results[0].runtime_attempts[0]["run_status"] == "invalid_output"
     assert results[0].runtime_attempts[1]["run_status"] == "ok"
     assert runtime_attempts == results[0].runtime_attempts
 
@@ -3650,11 +3651,11 @@ def test_startup_probe_uses_fallback_after_default_ccr_run_invalid_output(tmp_pa
     assert result["status"] == "ok"
     assert result["message"] == "startup_probe_ok"
     assert result["health"]["used_fallback"] is True
-    assert "primary command configuration error" in result["health"]["reason"]
+    assert "primary command failed" in result["health"]["reason"]
     attempts = result["health"]["attempts"]
     assert len(attempts) == 2
-    assert attempts[0]["status"] == "configuration_error"
-    assert attempts[0]["probe_status"] == "configuration_error"
+    assert attempts[0]["status"] == "available"
+    assert attempts[0]["probe_status"] == "invalid_output"
     assert attempts[1]["probe_status"] == "ok"
 
 

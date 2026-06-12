@@ -874,16 +874,7 @@ def _provider_command_configuration_error(
             "reason": f"ccr config file not found: {config_path}",
             "config_path": config_path,
         }
-    if _existing_ccr_config_path() or _windows_profile_ccr_config_path():
-        return None
-    default_path = _default_ccr_config_path() or "<unknown>"
-    return {
-        "reason": (
-            "ccr config file not found and CCR_CONFIG_PATH is not set: "
-            f"{default_path}"
-        ),
-        "config_path": default_path,
-    }
+    return None
 
 
 def _provider_command_configuration_hint(

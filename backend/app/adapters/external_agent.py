@@ -137,8 +137,7 @@ def _has_configuration_error(item: object) -> bool:
     }:
         if str(item.get("profile_config_path") or "").strip():
             return False
-    hint = str(item.get("config_hint") or "").lower()
-    return "ccr_config_path" in hint and "default config not found" in hint
+    return False
 
 
 def _format_runtime_diagnostic(value: object) -> str:
