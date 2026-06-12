@@ -392,6 +392,8 @@ async def test_external_agent_startup_probe_exception_returns_diagnostics(tools_
 
 
 async def test_gitnexus_startup_probe_reports_managed_process_diagnostics(monkeypatch):
+    from app.config import settings
+
     mock_pm = MagicMock()
     mock_pm.start = AsyncMock(return_value=True)
     mock_pm.health_check = AsyncMock(return_value={
@@ -416,6 +418,18 @@ async def test_gitnexus_startup_probe_reports_managed_process_diagnostics(monkey
     assert body["healthy"] is False
     assert body["status"] == "error"
     assert "Health endpoint unreachable" in body["message"]
+    assert body["diagnostics"]["configured_command"][0] == settings.gitnexus_bin
+    assert body["diagnostics"]["resolved_command"][1:] == [
+        "serve",
+        "--port",
+        str(settings.gitnexus_port),
+        "--host",
+        "0.0.0.0",
+    ]
+    assert body["diagnostics"]["health_url"].endswith("/api/info")
+    assert body["diagnostics"]["health_fallback_url"].endswith("/api/analyze")
+    assert body["diagnostics"]["initial_health"]["last_error"] == "Health endpoint unreachable"
+    assert body["diagnostics"]["post_start_health"]["last_error"] == "Health endpoint unreachable"
     mock_pm.start.assert_awaited_once_with("gitnexus")
     assert mock_pm.health_check.await_count == 2
     mock_pm.health_check.assert_any_await("gitnexus")

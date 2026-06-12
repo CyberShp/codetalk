@@ -9,6 +9,7 @@ from fastapi import APIRouter, HTTPException, Request
 
 from app.adapters import get_adapter, get_all_adapters
 from app.config import settings
+from app.services import process_manager as process_manager_module
 from app.services.external_agent_discovery import redact_agent_diagnostic_text
 from app.services.process_manager import ProcessManager
 
@@ -264,6 +265,11 @@ async def _managed_tool_startup_probe(tool_name: str, pm: ProcessManager) -> dic
             "started": False,
             "message": "startup probe ok: existing service already reachable",
             "health": initial_health,
+            "diagnostics": _managed_tool_startup_diagnostics(
+                tool_name,
+                initial_health=initial_health,
+                post_start_health=initial_health,
+            ),
             "stdout_log": str(settings.data_path / "logs" / "processes" / f"{tool_name}.out.log"),
             "stderr_log": str(settings.data_path / "logs" / "processes" / f"{tool_name}.err.log"),
         }
@@ -278,6 +284,10 @@ async def _managed_tool_startup_probe(tool_name: str, pm: ProcessManager) -> dic
             "status": "error",
             "started": False,
             "message": message,
+            "diagnostics": _managed_tool_startup_diagnostics(
+                tool_name,
+                initial_health=initial_health,
+            ),
         }
 
     health: dict[str, Any] = {}
@@ -313,8 +323,44 @@ async def _managed_tool_startup_probe(tool_name: str, pm: ProcessManager) -> dic
         "started": bool(started),
         "message": redact_agent_diagnostic_text(message),
         "health": health,
+        "diagnostics": _managed_tool_startup_diagnostics(
+            tool_name,
+            initial_health=initial_health,
+            post_start_health=health,
+        ),
         "stdout_log": str(stdout_log),
         "stderr_log": str(stderr_log),
+    }
+
+
+def _managed_tool_startup_diagnostics(
+    tool_name: str,
+    *,
+    initial_health: dict[str, Any] | None = None,
+    post_start_health: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    cfg = process_manager_module.TOOL_REGISTRY.get(tool_name, {})
+    command = [str(part) for part in cfg.get("command") or []]
+    try:
+        resolved_command = process_manager_module._resolve_spawn_command(command)
+    except Exception as exc:
+        resolved_command = command
+        resolve_error = redact_agent_diagnostic_text(str(exc))
+    else:
+        resolve_error = ""
+    stdout_log = settings.data_path / "logs" / "processes" / f"{tool_name}.out.log"
+    stderr_log = settings.data_path / "logs" / "processes" / f"{tool_name}.err.log"
+    return {
+        "configured_command": command,
+        "resolved_command": [str(part) for part in resolved_command],
+        "resolve_error": resolve_error,
+        "cwd": cfg.get("cwd"),
+        "health_url": cfg.get("health_url"),
+        "health_fallback_url": cfg.get("health_fallback_url"),
+        "stdout_log": str(stdout_log),
+        "stderr_log": str(stderr_log),
+        "initial_health": initial_health or {},
+        "post_start_health": post_start_health or {},
     }
 
 

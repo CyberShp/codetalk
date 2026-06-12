@@ -479,6 +479,8 @@ def _resolve_provider_command_attempt(command: str, provider: str | None = None)
                     resolved = None
         if not resolved:
             resolved = _resolve_windows_common_command_path(executable)
+        else:
+            resolved = _resolve_windows_executable_shim_path(resolved)
     else:
         resolved = shutil.which(executable)
     if not resolved:
@@ -577,6 +579,22 @@ def _resolve_configured_executable_path(executable: str) -> str | None:
     except OSError:
         return None
     return None
+
+
+def _resolve_windows_executable_shim_path(path: str) -> str:
+    if not platform.system().lower().startswith("win"):
+        return path
+    resolved = Path(path)
+    if resolved.suffix:
+        return path
+    for suffix in (".cmd", ".exe", ".bat", ".ps1"):
+        sibling = resolved.with_suffix(suffix)
+        try:
+            if sibling.is_file():
+                return str(sibling)
+        except OSError:
+            continue
+    return str(resolved)
 
 
 def _is_windows_powershell_script(path: str) -> bool:

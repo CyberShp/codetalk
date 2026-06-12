@@ -1561,6 +1561,37 @@ def test_provider_health_finds_windows_npm_command_when_service_path_misses_it(t
     assert health["argv"][1:5] == ["code", "-p", "--output-format", "json"]
 
 
+def test_provider_health_normalizes_extensionless_where_shim_to_cmd(tmp_path, monkeypatch):
+    from app.services import external_agent_discovery as discovery
+    from app.services.external_agent_discovery import check_provider_health
+
+    npm_dir = tmp_path / "npm"
+    npm_dir.mkdir()
+    ccr_extensionless = npm_dir / "ccr"
+    ccr_cmd = npm_dir / "ccr.cmd"
+    ccr_extensionless.write_text("", encoding="utf-8")
+    ccr_cmd.write_text("@echo off\n", encoding="utf-8")
+
+    _set_existing_ccr_config(tmp_path, monkeypatch)
+    monkeypatch.setattr("app.services.external_agent_discovery.platform.system", lambda: "Windows")
+    monkeypatch.setattr(
+        "app.services.external_agent_discovery.shutil.which",
+        lambda cmd: "C:/Windows/System32/where.exe" if cmd == "where.exe" else None,
+    )
+
+    class _Proc:
+        returncode = 0
+        stdout = f"{ccr_extensionless}\n{ccr_cmd}\n"
+
+    monkeypatch.setattr(discovery.subprocess, "run", lambda *_args, **_kwargs: _Proc())
+
+    health = check_provider_health("claude-code", "ccr code")
+
+    assert health["status"] == "available"
+    assert health["path"] == str(ccr_cmd)
+    assert health["argv"][0] == str(ccr_cmd)
+
+
 def test_provider_health_finds_windows_volta_command_when_service_path_misses_it(tmp_path, monkeypatch):
     from app.services.external_agent_discovery import check_provider_health
 
