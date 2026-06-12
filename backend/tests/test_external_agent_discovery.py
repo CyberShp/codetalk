@@ -1306,7 +1306,9 @@ def test_provider_health_does_not_block_ccr_for_missing_default_config(tmp_path,
     )
 
     assert health["status"] == "available"
-    assert health["argv"][0] == str(ccr)
+    assert health["launch_kind"] == "powershell-profile"
+    assert health["argv"][0].lower().endswith("powershell.exe")
+    assert str(ccr).replace("'", "''") in health["argv"][-1]
     assert health["used_fallback"] is False
     assert len(health["attempts"]) == 1
     assert health["attempts"][0]["status"] == "available"
@@ -2249,10 +2251,15 @@ def test_run_provider_uses_fallback_after_default_ccr_run_invalid_output(tmp_pat
     assert results[0].status == "ok"
     assert results[0].raw_summary == "fallback_ok"
     assert any("primary command failed; using fallback" in item for item in results[0].warnings)
-    assert any("external agent exited with exit code" in item for item in results[0].warnings)
+    assert any(
+        "external agent exited with exit code" in item
+        or "invalid json" in item.lower()
+        for item in results[0].warnings
+    )
     assert len(results[0].runtime_attempts) == 2
     assert results[0].runtime_attempts[0]["status"] == "available"
-    assert results[0].runtime_attempts[0]["run_status"] == "error"
+    assert results[0].runtime_attempts[0]["launch_kind"] == "powershell-profile"
+    assert results[0].runtime_attempts[0]["run_status"] == "invalid_output"
     assert results[0].runtime_attempts[1]["run_status"] == "ok"
     assert runtime_attempts == results[0].runtime_attempts
 

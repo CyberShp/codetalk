@@ -38,10 +38,7 @@ class ExternalAgentAdapter(BaseToolAdapter):
             fallback_commands=provider_fallback_commands(self._provider),
         )
         attempts = health.get("attempts") or []
-        misconfigured = (
-            _active_attempt_has_configuration_error(health)
-            or _active_attempt_has_required_configuration_gap(health)
-        )
+        misconfigured = _active_attempt_has_configuration_error(health)
         ok = health.get("status") == "available" and not misconfigured
         attempt_summary = "; ".join(
             _format_attempt_summary(item)
@@ -130,29 +127,6 @@ def _active_attempt_has_configuration_error(health: object) -> bool:
 
 def _has_configuration_error(item: object) -> bool:
     return isinstance(item, dict) and item.get("status") == "configuration_error"
-
-
-def _active_attempt_has_required_configuration_gap(health: object) -> bool:
-    if not isinstance(health, dict):
-        return False
-    attempts = health.get("attempts")
-    if not isinstance(attempts, list):
-        return False
-    if health.get("used_fallback"):
-        active_attempts = [attempts[-1]] if attempts else []
-    else:
-        active_attempts = attempts
-    return any(_has_required_configuration_gap(item) for item in active_attempts)
-
-
-def _has_required_configuration_gap(item: object) -> bool:
-    if not isinstance(item, dict):
-        return False
-    hint = str(item.get("config_hint") or item.get("reason") or "")
-    return (
-        "CCR_CONFIG_PATH is not set" in hint
-        and "default config not found" in hint
-    )
 
 
 def _format_runtime_diagnostic(value: object) -> str:

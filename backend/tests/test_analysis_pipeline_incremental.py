@@ -137,6 +137,7 @@ class TestCollectGitnexusPathTranslation(unittest.IsolatedAsyncioTestCase):
             patch("app.services.analysis_pipeline.httpx.AsyncClient", return_value=mock_client),
             patch.object(pipeline, "_build_gitnexus_cache_key", new=AsyncMock(return_value=None)),
             patch.object(pipeline, "_save_gitnexus_cache", new=AsyncMock()),
+            patch.object(pipeline, "_gitnexus_resolve_repo", new=AsyncMock(return_value=None)),
             patch(
                 "app.services.analysis_pipeline.to_tool_repo_path",
                 return_value="/container/repo",
@@ -213,6 +214,7 @@ class TestCollectGitnexus409(unittest.IsolatedAsyncioTestCase):
             patch("app.services.analysis_pipeline.httpx.AsyncClient", return_value=mock_client),
             patch.object(pipeline, "_build_gitnexus_cache_key", new=AsyncMock(return_value=None)),
             patch.object(pipeline, "_save_gitnexus_cache", new=AsyncMock()),
+            patch.object(pipeline, "_gitnexus_resolve_repo", new=AsyncMock(return_value=None)),
         ):
             await pipeline._collect_gitnexus("/fake/repo")
 

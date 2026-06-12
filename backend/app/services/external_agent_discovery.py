@@ -410,6 +410,18 @@ def _resolve_provider_command_attempt(command: str, provider: str | None = None)
                 "launch_kind": "powershell-script",
                 **_provider_command_configuration_hint(provider, guarded_argv),
             }
+        config_hint = _provider_command_configuration_hint(provider, guarded_argv)
+        if _should_use_windows_profile_agent_launch(provider, guarded_argv, config_hint):
+            return {
+                "command": command,
+                "status": "available",
+                "argv": _windows_shell_agent_argv(guarded_argv, provider=provider),
+                "configured_argv": configured_argv,
+                "executable": executable,
+                "path": configured_path,
+                "launch_kind": "powershell-profile",
+                **config_hint,
+            }
         return {
             "command": command,
             "status": "available",
@@ -418,7 +430,7 @@ def _resolve_provider_command_attempt(command: str, provider: str | None = None)
             "executable": executable,
             "path": configured_path,
             "launch_kind": "exec",
-            **_provider_command_configuration_hint(provider, guarded_argv),
+            **config_hint,
         }
     if platform.system().lower().startswith("win"):
         resolved = shutil.which(executable)
@@ -498,6 +510,18 @@ def _resolve_provider_command_attempt(command: str, provider: str | None = None)
             "launch_kind": "powershell-script",
             **_provider_command_configuration_hint(provider, guarded_argv),
         }
+    config_hint = _provider_command_configuration_hint(provider, guarded_argv)
+    if _should_use_windows_profile_agent_launch(provider, guarded_argv, config_hint):
+        return {
+            "command": command,
+            "status": "available",
+            "argv": _windows_shell_agent_argv(guarded_argv, provider=provider),
+            "configured_argv": configured_argv,
+            "executable": executable,
+            "path": resolved,
+            "launch_kind": "powershell-profile",
+            **config_hint,
+        }
     return {
         "command": command,
         "status": "available",
@@ -506,7 +530,7 @@ def _resolve_provider_command_attempt(command: str, provider: str | None = None)
         "executable": executable,
         "path": resolved,
         "launch_kind": "exec",
-        **_provider_command_configuration_hint(provider, guarded_argv),
+        **config_hint,
     }
 
 
@@ -525,6 +549,29 @@ def _resolve_configured_executable_path(executable: str) -> str | None:
 
 def _is_windows_powershell_script(path: str) -> bool:
     return platform.system().lower().startswith("win") and Path(path).suffix.lower() == ".ps1"
+
+
+def _should_use_windows_profile_agent_launch(
+    provider: str | None,
+    argv: list[str],
+    config_hint: dict[str, str],
+) -> bool:
+    """Use the user's PowerShell profile when CCR likely depends on shell env.
+
+    In intranet deployments ``ccr code`` is often made usable by profile-level
+    variables such as CCR_CONFIG_PATH or proxy/router settings.  A backend
+    subprocess launched directly with CreateProcess does not see those profile
+    assignments, so missing the default CCR config is a strong signal to run
+    through PowerShell once.
+    """
+    if not platform.system().lower().startswith("win"):
+        return False
+    if not settings.external_agent_windows_shell_load_profile:
+        return False
+    if not _looks_like_ccr_code_command(argv):
+        return False
+    hint = str(config_hint.get("config_hint") or "")
+    return "CCR_CONFIG_PATH is not set" in hint and "default config not found" in hint
 
 
 def split_agent_command(command: str) -> list[str]:
