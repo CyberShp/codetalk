@@ -4637,6 +4637,96 @@ def _cli_registration_input_hints(abs_file: str, line_number: int) -> list[str]:
     return _commander_input_hints_from_text(context)
 
 
+def _cobra_command_context_for_site_file(abs_file: str, line_number: int) -> str | None:
+    try:
+        lines = Path(abs_file).read_text(encoding="utf-8", errors="replace").splitlines()
+    except OSError:
+        return None
+    call_idx = line_number - 1
+    if call_idx < 0 or call_idx >= len(lines):
+        return None
+    start_idx = _cobra_command_start_index(lines, call_idx)
+    if start_idx is None:
+        return None
+    end_idx = _balanced_brace_window_end(lines, start_idx)
+    command_lines = lines[start_idx:end_idx]
+    command_text = "\n".join(command_lines)
+    if not re.search(r"\bRunE?\s*:", command_text) or "cobra.Command" not in command_text:
+        return None
+    command_name = _cobra_command_variable_name(lines[start_idx])
+    flag_lines: list[str] = []
+    if command_name:
+        flag_re = re.compile(
+            rf"\b{re.escape(command_name)}\s*\.\s*(?:PersistentFlags|Flags)\s*\(\s*\)\s*\.",
+        )
+        flag_lines = [line for line in lines if flag_re.search(line)]
+    return "\n".join([command_text, *flag_lines])
+
+
+def _cobra_command_start_index(lines: list[str], call_idx: int) -> int | None:
+    for idx in range(call_idx, max(-1, call_idx - 80), -1):
+        if re.search(r"(?:^|\b)(?:var\s+)?[A-Za-z_]\w*\s*(?::=|=)\s*&?cobra\.Command\s*\{", lines[idx]):
+            return idx
+        if re.search(r"&?cobra\.Command\s*\{", lines[idx]):
+            return idx
+    return None
+
+
+def _cobra_command_variable_name(line: str) -> str | None:
+    match = re.search(
+        r"(?:^|\b)(?:var\s+)?(?P<name>[A-Za-z_]\w*)\s*(?::=|=)\s*&?cobra\.Command\s*\{",
+        line or "",
+    )
+    return match.group("name") if match else None
+
+
+def _balanced_brace_window_end(lines: list[str], start_idx: int) -> int:
+    depth = 0
+    seen_open = False
+    for idx in range(start_idx, len(lines)):
+        line = lines[idx]
+        depth += line.count("{")
+        if "{" in line:
+            seen_open = True
+        depth -= line.count("}")
+        if seen_open and depth <= 0:
+            return idx + 1
+    return min(len(lines), start_idx + 80)
+
+
+def _cobra_input_hints_from_text(text: str) -> list[str]:
+    hints: list[str] = []
+    seen: set[str] = set()
+
+    def add(value: str) -> None:
+        if value and value not in seen:
+            seen.add(value)
+            hints.append(value)
+
+    for match in re.finditer(r"\bUse\s*:\s*(['\"])(?P<value>(?:\\.|(?!\1).)*?)\1", text or ""):
+        for arg in _cli_positional_args_from_command_spec(match.group("value")):
+            add(arg)
+    for match in re.finditer(
+        r"\.\s*(?:String|Bool|Int|Int64|Uint|Float64|Duration|StringSlice|StringArray)"
+        r"(?:P|Var|VarP)?\s*\((?P<args>[^)]*)\)",
+        text or "",
+        flags=re.DOTALL,
+    ):
+        quoted = re.findall(r"['\"]([^'\"]+)['\"]", match.group("args"))
+        option = next((item for item in quoted if re.match(r"^[A-Za-z0-9][\w-]*$", item)), None)
+        if option:
+            add(f"--{option}")
+    return hints[:12]
+
+
+def _cobra_entry_evidence(context: str) -> str:
+    for line in str(context or "").splitlines():
+        text = line.strip()
+        if "RunE" in text or re.search(r"\bRun\s*:", text):
+            return text[:200]
+    return "cobra.Command"
+
+
 def _cli_registration_context_for_site_file(abs_file: str, line_number: int) -> str | None:
     try:
         lines = Path(abs_file).read_text(encoding="utf-8", errors="replace").splitlines()
@@ -4762,13 +4852,16 @@ def _merge_decorated_cli_input_hints(cli_hints: object, metadata_hints: object) 
 
 
 def _cli_option_name_key(value: str) -> str:
-    text = str(value or "").strip().lower()
+    text = str(value or "").strip()
     if not text:
         return ""
     if text.startswith("--"):
         text = text[2:]
     elif text.startswith("-"):
         return ""
+    text = re.sub(r"([A-Z]+)([A-Z][a-z])", r"\1_\2", text)
+    text = re.sub(r"([a-z0-9])([A-Z])", r"\1_\2", text)
+    text = text.lower()
     text = text.split()[0].strip("<>[].,;:")
     return re.sub(r"[^a-z0-9]+", "_", text).strip("_")
 
@@ -6395,7 +6488,15 @@ def _trace_entry_paths(
                         decorated_caller_entry["depth"] = len(caller_chain) - 1
                         entry_paths.append(decorated_caller_entry)
                         continue
-                entry_kind = _classify_entry(site["file"], enclosing, site["text"])
+                cobra_context = _cobra_command_context_for_site_file(
+                    site["abs_file"],
+                    site["line_number"],
+                )
+                entry_kind = "cli" if cobra_context else _classify_entry(
+                    site["file"],
+                    enclosing,
+                    site["text"],
+                )
                 if entry_kind:
                     entry_symbol = _entry_symbol_for_site(entry_kind, enclosing, symbol, site["text"])
                     metadata = _entry_metadata_for_symbol(
@@ -6423,6 +6524,8 @@ def _trace_entry_paths(
                             anonymous_metadata["input_hints"],
                         )
                     anonymous_evidence = anonymous_metadata.pop("_anonymous_entry_evidence", None)
+                    if cobra_context and not anonymous_evidence:
+                        anonymous_evidence = _cobra_entry_evidence(cobra_context)
                     if entry_kind == "route":
                         route_site_text = _route_call_context_for_site_file(
                             site["abs_file"],
@@ -6449,9 +6552,12 @@ def _trace_entry_paths(
                         if route_trigger:
                             metadata["external_trigger"] = route_trigger
                     elif entry_kind == "cli":
-                        cli_hints = _cli_registration_input_hints(
-                            site["abs_file"],
-                            site["line_number"],
+                        cli_hints = _merge_ordered_strings(
+                            _cobra_input_hints_from_text(cobra_context or ""),
+                            _cli_registration_input_hints(
+                                site["abs_file"],
+                                site["line_number"],
+                            ),
                         )
                         if cli_hints:
                             metadata["input_hints"] = _merge_cli_input_hints(
