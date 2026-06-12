@@ -3486,8 +3486,12 @@ def _signature_input_params(
             hints.append(value)
 
     for raw_param in _split_signature_params(params):
+        external_param = _signature_external_param_name(raw_param)
         param = _signature_param_name(raw_param)
         if not param:
+            continue
+        if external_param:
+            add_hint(external_param)
             continue
         type_hint = _signature_param_type_hint(raw_param, param)
         model_fields = (model_fields_by_type or {}).get(type_hint or "")
@@ -3594,6 +3598,29 @@ def _strip_parameter_decorators(declaration: str) -> str:
         if stripped == text:
             return stripped
         text = stripped
+
+
+def _signature_external_param_name(raw_param: str) -> str | None:
+    text = str(raw_param or "")
+    if not text:
+        return None
+    annotation_match = re.search(
+        r"[@\[]\s*(?:RequestParam|PathVariable|RequestHeader|CookieValue|"
+        r"FromQuery|FromRoute|FromHeader|FromForm|Param|Query|Header|Cookie)"
+        r"(?:Attribute)?\s*(?:\((?P<body>[^)]*)\))?",
+        text,
+    )
+    if not annotation_match:
+        return None
+    body = annotation_match.group("body") or ""
+    for pattern in (
+        r"\b(?:name|value)\s*=\s*(['\"])(?P<name>[A-Za-z_][\w.-]*)\1",
+        r"^\s*(['\"])(?P<name>[A-Za-z_][\w.-]*)\1",
+    ):
+        match = re.search(pattern, body, re.IGNORECASE)
+        if match:
+            return match.group("name")
+    return None
 
 
 def _source_model_fields_by_class(lines: list[str], suffix: str) -> dict[str, list[str]]:
@@ -4123,12 +4150,13 @@ def _signature_param_name(raw_param: str) -> str | None:
     param = raw_param.strip()
     if not param or param.startswith(("*", "...")):
         return None
-    param = param.split("=", 1)[0].strip()
     param = re.sub(
-        r"^(?:@[A-Za-z_][\w.]*(?:\([^)]*\))?\s*)+",
+        r"^(?:(?:@[A-Za-z_][\w.]*(?:\([^)]*\))?)|"
+        r"(?:\[[A-Za-z_][\w.]*(?:\([^]]*\))?\])\s*)+",
         "",
         param,
     ).strip()
+    param = param.split("=", 1)[0].strip()
     if ":" in param:
         param = param.split(":", 1)[0].strip()
     param = param.lstrip("*").strip()
