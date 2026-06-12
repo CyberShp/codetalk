@@ -1316,6 +1316,53 @@ class TestCoverageTestDesign:
         assert "record_id" in cases[0]["inputs"]
         assert "payload" in cases[0]["inputs"]
 
+    async def test_agent_entry_chain_rejects_qualified_self_target(self):
+        from app.services.coverage_analyzer import _merge_agent_entry_paths
+
+        hit = FunctionHit(
+            function_name="normalize_record",
+            file_path="src/service.py",
+            line_start=1,
+            triggered=False,
+            hit_count=0,
+        )
+        agent_context = {
+            "validated_entries": [
+                {
+                    "provider": "claude-code",
+                    "entry_kind": "api",
+                    "entry_symbol": "normalize_record()",
+                    "entry_file": "src/service.py",
+                    "chain": ["normalize_record()"],
+                    "external_trigger": "POST /records",
+                    "source_verification": "source_backed",
+                },
+                {
+                    "provider": "claude-code",
+                    "entry_kind": "api",
+                    "entry_symbol": "service.normalize_record",
+                    "entry_file": "src/service.py",
+                    "chain": ["service.normalize_record"],
+                    "external_trigger": "POST /records",
+                    "source_verification": "source_backed",
+                },
+                {
+                    "provider": "claude-code",
+                    "entry_kind": "api",
+                    "entry_symbol": "public_records_api",
+                    "entry_file": "src/api.py",
+                    "chain": ["public_records_api -> service.normalize_record()"],
+                    "external_trigger": "POST /records",
+                    "source_verification": "source_backed",
+                },
+            ]
+        }
+
+        merged = _merge_agent_entry_paths([], agent_context, hit)
+
+        assert len(merged) == 1
+        assert merged[0]["entry_symbol"] == "public_records_api"
+
     async def test_black_box_cases_filter_internal_symbols_from_input_hints(self):
         from app.services.coverage_analyzer import _build_black_box_cases
 

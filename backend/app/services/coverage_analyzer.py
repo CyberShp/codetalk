@@ -1326,17 +1326,20 @@ def _agent_entry_is_self_target(item: dict, hit: FunctionHit) -> bool:
     function_name = str(hit.function_name or "").strip()
     if not function_name:
         return False
+    normalized_target = _agent_chain_symbol_key(function_name)
     entry_symbol = str(item.get("entry_symbol") or item.get("entry_label") or "").strip()
-    if entry_symbol and entry_symbol != function_name:
+    normalized_entry_symbol = _agent_chain_symbol_key(entry_symbol)
+    if entry_symbol and normalized_entry_symbol != normalized_target:
         return False
     chain = _normalize_agent_entry_chain(item.get("chain"))
-    if chain and any(value != function_name for value in chain):
+    normalized_chain = [_agent_chain_symbol_key(value) for value in chain]
+    if normalized_chain and any(value != normalized_target for value in normalized_chain):
         return False
     entry_file = str(item.get("entry_file") or "").replace("\\", "/")
     hit_file = str(hit.file_path or "").replace("\\", "/")
     if entry_file and hit_file and entry_file != hit_file and not hit_file.endswith(entry_file):
         return False
-    return bool(entry_symbol == function_name or chain == [function_name])
+    return bool(normalized_entry_symbol == normalized_target or normalized_chain == [normalized_target])
 
 
 def _agent_entry_has_public_trigger_surface(item: dict) -> bool:
