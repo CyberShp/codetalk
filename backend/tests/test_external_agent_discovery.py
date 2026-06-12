@@ -4754,6 +4754,53 @@ def test_workspace_path_hint_suffix_finds_nof_tls_from_frontend_root(tmp_path):
     assert rel_hits[0] == "nof/nvmf_tcp/transport/tls/tls.c"
 
 
+def test_workspace_path_hint_strips_line_location_suffixes(tmp_path):
+    from app.services.workspace_scope_resolver import _normalize_path_hint, _path_hint_repo_hits_blocking
+
+    target_dir = tmp_path / "src" / "payment" / "webhook"
+    target_dir.mkdir(parents=True)
+    (target_dir / "handler.ts").write_text(
+        "export function handlePaymentWebhook() { return true; }\n",
+        encoding="utf-8",
+    )
+
+    assert _normalize_path_hint("src/payment/webhook/handler.ts:42") == "src/payment/webhook/handler.ts"
+    assert _normalize_path_hint("src/payment/webhook/handler.ts#L42-L55") == "src/payment/webhook/handler.ts"
+
+    hits = _path_hint_repo_hits_blocking(
+        str(tmp_path),
+        [
+            "src/payment/webhook/handler.ts:42",
+            "src/payment/webhook/handler.ts#L42-L55",
+        ],
+        4,
+    )
+    rel_hits = [Path(hit).relative_to(tmp_path).as_posix() for hit in hits]
+
+    assert rel_hits == ["src/payment/webhook/handler.ts"]
+
+
+def test_workspace_path_hint_normalizes_remote_code_urls(tmp_path):
+    from app.services.workspace_scope_resolver import _normalize_path_hint, _path_hint_repo_hits_blocking
+
+    target_dir = tmp_path / "src" / "payment" / "webhook"
+    target_dir.mkdir(parents=True)
+    (target_dir / "handler.ts").write_text(
+        "export function handlePaymentWebhook() { return true; }\n",
+        encoding="utf-8",
+    )
+    github_url = "https://github.com/acme/project/blob/main/src/payment/webhook/handler.ts#L42"
+    gitlab_url = "https://gitlab.local/acme/project/-/blob/main/src/payment/webhook/handler.ts?ref=main#L42"
+
+    assert _normalize_path_hint(github_url) == "src/payment/webhook/handler.ts"
+    assert _normalize_path_hint(gitlab_url) == "src/payment/webhook/handler.ts"
+
+    hits = _path_hint_repo_hits_blocking(str(tmp_path), [github_url, gitlab_url], 4)
+    rel_hits = [Path(hit).relative_to(tmp_path).as_posix() for hit in hits]
+
+    assert rel_hits == ["src/payment/webhook/handler.ts"]
+
+
 def test_workspace_path_hint_repairs_split_nof_nvmf_tls_hint(tmp_path):
     from app.services.workspace_scope_resolver import _path_hint_repo_hits_blocking
 

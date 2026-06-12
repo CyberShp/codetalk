@@ -29,6 +29,7 @@ import subprocess
 from contextlib import suppress
 from pathlib import Path
 from typing import Iterable
+from urllib.parse import unquote, urlparse
 
 import aiosqlite
 import httpx
@@ -1188,10 +1189,38 @@ def _normalize_path_hint(hint: str) -> str:
     value = (hint or "").strip()
     if not value:
         return ""
+    parsed = urlparse(value)
+    if parsed.scheme.lower() == "file":
+        value = f"//{parsed.netloc}{parsed.path}" if parsed.netloc else parsed.path
+    elif parsed.scheme.lower() in {"http", "https"}:
+        value = _normalize_remote_path_hint(parsed.path)
     value = re.sub(r"[\r\n\t]+", "/", value)
     value = value.replace("\\", "/")
     value = re.sub(r"/+", "/", value)
+    value = unquote(value)
+    value = re.sub(r"#L\d+(?:[-,~]L?\d+)?$", "", value, flags=re.IGNORECASE)
+    value = re.sub(r":\d+:\d+$", "", value)
+    value = re.sub(r":\d+(?:-\d+)?$", "", value)
     return value.rstrip("/")
+
+
+def _normalize_remote_path_hint(path: str) -> str:
+    value = unquote(path or "").replace("\\", "/").strip("/")
+    if not value:
+        return ""
+    parts = [part for part in value.split("/") if part]
+    for index, part in enumerate(parts):
+        if part == "-":
+            continue
+        if part not in {"blob", "raw", "src"}:
+            continue
+        next_index = index + 1
+        if next_index < len(parts) and parts[next_index] == "-":
+            next_index += 1
+        file_start = next_index + 1
+        if file_start < len(parts):
+            return "/".join(parts[file_start:])
+    return value
 
 
 def _path_hint_variants(normalized_hint: str) -> list[str]:
