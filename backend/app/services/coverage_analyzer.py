@@ -4340,7 +4340,12 @@ def _cli_positional_args_from_command_spec(spec: str) -> list[str]:
 
 def _cli_long_option_from_spec(spec: str) -> str | None:
     match = re.search(r"(?<![\w-])(?P<option>--[A-Za-z0-9][\w-]*)\b", spec or "")
-    return match.group("option") if match else None
+    if match:
+        return match.group("option")
+    value = str(spec or "").strip()
+    if re.fullmatch(r"[A-Za-z][\w-]*", value):
+        return f"--{value}"
+    return None
 
 
 def _merge_cli_input_hints(registration_hints: object, metadata_hints: object) -> list[str]:
