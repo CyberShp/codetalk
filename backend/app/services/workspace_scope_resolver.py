@@ -195,11 +195,15 @@ def _keyword_path_variants(keyword: str) -> list[str]:
     add(dotted_snake.replace("/", "_"))
     add(dotted_snake.replace("/", "-"))
     add(dotted_snake.replace("/", "-").replace("_", "-"))
+    dotted_snake_path = dotted_snake.replace("_", "/")
+    add(dotted_snake_path)
+    add(dotted_snake_path.replace("/", "_"))
+    add(dotted_snake_path.replace("/", "-"))
     for singular_plural in _path_singular_plural_variants(dotted):
         add(singular_plural)
         add(singular_plural.replace("/", "_"))
         add(singular_plural.replace("/", "-"))
-    suffix_sources = [dotted, separator_path, dotted_snake]
+    suffix_sources = [dotted, separator_path, dotted_snake, dotted_snake_path]
     for source in suffix_sources:
         parts = [part for part in source.split("/") if part]
         for index in range(1, max(1, len(parts) - 1)):
@@ -596,18 +600,20 @@ def _path_keyword_repo_hits_blocking(
             matched_parts: set[str] = set()
             for kw in folded:
                 kw_tokenized = re.sub(r"[-_]+", "/", kw)
+                parts = [p for p in re.split(r"[/_-]+", kw) if p]
+                is_multipart = len(parts) >= 2
                 if kw in rel:
                     score += 4
                 elif kw_tokenized in rel_tokenized:
-                    score += 4
+                    score += 4 if (not is_multipart or kw_tokenized in dir_tokenized) else 1
                 if kw_tokenized and (
                     dir_tokenized == kw_tokenized
                     or dir_tokenized.endswith(f"/{kw_tokenized}")
                 ):
                     score += 12
                 if kw not in rel and kw_tokenized not in rel_tokenized:
-                    parts = [p for p in re.split(r"[/_-]+", kw) if p]
-                    hit_count = sum(1 for part in parts if part in rel_tokenized)
+                    part_match_text = dir_tokenized if is_multipart else rel_tokenized
+                    hit_count = sum(1 for part in parts if part in part_match_text)
                     if len(parts) >= 2 and hit_count >= 2:
                         score += hit_count
                     dir_hit_count = sum(1 for part in parts if part in dir_tokenized)

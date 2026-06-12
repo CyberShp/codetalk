@@ -5307,6 +5307,39 @@ def test_workspace_path_keyword_ranking_handles_generic_camel_module(tmp_path):
     assert rel_hits[0] == "services/payments/webhook/handler.ts"
 
 
+def test_workspace_path_keyword_ranking_handles_qualified_camel_module(tmp_path):
+    from app.services.workspace_scope_resolver import (
+        _keyword_path_variants,
+        _path_keyword_repo_hits_blocking,
+    )
+
+    target_dir = tmp_path / "services" / "payments" / "webhook"
+    target_dir.mkdir(parents=True)
+    (target_dir / "handler.ts").write_text(
+        "export function handlePaymentWebhook() { return true; }\n",
+        encoding="utf-8",
+    )
+    noise_dir = tmp_path / "com" / "acme" / "payments"
+    noise_dir.mkdir(parents=True)
+    (noise_dir / "payment_webhook_notes.ts").write_text(
+        "export const notes = true;\n",
+        encoding="utf-8",
+    )
+
+    variants = _keyword_path_variants("com.acme.PaymentWebhook")
+    assert "payment/webhook" in variants
+    assert "payments/webhook" in variants
+
+    hits = _path_keyword_repo_hits_blocking(
+        str(tmp_path),
+        ["com.acme.PaymentWebhook"],
+        3,
+    )
+    rel_hits = [Path(hit).relative_to(tmp_path).as_posix() for hit in hits]
+
+    assert rel_hits[0] == "services/payments/webhook/handler.ts"
+
+
 def test_workspace_path_keyword_ranking_ignores_natural_language_instruction_words(tmp_path):
     from app.services.workspace_scope_resolver import (
         _path_keyword_repo_hits_blocking,
@@ -5379,6 +5412,45 @@ def test_workspace_resolver_ignores_natural_language_words_without_tools(tmp_pat
     ]
 
     assert rel_paths[0] == "services/payments/webhook/handler.ts"
+
+
+def test_workspace_resolver_handles_qualified_camel_module_without_tools(tmp_path):
+    target_dir = tmp_path / "services" / "payments" / "webhook"
+    target_dir.mkdir(parents=True)
+    (target_dir / "handler.ts").write_text(
+        "export function handlePaymentWebhook() { return true; }\n",
+        encoding="utf-8",
+    )
+    noise_dir = tmp_path / "com" / "acme" / "payments"
+    noise_dir.mkdir(parents=True)
+    (noise_dir / "payment_webhook_notes.ts").write_text(
+        "export const notes = true;\n",
+        encoding="utf-8",
+    )
+
+    obj = AnalysisObject(
+        id="obj_payment_webhook",
+        text="com.acme.PaymentWebhook",
+        kind="module",
+    )
+
+    resolved = asyncio.run(WorkspaceScopeResolver()._resolve_object(
+        obj=obj,
+        ws_id="ws",
+        repo_path=str(tmp_path),
+        index=_GraphIndex(None),
+        limits=LLMLimits(max_files_per_object=4),
+        gitnexus_available=False,
+        external_agents_enabled=False,
+    ))
+    rel_paths = [
+        Path(c.path).relative_to(tmp_path).as_posix()
+        for c in resolved.candidate_files
+        if c.path
+    ]
+
+    assert rel_paths[0] == "services/payments/webhook/handler.ts"
+    assert resolved.candidate_files[0].role == "primary"
 
 
 def test_workspace_keyword_hit_role_uses_generic_module_path_match(tmp_path):
