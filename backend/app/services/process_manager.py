@@ -90,6 +90,8 @@ def _resolve_spawn_command(command: list[str]) -> list[str]:
     executable = command[0]
     resolved = shutil.which(executable)
     if not resolved:
+        resolved = _resolve_windows_common_command_path(executable)
+    if not resolved:
         return list(command)
 
     resolved_path = Path(resolved)
@@ -102,6 +104,73 @@ def _resolve_spawn_command(command: list[str]) -> list[str]:
             return [str(sibling), *command[1:]]
 
     return [str(resolved_path), *command[1:]]
+
+
+def _resolve_windows_common_command_path(executable: str) -> str | None:
+    """Find user-level command shims that Windows services often miss in PATH."""
+    value = (executable or "").strip().strip('"').strip("'")
+    if not value or any(sep in value for sep in ("/", "\\")):
+        return None
+
+    suffix = Path(value).suffix
+    names = [value] if suffix else [
+        f"{value}.cmd",
+        f"{value}.exe",
+        f"{value}.bat",
+        value,
+        f"{value}.ps1",
+    ]
+    for base_dir in _windows_common_command_dirs():
+        for name in names:
+            candidate = base_dir / name
+            try:
+                if candidate.is_file():
+                    return str(candidate)
+            except OSError:
+                continue
+    return None
+
+
+def _windows_common_command_dirs() -> list[Path]:
+    base_dirs: list[Path] = []
+    appdata = os.environ.get("APPDATA")
+    if appdata:
+        base_dirs.append(Path(appdata) / "npm")
+    userprofile = os.environ.get("USERPROFILE")
+    if userprofile:
+        base_dirs.append(Path(userprofile) / "AppData" / "Roaming" / "npm")
+        base_dirs.append(Path(userprofile) / ".npm-global" / "bin")
+        base_dirs.append(Path(userprofile) / "scoop" / "shims")
+        base_dirs.append(Path(userprofile) / ".yarn" / "bin")
+    localappdata = os.environ.get("LOCALAPPDATA")
+    if localappdata:
+        base_dirs.append(Path(localappdata) / "Volta" / "bin")
+        base_dirs.append(Path(localappdata) / "pnpm")
+    pnpm_home = os.environ.get("PNPM_HOME")
+    if pnpm_home:
+        base_dirs.append(Path(pnpm_home))
+    npm_prefix = os.environ.get("NPM_CONFIG_PREFIX") or os.environ.get("npm_config_prefix")
+    if npm_prefix:
+        prefix = Path(npm_prefix)
+        base_dirs.append(prefix)
+        base_dirs.append(prefix / "bin")
+    programdata = os.environ.get("ProgramData")
+    if programdata:
+        base_dirs.append(Path(programdata) / "scoop" / "shims")
+        base_dirs.append(Path(programdata) / "chocolatey" / "bin")
+    chocolatey = os.environ.get("ChocolateyInstall")
+    if chocolatey:
+        base_dirs.append(Path(chocolatey) / "bin")
+
+    deduped: list[Path] = []
+    seen: set[str] = set()
+    for base_dir in base_dirs:
+        key = str(base_dir).lower()
+        if key in seen:
+            continue
+        seen.add(key)
+        deduped.append(base_dir)
+    return deduped
 
 
 def _deepwiki_api_env() -> dict[str, str]:

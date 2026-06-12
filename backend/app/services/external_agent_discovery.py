@@ -389,6 +389,21 @@ def _unavailable_health_from_attempts(
     }
 
 
+def _agent_process_env(provider: str, repo_path: str | Path) -> dict[str, str]:
+    env = os.environ.copy()
+    env["CODETALK_AGENT_READONLY"] = "1"
+    env["CODETALK_REPO_PATH"] = str(Path(repo_path).resolve())
+    if provider == "claude-code":
+        configured = str(getattr(settings, "claude_code_config_path", "") or "").strip()
+        if configured:
+            env["CCR_CONFIG_PATH"] = configured
+        elif not env.get("CCR_CONFIG_PATH"):
+            discovered = _existing_ccr_config_path()
+            if discovered:
+                env["CCR_CONFIG_PATH"] = discovered
+    return env
+
+
 def _resolve_provider_command_attempt(command: str, provider: str | None = None) -> dict:
     argv = split_agent_command(command)
     if not argv:
@@ -2003,9 +2018,7 @@ async def probe_external_agent_startup(
             prompt,
         )
         attempt["prompt_transport"] = prompt_transport
-        env = os.environ.copy()
-        env["CODETALK_AGENT_READONLY"] = "1"
-        env["CODETALK_REPO_PATH"] = str(cwd)
+        env = _agent_process_env(provider, cwd)
         try:
             proc = await asyncio.create_subprocess_exec(
                 *process_argv,
@@ -2211,9 +2224,7 @@ async def _run_provider(
         )
         attempt["prompt_transport"] = prompt_transport
 
-        env = os.environ.copy()
-        env["CODETALK_AGENT_READONLY"] = "1"
-        env["CODETALK_REPO_PATH"] = str(Path(request.repo_path).resolve())
+        env = _agent_process_env(provider, request.repo_path)
         try:
             proc = await asyncio.create_subprocess_exec(
                 *process_argv,

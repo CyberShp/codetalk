@@ -536,6 +536,27 @@ async def test_process_manager_resolves_windows_npm_shim_before_spawn(monkeypatc
     assert cmd[1:] == ["serve", "--port", "7100"]
 
 
+async def test_process_manager_finds_windows_npm_shim_when_service_path_misses_it(
+    tmp_path, monkeypatch
+):
+    """A backend service PATH may miss user npm shims even when GitNexus is installed."""
+    from app.services import process_manager
+
+    npm_dir = tmp_path / "AppData" / "Roaming" / "npm"
+    npm_dir.mkdir(parents=True)
+    shim = npm_dir / "gitnexus.cmd"
+    shim.write_text("@echo off\n", encoding="utf-8")
+
+    monkeypatch.setattr(process_manager.sys, "platform", "win32")
+    monkeypatch.setattr(process_manager.shutil, "which", lambda _command: None)
+    monkeypatch.setenv("APPDATA", str(tmp_path / "AppData" / "Roaming"))
+
+    cmd = process_manager._resolve_spawn_command(["gitnexus", "serve", "--port", "7100"])
+
+    assert cmd[0] == str(shim)
+    assert cmd[1:] == ["serve", "--port", "7100"]
+
+
 async def test_process_log_streams_write_to_named_files(tmp_path, monkeypatch):
     """Managed subprocess stdout/stderr should be inspectable from log files."""
     from app.config import settings

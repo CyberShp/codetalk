@@ -2088,6 +2088,23 @@ def test_run_provider_nonzero_exit_keeps_ccr_config_hint(tmp_path, monkeypatch):
     assert "C:/Users/me/.claude-code-router/config-router.json" in results[0].raw_summary
 
 
+def test_agent_process_env_injects_configured_ccr_config_path(tmp_path, monkeypatch):
+    from app.config import settings
+    from app.services.external_agent_discovery import _agent_process_env
+
+    config = tmp_path / "router" / "config-router.json"
+    config.parent.mkdir()
+    config.write_text('{"Providers":[]}\n', encoding="utf-8")
+    monkeypatch.delenv("CCR_CONFIG_PATH", raising=False)
+    monkeypatch.setattr(settings, "claude_code_config_path", str(config))
+
+    env = _agent_process_env("claude-code", tmp_path)
+
+    assert env["CODETALK_AGENT_READONLY"] == "1"
+    assert env["CODETALK_REPO_PATH"] == str(tmp_path.resolve())
+    assert env["CCR_CONFIG_PATH"] == str(config)
+
+
 def test_run_provider_cli_error_keeps_ccr_config_hint(tmp_path, monkeypatch):
     from app.services.external_agent_discovery import AgentDiscoveryRequest, run_external_agent_discovery
 
