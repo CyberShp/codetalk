@@ -4363,13 +4363,25 @@ def _decorated_entry_for_symbol(
                 metadata.get("input_hints"),
             )
     if entry_kind == "route":
+        route_prefix = _route_prefix_for_decorator_receiver(
+            lines,
+            decorator_texts,
+            definition_line,
+        )
         route_hints = _route_template_input_hints([*decorator_texts, definition_text])
+        if route_prefix:
+            route_hints = _merge_ordered_strings(
+                _route_template_input_hints([route_prefix]),
+                route_hints,
+            )
         if route_hints:
             metadata["input_hints"] = _merge_ordered_strings(
                 metadata.get("input_hints"),
                 route_hints,
             )
         route_trigger = _route_external_trigger_from_texts([*decorator_texts, definition_text])
+        if route_prefix and route_trigger:
+            route_trigger = _route_trigger_with_prefix(route_trigger, route_prefix)
         if route_trigger:
             metadata["external_trigger"] = route_trigger
     if entry_kind != "route":
@@ -5013,6 +5025,96 @@ def _route_external_trigger_from_texts(texts: list[str]) -> str | None:
         return None
     method = _route_method_from_text(text)
     return f"{method} {path}" if method else path
+
+
+def _route_prefix_for_decorator_receiver(
+    lines: list[str],
+    decorator_texts: list[str],
+    definition_line: int,
+) -> str | None:
+    receiver = _route_decorator_receiver(decorator_texts)
+    if not receiver:
+        return None
+    receiver_pattern = re.escape(receiver)
+    scan_until = max(0, definition_line - 1)
+    for idx in range(scan_until - 1, -1, -1):
+        statement = _collect_assignment_statement_ending_at(lines, idx)
+        if not statement:
+            continue
+        if not re.search(rf"\b{receiver_pattern}\s*=", statement):
+            continue
+        prefix = _router_prefix_from_assignment(statement)
+        if prefix:
+            return prefix
+    return None
+
+
+def _route_decorator_receiver(decorator_texts: list[str]) -> str | None:
+    for text in reversed(decorator_texts):
+        match = re.search(
+            r"@\s*(?P<receiver>[A-Za-z_]\w*(?:\.[A-Za-z_]\w*)*)\s*\.\s*"
+            r"(?:get|post|put|patch|delete|head|options|any|route|websocket)\s*\(",
+            text or "",
+            re.IGNORECASE,
+        )
+        if match:
+            return match.group("receiver")
+    return None
+
+
+def _collect_assignment_statement_ending_at(lines: list[str], end_index: int) -> str:
+    collected: list[str] = []
+    depth = 0
+    for idx in range(end_index, max(-1, end_index - 12), -1):
+        text = lines[idx].strip()
+        if not text:
+            if not collected:
+                continue
+            break
+        collected.insert(0, text)
+        depth += text.count(")") - text.count("(")
+        depth += text.count("]") - text.count("[")
+        depth += text.count("}") - text.count("{")
+        if "=" in text and depth >= 0:
+            break
+    return " ".join(collected).strip()
+
+
+def _router_prefix_from_assignment(statement: str) -> str | None:
+    if not re.search(r"\b(?:APIRouter|Blueprint|Router)\s*\(", statement or ""):
+        return None
+    for key in ("prefix", "url_prefix"):
+        match = re.search(
+            rf"\b{key}\s*=\s*(['\"])(?P<prefix>(?:\\.|(?!\1).)*?)\1",
+            statement,
+        )
+        if match:
+            prefix = match.group("prefix").strip()
+            if _looks_like_route_path(prefix):
+                return prefix
+    return None
+
+
+def _route_trigger_with_prefix(trigger: str, prefix: str) -> str:
+    value = str(trigger or "").strip()
+    if not value or not prefix:
+        return value
+    match = re.match(r"^(?P<method>[A-Z]+)\s+(?P<path>.+)$", value)
+    if match:
+        return f"{match.group('method')} {_join_route_paths(prefix, match.group('path'))}"
+    return _join_route_paths(prefix, value)
+
+
+def _join_route_paths(prefix: str, path: str) -> str:
+    left = str(prefix or "").strip()
+    right = str(path or "").strip()
+    if not left:
+        return right
+    if not right:
+        return left
+    if right == "/":
+        return left if left.startswith("/") else f"/{left}"
+    return f"{left.rstrip('/')}/{right.lstrip('/')}"
 
 
 def _route_path_from_text(text: str) -> str | None:
