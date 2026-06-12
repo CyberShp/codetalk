@@ -3706,6 +3706,41 @@ class TestCoverageTestDesign:
         assert "amount" in case_text
         assert "currency" in case_text
 
+    async def test_fastapi_pydantic_field_aliases_feed_external_body_hints(self, tmp_path):
+        from app.services.coverage_analyzer import build_coverage_test_design
+
+        src = tmp_path / "src"
+        src.mkdir()
+        (src / "routes.py").write_text(
+            "from pydantic import BaseModel, Field\n\n"
+            "class PaymentRequest(BaseModel):\n"
+            "    amount: int = Field(alias='amount_cents')\n"
+            "    currency: str = Field(default='USD', alias='currency_code')\n\n"
+            "@app.post('/payments')\n"
+            "def create_payment(payload: PaymentRequest):\n"
+            "    if payload.amount <= 0:\n"
+            "        return {'status': 400}\n"
+            "    return {'status': 200}\n",
+            encoding="utf-8",
+        )
+        modules = self._modules(
+            "feature,module,code_location,function,triggered,hit_count\n"
+            "payments,routes,src/routes.py:8-11,create_payment,false,0\n"
+        )
+
+        design = await build_coverage_test_design(
+            modules, workspace_id="ws-1", repo_path=str(tmp_path)
+        )
+
+        gap = [g for g in design["gaps"] if g.get("kind") == "function"][0]
+        assert gap["black_box_readiness"]["case_type"] == "black_box_ready"
+        entry = gap["entry_paths"][0]
+        assert entry["input_hints"] == ["amount_cents", "currency_code"]
+        case_text = json.dumps(gap["black_box_cases"], ensure_ascii=False)
+        assert "amount_cents" in case_text
+        assert "currency_code" in case_text
+        assert "payload.amount" not in case_text
+
     async def test_fastapi_query_path_aliases_feed_external_input_hints(self, tmp_path):
         from app.services.coverage_analyzer import build_coverage_test_design
 

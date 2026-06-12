@@ -3683,13 +3683,14 @@ def _python_model_fields_by_class(lines: list[str]) -> dict[str, list[str]]:
             if field_match:
                 field = field_match.group("field")
                 annotation = field_match.group("annotation").strip()
+                external_field = _python_model_field_external_name(child, field)
                 if (
                     not field.startswith("_")
-                    and field not in seen
+                    and external_field not in seen
                     and not annotation.startswith(("ClassVar", "typing.ClassVar"))
                 ):
-                    seen.add(field)
-                    fields.append(field)
+                    seen.add(external_field)
+                    fields.append(external_field)
                     if len(fields) >= 12:
                         break
             else:
@@ -3710,6 +3711,15 @@ def _python_model_fields_by_class(lines: list[str]) -> dict[str, list[str]]:
             fields_by_class[class_name] = fields
         idx = max(pos, idx + 1)
     return fields_by_class
+
+
+def _python_model_field_external_name(line: str, field: str) -> str:
+    match = re.search(
+        r"\b(?:Field|pydantic\.Field)\s*\([^)]*"
+        r"\balias\s*=\s*(['\"])(?P<alias>[A-Za-z_][\w.-]*)\1",
+        line or "",
+    )
+    return match.group("alias") if match else field
 
 
 def _java_model_fields_by_class(lines: list[str]) -> dict[str, list[str]]:
