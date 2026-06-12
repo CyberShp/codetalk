@@ -3486,11 +3486,7 @@ def _anonymous_entry_metadata_for_site(
     call_idx = line_number - 1
     if call_idx < 0 or call_idx >= len(lines):
         return {}
-    start_idx: int | None = None
-    for idx in range(call_idx, max(-1, call_idx - 16), -1):
-        if _PUBLIC_CALLBACK_START_RE.search(lines[idx]) or _ROUTE_DSL_START_RE.search(lines[idx]):
-            start_idx = idx
-            break
+    start_idx = _route_call_context_start_index(lines, call_idx)
     if start_idx is None:
         return {}
 
@@ -3516,15 +3512,40 @@ def _route_call_context_for_site_file(abs_file: str, line_number: int) -> str | 
     call_idx = line_number - 1
     if call_idx < 0 or call_idx >= len(lines):
         return None
-    start_idx: int | None = None
-    for idx in range(call_idx, max(-1, call_idx - 16), -1):
-        if _PUBLIC_CALLBACK_START_RE.search(lines[idx]) or _ROUTE_DSL_START_RE.search(lines[idx]):
-            start_idx = idx
-            break
+    start_idx = _route_call_context_start_index(lines, call_idx)
     if start_idx is None:
         return None
     end_idx = _call_expression_window_end(lines, start_idx, call_idx)
     return " ".join(line.strip() for line in lines[start_idx:end_idx] if line.strip())
+
+
+def _route_call_context_start_index(lines: list[str], call_idx: int) -> int | None:
+    for idx in range(call_idx, max(-1, call_idx - 16), -1):
+        if _PUBLIC_CALLBACK_START_RE.search(lines[idx]) or _ROUTE_DSL_START_RE.search(lines[idx]):
+            chain_idx = _route_chain_start_index(lines, idx)
+            return chain_idx if chain_idx is not None else idx
+    return None
+
+
+def _route_chain_start_index(lines: list[str], method_idx: int) -> int | None:
+    """Find ``router.route('/x')`` preceding a chained ``.post(handler)`` line."""
+    if method_idx <= 0 or method_idx >= len(lines):
+        return None
+    if not re.match(
+        r"^\s*\.\s*(?:get|post|put|patch|delete|head|options|any|websocket)\s*\(",
+        lines[method_idx] or "",
+        re.IGNORECASE,
+    ):
+        return None
+    for idx in range(method_idx - 1, max(-1, method_idx - 8), -1):
+        text = (lines[idx] or "").strip()
+        if not text:
+            continue
+        if re.search(r"\.\s*route\s*\(\s*['\"]", text, re.IGNORECASE):
+            return idx
+        if text.endswith((";", "{", "}")):
+            break
+    return None
 
 
 def _call_expression_window_end(lines: list[str], start_idx: int, call_idx: int) -> int:
@@ -6348,8 +6369,12 @@ def _trace_entry_paths(
                         if enclosing is None else {}
                     )
                     if anonymous_metadata.get("input_hints"):
+                        existing_hints = _specific_signature_input_hints(
+                            metadata.get("input_hints") or [],
+                            anonymous_metadata["input_hints"],
+                        )
                         metadata["input_hints"] = _merge_ordered_strings(
-                            metadata.get("input_hints"),
+                            existing_hints,
                             anonymous_metadata["input_hints"],
                         )
                     anonymous_evidence = anonymous_metadata.pop("_anonymous_entry_evidence", None)
@@ -6523,8 +6548,12 @@ def _augment_entry_input_hints_from_symbol_source(
         str(abs_file),
         str(entry_symbol),
     )
+    existing_hints = _merge_ordered_input_hints(entry.get("input_hints"))
     signature_hints = _handler_signature_input_hints(str(abs_file), str(entry_symbol))
-    signature_hints = _specific_signature_input_hints(signature_hints, source_hints)
+    signature_hints = _specific_signature_input_hints(
+        signature_hints,
+        _merge_ordered_input_hints(source_hints, existing_hints),
+    )
     if str(entry.get("entry_kind") or "").strip().lower() == "cli" and entry.get("input_hints"):
         signature_hints = _filter_cli_signature_input_hints(
             signature_hints,
@@ -6535,7 +6564,7 @@ def _augment_entry_input_hints_from_symbol_source(
         signature_hints,
     )
     merged_hints = _merge_ordered_input_hints(
-        entry.get("input_hints"),
+        existing_hints,
         source_hints,
     )
     if merged_hints:
