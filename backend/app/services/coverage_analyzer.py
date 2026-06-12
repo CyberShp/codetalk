@@ -4382,13 +4382,15 @@ def _decorated_entry_for_symbol(
                 metadata.get("input_hints"),
             )
     if entry_kind == "route":
-        route_prefix = _route_prefix_for_decorator_receiver(
+        receiver_prefix = _route_prefix_for_decorator_receiver(
             repo_root,
             source_file,
             lines,
             decorator_texts,
             definition_line,
         )
+        class_prefix = _route_class_prefix_for_definition(lines, definition_line)
+        route_prefix = _combine_route_prefixes(class_prefix, receiver_prefix)
         route_hints = _route_template_input_hints([*decorator_texts, definition_text])
         if route_prefix:
             route_hints = _merge_ordered_strings(
@@ -5116,6 +5118,48 @@ def _route_include_prefix_for_decorator_receiver(
     return None
 
 
+def _route_class_prefix_for_definition(lines: list[str], definition_line: int) -> str | None:
+    class_line = _nearest_enclosing_class_line(lines, definition_line)
+    if class_line is None:
+        return None
+    class_decorators = _decorator_lines_before_definition(lines, class_line)
+    if not class_decorators:
+        return None
+    return _route_prefix_from_class_decorators([text for _, text in class_decorators])
+
+
+def _nearest_enclosing_class_line(lines: list[str], definition_line: int) -> int | None:
+    start = max(0, definition_line - 2)
+    for idx in range(start, -1, -1):
+        stripped = lines[idx].strip()
+        if re.match(
+            r"^(?:export\s+|public\s+|private\s+|protected\s+|abstract\s+|final\s+|sealed\s+|partial\s+)*"
+            r"class\s+[A-Za-z_]\w*\b",
+            stripped,
+        ):
+            return idx + 1
+    return None
+
+
+def _route_prefix_from_class_decorators(decorator_texts: list[str]) -> str | None:
+    text = " ".join(str(line or "").strip() for line in decorator_texts if str(line or "").strip())
+    if not text:
+        return None
+    if not re.search(r"[@\[]\s*(?:Controller|RequestMapping|Route)\b", text):
+        return None
+    path = _route_path_from_text(text)
+    return path if path and _looks_like_route_path(path) else None
+
+
+def _combine_route_prefixes(*prefixes: str | None) -> str | None:
+    combined = ""
+    for prefix in prefixes:
+        if not prefix:
+            continue
+        combined = _join_route_paths(combined, prefix) if combined else prefix
+    return combined or None
+
+
 def _router_import_aliases_for_source(
     lines: list[str],
     module_suffixes: set[str],
@@ -5328,6 +5372,9 @@ def _route_method_from_text(text: str) -> str | None:
     method_patterns = (
         r"\bmethods?\s*=\s*[\[\(\{]?\s*(['\"])(?P<method>get|post|put|patch|delete|head|options|any)\1",
         r"\bmethods?\s*:\s*[\[\(\{]?\s*(['\"])(?P<method>get|post|put|patch|delete|head|options|any)\1",
+        r"\bRequestMethod\.(?P<method>GET|POST|PUT|PATCH|DELETE|HEAD|OPTIONS)\b",
+        r"[@\[]\s*(?P<method>Get|Post|Put|Patch|Delete|Head|Options)Mapping\s*\(",
+        r"[@\[]\s*Http(?P<method>Get|Post|Put|Patch|Delete|Head|Options)\s*\(",
         r"\bmethod\s*[:=]\s*(['\"])(?P<method>get|post|put|patch|delete|head|options|any)\1",
         r"[@.]\s*(?P<method>get|post|put|patch|delete|head|options|any|websocket)\s*\(",
         r"\b(?P<method>get|post|put|patch|delete|head|options|any|websocket)\s+['\"]",
