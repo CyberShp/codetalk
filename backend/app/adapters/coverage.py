@@ -390,7 +390,7 @@ def _function_hit_rows_to_report(rows: list[list[str]]) -> CoverageReport:
         if not has_header and len(row) < 4:
             continue
         hit = _row_to_function_hit(row, indexes)
-        if hit.function_name and hit.file_path:
+        if hit.file_path and (hit.function_name or hit.line_start):
             hits.append(hit)
 
     if not hits:

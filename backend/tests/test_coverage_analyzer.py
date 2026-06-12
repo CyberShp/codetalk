@@ -337,6 +337,20 @@ error_recovery,src/service.c,40,55,false,0
         assert rec.raw["line_start"] == "40"
         assert rec.raw["line_end"] == "55"
 
+    async def test_function_hit_csv_keeps_line_record_without_function_name(self):
+        from app.adapters.coverage import parse_internal_function_hits
+
+        csv_text = """function_name,file_path,line_start,line_end,triggered,hit_count
+,src/routes.py,8,8,false,0
+"""
+        report = parse_internal_function_hits(csv_text)
+        rec = report.modules[0].function_hits[0]
+
+        assert rec.function_name == ""
+        assert rec.file_path == "src/routes.py"
+        assert rec.line_start == 8
+        assert rec.hit_count == 0
+
     async def test_function_hit_csv_accepts_compiler_style_line_column_location(self):
         from app.adapters.coverage import parse_internal_function_hits
 
@@ -4728,6 +4742,42 @@ class TestCoverageTestDesign:
         assert "tenantId" in case_text
         assert "amount" in case_text
         assert "currency" in case_text
+
+    async def test_coverage_line_hit_without_function_name_infers_enclosing_route(self, tmp_path):
+        from app.services.coverage_analyzer import build_coverage_test_design
+
+        src = tmp_path / "src"
+        src.mkdir()
+        (src / "routes.py").write_text(
+            "from fastapi import APIRouter\n\n"
+            "router = APIRouter()\n\n"
+            "@router.post('/payments/{tenant_id}/process')\n"
+            "def process_payment(tenant_id: str, payload: dict):\n"
+            "    amount = payload.get('amount')\n"
+            "    if not amount:\n"
+            "        return {'status': 'missing'}\n"
+            "    return {'tenant_id': tenant_id, 'amount': amount}\n",
+            encoding="utf-8",
+        )
+        modules = self._modules(
+            "feature,module,code_location,function,triggered,hit_count\n"
+            "payments,routes,src/routes.py:8,,false,0\n"
+        )
+
+        design = await build_coverage_test_design(
+            modules, workspace_id="ws-1", repo_path=str(tmp_path)
+        )
+
+        gap = [g for g in design["gaps"] if g.get("kind") == "function"][0]
+        assert gap["function_name"] == "process_payment"
+        assert gap["source_window"]["path"] == "src/routes.py"
+        assert gap["black_box_readiness"]["case_type"] == "black_box_ready"
+        entry = gap["entry_paths"][0]
+        assert entry["entry_kind"] == "route"
+        assert entry["external_trigger"] == "POST /payments/{tenant_id}/process"
+        case_text = json.dumps(gap["black_box_cases"], ensure_ascii=False)
+        assert "tenant_id" in case_text
+        assert "amount" in case_text
 
     async def test_fastapi_pydantic_field_aliases_feed_external_body_hints(self, tmp_path):
         from app.services.coverage_analyzer import build_coverage_test_design

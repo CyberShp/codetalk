@@ -10,7 +10,7 @@ import os
 import re
 import shutil
 import subprocess
-from dataclasses import asdict, dataclass
+from dataclasses import asdict, dataclass, replace
 from datetime import datetime, timezone
 from pathlib import Path
 from urllib.parse import unquote, urlparse
@@ -965,7 +965,10 @@ async def _build_black_box_function_recommendations(
     ``evidence`` …) and adds the coverage-test-design fields (``source_window``,
     ``trigger_branches``, ``entry_paths``, ``black_box_cases``, ``gray_box`` …).
     """
-    uncovered = _collect_uncovered_function_hits(modules)
+    uncovered = _enrich_uncovered_hits_with_source_functions(
+        _collect_uncovered_function_hits(modules),
+        repo_path=repo_path,
+    )
     prioritized = _prioritize_uncovered_hits(uncovered)
     design_targets = prioritized[:50]
     traced_keys = {
@@ -1469,6 +1472,58 @@ def _collect_uncovered_function_hits(
             if not (hit.triggered or hit.hit_count > 0):
                 uncovered.append((module, hit))
     return uncovered
+
+
+def _enrich_uncovered_hits_with_source_functions(
+    uncovered: list[tuple[ModuleCoverage, FunctionHit]],
+    *,
+    repo_path: str | None,
+) -> list[tuple[ModuleCoverage, FunctionHit]]:
+    repo_root = _existing_repo_root(repo_path)
+    if repo_root is None or not uncovered:
+        return uncovered
+    enriched: list[tuple[ModuleCoverage, FunctionHit]] = []
+    for module, hit in uncovered:
+        if str(hit.function_name or "").strip():
+            enriched.append((module, hit))
+            continue
+        inferred = _infer_function_name_for_coverage_line(repo_root, hit)
+        if not inferred:
+            enriched.append((module, hit))
+            continue
+        raw = dict(hit.raw or {})
+        raw.setdefault("inferred_function_name", inferred)
+        enriched.append((module, replace(hit, function_name=inferred, raw=raw)))
+    return enriched
+
+
+def _infer_function_name_for_coverage_line(
+    repo_root: Path,
+    hit: FunctionHit,
+) -> str | None:
+    if not hit.file_path or not hit.line_start:
+        return None
+    source_file = _resolve_source_file(repo_root, hit.file_path, None)
+    if source_file is None:
+        return None
+    try:
+        text = source_file.read_text(encoding="utf-8", errors="replace")
+    except OSError:
+        return None
+    lines = text.splitlines()
+    if not lines:
+        return None
+    suffix = source_file.suffix.lower()
+    anchor = max(0, min(len(lines) - 1, int(hit.line_start) - 1))
+    for idx in range(anchor, -1, -1):
+        name = _definition_name_for_file(lines, idx, suffix)
+        if name:
+            return name
+    for idx in range(anchor + 1, min(len(lines), anchor + 20)):
+        name = _definition_name_for_file(lines, idx, suffix)
+        if name:
+            return name
+    return None
 
 
 async def _resolve_workspace_scope_for_hits(
