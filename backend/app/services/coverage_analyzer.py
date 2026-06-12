@@ -3251,6 +3251,25 @@ def _anonymous_entry_metadata_for_site(
     return metadata
 
 
+def _route_call_context_for_site_file(abs_file: str, line_number: int) -> str | None:
+    try:
+        lines = Path(abs_file).read_text(encoding="utf-8", errors="replace").splitlines()
+    except OSError:
+        return None
+    call_idx = line_number - 1
+    if call_idx < 0 or call_idx >= len(lines):
+        return None
+    start_idx: int | None = None
+    for idx in range(call_idx, max(-1, call_idx - 16), -1):
+        if _PUBLIC_CALLBACK_START_RE.search(lines[idx]):
+            start_idx = idx
+            break
+    if start_idx is None:
+        return None
+    end_idx = _call_expression_window_end(lines, start_idx, call_idx)
+    return " ".join(line.strip() for line in lines[start_idx:end_idx] if line.strip())
+
+
 def _call_expression_window_end(lines: list[str], start_idx: int, call_idx: int) -> int:
     balance = 0
     saw_open = False
@@ -5054,11 +5073,14 @@ def _route_mount_prefix_for_site(lines: list[str], site_text: str) -> str | None
     if not receiver:
         return None
     receiver_pattern = re.escape(receiver)
-    for line in lines:
+    for idx, line in enumerate(lines):
+        if not re.search(r"\.\s*(?:use|mount)\s*\(", line or "", re.IGNORECASE):
+            continue
+        statement = _call_expression_context_from_start(lines, idx)
         match = re.search(
             rf"\.\s*(?:use|mount)\s*\(\s*(['\"])(?P<prefix>(?:\\.|(?!\1).)*?)\1\s*,\s*"
             rf"(?:[A-Za-z_]\w*\.)?{receiver_pattern}\b",
-            line or "",
+            statement or "",
             re.IGNORECASE,
         )
         if not match:
@@ -5067,6 +5089,11 @@ def _route_mount_prefix_for_site(lines: list[str], site_text: str) -> str | None
         if _looks_like_route_path(prefix):
             return prefix
     return None
+
+
+def _call_expression_context_from_start(lines: list[str], start_idx: int) -> str:
+    end_idx = _call_expression_window_end(lines, start_idx, start_idx)
+    return " ".join(line.strip() for line in lines[start_idx:end_idx] if line.strip())
 
 
 def _route_mount_prefix_for_site_file(abs_file: str, site_text: str) -> str | None:
@@ -5462,11 +5489,15 @@ def _trace_entry_paths(
                         )
                     anonymous_evidence = anonymous_metadata.pop("_anonymous_entry_evidence", None)
                     if entry_kind == "route":
+                        route_site_text = _route_call_context_for_site_file(
+                            site["abs_file"],
+                            site["line_number"],
+                        ) or site["text"]
                         route_prefix = _route_mount_prefix_for_site_file(
                             site["abs_file"],
-                            site["text"],
+                            route_site_text,
                         )
-                        route_hints = _route_template_input_hints([site["text"]])
+                        route_hints = _route_template_input_hints([route_site_text])
                         if route_prefix:
                             route_hints = _merge_ordered_strings(
                                 _route_template_input_hints([route_prefix]),
@@ -5477,7 +5508,7 @@ def _trace_entry_paths(
                                 metadata.get("input_hints"),
                                 route_hints,
                             )
-                        route_trigger = _route_external_trigger_from_texts([site["text"]])
+                        route_trigger = _route_external_trigger_from_texts([route_site_text])
                         if route_prefix and route_trigger:
                             route_trigger = _route_trigger_with_prefix(route_trigger, route_prefix)
                         if route_trigger:
