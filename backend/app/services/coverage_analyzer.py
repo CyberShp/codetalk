@@ -5937,7 +5937,7 @@ def _route_mount_prefix_for_site_file(abs_file: str, site_text: str) -> str | No
 def _route_call_receiver(text: str) -> str | None:
     match = re.search(
         r"\b(?P<receiver>[A-Za-z_]\w*(?:\.[A-Za-z_]\w*)*)\s*\.\s*"
-        r"(?:get|post|put|patch|delete|head|options|any|route|websocket)\s*\(",
+        r"(?:get|post|put|patch|delete|head|options|any|route|api_route|websocket)\s*\(",
         text or "",
         re.IGNORECASE,
     )
@@ -5950,7 +5950,7 @@ def _route_decorator_receiver(decorator_texts: list[str]) -> str | None:
     for text in reversed(decorator_texts):
         match = re.search(
             r"@\s*(?P<receiver>[A-Za-z_]\w*(?:\.[A-Za-z_]\w*)*)\s*\.\s*"
-            r"(?:get|post|put|patch|delete|head|options|any|route|websocket)\s*\(",
+            r"(?:get|post|put|patch|delete|head|options|any|route|api_route|websocket)\s*\(",
             text or "",
             re.IGNORECASE,
         )
@@ -6026,12 +6026,12 @@ def _route_path_from_text(text: str) -> str | None:
         ),
         (
             r"(?:@?[A-Za-z_]\w*(?:\.[A-Za-z_]\w*)*)?\s*\.\s*"
-            r"(?:get|post|put|patch|delete|head|options|any|route|websocket)\s*"
+            r"(?:get|post|put|patch|delete|head|options|any|route|api_route|websocket)\s*"
             r"\(\s*(['\"])(?P<path>(?:\\.|(?!\1).)*?)\1",
             True,
         ),
         (
-            r"\b(?:get|post|put|patch|delete|head|options|any|route|websocket)\s*"
+            r"\b(?:get|post|put|patch|delete|head|options|any|route|api_route|websocket)\s*"
             r"\(\s*(['\"])(?P<path>(?:\\.|(?!\1).)*?)\1",
             True,
         ),
@@ -6044,7 +6044,7 @@ def _route_path_from_text(text: str) -> str | None:
             True,
         ),
         (
-            r"\b(?:get|post|put|patch|delete|head|options|any|route|websocket)\s+"
+            r"\b(?:get|post|put|patch|delete|head|options|any|route|api_route|websocket)\s+"
             r"(['\"])(?P<path>(?:\\.|(?!\1).)*?)\1",
             True,
         ),
