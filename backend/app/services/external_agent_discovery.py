@@ -59,6 +59,16 @@ DISCOVERY_SCHEMA_KEYS = frozenset({
     "commands",
 })
 
+_QUERY_STOPWORDS_EN = frozenset({
+    "the", "and", "for", "with", "from", "into", "that", "this",
+    "path", "flow", "case", "code", "data", "value", "values",
+    "error", "errors", "logic", "long", "short", "handle", "handling",
+    "of", "in", "on", "to", "or", "if", "is", "be", "a", "an",
+    "analyze", "analysis", "please", "module", "modules", "source", "sources",
+    "repo", "repository", "project", "workspace", "find", "locate", "search",
+    "target", "object", "objects",
+})
+
 
 @dataclass
 class AgentCandidateFile:
@@ -128,7 +138,13 @@ def expand_agent_query_terms(text: str) -> list[str]:
     """
     original = (text or "").strip()
     split_ready = _split_ready_agent_query_text(original)
-    raw_parts = [p.lower() for p in re.split(r"[-_/\\\s]+", split_ready) if p.strip()]
+    original_parts = [
+        p.lower() for p in re.split(r"[-_/\\\s]+", split_ready) if p.strip()
+    ]
+    raw_parts = [
+        part for part in original_parts
+        if not (part.isascii() and part in _QUERY_STOPWORDS_EN)
+    ]
     seen: set[str] = set()
     out: list[str] = []
 
@@ -139,7 +155,8 @@ def expand_agent_query_terms(text: str) -> list[str]:
         seen.add(value)
         out.append(value)
 
-    add(original.lower())
+    if original and not any(part in _QUERY_STOPWORDS_EN for part in original_parts if part.isascii()):
+        add(original.lower())
     for part in raw_parts:
         add(part)
     if raw_parts:

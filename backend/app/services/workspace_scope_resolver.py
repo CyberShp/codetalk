@@ -81,6 +81,9 @@ _STOPWORDS_EN = frozenset({
     "path", "flow", "case", "code", "data", "value", "values",
     "error", "errors", "logic", "long", "short", "handle", "handling",
     "of", "in", "on", "to", "or", "if", "is", "be", "a", "an",
+    "analyze", "analysis", "please", "module", "modules", "source", "sources",
+    "repo", "repository", "project", "workspace", "find", "locate", "search",
+    "target", "object", "objects",
 })
 _STOPWORDS_CN = frozenset({"流程", "路径", "处理", "分析", "代码"})
 

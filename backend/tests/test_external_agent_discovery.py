@@ -55,6 +55,22 @@ def test_camel_case_query_expands_to_path_and_symbol_variants():
     assert "payment/webhook" in terms
 
 
+def test_natural_language_query_expansion_filters_instruction_words():
+    from app.services.external_agent_discovery import expand_agent_query_terms
+
+    terms = expand_agent_query_terms("please analyze payment webhook module")
+
+    assert "payment" in terms
+    assert "webhook" in terms
+    assert "payment_webhook" in terms
+    assert "payment/webhook" in terms
+    assert "please" not in terms
+    assert "analyze" not in terms
+    assert "module" not in terms
+    assert "please analyze payment webhook module" not in terms
+    assert "please/analyze/payment/webhook/module" not in terms
+
+
 def test_dotted_camel_path_keyword_expands_each_segment_to_snake_path():
     from app.services.workspace_scope_resolver import _keyword_path_variants
 
@@ -5004,6 +5020,80 @@ def test_workspace_path_keyword_ranking_handles_generic_camel_module(tmp_path):
     rel_hits = [Path(hit).relative_to(tmp_path).as_posix() for hit in hits]
 
     assert rel_hits[0] == "services/payments/webhook/handler.ts"
+
+
+def test_workspace_path_keyword_ranking_ignores_natural_language_instruction_words(tmp_path):
+    from app.services.workspace_scope_resolver import (
+        _path_keyword_repo_hits_blocking,
+        _tokenize,
+    )
+
+    target_dir = tmp_path / "services" / "payments" / "webhook"
+    target_dir.mkdir(parents=True)
+    (target_dir / "handler.ts").write_text(
+        "export function handlePaymentWebhook() { return true; }\n",
+        encoding="utf-8",
+    )
+    noise_dir = tmp_path / "tools" / "analysis" / "module"
+    noise_dir.mkdir(parents=True)
+    (noise_dir / "analyze.ts").write_text(
+        "export const moduleAnalyze = true;\n",
+        encoding="utf-8",
+    )
+
+    keywords = _tokenize("please analyze payment webhook module")
+    hits = _path_keyword_repo_hits_blocking(str(tmp_path), keywords, 3)
+    rel_hits = [Path(hit).relative_to(tmp_path).as_posix() for hit in hits]
+
+    assert "please" not in keywords
+    assert "analyze" not in keywords
+    assert "module" not in keywords
+    assert rel_hits[0] == "services/payments/webhook/handler.ts"
+
+
+def test_workspace_resolver_ignores_natural_language_words_without_tools(tmp_path, monkeypatch):
+    target_dir = tmp_path / "services" / "payments" / "webhook"
+    target_dir.mkdir(parents=True)
+    (target_dir / "handler.ts").write_text(
+        "export function handlePaymentWebhook() { return true; }\n",
+        encoding="utf-8",
+    )
+    noise_dir = tmp_path / "tools" / "analysis" / "module"
+    noise_dir.mkdir(parents=True)
+    (noise_dir / "analyze.ts").write_text(
+        "export const moduleAnalyze = true;\n",
+        encoding="utf-8",
+    )
+
+    async def fake_discovery(_request, **_kwargs):
+        return []
+
+    monkeypatch.setattr(
+        "app.services.workspace_scope_resolver.run_external_agent_discovery",
+        fake_discovery,
+    )
+    obj = AnalysisObject(
+        id="obj_payment_webhook",
+        text="please analyze payment webhook module",
+        kind="module",
+    )
+
+    resolved = asyncio.run(WorkspaceScopeResolver()._resolve_object(
+        obj=obj,
+        ws_id="ws",
+        repo_path=str(tmp_path),
+        index=_GraphIndex(None),
+        limits=LLMLimits(max_files_per_object=4),
+        gitnexus_available=False,
+        external_agents_enabled=False,
+    ))
+    rel_paths = [
+        Path(c.path).relative_to(tmp_path).as_posix()
+        for c in resolved.candidate_files
+        if c.path
+    ]
+
+    assert rel_paths[0] == "services/payments/webhook/handler.ts"
 
 
 def test_workspace_keyword_hit_role_uses_generic_module_path_match(tmp_path):
