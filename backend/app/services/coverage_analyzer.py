@@ -4263,7 +4263,7 @@ def _cli_option_input_hints(abs_file: str, enclosing_fn: str | None) -> list[str
         return []
     fn_start: int | None = None
     for idx, line in enumerate(lines):
-        if _match_def_name(line) == enclosing_fn:
+        if (_match_def_name(line) or _match_multiline_def_name(lines, idx)) == enclosing_fn:
             fn_start = idx
             break
     if fn_start is None:
@@ -4282,7 +4282,8 @@ def _cli_option_input_hints_from_text(text: str) -> list[str]:
     hints: list[str] = []
     seen: set[str] = set()
     for match in re.finditer(
-        r"(?:add_argument|click\.(?:option|argument))\s*\((?P<args>[^)]*)\)",
+        r"(?:add_argument|click\.(?:option|argument)|typer\.(?:Option|Argument))"
+        r"\s*\((?P<args>[^)]*)\)",
         text or "",
         flags=re.DOTALL,
     ):
@@ -4381,16 +4382,68 @@ def _cli_long_option_from_spec(spec: str) -> str | None:
 
 
 def _merge_cli_input_hints(registration_hints: object, metadata_hints: object) -> list[str]:
-    filtered_metadata = _filter_generic_cli_input_hints(metadata_hints)
+    filtered_metadata = _filter_cli_signature_input_hints(metadata_hints, registration_hints)
     return _merge_ordered_input_hints(registration_hints, filtered_metadata)
 
 
 def _filter_generic_cli_input_hints(hints: object) -> list[str]:
+    return _filter_cli_signature_input_hints(hints, None)
+
+
+def _filter_cli_signature_input_hints(
+    hints: object,
+    cli_hints: object | None,
+) -> list[str]:
     generic_cli_containers = {"args", "argv", "opts", "options", "cmd", "command"}
+    covered_by_cli = {
+        key
+        for hint in _coerce_input_hints(cli_hints)
+        for key in [_cli_option_name_key(hint)]
+        if key
+    }
     return [
         hint for hint in _coerce_input_hints(hints)
-        if str(hint or "").strip().lower() not in generic_cli_containers
+        if _input_hint_dedupe_key(hint) not in generic_cli_containers
+        and _cli_option_name_key(hint) not in covered_by_cli
     ]
+
+
+def _merge_decorated_cli_input_hints(cli_hints: object, metadata_hints: object) -> list[str]:
+    cli_items = _coerce_input_hints(cli_hints)
+    option_by_key = {
+        key: hint
+        for hint in cli_items
+        if hint.startswith("--")
+        for key in [_cli_option_name_key(hint)]
+        if key
+    }
+    merged: list[str] = []
+    seen: set[str] = set()
+
+    def add(value: str) -> None:
+        if value and value not in seen:
+            seen.add(value)
+            merged.append(value)
+
+    for hint in _coerce_input_hints(metadata_hints):
+        if _input_hint_dedupe_key(hint) in {"args", "argv", "opts", "options", "cmd", "command"}:
+            continue
+        add(option_by_key.get(_cli_option_name_key(hint), hint))
+    for hint in cli_items:
+        add(hint)
+    return merged[:12]
+
+
+def _cli_option_name_key(value: str) -> str:
+    text = str(value or "").strip().lower()
+    if not text:
+        return ""
+    if text.startswith("--"):
+        text = text[2:]
+    elif text.startswith("-"):
+        return ""
+    text = text.split()[0].strip("<>[].,;:")
+    return re.sub(r"[^a-z0-9]+", "_", text).strip("_")
 
 
 def _getopt_input_hints_from_text(text: str) -> list[str]:
@@ -4574,7 +4627,10 @@ def _decorated_entry_for_symbol(
     if entry_kind == "cli":
         cli_hints = _cli_option_input_hints(str(source_file), source_function_name)
         if cli_hints:
-            metadata["input_hints"] = cli_hints
+            metadata["input_hints"] = _merge_decorated_cli_input_hints(
+                cli_hints,
+                metadata.get("input_hints"),
+            )
     if entry_kind in {"message", "queue"}:
         payload_type_hints = _message_payload_type_input_hints(
             _collect_signature_text(lines, definition_line - 1)
@@ -6144,7 +6200,10 @@ def _augment_entry_input_hints_from_symbol_source(
     signature_hints = _handler_signature_input_hints(str(abs_file), str(entry_symbol))
     signature_hints = _specific_signature_input_hints(signature_hints, source_hints)
     if str(entry.get("entry_kind") or "").strip().lower() == "cli" and entry.get("input_hints"):
-        signature_hints = _filter_generic_cli_input_hints(signature_hints)
+        signature_hints = _filter_cli_signature_input_hints(
+            signature_hints,
+            entry.get("input_hints"),
+        )
     source_hints = _merge_ordered_input_hints(
         source_hints,
         signature_hints,
