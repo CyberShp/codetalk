@@ -5107,12 +5107,10 @@ def _route_include_prefix_for_decorator_receiver(
             )
             names = {receiver_name, *aliases}
             for idx, line in enumerate(candidate_lines):
-                if "include_router" not in line:
+                if "include_router" not in line and "register_blueprint" not in line:
                     continue
                 statement = _call_expression_context_from_start(candidate_lines, idx)
-                if not any(_include_router_statement_uses_name(statement, item) for item in names):
-                    continue
-                prefix = _include_router_prefix_from_statement(statement)
+                prefix = _mounted_route_prefix_from_statement(statement, names)
                 if prefix:
                     return prefix
     return None
@@ -5154,6 +5152,32 @@ def _include_router_statement_uses_name(statement: str, name: str) -> bool:
 def _include_router_prefix_from_statement(statement: str) -> str | None:
     match = re.search(
         r"\bprefix\s*=\s*(['\"])(?P<prefix>(?:\\.|(?!\1).)*?)\1",
+        statement or "",
+    )
+    if not match:
+        return None
+    prefix = match.group("prefix").strip()
+    return prefix if _looks_like_route_path(prefix) else None
+
+
+def _mounted_route_prefix_from_statement(statement: str, names: set[str]) -> str | None:
+    if any(_include_router_statement_uses_name(statement, item) for item in names):
+        return _include_router_prefix_from_statement(statement)
+    if any(_register_blueprint_statement_uses_name(statement, item) for item in names):
+        return _register_blueprint_prefix_from_statement(statement)
+    return None
+
+
+def _register_blueprint_statement_uses_name(statement: str, name: str) -> bool:
+    return bool(re.search(
+        rf"\.register_blueprint\s*\(\s*(?:[A-Za-z_]\w*\.)?{re.escape(name)}\b",
+        statement or "",
+    ))
+
+
+def _register_blueprint_prefix_from_statement(statement: str) -> str | None:
+    match = re.search(
+        r"\burl_prefix\s*=\s*(['\"])(?P<prefix>(?:\\.|(?!\1).)*?)\1",
         statement or "",
     )
     if not match:
