@@ -130,6 +130,12 @@ def _has_configuration_error(item: object) -> bool:
         return False
     if item.get("status") == "configuration_error":
         return True
+    if str(item.get("launch_kind") or "") in {
+        "powershell",
+        "powershell-profile",
+        "powershell-script",
+    }:
+        return False
     hint = str(item.get("config_hint") or "").lower()
     return "ccr_config_path" in hint and "default config not found" in hint
 
