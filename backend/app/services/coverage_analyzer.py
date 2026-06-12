@@ -434,7 +434,7 @@ _ENV_FIELD_RES = (
 _REGISTRATION_LINE_RE = re.compile(
     r"\b(?:[A-Z0-9_]*REGISTER[A-Z0-9_]*|register_[A-Za-z0-9_]+)\s*\("
     r"|\badd_[A-Za-z0-9_]*Servicer_to_server\s*\("
-    r"|\b(?:[A-Za-z_]\w*(?:\.[A-Za-z_]\w*)*\s*\.\s*)?HandleFunc\s*\("
+    r"|\b(?:[A-Za-z_]\w*(?:\.[A-Za-z_]\w*)*\s*\.\s*)?Handle(?:Func)?\s*\("
     r"|\.[ \t]*(?:register|subscribe|on|once|listen|addEventListener|addListener|"
     r"addHandler|add_listener|add_handler|add_job|schedule)\s*\(",
     re.IGNORECASE,
@@ -7160,7 +7160,7 @@ def _registered_entry_type(registration_line: str, window: list[str]) -> str:
     text = (registration_line + "\n" + "\n".join(window)).lower()
     if re.search(r"\.\s*(?:get|post|put|patch|delete|head|options|any|route)\s*\(", text):
         return "route"
-    if "handlefunc" in text and _route_path_from_text(text):
+    if re.search(r"\bhandle(?:func)?\s*\(", text) and _route_path_from_text(text):
         return "route"
     if "rpc" in text or "api" in text or "request" in text:
         return "api"
