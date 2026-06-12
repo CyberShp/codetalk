@@ -198,7 +198,13 @@ def _match_def_name(line: str) -> str | None:
     if not match:
         return None
     name = match.group(1)
+    if _looks_like_bare_function_invocation(stripped):
+        return None
     return None if name in _NON_FUNCTION_NAMES else name
+
+
+def _looks_like_bare_function_invocation(stripped_line: str) -> bool:
+    return bool(re.match(r"^[A-Za-z_]\w*\s*\([^()]*\)\s*$", stripped_line or ""))
 
 
 def _match_assigned_function_def_name(line: str) -> str | None:
@@ -371,6 +377,16 @@ _REQUEST_FIELD_RES = (
         r"\s*\(\s*['\"]([A-Za-z_][\w-]*)['\"]"
     ),
     re.compile(
+        r"\bcall\."
+        r"(?:parameters|request\.queryParameters|request\.headers|request\.cookies)"
+        r"\s*\[\s*['\"]([A-Za-z_][\w-]*)['\"]\s*\]"
+    ),
+    re.compile(
+        r"\bcall\.request\."
+        r"(?:queryParameters|headers|cookies)"
+        r"\.get\s*\(\s*['\"]([A-Za-z_][\w-]*)['\"]"
+    ),
+    re.compile(
         r"\b(?:params|request\.params)"
         r"\s*\[\s*:([A-Za-z_][\w-]*)\s*\]"
     ),
@@ -448,6 +464,11 @@ _PUBLIC_CALLBACK_START_RE = re.compile(
     r"subscribe|on|listen|addEventListener|addListener|addHandler|add_listener|add_handler|register|"
     r"add_job|schedule"
     r")|(?:^|\b)(?:path|re_path))\s*\(",
+    re.IGNORECASE,
+)
+_ROUTE_DSL_START_RE = re.compile(
+    r"(?<![\w.])(?:get|post|put|patch|delete|head|options|any|route|websocket)"
+    r"\s*\(\s*['\"]",
     re.IGNORECASE,
 )
 _CALLBACK_ASSIGN_RE = re.compile(
@@ -3464,7 +3485,7 @@ def _anonymous_entry_metadata_for_site(
         return {}
     start_idx: int | None = None
     for idx in range(call_idx, max(-1, call_idx - 16), -1):
-        if _PUBLIC_CALLBACK_START_RE.search(lines[idx]):
+        if _PUBLIC_CALLBACK_START_RE.search(lines[idx]) or _ROUTE_DSL_START_RE.search(lines[idx]):
             start_idx = idx
             break
     if start_idx is None:
@@ -3494,7 +3515,7 @@ def _route_call_context_for_site_file(abs_file: str, line_number: int) -> str | 
         return None
     start_idx: int | None = None
     for idx in range(call_idx, max(-1, call_idx - 16), -1):
-        if _PUBLIC_CALLBACK_START_RE.search(lines[idx]):
+        if _PUBLIC_CALLBACK_START_RE.search(lines[idx]) or _ROUTE_DSL_START_RE.search(lines[idx]):
             start_idx = idx
             break
     if start_idx is None:
@@ -5918,6 +5939,11 @@ def _route_path_from_text(text: str) -> str | None:
             True,
         ),
         (
+            r"\b(?:get|post|put|patch|delete|head|options|any|route|websocket)\s*"
+            r"\(\s*(['\"])(?P<path>(?:\\.|(?!\1).)*?)\1",
+            True,
+        ),
+        (
             r"[@\[]\s*(?:Controller|RequestMapping|Route|"
             r"Get|Post|Put|Patch|Delete|Head|Options|"
             r"GetMapping|PostMapping|PutMapping|PatchMapping|DeleteMapping|"
@@ -5979,6 +6005,7 @@ def _route_method_from_text(text: str) -> str | None:
         r"[@\[]\s*Http(?P<method>Get|Post|Put|Patch|Delete|Head|Options)\b",
         r"\bmethod\s*[:=]\s*(['\"])(?P<method>get|post|put|patch|delete|head|options|any)\1",
         r"[@.]\s*(?P<method>get|post|put|patch|delete|head|options|any|websocket)\s*\(",
+        r"(?<![\w.])(?P<method>get|post|put|patch|delete|head|options|any|websocket)\s*\(\s*['\"]",
         r"\b(?P<method>get|post|put|patch|delete|head|options|any|websocket)\s+['\"]",
     )
     for pattern in method_patterns:

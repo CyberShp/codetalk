@@ -2658,6 +2658,50 @@ class TestCoverageTestDesign:
         assert "account_id" in case_text
         assert "payment_id" in case_text
 
+    async def test_add_api_route_registration_becomes_black_box_entry(self, tmp_path):
+        from app.services.coverage_analyzer import build_coverage_test_design
+
+        src = tmp_path / "src"
+        src.mkdir()
+        (src / "payments.py").write_text(
+            "def process_payment(request, tenant_id: str):\n"
+            "    payload = {\n"
+            "        'amount': request.json['amount'],\n"
+            "        'tenant_id': tenant_id,\n"
+            "    }\n"
+            "    if not payload['amount']:\n"
+            "        return {'status': 400}\n"
+            "    return {'status': 200}\n",
+            encoding="utf-8",
+        )
+        (src / "routes.py").write_text(
+            "from payments import process_payment\n"
+            "app.add_api_route('/tenants/{tenant_id}/payments', endpoint=process_payment, methods=['POST'])\n",
+            encoding="utf-8",
+        )
+        modules = self._modules(
+            "feature,module,code_location,function,triggered,hit_count\n"
+            "payments,payments,src/payments.py:1-8,process_payment,false,0\n"
+        )
+
+        design = await build_coverage_test_design(
+            modules, workspace_id="ws-1", repo_path=str(tmp_path)
+        )
+
+        gap = [g for g in design["gaps"] if g.get("kind") == "function"][0]
+        assert gap["gray_box_required"] is False
+        assert gap["black_box_readiness"]["case_type"] == "black_box_ready"
+        entry = gap["entry_paths"][0]
+        assert entry["entry_kind"] == "route"
+        assert entry["entry_symbol"] == "process_payment"
+        assert "app.add_api_route" in entry["evidence"]
+        assert entry["external_trigger"] == "POST /tenants/{tenant_id}/payments"
+        assert entry["input_hints"] == ["amount", "tenant_id"]
+        case_text = json.dumps(gap["black_box_cases"], ensure_ascii=False)
+        assert "POST /tenants/{tenant_id}/payments" in case_text
+        assert "amount" in case_text
+        assert "tenant_id" in case_text
+
     async def test_js_route_table_handler_object_becomes_black_box_entry(self, tmp_path):
         from app.services.coverage_analyzer import build_coverage_test_design
 
@@ -2891,6 +2935,53 @@ class TestCoverageTestDesign:
         case_text = json.dumps(gap["black_box_cases"], ensure_ascii=False)
         assert "amount" in case_text
         assert "currency" in case_text
+
+    async def test_ktor_route_dsl_call_site_becomes_black_box_route(self, tmp_path):
+        from app.services.coverage_analyzer import build_coverage_test_design
+
+        src = tmp_path / "src"
+        src.mkdir()
+        (src / "PaymentService.kt").write_text(
+            "fun processPayment(call: ApplicationCall) {\n"
+            "    val tenantId = call.parameters[\"tenantId\"]\n"
+            "    val amount = call.request.queryParameters[\"amount\"]\n"
+            "    if (amount == null) {\n"
+            "        call.respond(HttpStatusCode.BadRequest, tenantId ?: \"missing\")\n"
+            "    }\n"
+            "}\n",
+            encoding="utf-8",
+        )
+        (src / "Routes.kt").write_text(
+            "fun Application.configureRoutes() {\n"
+            "    routing {\n"
+            "        post(\"/tenants/{tenantId}/payments\") {\n"
+            "            processPayment(call)\n"
+            "        }\n"
+            "    }\n"
+            "}\n",
+            encoding="utf-8",
+        )
+        modules = self._modules(
+            "feature,module,code_location,function,triggered,hit_count\n"
+            "payments,service,src/PaymentService.kt:1-7,processPayment,false,0\n"
+        )
+
+        design = await build_coverage_test_design(
+            modules, workspace_id="ws-1", repo_path=str(tmp_path)
+        )
+
+        gap = [g for g in design["gaps"] if g.get("kind") == "function"][0]
+        assert gap["gray_box_required"] is False
+        assert gap["black_box_readiness"]["case_type"] == "black_box_ready"
+        entry = gap["entry_paths"][0]
+        assert entry["entry_kind"] == "route"
+        assert entry["entry_symbol"] == "processPayment"
+        assert entry["external_trigger"] == "POST /tenants/{tenantId}/payments"
+        assert entry["input_hints"] == ["tenantId", "amount"]
+        case_text = json.dumps(gap["black_box_cases"], ensure_ascii=False)
+        assert "POST /tenants/{tenantId}/payments" in case_text
+        assert "tenantId" in case_text
+        assert "amount" in case_text
 
     async def test_direct_websocket_registration_becomes_black_box_route(self, tmp_path):
         from app.services.coverage_analyzer import build_coverage_test_design
@@ -3634,6 +3725,26 @@ class TestCoverageTestDesign:
         assert _match_def_name(
             "return service.ProcessPayment(req)"
         ) is None
+
+    async def test_coverage_definition_detection_rejects_indented_bare_calls(self):
+        from app.services.coverage_analyzer import _match_def_name
+
+        assert _match_def_name("            processPayment(call)") is None
+        assert _match_def_name("  processPayment(payload)") is None
+        assert _match_def_name("fun processPayment(call: ApplicationCall) {") == "processPayment"
+
+    async def test_ripgrep_line_parser_accepts_windows_drive_paths(self):
+        from app.services.coverage_analyzer import _parse_ripgrep_line
+
+        parsed = _parse_ripgrep_line(
+            "E:/repo/src/routes.kt:42:            processPayment(call)"
+        )
+
+        assert parsed == (
+            "E:/repo/src/routes.kt",
+            42,
+            "            processPayment(call)",
+        )
 
     async def test_coverage_definition_detection_handles_swift_functions(self):
         from app.services.coverage_analyzer import _match_def_name
