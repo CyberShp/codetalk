@@ -386,7 +386,7 @@ _ENV_FIELD_RES = (
 _REGISTRATION_LINE_RE = re.compile(
     r"\b(?:[A-Z0-9_]*REGISTER[A-Z0-9_]*|register_[A-Za-z0-9_]+)\s*\("
     r"|\badd_[A-Za-z0-9_]*Servicer_to_server\s*\("
-    r"|\.[ \t]*(?:register|subscribe|add_listener|add_handler|add_job|schedule)\s*\(",
+    r"|\.[ \t]*(?:register|subscribe|on|once|add_listener|add_handler|add_job|schedule)\s*\(",
     re.IGNORECASE,
 )
 _INLINE_ROUTE_DEFINITION_RE = re.compile(
@@ -6303,7 +6303,7 @@ def _registration_entry_for_site(
         token in " ".join(window).lower()
         for token in (
             "callback", "_cb", "handler", "ops", "poller", "timer", "event",
-            "register", "subscribe", "listener", "schedule", "scheduler", "job",
+            "register", "subscribe", ".on", ".once", "listener", "schedule", "scheduler", "job",
             "grpc", "servicer_to_server",
         )
     )
@@ -6559,6 +6559,8 @@ def _registered_entry_type(registration_line: str, window: list[str]) -> str:
         return "api"
     if "cli" in text or "cmd" in text:
         return "cli"
+    if re.search(r"\.\s*(?:on|once)\s*\(", text):
+        return "message"
     if any(token in text for token in ("subscribe", "subscriber", "topic", "queue", "message", "event", "listener")):
         return "message"
     if "service_register" in text or "ops" in text or "callback" in text or "_cb" in text:
