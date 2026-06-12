@@ -6299,6 +6299,46 @@ class TestCoverageTestDesign:
         assert window["path"] == "src/service.c"
         assert "recover_state" in window["text"]
 
+    async def test_source_window_normalizes_remote_code_urls(self, tmp_path):
+        from app.adapters.coverage import FunctionHit
+        from app.services.coverage_analyzer import _normalize_coverage_source_path, _read_source_window
+
+        github_url = "https://github.com/acme/project/blob/main/src/service.c#L1-L3"
+        gitlab_url = "https://gitlab.local/acme/project/-/blob/main/src/service.c?ref=main#L1"
+        assert _normalize_coverage_source_path(github_url) == "src/service.c"
+        assert _normalize_coverage_source_path(gitlab_url) == "src/service.c"
+
+        decoy = tmp_path / "docs" / "src"
+        decoy.mkdir(parents=True)
+        (decoy / "service.c").write_text(
+            "void recover_service(void) {\n"
+            "    wrong_documented_example();\n"
+            "}\n",
+            encoding="utf-8",
+        )
+        src = tmp_path / "src"
+        src.mkdir()
+        (src / "service.c").write_text(
+            "void recover_service(void) {\n"
+            "    recover_state();\n"
+            "}\n",
+            encoding="utf-8",
+        )
+        hit = FunctionHit(
+            function_name="recover_service",
+            file_path=github_url,
+            line_start=1,
+            triggered=False,
+            hit_count=0,
+        )
+
+        window = _read_source_window(tmp_path, hit)
+
+        assert window is not None
+        assert window["path"] == "src/service.c"
+        assert "recover_state" in window["text"]
+        assert "wrong_documented_example" not in window["text"]
+
     async def test_source_window_uses_workspace_scope_candidate_when_coverage_path_is_stale(
         self,
         tmp_path,

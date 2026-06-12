@@ -2547,6 +2547,8 @@ def _normalize_coverage_source_path(file_path: str) -> str:
             value = f"//{parsed.netloc}{parsed.path}"
         else:
             value = parsed.path
+    elif parsed.scheme.lower() in {"http", "https"}:
+        value = _normalize_remote_code_url_path(parsed.path)
     else:
         value = value.split("#", 1)[0].split("?", 1)[0]
     value = unquote(value).replace("\\", "/")
@@ -2554,6 +2556,28 @@ def _normalize_coverage_source_path(file_path: str) -> str:
         value = value[1:]
     value = re.sub(r":\d+:\d+$", "", value)
     value = re.sub(r":\d+(?:-\d+)?$", "", value)
+    return value
+
+
+def _normalize_remote_code_url_path(path: str) -> str:
+    value = unquote(path or "").replace("\\", "/").strip("/")
+    if not value:
+        return ""
+    parts = [part for part in value.split("/") if part]
+    markers = {"blob", "raw", "src"}
+    for index, part in enumerate(parts):
+        if part == "-":
+            continue
+        if part not in markers:
+            continue
+        next_index = index + 1
+        if next_index < len(parts) and parts[next_index] == "-":
+            next_index += 1
+        # Drop the branch/ref segment after blob/raw/src. This covers common
+        # GitHub, GitLab, Gitea, and Bitbucket source links.
+        file_start = next_index + 1
+        if file_start < len(parts):
+            return "/".join(parts[file_start:])
     return value
 
 
