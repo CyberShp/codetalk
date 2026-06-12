@@ -2981,6 +2981,53 @@ class TestCoverageTestDesign:
         assert "amount" in case_text
         assert "currency" in case_text
 
+    async def test_go_http_handlefunc_becomes_black_box_route(self, tmp_path):
+        from app.services.coverage_analyzer import build_coverage_test_design
+
+        src = tmp_path / "src"
+        src.mkdir()
+        (src / "handler.go").write_text(
+            "package payments\n\n"
+            "import \"net/http\"\n\n"
+            "func processPayment(w http.ResponseWriter, r *http.Request) {\n"
+            "    tenantID := r.PathValue(\"tenantId\")\n"
+            "    amount := r.URL.Query().Get(\"amount\")\n"
+            "    if amount == \"\" {\n"
+            "        http.Error(w, tenantID, http.StatusBadRequest)\n"
+            "        return\n"
+            "    }\n"
+            "    w.WriteHeader(http.StatusOK)\n"
+            "}\n",
+            encoding="utf-8",
+        )
+        (src / "server.go").write_text(
+            "package payments\n\n"
+            "import \"net/http\"\n\n"
+            "func RegisterRoutes() {\n"
+            "    http.HandleFunc(\"/payments/{tenantId}\", processPayment)\n"
+            "}\n",
+            encoding="utf-8",
+        )
+        modules = self._modules(
+            "feature,module,code_location,function,triggered,hit_count\n"
+            "payments,handler,src/handler.go:5-12,processPayment,false,0\n"
+        )
+
+        design = await build_coverage_test_design(
+            modules, workspace_id="ws-1", repo_path=str(tmp_path)
+        )
+
+        gap = [g for g in design["gaps"] if g.get("kind") == "function"][0]
+        assert gap["black_box_readiness"]["case_type"] == "black_box_ready"
+        entry = gap["entry_paths"][0]
+        assert entry["entry_kind"] == "route"
+        assert entry["entry_symbol"] == "processPayment"
+        assert entry["external_trigger"] == "/payments/{tenantId}"
+        assert entry["input_hints"] == ["tenantId", "amount"]
+        case_text = json.dumps(gap["black_box_cases"], ensure_ascii=False)
+        assert "/payments/{tenantId}" in case_text
+        assert "amount" in case_text
+
     async def test_ktor_route_dsl_call_site_becomes_black_box_route(self, tmp_path):
         from app.services.coverage_analyzer import build_coverage_test_design
 
