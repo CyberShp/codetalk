@@ -118,13 +118,17 @@ def _entry_paths(entry: object) -> list[str]:
 
 
 def _path_matches(target: str, candidate: str) -> bool:
-    """True when *candidate* refers to the same repo dir as *target*.
+    """True when *candidate* refers to the same or containing repo dir.
 
     Compares path *components* from the tail: the basenames must match and the
     shorter path must be a component-wise suffix of the longer one.  This
     tolerates host-vs-container prefix differences (``/b/spdk`` ==
     ``/host/a/b/spdk``) while never cross-matching two distinct same-named
     repos (``D:\\...\\spdk`` vs ``E:\\...\\spdk``).
+
+    GitNexus may index a workspace parent while CodeTalk is asked to analyse a
+    child directory.  In that case the indexed parent graph is still the right
+    graph, so a component-wise parent relation is accepted as well.
     """
     t, c = _norm_repo_path(target), _norm_repo_path(candidate)
     if not t or not c:
@@ -133,10 +137,27 @@ def _path_matches(target: str, candidate: str) -> bool:
         return True
     tp = [x for x in t.split("/") if x]
     cp = [x for x in c.split("/") if x]
-    if not tp or not cp or tp[-1] != cp[-1]:
+    if not tp or not cp:
         return False
     n = min(len(tp), len(cp))
-    return tp[-n:] == cp[-n:]
+    if tp[-1] == cp[-1] and tp[-n:] == cp[-n:]:
+        return True
+    return _path_components_contain_parent(tp, cp)
+
+
+def _path_components_contain_parent(target_parts: list[str], candidate_parts: list[str]) -> bool:
+    if len(candidate_parts) > len(target_parts):
+        return False
+    if target_parts[: len(candidate_parts)] == candidate_parts:
+        return True
+    parent_leaf = candidate_parts[-1]
+    for index, part in enumerate(target_parts):
+        if part != parent_leaf:
+            continue
+        candidate_tail = candidate_parts[-(index + 1):]
+        if target_parts[: index + 1][-len(candidate_tail):] == candidate_tail:
+            return True
+    return False
 
 
 def _entry_id(entry: object) -> str | None:

@@ -340,8 +340,6 @@ async def _fetch_live_gitnexus_graph_once(tool_path: str) -> tuple[dict | None, 
             except Exception:
                 pass
             resp = await client.get("/api/graph", params=params)
-            if resp.status_code == 404:
-                resp = await client.get("/api/graph")
             resp.raise_for_status()
             return resp.json(), ""
     except Exception as exc:

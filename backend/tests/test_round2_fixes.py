@@ -66,8 +66,21 @@ def test_resolve_string_entries_unique_basename() -> None:
 def test_path_matches_prefix_tolerance() -> None:
     # container vs host prefix difference, same basename -> match
     assert _path_matches("/host/a/b/spdk", "/b/spdk") is True
+    # workspace roots may be subdirectories of an already indexed repository.
+    assert _path_matches(r"E:\repo\frontend\nof\nvmf_tcp", r"E:\repo\frontend") is True
     # different distinct repos same basename -> no match
     assert _path_matches(r"E:\x\spdk", r"D:\y\spdk") is False
+
+
+def test_resolve_child_workspace_to_indexed_parent_repo() -> None:
+    payload = [
+        {"name": "frontend", "path": r"E:\repo\frontend"},
+    ]
+
+    assert (
+        resolve_indexed_repo_name(payload, r"E:\repo\frontend\nof\nvmf_tcp")
+        == "frontend"
+    )
 
 
 def test_entry_paths_collects_path_like_values() -> None:
