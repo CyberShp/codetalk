@@ -2753,6 +2753,51 @@ class TestCoverageTestDesign:
         case_text = json.dumps(gap["black_box_cases"], ensure_ascii=False)
         assert "POST /tenants/:tenantId/payments" in case_text
 
+    async def test_js_route_table_method_array_feeds_black_box_trigger(self, tmp_path):
+        from app.services.coverage_analyzer import build_coverage_test_design
+
+        src = tmp_path / "src"
+        src.mkdir()
+        (src / "payments.ts").write_text(
+            "export function processPayment(request) {\n"
+            "  const amount = request.body.amount;\n"
+            "  if (!amount) {\n"
+            "    return { status: 400 };\n"
+            "  }\n"
+            "  return { ok: true };\n"
+            "}\n",
+            encoding="utf-8",
+        )
+        (src / "routes.ts").write_text(
+            "import { processPayment } from './payments';\n"
+            "export const routes = [\n"
+            "  {\n"
+            "    method: ['POST'],\n"
+            "    path: '/tenants/:tenantId/payments',\n"
+            "    handler: processPayment,\n"
+            "  },\n"
+            "];\n",
+            encoding="utf-8",
+        )
+        modules = self._modules(
+            "feature,module,code_location,function,triggered,hit_count\n"
+            "payments,payments,src/payments.ts:1-7,processPayment,false,0\n"
+        )
+
+        design = await build_coverage_test_design(
+            modules, workspace_id="ws-1", repo_path=str(tmp_path)
+        )
+
+        gap = [g for g in design["gaps"] if g.get("kind") == "function"][0]
+        assert gap["black_box_readiness"]["case_type"] == "black_box_ready"
+        entry = gap["entry_paths"][0]
+        assert entry["entry_kind"] == "route"
+        assert entry["tool"] == "source-table"
+        assert entry["external_trigger"] == "POST /tenants/:tenantId/payments"
+        assert entry["input_hints"] == ["tenantId", "amount"]
+        case_text = json.dumps(gap["black_box_cases"], ensure_ascii=False)
+        assert "POST /tenants/:tenantId/payments" in case_text
+
     async def test_js_route_table_controller_method_becomes_black_box_entry(self, tmp_path):
         from app.services.coverage_analyzer import build_coverage_test_design
 

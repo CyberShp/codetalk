@@ -7071,13 +7071,9 @@ def _dispatch_table_route_method_for_symbol(
         candidates.append(_dispatch_table_initializer_block(window, handler_line_index))
     candidates.append("\n".join(window))
     for text in candidates:
-        match = re.search(
-            r"\bmethod\s*:\s*['\"](?P<method>get|post|put|patch|delete|head|options|any)['\"]",
-            text or "",
-            re.IGNORECASE,
-        )
-        if match:
-            return match.group("method").upper()
+        method = _route_method_from_text(text or "")
+        if method:
+            return method
     return None
 
 
@@ -7117,11 +7113,7 @@ def _dispatch_table_entry_type(context_text: str, window: list[str]) -> str:
     lowered = (context_text or "").lower()
     if re.search(r"\b(?:path|route|url)\s*:", context_text or "", re.IGNORECASE):
         return "route"
-    if re.search(
-        r"\bmethod\s*:\s*['\"](?:get|post|put|patch|delete|head|options|any)['\"]",
-        context_text or "",
-        re.IGNORECASE,
-    ):
+    if _route_method_from_text(context_text or ""):
         return "route"
     if re.search(r"\b(?:cli|cmd|command)(?:s|_table|_entry)?\b", lowered):
         return "cli"
