@@ -2081,10 +2081,12 @@ async def probe_external_agent_startup(
             last_unavailable_health["attempts"] = list(attempts)
             if _health_has_configuration_error(last_unavailable_health):
                 message = _format_unavailable_health_summary(last_unavailable_health)
+                attempt["probe_status"] = "configuration_error"
+                attempt["probe_message"] = message[:4000]
                 last_failure = {
                     "provider": provider,
                     "healthy": False,
-                    "status": "unavailable",
+                    "status": "configuration_error",
                     "message": message,
                     "health": last_unavailable_health,
                 }
@@ -2273,10 +2275,12 @@ async def _run_provider(
             last_unavailable_health["attempts"] = list(attempts)
             if _health_has_configuration_error(last_unavailable_health):
                 reason = _format_unavailable_health_summary(last_unavailable_health)
+                attempt["run_status"] = "configuration_error"
+                attempt["run_message"] = reason[:4000]
                 prior_failures.append(reason)
                 last_result = AgentDiscoveryResult(
                     provider=provider,
-                    status="unavailable",
+                    status="configuration_error",
                     raw_summary=reason,
                     warnings=[reason] if reason else [],
                     runtime_attempts=_runtime_attempt_records(

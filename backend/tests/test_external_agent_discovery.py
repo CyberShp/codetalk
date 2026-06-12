@@ -2342,6 +2342,43 @@ def test_run_provider_reports_configuration_error_without_fallback(tmp_path, mon
     assert results[0].runtime_attempts[0]["run_status"] == "configuration_error"
 
 
+def test_run_provider_preserves_health_stage_configuration_error(tmp_path, monkeypatch):
+    from app.services.external_agent_discovery import AgentDiscoveryRequest, run_external_agent_discovery
+
+    monkeypatch.setattr(
+        "app.services.external_agent_discovery.check_provider_health",
+        lambda provider, command, fallback_commands=None: {
+            "provider": provider,
+            "status": "configuration_error",
+            "reason": "ccr config file not found: C:/missing/config-router.json",
+            "attempts": [
+                {
+                    "command": "ccr code --config C:/missing/config-router.json",
+                    "status": "configuration_error",
+                    "reason": "ccr config file not found: C:/missing/config-router.json",
+                },
+            ],
+        },
+    )
+    monkeypatch.setattr(
+        "app.services.external_agent_discovery.settings.claude_code_fallback_commands",
+        [],
+    )
+
+    results = asyncio.run(run_external_agent_discovery(
+        AgentDiscoveryRequest(
+            request_id="ccr-health-config-error",
+            repo_path=str(tmp_path),
+            analysis_object_text="tls",
+        ),
+        providers=["claude-code"],
+    ))
+
+    assert results[0].status == "configuration_error"
+    assert "ccr config file not found" in results[0].raw_summary
+    assert results[0].runtime_attempts[0]["run_status"] == "configuration_error"
+
+
 def test_run_provider_uses_fallback_after_default_ccr_run_invalid_output(tmp_path, monkeypatch):
     from app.services.agent_discovery_session import create_agent_discovery_session
     from app.services.external_agent_discovery import AgentDiscoveryRequest, run_external_agent_discovery
@@ -3474,6 +3511,37 @@ def test_startup_probe_reports_configuration_error_when_ccr_config_missing_witho
     assert "Config file not found" in result["message"]
     attempts = result["health"]["attempts"]
     assert attempts[0]["probe_status"] == "configuration_error"
+
+
+def test_startup_probe_preserves_health_stage_configuration_error(tmp_path, monkeypatch):
+    from app.services.external_agent_discovery import probe_external_agent_startup
+
+    monkeypatch.setattr(
+        "app.services.external_agent_discovery.check_provider_health",
+        lambda provider, command, fallback_commands=None: {
+            "provider": provider,
+            "status": "configuration_error",
+            "reason": "ccr config file not found: C:/missing/config-router.json",
+            "attempts": [
+                {
+                    "command": "ccr code --config C:/missing/config-router.json",
+                    "status": "configuration_error",
+                    "reason": "ccr config file not found: C:/missing/config-router.json",
+                },
+            ],
+        },
+    )
+    monkeypatch.setattr(
+        "app.services.external_agent_discovery.settings.claude_code_fallback_commands",
+        [],
+    )
+
+    result = asyncio.run(probe_external_agent_startup("claude-code", repo_path=tmp_path))
+
+    assert result["healthy"] is False
+    assert result["status"] == "configuration_error"
+    assert "ccr config file not found" in result["message"]
+    assert result["health"]["attempts"][0]["probe_status"] == "configuration_error"
 
 
 def test_startup_probe_uses_fallback_after_default_ccr_run_invalid_output(tmp_path, monkeypatch):
