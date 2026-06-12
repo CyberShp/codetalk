@@ -210,20 +210,41 @@ class GitNexusHealthIndexedReposTests(unittest.IsolatedAsyncioTestCase):
     async def test_health_check_reports_zero_when_nothing_indexed(self) -> None:
         adapter = GitNexusAdapter(base_url="http://gitnexus:7100")
         adapter._client = _FakeAsyncClient(
-            get_responses=[_FakeResponse(200, {"version": "1.0"})],
+            get_responses=[
+                _FakeResponse(200, {"version": "1.0"}),
+                _FakeResponse(200, {"repos": []}),
+            ],
         )
         health = await adapter.health_check()
         self.assertEqual(health.indexed_repos, 0)
+        self.assertEqual(health.container_status, "running_no_index")
+        self.assertIn("no indexed repos", health.last_check)
 
     async def test_health_check_reports_actual_count_after_indexing(self) -> None:
         GitNexusAdapter._indexed_repo_by_path[("http://gitnexus:7100", "/repo/a")] = "a"
         GitNexusAdapter._indexed_repo_by_path[("http://gitnexus:7100", "/repo/b")] = "b"
         adapter = GitNexusAdapter(base_url="http://gitnexus:7100")
         adapter._client = _FakeAsyncClient(
-            get_responses=[_FakeResponse(200, {"version": "1.0"})],
+            get_responses=[
+                _FakeResponse(200, {"version": "1.0"}),
+                _FakeResponse(200, {"repos": ["a", "b"]}),
+            ],
         )
         health = await adapter.health_check()
         self.assertEqual(health.indexed_repos, 2)
+        self.assertEqual(health.container_status, "running")
+
+    async def test_health_check_reports_degraded_fallback_detail(self) -> None:
+        adapter = GitNexusAdapter(base_url="http://gitnexus:7100")
+        adapter._client = _FakeAsyncClient(
+            get_responses=[],
+            post_responses=[_FakeResponse(400, {"error": "path required"})],
+        )
+        health = await adapter.health_check()
+        self.assertTrue(health.is_healthy)
+        self.assertEqual(health.container_status, "running_degraded")
+        self.assertIn("/api/info failed", health.last_check)
+        self.assertIn("/api/analyze accepted probe", health.last_check)
 
     async def test_health_check_reports_count_even_when_unhealthy(self) -> None:
         GitNexusAdapter._indexed_repo_by_path[("http://gitnexus:7100", "/repo/c")] = "c"

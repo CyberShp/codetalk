@@ -280,18 +280,31 @@ class GitNexusAdapter(BaseToolAdapter):
 
     async def health_check(self) -> ToolHealth:
         n_indexed = len(self._indexed_repo_by_path)
+        info_error = ""
         try:
             resp = await self.client.get("/api/info")
             if resp.status_code < 500:
                 data = resp.json() if resp.status_code < 400 else {}
+                repo_count, repo_detail = await self._repo_count_for_health()
+                if repo_count is not None:
+                    n_indexed = max(n_indexed, repo_count)
+                status = "running" if n_indexed > 0 else "running_no_index"
+                last_check = repo_detail
+                if n_indexed == 0:
+                    last_check = (
+                        "GitNexus reachable but no indexed repos are reported; "
+                        "graph endpoints may be empty until indexing completes."
+                    )
                 return ToolHealth(
                     is_healthy=True,
-                    container_status="running",
+                    container_status=status,
                     version=data.get("version"),
                     indexed_repos=n_indexed,
+                    last_check=last_check,
                 )
-        except Exception:
-            pass
+            info_error = f"/api/info HTTP {resp.status_code}"
+        except Exception as exc:
+            info_error = f"/api/info failed: {exc}"
 
         # Fallback: probe /api/analyze — even a 4xx proves GitNexus is reachable
         try:
@@ -299,22 +312,38 @@ class GitNexusAdapter(BaseToolAdapter):
             if resp.status_code < 500:
                 return ToolHealth(
                     is_healthy=True,
-                    container_status="running",
+                    container_status="running_degraded",
                     indexed_repos=n_indexed,
+                    last_check=(
+                        f"{info_error}; /api/analyze accepted probe with "
+                        f"HTTP {resp.status_code}; graph readiness not verified"
+                    ).strip("; "),
                 )
             return ToolHealth(
                 is_healthy=False,
                 container_status="unhealthy",
-                last_check=f"HTTP {resp.status_code}",
+                last_check=(
+                    f"{info_error}; /api/analyze HTTP {resp.status_code}"
+                ).strip("; "),
                 indexed_repos=n_indexed,
             )
         except Exception as exc:
             return ToolHealth(
                 is_healthy=False,
                 container_status="error",
-                last_check=str(exc),
+                last_check=(f"{info_error}; /api/analyze failed: {exc}").strip("; "),
                 indexed_repos=n_indexed,
             )
+
+    async def _repo_count_for_health(self) -> tuple[int | None, str]:
+        """Best-effort repo count so health can distinguish process vs graph readiness."""
+        try:
+            resp = await self.client.get("/api/repos", timeout=10)
+            if resp.status_code != 200:
+                return None, f"/api/repos HTTP {resp.status_code}"
+            return len(_extract_repo_entries(resp.json())), ""
+        except Exception as exc:
+            return None, f"/api/repos failed: {exc}"
 
     async def prepare(
         self,
