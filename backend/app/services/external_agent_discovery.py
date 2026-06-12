@@ -1324,6 +1324,7 @@ def _normalize_agent_path_text(path: str) -> str:
         raw = markdown_match.group(1).strip()
     raw = raw.strip("<>")
     raw = _normalize_file_uri_path(raw)
+    raw = _normalize_remote_code_url_path(raw)
     raw = re.sub(
         rf"(?i)({'|'.join(re.escape(ext) for ext in SOURCE_EXTS)}(?:\:\d+(?:\:\d+|-\d+)?|#L\d+(?:-L\d+)?)?)[,.;]+$",
         lambda match: match.group(1),
@@ -1347,6 +1348,28 @@ def _normalize_file_uri_path(raw: str) -> str:
     if re.match(r"^/[A-Za-z]:/", path):
         path = path[1:]
     return path
+
+
+def _normalize_remote_code_url_path(raw: str) -> str:
+    parsed = urlparse(raw)
+    if parsed.scheme.lower() not in {"http", "https"}:
+        return raw
+    value = unquote(parsed.path or "").replace("\\", "/").strip("/")
+    if not value:
+        return raw
+    parts = [part for part in value.split("/") if part]
+    for index, part in enumerate(parts):
+        if part == "-":
+            continue
+        if part not in {"blob", "raw", "src"}:
+            continue
+        next_index = index + 1
+        if next_index < len(parts) and parts[next_index] == "-":
+            next_index += 1
+        file_start = next_index + 1
+        if file_start < len(parts):
+            return "/".join(parts[file_start:])
+    return value
 
 
 def _resolve_existing_or_suffix(root: Path, candidate: Path, normalized: str) -> Path | None:

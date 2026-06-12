@@ -3774,6 +3774,31 @@ def test_agent_candidate_path_with_file_uri_line_fragment_validates(tmp_path):
     assert validation.path == "nvmf_tcp/transport/tls/tls.c"
 
 
+def test_agent_candidate_path_with_remote_code_url_validates(tmp_path):
+    from app.services.external_agent_discovery import validate_agent_candidate_file
+
+    source_dir = tmp_path / "src" / "payment" / "webhook"
+    source_dir.mkdir(parents=True)
+    (source_dir / "handler.ts").write_text(
+        "export function handlePaymentWebhook() { return true; }\n",
+        encoding="utf-8",
+    )
+
+    github = validate_agent_candidate_file(
+        tmp_path,
+        "https://github.com/acme/project/blob/main/src/payment/webhook/handler.ts#L42",
+    )
+    gitlab = validate_agent_candidate_file(
+        tmp_path,
+        "https://gitlab.local/acme/project/-/blob/main/src/payment/webhook/handler.ts?ref=main#L42",
+    )
+
+    assert github.validated is True
+    assert github.path == "src/payment/webhook/handler.ts"
+    assert gitlab.validated is True
+    assert gitlab.path == "src/payment/webhook/handler.ts"
+
+
 def test_agent_candidate_path_with_encoded_file_uri_validates(tmp_path):
     from app.services.external_agent_discovery import validate_agent_candidate_file
 
