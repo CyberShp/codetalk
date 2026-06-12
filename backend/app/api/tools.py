@@ -247,6 +247,26 @@ async def startup_probe_tool(
 
 
 async def _managed_tool_startup_probe(tool_name: str, pm: ProcessManager) -> dict[str, Any]:
+    initial_health: dict[str, Any] = {}
+    try:
+        health_check = getattr(pm, "health_check", None)
+        if callable(health_check):
+            initial_health = await health_check(tool_name)
+    except Exception as exc:
+        initial_health = {"healthy": False, "status": "error", "last_error": str(exc)}
+
+    if bool(initial_health.get("healthy")):
+        return {
+            "tool": tool_name,
+            "healthy": True,
+            "status": "ok",
+            "started": False,
+            "message": "startup probe ok: existing service already reachable",
+            "health": initial_health,
+            "stdout_log": str(settings.data_path / "logs" / "processes" / f"{tool_name}.out.log"),
+            "stderr_log": str(settings.data_path / "logs" / "processes" / f"{tool_name}.err.log"),
+        }
+
     try:
         started = await pm.start(tool_name)
     except Exception as exc:

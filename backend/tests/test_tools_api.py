@@ -394,6 +394,34 @@ async def test_gitnexus_startup_probe_reports_managed_process_diagnostics(monkey
     assert body["status"] == "error"
     assert "Health endpoint unreachable" in body["message"]
     mock_pm.start.assert_awaited_once_with("gitnexus")
+    assert mock_pm.health_check.await_count == 2
+    mock_pm.health_check.assert_any_await("gitnexus")
+
+
+async def test_gitnexus_startup_probe_reuses_existing_healthy_service(monkeypatch):
+    mock_pm = MagicMock()
+    mock_pm.start = AsyncMock(return_value=True)
+    mock_pm.health_check = AsyncMock(return_value={
+        "name": "gitnexus",
+        "healthy": True,
+        "status": "running",
+        "version": "1.6.5",
+    })
+
+    app = _make_app(mock_pm)
+    async with AsyncClient(
+        transport=ASGITransport(app=app), base_url="http://test"
+    ) as client:
+        resp = await client.post("/api/tools/gitnexus/startup-probe")
+
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["tool"] == "gitnexus"
+    assert body["healthy"] is True
+    assert body["status"] == "ok"
+    assert body["started"] is False
+    assert "already reachable" in body["message"]
+    mock_pm.start.assert_not_awaited()
     mock_pm.health_check.assert_awaited_once_with("gitnexus")
 
 
