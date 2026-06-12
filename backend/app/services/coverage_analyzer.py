@@ -5326,8 +5326,8 @@ def _looks_like_route_path(value: str) -> bool:
 
 def _route_method_from_text(text: str) -> str | None:
     method_patterns = (
-        r"\bmethods?\s*=\s*\[?\s*(['\"])(?P<method>get|post|put|patch|delete|head|options|any)\1",
-        r"\bmethods?\s*:\s*\[?\s*(['\"])(?P<method>get|post|put|patch|delete|head|options|any)\1",
+        r"\bmethods?\s*=\s*[\[\(\{]?\s*(['\"])(?P<method>get|post|put|patch|delete|head|options|any)\1",
+        r"\bmethods?\s*:\s*[\[\(\{]?\s*(['\"])(?P<method>get|post|put|patch|delete|head|options|any)\1",
         r"\bmethod\s*[:=]\s*(['\"])(?P<method>get|post|put|patch|delete|head|options|any)\1",
         r"[@.]\s*(?P<method>get|post|put|patch|delete|head|options|any|websocket)\s*\(",
         r"\b(?P<method>get|post|put|patch|delete|head|options|any|websocket)\s+['\"]",
