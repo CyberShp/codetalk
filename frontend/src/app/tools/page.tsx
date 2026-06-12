@@ -14,7 +14,11 @@ import {
   Activity,
 } from "lucide-react";
 import { api } from "@/lib/api";
-import type { ExternalAgentStartupProbeResult, ToolInfo } from "@/lib/types";
+import type {
+  ExternalAgentStartupProbeResult,
+  GitNexusRepoIndexDiagnostic,
+  ToolInfo,
+} from "@/lib/types";
 
 const STATUS_DISPLAY: Record<
   string,
@@ -74,6 +78,125 @@ function formatLastCheck(value: string): string {
     minute: "2-digit",
     second: "2-digit",
   });
+}
+
+function ProbeSubject({
+  result,
+  fallback,
+}: {
+  result: ExternalAgentStartupProbeResult;
+  fallback: string;
+}) {
+  return (
+    <span className="text-on-surface-variant">
+      {result.provider ?? result.tool ?? fallback}
+    </span>
+  );
+}
+
+function RepoIndexDiagnostics({ repoIndex }: { repoIndex?: GitNexusRepoIndexDiagnostic }) {
+  if (!repoIndex) return null;
+  const indexed = repoIndex.repo_indexed === true;
+  return (
+    <div className="mt-2 rounded-md border border-outline-variant/30 bg-surface-container px-2.5 py-2">
+      <div className="mb-1 flex flex-wrap items-center gap-2">
+        <span
+          className={`inline-flex rounded px-1.5 py-0.5 font-medium ${
+            indexed ? "bg-green-400/10 text-green-500" : "bg-amber-400/10 text-amber-500"
+          }`}
+        >
+          {indexed ? "repo indexed" : "repo not indexed"}
+        </span>
+        {repoIndex.indexed_repo_count !== undefined && (
+          <span className="text-on-surface-variant">
+            indexed repos: {repoIndex.indexed_repo_count}
+          </span>
+        )}
+      </div>
+      {repoIndex.message && (
+        <p className="break-words text-on-surface">{repoIndex.message}</p>
+      )}
+      {(repoIndex.tool_repo_path || repoIndex.matched_repo_path) && (
+        <div className="mt-1 space-y-0.5 text-on-surface-variant">
+          {repoIndex.tool_repo_path && (
+            <p className="break-words">tool path: {repoIndex.tool_repo_path}</p>
+          )}
+          {repoIndex.matched_repo_path && (
+            <p className="break-words">matched path: {repoIndex.matched_repo_path}</p>
+          )}
+        </div>
+      )}
+      {(repoIndex.node_count !== undefined ||
+        repoIndex.edge_count !== undefined ||
+        repoIndex.file_count !== undefined) && (
+        <p className="mt-1 text-on-surface-variant">
+          nodes: {repoIndex.node_count ?? "-"} / edges: {repoIndex.edge_count ?? "-"} / files:{" "}
+          {repoIndex.file_count ?? "-"}
+        </p>
+      )}
+    </div>
+  );
+}
+
+function StartupProbeResultCard({
+  result,
+  fallbackName,
+}: {
+  result?: ExternalAgentStartupProbeResult;
+  fallbackName: string;
+}) {
+  if (!result) return null;
+  return (
+    <div className="rounded-lg border border-outline-variant/30 bg-surface px-3 py-2 text-xs">
+      <div className="flex flex-wrap items-center gap-2 mb-2">
+        <span
+          className={`inline-flex items-center rounded-full px-2 py-0.5 font-medium ${
+            result.healthy
+              ? "bg-green-400/10 text-green-500"
+              : "bg-red-400/10 text-red-500"
+          }`}
+        >
+          {result.status}
+        </span>
+        <ProbeSubject result={result} fallback={fallbackName} />
+      </div>
+      <p className="break-words text-on-surface">{result.message}</p>
+      <RepoIndexDiagnostics repoIndex={result.diagnostics?.repo_index} />
+      {result.health?.attempts && result.health.attempts.length > 0 && (
+        <div className="mt-2 space-y-1">
+          {result.health.attempts.map((attempt, index) => (
+            <div
+              key={`${attempt.command ?? "attempt"}-${index}`}
+              className="flex flex-wrap items-center gap-2 text-on-surface-variant"
+            >
+              <code className="max-w-full break-words rounded bg-surface-container px-1.5 py-0.5 font-data text-[11px] text-on-surface">
+                {attempt.command ?? "unknown command"}
+              </code>
+              <span>{attempt.status ?? "unknown"}</span>
+              {attempt.launch_kind && <span>{attempt.launch_kind}</span>}
+              {attempt.prompt_transport && <span>{attempt.prompt_transport}</span>}
+              {attempt.probe_status && <span>{attempt.probe_status}</span>}
+              {(attempt.reason || attempt.config_hint) && (
+                <span className="break-words">
+                  {attempt.reason || attempt.config_hint}
+                </span>
+              )}
+              {attempt.probe_message && (
+                <span className="basis-full break-words text-on-surface">
+                  {attempt.probe_message}
+                </span>
+              )}
+            </div>
+          ))}
+        </div>
+      )}
+      {result.health?.diagnostic?.summary && (
+        <p className="mt-2 break-words text-on-surface-variant">
+          {result.health.diagnostic.summary}
+        </p>
+      )}
+    </div>
+  );
 }
 
 export default function ToolsPage() {
@@ -355,70 +478,14 @@ export default function ToolsPage() {
                           Startup probe
                         </button>
                       </div>
-                      {probeResult && (
-                        <div className="rounded-lg border border-outline-variant/30 bg-surface px-3 py-2 text-xs">
-                          <div className="flex flex-wrap items-center gap-2 mb-2">
-                            <span
-                              className={`inline-flex items-center rounded-full px-2 py-0.5 font-medium ${
-                                probeResult.healthy
-                                  ? "bg-green-400/10 text-green-500"
-                                  : "bg-red-400/10 text-red-500"
-                              }`}
-                            >
-                              {probeResult.status}
-                            </span>
-                            <span className="text-on-surface-variant">
-                              {probeResult.provider}
-                            </span>
-                          </div>
-                          <p className="break-words text-on-surface">
-                            {probeResult.message}
-                          </p>
-                          {probeResult.health?.attempts &&
-                            probeResult.health.attempts.length > 0 && (
-                              <div className="mt-2 space-y-1">
-                                {probeResult.health.attempts.map((attempt, index) => (
-                                  <div
-                                    key={`${attempt.command ?? "attempt"}-${index}`}
-                                    className="flex flex-wrap items-center gap-2 text-on-surface-variant"
-                                  >
-                                    <code className="max-w-full break-words rounded bg-surface-container px-1.5 py-0.5 font-data text-[11px] text-on-surface">
-                                      {attempt.command ?? "unknown command"}
-                                    </code>
-                                    <span>{attempt.status ?? "unknown"}</span>
-                                    {attempt.launch_kind && (
-                                      <span>{attempt.launch_kind}</span>
-                                    )}
-                                    {attempt.prompt_transport && (
-                                      <span>{attempt.prompt_transport}</span>
-                                    )}
-                                    {attempt.probe_status && (
-                                      <span>{attempt.probe_status}</span>
-                                    )}
-                                    {(attempt.reason || attempt.config_hint) && (
-                                      <span className="break-words">
-                                        {attempt.reason || attempt.config_hint}
-                                      </span>
-                                    )}
-                                    {attempt.probe_message && (
-                                      <span className="basis-full break-words text-on-surface">
-                                        {attempt.probe_message}
-                                      </span>
-                                    )}
-                                  </div>
-                                ))}
-                              </div>
-                            )}
-                          {probeResult.health?.diagnostic?.summary && (
-                            <p className="mt-2 break-words text-on-surface-variant">
-                              {probeResult.health.diagnostic.summary}
-                            </p>
-                          )}
-                        </div>
-                      )}
+                      <StartupProbeResultCard
+                        result={probeResult}
+                        fallbackName={tool.name}
+                      />
                     </div>
                   ) : tool.healthy ? (
-                    <>
+                    <div className="flex flex-col gap-3">
+                      <div className="flex flex-wrap items-center gap-2">
                       <button
                         onClick={() => handleStop(tool.name)}
                         disabled={isBusy}
@@ -443,9 +510,27 @@ export default function ToolsPage() {
                         )}
                         {isRestarting ? "重启中..." : "重启"}
                       </button>
-                    </>
+                        <button
+                          onClick={() => handleStartupProbe(tool.name)}
+                          disabled={isBusy}
+                          className="inline-flex items-center gap-2 px-3 py-1.5 text-xs bg-surface-container-high text-on-surface rounded-lg border border-outline-variant/30 hover:bg-surface-container transition-colors disabled:opacity-50"
+                        >
+                          {isProbing ? (
+                            <Loader2 size={13} className="animate-spin" />
+                          ) : (
+                            <Activity size={13} />
+                          )}
+                          Startup probe
+                        </button>
+                      </div>
+                      <StartupProbeResultCard
+                        result={probeResult}
+                        fallbackName={tool.name}
+                      />
+                    </div>
                   ) : (
-                    <>
+                    <div className="flex flex-col gap-3">
+                      <div className="flex flex-wrap items-center gap-2">
                       <button
                         onClick={() => handleStart(tool.name)}
                         disabled={isBusy}
@@ -467,7 +552,24 @@ export default function ToolsPage() {
                         <Rocket size={14} />
                         部署向导
                       </a>
-                    </>
+                        <button
+                          onClick={() => handleStartupProbe(tool.name)}
+                          disabled={isBusy}
+                          className="inline-flex items-center gap-2 px-3 py-1.5 text-xs bg-surface-container-high text-on-surface rounded-lg border border-outline-variant/30 hover:bg-surface-container transition-colors disabled:opacity-50"
+                        >
+                          {isProbing ? (
+                            <Loader2 size={13} className="animate-spin" />
+                          ) : (
+                            <Activity size={13} />
+                          )}
+                          Startup probe
+                        </button>
+                      </div>
+                      <StartupProbeResultCard
+                        result={probeResult}
+                        fallbackName={tool.name}
+                      />
+                    </div>
                   )}
                 </div>
               </div>

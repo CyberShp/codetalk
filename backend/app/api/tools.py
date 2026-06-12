@@ -3,15 +3,19 @@
 import asyncio
 import logging
 from inspect import isawaitable
+from pathlib import Path
 from typing import Any
 
 from fastapi import APIRouter, HTTPException, Request
 
 from app.adapters import get_adapter, get_all_adapters
+from app.adapters.gitnexus import resolve_indexed_repo
 from app.config import settings
 from app.services import process_manager as process_manager_module
 from app.services.external_agent_discovery import redact_agent_diagnostic_text
 from app.services.process_manager import ProcessManager
+from app.utils.local_client import local_http_client
+from app.utils.repo_paths import to_tool_repo_path
 
 logger = logging.getLogger(__name__)
 
@@ -226,7 +230,11 @@ async def startup_probe_tool(
     probe = getattr(adapter, "startup_probe", None)
     if not callable(probe):
         if tool_name in _MANAGED_STARTUP_PROBE_TOOL_NAMES:
-            return await _managed_tool_startup_probe(tool_name, _get_pm(request))
+            return await _managed_tool_startup_probe(
+                tool_name,
+                _get_pm(request),
+                repo_path=repo_path,
+            )
         raise HTTPException(status_code=400, detail=f"Tool does not support startup probe: {tool_name}")
 
     try:
@@ -248,7 +256,12 @@ async def startup_probe_tool(
         }
 
 
-async def _managed_tool_startup_probe(tool_name: str, pm: ProcessManager) -> dict[str, Any]:
+async def _managed_tool_startup_probe(
+    tool_name: str,
+    pm: ProcessManager,
+    *,
+    repo_path: str | None = None,
+) -> dict[str, Any]:
     initial_health: dict[str, Any] = {}
     try:
         health_check = getattr(pm, "health_check", None)
@@ -257,6 +270,7 @@ async def _managed_tool_startup_probe(tool_name: str, pm: ProcessManager) -> dic
     except Exception as exc:
         initial_health = {"healthy": False, "status": "error", "last_error": str(exc)}
 
+    repo_index = await _managed_tool_repo_index_diagnostics(tool_name, repo_path)
     if bool(initial_health.get("healthy")):
         return {
             "tool": tool_name,
@@ -269,6 +283,7 @@ async def _managed_tool_startup_probe(tool_name: str, pm: ProcessManager) -> dic
                 tool_name,
                 initial_health=initial_health,
                 post_start_health=initial_health,
+                repo_index=repo_index,
             ),
             "stdout_log": str(settings.data_path / "logs" / "processes" / f"{tool_name}.out.log"),
             "stderr_log": str(settings.data_path / "logs" / "processes" / f"{tool_name}.err.log"),
@@ -287,6 +302,7 @@ async def _managed_tool_startup_probe(tool_name: str, pm: ProcessManager) -> dic
             "diagnostics": _managed_tool_startup_diagnostics(
                 tool_name,
                 initial_health=initial_health,
+                repo_index=repo_index,
             ),
         }
 
@@ -298,6 +314,8 @@ async def _managed_tool_startup_probe(tool_name: str, pm: ProcessManager) -> dic
     except Exception as exc:
         health = {"healthy": False, "status": "error", "last_error": str(exc)}
 
+    if not repo_index:
+        repo_index = await _managed_tool_repo_index_diagnostics(tool_name, repo_path)
     managed = getattr(pm, "_processes", {}).get(tool_name)
     last_error = (
         str(health.get("last_error") or health.get("error") or "").strip()
@@ -327,10 +345,100 @@ async def _managed_tool_startup_probe(tool_name: str, pm: ProcessManager) -> dic
             tool_name,
             initial_health=initial_health,
             post_start_health=health,
+            repo_index=repo_index,
         ),
         "stdout_log": str(stdout_log),
         "stderr_log": str(stderr_log),
     }
+
+
+async def _managed_tool_repo_index_diagnostics(
+    tool_name: str,
+    repo_path: str | None,
+) -> dict[str, Any]:
+    if tool_name != "gitnexus" or not repo_path:
+        return {}
+    return await _gitnexus_repo_readiness(repo_path)
+
+
+async def _gitnexus_repo_readiness(repo_path: str) -> dict[str, Any]:
+    requested_path = str(repo_path or "").strip()
+    resolved_repo_path = str(Path(requested_path).expanduser().resolve()) if requested_path else ""
+    tool_repo_path = (
+        to_tool_repo_path(
+            resolved_repo_path,
+            host_base_path=settings.repos_base_path,
+            tool_base_path=settings.tool_repos_base_path,
+        )
+        if resolved_repo_path
+        else ""
+    )
+    result: dict[str, Any] = {
+        "requested_repo_path": requested_path,
+        "resolved_repo_path": resolved_repo_path,
+        "tool_repo_path": tool_repo_path,
+        "base_url": settings.gitnexus_base_url,
+        "service_reachable": False,
+        "repo_indexed": False,
+        "indexed_repo_count": 0,
+    }
+    try:
+        result["repo_path_exists"] = bool(resolved_repo_path and Path(resolved_repo_path).is_dir())
+    except OSError:
+        result["repo_path_exists"] = False
+
+    try:
+        async with local_http_client(settings.gitnexus_base_url, timeout=10, connect_timeout=3) as client:
+            resp = await client.get("/api/repos", timeout=10)
+    except Exception as exc:
+        result["message"] = f"GitNexus /api/repos unreachable: {redact_agent_diagnostic_text(str(exc))}"
+        return result
+
+    result["service_reachable"] = True
+    result["repos_status_code"] = resp.status_code
+    if resp.status_code != 200:
+        result["message"] = f"GitNexus reachable but /api/repos returned HTTP {resp.status_code}"
+        return result
+
+    try:
+        payload = resp.json()
+    except Exception as exc:
+        result["message"] = f"GitNexus /api/repos returned invalid JSON: {redact_agent_diagnostic_text(str(exc))}"
+        return result
+
+    result["indexed_repo_count"] = _gitnexus_repo_entry_count(payload)
+    descriptor = resolve_indexed_repo(payload, tool_repo_path)
+    if descriptor is None and isinstance(payload, dict) and isinstance(payload.get("value"), list):
+        descriptor = resolve_indexed_repo(payload["value"], tool_repo_path)
+    if descriptor:
+        result.update({
+            "repo_indexed": True,
+            "matched_repo_name": descriptor.get("name"),
+            "matched_repo_path": descriptor.get("path"),
+            "matched_repo_id": descriptor.get("id"),
+            "matched_repo_ambiguous": bool(descriptor.get("ambiguous")),
+            "node_count": descriptor.get("node_count"),
+            "edge_count": descriptor.get("edge_count"),
+            "file_count": descriptor.get("file_count"),
+            "message": f"GitNexus repo indexed as {descriptor.get('name')}",
+        })
+        return result
+
+    result["message"] = "GitNexus reachable but this repo is not indexed"
+    return result
+
+
+def _gitnexus_repo_entry_count(payload: object) -> int:
+    if isinstance(payload, list):
+        return len(payload)
+    if isinstance(payload, dict):
+        for key in ("repos", "data", "items", "results", "value"):
+            value = payload.get(key)
+            if isinstance(value, list):
+                return len(value)
+        if any(key in payload for key in ("name", "repo", "repoName", "path", "root", "repo_path")):
+            return 1
+    return 0
 
 
 def _managed_tool_startup_diagnostics(
@@ -338,6 +446,7 @@ def _managed_tool_startup_diagnostics(
     *,
     initial_health: dict[str, Any] | None = None,
     post_start_health: dict[str, Any] | None = None,
+    repo_index: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     cfg = process_manager_module.TOOL_REGISTRY.get(tool_name, {})
     command = [str(part) for part in cfg.get("command") or []]
@@ -361,6 +470,7 @@ def _managed_tool_startup_diagnostics(
         "stderr_log": str(stderr_log),
         "initial_health": initial_health or {},
         "post_start_health": post_start_health or {},
+        "repo_index": repo_index or {},
     }
 
 

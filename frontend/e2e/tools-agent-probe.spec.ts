@@ -101,3 +101,56 @@ test("external agent tool card can run a startup probe", async ({ page }) => {
   await expect(page.getByText("Config file not found")).toBeVisible();
   await expect(page.getByText("startup probe timed out")).toBeVisible();
 });
+
+test("managed GitNexus card shows repo index startup probe diagnostics", async ({ page }) => {
+  test.setTimeout(60_000);
+
+  await page.route(`${backendBase}/api/tools/procs`, async (route) => {
+    await route.fulfill({
+      json: [
+        {
+          name: "gitnexus",
+          display_name: "GitNexus",
+          healthy: false,
+          status: "error",
+          managed: true,
+          message: "Health endpoint unreachable",
+        },
+      ],
+    });
+  });
+
+  await page.route(`${backendBase}/api/tools/gitnexus/startup-probe`, async (route) => {
+    expect(route.request().method()).toBe("POST");
+    await route.fulfill({
+      json: {
+        tool: "gitnexus",
+        healthy: true,
+        status: "ok",
+        started: false,
+        message: "startup probe ok: existing service already reachable",
+        diagnostics: {
+          repo_index: {
+            service_reachable: true,
+            repo_indexed: false,
+            indexed_repo_count: 3,
+            tool_repo_path: "E:\\codetalk_test\\codetalks-Test\\codetalk",
+            message: "GitNexus reachable but this repo is not indexed",
+          },
+        },
+      },
+    });
+  });
+
+  await page.goto("/tools", { waitUntil: "domcontentloaded" });
+
+  await expect(page.getByRole("heading", { name: "GitNexus" })).toBeVisible();
+  await page.getByRole("button", { name: "Startup probe" }).click();
+
+  await expect(page.getByText("gitnexus", { exact: true })).toBeVisible();
+  await expect(page.getByText("repo not indexed")).toBeVisible();
+  await expect(
+    page.getByText("GitNexus reachable but this repo is not indexed"),
+  ).toBeVisible();
+  await expect(page.getByText("indexed repos: 3")).toBeVisible();
+});

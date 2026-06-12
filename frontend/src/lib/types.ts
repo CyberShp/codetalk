@@ -139,11 +139,33 @@ export interface ExternalAgentProbeAttempt {
   probe_message?: string;
 }
 
+export interface GitNexusRepoIndexDiagnostic {
+  requested_repo_path?: string;
+  resolved_repo_path?: string;
+  tool_repo_path?: string;
+  base_url?: string;
+  service_reachable?: boolean;
+  repo_indexed?: boolean;
+  indexed_repo_count?: number;
+  repos_status_code?: number;
+  repo_path_exists?: boolean;
+  matched_repo_name?: string;
+  matched_repo_path?: string;
+  matched_repo_id?: string;
+  matched_repo_ambiguous?: boolean;
+  node_count?: number;
+  edge_count?: number;
+  file_count?: number;
+  message?: string;
+}
+
 export interface ExternalAgentStartupProbeResult {
-  provider: string;
+  provider?: string;
+  tool?: string;
   healthy: boolean;
   status: string;
   message: string;
+  started?: boolean;
   warnings?: string[];
   stdout?: string;
   stderr?: string;
@@ -161,6 +183,9 @@ export interface ExternalAgentStartupProbeResult {
       path_entries?: string[];
       path_entry_count?: number;
     };
+  };
+  diagnostics?: {
+    repo_index?: GitNexusRepoIndexDiagnostic;
   };
 }
 

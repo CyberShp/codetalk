@@ -527,6 +527,78 @@ async def test_gitnexus_startup_probe_reuses_existing_healthy_service(monkeypatc
     mock_pm.health_check.assert_awaited_once_with("gitnexus")
 
 
+async def test_gitnexus_startup_probe_reports_repo_index_readiness(tmp_path, monkeypatch):
+    mock_pm = MagicMock()
+    mock_pm.start = AsyncMock(return_value=True)
+    mock_pm.health_check = AsyncMock(return_value={
+        "name": "gitnexus",
+        "healthy": True,
+        "status": "running",
+    })
+    repo_path = tmp_path / "repo"
+    repo_path.mkdir()
+    readiness = {
+        "requested_repo_path": str(repo_path),
+        "tool_repo_path": str(repo_path),
+        "service_reachable": True,
+        "repo_indexed": False,
+        "indexed_repo_count": 2,
+        "message": "GitNexus reachable but this repo is not indexed",
+    }
+    readiness_probe = AsyncMock(return_value=readiness)
+    monkeypatch.setattr(tools, "_gitnexus_repo_readiness", readiness_probe, raising=False)
+
+    app = _make_app(mock_pm)
+    async with AsyncClient(
+        transport=ASGITransport(app=app), base_url="http://test"
+    ) as client:
+        resp = await client.post(
+            "/api/tools/gitnexus/startup-probe",
+            params={"repo_path": str(repo_path)},
+        )
+
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["diagnostics"]["repo_index"] == readiness
+    readiness_probe.assert_awaited_once_with(str(repo_path))
+
+
+async def test_gitnexus_repo_readiness_matches_indexed_parent_repo(tmp_path, monkeypatch):
+    parent = tmp_path / "frontend" / "nof"
+    child = parent / "nvmf_tcp"
+    child.mkdir(parents=True)
+
+    class FakeResponse:
+        status_code = 200
+
+        def json(self):
+            return [{
+                "name": "nof",
+                "path": str(parent),
+                "stats": {"files": 12, "nodes": 34, "edges": 56},
+            }]
+
+    class FakeClient:
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *_args):
+            return None
+
+        async def get(self, *_args, **_kwargs):
+            return FakeResponse()
+
+    monkeypatch.setattr(tools, "local_http_client", lambda *_args, **_kwargs: FakeClient())
+
+    readiness = await tools._gitnexus_repo_readiness(str(child))
+
+    assert readiness["service_reachable"] is True
+    assert readiness["repo_indexed"] is True
+    assert readiness["matched_repo_name"] == "nof"
+    assert readiness["matched_repo_path"] == str(parent)
+    assert readiness["node_count"] == 34
+
+
 async def test_startup_probe_rejects_tools_without_probe_support(tools_client, monkeypatch):
     class FakeAdapter:
         def name(self):
