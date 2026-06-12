@@ -4459,6 +4459,17 @@ def test_coverage_external_agent_warnings_use_raw_summary_when_warnings_missing(
     assert warnings == ["claude-code: spawn failed: ccr is not on backend PATH"]
 
 
+def test_coverage_external_agent_status_preserves_configuration_error():
+    from app.services.coverage_analyzer import _external_agent_status_from_provider_status
+
+    status = _external_agent_status_from_provider_status({
+        "claude-code": "configuration_error",
+        "opencode": "unavailable",
+    })
+
+    assert status == "configuration_error"
+
+
 def test_agent_entry_upsert_preserves_existing_input_hints():
     from app.services.coverage_analyzer import _upsert_agent_entry
 
@@ -6099,6 +6110,56 @@ def test_workspace_preview_keeps_local_source_when_gitnexus_and_agent_unavailabl
     ]
     assert any(path.endswith("nof/nvmf_tcp/transport/tls/tls.c") for path in paths)
     assert not any("未在 GitNexus" in warning for warning in resolved.warnings)
+
+
+def test_workspace_preview_preserves_agent_configuration_error_status(tmp_path, monkeypatch):
+    from app.schemas.workspace_analysis import AnalysisPlan
+    from app.services.external_agent_discovery import AgentDiscoveryResult
+
+    _write_tls_repo(tmp_path)
+
+    async def fake_discovery(_request, **_kwargs):
+        return [
+            AgentDiscoveryResult(
+                provider="claude-code",
+                status="configuration_error",
+                raw_summary=(
+                    "Config file not found at "
+                    "C:/Users/me/.claude-code-router/config-router.json"
+                ),
+            )
+        ]
+
+    async def fake_fetch_disabled(_repo_path):
+        return None, "GitNexus disabled in test"
+
+    monkeypatch.setattr(
+        "app.services.workspace_scope_resolver.run_external_agent_discovery",
+        fake_discovery,
+    )
+    monkeypatch.setattr(
+        "app.services.workspace_scope_resolver._fetch_live_gitnexus_graph_with_warning",
+        fake_fetch_disabled,
+    )
+    plan = AnalysisPlan(
+        analysis_objects=[AnalysisObject(id="obj_tls", text="nvme-tcp-tls", kind="module")]
+    )
+
+    preview = asyncio.run(
+        WorkspaceScopeResolver().resolve(
+            ws_id="ws",
+            repo_path=str(tmp_path),
+            plan=plan,
+        )
+    )
+
+    assert preview.external_agent_status == {"claude-code": "configuration_error"}
+    assert preview.external_agent_warnings == [
+        (
+            "obj_tls: claude-code: configuration_error - Config file not found at "
+            "C:/Users/me/.claude-code-router/config-router.json"
+        )
+    ]
 
 
 def test_workspace_preview_finds_generic_hyphenated_business_path_without_tools(tmp_path, monkeypatch):

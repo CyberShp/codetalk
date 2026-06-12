@@ -7862,7 +7862,13 @@ def _external_agent_status_from_provider_status(provider_status: object) -> str:
     statuses = {str(status) for status in provider_status.values() if status}
     if "ok" in statuses:
         return "available"
-    for status in ("invalid_output", "error", "timeout", "rejected_command"):
+    for status in (
+        "configuration_error",
+        "invalid_output",
+        "error",
+        "timeout",
+        "rejected_command",
+    ):
         if status in statuses:
             return status
     return "unavailable"

@@ -930,6 +930,7 @@ def _scope_external_agent_status_from_warnings(
         "timeout",
         "invalid_output",
         "rejected_command",
+        "configuration_error",
         "error",
     }
     provider_re = re.compile(r"^(claude-code|opencode|external_agent):\s*([a-z_]+)\b")
@@ -940,7 +941,8 @@ def _scope_external_agent_status_from_warnings(
         "timeout": 2,
         "invalid_output": 3,
         "rejected_command": 4,
-        "error": 5,
+        "configuration_error": 5,
+        "error": 6,
     }
     for obj in resolved:
         for warning in obj.warnings:
