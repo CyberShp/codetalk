@@ -204,7 +204,10 @@ def _match_def_name(line: str) -> str | None:
 
 
 def _looks_like_bare_function_invocation(stripped_line: str) -> bool:
-    return bool(re.match(r"^[A-Za-z_]\w*\s*\([^()]*\)\s*$", stripped_line or ""))
+    value = str(stripped_line or "").strip().rstrip(";")
+    if value.endswith(("{", ":")):
+        return False
+    return bool(re.match(r"^[A-Za-z_]\w*\s*\(.*\)\s*$", value))
 
 
 def _match_assigned_function_def_name(line: str) -> str | None:
@@ -3683,6 +3686,7 @@ def _request_destructured_fields(text: str) -> list[str]:
 def _handler_signature_input_hints(abs_file: str, enclosing_fn: str | None) -> list[str]:
     if not enclosing_fn or Path(abs_file).suffix.lower() not in {
         ".py", ".js", ".jsx", ".ts", ".tsx", ".java", ".cs", ".rb",
+        ".kt", ".kts",
     }:
         return []
     try:
@@ -3753,7 +3757,8 @@ def _signature_input_params(
     framework_params = {
         "self", "cls", "request", "req", "response", "res", "next",
         "reply", "h", "context", "ctx", "scope", "receive", "send", "argv", "argc",
-        "httpcontext", "cancellationtoken", "modelstate",
+        "call", "httpcontext", "applicationcall", "routingcontext",
+        "cancellationtoken", "modelstate",
     }
     hints: list[str] = []
     seen: set[str] = set()
@@ -3845,7 +3850,7 @@ def _signature_param_type_hint(raw_param: str, param_name: str) -> str | None:
         "requestbody", "frombody", "fromroute", "fromquery", "requestparam",
         "pathvariable", "valid", "validated", "notnull", "nullable",
         "string", "integer", "long", "double", "decimal", "boolean",
-        "responseentity", "iactionresult",
+        "responseentity", "iactionresult", "applicationcall", "routingcontext",
     }
     if ":" in declaration:
         annotation = declaration.split(":", 1)[1]
@@ -4485,6 +4490,7 @@ def _signature_external_type_hint(
         "pathvariable", "valid", "validated", "notnull", "nullable",
         "request", "httprequest", "httpservletrequest", "servletrequest",
         "response", "httpresponse", "httpservletresponse", "servletresponse",
+        "applicationcall", "routingcontext",
         "map", "hashmap", "dict", "dictionary", "list", "arraylist", "object",
         "string", "str", "int", "integer", "long", "float", "double", "decimal",
         "boolean", "bool", "void", "none", "null", "true", "false",
