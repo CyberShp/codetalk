@@ -4913,13 +4913,39 @@ def test_workspace_path_keyword_ranking_handles_generic_kebab_module(tmp_path):
 
     hits = _path_keyword_repo_hits_blocking(
         str(tmp_path),
-        ["payment-webhook", "payments/webhook"],
+        ["payment-webhook"],
         3,
     )
     rel_hits = [Path(hit).relative_to(tmp_path).as_posix() for hit in hits]
 
     assert rel_hits[0] == "services/payments/webhook/handler.ts"
     assert "examples/payment_webhook_example.ts" not in rel_hits[:1]
+
+
+def test_workspace_path_keyword_ranking_ignores_legacy_tls_bias_for_generic_module(tmp_path):
+    from app.services.workspace_scope_resolver import _path_keyword_repo_hits_blocking
+
+    target_dir = tmp_path / "services" / "session" / "tls"
+    target_dir.mkdir(parents=True)
+    (target_dir / "handler.ts").write_text(
+        "export function handleSessionTls() { return true; }\n",
+        encoding="utf-8",
+    )
+    misleading_dir = tmp_path / "nof" / "nvmf_tcp" / "transport" / "tls"
+    misleading_dir.mkdir(parents=True)
+    (misleading_dir / "session_tls.ts").write_text(
+        "export const unrelatedSessionTlsName = true;\n",
+        encoding="utf-8",
+    )
+
+    hits = _path_keyword_repo_hits_blocking(
+        str(tmp_path),
+        ["session-tls"],
+        3,
+    )
+    rel_hits = [Path(hit).relative_to(tmp_path).as_posix() for hit in hits]
+
+    assert rel_hits[0] == "services/session/tls/handler.ts"
 
 
 def test_workspace_scoped_package_keyword_expands_to_module_suffix(tmp_path):

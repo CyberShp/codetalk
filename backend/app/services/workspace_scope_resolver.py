@@ -561,8 +561,8 @@ def _path_keyword_repo_hits_blocking(
     """Rank source files by path tokens, not content.
 
     This is the local deterministic half of agentic discovery: a fuzzy string
-    like ``nvme-tcp-tls`` should match ``nof/nvmf_tcp/transport/tls/tls.c`` even
-    when the file content does not contain the exact spelling.
+    like ``payment-webhook`` should match ``services/payments/webhook/handler.ts``
+    even when the file content does not contain the exact spelling.
     """
     if not repo_path or not keywords or limit <= 0:
         return []
@@ -618,20 +618,7 @@ def _path_keyword_repo_hits_blocking(
                     score += 3
                 if full.suffix.lower() in _SOURCE_EXTS:
                     score += 2
-                if rel.startswith("transport/tls/"):
-                    score += 14
-                elif rel.startswith(("nvmf_tcp/transport/tls/", "nvme_tcp/transport/tls/")):
-                    score += 14
-                elif "/transport/tls/" in rel:
-                    score += 8
-                if rel.startswith(("nvmf_tcp/", "nvme_tcp/")):
-                    score += 10
-                elif "/nvmf_tcp/" in rel or "/nvme_tcp/" in rel:
-                    score += 6
-                if rel.startswith(("nof/nvmf_tcp/", "nof/nvme_tcp/")):
-                    score += 12
-                elif rel.startswith(("frontend/nof/nvmf_tcp/", "frontend/nof/nvme_tcp/")):
-                    score += 12
+                score += _path_keyword_alignment_bonus(rel, folded)
                 if rel.startswith((
                     "example/", "examples/", "sample/", "samples/",
                     "test/", "tests/", "doc/", "docs/",
@@ -640,6 +627,46 @@ def _path_keyword_repo_hits_blocking(
                 results.append((str(full), score))
     results.sort(key=lambda item: (-item[1], item[0].lower()))
     return [path for path, _score in results[:limit]]
+
+
+def _path_keyword_alignment_bonus(rel_path: str, keywords: list[str]) -> int:
+    """Reward generic directory continuity without protocol-specific boosts."""
+    rel = str(rel_path or "").lower().replace("\\", "/")
+    if not rel:
+        return 0
+    dir_path = str(Path(rel).parent).replace("\\", "/")
+    dir_tokenized = re.sub(r"[-_]+", "/", dir_path)
+    stem_tokenized = re.sub(r"[-_]+", "/", Path(rel).stem.lower())
+    bonus = 0
+    for keyword in keywords:
+        parts = [part for part in re.split(r"[/_-]+", keyword.lower()) if part]
+        if len(parts) < 2:
+            continue
+        variant = "/".join(parts)
+        if dir_tokenized == variant or dir_tokenized.endswith(f"/{variant}"):
+            bonus = max(bonus, 12 + len(parts) * 2)
+        elif f"/{variant}/" in f"/{dir_tokenized}/":
+            bonus = max(bonus, 8 + len(parts))
+        ordered_hits = _ordered_path_part_hits(dir_tokenized, parts)
+        if ordered_hits >= 2:
+            bonus = max(bonus, ordered_hits * 3)
+        if stem_tokenized == variant:
+            bonus = max(bonus, 8 + len(parts))
+    return bonus
+
+
+def _ordered_path_part_hits(path_text: str, parts: list[str]) -> int:
+    if not path_text or not parts:
+        return 0
+    position = 0
+    hits = 0
+    for part in parts:
+        found = path_text.find(part, position)
+        if found < 0:
+            continue
+        hits += 1
+        position = found + len(part)
+    return hits
 
 
 def _exact_symbol_repo_hits_blocking(
@@ -775,10 +802,6 @@ def _path_hint_repo_hits_blocking(
         except Exception:
             rel = path.as_posix().lower()
         score = 0
-        if rel.startswith(("nof/nvmf_tcp/", "nof/nvme_tcp/")):
-            score -= 30
-        elif rel.startswith(("frontend/nof/nvmf_tcp/", "frontend/nof/nvme_tcp/")):
-            score -= 30
         if rel.startswith((
             "example/", "examples/", "sample/", "samples/",
             "test/", "tests/", "doc/", "docs/",
