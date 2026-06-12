@@ -356,6 +356,31 @@ error_recovery,src/service.c:40:5,false,0
         assert rec.line_start == 40
         assert rec.line_end == 40
 
+    async def test_function_hit_csv_accepts_link_and_text_line_locations(self):
+        from app.adapters.coverage import parse_internal_function_hits
+
+        csv_text = """function_name,code_location,triggered,hit_count
+link_range,src/service.c#L10-L20,false,0
+text_line,src/service.c line 40,false,0
+at_line,src/service.c@55,false,0
+"""
+        report = parse_internal_function_hits(csv_text)
+        by_name = {
+            hit.function_name: hit
+            for module in report.modules
+            for hit in module.function_hits
+        }
+
+        assert by_name["link_range"].file_path == "src/service.c"
+        assert by_name["link_range"].line_start == 10
+        assert by_name["link_range"].line_end == 20
+        assert by_name["text_line"].file_path == "src/service.c"
+        assert by_name["text_line"].line_start == 40
+        assert by_name["text_line"].line_end == 40
+        assert by_name["at_line"].file_path == "src/service.c"
+        assert by_name["at_line"].line_start == 55
+        assert by_name["at_line"].line_end == 55
+
     async def test_run_analysis_generates_black_box_recommendations_without_llm(self, sqlite_db):
         analyzer = CoverageAnalyzer()
         analysis_id = str(uuid.uuid4())

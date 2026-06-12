@@ -555,6 +555,29 @@ def _row_to_function_hit(row: list[str], indexes: dict[str, int]) -> FunctionHit
 
 def _parse_location(value: str) -> tuple[str, int | None, int | None]:
     text = value.strip().strip("\"'")
+    link_fragment_match = re.match(
+        r"^(?P<path>.+?)#L(?P<start>\d+)(?:\s*[-,~]\s*L?(?P<end>\d+))?$",
+        text,
+        flags=re.IGNORECASE,
+    )
+    if link_fragment_match:
+        file_path = _normalize_path(link_fragment_match.group("path"))
+        line_start = int(link_fragment_match.group("start"))
+        line_end = int(link_fragment_match.group("end") or line_start)
+        return file_path, line_start, line_end
+
+    textual_match = re.match(
+        r"^(?P<path>.+?)(?:\s+line\s+|@)"
+        r"(?P<start>\d+)(?:\s*[-,~]\s*(?:L|line\s*)?(?P<end>\d+))?$",
+        text,
+        flags=re.IGNORECASE,
+    )
+    if textual_match:
+        file_path = _normalize_path(textual_match.group("path"))
+        line_start = int(textual_match.group("start"))
+        line_end = int(textual_match.group("end") or line_start)
+        return file_path, line_start, line_end
+
     line_column_match = re.match(
         r"^(?P<path>.+?)[(:\[]\s*(?:L|line\s*)?"
         r"(?P<start>\d+)\s*:\s*\d+\s*[\])]*$",
