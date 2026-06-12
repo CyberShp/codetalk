@@ -46,13 +46,48 @@ class TestAssessToolHealth(unittest.IsolatedAsyncioTestCase):
 
     async def test_cgc_only_when_gitnexus_unhealthy(self) -> None:
         pipeline = _pipeline_with_adapters(gitnexus_healthy=False, cgc_healthy=True)
-        await pipeline._assess_tool_health()
+        with patch.object(
+            pipeline,
+            "_try_start_managed_gitnexus",
+            new=AsyncMock(return_value=False),
+        ):
+            await pipeline._assess_tool_health()
         self.assertEqual(pipeline._pipeline_mode, "cgc_only")
         self.assertIn("GitNexus", pipeline._tool_health_warning)
 
+    async def test_gitnexus_health_starts_managed_process_before_degrading(self) -> None:
+        pipeline = AnalysisPipeline()
+        gitnexus = MagicMock()
+        gitnexus.health_check = AsyncMock(side_effect=[
+            ToolHealth(is_healthy=False, container_status="error"),
+            ToolHealth(is_healthy=True, container_status="running"),
+        ])
+        cgc = _mock_adapter(False)
+        pipeline._tool_adapters = {"gitnexus": gitnexus, "cgc": cgc}
+        process_manager = MagicMock()
+        process_manager.start = AsyncMock(return_value=True)
+
+        with (
+            patch(
+                "app.services.analysis_pipeline.ProcessManager.get_instance",
+                return_value=process_manager,
+            ),
+            patch("app.services.analysis_pipeline.asyncio.sleep", new=AsyncMock()),
+        ):
+            await pipeline._assess_tool_health()
+
+        process_manager.start.assert_awaited_once_with("gitnexus")
+        self.assertEqual(gitnexus.health_check.await_count, 2)
+        self.assertEqual(pipeline._pipeline_mode, "gitnexus_only")
+
     async def test_llm_direct_when_both_unhealthy(self) -> None:
         pipeline = _pipeline_with_adapters(gitnexus_healthy=False, cgc_healthy=False)
-        await pipeline._assess_tool_health()
+        with patch.object(
+            pipeline,
+            "_try_start_managed_gitnexus",
+            new=AsyncMock(return_value=False),
+        ):
+            await pipeline._assess_tool_health()
         self.assertEqual(pipeline._pipeline_mode, "llm_direct")
         self.assertIn("LLM", pipeline._tool_health_warning)
 
@@ -67,7 +102,12 @@ class TestAssessToolHealth(unittest.IsolatedAsyncioTestCase):
         broken = MagicMock()
         broken.health_check = AsyncMock(side_effect=RuntimeError("connection refused"))
         pipeline._tool_adapters = {"gitnexus": broken, "cgc": broken}
-        await pipeline._assess_tool_health()
+        with patch.object(
+            pipeline,
+            "_try_start_managed_gitnexus",
+            new=AsyncMock(return_value=False),
+        ):
+            await pipeline._assess_tool_health()
         self.assertEqual(pipeline._pipeline_mode, "llm_direct")
 
 

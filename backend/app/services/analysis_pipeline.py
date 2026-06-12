@@ -36,6 +36,7 @@ from app.schemas.workspace_analysis import AnalysisPlan, ScopePreview
 from app.services.analysis_artifacts import write_analysis_artifacts
 from app.services.evidence_card_builder import EvidenceCard, EvidenceCardBuilder
 from app.services.report_generator import ReportGenerator
+from app.services.process_manager import ProcessManager
 from app.services.workspace_scope_resolver import (
     normalize_file_key,
     plan_analysis_units,
@@ -513,18 +514,22 @@ class AnalysisPipeline:
           cgc_only      — GitNexus unavailable; gitnexus data collection skipped
           llm_direct    — both unavailable; pipeline runs on file-content only
         """
-        async def _check(adapter: BaseToolAdapter | None) -> bool:
+        async def _check(tool_name: str, adapter: BaseToolAdapter | None) -> bool:
             if adapter is None:
                 return False
             try:
                 health = await asyncio.wait_for(adapter.health_check(), timeout=5.0)
-                return bool(health.is_healthy)
-            except Exception:
-                return False
+                if bool(health.is_healthy):
+                    return True
+            except Exception as exc:
+                logger.debug("%s health check failed before managed start: %s", tool_name, exc)
+            if tool_name == "gitnexus":
+                return await self._try_start_managed_gitnexus(adapter)
+            return False
 
         gitnexus_ok, cgc_ok = await asyncio.gather(
-            _check(self._tool_adapters.get("gitnexus")),
-            _check(self._tool_adapters.get("cgc")),
+            _check("gitnexus", self._tool_adapters.get("gitnexus")),
+            _check("cgc", self._tool_adapters.get("cgc")),
         )
 
         if gitnexus_ok and cgc_ok:
@@ -541,6 +546,31 @@ class AnalysisPipeline:
             self._pipeline_mode = "llm_direct"
             self._tool_health_warning = "⚠️ 图谱工具均不可用，已降级为 LLM 直读模式（结果质量受影响）"
             logger.warning("Both GitNexus and CGC unavailable — degrading to llm_direct mode")
+
+    async def _try_start_managed_gitnexus(self, adapter: BaseToolAdapter) -> bool:
+        """Start locally managed GitNexus once before accepting degradation."""
+        try:
+            process_manager = ProcessManager.get_instance()
+            started = await asyncio.wait_for(process_manager.start("gitnexus"), timeout=10.0)
+        except Exception as exc:
+            logger.warning("GitNexus managed start failed before degradation: %s", exc)
+            return False
+        if not started:
+            logger.warning("GitNexus managed start returned false before degradation")
+            return False
+
+        for attempt in range(8):
+            if attempt:
+                await asyncio.sleep(1)
+            try:
+                health = await asyncio.wait_for(adapter.health_check(), timeout=5.0)
+                if health.is_healthy:
+                    logger.info("GitNexus became healthy after managed start")
+                    return True
+            except Exception as exc:
+                logger.debug("GitNexus recheck after managed start failed: %s", exc)
+        logger.warning("GitNexus remained unhealthy after managed start")
+        return False
 
     async def _ensure_git_init(self, path: Path) -> None:
         """Ensure git is initialized for the repo path."""
