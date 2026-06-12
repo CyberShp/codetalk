@@ -126,7 +126,12 @@ def _active_attempt_has_configuration_error(health: object) -> bool:
 
 
 def _has_configuration_error(item: object) -> bool:
-    return isinstance(item, dict) and item.get("status") == "configuration_error"
+    if not isinstance(item, dict):
+        return False
+    if item.get("status") == "configuration_error":
+        return True
+    hint = str(item.get("config_hint") or "").lower()
+    return "ccr_config_path" in hint and "default config not found" in hint
 
 
 def _format_runtime_diagnostic(value: object) -> str:

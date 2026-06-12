@@ -1798,7 +1798,7 @@ def test_external_agent_adapter_health_reports_launch_kind(monkeypatch):
     assert "command not found: ccr" in health.last_check
 
 
-def test_external_agent_adapter_health_keeps_default_ccr_config_hint_non_blocking(monkeypatch):
+def test_external_agent_adapter_health_marks_default_ccr_config_hint_misconfigured(monkeypatch):
     from app.adapters import external_agent as adapter_mod
 
     def fake_health(provider, command, fallback_commands=None):
@@ -1825,8 +1825,8 @@ def test_external_agent_adapter_health_keeps_default_ccr_config_hint_non_blockin
         adapter_mod.ExternalAgentAdapter("claude-code", "claude_code_command").health_check()
     )
 
-    assert health.is_healthy is True
-    assert health.container_status == "available"
+    assert health.is_healthy is False
+    assert health.container_status == "misconfigured"
     assert "default config not found" in health.last_check
 
 
@@ -6462,6 +6462,68 @@ def test_workspace_preview_reports_live_gitnexus_failure_reason(tmp_path, monkey
 
     assert preview.gitnexus_available is False
     assert any("connection refused" in warning for warning in preview.warnings)
+
+
+def test_live_gitnexus_fetch_retries_after_managed_start(tmp_path, monkeypatch):
+    from app.services import workspace_scope_resolver as resolver
+
+    class FakeResponse:
+        def __init__(self, status_code, payload):
+            self.status_code = status_code
+            self._payload = payload
+
+        def json(self):
+            return self._payload
+
+        def raise_for_status(self):
+            if self.status_code >= 400:
+                raise RuntimeError(f"HTTP {self.status_code}")
+
+    class FakeClient:
+        graph_calls = 0
+
+        def __init__(self, *args, **kwargs):
+            pass
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, exc_type, exc, tb):
+            return False
+
+        async def get(self, path, params=None, timeout=None):
+            if path == "/api/repos":
+                return FakeResponse(200, [])
+            if path == "/api/graph":
+                FakeClient.graph_calls += 1
+                if FakeClient.graph_calls == 1:
+                    raise RuntimeError("connection refused")
+                return FakeResponse(200, {"nodes": [{"id": "f1"}], "relationships": []})
+            raise AssertionError(path)
+
+    class FakeProcessManager:
+        started = 0
+
+        async def start(self, tool_name):
+            assert tool_name == "gitnexus"
+            self.started += 1
+            return True
+
+    fake_pm = FakeProcessManager()
+    monkeypatch.setattr(resolver.httpx, "AsyncClient", FakeClient)
+    monkeypatch.setattr(
+        "app.services.process_manager.ProcessManager.get_instance",
+        lambda: fake_pm,
+    )
+
+    graph, warning = asyncio.run(
+        resolver._fetch_live_gitnexus_graph_with_warning(str(tmp_path))
+    )
+
+    assert graph == {"nodes": [{"id": "f1"}], "relationships": []}
+    assert warning == ""
+    assert FakeClient.graph_calls == 2
+    assert fake_pm.started == 1
 
 
 def test_workspace_resolver_keeps_detailed_agent_warning_without_duplicate(tmp_path, monkeypatch):

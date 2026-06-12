@@ -301,8 +301,8 @@ async def test_tools_procs_adapter_exception_redacts_diagnostic_message(tools_cl
     assert "<redacted>" in agent["message"]
 
 
-async def test_external_agent_health_keeps_default_ccr_config_hint_non_blocking(monkeypatch):
-    """Default CCR config absence is a diagnostic hint; explicit bad config is misconfigured."""
+async def test_external_agent_health_marks_default_ccr_config_hint_misconfigured(monkeypatch):
+    """Default CCR config absence should be visible as an actionable configuration failure."""
     from app.adapters.external_agent import ExternalAgentAdapter
 
     monkeypatch.setattr(
@@ -328,8 +328,8 @@ async def test_external_agent_health_keeps_default_ccr_config_hint_non_blocking(
 
     health = await ExternalAgentAdapter("claude-code", "claude_code_command").health_check()
 
-    assert health.is_healthy is True
-    assert health.container_status == "available"
+    assert health.is_healthy is False
+    assert health.container_status == "misconfigured"
     assert "CCR_CONFIG_PATH" in health.last_check
 
 

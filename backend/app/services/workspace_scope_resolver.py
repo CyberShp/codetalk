@@ -289,6 +289,34 @@ async def _fetch_live_gitnexus_graph_with_warning(repo_path: str) -> tuple[dict 
     except Exception as exc:
         return None, f"GitNexus repo path translation failed: {_short_error(exc)}"
 
+    graph, warning = await _fetch_live_gitnexus_graph_once(tool_path)
+    if graph is not None:
+        return graph, ""
+
+    started, start_warning = await _try_start_managed_gitnexus_for_scope()
+    if not started:
+        return None, "; ".join(part for part in (warning, start_warning) if part)
+
+    retry_warning = ""
+    for attempt in range(4):
+        if attempt:
+            await asyncio.sleep(1)
+        graph, retry_warning = await _fetch_live_gitnexus_graph_once(tool_path)
+        if graph is not None:
+            return graph, ""
+    return None, "; ".join(
+        part
+        for part in (
+            warning,
+            "managed GitNexus start attempted",
+            f"retry failed: {retry_warning}" if retry_warning else "",
+        )
+        if part
+    )
+
+
+async def _fetch_live_gitnexus_graph_once(tool_path: str) -> tuple[dict | None, str]:
+    """Fetch the live graph once without trying to manage the process."""
     repo_name = Path(tool_path).name
     try:
         async with httpx.AsyncClient(
@@ -322,6 +350,22 @@ async def _fetch_live_gitnexus_graph_with_warning(repo_path: str) -> tuple[dict 
             None,
             f"GitNexus live graph fetch failed from {settings.gitnexus_base_url}: {_short_error(exc)}",
         )
+
+
+async def _try_start_managed_gitnexus_for_scope() -> tuple[bool, str]:
+    try:
+        from app.services.process_manager import ProcessManager
+
+        started = await asyncio.wait_for(
+            ProcessManager.get_instance().start("gitnexus"),
+            timeout=10.0,
+        )
+    except Exception as exc:
+        logger.info("Managed GitNexus start failed during scope preview: %s", exc)
+        return False, f"managed GitNexus start failed: {_short_error(exc)}"
+    if not started:
+        return False, "managed GitNexus start returned false"
+    return True, ""
 
 
 def _short_error(exc: Exception, limit: int = 240) -> str:
