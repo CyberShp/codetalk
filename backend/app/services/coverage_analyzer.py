@@ -4406,6 +4406,12 @@ def _decorated_entry_for_symbol(
         if route_prefix and route_trigger:
             route_trigger = _route_trigger_with_prefix(route_trigger, route_prefix)
         if route_trigger:
+            route_trigger = _expand_route_tokens(
+                route_trigger,
+                lines=lines,
+                definition_line=definition_line,
+                function_name=source_function_name,
+            )
             metadata["external_trigger"] = route_trigger
     if entry_kind != "route":
         channel_hints = _registration_channel_input_hints(
@@ -5141,6 +5147,14 @@ def _nearest_enclosing_class_line(lines: list[str], definition_line: int) -> int
     return None
 
 
+def _nearest_enclosing_class_name(lines: list[str], definition_line: int) -> str | None:
+    class_line = _nearest_enclosing_class_line(lines, definition_line)
+    if class_line is None or class_line < 1 or class_line > len(lines):
+        return None
+    match = re.search(r"\bclass\s+(?P<name>[A-Za-z_]\w*)\b", lines[class_line - 1])
+    return match.group("name") if match else None
+
+
 def _route_prefix_from_class_decorators(decorator_texts: list[str]) -> str | None:
     text = " ".join(str(line or "").strip() for line in decorator_texts if str(line or "").strip())
     if not text:
@@ -5158,6 +5172,56 @@ def _combine_route_prefixes(*prefixes: str | None) -> str | None:
             continue
         combined = _join_route_paths(combined, prefix) if combined else prefix
     return combined or None
+
+
+def _expand_route_tokens(
+    trigger: str,
+    *,
+    lines: list[str],
+    definition_line: int,
+    function_name: str,
+) -> str:
+    value = str(trigger or "")
+    if "[" not in value:
+        return value
+    class_name = _nearest_enclosing_class_name(lines, definition_line)
+    controller = _route_token_name_from_class(class_name)
+    action = _route_token_name_from_symbol(function_name)
+    replacements = {
+        "controller": controller,
+        "action": action,
+    }
+
+    def replace(match: re.Match) -> str:
+        key = match.group("token").lower()
+        replacement = replacements.get(key)
+        return replacement if replacement else match.group(0)
+
+    return re.sub(r"\[(?P<token>controller|action)\]", replace, value, flags=re.IGNORECASE)
+
+
+def _route_token_name_from_class(class_name: str | None) -> str:
+    name = str(class_name or "").strip()
+    if name.endswith("Controller") and len(name) > len("Controller"):
+        name = name[: -len("Controller")]
+    return _route_token_slug(name)
+
+
+def _route_token_name_from_symbol(symbol: str | None) -> str:
+    name = str(symbol or "").strip()
+    if name.endswith("Async") and len(name) > len("Async"):
+        name = name[: -len("Async")]
+    return _route_token_slug(name)
+
+
+def _route_token_slug(value: str) -> str:
+    text = str(value or "").strip()
+    if not text:
+        return ""
+    text = re.sub(r"([A-Z]+)([A-Z][a-z])", r"\1-\2", text)
+    text = re.sub(r"([a-z0-9])([A-Z])", r"\1-\2", text)
+    text = re.sub(r"[_\s]+", "-", text)
+    return text.strip("-").lower()
 
 
 def _router_import_aliases_for_source(
