@@ -3604,6 +3604,13 @@ def _signature_external_param_name(raw_param: str) -> str | None:
     text = str(raw_param or "")
     if not text:
         return None
+    fastapi_match = re.search(
+        r"\b(?:Path|Query|Body|Header|Cookie|Form)\s*\([^)]*"
+        r"\balias\s*=\s*(['\"])(?P<name>[A-Za-z_][\w.-]*)\1",
+        text,
+    )
+    if fastapi_match:
+        return fastapi_match.group("name")
     annotation_match = re.search(
         r"[@\[]\s*(?:RequestParam|PathVariable|RequestHeader|CookieValue|"
         r"FromQuery|FromRoute|FromHeader|FromForm|Param|Query|Header|Cookie)"

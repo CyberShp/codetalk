@@ -3706,6 +3706,42 @@ class TestCoverageTestDesign:
         assert "amount" in case_text
         assert "currency" in case_text
 
+    async def test_fastapi_query_path_aliases_feed_external_input_hints(self, tmp_path):
+        from app.services.coverage_analyzer import build_coverage_test_design
+
+        src = tmp_path / "src"
+        src.mkdir()
+        (src / "routes.py").write_text(
+            "from fastapi import Path, Query\n\n"
+            "@app.post('/customers/{customerId}/payments')\n"
+            "def create_payment(\n"
+            "    customer_id: str = Path(alias='customerId'),\n"
+            "    amount: int = Query(alias='amount_cents'),\n"
+            "):\n"
+            "    if amount <= 0:\n"
+            "        return {'status': 400}\n"
+            "    return {'status': 200, 'customer_id': customer_id}\n",
+            encoding="utf-8",
+        )
+        modules = self._modules(
+            "feature,module,code_location,function,triggered,hit_count\n"
+            "payments,routes,src/routes.py:4-10,create_payment,false,0\n"
+        )
+
+        design = await build_coverage_test_design(
+            modules, workspace_id="ws-1", repo_path=str(tmp_path)
+        )
+
+        gap = [g for g in design["gaps"] if g.get("kind") == "function"][0]
+        assert gap["black_box_readiness"]["case_type"] == "black_box_ready"
+        entry = gap["entry_paths"][0]
+        assert entry["external_trigger"] == "POST /customers/{customerId}/payments"
+        assert entry["input_hints"] == ["customerId", "amount_cents"]
+        case_text = json.dumps(gap["black_box_cases"], ensure_ascii=False)
+        assert "customerId" in case_text
+        assert "amount_cents" in case_text
+        assert "customer_id" not in case_text
+
     async def test_fastapi_router_prefix_feeds_black_box_trigger_and_input_hints(self, tmp_path):
         from app.services.coverage_analyzer import build_coverage_test_design
 
