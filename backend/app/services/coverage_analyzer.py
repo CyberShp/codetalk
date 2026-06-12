@@ -1353,8 +1353,24 @@ def _agent_entry_chain_missing_target(item: dict, function_name: object) -> bool
     target = str(function_name or "").strip()
     if not target:
         return False
+    normalized_target = _agent_chain_symbol_key(target)
     chain = _normalize_agent_entry_chain(item.get("chain"))
-    return bool(chain and target not in chain)
+    return bool(chain and normalized_target not in {
+        _agent_chain_symbol_key(segment) for segment in chain
+    })
+
+
+def _agent_chain_symbol_key(value: object) -> str:
+    text = str(value or "").strip()
+    if not text:
+        return ""
+    text = text.split("@", 1)[0].strip()
+    text = re.sub(r"\([^)]*\)\s*$", "", text).strip()
+    text = re.sub(r"[:#]L?\d+(?:[-,~]L?\d+)?$", "", text, flags=re.IGNORECASE).strip()
+    text = text.replace("::", ".")
+    text = text.rsplit(".", 1)[-1]
+    text = text.rsplit("/", 1)[-1]
+    return text.strip()
 
 
 def _normalize_agent_entry_chain(value: object) -> list[str]:

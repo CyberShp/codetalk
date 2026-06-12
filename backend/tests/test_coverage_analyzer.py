@@ -1279,6 +1279,43 @@ class TestCoverageTestDesign:
             "src/routes.py:10 app.post('/payments', process_payment)"
         ]
 
+    async def test_agent_entry_chain_accepts_qualified_target_symbol(self):
+        from app.services.coverage_analyzer import _build_black_box_cases, _merge_agent_entry_paths
+
+        hit = FunctionHit(
+            function_name="normalize_record",
+            file_path="src/service.py",
+            line_start=1,
+            triggered=False,
+            hit_count=0,
+        )
+        agent_context = {
+            "validated_entries": [{
+                "provider": "claude-code",
+                "turn_id": "coverage:normalize_record",
+                "entry_kind": "api",
+                "entry_symbol": "public_records_api",
+                "entry_file": "src/api.py",
+                "chain": ["public_records_api -> service.normalize_record() @ src/service.py:1"],
+                "external_trigger": "POST /records",
+                "reason": "source-backed public API reaches normalize_record",
+                "source_verification": "source_backed",
+                "input_hints": ["record_id", "payload"],
+            }]
+        }
+
+        merged = _merge_agent_entry_paths([], agent_context, hit)
+
+        assert len(merged) == 1
+        assert merged[0]["entry_symbol"] == "public_records_api"
+        assert merged[0]["external_trigger"] == "POST /records"
+        cases = _build_black_box_cases(hit, merged, [])
+        assert cases
+        assert cases[0]["case_type"] == "black_box_ready"
+        assert cases[0]["provider"] == "claude-code"
+        assert "record_id" in cases[0]["inputs"]
+        assert "payload" in cases[0]["inputs"]
+
     async def test_black_box_cases_filter_internal_symbols_from_input_hints(self):
         from app.services.coverage_analyzer import _build_black_box_cases
 
