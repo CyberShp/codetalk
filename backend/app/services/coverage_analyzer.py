@@ -4405,6 +4405,10 @@ def _decorated_entry_for_symbol(
         route_trigger = _route_external_trigger_from_texts([*decorator_texts, definition_text])
         if route_prefix and route_trigger:
             route_trigger = _route_trigger_with_prefix(route_trigger, route_prefix)
+        elif route_prefix:
+            route_method = _route_method_from_text(" ".join([*decorator_texts, definition_text]))
+            if route_method:
+                route_trigger = f"{route_method} {route_prefix}"
         if route_trigger:
             route_trigger = _expand_route_tokens(
                 route_trigger,
@@ -5483,7 +5487,9 @@ def _route_method_from_text(text: str) -> str | None:
         r"\bmethods?\s*:\s*[\[\(\{]?\s*(['\"])(?P<method>get|post|put|patch|delete|head|options|any)\1",
         r"\bRequestMethod\.(?P<method>GET|POST|PUT|PATCH|DELETE|HEAD|OPTIONS)\b",
         r"[@\[]\s*(?P<method>Get|Post|Put|Patch|Delete|Head|Options)Mapping\s*\(",
+        r"[@\[]\s*(?P<method>Get|Post|Put|Patch|Delete|Head|Options)Mapping\b",
         r"[@\[]\s*Http(?P<method>Get|Post|Put|Patch|Delete|Head|Options)\s*\(",
+        r"[@\[]\s*Http(?P<method>Get|Post|Put|Patch|Delete|Head|Options)\b",
         r"\bmethod\s*[:=]\s*(['\"])(?P<method>get|post|put|patch|delete|head|options|any)\1",
         r"[@.]\s*(?P<method>get|post|put|patch|delete|head|options|any|websocket)\s*\(",
         r"\b(?P<method>get|post|put|patch|delete|head|options|any|websocket)\s+['\"]",

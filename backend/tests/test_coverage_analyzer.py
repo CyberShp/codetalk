@@ -4142,6 +4142,43 @@ class TestCoverageTestDesign:
         case_text = json.dumps(gap["black_box_cases"], ensure_ascii=False)
         assert "POST /api/payment/{tenantId}" in case_text
 
+    async def test_aspnet_action_token_route_without_method_path_is_black_box_trigger(self, tmp_path):
+        from app.services.coverage_analyzer import build_coverage_test_design
+
+        src = tmp_path / "src"
+        src.mkdir()
+        (src / "PaymentController.cs").write_text(
+            "[Route(\"api/[controller]/[action]\")]\n"
+            "public class PaymentController {\n"
+            "  [HttpPost]\n"
+            "  public IActionResult ProcessPayment([FromBody] PaymentRequest request) {\n"
+            "    if (request.Amount <= 0) {\n"
+            "      return BadRequest();\n"
+            "    }\n"
+            "    return Ok();\n"
+            "  }\n"
+            "}\n\n"
+            "public class PaymentRequest {\n"
+            "  public decimal Amount { get; set; }\n"
+            "}\n",
+            encoding="utf-8",
+        )
+        modules = self._modules(
+            "feature,module,code_location,function,triggered,hit_count\n"
+            "payments,controller,src/PaymentController.cs:4-9,ProcessPayment,false,0\n"
+        )
+
+        design = await build_coverage_test_design(
+            modules, workspace_id="ws-1", repo_path=str(tmp_path)
+        )
+
+        gap = [g for g in design["gaps"] if g.get("kind") == "function"][0]
+        assert gap["black_box_readiness"]["case_type"] == "black_box_ready"
+        entry = gap["entry_paths"][0]
+        assert entry["external_trigger"] == "POST /api/payment/process-payment"
+        case_text = json.dumps(gap["black_box_cases"], ensure_ascii=False)
+        assert "POST /api/payment/process-payment" in case_text
+
     async def test_nestjs_route_decorator_is_black_box_route_without_caller(self, tmp_path):
         from app.services.coverage_analyzer import build_coverage_test_design
 
