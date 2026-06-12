@@ -327,6 +327,14 @@ _REQ_FIELD_RE = re.compile(
 )
 _REQUEST_FIELD_RES = (
     re.compile(
+        r"\b(?P<container>payload|message|msg|record)"
+        r"(?:\??\.)\s*(?P<field>[A-Za-z_][\w-]*)\b"
+    ),
+    re.compile(
+        r"\b(?P<container>payload|message|msg|record)"
+        r"\s*\[\s*['\"](?P<field>[A-Za-z_][\w-]*)['\"]\s*\]"
+    ),
+    re.compile(
         r"\b(?:event|evt)"
         r"(?:\??\.(?:detail|data|payload))"
         r"(?:\??\.)\s*([A-Za-z_][\w-]*)\b"
@@ -371,6 +379,10 @@ _REQUEST_FIELD_RES = (
         r"\s*\(\s*['\"]([A-Za-z_][\w-]*)['\"]"
     ),
 )
+_MESSAGE_ENVELOPE_FIELD_NAMES = {
+    "attributes", "headers", "key", "offset", "partition", "timestamp",
+    "topic", "value",
+}
 _REQUEST_DESTRUCTURE_RE = re.compile(
     r"\{(?P<fields>[^{}]+)\}\s*=\s*"
     r"\b(?:request|req)"
@@ -1944,7 +1956,7 @@ _INTERNAL_INPUT_HINTS = {
     "self", "cls", "this", "ctx", "context", "request", "req", "response", "res",
     "next", "scope", "receive", "send", "argv", "argc", "env", "logger", "log",
     "mock", "stub", "fixture", "helper", "file_obj", "file_object", "file_handle",
-    "stream", "reader",
+    "stream", "reader", "ack", "nack", "reject", "commit", "rollback",
 }
 
 
@@ -3378,7 +3390,10 @@ def _request_field_hints_from_text(statement_text: str) -> list[str]:
         positioned_fields.append((match.start(), match.group(1)))
     for pattern in _REQUEST_FIELD_RES:
         for match in pattern.finditer(statement_text):
-            positioned_fields.append((match.start(), match.group(1)))
+            field = _request_field_from_match(match)
+            if _is_message_envelope_field(match, field):
+                continue
+            positioned_fields.append((match.start(), field))
     for match in _RAILS_STRONG_PARAM_REQUIRE_RE.finditer(statement_text):
         positioned_fields.append((match.start(), match.group(1)))
     for match in _RAILS_STRONG_PARAM_PERMIT_RE.finditer(statement_text):
@@ -3398,6 +3413,22 @@ def _request_field_hints_from_text(statement_text: str) -> list[str]:
             seen.add(field)
             hints.append(field)
     return hints[:12]
+
+
+def _request_field_from_match(match: re.Match[str]) -> str:
+    groups = match.groupdict()
+    field = groups.get("field")
+    if field is not None:
+        return field
+    return match.group(1)
+
+
+def _is_message_envelope_field(match: re.Match[str], field: str) -> bool:
+    container = str(match.groupdict().get("container") or "").lower()
+    return (
+        container in {"message", "msg"}
+        and str(field or "").strip().lower() in _MESSAGE_ENVELOPE_FIELD_NAMES
+    )
 
 
 def _request_hint_scan_bounds(
@@ -6089,6 +6120,7 @@ def _augment_entry_input_hints_from_symbol_source(
         str(entry_symbol),
     )
     signature_hints = _handler_signature_input_hints(str(abs_file), str(entry_symbol))
+    signature_hints = _specific_signature_input_hints(signature_hints, source_hints)
     if str(entry.get("entry_kind") or "").strip().lower() == "cli" and entry.get("input_hints"):
         signature_hints = _filter_generic_cli_input_hints(signature_hints)
     source_hints = _merge_ordered_input_hints(

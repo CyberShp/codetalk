@@ -5419,6 +5419,43 @@ class TestCoverageTestDesign:
         case_text = json.dumps(gap["black_box_cases"], ensure_ascii=False)
         assert "invoice.created" in case_text
 
+    async def test_message_payload_fields_feed_black_box_input_hints_without_ack_context(self, tmp_path):
+        from app.services.coverage_analyzer import build_coverage_test_design
+
+        src = tmp_path / "src"
+        src.mkdir()
+        (src / "events.ts").write_text(
+            "export function processInvoice(payload, ctx) {\n"
+            "  const amount = payload.amount;\n"
+            "  if (!amount) {\n"
+            "    return 'missing';\n"
+            "  }\n"
+            "  return ctx.ack();\n"
+            "}\n\n"
+            "eventBus.subscribe('invoice.created', processInvoice);\n",
+            encoding="utf-8",
+        )
+        modules = self._modules(
+            "feature,module,code_location,function,triggered,hit_count\n"
+            "billing,events,src/events.ts:1-7,processInvoice,false,0\n"
+        )
+
+        design = await build_coverage_test_design(
+            modules, workspace_id="ws-1", repo_path=str(tmp_path)
+        )
+
+        gap = [g for g in design["gaps"] if g.get("kind") == "function"][0]
+        assert gap["black_box_readiness"]["case_type"] == "black_box_ready"
+        entry = gap["entry_paths"][0]
+        assert entry["entry_kind"] == "message"
+        assert entry["input_hints"] == ["invoice.created", "amount"]
+        case_text = json.dumps(gap["black_box_cases"], ensure_ascii=False)
+        assert "invoice.created" in case_text
+        assert "amount" in case_text
+        assert "payload" not in case_text
+        assert "ctx.ack" not in case_text
+        assert '"ack"' not in case_text
+
     async def test_event_on_registration_keeps_message_entry_kind(self, tmp_path):
         from app.services.coverage_analyzer import build_coverage_test_design
 
