@@ -2663,6 +2663,40 @@ class TestCoverageTestDesign:
         case_text = json.dumps(gap["black_box_cases"], ensure_ascii=False)
         assert "invoice_id" in case_text
 
+    async def test_lambda_event_nested_request_fields_feed_black_box_input_hints(self, tmp_path):
+        from app.services.coverage_analyzer import build_coverage_test_design
+
+        src = tmp_path / "lambda"
+        src.mkdir()
+        (src / "billing.py").write_text(
+            "def lambda_handler(event, context):\n"
+            "    params = event.get('queryStringParameters') or {}\n"
+            "    amount = params.get('amount')\n"
+            "    tenant_id = event['pathParameters']['tenant_id']\n"
+            "    if not amount:\n"
+            "        return {'statusCode': 400}\n"
+            "    return {'statusCode': 200, 'body': tenant_id}\n",
+            encoding="utf-8",
+        )
+        modules = self._modules(
+            "feature,module,code_location,function,triggered,hit_count\n"
+            "billing,lambda,lambda/billing.py:1-7,lambda_handler,false,0\n"
+        )
+
+        design = await build_coverage_test_design(
+            modules, workspace_id="ws-1", repo_path=str(tmp_path)
+        )
+
+        gap = [g for g in design["gaps"] if g.get("kind") == "function"][0]
+        assert gap["black_box_readiness"]["case_type"] == "black_box_ready"
+        entry = gap["entry_paths"][0]
+        assert entry["entry_kind"] == "event"
+        assert entry["entry_symbol"] == "lambda_handler"
+        assert entry["input_hints"] == ["amount", "tenant_id", "event"]
+        case_text = json.dumps(gap["black_box_cases"], ensure_ascii=False)
+        assert "amount" in case_text
+        assert "tenant_id" in case_text
+
     async def test_node_lambda_exports_handler_is_black_box_event_entry(self, tmp_path):
         from app.services.coverage_analyzer import build_coverage_test_design
 

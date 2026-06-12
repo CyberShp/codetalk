@@ -4967,12 +4967,58 @@ def _serverless_handler_entry_for_symbol(
 def _event_payload_input_hints(lines: list[str], definition_idx: int) -> list[str]:
     hints: list[str] = []
     seen: set[str] = set()
+
+    def add(value: str) -> None:
+        value = str(value or "").strip()
+        if value in {
+            "get", "body", "headers", "queryStringParameters", "pathParameters",
+            "multiValueQueryStringParameters", "multiValueHeaders",
+        }:
+            return
+        if not value or value in seen:
+            return
+        seen.add(value)
+        hints.append(value)
+
     fn_end = len(lines)
     for pos in range(definition_idx + 1, len(lines)):
         if _is_sibling_definition_boundary(lines, definition_idx, pos):
             fn_end = pos
             break
     text = "\n".join(lines[definition_idx:fn_end])
+    event_request_containers = (
+        "queryStringParameters", "pathParameters", "headers",
+        "multiValueQueryStringParameters", "multiValueHeaders",
+    )
+    container_pattern = "|".join(re.escape(item) for item in event_request_containers)
+    alias_names: set[str] = set()
+    for match in re.finditer(
+        rf"\b(?P<alias>[A-Za-z_]\w*)\s*=\s*event"
+        rf"(?:\??\.\s*(?P<dot>{container_pattern})"
+        rf"|\s*\[\s*['\"](?P<bracket>{container_pattern})['\"]\s*\]"
+        rf"|\.\s*get\s*\(\s*['\"](?P<get>{container_pattern})['\"]\s*\))",
+        text,
+    ):
+        alias = match.group("alias")
+        if alias and alias != "event":
+            alias_names.add(alias)
+    nested_patterns = []
+    for alias in sorted(alias_names):
+        escaped = re.escape(alias)
+        nested_patterns.extend([
+            rf"\b{escaped}\s*\.\s*get\s*\(\s*['\"](?P<get>[A-Za-z_][\w-]*)['\"]",
+            rf"\b{escaped}\s*\[\s*['\"](?P<bracket>[A-Za-z_][\w-]*)['\"]\s*\]",
+            rf"\b{escaped}\??\.\s*(?P<dot>[A-Za-z_][\w-]*)\b",
+        ])
+    nested_patterns.append(
+        rf"\bevent(?:\??\.\s*(?:{container_pattern})"
+        rf"|\s*\[\s*['\"](?:{container_pattern})['\"]\s*\])"
+        rf"(?:\??\.\s*(?P<dot>[A-Za-z_][\w-]*)"
+        rf"|\s*\[\s*['\"](?P<bracket>[A-Za-z_][\w-]*)['\"]\s*\])"
+    )
+    for pattern in nested_patterns:
+        for match in re.finditer(pattern, text):
+            add(match.groupdict().get("dot") or match.groupdict().get("bracket") or match.groupdict().get("get") or "")
     for pattern in (
         r"\bevent\s*\.\s*get\s*\(\s*['\"]([A-Za-z_][\w-]*)['\"]",
         r"\bevent\s*\[\s*['\"]([A-Za-z_][\w-]*)['\"]\s*\]",
@@ -4982,10 +5028,7 @@ def _event_payload_input_hints(lines: list[str], definition_idx: int) -> list[st
             value = match.group(1).strip()
             if value in {"get", "body", "headers", "queryStringParameters", "pathParameters"}:
                 continue
-            if not value or value in seen:
-                continue
-            seen.add(value)
-            hints.append(value)
+            add(value)
     return hints[:12]
 
 
