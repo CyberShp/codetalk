@@ -6650,6 +6650,105 @@ def test_live_gitnexus_fetch_does_not_fallback_to_wrong_default_graph(tmp_path, 
     assert FakeClient.graph_calls == [{"repo": "frontend"}]
 
 
+def test_live_gitnexus_fetch_warns_when_repo_is_not_indexed(tmp_path, monkeypatch):
+    from app.services import workspace_scope_resolver as resolver
+
+    class FakeResponse:
+        def __init__(self, status_code, payload):
+            self.status_code = status_code
+            self._payload = payload
+
+        def json(self):
+            return self._payload
+
+        def raise_for_status(self):
+            if self.status_code >= 400:
+                raise RuntimeError(f"HTTP {self.status_code}")
+
+    class FakeClient:
+        def __init__(self, *args, **kwargs):
+            pass
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, exc_type, exc, tb):
+            return False
+
+        async def get(self, path, params=None, timeout=None):
+            if path == "/api/repos":
+                return FakeResponse(200, [{"name": "other", "path": "E:/repos/other"}])
+            if path == "/api/graph":
+                return FakeResponse(404, {"error": "repo not found"})
+            raise AssertionError(path)
+
+    monkeypatch.setattr(resolver.httpx, "AsyncClient", FakeClient)
+
+    graph, warning = asyncio.run(
+        resolver._fetch_live_gitnexus_graph_once(str(tmp_path / "frontend"))
+    )
+
+    assert graph is None
+    assert "GitNexus reachable but this repo is not indexed" in warning
+    assert "indexed repos: 1" in warning
+
+
+def test_live_gitnexus_fetch_resolves_value_wrapped_parent_repo(tmp_path, monkeypatch):
+    from app.services import workspace_scope_resolver as resolver
+
+    parent = tmp_path / "frontend"
+    child = parent / "nof"
+    child.mkdir(parents=True)
+
+    class FakeResponse:
+        def __init__(self, status_code, payload):
+            self.status_code = status_code
+            self._payload = payload
+
+        def json(self):
+            return self._payload
+
+        def raise_for_status(self):
+            if self.status_code >= 400:
+                raise RuntimeError(f"HTTP {self.status_code}")
+
+    class FakeClient:
+        graph_calls: list[dict | None] = []
+
+        def __init__(self, *args, **kwargs):
+            pass
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, exc_type, exc, tb):
+            return False
+
+        async def get(self, path, params=None, timeout=None):
+            if path == "/api/repos":
+                return FakeResponse(200, {
+                    "value": [
+                        {
+                            "name": "frontend",
+                            "path": str(parent),
+                            "stats": {"nodes": 9, "edges": 10, "files": 2},
+                        }
+                    ]
+                })
+            if path == "/api/graph":
+                FakeClient.graph_calls.append(params)
+                return FakeResponse(200, {"nodes": [{"id": "f1"}], "relationships": []})
+            raise AssertionError(path)
+
+    monkeypatch.setattr(resolver.httpx, "AsyncClient", FakeClient)
+
+    graph, warning = asyncio.run(resolver._fetch_live_gitnexus_graph_once(str(child)))
+
+    assert graph == {"nodes": [{"id": "f1"}], "relationships": []}
+    assert warning == ""
+    assert FakeClient.graph_calls == [{"repo": "frontend", "path": str(parent)}]
+
+
 def test_workspace_resolver_keeps_detailed_agent_warning_without_duplicate(tmp_path, monkeypatch):
     from app.services.external_agent_discovery import AgentDiscoveryResult
 

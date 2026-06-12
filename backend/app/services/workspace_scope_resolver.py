@@ -318,6 +318,7 @@ async def _fetch_live_gitnexus_graph_with_warning(repo_path: str) -> tuple[dict 
 async def _fetch_live_gitnexus_graph_once(tool_path: str) -> tuple[dict | None, str]:
     """Fetch the live graph once without trying to manage the process."""
     repo_name = Path(tool_path).name
+    repo_index_warning = ""
     try:
         async with httpx.AsyncClient(
             base_url=settings.gitnexus_base_url,
@@ -332,11 +333,20 @@ async def _fetch_live_gitnexus_graph_once(tool_path: str) -> tuple[dict | None, 
                 from app.adapters.gitnexus import resolve_indexed_repo
                 repos_resp = await client.get("/api/repos", timeout=10)
                 if repos_resp.status_code == 200:
-                    descriptor = resolve_indexed_repo(repos_resp.json(), tool_path)
+                    repos_payload = repos_resp.json()
+                    repo_entries = _gitnexus_repo_entries_for_scope(repos_payload)
+                    descriptor = resolve_indexed_repo(repo_entries, tool_path)
                     if descriptor:
                         params["repo"] = descriptor["name"]
                         if descriptor.get("path"):
                             params["path"] = descriptor["path"]
+                    else:
+                        repo_index_warning = (
+                            "GitNexus reachable but this repo is not indexed "
+                            f"(tool path: {tool_path}; indexed repos: {len(repo_entries)})"
+                        )
+                else:
+                    repo_index_warning = f"GitNexus /api/repos HTTP {repos_resp.status_code}"
             except Exception:
                 pass
             resp = await client.get("/api/graph", params=params)
@@ -346,8 +356,27 @@ async def _fetch_live_gitnexus_graph_once(tool_path: str) -> tuple[dict | None, 
         logger.info("Live GitNexus graph fetch failed: %s", exc)
         return (
             None,
-            f"GitNexus live graph fetch failed from {settings.gitnexus_base_url}: {_short_error(exc)}",
+            "; ".join(
+                part for part in (
+                    repo_index_warning,
+                    f"GitNexus live graph fetch failed from {settings.gitnexus_base_url}: {_short_error(exc)}",
+                )
+                if part
+            ),
         )
+
+
+def _gitnexus_repo_entries_for_scope(payload: object) -> list:
+    if isinstance(payload, list):
+        return payload
+    if isinstance(payload, dict):
+        for key in ("repos", "data", "items", "results", "value"):
+            value = payload.get(key)
+            if isinstance(value, list):
+                return value
+        if any(key in payload for key in ("name", "repo", "repoName", "path", "root", "repo_path")):
+            return [payload]
+    return []
 
 
 async def _try_start_managed_gitnexus_for_scope() -> tuple[bool, str]:
