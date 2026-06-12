@@ -3243,7 +3243,8 @@ def _specific_signature_input_hints(
     if not source_hints:
         return signature_hints
     generic_payload_names = {
-        "event", "evt", "message", "msg", "payload", "record", "request", "req",
+        "event", "evt", "message", "msg", "payload", "record",
+        "request", "req", "response", "res", "reply", "next", "h",
     }
     return [
         hint for hint in signature_hints
@@ -3509,7 +3510,7 @@ def _signature_input_params(
         return []
     framework_params = {
         "self", "cls", "request", "req", "response", "res", "next",
-        "context", "ctx", "scope", "receive", "send", "argv", "argc",
+        "reply", "h", "context", "ctx", "scope", "receive", "send", "argv", "argc",
         "httpcontext", "cancellationtoken", "modelstate",
     }
     hints: list[str] = []

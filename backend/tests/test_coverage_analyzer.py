@@ -2463,6 +2463,46 @@ class TestCoverageTestDesign:
         case_text = json.dumps(gap["black_box_cases"], ensure_ascii=False)
         assert "POST /tenants/:tenantId/payments" in case_text
 
+    async def test_route_object_handler_filters_response_toolkit_signature_hints(self, tmp_path):
+        from app.services.coverage_analyzer import build_coverage_test_design
+
+        src = tmp_path / "src"
+        src.mkdir()
+        (src / "routes.ts").write_text(
+            "export function processPayment(request, reply) {\n"
+            "  const amount = request.body.amount;\n"
+            "  if (!amount) {\n"
+            "    return reply.code(400).send();\n"
+            "  }\n"
+            "  return reply.send({ ok: true });\n"
+            "}\n\n"
+            "fastify.route({\n"
+            "  method: 'POST',\n"
+            "  url: '/payments/:paymentId',\n"
+            "  handler: processPayment,\n"
+            "});\n",
+            encoding="utf-8",
+        )
+        modules = self._modules(
+            "feature,module,code_location,function,triggered,hit_count\n"
+            "payments,routes,src/routes.ts:1-7,processPayment,false,0\n"
+        )
+
+        design = await build_coverage_test_design(
+            modules, workspace_id="ws-1", repo_path=str(tmp_path)
+        )
+
+        gap = [g for g in design["gaps"] if g.get("kind") == "function"][0]
+        assert gap["black_box_readiness"]["case_type"] == "black_box_ready"
+        entry = gap["entry_paths"][0]
+        assert entry["entry_kind"] == "route"
+        assert entry["external_trigger"] == "POST /payments/:paymentId"
+        assert entry["input_hints"] == ["paymentId", "amount"]
+        case_text = json.dumps(gap["black_box_cases"], ensure_ascii=False)
+        assert "paymentId" in case_text
+        assert "amount" in case_text
+        assert "reply" not in case_text
+
     async def test_gin_route_registration_reads_context_input_hints(self, tmp_path):
         from app.services.coverage_analyzer import build_coverage_test_design
 
