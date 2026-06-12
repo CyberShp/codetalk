@@ -6115,6 +6115,7 @@ def _route_method_from_text(text: str) -> str | None:
     method_patterns = (
         r"\bmethods?\s*=\s*[\[\(\{]?\s*(['\"])(?P<method>get|post|put|patch|delete|head|options|any)\1",
         r"\bmethods?\s*:\s*[\[\(\{]?\s*(['\"])(?P<method>get|post|put|patch|delete|head|options|any)\1",
+        r"\broute\s*\(\s*(['\"])(?:\\.|(?!\1).)*?\1\s*,\s*(?P<method>get|post|put|patch|delete|head|options|any)\s*\(",
         r"\bRequestMethod\.(?P<method>GET|POST|PUT|PATCH|DELETE|HEAD|OPTIONS)\b",
         r"[@\[]\s*(?P<method>Get|Post|Put|Patch|Delete|Head|Options)Mapping\s*\(",
         r"[@\[]\s*(?P<method>Get|Post|Put|Patch|Delete|Head|Options)Mapping\b",
