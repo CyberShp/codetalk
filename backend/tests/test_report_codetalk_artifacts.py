@@ -122,11 +122,39 @@ def test_source_extensions_are_supported_across_report_chain() -> None:
         ".py", ".go", ".rs", ".java", ".js", ".jsx", ".ts", ".tsx", ".cs",
         ".rb", ".php", ".kt", ".kts", ".swift", ".m", ".scala",
         ".vue", ".svelte", ".astro", ".mdx",
+        ".proto", ".thrift",
     }
 
     assert expected_source_exts <= analysis_pipeline._SOURCE_EXTS
     assert expected_source_exts <= evidence_card_builder._SOURCE_EXTS
     assert expected_source_exts <= report_generator._SOURCE_EXTS
+
+
+def test_report_generator_reads_idl_key_source_files(tmp_path: Path) -> None:
+    proto = tmp_path / "api" / "billing.proto"
+    proto.parent.mkdir(parents=True)
+    proto.write_text(
+        "syntax = \"proto3\";\n"
+        "service Billing { rpc Refund(RefundRequest) returns (RefundReply); }\n",
+        encoding="utf-8",
+    )
+    graph = {
+        "nodes": [
+            {
+                "id": "api/billing.proto",
+                "label": "File",
+                "properties": {"name": "api/billing.proto"},
+            }
+        ],
+        "relationships": [
+            {"sourceId": "api/billing.proto", "targetId": "Billing"},
+        ],
+    }
+
+    source = ReportGenerator._read_source_for_key_files(str(tmp_path), graph)
+
+    assert "api/billing.proto" in source.replace("\\", "/")
+    assert "service Billing" in source
 
 
 @pytest.mark.asyncio
