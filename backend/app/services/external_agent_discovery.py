@@ -23,7 +23,13 @@ from app.config import settings
 from app.schemas.workspace_analysis import ScopeCandidate
 
 AgentStatus = Literal[
-    "ok", "unavailable", "timeout", "invalid_output", "rejected_command", "error"
+    "ok",
+    "unavailable",
+    "timeout",
+    "invalid_output",
+    "rejected_command",
+    "configuration_error",
+    "error",
 ]
 AgentGoal = Literal["source_scope", "coverage_entry"]
 
@@ -2330,17 +2336,22 @@ async def _run_provider(
                 if cli_error
                 else _format_process_error_summary(proc.returncode, stderr_text, raw, health)
             )
-            attempt["run_status"] = "error"
+            failure_status: AgentStatus = (
+                "configuration_error"
+                if _is_terminal_agent_configuration_error(summary)
+                else "error"
+            )
+            attempt["run_status"] = failure_status
             attempt["run_message"] = summary[:4000]
             prior_failures.append(summary)
             last_result = AgentDiscoveryResult(
                 provider=provider,
-                status="error",
+                status=failure_status,
                 raw_summary=summary,
                 warnings=[summary],
             )
             last_raw = raw + stderr_text
-            if _is_terminal_agent_configuration_error(summary) and index >= len(commands) - 1:
+            if failure_status == "configuration_error" and index >= len(commands) - 1:
                 last_result.runtime_attempts = _runtime_attempt_records(
                     provider,
                     request.request_id,

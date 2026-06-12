@@ -2303,8 +2303,43 @@ def test_run_provider_uses_fallback_after_ccr_config_error(tmp_path, monkeypatch
     assert results[0].raw_summary == "fallback_ok"
     assert any("Config file not found" in item for item in results[0].warnings)
     assert len(results[0].runtime_attempts) == 2
-    assert results[0].runtime_attempts[0]["run_status"] == "error"
+    assert results[0].runtime_attempts[0]["run_status"] == "configuration_error"
     assert results[0].runtime_attempts[1]["run_status"] == "ok"
+
+
+def test_run_provider_reports_configuration_error_without_fallback(tmp_path, monkeypatch):
+    from app.services.external_agent_discovery import AgentDiscoveryRequest, run_external_agent_discovery
+
+    bad_agent = tmp_path / "ccr_config_error.py"
+    bad_agent.write_text(
+        "import sys\n"
+        "sys.stdin.read()\n"
+        "print('Config file not found at C:/Users/me/.claude-code-router/config-router.json')\n"
+        "raise SystemExit(1)\n",
+        encoding="utf-8",
+    )
+
+    monkeypatch.setattr(
+        "app.services.external_agent_discovery.settings.claude_code_command",
+        f'"{sys.executable}" "{bad_agent}"',
+    )
+    monkeypatch.setattr(
+        "app.services.external_agent_discovery.settings.claude_code_fallback_commands",
+        [],
+    )
+
+    results = asyncio.run(run_external_agent_discovery(
+        AgentDiscoveryRequest(
+            request_id="ccr-config-error-no-fallback",
+            repo_path=str(tmp_path),
+            analysis_object_text="tls",
+        ),
+        providers=["claude-code"],
+    ))
+
+    assert results[0].status == "configuration_error"
+    assert "Config file not found" in results[0].raw_summary
+    assert results[0].runtime_attempts[0]["run_status"] == "configuration_error"
 
 
 def test_run_provider_uses_fallback_after_default_ccr_run_invalid_output(tmp_path, monkeypatch):
