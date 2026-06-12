@@ -3741,6 +3741,80 @@ class TestCoverageTestDesign:
         assert "tenant_id" in case_text
         assert "payment_id" in case_text
 
+    async def test_fastapi_include_router_prefix_feeds_black_box_trigger(self, tmp_path):
+        from app.services.coverage_analyzer import build_coverage_test_design
+
+        src = tmp_path / "src"
+        src.mkdir()
+        (src / "payments.py").write_text(
+            "from fastapi import APIRouter\n\n"
+            "router = APIRouter()\n\n"
+            "@router.post('/payments/{payment_id}')\n"
+            "def update_payment(payment_id: str, payload: dict):\n"
+            "    if not payload.get('amount'):\n"
+            "        return {'status': 400}\n"
+            "    return {'status': 200, 'payment_id': payment_id}\n",
+            encoding="utf-8",
+        )
+        (src / "main.py").write_text(
+            "from payments import router\n\n"
+            "app.include_router(router, prefix='/tenants/{tenant_id}')\n",
+            encoding="utf-8",
+        )
+        modules = self._modules(
+            "feature,module,code_location,function,triggered,hit_count\n"
+            "payments,payments,src/payments.py:6-9,update_payment,false,0\n"
+        )
+
+        design = await build_coverage_test_design(
+            modules, workspace_id="ws-1", repo_path=str(tmp_path)
+        )
+
+        gap = [g for g in design["gaps"] if g.get("kind") == "function"][0]
+        assert gap["black_box_readiness"]["case_type"] == "black_box_ready"
+        entry = gap["entry_paths"][0]
+        assert entry["external_trigger"] == "POST /tenants/{tenant_id}/payments/{payment_id}"
+        assert "tenant_id" in entry["input_hints"]
+        assert "payment_id" in entry["input_hints"]
+
+    async def test_fastapi_include_router_alias_prefix_feeds_black_box_trigger(self, tmp_path):
+        from app.services.coverage_analyzer import build_coverage_test_design
+
+        src = tmp_path / "src"
+        src.mkdir()
+        (src / "payments.py").write_text(
+            "from fastapi import APIRouter\n\n"
+            "router = APIRouter()\n\n"
+            "@router.post('/payments/{payment_id}')\n"
+            "def update_payment(payment_id: str, payload: dict):\n"
+            "    if not payload.get('amount'):\n"
+            "        return {'status': 400}\n"
+            "    return {'status': 200, 'payment_id': payment_id}\n",
+            encoding="utf-8",
+        )
+        (src / "main.py").write_text(
+            "from payments import router as payment_router\n\n"
+            "app.include_router(\n"
+            "    payment_router,\n"
+            "    prefix='/tenants/{tenant_id}',\n"
+            ")\n",
+            encoding="utf-8",
+        )
+        modules = self._modules(
+            "feature,module,code_location,function,triggered,hit_count\n"
+            "payments,payments,src/payments.py:6-9,update_payment,false,0\n"
+        )
+
+        design = await build_coverage_test_design(
+            modules, workspace_id="ws-1", repo_path=str(tmp_path)
+        )
+
+        gap = [g for g in design["gaps"] if g.get("kind") == "function"][0]
+        entry = gap["entry_paths"][0]
+        assert entry["external_trigger"] == "POST /tenants/{tenant_id}/payments/{payment_id}"
+        assert "tenant_id" in entry["input_hints"]
+        assert "payment_id" in entry["input_hints"]
+
     async def test_decorated_route_path_params_feed_black_box_input_hints(self, tmp_path):
         from app.services.coverage_analyzer import build_coverage_test_design
 

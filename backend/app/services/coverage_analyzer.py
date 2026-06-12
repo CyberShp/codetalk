@@ -4383,6 +4383,8 @@ def _decorated_entry_for_symbol(
             )
     if entry_kind == "route":
         route_prefix = _route_prefix_for_decorator_receiver(
+            repo_root,
+            source_file,
             lines,
             decorator_texts,
             definition_line,
@@ -5047,6 +5049,8 @@ def _route_external_trigger_from_texts(texts: list[str]) -> str | None:
 
 
 def _route_prefix_for_decorator_receiver(
+    repo_root: Path,
+    source_file: Path,
     lines: list[str],
     decorator_texts: list[str],
     definition_line: int,
@@ -5065,7 +5069,97 @@ def _route_prefix_for_decorator_receiver(
         prefix = _router_prefix_from_assignment(statement)
         if prefix:
             return prefix
+    return _route_include_prefix_for_decorator_receiver(repo_root, source_file, receiver)
+
+
+def _route_include_prefix_for_decorator_receiver(
+    repo_root: Path,
+    source_file: Path,
+    receiver: str,
+) -> str | None:
+    receiver_name = receiver.split(".")[-1]
+    source_stem = source_file.stem
+    try:
+        rel_source = source_file.resolve().relative_to(repo_root.resolve())
+    except Exception:
+        rel_source = source_file
+    module_parts = [part for part in rel_source.with_suffix("").parts if part]
+    module_suffixes = {
+        ".".join(module_parts[index:])
+        for index in range(len(module_parts))
+        if module_parts[index:]
+    }
+    module_suffixes.add(source_stem)
+    for root, dirs, files in os.walk(repo_root):
+        dirs[:] = [d for d in dirs if d not in _DIR_SKIP and not d.startswith(".")]
+        for name in files:
+            path = Path(root) / name
+            if path.suffix.lower() != ".py":
+                continue
+            try:
+                candidate_lines = path.read_text(encoding="utf-8", errors="replace").splitlines()
+            except OSError:
+                continue
+            aliases = _router_import_aliases_for_source(
+                candidate_lines,
+                module_suffixes,
+                receiver_name,
+            )
+            names = {receiver_name, *aliases}
+            for idx, line in enumerate(candidate_lines):
+                if "include_router" not in line:
+                    continue
+                statement = _call_expression_context_from_start(candidate_lines, idx)
+                if not any(_include_router_statement_uses_name(statement, item) for item in names):
+                    continue
+                prefix = _include_router_prefix_from_statement(statement)
+                if prefix:
+                    return prefix
     return None
+
+
+def _router_import_aliases_for_source(
+    lines: list[str],
+    module_suffixes: set[str],
+    receiver_name: str,
+) -> set[str]:
+    aliases: set[str] = set()
+    import_re = re.compile(
+        rf"\bfrom\s+(?P<module>[A-Za-z_][\w.]*|(?:\.+[A-Za-z_][\w.]*)?)\s+import\s+(?P<items>.+)"
+    )
+    item_re = re.compile(
+        rf"\b{re.escape(receiver_name)}\b(?:\s+as\s+(?P<alias>[A-Za-z_]\w*))?"
+    )
+    for line in lines:
+        match = import_re.search(line.strip())
+        if not match:
+            continue
+        module = match.group("module").lstrip(".")
+        if module and not any(module == suffix or module.endswith("." + suffix) for suffix in module_suffixes):
+            continue
+        for item in match.group("items").split(","):
+            item_match = item_re.search(item.strip())
+            if item_match:
+                aliases.add(item_match.group("alias") or receiver_name)
+    return aliases
+
+
+def _include_router_statement_uses_name(statement: str, name: str) -> bool:
+    return bool(re.search(
+        rf"\.include_router\s*\(\s*(?:[A-Za-z_]\w*\.)?{re.escape(name)}\b",
+        statement or "",
+    ))
+
+
+def _include_router_prefix_from_statement(statement: str) -> str | None:
+    match = re.search(
+        r"\bprefix\s*=\s*(['\"])(?P<prefix>(?:\\.|(?!\1).)*?)\1",
+        statement or "",
+    )
+    if not match:
+        return None
+    prefix = match.group("prefix").strip()
+    return prefix if _looks_like_route_path(prefix) else None
 
 
 def _route_mount_prefix_for_site(lines: list[str], site_text: str) -> str | None:
