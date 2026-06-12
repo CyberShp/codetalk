@@ -17,6 +17,23 @@ def _set_existing_ccr_config(tmp_path, monkeypatch) -> Path:
     return config
 
 
+def test_ccr_config_path_env_is_injected_into_ccr_code(monkeypatch, tmp_path):
+    from app.services.external_agent_discovery import _normalize_ccr_code_print_argv
+
+    config = tmp_path / "intranet" / "config-router.json"
+    config.parent.mkdir(parents=True)
+    config.write_text('{"providers":[]}\n', encoding="utf-8")
+    monkeypatch.setenv("CCR_CONFIG_PATH", str(config))
+    monkeypatch.setattr("app.services.external_agent_discovery.settings.claude_code_config_path", "")
+    monkeypatch.setenv("USERPROFILE", str(tmp_path / "empty-home"))
+    monkeypatch.delenv("HOME", raising=False)
+
+    argv = _normalize_ccr_code_print_argv(["ccr", "code"])
+
+    assert argv[:4] == ["ccr", "code", "--config", str(config)]
+    assert argv[-2:] == ["--", "-p"]
+
+
 def test_nvme_tcp_tls_query_expands_to_nvmf_transport_variants():
     from app.services.external_agent_discovery import expand_agent_query_terms
 
@@ -1182,7 +1199,7 @@ def test_provider_command_supports_subcommand_style(tmp_path, monkeypatch):
 def test_provider_health_normalizes_bare_ccr_code_for_noninteractive_prompt(tmp_path, monkeypatch):
     from app.services.external_agent_discovery import check_provider_health
 
-    _set_existing_ccr_config(tmp_path, monkeypatch)
+    config = _set_existing_ccr_config(tmp_path, monkeypatch)
     monkeypatch.setattr(
         "app.services.external_agent_discovery.shutil.which",
         lambda cmd: "C:/tools/ccr.exe" if cmd == "ccr" else None,
@@ -1191,7 +1208,7 @@ def test_provider_health_normalizes_bare_ccr_code_for_noninteractive_prompt(tmp_
     health = check_provider_health("claude-code", "ccr code")
 
     assert health["status"] == "available"
-    assert health["argv"][0:4] == ["C:/tools/ccr.exe", "code", "--", "-p"]
+    assert health["argv"][0:6] == ["C:/tools/ccr.exe", "code", "--config", str(config), "--", "-p"]
     assert "--output-format" not in health["argv"]
     assert "--allowedTools" not in health["argv"]
     assert "--disallowedTools" not in health["argv"]
@@ -2112,7 +2129,7 @@ def test_run_provider_nonzero_exit_keeps_ccr_config_hint(tmp_path, monkeypatch):
         providers=["claude-code"],
     ))
 
-    assert results[0].status == "error"
+    assert results[0].status == "configuration_error"
     assert "ccr failed before routing request" in results[0].raw_summary
     assert "configured=ccr code" in results[0].raw_summary
     assert "default config not found" in results[0].raw_summary
@@ -2199,7 +2216,7 @@ def test_run_provider_cli_error_keeps_ccr_config_hint(tmp_path, monkeypatch):
         providers=["claude-code"],
     ))
 
-    assert results[0].status == "error"
+    assert results[0].status == "configuration_error"
     assert "error_during_execution" in results[0].raw_summary
     assert "CCR router failed before request dispatch" in results[0].raw_summary
     assert "configured=ccr code" in results[0].raw_summary
@@ -3237,7 +3254,7 @@ def test_run_provider_claude_print_mode_passes_prompt_as_argument(tmp_path, monk
 def test_run_provider_bare_ccr_code_uses_print_argument_transport(tmp_path, monkeypatch):
     from app.services.external_agent_discovery import AgentDiscoveryRequest, run_external_agent_discovery
 
-    _set_existing_ccr_config(tmp_path, monkeypatch)
+    config = _set_existing_ccr_config(tmp_path, monkeypatch)
     captured: dict = {}
 
     class FakeProc:
@@ -3286,8 +3303,8 @@ def test_run_provider_bare_ccr_code_uses_print_argument_transport(tmp_path, monk
 
     assert results[0].status == "ok"
     argv = list(captured["argv"])
-    assert argv[0:4] == ["C:/tools/ccr.exe", "code", "--", "-p"]
-    assert "analysis_object_text" in argv[4]
+    assert argv[0:6] == ["C:/tools/ccr.exe", "code", "--config", str(config), "--", "-p"]
+    assert "analysis_object_text" in argv[6]
     assert "--output-format" not in argv
     assert captured["stdin"] == ""
     assert results[0].runtime_attempts[0]["prompt_transport"] == "argv"

@@ -916,6 +916,13 @@ def _existing_ccr_config_path() -> str | None:
     configured = str(getattr(settings, "claude_code_config_path", "") or "").strip()
     if configured:
         return configured
+    env_config = str(os.environ.get("CCR_CONFIG_PATH") or "").strip()
+    if env_config:
+        try:
+            if Path(env_config).expanduser().is_file():
+                return env_config
+        except OSError:
+            pass
 
     home = os.environ.get("USERPROFILE") or os.environ.get("HOME")
     if not home:
