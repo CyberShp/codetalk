@@ -4470,6 +4470,40 @@ def test_coverage_external_agent_status_preserves_configuration_error():
     assert status == "configuration_error"
 
 
+def test_coverage_agent_collection_keeps_worst_provider_status(tmp_path):
+    from app.services.coverage_analyzer import _collect_agent_entry_results
+    from app.services.external_agent_discovery import AgentDiscoveryResult
+
+    status_by_provider: dict[str, str] = {}
+    raw_results: list[dict] = []
+
+    _collect_agent_entry_results(
+        [
+            AgentDiscoveryResult(
+                provider="claude-code",
+                status="configuration_error",
+                raw_summary="missing ccr config",
+            ),
+            AgentDiscoveryResult(
+                provider="claude-code",
+                status="ok",
+                raw_summary="later ok",
+            ),
+        ],
+        repo_root=tmp_path,
+        object_id="gap1",
+        turn_id="coverage:gap1",
+        agent_session=None,
+        validated_entries=[],
+        unverified_entries=[],
+        status_by_provider=status_by_provider,
+        raw_results=raw_results,
+    )
+
+    assert status_by_provider == {"claude-code": "configuration_error"}
+    assert [item["status"] for item in raw_results] == ["configuration_error", "ok"]
+
+
 def test_agent_entry_upsert_preserves_existing_input_hints():
     from app.services.coverage_analyzer import _upsert_agent_entry
 

@@ -32,6 +32,7 @@ from app.llm.base import BaseLLMClient
 from app.llm.factory import create_llm_client_from_active
 from app.services.external_agent_discovery import (
     AgentDiscoveryRequest,
+    merge_agent_provider_status,
     run_external_agent_discovery,
     validate_agent_candidate_file,
 )
@@ -1750,7 +1751,10 @@ def _collect_agent_entry_results(
 ) -> None:
     for result in results:
         result_turn_id = getattr(result, "turn_id", None) or turn_id
-        status_by_provider[result.provider] = result.status
+        status_by_provider[result.provider] = merge_agent_provider_status(
+            status_by_provider.get(result.provider),
+            result.status,
+        )
         raw_results.append({
             "provider": result.provider,
             "turn_id": result_turn_id,
@@ -1895,7 +1899,10 @@ def _record_agent_round_error(
     exc: Exception,
 ) -> None:
     summary = str(exc).strip() or exc.__class__.__name__
-    provider_status["external_agent"] = "error"
+    provider_status["external_agent"] = merge_agent_provider_status(
+        provider_status.get("external_agent"),
+        "error",
+    )
     raw_results.append({
         "provider": "external_agent",
         "turn_id": turn_id,

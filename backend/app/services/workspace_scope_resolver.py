@@ -46,6 +46,7 @@ from app.services.external_agent_discovery import (
     AgentDiscoveryRequest,
     AgentDiscoveryResult,
     expand_agent_query_terms,
+    merge_agent_provider_status,
     merge_source_candidates,
     run_external_agent_discovery,
     validate_agent_candidate_file,
@@ -1091,7 +1092,10 @@ def _record_agent_scope_results(
     if session is None:
         return
     for result in results:
-        session.ledger.provider_status[result.provider] = result.status
+        session.ledger.provider_status[result.provider] = merge_agent_provider_status(
+            session.ledger.provider_status.get(result.provider),
+            result.status,
+        )
         for command in result.commands:
             session.ledger.command_history.append({
                 "object_id": object_id,

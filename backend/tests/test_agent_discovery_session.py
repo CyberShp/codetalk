@@ -374,6 +374,40 @@ def test_raw_output_is_not_used_as_fact_in_context_packet(tmp_path):
     assert packet["previous_agent_findings"] == []
 
 
+def test_provider_status_keeps_worst_status_across_turns(tmp_path):
+    from app.services.agent_discovery_session import create_agent_discovery_session
+
+    session = create_agent_discovery_session(
+        repo_path=str(tmp_path),
+        goal="workspace_scope",
+        artifact_dir=tmp_path / "artifacts",
+    )
+
+    session.record_turn(
+        provider="claude-code",
+        goal="source_scope",
+        prompt="prompt",
+        raw_output="missing ccr config",
+        parsed_result={},
+        validation_result={},
+        status="configuration_error",
+    )
+    session.record_turn(
+        provider="claude-code",
+        goal="source_scope",
+        prompt="prompt",
+        raw_output="later ok",
+        parsed_result={},
+        validation_result={},
+        status="ok",
+    )
+
+    loaded = create_agent_discovery_session.load(tmp_path / "artifacts")
+
+    assert session.ledger.provider_status["claude-code"] == "configuration_error"
+    assert loaded.ledger.provider_status["claude-code"] == "configuration_error"
+
+
 def test_turn_prompt_artifact_write_failure_is_recorded_without_raising(tmp_path, monkeypatch):
     from pathlib import Path
 

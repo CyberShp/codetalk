@@ -65,6 +65,17 @@ DISCOVERY_SCHEMA_KEYS = frozenset({
     "commands",
 })
 
+AGENT_STATUS_RANK = {
+    "ok": 0,
+    "available": 0,
+    "unavailable": 1,
+    "timeout": 2,
+    "invalid_output": 3,
+    "rejected_command": 4,
+    "configuration_error": 5,
+    "error": 6,
+}
+
 _QUERY_STOPWORDS_EN = frozenset({
     "the", "and", "for", "with", "from", "into", "that", "this",
     "path", "flow", "case", "code", "data", "value", "values",
@@ -287,6 +298,19 @@ def _fallback_reason(candidate_command: str, prior_attempts: list[dict]) -> str:
     if any(str(item.get("probe_status") or item.get("run_status") or "") for item in prior_attempts):
         return f"primary command failed; using fallback: {candidate_command}"
     return f"primary command unavailable; using fallback: {candidate_command}"
+
+
+def merge_agent_provider_status(current: str | None, incoming: str | None) -> str:
+    """Keep the most actionable provider status across turns/objects."""
+    current_value = str(current or "").strip()
+    incoming_value = str(incoming or "").strip()
+    if not current_value:
+        return incoming_value
+    if not incoming_value:
+        return current_value
+    current_rank = AGENT_STATUS_RANK.get(current_value, AGENT_STATUS_RANK["error"])
+    incoming_rank = AGENT_STATUS_RANK.get(incoming_value, AGENT_STATUS_RANK["error"])
+    return incoming_value if incoming_rank > current_rank else current_value
 
 
 def _agent_result_diagnostic(result: AgentDiscoveryResult) -> str:

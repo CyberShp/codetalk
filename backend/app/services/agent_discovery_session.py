@@ -16,7 +16,10 @@ from pathlib import Path
 from typing import Literal
 
 from app.config import settings
-from app.services.external_agent_discovery import validate_agent_candidate_file
+from app.services.external_agent_discovery import (
+    merge_agent_provider_status,
+    validate_agent_candidate_file,
+)
 
 SessionGoal = Literal["workspace_scope", "coverage_entry", "mixed"]
 
@@ -278,7 +281,10 @@ class AgentDiscoverySession:
             finished_at=_now(),
         )
         self.turns.append(turn)
-        self.ledger.provider_status[provider] = status
+        self.ledger.provider_status[provider] = merge_agent_provider_status(
+            self.ledger.provider_status.get(provider),
+            status,
+        )
         self.save()
         return turn
 
