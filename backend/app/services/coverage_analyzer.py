@@ -2600,7 +2600,25 @@ def _normalize_coverage_source_path(file_path: str) -> str:
         value = value[1:]
     value = re.sub(r":\d+:\d+$", "", value)
     value = re.sub(r":\d+(?:-\d+)?$", "", value)
+    value = _strip_coverage_symbol_suffix(value)
     return value
+
+
+def _strip_coverage_symbol_suffix(value: str) -> str:
+    """Strip ``path.ext:symbol`` while preserving drives and line suffixes."""
+    match = re.match(
+        rf"^(?P<path>.+\.(?:{_SOURCE_PATH_EXTENSION_PATTERN})):(?P<symbol>[^/\\]+)$",
+        value,
+        flags=re.IGNORECASE,
+    )
+    if not match:
+        return value
+    symbol = (match.group("symbol") or "").strip()
+    if not symbol or re.fullmatch(r"\d+(?::\d+)?(?:-\d+)?", symbol):
+        return value
+    if not re.search(r"[^\W\d_]", symbol, flags=re.UNICODE):
+        return value
+    return match.group("path")
 
 
 def _normalize_remote_code_url_path(path: str) -> str:

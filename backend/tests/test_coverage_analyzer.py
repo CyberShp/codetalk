@@ -6508,6 +6508,41 @@ class TestCoverageTestDesign:
         assert window["path"] == "src/service.c"
         assert "recover_state" in window["text"]
 
+    async def test_source_window_strips_file_symbol_suffix_before_function_fallback(self, tmp_path):
+        from app.adapters.coverage import FunctionHit
+        from app.services.coverage_analyzer import _normalize_coverage_source_path, _read_source_window
+
+        assert _normalize_coverage_source_path("src/service.py:normalize_record") == "src/service.py"
+
+        decoy = tmp_path / "aaa"
+        decoy.mkdir()
+        (decoy / "other.py").write_text(
+            "def normalize_record(record):\n"
+            "    return 'wrong file'\n",
+            encoding="utf-8",
+        )
+        src = tmp_path / "src"
+        src.mkdir()
+        (src / "service.py").write_text(
+            "def normalize_record(record):\n"
+            "    return 'correct file'\n",
+            encoding="utf-8",
+        )
+        hit = FunctionHit(
+            function_name="normalize_record",
+            file_path="src/service.py:normalize_record",
+            line_start=1,
+            triggered=False,
+            hit_count=0,
+        )
+
+        window = _read_source_window(tmp_path, hit)
+
+        assert window is not None
+        assert window["path"] == "src/service.py"
+        assert "correct file" in window["text"]
+        assert "wrong file" not in window["text"]
+
     async def test_source_window_normalizes_remote_code_urls(self, tmp_path):
         from app.adapters.coverage import FunctionHit
         from app.services.coverage_analyzer import _normalize_coverage_source_path, _read_source_window
