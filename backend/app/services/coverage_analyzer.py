@@ -132,6 +132,11 @@ _ASSIGNED_FUNCTION_DEF_RES = (
         r"^\s*func\s+\([^)]*\)\s+(?P<name>[A-Za-z_$][\w$]*)\s*\("
     ),
     re.compile(
+        r"^\s*(?:(?:pub(?:\([^)]*\))?|async|const|unsafe)\s+)*"
+        r"(?:extern\s+(?:\"[^\"]+\"\s+)?)?"
+        r"fn\s+(?P<name>[A-Za-z_]\w*)\s*(?:<[^>{}]*>)?\s*\("
+    ),
+    re.compile(
         r"^\s*def\s+(?:(?:self|[A-Z][\w:]*)\.)"
         r"(?P<name>[A-Za-z_$][\w$]*[!?=]?)\b"
     ),
@@ -5603,6 +5608,7 @@ def _decorator_start_line(line: str) -> bool:
     return bool(
         re.match(r"^@[A-Za-z_][\w.]*\b", stripped)
         or re.match(r"^\[[A-Za-z_][\w.]*\b", stripped)
+        or re.match(r"^#\s*\[\s*[A-Za-z_][\w.]*\b", stripped)
     )
 
 
@@ -5620,6 +5626,11 @@ def _classify_entry_decorator(decorator_lines: list[str]) -> str | None:
     text = " ".join(line.strip() for line in decorator_lines).lower()
     if not text:
         return None
+    if re.search(
+        r"#\s*\[\s*(?:get|post|put|patch|delete|head|options|route)\b",
+        text,
+    ):
+        return "route"
     for kind, tokens in _ENTRY_DECORATOR_KIND_TOKENS:
         if any(token in text for token in tokens):
             return kind
@@ -5646,13 +5657,20 @@ def _route_template_input_hints(decorator_lines: list[str]) -> list[str]:
     for pattern in (
         r"\{([A-Za-z_][\w-]*)\}",
         r"/:([A-Za-z_][\w-]*)\b",
-        r"<(?:[A-Za-z_][\w.]*:)?([A-Za-z_][\w-]*)>",
     ):
         for match in re.finditer(pattern, text):
             name = match.group(1)
             if name not in seen:
                 seen.add(name)
                 hints.append(name)
+    for match in re.finditer(r"<(?:[A-Za-z_][\w.]*:)?([A-Za-z_][\w-]*)>", text):
+        prefix = text[match.start() - 1] if match.start() > 0 else ""
+        if prefix and re.match(r"[\w:]", prefix):
+            continue
+        name = match.group(1)
+        if name not in seen:
+            seen.add(name)
+            hints.append(name)
     return hints[:12]
 
 
