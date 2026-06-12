@@ -875,12 +875,29 @@ def _has_claude_print_mode(argv: list[str]) -> bool:
 
 
 def _normalize_ccr_code_print_argv(argv: list[str]) -> list[str]:
-    result = list(argv)
+    result = _inject_configured_ccr_config_path(list(argv))
     if _ccr_code_has_claude_print_mode(result):
         return result
     if result and str(result[-1]) in {"-p", "--print"}:
         result.pop()
     result.extend(["--", "-p"])
+    return result
+
+
+def _inject_configured_ccr_config_path(argv: list[str]) -> list[str]:
+    if not _looks_like_ccr_code_command(argv):
+        return list(argv)
+    if _has_cli_option(argv, "--config") or _has_cli_option(argv, "-c"):
+        return list(argv)
+    config_path = str(getattr(settings, "claude_code_config_path", "") or "").strip()
+    if not config_path:
+        return list(argv)
+    result = list(argv)
+    try:
+        insert_at = result.index("--")
+    except ValueError:
+        insert_at = len(result)
+    result[insert_at:insert_at] = ["--config", config_path]
     return result
 
 

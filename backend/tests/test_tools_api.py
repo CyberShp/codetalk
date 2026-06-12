@@ -278,8 +278,8 @@ async def test_tools_procs_adapter_exception_redacts_diagnostic_message(tools_cl
     assert "<redacted>" in agent["message"]
 
 
-async def test_external_agent_health_marks_missing_ccr_config_misconfigured(monkeypatch):
-    """Tools health should not report CCR as healthy when its required config is absent."""
+async def test_external_agent_health_keeps_default_ccr_config_hint_non_blocking(monkeypatch):
+    """Default CCR config absence is a diagnostic hint; explicit bad config is misconfigured."""
     from app.adapters.external_agent import ExternalAgentAdapter
 
     monkeypatch.setattr(
@@ -305,8 +305,8 @@ async def test_external_agent_health_marks_missing_ccr_config_misconfigured(monk
 
     health = await ExternalAgentAdapter("claude-code", "claude_code_command").health_check()
 
-    assert health.is_healthy is False
-    assert health.container_status == "misconfigured"
+    assert health.is_healthy is True
+    assert health.container_status == "available"
     assert "CCR_CONFIG_PATH" in health.last_check
 
 
@@ -368,15 +368,44 @@ async def test_external_agent_startup_probe_exception_returns_diagnostics(tools_
     assert "<redacted>" in body["message"]
 
 
+async def test_gitnexus_startup_probe_reports_managed_process_diagnostics(monkeypatch):
+    mock_pm = MagicMock()
+    mock_pm.start = AsyncMock(return_value=True)
+    mock_pm.health_check = AsyncMock(return_value={
+        "name": "gitnexus",
+        "healthy": False,
+        "status": "error",
+        "last_error": "Health endpoint unreachable",
+    })
+    managed = MagicMock()
+    managed.last_error = "Health endpoint unreachable"
+    mock_pm._processes = {"gitnexus": managed}
+
+    app = _make_app(mock_pm)
+    async with AsyncClient(
+        transport=ASGITransport(app=app), base_url="http://test"
+    ) as client:
+        resp = await client.post("/api/tools/gitnexus/startup-probe")
+
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["tool"] == "gitnexus"
+    assert body["healthy"] is False
+    assert body["status"] == "error"
+    assert "Health endpoint unreachable" in body["message"]
+    mock_pm.start.assert_awaited_once_with("gitnexus")
+    mock_pm.health_check.assert_awaited_once_with("gitnexus")
+
+
 async def test_startup_probe_rejects_tools_without_probe_support(tools_client, monkeypatch):
     class FakeAdapter:
         def name(self):
-            return "gitnexus"
+            return "deepwiki-api"
 
     client, _mock_pm = tools_client
     monkeypatch.setattr(tools, "get_adapter", lambda _name: FakeAdapter())
 
-    resp = await client.post("/api/tools/gitnexus/startup-probe")
+    resp = await client.post("/api/tools/deepwiki-api/startup-probe")
 
     assert resp.status_code == 400
     assert "does not support startup probe" in resp.json()["detail"]

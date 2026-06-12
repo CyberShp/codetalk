@@ -7,6 +7,7 @@ from typing import Any
 from fastapi import APIRouter, HTTPException, Request
 
 from app.adapters import get_adapter, get_all_adapters
+from app.config import settings
 from app.services.external_agent_discovery import redact_agent_diagnostic_text
 from app.services.process_manager import ProcessManager
 
@@ -16,6 +17,7 @@ router = APIRouter(prefix="/api/tools", tags=["tools"])
 
 _HEALTH_TIMEOUT = 4.0  # seconds; adapters slower than this are reported as busy
 _ADAPTER_ONLY_TOOL_NAMES = {"claude-code", "opencode"}
+_MANAGED_STARTUP_PROBE_TOOL_NAMES = {"gitnexus"}
 
 
 def _get_pm(request: Request) -> ProcessManager:
@@ -208,7 +210,11 @@ async def get_tool_health(tool_name: str) -> dict[str, Any]:
 
 
 @router.post("/{tool_name}/startup-probe")
-async def startup_probe_tool(tool_name: str, repo_path: str | None = None) -> dict[str, Any]:
+async def startup_probe_tool(
+    tool_name: str,
+    request: Request,
+    repo_path: str | None = None,
+) -> dict[str, Any]:
     """Actually start an adapter-only external agent once and report diagnostics."""
     try:
         adapter = get_adapter(tool_name)
@@ -217,6 +223,8 @@ async def startup_probe_tool(tool_name: str, repo_path: str | None = None) -> di
 
     probe = getattr(adapter, "startup_probe", None)
     if not callable(probe):
+        if tool_name in _MANAGED_STARTUP_PROBE_TOOL_NAMES:
+            return await _managed_tool_startup_probe(tool_name, _get_pm(request))
         raise HTTPException(status_code=400, detail=f"Tool does not support startup probe: {tool_name}")
 
     try:
@@ -236,6 +244,57 @@ async def startup_probe_tool(tool_name: str, repo_path: str | None = None) -> di
             "status": "error",
             "message": message,
         }
+
+
+async def _managed_tool_startup_probe(tool_name: str, pm: ProcessManager) -> dict[str, Any]:
+    try:
+        started = await pm.start(tool_name)
+    except Exception as exc:
+        message = redact_agent_diagnostic_text(str(exc))
+        return {
+            "tool": tool_name,
+            "healthy": False,
+            "status": "error",
+            "started": False,
+            "message": message,
+        }
+
+    health: dict[str, Any] = {}
+    try:
+        health_check = getattr(pm, "health_check", None)
+        if callable(health_check):
+            health = await health_check(tool_name)
+    except Exception as exc:
+        health = {"healthy": False, "status": "error", "last_error": str(exc)}
+
+    managed = getattr(pm, "_processes", {}).get(tool_name)
+    last_error = (
+        str(health.get("last_error") or health.get("error") or "").strip()
+        if isinstance(health, dict)
+        else ""
+    )
+    if not last_error and managed is not None:
+        last_error = str(getattr(managed, "last_error", "") or "").strip()
+
+    healthy = bool(health.get("healthy")) if isinstance(health, dict) else False
+    health_status = str(health.get("status") or "").strip() if isinstance(health, dict) else ""
+    status = "ok" if healthy else (health_status or "error")
+    if not started and status == "ok":
+        status = "error"
+    message = "startup probe ok" if healthy else (last_error or f"Failed to start tool: {tool_name}")
+
+    stdout_log = settings.data_path / "logs" / "processes" / f"{tool_name}.out.log"
+    stderr_log = settings.data_path / "logs" / "processes" / f"{tool_name}.err.log"
+    return {
+        "tool": tool_name,
+        "healthy": healthy,
+        "status": status,
+        "started": bool(started),
+        "message": redact_agent_diagnostic_text(message),
+        "health": health,
+        "stdout_log": str(stdout_log),
+        "stderr_log": str(stderr_log),
+    }
 
 
 @router.post("/{tool_name}/start")
