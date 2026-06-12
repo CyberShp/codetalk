@@ -5345,6 +5345,32 @@ def test_workspace_path_keyword_ranking_handles_dotted_module_path(tmp_path):
     assert rel_hits[0] == "services/payments/webhook/handler.ts"
 
 
+def test_workspace_path_keyword_ranking_handles_colon_qualified_handler(tmp_path):
+    from app.services.workspace_scope_resolver import _path_keyword_repo_hits_blocking
+
+    target_dir = tmp_path / "services" / "payments" / "webhook"
+    target_dir.mkdir(parents=True)
+    (target_dir / "handler.ts").write_text(
+        "export function handlePaymentWebhook() { return true; }\n",
+        encoding="utf-8",
+    )
+    distractor_dir = tmp_path / "services" / "payments" / "ledger"
+    distractor_dir.mkdir(parents=True)
+    (distractor_dir / "webhook.ts").write_text(
+        "export const unrelated = true;\n",
+        encoding="utf-8",
+    )
+
+    hits = _path_keyword_repo_hits_blocking(
+        str(tmp_path),
+        ["services.payments.webhook:handler"],
+        3,
+    )
+    rel_hits = [Path(hit).relative_to(tmp_path).as_posix() for hit in hits]
+
+    assert rel_hits[0] == "services/payments/webhook/handler.ts"
+
+
 def test_workspace_path_keyword_preserves_pathlike_stopword_segments(tmp_path):
     from app.services.external_agent_discovery import expand_agent_query_terms
     from app.services.workspace_scope_resolver import (

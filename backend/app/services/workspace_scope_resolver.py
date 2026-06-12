@@ -176,7 +176,9 @@ def _keyword_path_variants(keyword: str) -> list[str]:
         variants.append(normalized)
 
     add(value)
-    dotted = value.replace(".", "/")
+    qualified_path = re.sub(r"[:#]+", "/", value)
+    add(qualified_path)
+    dotted = qualified_path.replace(".", "/")
     add(dotted)
     add(dotted.replace("/", "_"))
     add(dotted.replace("/", "-"))
