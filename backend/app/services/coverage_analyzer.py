@@ -2021,6 +2021,21 @@ _INTERNAL_INPUT_HINTS = {
     "stream", "reader", "ack", "nack", "reject", "commit", "rollback",
 }
 
+_TYPE_ONLY_INPUT_HINTS = {
+    "str", "string", "char", "character",
+    "bool", "boolean",
+    "byte", "bytes", "buffer",
+    "short", "int", "integer", "long", "bigint",
+    "float", "double", "decimal", "number", "numeric",
+    "uuid", "guid", "date", "datetime", "timestamp", "time",
+    "object", "any", "unknown", "void", "null", "none",
+    "array", "list", "tuple", "set", "map", "dict", "dictionary", "collection",
+    "optional", "option", "nullable", "result", "promise", "future",
+    "path", "filepath", "file_path", "json", "xml", "yaml",
+    "httpresponse", "responseentity", "iactionresult", "httprequest",
+    "httpcontext", "applicationcall", "routingcontext",
+}
+
 _INTERNAL_CONTEXT_HINT_PREFIXES = {
     "self",
     "this",
@@ -2090,6 +2105,8 @@ def _input_hint_is_internal_context(value: str) -> bool:
         return True
     normalized = re.sub(r"[^a-z0-9]+", "_", text.lower()).strip("_")
     if normalized in _INTERNAL_INPUT_HINTS:
+        return True
+    if normalized in _TYPE_ONLY_INPUT_HINTS:
         return True
     prefix_match = re.match(
         r"^([A-Za-z_][A-Za-z0-9_]*)\s*(?:\?\.|\.|->|\[\s*['\"])",

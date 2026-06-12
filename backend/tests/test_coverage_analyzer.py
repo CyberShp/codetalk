@@ -1500,6 +1500,53 @@ class TestCoverageTestDesign:
         assert 'ctx["tenant_id"]' not in execution_text
         assert "this?.payload.card_token" not in execution_text
 
+    async def test_black_box_cases_filter_primitive_type_input_hints(self):
+        from app.services.coverage_analyzer import _build_black_box_cases
+
+        hit = FunctionHit(
+            function_name="process_payment",
+            file_path="src/service.py",
+            line_start=1,
+            triggered=False,
+            hit_count=0,
+        )
+        entry_paths = [{
+            "entry_kind": "route",
+            "entry_symbol": "paymentRoute",
+            "entry_label": "POST /payments",
+            "chain": ["paymentRoute", "process_payment"],
+            "input_hints": [
+                "String",
+                "Boolean",
+                "Path",
+                "Json",
+                "tenant_id",
+                "amount",
+                "PaymentRequest",
+            ],
+        }]
+
+        cases = _build_black_box_cases(hit, entry_paths, [])
+        execution_text = json.dumps(
+            [
+                {
+                    "inputs": case.get("inputs"),
+                    "steps": case.get("steps"),
+                    "external_trigger": case.get("external_trigger"),
+                }
+                for case in cases
+            ],
+            ensure_ascii=False,
+        )
+
+        assert "tenant_id" in execution_text
+        assert "amount" in execution_text
+        assert "PaymentRequest" in execution_text
+        assert "String" not in execution_text
+        assert "Boolean" not in execution_text
+        assert "Path" not in execution_text
+        assert "Json" not in execution_text
+
     async def test_traces_external_entry_and_builds_black_box(self, tmp_path):
         from app.services.coverage_analyzer import build_coverage_test_design
 
