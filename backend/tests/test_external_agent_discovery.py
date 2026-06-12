@@ -7157,6 +7157,62 @@ def test_coverage_agent_self_symbol_does_not_generate_black_box_ready(tmp_path, 
     assert card["gray_box_allowed"] is True
 
 
+def test_coverage_agent_qualified_self_symbol_keeps_rejection_reason(tmp_path, monkeypatch):
+    import asyncio
+    import app.services.coverage_analyzer as coverage_mod
+    from app.services.coverage_analyzer import build_coverage_test_design
+    from app.services.external_agent_discovery import AgentCandidateEntry, AgentDiscoveryResult
+
+    src = tmp_path / "src"
+    src.mkdir()
+    (src / "service.py").write_text(
+        "def normalize_record(record):\n"
+        "    if not record:\n"
+        "        return None\n"
+        "    return record\n",
+        encoding="utf-8",
+    )
+
+    async def fake_discovery(_request, **_kwargs):
+        return [
+            AgentDiscoveryResult(
+                provider="claude-code",
+                status="ok",
+                candidate_entries=[
+                    AgentCandidateEntry(
+                        entry_kind="api",
+                        entry_symbol="service.normalize_record()",
+                        entry_file="src/service.py",
+                        chain=["service.normalize_record()"],
+                        external_trigger="POST /records",
+                        reason="agent returned the target function itself with a qualified name",
+                        validated=True,
+                    )
+                ],
+            )
+        ]
+
+    monkeypatch.setattr(coverage_mod, "run_external_agent_discovery", fake_discovery, raising=False)
+    modules = _coverage_modules(
+        "feature,module,code_location,function,triggered,hit_count\n"
+        "h,service,src/service.py:1-4,normalize_record,false,0\n"
+    )
+
+    design = asyncio.run(
+        build_coverage_test_design(modules, workspace_id="ws-1", repo_path=str(tmp_path))
+    )
+
+    gap = [g for g in design["gaps"] if g.get("kind") == "function"][0]
+    assert gap["entry_paths"] == []
+    assert gap["black_box_readiness"]["case_type"] != "black_box_ready"
+    card = design["entry_discovery"]["cards"][0]
+    candidate = card["candidate_external_entries"][0]
+    assert candidate["entry_symbol"] == "service.normalize_record()"
+    assert candidate["validation_error"] == "self_target_entry"
+    assert card["source_verification_status"] == "rejected_external_entry_candidate"
+    assert card["gray_box_allowed"] is True
+
+
 def test_coverage_agent_plain_function_entry_does_not_generate_black_box_ready(tmp_path, monkeypatch):
     import asyncio
     import app.services.coverage_analyzer as coverage_mod

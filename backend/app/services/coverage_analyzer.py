@@ -7659,17 +7659,20 @@ def _agent_entry_is_self_target_for_gap(entry: dict, gap: dict) -> bool:
     function_name = str(gap.get("function_name") or "").strip()
     if not function_name:
         return False
+    normalized_target = _agent_chain_symbol_key(function_name)
     entry_symbol = str(entry.get("entry_symbol") or entry.get("entry_label") or "").strip()
-    if entry_symbol and entry_symbol != function_name:
+    normalized_entry_symbol = _agent_chain_symbol_key(entry_symbol)
+    if entry_symbol and normalized_entry_symbol != normalized_target:
         return False
     chain = _normalize_agent_entry_chain(entry.get("chain"))
-    if chain and any(value != function_name for value in chain):
+    normalized_chain = [_agent_chain_symbol_key(value) for value in chain]
+    if normalized_chain and any(value != normalized_target for value in normalized_chain):
         return False
     entry_file = str(entry.get("entry_file") or "").replace("\\", "/")
     gap_file = str(gap.get("file_path") or "").replace("\\", "/")
     if entry_file and gap_file and entry_file != gap_file and not gap_file.endswith(entry_file):
         return False
-    return bool(entry_symbol == function_name or chain == [function_name])
+    return bool(normalized_entry_symbol == normalized_target or normalized_chain == [normalized_target])
 
 
 def _entry_candidates_from_paths(entry_paths: list[dict]) -> list[dict]:
