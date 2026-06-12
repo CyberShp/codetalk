@@ -2368,7 +2368,10 @@ class TestCoverageTestDesign:
         assert entry["entry_symbol"] == "processPayment"
         assert entry["tool"] == "source-table"
         assert "handler: processPayment" in entry["evidence"]
+        assert entry["external_trigger"] == "POST /tenants/:tenantId/payments"
         assert entry["input_hints"] == ["tenantId", "amount"]
+        case_text = json.dumps(gap["black_box_cases"], ensure_ascii=False)
+        assert "POST /tenants/:tenantId/payments" in case_text
 
     async def test_js_route_table_controller_method_becomes_black_box_entry(self, tmp_path):
         from app.services.coverage_analyzer import build_coverage_test_design
@@ -2419,7 +2422,10 @@ class TestCoverageTestDesign:
         assert entry["entry_symbol"] == "processPayment"
         assert entry["tool"] == "source-table"
         assert "handler: controller.processPayment" in entry["evidence"]
+        assert entry["external_trigger"] == "POST /tenants/:tenantId/payments"
         assert entry["input_hints"] == ["tenantId", "amount"]
+        case_text = json.dumps(gap["black_box_cases"], ensure_ascii=False)
+        assert "POST /tenants/:tenantId/payments" in case_text
 
     async def test_gin_route_registration_reads_context_input_hints(self, tmp_path):
         from app.services.coverage_analyzer import build_coverage_test_design

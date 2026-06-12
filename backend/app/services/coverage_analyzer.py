@@ -2136,7 +2136,7 @@ def _build_readiness_card(
 
 
 def _safe_external_label(entry: dict) -> str:
-    for key in ("entry_label", "external_trigger", "entry_symbol"):
+    for key in ("external_trigger", "entry_label", "entry_symbol"):
         label = str(entry.get(key) or "").strip()
         if label and _safe_external_label_text(label):
             return label
@@ -5790,11 +5790,18 @@ def _dispatch_table_entry_for_site(
     else:
         key_hints = [key]
     input_hints = _merge_ordered_strings(key_hints, metadata.pop("input_hints", []))
+    route_method = (
+        _dispatch_table_route_method_for_symbol(site_text, traced_symbol, window)
+        if entry_type == "route"
+        else None
+    )
+    external_trigger = f"{route_method} {key}" if route_method else key
     entry = {
         "entry_kind": entry_type,
         "entry_symbol": traced_symbol,
         "entry_file": rel_file,
-        "entry_label": _dispatch_table_entry_label(entry_type, key, traced_symbol),
+        "entry_label": _dispatch_table_entry_label(entry_type, key, traced_symbol, route_method),
+        "external_trigger": external_trigger,
         "call_line": line_number,
         "chain": caller_chain,
         "depth": max(0, len(caller_chain) - 1),
@@ -5824,6 +5831,27 @@ def _dispatch_table_key_for_symbol(
     positional_match = _DISPATCH_TABLE_ENTRY_RE.search(block_text)
     if positional_match and positional_match.group("symbol") == traced_symbol:
         return positional_match.group("key")
+    return None
+
+
+def _dispatch_table_route_method_for_symbol(
+    site_text: str,
+    traced_symbol: str,
+    window: list[str],
+) -> str | None:
+    candidates = [site_text or ""]
+    handler_line_index = _dispatch_table_handler_line_index(window, traced_symbol)
+    if handler_line_index is not None:
+        candidates.append(_dispatch_table_initializer_block(window, handler_line_index))
+    candidates.append("\n".join(window))
+    for text in candidates:
+        match = re.search(
+            r"\bmethod\s*:\s*['\"](?P<method>get|post|put|patch|delete|head|options|any)['\"]",
+            text or "",
+            re.IGNORECASE,
+        )
+        if match:
+            return match.group("method").upper()
     return None
 
 
@@ -5874,11 +5902,18 @@ def _dispatch_table_entry_type(context_text: str, window: list[str]) -> str:
     return _registered_entry_type(context_text, window)
 
 
-def _dispatch_table_entry_label(entry_type: str, key: str, symbol: str) -> str:
+def _dispatch_table_entry_label(
+    entry_type: str,
+    key: str,
+    symbol: str,
+    method: str | None = None,
+) -> str:
     label = _ENTRY_DISCOVERY_KIND_LABELS.get(entry_type, "external entry")
     if entry_type == "cli":
         return f"CLI command {key}"
     if entry_type in {"api", "route", "endpoint"}:
+        if method:
+            return f"{label} {method} {key}"
         return f"{label} {key}"
     return f"{label} {key or symbol}"
 
