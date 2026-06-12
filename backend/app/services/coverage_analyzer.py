@@ -5049,6 +5049,46 @@ def _route_prefix_for_decorator_receiver(
     return None
 
 
+def _route_mount_prefix_for_site(lines: list[str], site_text: str) -> str | None:
+    receiver = _route_call_receiver(site_text)
+    if not receiver:
+        return None
+    receiver_pattern = re.escape(receiver)
+    for line in lines:
+        match = re.search(
+            rf"\.\s*(?:use|mount)\s*\(\s*(['\"])(?P<prefix>(?:\\.|(?!\1).)*?)\1\s*,\s*"
+            rf"(?:[A-Za-z_]\w*\.)?{receiver_pattern}\b",
+            line or "",
+            re.IGNORECASE,
+        )
+        if not match:
+            continue
+        prefix = match.group("prefix").strip()
+        if _looks_like_route_path(prefix):
+            return prefix
+    return None
+
+
+def _route_mount_prefix_for_site_file(abs_file: str, site_text: str) -> str | None:
+    try:
+        lines = Path(abs_file).read_text(encoding="utf-8", errors="replace").splitlines()
+    except OSError:
+        return None
+    return _route_mount_prefix_for_site(lines, site_text)
+
+
+def _route_call_receiver(text: str) -> str | None:
+    match = re.search(
+        r"\b(?P<receiver>[A-Za-z_]\w*(?:\.[A-Za-z_]\w*)*)\s*\.\s*"
+        r"(?:get|post|put|patch|delete|head|options|any|route|websocket)\s*\(",
+        text or "",
+        re.IGNORECASE,
+    )
+    if match:
+        return match.group("receiver").split(".")[-1]
+    return None
+
+
 def _route_decorator_receiver(decorator_texts: list[str]) -> str | None:
     for text in reversed(decorator_texts):
         match = re.search(
@@ -5416,16 +5456,30 @@ def _trace_entry_paths(
                         if enclosing is None else {}
                     )
                     if anonymous_metadata.get("input_hints"):
-                        metadata["input_hints"] = anonymous_metadata["input_hints"]
+                        metadata["input_hints"] = _merge_ordered_strings(
+                            metadata.get("input_hints"),
+                            anonymous_metadata["input_hints"],
+                        )
                     anonymous_evidence = anonymous_metadata.pop("_anonymous_entry_evidence", None)
                     if entry_kind == "route":
+                        route_prefix = _route_mount_prefix_for_site_file(
+                            site["abs_file"],
+                            site["text"],
+                        )
                         route_hints = _route_template_input_hints([site["text"]])
+                        if route_prefix:
+                            route_hints = _merge_ordered_strings(
+                                _route_template_input_hints([route_prefix]),
+                                route_hints,
+                            )
                         if route_hints:
                             metadata["input_hints"] = _merge_ordered_strings(
                                 metadata.get("input_hints"),
                                 route_hints,
                             )
                         route_trigger = _route_external_trigger_from_texts([site["text"]])
+                        if route_prefix and route_trigger:
+                            route_trigger = _route_trigger_with_prefix(route_trigger, route_prefix)
                         if route_trigger:
                             metadata["external_trigger"] = route_trigger
                     else:
@@ -5908,13 +5962,21 @@ def _registration_entry_for_site(
             symbol = route_symbol
     metadata = _entry_metadata_for_symbol(repo_root, str(path), line_number, enclosing, symbol)
     if entry_type == "route":
+        route_prefix = _route_mount_prefix_for_site(lines, site_text)
         route_hints = _route_template_input_hints([site_text, registration_line])
+        if route_prefix:
+            route_hints = _merge_ordered_strings(
+                _route_template_input_hints([route_prefix]),
+                route_hints,
+            )
         if route_hints:
             metadata["input_hints"] = _merge_ordered_strings(
                 metadata.get("input_hints"),
                 route_hints,
             )
         route_trigger = _route_external_trigger_from_texts([site_text, registration_line, *window])
+        if route_prefix and route_trigger:
+            route_trigger = _route_trigger_with_prefix(route_trigger, route_prefix)
         if route_trigger:
             metadata["external_trigger"] = route_trigger
     else:
