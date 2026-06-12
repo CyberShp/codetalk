@@ -4872,6 +4872,39 @@ def test_workspace_path_keyword_ranking_handles_generic_kebab_module(tmp_path):
     assert "examples/payment_webhook_example.ts" not in rel_hits[:1]
 
 
+def test_workspace_scoped_package_keyword_expands_to_module_suffix(tmp_path):
+    from app.services.workspace_scope_resolver import (
+        _keyword_path_variants,
+        _path_keyword_repo_hits_blocking,
+    )
+
+    target_dir = tmp_path / "services" / "payments" / "webhook"
+    target_dir.mkdir(parents=True)
+    (target_dir / "handler.ts").write_text(
+        "export function handlePaymentWebhook() { return true; }\n",
+        encoding="utf-8",
+    )
+    weak_match = tmp_path / "packages" / "acme" / "docs"
+    weak_match.mkdir(parents=True)
+    (weak_match / "payment_webhook_notes.ts").write_text(
+        "export const note = 'payment webhook';\n",
+        encoding="utf-8",
+    )
+
+    variants = _keyword_path_variants("@acme/payment-webhook")
+    assert "payment/webhook" in variants
+    assert "payments/webhook" in variants
+
+    hits = _path_keyword_repo_hits_blocking(
+        str(tmp_path),
+        ["@acme/payment-webhook"],
+        3,
+    )
+    rel_hits = [Path(hit).relative_to(tmp_path).as_posix() for hit in hits]
+
+    assert rel_hits[0] == "services/payments/webhook/handler.ts"
+
+
 def test_workspace_path_keyword_ranking_handles_generic_camel_module(tmp_path):
     from app.services.workspace_scope_resolver import _path_keyword_repo_hits_blocking
 

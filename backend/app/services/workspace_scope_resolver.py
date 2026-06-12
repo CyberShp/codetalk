@@ -192,6 +192,20 @@ def _keyword_path_variants(keyword: str) -> list[str]:
         add(singular_plural)
         add(singular_plural.replace("/", "_"))
         add(singular_plural.replace("/", "-"))
+    suffix_sources = [dotted, separator_path, dotted_snake]
+    for source in suffix_sources:
+        parts = [part for part in source.split("/") if part]
+        for index in range(1, max(1, len(parts) - 1)):
+            suffix = "/".join(parts[index:])
+            if "/" not in suffix:
+                continue
+            add(suffix)
+            add(suffix.replace("/", "_"))
+            add(suffix.replace("/", "-"))
+            for singular_plural in _path_singular_plural_variants(suffix):
+                add(singular_plural)
+                add(singular_plural.replace("/", "_"))
+                add(singular_plural.replace("/", "-"))
     snake = re.sub(r"(?<=[a-z0-9])(?=[A-Z])", "_", value)
     snake = re.sub(r"(?<=[A-Z])(?=[A-Z][a-z])", "_", snake)
     add(snake)
