@@ -5265,6 +5265,36 @@ def test_workspace_path_keyword_ranking_handles_dotted_module_path(tmp_path):
     assert rel_hits[0] == "services/payments/webhook/handler.ts"
 
 
+def test_workspace_path_keyword_preserves_pathlike_stopword_segments(tmp_path):
+    from app.services.external_agent_discovery import expand_agent_query_terms
+    from app.services.workspace_scope_resolver import (
+        _path_keyword_repo_hits_blocking,
+        _tokenize,
+    )
+
+    target_dir = tmp_path / "pkg" / "module" / "webhook"
+    target_dir.mkdir(parents=True)
+    (target_dir / "handler.ts").write_text(
+        "export function handleWebhook() { return true; }\n",
+        encoding="utf-8",
+    )
+    distractor_dir = tmp_path / "pkg" / "a" / "webhook"
+    distractor_dir.mkdir(parents=True)
+    (distractor_dir / "handler.ts").write_text(
+        "export function handleWebhook() { return true; }\n",
+        encoding="utf-8",
+    )
+
+    text = "pkg/module.WebhookHandler"
+    keywords = list(dict.fromkeys([*_tokenize(text), *expand_agent_query_terms(text)]))[:32]
+    hits = _path_keyword_repo_hits_blocking(str(tmp_path), keywords, 3)
+    rel_hits = [Path(hit).relative_to(tmp_path).as_posix() for hit in hits]
+
+    assert "module" in keywords
+    assert "pkg/module/webhook/handler" in keywords
+    assert rel_hits[0] == "pkg/module/webhook/handler.ts"
+
+
 def test_workspace_path_keyword_ranking_handles_singular_plural_module_path(tmp_path):
     from app.services.workspace_scope_resolver import _path_keyword_repo_hits_blocking
 

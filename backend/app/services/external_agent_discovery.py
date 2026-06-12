@@ -141,9 +141,11 @@ def expand_agent_query_terms(text: str) -> list[str]:
     original_parts = [
         p.lower() for p in re.split(r"[-_/\\\s]+", split_ready) if p.strip()
     ]
+    preserve_pathlike_stopwords = _looks_like_pathlike_query(original)
     raw_parts = [
         part for part in original_parts
-        if not (part.isascii() and part in _QUERY_STOPWORDS_EN)
+        if preserve_pathlike_stopwords
+        or not (part.isascii() and part in _QUERY_STOPWORDS_EN)
     ]
     seen: set[str] = set()
     out: list[str] = []
@@ -190,6 +192,17 @@ def expand_agent_query_terms(text: str) -> list[str]:
         if "tls" in variant:
             add("tls")
     return out[:48]
+
+
+def _looks_like_pathlike_query(text: str) -> bool:
+    value = str(text or "").strip()
+    if not value:
+        return False
+    if any(separator in value for separator in ("/", "\\", "::", ".")):
+        return True
+    if re.match(r"^@[^/\s]+/[^/\s]+$", value):
+        return True
+    return False
 
 
 def _split_ready_agent_query_text(text: str) -> str:
