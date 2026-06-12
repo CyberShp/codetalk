@@ -5105,6 +5105,48 @@ class TestCoverageTestDesign:
         assert "--config" in case_text
         assert "tenant_id" in case_text
 
+    async def test_commander_action_registration_feeds_black_box_input_hints(self, tmp_path):
+        from app.services.coverage_analyzer import build_coverage_test_design
+
+        src = tmp_path / "src"
+        src.mkdir()
+        (src / "cli.ts").write_text(
+            "import { Command } from 'commander';\n\n"
+            "export function runSync(tenantId, options) {\n"
+            "  if (!options.config) {\n"
+            "    return 'missing';\n"
+            "  }\n"
+            "  return tenantId;\n"
+            "}\n\n"
+            "const program = new Command();\n"
+            "program\n"
+            "  .command('sync <tenantId>')\n"
+            "  .requiredOption('--config <path>')\n"
+            "  .option('--dry-run')\n"
+            "  .action(runSync);\n",
+            encoding="utf-8",
+        )
+        modules = self._modules(
+            "feature,module,code_location,function,triggered,hit_count\n"
+            "sync,cli,src/cli.ts:3-8,runSync,false,0\n"
+        )
+
+        design = await build_coverage_test_design(
+            modules, workspace_id="ws-1", repo_path=str(tmp_path)
+        )
+
+        gap = [g for g in design["gaps"] if g.get("kind") == "function"][0]
+        assert gap["black_box_readiness"]["case_type"] == "black_box_ready"
+        entry = gap["entry_paths"][0]
+        assert entry["entry_kind"] == "cli"
+        assert entry["entry_symbol"] == "runSync"
+        assert entry["input_hints"] == ["tenantId", "--config", "--dry-run"]
+        assert ".action(runSync)" in entry["evidence"]
+        case_text = json.dumps(gap["black_box_cases"], ensure_ascii=False)
+        assert "tenantId" in case_text
+        assert "--config" in case_text
+        assert "--dry-run" in case_text
+
     async def test_callback_registration_entry_discovery_prevents_final_gray_box(
         self, tmp_path
     ):

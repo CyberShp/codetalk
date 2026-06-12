@@ -4270,6 +4270,92 @@ def _cli_option_input_hints_from_text(text: str) -> list[str]:
     return hints[:12]
 
 
+def _cli_registration_input_hints(abs_file: str, line_number: int) -> list[str]:
+    context = _cli_registration_context_for_site_file(abs_file, line_number)
+    if not context:
+        return []
+    return _commander_input_hints_from_text(context)
+
+
+def _cli_registration_context_for_site_file(abs_file: str, line_number: int) -> str | None:
+    try:
+        lines = Path(abs_file).read_text(encoding="utf-8", errors="replace").splitlines()
+    except OSError:
+        return None
+    call_idx = line_number - 1
+    if call_idx < 0 or call_idx >= len(lines):
+        return None
+    start_idx: int | None = None
+    for idx in range(call_idx, max(-1, call_idx - 24), -1):
+        if re.search(r"(?:^|\.)\s*(?:command|argument|requiredOption|option|action)\s*\(", lines[idx]):
+            start_idx = idx
+        elif start_idx is not None and lines[idx].strip().endswith((".", ",")):
+            start_idx = idx
+        elif start_idx is not None and re.search(r"\b(?:program|commander|new\s+Command)\b", lines[idx]):
+            start_idx = idx
+            break
+    if start_idx is None:
+        return None
+    end_idx = _call_expression_window_end(lines, start_idx, call_idx)
+    return " ".join(line.strip() for line in lines[start_idx:end_idx] if line.strip())
+
+
+def _commander_input_hints_from_text(text: str) -> list[str]:
+    hints: list[str] = []
+    seen: set[str] = set()
+
+    def add(value: str) -> None:
+        if value and value not in seen:
+            seen.add(value)
+            hints.append(value)
+
+    for match in re.finditer(
+        r"\.\s*(?:command|argument)\s*\(\s*(['\"])(?P<value>(?:\\.|(?!\1).)*?)\1",
+        text or "",
+        re.IGNORECASE,
+    ):
+        for arg in _cli_positional_args_from_command_spec(match.group("value")):
+            add(arg)
+    for match in re.finditer(
+        r"\.\s*(?:requiredOption|option)\s*\(\s*(['\"])(?P<value>(?:\\.|(?!\1).)*?)\1",
+        text or "",
+        re.IGNORECASE,
+    ):
+        option = _cli_long_option_from_spec(match.group("value"))
+        if option:
+            add(option)
+    return hints[:12]
+
+
+def _cli_positional_args_from_command_spec(spec: str) -> list[str]:
+    args: list[str] = []
+    seen: set[str] = set()
+    for match in re.finditer(r"[<\[]\s*(?:\.\.\.)?(?P<name>[A-Za-z_][\w-]*)", spec or ""):
+        name = match.group("name")
+        if name not in seen:
+            seen.add(name)
+            args.append(name)
+    return args
+
+
+def _cli_long_option_from_spec(spec: str) -> str | None:
+    match = re.search(r"(?<![\w-])(?P<option>--[A-Za-z0-9][\w-]*)\b", spec or "")
+    return match.group("option") if match else None
+
+
+def _merge_cli_input_hints(registration_hints: object, metadata_hints: object) -> list[str]:
+    filtered_metadata = _filter_generic_cli_input_hints(metadata_hints)
+    return _merge_ordered_input_hints(registration_hints, filtered_metadata)
+
+
+def _filter_generic_cli_input_hints(hints: object) -> list[str]:
+    generic_cli_containers = {"args", "argv", "opts", "options", "cmd", "command"}
+    return [
+        hint for hint in _coerce_input_hints(hints)
+        if str(hint or "").strip().lower() not in generic_cli_containers
+    ]
+
+
 def _getopt_input_hints_from_text(text: str) -> list[str]:
     hints: list[str] = []
     seen: set[str] = set()
@@ -5873,6 +5959,16 @@ def _trace_entry_paths(
                             route_trigger = _route_trigger_with_prefix(route_trigger, route_prefix)
                         if route_trigger:
                             metadata["external_trigger"] = route_trigger
+                    elif entry_kind == "cli":
+                        cli_hints = _cli_registration_input_hints(
+                            site["abs_file"],
+                            site["line_number"],
+                        )
+                        if cli_hints:
+                            metadata["input_hints"] = _merge_cli_input_hints(
+                                cli_hints,
+                                metadata.get("input_hints"),
+                            )
                     else:
                         channel_hints = _merge_ordered_strings(
                             _registration_channel_input_hints(site["text"], entry_kind),
@@ -5986,9 +6082,12 @@ def _augment_entry_input_hints_from_symbol_source(
         str(abs_file),
         str(entry_symbol),
     )
+    signature_hints = _handler_signature_input_hints(str(abs_file), str(entry_symbol))
+    if str(entry.get("entry_kind") or "").strip().lower() == "cli" and entry.get("input_hints"):
+        signature_hints = _filter_generic_cli_input_hints(signature_hints)
     source_hints = _merge_ordered_input_hints(
         source_hints,
-        _handler_signature_input_hints(str(abs_file), str(entry_symbol)),
+        signature_hints,
     )
     merged_hints = _merge_ordered_input_hints(
         entry.get("input_hints"),
