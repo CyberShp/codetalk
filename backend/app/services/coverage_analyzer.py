@@ -6103,6 +6103,8 @@ def _route_method_from_text(text: str) -> str | None:
         r"[@\[]\s*Http(?P<method>Get|Post|Put|Patch|Delete|Head|Options)\s*\(",
         r"[@\[]\s*Http(?P<method>Get|Post|Put|Patch|Delete|Head|Options)\b",
         r"\bmethod\s*[:=]\s*(['\"])(?P<method>get|post|put|patch|delete|head|options|any)\1",
+        r"\.\s*methods?\s*\(\s*(['\"])(?P<method>get|post|put|patch|delete|head|options|any)\1",
+        r"\bhttp\.Method(?P<method>Get|Post|Put|Patch|Delete|Head|Options)\b",
         r"[@.]\s*(?P<method>get|post|put|patch|delete|head|options|any|websocket)\s*\(",
         r"(?<![\w.])(?P<method>get|post|put|patch|delete|head|options|any|websocket)\s*\(\s*['\"]",
         r"\b(?P<method>get|post|put|patch|delete|head|options|any|websocket)\s+['\"]",
