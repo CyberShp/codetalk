@@ -1147,13 +1147,46 @@ class TestCoverageTestDesign:
         assert merged[0]["turn_id"] == "coverage:tls_recover_session"
         assert merged[0]["confirming_providers"] == ["claude-code"]
         assert merged[0]["confirming_turn_ids"] == ["coverage:tls_recover_session"]
+        assert merged[0]["external_trigger"] == "RPC rpc_tls_entry"
         assert merged[0]["input_hints"] == ["tenant_id", "amount"]
         cases = _build_black_box_cases(hit, merged, [])
         assert cases[0]["provider"] == "claude-code"
         assert cases[0]["confirming_providers"] == ["claude-code"]
         assert cases[0]["confirming_turn_ids"] == ["coverage:tls_recover_session"]
+        assert "RPC rpc_tls_entry" in cases[0]["external_trigger"]
         assert "tenant_id" in cases[0]["inputs"]
         assert "amount" in cases[0]["inputs"]
+
+    async def test_duplicate_entry_path_merge_preserves_external_trigger(self):
+        from app.services.coverage_analyzer import _merge_duplicate_entry_path
+
+        existing = {
+            "entry_kind": "route",
+            "entry_symbol": "process_payment",
+            "entry_file": "src/routes.py",
+            "input_hints": ["amount"],
+            "tool": "ripgrep",
+        }
+        incoming = {
+            "entry_kind": "route",
+            "entry_symbol": "process_payment",
+            "entry_file": "src/routes.py",
+            "external_trigger": "POST /payments",
+            "entry_label": "route POST /payments",
+            "input_hints": ["tenant_id"],
+            "evidence": "src/routes.py:10 app.post('/payments', process_payment)",
+            "tool": "source-registration",
+        }
+
+        _merge_duplicate_entry_path(existing, incoming)
+
+        assert existing["external_trigger"] == "POST /payments"
+        assert existing["entry_label"] == "route POST /payments"
+        assert existing["input_hints"] == ["amount", "tenant_id"]
+        assert existing["confirming_tools"] == ["source-registration"]
+        assert existing["confirming_evidence"] == [
+            "src/routes.py:10 app.post('/payments', process_payment)"
+        ]
 
     async def test_black_box_cases_filter_internal_symbols_from_input_hints(self):
         from app.services.coverage_analyzer import _build_black_box_cases

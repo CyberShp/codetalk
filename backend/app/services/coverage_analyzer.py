@@ -1226,6 +1226,7 @@ def _entry_file_key(entry: dict) -> str:
 
 def _merge_agent_entry_confirmation(existing: dict, agent_entry: dict) -> None:
     _merge_agent_entry_label_confirmation(existing, agent_entry)
+    _merge_entry_external_trigger(existing, agent_entry)
     provider = str(agent_entry.get("provider") or "external_agent").strip()
     if provider:
         if not existing.get("provider"):
@@ -1257,6 +1258,24 @@ def _merge_agent_entry_confirmation(existing: dict, agent_entry: dict) -> None:
         if reason not in confirmations:
             confirmations.append(reason)
         existing["confirming_evidence"] = confirmations[:4]
+
+
+def _merge_entry_external_trigger(existing: dict, incoming: dict) -> None:
+    incoming_trigger = str(incoming.get("external_trigger") or "").strip()
+    if not incoming_trigger:
+        return
+    existing_trigger = str(existing.get("external_trigger") or "").strip()
+    if not existing_trigger:
+        existing["external_trigger"] = incoming_trigger
+        return
+    if existing_trigger == incoming_trigger:
+        return
+    triggers = _merge_ordered_strings(
+        existing.get("confirming_external_triggers"),
+        [incoming_trigger],
+    )
+    if triggers:
+        existing["confirming_external_triggers"] = triggers[:4]
 
 
 def _merge_agent_entry_label_confirmation(existing: dict, agent_entry: dict) -> None:
@@ -5369,18 +5388,38 @@ def _trace_entry_paths(
         key = (entry["entry_kind"], entry.get("entry_symbol"), entry.get("entry_file"))
         if key in seen:
             existing = seen[key]
-            merged_hints = _merge_ordered_input_hints(
-                existing.get("input_hints"),
-                entry.get("input_hints"),
-            )
-            if merged_hints:
-                existing["input_hints"] = merged_hints
+            _merge_duplicate_entry_path(existing, entry)
             continue
         seen[key] = entry
         unique_entries.append(entry)
     for entry in unique_entries:
         _augment_entry_input_hints_from_symbol_source(repo_root, entry)
     return unique_entries[:6], _dedupe_branches(caller_branches)
+
+
+def _merge_duplicate_entry_path(existing: dict, incoming: dict) -> None:
+    _merge_entry_external_trigger(existing, incoming)
+    merged_hints = _merge_ordered_input_hints(
+        existing.get("input_hints"),
+        incoming.get("input_hints"),
+    )
+    if merged_hints:
+        existing["input_hints"] = merged_hints
+    for key in ("entry_label", "source_verification", "provider", "turn_id"):
+        if not existing.get(key) and incoming.get(key):
+            existing[key] = incoming[key]
+    incoming_evidence = str(incoming.get("evidence") or "").strip()
+    if incoming_evidence and incoming_evidence != str(existing.get("evidence") or "").strip():
+        confirmations = list(existing.get("confirming_evidence") or [])
+        if incoming_evidence not in confirmations:
+            confirmations.append(incoming_evidence)
+        existing["confirming_evidence"] = confirmations[:4]
+    incoming_tool = str(incoming.get("tool") or "").strip()
+    if incoming_tool and incoming_tool != str(existing.get("tool") or "").strip():
+        tools = list(existing.get("confirming_tools") or [])
+        if incoming_tool not in tools:
+            tools.append(incoming_tool)
+        existing["confirming_tools"] = tools[:4]
 
 
 def _augment_entry_input_hints_from_symbol_source(
