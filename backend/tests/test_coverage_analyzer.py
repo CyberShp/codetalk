@@ -2315,10 +2315,13 @@ class TestCoverageTestDesign:
 
         gap = [g for g in design["gaps"] if g.get("kind") == "function"][0]
         assert gap["black_box_readiness"]["case_type"] == "black_box_ready"
+        entry = gap["entry_paths"][0]
+        assert entry["external_trigger"] == "POST /accounts/{account_id}/payments/:payment_id"
         assert gap["entry_paths"][0]["input_hints"] == [
             "amount", "currency", "account_id", "payment_id",
         ]
         case_text = json.dumps(gap["black_box_cases"], ensure_ascii=False)
+        assert "POST /accounts/{account_id}/payments/:payment_id" in case_text
         assert "account_id" in case_text
         assert "payment_id" in case_text
 
@@ -3607,8 +3610,11 @@ class TestCoverageTestDesign:
 
         gap = [g for g in design["gaps"] if g.get("kind") == "function"][0]
         assert gap["black_box_readiness"]["case_type"] == "black_box_ready"
-        assert gap["entry_paths"][0]["input_hints"] == ["account_id", "payment_id"]
+        entry = gap["entry_paths"][0]
+        assert entry["external_trigger"] == "GET /accounts/{account_id}/payments/:payment_id"
+        assert entry["input_hints"] == ["account_id", "payment_id"]
         case_text = json.dumps(gap["black_box_cases"], ensure_ascii=False)
+        assert "GET /accounts/{account_id}/payments/:payment_id" in case_text
         assert "account_id" in case_text
         assert "payment_id" in case_text
 

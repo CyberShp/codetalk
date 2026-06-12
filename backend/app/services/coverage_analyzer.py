@@ -4350,6 +4350,9 @@ def _decorated_entry_for_symbol(
                 metadata.get("input_hints"),
                 route_hints,
             )
+        route_trigger = _route_external_trigger_from_texts([*decorator_texts, definition_text])
+        if route_trigger:
+            metadata["external_trigger"] = route_trigger
     if entry_kind != "route":
         channel_hints = _registration_channel_input_hints(
             " ".join(text for _, text in decorators),
@@ -4982,6 +4985,56 @@ def _route_template_input_hints(decorator_lines: list[str]) -> list[str]:
     return hints[:12]
 
 
+def _route_external_trigger_from_texts(texts: list[str]) -> str | None:
+    text = " ".join(str(line or "").strip() for line in texts if str(line or "").strip())
+    if not text:
+        return None
+    path = _route_path_from_text(text)
+    if not path:
+        return None
+    method = _route_method_from_text(text)
+    return f"{method} {path}" if method else path
+
+
+def _route_path_from_text(text: str) -> str | None:
+    for pattern in (
+        r"\b(?:route|path|url)\s*[:=]\s*(['\"])(?P<path>(?:\\.|(?!\1).)*?)\1",
+        r"\badd_url_rule\s*\(\s*(['\"])(?P<path>(?:\\.|(?!\1).)*?)\1",
+        r"(?:@?[A-Za-z_]\w*(?:\.[A-Za-z_]\w*)*)?\s*\.\s*(?:get|post|put|patch|delete|head|options|any|route|websocket)\s*\(\s*(['\"])(?P<path>(?:\\.|(?!\1).)*?)\1",
+        r"\b(?:get|post|put|patch|delete|head|options|any|route|websocket)\s+(['\"])(?P<path>(?:\\.|(?!\1).)*?)\1",
+        r"\(\s*(['\"])(?P<path>(?:\\.|(?!\1).)*?)\1",
+    ):
+        for match in re.finditer(pattern, text or "", re.IGNORECASE):
+            path = match.group("path").strip()
+            if _looks_like_route_path(path):
+                return path
+    return None
+
+
+def _looks_like_route_path(value: str) -> bool:
+    text = str(value or "").strip()
+    if not text:
+        return False
+    return text.startswith(("/", "{", "<", ":")) or "/{" in text or "/:" in text
+
+
+def _route_method_from_text(text: str) -> str | None:
+    method_patterns = (
+        r"\bmethods?\s*=\s*\[?\s*(['\"])(?P<method>get|post|put|patch|delete|head|options|any)\1",
+        r"\bmethods?\s*:\s*\[?\s*(['\"])(?P<method>get|post|put|patch|delete|head|options|any)\1",
+        r"\bmethod\s*[:=]\s*(['\"])(?P<method>get|post|put|patch|delete|head|options|any)\1",
+        r"[@.]\s*(?P<method>get|post|put|patch|delete|head|options|any|websocket)\s*\(",
+        r"\b(?P<method>get|post|put|patch|delete|head|options|any|websocket)\s+['\"]",
+    )
+    for pattern in method_patterns:
+        match = re.search(pattern, text or "", re.IGNORECASE)
+        if not match:
+            continue
+        method = match.group("method").upper()
+        return "WEBSOCKET" if method == "WEBSOCKET" else method
+    return None
+
+
 def _message_payload_type_input_hints(signature: str) -> list[str]:
     params = _signature_param_section(signature or "")
     if params is None:
@@ -5251,6 +5304,9 @@ def _trace_entry_paths(
                                 metadata.get("input_hints"),
                                 route_hints,
                             )
+                        route_trigger = _route_external_trigger_from_texts([site["text"]])
+                        if route_trigger:
+                            metadata["external_trigger"] = route_trigger
                     else:
                         channel_hints = _merge_ordered_strings(
                             _registration_channel_input_hints(site["text"], entry_kind),
@@ -5717,6 +5773,9 @@ def _registration_entry_for_site(
                 metadata.get("input_hints"),
                 route_hints,
             )
+        route_trigger = _route_external_trigger_from_texts([site_text, registration_line, *window])
+        if route_trigger:
+            metadata["external_trigger"] = route_trigger
     else:
         channel_hints = _registration_channel_input_hints(registration_line, entry_type)
         if channel_hints:
