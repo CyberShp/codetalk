@@ -319,9 +319,9 @@ _SIGNATURE_RE = re.compile(
 )
 _REQUEST_CONTAINER_NAMES = (
     "json", "args", "form", "query", "body", "data", "params",
-    "headers", "cookies", "values", "files",
+    "headers", "cookies", "values", "files", "query_params", "path_params",
 )
-_REQUEST_CONTAINER_PATTERN = "|".join(_REQUEST_CONTAINER_NAMES)
+_REQUEST_CONTAINER_PATTERN = "|".join(re.escape(name) for name in _REQUEST_CONTAINER_NAMES)
 _REQ_FIELD_RE = re.compile(
     rf"\b(?:req|attrs|opts|ctx)\.(?!(?:{_REQUEST_CONTAINER_PATTERN})\b)([A-Za-z_]\w*)\b"
 )
@@ -346,17 +346,17 @@ _REQUEST_FIELD_RES = (
     ),
     re.compile(
         r"\b(?:request|req|payload|body|params|query|data)"
-        r"(?:\??\.(?:json|args|form|query|body|data|params|headers|cookies|values|files))?"
+        rf"(?:\??\.(?:{_REQUEST_CONTAINER_PATTERN}))?"
         r"(?:\??\.)?\s*\[\s*['\"]([A-Za-z_][\w-]*)['\"]\s*\]"
     ),
     re.compile(
         r"\b(?:request|req|payload|body|params|query|data)"
-        r"(?:\??\.(?:json|args|form|query|body|data|params|headers|cookies|values|files))?"
+        rf"(?:\??\.(?:{_REQUEST_CONTAINER_PATTERN}))?"
         r"\??\.get\s*\(\s*['\"]([A-Za-z_][\w-]*)['\"]"
     ),
     re.compile(
         r"\b(?:request|req)"
-        r"\??\.(?:json|args|form|query|body|data|params|headers|cookies|values|files)"
+        rf"\??\.(?:{_REQUEST_CONTAINER_PATTERN})"
         r"\??\.(?!get\b)([A-Za-z_][\w-]*)\b"
     ),
     re.compile(
@@ -6061,6 +6061,9 @@ def _trace_entry_paths(
             break
         frontier = next_frontier
 
+    for entry in entry_paths:
+        _rebind_entry_path_file_to_symbol_definition(repo_root, entry)
+
     # De-duplicate entry paths by (kind, symbol, file).
     seen: dict[tuple, dict] = {}
     unique_entries: list[dict] = []
@@ -6100,6 +6103,25 @@ def _merge_duplicate_entry_path(existing: dict, incoming: dict) -> None:
         if incoming_tool not in tools:
             tools.append(incoming_tool)
         existing["confirming_tools"] = tools[:4]
+
+
+def _rebind_entry_path_file_to_symbol_definition(repo_root: Path, entry: dict) -> None:
+    entry_symbol = str(entry.get("entry_symbol") or "").strip()
+    entry_file = str(entry.get("entry_file") or "").strip()
+    if not entry_symbol or not entry_file:
+        return
+    try:
+        current_file = (repo_root / entry_file).resolve()
+    except OSError:
+        return
+    rebound = _rebind_entry_file_to_symbol_definition(
+        repo_root,
+        current_file,
+        entry_symbol,
+    )
+    if rebound is None:
+        return
+    entry["entry_file"] = _relative_path(repo_root, rebound)
 
 
 def _augment_entry_input_hints_from_symbol_source(

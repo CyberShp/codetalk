@@ -3659,6 +3659,49 @@ class TestCoverageTestDesign:
         assert "amount" in case_text
         assert "currency" in case_text
 
+    async def test_starlette_route_table_is_black_box_route_with_path_and_method(self, tmp_path):
+        from app.services.coverage_analyzer import build_coverage_test_design
+
+        app = tmp_path / "payments"
+        app.mkdir()
+        (app / "views.py").write_text(
+            "async def process_payment(request):\n"
+            "    tenant_id = request.path_params['tenant_id']\n"
+            "    amount = request.query_params.get('amount')\n"
+            "    if not amount:\n"
+            "        return JSONResponse({'error': tenant_id}, status_code=400)\n"
+            "    return JSONResponse({'ok': True})\n",
+            encoding="utf-8",
+        )
+        (app / "routes.py").write_text(
+            "from starlette.routing import Route\n"
+            "from .views import process_payment\n\n"
+            "routes = [\n"
+            "    Route('/payments/{tenant_id}', process_payment, methods=['POST']),\n"
+            "]\n",
+            encoding="utf-8",
+        )
+        modules = self._modules(
+            "feature,module,code_location,function,triggered,hit_count\n"
+            "payments,views,payments/views.py:1-6,process_payment,false,0\n"
+        )
+
+        design = await build_coverage_test_design(
+            modules, workspace_id="ws-1", repo_path=str(tmp_path)
+        )
+
+        gap = [g for g in design["gaps"] if g.get("kind") == "function"][0]
+        assert gap["gray_box_required"] is False
+        assert gap["black_box_readiness"]["case_type"] == "black_box_ready"
+        entry = gap["entry_paths"][0]
+        assert entry["entry_kind"] == "route"
+        assert entry["entry_symbol"] == "process_payment"
+        assert entry["entry_file"] == "payments/views.py"
+        assert entry["external_trigger"] == "POST /payments/{tenant_id}"
+        assert entry["input_hints"] == ["tenant_id", "amount"]
+        case_text = json.dumps(gap["black_box_cases"], ensure_ascii=False)
+        assert "POST /payments/{tenant_id}" in case_text
+
     async def test_coverage_definition_detection_handles_objc_methods(self):
         from app.services.coverage_analyzer import _match_def_name
 
