@@ -3587,6 +3587,11 @@ def _request_field_hints(abs_file: str, line_number: int, enclosing_fn: str | No
             hints,
             _javascript_schema_input_hints(lines, start, end),
         )
+    elif Path(abs_file).suffix.lower() in {".kt", ".kts"}:
+        hints = _merge_ordered_input_hints(
+            hints,
+            _kotlin_receive_input_hints(lines, start, end),
+        )
     return hints
 
 
@@ -3914,6 +3919,8 @@ def _source_model_fields_by_class(lines: list[str], suffix: str) -> dict[str, li
         return _go_model_fields_by_struct(lines)
     if suffix in {".ts", ".tsx", ".mts", ".cts"}:
         return _typescript_model_fields_by_class(lines)
+    if suffix in {".kt", ".kts"}:
+        return _kotlin_model_fields_by_class(lines)
     return {}
 
 
@@ -4128,6 +4135,25 @@ def _python_serializer_input_hints(lines: list[str], start: int, end: int) -> li
     return hints
 
 
+def _kotlin_receive_input_hints(lines: list[str], start: int, end: int) -> list[str]:
+    window = "\n".join(lines[start:end])
+    if "receive<" not in window:
+        return []
+    fields_by_class = _kotlin_model_fields_by_class(lines)
+    if not fields_by_class:
+        return []
+    hints: list[str] = []
+    seen: set[str] = set()
+    for match in re.finditer(r"\breceive\s*<\s*([A-Za-z_]\w*)\s*>\s*\(", window):
+        for field in fields_by_class.get(match.group(1), []):
+            if field not in seen:
+                seen.add(field)
+                hints.append(field)
+                if len(hints) >= 12:
+                    return hints
+    return hints
+
+
 def _javascript_schema_input_hints(lines: list[str], start: int, end: int) -> list[str]:
     window = "\n".join(lines[start:end])
     if not re.search(
@@ -4308,6 +4334,45 @@ def _typescript_model_fields_by_class(lines: list[str]) -> dict[str, list[str]]:
             fields_by_type[type_name] = fields
         idx = max(pos, idx + 1)
     return fields_by_type
+
+
+def _kotlin_model_fields_by_class(lines: list[str]) -> dict[str, list[str]]:
+    text = "\n".join(lines)
+    fields_by_type: dict[str, list[str]] = {}
+    for match in re.finditer(r"\bdata\s+class\s+([A-Za-z_]\w*)\s*\(", text):
+        class_name = match.group(1)
+        params_start = match.end() - 1
+        params_end = _balanced_block_end(text, params_start, "(", ")")
+        if params_end is None:
+            continue
+        fields: list[str] = []
+        seen: set[str] = set()
+        for raw_param in _split_signature_params(text[params_start + 1:params_end]):
+            field = _kotlin_constructor_field_name(raw_param)
+            if field and field not in seen:
+                seen.add(field)
+                fields.append(field)
+                if len(fields) >= 12:
+                    break
+        if fields:
+            fields_by_type[class_name] = fields
+    return fields_by_type
+
+
+def _kotlin_constructor_field_name(raw_param: str) -> str | None:
+    text = str(raw_param or "").strip()
+    if not text:
+        return None
+    text = re.sub(r"^@[A-Za-z_][\w.]*(?:\([^()]*\))?\s*", "", text).strip()
+    match = re.match(
+        r"(?:(?:public|private|protected|internal)\s+)?(?:val|var)\s+"
+        r"([A-Za-z_]\w*)\s*:",
+        text,
+    )
+    if not match:
+        return None
+    field = match.group(1)
+    return None if field.startswith("_") else field
 
 
 def _csharp_model_fields_by_class(lines: list[str]) -> dict[str, list[str]]:
