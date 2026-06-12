@@ -435,12 +435,14 @@ _DISPATCH_TABLE_ENTRY_RE = re.compile(
     r"""(?P<quote>['"])(?P<key>[A-Za-z0-9_.:/-]{1,80})(?P=quote)\s*,\s*&?(?P<symbol>[A-Za-z_]\w*)\b"""
 )
 _DISPATCH_TABLE_HANDLER_RE = re.compile(
-    r"\.(?:handler|handlers|callback|cb|fn|func|function|method|op|ops|entry)\s*="
+    r"(?:\.(?:handler|handlers|callback|cb|fn|func|function|method|op|ops|entry)\s*="
+    r"|\b(?:handler|handlers|callback|cb|fn|func|function|method|op|ops|entry)\s*:)"
     r"\s*&?(?P<symbol>[A-Za-z_]\w*)\b",
     re.IGNORECASE,
 )
 _DISPATCH_TABLE_KEY_RE = re.compile(
-    r"\.(?:name|cmd|command|key|op|operation|route|path|topic|event|message|type|id)\s*="
+    r"(?:\.(?:name|cmd|command|key|op|operation|route|path|url|topic|event|message|type|id)\s*="
+    r"|\b(?:name|cmd|command|key|op|operation|route|path|url|topic|event|message|type|id)\s*:)"
     r"\s*(?P<quote>['\"])(?P<key>[A-Za-z0-9_.:/-]{1,80})(?P=quote)",
     re.IGNORECASE,
 )
@@ -5783,7 +5785,11 @@ def _dispatch_table_entry_for_site(
         None,
         traced_symbol,
     )
-    input_hints = _merge_ordered_strings([key], metadata.pop("input_hints", []))
+    if entry_type == "route":
+        key_hints = _route_template_input_hints([key])
+    else:
+        key_hints = [key]
+    input_hints = _merge_ordered_strings(key_hints, metadata.pop("input_hints", []))
     entry = {
         "entry_kind": entry_type,
         "entry_symbol": traced_symbol,
@@ -5847,6 +5853,14 @@ def _dispatch_table_initializer_block(window: list[str], handler_line_index: int
 
 def _dispatch_table_entry_type(context_text: str, window: list[str]) -> str:
     lowered = (context_text or "").lower()
+    if re.search(r"\b(?:path|route|url)\s*:", context_text or "", re.IGNORECASE):
+        return "route"
+    if re.search(
+        r"\bmethod\s*:\s*['\"](?:get|post|put|patch|delete|head|options|any)['\"]",
+        context_text or "",
+        re.IGNORECASE,
+    ):
+        return "route"
     if re.search(r"\b(?:cli|cmd|command)(?:s|_table|_entry)?\b", lowered):
         return "cli"
     return _registered_entry_type(context_text, window)

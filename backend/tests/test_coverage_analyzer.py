@@ -2322,6 +2322,54 @@ class TestCoverageTestDesign:
         assert "account_id" in case_text
         assert "payment_id" in case_text
 
+    async def test_js_route_table_handler_object_becomes_black_box_entry(self, tmp_path):
+        from app.services.coverage_analyzer import build_coverage_test_design
+
+        src = tmp_path / "src"
+        src.mkdir()
+        (src / "payments.ts").write_text(
+            "export function processPayment(req) {\n"
+            "  const payload = {\n"
+            "    amount: req.body.amount,\n"
+            "    tenantId: req.params.tenantId,\n"
+            "  };\n"
+            "  if (!payload.amount) {\n"
+            "    return { status: 400 };\n"
+            "  }\n"
+            "  return { status: 200 };\n"
+            "}\n",
+            encoding="utf-8",
+        )
+        (src / "routes.ts").write_text(
+            "import { processPayment } from './payments';\n\n"
+            "export const routes = [\n"
+            "  {\n"
+            "    method: 'POST',\n"
+            "    path: '/tenants/:tenantId/payments',\n"
+            "    handler: processPayment,\n"
+            "  },\n"
+            "];\n",
+            encoding="utf-8",
+        )
+        modules = self._modules(
+            "feature,module,code_location,function,triggered,hit_count\n"
+            "payments,payments,src/payments.ts:1-10,processPayment,false,0\n"
+        )
+
+        design = await build_coverage_test_design(
+            modules, workspace_id="ws-1", repo_path=str(tmp_path)
+        )
+
+        gap = [g for g in design["gaps"] if g.get("kind") == "function"][0]
+        assert gap["gray_box_required"] is False
+        assert gap["black_box_readiness"]["case_type"] == "black_box_ready"
+        entry = gap["entry_paths"][0]
+        assert entry["entry_kind"] == "route"
+        assert entry["entry_symbol"] == "processPayment"
+        assert entry["tool"] == "source-table"
+        assert "handler: processPayment" in entry["evidence"]
+        assert entry["input_hints"] == ["tenantId", "amount"]
+
     async def test_gin_route_registration_reads_context_input_hints(self, tmp_path):
         from app.services.coverage_analyzer import build_coverage_test_design
 
