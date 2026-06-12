@@ -5347,17 +5347,45 @@ def _join_route_paths(prefix: str, path: str) -> str:
 
 
 def _route_path_from_text(text: str) -> str | None:
-    for pattern in (
-        r"\b(?:route|path|url)\s*[:=]\s*(['\"])(?P<path>(?:\\.|(?!\1).)*?)\1",
-        r"\badd_url_rule\s*\(\s*(['\"])(?P<path>(?:\\.|(?!\1).)*?)\1",
-        r"(?:@?[A-Za-z_]\w*(?:\.[A-Za-z_]\w*)*)?\s*\.\s*(?:get|post|put|patch|delete|head|options|any|route|websocket)\s*\(\s*(['\"])(?P<path>(?:\\.|(?!\1).)*?)\1",
-        r"\b(?:get|post|put|patch|delete|head|options|any|route|websocket)\s+(['\"])(?P<path>(?:\\.|(?!\1).)*?)\1",
-        r"\(\s*(['\"])(?P<path>(?:\\.|(?!\1).)*?)\1",
-    ):
+    patterns = (
+        (
+            r"\b(?:route|path|url)\s*[:=]\s*(['\"])(?P<path>(?:\\.|(?!\1).)*?)\1",
+            False,
+        ),
+        (
+            r"\badd_url_rule\s*\(\s*(['\"])(?P<path>(?:\\.|(?!\1).)*?)\1",
+            True,
+        ),
+        (
+            r"(?:@?[A-Za-z_]\w*(?:\.[A-Za-z_]\w*)*)?\s*\.\s*"
+            r"(?:get|post|put|patch|delete|head|options|any|route|websocket)\s*"
+            r"\(\s*(['\"])(?P<path>(?:\\.|(?!\1).)*?)\1",
+            True,
+        ),
+        (
+            r"[@\[]\s*(?:Controller|RequestMapping|Route|"
+            r"Get|Post|Put|Patch|Delete|Head|Options|"
+            r"GetMapping|PostMapping|PutMapping|PatchMapping|DeleteMapping|"
+            r"HttpGet|HttpPost|HttpPut|HttpPatch|HttpDelete)\s*"
+            r"\(\s*(['\"])(?P<path>(?:\\.|(?!\1).)*?)\1",
+            True,
+        ),
+        (
+            r"\b(?:get|post|put|patch|delete|head|options|any|route|websocket)\s+"
+            r"(['\"])(?P<path>(?:\\.|(?!\1).)*?)\1",
+            True,
+        ),
+        (
+            r"\(\s*(['\"])(?P<path>(?:\\.|(?!\1).)*?)\1",
+            False,
+        ),
+    )
+    for pattern, allow_relative in patterns:
         for match in re.finditer(pattern, text or "", re.IGNORECASE):
             path = match.group("path").strip()
-            if _looks_like_route_path(path):
-                return path
+            normalized = _normalize_route_path(path, allow_relative=allow_relative)
+            if normalized:
+                return normalized
     return None
 
 
@@ -5366,6 +5394,23 @@ def _looks_like_route_path(value: str) -> bool:
     if not text:
         return False
     return text.startswith(("/", "{", "<", ":")) or "/{" in text or "/:" in text
+
+
+def _normalize_route_path(value: str, *, allow_relative: bool = False) -> str | None:
+    text = str(value or "").strip()
+    if not text:
+        return None
+    if allow_relative and not text.startswith(("/", "{", "<", ":")) and ("/{" in text or "/:" in text):
+        return f"/{text.lstrip('/')}"
+    if _looks_like_route_path(text):
+        return text
+    if not allow_relative:
+        return None
+    if re.search(r"\s", text):
+        return None
+    if text.startswith((".", "*")):
+        return None
+    return f"/{text.lstrip('/')}"
 
 
 def _route_method_from_text(text: str) -> str | None:

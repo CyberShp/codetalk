@@ -4176,6 +4176,41 @@ class TestCoverageTestDesign:
         case_text = json.dumps(gap["black_box_cases"], ensure_ascii=False)
         assert "POST /tenants/:tenantId/payments" in case_text
 
+    async def test_nestjs_relative_controller_prefix_feeds_black_box_trigger(self, tmp_path):
+        from app.services.coverage_analyzer import build_coverage_test_design
+
+        src = tmp_path / "src"
+        src.mkdir()
+        (src / "payment.controller.ts").write_text(
+            "@Controller('tenants/:tenantId')\n"
+            "export class PaymentController {\n"
+            "  @Post('payments')\n"
+            "  async processPayment(@Body() paymentRequest: PaymentRequest, @Param('tenantId') tenantId: string) {\n"
+            "    if (!paymentRequest.amount) {\n"
+            "      return { status: 400 };\n"
+            "    }\n"
+            "    return { status: 200, tenantId };\n"
+            "  }\n"
+            "}\n",
+            encoding="utf-8",
+        )
+        modules = self._modules(
+            "feature,module,code_location,function,triggered,hit_count\n"
+            "payments,controller,src/payment.controller.ts:4-9,processPayment,false,0\n"
+        )
+
+        design = await build_coverage_test_design(
+            modules, workspace_id="ws-1", repo_path=str(tmp_path)
+        )
+
+        gap = [g for g in design["gaps"] if g.get("kind") == "function"][0]
+        assert gap["black_box_readiness"]["case_type"] == "black_box_ready"
+        entry = gap["entry_paths"][0]
+        assert entry["external_trigger"] == "POST /tenants/:tenantId/payments"
+        assert "tenantId" in entry["input_hints"]
+        case_text = json.dumps(gap["black_box_cases"], ensure_ascii=False)
+        assert "POST /tenants/:tenantId/payments" in case_text
+
     async def test_nestjs_body_dto_fields_feed_black_box_input_hints(self, tmp_path):
         from app.services.coverage_analyzer import build_coverage_test_design
 
