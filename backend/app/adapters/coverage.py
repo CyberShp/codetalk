@@ -322,6 +322,13 @@ _COUNT_HEADERS = {
     "hitcount", "hits", "count", "times", "触发次数", "命中次数",
     "执行次数", "覆盖次数", "次数",
 }
+_LINE_START_HEADERS = {
+    "line", "lineno", "linenumber", "start", "startline", "linestart",
+    "beginline", "linebegin", "fromline",
+}
+_LINE_END_HEADERS = {
+    "end", "endline", "lineend", "stopline", "toline", "untilline",
+}
 
 
 def parse_internal_function_hits(content: str) -> CoverageReport:
@@ -356,7 +363,7 @@ def _function_hit_rows_to_report(rows: list[list[str]]) -> CoverageReport:
     header = [_normalize_header(c) for c in rows[0]]
     known_headers = (
         _FUNC_HEADERS | _LOCATION_HEADERS | _TRIGGER_HEADERS | _COUNT_HEADERS
-        | _FEATURE_HEADERS | _MODULE_HEADERS
+        | _FEATURE_HEADERS | _MODULE_HEADERS | _LINE_START_HEADERS | _LINE_END_HEADERS
     )
     has_header = any(h in known_headers for h in header)
     if has_header:
@@ -494,6 +501,10 @@ def _internal_hit_indexes(header: list[str]) -> dict[str, int]:
             indexes["triggered"] = idx
         elif name in _COUNT_HEADERS and "hit_count" not in indexes:
             indexes["hit_count"] = idx
+        elif name in _LINE_START_HEADERS and "line_start" not in indexes:
+            indexes["line_start"] = idx
+        elif name in _LINE_END_HEADERS and "line_end" not in indexes:
+            indexes["line_end"] = idx
 
     missing = [key for key in ("function", "location") if key not in indexes]
     if missing:
@@ -512,6 +523,10 @@ def _row_to_function_hit(row: list[str], indexes: dict[str, int]) -> FunctionHit
 
     raw_location = cell("location")
     file_path, line_start, line_end = _parse_location(raw_location)
+    if line_start is None:
+        line_start = _parse_optional_line_number(cell("line_start"))
+    if line_end is None:
+        line_end = _parse_optional_line_number(cell("line_end")) or line_start
     hit_count = _parse_hit_count(cell("hit_count"))
     triggered = _parse_triggered(cell("triggered"), hit_count)
 
@@ -530,6 +545,8 @@ def _row_to_function_hit(row: list[str], indexes: dict[str, int]) -> FunctionHit
             "feature_name": cell("feature"),
             "module_name": cell("module"),
             "code_location": raw_location,
+            "line_start": cell("line_start"),
+            "line_end": cell("line_end"),
             "triggered": cell("triggered"),
             "hit_count": cell("hit_count"),
         },
@@ -564,6 +581,15 @@ def _parse_hit_count(value: str) -> int:
         return 0
     match = re.search(r"-?\d+", value)
     return max(0, int(match.group(0))) if match else 0
+
+
+def _parse_optional_line_number(value: str) -> int | None:
+    if not value:
+        return None
+    match = re.search(r"\d+", value)
+    if not match:
+        return None
+    return max(1, int(match.group(0)))
 
 
 def _parse_triggered(value: str, hit_count: int) -> bool:

@@ -316,6 +316,27 @@ lib,lib/core,lib/core.c:11-15,c,false,0
         assert report.overall_line_rate == pytest.approx(0.5)
         assert report.overall_branch_rate == pytest.approx(0.0)
 
+    async def test_function_hit_csv_accepts_split_file_and_line_columns(self):
+        from app.adapters.coverage import parse_internal_function_hits
+
+        csv_text = """function_name,file_path,line_start,line_end,triggered,hit_count
+happy_path,src/service.c,10,20,true,8
+error_recovery,src/service.c,40,55,false,0
+"""
+        report = parse_internal_function_hits(csv_text)
+        rec = [
+            hit
+            for module in report.modules
+            for hit in module.function_hits
+            if hit.function_name == "error_recovery"
+        ][0]
+
+        assert rec.file_path == "src/service.c"
+        assert rec.line_start == 40
+        assert rec.line_end == 55
+        assert rec.raw["line_start"] == "40"
+        assert rec.raw["line_end"] == "55"
+
     async def test_run_analysis_generates_black_box_recommendations_without_llm(self, sqlite_db):
         analyzer = CoverageAnalyzer()
         analysis_id = str(uuid.uuid4())
@@ -362,6 +383,32 @@ error_recovery,src/service.c:40-55,false,0
         assert row["workspace_id"] == "ws-1"
         assert row["repo_path"] == "/repo"
         assert "error_recovery" in row["analysis_results_json"]
+
+    async def test_run_analysis_preserves_split_file_and_line_columns(self, sqlite_db):
+        analyzer = CoverageAnalyzer()
+        analysis_id = str(uuid.uuid4())
+        csv_text = """function_name,file_path,line_start,line_end,triggered,hit_count
+happy_path,src/service.c,10,20,true,8
+error_recovery,src/service.c,40,55,false,0
+"""
+
+        await analyzer.parse_and_store(
+            analysis_id,
+            [("internal.csv", csv_text)],
+            name="split-line-hit-test",
+            workspace_id="ws-1",
+            repo_path="/repo",
+        )
+
+        results = await analyzer.run_analysis(analysis_id)
+
+        assert len(results) == 1
+        rec = results[0]
+        assert rec["function_name"] == "error_recovery"
+        assert rec["file_path"] == "src/service.c"
+        assert rec["line_start"] == 40
+        assert rec["line_end"] == 55
+        assert rec["evidence"]["coverage"]["hit_count"] == 0
 
     async def test_context_loads_completed_reports_and_active_materials(
         self, sqlite_db, tmp_path
