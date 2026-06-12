@@ -5340,6 +5340,47 @@ class TestCoverageTestDesign:
         case_text = json.dumps(gap["black_box_cases"], ensure_ascii=False)
         assert "invoice.created" in case_text
 
+    async def test_add_event_listener_registration_keeps_message_entry_kind(self, tmp_path):
+        from app.services.coverage_analyzer import build_coverage_test_design
+
+        src = tmp_path / "src"
+        src.mkdir()
+        (src / "checkout.ts").write_text(
+            "export function submitCheckout(event) {\n"
+            "  const amount = event.detail.amount;\n"
+            "  if (!amount) {\n"
+            "    return 'missing';\n"
+            "  }\n"
+            "  return 'submitted';\n"
+            "}\n",
+            encoding="utf-8",
+        )
+        (src / "ui.ts").write_text(
+            "import { submitCheckout } from './checkout';\n\n"
+            "checkoutButton.addEventListener('submit', submitCheckout);\n",
+            encoding="utf-8",
+        )
+        modules = self._modules(
+            "feature,module,code_location,function,triggered,hit_count\n"
+            "checkout,checkout,src/checkout.ts:1-7,submitCheckout,false,0\n"
+        )
+
+        design = await build_coverage_test_design(
+            modules, workspace_id="ws-1", repo_path=str(tmp_path)
+        )
+
+        gap = [g for g in design["gaps"] if g.get("kind") == "function"][0]
+        assert gap["gray_box_required"] is False
+        assert gap["black_box_readiness"]["case_type"] == "black_box_ready"
+        entry = gap["entry_paths"][0]
+        assert entry["entry_symbol"] == "submitCheckout"
+        assert entry["entry_kind"] == "message"
+        assert "addEventListener" in entry["evidence"]
+        assert entry["input_hints"] == ["submit", "amount"]
+        case_text = json.dumps(gap["black_box_cases"], ensure_ascii=False)
+        assert "submit" in case_text
+        assert "amount" in case_text
+
     async def test_entry_discovery_artifact_and_context_are_written(self, tmp_path):
         from app.services.coverage_analyzer import build_coverage_test_design
 

@@ -327,6 +327,16 @@ _REQ_FIELD_RE = re.compile(
 )
 _REQUEST_FIELD_RES = (
     re.compile(
+        r"\b(?:event|evt)"
+        r"(?:\??\.(?:detail|data|payload))"
+        r"(?:\??\.)\s*([A-Za-z_][\w-]*)\b"
+    ),
+    re.compile(
+        r"\b(?:event|evt)"
+        r"(?:\??\.(?:detail|data|payload))"
+        r"\s*\[\s*['\"]([A-Za-z_][\w-]*)['\"]\s*\]"
+    ),
+    re.compile(
         r"\b(?:request|req|payload|body|params|query|data)"
         r"(?:\??\.(?:json|args|form|query|body|data|params|headers|cookies|values|files))?"
         r"(?:\??\.)?\s*\[\s*['\"]([A-Za-z_][\w-]*)['\"]\s*\]"
@@ -386,7 +396,8 @@ _ENV_FIELD_RES = (
 _REGISTRATION_LINE_RE = re.compile(
     r"\b(?:[A-Z0-9_]*REGISTER[A-Z0-9_]*|register_[A-Za-z0-9_]+)\s*\("
     r"|\badd_[A-Za-z0-9_]*Servicer_to_server\s*\("
-    r"|\.[ \t]*(?:register|subscribe|on|once|add_listener|add_handler|add_job|schedule)\s*\(",
+    r"|\.[ \t]*(?:register|subscribe|on|once|listen|addEventListener|addListener|"
+    r"addHandler|add_listener|add_handler|add_job|schedule)\s*\(",
     re.IGNORECASE,
 )
 _INLINE_ROUTE_DEFINITION_RE = re.compile(
@@ -415,13 +426,13 @@ _ENTRY_DECORATOR_KIND_TOKENS: tuple[tuple[str, tuple[str, ...]], ...] = (
         ".task", "@task", "@job", ".job", "job(",
     )),
     ("message", ("subscribe", "subscriber", "topic", "queue", "message", "event", "listener",
-                 ".on", ".listen", "consumer")),
+                 ".on", ".listen", "addeventlistener", "addlistener", "consumer")),
     ("callback", ("callback", ".callback")),
 )
 _PUBLIC_CALLBACK_START_RE = re.compile(
     r"(?:\.\s*(?:"
     r"get|post|put|patch|delete|head|options|route|use|"
-    r"subscribe|on|listen|add_listener|add_handler|register|"
+    r"subscribe|on|listen|addEventListener|addListener|addHandler|add_listener|add_handler|register|"
     r"add_job|schedule"
     r")|(?:^|\b)(?:path|re_path))\s*\(",
     re.IGNORECASE,
@@ -3163,7 +3174,10 @@ def _entry_metadata_for_site(abs_file: str, line_number: int, enclosing_fn: str 
     if rpc_method:
         metadata["entry_label"] = f"JSON-RPC {rpc_method}"
     hints = _request_field_hints(abs_file, line_number, enclosing_fn)
-    for hint in _handler_signature_input_hints(abs_file, enclosing_fn):
+    for hint in _specific_signature_input_hints(
+        _handler_signature_input_hints(abs_file, enclosing_fn),
+        hints,
+    ):
         if hint not in hints:
             hints.append(hint)
     if _is_cli_entry_symbol(enclosing_fn):
@@ -3181,7 +3195,7 @@ def _entry_metadata_for_symbol(
     entry_symbol: str | None,
 ) -> dict:
     metadata = _entry_metadata_for_site(abs_file, line_number, enclosing_fn)
-    if metadata.get("input_hints") or not entry_symbol:
+    if not entry_symbol:
         return metadata
 
     symbol_file: Path | None = None
@@ -3208,12 +3222,33 @@ def _entry_metadata_for_symbol(
     if rpc_method and not metadata.get("entry_label"):
         metadata["entry_label"] = f"JSON-RPC {rpc_method}"
     hints = _request_field_hints(str(symbol_file), definition_line, entry_symbol)
-    for hint in _handler_signature_input_hints(str(symbol_file), entry_symbol):
+    for hint in _specific_signature_input_hints(
+        _handler_signature_input_hints(str(symbol_file), entry_symbol),
+        hints,
+    ):
         if hint not in hints:
             hints.append(hint)
     if hints:
-        metadata["input_hints"] = hints
+        metadata["input_hints"] = _merge_ordered_input_hints(
+            metadata.get("input_hints"),
+            hints,
+        )
     return metadata
+
+
+def _specific_signature_input_hints(
+    signature_hints: list[str],
+    source_hints: list[str],
+) -> list[str]:
+    if not source_hints:
+        return signature_hints
+    generic_payload_names = {
+        "event", "evt", "message", "msg", "payload", "record", "request", "req",
+    }
+    return [
+        hint for hint in signature_hints
+        if str(hint or "").strip().lower() not in generic_payload_names
+    ]
 
 
 def _anonymous_entry_metadata_for_site(
