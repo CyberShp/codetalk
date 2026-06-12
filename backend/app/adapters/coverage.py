@@ -555,6 +555,16 @@ def _row_to_function_hit(row: list[str], indexes: dict[str, int]) -> FunctionHit
 
 def _parse_location(value: str) -> tuple[str, int | None, int | None]:
     text = value.strip().strip("\"'")
+    line_column_match = re.match(
+        r"^(?P<path>.+?)[(:\[]\s*(?:L|line\s*)?"
+        r"(?P<start>\d+)\s*:\s*\d+\s*[\])]*$",
+        text,
+        flags=re.IGNORECASE,
+    )
+    if line_column_match:
+        file_path = _normalize_path(line_column_match.group("path"))
+        line_start = int(line_column_match.group("start"))
+        return file_path, line_start, line_start
     match = re.match(
         r"^(?P<path>.+?)[(:\[]\s*(?:L|line\s*)?"
         r"(?P<start>\d+)(?:\s*[-,~]\s*(?:L)?(?P<end>\d+))?\s*[\])]*$",

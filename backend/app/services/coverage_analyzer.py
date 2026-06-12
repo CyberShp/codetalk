@@ -2552,6 +2552,7 @@ def _normalize_coverage_source_path(file_path: str) -> str:
     value = unquote(value).replace("\\", "/")
     if re.match(r"^/[A-Za-z]:/", value):
         value = value[1:]
+    value = re.sub(r":\d+:\d+$", "", value)
     value = re.sub(r":\d+(?:-\d+)?$", "", value)
     return value
 

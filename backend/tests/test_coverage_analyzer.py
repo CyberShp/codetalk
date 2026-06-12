@@ -337,6 +337,25 @@ error_recovery,src/service.c,40,55,false,0
         assert rec.raw["line_start"] == "40"
         assert rec.raw["line_end"] == "55"
 
+    async def test_function_hit_csv_accepts_compiler_style_line_column_location(self):
+        from app.adapters.coverage import parse_internal_function_hits
+
+        csv_text = """function_name,code_location,triggered,hit_count
+happy_path,src/service.c:10:3,true,8
+error_recovery,src/service.c:40:5,false,0
+"""
+        report = parse_internal_function_hits(csv_text)
+        rec = [
+            hit
+            for module in report.modules
+            for hit in module.function_hits
+            if hit.function_name == "error_recovery"
+        ][0]
+
+        assert rec.file_path == "src/service.c"
+        assert rec.line_start == 40
+        assert rec.line_end == 40
+
     async def test_run_analysis_generates_black_box_recommendations_without_llm(self, sqlite_db):
         analyzer = CoverageAnalyzer()
         analysis_id = str(uuid.uuid4())
@@ -6226,6 +6245,34 @@ class TestCoverageTestDesign:
         assert window["path"] == "src/payment service.py"
         assert "correct file" in window["text"]
         assert "wrong file" not in window["text"]
+
+    async def test_source_window_strips_compiler_style_line_column_suffix(self, tmp_path):
+        from app.adapters.coverage import FunctionHit
+        from app.services.coverage_analyzer import _normalize_coverage_source_path, _read_source_window
+
+        assert _normalize_coverage_source_path("src/service.c:1:7") == "src/service.c"
+
+        src = tmp_path / "src"
+        src.mkdir()
+        (src / "service.c").write_text(
+            "void recover_service(void) {\n"
+            "    recover_state();\n"
+            "}\n",
+            encoding="utf-8",
+        )
+        hit = FunctionHit(
+            function_name="recover_service",
+            file_path="src/service.c:1:7",
+            line_start=1,
+            triggered=False,
+            hit_count=0,
+        )
+
+        window = _read_source_window(tmp_path, hit)
+
+        assert window is not None
+        assert window["path"] == "src/service.c"
+        assert "recover_state" in window["text"]
 
     async def test_source_window_uses_workspace_scope_candidate_when_coverage_path_is_stale(
         self,
