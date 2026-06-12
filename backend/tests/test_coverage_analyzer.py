@@ -1406,6 +1406,53 @@ class TestCoverageTestDesign:
         assert "recover_session" not in execution_text
         assert "api_handle_request" not in execution_text
 
+    async def test_black_box_cases_filter_internal_context_access_input_hints(self):
+        from app.services.coverage_analyzer import _build_black_box_cases
+
+        hit = FunctionHit(
+            function_name="process_invoice",
+            file_path="src/processor.ts",
+            line_start=1,
+            triggered=False,
+            hit_count=0,
+        )
+        entry_paths = [{
+            "entry_kind": "message",
+            "entry_symbol": "consumeInvoice",
+            "entry_label": "message invoice.created",
+            "chain": ["consumeInvoice", "process_invoice"],
+            "input_hints": [
+                "request.body",
+                "ctx.user_id",
+                "this.payload",
+                "self.invoice_id",
+                "invoice.created",
+                "billing.process_invoice",
+                "amount",
+            ],
+        }]
+
+        cases = _build_black_box_cases(hit, entry_paths, [])
+        execution_text = json.dumps(
+            [
+                {
+                    "inputs": case.get("inputs"),
+                    "steps": case.get("steps"),
+                    "external_trigger": case.get("external_trigger"),
+                }
+                for case in cases
+            ],
+            ensure_ascii=False,
+        )
+
+        assert "invoice.created" in execution_text
+        assert "billing.process_invoice" in execution_text
+        assert "amount" in execution_text
+        assert "request.body" not in execution_text
+        assert "ctx.user_id" not in execution_text
+        assert "this.payload" not in execution_text
+        assert "self.invoice_id" not in execution_text
+
     async def test_traces_external_entry_and_builds_black_box(self, tmp_path):
         from app.services.coverage_analyzer import build_coverage_test_design
 
