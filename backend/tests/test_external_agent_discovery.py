@@ -1381,7 +1381,7 @@ def test_provider_health_uses_claude_fallback_when_ccr_missing(tmp_path, monkeyp
     assert health["attempts"][0]["executable"] == "ccr"
 
 
-def test_provider_health_does_not_block_ccr_for_missing_default_config(tmp_path, monkeypatch):
+def test_provider_health_uses_fallback_when_ccr_default_config_is_missing(tmp_path, monkeypatch):
     from app.services.external_agent_discovery import check_provider_health
 
     ccr = tmp_path / "bin" / "ccr.cmd"
@@ -1401,6 +1401,10 @@ def test_provider_health_does_not_block_ccr_for_missing_default_config(tmp_path,
     monkeypatch.setattr("app.services.external_agent_discovery.shutil.which", fake_which)
     monkeypatch.delenv("CCR_CONFIG_PATH", raising=False)
     monkeypatch.setenv("USERPROFILE", str(tmp_path / "home"))
+    monkeypatch.setattr(
+        "app.services.external_agent_discovery._windows_profile_ccr_config_path",
+        lambda: None,
+    )
 
     health = check_provider_health(
         "claude-code",
@@ -1409,16 +1413,47 @@ def test_provider_health_does_not_block_ccr_for_missing_default_config(tmp_path,
     )
 
     assert health["status"] == "available"
+    assert health["argv"][0] == str(claude)
+    assert health["used_fallback"] is True
+    assert len(health["attempts"]) == 2
+    assert health["attempts"][0]["status"] == "configuration_error"
+    assert "ccr config file not found" in health["attempts"][0]["reason"]
+    assert str(tmp_path / "home" / ".claude-code-router" / "config-router.json") == (
+        health["attempts"][0]["config_path"]
+    )
+    assert health["attempts"][1]["status"] == "available"
+
+
+def test_provider_health_allows_ccr_when_profile_exposes_config(tmp_path, monkeypatch):
+    from app.services.external_agent_discovery import check_provider_health
+
+    ccr = tmp_path / "bin" / "ccr.cmd"
+    config = tmp_path / "profile" / "config-router.json"
+    ccr.parent.mkdir()
+    config.parent.mkdir()
+    ccr.write_text("@echo off\n", encoding="utf-8")
+    config.write_text('{"Providers":[]}\n', encoding="utf-8")
+
+    monkeypatch.setattr("app.services.external_agent_discovery.platform.system", lambda: "Windows")
+    monkeypatch.setattr(
+        "app.services.external_agent_discovery.shutil.which",
+        lambda cmd: str(ccr) if cmd == "ccr" else None,
+    )
+    monkeypatch.delenv("CCR_CONFIG_PATH", raising=False)
+    monkeypatch.setenv("USERPROFILE", str(tmp_path / "home"))
+    monkeypatch.setattr(
+        "app.services.external_agent_discovery._windows_profile_ccr_config_path",
+        lambda: str(config),
+    )
+
+    health = check_provider_health("claude-code", "ccr code -p --output-format json")
+
+    assert health["status"] == "available"
     assert health["launch_kind"] == "powershell-profile"
     assert health["argv"][0].lower().endswith("powershell.exe")
     assert str(ccr).replace("'", "''") in health["argv"][-1]
-    assert health["used_fallback"] is False
-    assert len(health["attempts"]) == 1
     assert health["attempts"][0]["status"] == "available"
-    assert "default config not found" in health["attempts"][0]["config_hint"]
-    assert str(tmp_path / "home" / ".claude-code-router" / "config-router.json") in (
-        health["attempts"][0]["config_hint"]
-    )
+    assert health["attempts"][0]["profile_config_path"] == str(config)
 
 
 def test_provider_health_finds_ccr_from_pnpm_home_when_backend_path_misses_it(tmp_path, monkeypatch):
@@ -2473,16 +2508,10 @@ def test_run_provider_uses_fallback_after_default_ccr_run_invalid_output(tmp_pat
 
     assert results[0].status == "ok"
     assert results[0].raw_summary == "fallback_ok"
-    assert any("primary command failed; using fallback" in item for item in results[0].warnings)
-    assert any(
-        "external agent exited with exit code" in item
-        or "invalid json" in item.lower()
-        for item in results[0].warnings
-    )
+    assert any("primary command configuration error" in item for item in results[0].warnings)
     assert len(results[0].runtime_attempts) == 2
-    assert results[0].runtime_attempts[0]["status"] == "available"
-    assert results[0].runtime_attempts[0]["launch_kind"] == "powershell-profile"
-    assert results[0].runtime_attempts[0]["run_status"] == "invalid_output"
+    assert results[0].runtime_attempts[0]["status"] == "configuration_error"
+    assert results[0].runtime_attempts[0]["run_status"] == "configuration_error"
     assert results[0].runtime_attempts[1]["run_status"] == "ok"
     assert runtime_attempts == results[0].runtime_attempts
 
@@ -3621,11 +3650,11 @@ def test_startup_probe_uses_fallback_after_default_ccr_run_invalid_output(tmp_pa
     assert result["status"] == "ok"
     assert result["message"] == "startup_probe_ok"
     assert result["health"]["used_fallback"] is True
-    assert "primary command failed; using fallback" in result["health"]["reason"]
+    assert "primary command configuration error" in result["health"]["reason"]
     attempts = result["health"]["attempts"]
     assert len(attempts) == 2
-    assert attempts[0]["status"] == "available"
-    assert attempts[0]["probe_status"] == "invalid_output"
+    assert attempts[0]["status"] == "configuration_error"
+    assert attempts[0]["probe_status"] == "configuration_error"
     assert attempts[1]["probe_status"] == "ok"
 
 

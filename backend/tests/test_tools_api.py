@@ -333,8 +333,8 @@ async def test_external_agent_health_marks_default_ccr_config_hint_misconfigured
     assert "CCR_CONFIG_PATH" in health.last_check
 
 
-async def test_external_agent_health_does_not_misconfigure_powershell_profile_ccr(monkeypatch):
-    """Profile-backed CCR launches may provide config/env that direct Python cannot see."""
+async def test_external_agent_health_marks_missing_profile_ccr_config_misconfigured(monkeypatch):
+    """Profile launch is not enough unless CodeTalk verifies a usable CCR config."""
     from app.adapters.external_agent import ExternalAgentAdapter
 
     monkeypatch.setattr(
@@ -352,6 +352,39 @@ async def test_external_agent_health_does_not_misconfigure_powershell_profile_cc
                     "config_hint": (
                         "CCR_CONFIG_PATH is not set and default config not found: "
                         "C:/Users/me/.claude-code-router/config-router.json"
+                    ),
+                }
+            ],
+        },
+    )
+
+    health = await ExternalAgentAdapter("claude-code", "claude_code_command").health_check()
+
+    assert health.is_healthy is False
+    assert health.container_status == "misconfigured"
+    assert "powershell-profile" in health.last_check
+
+
+async def test_external_agent_health_accepts_profile_ccr_config(monkeypatch):
+    """A verified CCR config from PowerShell profile should remain healthy."""
+    from app.adapters.external_agent import ExternalAgentAdapter
+
+    monkeypatch.setattr(
+        "app.adapters.external_agent.check_provider_health",
+        lambda *_args, **_kwargs: {
+            "provider": "claude-code",
+            "status": "available",
+            "path": "C:/Users/me/AppData/Roaming/npm/ccr.cmd",
+            "launch_kind": "powershell-profile",
+            "attempts": [
+                {
+                    "command": "ccr code",
+                    "status": "available",
+                    "launch_kind": "powershell-profile",
+                    "profile_config_path": "C:/Users/me/.ccr/config.json",
+                    "config_hint": (
+                        "CCR_CONFIG_PATH is available from PowerShell profile: "
+                        "C:/Users/me/.ccr/config.json"
                     ),
                 }
             ],

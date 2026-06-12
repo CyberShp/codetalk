@@ -663,6 +663,8 @@ def _should_use_windows_profile_agent_launch(
         return False
     if not _looks_like_ccr_code_command(argv):
         return False
+    if str(config_hint.get("profile_config_path") or "").strip():
+        return True
     hint = str(config_hint.get("config_hint") or "")
     return "CCR_CONFIG_PATH is not set" in hint and "default config not found" in hint
 
@@ -862,16 +864,25 @@ def _provider_command_configuration_error(
     if provider != "claude-code" or not _looks_like_ccr_code_command(argv):
         return None
     config_path = _explicit_ccr_config_path_from_argv(argv)
-    if not config_path:
+    if config_path:
+        try:
+            if Path(config_path).expanduser().is_file():
+                return None
+        except OSError:
+            pass
+        return {
+            "reason": f"ccr config file not found: {config_path}",
+            "config_path": config_path,
+        }
+    if _existing_ccr_config_path() or _windows_profile_ccr_config_path():
         return None
-    try:
-        if Path(config_path).expanduser().is_file():
-            return None
-    except OSError:
-        pass
+    default_path = _default_ccr_config_path() or "<unknown>"
     return {
-        "reason": f"ccr config file not found: {config_path}",
-        "config_path": config_path,
+        "reason": (
+            "ccr config file not found and CCR_CONFIG_PATH is not set: "
+            f"{default_path}"
+        ),
+        "config_path": default_path,
     }
 
 
@@ -883,6 +894,15 @@ def _provider_command_configuration_hint(
         return {}
     if _explicit_ccr_config_path_from_argv(argv):
         return {}
+    profile_config_path = _windows_profile_ccr_config_path()
+    if profile_config_path:
+        return {
+            "config_hint": (
+                "CCR_CONFIG_PATH is available from PowerShell profile: "
+                f"{profile_config_path}"
+            ),
+            "profile_config_path": profile_config_path,
+        }
     config_path = _default_ccr_config_path()
     if not config_path:
         return {}
@@ -950,6 +970,62 @@ def _existing_ccr_config_path() -> str | None:
         except OSError:
             continue
     return None
+
+
+def _windows_profile_ccr_config_path() -> str | None:
+    """Return CCR_CONFIG_PATH supplied by the user's PowerShell profile.
+
+    Backend processes often miss profile-level env vars.  Before trusting a
+    profile-backed CCR launch, explicitly verify that the profile provides a
+    real config path.
+    """
+    if not platform.system().lower().startswith("win"):
+        return None
+    if not settings.external_agent_windows_shell_load_profile:
+        return None
+    value = _windows_profile_env_var("CCR_CONFIG_PATH")
+    if not value:
+        return None
+    try:
+        candidate = Path(value).expanduser()
+        if candidate.is_file():
+            return str(candidate)
+    except OSError:
+        return None
+    return None
+
+
+def _windows_profile_env_var(name: str) -> str | None:
+    powershell = _find_powershell()
+    if not powershell:
+        return None
+    safe_name = re.sub(r"[^A-Za-z0-9_]", "", str(name or ""))
+    if not safe_name:
+        return None
+    try:
+        proc = subprocess.run(
+            [
+                *_windows_powershell_base_argv(powershell),
+                "-Command",
+                (
+                    "[Console]::OutputEncoding = "
+                    "[System.Text.UTF8Encoding]::new($false); "
+                    f"$value = $env:{safe_name}; "
+                    "if ($value) { [Console]::Out.Write($value) }"
+                ),
+            ],
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+            timeout=3,
+        )
+    except Exception:
+        return None
+    if proc.returncode != 0:
+        return None
+    value = (proc.stdout or "").strip()
+    return value or None
 
 
 def _looks_like_ccr_code_command(argv: list[str]) -> bool:
