@@ -5407,6 +5407,37 @@ def _commander_input_hints_from_text(text: str) -> list[str]:
     return hints[:12]
 
 
+def _commander_cli_entry_for_site(
+    repo_root: Path,
+    abs_file: str,
+    line_number: int,
+    traced_symbol: str,
+    site_text: str,
+) -> dict | None:
+    context = _cli_registration_context_for_site_file(abs_file, line_number)
+    if not context or not re.search(r"\.\s*action\s*\(", context):
+        return None
+    if traced_symbol and not re.search(rf"\b{re.escape(traced_symbol)}\b", context):
+        return None
+    hints = _commander_input_hints_from_text(context)
+    if not hints:
+        return None
+    rel_file = _relative_path(repo_root, Path(abs_file))
+    entry = {
+        "entry_kind": "cli",
+        "entry_symbol": traced_symbol,
+        "entry_file": rel_file,
+        "entry_label": _public_entry_label("cli", traced_symbol),
+        "call_line": line_number,
+        "chain": [traced_symbol],
+        "depth": 0,
+        "evidence": f"{rel_file}:{line_number} {site_text.strip()}",
+        "tool": "source-cli-registration",
+        "input_hints": hints,
+    }
+    return entry
+
+
 def _cli_positional_args_from_command_spec(spec: str) -> list[str]:
     args: list[str] = []
     seen: set[str] = set()
@@ -7145,6 +7176,16 @@ def _trace_entry_paths(
                 if kafka_entry:
                     entry_paths.append(kafka_entry)
                     continue
+                commander_entry = _commander_cli_entry_for_site(
+                    repo_root,
+                    site["abs_file"],
+                    site["line_number"],
+                    symbol,
+                    site["text"],
+                )
+                if commander_entry:
+                    entry_paths.append(commander_entry)
+                    continue
                 table_entry = _dispatch_table_entry_for_site(
                     repo_root,
                     site["abs_file"],
@@ -7400,6 +7441,13 @@ def _augment_entry_input_hints_from_symbol_source(
         str(entry_symbol),
     )
     existing_hints = _merge_ordered_input_hints(entry.get("input_hints"))
+    if (
+        str(entry.get("entry_kind") or "").strip().lower() == "cli"
+        and str(entry.get("tool") or "").strip() == "source-cli-registration"
+        and existing_hints
+    ):
+        entry["input_hints"] = existing_hints
+        return
     signature_hints = _handler_signature_input_hints(str(abs_file), str(entry_symbol))
     signature_hints = _specific_signature_input_hints(
         signature_hints,
