@@ -547,6 +547,9 @@ _REGISTRATION_LINE_RE = re.compile(
     r"\b(?:[A-Z0-9_]*REGISTER[A-Z0-9_]*|register_[A-Za-z0-9_]+)\s*\("
     r"|\badd_[A-Za-z0-9_]*Servicer_to_server\s*\("
     r"|\b(?:[A-Za-z_]\w*(?:\.[A-Za-z_]\w*)*\s*\.\s*)?Handle(?:Func)?\s*\("
+    r"|\b(?:new\s+)?Worker\s*\("
+    r"|\bQueue\s*\("
+    r"|\.\s*process\s*\("
     r"|\.[ \t]*(?:register|subscribe|on|once|listen|addEventListener|addListener|"
     r"addHandler|add_listener|add_handler|add_job|schedule)\s*\(",
     re.IGNORECASE,
@@ -7993,7 +7996,7 @@ def _registration_entry_for_site(
         for token in (
             "callback", "_cb", "handler", "ops", "poller", "timer", "event",
             "register", "subscribe", ".on", ".once", "listener", "schedule", "scheduler", "job",
-            "grpc", "servicer_to_server",
+            "worker", "queue", ".process", "grpc", "servicer_to_server",
         )
     )
     if not (assignment_seen and registration_line and callback_like):
@@ -8290,6 +8293,12 @@ def _registered_entry_type(registration_line: str, window: list[str]) -> str:
         return "cli"
     if re.search(r"\.\s*(?:on|once)\s*\(", text):
         return "message"
+    if (
+        re.search(r"\b(?:new\s+)?worker\s*\(", text)
+        or re.search(r"\bqueue\s*\(", text)
+        or re.search(r"\.\s*process\s*\(", text)
+    ):
+        return "queue"
     if any(token in text for token in ("subscribe", "subscriber", "topic", "queue", "message", "event", "listener")):
         return "message"
     if "service_register" in text or "ops" in text or "callback" in text or "_cb" in text:
