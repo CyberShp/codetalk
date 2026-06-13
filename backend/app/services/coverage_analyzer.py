@@ -517,6 +517,13 @@ _CONFIG_FIELD_RES = (
         r"\s*\(\s*['\"]([A-Za-z_][\w.:-]*)['\"]",
         re.IGNORECASE,
     ),
+    re.compile(
+        r"\b(?:viper|config|cfg|settings|options)"
+        r"\s*\.\s*Get(?:String|Bool|Int|Int64|Float64|Duration|Time|"
+        r"StringSlice|StringMap(?:String|StringSlice)?)?"
+        r"\s*\(\s*['\"]([A-Za-z_][\w.:-]*)['\"]",
+        re.IGNORECASE,
+    ),
 )
 _REGISTRATION_LINE_RE = re.compile(
     r"\b(?:[A-Z0-9_]*REGISTER[A-Z0-9_]*|register_[A-Za-z0-9_]+)\s*\("
@@ -7410,6 +7417,9 @@ _CONFIG_OPERATION_RE = re.compile(
     r"|\b(?:configuration|config|settings|options)\s*\.\s*Get"
     r"(?:Value|Section|ConnectionString)?(?:\s*<[^>]+>)?\s*\("
     r"|\b(?:[A-Za-z_]\w*|System)\s*\.\s*getProperty\s*\("
+    r"|\b(?:viper|config|cfg|settings|options)\s*\.\s*Get"
+    r"(?:String|Bool|Int|Int64|Float64|Duration|Time|StringSlice|StringMap"
+    r"(?:String|StringSlice)?)?\s*\("
     r"|\b(?:load_config|read_config|parse_config)\s*\("
     r"|\.ya?ml\b|\.toml\b|\.ini\b|\.conf\b",
     re.IGNORECASE,
