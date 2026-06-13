@@ -6589,6 +6589,9 @@ def _route_mount_prefix_for_site(lines: list[str], site_text: str) -> str | None
     receiver = _route_call_receiver(site_text)
     if not receiver:
         return None
+    group_prefix = _route_group_prefix_for_receiver(lines, receiver)
+    if group_prefix:
+        return group_prefix
     receiver_pattern = re.escape(receiver)
     for idx, line in enumerate(lines):
         if not re.search(r"\.\s*(?:use|mount)\s*\(", line or "", re.IGNORECASE):
@@ -6606,6 +6609,39 @@ def _route_mount_prefix_for_site(lines: list[str], site_text: str) -> str | None
         if _looks_like_route_path(prefix):
             return prefix
     return None
+
+
+def _route_group_prefix_for_receiver(lines: list[str], receiver: str) -> str | None:
+    target = str(receiver or "").strip().split(".")[-1]
+    if not target:
+        return None
+    assignments: dict[str, tuple[str | None, str]] = {}
+    for idx, line in enumerate(lines):
+        if "MapGroup" not in (line or ""):
+            continue
+        statement = _call_expression_context_from_start(lines, idx)
+        match = re.search(
+            r"\b(?:var\s+)?(?P<name>[A-Za-z_]\w*)\s*=\s*"
+            r"(?:(?P<parent>[A-Za-z_]\w*)\s*\.\s*)?"
+            r"MapGroup\s*\(\s*(['\"])(?P<prefix>(?:\\.|(?!\3).)*?)\3",
+            statement or "",
+            re.IGNORECASE,
+        )
+        if not match:
+            continue
+        prefix = _normalize_route_path(match.group("prefix"), allow_relative=True)
+        if prefix:
+            assignments[match.group("name")] = (match.group("parent"), prefix)
+
+    def build_prefix(name: str, seen: set[str]) -> str | None:
+        if name in seen or name not in assignments:
+            return None
+        seen.add(name)
+        parent, prefix = assignments[name]
+        parent_prefix = build_prefix(parent, seen) if parent else None
+        return _join_route_paths(parent_prefix, prefix) if parent_prefix else prefix
+
+    return build_prefix(target, set())
 
 
 def _call_expression_context_from_start(lines: list[str], start_idx: int) -> str:
@@ -7790,6 +7826,9 @@ def _dispatch_table_entry_for_site(
         window,
     )
     if entry_type == "route":
+        route_prefix = _route_mount_prefix_for_site(lines, site_text)
+        if route_prefix:
+            key = _join_route_paths(route_prefix, key)
         key_hints = _route_template_input_hints([key])
     else:
         key_hints = [key]
