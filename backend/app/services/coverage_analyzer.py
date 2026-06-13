@@ -7429,7 +7429,11 @@ _FILESYSTEM_OPERATION_RE = re.compile(
     r"|\bopen\s*\("
     r"|\b(?:pd|pandas|pl|polars)\s*\.\s*read_"
     r"(?:csv|table|fwf|json|excel|parquet|feather|orc|stata|sas|pickle)\s*\("
-    r"|\bspark\s*\.\s*read\s*\.\s*(?:csv|json|parquet|orc|text)\s*\(",
+    r"|\bspark\s*\.\s*read\s*\.\s*(?:csv|json|parquet|orc|text)\s*\("
+    r"|\b(?:fs|fsPromises)\s*\.\s*(?:promises\s*\.\s*)?"
+    r"(?:readFileSync|readFile|createReadStream|openSync|open)\s*\("
+    r"|\bDeno\s*\.\s*(?:readTextFileSync|readTextFile|readFileSync|readFile|openSync|open)\s*\("
+    r"|\bBun\s*\.\s*file\s*\(",
     re.IGNORECASE,
 )
 
@@ -7570,6 +7574,34 @@ def _filesystem_operation_input_hints(window_text: str) -> list[str]:
                     add(literal_label)
                 continue
             if re.fullmatch(r"[A-Za-z_]\w*", arg_text):
+                add(arg_text)
+    js_file_res = (
+        re.compile(
+            r"""\b(?:fs|fsPromises)\s*\.\s*(?:promises\s*\.\s*)?(?:readFileSync|readFile|createReadStream|openSync|open)\s*\(\s*(?P<arg>[^,\n\r\)]+)""",
+            re.IGNORECASE,
+        ),
+        re.compile(
+            r"""\bDeno\s*\.\s*(?:readTextFileSync|readTextFile|readFileSync|readFile|openSync|open)\s*\(\s*(?P<arg>[^,\n\r\)]+)""",
+            re.IGNORECASE,
+        ),
+        re.compile(
+            r"""\bBun\s*\.\s*file\s*\(\s*(?P<arg>[^,\n\r\)]+)""",
+            re.IGNORECASE,
+        ),
+    )
+    for pattern in js_file_res:
+        for match in pattern.finditer(window_text or ""):
+            add("input file")
+            arg_text = match.group("arg").strip()
+            literal = re.match(r"""['"](?P<path>[^'"]+)['"]""", arg_text)
+            if literal:
+                path_text = literal.group("path").replace("\\", "/")
+                add(path_text)
+                literal_label = format_label_for_path(path_text)
+                if literal_label:
+                    add(literal_label)
+                continue
+            if re.fullmatch(r"[A-Za-z_$][\w$]*", arg_text):
                 add(arg_text)
     lowered = (window_text or "").lower()
     if any(token in lowered for token in ("glob(", "rglob(", "iterdir(", "listdir(", "scandir(", "walk(")):
