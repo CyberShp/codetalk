@@ -4852,7 +4852,14 @@ def _cli_option_input_hints_from_text(text: str) -> list[str]:
             continue
         hint = next((item for item in quoted if item.startswith("--")), None)
         if hint is None:
-            hint = next((item for item in quoted if not item.startswith("-")), None)
+            hint = next(
+                (
+                    item for item in quoted
+                    if not item.startswith("-")
+                    and re.fullmatch(r"[A-Za-z_][\w-]*", item)
+                ),
+                None,
+            )
         if hint and hint not in seen:
             seen.add(hint)
             hints.append(hint)
