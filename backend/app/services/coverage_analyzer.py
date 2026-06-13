@@ -512,6 +512,11 @@ _CONFIG_FIELD_RES = (
         r"\s*\(\s*['\"]([A-Za-z_][\w.:-]*)['\"]",
         re.IGNORECASE,
     ),
+    re.compile(
+        r"\b(?:[A-Za-z_]\w*|System)\s*\.\s*getProperty"
+        r"\s*\(\s*['\"]([A-Za-z_][\w.:-]*)['\"]",
+        re.IGNORECASE,
+    ),
 )
 _REGISTRATION_LINE_RE = re.compile(
     r"\b(?:[A-Z0-9_]*REGISTER[A-Z0-9_]*|register_[A-Za-z0-9_]+)\s*\("
@@ -3832,7 +3837,8 @@ def _filter_config_signature_input_hints(
     if not config_items:
         return _coerce_input_hints(hints)
     generic_config_names = {
-        "config", "configuration", "settings", "options", "value", "key", "name",
+        "config", "configuration", "env", "environment", "options",
+        "properties", "property", "settings", "value", "key", "name",
     }
     explicit_leafs = {
         _input_hint_dedupe_key(part)
@@ -7403,6 +7409,7 @@ _CONFIG_OPERATION_RE = re.compile(
     r"|\b(?:configuration|config|settings|options)\s*\[\s*['\"]"
     r"|\b(?:configuration|config|settings|options)\s*\.\s*Get"
     r"(?:Value|Section|ConnectionString)?(?:\s*<[^>]+>)?\s*\("
+    r"|\b(?:[A-Za-z_]\w*|System)\s*\.\s*getProperty\s*\("
     r"|\b(?:load_config|read_config|parse_config)\s*\("
     r"|\.ya?ml\b|\.toml\b|\.ini\b|\.conf\b",
     re.IGNORECASE,
