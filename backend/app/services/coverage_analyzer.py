@@ -1517,13 +1517,67 @@ def _infer_function_name_for_coverage_line(
     anchor = max(0, min(len(lines) - 1, int(hit.line_start) - 1))
     for idx in range(anchor, -1, -1):
         name = _definition_name_for_file(lines, idx, suffix)
-        if name:
+        if name and _coverage_definition_owns_line(lines, idx, anchor, suffix):
             return name
     for idx in range(anchor + 1, min(len(lines), anchor + 20)):
         name = _definition_name_for_file(lines, idx, suffix)
         if name and _coverage_forward_definition_prefix_is_safe(lines, anchor, idx, suffix):
             return name
     return None
+
+
+def _coverage_definition_owns_line(
+    lines: list[str],
+    definition_idx: int,
+    target_idx: int,
+    suffix: str,
+) -> bool:
+    if definition_idx < 0 or definition_idx >= len(lines):
+        return False
+    if target_idx <= definition_idx:
+        return True
+    if suffix == ".py":
+        return _python_definition_owns_line(lines, definition_idx, target_idx)
+    if suffix in {
+        ".c", ".h", ".hh", ".hpp", ".hxx", ".cc", ".cpp", ".cxx",
+        ".go", ".rs", ".java", ".js", ".jsx", ".mjs", ".cjs",
+        ".ts", ".tsx", ".mts", ".cts", ".cs", ".php", ".kt", ".kts",
+        ".swift", ".m", ".scala",
+    }:
+        return _brace_definition_owns_line(lines, definition_idx, target_idx)
+    return True
+
+
+def _python_definition_owns_line(
+    lines: list[str],
+    definition_idx: int,
+    target_idx: int,
+) -> bool:
+    def_indent = _line_indent(lines[definition_idx])
+    for idx in range(definition_idx + 1, min(target_idx, len(lines) - 1) + 1):
+        stripped = lines[idx].strip()
+        if not stripped or stripped.startswith("#"):
+            continue
+        if _line_indent(lines[idx]) <= def_indent:
+            return False
+    return True
+
+
+def _brace_definition_owns_line(
+    lines: list[str],
+    definition_idx: int,
+    target_idx: int,
+) -> bool:
+    balance = 0
+    saw_block = False
+    for idx in range(definition_idx, min(target_idx, len(lines) - 1) + 1):
+        text = lines[idx]
+        balance += text.count("{") - text.count("}")
+        if "{" in text:
+            saw_block = True
+        if idx < target_idx and saw_block and balance <= 0:
+            return False
+    return saw_block and balance > 0
 
 
 def _coverage_forward_definition_prefix_is_safe(

@@ -4807,6 +4807,67 @@ class TestCoverageTestDesign:
         assert gap["entry_paths"] == []
         assert gap["black_box_readiness"]["case_type"] != "black_box_ready"
 
+    async def test_coverage_line_between_functions_without_name_does_not_infer_previous_route(self, tmp_path):
+        from app.services.coverage_analyzer import build_coverage_test_design
+
+        src = tmp_path / "src"
+        src.mkdir()
+        (src / "routes.py").write_text(
+            "from fastapi import APIRouter\n\n"
+            "router = APIRouter()\n\n"
+            "@router.get('/health')\n"
+            "def health_check():\n"
+            "    return {'ok': True}\n\n"
+            "MODULE_READY = True\n\n"
+            "@router.post('/payments/{tenant_id}/process')\n"
+            "def process_payment(tenant_id: str, payload: dict):\n"
+            "    amount = payload.get('amount')\n"
+            "    return {'tenant_id': tenant_id, 'amount': amount}\n",
+            encoding="utf-8",
+        )
+        modules = self._modules(
+            "feature,module,code_location,function,triggered,hit_count\n"
+            "payments,routes,src/routes.py:9,,false,0\n"
+        )
+
+        design = await build_coverage_test_design(
+            modules, workspace_id="ws-1", repo_path=str(tmp_path)
+        )
+
+        gap = [g for g in design["gaps"] if g.get("kind") == "function"][0]
+        assert gap["function_name"] == ""
+        assert gap["entry_paths"] == []
+        assert gap["black_box_readiness"]["case_type"] != "black_box_ready"
+
+    async def test_coverage_c_line_after_function_without_name_does_not_infer_previous_function(self, tmp_path):
+        from app.services.coverage_analyzer import build_coverage_test_design
+
+        src = tmp_path / "src"
+        src.mkdir()
+        (src / "service.c").write_text(
+            "int recover_service(void) {\n"
+            "    return 0;\n"
+            "}\n\n"
+            "static int module_ready = 1;\n\n"
+            "int process_payment(void) {\n"
+            "    return module_ready;\n"
+            "}\n",
+            encoding="utf-8",
+        )
+        modules = self._modules(
+            "feature,module,code_location,function,triggered,hit_count\n"
+            "payments,service,src/service.c:5,,false,0\n"
+        )
+
+        design = await build_coverage_test_design(
+            modules, workspace_id="ws-1", repo_path=str(tmp_path)
+        )
+
+        gap = [g for g in design["gaps"] if g.get("kind") == "function"][0]
+        assert gap["function_name"] == ""
+        assert gap["entry_paths"] == []
+        assert gap["black_box_readiness"]["case_type"] != "black_box_ready"
+
     async def test_coverage_decorator_line_without_function_name_infers_next_route(self, tmp_path):
         from app.services.coverage_analyzer import build_coverage_test_design
 
