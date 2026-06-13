@@ -7666,6 +7666,46 @@ def test_coverage_local_python_open_reader_keeps_generic_path_input_hint(
     assert "input path" in json.dumps(gap["black_box_cases"], ensure_ascii=False)
 
 
+def test_coverage_local_python_path_object_open_keeps_path_input_hint(
+    tmp_path, monkeypatch
+):
+    import app.services.coverage_analyzer as coverage_mod
+    from app.services.coverage_analyzer import build_coverage_test_design
+
+    src = tmp_path / "src"
+    src.mkdir()
+    (src / "load.py").write_text(
+        "def normalize_text(text):\n"
+        "    return text.strip()\n"
+        "def load(input_path):\n"
+        "    with input_path.open('r', encoding='utf-8') as fh:\n"
+        "        text = fh.read()\n"
+        "    return normalize_text(text)\n",
+        encoding="utf-8",
+    )
+
+    async def no_agent(_request, **_kwargs):
+        return []
+
+    monkeypatch.setattr(coverage_mod, "run_external_agent_discovery", no_agent, raising=False)
+    modules = _coverage_modules(
+        "feature,module,code_location,function,triggered,hit_count\n"
+        "files,load,src/load.py:1-2,normalize_text,false,0\n"
+    )
+
+    design = asyncio.run(
+        build_coverage_test_design(modules, workspace_id="ws-1", repo_path=str(tmp_path))
+    )
+
+    gap = [g for g in design["gaps"] if g.get("function_name") == "normalize_text"][0]
+    assert gap["black_box_readiness"]["case_type"] == "black_box_ready"
+    assert gap["entry_paths"][0]["entry_kind"] == "file"
+    assert gap["entry_paths"][0]["input_hints"] == ["input file", "input_path"]
+    case_text = json.dumps(gap["black_box_cases"], ensure_ascii=False)
+    assert "input_path" in case_text
+    assert '"r"' not in case_text
+
+
 def test_coverage_agent_verified_entry_makes_gap_black_box_ready(tmp_path, monkeypatch):
     import app.services.coverage_analyzer as coverage_mod
     from app.services.coverage_analyzer import build_coverage_test_design

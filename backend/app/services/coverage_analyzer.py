@@ -7808,7 +7808,7 @@ def _filesystem_operation_input_hints(window_text: str) -> list[str]:
         return arg_text
 
     literal_path_res = (
-        re.compile(r"""\bopen\s*\(\s*['"](?P<path>[^'"]+)['"]"""),
+        re.compile(r"""(?<!\.)\bopen\s*\(\s*['"](?P<path>[^'"]+)['"]"""),
         re.compile(r"""\b(?:Path|PurePath)\s*\(\s*['"](?P<path>[^'"]+)['"]\s*\)\s*\.(?:read_text|read_bytes)\s*\("""),
     )
     for pattern in literal_path_res:
@@ -7824,7 +7824,7 @@ def _filesystem_operation_input_hints(window_text: str) -> list[str]:
 
     python_open_res = (
         re.compile(
-            r"""\bopen\s*\(\s*(?P<arg>[^,\n\r\)]+)""",
+            r"""(?<!\.)\bopen\s*\(\s*(?P<arg>[^,\n\r\)]+)""",
             re.IGNORECASE,
         ),
     )
@@ -7844,7 +7844,7 @@ def _filesystem_operation_input_hints(window_text: str) -> list[str]:
             re.IGNORECASE,
         ),
         re.compile(
-            r"""(?P<arg>[A-Za-z_]\w*)\s*\.\s*(?:read_text|read_bytes)\s*\(""",
+            r"""(?P<arg>[A-Za-z_]\w*)\s*\.\s*(?:read_text|read_bytes|open)\s*\(""",
             re.IGNORECASE,
         ),
     )
