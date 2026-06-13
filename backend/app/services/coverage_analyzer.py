@@ -176,6 +176,7 @@ _ASSIGNED_FUNCTION_DEF_RES = (
 # function definition.
 _NON_FUNCTION_NAMES = {
     "if", "else", "elif", "for", "while", "switch", "case", "default", "return",
+    "function",
     "sizeof", "catch", "except", "do", "goto", "typedef", "struct", "union",
     "enum", "when", "guard", "with", "and", "or", "not", "in", "is",
 }
