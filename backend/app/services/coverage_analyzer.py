@@ -7906,6 +7906,10 @@ def _filesystem_operation_input_hints(window_text: str) -> list[str]:
                 seen_vars.add(value)
                 vars_found.append(value)
 
+        for env_pattern in _ENV_FIELD_RES:
+            for env_match in env_pattern.finditer(stripped):
+                add_var(env_match.group(1))
+
         for match in re.finditer(
             r"""\b(?P<arg>[A-Za-z_]\w*)\s*\.\s*(?:with_suffix|with_name|with_stem|joinpath|relative_to)\s*\(""",
             stripped,
@@ -7931,7 +7935,7 @@ def _filesystem_operation_input_hints(window_text: str) -> list[str]:
             excluded = {
                 "Path", "PurePath", "str", "os", "path", "fspath",
                 "with_suffix", "with_name", "with_stem", "joinpath", "relative_to",
-                "parent",
+                "parent", "environ", "getenv",
             }
             for name in re.findall(r"""\b[A-Za-z_]\w*\b""", without_strings):
                 if name not in excluded:
