@@ -3868,6 +3868,35 @@ def _entry_metadata_for_symbol(
             metadata.get("input_hints"),
             hints,
         )
+    route_registration = _route_registration_metadata_for_symbol(repo_root, entry_symbol)
+    if route_registration.get("external_trigger") and not metadata.get("external_trigger"):
+        metadata["external_trigger"] = route_registration["external_trigger"]
+    route_hints = route_registration.get("input_hints")
+    if route_hints:
+        metadata["input_hints"] = _merge_ordered_input_hints(
+            metadata.get("input_hints"),
+            route_hints,
+        )
+    return metadata
+
+
+def _route_registration_metadata_for_symbol(repo_root: Path, entry_symbol: str) -> dict:
+    metadata: dict = {}
+    if not entry_symbol:
+        return metadata
+    for site in _ripgrep_call_sites(repo_root, entry_symbol)[:20]:
+        context = (
+            _route_call_context_for_site_file(site["abs_file"], site["line_number"])
+            or site["text"]
+        )
+        trigger = _route_external_trigger_from_texts([context, site["text"]])
+        if not trigger:
+            continue
+        metadata["external_trigger"] = trigger
+        hints = _route_template_input_hints([context, site["text"]])
+        if hints:
+            metadata["input_hints"] = hints
+        return metadata
     return metadata
 
 
@@ -6883,6 +6912,7 @@ def _route_method_from_text(text: str) -> str | None:
         r"\.\s*MapMethods\s*\([^)]*?\bnew\s*\[\]\s*\{\s*['\"]"
         r"(?P<method>GET|POST|PUT|PATCH|DELETE|HEAD|OPTIONS)['\"]",
         r"\bmethod\s*[:=]\s*(['\"])(?P<method>get|post|put|patch|delete|head|options|any)\1",
+        r"(?:::|\.)\s*(?P<method>get|post|put|patch|delete|head|options)\s*\(\s*\)\s*\.\s*to\s*\(",
         r"\.\s*methods?\s*\(\s*(['\"])(?P<method>get|post|put|patch|delete|head|options|any)\1",
         r"\bhttp\.Method(?P<method>Get|Post|Put|Patch|Delete|Head|Options)\b",
         r"[@.]\s*(?P<method>get|post|put|patch|delete|head|options|any|websocket)\s*\(",

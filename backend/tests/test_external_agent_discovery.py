@@ -6921,6 +6921,88 @@ def _coverage_modules(csv_text):
     return parse_internal_function_hits(csv_text).modules
 
 
+def test_coverage_local_axum_route_registration_adds_external_trigger(tmp_path, monkeypatch):
+    import app.services.coverage_analyzer as coverage_mod
+    from app.services.coverage_analyzer import build_coverage_test_design
+
+    src = tmp_path / "src"
+    src.mkdir()
+    (src / "routes.rs").write_text(
+        "use axum::{routing::post, Json, Router};\n"
+        "use http::StatusCode;\n"
+        "fn normalize_order(req: OrderRequest) {\n"
+        "    if req.id == 0 { return; }\n"
+        "}\n"
+        "async fn create_order(Json(req): Json<OrderRequest>) -> StatusCode {\n"
+        "    normalize_order(req);\n"
+        "    StatusCode::OK\n"
+        "}\n"
+        "fn router() -> Router {\n"
+        "    Router::new().route(\"/orders\", post(create_order))\n"
+        "}\n",
+        encoding="utf-8",
+    )
+
+    async def no_agent(_request, **_kwargs):
+        return []
+
+    monkeypatch.setattr(coverage_mod, "run_external_agent_discovery", no_agent, raising=False)
+    modules = _coverage_modules(
+        "feature,module,code_location,function,triggered,hit_count\n"
+        "orders,routes,src/routes.rs:3-5,normalize_order,false,0\n"
+    )
+
+    design = asyncio.run(
+        build_coverage_test_design(modules, workspace_id="ws-1", repo_path=str(tmp_path))
+    )
+
+    gap = [g for g in design["gaps"] if g.get("function_name") == "normalize_order"][0]
+    assert gap["black_box_readiness"]["case_type"] == "black_box_ready"
+    assert gap["entry_paths"][0]["external_trigger"] == "POST /orders"
+    assert gap["entry_paths"][0]["tool"] == "ripgrep"
+    assert "POST /orders" in json.dumps(gap["black_box_cases"], ensure_ascii=False)
+
+
+def test_coverage_local_actix_route_registration_adds_external_trigger(tmp_path, monkeypatch):
+    import app.services.coverage_analyzer as coverage_mod
+    from app.services.coverage_analyzer import build_coverage_test_design
+
+    src = tmp_path / "src"
+    src.mkdir()
+    (src / "handlers.rs").write_text(
+        "use actix_web::{web, HttpResponse, Responder};\n"
+        "fn normalize_order(req: OrderRequest) {\n"
+        "    if req.id == 0 { return; }\n"
+        "}\n"
+        "async fn create_order(req: web::Json<OrderRequest>) -> impl Responder {\n"
+        "    normalize_order(req.into_inner());\n"
+        "    HttpResponse::Ok()\n"
+        "}\n"
+        "fn config(cfg: &mut web::ServiceConfig) {\n"
+        "    cfg.service(web::resource(\"/orders\").route(web::post().to(create_order)));\n"
+        "}\n",
+        encoding="utf-8",
+    )
+
+    async def no_agent(_request, **_kwargs):
+        return []
+
+    monkeypatch.setattr(coverage_mod, "run_external_agent_discovery", no_agent, raising=False)
+    modules = _coverage_modules(
+        "feature,module,code_location,function,triggered,hit_count\n"
+        "orders,handlers,src/handlers.rs:2-4,normalize_order,false,0\n"
+    )
+
+    design = asyncio.run(
+        build_coverage_test_design(modules, workspace_id="ws-1", repo_path=str(tmp_path))
+    )
+
+    gap = [g for g in design["gaps"] if g.get("function_name") == "normalize_order"][0]
+    assert gap["black_box_readiness"]["case_type"] == "black_box_ready"
+    assert gap["entry_paths"][0]["external_trigger"] == "POST /orders"
+    assert "POST /orders" in json.dumps(gap["black_box_cases"], ensure_ascii=False)
+
+
 def test_coverage_agent_verified_entry_makes_gap_black_box_ready(tmp_path, monkeypatch):
     import app.services.coverage_analyzer as coverage_mod
     from app.services.coverage_analyzer import build_coverage_test_design
