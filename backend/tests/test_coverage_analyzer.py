@@ -3030,6 +3030,45 @@ class TestCoverageTestDesign:
         assert "payments.mode" in case_text
         assert "credentials.dig" not in case_text
 
+    async def test_rails_credentials_direct_reads_feed_black_box_config_input_hints(self, tmp_path):
+        from app.services.coverage_analyzer import build_coverage_test_design
+
+        app = tmp_path / "app"
+        app.mkdir()
+        (app / "payment_config.rb").write_text(
+            "def configure_payment_mode(mode)\n"
+            "  return false if mode.nil? || mode.empty?\n"
+            "  true\n"
+            "end\n\n"
+            "def bootstrap\n"
+            "  mode = Rails.application.credentials.fetch(:payment_mode)\n"
+            "  fallback = Rails.application.credentials[:fallback_mode]\n"
+            "  audit = Rails.application.credentials.audit_mode\n"
+            "  configure_payment_mode(mode || fallback || audit)\n"
+            "end\n",
+            encoding="utf-8",
+        )
+        modules = self._modules(
+            "feature,module,code_location,function,triggered,hit_count\n"
+            "payments,config,app/payment_config.rb:1-4,configure_payment_mode,false,0\n"
+        )
+
+        design = await build_coverage_test_design(
+            modules, workspace_id="ws-1", repo_path=str(tmp_path)
+        )
+
+        gap = [g for g in design["gaps"] if g.get("kind") == "function"][0]
+        assert gap["black_box_readiness"]["case_type"] == "black_box_ready"
+        entry = gap["entry_paths"][0]
+        assert entry["entry_kind"] == "config"
+        assert entry["entry_symbol"] == "bootstrap"
+        assert entry["input_hints"] == ["payment_mode", "fallback_mode", "audit_mode"]
+        case_text = json.dumps(gap["black_box_cases"], ensure_ascii=False)
+        assert "payment_mode" in case_text
+        assert "fallback_mode" in case_text
+        assert "audit_mode" in case_text
+        assert "credentials.fetch" not in case_text
+
     async def test_route_registration_reference_becomes_black_box_entry_without_agent(self, tmp_path):
         from app.services.coverage_analyzer import build_coverage_test_design
 

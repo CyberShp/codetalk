@@ -4059,7 +4059,7 @@ def _request_field_hints_from_text(statement_text: str) -> list[str]:
     for pattern in _CONFIG_FIELD_RES:
         for match in pattern.finditer(statement_text):
             positioned_fields.append((match.start(), match.group(1)))
-    for offset, field in _rails_credentials_dig_fields(statement_text):
+    for offset, field in _rails_credentials_fields(statement_text):
         positioned_fields.append((offset, field))
     for offset, field in _env_destructured_fields(statement_text):
         positioned_fields.append((offset, field))
@@ -4080,18 +4080,39 @@ def _request_field_hints_from_text(statement_text: str) -> list[str]:
     return hints[:12]
 
 
-def _rails_credentials_dig_fields(text: str) -> list[tuple[int, str]]:
+def _rails_credentials_fields(text: str) -> list[tuple[int, str]]:
     fields: list[tuple[int, str]] = []
+    source = text or ""
     for match in re.finditer(
         r"\bRails\s*\.\s*application\s*\.\s*credentials\s*\.\s*dig\s*\((?P<args>[^)]*)\)",
-        text or "",
+        source,
     ):
         parts = [
-            part.group(1)
-            for part in re.finditer(r":([A-Za-z_][\w-]*)", match.group("args"))
+            part.group(1) or part.group(2) or part.group(3)
+            for part in re.finditer(
+                r":([A-Za-z_][\w-]*)|['\"]([A-Za-z_][\w-]*)['\"]|\b([A-Z][A-Z0-9_]{2,})\b",
+                match.group("args"),
+            )
         ]
         if parts:
             fields.append((match.start(), ".".join(parts)))
+    for match in re.finditer(
+        r"\bRails\s*\.\s*application\s*\.\s*credentials\s*\.\s*fetch\s*\(\s*(?::(?P<symbol>[A-Za-z_][\w-]*)|['\"](?P<string>[A-Za-z_][\w-]*)['\"])",
+        source,
+    ):
+        fields.append((match.start(), match.group("symbol") or match.group("string")))
+    for match in re.finditer(
+        r"\bRails\s*\.\s*application\s*\.\s*credentials\s*\[\s*(?::(?P<symbol>[A-Za-z_][\w-]*)|['\"](?P<string>[A-Za-z_][\w-]*)['\"])\s*\]",
+        source,
+    ):
+        fields.append((match.start(), match.group("symbol") or match.group("string")))
+    for match in re.finditer(
+        r"\bRails\s*\.\s*application\s*\.\s*credentials\s*\.\s*(?P<field>[A-Za-z_]\w*)\b(?!\s*\()",
+        source,
+    ):
+        field = match.group("field")
+        if field not in {"dig", "fetch"}:
+            fields.append((match.start(), field))
     return fields
 
 
@@ -7450,7 +7471,7 @@ _CONFIG_OPERATION_RE = re.compile(
     r"|\b(?:settings|config|options)(?:\s*\.\s*[A-Za-z_]\w*)*"
     r"\s*\.\s*[A-Z][A-Z0-9_]*(?:\.[A-Z][A-Z0-9_]*)*\b"
     r"|\bRails\s*\.\s*(?:application\s*\.\s*config|configuration)\s*\.\s*x\s*\."
-    r"|\bRails\s*\.\s*application\s*\.\s*credentials\s*\.\s*dig\s*\("
+    r"|\bRails\s*\.\s*application\s*\.\s*credentials\s*(?:\.\s*(?:dig|fetch)\s*\(|\[\s*(?::|['\"])|\.\s*[A-Za-z_]\w*\b)"
     r"|\b(?:configuration|config|settings|options)\s*\.\s*Get"
     r"(?:Value|Section|ConnectionString)?(?:\s*<[^>]+>)?\s*\("
     r"|\b(?:[A-Za-z_]\w*|System)\s*\.\s*getProperty\s*\("
