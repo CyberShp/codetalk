@@ -520,6 +520,7 @@ _ENTRY_DECORATOR_KIND_TOKENS: tuple[tuple[str, tuple[str, ...]], ...] = (
 _PUBLIC_CALLBACK_START_RE = re.compile(
     r"(?:\.\s*(?:"
     r"get|post|put|patch|delete|head|options|route|use|"
+    r"mapget|mappost|mapput|mappatch|mapdelete|mapmethods|"
     r"subscribe|on|listen|addEventListener|addListener|addHandler|add_listener|add_handler|register|"
     r"add_job|schedule"
     r")|(?:^|\b)(?:path|re_path))\s*\(",
@@ -649,6 +650,7 @@ _ENTRY_SIGNATURES: tuple[tuple[str, tuple[str, ...]], ...] = (
     ("webhook", ("webhook", "webhooks", "hook_handler", "hook_delivery")),
     ("route", ("route", "routes", "router", "controller", "view",
                ".get", ".post", ".put", ".patch", ".delete", ".head", ".options", ".any",
+               ".mapget", ".mappost", ".mapput", ".mappatch", ".mapdelete", ".mapmethods",
                "path(", "re_path(", "urlpatterns",
                ".websocket", "websocket(")),
     ("endpoint", ("endpoint", "endpoints", "servlet")),
@@ -3635,6 +3637,11 @@ def _classify_entry(file_path: str, enclosing_fn: str | None, line_text: str) ->
     if _callback_symbol_from_assignment(line_text):
         return "callback"
     blob = " ".join(filter(None, [file_path or "", enclosing_fn or "", line_text or ""])).lower()
+    if (
+        _PUBLIC_CALLBACK_START_RE.search(line_text or "")
+        and _route_external_trigger_from_texts([line_text])
+    ):
+        return "route"
     if enclosing_fn and enclosing_fn.lower() in {"main", "_main", "wmain"}:
         return "cli"
     for kind, needles in _ENTRY_SIGNATURES:
@@ -6467,7 +6474,8 @@ def _route_mount_prefix_for_site_file(abs_file: str, site_text: str) -> str | No
 def _route_call_receiver(text: str) -> str | None:
     match = re.search(
         r"\b(?P<receiver>[A-Za-z_]\w*(?:\.[A-Za-z_]\w*)*)\s*\.\s*"
-        r"(?:get|post|put|patch|delete|head|options|any|route|api_route|websocket)\s*\(",
+        r"(?:get|post|put|patch|delete|head|options|any|route|api_route|websocket|"
+        r"mapget|mappost|mapput|mappatch|mapdelete|mapmethods)\s*\(",
         text or "",
         re.IGNORECASE,
     )
@@ -6556,12 +6564,14 @@ def _route_path_from_text(text: str) -> str | None:
         ),
         (
             r"(?:(?P<receiver>@?[A-Za-z_]\w*(?:\.[A-Za-z_]\w*)*)\s*\.\s*)?"
-            r"(?:get|post|put|patch|delete|head|options|any|route|api_route|websocket)\s*"
+            r"(?:get|post|put|patch|delete|head|options|any|route|api_route|websocket|"
+            r"mapget|mappost|mapput|mappatch|mapdelete|mapmethods)\s*"
             r"\(\s*(?P<quote>['\"])(?P<path>(?:\\.|(?!(?P=quote)).)*?)(?P=quote)",
             True,
         ),
         (
-            r"(?<![\w.])(?:get|post|put|patch|delete|head|options|any|route|api_route|websocket)\s*"
+            r"(?<![\w.])(?:get|post|put|patch|delete|head|options|any|route|api_route|websocket|"
+            r"mapget|mappost|mapput|mappatch|mapdelete|mapmethods)\s*"
             r"\(\s*(['\"])(?P<path>(?:\\.|(?!\1).)*?)\1",
             True,
         ),
@@ -6639,6 +6649,7 @@ def _route_method_from_text(text: str) -> str | None:
         r"[@\[]\s*(?P<method>Get|Post|Put|Patch|Delete|Head|Options)Mapping\b",
         r"[@\[]\s*Http(?P<method>Get|Post|Put|Patch|Delete|Head|Options)\s*\(",
         r"[@\[]\s*Http(?P<method>Get|Post|Put|Patch|Delete|Head|Options)\b",
+        r"\.\s*Map(?P<method>Get|Post|Put|Patch|Delete|Head|Options)\s*\(",
         r"\bmethod\s*[:=]\s*(['\"])(?P<method>get|post|put|patch|delete|head|options|any)\1",
         r"\.\s*methods?\s*\(\s*(['\"])(?P<method>get|post|put|patch|delete|head|options|any)\1",
         r"\bhttp\.Method(?P<method>Get|Post|Put|Patch|Delete|Head|Options)\b",

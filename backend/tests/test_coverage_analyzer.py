@@ -5893,6 +5893,54 @@ class TestCoverageTestDesign:
         assert "Amount" in case_text
         assert "Currency" in case_text
 
+    async def test_aspnet_minimal_api_method_group_is_black_box_route(self, tmp_path):
+        from app.services.coverage_analyzer import build_coverage_test_design
+
+        src = tmp_path / "src"
+        src.mkdir()
+        (src / "Program.cs").write_text(
+            "public class Program {\n"
+            "  public static void Main() {\n"
+            "    var app = WebApplication.Create();\n"
+            "    app.MapPost(\"/tenants/{tenantId}/payments\", ProcessPayment);\n"
+            "  }\n"
+            "  public static IResult ProcessPayment([FromBody] PaymentRequest request, string tenantId) {\n"
+            "    if (request.Amount <= 0) {\n"
+            "      return Results.BadRequest();\n"
+            "    }\n"
+            "    return Results.Ok(request.Currency + tenantId);\n"
+            "  }\n"
+            "}\n\n"
+            "public class PaymentRequest {\n"
+            "  public decimal Amount { get; set; }\n"
+            "  public string Currency { get; set; }\n"
+            "}\n",
+            encoding="utf-8",
+        )
+        modules = self._modules(
+            "feature,module,code_location,function,triggered,hit_count\n"
+            "payments,minimal-api,src/Program.cs:6-11,ProcessPayment,false,0\n"
+        )
+
+        design = await build_coverage_test_design(
+            modules, workspace_id="ws-1", repo_path=str(tmp_path)
+        )
+
+        gap = [g for g in design["gaps"] if g.get("kind") == "function"][0]
+        assert gap["black_box_readiness"]["case_type"] == "black_box_ready"
+        process_entries = [
+            item for item in gap["entry_paths"] if item.get("entry_symbol") == "ProcessPayment"
+        ]
+        assert process_entries
+        entry = process_entries[0]
+        assert entry["entry_kind"] == "route"
+        assert entry["external_trigger"] == "POST /tenants/{tenantId}/payments"
+        assert entry["input_hints"] == ["Amount", "Currency", "tenantId"]
+        case_text = json.dumps(gap["black_box_cases"], ensure_ascii=False)
+        assert "POST /tenants/{tenantId}/payments" in case_text
+        assert "Amount" in case_text
+        assert "Currency" in case_text
+
     async def test_aspnet_request_collections_feed_black_box_input_hints(self, tmp_path):
         from app.services.coverage_analyzer import build_coverage_test_design
 
