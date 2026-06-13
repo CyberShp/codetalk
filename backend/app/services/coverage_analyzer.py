@@ -352,6 +352,16 @@ _REQUEST_FIELD_RES = (
         r"\s*\[\s*['\"](?P<field>[A-Za-z_][\w-]*)['\"]\s*\]"
     ),
     re.compile(
+        r"\b(?P<container>message|msg|record)"
+        r"(?:\??\.)\s*(?:value|data|payload)"
+        r"(?:\??\.)\s*(?P<field>[A-Za-z_][\w-]*)\b"
+    ),
+    re.compile(
+        r"\b(?P<container>message|msg|record)"
+        r"(?:\??\.)\s*(?:value|data|payload)"
+        r"\s*\[\s*['\"](?P<field>[A-Za-z_][\w-]*)['\"]\s*\]"
+    ),
+    re.compile(
         r"\b(?P<container>job|task)"
         r"(?:\??\.)\s*data"
         r"(?:\??\.)\s*(?P<field>[A-Za-z_][\w-]*)\b"
@@ -2186,7 +2196,8 @@ _INTERNAL_INPUT_HINTS = {
     "self", "cls", "this", "ctx", "context", "request", "req", "response", "res",
     "next", "scope", "receive", "send", "argv", "argc", "env", "logger", "log",
     "mock", "stub", "fixture", "helper", "file_obj", "file_object", "file_handle",
-    "stream", "reader", "job", "task", "ack", "nack", "reject", "commit", "rollback",
+    "stream", "reader", "message", "msg", "record", "job", "task",
+    "ack", "nack", "reject", "commit", "rollback",
 }
 
 _TYPE_ONLY_INPUT_HINTS = {
