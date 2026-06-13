@@ -2273,6 +2273,20 @@ def _merge_ordered_input_hints(*values: object) -> list[str]:
     ])
 
 
+def _filter_route_input_hints(hints: object) -> list[str]:
+    http_method_keys = {
+        "get", "post", "put", "patch", "delete", "head", "options", "any",
+    }
+    filtered: list[str] = []
+    for hint in _coerce_input_hints(hints):
+        text = str(hint or "").strip()
+        key = _input_hint_dedupe_key(text)
+        if key in http_method_keys and (text.startswith("--") or text.upper() == text):
+            continue
+        filtered.append(hint)
+    return filtered
+
+
 def _black_box_input_hints(entry: dict, hit: FunctionHit) -> list[str]:
     banned = {
         _input_hint_dedupe_key(value)
@@ -6650,6 +6664,8 @@ def _route_method_from_text(text: str) -> str | None:
         r"[@\[]\s*Http(?P<method>Get|Post|Put|Patch|Delete|Head|Options)\s*\(",
         r"[@\[]\s*Http(?P<method>Get|Post|Put|Patch|Delete|Head|Options)\b",
         r"\.\s*Map(?P<method>Get|Post|Put|Patch|Delete|Head|Options)\s*\(",
+        r"\.\s*MapMethods\s*\([^)]*?\bnew\s*\[\]\s*\{\s*['\"]"
+        r"(?P<method>GET|POST|PUT|PATCH|DELETE|HEAD|OPTIONS)['\"]",
         r"\bmethod\s*[:=]\s*(['\"])(?P<method>get|post|put|patch|delete|head|options|any)\1",
         r"\.\s*methods?\s*\(\s*(['\"])(?P<method>get|post|put|patch|delete|head|options|any)\1",
         r"\bhttp\.Method(?P<method>Get|Post|Put|Patch|Delete|Head|Options)\b",
@@ -7137,6 +7153,8 @@ def _augment_entry_input_hints_from_symbol_source(
         existing_hints,
         source_hints,
     )
+    if str(entry.get("entry_kind") or "").strip().lower() == "route":
+        merged_hints = _filter_route_input_hints(merged_hints)
     if merged_hints:
         entry["input_hints"] = merged_hints
 
