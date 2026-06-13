@@ -7003,6 +7003,47 @@ def test_coverage_local_actix_route_registration_adds_external_trigger(tmp_path,
     assert "POST /orders" in json.dumps(gap["black_box_cases"], ensure_ascii=False)
 
 
+def test_coverage_local_django_urlconf_does_not_treat_dict_get_as_http_route(tmp_path, monkeypatch):
+    import app.services.coverage_analyzer as coverage_mod
+    from app.services.coverage_analyzer import build_coverage_test_design
+
+    app_dir = tmp_path / "app"
+    app_dir.mkdir()
+    (app_dir / "views.py").write_text(
+        "def normalize_order(payload):\n"
+        "    if not payload.get('id'):\n"
+        "        return None\n"
+        "\n"
+        "def create_order(request):\n"
+        "    return normalize_order(request.POST)\n",
+        encoding="utf-8",
+    )
+    (app_dir / "urls.py").write_text(
+        "from django.urls import path\n"
+        "from . import views\n"
+        "urlpatterns = [path('orders/', views.create_order, name='create-order')]\n",
+        encoding="utf-8",
+    )
+
+    async def no_agent(_request, **_kwargs):
+        return []
+
+    monkeypatch.setattr(coverage_mod, "run_external_agent_discovery", no_agent, raising=False)
+    modules = _coverage_modules(
+        "feature,module,code_location,function,triggered,hit_count\n"
+        "orders,views,app/views.py:1-3,normalize_order,false,0\n"
+    )
+
+    design = asyncio.run(
+        build_coverage_test_design(modules, workspace_id="ws-1", repo_path=str(tmp_path))
+    )
+
+    gap = [g for g in design["gaps"] if g.get("function_name") == "normalize_order"][0]
+    assert gap["black_box_readiness"]["case_type"] == "black_box_ready"
+    assert gap["entry_paths"][0]["external_trigger"] == "/orders/"
+    assert "GET /id" not in json.dumps(gap["black_box_cases"], ensure_ascii=False)
+
+
 def test_coverage_agent_verified_entry_makes_gap_black_box_ready(tmp_path, monkeypatch):
     import app.services.coverage_analyzer as coverage_mod
     from app.services.coverage_analyzer import build_coverage_test_design

@@ -6822,6 +6822,10 @@ def _route_path_from_text(text: str) -> str | None:
             True,
         ),
         (
+            r"\b(?:path|re_path|url)\s*\(\s*(['\"])(?P<path>(?:\\.|(?!\1).)*?)\1",
+            True,
+        ),
+        (
             r"(?:(?P<receiver>@?[A-Za-z_]\w*(?:\.[A-Za-z_]\w*)*)\s*\.\s*)?"
             r"(?:get|post|put|patch|delete|head|options|any|route|api_route|websocket|"
             r"mapget|mappost|mapput|mappatch|mapdelete|mapmethods)\s*"
@@ -6870,7 +6874,7 @@ def _route_receiver_is_request_accessor(receiver: str | None) -> bool:
     last = receiver.strip().split(".")[-1].lstrip("@").lower()
     return last in {
         "args", "body", "cookies", "data", "files", "form", "headers",
-        "json", "meta", "params", "query", "request", "values",
+        "json", "meta", "params", "payload", "post", "query", "request", "values",
     }
 
 
