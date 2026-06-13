@@ -8088,6 +8088,11 @@ def _registration_entry_for_site(
             metadata["external_trigger"] = route_trigger
     else:
         channel_hints = _registration_channel_input_hints(registration_line, entry_type)
+        if entry_type == "message":
+            channel_hints = _merge_ordered_strings(
+                channel_hints,
+                _kafka_topic_input_hints("\n".join(window)),
+            )
         if channel_hints:
             metadata["input_hints"] = _merge_ordered_strings(
                 channel_hints,
