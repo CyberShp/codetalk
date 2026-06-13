@@ -103,10 +103,22 @@ def _format_attempt_summary(item: dict) -> str:
     launch_suffix = f" ({launch})" if launch else ""
     reason = str(item.get("reason") or "").strip()
     config_hint = str(item.get("config_hint") or "").strip()
-    detail = reason or config_hint
+    config_action = _ccr_config_action_hint(config_hint)
+    detail = "; ".join(part for part in [reason or config_hint, config_action] if part)
     reason_suffix = f": {detail}" if detail else ""
     return redact_agent_diagnostic_text(
         f"{item.get('command')} => {item.get('status')}{launch_suffix}{reason_suffix}"
+    )
+
+
+def _ccr_config_action_hint(config_hint: str) -> str:
+    if "CCR_CONFIG_PATH is not set" not in config_hint:
+        return ""
+    if "default config not found" not in config_hint:
+        return ""
+    return (
+        "Set CCR_CONFIG_PATH or CLAUDE_CODE_CONFIG_PATH to an existing CCR "
+        "config file, then run the startup probe"
     )
 
 

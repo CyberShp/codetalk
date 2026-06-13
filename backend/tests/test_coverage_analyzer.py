@@ -5038,6 +5038,46 @@ class TestCoverageTestDesign:
         case_text = json.dumps(gap["black_box_cases"], ensure_ascii=False)
         assert "amount" in case_text
 
+    async def test_coverage_bound_class_field_arrow_without_function_name_infers_route(self, tmp_path):
+        from app.services.coverage_analyzer import build_coverage_test_design
+
+        src = tmp_path / "src"
+        src.mkdir()
+        (src / "routes.ts").write_text(
+            "import express from 'express';\n\n"
+            "class PaymentController {\n"
+            "  processPayment = (\n"
+            "    req: Request,\n"
+            "    res: Response,\n"
+            "  ) => {\n"
+            "    const amount = req.body.amount;\n"
+            "    return res.json({ amount });\n"
+            "  };\n"
+            "}\n\n"
+            "const app = express();\n"
+            "const controller = new PaymentController();\n"
+            "app.post('/payments/:tenantId/process', controller.processPayment.bind(controller));\n",
+            encoding="utf-8",
+        )
+        modules = self._modules(
+            "feature,module,code_location,function,triggered,hit_count\n"
+            "payments,routes,src/routes.ts:5,,false,0\n"
+        )
+
+        design = await build_coverage_test_design(
+            modules, workspace_id="ws-1", repo_path=str(tmp_path)
+        )
+
+        gap = [g for g in design["gaps"] if g.get("kind") == "function"][0]
+        assert gap["function_name"] == "processPayment"
+        assert gap["black_box_readiness"]["case_type"] == "black_box_ready"
+        entry = gap["entry_paths"][0]
+        assert entry["entry_kind"] == "route"
+        assert entry["entry_symbol"] == "processPayment"
+        assert entry["external_trigger"] == "POST /payments/:tenantId/process"
+        case_text = json.dumps(gap["black_box_cases"], ensure_ascii=False)
+        assert "amount" in case_text
+
     async def test_coverage_anonymous_default_function_without_name_is_not_named_function(self, tmp_path):
         from app.services.coverage_analyzer import build_coverage_test_design
 

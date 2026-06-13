@@ -1891,6 +1891,8 @@ def test_external_agent_adapter_health_keeps_default_ccr_config_hint_available(m
     assert health.is_healthy is True
     assert health.container_status == "available"
     assert "default config not found" in health.last_check
+    assert "Set CCR_CONFIG_PATH" in health.last_check
+    assert "startup probe" in health.last_check
 
 
 def test_external_agent_adapter_health_marks_explicit_ccr_config_error_misconfigured(monkeypatch):
