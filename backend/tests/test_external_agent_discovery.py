@@ -7804,6 +7804,60 @@ def test_data_loader_path_normalization_methods_keep_path_input_hint():
     ) == ["JSON file", "config_path"]
 
 
+def test_data_loader_derived_path_expressions_keep_input_hints():
+    from app.services.coverage_analyzer import _filesystem_operation_input_hints
+
+    assert _filesystem_operation_input_hints(
+        "frame = pd.read_csv(input_path.with_suffix('.csv'))"
+    ) == ["CSV file", "input_path"]
+    assert _filesystem_operation_input_hints(
+        "frame = pd.read_csv(base_dir / filename)"
+    ) == ["CSV file", "base_dir", "filename"]
+    assert _filesystem_operation_input_hints(
+        "frame = pd.read_json(os.path.join(config_dir, config_name))"
+    ) == ["JSON file", "config_dir", "config_name"]
+
+
+def test_coverage_local_pandas_derived_path_keeps_path_input_hint(
+    tmp_path, monkeypatch
+):
+    import app.services.coverage_analyzer as coverage_mod
+    from app.services.coverage_analyzer import build_coverage_test_design
+
+    src = tmp_path / "src"
+    src.mkdir()
+    (src / "load.py").write_text(
+        "import pandas as pd\n"
+        "def normalize_row(row):\n"
+        "    return row['name'].strip()\n"
+        "def load(input_path):\n"
+        "    frame = pd.read_csv(input_path.with_suffix('.csv'))\n"
+        "    return normalize_row(frame.iloc[0])\n",
+        encoding="utf-8",
+    )
+
+    async def no_agent(_request, **_kwargs):
+        return []
+
+    monkeypatch.setattr(coverage_mod, "run_external_agent_discovery", no_agent, raising=False)
+    modules = _coverage_modules(
+        "feature,module,code_location,function,triggered,hit_count\n"
+        "files,load,src/load.py:2-3,normalize_row,false,0\n"
+    )
+
+    design = asyncio.run(
+        build_coverage_test_design(modules, workspace_id="ws-1", repo_path=str(tmp_path))
+    )
+
+    gap = [g for g in design["gaps"] if g.get("function_name") == "normalize_row"][0]
+    assert gap["black_box_readiness"]["case_type"] == "black_box_ready"
+    assert gap["entry_paths"][0]["entry_kind"] == "file"
+    assert gap["entry_paths"][0]["input_hints"] == ["CSV file", "input_path"]
+    case_text = json.dumps(gap["black_box_cases"], ensure_ascii=False)
+    assert "CSV file" in case_text
+    assert "input_path" in case_text
+
+
 def test_coverage_agent_verified_entry_makes_gap_black_box_ready(tmp_path, monkeypatch):
     import app.services.coverage_analyzer as coverage_mod
     from app.services.coverage_analyzer import build_coverage_test_design
