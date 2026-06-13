@@ -4912,6 +4912,25 @@ def _argv_input_hints_from_text(text: str) -> list[str]:
             if name not in seen:
                 seen.add(name)
                 hints.append(name)
+    for match in re.finditer(
+        r"\b(?:const|let|var)\s*\[(?P<items>[^\]]+)\]\s*=\s*(?:process\.)?argv\b",
+        text or "",
+        re.MULTILINE,
+    ):
+        for index, raw_item in enumerate(match.group("items").split(",")):
+            if index < 2:
+                continue
+            name = raw_item.strip().lstrip(".").strip()
+            if not name or name.startswith("..."):
+                name = name[3:].strip()
+            if not re.fullmatch(r"[A-Za-z_$][\w$]*", name or ""):
+                continue
+            normalized = name.lower()
+            if normalized in {"argv", "argc", "node", "script", "process"}:
+                continue
+            if name not in seen:
+                seen.add(name)
+                hints.append(name)
     return hints[:8]
 
 
