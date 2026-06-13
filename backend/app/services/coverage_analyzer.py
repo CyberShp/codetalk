@@ -7807,6 +7807,14 @@ def _filesystem_operation_input_hints(window_text: str) -> list[str]:
             return "input path"
         return arg_text
 
+    def path_wrapper_inner_arg(arg_text: str) -> str | None:
+        match = re.fullmatch(
+            r"""(?:Path|PurePath)\s*\(\s*(?P<arg>[^)\n\r]+)\s*\)""",
+            arg_text.strip(),
+            re.IGNORECASE,
+        )
+        return match.group("arg").strip() if match else None
+
     literal_path_res = (
         re.compile(r"""(?<!\.)\bopen\s*\(\s*['"](?P<path>[^'"]+)['"]"""),
         re.compile(r"""\b(?:Path|PurePath)\s*\(\s*['"](?P<path>[^'"]+)['"]\s*\)\s*\.(?:read_text|read_bytes)\s*\("""),
@@ -7869,11 +7877,11 @@ def _filesystem_operation_input_hints(window_text: str) -> list[str]:
             add(label)
     data_loader_res = (
         re.compile(
-            r"""\b(?:pd|pandas|pl|polars)\s*\.\s*read_(?P<format>[A-Za-z0-9_]+)\s*\(\s*(?P<arg>[^,\n\r\)]+)""",
+            r"""\b(?:pd|pandas|pl|polars)\s*\.\s*read_(?P<format>[A-Za-z0-9_]+)\s*\(\s*(?P<arg>(?:Path|PurePath)\s*\([^)]+\)|[^,\n\r\)]+)""",
             re.IGNORECASE,
         ),
         re.compile(
-            r"""\bspark\s*\.\s*read\s*\.\s*(?P<format>[A-Za-z0-9_]+)\s*\(\s*(?P<arg>[^,\n\r\)]+)""",
+            r"""\bspark\s*\.\s*read\s*\.\s*(?P<format>[A-Za-z0-9_]+)\s*\(\s*(?P<arg>(?:Path|PurePath)\s*\([^)]+\)|[^,\n\r\)]+)""",
             re.IGNORECASE,
         ),
     )
@@ -7891,6 +7899,19 @@ def _filesystem_operation_input_hints(window_text: str) -> list[str]:
                 if literal_label:
                     add(literal_label)
                 continue
+            wrapped_arg = path_wrapper_inner_arg(arg_text)
+            if wrapped_arg:
+                wrapped_literal = re.match(r"""['"](?P<path>[^'"]+)['"]""", wrapped_arg)
+                if wrapped_literal:
+                    path_text = wrapped_literal.group("path").replace("\\", "/")
+                    add(path_text)
+                    literal_label = format_label_for_path(path_text)
+                    if literal_label:
+                        add(literal_label)
+                    continue
+                if re.fullmatch(r"[A-Za-z_]\w*", wrapped_arg):
+                    add(variable_file_hint(wrapped_arg))
+                    continue
             if re.fullmatch(r"[A-Za-z_]\w*", arg_text):
                 add(variable_file_hint(arg_text))
     js_file_res = (
