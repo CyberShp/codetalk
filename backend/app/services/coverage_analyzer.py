@@ -7906,12 +7906,43 @@ def _filesystem_operation_input_hints(window_text: str) -> list[str]:
                 seen_vars.add(value)
                 vars_found.append(value)
 
+        def add_path_arg_vars(value: str) -> None:
+            part = value.strip()
+            if not part:
+                return
+            for env_pattern in _ENV_FIELD_RES:
+                for env_match in env_pattern.finditer(part):
+                    add_var(env_match.group(1))
+            wrapped = path_wrapper_inner_arg(part) or part
+            if re.fullmatch(r"[A-Za-z_]\w*", wrapped):
+                add_var(wrapped)
+
         for env_pattern in _ENV_FIELD_RES:
             for env_match in env_pattern.finditer(stripped):
                 add_var(env_match.group(1))
 
+        joinpath_res = (
+            re.compile(
+                r"""\b(?:Path|PurePath)\s*\(\s*(?P<base>[^)\n\r]+)\s*\)\s*\.\s*joinpath\s*\(\s*(?P<args>[^)]*)\)""",
+                re.IGNORECASE,
+            ),
+            re.compile(
+                r"""\b(?P<base>[A-Za-z_]\w*)\s*\.\s*parent\s*\.\s*joinpath\s*\(\s*(?P<args>[^)]*)\)""",
+                re.IGNORECASE,
+            ),
+            re.compile(
+                r"""(?<!\.)\b(?P<base>[A-Za-z_]\w*)\s*\.\s*joinpath\s*\(\s*(?P<args>[^)]*)\)""",
+                re.IGNORECASE,
+            ),
+        )
+        for joinpath_re in joinpath_res:
+            for joinpath_match in joinpath_re.finditer(stripped):
+                add_path_arg_vars(joinpath_match.group("base"))
+                for part in split_top_level_args(joinpath_match.group("args")):
+                    add_path_arg_vars(part)
+
         for match in re.finditer(
-            r"""\b(?P<arg>[A-Za-z_]\w*)\s*\.\s*(?:with_suffix|with_name|with_stem|joinpath|relative_to)\s*\(""",
+            r"""\b(?P<arg>[A-Za-z_]\w*)\s*\.\s*(?:with_suffix|with_name|with_stem|relative_to)\s*\(""",
             stripped,
             re.IGNORECASE,
         ):
