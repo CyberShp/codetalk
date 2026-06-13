@@ -4339,10 +4339,12 @@ def _line_matches_signature_name(
     line = lines[idx] if 0 <= idx < len(lines) else ""
     if suffix in {".s", ".asm"}:
         return _assembly_label_definition_name(line) == name
-    if _match_def_name(line) == name or _match_multiline_def_name(lines, idx) == name:
-        return True
-    if _javascript_assigned_function_definition_name(lines, idx) == name:
-        return True
+    definition_name = _match_def_name(line) or _match_multiline_def_name(lines, idx)
+    if definition_name:
+        return definition_name == name
+    assigned_definition_name = _javascript_assigned_function_definition_name(lines, idx)
+    if assigned_definition_name:
+        return assigned_definition_name == name
     stripped = line.strip()
     if stripped.startswith(_EXPRESSION_CALL_PREFIXES):
         return False
@@ -6365,6 +6367,8 @@ def _decorator_block_ending_at(
         if not _decorator_start_line(lines[start_idx]):
             continue
         block_texts = lines[start_idx:end_idx + 1]
+        if _decorator_block_contains_definition(block_texts[1:]):
+            continue
         if not _decorator_block_is_balanced(block_texts):
             continue
         return (
@@ -6372,6 +6376,10 @@ def _decorator_block_ending_at(
             [(idx + 1, lines[idx]) for idx in range(start_idx, end_idx + 1)],
         )
     return None
+
+
+def _decorator_block_contains_definition(lines: list[str]) -> bool:
+    return any(_match_def_name(line) for line in lines)
 
 
 def _decorator_start_line(line: str) -> bool:
