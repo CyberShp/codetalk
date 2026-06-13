@@ -3940,7 +3940,7 @@ def _request_field_from_match(match: re.Match[str]) -> str:
 def _is_message_envelope_field(match: re.Match[str], field: str) -> bool:
     container = str(match.groupdict().get("container") or "").lower()
     return (
-        container in {"message", "msg"}
+        container in {"message", "msg", "record"}
         and str(field or "").strip().lower() in _MESSAGE_ENVELOPE_FIELD_NAMES
     )
 
@@ -3986,7 +3986,9 @@ def _request_destructured_fields(text: str) -> list[str]:
 def _payload_destructured_fields(text: str) -> list[str]:
     fields: list[str] = []
     patterns = (
-        r"\{(?P<fields>[^{}]+)\}\s*=\s*(?:payload|message|msg|record)\b",
+        r"\{(?P<fields>[^{}]+)\}\s*=\s*payload\b",
+        r"\{(?P<fields>[^{}]+)\}\s*=\s*(?:message|msg|record)"
+        r"(?:\??\.)\s*(?:value|data|payload)\b",
         r"\{(?P<fields>[^{}]+)\}\s*=\s*(?:job|task)(?:\??\.)\s*data\b",
         r"\{(?P<fields>[^{}]+)\}\s*=\s*(?:event|evt)(?:\??\.)\s*(?:detail|data|payload)\b",
     )
