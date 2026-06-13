@@ -411,6 +411,11 @@ _REQUEST_FIELD_RES = (
         r"(?:\s*\[\s*|\s*\.get\s*\(\s*)['\"]([A-Za-z_][\w-]*)['\"]"
     ),
     re.compile(
+        r"\bRequest\."
+        r"(?:Query|Headers|Cookies|Form|RouteValues|Body)"
+        r"(?:\s*\[\s*|\s*\.get\s*\(\s*)['\"]([A-Za-z_][\w.-]*)['\"]"
+    ),
+    re.compile(
         r"\b(?:c|ctx|context)\."
         r"(?:Param|Params|Query|QueryParam|DefaultQuery|PostForm|DefaultPostForm|"
         r"FormValue|FormFile|GetHeader|Cookie)"
@@ -3869,12 +3874,19 @@ def _request_field_hints(abs_file: str, line_number: int, enclosing_fn: str | No
         return []
     statement: list[str] = []
     start, end = _request_hint_scan_bounds(lines, idx, enclosing_fn)
+    scanning_definition = bool(
+        enclosing_fn
+        and (
+            _match_def_name(lines[idx])
+            or _match_multiline_def_name(lines, idx)
+        ) == enclosing_fn
+    )
     for pos in range(start, end):
         text = lines[pos].strip()
         if not text:
             continue
         statement.append(text)
-        if pos >= idx and ";" in text:
+        if not scanning_definition and pos >= idx and ";" in text:
             break
     statement_text = " ".join(statement)
     hints = _request_field_hints_from_text(statement_text)
@@ -6536,13 +6548,13 @@ def _route_path_from_text(text: str) -> str | None:
             True,
         ),
         (
-            r"(?:@?[A-Za-z_]\w*(?:\.[A-Za-z_]\w*)*)?\s*\.\s*"
+            r"(?:(?P<receiver>@?[A-Za-z_]\w*(?:\.[A-Za-z_]\w*)*)\s*\.\s*)?"
             r"(?:get|post|put|patch|delete|head|options|any|route|api_route|websocket)\s*"
             r"\(\s*(['\"])(?P<path>(?:\\.|(?!\1).)*?)\1",
             True,
         ),
         (
-            r"\b(?:get|post|put|patch|delete|head|options|any|route|api_route|websocket)\s*"
+            r"(?<![\w.])(?:get|post|put|patch|delete|head|options|any|route|api_route|websocket)\s*"
             r"\(\s*(['\"])(?P<path>(?:\\.|(?!\1).)*?)\1",
             True,
         ),
@@ -6566,11 +6578,24 @@ def _route_path_from_text(text: str) -> str | None:
     )
     for pattern, allow_relative in patterns:
         for match in re.finditer(pattern, text or "", re.IGNORECASE):
+            receiver = match.groupdict().get("receiver")
+            if _route_receiver_is_request_accessor(receiver):
+                continue
             path = match.group("path").strip()
             normalized = _normalize_route_path(path, allow_relative=allow_relative)
             if normalized:
                 return normalized
     return None
+
+
+def _route_receiver_is_request_accessor(receiver: str | None) -> bool:
+    if not receiver:
+        return False
+    last = receiver.strip().split(".")[-1].lstrip("@").lower()
+    return last in {
+        "args", "body", "cookies", "data", "files", "form", "headers",
+        "json", "meta", "params", "query", "request", "values",
+    }
 
 
 def _looks_like_route_path(value: str) -> bool:
