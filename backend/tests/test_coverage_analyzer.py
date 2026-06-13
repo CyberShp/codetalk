@@ -2279,6 +2279,50 @@ class TestCoverageTestDesign:
         assert "input file" in case_text
         assert "inputPath" in case_text
 
+    async def test_java_files_read_string_becomes_black_box_file_entry(self, tmp_path):
+        from app.services.coverage_analyzer import build_coverage_test_design
+
+        src = tmp_path / "src"
+        src.mkdir()
+        (src / "OrderProcessor.java").write_text(
+            "public class OrderProcessor {\n"
+            "  public static String processOrder(String payload) {\n"
+            "    if (payload == null || payload.isEmpty()) return \"missing\";\n"
+            "    return \"processed\";\n"
+            "  }\n"
+            "}\n",
+            encoding="utf-8",
+        )
+        (src / "OrderLoader.java").write_text(
+            "import java.nio.file.Files;\n"
+            "import java.nio.file.Path;\n\n"
+            "public class OrderLoader {\n"
+            "  public String loadOrders(Path inputPath) throws Exception {\n"
+            "    String raw = Files.readString(inputPath);\n"
+            "    return OrderProcessor.processOrder(raw);\n"
+            "  }\n"
+            "}\n",
+            encoding="utf-8",
+        )
+        modules = self._modules(
+            "feature,module,code_location,function,triggered,hit_count\n"
+            "orders,orders,src/OrderProcessor.java:2-5,processOrder,false,0\n"
+        )
+
+        design = await build_coverage_test_design(
+            modules, workspace_id="ws-1", repo_path=str(tmp_path)
+        )
+
+        gap = [g for g in design["gaps"] if g.get("kind") == "function"][0]
+        assert gap["black_box_readiness"]["case_type"] == "black_box_ready"
+        entry = gap["entry_paths"][0]
+        assert entry["entry_kind"] == "file"
+        assert entry["entry_symbol"] == "loadOrders"
+        assert entry["input_hints"] == ["input file", "inputPath"]
+        case_text = json.dumps(gap["black_box_cases"], ensure_ascii=False)
+        assert "input file" in case_text
+        assert "inputPath" in case_text
+
     async def test_route_call_site_keeps_route_entry_kind_without_agent(self, tmp_path):
         from app.services.coverage_analyzer import build_coverage_test_design
 
