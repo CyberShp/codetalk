@@ -3048,6 +3048,7 @@ def _definition_line_matches_any_name(
     defined = (
         _match_def_name(lines[idx])
         or _match_multiline_def_name(lines, idx)
+        or _javascript_assigned_function_definition_name(lines, idx)
         or _javascript_method_definition_name(lines, idx)
         or _java_method_definition_name(lines[idx])
     )
@@ -3360,13 +3361,20 @@ def _definition_name_for_file(lines: list[str], idx: int, suffix: str) -> str | 
         _javascript_method_definition_name(lines, idx)
         if suffix in {".js", ".jsx", ".ts", ".tsx"} else None
     )
+    js_assigned_name = (
+        _javascript_assigned_function_definition_name(lines, idx)
+        if suffix in {".js", ".jsx", ".ts", ".tsx"} else None
+    )
     if suffix in {".js", ".jsx", ".ts", ".tsx"} and not (
         re.search(r"\bfunction\b", stripped)
         or "=>" in stripped
+        or js_assigned_name
         or re.match(r"^(?:export\s+)?(?:async\s+)?function\s+", stripped)
         or js_method_name
     ):
         return None
+    if js_assigned_name:
+        return js_assigned_name
     if js_method_name:
         return js_method_name
     if suffix == ".java":
@@ -3379,6 +3387,36 @@ def _definition_name_for_file(lines: list[str], idx: int, suffix: str) -> str | 
         and suffix in {".py", ".js", ".jsx", ".ts", ".tsx", ".rb"}
         and re.match(rf"^\s*{re.escape(name)}\s*\(", line)
     ):
+        return None
+    return name
+
+
+def _javascript_assigned_function_definition_name(lines: list[str], idx: int) -> str | None:
+    if idx < 0 or idx >= len(lines):
+        return None
+    stripped = lines[idx].strip()
+    if not stripped or stripped.startswith(_EXPRESSION_CALL_PREFIXES):
+        return None
+    match = re.match(
+        r"^(?:export\s+)?(?:const|let|var)\s+"
+        r"(?P<name>[A-Za-z_$][\w$]*)"
+        r"(?:\s*:\s*[^=]+)?\s*=",
+        stripped,
+    )
+    if not match:
+        match = re.match(
+            r"^(?:(?:public|private|protected|static|readonly)\s+)*"
+            r"(?P<name>[A-Za-z_$][\w$]*)"
+            r"(?:\s*:\s*[^=]+)?\s*=",
+            stripped,
+        )
+    if not match:
+        return None
+    name = match.group("name")
+    if name in _NON_FUNCTION_NAMES:
+        return None
+    signature = _collect_signature_text(lines, idx)
+    if "=>" not in signature and not re.search(r"\bfunction\b", signature):
         return None
     return name
 
@@ -3965,6 +4003,8 @@ def _collect_signature_text(lines: list[str], start_idx: int) -> str:
 def _line_matches_signature_name(lines: list[str], idx: int, name: str) -> bool:
     line = lines[idx] if 0 <= idx < len(lines) else ""
     if _match_def_name(line) == name or _match_multiline_def_name(lines, idx) == name:
+        return True
+    if _javascript_assigned_function_definition_name(lines, idx) == name:
         return True
     stripped = line.strip()
     if stripped.startswith(_EXPRESSION_CALL_PREFIXES):
