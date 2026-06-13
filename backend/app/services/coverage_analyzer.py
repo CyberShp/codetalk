@@ -455,8 +455,8 @@ _REQUEST_FIELD_RES = (
     ),
 )
 _MESSAGE_ENVELOPE_FIELD_NAMES = {
-    "attributes", "content", "headers", "key", "offset", "partition", "timestamp",
-    "topic", "value",
+    "attributes", "body", "content", "headers", "key", "offset", "partition",
+    "timestamp", "topic", "value",
 }
 _REQUEST_DESTRUCTURE_RE = re.compile(
     r"\{(?P<fields>[^{}]+)\}\s*=\s*"
