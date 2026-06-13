@@ -6729,8 +6729,11 @@ class TestCoverageTestDesign:
         entry = gap["entry_paths"][0]
         assert entry["entry_kind"] == "queue"
         assert entry["entry_symbol"] == "processInvoice"
-        assert "invoice_queue" in entry["input_hints"]
-        assert "invoice_queue" in json.dumps(gap["black_box_cases"], ensure_ascii=False)
+        assert entry["input_hints"] == ["invoice_queue", "invoiceId"]
+        case_text = json.dumps(gap["black_box_cases"], ensure_ascii=False)
+        assert "invoice_queue" in case_text
+        assert "invoiceId" in case_text
+        assert "job.data" not in case_text
 
     async def test_timer_call_site_keeps_timer_entry_kind_without_agent(self, tmp_path):
         from app.services.coverage_analyzer import build_coverage_test_design
