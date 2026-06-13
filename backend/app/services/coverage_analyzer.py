@@ -4872,7 +4872,47 @@ def _cli_option_input_hints_from_text(text: str) -> list[str]:
         if hint not in seen:
             seen.add(hint)
             hints.append(hint)
+    for hint in _argv_input_hints_from_text(text):
+        if hint not in seen:
+            seen.add(hint)
+            hints.append(hint)
     return hints[:12]
+
+
+def _argv_input_hints_from_text(text: str) -> list[str]:
+    hints: list[str] = []
+    seen: set[str] = set()
+    patterns = (
+        re.compile(
+            r"^\s*(?P<name>[A-Za-z_][\w]*)\s*=\s*"
+            r"(?:sys\.)?argv\s*\[\s*(?P<index>\d+)\s*\]",
+            re.MULTILINE,
+        ),
+        re.compile(
+            r"^\s*(?:const|let|var)\s+(?P<name>[A-Za-z_$][\w$]*)\s*=\s*"
+            r"(?:process\.)?argv\s*\[\s*(?P<index>\d+)\s*\]",
+            re.MULTILINE,
+        ),
+        re.compile(
+            r"^\s*(?:const\s+)?(?:char|wchar_t|std::string|auto|int|long|double|float)"
+            r"(?:\s+|\s*[*&]\s*)+(?P<name>[A-Za-z_][\w]*)\s*=\s*"
+            r"argv\s*\[\s*(?P<index>\d+)\s*\]",
+            re.MULTILINE,
+        ),
+    )
+    for pattern in patterns:
+        for match in pattern.finditer(text or ""):
+            index = int(match.group("index"))
+            if index <= 0:
+                continue
+            name = match.group("name").strip()
+            normalized = name.lower()
+            if normalized in {"argv", "argc", "sys", "process"}:
+                continue
+            if name not in seen:
+                seen.add(name)
+                hints.append(name)
+    return hints[:8]
 
 
 def _cli_registration_input_hints(abs_file: str, line_number: int) -> list[str]:

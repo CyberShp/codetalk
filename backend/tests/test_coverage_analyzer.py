@@ -6711,6 +6711,43 @@ class TestCoverageTestDesign:
         assert "--config" in case_text
         assert "--tenant-id" in case_text
 
+    async def test_sys_argv_main_entry_feeds_black_box_input_hints(self, tmp_path):
+        from app.services.coverage_analyzer import build_coverage_test_design
+
+        src = tmp_path / "src"
+        src.mkdir()
+        (src / "cli.py").write_text(
+            "import sys\n\n"
+            "def process_payment(config, tenant_id):\n"
+            "    if not config:\n"
+            "        return 'missing'\n"
+            "    return tenant_id\n\n"
+            "def main():\n"
+            "    config = sys.argv[1]\n"
+            "    tenant_id = sys.argv[2]\n"
+            "    return process_payment(config, tenant_id)\n",
+            encoding="utf-8",
+        )
+        modules = self._modules(
+            "feature,module,code_location,function,triggered,hit_count\n"
+            "payments,cli,src/cli.py:3-6,process_payment,false,0\n"
+        )
+
+        design = await build_coverage_test_design(
+            modules, workspace_id="ws-1", repo_path=str(tmp_path)
+        )
+
+        gap = [g for g in design["gaps"] if g.get("kind") == "function"][0]
+        assert gap["black_box_readiness"]["case_type"] == "black_box_ready"
+        entry = gap["entry_paths"][0]
+        assert entry["entry_kind"] == "cli"
+        assert entry["entry_symbol"] == "main"
+        assert entry["input_hints"] == ["config", "tenant_id"]
+        case_text = json.dumps(gap["black_box_cases"], ensure_ascii=False)
+        assert "config" in case_text
+        assert "tenant_id" in case_text
+        assert "sys.argv" not in case_text
+
     async def test_getopt_long_main_entry_feeds_black_box_input_hints(self, tmp_path):
         from app.services.coverage_analyzer import build_coverage_test_design
 
