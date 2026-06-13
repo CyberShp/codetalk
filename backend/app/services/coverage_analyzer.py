@@ -392,7 +392,8 @@ _REQUEST_FIELD_RES = (
     ),
     re.compile(
         r"\b(?:c|ctx|context)\."
-        r"(?:Param|Query|DefaultQuery|PostForm|DefaultPostForm|GetHeader)"
+        r"(?:Param|Params|Query|QueryParam|DefaultQuery|PostForm|DefaultPostForm|"
+        r"FormValue|FormFile|GetHeader|Cookie)"
         r"\s*\(\s*['\"]([A-Za-z_][\w-]*)['\"]"
     ),
     re.compile(
