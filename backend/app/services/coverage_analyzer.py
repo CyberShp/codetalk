@@ -252,13 +252,18 @@ def _match_multiline_def_name(lines: list[str], idx: int) -> str | None:
         if not start_text or start_text.startswith(("//", "/*", "*")):
             break
         fragment_lines: list[str] = []
+        includes_current_line = False
         for end in range(start, min(len(lines), idx + 8)):
             text = lines[end].strip()
             if not text:
                 continue
+            if end == idx:
+                includes_current_line = True
             fragment_lines.append(text)
             if "{" in text or ";" in text:
                 break
+        if not includes_current_line:
+            continue
         signature = " ".join(fragment_lines)
         match = _SIGNATURE_RE.match(signature)
         if not match:
