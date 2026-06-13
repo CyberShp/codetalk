@@ -416,6 +416,11 @@ _REQUEST_FIELD_RES = (
         r"(?:\s*\[\s*|\s*\.get\s*\(\s*)['\"]([A-Za-z_][\w.-]*)['\"]"
     ),
     re.compile(
+        r"\bRequest\."
+        r"(?:Query|Headers|Cookies|Form|RouteValues|Body)"
+        r"\.TryGetValue\s*\(\s*['\"]([A-Za-z_][\w.-]*)['\"]"
+    ),
+    re.compile(
         r"\b(?:c|ctx|context)\."
         r"(?:Param|Params|Query|QueryParam|DefaultQuery|PostForm|DefaultPostForm|"
         r"FormValue|FormFile|GetHeader|Cookie)"

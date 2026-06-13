@@ -5828,6 +5828,47 @@ class TestCoverageTestDesign:
         assert "session_id" in case_text
         assert "Request.Query" not in case_text
 
+    async def test_aspnet_request_try_get_value_feeds_black_box_input_hints(self, tmp_path):
+        from app.services.coverage_analyzer import build_coverage_test_design
+
+        src = tmp_path / "src"
+        src.mkdir()
+        (src / "PaymentController.cs").write_text(
+            "public class PaymentController {\n"
+            "  [HttpPost(\"/payments\")]\n"
+            "  public IActionResult ProcessPayment() {\n"
+            "    Request.Query.TryGetValue(\"amount\", out var amount);\n"
+            "    Request.Headers.TryGetValue(\"X-Tenant-Id\", out var tenantId);\n"
+            "    Request.Cookies.TryGetValue(\"session_id\", out var sessionId);\n"
+            "    if (string.IsNullOrEmpty(amount)) {\n"
+            "      return BadRequest();\n"
+            "    }\n"
+            "    return Ok(tenantId + sessionId);\n"
+            "  }\n"
+            "}\n",
+            encoding="utf-8",
+        )
+        modules = self._modules(
+            "feature,module,code_location,function,triggered,hit_count\n"
+            "payments,controller,src/PaymentController.cs:3-11,ProcessPayment,false,0\n"
+        )
+
+        design = await build_coverage_test_design(
+            modules, workspace_id="ws-1", repo_path=str(tmp_path)
+        )
+
+        gap = [g for g in design["gaps"] if g.get("kind") == "function"][0]
+        assert gap["black_box_readiness"]["case_type"] == "black_box_ready"
+        entry = gap["entry_paths"][0]
+        assert entry["entry_kind"] == "route"
+        assert entry["entry_symbol"] == "ProcessPayment"
+        assert entry["input_hints"] == ["amount", "X-Tenant-Id", "session_id"]
+        case_text = json.dumps(gap["black_box_cases"], ensure_ascii=False)
+        assert "amount" in case_text
+        assert "X-Tenant-Id" in case_text
+        assert "session_id" in case_text
+        assert "TryGetValue" not in case_text
+
     async def test_aspnet_controller_token_route_feeds_black_box_trigger(self, tmp_path):
         from app.services.coverage_analyzer import build_coverage_test_design
 
