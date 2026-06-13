@@ -339,7 +339,8 @@ _REQUEST_CONTAINER_NAMES = (
 )
 _REQUEST_CONTAINER_PATTERN = "|".join(re.escape(name) for name in _REQUEST_CONTAINER_NAMES)
 _REQ_FIELD_RE = re.compile(
-    rf"\b(?:req|attrs|opts|ctx)\.(?!(?:{_REQUEST_CONTAINER_PATTERN})\b)([A-Za-z_]\w*)\b"
+    rf"\b(?:req|attrs|opts|ctx)\."
+    rf"(?!(?:{_REQUEST_CONTAINER_PATTERN}|get|header)\b)([A-Za-z_]\w*)\b"
 )
 _REQUEST_FIELD_RES = (
     re.compile(
@@ -369,6 +370,10 @@ _REQUEST_FIELD_RES = (
         r"\b(?:request|req|payload|body|params|query|data)"
         rf"(?:\??\.(?:{_REQUEST_CONTAINER_PATTERN}))?"
         r"\??\.get\s*\(\s*['\"]([A-Za-z_][\w-]*)['\"]"
+    ),
+    re.compile(
+        r"\b(?:request|req)"
+        r"\??\.(?:get|header)\s*\(\s*['\"]([A-Za-z_][\w-]*)['\"]"
     ),
     re.compile(
         r"\b(?:request|req)"

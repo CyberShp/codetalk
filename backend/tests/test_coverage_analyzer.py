@@ -2489,6 +2489,49 @@ class TestCoverageTestDesign:
         assert "X-User-Id" in case_text
         assert "session_id" in case_text
 
+    async def test_route_request_header_method_feeds_black_box_input_hints(self, tmp_path):
+        from app.services.coverage_analyzer import build_coverage_test_design
+
+        src = tmp_path / "src"
+        src.mkdir()
+        (src / "routes.ts").write_text(
+            "export function processPayment(req, res) {\n"
+            "  const traceId = req.header('X-Trace-Id');\n"
+            "  const auth = req.get('Authorization');\n"
+            "  const amount = req.body.amount;\n"
+            "  if (!traceId || !auth || !amount) {\n"
+            "    return res.status(400).json({ error: 'missing input' });\n"
+            "  }\n"
+            "  return res.json({ traceId, amount });\n"
+            "}\n\n"
+            "router.post('/payments/:tenantId/process', processPayment);\n",
+            encoding="utf-8",
+        )
+        modules = self._modules(
+            "feature,module,code_location,function,triggered,hit_count\n"
+            "payments,routes,src/routes.ts:1-8,processPayment,false,0\n"
+        )
+
+        design = await build_coverage_test_design(
+            modules, workspace_id="ws-1", repo_path=str(tmp_path)
+        )
+
+        gap = [g for g in design["gaps"] if g.get("kind") == "function"][0]
+        assert gap["black_box_readiness"]["case_type"] == "black_box_ready"
+        entry = gap["entry_paths"][0]
+        assert entry["entry_kind"] == "route"
+        assert "X-Trace-Id" in entry["input_hints"]
+        assert "Authorization" in entry["input_hints"]
+        assert "amount" in entry["input_hints"]
+        assert "tenantId" in entry["input_hints"]
+        assert "header" not in entry["input_hints"]
+        assert "get" not in entry["input_hints"]
+        case_text = json.dumps(gap["black_box_cases"], ensure_ascii=False)
+        assert "X-Trace-Id" in case_text
+        assert "Authorization" in case_text
+        assert "header" not in case_text
+        assert "get" not in case_text
+
     async def test_route_input_hints_do_not_cross_function_boundaries(self, tmp_path):
         from app.services.coverage_analyzer import build_coverage_test_design
 
