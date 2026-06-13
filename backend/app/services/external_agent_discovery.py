@@ -35,6 +35,7 @@ AgentGoal = Literal["source_scope", "coverage_entry"]
 
 SOURCE_EXTS = frozenset({
     ".c", ".h", ".hh", ".hpp", ".hxx", ".cc", ".cpp", ".cxx", ".ipp", ".inl",
+    ".s", ".asm",
     ".py", ".go", ".rs", ".java",
     ".ts", ".tsx", ".mts", ".cts", ".js", ".jsx", ".mjs", ".cjs",
     ".cs", ".rb", ".php", ".kt", ".kts",

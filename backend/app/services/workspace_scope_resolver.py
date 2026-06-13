@@ -69,6 +69,7 @@ _DIR_SKIP = frozenset({
 _SOURCE_EXTS = frozenset({
     ".py", ".js", ".jsx", ".mjs", ".cjs", ".ts", ".tsx", ".mts", ".cts", ".go", ".rs", ".java",
     ".c", ".h", ".hh", ".hpp", ".hxx", ".cc", ".cpp", ".cxx", ".ipp", ".inl",
+    ".s", ".asm",
     ".cs", ".rb", ".php",
     ".kt", ".kts", ".swift", ".m", ".scala", ".vue", ".svelte", ".astro", ".mdx",
     ".proto", ".thrift", ".graphql", ".gql",

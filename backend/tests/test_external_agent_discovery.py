@@ -284,6 +284,30 @@ def test_agent_json_validates_graphql_schema_source_files(tmp_path):
     assert [candidate.validated for candidate in result.candidate_files] == [True, True]
 
 
+def test_agent_json_validates_assembly_source_files(tmp_path):
+    from app.services.external_agent_discovery import parse_agent_output
+
+    src = tmp_path / "arch" / "x86" / "tls"
+    src.mkdir(parents=True)
+    (src / "tls_switch.S").write_text("ENTRY(tls_switch)\n", encoding="utf-8")
+    raw = json.dumps({
+        "candidate_files": [
+            {
+                "path": "arch/x86/tls/tls_switch.S",
+                "reason": "assembly implementation",
+                "confidence": "high",
+            },
+        ],
+        "candidate_entries": [],
+    })
+
+    result = parse_agent_output("claude-code", raw, tmp_path)
+
+    assert result.status == "ok"
+    assert result.candidate_files[0].validated is True
+    assert result.candidate_files[0].path == "arch/x86/tls/tls_switch.S"
+
+
 def test_invalid_json_does_not_enter_candidate_merge(tmp_path):
     from app.services.external_agent_discovery import parse_agent_output
 
@@ -6217,6 +6241,25 @@ def test_workspace_path_keyword_search_includes_graphql_schema_source_files(tmp_
 
     assert "services/billing/billing.graphql" in rel_hits
     assert "services/billing/refund.gql" in rel_hits
+
+
+def test_workspace_path_keyword_search_includes_assembly_source_files(tmp_path):
+    from app.services.workspace_scope_resolver import _path_keyword_repo_hits_blocking
+
+    asm_dir = tmp_path / "arch" / "x86" / "tls"
+    asm_dir.mkdir(parents=True)
+    (asm_dir / "tls_switch.S").write_text("ENTRY(tls_switch)\n", encoding="utf-8")
+    (asm_dir / "tls_fallback.asm").write_text("tls_fallback:\n", encoding="utf-8")
+
+    hits = _path_keyword_repo_hits_blocking(str(tmp_path), ["tls-switch"], 4)
+    rel_hits = [Path(hit).relative_to(tmp_path).as_posix() for hit in hits]
+
+    assert "arch/x86/tls/tls_switch.S" in rel_hits
+
+    asm_hits = _path_keyword_repo_hits_blocking(str(tmp_path), ["tls-fallback"], 4)
+    asm_rel_hits = [Path(hit).relative_to(tmp_path).as_posix() for hit in asm_hits]
+
+    assert "arch/x86/tls/tls_fallback.asm" in asm_rel_hits
 
 
 def test_evidence_builder_reads_idl_source_candidates(tmp_path):
