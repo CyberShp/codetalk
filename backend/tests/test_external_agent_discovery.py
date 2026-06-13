@@ -7793,6 +7793,17 @@ def test_data_loader_as_posix_path_keeps_path_input_hint():
     ) == ["CSV file", "input_path"]
 
 
+def test_data_loader_path_normalization_methods_keep_path_input_hint():
+    from app.services.coverage_analyzer import _filesystem_operation_input_hints
+
+    assert _filesystem_operation_input_hints(
+        "frame = pd.read_csv(input_path.resolve())"
+    ) == ["CSV file", "input_path"]
+    assert _filesystem_operation_input_hints(
+        "frame = pd.read_json(config_path.expanduser())"
+    ) == ["JSON file", "config_path"]
+
+
 def test_coverage_agent_verified_entry_makes_gap_black_box_ready(tmp_path, monkeypatch):
     import app.services.coverage_analyzer as coverage_mod
     from app.services.coverage_analyzer import build_coverage_test_design
