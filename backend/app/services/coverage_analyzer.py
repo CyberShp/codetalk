@@ -7910,6 +7910,8 @@ def _filesystem_operation_input_hints(window_text: str) -> list[str]:
             part = value.strip()
             if not part:
                 return
+            if "=" in part and not part.lstrip().startswith(("=", "==")):
+                part = part.split("=", 1)[1].strip()
             for env_pattern in _ENV_FIELD_RES:
                 for env_match in env_pattern.finditer(part):
                     add_var(env_match.group(1))
@@ -7964,6 +7966,23 @@ def _filesystem_operation_input_hints(window_text: str) -> list[str]:
         without_strings = re.sub(r"""(['"])(?:\\.|(?!\1).)*\1""", " ", stripped)
         if "+" in without_strings:
             for part in re.split(r"""\+""", stripped):
+                add_path_arg_vars(part)
+
+        for fstring_match in re.finditer(
+            r"""[fF](?P<quote>['"])(?P<body>.*?)(?P=quote)""",
+            stripped,
+            re.DOTALL,
+        ):
+            for expr in re.findall(r"""\{([^{}]+)\}""", fstring_match.group("body")):
+                add_path_arg_vars(expr)
+
+        format_match = re.match(
+            r"""(?P<quote>['"])(?P<body>.*?)(?P=quote)\s*\.\s*format\s*\(\s*(?P<args>.*)\s*\)\s*$""",
+            stripped,
+            re.DOTALL,
+        )
+        if format_match:
+            for part in split_top_level_args(format_match.group("args")):
                 add_path_arg_vars(part)
 
         if re.search(r"""(?:^|[\w)\]])\s*/\s*(?:[\w(]|$)""", without_strings):
@@ -8053,6 +8072,11 @@ def _filesystem_operation_input_hints(window_text: str) -> list[str]:
             if label:
                 add(label)
             arg_text = first_call_argument(window_text or "", match.end())
+            expression_vars = path_expression_input_vars(arg_text)
+            if expression_vars:
+                for variable in expression_vars:
+                    add(variable_file_hint(variable))
+                continue
             literal = re.match(r"""['"](?P<path>[^'"]+)['"]""", arg_text)
             if literal:
                 path_text = literal.group("path").replace("\\", "/")
@@ -8074,11 +8098,6 @@ def _filesystem_operation_input_hints(window_text: str) -> list[str]:
                 if re.fullmatch(r"[A-Za-z_]\w*", wrapped_arg):
                     add(variable_file_hint(wrapped_arg))
                     continue
-            expression_vars = path_expression_input_vars(arg_text)
-            if expression_vars:
-                for variable in expression_vars:
-                    add(variable_file_hint(variable))
-                continue
             if re.fullmatch(r"[A-Za-z_]\w*", arg_text):
                 add(variable_file_hint(arg_text))
     js_file_res = (
