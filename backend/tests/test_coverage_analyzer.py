@@ -4868,6 +4868,37 @@ class TestCoverageTestDesign:
         assert gap["entry_paths"] == []
         assert gap["black_box_readiness"]["case_type"] != "black_box_ready"
 
+    async def test_coverage_c_multiline_signature_line_without_name_infers_function(self, tmp_path):
+        from app.services.coverage_analyzer import build_coverage_test_design
+
+        src = tmp_path / "src"
+        src.mkdir()
+        (src / "service.c").write_text(
+            "int process_payment(\n"
+            "    int tenant_id,\n"
+            "    int amount\n"
+            ") {\n"
+            "    if (amount <= 0) {\n"
+            "        return -1;\n"
+            "    }\n"
+            "    return tenant_id;\n"
+            "}\n",
+            encoding="utf-8",
+        )
+        modules = self._modules(
+            "feature,module,code_location,function,triggered,hit_count\n"
+            "payments,service,src/service.c:2,,false,0\n"
+        )
+
+        design = await build_coverage_test_design(
+            modules, workspace_id="ws-1", repo_path=str(tmp_path)
+        )
+
+        gap = [g for g in design["gaps"] if g.get("kind") == "function"][0]
+        assert gap["function_name"] == "process_payment"
+        assert gap["source_window"]["path"] == "src/service.c"
+        assert "amount <= 0" in json.dumps(gap["trigger_branches"], ensure_ascii=False)
+
     async def test_coverage_decorator_line_without_function_name_infers_next_route(self, tmp_path):
         from app.services.coverage_analyzer import build_coverage_test_design
 
@@ -4895,6 +4926,42 @@ class TestCoverageTestDesign:
         assert gap["function_name"] == "process_payment"
         assert gap["black_box_readiness"]["case_type"] == "black_box_ready"
         assert gap["entry_paths"][0]["external_trigger"] == "POST /payments/{tenant_id}/process"
+
+    async def test_coverage_multiline_signature_line_without_function_name_infers_route(self, tmp_path):
+        from app.services.coverage_analyzer import build_coverage_test_design
+
+        src = tmp_path / "src"
+        src.mkdir()
+        (src / "payments.controller.ts").write_text(
+            "import { Body, Controller, Param, Post } from '@nestjs/common';\n\n"
+            "class CreatePaymentDto {\n"
+            "  amount: number;\n"
+            "}\n\n"
+            "@Controller('tenants/:tenantId/payments')\n"
+            "export class PaymentsController {\n"
+            "  @Post('process')\n"
+            "  processPayment(\n"
+            "    @Param('tenantId') tenantId: string,\n"
+            "    @Body() payload: CreatePaymentDto,\n"
+            "  ) {\n"
+            "    return { tenantId, amount: payload.amount };\n"
+            "  }\n"
+            "}\n",
+            encoding="utf-8",
+        )
+        modules = self._modules(
+            "feature,module,code_location,function,triggered,hit_count\n"
+            "payments,controller,src/payments.controller.ts:12,,false,0\n"
+        )
+
+        design = await build_coverage_test_design(
+            modules, workspace_id="ws-1", repo_path=str(tmp_path)
+        )
+
+        gap = [g for g in design["gaps"] if g.get("kind") == "function"][0]
+        assert gap["function_name"] == "processPayment"
+        assert gap["black_box_readiness"]["case_type"] == "black_box_ready"
+        assert gap["entry_paths"][0]["external_trigger"] == "POST /tenants/:tenantId/payments/process"
 
     async def test_fastapi_pydantic_field_aliases_feed_external_body_hints(self, tmp_path):
         from app.services.coverage_analyzer import build_coverage_test_design

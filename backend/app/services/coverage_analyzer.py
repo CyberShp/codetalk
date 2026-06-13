@@ -1568,6 +1568,8 @@ def _brace_definition_owns_line(
     definition_idx: int,
     target_idx: int,
 ) -> bool:
+    if not any("{" in lines[idx] for idx in range(definition_idx, min(target_idx, len(lines) - 1) + 1)):
+        return _brace_signature_prefix_owns_line(lines, definition_idx, target_idx)
     balance = 0
     saw_block = False
     for idx in range(definition_idx, min(target_idx, len(lines) - 1) + 1):
@@ -1578,6 +1580,20 @@ def _brace_definition_owns_line(
         if idx < target_idx and saw_block and balance <= 0:
             return False
     return saw_block and balance > 0
+
+
+def _brace_signature_prefix_owns_line(
+    lines: list[str],
+    definition_idx: int,
+    target_idx: int,
+) -> bool:
+    balance = 0
+    for idx in range(definition_idx, min(target_idx, len(lines) - 1) + 1):
+        text = lines[idx]
+        if idx < target_idx and ";" in text:
+            return False
+        balance += text.count("(") - text.count(")")
+    return balance > 0
 
 
 def _coverage_forward_definition_prefix_is_safe(
