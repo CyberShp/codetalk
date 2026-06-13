@@ -3922,6 +3922,10 @@ def _request_field_hints_from_text(statement_text: str) -> list[str]:
         if field not in seen:
             seen.add(field)
             hints.append(field)
+    for field in _payload_destructured_fields(statement_text):
+        if field not in seen:
+            seen.add(field)
+            hints.append(field)
     return hints[:12]
 
 
@@ -3977,6 +3981,31 @@ def _request_destructured_fields(text: str) -> list[str]:
             if re.match(r"^[A-Za-z_][\w-]*$", field):
                 fields.append(field)
     return fields
+
+
+def _payload_destructured_fields(text: str) -> list[str]:
+    fields: list[str] = []
+    patterns = (
+        r"\{(?P<fields>[^{}]+)\}\s*=\s*(?:payload|message|msg|record)\b",
+        r"\{(?P<fields>[^{}]+)\}\s*=\s*(?:job|task)(?:\??\.)\s*data\b",
+        r"\{(?P<fields>[^{}]+)\}\s*=\s*(?:event|evt)(?:\??\.)\s*(?:detail|data|payload)\b",
+    )
+    for pattern in patterns:
+        for match in re.finditer(pattern, text or ""):
+            raw_fields = match.group("fields")
+            for raw_field in raw_fields.split(","):
+                field = _destructured_external_field_name(raw_field)
+                if field:
+                    fields.append(field)
+    return fields
+
+
+def _destructured_external_field_name(raw_field: str) -> str | None:
+    field = str(raw_field or "").strip()
+    if not field or "..." in field or "{" in field or "}" in field:
+        return None
+    field = field.split(":", 1)[0].split("=", 1)[0].strip()
+    return field if re.match(r"^[A-Za-z_][\w-]*$", field) else None
 
 
 def _env_destructured_fields(text: str) -> list[tuple[int, str]]:
