@@ -286,6 +286,14 @@ def _line_indent(line: str) -> int:
 def _definition_encloses_line(lines: list[str], def_idx: int, target_idx: int) -> bool:
     if def_idx < 0 or def_idx >= len(lines) or target_idx <= def_idx:
         return True
+    def_text = lines[def_idx].strip()
+    if def_text.startswith("def "):
+        def_indent = _line_indent(lines[def_idx])
+        for idx in range(def_idx + 1, min(target_idx, len(lines) - 1) + 1):
+            text = lines[idx].strip()
+            if idx < target_idx and text == "end" and _line_indent(lines[idx]) <= def_indent:
+                return False
+        return True
     if not _match_assigned_function_def_name(lines[def_idx]):
         return True
 
@@ -509,6 +517,10 @@ _CONFIG_FIELD_RES = (
     re.compile(
         r"\b(?:settings|config|options)(?:\s*\.\s*[A-Za-z_]\w*)*"
         r"\s*\.\s*([A-Z][A-Z0-9_]*(?:\.[A-Z][A-Z0-9_]*)*)\b"
+    ),
+    re.compile(
+        r"\bRails\s*\.\s*(?:application\s*\.\s*config|configuration)"
+        r"\s*\.\s*x(?:\s*\.\s*([A-Za-z_]\w*))+"
     ),
     re.compile(
         r"\b(?:configuration|config|settings|options)"
@@ -7420,6 +7432,7 @@ _CONFIG_OPERATION_RE = re.compile(
     r"|\b(?:configuration|config|settings|options)\s*\[\s*['\"]"
     r"|\b(?:settings|config|options)(?:\s*\.\s*[A-Za-z_]\w*)*"
     r"\s*\.\s*[A-Z][A-Z0-9_]*(?:\.[A-Z][A-Z0-9_]*)*\b"
+    r"|\bRails\s*\.\s*(?:application\s*\.\s*config|configuration)\s*\.\s*x\s*\."
     r"|\b(?:configuration|config|settings|options)\s*\.\s*Get"
     r"(?:Value|Section|ConnectionString)?(?:\s*<[^>]+>)?\s*\("
     r"|\b(?:[A-Za-z_]\w*|System)\s*\.\s*getProperty\s*\("
