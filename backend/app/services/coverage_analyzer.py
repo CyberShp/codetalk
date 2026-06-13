@@ -496,6 +496,19 @@ _ENV_FIELD_RES = (
     ),
     re.compile(r"\bgetenv\s*\(\s*['\"]([A-Za-z_][\w.-]*)['\"]"),
 )
+_CONFIG_FIELD_RES = (
+    re.compile(
+        r"\b(?:configuration|config|settings|options)"
+        r"\s*\[\s*['\"]([A-Za-z_][\w.:-]*)['\"]\s*\]",
+        re.IGNORECASE,
+    ),
+    re.compile(
+        r"\b(?:configuration|config|settings|options)"
+        r"\s*\.\s*Get(?:Value|Section|ConnectionString)?(?:\s*<[^>]+>)?"
+        r"\s*\(\s*['\"]([A-Za-z_][\w.:-]*)['\"]",
+        re.IGNORECASE,
+    ),
+)
 _REGISTRATION_LINE_RE = re.compile(
     r"\b(?:[A-Z0-9_]*REGISTER[A-Z0-9_]*|register_[A-Za-z0-9_]+)\s*\("
     r"|\badd_[A-Za-z0-9_]*Servicer_to_server\s*\("
@@ -3799,6 +3812,7 @@ def _specific_signature_input_hints(
     generic_payload_names = {
         "event", "evt", "message", "msg", "payload", "record",
         "request", "req", "response", "res", "reply", "next", "h",
+        "config", "configuration", "settings", "options",
     }
     return [
         hint for hint in signature_hints
@@ -3975,6 +3989,9 @@ def _request_field_hints_from_text(statement_text: str) -> list[str]:
         for field_match in _RUBY_SYMBOL_ARG_RE.finditer(match.group("fields")):
             positioned_fields.append((match.start() + field_match.start(), field_match.group(1)))
     for pattern in _ENV_FIELD_RES:
+        for match in pattern.finditer(statement_text):
+            positioned_fields.append((match.start(), match.group(1)))
+    for pattern in _CONFIG_FIELD_RES:
         for match in pattern.finditer(statement_text):
             positioned_fields.append((match.start(), match.group(1)))
     for offset, field in _env_destructured_fields(statement_text):
@@ -7329,6 +7346,9 @@ _CONFIG_OPERATION_RE = re.compile(
     r"|\b(?:os\.)?getenv\s*\("
     r"|\bprocess\.env\b"
     r"|\bgetenv\s*\("
+    r"|\b(?:configuration|config|settings|options)\s*\[\s*['\"]"
+    r"|\b(?:configuration|config|settings|options)\s*\.\s*Get"
+    r"(?:Value|Section|ConnectionString)?(?:\s*<[^>]+>)?\s*\("
     r"|\b(?:load_config|read_config|parse_config)\s*\("
     r"|\.ya?ml\b|\.toml\b|\.ini\b|\.conf\b",
     re.IGNORECASE,

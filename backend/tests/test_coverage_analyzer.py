@@ -2768,6 +2768,45 @@ class TestCoverageTestDesign:
         assert "PAYMENT_MODE" in case_text
         assert "GetEnvironmentVariable" not in case_text
 
+    async def test_dotnet_configuration_indexer_feeds_black_box_config_input_hint(self, tmp_path):
+        from app.services.coverage_analyzer import build_coverage_test_design
+
+        src = tmp_path / "src"
+        src.mkdir()
+        (src / "PaymentConfig.cs").write_text(
+            "public class PaymentConfig {\n"
+            "  public static bool ConfigurePaymentMode(string mode) {\n"
+            "    if (string.IsNullOrWhiteSpace(mode)) {\n"
+            "      return false;\n"
+            "    }\n"
+            "    return true;\n"
+            "  }\n"
+            "  public static bool Bootstrap(IConfiguration configuration) {\n"
+            "    var mode = configuration[\"Payment:Mode\"];\n"
+            "    return ConfigurePaymentMode(mode);\n"
+            "  }\n"
+            "}\n",
+            encoding="utf-8",
+        )
+        modules = self._modules(
+            "feature,module,code_location,function,triggered,hit_count\n"
+            "payments,config,src/PaymentConfig.cs:2-7,ConfigurePaymentMode,false,0\n"
+        )
+
+        design = await build_coverage_test_design(
+            modules, workspace_id="ws-1", repo_path=str(tmp_path)
+        )
+
+        gap = [g for g in design["gaps"] if g.get("kind") == "function"][0]
+        assert gap["black_box_readiness"]["case_type"] == "black_box_ready"
+        entry = gap["entry_paths"][0]
+        assert entry["entry_kind"] == "config"
+        assert entry["entry_symbol"] == "Bootstrap"
+        assert entry["input_hints"] == ["Payment:Mode"]
+        case_text = json.dumps(gap["black_box_cases"], ensure_ascii=False)
+        assert "Payment:Mode" in case_text
+        assert "configuration[" not in case_text
+
     async def test_route_registration_reference_becomes_black_box_entry_without_agent(self, tmp_path):
         from app.services.coverage_analyzer import build_coverage_test_design
 
