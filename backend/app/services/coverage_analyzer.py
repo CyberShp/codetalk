@@ -344,6 +344,18 @@ _REQ_FIELD_RE = re.compile(
 )
 _REQUEST_FIELD_RES = (
     re.compile(
+        r"\b(?P<container>message|msg|record)"
+        r"(?:\??\.)\s*(?:properties(?:\??\.)\s*)?"
+        r"(?:headers|messageAttributes|attributes)"
+        r"(?:\??\.)\s*(?P<field>[A-Za-z_][\w-]*)\b"
+    ),
+    re.compile(
+        r"\b(?P<container>message|msg|record)"
+        r"(?:\??\.)\s*(?:properties(?:\??\.)\s*)?"
+        r"(?:headers|messageAttributes|attributes)"
+        r"\s*\[\s*['\"](?P<field>[A-Za-z_][\w.-]*)['\"]\s*\]"
+    ),
+    re.compile(
         r"\b(?P<container>payload|message|msg|record)"
         r"(?:\??\.)\s*(?P<field>[A-Za-z_][\w-]*)\b"
     ),
@@ -456,7 +468,7 @@ _REQUEST_FIELD_RES = (
 )
 _MESSAGE_ENVELOPE_FIELD_NAMES = {
     "attributes", "body", "content", "headers", "key", "offset", "partition",
-    "timestamp", "topic", "value",
+    "messageattributes", "properties", "timestamp", "topic", "value",
 }
 _REQUEST_DESTRUCTURE_RE = re.compile(
     r"\{(?P<fields>[^{}]+)\}\s*=\s*"

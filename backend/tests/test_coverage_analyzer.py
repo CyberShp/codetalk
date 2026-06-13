@@ -7763,6 +7763,45 @@ class TestCoverageTestDesign:
         assert "currency" in case_text
         assert "body" not in case_text
 
+    async def test_message_headers_feed_black_box_input_hints(self, tmp_path):
+        from app.services.coverage_analyzer import build_coverage_test_design
+
+        src = tmp_path / "src"
+        src.mkdir()
+        (src / "events.ts").write_text(
+            "export function processInvoice(record) {\n"
+            "  const tenantId = record.properties.headers['tenant_id'];\n"
+            "  const payload = JSON.parse(record.body);\n"
+            "  if (!tenantId || !payload.amount) {\n"
+            "    return 'missing';\n"
+            "  }\n"
+            "  return payload.currency;\n"
+            "}\n\n"
+            "eventBus.subscribe('invoice.created', processInvoice);\n",
+            encoding="utf-8",
+        )
+        modules = self._modules(
+            "feature,module,code_location,function,triggered,hit_count\n"
+            "billing,events,src/events.ts:1-8,processInvoice,false,0\n"
+        )
+
+        design = await build_coverage_test_design(
+            modules, workspace_id="ws-1", repo_path=str(tmp_path)
+        )
+
+        gap = [g for g in design["gaps"] if g.get("kind") == "function"][0]
+        assert gap["black_box_readiness"]["case_type"] == "black_box_ready"
+        entry = gap["entry_paths"][0]
+        assert entry["entry_kind"] == "message"
+        assert entry["input_hints"] == [
+            "invoice.created", "tenant_id", "amount", "currency",
+        ]
+        case_text = json.dumps(gap["black_box_cases"], ensure_ascii=False)
+        assert "tenant_id" in case_text
+        assert "amount" in case_text
+        assert "properties" not in case_text
+        assert "headers" not in case_text
+
     async def test_message_payload_destructuring_feeds_black_box_input_hints(self, tmp_path):
         from app.services.coverage_analyzer import build_coverage_test_design
 
