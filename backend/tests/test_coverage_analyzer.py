@@ -8967,6 +8967,32 @@ class TestCoverageTestDesign:
         assert "correct file" in window["text"]
         assert "wrong file" not in window["text"]
 
+    async def test_source_window_reads_assembly_label_source_files(self, tmp_path):
+        from app.adapters.coverage import FunctionHit
+        from app.services.coverage_analyzer import _read_source_window
+
+        src = tmp_path / "arch" / "x86" / "tls"
+        src.mkdir(parents=True)
+        (src / "tls_switch.S").write_text(
+            ".globl tls_switch\n"
+            "tls_switch:\n"
+            "    ret\n",
+            encoding="utf-8",
+        )
+        hit = FunctionHit(
+            function_name="tls_switch",
+            file_path="arch/x86/tls/tls_switch.S",
+            line_start=2,
+            triggered=False,
+            hit_count=0,
+        )
+
+        window = _read_source_window(tmp_path, hit)
+
+        assert window is not None
+        assert window["path"] == "arch/x86/tls/tls_switch.S"
+        assert "tls_switch:" in window["text"]
+
     async def test_source_window_resolves_dotted_module_symbol_before_global_fallback(self, tmp_path):
         from app.adapters.coverage import FunctionHit
         from app.services.coverage_analyzer import _read_source_window

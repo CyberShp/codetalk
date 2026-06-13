@@ -92,6 +92,7 @@ SOURCE_WINDOW_AFTER = 60
 _SOURCE_EXTENSION_CANDIDATES = (
     "",
     ".c", ".h", ".hh", ".hpp", ".hxx", ".cc", ".cpp", ".cxx", ".ipp", ".inl",
+    ".s", ".asm",
     ".py", ".go", ".rs", ".java",
     ".js", ".jsx", ".mjs", ".cjs", ".ts", ".tsx", ".mts", ".cts", ".cs",
     ".rb", ".php", ".kt", ".kts", ".swift", ".m", ".scala",
@@ -3156,8 +3157,9 @@ def _source_file_defines_function(candidate: Path, function_name: str) -> bool:
         lines = candidate.read_text(encoding="utf-8", errors="replace").splitlines()
     except OSError:
         return False
+    suffix = candidate.suffix.lower()
     return any(
-        _definition_line_matches_any_name(lines, idx, names)
+        _definition_line_matches_any_name(lines, idx, names, suffix=suffix)
         for idx, _line in enumerate(lines)
     )
 
@@ -3166,7 +3168,11 @@ def _definition_line_matches_any_name(
     lines: list[str],
     idx: int,
     names: list[str],
+    *,
+    suffix: str | None = None,
 ) -> bool:
+    if suffix in {".s", ".asm"}:
+        return _assembly_label_definition_name(lines[idx] if 0 <= idx < len(lines) else "") in names
     defined = (
         _match_def_name(lines[idx])
         or _match_multiline_def_name(lines, idx)
@@ -3281,7 +3287,11 @@ def _read_source_window_for_path(
     if not total:
         return None
 
-    definition_line = _find_strict_definition_line(lines, hit.function_name)
+    definition_line = _find_strict_definition_line(
+        lines,
+        hit.function_name,
+        suffix=source_file.suffix.lower(),
+    )
     if hit.function_name and not definition_line:
         return None
     start_line = definition_line or hit.line_start
@@ -3311,8 +3321,13 @@ def _read_source_window_for_path(
     }
 
 
-def _find_definition_line(lines: list[str], function_name: str) -> int | None:
-    strict = _find_strict_definition_line(lines, function_name)
+def _find_definition_line(
+    lines: list[str],
+    function_name: str,
+    *,
+    suffix: str | None = None,
+) -> int | None:
+    strict = _find_strict_definition_line(lines, function_name, suffix=suffix)
     if strict:
         return strict
     # Fallback: first textual occurrence of "name(".
@@ -3330,21 +3345,28 @@ def _find_definition_line(lines: list[str], function_name: str) -> int | None:
     return None
 
 
-def _find_strict_definition_line(lines: list[str], function_name: str) -> int | None:
-    match = _find_strict_definition_match(lines, function_name)
+def _find_strict_definition_line(
+    lines: list[str],
+    function_name: str,
+    *,
+    suffix: str | None = None,
+) -> int | None:
+    match = _find_strict_definition_match(lines, function_name, suffix=suffix)
     return match[0] if match else None
 
 
 def _find_strict_definition_match(
     lines: list[str],
     function_name: str,
+    *,
+    suffix: str | None = None,
 ) -> tuple[int, str] | None:
     names = _function_name_candidates(function_name)
     if not names:
         return None
     for idx, line in enumerate(lines):
         for name in names:
-            if _line_matches_signature_name(lines, idx, name):
+            if _line_matches_signature_name(lines, idx, name, suffix=suffix):
                 return idx + 1, name
     return None
 
@@ -3472,6 +3494,8 @@ def _definition_name_for_file(lines: list[str], idx: int, suffix: str) -> str | 
         return None
     line = lines[idx]
     stripped = line.strip()
+    if suffix in {".s", ".asm"}:
+        return _assembly_label_definition_name(line)
     if suffix == ".py" and not (
         re.match(r"^(?:async\s+)?def\s+", stripped)
         or re.search(r"=\s*lambda\b", stripped)
@@ -3511,6 +3535,17 @@ def _definition_name_for_file(lines: list[str], idx: int, suffix: str) -> str | 
     ):
         return None
     return name
+
+
+def _assembly_label_definition_name(line: str) -> str | None:
+    text = str(line or "").strip()
+    if not text or text.startswith((".", "#", "//", "/*", "*")):
+        return None
+    match = re.match(r"^(?P<name>[A-Za-z_.$][\w.$]*)\s*:\s*(?:[#;].*)?$", text)
+    if not match:
+        return None
+    name = match.group("name")
+    return None if name in _NON_FUNCTION_NAMES else name
 
 
 def _javascript_assigned_function_definition_name(lines: list[str], idx: int) -> str | None:
@@ -4259,8 +4294,16 @@ def _collect_signature_text(lines: list[str], start_idx: int) -> str:
     return " ".join(parts)
 
 
-def _line_matches_signature_name(lines: list[str], idx: int, name: str) -> bool:
+def _line_matches_signature_name(
+    lines: list[str],
+    idx: int,
+    name: str,
+    *,
+    suffix: str | None = None,
+) -> bool:
     line = lines[idx] if 0 <= idx < len(lines) else ""
+    if suffix in {".s", ".asm"}:
+        return _assembly_label_definition_name(line) == name
     if _match_def_name(line) == name or _match_multiline_def_name(lines, idx) == name:
         return True
     if _javascript_assigned_function_definition_name(lines, idx) == name:
