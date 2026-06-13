@@ -2161,6 +2161,45 @@ class TestCoverageTestDesign:
         assert "JSON file" in case_text
         assert "inbox_dir" in case_text
 
+    async def test_filesystem_literal_read_feeds_specific_file_input_hints(self, tmp_path):
+        from app.services.coverage_analyzer import build_coverage_test_design
+
+        src = tmp_path / "src"
+        src.mkdir()
+        (src / "orders.py").write_text(
+            "def process_order(payload):\n"
+            "    if not payload:\n"
+            "        return 'missing'\n"
+            "    return 'processed'\n",
+            encoding="utf-8",
+        )
+        (src / "seed_loader.py").write_text(
+            "from pathlib import Path\n"
+            "from orders import process_order\n\n"
+            "def load_seed_orders():\n"
+            "    payload = Path('fixtures/orders.json').read_text()\n"
+            "    return process_order(payload)\n",
+            encoding="utf-8",
+        )
+        modules = self._modules(
+            "feature,module,code_location,function,triggered,hit_count\n"
+            "orders,orders,src/orders.py:1-4,process_order,false,0\n"
+        )
+
+        design = await build_coverage_test_design(
+            modules, workspace_id="ws-1", repo_path=str(tmp_path)
+        )
+
+        gap = [g for g in design["gaps"] if g.get("kind") == "function"][0]
+        assert gap["black_box_readiness"]["case_type"] == "black_box_ready"
+        entry = gap["entry_paths"][0]
+        assert entry["entry_kind"] == "file"
+        assert entry["entry_symbol"] == "load_seed_orders"
+        assert entry["input_hints"] == ["fixtures/orders.json", "JSON file"]
+        case_text = json.dumps(gap["black_box_cases"], ensure_ascii=False)
+        assert "fixtures/orders.json" in case_text
+        assert "JSON file" in case_text
+
     async def test_route_call_site_keeps_route_entry_kind_without_agent(self, tmp_path):
         from app.services.coverage_analyzer import build_coverage_test_design
 

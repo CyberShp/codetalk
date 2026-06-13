@@ -7079,6 +7079,26 @@ def _filesystem_operation_input_hints(window_text: str) -> list[str]:
         "txt": "text file",
         "log": "log file",
     }
+
+    def format_label_for_path(path_text: str) -> str | None:
+        suffix = Path(path_text.replace("\\", "/")).suffix.lower().lstrip(".")
+        return format_labels.get(suffix)
+
+    literal_path_res = (
+        re.compile(r"""\bopen\s*\(\s*['"](?P<path>[^'"]+)['"]"""),
+        re.compile(r"""\b(?:Path|PurePath)\s*\(\s*['"](?P<path>[^'"]+)['"]\s*\)\s*\.(?:read_text|read_bytes)\s*\("""),
+    )
+    for pattern in literal_path_res:
+        for match in pattern.finditer(window_text or ""):
+            path_text = match.group("path").strip()
+            if not path_text or "*" in path_text:
+                continue
+            normalized = path_text.replace("\\", "/")
+            add(normalized)
+            label = format_label_for_path(normalized)
+            if label:
+                add(label)
+
     for match in re.finditer(r"""\*\.(?P<ext>[A-Za-z0-9]+)""", window_text or ""):
         label = format_labels.get(match.group("ext").lower())
         if label:
