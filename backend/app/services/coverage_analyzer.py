@@ -7809,7 +7809,7 @@ def _filesystem_operation_input_hints(window_text: str) -> list[str]:
 
     def path_wrapper_inner_arg(arg_text: str) -> str | None:
         match = re.fullmatch(
-            r"""(?:Path|PurePath)\s*\(\s*(?P<arg>[^)\n\r]+)\s*\)""",
+            r"""(?:Path|PurePath|str|os\s*\.\s*fspath)\s*\(\s*(?P<arg>[^)\n\r]+)\s*\)""",
             arg_text.strip(),
             re.IGNORECASE,
         )
@@ -7877,11 +7877,11 @@ def _filesystem_operation_input_hints(window_text: str) -> list[str]:
             add(label)
     data_loader_res = (
         re.compile(
-            r"""\b(?:pd|pandas|pl|polars)\s*\.\s*read_(?P<format>[A-Za-z0-9_]+)\s*\(\s*(?P<arg>(?:Path|PurePath)\s*\([^)]+\)|[^,\n\r\)]+)""",
+            r"""\b(?:pd|pandas|pl|polars)\s*\.\s*read_(?P<format>[A-Za-z0-9_]+)\s*\(\s*(?P<arg>(?:Path|PurePath|str|os\s*\.\s*fspath)\s*\([^)]+\)|[^,\n\r\)]+)""",
             re.IGNORECASE,
         ),
         re.compile(
-            r"""\bspark\s*\.\s*read\s*\.\s*(?P<format>[A-Za-z0-9_]+)\s*\(\s*(?P<arg>(?:Path|PurePath)\s*\([^)]+\)|[^,\n\r\)]+)""",
+            r"""\bspark\s*\.\s*read\s*\.\s*(?P<format>[A-Za-z0-9_]+)\s*\(\s*(?P<arg>(?:Path|PurePath|str|os\s*\.\s*fspath)\s*\([^)]+\)|[^,\n\r\)]+)""",
             re.IGNORECASE,
         ),
     )

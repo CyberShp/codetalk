@@ -7747,6 +7747,44 @@ def test_coverage_local_pandas_path_wrapper_keeps_path_input_hint(
     assert "input path" in case_text
 
 
+def test_coverage_local_pandas_str_path_keeps_path_input_hint(tmp_path, monkeypatch):
+    import app.services.coverage_analyzer as coverage_mod
+    from app.services.coverage_analyzer import build_coverage_test_design
+
+    src = tmp_path / "src"
+    src.mkdir()
+    (src / "load.py").write_text(
+        "import pandas as pd\n"
+        "def normalize_row(row):\n"
+        "    return row['name'].strip()\n"
+        "def load(path):\n"
+        "    frame = pd.read_csv(str(path))\n"
+        "    return normalize_row(frame.iloc[0])\n",
+        encoding="utf-8",
+    )
+
+    async def no_agent(_request, **_kwargs):
+        return []
+
+    monkeypatch.setattr(coverage_mod, "run_external_agent_discovery", no_agent, raising=False)
+    modules = _coverage_modules(
+        "feature,module,code_location,function,triggered,hit_count\n"
+        "files,load,src/load.py:2-3,normalize_row,false,0\n"
+    )
+
+    design = asyncio.run(
+        build_coverage_test_design(modules, workspace_id="ws-1", repo_path=str(tmp_path))
+    )
+
+    gap = [g for g in design["gaps"] if g.get("function_name") == "normalize_row"][0]
+    assert gap["black_box_readiness"]["case_type"] == "black_box_ready"
+    assert gap["entry_paths"][0]["entry_kind"] == "file"
+    assert gap["entry_paths"][0]["input_hints"] == ["CSV file", "input path"]
+    case_text = json.dumps(gap["black_box_cases"], ensure_ascii=False)
+    assert "CSV file" in case_text
+    assert "input path" in case_text
+
+
 def test_coverage_agent_verified_entry_makes_gap_black_box_ready(tmp_path, monkeypatch):
     import app.services.coverage_analyzer as coverage_mod
     from app.services.coverage_analyzer import build_coverage_test_design
