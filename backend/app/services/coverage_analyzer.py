@@ -7443,7 +7443,9 @@ _FILESYSTEM_OPERATION_RE = re.compile(
     r"|\b(?:std::)?(?:ifstream|fstream)\s+\w+\s*\("
     r"|\bnew\s+(?:std::)?(?:ifstream|fstream)\s*\("
     r"|\b(?:os|ioutil)\s*\.\s*(?:ReadFile|Open|OpenFile)\s*\("
-    r"|\b(?:bufio|csv|json|xml)\s*\.\s*New(?:Reader|Decoder)\s*\(",
+    r"|\b(?:bufio|csv|json|xml)\s*\.\s*New(?:Reader|Decoder)\s*\("
+    r"|\b(?:std::)?fs::(?:read_to_string|read|read_dir|File::open)\s*\("
+    r"|\b(?:std::)?(?:fs::)?File::open\s*\(",
     re.IGNORECASE,
 )
 
@@ -7684,6 +7686,30 @@ def _filesystem_operation_input_hints(window_text: str) -> list[str]:
         ),
     )
     for pattern in go_file_res:
+        for match in pattern.finditer(window_text or ""):
+            add("input file")
+            arg_text = match.group("arg").strip()
+            literal = re.match(r"""['"](?P<path>[^'"]+)['"]""", arg_text)
+            if literal:
+                path_text = literal.group("path").replace("\\", "/")
+                add(path_text)
+                literal_label = format_label_for_path(path_text)
+                if literal_label:
+                    add(literal_label)
+                continue
+            if re.fullmatch(r"[A-Za-z_]\w*", arg_text):
+                add(arg_text)
+    rust_file_res = (
+        re.compile(
+            r"""\b(?:std::)?fs::(?:read_to_string|read|read_dir|File::open)\s*\(\s*(?P<arg>[^,\n\r\)]+)""",
+            re.IGNORECASE,
+        ),
+        re.compile(
+            r"""\b(?:std::)?(?:fs::)?File::open\s*\(\s*(?P<arg>[^,\n\r\)]+)""",
+            re.IGNORECASE,
+        ),
+    )
+    for pattern in rust_file_res:
         for match in pattern.finditer(window_text or ""):
             add("input file")
             arg_text = match.group("arg").strip()
