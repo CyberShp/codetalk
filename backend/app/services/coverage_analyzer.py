@@ -504,7 +504,7 @@ _ENV_FIELD_RES = (
         r"\b(?:System\.)?Environment\.GetEnvironmentVariable"
         r"\s*\(\s*['\"]([A-Za-z_][\w.-]*)['\"]"
     ),
-    re.compile(r"\bgetenv\s*\(\s*['\"]([A-Za-z_][\w.-]*)['\"]"),
+    re.compile(r"\b(?:[A-Za-z_]\w*\.)?getenv\s*\(\s*['\"]([A-Za-z_][\w.-]*)['\"]", re.IGNORECASE),
 )
 _CONFIG_FIELD_RES = (
     re.compile(
@@ -3758,6 +3758,8 @@ def _classify_entry(file_path: str, enclosing_fn: str | None, line_text: str) ->
         return "route"
     if enclosing_fn and enclosing_fn.lower() in {"main", "_main", "wmain"}:
         return "cli"
+    if _CONFIG_OPERATION_RE.search(line_text or ""):
+        return "config"
     for kind, needles in _ENTRY_SIGNATURES:
         if any(needle in blob for needle in needles):
             if kind == "message" and not _has_explicit_message_entry_surface(
