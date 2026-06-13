@@ -7813,7 +7813,14 @@ def _filesystem_operation_input_hints(window_text: str) -> list[str]:
             arg_text.strip(),
             re.IGNORECASE,
         )
-        return match.group("arg").strip() if match else None
+        if match:
+            return match.group("arg").strip()
+        method_match = re.fullmatch(
+            r"""(?P<arg>[A-Za-z_]\w*)\s*\.\s*(?:as_posix|__fspath__)\s*\(\s*\)""",
+            arg_text.strip(),
+            re.IGNORECASE,
+        )
+        return method_match.group("arg").strip() if method_match else None
 
     literal_path_res = (
         re.compile(r"""(?<!\.)\bopen\s*\(\s*['"](?P<path>[^'"]+)['"]"""),
@@ -7877,11 +7884,11 @@ def _filesystem_operation_input_hints(window_text: str) -> list[str]:
             add(label)
     data_loader_res = (
         re.compile(
-            r"""\b(?:pd|pandas|pl|polars)\s*\.\s*read_(?P<format>[A-Za-z0-9_]+)\s*\(\s*(?P<arg>(?:Path|PurePath|str|os\s*\.\s*fspath)\s*\([^)]+\)|[^,\n\r\)]+)""",
+            r"""\b(?:pd|pandas|pl|polars)\s*\.\s*read_(?P<format>[A-Za-z0-9_]+)\s*\(\s*(?P<arg>[A-Za-z_]\w*\s*\.\s*(?:as_posix|__fspath__)\s*\(\s*\)|(?:Path|PurePath|str|os\s*\.\s*fspath)\s*\([^)]+\)|[^,\n\r\)]+)""",
             re.IGNORECASE,
         ),
         re.compile(
-            r"""\bspark\s*\.\s*read\s*\.\s*(?P<format>[A-Za-z0-9_]+)\s*\(\s*(?P<arg>(?:Path|PurePath|str|os\s*\.\s*fspath)\s*\([^)]+\)|[^,\n\r\)]+)""",
+            r"""\bspark\s*\.\s*read\s*\.\s*(?P<format>[A-Za-z0-9_]+)\s*\(\s*(?P<arg>[A-Za-z_]\w*\s*\.\s*(?:as_posix|__fspath__)\s*\(\s*\)|(?:Path|PurePath|str|os\s*\.\s*fspath)\s*\([^)]+\)|[^,\n\r\)]+)""",
             re.IGNORECASE,
         ),
     )

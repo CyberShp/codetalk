@@ -7785,6 +7785,14 @@ def test_coverage_local_pandas_str_path_keeps_path_input_hint(tmp_path, monkeypa
     assert "input path" in case_text
 
 
+def test_data_loader_as_posix_path_keeps_path_input_hint():
+    from app.services.coverage_analyzer import _filesystem_operation_input_hints
+
+    assert _filesystem_operation_input_hints(
+        "frame = pd.read_csv(input_path.as_posix())"
+    ) == ["CSV file", "input_path"]
+
+
 def test_coverage_agent_verified_entry_makes_gap_black_box_ready(tmp_path, monkeypatch):
     import app.services.coverage_analyzer as coverage_mod
     from app.services.coverage_analyzer import build_coverage_test_design
