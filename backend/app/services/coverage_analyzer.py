@@ -377,6 +377,11 @@ _REQUEST_FIELD_RES = (
     ),
     re.compile(
         r"\b(?:request|req)"
+        r"\??\.(?:getParameter|getParameterValues|getHeader|getPart|getParts|"
+        r"getAttribute|getSession)\s*\(\s*['\"]([A-Za-z_][\w.-]*)['\"]"
+    ),
+    re.compile(
+        r"\b(?:request|req)"
         rf"\??\.(?:{_REQUEST_CONTAINER_PATTERN})"
         r"\??\.(?!get\b)([A-Za-z_][\w-]*)\b"
     ),

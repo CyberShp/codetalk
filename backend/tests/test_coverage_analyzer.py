@@ -6303,6 +6303,59 @@ class TestCoverageTestDesign:
         assert "MultipartFile" not in case_text
         assert "rawAmount" not in case_text
 
+    async def test_java_servlet_request_methods_feed_black_box_input_hints(self, tmp_path):
+        from app.services.coverage_analyzer import build_coverage_test_design
+
+        src = tmp_path / "src"
+        src.mkdir()
+        (src / "PaymentService.java").write_text(
+            "public final class PaymentService {\n"
+            "  public String processPayment(String amount, String tenantId, Object receipt) {\n"
+            "    if (amount == null) {\n"
+            "      return \"missing\";\n"
+            "    }\n"
+            "    return \"processed\";\n"
+            "  }\n"
+            "}\n",
+            encoding="utf-8",
+        )
+        (src / "PaymentServlet.java").write_text(
+            "import jakarta.servlet.http.HttpServlet;\n"
+            "import jakarta.servlet.http.HttpServletRequest;\n"
+            "import jakarta.servlet.http.HttpServletResponse;\n\n"
+            "public final class PaymentServlet extends HttpServlet {\n"
+            "  private final PaymentService service = new PaymentService();\n\n"
+            "  protected void doPost(HttpServletRequest request, HttpServletResponse response) {\n"
+            "    String amount = request.getParameter(\"amount\");\n"
+            "    String tenantId = request.getHeader(\"X-Tenant-Id\");\n"
+            "    Object receipt = request.getPart(\"receipt\");\n"
+            "    service.processPayment(amount, tenantId, receipt);\n"
+            "  }\n"
+            "}\n",
+            encoding="utf-8",
+        )
+        modules = self._modules(
+            "feature,module,code_location,function,triggered,hit_count\n"
+            "payments,service,src/PaymentService.java:2-7,processPayment,false,0\n"
+        )
+
+        design = await build_coverage_test_design(
+            modules, workspace_id="ws-1", repo_path=str(tmp_path)
+        )
+
+        gap = [g for g in design["gaps"] if g.get("kind") == "function"][0]
+        assert gap["gray_box_required"] is False
+        assert gap["black_box_readiness"]["case_type"] == "black_box_ready"
+        entry = gap["entry_paths"][0]
+        assert entry["entry_kind"] in {"endpoint", "api", "route"}
+        assert entry["entry_symbol"] == "doPost"
+        assert entry["input_hints"] == ["amount", "X-Tenant-Id", "receipt"]
+        case_text = json.dumps(gap["black_box_cases"], ensure_ascii=False)
+        assert "amount" in case_text
+        assert "X-Tenant-Id" in case_text
+        assert "receipt" in case_text
+        assert "HttpServletRequest" not in case_text
+
     async def test_decorated_message_consumer_is_black_box_entry_without_caller(self, tmp_path):
         from app.services.coverage_analyzer import build_coverage_test_design
 
