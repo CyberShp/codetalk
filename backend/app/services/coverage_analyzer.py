@@ -97,6 +97,7 @@ _SOURCE_EXTENSION_CANDIDATES = (
     ".js", ".jsx", ".mjs", ".cjs", ".ts", ".tsx", ".mts", ".cts", ".cs",
     ".rb", ".php", ".kt", ".kts", ".swift", ".m", ".scala",
     ".vue", ".svelte", ".astro", ".mdx",
+    ".ex", ".exs", ".erl", ".hrl",
 )
 _SOURCE_FILE_EXTS = {ext for ext in _SOURCE_EXTENSION_CANDIDATES if ext}
 _SOURCE_PATH_EXTENSION_PATTERN = "|".join(

@@ -40,6 +40,7 @@ SOURCE_EXTS = frozenset({
     ".ts", ".tsx", ".mts", ".cts", ".js", ".jsx", ".mjs", ".cjs",
     ".cs", ".rb", ".php", ".kt", ".kts",
     ".swift", ".m", ".scala", ".vue", ".svelte", ".astro", ".mdx",
+    ".ex", ".exs", ".erl", ".hrl",
     ".proto", ".thrift", ".graphql", ".gql",
 })
 

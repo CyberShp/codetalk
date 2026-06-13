@@ -5423,6 +5423,50 @@ def test_workspace_path_keyword_ranking_handles_qualified_camel_module(tmp_path)
     assert rel_hits[0] == "services/payments/webhook/handler.ts"
 
 
+def test_workspace_path_keyword_search_includes_elixir_source_files(tmp_path):
+    from app.services.workspace_scope_resolver import _path_keyword_repo_hits_blocking
+
+    target_dir = tmp_path / "lib" / "my_app" / "billing" / "refund"
+    target_dir.mkdir(parents=True)
+    (target_dir / "handler.ex").write_text(
+        "defmodule MyApp.Billing.Refund.Handler do\n"
+        "  def refund_payment(payload), do: {:ok, payload}\n"
+        "end\n",
+        encoding="utf-8",
+    )
+
+    hits = _path_keyword_repo_hits_blocking(
+        str(tmp_path),
+        ["billing-refund"],
+        3,
+    )
+    rel_hits = [Path(hit).relative_to(tmp_path).as_posix() for hit in hits]
+
+    assert rel_hits[0] == "lib/my_app/billing/refund/handler.ex"
+
+
+def test_agent_candidate_validation_accepts_elixir_source_files(tmp_path):
+    from app.services.external_agent_discovery import validate_agent_candidate_file
+
+    target_dir = tmp_path / "lib" / "my_app" / "billing" / "refund"
+    target_dir.mkdir(parents=True)
+    source = target_dir / "handler.ex"
+    source.write_text(
+        "defmodule MyApp.Billing.Refund.Handler do\n"
+        "  def refund_payment(payload), do: {:ok, payload}\n"
+        "end\n",
+        encoding="utf-8",
+    )
+
+    validation = validate_agent_candidate_file(
+        tmp_path,
+        "lib/my_app/billing/refund/handler.ex",
+    )
+
+    assert validation.validated is True
+    assert validation.path == "lib/my_app/billing/refund/handler.ex"
+
+
 def test_workspace_path_keyword_ranking_ignores_natural_language_instruction_words(tmp_path):
     from app.services.workspace_scope_resolver import (
         _path_keyword_repo_hits_blocking,
