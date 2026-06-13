@@ -6434,7 +6434,7 @@ def _route_template_input_hints(decorator_lines: list[str]) -> list[str]:
     hints: list[str] = []
     seen: set[str] = set()
     for pattern in (
-        r"\{([A-Za-z_][\w-]*)\}",
+        r"\{([A-Za-z_][\w-]*)(?::[^{}]+)?\}",
         r"/:([A-Za-z_][\w-]*)\b",
         r"(?<![\w:]):([A-Za-z_][\w-]*)\b",
     ):

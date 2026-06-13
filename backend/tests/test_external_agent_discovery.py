@@ -7126,6 +7126,44 @@ def test_coverage_local_nestjs_relative_route_token_enters_input_hints(
     assert "id" in json.dumps(gap["black_box_cases"], ensure_ascii=False)
 
 
+def test_coverage_local_typed_route_token_enters_input_hints(tmp_path, monkeypatch):
+    import app.services.coverage_analyzer as coverage_mod
+    from app.services.coverage_analyzer import build_coverage_test_design
+
+    src = tmp_path / "src"
+    src.mkdir()
+    (src / "OrdersController.cs").write_text(
+        "using Microsoft.AspNetCore.Mvc;\n"
+        "[ApiController]\n"
+        "[Route(\"orders\")]\n"
+        "public class OrdersController : ControllerBase {\n"
+        "    [HttpGet(\"{id:int}\")]\n"
+        "    public IActionResult Get(int orderId) { return Ok(NormalizeOrder(orderId)); }\n"
+        "    private int NormalizeOrder(int value) { return value <= 0 ? 1 : value; }\n"
+        "}\n",
+        encoding="utf-8",
+    )
+
+    async def no_agent(_request, **_kwargs):
+        return []
+
+    monkeypatch.setattr(coverage_mod, "run_external_agent_discovery", no_agent, raising=False)
+    modules = _coverage_modules(
+        "feature,module,code_location,function,triggered,hit_count\n"
+        "orders,controller,src/OrdersController.cs:7-7,NormalizeOrder,false,0\n"
+    )
+
+    design = asyncio.run(
+        build_coverage_test_design(modules, workspace_id="ws-1", repo_path=str(tmp_path))
+    )
+
+    gap = [g for g in design["gaps"] if g.get("function_name") == "NormalizeOrder"][0]
+    assert gap["black_box_readiness"]["case_type"] == "black_box_ready"
+    assert gap["entry_paths"][0]["external_trigger"] == "GET /orders/{id:int}"
+    assert "id" in gap["entry_paths"][0]["input_hints"]
+    assert "id" in json.dumps(gap["black_box_cases"], ensure_ascii=False)
+
+
 def test_coverage_local_bullmq_worker_keeps_queue_input_hint(tmp_path, monkeypatch):
     import app.services.coverage_analyzer as coverage_mod
     from app.services.coverage_analyzer import build_coverage_test_design
