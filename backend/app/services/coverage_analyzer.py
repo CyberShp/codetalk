@@ -7426,7 +7426,10 @@ _FILESYSTEM_OPERATION_RE = re.compile(
     r"\b(?:glob|rglob|iterdir|listdir|scandir|walk)\s*\("
     r"|\.read_text\s*\("
     r"|\.read_bytes\s*\("
-    r"|\bopen\s*\(",
+    r"|\bopen\s*\("
+    r"|\b(?:pd|pandas|pl|polars)\s*\.\s*read_"
+    r"(?:csv|table|fwf|json|excel|parquet|feather|orc|stata|sas|pickle)\s*\("
+    r"|\bspark\s*\.\s*read\s*\.\s*(?:csv|json|parquet|orc|text)\s*\(",
     re.IGNORECASE,
 )
 
@@ -7505,7 +7508,17 @@ def _filesystem_operation_input_hints(window_text: str) -> list[str]:
         "yml": "YAML file",
         "xlsx": "XLSX file",
         "xls": "XLS file",
+        "excel": "XLSX file",
+        "parquet": "Parquet file",
+        "feather": "Feather file",
+        "orc": "ORC file",
+        "stata": "Stata file",
+        "sas": "SAS file",
+        "pickle": "pickle file",
+        "table": "table file",
+        "fwf": "fixed-width file",
         "txt": "text file",
+        "text": "text file",
         "log": "log file",
     }
 
@@ -7532,10 +7545,39 @@ def _filesystem_operation_input_hints(window_text: str) -> list[str]:
         label = format_labels.get(match.group("ext").lower())
         if label:
             add(label)
+    data_loader_res = (
+        re.compile(
+            r"""\b(?:pd|pandas|pl|polars)\s*\.\s*read_(?P<format>[A-Za-z0-9_]+)\s*\(\s*(?P<arg>[^,\n\r\)]+)""",
+            re.IGNORECASE,
+        ),
+        re.compile(
+            r"""\bspark\s*\.\s*read\s*\.\s*(?P<format>[A-Za-z0-9_]+)\s*\(\s*(?P<arg>[^,\n\r\)]+)""",
+            re.IGNORECASE,
+        ),
+    )
+    for pattern in data_loader_res:
+        for match in pattern.finditer(window_text or ""):
+            label = format_labels.get(match.group("format").lower())
+            if label:
+                add(label)
+            arg_text = match.group("arg").strip()
+            literal = re.match(r"""['"](?P<path>[^'"]+)['"]""", arg_text)
+            if literal:
+                path_text = literal.group("path").replace("\\", "/")
+                add(path_text)
+                literal_label = format_label_for_path(path_text)
+                if literal_label:
+                    add(literal_label)
+                continue
+            if re.fullmatch(r"[A-Za-z_]\w*", arg_text):
+                add(arg_text)
     lowered = (window_text or "").lower()
     if any(token in lowered for token in ("glob(", "rglob(", "iterdir(", "listdir(", "scandir(", "walk(")):
         add("input directory")
-    if not hints and any(token in lowered for token in ("read_text(", "read_bytes(", "open(")):
+    if not hints and any(
+        token in lowered
+        for token in ("read_text(", "read_bytes(", "open(", "read_csv(", "read_json(", "read_excel(")
+    ):
         add("input file")
     return hints[:6]
 
