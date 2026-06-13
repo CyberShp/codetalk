@@ -3899,6 +3899,8 @@ def _request_field_hints_from_text(statement_text: str) -> list[str]:
     for pattern in _ENV_FIELD_RES:
         for match in pattern.finditer(statement_text):
             positioned_fields.append((match.start(), match.group(1)))
+    for offset, field in _env_destructured_fields(statement_text):
+        positioned_fields.append((offset, field))
     seen: set[str] = set()
     hints: list[str] = []
     for _, field in sorted(positioned_fields, key=lambda item: item[0]):
@@ -3963,6 +3965,23 @@ def _request_destructured_fields(text: str) -> list[str]:
             field = field.split(":", 1)[0].split("=", 1)[0].strip()
             if re.match(r"^[A-Za-z_][\w-]*$", field):
                 fields.append(field)
+    return fields
+
+
+def _env_destructured_fields(text: str) -> list[tuple[int, str]]:
+    fields: list[tuple[int, str]] = []
+    for match in re.finditer(
+        r"\{(?P<fields>[^{}]+)\}\s*=\s*process\.env\b",
+        text or "",
+    ):
+        raw_fields = match.group("fields")
+        for raw_field in raw_fields.split(","):
+            item = raw_field.strip()
+            if not item or item.startswith("...") or "{" in item or "}" in item:
+                continue
+            field = item.split(":", 1)[0].split("=", 1)[0].strip()
+            if re.match(r"^[A-Za-z_][\w.-]*$", field):
+                fields.append((match.start() + raw_field.find(field), field))
     return fields
 
 
