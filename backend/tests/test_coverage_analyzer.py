@@ -2365,6 +2365,47 @@ class TestCoverageTestDesign:
         assert "input file" in case_text
         assert "input_path" in case_text
 
+    async def test_go_os_read_file_becomes_black_box_file_entry(self, tmp_path):
+        from app.services.coverage_analyzer import build_coverage_test_design
+
+        src = tmp_path / "src"
+        src.mkdir()
+        (src / "processor.go").write_text(
+            "package main\n\n"
+            "func processOrder(payload []byte) string {\n"
+            "    if len(payload) == 0 { return \"missing\" }\n"
+            "    return \"processed\"\n"
+            "}\n",
+            encoding="utf-8",
+        )
+        (src / "loader.go").write_text(
+            "package main\n\n"
+            "import \"os\"\n\n"
+            "func loadOrders(inputPath string) string {\n"
+            "    payload, _ := os.ReadFile(inputPath)\n"
+            "    return processOrder(payload)\n"
+            "}\n",
+            encoding="utf-8",
+        )
+        modules = self._modules(
+            "feature,module,code_location,function,triggered,hit_count\n"
+            "orders,orders,src/processor.go:3-6,processOrder,false,0\n"
+        )
+
+        design = await build_coverage_test_design(
+            modules, workspace_id="ws-1", repo_path=str(tmp_path)
+        )
+
+        gap = [g for g in design["gaps"] if g.get("kind") == "function"][0]
+        assert gap["black_box_readiness"]["case_type"] == "black_box_ready"
+        entry = gap["entry_paths"][0]
+        assert entry["entry_kind"] == "file"
+        assert entry["entry_symbol"] == "loadOrders"
+        assert entry["input_hints"] == ["input file", "inputPath"]
+        case_text = json.dumps(gap["black_box_cases"], ensure_ascii=False)
+        assert "input file" in case_text
+        assert "inputPath" in case_text
+
     async def test_route_call_site_keeps_route_entry_kind_without_agent(self, tmp_path):
         from app.services.coverage_analyzer import build_coverage_test_design
 
