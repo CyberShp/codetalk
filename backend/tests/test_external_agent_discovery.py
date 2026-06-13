@@ -7516,6 +7516,42 @@ def test_coverage_local_top_level_argparse_keeps_cli_input_hints(tmp_path, monke
     assert "--input-file" in json.dumps(gap["black_box_cases"], ensure_ascii=False)
 
 
+def test_coverage_local_node_file_reader_keeps_generic_path_input_hint(tmp_path, monkeypatch):
+    import app.services.coverage_analyzer as coverage_mod
+    from app.services.coverage_analyzer import build_coverage_test_design
+
+    src = tmp_path / "src"
+    src.mkdir()
+    (src / "load.js").write_text(
+        "const fs = require('fs');\n"
+        "function normalizeText(text) { return text.trim(); }\n"
+        "function load(path) {\n"
+        "  const text = fs.readFileSync(path, 'utf8');\n"
+        "  return normalizeText(text);\n"
+        "}\n",
+        encoding="utf-8",
+    )
+
+    async def no_agent(_request, **_kwargs):
+        return []
+
+    monkeypatch.setattr(coverage_mod, "run_external_agent_discovery", no_agent, raising=False)
+    modules = _coverage_modules(
+        "feature,module,code_location,function,triggered,hit_count\n"
+        "files,load,src/load.js:2-2,normalizeText,false,0\n"
+    )
+
+    design = asyncio.run(
+        build_coverage_test_design(modules, workspace_id="ws-1", repo_path=str(tmp_path))
+    )
+
+    gap = [g for g in design["gaps"] if g.get("function_name") == "normalizeText"][0]
+    assert gap["black_box_readiness"]["case_type"] == "black_box_ready"
+    assert gap["entry_paths"][0]["entry_kind"] == "file"
+    assert gap["entry_paths"][0]["input_hints"] == ["input file", "input path"]
+    assert "input path" in json.dumps(gap["black_box_cases"], ensure_ascii=False)
+
+
 def test_coverage_agent_verified_entry_makes_gap_black_box_ready(tmp_path, monkeypatch):
     import app.services.coverage_analyzer as coverage_mod
     from app.services.coverage_analyzer import build_coverage_test_design

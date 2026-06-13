@@ -7750,6 +7750,12 @@ def _filesystem_operation_input_hints(window_text: str) -> list[str]:
         suffix = Path(path_text.replace("\\", "/")).suffix.lower().lstrip(".")
         return format_labels.get(suffix)
 
+    def variable_file_hint(arg_text: str) -> str:
+        key = _input_hint_dedupe_key(arg_text)
+        if key in {"path", "filepath", "file_path"}:
+            return "input path"
+        return arg_text
+
     literal_path_res = (
         re.compile(r"""\bopen\s*\(\s*['"](?P<path>[^'"]+)['"]"""),
         re.compile(r"""\b(?:Path|PurePath)\s*\(\s*['"](?P<path>[^'"]+)['"]\s*\)\s*\.(?:read_text|read_bytes)\s*\("""),
@@ -7794,7 +7800,7 @@ def _filesystem_operation_input_hints(window_text: str) -> list[str]:
                     add(literal_label)
                 continue
             if re.fullmatch(r"[A-Za-z_]\w*", arg_text):
-                add(arg_text)
+                add(variable_file_hint(arg_text))
     js_file_res = (
         re.compile(
             r"""\b(?:fs|fsPromises)\s*\.\s*(?:promises\s*\.\s*)?(?:readFileSync|readFile|createReadStream|openSync|open)\s*\(\s*(?P<arg>[^,\n\r\)]+)""",
@@ -7822,7 +7828,7 @@ def _filesystem_operation_input_hints(window_text: str) -> list[str]:
                     add(literal_label)
                 continue
             if re.fullmatch(r"[A-Za-z_$][\w$]*", arg_text):
-                add(arg_text)
+                add(variable_file_hint(arg_text))
     jvm_file_res = (
         re.compile(
             r"""\b(?:java\.nio\.file\.)?Files\s*\.\s*(?:readString|readAllBytes|readAllLines|lines|newBufferedReader|newInputStream)\s*\(\s*(?P<arg>[^,\n\r\)]+)""",
@@ -7850,7 +7856,7 @@ def _filesystem_operation_input_hints(window_text: str) -> list[str]:
                     add(literal_label)
                 continue
             if re.fullmatch(r"[A-Za-z_]\w*", arg_text):
-                add(arg_text)
+                add(variable_file_hint(arg_text))
     c_file_res = (
         re.compile(
             r"""\b(?:fopen|freopen)\s*\(\s*(?P<arg>[^,\n\r\)]+)""",
@@ -7882,7 +7888,7 @@ def _filesystem_operation_input_hints(window_text: str) -> list[str]:
                     add(literal_label)
                 continue
             if re.fullmatch(r"[A-Za-z_]\w*", arg_text):
-                add(arg_text)
+                add(variable_file_hint(arg_text))
     go_file_res = (
         re.compile(
             r"""\b(?:os|ioutil)\s*\.\s*(?:ReadFile|Open|OpenFile)\s*\(\s*(?P<arg>[^,\n\r\)]+)""",
@@ -7906,7 +7912,7 @@ def _filesystem_operation_input_hints(window_text: str) -> list[str]:
                     add(literal_label)
                 continue
             if re.fullmatch(r"[A-Za-z_]\w*", arg_text):
-                add(arg_text)
+                add(variable_file_hint(arg_text))
     rust_file_res = (
         re.compile(
             r"""\b(?:std::)?fs::(?:read_to_string|read|read_dir|File::open)\s*\(\s*(?P<arg>[^,\n\r\)]+)""",
@@ -7930,7 +7936,7 @@ def _filesystem_operation_input_hints(window_text: str) -> list[str]:
                     add(literal_label)
                 continue
             if re.fullmatch(r"[A-Za-z_]\w*", arg_text):
-                add(arg_text)
+                add(variable_file_hint(arg_text))
     lowered = (window_text or "").lower()
     if any(token in lowered for token in ("glob(", "rglob(", "iterdir(", "listdir(", "scandir(", "walk(")):
         add("input directory")
