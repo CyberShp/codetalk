@@ -7025,7 +7025,11 @@ def _queue_registration_input_hints(site_text: str, entry_type: str) -> list[str
     if entry_type != "queue":
         return []
     text = site_text or ""
-    if not re.search(r"\b(?:new\s+Worker|Worker\s*\(|Queue\s*\(|\.process\s*\()", text):
+    if not re.search(
+        r"\b(?:new\s+Worker|Worker\s*\(|Queue\s*\(|assertQueue\s*\()"
+        r"|(?:\.process|\.consume|\.assertQueue)\s*\(",
+        text,
+    ):
         return []
     hints: list[str] = []
     seen: set[str] = set()
@@ -7036,6 +7040,33 @@ def _queue_registration_input_hints(site_text: str, entry_type: str) -> list[str
         seen.add(value)
         hints.append(value)
     return hints[:4]
+
+
+def _channel_registration_context_input_hints(
+    abs_file: str,
+    line_number: int,
+    entry_type: str,
+) -> list[str]:
+    if entry_type not in {"message", "queue", "scheduler", "job", "timer"}:
+        return []
+    try:
+        lines = Path(abs_file).read_text(encoding="utf-8", errors="replace").splitlines()
+    except OSError:
+        return []
+    idx = max(0, line_number - 1)
+    start = max(0, idx - 12)
+    end = min(len(lines), idx + 28)
+    window_text = "\n".join(lines[start:end])
+    hints = _merge_ordered_strings(
+        _registration_channel_input_hints(window_text, entry_type),
+        _queue_registration_input_hints(window_text, entry_type),
+    )
+    if entry_type == "message":
+        hints = _merge_ordered_strings(
+            hints,
+            _kafka_topic_input_hints(window_text),
+        )
+    return hints
 
 
 def _symbol_channel_input_hints(symbol: str | None, entry_type: str) -> list[str]:
@@ -7308,6 +7339,11 @@ def _trace_entry_paths(
                         channel_hints = _merge_ordered_strings(
                             _registration_channel_input_hints(site["text"], entry_kind),
                             _queue_registration_input_hints(site["text"], entry_kind),
+                            _channel_registration_context_input_hints(
+                                site["abs_file"],
+                                site["line_number"],
+                                entry_kind,
+                            ),
                             _symbol_channel_input_hints(entry_symbol, entry_kind),
                         )
                         if channel_hints:
