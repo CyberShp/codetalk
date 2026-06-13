@@ -8043,16 +8043,30 @@ def _kafka_consumer_entry_for_site(
 def _kafka_topic_input_hints(window_text: str) -> list[str]:
     hints: list[str] = []
     seen: set[str] = set()
-    patterns = (
-        r"\btopics?\s*:\s*\[\s*(['\"])(?P<value>(?:\\.|(?!\1).)*?)\1",
+
+    def add_hint(value: str) -> None:
+        value = value.strip()
+        if value and value not in seen:
+            seen.add(value)
+            hints.append(value)
+
+    text = window_text or ""
+    for match in re.finditer(
+        r"\btopics\s*:\s*\[(?P<body>[^\]]*)\]",
+        text,
+        re.IGNORECASE | re.DOTALL,
+    ):
+        for quoted in re.finditer(
+            r"(['\"])(?P<value>(?:\\.|(?!\1).)*?)\1",
+            match.group("body"),
+        ):
+            add_hint(quoted.group("value"))
+    for match in re.finditer(
         r"\btopic\s*:\s*(['\"])(?P<value>(?:\\.|(?!\1).)*?)\1",
-    )
-    for pattern in patterns:
-        for match in re.finditer(pattern, window_text or "", re.IGNORECASE):
-            value = match.group("value").strip()
-            if value and value not in seen:
-                seen.add(value)
-                hints.append(value)
+        text,
+        re.IGNORECASE,
+    ):
+        add_hint(match.group("value"))
     return hints[:6]
 
 
