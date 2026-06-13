@@ -2807,6 +2807,45 @@ class TestCoverageTestDesign:
         assert "Payment:Mode" in case_text
         assert "configuration[" not in case_text
 
+    async def test_spring_value_annotation_feeds_black_box_config_input_hint(self, tmp_path):
+        from app.services.coverage_analyzer import build_coverage_test_design
+
+        src = tmp_path / "src"
+        src.mkdir()
+        (src / "PaymentConfig.java").write_text(
+            "import org.springframework.beans.factory.annotation.Value;\n\n"
+            "public class PaymentConfig {\n"
+            "  public boolean configurePaymentMode(String mode) {\n"
+            "    if (mode == null || mode.isBlank()) {\n"
+            "      return false;\n"
+            "    }\n"
+            "    return true;\n"
+            "  }\n"
+            "  public boolean bootstrap(@Value(\"${payment.mode:enabled}\") String mode) {\n"
+            "    return configurePaymentMode(mode);\n"
+            "  }\n"
+            "}\n",
+            encoding="utf-8",
+        )
+        modules = self._modules(
+            "feature,module,code_location,function,triggered,hit_count\n"
+            "payments,config,src/PaymentConfig.java:4-9,configurePaymentMode,false,0\n"
+        )
+
+        design = await build_coverage_test_design(
+            modules, workspace_id="ws-1", repo_path=str(tmp_path)
+        )
+
+        gap = [g for g in design["gaps"] if g.get("kind") == "function"][0]
+        assert gap["black_box_readiness"]["case_type"] == "black_box_ready"
+        entry = gap["entry_paths"][0]
+        assert entry["entry_kind"] == "config"
+        assert entry["entry_symbol"] == "bootstrap"
+        assert entry["input_hints"] == ["payment.mode"]
+        case_text = json.dumps(gap["black_box_cases"], ensure_ascii=False)
+        assert "payment.mode" in case_text
+        assert "@Value" not in case_text
+
     async def test_route_registration_reference_becomes_black_box_entry_without_agent(self, tmp_path):
         from app.services.coverage_analyzer import build_coverage_test_design
 

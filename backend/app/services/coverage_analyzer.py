@@ -498,6 +498,10 @@ _ENV_FIELD_RES = (
 )
 _CONFIG_FIELD_RES = (
     re.compile(
+        r"@Value\s*\(\s*['\"]\s*\$\{\s*([A-Za-z_][\w.-]*)\s*(?::[^}]*)?\}\s*['\"]\s*\)",
+        re.IGNORECASE,
+    ),
+    re.compile(
         r"\b(?:configuration|config|settings|options)"
         r"\s*\[\s*['\"]([A-Za-z_][\w.:-]*)['\"]\s*\]",
         re.IGNORECASE,
@@ -3548,7 +3552,7 @@ def _java_method_definition_name(line: str) -> str | None:
         r"(?:(?:public|private|protected|static|final|synchronized|native|abstract|default)\s+)*"
         r"(?:<[^>]+>\s*)?"
         r"[\w.$<>,?\[\]\s]+\s+"
-        r"(?P<name>[A-Za-z_]\w*)\s*\([^;{}]*\)"
+        r"(?P<name>[A-Za-z_]\w*)\s*\([^;]*\)"
         r"(?:\s+throws\s+[\w.$,\s]+)?\s*(?:\{|$)",
         stripped,
     )
@@ -3817,6 +3821,38 @@ def _specific_signature_input_hints(
     return [
         hint for hint in signature_hints
         if str(hint or "").strip().lower() not in generic_payload_names
+    ]
+
+
+def _filter_config_signature_input_hints(
+    hints: object,
+    config_hints: object,
+) -> list[str]:
+    config_items = _coerce_input_hints(config_hints)
+    if not config_items:
+        return _coerce_input_hints(hints)
+    generic_config_names = {
+        "config", "configuration", "settings", "options", "value", "key", "name",
+    }
+    explicit_leafs = {
+        _input_hint_dedupe_key(part)
+        for hint in config_items
+        for part in re.split(r"[:._-]+", str(hint or ""))
+        if part
+    }
+    return [
+        hint for hint in _coerce_input_hints(hints)
+        if (
+            _input_hint_dedupe_key(hint) not in generic_config_names
+            and _input_hint_dedupe_key(hint) not in explicit_leafs
+        )
+    ]
+
+
+def _explicit_config_input_hints(hints: object) -> list[str]:
+    return [
+        hint for hint in _coerce_input_hints(hints)
+        if re.search(r"[:._-]", str(hint or "")) or str(hint or "").isupper()
     ]
 
 
@@ -7058,6 +7094,16 @@ def _trace_entry_paths(
                         )
                         if entry_kind == "config" else ""
                     )
+                    if config_evidence:
+                        config_hints = _request_field_hints_from_text(config_evidence)
+                        if config_hints:
+                            metadata["input_hints"] = _merge_ordered_input_hints(
+                                config_hints,
+                                _filter_config_signature_input_hints(
+                                    metadata.get("input_hints"),
+                                    config_hints,
+                                ),
+                            )
                     entry_paths.append({
                         "entry_kind": entry_kind,
                         "entry_symbol": entry_symbol,
@@ -7188,6 +7234,13 @@ def _augment_entry_input_hints_from_symbol_source(
     )
     if str(entry.get("entry_kind") or "").strip().lower() == "route":
         merged_hints = _filter_route_input_hints(merged_hints)
+    if str(entry.get("entry_kind") or "").strip().lower() == "config":
+        config_hints = _explicit_config_input_hints(merged_hints)
+        if config_hints:
+            merged_hints = _merge_ordered_input_hints(
+                config_hints,
+                _filter_config_signature_input_hints(merged_hints, config_hints),
+            )
     if merged_hints:
         entry["input_hints"] = merged_hints
 
@@ -7346,6 +7399,7 @@ _CONFIG_OPERATION_RE = re.compile(
     r"|\b(?:os\.)?getenv\s*\("
     r"|\bprocess\.env\b"
     r"|\bgetenv\s*\("
+    r"|@Value\s*\(\s*['\"]\s*\$\{"
     r"|\b(?:configuration|config|settings|options)\s*\[\s*['\"]"
     r"|\b(?:configuration|config|settings|options)\s*\.\s*Get"
     r"(?:Value|Section|ConnectionString)?(?:\s*<[^>]+>)?\s*\("
