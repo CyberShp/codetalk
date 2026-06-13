@@ -490,6 +490,10 @@ _ENV_FIELD_RES = (
     re.compile(r"\b(?:os\.)?getenv\s*\(\s*['\"]([A-Za-z_][\w.-]*)['\"]"),
     re.compile(r"\bprocess\.env\.([A-Za-z_][\w.-]*)\b"),
     re.compile(r"\bprocess\.env\s*\[\s*['\"]([A-Za-z_][\w.-]*)['\"]\s*\]"),
+    re.compile(
+        r"\b(?:System\.)?Environment\.GetEnvironmentVariable"
+        r"\s*\(\s*['\"]([A-Za-z_][\w.-]*)['\"]"
+    ),
     re.compile(r"\bgetenv\s*\(\s*['\"]([A-Za-z_][\w.-]*)['\"]"),
 )
 _REGISTRATION_LINE_RE = re.compile(
