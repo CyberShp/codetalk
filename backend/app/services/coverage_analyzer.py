@@ -7962,6 +7962,10 @@ def _filesystem_operation_input_hints(window_text: str) -> list[str]:
                     add_var(wrapped)
 
         without_strings = re.sub(r"""(['"])(?:\\.|(?!\1).)*\1""", " ", stripped)
+        if "+" in without_strings:
+            for part in re.split(r"""\+""", stripped):
+                add_path_arg_vars(part)
+
         if re.search(r"""(?:^|[\w)\]])\s*/\s*(?:[\w(]|$)""", without_strings):
             excluded = {
                 "Path", "PurePath", "str", "os", "path", "fspath",
