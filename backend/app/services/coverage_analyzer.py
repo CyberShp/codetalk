@@ -4178,7 +4178,8 @@ def _signature_external_param_name(raw_param: str) -> str | None:
         return fastapi_match.group("name")
     annotation_match = re.search(
         r"[@\[]\s*(?:RequestParam|PathVariable|RequestHeader|CookieValue|"
-        r"RequestPart|FromQuery|FromRoute|FromHeader|FromForm|Param|Query|Header|Cookie)"
+        r"RequestPart|FromQuery|FromRoute|FromHeader|FromForm|FromCookie|"
+        r"Param|Query|Header|Cookie)"
         r"(?:Attribute)?\s*(?:\((?P<body>[^)]*)\))?",
         text,
     )
