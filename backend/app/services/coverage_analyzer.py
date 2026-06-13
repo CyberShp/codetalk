@@ -3905,6 +3905,40 @@ def _route_registration_metadata_for_symbol(repo_root: Path, entry_symbol: str) 
     return metadata
 
 
+def _registration_input_hints_for_entry_symbol(
+    repo_root: Path,
+    entry_symbol: str,
+    entry_kind: str,
+) -> list[str]:
+    if entry_kind not in {"message", "queue", "scheduler", "job", "timer"}:
+        return []
+    hints: list[str] = []
+    for site in _ripgrep_call_sites(repo_root, entry_symbol)[:20]:
+        try:
+            lines = Path(site["abs_file"]).read_text(
+                encoding="utf-8",
+                errors="replace",
+            ).splitlines()
+        except OSError:
+            continue
+        idx = max(0, int(site["line_number"]) - 1)
+        window = lines[max(0, idx - 12):min(len(lines), idx + 28)]
+        detected_kind = _registered_entry_type(site["text"], window)
+        if detected_kind != entry_kind:
+            continue
+        hints = _merge_ordered_input_hints(
+            hints,
+            _channel_registration_context_input_hints(
+                site["abs_file"],
+                int(site["line_number"]),
+                entry_kind,
+            ),
+        )
+        if hints:
+            return hints
+    return hints
+
+
 def _specific_signature_input_hints(
     signature_hints: list[str],
     source_hints: list[str],
@@ -7042,6 +7076,25 @@ def _queue_registration_input_hints(site_text: str, entry_type: str) -> list[str
     return hints[:4]
 
 
+def _registration_config_path_input_hints(window_text: str) -> list[str]:
+    hints: list[str] = []
+    seen: set[str] = set()
+    for match in re.finditer(
+        r"\b(?P<path>(?:config|configuration|settings|options|cfg)"
+        r"(?:\s*\.\s*[A-Za-z_]\w*){2,})\b",
+        window_text or "",
+        re.IGNORECASE,
+    ):
+        value = re.sub(r"\s*\.\s*", ".", match.group("path")).strip(".")
+        parts = value.split(".")
+        if parts[-1].lower() in {"split", "trim", "map", "filter", "join", "tostring"}:
+            value = ".".join(parts[:-1])
+        if value and value not in seen:
+            seen.add(value)
+            hints.append(value)
+    return hints[:6]
+
+
 def _channel_registration_context_input_hints(
     abs_file: str,
     line_number: int,
@@ -7060,6 +7113,7 @@ def _channel_registration_context_input_hints(
     hints = _merge_ordered_strings(
         _registration_channel_input_hints(window_text, entry_type),
         _queue_registration_input_hints(window_text, entry_type),
+        _registration_config_path_input_hints(window_text),
     )
     if entry_type == "message":
         hints = _merge_ordered_strings(
@@ -7485,9 +7539,15 @@ def _augment_entry_input_hints_from_symbol_source(
         str(abs_file),
         str(entry_symbol),
     )
+    entry_kind = str(entry.get("entry_kind") or "").strip().lower()
+    registration_hints = _registration_input_hints_for_entry_symbol(
+        repo_root,
+        str(entry_symbol),
+        entry_kind,
+    )
     existing_hints = _merge_ordered_input_hints(entry.get("input_hints"))
     if (
-        str(entry.get("entry_kind") or "").strip().lower() == "cli"
+        entry_kind == "cli"
         and str(entry.get("tool") or "").strip() == "source-cli-registration"
         and existing_hints
     ):
@@ -7505,15 +7565,16 @@ def _augment_entry_input_hints_from_symbol_source(
         )
     source_hints = _merge_ordered_input_hints(
         source_hints,
+        registration_hints,
         signature_hints,
     )
     merged_hints = _merge_ordered_input_hints(
         existing_hints,
         source_hints,
     )
-    if str(entry.get("entry_kind") or "").strip().lower() == "route":
+    if entry_kind == "route":
         merged_hints = _filter_route_input_hints(merged_hints)
-    if str(entry.get("entry_kind") or "").strip().lower() == "config":
+    if entry_kind == "config":
         config_hints = _explicit_config_input_hints(merged_hints)
         if config_hints:
             merged_hints = _merge_ordered_input_hints(
@@ -8012,10 +8073,12 @@ def _kafka_consumer_entry_for_site(
         return None
 
     topic_hints = _kafka_topic_input_hints(window_text)
+    config_hints = _registration_config_path_input_hints(window_text)
     rel_file = _relative_path(repo_root, path)
     metadata = _entry_metadata_for_symbol(repo_root, str(path), line_number, None, symbol)
     merged_hints = _merge_ordered_input_hints(
         topic_hints,
+        config_hints,
         metadata.pop("input_hints", []),
     )
     entry_label = metadata.pop("entry_label", None)

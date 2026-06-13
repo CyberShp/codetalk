@@ -7282,6 +7282,54 @@ def test_coverage_local_kafka_consumer_keeps_all_topic_input_hints(tmp_path, mon
     assert "payments" in cases_json
 
 
+def test_coverage_local_kafka_consumer_keeps_config_topic_input_hint(tmp_path, monkeypatch):
+    import app.services.coverage_analyzer as coverage_mod
+    from app.services.coverage_analyzer import build_coverage_test_design
+
+    src = tmp_path / "src"
+    src.mkdir()
+    (src / "consumer.js").write_text(
+        "function normalizeOrder(payload) {\n"
+        "  if (!payload.id) return null;\n"
+        "  return payload;\n"
+        "}\n"
+        "async function handle(message) {\n"
+        "  return normalizeOrder(JSON.parse(message.value));\n"
+        "}\n"
+        "const topic = config.kafka.topic;\n"
+        "consumer.subscribe({ topic });\n"
+        "consumer.run({ eachMessage: async ({ message }) => handle(message) });\n",
+        encoding="utf-8",
+    )
+
+    async def no_agent(_request, **_kwargs):
+        return []
+
+    monkeypatch.setattr(coverage_mod, "run_external_agent_discovery", no_agent, raising=False)
+    modules = _coverage_modules(
+        "feature,module,code_location,function,triggered,hit_count\n"
+        "orders,consumer,src/consumer.js:1-4,normalizeOrder,false,0\n"
+    )
+
+    design = asyncio.run(
+        build_coverage_test_design(modules, workspace_id="ws-1", repo_path=str(tmp_path))
+    )
+
+    gap = [g for g in design["gaps"] if g.get("function_name") == "normalizeOrder"][0]
+    assert gap["black_box_readiness"]["case_type"] == "black_box_ready"
+    assert gap["entry_paths"][0]["entry_kind"] == "message"
+    assert "config.kafka.topic" in gap["entry_paths"][0]["input_hints"]
+    assert "config.kafka.topic" in json.dumps(gap["black_box_cases"], ensure_ascii=False)
+
+
+def test_registration_config_path_input_hints_strip_method_suffix():
+    from app.services.coverage_analyzer import _registration_config_path_input_hints
+
+    assert _registration_config_path_input_hints(
+        "const topics = config.kafka.topics.split(',');"
+    ) == ["config.kafka.topics"]
+
+
 def test_coverage_local_rabbitmq_consumer_keeps_queue_input_hint(tmp_path, monkeypatch):
     import app.services.coverage_analyzer as coverage_mod
     from app.services.coverage_analyzer import build_coverage_test_design
