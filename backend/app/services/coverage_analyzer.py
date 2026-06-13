@@ -7590,11 +7590,21 @@ def _dispatch_table_entry_for_site(
         None,
         traced_symbol,
     )
+    php_route_action_key = _php_route_action_key_for_symbol(
+        site_text,
+        traced_symbol,
+        window,
+    )
     if entry_type == "route":
         key_hints = _route_template_input_hints([key])
     else:
         key_hints = [key]
-    input_hints = _merge_ordered_strings(key_hints, metadata.pop("input_hints", []))
+    metadata_hints = metadata.pop("input_hints", [])
+    input_hints = (
+        _merge_ordered_strings(metadata_hints, key_hints)
+        if php_route_action_key
+        else _merge_ordered_strings(key_hints, metadata_hints)
+    )
     route_method = (
         _dispatch_table_route_method_for_symbol(site_text, traced_symbol, window)
         if entry_type == "route"
@@ -7623,6 +7633,13 @@ def _dispatch_table_key_for_symbol(
     traced_symbol: str,
     window: list[str],
 ) -> str | None:
+    laravel_route_key = _php_route_action_key_for_symbol(
+        site_text,
+        traced_symbol,
+        window,
+    )
+    if laravel_route_key:
+        return laravel_route_key
     for match in _DISPATCH_TABLE_ENTRY_RE.finditer(site_text or ""):
         if match.group("symbol") == traced_symbol:
             return match.group("key")
@@ -7636,6 +7653,32 @@ def _dispatch_table_key_for_symbol(
     positional_match = _DISPATCH_TABLE_ENTRY_RE.search(block_text)
     if positional_match and positional_match.group("symbol") == traced_symbol:
         return positional_match.group("key")
+    return None
+
+
+def _php_route_action_key_for_symbol(
+    site_text: str,
+    traced_symbol: str,
+    window: list[str],
+) -> str | None:
+    symbol = str(traced_symbol or "").strip()
+    if not symbol:
+        return None
+    candidates = [site_text or "", *window]
+    for text in candidates:
+        if not re.search(
+            r"\bRoute::(?:get|post|put|patch|delete|options|any|match)\s*\(",
+            text or "",
+        ):
+            continue
+        if not re.search(
+            rf"(?:['\"]{re.escape(symbol)}['\"]|@{re.escape(symbol)}\b)",
+            text or "",
+        ):
+            continue
+        path = _route_path_from_text(text)
+        if path:
+            return path
     return None
 
 

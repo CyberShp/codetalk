@@ -4655,6 +4655,55 @@ class TestCoverageTestDesign:
         assert "integer" not in case_text
         assert "boolean" not in case_text
 
+    async def test_laravel_route_table_without_path_params_keeps_controller_entry(self, tmp_path):
+        from app.services.coverage_analyzer import build_coverage_test_design
+
+        controller = tmp_path / "app" / "Http" / "Controllers"
+        controller.mkdir(parents=True)
+        routes = tmp_path / "routes"
+        routes.mkdir()
+        (controller / "PaymentController.php").write_text(
+            "<?php\n"
+            "class PaymentController {\n"
+            "  public function process(Request $request) {\n"
+            "    $amount = $request->input('amount');\n"
+            "    $currency = $request->query('currency');\n"
+            "    if (!$amount || !$currency) {\n"
+            "      return response()->json(['error' => 'missing'], 400);\n"
+            "    }\n"
+            "    return response()->json(['ok' => true]);\n"
+            "  }\n"
+            "}\n",
+            encoding="utf-8",
+        )
+        (routes / "web.php").write_text(
+            "<?php\n"
+            "Route::post('/payments', [PaymentController::class, 'process']);\n",
+            encoding="utf-8",
+        )
+        modules = self._modules(
+            "feature,module,code_location,function,triggered,hit_count\n"
+            "payments,controller,app/Http/Controllers/PaymentController.php:3-10,process,false,0\n"
+        )
+
+        design = await build_coverage_test_design(
+            modules, workspace_id="ws-1", repo_path=str(tmp_path)
+        )
+
+        gap = [g for g in design["gaps"] if g.get("kind") == "function"][0]
+        assert gap["black_box_readiness"]["case_type"] == "black_box_ready"
+        process_entries = [
+            item for item in gap["entry_paths"] if item.get("entry_symbol") == "process"
+        ]
+        assert process_entries
+        entry = process_entries[0]
+        assert entry["entry_kind"] == "route"
+        assert entry["external_trigger"] == "POST /payments"
+        assert entry["input_hints"] == ["amount", "currency"]
+        case_text = json.dumps(gap["black_box_cases"], ensure_ascii=False)
+        assert "amount" in case_text
+        assert "currency" in case_text
+
     async def test_coverage_source_window_reads_vue_component_script(self, tmp_path):
         from app.services.coverage_analyzer import build_coverage_test_design
 
