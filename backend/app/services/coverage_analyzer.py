@@ -7822,6 +7822,31 @@ def _filesystem_operation_input_hints(window_text: str) -> list[str]:
             if label:
                 add(label)
 
+    python_pathlib_res = (
+        re.compile(
+            r"""\b(?:Path|PurePath)\s*\(\s*(?P<arg>[^)\n\r]+)\s*\)\s*\.\s*(?:read_text|read_bytes|open)\s*\(""",
+            re.IGNORECASE,
+        ),
+        re.compile(
+            r"""(?P<arg>[A-Za-z_]\w*)\s*\.\s*(?:read_text|read_bytes)\s*\(""",
+            re.IGNORECASE,
+        ),
+    )
+    for pattern in python_pathlib_res:
+        for match in pattern.finditer(window_text or ""):
+            arg_text = match.group("arg").strip()
+            literal = re.match(r"""['"](?P<path>[^'"]+)['"]""", arg_text)
+            if literal:
+                path_text = literal.group("path").replace("\\", "/")
+                add(path_text)
+                literal_label = format_label_for_path(path_text)
+                if literal_label:
+                    add(literal_label)
+                continue
+            add("input file")
+            if re.fullmatch(r"[A-Za-z_]\w*", arg_text):
+                add(variable_file_hint(arg_text))
+
     for match in re.finditer(r"""\*\.(?P<ext>[A-Za-z0-9]+)""", window_text or ""):
         label = format_labels.get(match.group("ext").lower())
         if label:
