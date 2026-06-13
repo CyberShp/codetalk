@@ -7658,6 +7658,51 @@ _FILESYSTEM_OPERATION_RE = re.compile(
 )
 
 
+_JS_FS_DESTRUCTURED_IMPORT_RE = re.compile(
+    r"(?:\b(?:const|let|var)\s*\{(?P<cjs>[^}]+)\}\s*=\s*require\s*\(\s*['\"](?:node:)?fs(?:/promises)?['\"]\s*\)"
+    r"|\bimport\s*\{(?P<esm>[^}]+)\}\s*from\s*['\"](?:node:)?fs(?:/promises)?['\"])",
+    re.IGNORECASE,
+)
+_JS_FS_CALLABLES = {
+    "readFileSync", "readFile", "createReadStream", "openSync", "open",
+}
+
+
+def _js_destructured_fs_import_names(window_text: str) -> set[str]:
+    names: set[str] = set()
+    for match in _JS_FS_DESTRUCTURED_IMPORT_RE.finditer(window_text or ""):
+        raw_items = match.group("cjs") or match.group("esm") or ""
+        for item in raw_items.split(","):
+            text = item.strip()
+            if not text:
+                continue
+            alias_match = re.search(
+                r"\b(?P<name>[A-Za-z_$][\w$]*)\b\s*(?::|\bas\b)\s*(?P<alias>[A-Za-z_$][\w$]*)\b",
+                text,
+            )
+            if alias_match:
+                if alias_match.group("name") in _JS_FS_CALLABLES:
+                    names.add(alias_match.group("alias"))
+                continue
+            name_match = re.match(r"(?P<name>[A-Za-z_$][\w$]*)\b", text)
+            if name_match and name_match.group("name") in _JS_FS_CALLABLES:
+                names.add(name_match.group("name"))
+    return names
+
+
+def _js_destructured_fs_call_args(text: str, imported_names: set[str]) -> list[str]:
+    if not imported_names:
+        return []
+    args: list[str] = []
+    for match in re.finditer(
+        r"(?<![\w.])(?P<name>[A-Za-z_$][\w$]*)\s*\(\s*(?P<arg>[^,\n\r\)]+)",
+        text or "",
+    ):
+        if match.group("name") in imported_names:
+            args.append(match.group("arg").strip())
+    return args
+
+
 def _filesystem_entry_for_site(
     repo_root: Path,
     abs_file: str,
@@ -7678,8 +7723,14 @@ def _filesystem_entry_for_site(
     start = max(0, idx - 8)
     end = min(len(lines), idx + 8)
     window = lines[start:end]
+    imported_fs_names = _js_destructured_fs_import_names("\n".join(window))
     evidence_line = next(
-        (line.strip() for line in window if _FILESYSTEM_OPERATION_RE.search(line)),
+        (
+            line.strip()
+            for line in window
+            if _FILESYSTEM_OPERATION_RE.search(line)
+            or _js_destructured_fs_call_args(line, imported_fs_names)
+        ),
         "",
     )
     if not evidence_line:
@@ -7815,6 +7866,7 @@ def _filesystem_operation_input_hints(window_text: str) -> list[str]:
             re.IGNORECASE,
         ),
     )
+    imported_fs_names = _js_destructured_fs_import_names(window_text or "")
     for pattern in js_file_res:
         for match in pattern.finditer(window_text or ""):
             add("input file")
@@ -7829,6 +7881,18 @@ def _filesystem_operation_input_hints(window_text: str) -> list[str]:
                 continue
             if re.fullmatch(r"[A-Za-z_$][\w$]*", arg_text):
                 add(variable_file_hint(arg_text))
+    for arg_text in _js_destructured_fs_call_args(window_text or "", imported_fs_names):
+        add("input file")
+        literal = re.match(r"""['"](?P<path>[^'"]+)['"]""", arg_text)
+        if literal:
+            path_text = literal.group("path").replace("\\", "/")
+            add(path_text)
+            literal_label = format_label_for_path(path_text)
+            if literal_label:
+                add(literal_label)
+            continue
+        if re.fullmatch(r"[A-Za-z_$][\w$]*", arg_text):
+            add(variable_file_hint(arg_text))
     jvm_file_res = (
         re.compile(
             r"""\b(?:java\.nio\.file\.)?Files\s*\.\s*(?:readString|readAllBytes|readAllLines|lines|newBufferedReader|newInputStream)\s*\(\s*(?P<arg>[^,\n\r\)]+)""",
