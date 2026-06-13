@@ -7479,6 +7479,43 @@ def test_coverage_local_commander_action_generates_cli_entry(tmp_path, monkeypat
     assert "--port" in json.dumps(gap["black_box_cases"], ensure_ascii=False)
 
 
+def test_coverage_local_top_level_argparse_keeps_cli_input_hints(tmp_path, monkeypatch):
+    import app.services.coverage_analyzer as coverage_mod
+    from app.services.coverage_analyzer import build_coverage_test_design
+
+    src = tmp_path / "src"
+    src.mkdir()
+    (src / "cli.py").write_text(
+        "import argparse\n"
+        "def normalizePath(path):\n"
+        "    return path.strip()\n"
+        "parser = argparse.ArgumentParser()\n"
+        "parser.add_argument('--input-file', required=True)\n"
+        "args = parser.parse_args()\n"
+        "normalizePath(args.input_file)\n",
+        encoding="utf-8",
+    )
+
+    async def no_agent(_request, **_kwargs):
+        return []
+
+    monkeypatch.setattr(coverage_mod, "run_external_agent_discovery", no_agent, raising=False)
+    modules = _coverage_modules(
+        "feature,module,code_location,function,triggered,hit_count\n"
+        "cli,cli,src/cli.py:2-3,normalizePath,false,0\n"
+    )
+
+    design = asyncio.run(
+        build_coverage_test_design(modules, workspace_id="ws-1", repo_path=str(tmp_path))
+    )
+
+    gap = [g for g in design["gaps"] if g.get("function_name") == "normalizePath"][0]
+    assert gap["black_box_readiness"]["case_type"] == "black_box_ready"
+    assert gap["entry_paths"][0]["entry_kind"] == "cli"
+    assert gap["entry_paths"][0]["input_hints"] == ["--input-file"]
+    assert "--input-file" in json.dumps(gap["black_box_cases"], ensure_ascii=False)
+
+
 def test_coverage_agent_verified_entry_makes_gap_black_box_ready(tmp_path, monkeypatch):
     import app.services.coverage_analyzer as coverage_mod
     from app.services.coverage_analyzer import build_coverage_test_design

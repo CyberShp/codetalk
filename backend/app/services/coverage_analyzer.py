@@ -5303,9 +5303,18 @@ def _argv_input_hints_from_text(text: str) -> list[str]:
 
 def _cli_registration_input_hints(abs_file: str, line_number: int) -> list[str]:
     context = _cli_registration_context_for_site_file(abs_file, line_number)
-    if not context:
+    if context:
+        return _commander_input_hints_from_text(context)
+    try:
+        lines = Path(abs_file).read_text(encoding="utf-8", errors="replace").splitlines()
+    except OSError:
         return []
-    return _commander_input_hints_from_text(context)
+    call_idx = line_number - 1
+    if call_idx < 0 or call_idx >= len(lines):
+        return []
+    start = max(0, call_idx - 32)
+    end = min(len(lines), call_idx + 8)
+    return _cli_option_input_hints_from_text("\n".join(lines[start:end]))
 
 
 def _cobra_command_context_for_site_file(abs_file: str, line_number: int) -> str | None:
