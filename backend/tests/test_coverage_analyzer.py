@@ -2925,6 +2925,41 @@ class TestCoverageTestDesign:
         assert "payment.mode" in case_text
         assert "viper.GetString" not in case_text
 
+    async def test_python_settings_attribute_feeds_black_box_config_input_hint(self, tmp_path):
+        from app.services.coverage_analyzer import build_coverage_test_design
+
+        src = tmp_path / "src"
+        src.mkdir()
+        (src / "payment_config.py").write_text(
+            "from django.conf import settings\n\n"
+            "def configure_payment_mode(mode):\n"
+            "    if not mode:\n"
+            "        return False\n"
+            "    return True\n\n"
+            "def bootstrap():\n"
+            "    mode = settings.PAYMENT_MODE\n"
+            "    return configure_payment_mode(mode)\n",
+            encoding="utf-8",
+        )
+        modules = self._modules(
+            "feature,module,code_location,function,triggered,hit_count\n"
+            "payments,config,src/payment_config.py:3-6,configure_payment_mode,false,0\n"
+        )
+
+        design = await build_coverage_test_design(
+            modules, workspace_id="ws-1", repo_path=str(tmp_path)
+        )
+
+        gap = [g for g in design["gaps"] if g.get("kind") == "function"][0]
+        assert gap["black_box_readiness"]["case_type"] == "black_box_ready"
+        entry = gap["entry_paths"][0]
+        assert entry["entry_kind"] == "config"
+        assert entry["entry_symbol"] == "bootstrap"
+        assert entry["input_hints"] == ["PAYMENT_MODE"]
+        case_text = json.dumps(gap["black_box_cases"], ensure_ascii=False)
+        assert "PAYMENT_MODE" in case_text
+        assert "settings.PAYMENT_MODE" not in case_text
+
     async def test_route_registration_reference_becomes_black_box_entry_without_agent(self, tmp_path):
         from app.services.coverage_analyzer import build_coverage_test_design
 

@@ -507,6 +507,10 @@ _CONFIG_FIELD_RES = (
         re.IGNORECASE,
     ),
     re.compile(
+        r"\b(?:settings|config|options)(?:\s*\.\s*[A-Za-z_]\w*)*"
+        r"\s*\.\s*([A-Z][A-Z0-9_]*(?:\.[A-Z][A-Z0-9_]*)*)\b"
+    ),
+    re.compile(
         r"\b(?:configuration|config|settings|options)"
         r"\s*\.\s*Get(?:Value|Section|ConnectionString)?(?:\s*<[^>]+>)?"
         r"\s*\(\s*['\"]([A-Za-z_][\w.:-]*)['\"]",
@@ -7414,6 +7418,8 @@ _CONFIG_OPERATION_RE = re.compile(
     r"|\bgetenv\s*\("
     r"|@Value\s*\(\s*['\"]\s*\$\{"
     r"|\b(?:configuration|config|settings|options)\s*\[\s*['\"]"
+    r"|\b(?:settings|config|options)(?:\s*\.\s*[A-Za-z_]\w*)*"
+    r"\s*\.\s*[A-Z][A-Z0-9_]*(?:\.[A-Z][A-Z0-9_]*)*\b"
     r"|\b(?:configuration|config|settings|options)\s*\.\s*Get"
     r"(?:Value|Section|ConnectionString)?(?:\s*<[^>]+>)?\s*\("
     r"|\b(?:[A-Za-z_]\w*|System)\s*\.\s*getProperty\s*\("
