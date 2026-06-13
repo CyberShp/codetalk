@@ -6436,6 +6436,7 @@ def _route_template_input_hints(decorator_lines: list[str]) -> list[str]:
     for pattern in (
         r"\{([A-Za-z_][\w-]*)\}",
         r"/:([A-Za-z_][\w-]*)\b",
+        r"(?<![\w:]):([A-Za-z_][\w-]*)\b",
     ):
         for match in re.finditer(pattern, text):
             name = match.group(1)

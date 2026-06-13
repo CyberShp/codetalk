@@ -7084,6 +7084,48 @@ def test_coverage_local_spring_helper_does_not_inherit_previous_route_decorator(
     assert gap["entry_paths"][0]["external_trigger"] == "POST /orders/{id}"
 
 
+def test_coverage_local_nestjs_relative_route_token_enters_input_hints(
+    tmp_path,
+    monkeypatch,
+):
+    import app.services.coverage_analyzer as coverage_mod
+    from app.services.coverage_analyzer import build_coverage_test_design
+
+    src = tmp_path / "src"
+    src.mkdir()
+    (src / "orders.controller.ts").write_text(
+        "@Controller('orders')\n"
+        "export class OrdersController {\n"
+        "  @Post(':id')\n"
+        "  create(@Body() dto) { return normalizeOrder(dto); }\n"
+        "}\n"
+        "function normalizeOrder(input) {\n"
+        "  if (!input.id) return null;\n"
+        "  return input;\n"
+        "}\n",
+        encoding="utf-8",
+    )
+
+    async def no_agent(_request, **_kwargs):
+        return []
+
+    monkeypatch.setattr(coverage_mod, "run_external_agent_discovery", no_agent, raising=False)
+    modules = _coverage_modules(
+        "feature,module,code_location,function,triggered,hit_count\n"
+        "orders,controller,src/orders.controller.ts:6-8,normalizeOrder,false,0\n"
+    )
+
+    design = asyncio.run(
+        build_coverage_test_design(modules, workspace_id="ws-1", repo_path=str(tmp_path))
+    )
+
+    gap = [g for g in design["gaps"] if g.get("function_name") == "normalizeOrder"][0]
+    assert gap["black_box_readiness"]["case_type"] == "black_box_ready"
+    assert gap["entry_paths"][0]["external_trigger"] == "POST /orders/:id"
+    assert "id" in gap["entry_paths"][0]["input_hints"]
+    assert "id" in json.dumps(gap["black_box_cases"], ensure_ascii=False)
+
+
 def test_coverage_local_bullmq_worker_keeps_queue_input_hint(tmp_path, monkeypatch):
     import app.services.coverage_analyzer as coverage_mod
     from app.services.coverage_analyzer import build_coverage_test_design
