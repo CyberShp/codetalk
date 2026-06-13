@@ -4779,6 +4779,62 @@ class TestCoverageTestDesign:
         assert "tenant_id" in case_text
         assert "amount" in case_text
 
+    async def test_coverage_top_level_line_without_function_name_does_not_infer_next_route(self, tmp_path):
+        from app.services.coverage_analyzer import build_coverage_test_design
+
+        src = tmp_path / "src"
+        src.mkdir()
+        (src / "routes.py").write_text(
+            "from fastapi import APIRouter\n\n"
+            "router = APIRouter()\n\n"
+            "@router.post('/payments/{tenant_id}/process')\n"
+            "def process_payment(tenant_id: str, payload: dict):\n"
+            "    amount = payload.get('amount')\n"
+            "    return {'tenant_id': tenant_id, 'amount': amount}\n",
+            encoding="utf-8",
+        )
+        modules = self._modules(
+            "feature,module,code_location,function,triggered,hit_count\n"
+            "payments,routes,src/routes.py:1,,false,0\n"
+        )
+
+        design = await build_coverage_test_design(
+            modules, workspace_id="ws-1", repo_path=str(tmp_path)
+        )
+
+        gap = [g for g in design["gaps"] if g.get("kind") == "function"][0]
+        assert gap["function_name"] == ""
+        assert gap["entry_paths"] == []
+        assert gap["black_box_readiness"]["case_type"] != "black_box_ready"
+
+    async def test_coverage_decorator_line_without_function_name_infers_next_route(self, tmp_path):
+        from app.services.coverage_analyzer import build_coverage_test_design
+
+        src = tmp_path / "src"
+        src.mkdir()
+        (src / "routes.py").write_text(
+            "from fastapi import APIRouter\n\n"
+            "router = APIRouter()\n\n"
+            "@router.post('/payments/{tenant_id}/process')\n"
+            "def process_payment(tenant_id: str, payload: dict):\n"
+            "    amount = payload.get('amount')\n"
+            "    return {'tenant_id': tenant_id, 'amount': amount}\n",
+            encoding="utf-8",
+        )
+        modules = self._modules(
+            "feature,module,code_location,function,triggered,hit_count\n"
+            "payments,routes,src/routes.py:5,,false,0\n"
+        )
+
+        design = await build_coverage_test_design(
+            modules, workspace_id="ws-1", repo_path=str(tmp_path)
+        )
+
+        gap = [g for g in design["gaps"] if g.get("kind") == "function"][0]
+        assert gap["function_name"] == "process_payment"
+        assert gap["black_box_readiness"]["case_type"] == "black_box_ready"
+        assert gap["entry_paths"][0]["external_trigger"] == "POST /payments/{tenant_id}/process"
+
     async def test_fastapi_pydantic_field_aliases_feed_external_body_hints(self, tmp_path):
         from app.services.coverage_analyzer import build_coverage_test_design
 

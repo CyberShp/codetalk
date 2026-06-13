@@ -1521,9 +1521,30 @@ def _infer_function_name_for_coverage_line(
             return name
     for idx in range(anchor + 1, min(len(lines), anchor + 20)):
         name = _definition_name_for_file(lines, idx, suffix)
-        if name:
+        if name and _coverage_forward_definition_prefix_is_safe(lines, anchor, idx, suffix):
             return name
     return None
+
+
+def _coverage_forward_definition_prefix_is_safe(
+    lines: list[str],
+    anchor: int,
+    definition_idx: int,
+    suffix: str,
+) -> bool:
+    """Allow forward inference only across definition-adjacent metadata."""
+    if definition_idx <= anchor:
+        return True
+    for idx in range(anchor, definition_idx):
+        stripped = lines[idx].strip()
+        if not stripped:
+            continue
+        if stripped.startswith(("@", "#", "//", "/*", "*", "*/")):
+            continue
+        if suffix == ".cs" and stripped.startswith("[") and stripped.endswith("]"):
+            continue
+        return False
+    return True
 
 
 async def _resolve_workspace_scope_for_hits(
