@@ -448,7 +448,9 @@ _REQUEST_FIELD_RES = (
     ),
     re.compile(
         r"\$(?:request|req)"
-        r"\s*->\s*(?:input|query|post|get|route|header|cookie)"
+        r"\s*->\s*(?:input|query|post|get|route|header|cookie|file|"
+        r"boolean|integer|float|date|enum|string|array|collect|"
+        r"has|filled|missing|validated)"
         r"\s*\(\s*['\"]([A-Za-z_][\w-]*)['\"]"
     ),
 )
@@ -6555,7 +6557,7 @@ def _route_path_from_text(text: str) -> str | None:
         (
             r"(?:(?P<receiver>@?[A-Za-z_]\w*(?:\.[A-Za-z_]\w*)*)\s*\.\s*)?"
             r"(?:get|post|put|patch|delete|head|options|any|route|api_route|websocket)\s*"
-            r"\(\s*(['\"])(?P<path>(?:\\.|(?!\1).)*?)\1",
+            r"\(\s*(?P<quote>['\"])(?P<path>(?:\\.|(?!(?P=quote)).)*?)(?P=quote)",
             True,
         ),
         (
