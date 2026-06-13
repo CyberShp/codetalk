@@ -6877,7 +6877,7 @@ class TestCoverageTestDesign:
         assert entry["entry_kind"] == "message"
         assert entry["entry_symbol"] == "processInvoice"
         assert entry["tool"] == "source-kafka-consumer"
-        assert entry["input_hints"] == ["invoice.created", "message"]
+        assert entry["input_hints"] == ["invoice.created"]
 
     async def test_celery_task_decorator_is_black_box_job_without_caller(self, tmp_path):
         from app.services.coverage_analyzer import build_coverage_test_design
@@ -7688,6 +7688,44 @@ class TestCoverageTestDesign:
         assert "payload" not in case_text
         assert "ctx.ack" not in case_text
         assert '"ack"' not in case_text
+
+    async def test_rabbitmq_consume_registration_feeds_message_input_hints(self, tmp_path):
+        from app.services.coverage_analyzer import build_coverage_test_design
+
+        src = tmp_path / "src"
+        src.mkdir()
+        (src / "consumer.ts").write_text(
+            "export function processInvoice(message) {\n"
+            "  const payload = JSON.parse(message.content.toString());\n"
+            "  if (!payload.amount) {\n"
+            "    return 'missing';\n"
+            "  }\n"
+            "  return payload.currency;\n"
+            "}\n\n"
+            "channel.consume('invoice_queue', processInvoice, { noAck: false });\n",
+            encoding="utf-8",
+        )
+        modules = self._modules(
+            "feature,module,code_location,function,triggered,hit_count\n"
+            "billing,consumer,src/consumer.ts:1-7,processInvoice,false,0\n"
+        )
+
+        design = await build_coverage_test_design(
+            modules, workspace_id="ws-1", repo_path=str(tmp_path)
+        )
+
+        gap = [g for g in design["gaps"] if g.get("kind") == "function"][0]
+        assert gap["black_box_readiness"]["case_type"] == "black_box_ready"
+        entry = gap["entry_paths"][0]
+        assert entry["entry_kind"] == "message"
+        assert entry["entry_symbol"] == "processInvoice"
+        assert "channel.consume" in entry["evidence"]
+        assert entry["input_hints"] == ["invoice_queue", "amount", "currency"]
+        case_text = json.dumps(gap["black_box_cases"], ensure_ascii=False)
+        assert "invoice_queue" in case_text
+        assert "amount" in case_text
+        assert "currency" in case_text
+        assert "content" not in case_text
 
     async def test_message_payload_destructuring_feeds_black_box_input_hints(self, tmp_path):
         from app.services.coverage_analyzer import build_coverage_test_design

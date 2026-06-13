@@ -455,7 +455,7 @@ _REQUEST_FIELD_RES = (
     ),
 )
 _MESSAGE_ENVELOPE_FIELD_NAMES = {
-    "attributes", "headers", "key", "offset", "partition", "timestamp",
+    "attributes", "content", "headers", "key", "offset", "partition", "timestamp",
     "topic", "value",
 }
 _REQUEST_DESTRUCTURE_RE = re.compile(
