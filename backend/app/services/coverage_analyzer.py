@@ -9294,6 +9294,7 @@ def _registration_entry_for_site(
             _registration_channel_input_hints(registration_line, entry_type),
             _signal_registration_input_hints(registration_line),
             _posix_signal_input_hints(registration_line),
+            _node_process_lifecycle_input_hints(registration_line),
         )
         if entry_type == "message":
             channel_hints = _merge_ordered_strings(
@@ -9574,6 +9575,32 @@ def _posix_signal_input_hints(text: str) -> list[str]:
     return hints[:6]
 
 
+def _node_process_lifecycle_input_hints(text: str) -> list[str]:
+    runtime_events = {
+        "beforeexit",
+        "exit",
+        "uncaughtexception",
+        "unhandledrejection",
+        "rejectionhandled",
+        "warning",
+        "multipleresolves",
+        "disconnect",
+    }
+    hints: list[str] = []
+    seen: set[str] = set()
+    for match in re.finditer(
+        r"\bprocess\s*\.\s*(?:on|once)\s*\(\s*(['\"])(?P<event>[^'\"]{1,80})\1",
+        text or "",
+        re.IGNORECASE,
+    ):
+        event = match.group("event").strip()
+        if event.lower() not in runtime_events or event in seen:
+            continue
+        seen.add(event)
+        hints.append(event)
+    return hints[:6]
+
+
 def _registered_entry_type(registration_line: str, window: list[str]) -> str:
     text = (registration_line + "\n" + "\n".join(window)).lower()
     if re.search(r"\.\s*(?:get|post|put|patch|delete|head|options|any|route)\s*\(", text):
@@ -9587,6 +9614,8 @@ def _registered_entry_type(registration_line: str, window: list[str]) -> str:
     if "cli" in text or "cmd" in text:
         return "cli"
     if _posix_signal_input_hints(registration_line + "\n" + "\n".join(window)):
+        return "callback"
+    if _node_process_lifecycle_input_hints(registration_line + "\n" + "\n".join(window)):
         return "callback"
     if re.search(r"\.\s*(?:on|once)\s*\(", text):
         return "message"
