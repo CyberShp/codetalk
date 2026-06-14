@@ -212,7 +212,7 @@ def _strip_source_location_suffix(value: str) -> str:
         return ""
     text = re.sub(
         r"(?P<path>\b[^:#\s]+?\.(?:c|h|cc|cpp|hpp|py|go|rs|java|kt|kts|ts|tsx|js|jsx|mjs|cjs|mts|cts|rb|php|cs|proto|graphql|gql|idl|s|asm|cu|cuh))"
-        r"(?::\d+(?::\d+)?)?(?:[#:]?[A-Za-z_][\w$.-]*)?$",
+        r"(?:(?::\d+(?::\d+)?(?:-\d+)?)|(?:#L?\d+(?:-L?\d+)?))?(?:[#:]?[A-Za-z_][\w$.-]*)?$",
         r"\g<path>",
         text,
         flags=re.IGNORECASE,

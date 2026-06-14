@@ -6118,6 +6118,60 @@ def test_workspace_path_keyword_ranking_handles_suffix_file_location(tmp_path):
     assert rel_hits[0] == "src/payments/webhook_handler.py"
 
 
+def test_workspace_path_keyword_ranking_handles_line_range_file_location(tmp_path):
+    from app.services.workspace_scope_resolver import _path_keyword_repo_hits_blocking
+
+    target_dir = tmp_path / "src" / "payments"
+    target_dir.mkdir(parents=True)
+    (target_dir / "webhook_handler.py").write_text(
+        "def handle_webhook():\n"
+        "    return True\n",
+        encoding="utf-8",
+    )
+    distractor_dir = tmp_path / "examples" / "payments"
+    distractor_dir.mkdir(parents=True)
+    (distractor_dir / "webhook_handler.py").write_text(
+        "def handle_webhook_example():\n"
+        "    return True\n",
+        encoding="utf-8",
+    )
+
+    hits = _path_keyword_repo_hits_blocking(
+        str(tmp_path),
+        ["payments/webhook_handler.py:42-50"],
+        3,
+    )
+    rel_hits = [Path(hit).relative_to(tmp_path).as_posix() for hit in hits]
+
+    assert rel_hits[0] == "src/payments/webhook_handler.py"
+
+
+def test_workspace_path_keyword_ranking_handles_windows_absolute_file_location(tmp_path):
+    from app.services.workspace_scope_resolver import _path_keyword_repo_hits_blocking
+
+    target_dir = tmp_path / "src" / "payments"
+    target_dir.mkdir(parents=True)
+    target_file = target_dir / "webhook_handler.py"
+    target_file.write_text(
+        "def handle_webhook():\n"
+        "    return True\n",
+        encoding="utf-8",
+    )
+    distractor_dir = tmp_path / "examples" / "payments"
+    distractor_dir.mkdir(parents=True)
+    (distractor_dir / "webhook_handler.py").write_text(
+        "def handle_webhook_example():\n"
+        "    return True\n",
+        encoding="utf-8",
+    )
+
+    location = r"C:\workspaces\frontend\src\payments\webhook_handler.py:42"
+    hits = _path_keyword_repo_hits_blocking(str(tmp_path), [location], 3)
+    rel_hits = [Path(hit).relative_to(tmp_path).as_posix() for hit in hits]
+
+    assert rel_hits[0] == "src/payments/webhook_handler.py"
+
+
 def test_workspace_path_keyword_preserves_pathlike_stopword_segments(tmp_path):
     from app.services.external_agent_discovery import expand_agent_query_terms
     from app.services.workspace_scope_resolver import (
