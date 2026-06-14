@@ -8784,6 +8784,48 @@ class TestCoverageTestDesign:
         assert entry["entry_symbol"] == "flushQueue"
         assert "this::flushQueue" in entry["evidence"]
 
+    async def test_java_thread_lambda_is_worker_entry_without_agent(
+        self, tmp_path, monkeypatch
+    ):
+        from app.services.coverage_analyzer import build_coverage_test_design
+
+        monkeypatch.setattr(
+            "app.services.coverage_analyzer.settings.external_agents_enabled",
+            False,
+        )
+        src = tmp_path / "src"
+        src.mkdir()
+        (src / "InvoiceWorker.java").write_text(
+            "public class InvoiceWorker {\n"
+            "  public void flushQueue() {\n"
+            "    if (!queueReady()) {\n"
+            "      return;\n"
+            "    }\n"
+            "    drainInvoices();\n"
+            "  }\n\n"
+            "  public void start() {\n"
+            "    new Thread(() -> flushQueue(), \"invoice-flusher\").start();\n"
+            "  }\n"
+            "}\n",
+            encoding="utf-8",
+        )
+        modules = self._modules(
+            "feature,module,code_location,function,triggered,hit_count\n"
+            "billing,worker,src/InvoiceWorker.java:2-7,flushQueue,false,0\n"
+        )
+
+        design = await build_coverage_test_design(
+            modules, workspace_id="ws-1", repo_path=str(tmp_path)
+        )
+
+        gap = [g for g in design["gaps"] if g.get("kind") == "function"][0]
+        assert gap["gray_box_required"] is False
+        assert gap["black_box_readiness"]["case_type"] == "black_box_ready"
+        entry = gap["entry_paths"][0]
+        assert entry["entry_kind"] == "worker"
+        assert entry["entry_symbol"] == "flushQueue"
+        assert "new Thread(() -> flushQueue()" in entry["evidence"]
+
     async def test_asyncio_create_task_registration_is_worker_entry_without_agent(self, tmp_path):
         from app.services.coverage_analyzer import build_coverage_test_design
 
