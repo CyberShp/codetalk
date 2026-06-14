@@ -612,6 +612,7 @@ _ENTRY_DECORATOR_KIND_TOKENS: tuple[tuple[str, tuple[str, ...]], ...] = (
 _PUBLIC_CALLBACK_START_RE = re.compile(
     r"(?:\.\s*(?:"
     r"get|post|put|patch|delete|head|options|route|use|"
+    r"add_get|add_post|add_put|add_patch|add_delete|add_head|add_options|"
     r"mapget|mappost|mapput|mappatch|mapdelete|mapmethods|"
     r"subscribe|on|once|prependListener|prependOnceListener|listen|addEventListener|addListener|addHandler|add_listener|add_handler|register|"
     r"add_job|schedule"
@@ -7048,6 +7049,7 @@ def _route_call_receiver(text: str) -> str | None:
     match = re.search(
         r"\b(?P<receiver>[A-Za-z_]\w*(?:\.[A-Za-z_]\w*)*)\s*\.\s*"
         r"(?:get|post|put|patch|delete|head|options|any|route|api_route|websocket|"
+        r"add_get|add_post|add_put|add_patch|add_delete|add_head|add_options|"
         r"mapget|mappost|mapput|mappatch|mapdelete|mapmethods)\s*\(",
         text or "",
         re.IGNORECASE,
@@ -7055,6 +7057,23 @@ def _route_call_receiver(text: str) -> str | None:
     if match:
         return match.group("receiver").split(".")[-1]
     return None
+
+
+def _route_call_receiver_hints(text: str) -> list[str]:
+    match = re.search(
+        r"\b(?P<receiver>[A-Za-z_]\w*(?:\.[A-Za-z_]\w*)*)\s*\.\s*"
+        r"(?:get|post|put|patch|delete|head|options|any|route|api_route|websocket|"
+        r"add_get|add_post|add_put|add_patch|add_delete|add_head|add_options|"
+        r"mapget|mappost|mapput|mappatch|mapdelete|mapmethods)\s*\(",
+        text or "",
+        re.IGNORECASE,
+    )
+    if not match:
+        return []
+    parts = [part for part in match.group("receiver").split(".") if part]
+    if not parts:
+        return []
+    return list(dict.fromkeys([parts[0], parts[-1]]))
 
 
 def _route_decorator_receiver(decorator_texts: list[str]) -> str | None:
@@ -7142,12 +7161,14 @@ def _route_path_from_text(text: str) -> str | None:
         (
             r"(?:(?P<receiver>@?[A-Za-z_]\w*(?:\.[A-Za-z_]\w*)*)\s*\.\s*)?"
             r"(?:get|post|put|patch|delete|head|options|any|route|api_route|websocket|"
+            r"add_get|add_post|add_put|add_patch|add_delete|add_head|add_options|"
             r"mapget|mappost|mapput|mappatch|mapdelete|mapmethods)\s*"
             r"\(\s*(?P<quote>['\"])(?P<path>(?:\\.|(?!(?P=quote)).)*?)(?P=quote)",
             True,
         ),
         (
             r"(?<![\w.])(?:get|post|put|patch|delete|head|options|any|route|api_route|websocket|"
+            r"add_get|add_post|add_put|add_patch|add_delete|add_head|add_options|"
             r"mapget|mappost|mapput|mappatch|mapdelete|mapmethods)\s*"
             r"\(\s*(['\"])(?P<path>(?:\\.|(?!\1).)*?)\1",
             True,
@@ -7218,6 +7239,7 @@ def _normalize_route_path(value: str, *, allow_relative: bool = False) -> str | 
 
 def _route_method_from_text(text: str) -> str | None:
     method_patterns = (
+        r"\.\s*add_(?P<method>get|post|put|patch|delete|head|options)\s*\(",
         r"\bmethods?\s*=\s*[\[\(\{]?\s*(['\"])(?P<method>get|post|put|patch|delete|head|options|any)\1",
         r"\bmethods?\s*:\s*[\[\(\{]?\s*(['\"])(?P<method>get|post|put|patch|delete|head|options|any)\1",
         r"\broute\s*\(\s*(['\"])(?:\\.|(?!\1).)*?\1\s*,\s*(?P<method>get|post|put|patch|delete|head|options|any)\s*\(",
@@ -7817,6 +7839,12 @@ def _trace_entry_paths(
                             site["abs_file"],
                             site["line_number"],
                         ) or site["text"]
+                        receiver_hints = _route_call_receiver_hints(route_site_text)
+                        if receiver_hints and metadata.get("input_hints"):
+                            metadata["input_hints"] = [
+                                hint for hint in metadata.get("input_hints") or []
+                                if hint not in receiver_hints
+                            ]
                         route_prefix = _route_mount_prefix_for_site_file(
                             site["abs_file"],
                             route_site_text,
