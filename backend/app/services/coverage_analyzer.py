@@ -188,6 +188,8 @@ _EXPRESSION_CALL_PREFIXES = (
     "await ",
     "raise ",
     "throw ",
+    "go ",
+    "defer ",
 )
 
 
@@ -562,6 +564,7 @@ _REGISTRATION_LINE_RE = re.compile(
     r"|\.\s*submit\s*\("
     r"|\.\s*(?:create_task|ensure_future)\s*\("
     r"|\basyncio\s*\.\s*(?:create_task|ensure_future)\s*\("
+    r"|\bgo\s+[A-Za-z_]\w*(?:\.[A-Za-z_]\w*)?\s*\("
     r"|\b(?:setImmediate|queueMicrotask|requestAnimationFrame|requestIdleCallback)\s*\("
     r"|\bprocess\s*\.\s*nextTick\s*\("
     r"|\.[ \t]*(?:register|subscribe|on|once|listen|addEventListener|addListener|"
@@ -4400,9 +4403,10 @@ def _env_destructured_fields(text: str) -> list[tuple[int, str]]:
 
 
 def _handler_signature_input_hints(abs_file: str, enclosing_fn: str | None) -> list[str]:
-    if not enclosing_fn or Path(abs_file).suffix.lower() not in {
+    suffix = Path(abs_file).suffix.lower()
+    if not enclosing_fn or suffix not in {
         ".py", ".js", ".jsx", ".ts", ".tsx", ".java", ".cs", ".rb",
-        ".kt", ".kts",
+        ".kt", ".kts", ".go",
     }:
         return []
     try:
@@ -4414,9 +4418,13 @@ def _handler_signature_input_hints(abs_file: str, enclosing_fn: str | None) -> l
             continue
         signature = _collect_signature_text(lines, idx)
         model_fields_by_type = _source_model_fields_by_class(
-            lines, Path(abs_file).suffix.lower()
+            lines, suffix
         )
-        return _signature_input_params(signature, model_fields_by_type=model_fields_by_type)
+        return _signature_input_params(
+            signature,
+            model_fields_by_type=model_fields_by_type,
+            param_style="go" if suffix == ".go" else None,
+        )
     return []
 
 
@@ -4480,6 +4488,7 @@ def _signature_input_params(
     signature: str,
     *,
     model_fields_by_type: dict[str, list[str]] | None = None,
+    param_style: str | None = None,
 ) -> list[str]:
     params = _signature_param_section(signature or "")
     if params is None:
@@ -4500,7 +4509,7 @@ def _signature_input_params(
 
     for raw_param in _split_signature_params(params):
         external_param = _signature_external_param_name(raw_param)
-        param = _signature_param_name(raw_param)
+        param = _signature_param_name(raw_param, param_style=param_style)
         if not param:
             continue
         if external_param:
@@ -5238,7 +5247,7 @@ def _signature_external_type_hint(
     return None
 
 
-def _signature_param_name(raw_param: str) -> str | None:
+def _signature_param_name(raw_param: str, *, param_style: str | None = None) -> str | None:
     param = raw_param.strip()
     if not param or param.startswith(("*", "...")):
         return None
@@ -5252,6 +5261,10 @@ def _signature_param_name(raw_param: str) -> str | None:
     if ":" in param:
         param = param.split(":", 1)[0].strip()
     param = param.lstrip("*").strip()
+    if param_style == "go":
+        match = re.match(r"^(?P<name>[A-Za-z_]\w*)\s+(?:\.\.\.)?[*\[\]\w.]+$", param)
+        if match:
+            return match.group("name")
     if re.match(r"^[A-Za-z_][\w-]*$", param):
         return param
     identifiers = re.findall(r"[A-Za-z_][\w-]*", param)
@@ -7295,7 +7308,8 @@ def _looks_like_worker_registration(text: str) -> bool:
         r"|\b(?:Thread|Process)\s*\("
         r"|\.\s*submit\s*\("
         r"|\.\s*(?:create_task|ensure_future)\s*\("
-        r"|\basyncio\s*\.\s*(?:create_task|ensure_future)\s*\(",
+        r"|\basyncio\s*\.\s*(?:create_task|ensure_future)\s*\("
+        r"|\bgo\s+[A-Za-z_]\w*(?:\.[A-Za-z_]\w*)?\s*\(",
         text or "",
         re.IGNORECASE,
     ))
@@ -7310,6 +7324,7 @@ def _worker_registration_symbol_from_text(text: str, caller_chain: list[str]) ->
         r"\.\s*submit\s*\(\s*(?P<symbol>[A-Za-z_]\w*(?:\.[A-Za-z_]\w*)?)\b",
         r"(?:\.|\b)(?:create_task|ensure_future)\s*\(\s*"
         r"(?P<symbol>[A-Za-z_]\w*(?:\.[A-Za-z_]\w*)?)\s*\(",
+        r"\bgo\s+(?P<symbol>[A-Za-z_]\w*(?:\.[A-Za-z_]\w*)?)\s*\(",
     ):
         for match in re.finditer(pattern, text or "", re.IGNORECASE):
             candidates.append(match.group("symbol").rsplit(".", 1)[-1])
@@ -9411,7 +9426,7 @@ def _registration_entry_for_site(
             "callback", "_cb", "handler", "ops", "poller", "timer", "event",
             "register", "subscribe", ".on", ".once", "listener", "schedule", "scheduler", "job",
             "worker", "queue", ".process", "grpc", "servicer_to_server", "signal",
-            "thread", "target=", "executor", ".submit",
+            "thread", "target=", "executor", ".submit", "go ",
             "setimmediate", "queuemicrotask", "requestanimationframe",
             "requestidlecallback", "nexttick",
         )

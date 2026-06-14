@@ -8216,6 +8216,53 @@ class TestCoverageTestDesign:
         assert "tenant-id" in case_text
         assert "--config" in case_text
 
+    async def test_go_goroutine_call_site_is_worker_entry_without_agent(
+        self, tmp_path, monkeypatch
+    ):
+        from app.services.coverage_analyzer import build_coverage_test_design
+
+        monkeypatch.setattr(
+            "app.services.coverage_analyzer.settings.external_agents_enabled",
+            False,
+        )
+        src = tmp_path / "worker"
+        src.mkdir()
+        (src / "processor.go").write_text(
+            "package worker\n\n"
+            "type Batch struct { ID string }\n\n"
+            "func flushBatch(batch Batch) error {\n"
+            "    if batch.ID == \"\" {\n"
+            "        return ErrMissingBatch\n"
+            "    }\n"
+            "    return nil\n"
+            "}\n",
+            encoding="utf-8",
+        )
+        (src / "runtime.go").write_text(
+            "package worker\n\n"
+            "func StartRuntime(batch Batch) {\n"
+            "    go flushBatch(batch)\n"
+            "}\n",
+            encoding="utf-8",
+        )
+        modules = self._modules(
+            "feature,module,code_location,function,triggered,hit_count\n"
+            "batch,worker,worker/processor.go:5-10,flushBatch,false,0\n"
+        )
+
+        design = await build_coverage_test_design(
+            modules, workspace_id="ws-1", repo_path=str(tmp_path)
+        )
+
+        gap = [g for g in design["gaps"] if g.get("kind") == "function"][0]
+        assert gap["gray_box_required"] is False
+        assert gap["black_box_readiness"]["case_type"] == "black_box_ready"
+        entry = gap["entry_paths"][0]
+        assert entry["entry_kind"] == "worker"
+        assert entry["entry_symbol"] == "flushBatch"
+        assert "go flushBatch(batch)" in entry["evidence"]
+        assert "batch" in entry["input_hints"]
+
     async def test_callback_registration_entry_discovery_prevents_final_gray_box(
         self, tmp_path
     ):
