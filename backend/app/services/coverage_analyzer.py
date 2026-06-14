@@ -7668,6 +7668,41 @@ _JS_FS_CALLABLES = {
 }
 
 
+def _first_top_level_call_argument(text: str, start: int) -> str:
+    chars: list[str] = []
+    depth = 0
+    quote: str | None = None
+    escaped = False
+    for ch in (text or "")[start:]:
+        if quote:
+            chars.append(ch)
+            if escaped:
+                escaped = False
+            elif ch == "\\":
+                escaped = True
+            elif ch == quote:
+                quote = None
+            continue
+        if ch in ("'", '"', "`"):
+            quote = ch
+            chars.append(ch)
+            continue
+        if ch in "([{":
+            depth += 1
+            chars.append(ch)
+            continue
+        if ch in ")]}":
+            if depth == 0:
+                break
+            depth -= 1
+            chars.append(ch)
+            continue
+        if ch == "," and depth == 0:
+            break
+        chars.append(ch)
+    return "".join(chars).strip()
+
+
 def _js_destructured_fs_import_names(window_text: str) -> set[str]:
     names: set[str] = set()
     for match in _JS_FS_DESTRUCTURED_IMPORT_RE.finditer(window_text or ""):
@@ -7695,11 +7730,13 @@ def _js_destructured_fs_call_args(text: str, imported_names: set[str]) -> list[s
         return []
     args: list[str] = []
     for match in re.finditer(
-        r"(?<![\w.])(?P<name>[A-Za-z_$][\w$]*)\s*\(\s*(?P<arg>[^,\n\r\)]+)",
+        r"(?<![\w.])(?P<name>[A-Za-z_$][\w$]*)\s*\(",
         text or "",
     ):
         if match.group("name") in imported_names:
-            args.append(match.group("arg").strip())
+            arg_text = _first_top_level_call_argument(text or "", match.end())
+            if arg_text:
+                args.append(arg_text)
     return args
 
 
@@ -7823,38 +7860,7 @@ def _filesystem_operation_input_hints(window_text: str) -> list[str]:
         return method_match.group("arg").strip() if method_match else None
 
     def first_call_argument(text: str, start: int) -> str:
-        chars: list[str] = []
-        depth = 0
-        quote: str | None = None
-        escaped = False
-        for ch in text[start:]:
-            if quote:
-                chars.append(ch)
-                if escaped:
-                    escaped = False
-                elif ch == "\\":
-                    escaped = True
-                elif ch == quote:
-                    quote = None
-                continue
-            if ch in ("'", '"'):
-                quote = ch
-                chars.append(ch)
-                continue
-            if ch in "([{":
-                depth += 1
-                chars.append(ch)
-                continue
-            if ch in ")]}":
-                if depth == 0:
-                    break
-                depth -= 1
-                chars.append(ch)
-                continue
-            if ch == "," and depth == 0:
-                break
-            chars.append(ch)
-        return "".join(chars).strip()
+        return _first_top_level_call_argument(text, start)
 
     def split_top_level_args(arg_text: str) -> list[str]:
         args: list[str] = []
@@ -7872,7 +7878,7 @@ def _filesystem_operation_input_hints(window_text: str) -> list[str]:
                 elif ch == quote:
                     quote = None
                 continue
-            if ch in ("'", '"'):
+            if ch in ("'", '"', "`"):
                 quote = ch
                 current.append(ch)
                 continue
@@ -7916,7 +7922,7 @@ def _filesystem_operation_input_hints(window_text: str) -> list[str]:
                 for env_match in env_pattern.finditer(part):
                     add_var(env_match.group(1))
             wrapped = path_wrapper_inner_arg(part) or part
-            if re.fullmatch(r"[A-Za-z_]\w*", wrapped):
+            if re.fullmatch(r"[A-Za-z_$][\w$]*", wrapped):
                 add_var(wrapped)
 
         for env_pattern in _ENV_FIELD_RES:
@@ -7959,9 +7965,23 @@ def _filesystem_operation_input_hints(window_text: str) -> list[str]:
         )
         if join_match:
             for part in split_top_level_args(join_match.group("args")):
-                wrapped = path_wrapper_inner_arg(part) or part
-                if re.fullmatch(r"[A-Za-z_]\w*", wrapped):
-                    add_var(wrapped)
+                add_path_arg_vars(part)
+
+        js_path_match = re.fullmatch(
+            r"""(?:path|Path)\s*\.\s*(?:join|resolve)\s*\(\s*(?P<args>.*)\s*\)""",
+            stripped,
+            re.IGNORECASE | re.DOTALL,
+        )
+        if js_path_match:
+            for part in split_top_level_args(js_path_match.group("args")):
+                add_path_arg_vars(part)
+        js_path_unary_match = re.fullmatch(
+            r"""(?:path|Path)\s*\.\s*(?:normalize|parse|dirname|basename|extname)\s*\(\s*(?P<arg>.*)\s*\)""",
+            stripped,
+            re.IGNORECASE | re.DOTALL,
+        )
+        if js_path_unary_match:
+            add_path_arg_vars(js_path_unary_match.group("arg"))
 
         without_strings = re.sub(r"""(['"])(?:\\.|(?!\1).)*\1""", " ", stripped)
         if "+" in without_strings:
@@ -7974,6 +7994,14 @@ def _filesystem_operation_input_hints(window_text: str) -> list[str]:
             re.DOTALL,
         ):
             for expr in re.findall(r"""\{([^{}]+)\}""", fstring_match.group("body")):
+                add_path_arg_vars(expr)
+
+        for template_match in re.finditer(
+            r"""`(?P<body>(?:\\.|[^`])*)`""",
+            stripped,
+            re.DOTALL,
+        ):
+            for expr in re.findall(r"""\$\{([^{}]+)\}""", template_match.group("body")):
                 add_path_arg_vars(expr)
 
         format_match = re.match(
@@ -8119,15 +8147,15 @@ def _filesystem_operation_input_hints(window_text: str) -> list[str]:
                 add(variable_file_hint(arg_text))
     js_file_res = (
         re.compile(
-            r"""\b(?:fs|fsPromises)\s*\.\s*(?:promises\s*\.\s*)?(?:readFileSync|readFile|createReadStream|openSync|open)\s*\(\s*(?P<arg>[^,\n\r\)]+)""",
+            r"""\b(?:fs|fsPromises)\s*\.\s*(?:promises\s*\.\s*)?(?:readFileSync|readFile|createReadStream|openSync|open)\s*\(""",
             re.IGNORECASE,
         ),
         re.compile(
-            r"""\bDeno\s*\.\s*(?:readTextFileSync|readTextFile|readFileSync|readFile|openSync|open)\s*\(\s*(?P<arg>[^,\n\r\)]+)""",
+            r"""\bDeno\s*\.\s*(?:readTextFileSync|readTextFile|readFileSync|readFile|openSync|open)\s*\(""",
             re.IGNORECASE,
         ),
         re.compile(
-            r"""\bBun\s*\.\s*file\s*\(\s*(?P<arg>[^,\n\r\)]+)""",
+            r"""\bBun\s*\.\s*file\s*\(""",
             re.IGNORECASE,
         ),
     )
@@ -8135,7 +8163,7 @@ def _filesystem_operation_input_hints(window_text: str) -> list[str]:
     for pattern in js_file_res:
         for match in pattern.finditer(window_text or ""):
             add("input file")
-            arg_text = match.group("arg").strip()
+            arg_text = first_call_argument(window_text or "", match.end())
             literal = re.match(r"""['"](?P<path>[^'"]+)['"]""", arg_text)
             if literal:
                 path_text = literal.group("path").replace("\\", "/")
@@ -8143,6 +8171,11 @@ def _filesystem_operation_input_hints(window_text: str) -> list[str]:
                 literal_label = format_label_for_path(path_text)
                 if literal_label:
                     add(literal_label)
+                continue
+            expression_vars = path_expression_input_vars(arg_text)
+            if expression_vars:
+                for variable in expression_vars:
+                    add(variable_file_hint(variable))
                 continue
             if re.fullmatch(r"[A-Za-z_$][\w$]*", arg_text):
                 add(variable_file_hint(arg_text))
@@ -8155,6 +8188,11 @@ def _filesystem_operation_input_hints(window_text: str) -> list[str]:
             literal_label = format_label_for_path(path_text)
             if literal_label:
                 add(literal_label)
+            continue
+        expression_vars = path_expression_input_vars(arg_text)
+        if expression_vars:
+            for variable in expression_vars:
+                add(variable_file_hint(variable))
             continue
         if re.fullmatch(r"[A-Za-z_$][\w$]*", arg_text):
             add(variable_file_hint(arg_text))
