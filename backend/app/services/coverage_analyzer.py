@@ -9740,7 +9740,18 @@ def _dispatch_table_handler_symbol_matches(handler_symbol: str, traced_symbol: s
     traced = str(traced_symbol or "").strip()
     if not value or not traced:
         return False
-    return value == traced or value.rsplit(".", 1)[-1] == traced
+    return (
+        value == traced
+        or _last_qualified_symbol_part(value) == traced
+        or _last_qualified_symbol_part(value) == _last_qualified_symbol_part(traced)
+    )
+
+
+def _last_qualified_symbol_part(symbol: str) -> str:
+    value = str(symbol or "").strip()
+    if not value:
+        return ""
+    return re.split(r"(?:::|\.)", value)[-1]
 
 
 def _dispatch_table_initializer_block(window: list[str], handler_line_index: int) -> str:
