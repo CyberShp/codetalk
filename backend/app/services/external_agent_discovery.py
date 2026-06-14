@@ -277,11 +277,25 @@ def _split_compact_agent_query_parts(parts: list[str]) -> list[str]:
 
 def _split_ready_agent_query_text(text: str) -> str:
     value = text or ""
+    value = _normalize_known_mixed_case_query_acronyms(value)
     value = _split_agent_acronym_word_boundaries(value)
     value = re.sub(r"([a-z0-9])([A-Z])", r"\1 \2", value)
     value = re.sub(r"([A-Za-z0-9]+)([^\x00-\x7F])", r"\1 \2", value)
     value = re.sub(r"([^\x00-\x7F])([A-Za-z0-9]+)", r"\1 \2", value)
     value = re.sub(r"[^\w/\\\-\s]+", " ", value, flags=re.UNICODE)
+    return value
+
+
+def _normalize_known_mixed_case_query_acronyms(text: str) -> str:
+    value = text or ""
+    replacements = (
+        (re.compile(r"(?<![a-z0-9])NVMe", re.IGNORECASE), "nvme"),
+        (re.compile(r"(?<![a-z0-9])NVMf", re.IGNORECASE), "nvmf"),
+        (re.compile(r"(?<![a-z0-9])iSCSI", re.IGNORECASE), "iscsi"),
+        (re.compile(r"(?<![a-z0-9])gRPC", re.IGNORECASE), "grpc"),
+    )
+    for pattern, replacement in replacements:
+        value = pattern.sub(replacement, value)
     return value
 
 

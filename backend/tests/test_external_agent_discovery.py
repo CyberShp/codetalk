@@ -58,6 +58,18 @@ def test_compact_nvme_tcp_tls_query_expands_to_nvmf_transport_variants():
     assert "transport/tls" in terms
 
 
+def test_mixed_case_nvme_query_expands_to_nvmf_transport_variants():
+    from app.services.external_agent_discovery import expand_agent_query_terms
+
+    terms = expand_agent_query_terms("NVMeTcpTLS")
+
+    assert "nvme" in terms
+    assert "nvmf_tcp_tls" in terms
+    assert "nvmf_tcp/transport/tls" in terms
+    assert "transport/tls" in terms
+    assert "nv_me_tcp_tls" not in terms
+
+
 def test_nvme_tcp_tls_query_expands_inside_chinese_text_without_spaces():
     from app.services.external_agent_discovery import expand_agent_query_terms
 
@@ -5821,6 +5833,45 @@ def test_workspace_resolver_handles_qualified_camel_module_without_tools(tmp_pat
     ]
 
     assert rel_paths[0] == "services/payments/webhook/handler.ts"
+    assert resolved.candidate_files[0].role == "primary"
+
+
+def test_workspace_resolver_handles_mixed_case_nvme_tls_without_tools(tmp_path):
+    tls_dir = tmp_path / "nof" / "nvmf_tcp" / "transport" / "tls"
+    tls_dir.mkdir(parents=True)
+    (tls_dir / "tls.c").write_text(
+        "int nvmf_tcp_tls_handshake(void) { return 0; }\n",
+        encoding="utf-8",
+    )
+    noise_dir = tmp_path / "examples" / "nv" / "me" / "tcp" / "tls"
+    noise_dir.mkdir(parents=True)
+    (noise_dir / "sample.c").write_text(
+        "int sample_nv_me_tcp_tls(void) { return 0; }\n",
+        encoding="utf-8",
+    )
+
+    obj = AnalysisObject(
+        id="obj_nvme_tls",
+        text="NVMeTcpTLS",
+        kind="module",
+    )
+
+    resolved = asyncio.run(WorkspaceScopeResolver()._resolve_object(
+        obj=obj,
+        ws_id="ws",
+        repo_path=str(tmp_path),
+        index=_GraphIndex(None),
+        limits=LLMLimits(max_files_per_object=4),
+        gitnexus_available=False,
+        external_agents_enabled=False,
+    ))
+    rel_paths = [
+        Path(c.path).relative_to(tmp_path).as_posix()
+        for c in resolved.candidate_files
+        if c.path
+    ]
+
+    assert rel_paths[0] == "nof/nvmf_tcp/transport/tls/tls.c"
     assert resolved.candidate_files[0].role == "primary"
 
 
