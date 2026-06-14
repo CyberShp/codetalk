@@ -5179,6 +5179,29 @@ def test_workspace_path_hint_normalizes_remote_code_urls(tmp_path):
     assert rel_hits == ["src/payment/webhook/handler.ts"]
 
 
+def test_workspace_path_hint_normalizes_remote_query_path_urls(tmp_path):
+    from app.services.workspace_scope_resolver import _normalize_path_hint, _path_hint_repo_hits_blocking
+
+    target_dir = tmp_path / "src" / "payment" / "webhook"
+    target_dir.mkdir(parents=True)
+    (target_dir / "handler.ts").write_text(
+        "export function handlePaymentWebhook() { return true; }\n",
+        encoding="utf-8",
+    )
+    azure_url = (
+        "https://dev.azure.com/acme/project/_git/repo"
+        "?path=%2Fsrc%2Fpayment%2Fwebhook%2Fhandler.ts"
+        "&version=GBmain&line=42&lineEnd=55"
+    )
+
+    assert _normalize_path_hint(azure_url) == "src/payment/webhook/handler.ts"
+
+    hits = _path_hint_repo_hits_blocking(str(tmp_path), [azure_url], 4)
+    rel_hits = [Path(hit).relative_to(tmp_path).as_posix() for hit in hits]
+
+    assert rel_hits == ["src/payment/webhook/handler.ts"]
+
+
 def test_workspace_path_hint_repairs_split_nof_nvmf_tls_hint(tmp_path):
     from app.services.workspace_scope_resolver import _path_hint_repo_hits_blocking
 

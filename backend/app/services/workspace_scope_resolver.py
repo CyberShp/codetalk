@@ -29,7 +29,7 @@ import subprocess
 from contextlib import suppress
 from pathlib import Path
 from typing import Iterable
-from urllib.parse import unquote, urlparse
+from urllib.parse import parse_qs, unquote, urlparse
 
 import aiosqlite
 import httpx
@@ -1316,7 +1316,10 @@ def _normalize_path_hint(hint: str) -> str:
     if parsed.scheme.lower() == "file":
         value = f"//{parsed.netloc}{parsed.path}" if parsed.netloc else parsed.path
     elif parsed.scheme.lower() in {"http", "https"}:
-        value = _normalize_remote_path_hint(parsed.path)
+        value = (
+            _normalize_remote_query_path_hint(parsed.query)
+            or _normalize_remote_path_hint(parsed.path)
+        )
     value = re.sub(r"[\r\n\t]+", "/", value)
     value = value.replace("\\", "/")
     value = re.sub(r"/+", "/", value)
@@ -1344,6 +1347,14 @@ def _normalize_remote_path_hint(path: str) -> str:
         if file_start < len(parts):
             return "/".join(parts[file_start:])
     return value
+
+
+def _normalize_remote_query_path_hint(query: str) -> str:
+    for value in parse_qs(query or "", keep_blank_values=False).get("path", []):
+        normalized = unquote(value or "").replace("\\", "/").strip("/")
+        if normalized:
+            return normalized
+    return ""
 
 
 def _path_hint_variants(normalized_hint: str) -> list[str]:
