@@ -10114,6 +10114,36 @@ class TestCoverageTestDesign:
         assert gap["source_window"]["path"] == "nvmf_tcp/transport/tls/tls.c"
         assert "nvmf_tcp_tls_recover" in json.dumps(gap["source_window"], ensure_ascii=False)
 
+    async def test_source_window_resolves_cuda_source_from_stale_path(self, tmp_path):
+        from app.services.coverage_analyzer import build_coverage_test_design
+
+        src = tmp_path / "gpu" / "tls"
+        src.mkdir(parents=True)
+        (src / "handshake.cu").write_text(
+            "void tls_handshake_kernel(int *state) {\n"
+            "    if (state == 0) {\n"
+            "        return;\n"
+            "    }\n"
+            "    state[0] = 1;\n"
+            "}\n",
+            encoding="utf-8",
+        )
+        modules = self._modules(
+            "feature,module,code_location,function,triggered,hit_count\n"
+            "tls,gpu,frontend/nof/gpu/tls/handshake.cu:1-6,tls_handshake_kernel,false,0\n"
+        )
+
+        design = await build_coverage_test_design(
+            modules,
+            workspace_id="ws-1",
+            repo_path=str(tmp_path),
+        )
+
+        gap = next(g for g in design["gaps"] if g.get("function_name") == "tls_handshake_kernel")
+        assert gap["source_window"]["available"] is True
+        assert gap["source_window"]["path"] == "gpu/tls/handshake.cu"
+        assert "tls_handshake_kernel" in json.dumps(gap["source_window"], ensure_ascii=False)
+
     async def test_source_window_basename_fallback_prefers_matching_function(self, tmp_path):
         from app.services.coverage_analyzer import build_coverage_test_design
 

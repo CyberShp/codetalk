@@ -91,11 +91,11 @@ SOURCE_WINDOW_BEFORE = 3
 SOURCE_WINDOW_AFTER = 60
 _SOURCE_EXTENSION_CANDIDATES = (
     "",
-    ".c", ".h", ".hh", ".hpp", ".hxx", ".cc", ".cpp", ".cxx", ".ipp", ".inl",
+    ".c", ".h", ".hh", ".hpp", ".hxx", ".cc", ".cpp", ".cxx", ".cu", ".cuh", ".ipp", ".inl",
     ".s", ".asm",
     ".py", ".go", ".rs", ".java",
     ".js", ".jsx", ".mjs", ".cjs", ".ts", ".tsx", ".mts", ".cts", ".cs",
-    ".rb", ".php", ".kt", ".kts", ".swift", ".m", ".scala",
+    ".rb", ".php", ".kt", ".kts", ".swift", ".m", ".mm", ".scala",
     ".vue", ".svelte", ".astro", ".mdx",
     ".ex", ".exs", ".erl", ".hrl",
 )
