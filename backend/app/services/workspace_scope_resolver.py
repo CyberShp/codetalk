@@ -235,9 +235,22 @@ def _camel_segment_to_snake(value: str) -> str:
     if not text:
         return ""
     text = re.sub(r"(?<=[a-z0-9])(?=[A-Z])", "_", text)
-    text = re.sub(r"(?<=[A-Z])(?=[A-Z][a-z])", "_", text)
+    text = _split_acronym_word_boundaries(text)
     text = re.sub(r"[-\s]+", "_", text)
     return text.lower()
+
+
+def _split_acronym_word_boundaries(text: str) -> str:
+    pieces: list[str] = []
+    last = 0
+    for match in re.finditer(r"(?<=[A-Z])(?=[A-Z][a-z])", text or ""):
+        index = match.start()
+        if index == 1:
+            continue
+        pieces.append(text[last:index])
+        last = index
+    pieces.append(text[last:])
+    return "_".join(part for part in pieces if part)
 
 
 # ---------------------------------------------------------------------------

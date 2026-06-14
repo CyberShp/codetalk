@@ -85,6 +85,19 @@ def test_camel_case_query_expands_to_path_and_symbol_variants():
     assert "payment/webhook" in terms
 
 
+def test_acronym_digit_camel_query_expands_to_path_and_symbol_variants():
+    from app.services.external_agent_discovery import expand_agent_query_terms
+
+    terms = expand_agent_query_terms("OAuth2TokenValidator")
+
+    assert "oauth2" in terms
+    assert "token" in terms
+    assert "validator" in terms
+    assert "oauth2_token_validator" in terms
+    assert "oauth2/token/validator" in terms
+    assert "o/auth2/token/validator" not in terms
+
+
 def test_natural_language_query_expansion_filters_instruction_words():
     from app.services.external_agent_discovery import expand_agent_query_terms
 
@@ -5513,6 +5526,42 @@ def test_workspace_path_keyword_ranking_handles_qualified_camel_module(tmp_path)
     rel_hits = [Path(hit).relative_to(tmp_path).as_posix() for hit in hits]
 
     assert rel_hits[0] == "services/payments/webhook/handler.ts"
+
+
+def test_acronym_digit_camel_keyword_expands_to_nested_path_variant():
+    from app.services.workspace_scope_resolver import _keyword_path_variants
+
+    variants = _keyword_path_variants("OAuth2TokenValidator")
+
+    assert "oauth2/token/validator" in variants
+    assert "oauth2_token_validator" in variants
+    assert "token/validator" in variants
+
+
+def test_workspace_path_keyword_ranking_handles_acronym_digit_camel_module(tmp_path):
+    from app.services.workspace_scope_resolver import _path_keyword_repo_hits_blocking
+
+    target_dir = tmp_path / "services" / "auth" / "oauth2" / "token" / "validator"
+    target_dir.mkdir(parents=True)
+    (target_dir / "service.ts").write_text(
+        "export function validateOAuth2Token(token) { return Boolean(token); }\n",
+        encoding="utf-8",
+    )
+    noise_dir = tmp_path / "services" / "auth" / "oauth2"
+    noise_dir.mkdir(parents=True, exist_ok=True)
+    (noise_dir / "oauth2_token_validator_notes.ts").write_text(
+        "export const notes = true;\n",
+        encoding="utf-8",
+    )
+
+    hits = _path_keyword_repo_hits_blocking(
+        str(tmp_path),
+        ["OAuth2TokenValidator"],
+        3,
+    )
+    rel_hits = [Path(hit).relative_to(tmp_path).as_posix() for hit in hits]
+
+    assert rel_hits[0] == "services/auth/oauth2/token/validator/service.ts"
 
 
 def test_workspace_path_keyword_search_includes_elixir_source_files(tmp_path):

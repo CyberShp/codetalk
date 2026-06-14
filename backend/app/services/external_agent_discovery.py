@@ -254,12 +254,25 @@ def _looks_like_pathlike_query(text: str) -> bool:
 
 def _split_ready_agent_query_text(text: str) -> str:
     value = text or ""
-    value = re.sub(r"([A-Z]+)([A-Z][a-z])", r"\1 \2", value)
+    value = _split_agent_acronym_word_boundaries(value)
     value = re.sub(r"([a-z0-9])([A-Z])", r"\1 \2", value)
     value = re.sub(r"([A-Za-z0-9]+)([^\x00-\x7F])", r"\1 \2", value)
     value = re.sub(r"([^\x00-\x7F])([A-Za-z0-9]+)", r"\1 \2", value)
     value = re.sub(r"[^\w/\\\-\s]+", " ", value, flags=re.UNICODE)
     return value
+
+
+def _split_agent_acronym_word_boundaries(text: str) -> str:
+    pieces: list[str] = []
+    last = 0
+    for match in re.finditer(r"(?<=[A-Z])(?=[A-Z][a-z])", text or ""):
+        index = match.start()
+        if index == 1:
+            continue
+        pieces.append(text[last:index])
+        last = index
+    pieces.append(text[last:])
+    return " ".join(part for part in pieces if part)
 
 
 def check_provider_health(
