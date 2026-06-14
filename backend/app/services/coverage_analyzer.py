@@ -627,7 +627,7 @@ _CALLBACK_ASSIGN_RE = re.compile(
     r"\.(?P<callback_prop>"
     r"(?:[A-Za-z_]\w*(?:cb|callback|handler|fn|op|ops|event|listener|consumer)|"
     r"(?:cb|callback|handler|fn|op|ops|event|listener|consumer))"
-    r")\s*=\s*(?P<symbol>[A-Za-z_]\w*)",
+    r")\s*=\s*&?\s*(?P<symbol>[A-Za-z_]\w*)",
     re.IGNORECASE,
 )
 _BROWSER_LIFECYCLE_CALLBACK_ASSIGN_RE = re.compile(

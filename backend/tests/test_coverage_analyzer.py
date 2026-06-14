@@ -8439,6 +8439,55 @@ class TestCoverageTestDesign:
         assert card["candidate_external_entries"][0]["entry_type"] == "callback"
         assert "SERVICE_REGISTER" in card["candidate_external_entries"][0]["evidence"]
 
+    async def test_address_of_callback_registration_prevents_final_gray_box(
+        self, tmp_path, monkeypatch
+    ):
+        from app.services.coverage_analyzer import build_coverage_test_design
+
+        monkeypatch.setattr(
+            "app.services.coverage_analyzer.settings.external_agents_enabled",
+            False,
+        )
+        src = tmp_path / "src"
+        src.mkdir()
+        (src / "session.c").write_text(
+            "void recover_session(void *ctx) {\n"
+            "    if (ctx == 0) {\n"
+            "        return;\n"
+            "    }\n"
+            "    cleanup(ctx);\n"
+            "}\n",
+            encoding="utf-8",
+        )
+        (src / "service.c").write_text(
+            "static struct service_ops ops = {\n"
+            "    .timeout_cb = &recover_session,\n"
+            "};\n\n"
+            "SERVICE_REGISTER(\"session\", &ops);\n",
+            encoding="utf-8",
+        )
+        modules = self._modules(
+            "feature,module,code_location,function,triggered,hit_count\n"
+            "recover,session,src/session.c:1-6,recover_session,false,0\n"
+        )
+
+        design = await build_coverage_test_design(
+            modules, workspace_id="ws-1", repo_path=str(tmp_path)
+        )
+
+        gap = [g for g in design["gaps"] if g.get("kind") == "function"][0]
+        assert gap["gray_box_required"] is False
+        assert gap["black_box_readiness"]["case_type"] == "black_box_ready"
+        entry = gap["entry_paths"][0]
+        assert entry["entry_kind"] == "callback"
+        assert entry["entry_symbol"] == "recover_session"
+        assert ".timeout_cb = &recover_session" in entry["evidence"]
+
+    async def test_callback_assignment_parser_accepts_address_of_symbol(self):
+        from app.services.coverage_analyzer import _callback_symbol_from_assignment
+
+        assert _callback_symbol_from_assignment(".timeout_cb = &recover_session") == "recover_session"
+
     async def test_event_dispatcher_register_entry_prevents_final_gray_box(self, tmp_path):
         from app.services.coverage_analyzer import build_coverage_test_design
 
