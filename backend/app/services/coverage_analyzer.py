@@ -5927,6 +5927,17 @@ def _decorated_entry_for_symbol(
     definition_text = lines[definition_line - 1] if 0 < definition_line <= len(lines) else ""
     decorators = _decorator_lines_before_definition(lines, definition_line)
     decorator_texts = [text for _, text in decorators]
+    serverless_decorator_entry = _serverless_decorator_entry_for_symbol(
+        repo_root,
+        source_file,
+        source_function_name,
+        lines,
+        definition_line,
+        definition_text,
+        decorators,
+    )
+    if serverless_decorator_entry:
+        return serverless_decorator_entry
     entry_kind = _classify_entry_decorator(decorator_texts)
     tool = "source-decorator"
     if not entry_kind:
@@ -6032,6 +6043,50 @@ def _decorated_entry_for_symbol(
         "tool": tool,
     }
     entry.update(metadata)
+    return entry
+
+
+def _serverless_decorator_entry_for_symbol(
+    repo_root: Path,
+    source_file: Path,
+    function_name: str,
+    lines: list[str],
+    definition_line: int,
+    definition_text: str,
+    decorators: list[tuple[int, str]],
+) -> dict | None:
+    decorator_text = " ".join(text.strip() for _, text in decorators)
+    lowered = decorator_text.lower()
+    if "functions_framework.http" not in lowered:
+        return None
+    definition_idx = max(0, definition_line - 1)
+    fn_end = len(lines)
+    for pos in range(definition_idx + 1, len(lines)):
+        if _is_sibling_definition_boundary(lines, definition_idx, pos):
+            fn_end = pos
+            break
+    source_text = "\n".join(lines[definition_idx:fn_end])
+    input_hints = _merge_ordered_strings(
+        _request_field_hints_from_text(source_text),
+        _signature_input_params(definition_text),
+    )
+    rel_file = _relative_path(repo_root, source_file)
+    evidence_line = decorators[0][0] if decorators else definition_line
+    evidence_text = decorator_text or definition_text
+    entry = {
+        "entry_kind": "route",
+        "entry_symbol": function_name,
+        "entry_file": rel_file,
+        "entry_label": f"serverless HTTP trigger {function_name}",
+        "external_trigger": f"HTTP {function_name}",
+        "call_line": definition_line,
+        "chain": [function_name],
+        "depth": 0,
+        "evidence": f"{rel_file}:{evidence_line} {evidence_text.strip()}",
+        "tool": "source-serverless-decorator",
+    }
+    if input_hints:
+        entry["input_hints"] = input_hints
     return entry
 
 

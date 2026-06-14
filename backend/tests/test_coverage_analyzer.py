@@ -4812,6 +4812,48 @@ class TestCoverageTestDesign:
         assert "order_id" in case_text
         assert "dry_run" in case_text
 
+    async def test_gcp_functions_framework_http_decorator_is_black_box_entry(self, tmp_path):
+        from app.services.coverage_analyzer import build_coverage_test_design
+
+        src = tmp_path / "functions"
+        src.mkdir()
+        (src / "payments.py").write_text(
+            "import functions_framework\n"
+            "\n"
+            "@functions_framework.http\n"
+            "def process_payment(request):\n"
+            "    body = request.get_json(silent=True) or {}\n"
+            "    amount = body.get('amount')\n"
+            "    dry_run = request.args.get('dry_run')\n"
+            "    if not amount:\n"
+            "        return ('missing', 400)\n"
+            "    return {'dry_run': dry_run, 'amount': amount}\n",
+            encoding="utf-8",
+        )
+        modules = self._modules(
+            "feature,module,code_location,function,triggered,hit_count\n"
+            "payments,functions,functions/payments.py:4-10,process_payment,false,0\n"
+        )
+
+        design = await build_coverage_test_design(
+            modules, workspace_id="ws-1", repo_path=str(tmp_path)
+        )
+
+        gap = [g for g in design["gaps"] if g.get("kind") == "function"][0]
+        assert gap["gray_box_required"] is False
+        assert gap["black_box_readiness"]["case_type"] == "black_box_ready"
+        entry = gap["entry_paths"][0]
+        assert entry["entry_kind"] == "route"
+        assert entry["entry_symbol"] == "process_payment"
+        assert entry["tool"] == "source-serverless-decorator"
+        assert entry["external_trigger"] == "HTTP process_payment"
+        assert "amount" in entry["input_hints"]
+        assert "dry_run" in entry["input_hints"]
+        assert "functions_framework.http" in entry["evidence"]
+        case_text = json.dumps(gap["black_box_cases"], ensure_ascii=False)
+        assert "amount" in case_text
+        assert "dry_run" in case_text
+
     async def test_js_arrow_route_handler_is_source_backed_with_input_hints(self, tmp_path):
         from app.services.coverage_analyzer import build_coverage_test_design
 
