@@ -647,7 +647,7 @@ _DISPATCH_TABLE_ENTRY_RE = re.compile(
 _DISPATCH_TABLE_HANDLER_RE = re.compile(
     r"(?:\.(?:handler|handlers|callback|cb|fn|func|function|method|op|ops|entry)\s*="
     r"|\b(?:handler|handlers|callback|cb|fn|func|function|method|op|ops|entry)\s*:)"
-    r"\s*&?(?P<symbol>[A-Za-z_]\w*(?:\.[A-Za-z_]\w*)?)\b",
+    r"\s*(?P<rhs>[^,;}]+)",
     re.IGNORECASE,
 )
 _DISPATCH_TABLE_KEY_RE = re.compile(
@@ -7628,6 +7628,17 @@ def _trace_entry_paths(
                 if kafka_entry:
                     entry_paths.append(kafka_entry)
                     continue
+                table_entry = _dispatch_table_entry_for_site(
+                    repo_root,
+                    site["abs_file"],
+                    site["line_number"],
+                    symbol,
+                    site["text"],
+                    caller_chain,
+                )
+                if table_entry:
+                    entry_paths.append(table_entry)
+                    continue
                 registration_entry = _registration_entry_for_site(
                     repo_root,
                     site["abs_file"],
@@ -7648,17 +7659,6 @@ def _trace_entry_paths(
                 )
                 if commander_entry:
                     entry_paths.append(commander_entry)
-                    continue
-                table_entry = _dispatch_table_entry_for_site(
-                    repo_root,
-                    site["abs_file"],
-                    site["line_number"],
-                    symbol,
-                    site["text"],
-                    caller_chain,
-                )
-                if table_entry:
-                    entry_paths.append(table_entry)
                     continue
                 filesystem_entry = _filesystem_entry_for_site(
                     repo_root,
@@ -9727,13 +9727,13 @@ def _dispatch_table_route_method_for_symbol(
 def _dispatch_table_handler_line_index(window: list[str], traced_symbol: str) -> int | None:
     for index, line in enumerate(window):
         for match in _DISPATCH_TABLE_HANDLER_RE.finditer(line or ""):
-            if _dispatch_table_handler_symbol_matches(match.group("symbol"), traced_symbol):
+            if _dispatch_table_handler_symbol_matches(match.group("rhs"), traced_symbol):
                 return index
     return None
 
 
 def _dispatch_table_handler_symbol_matches(handler_symbol: str, traced_symbol: str) -> bool:
-    value = str(handler_symbol or "").strip()
+    value = _strip_callback_assignment_prefix(str(handler_symbol or "").strip())
     traced = str(traced_symbol or "").strip()
     if not value or not traced:
         return False
