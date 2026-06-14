@@ -142,6 +142,8 @@ def _has_configuration_error(item: object) -> bool:
         return False
     if item.get("status") == "configuration_error":
         return True
+    if _has_missing_ccr_config_hint(item):
+        return True
     if str(item.get("launch_kind") or "") in {
         "powershell",
         "powershell-profile",
@@ -150,6 +152,13 @@ def _has_configuration_error(item: object) -> bool:
         if str(item.get("profile_config_path") or "").strip():
             return False
     return False
+
+
+def _has_missing_ccr_config_hint(item: dict) -> bool:
+    if str(item.get("profile_config_path") or "").strip():
+        return False
+    hint = str(item.get("config_hint") or "")
+    return "CCR_CONFIG_PATH is not set" in hint and "default config not found" in hint
 
 
 def _format_runtime_diagnostic(value: object) -> str:

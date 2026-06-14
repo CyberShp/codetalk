@@ -515,8 +515,7 @@ def _resolve_provider_command_attempt(command: str, provider: str | None = None)
                 "configured_argv": guarded_argv,
                 "executable": executable,
                 "path": configured_path,
-                "reason": config_error["reason"],
-                "config_path": config_error["config_path"],
+                **config_error,
             }
         if _is_windows_powershell_script(configured_path):
             return {
@@ -585,8 +584,7 @@ def _resolve_provider_command_attempt(command: str, provider: str | None = None)
                     "executable": executable,
                     "path": shell_resolution,
                     "launch_kind": "powershell",
-                    "reason": config_error["reason"],
-                    "config_path": config_error["config_path"],
+                    **config_error,
                 }
             shell_argv = _windows_shell_agent_argv(guarded_argv, provider=provider)
             return {
@@ -617,8 +615,7 @@ def _resolve_provider_command_attempt(command: str, provider: str | None = None)
             "argv": guarded_argv,
             "executable": executable,
             "path": resolved,
-            "reason": config_error["reason"],
-            "config_path": config_error["config_path"],
+            **config_error,
         }
     if _is_windows_powershell_script(resolved):
         return {
@@ -918,7 +915,25 @@ def _provider_command_configuration_error(
             "reason": f"ccr config file not found: {config_path}",
             "config_path": config_path,
         }
-    return None
+    profile_config_path = _windows_profile_ccr_config_path()
+    if profile_config_path:
+        return None
+    default_config_path = _default_ccr_config_path()
+    if not default_config_path:
+        return None
+    try:
+        if Path(default_config_path).expanduser().is_file():
+            return None
+    except OSError:
+        pass
+    return {
+        "reason": f"ccr config file not found: {default_config_path}",
+        "config_path": default_config_path,
+        "config_hint": (
+            "CCR_CONFIG_PATH is not set and default config not found: "
+            f"{default_config_path}"
+        ),
+    }
 
 
 def _provider_command_configuration_hint(
