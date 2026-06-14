@@ -7104,6 +7104,82 @@ class TestCoverageTestDesign:
         case_text = json.dumps(gap["black_box_cases"], ensure_ascii=False)
         assert "POST /tenants/{tenantId}/payments" in case_text
 
+    async def test_spring_request_mapping_value_method_feeds_black_box_trigger(
+        self, tmp_path
+    ):
+        from app.services.coverage_analyzer import build_coverage_test_design
+
+        src = tmp_path / "src"
+        src.mkdir()
+        (src / "PaymentController.java").write_text(
+            "class PaymentController {\n"
+            "  @RequestMapping(value = \"/payments/{paymentId}\", method = RequestMethod.POST)\n"
+            "  public Response confirmPayment(String paymentId, PaymentRequest request) {\n"
+            "    if (request == null) {\n"
+            "      return Response.badRequest().build();\n"
+            "    }\n"
+            "    return Response.ok().build();\n"
+            "  }\n"
+            "}\n",
+            encoding="utf-8",
+        )
+        modules = self._modules(
+            "feature,module,code_location,function,triggered,hit_count\n"
+            "payments,controller,src/PaymentController.java:3-8,confirmPayment,false,0\n"
+        )
+
+        design = await build_coverage_test_design(
+            modules, workspace_id="ws-1", repo_path=str(tmp_path)
+        )
+
+        gap = [g for g in design["gaps"] if g.get("kind") == "function"][0]
+        assert gap["black_box_readiness"]["case_type"] == "black_box_ready"
+        entry = gap["entry_paths"][0]
+        assert entry["entry_kind"] == "route"
+        assert entry["external_trigger"] == "POST /payments/{paymentId}"
+        assert "paymentId" in entry["input_hints"]
+        case_text = json.dumps(gap["black_box_cases"], ensure_ascii=False)
+        assert "POST /payments/{paymentId}" in case_text
+        assert "paymentId" in case_text
+
+    async def test_spring_class_request_mapping_value_prefix_feeds_black_box_trigger(
+        self, tmp_path
+    ):
+        from app.services.coverage_analyzer import build_coverage_test_design
+
+        src = tmp_path / "src"
+        src.mkdir()
+        (src / "PaymentController.java").write_text(
+            "@RequestMapping(value = \"/tenants/{tenantId}\")\n"
+            "class PaymentController {\n"
+            "  @RequestMapping(value = \"/payments/{paymentId}\", method = RequestMethod.POST)\n"
+            "  public Response confirmPayment(String tenantId, String paymentId, PaymentRequest request) {\n"
+            "    if (request == null) {\n"
+            "      return Response.badRequest().build();\n"
+            "    }\n"
+            "    return Response.ok().build();\n"
+            "  }\n"
+            "}\n",
+            encoding="utf-8",
+        )
+        modules = self._modules(
+            "feature,module,code_location,function,triggered,hit_count\n"
+            "payments,controller,src/PaymentController.java:4-9,confirmPayment,false,0\n"
+        )
+
+        design = await build_coverage_test_design(
+            modules, workspace_id="ws-1", repo_path=str(tmp_path)
+        )
+
+        gap = [g for g in design["gaps"] if g.get("kind") == "function"][0]
+        assert gap["black_box_readiness"]["case_type"] == "black_box_ready"
+        entry = gap["entry_paths"][0]
+        assert entry["external_trigger"] == "POST /tenants/{tenantId}/payments/{paymentId}"
+        assert "tenantId" in entry["input_hints"]
+        assert "paymentId" in entry["input_hints"]
+        case_text = json.dumps(gap["black_box_cases"], ensure_ascii=False)
+        assert "POST /tenants/{tenantId}/payments/{paymentId}" in case_text
+
     async def test_aspnet_http_attribute_is_black_box_route_without_caller(self, tmp_path):
         from app.services.coverage_analyzer import build_coverage_test_design
 

@@ -7809,6 +7809,15 @@ def _route_path_from_text(text: str) -> str | None:
             True,
         ),
         (
+            r"[@\[]\s*(?:Controller|RequestMapping|Route|"
+            r"Get|Post|Put|Patch|Delete|Head|Options|"
+            r"GetMapping|PostMapping|PutMapping|PatchMapping|DeleteMapping|"
+            r"HttpGet|HttpPost|HttpPut|HttpPatch|HttpDelete)\s*"
+            r"\([^)]*\b(?:value|path)\s*=\s*(?:\{\s*)?"
+            r"(?P<quote>['\"])(?P<path>(?:\\.|(?!(?P=quote)).)*?)(?P=quote)",
+            True,
+        ),
+        (
             r"\b(?:get|post|put|patch|delete|head|options|any|route|api_route|websocket)\s+"
             r"(['\"])(?P<path>(?:\\.|(?!\1).)*?)\1",
             True,
