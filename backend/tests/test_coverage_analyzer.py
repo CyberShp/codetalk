@@ -8794,6 +8794,49 @@ class TestCoverageTestDesign:
         assert gap["entry_paths"][0]["entry_kind"] == "scheduler"
         assert "scheduler.add_job" in gap["entry_paths"][0]["evidence"]
 
+    async def test_python_sched_enter_registration_keeps_delay_hint_without_agent(
+        self, tmp_path, monkeypatch
+    ):
+        from app.services.coverage_analyzer import build_coverage_test_design
+
+        monkeypatch.setattr(
+            "app.services.coverage_analyzer.settings.external_agents_enabled",
+            False,
+        )
+        src = tmp_path / "src"
+        src.mkdir()
+        (src / "digest.py").write_text(
+            "def send_digest(payload):\n"
+            "    if not payload:\n"
+            "        return 'missing'\n"
+            "    return 'sent'\n",
+            encoding="utf-8",
+        )
+        (src / "runtime.py").write_text(
+            "import sched\n"
+            "from digest import send_digest\n\n"
+            "scheduler = sched.scheduler()\n"
+            "scheduler.enter(60, 1, send_digest, argument=({'force': True},))\n",
+            encoding="utf-8",
+        )
+        modules = self._modules(
+            "feature,module,code_location,function,triggered,hit_count\n"
+            "digest,digest,src/digest.py:1-4,send_digest,false,0\n"
+        )
+
+        design = await build_coverage_test_design(
+            modules, workspace_id="ws-1", repo_path=str(tmp_path)
+        )
+
+        gap = [g for g in design["gaps"] if g.get("kind") == "function"][0]
+        assert gap["gray_box_required"] is False
+        assert gap["black_box_readiness"]["case_type"] == "black_box_ready"
+        entry = gap["entry_paths"][0]
+        assert entry["entry_kind"] == "scheduler"
+        assert entry["entry_symbol"] == "send_digest"
+        assert "scheduler.enter(60, 1, send_digest" in entry["evidence"]
+        assert "60" in entry["input_hints"]
+
     async def test_apscheduler_function_ref_add_job_keeps_job_id_and_signature_hints(self, tmp_path):
         from app.services.coverage_analyzer import build_coverage_test_design
 

@@ -7244,7 +7244,7 @@ def _signal_registration_input_hints(registration_line: str) -> list[str]:
 
 
 def _timer_interval_input_hints(registration_line: str, entry_type: str) -> list[str]:
-    if entry_type != "timer":
+    if entry_type not in {"timer", "scheduler"}:
         return []
     hints: list[str] = []
     seen: set[str] = set()
@@ -7269,6 +7269,16 @@ def _timer_interval_input_hints(registration_line: str, entry_type: str) -> list
             hints.append(value)
     for match in re.finditer(
         r"\.\s*(?:call_later|call_at)\s*\(\s*(?P<delay>\d+(?:\.\d+)?)\b",
+        registration_line or "",
+        re.IGNORECASE,
+    ):
+        value = match.group("delay")
+        if value in seen:
+            continue
+        seen.add(value)
+        hints.append(value)
+    for match in re.finditer(
+        r"\.\s*(?:enter|enterabs)\s*\(\s*(?P<delay>\d+(?:\.\d+)?)\b",
         registration_line or "",
         re.IGNORECASE,
     ):
