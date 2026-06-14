@@ -5435,7 +5435,13 @@ def _cli_option_input_hints(abs_file: str, enclosing_fn: str | None) -> list[str
         if _is_sibling_definition_boundary(lines, fn_start, pos):
             fn_end = pos
             break
-    return _cli_option_input_hints_from_text("\n".join(lines[window_start:fn_end]))
+    hints = _cli_option_input_hints_from_text("\n".join(lines[window_start:fn_end]))
+    if Path(abs_file).suffix.lower() == ".rs":
+        hints = _merge_ordered_strings(
+            hints,
+            _rust_clap_input_hints_from_text("\n".join(lines)),
+        )
+    return hints
 
 
 def _cli_option_input_hints_from_text(text: str) -> list[str]:
@@ -5463,6 +5469,10 @@ def _cli_option_input_hints_from_text(text: str) -> list[str]:
         if hint and hint not in seen:
             seen.add(hint)
             hints.append(hint)
+    for hint in _rust_clap_input_hints_from_text(text):
+        if hint not in seen:
+            seen.add(hint)
+            hints.append(hint)
     for hint in _getopt_input_hints_from_text(text):
         if hint not in seen:
             seen.add(hint)
@@ -5472,6 +5482,57 @@ def _cli_option_input_hints_from_text(text: str) -> list[str]:
             seen.add(hint)
             hints.append(hint)
     return hints[:12]
+
+
+def _rust_clap_input_hints_from_text(text: str) -> list[str]:
+    hints: list[str] = []
+    seen: set[str] = set()
+    pending_attrs: list[str] = []
+
+    def add(value: str | None) -> None:
+        if value and value not in seen:
+            seen.add(value)
+            hints.append(value)
+
+    for raw_line in str(text or "").splitlines():
+        line = raw_line.strip()
+        if not line:
+            continue
+        attr_match = re.match(r"#\[(?P<attr>(?:arg|clap|structopt)\s*\([^]]*\))\]", line)
+        if attr_match:
+            pending_attrs.append(attr_match.group("attr"))
+            continue
+        field_match = re.match(
+            r"(?:(?:pub|pub\([^)]*\))\s+)?(?P<name>[A-Za-z_]\w*)\s*:",
+            line,
+        )
+        if not field_match:
+            if not line.startswith("#["):
+                pending_attrs.clear()
+            continue
+        field_name = field_match.group("name")
+        for attr in pending_attrs:
+            add(_rust_clap_long_option_from_attr(attr, field_name))
+        pending_attrs.clear()
+    return hints[:12]
+
+
+def _rust_clap_long_option_from_attr(attr: str, field_name: str) -> str | None:
+    text = str(attr or "")
+    if re.search(r"\bskip\b", text):
+        return None
+    if not re.search(r"\blong\b", text):
+        return None
+    explicit = re.search(
+        r"\blong\s*=\s*(?P<quote>['\"])(?P<value>[A-Za-z0-9][\w-]*)\1",
+        text,
+    )
+    if explicit:
+        return f"--{explicit.group('value')}"
+    normalized = re.sub(r"_+", "-", str(field_name or "").strip())
+    if not re.fullmatch(r"[A-Za-z][A-Za-z0-9-]*", normalized):
+        return None
+    return f"--{normalized}"
 
 
 def _argv_input_hints_from_text(text: str) -> list[str]:

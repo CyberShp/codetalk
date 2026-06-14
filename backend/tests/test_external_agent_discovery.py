@@ -8142,6 +8142,109 @@ def test_coverage_local_top_level_argparse_keeps_cli_input_hints(tmp_path, monke
     assert "--input-file" in json.dumps(gap["black_box_cases"], ensure_ascii=False)
 
 
+def test_coverage_local_rust_clap_derive_keeps_cli_option_hint(tmp_path, monkeypatch):
+    import app.services.coverage_analyzer as coverage_mod
+    from app.services.coverage_analyzer import build_coverage_test_design
+
+    src = tmp_path / "src"
+    src.mkdir()
+    (src / "main.rs").write_text(
+        "use clap::Parser;\n"
+        "\n"
+        "#[derive(Parser)]\n"
+        "struct Cli {\n"
+        "    #[arg(long)]\n"
+        "    input_file: String,\n"
+        "}\n"
+        "\n"
+        "// filler 01\n"
+        "// filler 02\n"
+        "// filler 03\n"
+        "// filler 04\n"
+        "// filler 05\n"
+        "// filler 06\n"
+        "// filler 07\n"
+        "// filler 08\n"
+        "// filler 09\n"
+        "// filler 10\n"
+        "// filler 11\n"
+        "// filler 12\n"
+        "// filler 13\n"
+        "// filler 14\n"
+        "// filler 15\n"
+        "// filler 16\n"
+        "// filler 17\n"
+        "// filler 18\n"
+        "// filler 19\n"
+        "// filler 20\n"
+        "// filler 21\n"
+        "// filler 22\n"
+        "// filler 23\n"
+        "// filler 24\n"
+        "// filler 25\n"
+        "// filler 26\n"
+        "// filler 27\n"
+        "// filler 28\n"
+        "// filler 29\n"
+        "// filler 30\n"
+        "// filler 31\n"
+        "// filler 32\n"
+        "// filler 33\n"
+        "// filler 34\n"
+        "// filler 35\n"
+        "// filler 36\n"
+        "// filler 37\n"
+        "// filler 38\n"
+        "// filler 39\n"
+        "// filler 40\n"
+        "\n"
+        "fn normalize_path(path: &str) -> String {\n"
+        "    if path.is_empty() { return \"default.txt\".to_string(); }\n"
+        "    path.trim().to_string()\n"
+        "}\n"
+        "\n"
+        "fn main() {\n"
+        "    let cli = Cli::parse();\n"
+        "    println!(\"{}\", normalize_path(&cli.input_file));\n"
+        "}\n",
+        encoding="utf-8",
+    )
+
+    async def no_agent(_request, **_kwargs):
+        return []
+
+    monkeypatch.setattr(coverage_mod, "run_external_agent_discovery", no_agent, raising=False)
+    modules = _coverage_modules(
+        "feature,module,code_location,function,triggered,hit_count\n"
+        "cli,main,src/main.rs:49-52,normalize_path,false,0\n"
+    )
+
+    design = asyncio.run(
+        build_coverage_test_design(modules, workspace_id="ws-1", repo_path=str(tmp_path))
+    )
+
+    gap = [g for g in design["gaps"] if g.get("function_name") == "normalize_path"][0]
+    assert gap["black_box_readiness"]["case_type"] == "black_box_ready"
+    assert gap["entry_paths"][0]["entry_kind"] == "cli"
+    assert gap["entry_paths"][0]["entry_symbol"] == "main"
+    assert "--input-file" in gap["entry_paths"][0]["input_hints"]
+    assert "--input-file" in json.dumps(gap["black_box_cases"], ensure_ascii=False)
+
+
+def test_rust_clap_input_hints_support_explicit_long_option_name():
+    from app.services.coverage_analyzer import _cli_option_input_hints_from_text
+
+    hints = _cli_option_input_hints_from_text(
+        "#[derive(Parser)]\n"
+        "struct Cli {\n"
+        "    #[arg(short, long = \"config\")]\n"
+        "    config_path: String,\n"
+        "}\n"
+    )
+
+    assert hints == ["--config"]
+
+
 def test_coverage_local_python_handler_map_generates_table_entry(tmp_path, monkeypatch):
     import app.services.coverage_analyzer as coverage_mod
     from app.services.coverage_analyzer import build_coverage_test_design
