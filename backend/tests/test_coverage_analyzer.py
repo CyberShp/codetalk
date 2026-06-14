@@ -7725,6 +7725,49 @@ class TestCoverageTestDesign:
         case_text = json.dumps(gap["black_box_cases"], ensure_ascii=False)
         assert "session_timer" in case_text
 
+    async def test_js_set_interval_registration_is_timer_entry_without_agent(
+        self, tmp_path, monkeypatch
+    ):
+        from app.services.coverage_analyzer import build_coverage_test_design
+
+        monkeypatch.setattr(
+            "app.services.coverage_analyzer.settings.external_agents_enabled",
+            False,
+        )
+        src = tmp_path / "src"
+        src.mkdir()
+        (src / "metrics.ts").write_text(
+            "export function collectMetrics(sample) {\n"
+            "  if (!sample) {\n"
+            "    return 'missing';\n"
+            "  }\n"
+            "  return 'collected';\n"
+            "}\n",
+            encoding="utf-8",
+        )
+        (src / "timers.ts").write_text(
+            "import { collectMetrics } from './metrics';\n\n"
+            "setInterval(collectMetrics, 30000);\n",
+            encoding="utf-8",
+        )
+        modules = self._modules(
+            "feature,module,code_location,function,triggered,hit_count\n"
+            "metrics,metrics,src/metrics.ts:1-6,collectMetrics,false,0\n"
+        )
+
+        design = await build_coverage_test_design(
+            modules, workspace_id="ws-1", repo_path=str(tmp_path)
+        )
+
+        gap = [g for g in design["gaps"] if g.get("kind") == "function"][0]
+        assert gap["gray_box_required"] is False
+        assert gap["black_box_readiness"]["case_type"] == "black_box_ready"
+        entry = gap["entry_paths"][0]
+        assert entry["entry_kind"] == "timer"
+        assert entry["entry_symbol"] == "collectMetrics"
+        assert "setInterval(collectMetrics, 30000)" in entry["evidence"]
+        assert "30000" in entry["input_hints"]
+
     async def test_argparse_main_entry_feeds_black_box_input_hints(self, tmp_path):
         from app.services.coverage_analyzer import build_coverage_test_design
 

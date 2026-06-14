@@ -7214,6 +7214,23 @@ def _signal_registration_input_hints(registration_line: str) -> list[str]:
     return hints[:6]
 
 
+def _timer_interval_input_hints(registration_line: str, entry_type: str) -> list[str]:
+    if entry_type != "timer":
+        return []
+    hints: list[str] = []
+    seen: set[str] = set()
+    for match in re.finditer(
+        r"\bset(?:Interval|Timeout)\s*\([^,]+,\s*(?P<delay>\d{2,})\b",
+        registration_line or "",
+    ):
+        value = match.group("delay")
+        if value in seen:
+            continue
+        seen.add(value)
+        hints.append(value)
+    return hints[:4]
+
+
 def _queue_registration_input_hints(site_text: str, entry_type: str) -> list[str]:
     if entry_type != "queue":
         return []
@@ -7552,6 +7569,7 @@ def _trace_entry_paths(
                         channel_hints = _merge_ordered_strings(
                             _registration_channel_input_hints(site["text"], entry_kind),
                             _queue_registration_input_hints(site["text"], entry_kind),
+                            _timer_interval_input_hints(site["text"], entry_kind),
                             _channel_registration_context_input_hints(
                                 site["abs_file"],
                                 site["line_number"],
@@ -9311,6 +9329,7 @@ def _registration_entry_for_site(
             _signal_registration_input_hints(registration_line),
             _posix_signal_input_hints(registration_line),
             _node_process_lifecycle_input_hints(registration_line),
+            _timer_interval_input_hints(registration_line, entry_type),
         )
         if entry_type == "message":
             channel_hints = _merge_ordered_strings(
