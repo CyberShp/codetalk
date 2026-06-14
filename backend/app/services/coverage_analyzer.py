@@ -561,6 +561,7 @@ _REGISTRATION_LINE_RE = re.compile(
     r"|\bQueue\s*\("
     r"|\.\s*process\s*\("
     r"|\b(?:std\s*::\s*)?j?thread\s+[A-Za-z_]\w*\s*\("
+    r"|\b(?:(?:std|tokio)\s*::\s*)?(?:thread|task)\s*::\s*spawn\s*\("
     r"|\b(?:threading|multiprocessing)\s*\.\s*(?:Thread|Process)\s*\("
     r"|\b(?:Thread|Process)\s*\("
     r"|\.\s*submit\s*\("
@@ -7308,6 +7309,7 @@ def _looks_like_worker_registration(text: str) -> bool:
     return bool(re.search(
         r"\b(?:threading|multiprocessing)\s*\.\s*(?:Thread|Process)\s*\("
         r"|\b(?:std\s*::\s*)?j?thread\s+[A-Za-z_]\w*\s*\("
+        r"|\b(?:(?:std|tokio)\s*::\s*)?(?:thread|task)\s*::\s*spawn\s*\("
         r"|\b(?:Thread|Process)\s*\("
         r"|\.\s*submit\s*\("
         r"|\.\s*(?:create_task|ensure_future)\s*\("
@@ -7326,6 +7328,9 @@ def _worker_registration_symbol_from_text(text: str, caller_chain: list[str]) ->
         r"\btarget\s*=\s*(?P<symbol>[A-Za-z_]\w*(?:\.[A-Za-z_]\w*)?)\b",
         r"\b(?:std\s*::\s*)?j?thread\s+[A-Za-z_]\w*\s*\(\s*"
         r"(?P<symbol>[A-Za-z_]\w*(?:(?:\.|::)[A-Za-z_]\w*)?)\b",
+        r"\b(?:(?:std|tokio)\s*::\s*)?(?:thread|task)\s*::\s*spawn\s*\(\s*"
+        r"(?:async\s+)?(?:move\s+)?(?:\|\s*\|\s*)?(?:\{[^{}]{0,500}?\b)?"
+        r"(?P<symbol>[A-Za-z_]\w*(?:(?:\.|::)[A-Za-z_]\w*)?)\s*\(",
         r"\.\s*submit\s*\(\s*(?P<symbol>[A-Za-z_]\w*(?:\.[A-Za-z_]\w*)?)\b",
         r"(?:\.|\b)(?:create_task|ensure_future)\s*\(\s*"
         r"(?P<symbol>[A-Za-z_]\w*(?:\.[A-Za-z_]\w*)?)\s*\(",

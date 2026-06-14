@@ -8868,6 +8868,47 @@ class TestCoverageTestDesign:
         assert entry["entry_symbol"] == "processBatch"
         assert "std::thread worker(processBatch, 100)" in entry["evidence"]
 
+    async def test_rust_thread_spawn_is_worker_entry_without_agent(
+        self, tmp_path, monkeypatch
+    ):
+        from app.services.coverage_analyzer import build_coverage_test_design
+
+        monkeypatch.setattr(
+            "app.services.coverage_analyzer.settings.external_agents_enabled",
+            False,
+        )
+        src = tmp_path / "src"
+        src.mkdir()
+        (src / "runtime.rs").write_text(
+            "use std::thread;\n\n"
+            "fn process_batch(limit: usize) {\n"
+            "    if limit == 0 {\n"
+            "        return;\n"
+            "    }\n"
+            "    flush(limit);\n"
+            "}\n\n"
+            "fn start_runtime() {\n"
+            "    thread::spawn(|| process_batch(100));\n"
+            "}\n",
+            encoding="utf-8",
+        )
+        modules = self._modules(
+            "feature,module,code_location,function,triggered,hit_count\n"
+            "batch,runtime,src/runtime.rs:3-8,process_batch,false,0\n"
+        )
+
+        design = await build_coverage_test_design(
+            modules, workspace_id="ws-1", repo_path=str(tmp_path)
+        )
+
+        gap = [g for g in design["gaps"] if g.get("kind") == "function"][0]
+        assert gap["gray_box_required"] is False
+        assert gap["black_box_readiness"]["case_type"] == "black_box_ready"
+        entry = gap["entry_paths"][0]
+        assert entry["entry_kind"] == "worker"
+        assert entry["entry_symbol"] == "process_batch"
+        assert "thread::spawn(|| process_batch(100))" in entry["evidence"]
+
     async def test_asyncio_create_task_registration_is_worker_entry_without_agent(self, tmp_path):
         from app.services.coverage_analyzer import build_coverage_test_design
 
