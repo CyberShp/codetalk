@@ -206,6 +206,20 @@ def _path_singular_plural_variants(path_like: str) -> list[str]:
     return list(dict.fromkeys(out))
 
 
+def _strip_source_location_suffix(value: str) -> str:
+    text = (value or "").strip()
+    if not text:
+        return ""
+    text = re.sub(
+        r"(?P<path>\b[^:#\s]+?\.(?:c|h|cc|cpp|hpp|py|go|rs|java|kt|kts|ts|tsx|js|jsx|mjs|cjs|mts|cts|rb|php|cs|proto|graphql|gql|idl|s|asm|cu|cuh))"
+        r"(?::\d+(?::\d+)?)?(?:[#:]?[A-Za-z_][\w$.-]*)?$",
+        r"\g<path>",
+        text,
+        flags=re.IGNORECASE,
+    )
+    return text
+
+
 def _keyword_path_variants(keyword: str) -> list[str]:
     value = (keyword or "").strip().replace("\\", "/")
     if not value:
@@ -221,6 +235,9 @@ def _keyword_path_variants(keyword: str) -> list[str]:
         variants.append(normalized)
 
     add(value)
+    source_location_path = _strip_source_location_suffix(value)
+    if source_location_path and source_location_path != value:
+        add(source_location_path)
     qualified_path = re.sub(r"[:#]+", "/", value)
     add(qualified_path)
     dotted = qualified_path.replace(".", "/")
