@@ -9293,6 +9293,7 @@ def _registration_entry_for_site(
         channel_hints = _merge_ordered_strings(
             _registration_channel_input_hints(registration_line, entry_type),
             _signal_registration_input_hints(registration_line),
+            _posix_signal_input_hints(registration_line),
         )
         if entry_type == "message":
             channel_hints = _merge_ordered_strings(
@@ -9561,6 +9562,18 @@ def _registry_callback_symbol_from_assignment(text: str) -> str | None:
     return match.group("symbol") if match else None
 
 
+def _posix_signal_input_hints(text: str) -> list[str]:
+    hints: list[str] = []
+    seen: set[str] = set()
+    for match in re.finditer(r"\b(?P<name>SIG[A-Z0-9_]+)\b", text or ""):
+        name = match.group("name")
+        if name in seen:
+            continue
+        seen.add(name)
+        hints.append(name)
+    return hints[:6]
+
+
 def _registered_entry_type(registration_line: str, window: list[str]) -> str:
     text = (registration_line + "\n" + "\n".join(window)).lower()
     if re.search(r"\.\s*(?:get|post|put|patch|delete|head|options|any|route)\s*\(", text):
@@ -9573,6 +9586,8 @@ def _registered_entry_type(registration_line: str, window: list[str]) -> str:
         return "api"
     if "cli" in text or "cmd" in text:
         return "cli"
+    if _posix_signal_input_hints(registration_line + "\n" + "\n".join(window)):
+        return "callback"
     if re.search(r"\.\s*(?:on|once)\s*\(", text):
         return "message"
     if (

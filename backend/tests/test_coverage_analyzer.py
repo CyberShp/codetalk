@@ -8251,6 +8251,45 @@ class TestCoverageTestDesign:
         assert "signal.signal" in entry["evidence"]
         assert "SIGTERM" in entry["input_hints"]
 
+    async def test_node_signal_handler_registration_is_callback_entry_without_agent(
+        self, tmp_path, monkeypatch
+    ):
+        from app.services.coverage_analyzer import build_coverage_test_design
+
+        monkeypatch.setattr(
+            "app.services.coverage_analyzer.settings.external_agents_enabled",
+            False,
+        )
+        src = tmp_path / "src"
+        src.mkdir()
+        (src / "signals.js").write_text(
+            "function shutdown(signal) {\n"
+            "  if (signal === 'SIGTERM') {\n"
+            "    return 'term';\n"
+            "  }\n"
+            "  return 'other';\n"
+            "}\n\n"
+            "process.on('SIGTERM', shutdown);\n",
+            encoding="utf-8",
+        )
+        modules = self._modules(
+            "feature,module,code_location,function,triggered,hit_count\n"
+            "runtime,signals,src/signals.js:1-6,shutdown,false,0\n"
+        )
+
+        design = await build_coverage_test_design(
+            modules, workspace_id="ws-1", repo_path=str(tmp_path)
+        )
+
+        gap = [g for g in design["gaps"] if g.get("kind") == "function"][0]
+        assert gap["gray_box_required"] is False
+        assert gap["black_box_readiness"]["case_type"] == "black_box_ready"
+        entry = gap["entry_paths"][0]
+        assert entry["entry_kind"] == "callback"
+        assert entry["entry_symbol"] == "shutdown"
+        assert "process.on('SIGTERM', shutdown)" in entry["evidence"]
+        assert "SIGTERM" in entry["input_hints"]
+
     async def test_property_callback_assignment_is_black_box_entry_without_agent(
         self, tmp_path, monkeypatch
     ):
