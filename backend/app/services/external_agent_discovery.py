@@ -1107,7 +1107,7 @@ def _ccr_code_has_claude_print_mode(argv: list[str]) -> bool:
     try:
         separator = list(argv).index("--")
     except ValueError:
-        return False
+        return any(str(token) in {"-p", "--print"} for token in argv)
     return any(str(token) in {"-p", "--print"} for token in argv[separator + 1:])
 
 

@@ -1327,6 +1327,28 @@ def test_provider_command_strips_quotes_from_absolute_executable_path(tmp_path, 
     assert health["status"] == "available"
     assert health["argv"][0] == str(agent)
     assert health["argv"][1:5] == ["code", "-p", "--output-format", "json"]
+    assert health["argv"].count("-p") == 1
+    assert "--" not in health["argv"]
+
+
+def test_provider_health_keeps_explicit_ccr_print_mode_without_duplicate_forwarded_print(tmp_path, monkeypatch):
+    from app.services.external_agent_discovery import check_provider_health
+
+    ccr = tmp_path / "bin" / "ccr.cmd"
+    ccr.parent.mkdir()
+    ccr.write_text("@echo off\n", encoding="utf-8")
+    _set_existing_ccr_config(tmp_path, monkeypatch)
+    monkeypatch.setattr(
+        "app.services.external_agent_discovery.shutil.which",
+        lambda cmd: str(ccr) if cmd == "ccr" else None,
+    )
+
+    health = check_provider_health("claude-code", "ccr code -p --output-format json")
+
+    assert health["status"] == "available"
+    assert health["argv"][0:4] == [str(ccr), "code", "-p", "--output-format"]
+    assert health["argv"].count("-p") == 1
+    assert "--" not in health["argv"]
 
 
 def test_provider_health_appends_claude_readonly_cli_guard(monkeypatch):
