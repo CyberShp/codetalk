@@ -166,6 +166,9 @@ def expand_agent_query_terms(text: str) -> list[str]:
         if preserve_pathlike_stopwords
         or not (part.isascii() and part in _QUERY_STOPWORDS_EN)
     ]
+    compact_parts = _split_compact_agent_query_parts(raw_parts)
+    if compact_parts:
+        raw_parts = compact_parts
     seen: set[str] = set()
     out: list[str] = []
 
@@ -211,6 +214,31 @@ def expand_agent_query_terms(text: str) -> list[str]:
         if "tls" in variant:
             add("tls")
     return out[:48]
+
+
+def _split_compact_agent_query_parts(parts: list[str]) -> list[str]:
+    if len(parts) != 1:
+        return []
+    token = parts[0].strip().lower()
+    if not token or not token.isascii() or not token.isalnum():
+        return []
+    vocabulary = (
+        "nvme", "nvmf", "iscsi", "rdma",
+        "tcp", "udp", "tls", "ssl",
+        "grpc", "http", "rpc", "api",
+    )
+
+    def split_at(offset: int, chosen: list[str]) -> list[str] | None:
+        if offset == len(token):
+            return chosen if len(chosen) >= 2 else None
+        for word in vocabulary:
+            if token.startswith(word, offset):
+                found = split_at(offset + len(word), [*chosen, word])
+                if found:
+                    return found
+        return None
+
+    return split_at(0, []) or []
 
 
 def _looks_like_pathlike_query(text: str) -> bool:

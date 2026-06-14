@@ -45,6 +45,19 @@ def test_nvme_tcp_tls_query_expands_to_nvmf_transport_variants():
     assert "transport/tls" in terms
 
 
+def test_compact_nvme_tcp_tls_query_expands_to_nvmf_transport_variants():
+    from app.services.external_agent_discovery import expand_agent_query_terms
+
+    terms = expand_agent_query_terms("nvmetcptls")
+
+    assert "nvme" in terms
+    assert "tcp" in terms
+    assert "tls" in terms
+    assert "nvmf_tcp_tls" in terms
+    assert "nvmf_tcp/transport/tls" in terms
+    assert "transport/tls" in terms
+
+
 def test_nvme_tcp_tls_query_expands_inside_chinese_text_without_spaces():
     from app.services.external_agent_discovery import expand_agent_query_terms
 
@@ -4954,6 +4967,32 @@ def test_workspace_resolver_local_path_expansion_finds_nvme_tls_without_agent(tm
     )
 
     resolved = asyncio.run(_resolve_nvme_tls(tmp_path))
+    paths = [c.path.replace("\\", "/") for c in resolved.candidate_files if c.path]
+
+    assert any(path.endswith("nof/nvmf_tcp/transport/tls/tls.c") for path in paths)
+    assert not resolved.warnings
+
+
+def test_workspace_resolver_finds_compact_nvme_tls_without_agent(tmp_path, monkeypatch):
+    _write_tls_repo(tmp_path)
+
+    async def fake_discovery(_request, **_kwargs):
+        return []
+
+    monkeypatch.setattr(
+        "app.services.workspace_scope_resolver.run_external_agent_discovery",
+        fake_discovery,
+    )
+    obj = AnalysisObject(id="obj_tls_compact", text="nvmetcptls", kind="module")
+
+    resolved = asyncio.run(WorkspaceScopeResolver()._resolve_object(
+        obj=obj,
+        ws_id="ws",
+        repo_path=str(tmp_path),
+        index=_GraphIndex(None),
+        limits=LLMLimits(max_files_per_object=8),
+        gitnexus_available=False,
+    ))
     paths = [c.path.replace("\\", "/") for c in resolved.candidate_files if c.path]
 
     assert any(path.endswith("nof/nvmf_tcp/transport/tls/tls.c") for path in paths)
