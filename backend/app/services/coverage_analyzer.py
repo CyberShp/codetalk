@@ -7983,6 +7983,34 @@ def _filesystem_operation_input_hints(window_text: str) -> list[str]:
         if js_path_unary_match:
             add_path_arg_vars(js_path_unary_match.group("arg"))
 
+        jvm_path_match = re.fullmatch(
+            r"""(?:Paths|Path)\s*\.\s*(?:get|of)\s*\(\s*(?P<args>.*)\s*\)""",
+            stripped,
+            re.IGNORECASE | re.DOTALL,
+        )
+        if jvm_path_match:
+            for part in split_top_level_args(jvm_path_match.group("args")):
+                add_path_arg_vars(part)
+
+        go_path_match = re.fullmatch(
+            r"""(?:filepath|path)\s*\.\s*Join\s*\(\s*(?P<args>.*)\s*\)""",
+            stripped,
+            re.IGNORECASE | re.DOTALL,
+        )
+        if go_path_match:
+            for part in split_top_level_args(go_path_match.group("args")):
+                add_path_arg_vars(part)
+
+        rust_path_join_match = re.fullmatch(
+            r"""(?:(?:std::)?path::)?(?:Path|PathBuf)::(?:new|from)\s*\(\s*(?P<base>.*?)\s*\)\s*\.\s*join\s*\(\s*(?P<args>.*)\s*\)""",
+            stripped,
+            re.IGNORECASE | re.DOTALL,
+        )
+        if rust_path_join_match:
+            add_path_arg_vars(rust_path_join_match.group("base"))
+            for part in split_top_level_args(rust_path_join_match.group("args")):
+                add_path_arg_vars(part)
+
         without_strings = re.sub(r"""(['"])(?:\\.|(?!\1).)*\1""", " ", stripped)
         if "+" in without_strings:
             for part in re.split(r"""\+""", stripped):
@@ -8198,11 +8226,11 @@ def _filesystem_operation_input_hints(window_text: str) -> list[str]:
             add(variable_file_hint(arg_text))
     jvm_file_res = (
         re.compile(
-            r"""\b(?:java\.nio\.file\.)?Files\s*\.\s*(?:readString|readAllBytes|readAllLines|lines|newBufferedReader|newInputStream)\s*\(\s*(?P<arg>[^,\n\r\)]+)""",
+            r"""\b(?:java\.nio\.file\.)?Files\s*\.\s*(?:readString|readAllBytes|readAllLines|lines|newBufferedReader|newInputStream)\s*\(""",
             re.IGNORECASE,
         ),
         re.compile(
-            r"""\bnew\s+(?:FileInputStream|FileReader|BufferedReader)\s*\(\s*(?P<arg>[^,\n\r\)]+)""",
+            r"""\bnew\s+(?:FileInputStream|FileReader|BufferedReader)\s*\(""",
             re.IGNORECASE,
         ),
         re.compile(
@@ -8213,7 +8241,10 @@ def _filesystem_operation_input_hints(window_text: str) -> list[str]:
     for pattern in jvm_file_res:
         for match in pattern.finditer(window_text or ""):
             add("input file")
-            arg_text = match.group("arg").strip()
+            if "arg" in pattern.groupindex:
+                arg_text = match.group("arg").strip()
+            else:
+                arg_text = first_call_argument(window_text or "", match.end())
             literal = re.match(r"""['"](?P<path>[^'"]+)['"]""", arg_text)
             if literal:
                 path_text = literal.group("path").replace("\\", "/")
@@ -8221,6 +8252,11 @@ def _filesystem_operation_input_hints(window_text: str) -> list[str]:
                 literal_label = format_label_for_path(path_text)
                 if literal_label:
                     add(literal_label)
+                continue
+            expression_vars = path_expression_input_vars(arg_text)
+            if expression_vars:
+                for variable in expression_vars:
+                    add(variable_file_hint(variable))
                 continue
             if re.fullmatch(r"[A-Za-z_]\w*", arg_text):
                 add(variable_file_hint(arg_text))
@@ -8258,18 +8294,18 @@ def _filesystem_operation_input_hints(window_text: str) -> list[str]:
                 add(variable_file_hint(arg_text))
     go_file_res = (
         re.compile(
-            r"""\b(?:os|ioutil)\s*\.\s*(?:ReadFile|Open|OpenFile)\s*\(\s*(?P<arg>[^,\n\r\)]+)""",
+            r"""\b(?:os|ioutil)\s*\.\s*(?:ReadFile|Open|OpenFile)\s*\(""",
             re.IGNORECASE,
         ),
         re.compile(
-            r"""\b(?:bufio|csv|json|xml)\s*\.\s*New(?:Reader|Decoder)\s*\(\s*(?P<arg>[^,\n\r\)]+)""",
+            r"""\b(?:bufio|csv|json|xml)\s*\.\s*New(?:Reader|Decoder)\s*\(""",
             re.IGNORECASE,
         ),
     )
     for pattern in go_file_res:
         for match in pattern.finditer(window_text or ""):
             add("input file")
-            arg_text = match.group("arg").strip()
+            arg_text = first_call_argument(window_text or "", match.end())
             literal = re.match(r"""['"](?P<path>[^'"]+)['"]""", arg_text)
             if literal:
                 path_text = literal.group("path").replace("\\", "/")
@@ -8278,22 +8314,27 @@ def _filesystem_operation_input_hints(window_text: str) -> list[str]:
                 if literal_label:
                     add(literal_label)
                 continue
+            expression_vars = path_expression_input_vars(arg_text)
+            if expression_vars:
+                for variable in expression_vars:
+                    add(variable_file_hint(variable))
+                continue
             if re.fullmatch(r"[A-Za-z_]\w*", arg_text):
                 add(variable_file_hint(arg_text))
     rust_file_res = (
         re.compile(
-            r"""\b(?:std::)?fs::(?:read_to_string|read|read_dir|File::open)\s*\(\s*(?P<arg>[^,\n\r\)]+)""",
+            r"""\b(?:std::)?fs::(?:read_to_string|read|read_dir|File::open)\s*\(""",
             re.IGNORECASE,
         ),
         re.compile(
-            r"""\b(?:std::)?(?:fs::)?File::open\s*\(\s*(?P<arg>[^,\n\r\)]+)""",
+            r"""\b(?:std::)?(?:fs::)?File::open\s*\(""",
             re.IGNORECASE,
         ),
     )
     for pattern in rust_file_res:
         for match in pattern.finditer(window_text or ""):
             add("input file")
-            arg_text = match.group("arg").strip()
+            arg_text = first_call_argument(window_text or "", match.end())
             literal = re.match(r"""['"](?P<path>[^'"]+)['"]""", arg_text)
             if literal:
                 path_text = literal.group("path").replace("\\", "/")
@@ -8301,6 +8342,11 @@ def _filesystem_operation_input_hints(window_text: str) -> list[str]:
                 literal_label = format_label_for_path(path_text)
                 if literal_label:
                     add(literal_label)
+                continue
+            expression_vars = path_expression_input_vars(arg_text)
+            if expression_vars:
+                for variable in expression_vars:
+                    add(variable_file_hint(variable))
                 continue
             if re.fullmatch(r"[A-Za-z_]\w*", arg_text):
                 add(variable_file_hint(arg_text))
