@@ -8036,6 +8036,31 @@ def test_file_reader_getter_path_aliases_keep_external_field_input_hints():
     ) == ["input file", "request.args.base_dir", "request.args.filename"]
 
 
+def test_file_reader_fallback_path_aliases_keep_external_field_input_hints():
+    from app.services.coverage_analyzer import _filesystem_operation_input_hints
+
+    assert _filesystem_operation_input_hints(
+        "base_dir = request.args.get('base_dir') or '/tmp'\n"
+        "filename = request.args.get('filename') or 'input.txt'\n"
+        "path = os.path.join(base_dir, filename)\n"
+        'with open(path, "r") as fh:\n'
+        "    text = fh.read()"
+    ) == ["input file", "request.args.base_dir", "request.args.filename"]
+    assert _filesystem_operation_input_hints(
+        "base_dir = request.base_dir or '/tmp'\n"
+        "filename = request.filename or 'input.txt'\n"
+        "path = os.path.join(base_dir, filename)\n"
+        'with open(path, "r") as fh:\n'
+        "    text = fh.read()"
+    ) == ["input file", "request.base_dir", "request.filename"]
+    assert _filesystem_operation_input_hints(
+        "const baseDir = req.query.baseDir || '/tmp';\n"
+        "const filename = req.query.filename ?? 'input.txt';\n"
+        "const inputPath = path.join(baseDir, filename);\n"
+        'const text = fs.readFileSync(inputPath, "utf8");'
+    ) == ["input file", "req.query.baseDir", "req.query.filename"]
+
+
 def test_coverage_local_python_open_join_reader_keeps_filename_input_hint(
     tmp_path, monkeypatch
 ):
@@ -8139,6 +8164,54 @@ def test_coverage_local_python_getter_path_reader_keeps_request_field_input_hint
         "def load(request):\n"
         "    base_dir = request.args.get('base_dir')\n"
         "    filename = request.args.get('filename')\n"
+        "    path = os.path.join(base_dir, filename)\n"
+        "    with open(path, 'r', encoding='utf-8') as fh:\n"
+        "        text = fh.read()\n"
+        "    return normalize_text(text)\n",
+        encoding="utf-8",
+    )
+
+    async def no_agent(_request, **_kwargs):
+        return []
+
+    monkeypatch.setattr(coverage_mod, "run_external_agent_discovery", no_agent, raising=False)
+    modules = _coverage_modules(
+        "feature,module,code_location,function,triggered,hit_count\n"
+        "files,load,src/load.py:2-3,normalize_text,false,0\n"
+    )
+
+    design = asyncio.run(
+        build_coverage_test_design(modules, workspace_id="ws-1", repo_path=str(tmp_path))
+    )
+
+    gap = [g for g in design["gaps"] if g.get("function_name") == "normalize_text"][0]
+    assert gap["black_box_readiness"]["case_type"] == "black_box_ready"
+    assert gap["entry_paths"][0]["entry_kind"] == "file"
+    assert gap["entry_paths"][0]["input_hints"] == [
+        "input file",
+        "request.args.base_dir",
+        "request.args.filename",
+    ]
+    case_text = json.dumps(gap["black_box_cases"], ensure_ascii=False)
+    assert "request.args.base_dir" in case_text
+    assert "request.args.filename" in case_text
+
+
+def test_coverage_local_python_fallback_path_reader_keeps_request_field_input_hint(
+    tmp_path, monkeypatch
+):
+    import app.services.coverage_analyzer as coverage_mod
+    from app.services.coverage_analyzer import build_coverage_test_design
+
+    src = tmp_path / "src"
+    src.mkdir()
+    (src / "load.py").write_text(
+        "import os\n"
+        "def normalize_text(text):\n"
+        "    return text.strip()\n"
+        "def load(request):\n"
+        "    base_dir = request.args.get('base_dir') or '/tmp'\n"
+        "    filename = request.args.get('filename') or 'input.txt'\n"
         "    path = os.path.join(base_dir, filename)\n"
         "    with open(path, 'r', encoding='utf-8') as fh:\n"
         "        text = fh.read()\n"

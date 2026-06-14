@@ -8210,8 +8210,52 @@ def _filesystem_operation_input_hints(window_text: str) -> list[str]:
                     path_text.strip(),
                 )
 
+            def fallback_primary_expr(value: str) -> str | None:
+                depth = 0
+                quote: str | None = None
+                escaped = False
+                for idx, ch in enumerate(value):
+                    if quote:
+                        if escaped:
+                            escaped = False
+                        elif ch == "\\":
+                            escaped = True
+                        elif ch == quote:
+                            quote = None
+                        continue
+                    if ch in ("'", '"', "`"):
+                        quote = ch
+                        continue
+                    if ch in "([{":
+                        depth += 1
+                        continue
+                    if ch in ")]}":
+                        depth = max(0, depth - 1)
+                        continue
+                    if depth != 0:
+                        continue
+                    if value.startswith(("||", "??"), idx):
+                        left = value[:idx].strip()
+                        return left or None
+                    if (
+                        value.startswith("or", idx)
+                        and (idx == 0 or not re.match(r"[A-Za-z0-9_$]", value[idx - 1]))
+                        and (
+                            idx + 2 >= len(value)
+                            or not re.match(r"[A-Za-z0-9_$]", value[idx + 2])
+                        )
+                    ):
+                        left = value[:idx].strip()
+                        return left or None
+                return None
+
             field_base_re = r"""[A-Za-z_$][\w$]*(?:\s*(?:\?\.|\.|->)\s*[A-Za-z_$][\w$]*)*"""
 
+            fallback_expr = fallback_primary_expr(expr)
+            if fallback_expr and fallback_expr != expr:
+                fallback_vars = field_alias_vars(fallback_expr)
+                if fallback_vars:
+                    return fallback_vars
             for env_pattern in _ENV_FIELD_RES:
                 env_match = env_pattern.fullmatch(expr)
                 if env_match:
