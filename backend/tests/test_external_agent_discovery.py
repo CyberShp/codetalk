@@ -5412,6 +5412,37 @@ def test_workspace_path_keyword_ranking_handles_generic_camel_module(tmp_path):
     assert rel_hits[0] == "services/payments/webhook/handler.ts"
 
 
+def test_workspace_path_keyword_ranking_handles_compact_module_text(tmp_path):
+    from app.services.workspace_scope_resolver import _path_keyword_repo_hits_blocking
+
+    webhook_dir = tmp_path / "services" / "payments" / "webhook"
+    webhook_dir.mkdir(parents=True)
+    (webhook_dir / "handler.ts").write_text(
+        "export function handlePaymentWebhook() { return true; }\n",
+        encoding="utf-8",
+    )
+    refund_dir = tmp_path / "services" / "billing" / "refund"
+    refund_dir.mkdir(parents=True)
+    (refund_dir / "service.py").write_text(
+        "def issue_refund(payload):\n"
+        "    return payload\n",
+        encoding="utf-8",
+    )
+    noise_dir = tmp_path / "services" / "billing" / "webhook"
+    noise_dir.mkdir(parents=True)
+    (noise_dir / "notes.ts").write_text("export const note = true;\n", encoding="utf-8")
+
+    webhook_hits = _path_keyword_repo_hits_blocking(str(tmp_path), ["paymentwebhook"], 3)
+    refund_hits = _path_keyword_repo_hits_blocking(str(tmp_path), ["billingrefund"], 3)
+
+    assert Path(webhook_hits[0]).relative_to(tmp_path).as_posix() == (
+        "services/payments/webhook/handler.ts"
+    )
+    assert Path(refund_hits[0]).relative_to(tmp_path).as_posix() == (
+        "services/billing/refund/service.py"
+    )
+
+
 def test_workspace_path_keyword_ranking_handles_qualified_camel_module(tmp_path):
     from app.services.workspace_scope_resolver import (
         _keyword_path_variants,

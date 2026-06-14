@@ -668,17 +668,27 @@ def _path_keyword_repo_hits_blocking(
             rel = full.relative_to(root).as_posix().lower()
             rel_tokenized = re.sub(r"[-_]+", "/", rel)
             dir_tokenized = re.sub(r"[-_]+", "/", str(Path(rel).parent).replace("\\", "/"))
+            compact_rel = _compact_path_keyword_text(rel)
+            compact_dir = _compact_path_keyword_text(dir_tokenized)
+            compact_dir_singular = _compact_singular_path_keyword_text(dir_tokenized)
             stem = full.stem.lower()
             score = 0
             matched_parts: set[str] = set()
             for kw in folded:
                 kw_tokenized = re.sub(r"[-_]+", "/", kw)
+                compact_kw = _compact_path_keyword_text(kw)
                 parts = [p for p in re.split(r"[/_-]+", kw) if p]
                 is_multipart = len(parts) >= 2
                 if kw in rel:
                     score += 4
                 elif kw_tokenized in rel_tokenized:
                     score += 4 if (not is_multipart or kw_tokenized in dir_tokenized) else 1
+                elif len(compact_kw) >= 6 and compact_kw in compact_dir_singular:
+                    score += 10
+                elif len(compact_kw) >= 6 and compact_kw in compact_dir:
+                    score += 8
+                elif len(compact_kw) >= 6 and compact_kw in compact_rel:
+                    score += 3
                 if kw_tokenized and (
                     dir_tokenized == kw_tokenized
                     or dir_tokenized.endswith(f"/{kw_tokenized}")
@@ -713,6 +723,19 @@ def _path_keyword_repo_hits_blocking(
                 results.append((str(full), score))
     results.sort(key=lambda item: (-item[1], item[0].lower()))
     return [path for path, _score in results[:limit]]
+
+
+def _compact_path_keyword_text(value: str) -> str:
+    return re.sub(r"[^a-z0-9]+", "", str(value or "").lower())
+
+
+def _compact_singular_path_keyword_text(value: str) -> str:
+    parts = [part for part in re.split(r"[/_-]+", str(value or "").lower()) if part]
+    normalized = [
+        part[:-1] if len(part) > 3 and part.endswith("s") else part
+        for part in parts
+    ]
+    return _compact_path_keyword_text("".join(normalized))
 
 
 def _path_keyword_alignment_bonus(rel_path: str, keywords: list[str]) -> int:
