@@ -5221,6 +5221,44 @@ def test_workspace_resolver_finds_camel_case_module_without_agent(tmp_path, monk
     assert not resolved.warnings
 
 
+def test_workspace_resolver_finds_hyphenated_file_basename_without_agent(tmp_path, monkeypatch):
+    source_dir = tmp_path / "src"
+    source_dir.mkdir()
+    (source_dir / "payment_handler.py").write_text(
+        "def payment_handler(request):\n"
+        "    return request\n",
+        encoding="utf-8",
+    )
+
+    async def fake_discovery(_request, **_kwargs):
+        return []
+
+    monkeypatch.setattr(
+        "app.services.workspace_scope_resolver.run_external_agent_discovery",
+        fake_discovery,
+    )
+    obj = AnalysisObject(id="obj_payment_handler", text="payment-handler", kind="module")
+
+    resolved = asyncio.run(WorkspaceScopeResolver()._resolve_object(
+        obj=obj,
+        ws_id="ws",
+        repo_path=str(tmp_path),
+        index=_GraphIndex(None),
+        limits=LLMLimits(max_files_per_object=8),
+        gitnexus_available=False,
+    ))
+    paths = [c.path.replace("\\", "/") for c in resolved.candidate_files if c.path]
+
+    assert any(path.endswith("src/payment_handler.py") for path in paths)
+    primary_paths = [
+        c.path.replace("\\", "/")
+        for c in resolved.candidate_files
+        if c.path and c.role == "primary"
+    ]
+    assert any(path.endswith("src/payment_handler.py") for path in primary_paths)
+    assert not resolved.warnings
+
+
 def test_workspace_path_hint_with_parent_dirs_finds_tls_from_nof_repo_root(tmp_path, monkeypatch):
     from app.services.workspace_scope_resolver import _path_hint_repo_hits_blocking
 

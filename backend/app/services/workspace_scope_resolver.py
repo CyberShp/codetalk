@@ -1287,6 +1287,7 @@ def _scope_role_for_keyword_hit(repo_path: str, path: str, keywords: list[str]) 
     parent = Path(rel).parent.as_posix().lower()
     parent_tokenized = re.sub(r"[-_]+", "/", parent)
     stem = Path(rel).stem.lower()
+    stem_tokenized = re.sub(r"[-_]+", "/", stem)
     parent_name = Path(parent).name.lower()
 
     for keyword in keywords:
@@ -1296,7 +1297,8 @@ def _scope_role_for_keyword_hit(repo_path: str, path: str, keywords: list[str]) 
                 continue
             parts = [part for part in variant_tokenized.split("/") if part]
             if len(parts) >= 2 and (
-                parent_tokenized == variant_tokenized
+                stem_tokenized == variant_tokenized
+                or parent_tokenized == variant_tokenized
                 or parent_tokenized.endswith(f"/{variant_tokenized}")
                 or f"/{variant_tokenized}/" in f"/{rel_tokenized}/"
             ):
