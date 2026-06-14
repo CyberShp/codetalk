@@ -9329,6 +9329,7 @@ def _registration_entry_for_site(
             _signal_registration_input_hints(registration_line),
             _posix_signal_input_hints(registration_line),
             _node_process_lifecycle_input_hints(registration_line),
+            _python_process_lifecycle_input_hints(registration_line),
             _timer_interval_input_hints(registration_line, entry_type),
         )
         if entry_type == "message":
@@ -9639,6 +9640,12 @@ def _node_process_lifecycle_input_hints(text: str) -> list[str]:
         seen.add(event)
         hints.append(event)
     return hints[:6]
+
+
+def _python_process_lifecycle_input_hints(text: str) -> list[str]:
+    if re.search(r"\batexit\s*\.\s*register\s*\(", text or "", re.IGNORECASE):
+        return ["atexit"]
+    return []
 
 
 def _registered_entry_type(registration_line: str, window: list[str]) -> str:
