@@ -613,6 +613,7 @@ _PUBLIC_CALLBACK_START_RE = re.compile(
     r"(?:\.\s*(?:"
     r"get|post|put|patch|delete|head|options|route|use|"
     r"add_get|add_post|add_put|add_patch|add_delete|add_head|add_options|"
+    r"add_url_rule|"
     r"mapget|mappost|mapput|mappatch|mapdelete|mapmethods|"
     r"subscribe|on|once|prependListener|prependOnceListener|listen|addEventListener|addListener|addHandler|add_listener|add_handler|register|"
     r"add_job|schedule"
@@ -6034,6 +6035,168 @@ def _decorated_entry_for_symbol(
     return entry
 
 
+def _class_method_route_entry_for_symbol(
+    repo_root: Path,
+    function_name: str,
+    source_file_hint: str | None,
+) -> dict | None:
+    parts = _class_method_symbol_parts(function_name)
+    if parts is None:
+        return None
+    class_name, method_name = parts
+    method = _http_method_from_class_method_name(method_name)
+    if not method:
+        return None
+
+    source_file = (
+        _resolve_source_file(repo_root, source_file_hint or "", function_name)
+        if source_file_hint else None
+    )
+    if source_file is None:
+        source_file = _resolve_entry_file_from_symbol(repo_root, function_name)
+    if source_file is None or source_file.suffix.lower() not in _SOURCE_FILE_EXTS:
+        return None
+    try:
+        source_lines = source_file.read_text(encoding="utf-8", errors="replace").splitlines()
+    except OSError:
+        return None
+
+    definition_match = _find_class_method_definition_match(
+        source_lines,
+        class_name,
+        method_name,
+        suffix=source_file.suffix.lower(),
+    )
+    if not definition_match:
+        return None
+    definition_line, source_method_name = definition_match
+
+    registration = _class_based_route_registration_for_class(repo_root, class_name, method)
+    if registration is None:
+        return None
+    reg_file, call_line, context, trigger = registration
+
+    metadata = _entry_metadata_for_site(str(source_file), definition_line, source_method_name)
+    route_hints = _route_template_input_hints([context])
+    merged_hints = _merge_ordered_input_hints(metadata.get("input_hints"), route_hints)
+    if merged_hints:
+        metadata["input_hints"] = _filter_route_input_hints(merged_hints)
+    metadata["external_trigger"] = trigger
+
+    rel_file = _relative_path(repo_root, reg_file)
+    entry = {
+        "entry_kind": "route",
+        "entry_symbol": function_name,
+        "entry_file": rel_file,
+        "entry_label": f"{_ENTRY_DISCOVERY_KIND_LABELS.get('route', 'Route')} {trigger}",
+        "call_line": call_line,
+        "chain": [function_name],
+        "depth": 0,
+        "evidence": f"{rel_file}:{call_line} {context[:220]}",
+        "tool": "source-registration",
+    }
+    entry.update(metadata)
+    return entry
+
+
+def _class_method_symbol_parts(function_name: str | None) -> tuple[str, str] | None:
+    value = re.sub(r"\([^()]*\)\s*$", "", str(function_name or "").strip())
+    match = re.match(
+        r"(?:.*\.)?(?P<class>[A-Za-z_]\w*)\.(?P<method>[A-Za-z_]\w*)$",
+        value,
+    )
+    if not match:
+        return None
+    return match.group("class"), match.group("method")
+
+
+def _http_method_from_class_method_name(method_name: str | None) -> str | None:
+    method = str(method_name or "").strip().upper()
+    if method in {"GET", "POST", "PUT", "PATCH", "DELETE", "HEAD", "OPTIONS"}:
+        return method
+    return None
+
+
+def _find_class_method_definition_match(
+    lines: list[str],
+    class_name: str,
+    method_name: str,
+    *,
+    suffix: str | None = None,
+) -> tuple[int, str] | None:
+    for idx, _line in enumerate(lines):
+        if not _line_matches_signature_name(lines, idx, method_name, suffix=suffix):
+            continue
+        definition_line = idx + 1
+        if _nearest_enclosing_class_name(lines, definition_line) == class_name:
+            return definition_line, method_name
+    return None
+
+
+def _class_based_route_registration_for_class(
+    repo_root: Path,
+    class_name: str,
+    method: str,
+) -> tuple[Path, int, str, str] | None:
+    class_view_re = re.compile(
+        rf"\b{re.escape(class_name)}\s*\.\s*as_view\s*\(",
+    )
+    for candidate in _iter_source_files(repo_root, limit=1000):
+        try:
+            if not _is_within(repo_root, candidate):
+                continue
+            lines = candidate.read_text(encoding="utf-8", errors="replace").splitlines()
+        except OSError:
+            continue
+        for idx, line in enumerate(lines):
+            if not class_view_re.search(line):
+                continue
+            start_idx = _route_call_context_start_index(lines, idx)
+            if start_idx is None:
+                start_idx = idx
+            end_idx = _call_expression_window_end(lines, start_idx, idx)
+            context = " ".join(item.strip() for item in lines[start_idx:end_idx] if item.strip())
+            path = _route_path_from_text(context)
+            if not path:
+                continue
+            methods = _route_methods_from_text(context)
+            if methods and method not in methods and "ANY" not in methods:
+                continue
+            trigger = f"{method} {path}"
+            return candidate, start_idx + 1, context, trigger
+    return None
+
+
+def _route_methods_from_text(text: str) -> list[str]:
+    methods: list[str] = []
+    seen: set[str] = set()
+
+    def add(value: str) -> None:
+        method = str(value or "").strip().upper()
+        if method == "WEBSOCKET":
+            method = "WEBSOCKET"
+        if method and method not in seen:
+            seen.add(method)
+            methods.append(method)
+
+    for match in re.finditer(
+        r"\bmethods?\s*[:=]\s*(?P<body>[\[\(\{][^\]\)\}\n]{0,300}[\]\)\}]|['\"][A-Za-z]+['\"])",
+        text or "",
+        re.IGNORECASE,
+    ):
+        for item in re.finditer(
+            r"['\"](?P<method>get|post|put|patch|delete|head|options|any)['\"]",
+            match.group("body"),
+            re.IGNORECASE,
+        ):
+            add(item.group("method"))
+    if not methods:
+        single = _route_method_from_text(text)
+        if single:
+            add(single)
+    return methods
+
+
 def _go_grpc_registration_entry_for_symbol(
     repo_root: Path,
     source_file: Path,
@@ -7701,6 +7864,13 @@ def _trace_entry_paths(
     decorated_entry = _decorated_entry_for_symbol(repo_root, function_name, source_file_hint)
     if decorated_entry:
         entry_paths.append(decorated_entry)
+    class_method_route_entry = _class_method_route_entry_for_symbol(
+        repo_root,
+        function_name,
+        source_file_hint,
+    )
+    if class_method_route_entry:
+        entry_paths.append(class_method_route_entry)
     # BFS frontier of (chain_so_far, current_symbol).
     frontier: list[tuple[list[str], str]] = [([function_name], function_name)]
     cgc_entries, cgc_frontier = _cgc_caller_seed_paths(function_name, cgc_callers)

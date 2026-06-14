@@ -3741,6 +3741,59 @@ class TestCoverageTestDesign:
         assert "account_id" in case_text
         assert "payment_id" in case_text
 
+    async def test_flask_method_view_registration_becomes_black_box_entry(
+        self, tmp_path, monkeypatch
+    ):
+        from app.services.coverage_analyzer import build_coverage_test_design
+
+        monkeypatch.setattr(
+            "app.services.coverage_analyzer.settings.external_agents_enabled",
+            False,
+        )
+        src = tmp_path / "src"
+        src.mkdir()
+        (src / "views.py").write_text(
+            "from flask import request\n"
+            "from flask.views import MethodView\n\n"
+            "class PaymentView(MethodView):\n"
+            "    def post(self, tenant_id):\n"
+            "        amount = request.json['amount']\n"
+            "        if not amount:\n"
+            "            return {'status': 400}\n"
+            "        return {'tenant_id': tenant_id, 'status': 200}\n",
+            encoding="utf-8",
+        )
+        (src / "routes.py").write_text(
+            "from views import PaymentView\n\n"
+            "app.add_url_rule(\n"
+            "    '/payments/<tenant_id>',\n"
+            "    view_func=PaymentView.as_view('payment_view'),\n"
+            "    methods=['POST'],\n"
+            ")\n",
+            encoding="utf-8",
+        )
+        modules = self._modules(
+            "feature,module,code_location,function,triggered,hit_count\n"
+            "payments,views,src/views.py:5-9,views.PaymentView.post,false,0\n"
+        )
+
+        design = await build_coverage_test_design(
+            modules, workspace_id="ws-1", repo_path=str(tmp_path)
+        )
+
+        gap = [g for g in design["gaps"] if g.get("kind") == "function"][0]
+        assert gap["gray_box_required"] is False
+        assert gap["black_box_readiness"]["case_type"] == "black_box_ready"
+        entry = gap["entry_paths"][0]
+        assert entry["entry_kind"] == "route"
+        assert entry["entry_symbol"] == "views.PaymentView.post"
+        assert entry["external_trigger"] == "POST /payments/<tenant_id>"
+        assert entry["input_hints"] == ["amount", "tenant_id"]
+        case_text = json.dumps(gap["black_box_cases"], ensure_ascii=False)
+        assert "POST /payments/<tenant_id>" in case_text
+        assert "amount" in case_text
+        assert "tenant_id" in case_text
+
     async def test_add_api_route_registration_becomes_black_box_entry(self, tmp_path):
         from app.services.coverage_analyzer import build_coverage_test_design
 
