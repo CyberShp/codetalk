@@ -3747,6 +3747,12 @@ def _parse_ripgrep_line(raw: str) -> tuple[str, int, str] | None:
     return match.group("file"), line_number, match.group("text")
 
 
+def _local_call_sites(repo_root: Path, function_name: str, *, rg_available: bool) -> list[dict]:
+    if rg_available:
+        return _ripgrep_call_sites(repo_root, function_name)
+    return _source_scan_call_sites(repo_root, function_name)
+
+
 def _ripgrep_call_sites(repo_root: Path, function_name: str) -> list[dict]:
     """Find textual call sites of ``function_name`` via ripgrep (degraded mode)."""
     if not function_name or shutil.which("rg") is None:
@@ -3797,6 +3803,47 @@ def _ripgrep_call_sites(repo_root: Path, function_name: str) -> list[dict]:
         })
         if len(sites) >= 40:
             break
+    return sites
+
+
+def _source_scan_call_sites(repo_root: Path, function_name: str) -> list[dict]:
+    """Find call sites with a bounded Python scan when ripgrep is unavailable."""
+    names = _function_name_candidates(function_name)
+    if not names:
+        return []
+    pattern = re.compile(
+        r"\b(?:"
+        + "|".join(re.escape(name) for name in names)
+        + r")\b"
+    )
+    sites: list[dict] = []
+    for candidate in _iter_source_files(repo_root, limit=1000):
+        try:
+            if not _is_within(repo_root, candidate):
+                continue
+            lines = candidate.read_text(encoding="utf-8", errors="replace").splitlines()
+        except OSError:
+            continue
+        file_str = str(candidate)
+        for idx, line in enumerate(lines, start=1):
+            if not pattern.search(line):
+                continue
+            stripped = line.strip()
+            if _is_definition_or_declaration_site(file_str, idx, function_name):
+                continue
+            if stripped.startswith(("//", "#", "*", "/*")):
+                continue
+            if _is_non_executable_symbol_reference(stripped, function_name):
+                continue
+            sites.append({
+                "file": _relative_path(repo_root, candidate),
+                "abs_file": file_str,
+                "line_number": idx,
+                "text": stripped[:200],
+                "tool": "source-scan",
+            })
+            if len(sites) >= 40:
+                return sites
     return sites
 
 
@@ -7601,7 +7648,7 @@ def _trace_entry_paths(
     for _hop in range(ENTRY_TRACE_MAX_HOPS):
         next_frontier: list[tuple[list[str], str]] = []
         for chain, symbol in frontier:
-            sites = _ripgrep_call_sites(repo_root, symbol) if rg_available else []
+            sites = _local_call_sites(repo_root, symbol, rg_available=rg_available)
             for site in sites[:6]:
                 enclosing, guard = _caller_context(site["abs_file"], site["line_number"])
                 if len(chain) == 1 and guard:
@@ -7821,7 +7868,7 @@ def _trace_entry_paths(
                                 else f"{site['file']}:{site['line_number']} {site['text']}"
                             )
                         ),
-                        "tool": "ripgrep" if rg_available else "cgc",
+                        "tool": site.get("tool") or ("ripgrep" if rg_available else "source-scan"),
                         **metadata,
                     })
                     if enclosing and enclosing not in visited:
@@ -11037,7 +11084,7 @@ def _entry_candidates_from_paths(entry_paths: list[dict]) -> list[dict]:
             "external_trigger": entry.get("external_trigger"),
             "chain": entry.get("chain") or [],
             "evidence": entry.get("evidence"),
-            "confidence": "high" if tool in {"ripgrep", "source-registration"} else "medium",
+            "confidence": "high" if tool in {"ripgrep", "source-scan", "source-registration"} else "medium",
             "source_verification": source_verification,
             "tool": tool,
             "provider": entry.get("provider") or (tool if tool in {"claude-code", "opencode"} else None),

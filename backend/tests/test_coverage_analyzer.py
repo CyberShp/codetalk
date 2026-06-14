@@ -11038,7 +11038,7 @@ class TestCoverageTestDesign:
         assert gap["source_window"] is None
         assert any("未绑定工作区" in w for w in design["warnings"])
 
-    async def test_tool_unavailable_markers_when_ripgrep_missing(self, tmp_path, monkeypatch):
+    async def test_python_source_scan_traces_entry_when_ripgrep_missing(self, tmp_path, monkeypatch):
         import app.services.coverage_analyzer as mod
         from app.services.coverage_analyzer import build_coverage_test_design
 
@@ -11054,12 +11054,16 @@ class TestCoverageTestDesign:
         ts = design["summary"]["tool_status"]
         assert ts["ripgrep"] == "unavailable"
         assert ts["joern"].startswith("unavailable")
-        # Source window still works (filesystem read), but no caller trace.
+        # Source window and caller tracing still work through bounded Python source scan.
         gap = [g for g in design["gaps"] if g.get("kind") == "function"][0]
-        assert gap["entry_paths"] == []
+        assert gap["entry_paths"]
+        assert any(entry.get("tool") == "source-scan" for entry in gap["entry_paths"])
         assert gap["gray_box_required"] is False
-        assert gap["entry_trace_status"] == "tool_unavailable"
-        assert gap["entry_discovery"]["entry_trace_status"] == "tool_unavailable"
+        assert gap["entry_trace_status"] == "entry_found"
+        assert gap["entry_discovery"]["entry_trace_status"] == "entry_found"
+        assert gap["entry_discovery"]["candidate_external_entries"][0]["tool"] == "source-scan"
+        assert gap["entry_discovery"]["candidate_external_entries"][0]["confidence"] == "high"
+        assert gap["black_box_readiness"]["case_type"] == "black_box_ready"
 
     async def test_branch_gaps_designed_from_conditions(self, tmp_path):
         from app.adapters.coverage import ModuleCoverage
