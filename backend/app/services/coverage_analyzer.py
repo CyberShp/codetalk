@@ -7907,6 +7907,41 @@ def _filesystem_operation_input_hints(window_text: str) -> list[str]:
         vars_found: list[str] = []
         seen_vars: set[str] = set()
 
+        def strip_balanced_outer_parens(value: str) -> str:
+            text = value.strip()
+            changed = True
+            while changed and text.startswith("(") and text.endswith(")"):
+                changed = False
+                depth = 0
+                quote: str | None = None
+                escaped = False
+                encloses_all = True
+                for idx, ch in enumerate(text):
+                    if quote:
+                        if escaped:
+                            escaped = False
+                        elif ch == "\\":
+                            escaped = True
+                        elif ch == quote:
+                            quote = None
+                        continue
+                    if ch in ("'", '"', "`"):
+                        quote = ch
+                        continue
+                    if ch in "([{":
+                        depth += 1
+                    elif ch in ")]}":
+                        depth -= 1
+                        if depth == 0 and idx != len(text) - 1:
+                            encloses_all = False
+                            break
+                if encloses_all and depth == 0:
+                    text = text[1:-1].strip()
+                    changed = True
+            return text
+
+        stripped = strip_balanced_outer_parens(stripped)
+
         def add_var(value: str) -> None:
             if value and value not in seen_vars:
                 seen_vars.add(value)
@@ -7928,6 +7963,17 @@ def _filesystem_operation_input_hints(window_text: str) -> list[str]:
         for env_pattern in _ENV_FIELD_RES:
             for env_match in env_pattern.finditer(stripped):
                 add_var(env_match.group(1))
+
+        path_value_method_match = re.fullmatch(
+            r"""(?P<inner>.+?)\s*\.\s*(?:string|generic_string|c_str|native|wstring)\s*\(\s*\)""",
+            stripped,
+            re.IGNORECASE | re.DOTALL,
+        )
+        if path_value_method_match:
+            inner = path_value_method_match.group("inner").strip()
+            inner = strip_balanced_outer_parens(inner)
+            for variable in path_expression_input_vars(inner):
+                add_var(variable)
 
         joinpath_res = (
             re.compile(
@@ -8011,6 +8057,25 @@ def _filesystem_operation_input_hints(window_text: str) -> list[str]:
             for part in split_top_level_args(rust_path_join_match.group("args")):
                 add_path_arg_vars(part)
 
+        cpp_path_append_match = re.fullmatch(
+            r"""(?:(?:std::)?filesystem::)?path\s*\(\s*(?P<base>.*?)\s*\)\s*\.\s*(?:append|concat)\s*\(\s*(?P<args>.*)\s*\)""",
+            stripped,
+            re.IGNORECASE | re.DOTALL,
+        )
+        if cpp_path_append_match:
+            add_path_arg_vars(cpp_path_append_match.group("base"))
+            for part in split_top_level_args(cpp_path_append_match.group("args")):
+                add_path_arg_vars(part)
+
+        cpp_path_slash_match = re.fullmatch(
+            r"""(?:(?:std::)?filesystem::)?path\s*\(\s*(?P<base>.*?)\s*\)\s*/\s*(?P<rest>.+)""",
+            stripped,
+            re.IGNORECASE | re.DOTALL,
+        )
+        if cpp_path_slash_match:
+            add_path_arg_vars(cpp_path_slash_match.group("base"))
+            add_path_arg_vars(cpp_path_slash_match.group("rest"))
+
         without_strings = re.sub(r"""(['"])(?:\\.|(?!\1).)*\1""", " ", stripped)
         if "+" in without_strings:
             for part in re.split(r"""\+""", stripped):
@@ -8060,7 +8125,8 @@ def _filesystem_operation_input_hints(window_text: str) -> list[str]:
 
         if re.search(r"""(?:^|[\w)\]])\s*/\s*(?:[\w(]|$)""", without_strings):
             excluded = {
-                "Path", "PurePath", "str", "os", "path", "fspath",
+                "Path", "PurePath", "str", "os", "path", "fspath", "std",
+                "filesystem", "string", "generic_string", "c_str", "native", "wstring",
                 "with_suffix", "with_name", "with_stem", "joinpath", "relative_to",
                 "parent", "environ", "getenv",
             }
@@ -8297,18 +8363,21 @@ def _filesystem_operation_input_hints(window_text: str) -> list[str]:
             re.IGNORECASE,
         ),
         re.compile(
-            r"""\b(?:std::)?(?:ifstream|fstream)\s+\w+\s*\(\s*(?P<arg>[^,\n\r\)]+)""",
+            r"""\b(?:std::)?(?:ifstream|fstream)\s+\w+\s*\(""",
             re.IGNORECASE,
         ),
         re.compile(
-            r"""\bnew\s+(?:std::)?(?:ifstream|fstream)\s*\(\s*(?P<arg>[^,\n\r\)]+)""",
+            r"""\bnew\s+(?:std::)?(?:ifstream|fstream)\s*\(""",
             re.IGNORECASE,
         ),
     )
     for pattern in c_file_res:
         for match in pattern.finditer(window_text or ""):
             add("input file")
-            arg_text = match.group("arg").strip()
+            if "arg" in pattern.groupindex:
+                arg_text = match.group("arg").strip()
+            else:
+                arg_text = first_call_argument(window_text or "", match.end())
             literal = re.match(r"""['"](?P<path>[^'"]+)['"]""", arg_text)
             if literal:
                 path_text = literal.group("path").replace("\\", "/")
@@ -8316,6 +8385,11 @@ def _filesystem_operation_input_hints(window_text: str) -> list[str]:
                 literal_label = format_label_for_path(path_text)
                 if literal_label:
                     add(literal_label)
+                continue
+            expression_vars = path_expression_input_vars(arg_text)
+            if expression_vars:
+                for variable in expression_vars:
+                    add(variable_file_hint(variable))
                 continue
             if re.fullmatch(r"[A-Za-z_]\w*", arg_text):
                 add(variable_file_hint(arg_text))

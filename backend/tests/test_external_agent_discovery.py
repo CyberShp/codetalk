@@ -7628,6 +7628,73 @@ def test_file_reader_cross_language_path_builders_keep_argument_input_hints():
     ) == ["input file", "base_dir", "filename"]
 
 
+def test_cpp_file_reader_filesystem_path_builders_keep_argument_input_hints():
+    from app.services.coverage_analyzer import _filesystem_operation_input_hints
+
+    assert _filesystem_operation_input_hints(
+        "std::ifstream in((std::filesystem::path(base_dir) / filename).string());"
+    ) == ["input file", "base_dir", "filename"]
+    assert _filesystem_operation_input_hints(
+        "std::ifstream in((std::filesystem::path(base_dir).append(filename)).string());"
+    ) == ["input file", "base_dir", "filename"]
+    assert _filesystem_operation_input_hints(
+        "std::ifstream in((std::filesystem::path(std::getenv(\"DATA_DIR\")) / filename).string());"
+    ) == ["input file", "DATA_DIR", "filename"]
+
+
+def test_coverage_local_cpp_filesystem_reader_keeps_filename_input_hint(
+    tmp_path, monkeypatch
+):
+    import app.services.coverage_analyzer as coverage_mod
+    from app.services.coverage_analyzer import build_coverage_test_design
+
+    src = tmp_path / "src"
+    src.mkdir()
+    (src / "processor.cpp").write_text(
+        "#include <string>\n\n"
+        "int normalize_payload(const std::string& payload) {\n"
+        "    if (payload.empty()) return -1;\n"
+        "    return 0;\n"
+        "}\n",
+        encoding="utf-8",
+    )
+    (src / "loader.cpp").write_text(
+        "#include <filesystem>\n"
+        "#include <fstream>\n"
+        "#include <sstream>\n"
+        "#include <string>\n\n"
+        "extern int normalize_payload(const std::string& payload);\n\n"
+        "int load_payload(const std::string& base_dir, const std::string& filename) {\n"
+        "    std::ifstream in((std::filesystem::path(base_dir) / filename).string());\n"
+        "    std::stringstream buffer;\n"
+        "    buffer << in.rdbuf();\n"
+        "    return normalize_payload(buffer.str());\n"
+        "}\n",
+        encoding="utf-8",
+    )
+
+    async def no_agent(_request, **_kwargs):
+        return []
+
+    monkeypatch.setattr(coverage_mod, "run_external_agent_discovery", no_agent, raising=False)
+    modules = _coverage_modules(
+        "feature,module,code_location,function,triggered,hit_count\n"
+        "files,load,src/processor.cpp:3-6,normalize_payload,false,0\n"
+    )
+
+    design = asyncio.run(
+        build_coverage_test_design(modules, workspace_id="ws-1", repo_path=str(tmp_path))
+    )
+
+    gap = [g for g in design["gaps"] if g.get("function_name") == "normalize_payload"][0]
+    assert gap["black_box_readiness"]["case_type"] == "black_box_ready"
+    assert gap["entry_paths"][0]["entry_kind"] == "file"
+    assert gap["entry_paths"][0]["input_hints"] == ["input file", "base_dir", "filename"]
+    case_text = json.dumps(gap["black_box_cases"], ensure_ascii=False)
+    assert "base_dir" in case_text
+    assert "filename" in case_text
+
+
 def test_coverage_local_go_filepath_join_reader_keeps_filename_input_hint(
     tmp_path, monkeypatch
 ):
