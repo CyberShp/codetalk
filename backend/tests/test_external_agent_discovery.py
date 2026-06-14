@@ -7973,6 +7973,21 @@ def test_file_reader_path_aliases_keep_external_field_input_hints():
     ) == ["input file", "request.BaseDir", "request.Filename"]
 
 
+def test_file_reader_destructured_path_aliases_keep_external_field_input_hints():
+    from app.services.coverage_analyzer import _filesystem_operation_input_hints
+
+    assert _filesystem_operation_input_hints(
+        "const { baseDir, filename } = request;\n"
+        "const inputPath = path.join(baseDir, filename);\n"
+        'const text = fs.readFileSync(inputPath, "utf8");'
+    ) == ["input file", "request.baseDir", "request.filename"]
+    assert _filesystem_operation_input_hints(
+        "const { baseDir: rootDir, filename: name } = request;\n"
+        "const inputPath = path.join(rootDir, name);\n"
+        'const text = fs.readFileSync(inputPath, "utf8");'
+    ) == ["input file", "request.baseDir", "request.filename"]
+
+
 def test_coverage_local_python_open_join_reader_keeps_filename_input_hint(
     tmp_path, monkeypatch
 ):
@@ -8030,6 +8045,53 @@ def test_coverage_local_node_assigned_path_reader_keeps_filename_input_hint(
         "  const baseDir = request.baseDir;\n"
         "  const filename = request.filename;\n"
         "  const inputPath = path.join(baseDir, filename);\n"
+        "  const text = fs.readFileSync(inputPath, 'utf8');\n"
+        "  return normalizeText(text);\n"
+        "}\n",
+        encoding="utf-8",
+    )
+
+    async def no_agent(_request, **_kwargs):
+        return []
+
+    monkeypatch.setattr(coverage_mod, "run_external_agent_discovery", no_agent, raising=False)
+    modules = _coverage_modules(
+        "feature,module,code_location,function,triggered,hit_count\n"
+        "files,load,src/load.js:3-3,normalizeText,false,0\n"
+    )
+
+    design = asyncio.run(
+        build_coverage_test_design(modules, workspace_id="ws-1", repo_path=str(tmp_path))
+    )
+
+    gap = [g for g in design["gaps"] if g.get("function_name") == "normalizeText"][0]
+    assert gap["black_box_readiness"]["case_type"] == "black_box_ready"
+    assert gap["entry_paths"][0]["entry_kind"] == "file"
+    assert gap["entry_paths"][0]["input_hints"] == [
+        "input file",
+        "request.baseDir",
+        "request.filename",
+    ]
+    case_text = json.dumps(gap["black_box_cases"], ensure_ascii=False)
+    assert "request.baseDir" in case_text
+    assert "request.filename" in case_text
+
+
+def test_coverage_local_node_destructured_path_reader_keeps_request_field_input_hint(
+    tmp_path, monkeypatch
+):
+    import app.services.coverage_analyzer as coverage_mod
+    from app.services.coverage_analyzer import build_coverage_test_design
+
+    src = tmp_path / "src"
+    src.mkdir()
+    (src / "load.js").write_text(
+        "const fs = require('fs');\n"
+        "const path = require('path');\n"
+        "function normalizeText(text) { return text.trim(); }\n"
+        "function load(request) {\n"
+        "  const { baseDir: rootDir, filename: name } = request;\n"
+        "  const inputPath = path.join(rootDir, name);\n"
         "  const text = fs.readFileSync(inputPath, 'utf8');\n"
         "  return normalizeText(text);\n"
         "}\n",

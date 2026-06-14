@@ -8189,6 +8189,45 @@ def _filesystem_operation_input_hints(window_text: str) -> list[str]:
                 return [normalized]
             return []
 
+        def normalized_destructuring_base(expr_text: str) -> str | None:
+            expr = expr_text.strip().rstrip(";").strip()
+            if re.fullmatch(r"""[A-Za-z_$][\w$]*""", expr):
+                return expr
+            field_vars = field_alias_vars(expr)
+            return field_vars[0] if field_vars else None
+
+        def destructured_alias_pairs(text_value: str) -> list[tuple[str, list[str]]]:
+            pairs: list[tuple[str, list[str]]] = []
+            destructuring_re = re.compile(
+                r"""(?:^|[\n\r])\s*(?:const|let|var)\s*\{(?P<body>.*?)\}\s*="""
+                r"""\s*(?P<base>[A-Za-z_$][\w$]*(?:\s*(?:\?\.|\.|->)\s*[A-Za-z_$][\w$]*)*)\s*;?""",
+                re.DOTALL,
+            )
+            for match in destructuring_re.finditer(text_value or ""):
+                base = normalized_destructuring_base(match.group("base"))
+                if not base:
+                    continue
+                for part in split_top_level_args(match.group("body")):
+                    item = part.strip()
+                    if not item or item.startswith("..."):
+                        continue
+                    item = item.split("=", 1)[0].strip()
+                    direct_match = re.fullmatch(r"""(?P<field>[A-Za-z_$][\w$]*)""", item)
+                    if direct_match:
+                        field = direct_match.group("field")
+                        pairs.append((field, [f"{base}.{field}"]))
+                        continue
+                    renamed_match = re.fullmatch(
+                        r"""(?P<field>[A-Za-z_$][\w$]*)\s*:\s*(?P<local>[A-Za-z_$][\w$]*)""",
+                        item,
+                    )
+                    if renamed_match:
+                        pairs.append((
+                            renamed_match.group("local"),
+                            [f"{base}.{renamed_match.group('field')}"],
+                        ))
+            return pairs
+
         def expand_aliases(variables: list[str]) -> list[str]:
             expanded: list[str] = []
 
@@ -8300,6 +8339,8 @@ def _filesystem_operation_input_hints(window_text: str) -> list[str]:
                 alias_values = field_alias_vars(expr)
                 if alias_values:
                     alias_vars[name] = expand_aliases(alias_values)
+        for name, alias_values in destructured_alias_pairs(text or ""):
+            alias_vars[name] = expand_aliases(alias_values)
         for pattern in assignment_res:
             for match in pattern.finditer(text or ""):
                 name = match.group("name").strip()
