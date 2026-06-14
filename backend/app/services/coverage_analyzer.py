@@ -510,6 +510,10 @@ _ENV_FIELD_RES = (
     re.compile(r"\bprocess\.env\.([A-Za-z_][\w.-]*)\b"),
     re.compile(r"\bprocess\.env\s*\[\s*['\"]([A-Za-z_][\w.-]*)['\"]\s*\]"),
     re.compile(
+        r"\bENV\s*(?:\[\s*|\.\s*(?:fetch|get)\s*\(\s*)"
+        r"['\"]([A-Za-z_][\w.-]*)['\"]"
+    ),
+    re.compile(
         r"\b(?:System\.)?Environment\.GetEnvironmentVariable"
         r"\s*\(\s*['\"]([A-Za-z_][\w.-]*)['\"]"
     ),
@@ -2439,7 +2443,10 @@ def _filter_route_input_hints(hints: object) -> list[str]:
             continue
         if key in route_internal_keys or _input_hint_is_internal_context(text):
             continue
-        if re.fullmatch(r"[A-Z][A-Za-z0-9_]*", text):
+        if (
+            re.fullmatch(r"[A-Z][A-Za-z0-9]*", text)
+            and any(char.islower() for char in text)
+        ):
             text = text[:1].lower() + text[1:]
             key = _input_hint_dedupe_key(text)
         if key in seen:
@@ -4533,6 +4540,11 @@ def _handler_signature_input_hints(abs_file: str, enclosing_fn: str | None) -> l
     for idx, line in enumerate(lines):
         if not _line_matches_signature_name(lines, idx, enclosing_fn):
             continue
+        if suffix == ".rb" and re.match(
+            rf"^\s*def\s+(?:self\.)?{re.escape(enclosing_fn)}\s*$",
+            line or "",
+        ):
+            return []
         signature = _collect_signature_text(lines, idx)
         model_fields_by_type = _source_model_fields_by_class(
             lines, suffix
@@ -10071,6 +10083,7 @@ _CONFIG_OPERATION_RE = re.compile(
     r"|\b(?:os\.)?getenv\s*\("
     r"|\bprocess\.env\b"
     r"|\bgetenv\s*\("
+    r"|\bENV\s*(?:\[|\.fetch\s*\(|\.get\s*\()"
     r"|@Value\s*\(\s*['\"]\s*\$\{"
     r"|\b(?:configuration|config|settings|options)\s*\[\s*['\"]"
     r"|\b(?:settings|config|options)(?:\s*\.\s*[A-Za-z_]\w*)*"
