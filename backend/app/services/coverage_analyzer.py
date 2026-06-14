@@ -579,6 +579,7 @@ _ENTRY_DECORATOR_KIND_TOKENS: tuple[tuple[str, tuple[str, ...]], ...] = (
     ("api", (
         "api", "rpc", "grpc", "http", "request",
         "graphql", "resolver", "query", "mutation", "subscription",
+        "errorhandler", "error_handler", "exception_handler", "exceptionhandler",
     )),
     ("scheduler", ("schedule", "scheduler", "scheduled", "cron", "periodic", "add_job")),
     ("timer", ("timer", "timeout", "poller", "interval")),
@@ -5825,6 +5826,14 @@ def _decorated_entry_for_symbol(
                 payload_type_hints,
                 metadata.get("input_hints"),
             )
+    if entry_kind == "api":
+        error_hints = _error_handler_input_hints(decorator_texts)
+        if error_hints:
+            metadata["input_hints"] = _merge_ordered_strings(
+                error_hints,
+                metadata.get("input_hints"),
+            )
+            metadata["entry_label"] = f"API error handler {error_hints[0]}"
     if entry_kind == "route":
         receiver_prefix = _route_prefix_for_decorator_receiver(
             repo_root,
@@ -6529,6 +6538,30 @@ def _classify_inline_entry_definition(
     if entry_kind in {"route", "endpoint", "api"}:
         return "route"
     return None
+
+
+def _error_handler_input_hints(decorator_lines: list[str]) -> list[str]:
+    text = " ".join(str(line or "").strip() for line in decorator_lines)
+    if not re.search(r"(?:error|exception)[_\w]*handler|handler\s*\(", text, re.IGNORECASE):
+        return []
+    hints: list[str] = []
+    seen: set[str] = set()
+
+    def add(value: str) -> None:
+        cleaned = value.strip()
+        if not cleaned or cleaned in seen:
+            return
+        seen.add(cleaned)
+        hints.append(cleaned)
+
+    for match in re.finditer(r"(?<![\w.])(?P<code>[1-5]\d{2})(?![\w.])", text):
+        add(match.group("code"))
+    for match in re.finditer(
+        r"\b(?P<name>[A-Z][A-Za-z0-9_]*(?:Error|Exception))\b",
+        text,
+    ):
+        add(match.group("name"))
+    return hints[:6]
 
 
 def _route_template_input_hints(decorator_lines: list[str]) -> list[str]:
@@ -7672,8 +7705,76 @@ def _augment_entry_input_hints_from_symbol_source(
                 config_hints,
                 _filter_config_signature_input_hints(merged_hints, config_hints),
             )
+    if entry_kind in {"job", "scheduler", "timer", "message", "queue", "callback"}:
+        merged_hints = _filter_return_literal_input_hints(
+            str(abs_file),
+            str(entry_symbol),
+            merged_hints,
+            protected_hints=_merge_ordered_input_hints(
+                registration_hints,
+                signature_hints,
+            ),
+        )
     if merged_hints:
         entry["input_hints"] = merged_hints
+
+
+def _filter_return_literal_input_hints(
+    abs_file: str,
+    entry_symbol: str,
+    hints: object,
+    *,
+    protected_hints: object,
+) -> list[str]:
+    merged = _merge_ordered_input_hints(hints)
+    protected_keys = {
+        _input_hint_dedupe_key(item)
+        for item in _merge_ordered_input_hints(protected_hints)
+    }
+    return_literal_keys = {
+        _input_hint_dedupe_key(item)
+        for item in _return_string_literals_for_symbol(abs_file, entry_symbol)
+    }
+    if not return_literal_keys:
+        return merged
+    return [
+        hint for hint in merged
+        if (
+            _input_hint_dedupe_key(hint) not in return_literal_keys
+            or _input_hint_dedupe_key(hint) in protected_keys
+        )
+    ]
+
+
+def _return_string_literals_for_symbol(abs_file: str, entry_symbol: str) -> list[str]:
+    try:
+        lines = Path(abs_file).read_text(encoding="utf-8", errors="replace").splitlines()
+    except OSError:
+        return []
+    definition_line = _find_strict_definition_line(lines, entry_symbol)
+    if not definition_line:
+        return []
+    definition_idx = definition_line - 1
+    definition_indent = len(lines[definition_idx]) - len(lines[definition_idx].lstrip())
+    body: list[str] = []
+    for line in lines[definition_idx + 1:definition_idx + 81]:
+        stripped = line.strip()
+        if stripped and _match_def_name(line):
+            indent = len(line) - len(line.lstrip())
+            if indent <= definition_indent:
+                break
+        body.append(line)
+    literals: list[str] = []
+    seen: set[str] = set()
+    for line in body:
+        if not re.search(r"\breturn\b", line):
+            continue
+        for match in re.finditer(r"""(['"])(?P<value>[A-Za-z][A-Za-z0-9_.:-]{1,40})\1""", line):
+            value = match.group("value").strip()
+            if value and value not in seen:
+                seen.add(value)
+                literals.append(value)
+    return literals[:12]
 
 
 def _augment_entry_paths_input_hints(repo_root: Path, entry_paths: list[dict]) -> None:
