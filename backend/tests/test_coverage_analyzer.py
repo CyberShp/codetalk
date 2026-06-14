@@ -8294,6 +8294,49 @@ class TestCoverageTestDesign:
         assert "app.on_event = handle_event" in entry["evidence"]
         assert entry["input_hints"] == ["on_event", "payload"]
 
+    async def test_registry_index_assignment_is_black_box_entry_without_agent(
+        self, tmp_path, monkeypatch
+    ):
+        from app.services.coverage_analyzer import build_coverage_test_design
+
+        monkeypatch.setattr(
+            "app.services.coverage_analyzer.settings.external_agents_enabled",
+            False,
+        )
+        src = tmp_path / "src"
+        src.mkdir()
+        (src / "payments.py").write_text(
+            "def process_payment(payload):\n"
+            "    if not payload:\n"
+            "        return 'missing'\n"
+            "    return 'processed'\n",
+            encoding="utf-8",
+        )
+        (src / "registry.py").write_text(
+            "from payments import process_payment\n\n"
+            "def handle_payment(payload):\n"
+            "    return process_payment(payload)\n\n"
+            "event_handlers['payment.created'] = handle_payment\n",
+            encoding="utf-8",
+        )
+        modules = self._modules(
+            "feature,module,code_location,function,triggered,hit_count\n"
+            "payments,payments,src/payments.py:1-4,process_payment,false,0\n"
+        )
+
+        design = await build_coverage_test_design(
+            modules, workspace_id="ws-1", repo_path=str(tmp_path)
+        )
+
+        gap = [g for g in design["gaps"] if g.get("kind") == "function"][0]
+        assert gap["gray_box_required"] is False
+        assert gap["black_box_readiness"]["case_type"] == "black_box_ready"
+        entry = gap["entry_paths"][0]
+        assert entry["entry_kind"] == "message"
+        assert entry["entry_symbol"] == "handle_payment"
+        assert "event_handlers['payment.created'] = handle_payment" in entry["evidence"]
+        assert entry["input_hints"] == ["payment.created", "payload"]
+
     async def test_scheduler_add_job_registration_keeps_scheduler_entry_kind(self, tmp_path):
         from app.services.coverage_analyzer import build_coverage_test_design
 

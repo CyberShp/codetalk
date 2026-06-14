@@ -612,6 +612,12 @@ _CALLBACK_ASSIGN_RE = re.compile(
     r")\s*=\s*(?P<symbol>[A-Za-z_]\w*)",
     re.IGNORECASE,
 )
+_REGISTRY_CALLBACK_ASSIGN_RE = re.compile(
+    r"\b(?P<table>[A-Za-z_]\w*(?:\.[A-Za-z_]\w*)*)\s*"
+    r"\[\s*(?P<quote>['\"])(?P<key>[A-Za-z0-9_.:/-]{1,100})(?P=quote)\s*\]\s*="
+    r"\s*&?(?P<symbol>[A-Za-z_]\w*)\b",
+    re.IGNORECASE,
+)
 _DISPATCH_TABLE_ENTRY_RE = re.compile(
     r"""(?P<quote>['"])(?P<key>[A-Za-z0-9_.:/-]{1,80})(?P=quote)\s*,\s*&?(?P<symbol>[A-Za-z_]\w*)\b"""
 )
@@ -9219,6 +9225,7 @@ def _registration_entry_for_site(
     symbol = (
         enclosing
         or _callback_symbol_from_assignment(site_text)
+        or _registry_callback_symbol_from_assignment(site_text)
         or _registered_callback_symbol(site_text, caller_chain)
     )
     if not symbol:
@@ -9243,6 +9250,8 @@ def _registration_entry_for_site(
         "",
     )
     if not registration_line and _callback_symbol_from_assignment(site_text) == symbol:
+        registration_line = site_text.strip()
+    if not registration_line and _registry_callback_symbol_from_assignment(site_text) == symbol:
         registration_line = site_text.strip()
     callback_like = any(
         token in " ".join(window).lower()
@@ -9544,6 +9553,11 @@ def _registered_callback_symbol(site_text: str, caller_chain: list[str]) -> str 
 
 def _callback_symbol_from_assignment(text: str) -> str | None:
     match = _CALLBACK_ASSIGN_RE.search(text or "")
+    return match.group("symbol") if match else None
+
+
+def _registry_callback_symbol_from_assignment(text: str) -> str | None:
+    match = _REGISTRY_CALLBACK_ASSIGN_RE.search(text or "")
     return match.group("symbol") if match else None
 
 
