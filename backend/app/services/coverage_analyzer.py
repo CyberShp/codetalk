@@ -606,8 +606,10 @@ _ROUTE_DSL_START_RE = re.compile(
     re.IGNORECASE,
 )
 _CALLBACK_ASSIGN_RE = re.compile(
-    r"\.(?:[A-Za-z_]\w*(?:cb|callback|handler|fn|op|ops)|(?:cb|callback|handler|fn|op|ops))\s*="
-    r"\s*(?P<symbol>[A-Za-z_]\w*)",
+    r"\.(?P<callback_prop>"
+    r"(?:[A-Za-z_]\w*(?:cb|callback|handler|fn|op|ops|event|listener|consumer)|"
+    r"(?:cb|callback|handler|fn|op|ops|event|listener|consumer))"
+    r")\s*=\s*(?P<symbol>[A-Za-z_]\w*)",
     re.IGNORECASE,
 )
 _DISPATCH_TABLE_ENTRY_RE = re.compile(
@@ -7153,7 +7155,21 @@ def _registration_channel_input_hints(registration_line: str, entry_type: str) -
             continue
         seen.add(value)
         hints.append(value)
+    assignment_hint = _callback_assignment_channel_hint(registration_line)
+    if assignment_hint and assignment_hint not in seen:
+        seen.add(assignment_hint)
+        hints.append(assignment_hint)
     return hints[:8]
+
+
+def _callback_assignment_channel_hint(text: str) -> str | None:
+    match = _CALLBACK_ASSIGN_RE.search(text or "")
+    if not match:
+        return None
+    prop = (match.group("callback_prop") or "").strip()
+    if not prop:
+        return None
+    return prop
 
 
 def _signal_registration_input_hints(registration_line: str) -> list[str]:
@@ -9226,6 +9242,8 @@ def _registration_entry_for_site(
         (line.strip() for line in window if _REGISTRATION_LINE_RE.search(line)),
         "",
     )
+    if not registration_line and _callback_symbol_from_assignment(site_text) == symbol:
+        registration_line = site_text.strip()
     callback_like = any(
         token in " ".join(window).lower()
         for token in (
