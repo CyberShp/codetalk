@@ -8162,6 +8162,67 @@ def _filesystem_operation_input_hints(window_text: str) -> list[str]:
 
     def collect_assigned_path_expression_vars(text: str) -> dict[str, list[str]]:
         assigned: dict[str, list[str]] = {}
+
+        def remember(name: str, variables: list[str]) -> None:
+            clean_name = name.strip().lstrip("&*").strip()
+            if not clean_name or not variables:
+                return
+            existing = assigned.setdefault(clean_name, [])
+            for variable in variables:
+                if variable not in existing:
+                    existing.append(variable)
+
+        def printf_arg_vars(arg_text: str) -> list[str]:
+            part = arg_text.strip()
+            if not part:
+                return []
+            expr_vars = path_expression_input_vars(part)
+            if expr_vars:
+                return expr_vars
+            part = re.sub(
+                r"""^\(\s*(?:const\s+)?(?:char|wchar_t|unsigned\s+char|signed\s+char)\s*\*\s*\)""",
+                "",
+                part,
+            ).strip()
+            part = part.lstrip("&*").strip()
+            if re.fullmatch(r"[A-Za-z_]\w*", part):
+                return [part]
+            if re.fullmatch(r"[A-Za-z_]\w*(?:->|\.)[A-Za-z_]\w*", part):
+                return [part]
+            return []
+
+        def full_call_arguments_text(src_text: str, start: int) -> str:
+            chars: list[str] = []
+            depth = 0
+            quote: str | None = None
+            escaped = False
+            for ch in (src_text or "")[start:]:
+                if quote:
+                    chars.append(ch)
+                    if escaped:
+                        escaped = False
+                    elif ch == "\\":
+                        escaped = True
+                    elif ch == quote:
+                        quote = None
+                    continue
+                if ch in ("'", '"', "`"):
+                    quote = ch
+                    chars.append(ch)
+                    continue
+                if ch in "([{":
+                    depth += 1
+                    chars.append(ch)
+                    continue
+                if ch in ")]}":
+                    if depth == 0:
+                        break
+                    depth -= 1
+                    chars.append(ch)
+                    continue
+                chars.append(ch)
+            return "".join(chars).strip()
+
         assignment_res = (
             re.compile(
                 r"""^\s*(?P<name>[A-Za-z_$][\w$]*)\s*=\s*(?P<expr>.+?)\s*;?\s*$""",
@@ -8195,10 +8256,33 @@ def _filesystem_operation_input_hints(window_text: str) -> list[str]:
                 expr_vars = path_expression_input_vars(expr)
                 if not expr_vars:
                     continue
-                existing = assigned.setdefault(name, [])
-                for variable in expr_vars:
-                    if variable not in existing:
-                        existing.append(variable)
+                remember(name, expr_vars)
+        printf_res = (
+            ("snprintf", 0, 2),
+            ("snprintf_s", 0, 3),
+            ("_snprintf", 0, 2),
+            ("sprintf", 0, 1),
+            ("sprintf_s", 0, 2),
+            ("asprintf", 0, 1),
+        )
+        for func_name, dest_index, fmt_index in printf_res:
+            pattern = re.compile(rf"""\b{func_name}\s*\(""", re.IGNORECASE)
+            for match in pattern.finditer(text or ""):
+                full_args = full_call_arguments_text(text or "", match.end())
+                if not full_args:
+                    continue
+                args = split_top_level_args(full_args)
+                if len(args) <= fmt_index or len(args) <= dest_index:
+                    continue
+                fmt = args[fmt_index].strip()
+                if not re.match(r"""[LuUu8]*['"]""", fmt) or "%" not in fmt:
+                    continue
+                variables: list[str] = []
+                for part in args[fmt_index + 1:]:
+                    for variable in printf_arg_vars(part):
+                        if variable not in variables:
+                            variables.append(variable)
+                remember(args[dest_index], variables)
         return assigned
 
     assigned_path_vars = collect_assigned_path_expression_vars(window_text or "")
