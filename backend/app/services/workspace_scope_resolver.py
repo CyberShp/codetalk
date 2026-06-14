@@ -916,6 +916,10 @@ def _exact_symbol_repo_hits_blocking(
                 except OSError:
                     continue
 
+    if qualifier:
+        for path in list(hits):
+            hits[path] += _score_qualified_symbol_file(path, qualifier, symbol)
+
     ranked = sorted(hits.items(), key=lambda item: (-item[1], item[0].lower()))
     return [path for path, _ in ranked[:limit]]
 
@@ -943,6 +947,62 @@ def _score_qualified_symbol_hit(line: str, qualifier: str | None, symbol: str) -
     if re.search(rf"\bclass\s+{escaped_class}\b", text):
         return 40
     return 0
+
+
+def _score_qualified_symbol_file(path: str, qualifier: str | None, symbol: str) -> int:
+    if not qualifier or not symbol:
+        return 0
+    try:
+        file_path = Path(path)
+        lines = file_path.read_text(encoding="utf-8", errors="replace").splitlines()
+    except OSError:
+        return 0
+    class_name = _qualified_symbol_class_name(qualifier)
+    if not class_name:
+        return 0
+    best = 0
+    for idx, line in enumerate(lines):
+        stripped = line.strip()
+        if not re.search(rf"\b{re.escape(symbol)}\b", stripped):
+            continue
+        if not _is_symbol_definition_line(stripped, symbol):
+            continue
+        enclosing = _nearest_enclosing_source_class_name(lines, idx)
+        if enclosing == class_name:
+            best = max(best, 260)
+        elif enclosing:
+            best = max(best, -60)
+    return best
+
+
+def _qualified_symbol_class_name(qualifier: str | None) -> str | None:
+    parts = [part for part in re.split(r"(?:::|\.)", str(qualifier or "")) if part]
+    return parts[-1] if parts else None
+
+
+def _line_indent(line: str) -> int:
+    return len(line) - len(line.lstrip(" \t"))
+
+
+def _nearest_enclosing_source_class_name(lines: list[str], definition_idx: int) -> str | None:
+    if definition_idx < 0 or definition_idx >= len(lines):
+        return None
+    definition_indent = _line_indent(lines[definition_idx])
+    for idx in range(definition_idx - 1, -1, -1):
+        line = lines[idx]
+        stripped = line.strip()
+        if not stripped:
+            continue
+        if _line_indent(line) >= definition_indent:
+            continue
+        match = re.match(
+            r"^(?:export\s+|public\s+|private\s+|protected\s+|abstract\s+|final\s+|sealed\s+|partial\s+)*"
+            r"class\s+(?P<name>[A-Za-z_]\w*)\b",
+            stripped,
+        )
+        if match:
+            return match.group("name")
+    return None
 
 
 def _parse_ripgrep_line(raw: str) -> tuple[str, int, str] | None:
