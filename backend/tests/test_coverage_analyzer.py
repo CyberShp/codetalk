@@ -4759,6 +4759,59 @@ class TestCoverageTestDesign:
         assert "exports.handler" in entry["evidence"]
         assert entry["input_hints"] == ["invoice_id", "event"]
 
+    async def test_azure_function_json_http_trigger_is_black_box_entry(self, tmp_path):
+        from app.services.coverage_analyzer import build_coverage_test_design
+
+        src = tmp_path / "HttpTrigger"
+        src.mkdir()
+        (src / "__init__.py").write_text(
+            "import azure.functions as func\n"
+            "\n"
+            "def main(req: func.HttpRequest) -> func.HttpResponse:\n"
+            "    order_id = req.route_params.get('order_id')\n"
+            "    dry_run = req.params.get('dry_run')\n"
+            "    if not order_id:\n"
+            "        return func.HttpResponse('missing', status_code=400)\n"
+            "    return func.HttpResponse(dry_run or order_id)\n",
+            encoding="utf-8",
+        )
+        (src / "function.json").write_text(
+            json.dumps({
+                "bindings": [{
+                    "authLevel": "function",
+                    "type": "httpTrigger",
+                    "direction": "in",
+                    "name": "req",
+                    "methods": ["post"],
+                    "route": "orders/{order_id}",
+                }],
+            }),
+            encoding="utf-8",
+        )
+        modules = self._modules(
+            "feature,module,code_location,function,triggered,hit_count\n"
+            "orders,HttpTrigger,HttpTrigger/__init__.py:3-8,main,false,0\n"
+        )
+
+        design = await build_coverage_test_design(
+            modules, workspace_id="ws-1", repo_path=str(tmp_path)
+        )
+
+        gap = [g for g in design["gaps"] if g.get("kind") == "function"][0]
+        assert gap["gray_box_required"] is False
+        assert gap["black_box_readiness"]["case_type"] == "black_box_ready"
+        entry = gap["entry_paths"][0]
+        assert entry["entry_kind"] == "route"
+        assert entry["entry_symbol"] == "main"
+        assert entry["tool"] == "source-serverless-config"
+        assert entry["external_trigger"] == "POST /orders/{order_id}"
+        assert "order_id" in entry["input_hints"]
+        assert "dry_run" in entry["input_hints"]
+        assert "function.json" in entry["evidence"]
+        case_text = json.dumps(gap["black_box_cases"], ensure_ascii=False)
+        assert "order_id" in case_text
+        assert "dry_run" in case_text
+
     async def test_js_arrow_route_handler_is_source_backed_with_input_hints(self, tmp_path):
         from app.services.coverage_analyzer import build_coverage_test_design
 

@@ -6423,6 +6423,16 @@ def _serverless_handler_entry_for_symbol(
     if definition_idx < 0 or definition_idx >= len(lines):
         return None
     definition_text = lines[definition_idx].strip()
+    azure_config_entry = _azure_function_json_entry_for_symbol(
+        repo_root,
+        source_file,
+        function_name,
+        lines,
+        definition_line,
+        definition_text,
+    )
+    if azure_config_entry:
+        return azure_config_entry
     params = _signature_input_params(definition_text)
     normalized_params = {param.lower() for param in params}
     if "event" not in normalized_params:
@@ -6450,6 +6460,82 @@ def _serverless_handler_entry_for_symbol(
         "depth": 0,
         "evidence": f"{rel_file}:{definition_line} {definition_text}",
         "tool": "source-serverless-handler",
+    }
+    if input_hints:
+        entry["input_hints"] = input_hints
+    return entry
+
+
+def _azure_function_json_entry_for_symbol(
+    repo_root: Path,
+    source_file: Path,
+    function_name: str,
+    lines: list[str],
+    definition_line: int,
+    definition_text: str,
+) -> dict | None:
+    config_path = source_file.parent / "function.json"
+    if not config_path.exists() or function_name != "main":
+        return None
+    try:
+        config = json.loads(config_path.read_text(encoding="utf-8", errors="replace"))
+    except (OSError, json.JSONDecodeError):
+        return None
+    if not isinstance(config, dict):
+        return None
+    entry_point = str(config.get("entryPoint") or config.get("entry_point") or "main").strip()
+    if entry_point and entry_point != function_name:
+        return None
+    bindings = config.get("bindings")
+    if not isinstance(bindings, list):
+        return None
+    trigger = next(
+        (
+            binding
+            for binding in bindings
+            if isinstance(binding, dict)
+            and str(binding.get("type") or "").lower() == "httptrigger"
+            and str(binding.get("direction") or "in").lower() == "in"
+        ),
+        None,
+    )
+    if trigger is None:
+        return None
+
+    route_value = str(trigger.get("route") or source_file.parent.name or "").strip()
+    route_path = _normalize_route_path(route_value, allow_relative=True) or "/"
+    methods = trigger.get("methods")
+    method = "ANY"
+    if isinstance(methods, list) and methods:
+        method = str(methods[0] or "ANY").upper()
+    elif isinstance(methods, str) and methods.strip():
+        method = methods.strip().upper()
+
+    definition_idx = max(0, definition_line - 1)
+    fn_end = len(lines)
+    for pos in range(definition_idx + 1, len(lines)):
+        if _is_sibling_definition_boundary(lines, definition_idx, pos):
+            fn_end = pos
+            break
+    source_text = "\n".join(lines[definition_idx:fn_end])
+    input_hints = _merge_ordered_strings(
+        _route_template_input_hints([route_path]),
+        _request_field_hints_from_text(source_text),
+    )
+    rel_file = _relative_path(repo_root, source_file)
+    rel_config = _relative_path(repo_root, config_path)
+    external_trigger = f"{method} {route_path}"
+    entry = {
+        "entry_kind": "route",
+        "entry_symbol": function_name,
+        "entry_file": rel_file,
+        "entry_label": f"serverless HTTP trigger {external_trigger}",
+        "external_trigger": external_trigger,
+        "call_line": definition_line,
+        "chain": [function_name],
+        "depth": 0,
+        "evidence": f"{rel_file}:{definition_line} {definition_text} | {rel_config} httpTrigger",
+        "tool": "source-serverless-config",
     }
     if input_hints:
         entry["input_hints"] = input_hints
