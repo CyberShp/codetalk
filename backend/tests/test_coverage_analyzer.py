@@ -8868,6 +8868,49 @@ class TestCoverageTestDesign:
         assert entry["entry_symbol"] == "processBatch"
         assert "std::thread worker(processBatch, 100)" in entry["evidence"]
 
+    async def test_c_pthread_create_function_is_worker_entry_without_agent(
+        self, tmp_path, monkeypatch
+    ):
+        from app.services.coverage_analyzer import build_coverage_test_design
+
+        monkeypatch.setattr(
+            "app.services.coverage_analyzer.settings.external_agents_enabled",
+            False,
+        )
+        src = tmp_path / "src"
+        src.mkdir()
+        (src / "batch_worker.c").write_text(
+            "#include <pthread.h>\n\n"
+            "static void *process_batch(void *ctx) {\n"
+            "    if (ctx == NULL) {\n"
+            "        return NULL;\n"
+            "    }\n"
+            "    flush(ctx);\n"
+            "    return NULL;\n"
+            "}\n\n"
+            "void start_workers(void *ctx) {\n"
+            "    pthread_t tid;\n"
+            "    pthread_create(&tid, NULL, process_batch, ctx);\n"
+            "}\n",
+            encoding="utf-8",
+        )
+        modules = self._modules(
+            "feature,module,code_location,function,triggered,hit_count\n"
+            "batch,worker,src/batch_worker.c:3-9,process_batch,false,0\n"
+        )
+
+        design = await build_coverage_test_design(
+            modules, workspace_id="ws-1", repo_path=str(tmp_path)
+        )
+
+        gap = [g for g in design["gaps"] if g.get("kind") == "function"][0]
+        assert gap["gray_box_required"] is False
+        assert gap["black_box_readiness"]["case_type"] == "black_box_ready"
+        entry = gap["entry_paths"][0]
+        assert entry["entry_kind"] == "worker"
+        assert entry["entry_symbol"] == "process_batch"
+        assert "pthread_create(&tid, NULL, process_batch, ctx)" in entry["evidence"]
+
     async def test_rust_thread_spawn_is_worker_entry_without_agent(
         self, tmp_path, monkeypatch
     ):
