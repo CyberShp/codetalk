@@ -627,7 +627,7 @@ _CALLBACK_ASSIGN_RE = re.compile(
     r"\.(?P<callback_prop>"
     r"(?:[A-Za-z_]\w*(?:cb|callback|handler|fn|op|ops|event|listener|consumer)|"
     r"(?:cb|callback|handler|fn|op|ops|event|listener|consumer))"
-    r")\s*=\s*&?\s*(?P<symbol>[A-Za-z_]\w*)",
+    r")\s*=\s*(?P<rhs>[^,;}]+)",
     re.IGNORECASE,
 )
 _BROWSER_LIFECYCLE_CALLBACK_ASSIGN_RE = re.compile(
@@ -9858,7 +9858,21 @@ def _asyncio_loop_registration_symbols_from_text(text: str) -> list[str]:
 
 def _callback_symbol_from_assignment(text: str) -> str | None:
     match = _CALLBACK_ASSIGN_RE.search(text or "")
-    return match.group("symbol") if match else None
+    if not match:
+        return None
+    rhs = _strip_callback_assignment_prefix(match.group("rhs"))
+    symbol_match = re.match(r"(?P<symbol>[A-Za-z_]\w*)\b", rhs)
+    return symbol_match.group("symbol") if symbol_match else None
+
+
+def _strip_callback_assignment_prefix(rhs: str) -> str:
+    value = str(rhs or "").strip()
+    while value.startswith("("):
+        close_index = _find_matching_call_close(value, 0)
+        if close_index is None:
+            break
+        value = value[close_index + 1:].strip()
+    return value.lstrip("&").strip()
 
 
 def _browser_lifecycle_callback_symbol_from_assignment(text: str) -> str | None:

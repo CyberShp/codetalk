@@ -8488,6 +8488,14 @@ class TestCoverageTestDesign:
 
         assert _callback_symbol_from_assignment(".timeout_cb = &recover_session") == "recover_session"
 
+    async def test_callback_assignment_parser_accepts_casted_symbol(self):
+        from app.services.coverage_analyzer import _callback_symbol_from_assignment
+
+        assert (
+            _callback_symbol_from_assignment(".timeout_cb = (service_cb) recover_session")
+            == "recover_session"
+        )
+
     async def test_event_dispatcher_register_entry_prevents_final_gray_box(self, tmp_path):
         from app.services.coverage_analyzer import build_coverage_test_design
 
