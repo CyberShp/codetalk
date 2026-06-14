@@ -9081,6 +9081,59 @@ class TestCoverageTestDesign:
         assert entry["entry_symbol"] == "recover_session"
         assert ".timeout_cb = &recover_session" in entry["evidence"]
 
+    async def test_cross_file_transport_ops_registration_is_callback_entry_without_agent(
+        self, tmp_path, monkeypatch
+    ):
+        from app.services.coverage_analyzer import build_coverage_test_design
+
+        monkeypatch.setattr(
+            "app.services.coverage_analyzer.settings.external_agents_enabled",
+            False,
+        )
+        src = tmp_path / "nvmf_tcp" / "transport" / "tls"
+        src.mkdir(parents=True)
+        (src / "tls.c").write_text(
+            "struct nvmf_transport_ops {\n"
+            "    const char *name;\n"
+            "    int (*listen)(struct nvmf_transport *transport);\n"
+            "};\n\n"
+            "static int nvmf_tcp_tls_listen(struct nvmf_transport *transport) {\n"
+            "    if (transport == 0) {\n"
+            "        return -1;\n"
+            "    }\n"
+            "    return 0;\n"
+            "}\n\n"
+            "const struct nvmf_transport_ops nvmf_tcp_tls_ops = {\n"
+            "    .name = \"tcp-tls\",\n"
+            "    .listen = nvmf_tcp_tls_listen,\n"
+            "};\n",
+            encoding="utf-8",
+        )
+        (src / "transport.c").write_text(
+            "struct nvmf_transport_ops;\n"
+            "extern const struct nvmf_transport_ops nvmf_tcp_tls_ops;\n"
+            "SPDK_NVMF_TRANSPORT_REGISTER(tcp_tls, &nvmf_tcp_tls_ops);\n",
+            encoding="utf-8",
+        )
+        modules = self._modules(
+            "feature,module,code_location,function,triggered,hit_count\n"
+            "tls,nvmf_tcp,nvmf_tcp/transport/tls/tls.c:6-11,nvmf_tcp_tls_listen,false,0\n"
+        )
+
+        design = await build_coverage_test_design(
+            modules, workspace_id="ws-1", repo_path=str(tmp_path)
+        )
+
+        gap = [g for g in design["gaps"] if g.get("kind") == "function"][0]
+        assert gap["gray_box_required"] is False
+        assert gap["black_box_readiness"]["case_type"] == "black_box_ready"
+        entry = gap["entry_paths"][0]
+        assert entry["entry_kind"] == "callback"
+        assert entry["entry_symbol"] == "nvmf_tcp_tls_listen"
+        assert entry["external_trigger"] == "tcp-tls"
+        assert ".listen = nvmf_tcp_tls_listen" in entry["evidence"]
+        assert "SPDK_NVMF_TRANSPORT_REGISTER" in entry["evidence"]
+
     async def test_callback_assignment_parser_accepts_address_of_symbol(self):
         from app.services.coverage_analyzer import _callback_symbol_from_assignment
 

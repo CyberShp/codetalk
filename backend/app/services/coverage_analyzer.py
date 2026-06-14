@@ -8098,6 +8098,17 @@ def _trace_entry_paths(
                 if kafka_entry:
                     entry_paths.append(kafka_entry)
                     continue
+                ops_registration_entry = _ops_registration_entry_for_site(
+                    repo_root,
+                    site["abs_file"],
+                    site["line_number"],
+                    symbol,
+                    site["text"],
+                    caller_chain,
+                )
+                if ops_registration_entry:
+                    entry_paths.append(ops_registration_entry)
+                    continue
                 table_entry = _dispatch_table_entry_for_site(
                     repo_root,
                     site["abs_file"],
@@ -9955,6 +9966,180 @@ def _kafka_topic_input_hints(window_text: str) -> list[str]:
     ):
         add_hint(match.group("value"))
     return hints[:6]
+
+
+def _ops_registration_entry_for_site(
+    repo_root: Path,
+    abs_file: str,
+    line_number: int,
+    traced_symbol: str,
+    site_text: str,
+    caller_chain: list[str],
+) -> dict | None:
+    if not traced_symbol:
+        return None
+    assignment = _designated_initializer_symbol_assignment(site_text, traced_symbol)
+    if assignment is None:
+        return None
+    field_name = assignment.get("field") or "callback"
+    try:
+        path = Path(abs_file)
+        lines = path.read_text(encoding="utf-8", errors="replace").splitlines()
+    except OSError:
+        return None
+    line_idx = max(0, min(line_number - 1, len(lines) - 1))
+    block = _enclosing_named_initializer_block(lines, line_idx)
+    if block is None:
+        return None
+    ops_name = block.get("name") or ""
+    block_text = block.get("text") or ""
+    if not ops_name or not _looks_like_public_ops_block(ops_name, block_text):
+        return None
+    registration = _find_ops_registration_site(repo_root, ops_name)
+    if registration is None:
+        return None
+
+    key = _ops_registration_key(block_text, registration.get("text") or "")
+    rel_file = _relative_path(repo_root, path)
+    reg_rel_file = registration.get("file") or rel_file
+    reg_line = registration.get("line_number") or line_number
+    metadata = _entry_metadata_for_symbol(
+        repo_root,
+        str(path),
+        line_number,
+        None,
+        traced_symbol,
+    )
+    input_hints = _merge_ordered_input_hints(
+        [key] if key else [],
+        metadata.pop("input_hints", []),
+    )
+    evidence_parts = [
+        f"{rel_file}:{line_number} {site_text.strip()}",
+        f"{reg_rel_file}:{reg_line} {registration.get('text', '').strip()}",
+    ]
+    entry = {
+        "entry_kind": "callback",
+        "entry_symbol": traced_symbol,
+        "entry_file": rel_file,
+        "entry_label": f"{_ENTRY_DISCOVERY_KIND_LABELS.get('callback', 'callback')} {key or field_name}",
+        "call_line": line_number,
+        "chain": caller_chain,
+        "depth": max(0, len(caller_chain) - 1),
+        "evidence": " | ".join(part for part in evidence_parts if part.strip()),
+        "tool": "source-ops-registration",
+        "input_hints": input_hints,
+    }
+    if key:
+        entry["external_trigger"] = key
+    entry.update(metadata)
+    return entry
+
+
+def _designated_initializer_symbol_assignment(
+    text: str,
+    traced_symbol: str,
+) -> dict | None:
+    symbol = str(traced_symbol or "").strip()
+    if not symbol:
+        return None
+    pattern = re.compile(
+        r"\.(?P<field>[A-Za-z_]\w*)\s*=\s*(?P<rhs>[^,;}]+)",
+        re.IGNORECASE,
+    )
+    for match in pattern.finditer(text or ""):
+        rhs = _strip_callback_assignment_prefix(match.group("rhs"))
+        if _dispatch_table_handler_symbol_matches(rhs, symbol):
+            return {"field": match.group("field"), "rhs": rhs}
+    return None
+
+
+def _enclosing_named_initializer_block(lines: list[str], line_idx: int) -> dict | None:
+    if not lines:
+        return None
+    start: int | None = None
+    for idx in range(min(line_idx, len(lines) - 1), max(-1, line_idx - 80), -1):
+        if "{" not in lines[idx]:
+            continue
+        prefix = " ".join(line.strip() for line in lines[max(0, idx - 2):idx + 1])
+        if re.search(r"\b[A-Za-z_]\w*\s*=\s*\{\s*$", prefix):
+            start = idx
+            break
+    if start is None:
+        return None
+    header = " ".join(line.strip() for line in lines[max(0, start - 2):start + 1])
+    name_match = re.search(r"\b(?P<name>[A-Za-z_]\w*)\s*=\s*\{\s*$", header)
+    if not name_match:
+        return None
+    depth = 0
+    seen_open = False
+    end = start
+    for idx in range(start, min(len(lines), start + 240)):
+        line = lines[idx]
+        depth += line.count("{")
+        if "{" in line:
+            seen_open = True
+        depth -= line.count("}")
+        end = idx
+        if seen_open and depth <= 0:
+            break
+    if line_idx < start or line_idx > end:
+        return None
+    return {
+        "name": name_match.group("name"),
+        "start": start + 1,
+        "end": end + 1,
+        "text": "\n".join(lines[start:end + 1]),
+    }
+
+
+def _looks_like_public_ops_block(ops_name: str, block_text: str) -> bool:
+    text = " ".join([ops_name or "", block_text or ""]).lower()
+    tokens = {token for token in re.split(r"[^a-z0-9]+|_", text) if token}
+    if not (tokens & {"ops", "operations", "transport", "protocol", "proto", "driver", "module"}):
+        return False
+    return bool(re.search(r"\.[A-Za-z_]\w*\s*=", block_text or ""))
+
+
+def _find_ops_registration_site(repo_root: Path, ops_name: str) -> dict | None:
+    if not ops_name:
+        return None
+    pattern = re.compile(rf"\b{re.escape(ops_name)}\b")
+    for candidate in _iter_source_files(repo_root, limit=1000):
+        try:
+            if not _is_within(repo_root, candidate):
+                continue
+            lines = candidate.read_text(encoding="utf-8", errors="replace").splitlines()
+        except OSError:
+            continue
+        for idx, line in enumerate(lines, start=1):
+            stripped = line.strip()
+            if not stripped or stripped.startswith(("//", "#", "*", "/*")):
+                continue
+            if not pattern.search(stripped):
+                continue
+            if not _REGISTRATION_LINE_RE.search(stripped):
+                continue
+            return {
+                "file": _relative_path(repo_root, candidate),
+                "abs_file": str(candidate),
+                "line_number": idx,
+                "text": stripped[:220],
+            }
+    return None
+
+
+def _ops_registration_key(block_text: str, registration_text: str) -> str | None:
+    key_match = _DISPATCH_TABLE_KEY_RE.search(block_text or "")
+    if key_match:
+        return key_match.group("key")
+    args = _signature_param_section(registration_text or "")
+    if args:
+        for raw_arg in _split_signature_params(args):
+            value = raw_arg.strip().lstrip("&").strip()
+            if re.fullmatch(r"[A-Za-z_]\w*", value):
+                return value
+    return None
 
 
 def _registration_entry_for_site(
