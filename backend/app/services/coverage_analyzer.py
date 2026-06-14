@@ -558,6 +558,7 @@ _REGISTRATION_LINE_RE = re.compile(
     r"|\bsignal\s*\.\s*signal\s*\("
     r"|(?<!\.)\bsignal\s*\("
     r"|\b(?:new\s+)?Worker\s*\("
+    r"|\buv_timer_start\s*\("
     r"|\bQueue\s*\("
     r"|\.\s*process\s*\("
     r"|\bpthread_create\s*\("
@@ -7253,6 +7254,16 @@ def _timer_interval_input_hints(registration_line: str, entry_type: str) -> list
             continue
         seen.add(value)
         hints.append(value)
+    for match in re.finditer(
+        r"\buv_timer_start\s*\(\s*[^,]+,\s*[^,]+,\s*"
+        r"(?P<timeout>\d{1,})\s*,\s*(?P<repeat>\d{1,})\b",
+        registration_line or "",
+    ):
+        for value in (match.group("timeout"), match.group("repeat")):
+            if value in seen:
+                continue
+            seen.add(value)
+            hints.append(value)
     return hints[:4]
 
 
@@ -9421,11 +9432,6 @@ def _registration_entry_for_site(
     start = max(0, idx - 12)
     end = min(len(lines), idx + 28)
     window = lines[start:end]
-    assignment_seen = any(
-        _callback_symbol_from_assignment(line) == symbol
-        or re.search(rf"\b{re.escape(symbol)}\b", line)
-        for line in window
-    )
     registration_line = next(
         (line.strip() for line in window if _REGISTRATION_LINE_RE.search(line)),
         "",
@@ -9436,6 +9442,17 @@ def _registration_entry_for_site(
         registration_line = site_text.strip()
     if not registration_line and _registry_callback_symbol_from_assignment(site_text) == symbol:
         registration_line = site_text.strip()
+    registered_timer_symbol = _timer_registration_symbol_from_text(
+        registration_line or site_text,
+        caller_chain,
+    )
+    if registered_timer_symbol:
+        symbol = registered_timer_symbol
+    assignment_seen = any(
+        _callback_symbol_from_assignment(line) == symbol
+        or re.search(rf"\b{re.escape(symbol)}\b", line)
+        for line in window
+    )
     callback_like = any(
         token in " ".join(window).lower()
         for token in (
@@ -9736,10 +9753,26 @@ def _registered_route_symbol(site_text: str, caller_chain: list[str]) -> str | N
 
 
 def _registered_callback_symbol(site_text: str, caller_chain: list[str]) -> str | None:
+    timer_symbol = _timer_registration_symbol_from_text(site_text, caller_chain)
+    if timer_symbol:
+        return timer_symbol
     for candidate in reversed(caller_chain or []):
         if candidate and re.search(rf"\b{re.escape(candidate)}\b", site_text or ""):
             return candidate
     return None
+
+
+def _timer_registration_symbol_from_text(text: str, caller_chain: list[str]) -> str | None:
+    candidates: list[str] = []
+    for pattern in (
+        r"\buv_timer_start\s*\(\s*[^,]+,\s*(?P<symbol>[A-Za-z_]\w*)\b",
+    ):
+        for match in re.finditer(pattern, text or "", re.IGNORECASE):
+            candidates.append(match.group("symbol"))
+    for candidate in candidates:
+        if any(candidate == item for item in caller_chain or []):
+            return candidate
+    return candidates[0] if candidates else None
 
 
 def _callback_symbol_from_assignment(text: str) -> str | None:
