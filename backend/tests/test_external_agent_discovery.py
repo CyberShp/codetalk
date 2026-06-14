@@ -7949,6 +7949,30 @@ def test_file_reader_typed_assigned_path_expressions_keep_source_input_hints():
     ) == ["input file", "base_dir", "filename"]
 
 
+def test_file_reader_path_aliases_keep_external_field_input_hints():
+    from app.services.coverage_analyzer import _filesystem_operation_input_hints
+
+    assert _filesystem_operation_input_hints(
+        "const baseDir = request.baseDir;\n"
+        "const filename = request.filename;\n"
+        "const inputPath = path.join(baseDir, filename);\n"
+        'const text = fs.readFileSync(inputPath, "utf8");'
+    ) == ["input file", "request.baseDir", "request.filename"]
+    assert _filesystem_operation_input_hints(
+        "base_dir = request.base_dir\n"
+        "filename = request.filename\n"
+        "path = os.path.join(base_dir, filename)\n"
+        'with open(path, "r") as fh:\n'
+        "    text = fh.read()"
+    ) == ["input file", "request.base_dir", "request.filename"]
+    assert _filesystem_operation_input_hints(
+        "baseDir := request.BaseDir\n"
+        "filename := request.Filename\n"
+        "inputPath := filepath.Join(baseDir, filename)\n"
+        "payload, _ := os.ReadFile(inputPath)"
+    ) == ["input file", "request.BaseDir", "request.Filename"]
+
+
 def test_coverage_local_python_open_join_reader_keeps_filename_input_hint(
     tmp_path, monkeypatch
 ):
@@ -8028,10 +8052,14 @@ def test_coverage_local_node_assigned_path_reader_keeps_filename_input_hint(
     gap = [g for g in design["gaps"] if g.get("function_name") == "normalizeText"][0]
     assert gap["black_box_readiness"]["case_type"] == "black_box_ready"
     assert gap["entry_paths"][0]["entry_kind"] == "file"
-    assert gap["entry_paths"][0]["input_hints"] == ["input file", "baseDir", "filename"]
+    assert gap["entry_paths"][0]["input_hints"] == [
+        "input file",
+        "request.baseDir",
+        "request.filename",
+    ]
     case_text = json.dumps(gap["black_box_cases"], ensure_ascii=False)
-    assert "baseDir" in case_text
-    assert "filename" in case_text
+    assert "request.baseDir" in case_text
+    assert "request.filename" in case_text
 
 
 def test_coverage_local_go_assigned_path_reader_keeps_filename_input_hint(

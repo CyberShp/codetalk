@@ -8162,13 +8162,57 @@ def _filesystem_operation_input_hints(window_text: str) -> list[str]:
 
     def collect_assigned_path_expression_vars(text: str) -> dict[str, list[str]]:
         assigned: dict[str, list[str]] = {}
+        alias_vars: dict[str, list[str]] = {}
+
+        def field_alias_vars(expr_text: str) -> list[str]:
+            expr = expr_text.strip().rstrip(";").strip()
+            expr = path_wrapper_inner_arg(expr) or expr
+            for env_pattern in _ENV_FIELD_RES:
+                env_match = env_pattern.fullmatch(expr)
+                if env_match:
+                    return [env_match.group(1)]
+            bracket_match = re.fullmatch(
+                r"""(?P<base>[A-Za-z_$][\w$]*)\s*\[\s*['"](?P<field>[^'"]+)['"]\s*\]""",
+                expr,
+            )
+            if bracket_match:
+                return [f"{bracket_match.group('base')}.{bracket_match.group('field')}"]
+            if re.fullmatch(
+                r"""[A-Za-z_$][\w$]*(?:\s*(?:\?\.|\.|->)\s*[A-Za-z_$][\w$]*)+""",
+                expr,
+            ):
+                normalized = re.sub(
+                    r"""\s*(\?\.|\.|->)\s*""",
+                    lambda match: "." if match.group(1) == "?." else match.group(1),
+                    expr,
+                )
+                return [normalized]
+            return []
+
+        def expand_aliases(variables: list[str]) -> list[str]:
+            expanded: list[str] = []
+
+            def add_expanded(variable: str, seen_aliases: set[str]) -> None:
+                if variable in seen_aliases:
+                    return
+                alias_values = alias_vars.get(variable)
+                if alias_values:
+                    for alias_value in alias_values:
+                        add_expanded(alias_value, {*seen_aliases, variable})
+                    return
+                if variable not in expanded:
+                    expanded.append(variable)
+
+            for variable in variables:
+                add_expanded(variable, set())
+            return expanded
 
         def remember(name: str, variables: list[str]) -> None:
             clean_name = name.strip().lstrip("&*").strip()
             if not clean_name or not variables:
                 return
             existing = assigned.setdefault(clean_name, [])
-            for variable in variables:
+            for variable in expand_aliases(variables):
                 if variable not in existing:
                     existing.append(variable)
 
@@ -8249,6 +8293,13 @@ def _filesystem_operation_input_hints(window_text: str) -> list[str]:
                 re.MULTILINE,
             ),
         )
+        for pattern in assignment_res:
+            for match in pattern.finditer(text or ""):
+                name = match.group("name").strip()
+                expr = match.group("expr").strip().rstrip(";").strip()
+                alias_values = field_alias_vars(expr)
+                if alias_values:
+                    alias_vars[name] = expand_aliases(alias_values)
         for pattern in assignment_res:
             for match in pattern.finditer(text or ""):
                 name = match.group("name").strip()
