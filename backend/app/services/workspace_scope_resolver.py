@@ -111,6 +111,9 @@ def _analysis_object_exact_symbol(text: str) -> str | None:
     value = value.rstrip(";{").strip()
     if _looks_like_symbol(value):
         return value
+    qualified = _analysis_object_qualified_symbol(value)
+    if qualified:
+        return qualified[1]
     if "(" not in value:
         return None
     prefix = value.split("(", 1)[0].strip()
@@ -124,6 +127,21 @@ def _analysis_object_exact_symbol(text: str) -> str | None:
     if symbol.lower() in _CALLABLE_SYMBOL_EXCLUDES:
         return None
     return symbol if _looks_like_symbol(symbol) else None
+
+
+def _analysis_object_qualified_symbol(text: str) -> tuple[str, str] | None:
+    value = str(text or "").strip().strip("`'\"")
+    value = re.sub(r"\([^()]*\)\s*$", "", value).strip()
+    if not value or any(sep in value for sep in ("/", "\\")):
+        return None
+    parts = [part for part in re.split(r"(?:::|\.)", value) if part]
+    if len(parts) < 2 or any(not re.fullmatch(r"[A-Za-z_]\w*", part) for part in parts):
+        return None
+    symbol = parts[-1]
+    if symbol.lower() in _CALLABLE_SYMBOL_EXCLUDES:
+        return None
+    qualifier = ".".join(parts[:-1])
+    return (qualifier, symbol) if _looks_like_symbol(symbol) else None
 
 
 def _tokenize(text: str) -> list[str]:
@@ -835,7 +853,7 @@ def _ordered_path_part_hits(path_text: str, parts: list[str]) -> int:
 
 
 def _exact_symbol_repo_hits_blocking(
-    repo_path: str, symbol: str, limit: int
+    repo_path: str, symbol: str, limit: int, qualifier: str | None = None
 ) -> list[str]:
     """Return source files most likely to define *symbol*.
 
@@ -870,6 +888,7 @@ def _exact_symbol_repo_hits_blocking(
                     continue
                 path, _line_number, text = parsed
                 score = _score_symbol_hit(path, text, symbol)
+                score += _score_qualified_symbol_hit(text, qualifier, symbol)
                 hits[path] = max(hits.get(path, 0), score)
         except (subprocess.TimeoutExpired, OSError) as exc:
             logger.info("exact symbol ripgrep failed (%s); using python walker", exc)
@@ -890,7 +909,8 @@ def _exact_symbol_repo_hits_blocking(
                                 path = str(full)
                                 hits[path] = max(
                                     hits.get(path, 0),
-                                    _score_symbol_hit(path, line, symbol),
+                                    _score_symbol_hit(path, line, symbol)
+                                    + _score_qualified_symbol_hit(line, qualifier, symbol),
                                 )
                                 break
                 except OSError:
@@ -898,6 +918,31 @@ def _exact_symbol_repo_hits_blocking(
 
     ranked = sorted(hits.items(), key=lambda item: (-item[1], item[0].lower()))
     return [path for path, _ in ranked[:limit]]
+
+
+def _score_qualified_symbol_hit(line: str, qualifier: str | None, symbol: str) -> int:
+    if not qualifier or not symbol:
+        return 0
+    text = str(line or "")
+    qualifier_parts = [part for part in re.split(r"(?:::|\.)", qualifier) if part]
+    if not qualifier_parts:
+        return 0
+    class_name = qualifier_parts[-1]
+    escaped_class = re.escape(class_name)
+    escaped_symbol = re.escape(symbol)
+    if re.search(
+        rf"\b{escaped_class}\s*(?:::|\.)\s*{escaped_symbol}\b",
+        text,
+    ):
+        return 240
+    if re.search(
+        rf"\(\s*\w+\s+\*?{escaped_class}\s*\)\s+{escaped_symbol}\s*\(",
+        text,
+    ):
+        return 220
+    if re.search(rf"\bclass\s+{escaped_class}\b", text):
+        return 40
+    return 0
 
 
 def _parse_ripgrep_line(raw: str) -> tuple[str, int, str] | None:
@@ -1203,6 +1248,37 @@ def _scope_role_for_keyword_hit(repo_path: str, path: str, keywords: list[str]) 
             ):
                 return "primary"
     return "related"
+
+
+def _merge_exact_source_candidates(
+    repo_path: str,
+    exact_candidates: list[ScopeCandidate],
+    existing_candidates: list[ScopeCandidate],
+) -> list[ScopeCandidate]:
+    by_key: dict[str, ScopeCandidate] = {}
+    ordered_keys: list[str] = []
+
+    def put(candidate: ScopeCandidate) -> None:
+        if not candidate.path:
+            return
+        key = normalize_file_key(repo_path, candidate.path)
+        if not key:
+            return
+        if key not in by_key:
+            ordered_keys.append(key)
+        by_key[key] = candidate
+
+    for candidate in exact_candidates:
+        put(candidate)
+    for candidate in existing_candidates:
+        if not candidate.path:
+            continue
+        key = normalize_file_key(repo_path, candidate.path)
+        if not key or key in by_key:
+            continue
+        ordered_keys.append(key)
+        by_key[key] = candidate
+    return [by_key[key] for key in ordered_keys]
 
 
 def _record_agent_scope_file(
@@ -1618,10 +1694,10 @@ async def _path_keyword_repo_hits(
 
 
 async def _exact_symbol_repo_hits(
-    repo_path: str, symbol: str, limit: int
+    repo_path: str, symbol: str, limit: int, qualifier: str | None = None
 ) -> list[str]:
     return await asyncio.to_thread(
-        _exact_symbol_repo_hits_blocking, repo_path, symbol, limit
+        _exact_symbol_repo_hits_blocking, repo_path, symbol, limit, qualifier
     )
 
 
@@ -1998,20 +2074,20 @@ class WorkspaceScopeResolver:
         # also pull local source hits — a wrong/incomplete GitNexus graph (e.g.
         # a same-named repo) must not be able to hide the real implementation
         # files (log_flags.c / log_deprecated.c were silently missed).
-        exact_symbol = _analysis_object_exact_symbol(obj.text)
+        qualified_symbol = _analysis_object_qualified_symbol(obj.text)
+        exact_symbol = qualified_symbol[1] if qualified_symbol else _analysis_object_exact_symbol(obj.text)
         if exact_symbol:
             exact_hits = await _await_with_agent_cleanup(
                 _exact_symbol_repo_hits(
-                    repo_path, exact_symbol, limits.max_files_per_object
+                    repo_path,
+                    exact_symbol,
+                    limits.max_files_per_object,
+                    qualified_symbol[0] if qualified_symbol else None,
                 ),
                 agent_task,
             )
             exact_candidates: list[ScopeCandidate] = []
             for hit in exact_hits:
-                key = ("file", normalize_file_key(repo_path, hit))
-                if key in seen_keys:
-                    continue
-                seen_keys.add(key)
                 _record_agent_scope_file(
                     agent_session,
                     object_id=obj.id,
@@ -2035,7 +2111,14 @@ class WorkspaceScopeResolver:
             # Exact local symbol evidence is the most trustworthy grounding when
             # GitNexus repo disambiguation is degraded, so it must not be pushed
             # out by graph-derived callers before evidence-card budgeting.
-            file_candidates = exact_candidates + file_candidates
+            file_candidates = _merge_exact_source_candidates(
+                repo_path,
+                exact_candidates,
+                file_candidates,
+            )
+            for cand in exact_candidates:
+                if cand.path:
+                    seen_keys.add(("file", normalize_file_key(repo_path, cand.path)))
 
         # If GitNexus is empty OR returned nothing, fall back to repo search.
         if not file_candidates:

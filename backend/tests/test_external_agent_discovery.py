@@ -6149,6 +6149,54 @@ def test_workspace_exact_symbol_search_prioritizes_cpp_method_definition(tmp_pat
     assert rel_hits[0] == "src/z_service.cpp"
 
 
+def test_workspace_resolver_prioritizes_qualified_method_definition_without_tools(
+    tmp_path, monkeypatch
+):
+    src = tmp_path / "src"
+    src.mkdir()
+    (src / "a_other.cpp").write_text(
+        "PaymentResult OtherService::processPayment(const Request& req) {\n"
+        "    return PaymentResult{};\n"
+        "}\n",
+        encoding="utf-8",
+    )
+    (src / "z_payment.cpp").write_text(
+        "PaymentResult PaymentService::processPayment(const Request& req) {\n"
+        "    return PaymentResult{};\n"
+        "}\n",
+        encoding="utf-8",
+    )
+
+    async def fake_discovery(_request, **_kwargs):
+        return []
+
+    monkeypatch.setattr(
+        "app.services.workspace_scope_resolver.run_external_agent_discovery",
+        fake_discovery,
+    )
+    obj = AnalysisObject(
+        id="obj_payment_method",
+        text="PaymentService::processPayment",
+        kind="function",
+    )
+
+    resolved = asyncio.run(WorkspaceScopeResolver()._resolve_object(
+        obj=obj,
+        ws_id="ws",
+        repo_path=str(tmp_path),
+        index=_GraphIndex(None),
+        limits=LLMLimits(max_files_per_object=4),
+        gitnexus_available=False,
+        external_agents_enabled=False,
+    ))
+
+    first = resolved.candidate_files[0]
+    assert Path(first.path).relative_to(tmp_path).as_posix() == "src/z_payment.cpp"
+    assert first.symbol == "processPayment"
+    assert first.role == "primary"
+    assert first.source == "repo_search"
+
+
 def test_workspace_exact_symbol_search_prioritizes_go_receiver_method_definition(tmp_path):
     from app.services.workspace_scope_resolver import _exact_symbol_repo_hits_blocking
 
