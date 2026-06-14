@@ -96,10 +96,34 @@ _TOKEN_RE = re.compile(r"[\w一-鿿]{2,}", re.UNICODE)
 
 # A bare C/C++/identifier-style analysis object (e.g. ``spdk_log_set_flag``).
 _SYMBOL_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]{2,}$")
+_CALLABLE_SYMBOL_EXCLUDES = {
+    "if", "for", "while", "switch", "catch", "return", "sizeof",
+    "function", "def", "class", "struct", "enum", "lambda",
+}
 
 
 def _looks_like_symbol(text: str) -> bool:
     return bool(_SYMBOL_RE.match((text or "").strip()))
+
+
+def _analysis_object_exact_symbol(text: str) -> str | None:
+    value = str(text or "").strip().strip("`'\"")
+    value = value.rstrip(";{").strip()
+    if _looks_like_symbol(value):
+        return value
+    if "(" not in value:
+        return None
+    prefix = value.split("(", 1)[0].strip()
+    match = re.search(
+        r"(?P<symbol>[A-Za-z_]\w*(?:(?:::|\.)[A-Za-z_]\w*)*)$",
+        prefix,
+    )
+    if not match:
+        return None
+    symbol = re.split(r"(?:::|\.)", match.group("symbol"))[-1]
+    if symbol.lower() in _CALLABLE_SYMBOL_EXCLUDES:
+        return None
+    return symbol if _looks_like_symbol(symbol) else None
 
 
 def _tokenize(text: str) -> list[str]:
@@ -1956,10 +1980,11 @@ class WorkspaceScopeResolver:
         # also pull local source hits — a wrong/incomplete GitNexus graph (e.g.
         # a same-named repo) must not be able to hide the real implementation
         # files (log_flags.c / log_deprecated.c were silently missed).
-        if _looks_like_symbol(obj.text):
+        exact_symbol = _analysis_object_exact_symbol(obj.text)
+        if exact_symbol:
             exact_hits = await _await_with_agent_cleanup(
                 _exact_symbol_repo_hits(
-                    repo_path, obj.text.strip(), limits.max_files_per_object
+                    repo_path, exact_symbol, limits.max_files_per_object
                 ),
                 agent_task,
             )
@@ -1982,7 +2007,7 @@ class WorkspaceScopeResolver:
                 exact_candidates.append(
                     ScopeCandidate(
                         path=hit,
-                        symbol=obj.text.strip(),
+                        symbol=exact_symbol,
                         source="repo_search",
                         confidence="high",
                         reason="本地源码精确符号命中，优先作为事实证据（防止图谱漏召回）",

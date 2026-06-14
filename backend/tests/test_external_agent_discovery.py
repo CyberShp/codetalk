@@ -6797,6 +6797,60 @@ def test_workspace_preview_finds_generic_hyphenated_business_path_without_tools(
     assert not any("源码未找到" in warning for warning in resolved.warnings)
 
 
+def test_workspace_resolver_prioritizes_callable_symbol_definition_without_tools(tmp_path, monkeypatch):
+    (tmp_path / "src" / "core").mkdir(parents=True)
+    (tmp_path / "aaa_examples").mkdir()
+    (tmp_path / "tests").mkdir()
+    (tmp_path / "src" / "core" / "worker.c").write_text(
+        "int process_event(struct event *event) {\n"
+        "    return event ? 0 : -1;\n"
+        "}\n",
+        encoding="utf-8",
+    )
+    (tmp_path / "aaa_examples" / "demo.c").write_text(
+        "void demo(void) { process_event(0); }\n",
+        encoding="utf-8",
+    )
+    (tmp_path / "tests" / "test_worker.c").write_text(
+        "void test_process_event(void) { process_event(0); }\n",
+        encoding="utf-8",
+    )
+
+    async def fake_discovery(_request, **_kwargs):
+        return []
+
+    monkeypatch.setattr(
+        "app.services.workspace_scope_resolver.run_external_agent_discovery",
+        fake_discovery,
+    )
+
+    resolved = asyncio.run(WorkspaceScopeResolver()._resolve_object(
+        obj=AnalysisObject(id="obj_process_event", text="process_event()", kind="function"),
+        ws_id="ws",
+        repo_path=str(tmp_path),
+        index=_GraphIndex(None),
+        limits=LLMLimits(max_files_per_object=5),
+        gitnexus_available=False,
+        external_agents_enabled=False,
+    ))
+    first = resolved.candidate_files[0]
+
+    assert Path(first.path).relative_to(tmp_path).as_posix() == "src/core/worker.c"
+    assert first.symbol == "process_event"
+    assert first.role == "primary"
+    assert first.source == "repo_search"
+    assert first.confidence == "high"
+
+
+def test_workspace_exact_symbol_extraction_accepts_calls_and_signatures():
+    from app.services.workspace_scope_resolver import _analysis_object_exact_symbol
+
+    assert _analysis_object_exact_symbol("process_event()") == "process_event"
+    assert _analysis_object_exact_symbol("int process_event(struct event *event)") == "process_event"
+    assert _analysis_object_exact_symbol("Controller::process_event(request)") == "process_event"
+    assert _analysis_object_exact_symbol("if (process_event)") is None
+
+
 def test_workspace_preview_reports_live_gitnexus_failure_reason(tmp_path, monkeypatch):
     from app.schemas.workspace_analysis import AnalysisPlan
 
