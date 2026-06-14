@@ -557,6 +557,9 @@ _REGISTRATION_LINE_RE = re.compile(
     r"|\b(?:new\s+)?Worker\s*\("
     r"|\bQueue\s*\("
     r"|\.\s*process\s*\("
+    r"|\b(?:threading|multiprocessing)\s*\.\s*(?:Thread|Process)\s*\("
+    r"|\b(?:Thread|Process)\s*\("
+    r"|\.\s*submit\s*\("
     r"|\.[ \t]*(?:register|subscribe|on|once|listen|addEventListener|addListener|"
     r"addHandler|add_listener|add_handler|add_job|schedule)\s*\(",
     re.IGNORECASE,
@@ -658,6 +661,7 @@ _ENTRY_DISCOVERY_KIND_LABELS = {
     "callback": "注册回调入口",
     "timer": "定时任务入口",
     "service": "服务启动入口",
+    "worker": "Worker entry",
 }
 
 _PUBLIC_ENTRY_KIND_ALIASES = {
@@ -3983,7 +3987,7 @@ def _registration_input_hints_for_entry_symbol(
     entry_symbol: str,
     entry_kind: str,
 ) -> list[str]:
-    if entry_kind not in {"message", "queue", "scheduler", "job", "timer"}:
+    if entry_kind not in {"message", "queue", "scheduler", "job", "timer", "worker"}:
         return []
     hints: list[str] = []
     for site in _ripgrep_call_sites(repo_root, entry_symbol)[:20]:
@@ -7147,7 +7151,7 @@ def _message_payload_type_input_hints(signature: str) -> list[str]:
 
 
 def _registration_channel_input_hints(registration_line: str, entry_type: str) -> list[str]:
-    if entry_type not in {"message", "queue", "scheduler", "job", "timer", "callback"}:
+    if entry_type not in {"message", "queue", "scheduler", "job", "timer", "callback", "worker"}:
         return []
     hints: list[str] = []
     seen: set[str] = set()
@@ -7231,6 +7235,53 @@ def _timer_interval_input_hints(registration_line: str, entry_type: str) -> list
     return hints[:4]
 
 
+def _worker_registration_input_hints(registration_text: str, entry_type: str) -> list[str]:
+    if entry_type != "worker" or not _looks_like_worker_registration(registration_text):
+        return []
+    hints: list[str] = []
+    seen: set[str] = set()
+
+    def add(value: str) -> None:
+        text = str(value or "").strip()
+        if not text or text in seen:
+            return
+        seen.add(text)
+        hints.append(text)
+
+    text = registration_text or ""
+    for match in re.finditer(
+        r"\b(?:name|thread_name|process_name)\s*=\s*(['\"])(?P<value>(?:\\.|(?!\1).)*?)\1",
+        text,
+    ):
+        add(match.group("value"))
+    for match in re.finditer(
+        r"\b(?:kwargs|args)\s*=\s*\{(?P<body>[^}]{0,500})\}",
+        text,
+        re.DOTALL,
+    ):
+        for key in re.finditer(r"(['\"])(?P<key>[A-Za-z_]\w{1,80})(?:\\.|(?!\1).)*?\1\s*:", match.group("body")):
+            add(key.group("key"))
+    for match in re.finditer(
+        r"\b(?P<key>[A-Za-z_]\w{1,80})\s*=",
+        text,
+    ):
+        key = match.group("key")
+        if key.lower() in {"target", "daemon", "name", "thread_name", "process_name", "args", "kwargs"}:
+            continue
+        add(key)
+    return hints[:8]
+
+
+def _looks_like_worker_registration(text: str) -> bool:
+    return bool(re.search(
+        r"\b(?:threading|multiprocessing)\s*\.\s*(?:Thread|Process)\s*\("
+        r"|\b(?:Thread|Process)\s*\("
+        r"|\.\s*submit\s*\(",
+        text or "",
+        re.IGNORECASE,
+    ))
+
+
 def _queue_registration_input_hints(site_text: str, entry_type: str) -> list[str]:
     if entry_type != "queue":
         return []
@@ -7276,7 +7327,7 @@ def _channel_registration_context_input_hints(
     line_number: int,
     entry_type: str,
 ) -> list[str]:
-    if entry_type not in {"message", "queue", "scheduler", "job", "timer"}:
+    if entry_type not in {"message", "queue", "scheduler", "job", "timer", "worker"}:
         return []
     try:
         lines = Path(abs_file).read_text(encoding="utf-8", errors="replace").splitlines()
@@ -7289,6 +7340,7 @@ def _channel_registration_context_input_hints(
     hints = _merge_ordered_strings(
         _registration_channel_input_hints(window_text, entry_type),
         _queue_registration_input_hints(window_text, entry_type),
+        _worker_registration_input_hints(window_text, entry_type),
         _registration_config_path_input_hints(window_text),
     )
     if entry_type == "message":
@@ -7300,7 +7352,7 @@ def _channel_registration_context_input_hints(
 
 
 def _symbol_channel_input_hints(symbol: str | None, entry_type: str) -> list[str]:
-    if entry_type not in {"message", "queue", "scheduler", "job", "timer"}:
+    if entry_type not in {"message", "queue", "scheduler", "job", "timer", "worker"}:
         return []
     text = str(symbol or "").strip()
     if not text:
@@ -7758,7 +7810,7 @@ def _augment_entry_input_hints_from_symbol_source(
                 config_hints,
                 _filter_config_signature_input_hints(merged_hints, config_hints),
             )
-    if entry_kind in {"job", "scheduler", "timer", "message", "queue", "callback"}:
+    if entry_kind in {"job", "scheduler", "timer", "message", "queue", "callback", "worker"}:
         merged_hints = _filter_return_literal_input_hints(
             str(abs_file),
             str(entry_symbol),
@@ -9293,6 +9345,7 @@ def _registration_entry_for_site(
             "callback", "_cb", "handler", "ops", "poller", "timer", "event",
             "register", "subscribe", ".on", ".once", "listener", "schedule", "scheduler", "job",
             "worker", "queue", ".process", "grpc", "servicer_to_server", "signal",
+            "thread", "target=", "executor", ".submit",
         )
     )
     if not (assignment_seen and registration_line and callback_like):
@@ -9331,6 +9384,7 @@ def _registration_entry_for_site(
             _node_process_lifecycle_input_hints(registration_line),
             _python_process_lifecycle_input_hints(registration_line),
             _timer_interval_input_hints(registration_line, entry_type),
+            _worker_registration_input_hints("\n".join(window), entry_type),
         )
         if entry_type == "message":
             channel_hints = _merge_ordered_strings(
@@ -9664,6 +9718,8 @@ def _registered_entry_type(registration_line: str, window: list[str]) -> str:
         return "callback"
     if _node_process_lifecycle_input_hints(registration_line + "\n" + "\n".join(window)):
         return "callback"
+    if _looks_like_worker_registration(registration_line + "\n" + "\n".join(window)):
+        return "worker"
     if re.search(r"\.\s*(?:on|once)\s*\(", text):
         return "message"
     if (

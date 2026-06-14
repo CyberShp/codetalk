@@ -8611,6 +8611,47 @@ class TestCoverageTestDesign:
         assert "scheduler.add_job" in entry["evidence"]
         assert entry["input_hints"] == ["session_cleanup", "cron", "batch_size"]
 
+    async def test_python_thread_target_registration_is_worker_entry_without_agent(self, tmp_path):
+        from app.services.coverage_analyzer import build_coverage_test_design
+
+        src = tmp_path / "src"
+        src.mkdir()
+        (src / "workers.py").write_text(
+            "def flush_pending_batches(batch_size):\n"
+            "    if batch_size <= 0:\n"
+            "        return 'skip'\n"
+            "    return 'flushed'\n",
+            encoding="utf-8",
+        )
+        (src / "bootstrap.py").write_text(
+            "import threading\n"
+            "from workers import flush_pending_batches\n\n"
+            "threading.Thread(\n"
+            "    name='batch-flusher',\n"
+            "    target=flush_pending_batches,\n"
+            "    kwargs={'batch_size': 250},\n"
+            "    daemon=True,\n"
+            ").start()\n",
+            encoding="utf-8",
+        )
+        modules = self._modules(
+            "feature,module,code_location,function,triggered,hit_count\n"
+            "batches,workers,src/workers.py:1-4,flush_pending_batches,false,0\n"
+        )
+
+        design = await build_coverage_test_design(
+            modules, workspace_id="ws-1", repo_path=str(tmp_path)
+        )
+
+        gap = [g for g in design["gaps"] if g.get("kind") == "function"][0]
+        assert gap["gray_box_required"] is False
+        assert gap["black_box_readiness"]["case_type"] == "black_box_ready"
+        entry = gap["entry_paths"][0]
+        assert entry["entry_kind"] == "worker"
+        assert entry["entry_symbol"] == "flush_pending_batches"
+        assert "threading.Thread" in entry["evidence"]
+        assert entry["input_hints"] == ["batch-flusher", "batch_size"]
+
     async def test_message_subscribe_registration_keeps_message_entry_kind(self, tmp_path):
         from app.services.coverage_analyzer import build_coverage_test_design
 
