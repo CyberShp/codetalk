@@ -638,7 +638,7 @@ _BROWSER_LIFECYCLE_CALLBACK_ASSIGN_RE = re.compile(
 _REGISTRY_CALLBACK_ASSIGN_RE = re.compile(
     r"\b(?P<table>[A-Za-z_]\w*(?:\.[A-Za-z_]\w*)*)\s*"
     r"\[\s*(?P<quote>['\"])(?P<key>[A-Za-z0-9_.:/-]{1,100})(?P=quote)\s*\]\s*="
-    r"\s*&?(?P<symbol>[A-Za-z_]\w*)\b",
+    r"\s*(?P<rhs>[^,;}]+)",
     re.IGNORECASE,
 )
 _DISPATCH_TABLE_ENTRY_RE = re.compile(
@@ -9450,10 +9450,10 @@ def _registration_entry_for_site(
 ) -> dict | None:
     symbol = (
         _worker_registration_symbol_from_text(site_text, caller_chain)
-        or enclosing
         or _callback_symbol_from_assignment(site_text)
         or _browser_lifecycle_callback_symbol_from_assignment(site_text)
         or _registry_callback_symbol_from_assignment(site_text)
+        or enclosing
         or _registered_callback_symbol(site_text, caller_chain)
     )
     if not symbol:
@@ -9882,7 +9882,11 @@ def _browser_lifecycle_callback_symbol_from_assignment(text: str) -> str | None:
 
 def _registry_callback_symbol_from_assignment(text: str) -> str | None:
     match = _REGISTRY_CALLBACK_ASSIGN_RE.search(text or "")
-    return match.group("symbol") if match else None
+    if not match:
+        return None
+    rhs = _strip_callback_assignment_prefix(match.group("rhs"))
+    symbol_match = re.match(r"(?P<symbol>[A-Za-z_]\w*)\b", rhs)
+    return symbol_match.group("symbol") if symbol_match else None
 
 
 def _posix_signal_input_hints(text: str) -> list[str]:
