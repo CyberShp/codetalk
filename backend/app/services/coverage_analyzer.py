@@ -7287,6 +7287,17 @@ def _timer_interval_input_hints(registration_line: str, entry_type: str) -> list
             continue
         seen.add(value)
         hints.append(value)
+    for match in re.finditer(
+        r"\bschedule\s*\.\s*every\s*\(\s*(?P<count>\d+(?:\.\d+)?)\s*\)"
+        r"\s*\.\s*(?P<unit>seconds?|minutes?|hours?|days?|weeks?)\b",
+        registration_line or "",
+        re.IGNORECASE,
+    ):
+        value = f"{match.group('count')} {match.group('unit').lower()}"
+        if value in seen:
+            continue
+        seen.add(value)
+        hints.append(value)
     return hints[:4]
 
 
