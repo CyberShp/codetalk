@@ -8329,6 +8329,49 @@ class TestCoverageTestDesign:
         assert "process.on('uncaughtException', reportFatal)" in entry["evidence"]
         assert "uncaughtException" in entry["input_hints"]
 
+    async def test_browser_lifecycle_property_registration_is_callback_entry_without_agent(
+        self, tmp_path, monkeypatch
+    ):
+        from app.services.coverage_analyzer import build_coverage_test_design
+
+        monkeypatch.setattr(
+            "app.services.coverage_analyzer.settings.external_agents_enabled",
+            False,
+        )
+        src = tmp_path / "src"
+        src.mkdir()
+        (src / "errors.ts").write_text(
+            "export function reportError(message) {\n"
+            "  if (!message) {\n"
+            "    return 'missing';\n"
+            "  }\n"
+            "  return 'reported';\n"
+            "}\n",
+            encoding="utf-8",
+        )
+        (src / "browser.ts").write_text(
+            "import { reportError } from './errors';\n\n"
+            "window.onerror = reportError;\n",
+            encoding="utf-8",
+        )
+        modules = self._modules(
+            "feature,module,code_location,function,triggered,hit_count\n"
+            "browser,errors,src/errors.ts:1-6,reportError,false,0\n"
+        )
+
+        design = await build_coverage_test_design(
+            modules, workspace_id="ws-1", repo_path=str(tmp_path)
+        )
+
+        gap = [g for g in design["gaps"] if g.get("kind") == "function"][0]
+        assert gap["gray_box_required"] is False
+        assert gap["black_box_readiness"]["case_type"] == "black_box_ready"
+        entry = gap["entry_paths"][0]
+        assert entry["entry_kind"] == "callback"
+        assert entry["entry_symbol"] == "reportError"
+        assert "window.onerror = reportError" in entry["evidence"]
+        assert "onerror" in entry["input_hints"]
+
     async def test_property_callback_assignment_is_black_box_entry_without_agent(
         self, tmp_path, monkeypatch
     ):

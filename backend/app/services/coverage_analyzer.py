@@ -612,6 +612,11 @@ _CALLBACK_ASSIGN_RE = re.compile(
     r")\s*=\s*(?P<symbol>[A-Za-z_]\w*)",
     re.IGNORECASE,
 )
+_BROWSER_LIFECYCLE_CALLBACK_ASSIGN_RE = re.compile(
+    r"\b(?:window|document|self|globalThis)\s*\.\s*"
+    r"(?P<callback_prop>on[A-Za-z_]\w*)\s*=\s*(?P<symbol>[A-Za-z_]\w*)",
+    re.IGNORECASE,
+)
 _REGISTRY_CALLBACK_ASSIGN_RE = re.compile(
     r"\b(?P<table>[A-Za-z_]\w*(?:\.[A-Za-z_]\w*)*)\s*"
     r"\[\s*(?P<quote>['\"])(?P<key>[A-Za-z0-9_.:/-]{1,100})(?P=quote)\s*\]\s*="
@@ -7142,7 +7147,7 @@ def _message_payload_type_input_hints(signature: str) -> list[str]:
 
 
 def _registration_channel_input_hints(registration_line: str, entry_type: str) -> list[str]:
-    if entry_type not in {"message", "queue", "scheduler", "job", "timer"}:
+    if entry_type not in {"message", "queue", "scheduler", "job", "timer", "callback"}:
         return []
     hints: list[str] = []
     seen: set[str] = set()
@@ -7157,7 +7162,7 @@ def _registration_channel_input_hints(registration_line: str, entry_type: str) -
                 hints.append(value)
     for match in re.finditer(r"""(['"])(?P<value>(?:\\.|(?!\1).)*?)\1""", registration_line or ""):
         value = match.group("value").strip()
-        if not value or value in seen:
+        if not value or value in seen or _looks_like_relative_module_path_hint(value):
             continue
         seen.add(value)
         hints.append(value)
@@ -7169,13 +7174,21 @@ def _registration_channel_input_hints(registration_line: str, entry_type: str) -
 
 
 def _callback_assignment_channel_hint(text: str) -> str | None:
-    match = _CALLBACK_ASSIGN_RE.search(text or "")
+    match = (
+        _CALLBACK_ASSIGN_RE.search(text or "")
+        or _BROWSER_LIFECYCLE_CALLBACK_ASSIGN_RE.search(text or "")
+    )
     if not match:
         return None
     prop = (match.group("callback_prop") or "").strip()
     if not prop:
         return None
     return prop
+
+
+def _looks_like_relative_module_path_hint(value: str) -> bool:
+    text = str(value or "").strip().replace("\\", "/")
+    return text.startswith("./") or text.startswith("../")
 
 
 def _signal_registration_input_hints(registration_line: str) -> list[str]:
@@ -9225,6 +9238,7 @@ def _registration_entry_for_site(
     symbol = (
         enclosing
         or _callback_symbol_from_assignment(site_text)
+        or _browser_lifecycle_callback_symbol_from_assignment(site_text)
         or _registry_callback_symbol_from_assignment(site_text)
         or _registered_callback_symbol(site_text, caller_chain)
     )
@@ -9250,6 +9264,8 @@ def _registration_entry_for_site(
         "",
     )
     if not registration_line and _callback_symbol_from_assignment(site_text) == symbol:
+        registration_line = site_text.strip()
+    if not registration_line and _browser_lifecycle_callback_symbol_from_assignment(site_text) == symbol:
         registration_line = site_text.strip()
     if not registration_line and _registry_callback_symbol_from_assignment(site_text) == symbol:
         registration_line = site_text.strip()
@@ -9555,6 +9571,11 @@ def _registered_callback_symbol(site_text: str, caller_chain: list[str]) -> str 
 
 def _callback_symbol_from_assignment(text: str) -> str | None:
     match = _CALLBACK_ASSIGN_RE.search(text or "")
+    return match.group("symbol") if match else None
+
+
+def _browser_lifecycle_callback_symbol_from_assignment(text: str) -> str | None:
+    match = _BROWSER_LIFECYCLE_CALLBACK_ASSIGN_RE.search(text or "")
     return match.group("symbol") if match else None
 
 
