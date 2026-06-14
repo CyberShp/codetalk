@@ -9894,6 +9894,14 @@ def _strip_callback_assignment_prefix(rhs: str) -> str:
         if not named_cast_match:
             break
         value = named_cast_match.group("inner").strip()
+    while True:
+        macro_wrapper_match = re.match(
+            r"[A-Z][A-Z0-9_]*\s*\(\s*(?P<inner>&?[A-Za-z_]\w*(?:(?:::|\.)[A-Za-z_]\w*)*)\s*\)\s*$",
+            value,
+        )
+        if not macro_wrapper_match:
+            break
+        value = macro_wrapper_match.group("inner").strip()
     return value.lstrip("&").strip()
 
 
