@@ -98,6 +98,7 @@ _SOURCE_EXTENSION_CANDIDATES = (
     ".rb", ".php", ".kt", ".kts", ".swift", ".m", ".mm", ".scala",
     ".vue", ".svelte", ".astro", ".mdx",
     ".ex", ".exs", ".erl", ".hrl",
+    ".proto", ".thrift", ".graphql", ".gql",
 )
 _SOURCE_FILE_EXTS = {ext for ext in _SOURCE_EXTENSION_CANDIDATES if ext}
 _SOURCE_PATH_EXTENSION_PATTERN = "|".join(

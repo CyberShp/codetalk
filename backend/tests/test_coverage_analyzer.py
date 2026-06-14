@@ -10940,6 +10940,34 @@ class TestCoverageTestDesign:
         assert gap["source_window"]["path"] == "gpu/tls/handshake.cu"
         assert "tls_handshake_kernel" in json.dumps(gap["source_window"], ensure_ascii=False)
 
+    async def test_source_window_resolves_schema_source_from_stale_path(self, tmp_path):
+        from app.services.coverage_analyzer import build_coverage_test_design
+
+        src = tmp_path / "api" / "billing"
+        src.mkdir(parents=True)
+        (src / "billing.proto").write_text(
+            "syntax = \"proto3\";\n"
+            "service Billing {\n"
+            "  rpc CreateInvoice(CreateInvoiceRequest) returns (CreateInvoiceReply);\n"
+            "}\n",
+            encoding="utf-8",
+        )
+        modules = self._modules(
+            "feature,module,code_location,function,triggered,hit_count\n"
+            "billing,api,frontend/nof/api/billing/billing.proto:1-4,CreateInvoice,false,0\n"
+        )
+
+        design = await build_coverage_test_design(
+            modules,
+            workspace_id="ws-1",
+            repo_path=str(tmp_path),
+        )
+
+        gap = next(g for g in design["gaps"] if g.get("function_name") == "CreateInvoice")
+        assert gap["source_window"]["available"] is True
+        assert gap["source_window"]["path"] == "api/billing/billing.proto"
+        assert "CreateInvoice" in json.dumps(gap["source_window"], ensure_ascii=False)
+
     async def test_source_window_basename_fallback_prefers_matching_function(self, tmp_path):
         from app.services.coverage_analyzer import build_coverage_test_design
 
@@ -11508,6 +11536,34 @@ class TestCoverageTestDesign:
             if finding["rule"] == "source_path"
         ]
         assert any(text.endswith(".scala:42") for text in source_findings)
+
+    async def test_white_box_leak_lint_flags_schema_source_paths(self):
+        for source_path in (
+            "api/billing.proto:3",
+            "api/schema.graphql:12",
+            "api/events.gql:4",
+            "idl/payment.thrift:8",
+        ):
+            drafts = [{
+                "case_type": "black_box_ready",
+                "test_execution": {
+                    "title": "Cover public contract branch",
+                    "external_trigger": "Send a public API request.",
+                    "preconditions": f"Follow {source_path} before sending the request.",
+                    "inputs": "Use a boundary request value.",
+                    "steps": ["Send the request and observe the response."],
+                    "expected": "The request returns a controlled error.",
+                    "observable_signals": ["public response", "service logs"],
+                },
+            }]
+
+            result = _lint_test_case_drafts(drafts)
+
+            assert result["passed"] is False
+            assert any(
+                finding["rule"] == "source_path" and finding["text"] == source_path
+                for finding in result["findings"]
+            )
 
     async def test_white_box_lint_allows_public_rpc_and_cli_entry_names(self):
         drafts = [{
