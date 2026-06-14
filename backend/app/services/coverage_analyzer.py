@@ -560,6 +560,8 @@ _REGISTRATION_LINE_RE = re.compile(
     r"|\b(?:threading|multiprocessing)\s*\.\s*(?:Thread|Process)\s*\("
     r"|\b(?:Thread|Process)\s*\("
     r"|\.\s*submit\s*\("
+    r"|\.\s*(?:create_task|ensure_future)\s*\("
+    r"|\basyncio\s*\.\s*(?:create_task|ensure_future)\s*\("
     r"|\.[ \t]*(?:register|subscribe|on|once|listen|addEventListener|addListener|"
     r"addHandler|add_listener|add_handler|add_job|schedule)\s*\(",
     re.IGNORECASE,
@@ -7254,6 +7256,19 @@ def _worker_registration_input_hints(registration_text: str, entry_type: str) ->
         text,
     ):
         add(match.group("value"))
+    for call in re.finditer(
+        r"\b[A-Za-z_]\w*(?:\.[A-Za-z_]\w*)*\s*\(",
+        text,
+    ):
+        fn = call.group(0).rsplit(".", 1)[-1].split("(", 1)[0]
+        if fn in {"Thread", "Process", "submit", "create_task", "ensure_future"}:
+            continue
+        call_start = call.end()
+        close_index = _find_matching_call_close(text, call_start - 1)
+        if close_index is None:
+            continue
+        for key in re.finditer(r"\b(?P<key>[A-Za-z_]\w{1,80})\s*=", text[call_start:close_index]):
+            add(key.group("key"))
     for match in re.finditer(
         r"\b(?:kwargs|args)\s*=\s*\{(?P<body>[^}]{0,500})\}",
         text,
@@ -7276,10 +7291,58 @@ def _looks_like_worker_registration(text: str) -> bool:
     return bool(re.search(
         r"\b(?:threading|multiprocessing)\s*\.\s*(?:Thread|Process)\s*\("
         r"|\b(?:Thread|Process)\s*\("
-        r"|\.\s*submit\s*\(",
+        r"|\.\s*submit\s*\("
+        r"|\.\s*(?:create_task|ensure_future)\s*\("
+        r"|\basyncio\s*\.\s*(?:create_task|ensure_future)\s*\(",
         text or "",
         re.IGNORECASE,
     ))
+
+
+def _worker_registration_symbol_from_text(text: str, caller_chain: list[str]) -> str | None:
+    if not _looks_like_worker_registration(text):
+        return None
+    candidates: list[str] = []
+    for pattern in (
+        r"\btarget\s*=\s*(?P<symbol>[A-Za-z_]\w*(?:\.[A-Za-z_]\w*)?)\b",
+        r"\.\s*submit\s*\(\s*(?P<symbol>[A-Za-z_]\w*(?:\.[A-Za-z_]\w*)?)\b",
+        r"(?:\.|\b)(?:create_task|ensure_future)\s*\(\s*"
+        r"(?P<symbol>[A-Za-z_]\w*(?:\.[A-Za-z_]\w*)?)\s*\(",
+    ):
+        for match in re.finditer(pattern, text or "", re.IGNORECASE):
+            candidates.append(match.group("symbol").rsplit(".", 1)[-1])
+    for candidate in candidates:
+        if any(candidate == item for item in caller_chain or []):
+            return candidate
+    return candidates[0] if candidates else None
+
+
+def _find_matching_call_close(text: str, open_index: int) -> int | None:
+    if open_index < 0 or open_index >= len(text) or text[open_index] != "(":
+        return None
+    depth = 0
+    quote: str | None = None
+    escaped = False
+    for idx in range(open_index, len(text)):
+        char = text[idx]
+        if quote:
+            if escaped:
+                escaped = False
+            elif char == "\\":
+                escaped = True
+            elif char == quote:
+                quote = None
+            continue
+        if char in {"'", '"'}:
+            quote = char
+            continue
+        if char == "(":
+            depth += 1
+        elif char == ")":
+            depth -= 1
+            if depth == 0:
+                return idx
+    return None
 
 
 def _queue_registration_input_hints(site_text: str, entry_type: str) -> list[str]:
@@ -9306,7 +9369,8 @@ def _registration_entry_for_site(
     caller_chain: list[str],
 ) -> dict | None:
     symbol = (
-        enclosing
+        _worker_registration_symbol_from_text(site_text, caller_chain)
+        or enclosing
         or _callback_symbol_from_assignment(site_text)
         or _browser_lifecycle_callback_symbol_from_assignment(site_text)
         or _registry_callback_symbol_from_assignment(site_text)
