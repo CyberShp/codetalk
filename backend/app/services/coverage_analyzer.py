@@ -6096,9 +6096,7 @@ def _class_method_route_entry_for_symbol(
     source_file_hint: str | None,
 ) -> dict | None:
     parts = _class_method_symbol_parts(function_name)
-    if parts is None:
-        return None
-    class_name, method_name = parts
+    method_name = parts[1] if parts is not None else function_name
     method = _http_method_from_class_method_name(method_name)
     if not method:
         return None
@@ -6115,6 +6113,16 @@ def _class_method_route_entry_for_symbol(
         source_lines = source_file.read_text(encoding="utf-8", errors="replace").splitlines()
     except OSError:
         return None
+
+    if parts is None:
+        parts = _infer_class_method_symbol_parts_from_source(
+            source_lines,
+            method_name,
+            suffix=source_file.suffix.lower(),
+        )
+        if parts is None:
+            return None
+    class_name, method_name = parts
 
     definition_match = _find_class_method_definition_match(
         source_lines,
@@ -6141,11 +6149,11 @@ def _class_method_route_entry_for_symbol(
     rel_file = _relative_path(repo_root, reg_file)
     entry = {
         "entry_kind": "route",
-        "entry_symbol": function_name,
+        "entry_symbol": f"{class_name}.{source_method_name}",
         "entry_file": rel_file,
         "entry_label": f"{_ENTRY_DISCOVERY_KIND_LABELS.get('route', 'Route')} {trigger}",
         "call_line": call_line,
-        "chain": [function_name],
+        "chain": [f"{class_name}.{source_method_name}"],
         "depth": 0,
         "evidence": f"{rel_file}:{call_line} {context[:220]}",
         "tool": "source-registration",
@@ -6163,6 +6171,25 @@ def _class_method_symbol_parts(function_name: str | None) -> tuple[str, str] | N
     if not match:
         return None
     return match.group("class"), match.group("method")
+
+
+def _infer_class_method_symbol_parts_from_source(
+    lines: list[str],
+    method_name: str,
+    *,
+    suffix: str | None = None,
+) -> tuple[str, str] | None:
+    matches: list[tuple[str, str]] = []
+    for idx, _line in enumerate(lines):
+        if not _line_matches_signature_name(lines, idx, method_name, suffix=suffix):
+            continue
+        definition_line = idx + 1
+        class_name = _nearest_enclosing_class_name(lines, definition_line)
+        if class_name:
+            matches.append((class_name, method_name))
+    if len(matches) == 1:
+        return matches[0]
+    return None
 
 
 def _http_method_from_class_method_name(method_name: str | None) -> str | None:

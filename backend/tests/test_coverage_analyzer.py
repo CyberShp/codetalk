@@ -5940,6 +5940,51 @@ class TestCoverageTestDesign:
         assert entry["entry_symbol"] == "process_payment"
         assert entry["input_hints"] == ["amount", "tenant_id"]
 
+    async def test_django_class_based_view_unqualified_method_is_black_box_route(
+        self,
+        tmp_path,
+    ):
+        from app.services.coverage_analyzer import build_coverage_test_design
+
+        app = tmp_path / "payments"
+        app.mkdir()
+        (app / "views.py").write_text(
+            "from django.views import View\n"
+            "from django.http import JsonResponse\n\n"
+            "class PaymentView(View):\n"
+            "    def post(self, request, tenant_id):\n"
+            "        amount = request.POST.get('amount')\n"
+            "        if not amount:\n"
+            "            return JsonResponse({'error': tenant_id}, status=400)\n"
+            "        return JsonResponse({'ok': True})\n",
+            encoding="utf-8",
+        )
+        (app / "urls.py").write_text(
+            "from django.urls import path\n"
+            "from .views import PaymentView\n\n"
+            "urlpatterns = [\n"
+            "    path('payments/<str:tenant_id>/', PaymentView.as_view(), name='payment'),\n"
+            "]\n",
+            encoding="utf-8",
+        )
+        modules = self._modules(
+            "feature,module,code_location,function,triggered,hit_count\n"
+            "payments,views,payments/views.py:5-9,post,false,0\n"
+        )
+
+        design = await build_coverage_test_design(
+            modules, workspace_id="ws-1", repo_path=str(tmp_path)
+        )
+
+        gap = [g for g in design["gaps"] if g.get("kind") == "function"][0]
+        assert gap["black_box_readiness"]["case_type"] == "black_box_ready"
+        entry = gap["entry_paths"][0]
+        assert entry["entry_kind"] == "route"
+        assert entry["entry_symbol"] == "PaymentView.post"
+        assert entry["external_trigger"] == "POST /payments/<str:tenant_id>/"
+        assert entry["input_hints"] == ["amount", "tenant_id"]
+        assert "PaymentView.as_view" in entry["evidence"]
+
     async def test_drf_serializer_fields_feed_black_box_input_hints(self, tmp_path):
         from app.services.coverage_analyzer import build_coverage_test_design
 
