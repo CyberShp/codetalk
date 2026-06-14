@@ -9885,6 +9885,9 @@ def _strip_callback_assignment_prefix(rhs: str) -> str:
         close_index = _find_matching_call_close(value, 0)
         if close_index is None:
             break
+        if close_index == len(value) - 1:
+            value = value[1:close_index].strip()
+            continue
         value = value[close_index + 1:].strip()
     while True:
         named_cast_match = re.match(
