@@ -1610,8 +1610,6 @@ def _entry_trace_status(
         return "source_not_found"
     if entry_paths:
         return "entry_found"
-    if tool_status.get("ripgrep") != "available":
-        return "tool_unavailable"
     return "source_read_ok_entry_not_found"
 
 
@@ -3736,6 +3734,47 @@ def _is_non_executable_symbol_reference(line_text: str, function_name: str) -> b
     return False
 
 
+def _line_mentions_symbol_in_code(line_text: str, function_name: str) -> bool:
+    if not function_name:
+        return False
+    code_text = _strip_line_literals_and_comments(line_text)
+    if not code_text.strip():
+        return False
+    return re.search(rf"\b{re.escape(function_name)}\b", code_text) is not None
+
+
+def _strip_line_literals_and_comments(line_text: str) -> str:
+    """Remove quoted string content and trailing line comments from one line."""
+    text = str(line_text or "")
+    out: list[str] = []
+    quote: str | None = None
+    escaped = False
+    idx = 0
+    while idx < len(text):
+        ch = text[idx]
+        nxt = text[idx + 1] if idx + 1 < len(text) else ""
+        if quote:
+            if escaped:
+                escaped = False
+            elif ch == "\\":
+                escaped = True
+            elif ch == quote:
+                quote = None
+            idx += 1
+            continue
+        if ch in {"'", '"'}:
+            quote = ch
+            idx += 1
+            continue
+        if ch == "/" and nxt in {"/", "*"}:
+            break
+        if ch == "#":
+            break
+        out.append(ch)
+        idx += 1
+    return "".join(out)
+
+
 def _parse_ripgrep_line(raw: str) -> tuple[str, int, str] | None:
     match = re.match(r"^(?P<file>.*?):(?P<line>\d+):(?P<text>.*)$", raw or "")
     if not match:
@@ -3793,6 +3832,8 @@ def _ripgrep_call_sites(repo_root: Path, function_name: str) -> list[dict]:
             continue
         if stripped.startswith(("//", "#", "*", "/*")):
             continue
+        if not _line_mentions_symbol_in_code(stripped, function_name):
+            continue
         if _is_non_executable_symbol_reference(stripped, function_name):
             continue
         sites.append({
@@ -3826,7 +3867,8 @@ def _source_scan_call_sites(repo_root: Path, function_name: str) -> list[dict]:
             continue
         file_str = str(candidate)
         for idx, line in enumerate(lines, start=1):
-            if not pattern.search(line):
+            code_text = _strip_line_literals_and_comments(line)
+            if not pattern.search(code_text):
                 continue
             stripped = line.strip()
             if _is_definition_or_declaration_site(file_str, idx, function_name):

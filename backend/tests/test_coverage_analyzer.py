@@ -10259,6 +10259,47 @@ class TestCoverageTestDesign:
         assert any("入口" in g for g in gap["evidence_gaps"])
         assert design["summary"]["gray_box_required_count"] == 1
 
+    async def test_string_literal_function_mention_does_not_become_black_box_ready(
+        self,
+        tmp_path,
+        monkeypatch,
+    ):
+        import app.services.coverage_analyzer as mod
+        from app.services.coverage_analyzer import build_coverage_test_design
+
+        src = tmp_path / "src"
+        src.mkdir()
+        (src / "api.c").write_text(
+            "int api_handle_request(request_t *req) {\n"
+            "    log_error(\"recover_session failed previously\");\n"
+            "    return 0;\n"
+            "}\n",
+            encoding="utf-8",
+        )
+        (src / "session.c").write_text(
+            "void recover_session(session_t *s) {\n"
+            "    if (s == NULL) {\n"
+            "        return;\n"
+            "    }\n"
+            "    cleanup(s);\n"
+            "}\n",
+            encoding="utf-8",
+        )
+        monkeypatch.setattr(mod.shutil, "which", lambda _name: None)
+        modules = self._modules(
+            "feature,module,code_location,function,triggered,hit_count\n"
+            "rec,session,src/session.c:1-6,recover_session,false,0\n"
+        )
+
+        design = await build_coverage_test_design(
+            modules, workspace_id="ws-1", repo_path=str(tmp_path)
+        )
+
+        gap = [g for g in design["gaps"] if g.get("kind") == "function"][0]
+        assert gap["entry_paths"] == []
+        assert gap["black_box_readiness"]["case_type"] == "gray_box_required"
+        assert all(case["case_type"] != "black_box_ready" for case in gap["black_box_cases"])
+
     async def test_internal_handler_name_alone_does_not_become_black_box_ready(self, tmp_path):
         from app.services.coverage_analyzer import build_coverage_test_design
 
