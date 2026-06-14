@@ -3832,6 +3832,51 @@ class TestCoverageTestDesign:
         assert "amount" in case_text
         assert "tenant_id" in case_text
 
+    async def test_aiohttp_add_routes_container_does_not_become_input_hint(
+        self, tmp_path, monkeypatch
+    ):
+        from app.services.coverage_analyzer import build_coverage_test_design
+
+        monkeypatch.setattr(
+            "app.services.coverage_analyzer.settings.external_agents_enabled",
+            False,
+        )
+        src = tmp_path / "src"
+        src.mkdir()
+        (src / "payments.py").write_text(
+            "async def process_payment(request):\n"
+            "    payload = await request.json()\n"
+            "    if not payload['amount']:\n"
+            "        return {'status': 400}\n"
+            "    return {'status': 200}\n",
+            encoding="utf-8",
+        )
+        (src / "routes.py").write_text(
+            "from aiohttp import web\n"
+            "from payments import process_payment\n\n"
+            "def setup_routes(app):\n"
+            "    app.add_routes([web.post('/payments/{tenant_id}', process_payment)])\n",
+            encoding="utf-8",
+        )
+        modules = self._modules(
+            "feature,module,code_location,function,triggered,hit_count\n"
+            "payments,payments,src/payments.py:1-5,process_payment,false,0\n"
+        )
+
+        design = await build_coverage_test_design(
+            modules, workspace_id="ws-1", repo_path=str(tmp_path)
+        )
+
+        gap = [g for g in design["gaps"] if g.get("kind") == "function"][0]
+        assert gap["black_box_readiness"]["case_type"] == "black_box_ready"
+        entry = gap["entry_paths"][0]
+        assert entry["external_trigger"] == "POST /payments/{tenant_id}"
+        assert entry["input_hints"] == ["amount", "tenant_id"]
+        case_text = json.dumps(gap["black_box_cases"], ensure_ascii=False)
+        assert "app," not in case_text
+        assert "amount" in case_text
+        assert "tenant_id" in case_text
+
     async def test_js_route_table_handler_object_becomes_black_box_entry(self, tmp_path):
         from app.services.coverage_analyzer import build_coverage_test_design
 

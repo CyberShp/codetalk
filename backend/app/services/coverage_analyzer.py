@@ -7060,20 +7060,21 @@ def _route_call_receiver(text: str) -> str | None:
 
 
 def _route_call_receiver_hints(text: str) -> list[str]:
-    match = re.search(
-        r"\b(?P<receiver>[A-Za-z_]\w*(?:\.[A-Za-z_]\w*)*)\s*\.\s*"
+    receivers = re.findall(
+        r"\b([A-Za-z_]\w*(?:\.[A-Za-z_]\w*)*)\s*\.\s*"
         r"(?:get|post|put|patch|delete|head|options|any|route|api_route|websocket|"
         r"add_get|add_post|add_put|add_patch|add_delete|add_head|add_options|"
-        r"mapget|mappost|mapput|mappatch|mapdelete|mapmethods)\s*\(",
+        r"add_routes|mapget|mappost|mapput|mappatch|mapdelete|mapmethods)\s*\(",
         text or "",
         re.IGNORECASE,
     )
-    if not match:
-        return []
-    parts = [part for part in match.group("receiver").split(".") if part]
-    if not parts:
-        return []
-    return list(dict.fromkeys([parts[0], parts[-1]]))
+    hints: list[str] = []
+    for receiver in receivers:
+        parts = [part for part in str(receiver or "").split(".") if part]
+        if not parts:
+            continue
+        hints.extend([parts[0], parts[-1]])
+    return list(dict.fromkeys(hints))
 
 
 def _route_decorator_receiver(decorator_texts: list[str]) -> str | None:
