@@ -8365,6 +8365,19 @@ def _filesystem_operation_input_hints(window_text: str) -> list[str]:
                     for alias_value in alias_values:
                         add_expanded(alias_value, {*seen_aliases, variable})
                     return
+                base_match = re.fullmatch(
+                    r"""(?P<base>[A-Za-z_$][\w$]*)(?P<suffix>(?:\.|->).+)""",
+                    variable,
+                )
+                if base_match:
+                    base_alias_values = alias_vars.get(base_match.group("base"))
+                    if base_alias_values:
+                        for alias_value in base_alias_values:
+                            add_expanded(
+                                f"{alias_value}{base_match.group('suffix')}",
+                                {*seen_aliases, variable},
+                            )
+                        return
                 if variable not in expanded:
                     expanded.append(variable)
 
