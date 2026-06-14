@@ -7985,6 +7985,23 @@ def _filesystem_operation_input_hints(window_text: str) -> list[str]:
             for part in split_top_level_args(format_match.group("args")):
                 add_path_arg_vars(part)
 
+        percent_tuple_match = re.match(
+            r"""(?P<quote>['"])(?P<body>.*?)(?P=quote)\s*%\s*\((?P<args>.*)\)\s*$""",
+            stripped,
+            re.DOTALL,
+        )
+        if percent_tuple_match:
+            for part in split_top_level_args(percent_tuple_match.group("args")):
+                add_path_arg_vars(part)
+        else:
+            percent_single_match = re.match(
+                r"""(?P<quote>['"])(?P<body>.*?)(?P=quote)\s*%\s*(?P<arg>.+?)\s*$""",
+                stripped,
+                re.DOTALL,
+            )
+            if percent_single_match:
+                add_path_arg_vars(percent_single_match.group("arg"))
+
         if re.search(r"""(?:^|[\w)\]])\s*/\s*(?:[\w(]|$)""", without_strings):
             excluded = {
                 "Path", "PurePath", "str", "os", "path", "fspath",
