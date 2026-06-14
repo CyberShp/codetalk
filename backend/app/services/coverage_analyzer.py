@@ -9886,6 +9886,14 @@ def _strip_callback_assignment_prefix(rhs: str) -> str:
         if close_index is None:
             break
         value = value[close_index + 1:].strip()
+    while True:
+        named_cast_match = re.match(
+            r"(?:static|reinterpret|const|dynamic)_cast\s*<[^>]+>\s*\((?P<inner>.*)\)\s*$",
+            value,
+        )
+        if not named_cast_match:
+            break
+        value = named_cast_match.group("inner").strip()
     return value.lstrip("&").strip()
 
 

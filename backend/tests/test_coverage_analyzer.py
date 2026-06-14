@@ -1785,6 +1785,50 @@ class TestCoverageTestDesign:
         assert entry["input_hints"] == ["recover"]
         assert '{ "recover", ops::handle_recover }' in entry["evidence"]
 
+    async def test_cpp_static_cast_command_table_entry_is_black_box_without_graph(self, tmp_path):
+        from app.services.coverage_analyzer import build_coverage_test_design
+
+        src = tmp_path / "src"
+        src.mkdir()
+        (src / "ops.cc").write_text(
+            "using command_handler_t = int (*)(request *req);\n"
+            "struct command_entry { const char *name; command_handler_t handler; };\n"
+            "void recover_session(session *s) {\n"
+            "    if (s == nullptr) {\n"
+            "        return;\n"
+            "    }\n"
+            "    cleanup_session(s);\n"
+            "}\n"
+            "int handle_recover(request *req) {\n"
+            "    if (req->reset) {\n"
+            "        recover_session(req->session);\n"
+            "    }\n"
+            "    return 0;\n"
+            "}\n"
+            "static command_entry command_table[] = {\n"
+            "    { \"recover\", static_cast<command_handler_t>(handle_recover) },\n"
+            "};\n",
+            encoding="utf-8",
+        )
+        modules = self._modules(
+            "feature,module,code_location,function,triggered,hit_count\n"
+            "rec,ops,src/ops.cc:3-8,recover_session,false,0\n"
+        )
+
+        design = await build_coverage_test_design(
+            modules, workspace_id="ws-1", repo_path=str(tmp_path)
+        )
+        gap = [g for g in design["gaps"] if g.get("kind") == "function"][0]
+
+        assert gap["gray_box_required"] is False
+        assert gap["black_box_readiness"]["case_type"] == "black_box_ready"
+        entry = gap["entry_paths"][0]
+        assert entry["tool"] == "source-table"
+        assert entry["entry_kind"] == "cli"
+        assert entry["entry_symbol"] == "handle_recover"
+        assert entry["input_hints"] == ["recover"]
+        assert 'static_cast<command_handler_t>(handle_recover)' in entry["evidence"]
+
     async def test_c_designated_command_table_entry_is_black_box_without_graph(self, tmp_path):
         from app.services.coverage_analyzer import build_coverage_test_design
 
