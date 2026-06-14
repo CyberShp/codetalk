@@ -5848,6 +5848,47 @@ def test_workspace_path_keyword_preserves_pathlike_stopword_segments(tmp_path):
     assert rel_hits[0] == "pkg/module/webhook/handler.ts"
 
 
+def test_workspace_path_keyword_ignores_instruction_words_around_pathlike_query(tmp_path):
+    from app.services.external_agent_discovery import expand_agent_query_terms
+    from app.services.workspace_scope_resolver import (
+        _path_keyword_repo_hits_blocking,
+        _tokenize,
+    )
+
+    target_dir = tmp_path / "src" / "payment" / "webhook"
+    target_dir.mkdir(parents=True)
+    (target_dir / "handler.ts").write_text(
+        "export function handlePaymentWebhook() { return true; }\n",
+        encoding="utf-8",
+    )
+    noise_dir = (
+        tmp_path
+        / "please"
+        / "analyze"
+        / "src"
+        / "payment"
+        / "webhook"
+        / "handler"
+        / "ts"
+    )
+    noise_dir.mkdir(parents=True)
+    (noise_dir / "noise.ts").write_text(
+        "export const noise = true;\n",
+        encoding="utf-8",
+    )
+
+    text = "please analyze src/payment/webhook/handler.ts"
+    keywords = list(dict.fromkeys([
+        *_tokenize(text),
+        *expand_agent_query_terms(text),
+    ]))[:32]
+    hits = _path_keyword_repo_hits_blocking(str(tmp_path), keywords, 3)
+    rel_hits = [Path(hit).relative_to(tmp_path).as_posix() for hit in hits]
+
+    assert "please/analyze/src/payment/webhook/handler/ts" not in keywords
+    assert rel_hits[0] == "src/payment/webhook/handler.ts"
+
+
 def test_workspace_path_keyword_ranking_handles_singular_plural_module_path(tmp_path):
     from app.services.workspace_scope_resolver import _path_keyword_repo_hits_blocking
 

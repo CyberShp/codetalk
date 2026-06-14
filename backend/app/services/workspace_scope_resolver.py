@@ -705,6 +705,7 @@ def _path_keyword_repo_hits_blocking(
                 continue
             rel = full.relative_to(root).as_posix().lower()
             rel_tokenized = re.sub(r"[-_]+", "/", rel)
+            file_tokenized = re.sub(r"[-_.]+", "/", rel)
             dir_tokenized = re.sub(r"[-_]+", "/", str(Path(rel).parent).replace("\\", "/"))
             compact_rel = _compact_path_keyword_text(rel)
             compact_dir = _compact_path_keyword_text(dir_tokenized)
@@ -717,7 +718,24 @@ def _path_keyword_repo_hits_blocking(
                 compact_kw = _compact_path_keyword_text(kw)
                 parts = [p for p in re.split(r"[/_-]+", kw) if p]
                 is_multipart = len(parts) >= 2
-                if kw in rel:
+                keyword_file_name = Path(kw.replace("\\", "/")).name.lower()
+                if (
+                    "." in keyword_file_name
+                    and keyword_file_name == full.name.lower()
+                ):
+                    score += 80
+                    keyword_path = kw.replace("\\", "/")
+                    if keyword_path in rel and (
+                        rel == keyword_path
+                        or rel.endswith(f"/{keyword_path}")
+                    ):
+                        score += 140
+                if kw_tokenized and (
+                    file_tokenized == kw_tokenized
+                    or file_tokenized.endswith(f"/{kw_tokenized}")
+                ):
+                    score += 16
+                elif kw in rel:
                     score += 4
                 elif kw_tokenized in rel_tokenized:
                     score += 4 if (not is_multipart or kw_tokenized in dir_tokenized) else 1

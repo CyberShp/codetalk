@@ -161,10 +161,10 @@ def expand_agent_query_terms(text: str) -> list[str]:
     original_parts = [
         p.lower() for p in re.split(r"[-_/\\\s]+", split_ready) if p.strip()
     ]
-    preserve_pathlike_stopwords = _looks_like_pathlike_query(original)
+    protected_path_parts = _pathlike_query_protected_parts(original)
     raw_parts = [
         part for part in original_parts
-        if preserve_pathlike_stopwords
+        if part in protected_path_parts
         or not (part.isascii() and part in _QUERY_STOPWORDS_EN)
     ]
     compact_parts = _split_compact_agent_query_parts(raw_parts)
@@ -182,6 +182,8 @@ def expand_agent_query_terms(text: str) -> list[str]:
 
     if original and not any(part in _QUERY_STOPWORDS_EN for part in original_parts if part.isascii()):
         add(original.lower())
+    for fragment in _extract_pathlike_query_fragments(original):
+        add(fragment.lower().replace("\\", "/"))
     for part in raw_parts:
         add(part)
     if raw_parts:
@@ -217,6 +219,37 @@ def expand_agent_query_terms(text: str) -> list[str]:
     return out[:48]
 
 
+def _pathlike_query_protected_parts(text: str) -> set[str]:
+    """Return stopword-looking tokens that are inside real path fragments.
+
+    A whole user sentence can be path-like because it contains one file path.
+    In that case instruction words around the path ("please analyze ...") must
+    not become path components, while legitimate path segments such as
+    ``pkg/module.WebhookHandler``'s ``module`` still need to survive.
+    """
+    protected: set[str] = set()
+    for fragment in _extract_pathlike_query_fragments(text):
+        split_ready = _split_ready_agent_query_text(fragment)
+        for part in re.split(r"[-_/\\\s]+", split_ready):
+            normalized = part.strip().lower()
+            if normalized:
+                protected.add(normalized)
+    return protected
+
+
+def _extract_pathlike_query_fragments(text: str) -> list[str]:
+    value = str(text or "")
+    if not value:
+        return []
+    pattern = re.compile(
+        r"(?<![A-Za-z0-9_@.-])"
+        r"@?[A-Za-z0-9_][A-Za-z0-9_@-]*"
+        r"(?:(?:[/\\]|::|:|\.)[A-Za-z0-9_@-]+)+"
+        r"(?![A-Za-z0-9_@.-])"
+    )
+    return [match.group(0) for match in pattern.finditer(value)]
+
+
 def _split_compact_agent_query_parts(parts: list[str]) -> list[str]:
     if len(parts) != 1:
         return []
@@ -240,17 +273,6 @@ def _split_compact_agent_query_parts(parts: list[str]) -> list[str]:
         return None
 
     return split_at(0, []) or []
-
-
-def _looks_like_pathlike_query(text: str) -> bool:
-    value = str(text or "").strip()
-    if not value:
-        return False
-    if any(separator in value for separator in ("/", "\\", "::", ".")):
-        return True
-    if re.match(r"^@[^/\s]+/[^/\s]+$", value):
-        return True
-    return False
 
 
 def _split_ready_agent_query_text(text: str) -> str:
