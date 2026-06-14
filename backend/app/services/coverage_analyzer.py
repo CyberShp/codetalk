@@ -7069,7 +7069,9 @@ def _ruby_worker_marker(
         if (
             "Sidekiq::Worker" in text
             or "Sidekiq::Job" in text
+            or re.search(r"<\s*(?:ApplicationJob|ActiveJob::Base)\b", text)
             or text.startswith("sidekiq_options")
+            or text.startswith("queue_as ")
         ):
             return class_start + offset + 1, line
     return None
