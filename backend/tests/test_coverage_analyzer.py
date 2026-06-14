@@ -8944,6 +8944,47 @@ class TestCoverageTestDesign:
         assert "tenant-id" in case_text
         assert "--config" in case_text
 
+    async def test_go_standard_flag_cli_feeds_black_box_input_hints(self, tmp_path):
+        from app.services.coverage_analyzer import build_coverage_test_design
+
+        cmd = tmp_path / "cmd"
+        cmd.mkdir()
+        (cmd / "sync.go").write_text(
+            "package main\n\n"
+            "import \"flag\"\n\n"
+            "func syncTenant(config string, tenantID string) error {\n"
+            "    if config == \"\" {\n"
+            "        return ErrMissingConfig\n"
+            "    }\n"
+            "    return nil\n"
+            "}\n\n"
+            "func main() {\n"
+            "    config := flag.String(\"config\", \"\", \"config path\")\n"
+            "    tenantID := flag.String(\"tenant-id\", \"\", \"tenant id\")\n"
+            "    flag.Parse()\n"
+            "    _ = syncTenant(*config, *tenantID)\n"
+            "}\n",
+            encoding="utf-8",
+        )
+        modules = self._modules(
+            "feature,module,code_location,function,triggered,hit_count\n"
+            "sync,cmd,cmd/sync.go:5-10,syncTenant,false,0\n"
+        )
+
+        design = await build_coverage_test_design(
+            modules, workspace_id="ws-1", repo_path=str(tmp_path)
+        )
+
+        gap = [g for g in design["gaps"] if g.get("kind") == "function"][0]
+        assert gap["black_box_readiness"]["case_type"] == "black_box_ready"
+        entry = gap["entry_paths"][0]
+        assert entry["entry_kind"] == "cli"
+        assert entry["entry_symbol"] == "main"
+        assert entry["input_hints"] == ["--config", "--tenant-id"]
+        case_text = json.dumps(gap["black_box_cases"], ensure_ascii=False)
+        assert "--config" in case_text
+        assert "--tenant-id" in case_text
+
     async def test_go_goroutine_call_site_is_worker_entry_without_agent(
         self, tmp_path, monkeypatch
     ):

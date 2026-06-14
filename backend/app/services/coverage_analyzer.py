@@ -5473,6 +5473,10 @@ def _cli_option_input_hints_from_text(text: str) -> list[str]:
         if hint not in seen:
             seen.add(hint)
             hints.append(hint)
+    for hint in _go_flag_input_hints_from_text(text):
+        if hint not in seen:
+            seen.add(hint)
+            hints.append(hint)
     for hint in _getopt_input_hints_from_text(text):
         if hint not in seen:
             seen.add(hint)
@@ -5533,6 +5537,33 @@ def _rust_clap_long_option_from_attr(attr: str, field_name: str) -> str | None:
     if not re.fullmatch(r"[A-Za-z][A-Za-z0-9-]*", normalized):
         return None
     return f"--{normalized}"
+
+
+def _go_flag_input_hints_from_text(text: str) -> list[str]:
+    hints: list[str] = []
+    seen: set[str] = set()
+    flag_func = (
+        "Bool|BoolFunc|BoolVar|Duration|DurationVar|Float64|Float64Var|"
+        "Func|Int|Int64|Int64Var|IntVar|String|StringVar|TextVar|Uint|"
+        "Uint64|Uint64Var|UintVar|Var"
+    )
+    for match in re.finditer(
+        rf"\bflag\s*\.\s*(?:{flag_func})\s*\((?P<args>[^)]*)\)",
+        text or "",
+        flags=re.DOTALL,
+    ):
+        args = match.group("args")
+        quoted = re.findall(r"['\"]([^'\"]+)['\"]", args)
+        if not quoted:
+            continue
+        name = quoted[0].strip()
+        if not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9_.-]*", name):
+            continue
+        hint = f"--{name}"
+        if hint not in seen:
+            seen.add(hint)
+            hints.append(hint)
+    return hints[:12]
 
 
 def _argv_input_hints_from_text(text: str) -> list[str]:
