@@ -2312,6 +2312,12 @@ _INTERNAL_CONTEXT_HINT_PREFIXES = {
     "res",
 }
 
+_INTERNAL_CONTEXT_CONTAINER_FIELDS = {
+    "args", "arg", "body", "data", "files", "file", "form", "headers", "header",
+    "json", "params", "param", "query", "queries", "cookies", "cookie", "values",
+    "request", "response", "req", "res",
+}
+
 
 def _coerce_input_hints(value: object) -> list[str]:
     hints: list[str] = []
@@ -2391,6 +2397,20 @@ def _input_hint_is_internal_context(value: str) -> bool:
         text,
     )
     if prefix_match and prefix_match.group(1).lower() in _INTERNAL_CONTEXT_HINT_PREFIXES:
+        leaf_match = re.search(
+            r"(?:\?\.|\.|->)\s*([A-Za-z_][A-Za-z0-9_]*)\s*$"
+            r"|\[\s*['\"]([^'\"]+)['\"]\s*\]\s*$",
+            text,
+        )
+        leaf = (leaf_match.group(1) or leaf_match.group(2)) if leaf_match else ""
+        leaf_key = _input_hint_dedupe_key(leaf)
+        if (
+            leaf_key
+            and leaf_key not in _INTERNAL_INPUT_HINTS
+            and leaf_key not in _TYPE_ONLY_INPUT_HINTS
+            and leaf_key not in _INTERNAL_CONTEXT_CONTAINER_FIELDS
+        ):
+            return False
         return True
     if normalized.endswith(("_ctx", "_context")):
         return True
@@ -7959,6 +7979,11 @@ def _filesystem_operation_input_hints(window_text: str) -> list[str]:
             wrapped = path_wrapper_inner_arg(part) or part
             if re.fullmatch(r"[A-Za-z_$][\w$]*", wrapped):
                 add_var(wrapped)
+            elif (
+                re.fullmatch(r"[A-Za-z_$][\w$]*(?:\.[A-Za-z_$][\w$]*)+", wrapped)
+                and not wrapped.startswith(("process.env.", "System."))
+            ):
+                add_var(wrapped)
 
         for env_pattern in _ENV_FIELD_RES:
             for env_match in env_pattern.finditer(stripped):
@@ -8148,6 +8173,18 @@ def _filesystem_operation_input_hints(window_text: str) -> list[str]:
             ),
             re.compile(
                 r"""^\s*(?:auto|std::string|std::filesystem::path|filesystem::path)\s+(?P<name>[A-Za-z_]\w*)\s*=\s*(?P<expr>.+?)\s*;?\s*$""",
+                re.MULTILINE,
+            ),
+            re.compile(
+                r"""^\s*(?:final\s+)?(?:var|Path|java\.nio\.file\.Path|String|File)\s+(?P<name>[A-Za-z_$][\w$]*)\s*=\s*(?P<expr>.+?)\s*;?\s*$""",
+                re.MULTILINE,
+            ),
+            re.compile(
+                r"""^\s*(?P<name>[A-Za-z_]\w*)\s*:=\s*(?P<expr>.+?)\s*$""",
+                re.MULTILINE,
+            ),
+            re.compile(
+                r"""^\s*let\s+(?:mut\s+)?(?P<name>[A-Za-z_]\w*)\s*=\s*(?P<expr>.+?)\s*;?\s*$""",
                 re.MULTILINE,
             ),
         )

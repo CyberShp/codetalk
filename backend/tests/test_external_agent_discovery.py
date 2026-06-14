@@ -7861,6 +7861,23 @@ def test_file_reader_assigned_path_expressions_keep_source_input_hints():
     ) == ["input file", "baseDir", "filename"]
 
 
+def test_file_reader_typed_assigned_path_expressions_keep_source_input_hints():
+    from app.services.coverage_analyzer import _filesystem_operation_input_hints
+
+    assert _filesystem_operation_input_hints(
+        "Path inputPath = Paths.get(baseDir, filename);\n"
+        "String raw = Files.readString(inputPath);"
+    ) == ["input file", "baseDir", "filename"]
+    assert _filesystem_operation_input_hints(
+        "inputPath := filepath.Join(baseDir, filename)\n"
+        "payload, _ := os.ReadFile(inputPath)"
+    ) == ["input file", "baseDir", "filename"]
+    assert _filesystem_operation_input_hints(
+        "let input_path = Path::new(base_dir).join(filename);\n"
+        "let payload = fs::read_to_string(input_path).unwrap();"
+    ) == ["input file", "base_dir", "filename"]
+
+
 def test_coverage_local_python_open_join_reader_keeps_filename_input_hint(
     tmp_path, monkeypatch
 ):
@@ -7944,6 +7961,62 @@ def test_coverage_local_node_assigned_path_reader_keeps_filename_input_hint(
     case_text = json.dumps(gap["black_box_cases"], ensure_ascii=False)
     assert "baseDir" in case_text
     assert "filename" in case_text
+
+
+def test_coverage_local_go_assigned_path_reader_keeps_filename_input_hint(
+    tmp_path, monkeypatch
+):
+    import app.services.coverage_analyzer as coverage_mod
+    from app.services.coverage_analyzer import build_coverage_test_design
+
+    src = tmp_path / "src"
+    src.mkdir()
+    (src / "processor.go").write_text(
+        "package main\n\n"
+        "func normalizePayload(payload []byte) string {\n"
+        "    if len(payload) == 0 { return \"missing\" }\n"
+        "    return \"processed\"\n"
+        "}\n",
+        encoding="utf-8",
+    )
+    (src / "loader.go").write_text(
+        "package main\n\n"
+        "import (\n"
+        "    \"os\"\n"
+        "    \"path/filepath\"\n"
+        ")\n\n"
+        "func loadPayload(request Request) string {\n"
+        "    inputPath := filepath.Join(request.BaseDir, request.Filename)\n"
+        "    payload, _ := os.ReadFile(inputPath)\n"
+        "    return normalizePayload(payload)\n"
+        "}\n",
+        encoding="utf-8",
+    )
+
+    async def no_agent(_request, **_kwargs):
+        return []
+
+    monkeypatch.setattr(coverage_mod, "run_external_agent_discovery", no_agent, raising=False)
+    modules = _coverage_modules(
+        "feature,module,code_location,function,triggered,hit_count\n"
+        "files,load,src/processor.go:3-6,normalizePayload,false,0\n"
+    )
+
+    design = asyncio.run(
+        build_coverage_test_design(modules, workspace_id="ws-1", repo_path=str(tmp_path))
+    )
+
+    gap = [g for g in design["gaps"] if g.get("function_name") == "normalizePayload"][0]
+    assert gap["black_box_readiness"]["case_type"] == "black_box_ready"
+    assert gap["entry_paths"][0]["entry_kind"] == "file"
+    assert gap["entry_paths"][0]["input_hints"] == [
+        "input file",
+        "request.BaseDir",
+        "request.Filename",
+    ]
+    case_text = json.dumps(gap["black_box_cases"], ensure_ascii=False)
+    assert "request.BaseDir" in case_text
+    assert "request.Filename" in case_text
 
 
 def test_coverage_local_python_open_reader_keeps_generic_path_input_hint(
