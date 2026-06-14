@@ -562,6 +562,8 @@ _REGISTRATION_LINE_RE = re.compile(
     r"|\.\s*submit\s*\("
     r"|\.\s*(?:create_task|ensure_future)\s*\("
     r"|\basyncio\s*\.\s*(?:create_task|ensure_future)\s*\("
+    r"|\b(?:setImmediate|queueMicrotask|requestAnimationFrame|requestIdleCallback)\s*\("
+    r"|\bprocess\s*\.\s*nextTick\s*\("
     r"|\.[ \t]*(?:register|subscribe|on|once|listen|addEventListener|addListener|"
     r"addHandler|add_listener|add_handler|add_job|schedule)\s*\(",
     re.IGNORECASE,
@@ -9410,6 +9412,8 @@ def _registration_entry_for_site(
             "register", "subscribe", ".on", ".once", "listener", "schedule", "scheduler", "job",
             "worker", "queue", ".process", "grpc", "servicer_to_server", "signal",
             "thread", "target=", "executor", ".submit",
+            "setimmediate", "queuemicrotask", "requestanimationframe",
+            "requestidlecallback", "nexttick",
         )
     )
     if not (assignment_seen and registration_line and callback_like):
@@ -9766,6 +9770,15 @@ def _python_process_lifecycle_input_hints(text: str) -> list[str]:
     return []
 
 
+def _looks_like_js_event_loop_callback_registration(text: str) -> bool:
+    return bool(re.search(
+        r"\b(?:setImmediate|queueMicrotask|requestAnimationFrame|requestIdleCallback)\s*\("
+        r"|\bprocess\s*\.\s*nextTick\s*\(",
+        text or "",
+        re.IGNORECASE,
+    ))
+
+
 def _registered_entry_type(registration_line: str, window: list[str]) -> str:
     text = (registration_line + "\n" + "\n".join(window)).lower()
     if re.search(r"\.\s*(?:get|post|put|patch|delete|head|options|any|route)\s*\(", text):
@@ -9781,6 +9794,8 @@ def _registered_entry_type(registration_line: str, window: list[str]) -> str:
     if _posix_signal_input_hints(registration_line + "\n" + "\n".join(window)):
         return "callback"
     if _node_process_lifecycle_input_hints(registration_line + "\n" + "\n".join(window)):
+        return "callback"
+    if _looks_like_js_event_loop_callback_registration(registration_line + "\n" + "\n".join(window)):
         return "callback"
     if _looks_like_worker_registration(registration_line + "\n" + "\n".join(window)):
         return "worker"
