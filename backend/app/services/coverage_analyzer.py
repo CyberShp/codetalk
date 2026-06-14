@@ -644,7 +644,7 @@ _REGISTRY_CALLBACK_ASSIGN_RE = re.compile(
     re.IGNORECASE,
 )
 _DISPATCH_TABLE_ENTRY_RE = re.compile(
-    r"""(?P<quote>['"])(?P<key>[A-Za-z0-9_.:/-]{1,80})(?P=quote)\s*,\s*(?P<rhs>[^,;}]+)"""
+    r"""(?P<quote>['"])(?P<key>[A-Za-z0-9_.:/-]{1,80})(?P=quote)\s*(?:,|:)\s*(?P<rhs>[^,;}]+)"""
 )
 _DISPATCH_TABLE_HANDLER_RE = re.compile(
     r"(?:\.(?:handler|handlers|callback|cb|fn|func|function|method|op|ops|entry)\s*="
@@ -7377,6 +7377,22 @@ def _route_receiver_is_request_accessor(receiver: str | None) -> bool:
     }
 
 
+def _strip_request_accessor_method_calls(text: str) -> str:
+    def replace(match: re.Match) -> str:
+        receiver = match.group("receiver")
+        if _route_receiver_is_request_accessor(receiver):
+            return ""
+        return match.group(0)
+
+    return re.sub(
+        r"\b(?P<receiver>[A-Za-z_]\w*(?:\s*\.\s*[A-Za-z_]\w*)*)"
+        r"\s*\.\s*(?:get|post|put|patch|delete|head|options|any|websocket)\s*\(",
+        replace,
+        text or "",
+        flags=re.IGNORECASE,
+    )
+
+
 def _looks_like_route_path(value: str) -> bool:
     text = str(value or "").strip()
     if not text:
@@ -7402,6 +7418,7 @@ def _normalize_route_path(value: str, *, allow_relative: bool = False) -> str | 
 
 
 def _route_method_from_text(text: str) -> str | None:
+    text = _strip_request_accessor_method_calls(text or "")
     method_patterns = (
         r"\.\s*add_(?P<method>get|post|put|patch|delete|head|options)\s*\(",
         r"\bmethods?\s*=\s*[\[\(\{]?\s*(['\"])(?P<method>get|post|put|patch|delete|head|options|any)\1",
@@ -10499,9 +10516,22 @@ def _looks_like_asyncio_callback_registration(text: str) -> bool:
     ))
 
 
+def _has_route_registration_call(text: str) -> bool:
+    for match in re.finditer(
+        r"\b(?P<receiver>[A-Za-z_]\w*(?:\s*\.\s*[A-Za-z_]\w*)*)"
+        r"\s*\.\s*(?:get|post|put|patch|delete|head|options|any|route)\s*\(",
+        text or "",
+        re.IGNORECASE,
+    ):
+        if _route_receiver_is_request_accessor(match.group("receiver")):
+            continue
+        return True
+    return False
+
+
 def _registered_entry_type(registration_line: str, window: list[str]) -> str:
     text = (registration_line + "\n" + "\n".join(window)).lower()
-    if re.search(r"\.\s*(?:get|post|put|patch|delete|head|options|any|route)\s*\(", text):
+    if _has_route_registration_call(text):
         return "route"
     if re.search(r"\bhandle(?:func)?\s*\(", text) and _route_path_from_text(text):
         return "route"
