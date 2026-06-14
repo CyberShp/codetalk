@@ -5477,6 +5477,10 @@ def _cli_option_input_hints_from_text(text: str) -> list[str]:
         if hint not in seen:
             seen.add(hint)
             hints.append(hint)
+    for hint in _go_urfave_cli_input_hints_from_text(text):
+        if hint not in seen:
+            seen.add(hint)
+            hints.append(hint)
     for hint in _getopt_input_hints_from_text(text):
         if hint not in seen:
             seen.add(hint)
@@ -5563,6 +5567,49 @@ def _go_flag_input_hints_from_text(text: str) -> list[str]:
         if hint not in seen:
             seen.add(hint)
             hints.append(hint)
+    return hints[:12]
+
+
+def _go_urfave_cli_input_hints_from_text(text: str) -> list[str]:
+    source = str(text or "")
+    hints: list[str] = []
+    seen: set[str] = set()
+
+    def add(raw_name: str | None) -> None:
+        name = str(raw_name or "").strip()
+        if not name:
+            return
+        name = name.split(",", 1)[0].strip()
+        if not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9_.-]*", name):
+            return
+        hint = f"--{name}"
+        if hint not in seen:
+            seen.add(hint)
+            hints.append(hint)
+
+    flag_type = (
+        "Bool|Duration|Float64|Generic|Int|Int64|IntSlice|Path|String|"
+        "StringSlice|Timestamp|Uint|Uint64"
+    )
+    for match in re.finditer(
+        rf"\b(?:cli\s*\.\s*)?(?:{flag_type})Flag\s*\{{(?P<body>[^}}]*)\}}",
+        source,
+        flags=re.DOTALL,
+    ):
+        name_match = re.search(
+            r"\bName\s*:\s*(['\"])(?P<name>[^'\"]+)\1",
+            match.group("body"),
+        )
+        if name_match:
+            add(name_match.group("name"))
+
+    if not re.search(r"\bcli\s*\.\s*Context\b|urfave/cli", source):
+        return hints[:12]
+    for match in re.finditer(
+        rf"\b[A-Za-z_]\w*\s*\.\s*(?:{flag_type})\s*\(\s*(['\"])(?P<name>[^'\"]+)\1",
+        source,
+    ):
+        add(match.group("name"))
     return hints[:12]
 
 

@@ -8985,6 +8985,58 @@ class TestCoverageTestDesign:
         assert "--config" in case_text
         assert "--tenant-id" in case_text
 
+    async def test_go_urfave_cli_action_feeds_black_box_input_hints(self, tmp_path):
+        from app.services.coverage_analyzer import build_coverage_test_design
+
+        cmd = tmp_path / "cmd"
+        cmd.mkdir()
+        (cmd / "sync.go").write_text(
+            "package main\n\n"
+            "import cli \"github.com/urfave/cli/v2\"\n\n"
+            "func syncTenant(config string, tenantID string) error {\n"
+            "    if config == \"\" {\n"
+            "        return ErrMissingConfig\n"
+            "    }\n"
+            "    return nil\n"
+            "}\n\n"
+            "func main() {\n"
+            "    app := &cli.App{\n"
+            "        Commands: []*cli.Command{\n"
+            "            {\n"
+            "                Name: \"sync\",\n"
+            "                Flags: []cli.Flag{\n"
+            "                    &cli.StringFlag{Name: \"config\"},\n"
+            "                    &cli.StringFlag{Name: \"tenant-id\"},\n"
+            "                },\n"
+            "                Action: func(ctx *cli.Context) error {\n"
+            "                    return syncTenant(ctx.String(\"config\"), ctx.String(\"tenant-id\"))\n"
+            "                },\n"
+            "            },\n"
+            "        },\n"
+            "    }\n"
+            "    _ = app.Run(nil)\n"
+            "}\n",
+            encoding="utf-8",
+        )
+        modules = self._modules(
+            "feature,module,code_location,function,triggered,hit_count\n"
+            "sync,cmd,cmd/sync.go:5-10,syncTenant,false,0\n"
+        )
+
+        design = await build_coverage_test_design(
+            modules, workspace_id="ws-1", repo_path=str(tmp_path)
+        )
+
+        gap = [g for g in design["gaps"] if g.get("kind") == "function"][0]
+        assert gap["black_box_readiness"]["case_type"] == "black_box_ready"
+        entry = gap["entry_paths"][0]
+        assert entry["entry_kind"] == "cli"
+        assert entry["entry_symbol"] == "main"
+        assert entry["input_hints"] == ["--config", "--tenant-id"]
+        case_text = json.dumps(gap["black_box_cases"], ensure_ascii=False)
+        assert "--config" in case_text
+        assert "--tenant-id" in case_text
+
     async def test_go_goroutine_call_site_is_worker_entry_without_agent(
         self, tmp_path, monkeypatch
     ):
