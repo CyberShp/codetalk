@@ -8135,6 +8135,46 @@ def _filesystem_operation_input_hints(window_text: str) -> list[str]:
                     add_var(name)
         return vars_found
 
+    def collect_assigned_path_expression_vars(text: str) -> dict[str, list[str]]:
+        assigned: dict[str, list[str]] = {}
+        assignment_res = (
+            re.compile(
+                r"""^\s*(?P<name>[A-Za-z_$][\w$]*)\s*=\s*(?P<expr>.+?)\s*;?\s*$""",
+                re.MULTILINE,
+            ),
+            re.compile(
+                r"""^\s*(?:const|let|var)\s+(?P<name>[A-Za-z_$][\w$]*)\s*=\s*(?P<expr>.+?)\s*;?\s*$""",
+                re.MULTILINE,
+            ),
+            re.compile(
+                r"""^\s*(?:auto|std::string|std::filesystem::path|filesystem::path)\s+(?P<name>[A-Za-z_]\w*)\s*=\s*(?P<expr>.+?)\s*;?\s*$""",
+                re.MULTILINE,
+            ),
+        )
+        for pattern in assignment_res:
+            for match in pattern.finditer(text or ""):
+                name = match.group("name").strip()
+                expr = match.group("expr").strip().rstrip(";").strip()
+                expr_vars = path_expression_input_vars(expr)
+                if not expr_vars:
+                    continue
+                existing = assigned.setdefault(name, [])
+                for variable in expr_vars:
+                    if variable not in existing:
+                        existing.append(variable)
+        return assigned
+
+    assigned_path_vars = collect_assigned_path_expression_vars(window_text or "")
+
+    def path_vars_for_arg(arg_text: str) -> list[str]:
+        expression_vars = path_expression_input_vars(arg_text)
+        if expression_vars:
+            return expression_vars
+        simple = arg_text.strip()
+        if re.fullmatch(r"[A-Za-z_$][\w$]*", simple):
+            return assigned_path_vars.get(simple, [])
+        return []
+
     literal_path_res = (
         re.compile(r"""(?<!\.)\bopen\s*\(\s*['"](?P<path>[^'"]+)['"]"""),
         re.compile(r"""\b(?:Path|PurePath)\s*\(\s*['"](?P<path>[^'"]+)['"]\s*\)\s*\.(?:read_text|read_bytes)\s*\("""),
@@ -8163,7 +8203,7 @@ def _filesystem_operation_input_hints(window_text: str) -> list[str]:
             if literal:
                 continue
             add("input file")
-            expression_vars = path_expression_input_vars(arg_text)
+            expression_vars = path_vars_for_arg(arg_text)
             if expression_vars:
                 for variable in expression_vars:
                     add(variable_file_hint(variable))
@@ -8188,7 +8228,7 @@ def _filesystem_operation_input_hints(window_text: str) -> list[str]:
                 arg_text = match.group("expr").strip()
             else:
                 arg_text = f"Path({match.group('base')}).joinpath({match.group('args')})"
-            expression_vars = path_expression_input_vars(arg_text)
+            expression_vars = path_vars_for_arg(arg_text)
             if expression_vars:
                 for variable in expression_vars:
                     add(variable_file_hint(variable))
@@ -8215,6 +8255,11 @@ def _filesystem_operation_input_hints(window_text: str) -> list[str]:
                     add(literal_label)
                 continue
             add("input file")
+            expression_vars = path_vars_for_arg(arg_text)
+            if expression_vars:
+                for variable in expression_vars:
+                    add(variable_file_hint(variable))
+                continue
             if re.fullmatch(r"[A-Za-z_]\w*", arg_text):
                 add(variable_file_hint(arg_text))
 
@@ -8238,7 +8283,7 @@ def _filesystem_operation_input_hints(window_text: str) -> list[str]:
             if label:
                 add(label)
             arg_text = first_call_argument(window_text or "", match.end())
-            expression_vars = path_expression_input_vars(arg_text)
+            expression_vars = path_vars_for_arg(arg_text)
             if expression_vars:
                 for variable in expression_vars:
                     add(variable_file_hint(variable))
@@ -8293,7 +8338,7 @@ def _filesystem_operation_input_hints(window_text: str) -> list[str]:
                 if literal_label:
                     add(literal_label)
                 continue
-            expression_vars = path_expression_input_vars(arg_text)
+            expression_vars = path_vars_for_arg(arg_text)
             if expression_vars:
                 for variable in expression_vars:
                     add(variable_file_hint(variable))
@@ -8310,7 +8355,7 @@ def _filesystem_operation_input_hints(window_text: str) -> list[str]:
             if literal_label:
                 add(literal_label)
             continue
-        expression_vars = path_expression_input_vars(arg_text)
+        expression_vars = path_vars_for_arg(arg_text)
         if expression_vars:
             for variable in expression_vars:
                 add(variable_file_hint(variable))
@@ -8346,7 +8391,7 @@ def _filesystem_operation_input_hints(window_text: str) -> list[str]:
                 if literal_label:
                     add(literal_label)
                 continue
-            expression_vars = path_expression_input_vars(arg_text)
+            expression_vars = path_vars_for_arg(arg_text)
             if expression_vars:
                 for variable in expression_vars:
                     add(variable_file_hint(variable))
@@ -8386,7 +8431,7 @@ def _filesystem_operation_input_hints(window_text: str) -> list[str]:
                 if literal_label:
                     add(literal_label)
                 continue
-            expression_vars = path_expression_input_vars(arg_text)
+            expression_vars = path_vars_for_arg(arg_text)
             if expression_vars:
                 for variable in expression_vars:
                     add(variable_file_hint(variable))
@@ -8415,7 +8460,7 @@ def _filesystem_operation_input_hints(window_text: str) -> list[str]:
                 if literal_label:
                     add(literal_label)
                 continue
-            expression_vars = path_expression_input_vars(arg_text)
+            expression_vars = path_vars_for_arg(arg_text)
             if expression_vars:
                 for variable in expression_vars:
                     add(variable_file_hint(variable))
@@ -8444,7 +8489,7 @@ def _filesystem_operation_input_hints(window_text: str) -> list[str]:
                 if literal_label:
                     add(literal_label)
                 continue
-            expression_vars = path_expression_input_vars(arg_text)
+            expression_vars = path_vars_for_arg(arg_text)
             if expression_vars:
                 for variable in expression_vars:
                     add(variable_file_hint(variable))
