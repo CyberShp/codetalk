@@ -573,7 +573,7 @@ _REGISTRATION_LINE_RE = re.compile(
     r"|\bgo\s+[A-Za-z_]\w*(?:\.[A-Za-z_]\w*)?\s*\("
     r"|\b(?:setImmediate|queueMicrotask|requestAnimationFrame|requestIdleCallback)\s*\("
     r"|\bprocess\s*\.\s*nextTick\s*\("
-    r"|\.[ \t]*(?:register|subscribe|on|once|listen|addEventListener|addListener|"
+    r"|\.[ \t]*(?:register|subscribe|on|once|prependListener|prependOnceListener|listen|addEventListener|addListener|"
     r"addHandler|add_listener|add_handler|add_job|schedule)\s*\(",
     re.IGNORECASE,
 )
@@ -611,7 +611,7 @@ _PUBLIC_CALLBACK_START_RE = re.compile(
     r"(?:\.\s*(?:"
     r"get|post|put|patch|delete|head|options|route|use|"
     r"mapget|mappost|mapput|mappatch|mapdelete|mapmethods|"
-    r"subscribe|on|listen|addEventListener|addListener|addHandler|add_listener|add_handler|register|"
+    r"subscribe|on|once|prependListener|prependOnceListener|listen|addEventListener|addListener|addHandler|add_listener|add_handler|register|"
     r"add_job|schedule"
     r")|(?:^|\b)(?:path|re_path))\s*\(",
     re.IGNORECASE,
@@ -3865,7 +3865,7 @@ def _has_explicit_message_entry_surface(file_path: str, line_text: str) -> bool:
     """Avoid treating internal helpers named *event/message* as public entries."""
     text = " ".join([str(file_path or ""), str(line_text or "")]).lower()
     if re.search(
-        r"(?:\.\s*(?:subscribe|on|once|listen|add(?:event)?listener|consumer)\s*\()"
+        r"(?:\.\s*(?:subscribe|on|once|prepend(?:once)?listener|listen|add(?:event)?listener|consumer)\s*\()"
         r"|\b(?:subscribe|subscriber|topic|queue|message[_ -]?bus|event[_ -]?bus|"
         r"listener|consumer|kafka|rabbit|sqs|pubsub|webhook)\b",
         text,
@@ -7573,17 +7573,6 @@ def _trace_entry_paths(
                     branch.update({"source": "caller", "file": site["file"]})
                     caller_branches.append(branch)
                 caller_chain = ([enclosing, *chain] if enclosing else chain)
-                registration_entry = _registration_entry_for_site(
-                    repo_root,
-                    site["abs_file"],
-                    site["line_number"],
-                    enclosing,
-                    site["text"],
-                    caller_chain,
-                )
-                if registration_entry:
-                    entry_paths.append(registration_entry)
-                    continue
                 graphql_entry = _graphql_schema_entry_for_site(
                     repo_root,
                     site["abs_file"],
@@ -7605,6 +7594,17 @@ def _trace_entry_paths(
                 )
                 if kafka_entry:
                     entry_paths.append(kafka_entry)
+                    continue
+                registration_entry = _registration_entry_for_site(
+                    repo_root,
+                    site["abs_file"],
+                    site["line_number"],
+                    enclosing,
+                    site["text"],
+                    caller_chain,
+                )
+                if registration_entry:
+                    entry_paths.append(registration_entry)
                     continue
                 commander_entry = _commander_cli_entry_for_site(
                     repo_root,
@@ -7882,6 +7882,8 @@ def _augment_entry_input_hints_from_symbol_source(
         str(entry_symbol),
         entry_kind,
     )
+    if str(entry.get("tool") or "").strip() == "source-kafka-consumer":
+        registration_hints = []
     existing_hints = _merge_ordered_input_hints(entry.get("input_hints"))
     if (
         entry_kind == "cli"
@@ -9818,7 +9820,8 @@ def _node_process_lifecycle_input_hints(text: str) -> list[str]:
     hints: list[str] = []
     seen: set[str] = set()
     for match in re.finditer(
-        r"\bprocess\s*\.\s*(?:on|once)\s*\(\s*(['\"])(?P<event>[^'\"]{1,80})\1",
+        r"\bprocess\s*\.\s*(?:on|once|prependListener|prependOnceListener)"
+        r"\s*\(\s*(['\"])(?P<event>[^'\"]{1,80})\1",
         text or "",
         re.IGNORECASE,
     ):
@@ -9865,7 +9868,7 @@ def _registered_entry_type(registration_line: str, window: list[str]) -> str:
         return "callback"
     if _looks_like_worker_registration(registration_line + "\n" + "\n".join(window)):
         return "worker"
-    if re.search(r"\.\s*(?:on|once)\s*\(", text):
+    if re.search(r"\.\s*(?:on|once|prependlistener|prependoncelistener)\s*\(", text):
         return "message"
     if (
         re.search(r"\b(?:new\s+)?worker\s*\(", text)

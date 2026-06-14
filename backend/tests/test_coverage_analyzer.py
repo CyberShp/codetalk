@@ -9413,6 +9413,46 @@ class TestCoverageTestDesign:
         case_text = json.dumps(gap["black_box_cases"], ensure_ascii=False)
         assert "invoice.created" in case_text
 
+    async def test_event_prepend_listener_registration_keeps_message_entry_kind(self, tmp_path):
+        from app.services.coverage_analyzer import build_coverage_test_design
+
+        src = tmp_path / "src"
+        src.mkdir()
+        (src / "invoices.ts").write_text(
+            "export function reconcileInvoice(payload) {\n"
+            "  if (!payload) {\n"
+            "    return 'missing';\n"
+            "  }\n"
+            "  return 'reconciled';\n"
+            "}\n",
+            encoding="utf-8",
+        )
+        (src / "events.ts").write_text(
+            "import { reconcileInvoice } from './invoices';\n\n"
+            "function consume(payload) {\n"
+            "  return reconcileInvoice(payload);\n"
+            "}\n\n"
+            "bus.prependListener('invoice.created', consume);\n",
+            encoding="utf-8",
+        )
+        modules = self._modules(
+            "feature,module,code_location,function,triggered,hit_count\n"
+            "invoices,invoices,src/invoices.ts:1-6,reconcileInvoice,false,0\n"
+        )
+
+        design = await build_coverage_test_design(
+            modules, workspace_id="ws-1", repo_path=str(tmp_path)
+        )
+
+        gap = [g for g in design["gaps"] if g.get("kind") == "function"][0]
+        assert gap["gray_box_required"] is False
+        assert gap["black_box_readiness"]["case_type"] == "black_box_ready"
+        entry = gap["entry_paths"][0]
+        assert entry["entry_symbol"] == "consume"
+        assert entry["entry_kind"] == "message"
+        assert "prependListener" in entry["evidence"]
+        assert entry["input_hints"] == ["invoice.created", "payload"]
+
     async def test_add_event_listener_registration_keeps_message_entry_kind(self, tmp_path):
         from app.services.coverage_analyzer import build_coverage_test_design
 
