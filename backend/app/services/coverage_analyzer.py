@@ -558,6 +558,7 @@ _REGISTRATION_LINE_RE = re.compile(
     r"|\bsignal\s*\.\s*signal\s*\("
     r"|(?<!\.)\bsignal\s*\("
     r"|\b(?:new\s+)?Worker\s*\("
+    r"|\buv_async_init\s*\("
     r"|\buv_timer_start\s*\("
     r"|\bQueue\s*\("
     r"|\.\s*process\s*\("
@@ -9442,12 +9443,12 @@ def _registration_entry_for_site(
         registration_line = site_text.strip()
     if not registration_line and _registry_callback_symbol_from_assignment(site_text) == symbol:
         registration_line = site_text.strip()
-    registered_timer_symbol = _timer_registration_symbol_from_text(
+    registered_libuv_symbol = _libuv_registration_symbol_from_text(
         registration_line or site_text,
         caller_chain,
     )
-    if registered_timer_symbol:
-        symbol = registered_timer_symbol
+    if registered_libuv_symbol:
+        symbol = registered_libuv_symbol
     assignment_seen = any(
         _callback_symbol_from_assignment(line) == symbol
         or re.search(rf"\b{re.escape(symbol)}\b", line)
@@ -9459,7 +9460,7 @@ def _registration_entry_for_site(
             "callback", "_cb", "handler", "ops", "poller", "timer", "event",
             "register", "subscribe", ".on", ".once", "listener", "schedule", "scheduler", "job",
             "worker", "queue", ".process", "grpc", "servicer_to_server", "signal",
-            "thread", "target=", "executor", ".submit", "go ",
+            "thread", "target=", "executor", ".submit", "go ", "uv_async", "async",
             "setimmediate", "queuemicrotask", "requestanimationframe",
             "requestidlecallback", "nexttick",
         )
@@ -9753,19 +9754,20 @@ def _registered_route_symbol(site_text: str, caller_chain: list[str]) -> str | N
 
 
 def _registered_callback_symbol(site_text: str, caller_chain: list[str]) -> str | None:
-    timer_symbol = _timer_registration_symbol_from_text(site_text, caller_chain)
-    if timer_symbol:
-        return timer_symbol
+    libuv_symbol = _libuv_registration_symbol_from_text(site_text, caller_chain)
+    if libuv_symbol:
+        return libuv_symbol
     for candidate in reversed(caller_chain or []):
         if candidate and re.search(rf"\b{re.escape(candidate)}\b", site_text or ""):
             return candidate
     return None
 
 
-def _timer_registration_symbol_from_text(text: str, caller_chain: list[str]) -> str | None:
+def _libuv_registration_symbol_from_text(text: str, caller_chain: list[str]) -> str | None:
     candidates: list[str] = []
     for pattern in (
         r"\buv_timer_start\s*\(\s*[^,]+,\s*(?P<symbol>[A-Za-z_]\w*)\b",
+        r"\buv_async_init\s*\(\s*[^,]+,\s*[^,]+,\s*(?P<symbol>[A-Za-z_]\w*)\b",
     ):
         for match in re.finditer(pattern, text or "", re.IGNORECASE):
             candidates.append(match.group("symbol"))

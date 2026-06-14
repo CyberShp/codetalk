@@ -7856,6 +7856,48 @@ class TestCoverageTestDesign:
         assert "setImmediate(flushBatch)" in entry["evidence"]
         assert entry["input_hints"] == ["batch"]
 
+    async def test_c_uv_async_init_registration_is_callback_entry_without_agent(
+        self, tmp_path, monkeypatch
+    ):
+        from app.services.coverage_analyzer import build_coverage_test_design
+
+        monkeypatch.setattr(
+            "app.services.coverage_analyzer.settings.external_agents_enabled",
+            False,
+        )
+        src = tmp_path / "src"
+        src.mkdir()
+        (src / "async_flush.c").write_text(
+            "#include <uv.h>\n\n"
+            "static void on_async_flush(uv_async_t *handle) {\n"
+            "    if (handle == NULL) {\n"
+            "        return;\n"
+            "    }\n"
+            "    flush_pending(handle);\n"
+            "}\n\n"
+            "void init_async_flush(uv_loop_t *loop) {\n"
+            "    static uv_async_t async_handle;\n"
+            "    uv_async_init(loop, &async_handle, on_async_flush);\n"
+            "}\n",
+            encoding="utf-8",
+        )
+        modules = self._modules(
+            "feature,module,code_location,function,triggered,hit_count\n"
+            "flush,async,src/async_flush.c:3-8,on_async_flush,false,0\n"
+        )
+
+        design = await build_coverage_test_design(
+            modules, workspace_id="ws-1", repo_path=str(tmp_path)
+        )
+
+        gap = [g for g in design["gaps"] if g.get("kind") == "function"][0]
+        assert gap["gray_box_required"] is False
+        assert gap["black_box_readiness"]["case_type"] == "black_box_ready"
+        entry = gap["entry_paths"][0]
+        assert entry["entry_kind"] == "callback"
+        assert entry["entry_symbol"] == "on_async_flush"
+        assert "uv_async_init(loop, &async_handle, on_async_flush)" in entry["evidence"]
+
     async def test_argparse_main_entry_feeds_black_box_input_hints(self, tmp_path):
         from app.services.coverage_analyzer import build_coverage_test_design
 
