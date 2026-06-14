@@ -7976,6 +7976,67 @@ class TestCoverageTestDesign:
         assert "currency" in case_text
         assert "tenantId" in case_text
 
+    async def test_spring_request_body_json_property_aliases_feed_external_input_hints(
+        self, tmp_path
+    ):
+        from app.services.coverage_analyzer import build_coverage_test_design
+
+        src = tmp_path / "src"
+        src.mkdir()
+        (src / "PaymentController.java").write_text(
+            "import com.fasterxml.jackson.annotation.JsonProperty;\n\n"
+            "public class PaymentController {\n"
+            "  @PostMapping(\"/tenants/{tenantId}/payments\")\n"
+            "  public ResponseEntity<?> processPayment(\n"
+            "      @RequestBody PaymentRequest request,\n"
+            "      @PathVariable String tenantId) {\n"
+            "    if (request.amount == null) {\n"
+            "      return ResponseEntity.badRequest().build();\n"
+            "    }\n"
+            "    return ResponseEntity.ok().build();\n"
+            "  }\n"
+            "}\n\n"
+            "class PaymentRequest {\n"
+            "  @JsonProperty(\"amount_cents\")\n"
+            "  private BigDecimal amount;\n"
+            "  @JsonProperty(value = \"currency_code\")\n"
+            "  private String currency;\n"
+            "}\n",
+            encoding="utf-8",
+        )
+        modules = self._modules(
+            "feature,module,code_location,function,triggered,hit_count\n"
+            "payments,controller,src/PaymentController.java:5-11,processPayment,false,0\n"
+        )
+
+        design = await build_coverage_test_design(
+            modules, workspace_id="ws-1", repo_path=str(tmp_path)
+        )
+
+        gap = [g for g in design["gaps"] if g.get("kind") == "function"][0]
+        assert gap["black_box_readiness"]["case_type"] == "black_box_ready"
+        entry = gap["entry_paths"][0]
+        assert entry["input_hints"] == ["amount_cents", "currency_code", "tenantId"]
+        case_text = json.dumps(gap["black_box_cases"], ensure_ascii=False)
+        assert "amount_cents" in case_text
+        assert "currency_code" in case_text
+        assert '"amount"' not in case_text
+        assert '"currency"' not in case_text
+
+    async def test_java_model_serialized_name_aliases_feed_model_fields(self):
+        from app.services.coverage_analyzer import _java_model_fields_by_class
+
+        fields = _java_model_fields_by_class([
+            "class PaymentRequest {",
+            "  @SerializedName(\"amount_cents\")",
+            "  private BigDecimal amount;",
+            "  @SerializedName(value = \"currency_code\")",
+            "  private String currency;",
+            "}",
+        ])
+
+        assert fields["PaymentRequest"] == ["amount_cents", "currency_code"]
+
     async def test_spring_named_request_param_feeds_external_input_hint(self, tmp_path):
         from app.services.coverage_analyzer import build_coverage_test_design
 

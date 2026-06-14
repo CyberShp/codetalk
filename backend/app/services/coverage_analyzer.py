@@ -2443,12 +2443,6 @@ def _filter_route_input_hints(hints: object) -> list[str]:
             continue
         if key in route_internal_keys or _input_hint_is_internal_context(text):
             continue
-        if (
-            re.fullmatch(r"[A-Z][A-Za-z0-9]*", text)
-            and any(char.islower() for char in text)
-        ):
-            text = text[:1].lower() + text[1:]
-            key = _input_hint_dedupe_key(text)
         if key in seen:
             continue
         seen.add(key)
@@ -4925,17 +4919,32 @@ def _java_model_fields_by_class(lines: list[str]) -> dict[str, list[str]]:
 
         brace_depth = line.count("{") - line.count("}")
         pos = idx + 1
+        pending_annotations: list[str] = []
         while pos < len(lines):
             child = lines[pos]
             if brace_depth <= 0 and child.strip():
                 break
             if brace_depth == 1:
+                stripped = child.strip()
+                if stripped.startswith("@"):
+                    pending_annotations.append(stripped)
+                    brace_depth += child.count("{") - child.count("}")
+                    pos += 1
+                    continue
                 field = _java_field_name_from_declaration(child)
                 if field and field not in seen:
-                    seen.add(field)
-                    fields.append(field)
+                    external_field = _java_model_field_external_name(
+                        child,
+                        pending_annotations,
+                        field,
+                    )
+                    if external_field not in seen:
+                        seen.add(external_field)
+                        fields.append(external_field)
                     if len(fields) >= 12:
                         break
+                if stripped:
+                    pending_annotations.clear()
             brace_depth += child.count("{") - child.count("}")
             pos += 1
         if fields:
@@ -4965,6 +4974,25 @@ def _java_field_name_from_declaration(raw_line: str) -> str | None:
     if field and not field[0].isupper():
         return field
     return None
+
+
+def _java_model_field_external_name(
+    raw_line: str,
+    annotations: list[str],
+    field: str,
+) -> str:
+    text = "\n".join([*annotations, str(raw_line or "")])
+    for pattern in (
+        r"@(?:JsonProperty|SerializedName|JsonAlias|JsonbProperty)\s*"
+        r"\(\s*(['\"])(?P<alias>[A-Za-z_][\w.-]*)\1",
+        r"@(?:JsonProperty|SerializedName|JsonAlias|JsonbProperty)\s*"
+        r"\([^)]*\b(?:value|name|propertyName)\s*=\s*"
+        r"(['\"])(?P<alias>[A-Za-z_][\w.-]*)\1",
+    ):
+        match = re.search(pattern, text)
+        if match:
+            return match.group("alias")
+    return field
 
 
 def _go_bind_input_hints(lines: list[str], start: int, end: int) -> list[str]:
@@ -8789,6 +8817,20 @@ def _augment_entry_input_hints_from_symbol_source(
             signature_hints,
             entry.get("input_hints"),
         )
+    route_protected_hints = (
+        _route_template_input_hints([str(entry.get("external_trigger") or "")])
+        if entry_kind == "route" else []
+    )
+    existing_hints = _filter_hints_shadowed_by_external_aliases(
+        existing_hints,
+        signature_hints,
+        protected_hints=route_protected_hints,
+    )
+    source_hints = _filter_hints_shadowed_by_external_aliases(
+        source_hints,
+        signature_hints,
+        protected_hints=route_protected_hints,
+    )
     source_hints = _merge_ordered_input_hints(
         source_hints,
         registration_hints,
@@ -8845,6 +8887,35 @@ def _filter_return_literal_input_hints(
             _input_hint_dedupe_key(hint) not in return_literal_keys
             or _input_hint_dedupe_key(hint) in protected_keys
         )
+    ]
+
+
+def _filter_hints_shadowed_by_external_aliases(
+    source_hints: object,
+    alias_hints: object,
+    *,
+    protected_hints: object = None,
+) -> list[str]:
+    aliases = _merge_ordered_input_hints(alias_hints)
+    if not aliases:
+        return _merge_ordered_input_hints(source_hints)
+    alias_keys = {_input_hint_dedupe_key(alias) for alias in aliases}
+    protected_keys = {
+        _input_hint_dedupe_key(hint)
+        for hint in _merge_ordered_input_hints(protected_hints)
+    }
+
+    def shadowed_by_alias(hint: str) -> bool:
+        key = _input_hint_dedupe_key(hint)
+        if key in protected_keys:
+            return False
+        if len(key) < 3:
+            return False
+        return any(alias_key.startswith(f"{key}_") for alias_key in alias_keys)
+
+    return [
+        hint for hint in _merge_ordered_input_hints(source_hints)
+        if not shadowed_by_alias(hint)
     ]
 
 
