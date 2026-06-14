@@ -2425,13 +2425,27 @@ def _filter_route_input_hints(hints: object) -> list[str]:
     http_method_keys = {
         "get", "post", "put", "patch", "delete", "head", "options", "any",
     }
+    route_internal_keys = {
+        "app", "application", "engine", "router", "route", "routes", "mux",
+        "server", "srv", "controller", "handler", "handlers", "ctl",
+        "c", "r", "w",
+    }
     filtered: list[str] = []
+    seen: set[str] = set()
     for hint in _coerce_input_hints(hints):
         text = str(hint or "").strip()
         key = _input_hint_dedupe_key(text)
         if key in http_method_keys and (text.startswith("--") or text.upper() == text):
             continue
-        filtered.append(hint)
+        if key in route_internal_keys or _input_hint_is_internal_context(text):
+            continue
+        if re.fullmatch(r"[A-Z][A-Za-z0-9_]*", text):
+            text = text[:1].lower() + text[1:]
+            key = _input_hint_dedupe_key(text)
+        if key in seen:
+            continue
+        seen.add(key)
+        filtered.append(text)
     return filtered
 
 
@@ -4615,6 +4629,8 @@ def _signature_input_params(
         param = _signature_param_name(raw_param, param_style=param_style)
         if not param:
             continue
+        if _signature_param_is_framework_carrier(raw_param, param, param_style):
+            continue
         if external_param:
             add_hint(external_param)
             continue
@@ -4635,6 +4651,26 @@ def _signature_input_params(
                 continue
         add_hint(param)
     return hints
+
+
+def _signature_param_is_framework_carrier(
+    raw_param: str,
+    param_name: str,
+    param_style: str | None,
+) -> bool:
+    if param_style != "go":
+        return False
+    declaration = _strip_parameter_decorators(
+        str(raw_param or "").split("=", 1)[0].strip()
+    )
+    match = re.match(
+        rf"^{re.escape(param_name)}\s+(?P<type>.+)$",
+        declaration,
+    )
+    if not match:
+        return False
+    type_text = re.sub(r"\s+", "", match.group("type")).lower().lstrip("*")
+    return type_text in {"http.responsewriter", "http.request"}
 
 
 def _signature_param_section(signature: str) -> str | None:
@@ -6493,6 +6529,111 @@ def _java_grpc_service_name_from_class_header(class_name: str, class_header: str
     return class_name or None
 
 
+def _proto_rpc_contract_entry_for_symbol(
+    repo_root: Path,
+    function_name: str,
+    source_file_hint: str | None,
+) -> dict | None:
+    source_file = _resolve_source_file(repo_root, source_file_hint or "", function_name)
+    if source_file is None or source_file.suffix.lower() != ".proto":
+        return None
+    try:
+        lines = source_file.read_text(encoding="utf-8", errors="replace").splitlines()
+    except OSError:
+        return None
+    names = set(_function_name_candidates(function_name))
+    if not names:
+        return None
+
+    service_name: str | None = None
+    service_depth = 0
+    rel_file = _relative_path(repo_root, source_file)
+    for idx, raw_line in enumerate(lines):
+        line = _strip_proto_line_comment(raw_line).strip()
+        if not line:
+            continue
+        if service_name is None:
+            service_match = re.search(r"\bservice\s+(?P<name>[A-Za-z_]\w*)\b", line)
+            if not service_match:
+                continue
+            service_name = service_match.group("name")
+            service_depth = line.count("{") - line.count("}")
+        else:
+            service_depth += line.count("{") - line.count("}")
+
+        rpc_match = re.search(
+            r"\brpc\s+(?P<rpc>[A-Za-z_]\w*)\s*"
+            r"\(\s*(?:stream\s+)?(?P<request>[A-Za-z_][\w.]*)\s*\)",
+            line,
+        )
+        if rpc_match and rpc_match.group("rpc") in names:
+            rpc_name = rpc_match.group("rpc")
+            request_type = rpc_match.group("request").rsplit(".", 1)[-1]
+            trigger = (
+                f"gRPC {service_name}/{rpc_name}"
+                if service_name else f"gRPC {rpc_name}"
+            )
+            return {
+                "entry_kind": "grpc",
+                "entry_symbol": rpc_name,
+                "entry_file": rel_file,
+                "entry_label": trigger,
+                "external_trigger": trigger,
+                "call_line": idx + 1,
+                "chain": [trigger],
+                "depth": 0,
+                "evidence": f"{rel_file}:{idx + 1} {line}",
+                "tool": "source-proto-contract",
+                "input_hints": _proto_message_field_hints(lines, request_type),
+            }
+        if service_name is not None and service_depth <= 0:
+            service_name = None
+            service_depth = 0
+    return None
+
+
+def _strip_proto_line_comment(line: str) -> str:
+    return re.sub(r"\s*//.*$", "", line or "")
+
+
+def _proto_message_field_hints(lines: list[str], message_name: str) -> list[str]:
+    if not message_name:
+        return []
+    hints: list[str] = []
+    seen: set[str] = set()
+    in_message = False
+    depth = 0
+
+    def add(field: str) -> None:
+        if field and field not in seen:
+            seen.add(field)
+            hints.append(field)
+
+    for raw_line in lines:
+        line = _strip_proto_line_comment(raw_line).strip()
+        if not line:
+            continue
+        if not in_message:
+            if not re.search(rf"\bmessage\s+{re.escape(message_name)}\b", line):
+                continue
+            in_message = True
+            depth = line.count("{") - line.count("}")
+            continue
+
+        depth += line.count("{") - line.count("}")
+        field_match = re.match(
+            r"(?:(?:optional|required|repeated)\s+)?"
+            r"(?:map\s*<[^>]+>|[A-Za-z_][\w.]*)\s+"
+            r"(?P<field>[A-Za-z_]\w*)\s*=",
+            line,
+        )
+        if field_match:
+            add(field_match.group("field"))
+        if depth <= 0:
+            break
+    return hints[:12]
+
+
 def _serverless_handler_entry_for_symbol(
     repo_root: Path,
     source_file: Path,
@@ -8047,6 +8188,13 @@ def _trace_entry_paths(
     caller_branches: list[dict] = []
     entry_paths: list[dict] = []
     visited: set[str] = {function_name}
+    proto_contract_entry = _proto_rpc_contract_entry_for_symbol(
+        repo_root,
+        function_name,
+        source_file_hint,
+    )
+    if proto_contract_entry:
+        entry_paths.append(proto_contract_entry)
     decorated_entry = _decorated_entry_for_symbol(repo_root, function_name, source_file_hint)
     if decorated_entry:
         entry_paths.append(decorated_entry)
@@ -8356,6 +8504,7 @@ def _entry_path_discovery_priority(entry: dict) -> int:
         "source-registration",
         "source-cli-registration",
         "source-grpc-registration",
+        "source-proto-contract",
         "graphql-schema",
         "kafka-consumer",
     }:

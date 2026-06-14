@@ -10968,6 +10968,48 @@ class TestCoverageTestDesign:
         assert gap["source_window"]["path"] == "api/billing/billing.proto"
         assert "CreateInvoice" in json.dumps(gap["source_window"], ensure_ascii=False)
 
+    async def test_proto_rpc_contract_becomes_black_box_grpc_entry(self, tmp_path):
+        from app.services.coverage_analyzer import build_coverage_test_design
+
+        src = tmp_path / "api" / "billing"
+        src.mkdir(parents=True)
+        (src / "billing.proto").write_text(
+            "syntax = \"proto3\";\n"
+            "package billing.v1;\n"
+            "message CreateInvoiceRequest {\n"
+            "  string tenant_id = 1;\n"
+            "  int64 amount_cents = 2;\n"
+            "}\n"
+            "message CreateInvoiceReply { string invoice_id = 1; }\n"
+            "service BillingService {\n"
+            "  rpc CreateInvoice(CreateInvoiceRequest) returns (CreateInvoiceReply);\n"
+            "}\n",
+            encoding="utf-8",
+        )
+        modules = self._modules(
+            "feature,module,code_location,function,triggered,hit_count\n"
+            "billing,api,frontend/nof/api/billing/billing.proto:8-10,CreateInvoice,false,0\n"
+        )
+
+        design = await build_coverage_test_design(
+            modules,
+            workspace_id="ws-1",
+            repo_path=str(tmp_path),
+        )
+
+        gap = next(g for g in design["gaps"] if g.get("function_name") == "CreateInvoice")
+        assert gap["black_box_readiness"]["case_type"] == "black_box_ready"
+        entry = gap["entry_paths"][0]
+        assert entry["entry_kind"] == "grpc"
+        assert entry["entry_symbol"] == "CreateInvoice"
+        assert entry["entry_label"] == "gRPC BillingService/CreateInvoice"
+        assert entry["external_trigger"] == "gRPC BillingService/CreateInvoice"
+        assert entry["input_hints"] == ["tenant_id", "amount_cents"]
+        case_text = json.dumps(gap["black_box_cases"], ensure_ascii=False)
+        assert "BillingService/CreateInvoice" in case_text
+        assert "tenant_id" in case_text
+        assert "amount_cents" in case_text
+
     async def test_source_window_basename_fallback_prefers_matching_function(self, tmp_path):
         from app.services.coverage_analyzer import build_coverage_test_design
 
