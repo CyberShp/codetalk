@@ -7258,6 +7258,67 @@ class TestCoverageTestDesign:
         assert "Amount" in case_text
         assert "Currency" in case_text
 
+    async def test_aspnet_body_json_property_name_aliases_feed_external_input_hints(
+        self, tmp_path
+    ):
+        from app.services.coverage_analyzer import build_coverage_test_design
+
+        src = tmp_path / "src"
+        src.mkdir()
+        (src / "PaymentController.cs").write_text(
+            "using System.Text.Json.Serialization;\n\n"
+            "public class PaymentController {\n"
+            "  [HttpPost(\"/tenants/{tenantId}/payments\")]\n"
+            "  public IActionResult ProcessPayment(\n"
+            "      [FromBody] PaymentRequest request,\n"
+            "      string tenantId) {\n"
+            "    if (request.Amount <= 0) {\n"
+            "      return BadRequest();\n"
+            "    }\n"
+            "    return Ok();\n"
+            "  }\n"
+            "}\n\n"
+            "public class PaymentRequest {\n"
+            "  [JsonPropertyName(\"amount_cents\")]\n"
+            "  public decimal Amount { get; set; }\n"
+            "  [JsonProperty(PropertyName = \"currency_code\")]\n"
+            "  public string Currency { get; set; }\n"
+            "}\n",
+            encoding="utf-8",
+        )
+        modules = self._modules(
+            "feature,module,code_location,function,triggered,hit_count\n"
+            "payments,controller,src/PaymentController.cs:5-12,ProcessPayment,false,0\n"
+        )
+
+        design = await build_coverage_test_design(
+            modules, workspace_id="ws-1", repo_path=str(tmp_path)
+        )
+
+        gap = [g for g in design["gaps"] if g.get("kind") == "function"][0]
+        assert gap["black_box_readiness"]["case_type"] == "black_box_ready"
+        entry = gap["entry_paths"][0]
+        assert entry["input_hints"] == ["amount_cents", "currency_code", "tenantId"]
+        case_text = json.dumps(gap["black_box_cases"], ensure_ascii=False)
+        assert "amount_cents" in case_text
+        assert "currency_code" in case_text
+        assert '"Amount"' not in case_text
+        assert '"Currency"' not in case_text
+
+    async def test_csharp_model_data_member_aliases_feed_model_fields(self):
+        from app.services.coverage_analyzer import _csharp_model_fields_by_class
+
+        fields = _csharp_model_fields_by_class([
+            "public class PaymentRequest {",
+            "  [DataMember(Name = \"amount_cents\")]",
+            "  public decimal Amount { get; set; }",
+            "  [JsonPropertyName(\"currency_code\")]",
+            "  public string Currency { get; set; }",
+            "}",
+        ])
+
+        assert fields["PaymentRequest"] == ["amount_cents", "currency_code"]
+
     async def test_aspnet_minimal_api_method_group_is_black_box_route(self, tmp_path):
         from app.services.coverage_analyzer import build_coverage_test_design
 

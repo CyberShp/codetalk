@@ -5326,17 +5326,32 @@ def _csharp_model_fields_by_class(lines: list[str]) -> dict[str, list[str]]:
 
         brace_depth = line.count("{") - line.count("}")
         pos = idx + 1
+        pending_attributes: list[str] = []
         while pos < len(lines):
             child = lines[pos]
             if brace_depth <= 0 and child.strip():
                 break
             if brace_depth == 1:
+                stripped = child.strip()
+                if stripped.startswith("["):
+                    pending_attributes.append(stripped)
+                    brace_depth += child.count("{") - child.count("}")
+                    pos += 1
+                    continue
                 field = _csharp_member_name_from_declaration(child)
                 if field and field not in seen:
-                    seen.add(field)
-                    fields.append(field)
+                    external_field = _csharp_model_field_external_name(
+                        child,
+                        pending_attributes,
+                        field,
+                    )
+                    if external_field not in seen:
+                        seen.add(external_field)
+                        fields.append(external_field)
                     if len(fields) >= 12:
                         break
+                if stripped:
+                    pending_attributes.clear()
             brace_depth += child.count("{") - child.count("}")
             pos += 1
         if fields:
@@ -5367,6 +5382,25 @@ def _csharp_member_name_from_declaration(raw_line: str) -> str | None:
     if member and member[0].isupper():
         return member
     return None
+
+
+def _csharp_model_field_external_name(
+    raw_line: str,
+    attributes: list[str],
+    field: str,
+) -> str:
+    text = "\n".join([*attributes, str(raw_line or "")])
+    for pattern in (
+        r"\[(?:JsonPropertyName|JsonProperty|DataMember)\s*"
+        r"\(\s*(['\"])(?P<alias>[A-Za-z_][\w.-]*)\1",
+        r"\[(?:JsonPropertyName|JsonProperty|DataMember)\s*"
+        r"\([^]]*\b(?:PropertyName|Name|propertyName|name)\s*=\s*"
+        r"(['\"])(?P<alias>[A-Za-z_][\w.-]*)\1",
+    ):
+        match = re.search(pattern, text)
+        if match:
+            return match.group("alias")
+    return field
 
 
 def _typescript_field_name_from_declaration(raw_line: str) -> str | None:
