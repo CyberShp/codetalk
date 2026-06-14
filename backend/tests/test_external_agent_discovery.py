@@ -2150,6 +2150,12 @@ def test_run_provider_spawn_error_keeps_launch_diagnostics(tmp_path, monkeypatch
                     "status": "available",
                     "launch_kind": "powershell",
                     "path": "PowerShell function ccr",
+                    "configured_argv": ["ccr", "code", "-p"],
+                    "config_hint": (
+                        "CCR_CONFIG_PATH is available from PowerShell profile: "
+                        "C:/Users/me/ccr.json"
+                    ),
+                    "profile_config_path": "C:/Users/me/ccr.json",
                 }
             ],
         },
@@ -2179,6 +2185,10 @@ def test_run_provider_spawn_error_keeps_launch_diagnostics(tmp_path, monkeypatch
     assert "configured=ccr code -p" in result.raw_summary
     assert "PowerShell function ccr" in result.raw_summary
     assert result.warnings == [result.raw_summary]
+    attempt = result.runtime_attempts[0]
+    assert attempt["configured_argv"] == "ccr code -p"
+    assert "PowerShell profile" in attempt["config_hint"]
+    assert attempt["profile_config_path"] == "C:/Users/me/ccr.json"
 
 
 def test_run_provider_reports_nonzero_exit_with_stderr(tmp_path, monkeypatch):
@@ -5244,6 +5254,77 @@ def test_workspace_resolver_uses_repaired_split_tls_path_hint(tmp_path, monkeypa
     paths = [c.path.replace("\\", "/") for c in resolved.candidate_files if c.path]
 
     assert any(path.endswith("nof/nvmf_tcp/transport/tls/tls.c") for path in paths)
+    assert not resolved.warnings
+
+
+def test_workspace_resolver_repairs_path_fragment_embedded_in_object_text(tmp_path, monkeypatch):
+    _write_tls_tree_at(tmp_path, "nof/nvmf_tcp/transport/tls")
+
+    async def fake_discovery(_request, **_kwargs):
+        return []
+
+    monkeypatch.setattr(
+        "app.services.workspace_scope_resolver.run_external_agent_discovery",
+        fake_discovery,
+    )
+    obj = AnalysisObject(
+        id="obj_tls_text_path",
+        text="源码目录：frontend\nof\nvmf_tcp\\transport\\tls",
+        kind="module",
+    )
+
+    resolved = asyncio.run(WorkspaceScopeResolver()._resolve_object(
+        obj=obj,
+        ws_id="ws",
+        repo_path=str(tmp_path),
+        index=_GraphIndex(None),
+        limits=LLMLimits(max_files_per_object=8),
+        gitnexus_available=False,
+    ))
+    paths = [c.path.replace("\\", "/") for c in resolved.candidate_files if c.path]
+
+    assert any(path.endswith("nof/nvmf_tcp/transport/tls/tls.c") for path in paths)
+    assert not resolved.warnings
+
+
+def test_workspace_resolver_repairs_non_tls_vmf_path_fragment_in_object_text(tmp_path, monkeypatch):
+    real_dir = tmp_path / "nof" / "nvmf_tcp" / "security" / "auth"
+    decoy_dir = tmp_path / "lib" / "security" / "auth"
+    real_dir.mkdir(parents=True)
+    decoy_dir.mkdir(parents=True)
+    (real_dir / "auth.c").write_text(
+        "int nvmf_tcp_authenticate(void) { return 0; }\n",
+        encoding="utf-8",
+    )
+    (decoy_dir / "auth.c").write_text(
+        "int generic_authenticate(void) { return 0; }\n",
+        encoding="utf-8",
+    )
+
+    async def fake_discovery(_request, **_kwargs):
+        return []
+
+    monkeypatch.setattr(
+        "app.services.workspace_scope_resolver.run_external_agent_discovery",
+        fake_discovery,
+    )
+    obj = AnalysisObject(
+        id="obj_auth_text_path",
+        text="源码目录：frontend\nof\nvmf_tcp\\security\\auth",
+        kind="module",
+    )
+
+    resolved = asyncio.run(WorkspaceScopeResolver()._resolve_object(
+        obj=obj,
+        ws_id="ws",
+        repo_path=str(tmp_path),
+        index=_GraphIndex(None),
+        limits=LLMLimits(max_files_per_object=4),
+        gitnexus_available=False,
+    ))
+    paths = [Path(c.path).relative_to(tmp_path).as_posix() for c in resolved.candidate_files if c.path]
+
+    assert paths[0] == "nof/nvmf_tcp/security/auth/auth.c"
     assert not resolved.warnings
 
 

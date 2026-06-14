@@ -398,7 +398,10 @@ def _runtime_attempt_records(
         "reason",
         "executable",
         "path",
+        "configured_argv",
         "config_path",
+        "config_hint",
+        "profile_config_path",
         "launch_kind",
         "prompt_transport",
         "run_status",
@@ -420,6 +423,11 @@ def _runtime_attempt_records(
         for key in fields_to_keep:
             value = attempt.get(key)
             if value is None:
+                continue
+            if key == "configured_argv" and isinstance(value, list):
+                record[key] = " ".join(
+                    _redact_agent_diagnostic_text(str(item)) for item in value
+                )
                 continue
             if isinstance(value, (str, int, float, bool)):
                 record[key] = _redact_agent_diagnostic_text(str(value)) if isinstance(value, str) else value
