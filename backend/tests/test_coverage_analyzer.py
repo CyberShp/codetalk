@@ -2173,6 +2173,102 @@ class TestCoverageTestDesign:
 
         assert _ripgrep_call_sites(tmp_path, "recover_session") == []
 
+    async def test_ripgrep_call_sites_use_qualified_name_leaf_candidate(
+        self,
+        tmp_path,
+        monkeypatch,
+    ):
+        import subprocess
+        import app.services.coverage_analyzer as mod
+        from app.services.coverage_analyzer import _ripgrep_call_sites
+
+        src = tmp_path / "src"
+        src.mkdir()
+        api = src / "api.py"
+        api.write_text(
+            "def route(req):\n"
+            "    return processPayment(req)\n",
+            encoding="utf-8",
+        )
+        seen_commands: list[list[str]] = []
+
+        def fake_run(args, **_kwargs):
+            seen_commands.append(list(args))
+            return subprocess.CompletedProcess(
+                args,
+                0,
+                stdout=f"{api}:2:    return processPayment(req)\n",
+                stderr="",
+            )
+
+        monkeypatch.setattr(mod.shutil, "which", lambda name: "rg" if name == "rg" else None)
+        monkeypatch.setattr(mod.subprocess, "run", fake_run)
+
+        sites = _ripgrep_call_sites(tmp_path, "PaymentService.processPayment")
+
+        assert sites
+        assert sites[0]["file"] == "src/api.py"
+        pattern = seen_commands[0][seen_commands[0].index("-e") + 1]
+        assert "processPayment" in pattern
+
+    async def test_coverage_ripgrep_traces_qualified_hit_leaf_call_site(
+        self,
+        tmp_path,
+        monkeypatch,
+    ):
+        import subprocess
+        import app.services.coverage_analyzer as mod
+        from app.services.coverage_analyzer import build_coverage_test_design
+
+        monkeypatch.setattr(mod.shutil, "which", lambda name: "rg" if name == "rg" else None)
+        monkeypatch.setattr(
+            "app.services.coverage_analyzer.settings.external_agents_enabled",
+            False,
+        )
+        src = tmp_path / "src"
+        src.mkdir()
+        route_file = src / "routes.py"
+        (src / "payments.py").write_text(
+            "def processPayment(request):\n"
+            "    amount = request.json['amount']\n"
+            "    if not amount:\n"
+            "        return {'status': 400}\n"
+            "    return {'status': 200}\n",
+            encoding="utf-8",
+        )
+        route_file.write_text(
+            "from payments import processPayment\n"
+            "app.post('/payments/{tenant_id}', processPayment)\n",
+            encoding="utf-8",
+        )
+
+        def fake_run(args, **_kwargs):
+            pattern = args[args.index("-e") + 1]
+            stdout = (
+                f"{route_file}:2:app.post('/payments/{{tenant_id}}', processPayment)\n"
+                if "processPayment" in pattern
+                else ""
+            )
+            return subprocess.CompletedProcess(args, 0, stdout=stdout, stderr="")
+
+        monkeypatch.setattr(mod.subprocess, "run", fake_run)
+        modules = self._modules(
+            "feature,module,code_location,function,triggered,hit_count\n"
+            "payments,payments,src/payments.py:1-5,PaymentService.processPayment,false,0\n"
+        )
+
+        design = await build_coverage_test_design(
+            modules, workspace_id="ws-1", repo_path=str(tmp_path)
+        )
+
+        gap = [g for g in design["gaps"] if g.get("kind") == "function"][0]
+        assert gap["black_box_readiness"]["case_type"] == "black_box_ready"
+        entry = gap["entry_paths"][0]
+        assert entry["entry_kind"] == "route"
+        assert entry["entry_symbol"] == "processPayment"
+        assert entry["external_trigger"] == "POST /payments/{tenant_id}"
+        assert entry["input_hints"] == ["amount", "tenant_id"]
+
     async def test_spdk_rpc_multiline_handler_becomes_black_box_entry(self, tmp_path):
         from app.services.coverage_analyzer import build_coverage_test_design
 

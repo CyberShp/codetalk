@@ -3757,10 +3757,18 @@ def _line_mentions_symbol_in_code(line_text: str, function_name: str) -> bool:
         return False
     if _line_mentions_symbol_in_public_registration(line_text, function_name):
         return True
+    names = _function_name_candidates(function_name)
+    if not names:
+        return False
     code_text = _strip_line_literals_and_comments(line_text)
     if not code_text.strip():
         return False
-    return re.search(rf"\b{re.escape(function_name)}\b", code_text) is not None
+    return re.search(
+        r"\b(?:"
+        + "|".join(re.escape(name) for name in names)
+        + r")\b",
+        code_text,
+    ) is not None
 
 
 def _line_mentions_symbol_in_public_registration(line_text: str, function_name: str) -> bool:
@@ -3850,7 +3858,14 @@ def _ripgrep_call_sites(repo_root: Path, function_name: str) -> list[dict]:
     """Find textual call sites of ``function_name`` via ripgrep (degraded mode)."""
     if not function_name or shutil.which("rg") is None:
         return []
-    pattern = rf"\b{re.escape(function_name)}\b"
+    names = _function_name_candidates(function_name)
+    if not names:
+        return []
+    pattern = (
+        r"\b(?:"
+        + "|".join(re.escape(name) for name in names)
+        + r")\b"
+    )
     exclude_args = [
         item
         for glob in _RIPGREP_EXCLUDE_GLOBS
@@ -4041,9 +4056,10 @@ def _entry_symbol_for_site(
         entry_kind == "route"
         and traced_symbol
         and _PUBLIC_CALLBACK_START_RE.search(line_text or "")
-        and re.search(rf"\b{re.escape(traced_symbol)}\b", line_text or "")
     ):
-        return traced_symbol
+        for candidate in _function_name_candidates(traced_symbol):
+            if re.search(rf"\b{re.escape(candidate)}\b", line_text or ""):
+                return candidate
     return enclosing_fn or traced_symbol
 
 
