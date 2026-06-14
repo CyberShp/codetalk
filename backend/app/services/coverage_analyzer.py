@@ -656,6 +656,9 @@ _DISPATCH_TABLE_KEY_RE = re.compile(
     r"\s*(?P<quote>['\"])(?P<key>[A-Za-z0-9_.:/-]{1,80})(?P=quote)",
     re.IGNORECASE,
 )
+_HTTP_METHOD_NAMES = {
+    "GET", "POST", "PUT", "PATCH", "DELETE", "HEAD", "OPTIONS", "ANY", "WEBSOCKET",
+}
 _DISPATCH_TABLE_CONTEXT_RE = re.compile(
     r"\b(?:cmd|command|cli|rpc|api|request|handler|handlers|op|ops|operation|"
     r"dispatch|route|endpoint|message|event|callback|table|registry)\b",
@@ -7821,11 +7824,19 @@ def _trace_entry_paths(
                         "tool": "ripgrep" if rg_available else "cgc",
                         **metadata,
                     })
+                    if enclosing and enclosing not in visited:
+                        visited.add(enclosing)
+                        next_frontier.append((caller_chain, enclosing))
                     continue
                 if enclosing and enclosing not in visited:
                     visited.add(enclosing)
                     next_frontier.append((caller_chain, enclosing))
-        if entry_paths or not next_frontier:
+        if entry_paths:
+            if next_frontier and not _has_structured_entry_path(entry_paths):
+                frontier = next_frontier
+                continue
+            break
+        if not next_frontier:
             break
         frontier = next_frontier
 
@@ -7845,10 +7856,43 @@ def _trace_entry_paths(
         unique_entries.append(entry)
     for entry in unique_entries:
         _augment_entry_input_hints_from_symbol_source(repo_root, entry)
+    unique_entries.sort(key=_entry_path_discovery_priority)
     return unique_entries[:6], _dedupe_branches(caller_branches)
 
 
+def _has_structured_entry_path(entry_paths: list[dict]) -> bool:
+    return any(_entry_path_discovery_priority(entry) < 50 for entry in entry_paths)
+
+
+def _entry_path_discovery_priority(entry: dict) -> int:
+    tool = str(entry.get("tool") or "").strip()
+    if tool in {
+        "source-table",
+        "source-registration",
+        "source-cli-registration",
+        "source-grpc-registration",
+        "graphql-schema",
+        "kafka-consumer",
+    }:
+        return 0
+    if tool.startswith("source-"):
+        return 10
+    if tool and tool not in {"ripgrep", "cgc"}:
+        return 20
+    if tool == "cgc":
+        return 70
+    if tool == "ripgrep":
+        return 80
+    return 60
+
+
 def _merge_duplicate_entry_path(existing: dict, incoming: dict) -> None:
+    if _entry_path_discovery_priority(incoming) < _entry_path_discovery_priority(existing):
+        original = dict(existing)
+        existing.clear()
+        existing.update(incoming)
+        _merge_duplicate_entry_path(existing, original)
+        return
     _merge_entry_external_trigger(existing, incoming)
     merged_hints = _merge_ordered_input_hints(
         existing.get("input_hints"),
@@ -9605,6 +9649,8 @@ def _dispatch_table_entry_for_site(
 
     rel_file = _relative_path(repo_root, path)
     entry_type = _dispatch_table_entry_type(context_text, window)
+    if entry_type != "route" and _looks_like_route_path(key):
+        entry_type = "route"
     metadata = _entry_metadata_for_symbol(
         repo_root,
         str(path),
@@ -9668,19 +9714,31 @@ def _dispatch_table_key_for_symbol(
     for match in _DISPATCH_TABLE_ENTRY_RE.finditer(site_text or ""):
         if _dispatch_table_handler_symbol_matches(match.group("rhs"), traced_symbol):
             return match.group("key")
+    positional = _dispatch_table_positional_metadata_for_symbol(site_text, traced_symbol)
+    if positional:
+        return positional.get("key")
     handler_line_index = _dispatch_table_handler_line_index(window, traced_symbol)
-    if handler_line_index is None:
+    if handler_line_index is not None:
+        block_text = _dispatch_table_initializer_block(window, handler_line_index)
+        key_match = _DISPATCH_TABLE_KEY_RE.search(block_text)
+        if key_match:
+            return key_match.group("key")
+        positional_match = _DISPATCH_TABLE_ENTRY_RE.search(block_text)
+        if positional_match and _dispatch_table_handler_symbol_matches(
+            positional_match.group("rhs"),
+            traced_symbol,
+        ):
+            return positional_match.group("key")
+        positional = _dispatch_table_positional_metadata_for_symbol(block_text, traced_symbol)
+        if positional:
+            return positional.get("key")
+    positional_line_index = _dispatch_table_positional_handler_line_index(window, traced_symbol)
+    if positional_line_index is None:
         return None
-    block_text = _dispatch_table_initializer_block(window, handler_line_index)
-    key_match = _DISPATCH_TABLE_KEY_RE.search(block_text)
-    if key_match:
-        return key_match.group("key")
-    positional_match = _DISPATCH_TABLE_ENTRY_RE.search(block_text)
-    if positional_match and _dispatch_table_handler_symbol_matches(
-        positional_match.group("rhs"),
-        traced_symbol,
-    ):
-        return positional_match.group("key")
+    block_text = _dispatch_table_initializer_block(window, positional_line_index)
+    positional = _dispatch_table_positional_metadata_for_symbol(block_text, traced_symbol)
+    if positional:
+        return positional.get("key")
     return None
 
 
@@ -9719,6 +9777,16 @@ def _dispatch_table_route_method_for_symbol(
     handler_line_index = _dispatch_table_handler_line_index(window, traced_symbol)
     if handler_line_index is not None:
         candidates.append(_dispatch_table_initializer_block(window, handler_line_index))
+    positional_line_index = _dispatch_table_positional_handler_line_index(window, traced_symbol)
+    if positional_line_index is not None:
+        positional_block = _dispatch_table_initializer_block(window, positional_line_index)
+        positional = _dispatch_table_positional_metadata_for_symbol(
+            positional_block,
+            traced_symbol,
+        )
+        if positional and positional.get("route_method"):
+            return positional["route_method"]
+        candidates.append(positional_block)
     candidates.append("\n".join(window))
     for text in candidates:
         method = _route_method_from_text(text or "")
@@ -9735,6 +9803,16 @@ def _dispatch_table_handler_line_index(window: list[str], traced_symbol: str) ->
     return None
 
 
+def _dispatch_table_positional_handler_line_index(window: list[str], traced_symbol: str) -> int | None:
+    for index, line in enumerate(window):
+        if not re.search(rf"\b{re.escape(_last_qualified_symbol_part(traced_symbol))}\b", line or ""):
+            continue
+        block_text = _dispatch_table_initializer_block(window, index)
+        if _dispatch_table_positional_metadata_for_symbol(block_text, traced_symbol):
+            return index
+    return None
+
+
 def _dispatch_table_handler_symbol_matches(handler_symbol: str, traced_symbol: str) -> bool:
     value = _strip_callback_assignment_prefix(str(handler_symbol or "").strip())
     traced = str(traced_symbol or "").strip()
@@ -9745,6 +9823,105 @@ def _dispatch_table_handler_symbol_matches(handler_symbol: str, traced_symbol: s
         or _last_qualified_symbol_part(value) == traced
         or _last_qualified_symbol_part(value) == _last_qualified_symbol_part(traced)
     )
+
+
+def _dispatch_table_positional_metadata_for_symbol(text: str, traced_symbol: str) -> dict | None:
+    fields = _split_dispatch_table_initializer_fields(text)
+    if len(fields) < 2:
+        return None
+
+    handler_index: int | None = None
+    for index, field in enumerate(fields):
+        if _dispatch_table_handler_symbol_matches(field, traced_symbol):
+            handler_index = index
+            break
+    if handler_index is None:
+        return None
+
+    preceding_strings = [
+        value
+        for field in fields[:handler_index]
+        for value in _quoted_string_values(field)
+    ]
+    if not preceding_strings:
+        return None
+
+    route_path = next(
+        (
+            value
+            for value in preceding_strings
+            if _normalize_route_path(value, allow_relative=False)
+        ),
+        None,
+    )
+    route_method = next(
+        (value.upper() for value in preceding_strings if value.upper() in _HTTP_METHOD_NAMES),
+        None,
+    )
+    non_method_strings = [
+        value for value in preceding_strings if value.upper() not in _HTTP_METHOD_NAMES
+    ]
+    key = route_path or (non_method_strings[-1] if non_method_strings else preceding_strings[-1])
+    return {
+        "key": key,
+        "route_method": route_method,
+    }
+
+
+def _split_dispatch_table_initializer_fields(text: str) -> list[str]:
+    value = str(text or "").strip().rstrip(",").strip()
+    if not value:
+        return []
+    if value.startswith("{") and value.endswith("}"):
+        value = value[1:-1].strip()
+    fields: list[str] = []
+    current: list[str] = []
+    depth = 0
+    quote: str | None = None
+    escaped = False
+    for ch in value:
+        if quote:
+            current.append(ch)
+            if escaped:
+                escaped = False
+            elif ch == "\\":
+                escaped = True
+            elif ch == quote:
+                quote = None
+            continue
+        if ch in ("'", '"', "`"):
+            quote = ch
+            current.append(ch)
+            continue
+        if ch in "([{":
+            depth += 1
+            current.append(ch)
+            continue
+        if ch in ")]}":
+            depth = max(0, depth - 1)
+            current.append(ch)
+            continue
+        if ch == "," and depth == 0:
+            field = "".join(current).strip()
+            if field:
+                fields.append(field)
+            current = []
+            continue
+        current.append(ch)
+    field = "".join(current).strip()
+    if field:
+        fields.append(field)
+    return fields
+
+
+def _quoted_string_values(text: str) -> list[str]:
+    return [
+        match.group("value")
+        for match in re.finditer(
+            r"(?P<quote>['\"])(?P<value>(?:\\.|(?!(?P=quote)).)*?)(?P=quote)",
+            text or "",
+        )
+    ]
 
 
 def _last_qualified_symbol_part(symbol: str) -> str:

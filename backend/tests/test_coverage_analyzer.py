@@ -1739,6 +1739,52 @@ class TestCoverageTestDesign:
         assert entry["input_hints"] == ["recover"]
         assert '{ "recover", (handle_recover) }' in entry["evidence"]
 
+    async def test_c_method_path_dispatch_table_entry_is_black_box_without_graph(self, tmp_path):
+        from app.services.coverage_analyzer import build_coverage_test_design
+
+        src = tmp_path / "src"
+        src.mkdir()
+        (src / "routes.c").write_text(
+            "struct route_entry { const char *method; const char *path; int (*handler)(struct request *req); };\n"
+            "void recover_session(struct session *s) {\n"
+            "    if (s == 0) {\n"
+            "        return;\n"
+            "    }\n"
+            "    cleanup_session(s);\n"
+            "}\n"
+            "static int handle_recover(struct request *req) {\n"
+            "    if (req->id == 0) {\n"
+            "        return -1;\n"
+            "    }\n"
+            "    recover_session(req->session);\n"
+            "    return 0;\n"
+            "}\n"
+            "static const struct route_entry routes[] = {\n"
+            "    { \"POST\", \"/sessions/{id}/recover\", handle_recover },\n"
+            "};\n",
+            encoding="utf-8",
+        )
+        modules = self._modules(
+            "feature,module,code_location,function,triggered,hit_count\n"
+            "rec,routes,src/routes.c:2-7,recover_session,false,0\n"
+        )
+
+        design = await build_coverage_test_design(
+            modules, workspace_id="ws-1", repo_path=str(tmp_path)
+        )
+        gap = [g for g in design["gaps"] if g.get("kind") == "function"][0]
+
+        assert gap["gray_box_required"] is False
+        assert gap["black_box_readiness"]["case_type"] == "black_box_ready"
+        entry = gap["entry_paths"][0]
+        assert entry["tool"] == "source-table"
+        assert entry["entry_kind"] == "route"
+        assert entry["entry_symbol"] == "handle_recover"
+        assert entry["external_trigger"] == "POST /sessions/{id}/recover"
+        assert entry["input_hints"] == ["id"]
+        case_text = json.dumps(gap["black_box_cases"], ensure_ascii=False)
+        assert "POST /sessions/{id}/recover" in case_text
+
     async def test_c_casted_positional_command_table_entry_is_black_box_without_graph(self, tmp_path):
         from app.services.coverage_analyzer import build_coverage_test_design
 
