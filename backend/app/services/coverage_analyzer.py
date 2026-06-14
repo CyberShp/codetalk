@@ -642,7 +642,7 @@ _REGISTRY_CALLBACK_ASSIGN_RE = re.compile(
     re.IGNORECASE,
 )
 _DISPATCH_TABLE_ENTRY_RE = re.compile(
-    r"""(?P<quote>['"])(?P<key>[A-Za-z0-9_.:/-]{1,80})(?P=quote)\s*,\s*&?(?P<symbol>[A-Za-z_]\w*)\b"""
+    r"""(?P<quote>['"])(?P<key>[A-Za-z0-9_.:/-]{1,80})(?P=quote)\s*,\s*(?P<rhs>[^,;}]+)"""
 )
 _DISPATCH_TABLE_HANDLER_RE = re.compile(
     r"(?:\.(?:handler|handlers|callback|cb|fn|func|function|method|op|ops|entry)\s*="
@@ -9666,7 +9666,7 @@ def _dispatch_table_key_for_symbol(
     if laravel_route_key:
         return laravel_route_key
     for match in _DISPATCH_TABLE_ENTRY_RE.finditer(site_text or ""):
-        if match.group("symbol") == traced_symbol:
+        if _dispatch_table_handler_symbol_matches(match.group("rhs"), traced_symbol):
             return match.group("key")
     handler_line_index = _dispatch_table_handler_line_index(window, traced_symbol)
     if handler_line_index is None:
@@ -9676,7 +9676,10 @@ def _dispatch_table_key_for_symbol(
     if key_match:
         return key_match.group("key")
     positional_match = _DISPATCH_TABLE_ENTRY_RE.search(block_text)
-    if positional_match and positional_match.group("symbol") == traced_symbol:
+    if positional_match and _dispatch_table_handler_symbol_matches(
+        positional_match.group("rhs"),
+        traced_symbol,
+    ):
         return positional_match.group("key")
     return None
 
