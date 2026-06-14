@@ -1876,6 +1876,108 @@ def test_provider_health_probes_shell_only_ccr_with_execution_policy_bypass(tmp_
     assert "-NoProfile" not in captured["args"]
 
 
+def test_provider_health_tries_pwsh_when_windows_powershell_cannot_see_ccr(tmp_path, monkeypatch):
+    from app.services.external_agent_discovery import check_provider_health
+
+    _set_existing_ccr_config(tmp_path, monkeypatch)
+    calls: list[str] = []
+
+    class Completed:
+        def __init__(self, returncode: int, stdout: str = ""):
+            self.returncode = returncode
+            self.stdout = stdout
+
+    def fake_which(cmd):
+        lower = cmd.lower()
+        if lower == "powershell.exe":
+            return "C:/Windows/System32/WindowsPowerShell/v1.0/powershell.exe"
+        if lower == "pwsh.exe":
+            return "C:/Program Files/PowerShell/7/pwsh.exe"
+        return None
+
+    def fake_run(args, **kwargs):
+        calls.append(args[0])
+        if args[0].endswith("powershell.exe"):
+            return Completed(1)
+        return Completed(0, "Function ccr\n")
+
+    monkeypatch.setattr("app.services.external_agent_discovery.platform.system", lambda: "Windows")
+    monkeypatch.setattr("app.services.external_agent_discovery.shutil.which", fake_which)
+    monkeypatch.setattr("app.services.external_agent_discovery.subprocess.run", fake_run)
+    monkeypatch.setenv("APPDATA", str(tmp_path / "missing-appdata"))
+    monkeypatch.setenv("USERPROFILE", str(tmp_path / "missing-userprofile"))
+
+    health = check_provider_health("claude-code", "ccr code -p --output-format json")
+
+    assert health["status"] == "available"
+    assert health["launch_kind"] == "powershell"
+    assert health["argv"][0] == "C:/Program Files/PowerShell/7/pwsh.exe"
+    assert calls == [
+        "C:/Windows/System32/WindowsPowerShell/v1.0/powershell.exe",
+        "C:/Program Files/PowerShell/7/pwsh.exe",
+    ]
+
+
+def test_provider_health_uses_pwsh_profile_ccr_config_when_windows_powershell_lacks_it(
+    tmp_path,
+    monkeypatch,
+):
+    from app.config import settings
+    from app.services.external_agent_discovery import check_provider_health
+
+    config = tmp_path / "router" / "config-router.json"
+    config.parent.mkdir()
+    config.write_text('{"Providers":[]}\n', encoding="utf-8")
+    profile_env_calls: list[str] = []
+
+    class Completed:
+        def __init__(self, returncode: int, stdout: str = ""):
+            self.returncode = returncode
+            self.stdout = stdout
+
+    def fake_which(cmd):
+        lower = cmd.lower()
+        if lower == "powershell.exe":
+            return "C:/Windows/System32/WindowsPowerShell/v1.0/powershell.exe"
+        if lower == "pwsh.exe":
+            return "C:/Program Files/PowerShell/7/pwsh.exe"
+        return None
+
+    def fake_run(args, **kwargs):
+        shell = args[0]
+        script = args[-1]
+        if "Get-Command" in script:
+            if shell.endswith("powershell.exe"):
+                return Completed(1)
+            return Completed(0, "Function ccr\n")
+        if "$env:CCR_CONFIG_PATH" in script:
+            profile_env_calls.append(shell)
+            if shell.endswith("powershell.exe"):
+                return Completed(0, "")
+            return Completed(0, str(config))
+        return Completed(1)
+
+    monkeypatch.setattr("app.services.external_agent_discovery.platform.system", lambda: "Windows")
+    monkeypatch.setattr("app.services.external_agent_discovery.shutil.which", fake_which)
+    monkeypatch.setattr("app.services.external_agent_discovery.subprocess.run", fake_run)
+    monkeypatch.setattr(settings, "claude_code_config_path", "")
+    monkeypatch.delenv("CCR_CONFIG_PATH", raising=False)
+    monkeypatch.setenv("APPDATA", str(tmp_path / "missing-appdata"))
+    monkeypatch.setenv("USERPROFILE", str(tmp_path / "missing-userprofile"))
+
+    health = check_provider_health("claude-code", "ccr code")
+
+    assert health["status"] == "available"
+    assert health["argv"][0] == "C:/Program Files/PowerShell/7/pwsh.exe"
+    assert health["attempts"][0]["profile_config_path"] == str(config)
+    assert profile_env_calls == [
+        "C:/Windows/System32/WindowsPowerShell/v1.0/powershell.exe",
+        "C:/Program Files/PowerShell/7/pwsh.exe",
+        "C:/Windows/System32/WindowsPowerShell/v1.0/powershell.exe",
+        "C:/Program Files/PowerShell/7/pwsh.exe",
+    ]
+
+
 def test_provider_health_wraps_windows_ps1_agent_with_powershell(tmp_path, monkeypatch):
     from app.services.external_agent_discovery import check_provider_health
 

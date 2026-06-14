@@ -614,7 +614,8 @@ def _resolve_provider_command_attempt(command: str, provider: str | None = None)
     else:
         resolved = shutil.which(executable)
     if not resolved:
-        shell_resolution = _probe_windows_shell_command(executable)
+        shell_probe = _probe_windows_shell_command(executable)
+        shell_resolution = _shell_probe_summary(shell_probe)
         if shell_resolution:
             normalized_argv = _normalize_agent_automation_argv(provider, argv)
             guarded_argv = apply_readonly_cli_guard(provider, normalized_argv)
@@ -627,10 +628,15 @@ def _resolve_provider_command_attempt(command: str, provider: str | None = None)
                     "configured_argv": guarded_argv,
                     "executable": executable,
                     "path": shell_resolution,
+                    "shell_path": _shell_probe_powershell(shell_probe),
                     "launch_kind": "powershell",
                     **config_error,
                 }
-            shell_argv = _windows_shell_agent_argv(guarded_argv, provider=provider)
+            shell_argv = _windows_shell_agent_argv(
+                guarded_argv,
+                provider=provider,
+                powershell=_shell_probe_powershell(shell_probe),
+            )
             return {
                 "command": command,
                 "status": "available",
@@ -638,6 +644,7 @@ def _resolve_provider_command_attempt(command: str, provider: str | None = None)
                 "configured_argv": guarded_argv,
                 "executable": executable,
                 "path": shell_resolution,
+                "shell_path": _shell_probe_powershell(shell_probe),
                 "launch_kind": "powershell",
                 **_provider_command_configuration_hint(provider, guarded_argv),
             }
@@ -911,35 +918,48 @@ def _agent_command_configuration_hint(
     }
 
 
-def _probe_windows_shell_command(executable: str) -> str | None:
+def _probe_windows_shell_command(executable: str) -> dict[str, str] | str | None:
     if not settings.external_agent_windows_shell_fallback_enabled:
         return None
     if not platform.system().lower().startswith("win"):
         return None
-    powershell = _find_powershell()
-    if not powershell:
-        return None
-    try:
-        proc = subprocess.run(
-            [
-                *_windows_powershell_base_argv(powershell),
-                "-Command",
-                (
-                    "$cmd = Get-Command -ErrorAction SilentlyContinue "
-                    f"{_powershell_single_quote(executable)}; "
-                    "if ($cmd) { $cmd.Source; if (-not $cmd.Source) { $cmd.Definition } }"
-                ),
-            ],
-            capture_output=True,
-            text=True,
-            timeout=3,
-        )
-    except Exception:
-        return None
-    if proc.returncode != 0:
-        return None
-    summary = (proc.stdout or "").strip()
-    return summary or f"PowerShell command: {executable}"
+    for powershell in _iter_windows_powershell_candidates():
+        try:
+            proc = subprocess.run(
+                [
+                    *_windows_powershell_base_argv(powershell),
+                    "-Command",
+                    (
+                        "$cmd = Get-Command -ErrorAction SilentlyContinue "
+                        f"{_powershell_single_quote(executable)}; "
+                        "if ($cmd) { $cmd.Source; if (-not $cmd.Source) { $cmd.Definition } }"
+                    ),
+                ],
+                capture_output=True,
+                text=True,
+                timeout=3,
+            )
+        except Exception:
+            continue
+        if proc.returncode != 0:
+            continue
+        summary = (proc.stdout or "").strip() or f"PowerShell command: {executable}"
+        return {"summary": summary, "powershell": powershell}
+    return None
+
+
+def _shell_probe_summary(probe: dict[str, str] | str | None) -> str | None:
+    if isinstance(probe, dict):
+        return str(probe.get("summary") or probe.get("path") or "").strip() or None
+    if isinstance(probe, str):
+        return probe
+    return None
+
+
+def _shell_probe_powershell(probe: dict[str, str] | str | None) -> str | None:
+    if isinstance(probe, dict):
+        return str(probe.get("powershell") or "").strip() or None
+    return None
 
 
 def _provider_command_configuration_error(
@@ -1090,36 +1110,36 @@ def _windows_profile_ccr_config_path() -> str | None:
 
 
 def _windows_profile_env_var(name: str) -> str | None:
-    powershell = _find_powershell()
-    if not powershell:
-        return None
     safe_name = re.sub(r"[^A-Za-z0-9_]", "", str(name or ""))
     if not safe_name:
         return None
-    try:
-        proc = subprocess.run(
-            [
-                *_windows_powershell_base_argv(powershell),
-                "-Command",
-                (
-                    "[Console]::OutputEncoding = "
-                    "[System.Text.UTF8Encoding]::new($false); "
-                    f"$value = $env:{safe_name}; "
-                    "if ($value) { [Console]::Out.Write($value) }"
-                ),
-            ],
-            capture_output=True,
-            text=True,
-            encoding="utf-8",
-            errors="replace",
-            timeout=3,
-        )
-    except Exception:
-        return None
-    if proc.returncode != 0:
-        return None
-    value = (proc.stdout or "").strip()
-    return value or None
+    for powershell in _iter_windows_powershell_candidates():
+        try:
+            proc = subprocess.run(
+                [
+                    *_windows_powershell_base_argv(powershell),
+                    "-Command",
+                    (
+                        "[Console]::OutputEncoding = "
+                        "[System.Text.UTF8Encoding]::new($false); "
+                        f"$value = $env:{safe_name}; "
+                        "if ($value) { [Console]::Out.Write($value) }"
+                    ),
+                ],
+                capture_output=True,
+                text=True,
+                encoding="utf-8",
+                errors="replace",
+                timeout=3,
+            )
+        except Exception:
+            continue
+        if proc.returncode != 0:
+            continue
+        value = (proc.stdout or "").strip()
+        if value:
+            return value
+    return None
 
 
 def _looks_like_ccr_code_command(argv: list[str]) -> bool:
@@ -1231,10 +1251,27 @@ def _explicit_ccr_config_path_from_argv(argv: list[str]) -> str | None:
 
 
 def _find_powershell() -> str | None:
+    for candidate in _iter_windows_powershell_candidates():
+        return candidate
+    return None
+
+
+def _iter_windows_powershell_candidates() -> list[str]:
+    candidates: list[str] = []
+    seen: set[str] = set()
+
+    def add(candidate: str | None) -> None:
+        value = str(candidate or "").strip()
+        if not value:
+            return
+        key = value.lower()
+        if key in seen:
+            return
+        seen.add(key)
+        candidates.append(value)
+
     for name in ("powershell.exe", "pwsh.exe"):
-        found = shutil.which(name)
-        if found:
-            return found
+        add(shutil.which(name))
     if platform.system().lower().startswith("win"):
         for env_name in ("SystemRoot", "WINDIR"):
             root = os.environ.get(env_name)
@@ -1249,14 +1286,18 @@ def _find_powershell() -> str | None:
             )
             try:
                 if candidate.is_file():
-                    return str(candidate)
+                    add(str(candidate))
             except OSError:
                 continue
-    return None
+    return candidates
 
 
-def _windows_shell_agent_argv(argv: list[str], provider: str | None = None) -> list[str]:
-    powershell = _find_powershell() or "powershell.exe"
+def _windows_shell_agent_argv(
+    argv: list[str],
+    provider: str | None = None,
+    powershell: str | None = None,
+) -> list[str]:
+    powershell = powershell or _find_powershell() or "powershell.exe"
     base = _windows_powershell_base_argv(powershell)
     command = _powershell_agent_command_with_prompt_arg(provider, argv, "$__codetalkPrompt")
     if command is None:
