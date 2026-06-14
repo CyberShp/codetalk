@@ -190,6 +190,7 @@ _EXPRESSION_CALL_PREFIXES = (
     "throw ",
     "go ",
     "defer ",
+    "new ",
 )
 
 
@@ -7325,6 +7326,7 @@ def _worker_registration_symbol_from_text(text: str, caller_chain: list[str]) ->
         r"(?:\.|\b)(?:create_task|ensure_future)\s*\(\s*"
         r"(?P<symbol>[A-Za-z_]\w*(?:\.[A-Za-z_]\w*)?)\s*\(",
         r"\bgo\s+(?P<symbol>[A-Za-z_]\w*(?:\.[A-Za-z_]\w*)?)\s*\(",
+        r"(?:&\s*)?(?:this|self|[A-Za-z_]\w*)\s*::\s*(?P<symbol>[A-Za-z_]\w*)\b",
     ):
         for match in re.finditer(pattern, text or "", re.IGNORECASE):
             candidates.append(match.group("symbol").rsplit(".", 1)[-1])
