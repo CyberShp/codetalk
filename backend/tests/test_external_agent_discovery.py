@@ -6470,6 +6470,43 @@ def test_workspace_path_keyword_search_includes_assembly_source_files(tmp_path):
     assert "arch/x86/tls/tls_fallback.asm" in asm_rel_hits
 
 
+def test_workspace_path_keyword_search_includes_cuda_source_files(tmp_path):
+    from app.services.workspace_scope_resolver import _path_keyword_repo_hits_blocking
+
+    kernel_dir = tmp_path / "gpu" / "tls" / "handshake"
+    kernel_dir.mkdir(parents=True)
+    (kernel_dir / "tls_handshake.cu").write_text(
+        "__global__ void tls_handshake_kernel() {}\n",
+        encoding="utf-8",
+    )
+    (kernel_dir / "tls_handshake.cuh").write_text(
+        "void launch_tls_handshake();\n",
+        encoding="utf-8",
+    )
+
+    hits = _path_keyword_repo_hits_blocking(str(tmp_path), ["tls-handshake"], 4)
+    rel_hits = [Path(hit).relative_to(tmp_path).as_posix() for hit in hits]
+
+    assert "gpu/tls/handshake/tls_handshake.cu" in rel_hits
+    assert "gpu/tls/handshake/tls_handshake.cuh" in rel_hits
+
+
+def test_agent_candidate_validation_accepts_objective_cxx_source_files(tmp_path):
+    from app.services.external_agent_discovery import validate_agent_candidate_file
+
+    objc_dir = tmp_path / "platform" / "tls"
+    objc_dir.mkdir(parents=True)
+    (objc_dir / "TLSHandshake.mm").write_text(
+        "void TLSHandshakeStart() {}\n",
+        encoding="utf-8",
+    )
+
+    validation = validate_agent_candidate_file(tmp_path, "platform/tls/TLSHandshake.mm")
+
+    assert validation.validated is True
+    assert validation.path == "platform/tls/TLSHandshake.mm"
+
+
 def test_evidence_builder_reads_idl_source_candidates(tmp_path):
     from app.schemas.workspace_analysis import ResolvedAnalysisObject, ScopeCandidate
     from app.services.evidence_card_builder import EvidenceCardBuilder
