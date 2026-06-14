@@ -1177,6 +1177,26 @@ class TestCoverageTestDesign:
             "ProcessPayment",
         ]
 
+    async def test_dispatch_table_handler_match_accepts_endpoint_keyword(self):
+        from app.services.coverage_analyzer import _dispatch_table_handler_symbol_matches
+
+        assert _dispatch_table_handler_symbol_matches(
+            "endpoint=process_payment",
+            "process_payment",
+        )
+        assert _dispatch_table_handler_symbol_matches(
+            "to: 'payments#process'",
+            "process",
+        )
+        assert _dispatch_table_handler_symbol_matches(
+            "[PaymentController::class, 'process']",
+            "process",
+        )
+        assert not _dispatch_table_handler_symbol_matches(
+            "methods=['POST']",
+            "process",
+        )
+
     @staticmethod
     def _make_repo(tmp_path):
         src = tmp_path / "src"
@@ -3872,6 +3892,52 @@ class TestCoverageTestDesign:
         assert "POST /tenants/{tenant_id}/payments" in case_text
         assert "amount" in case_text
         assert "tenant_id" in case_text
+
+    async def test_starlette_route_endpoint_keyword_becomes_black_box_entry(
+        self, tmp_path, monkeypatch
+    ):
+        import app.services.coverage_analyzer as mod
+        from app.services.coverage_analyzer import build_coverage_test_design
+
+        monkeypatch.setattr(mod.shutil, "which", lambda _name: None)
+        src = tmp_path / "src"
+        src.mkdir()
+        (src / "payments.py").write_text(
+            "async def process_payment(request):\n"
+            "    payload = await request.json()\n"
+            "    tenant_id = request.path_params['tenant_id']\n"
+            "    if not payload['amount']:\n"
+            "        return {'status': 400, 'tenant_id': tenant_id}\n"
+            "    return {'status': 200}\n",
+            encoding="utf-8",
+        )
+        (src / "routes.py").write_text(
+            "from starlette.routing import Route\n"
+            "from payments import process_payment\n\n"
+            "routes = [\n"
+            "    Route('/tenants/{tenant_id}/payments', endpoint=process_payment, methods=['POST']),\n"
+            "]\n",
+            encoding="utf-8",
+        )
+        modules = self._modules(
+            "feature,module,code_location,function,triggered,hit_count\n"
+            "payments,payments,src/payments.py:1-6,process_payment,false,0\n"
+        )
+
+        design = await build_coverage_test_design(
+            modules, workspace_id="ws-1", repo_path=str(tmp_path)
+        )
+
+        gap = [g for g in design["gaps"] if g.get("kind") == "function"][0]
+        assert gap["gray_box_required"] is False
+        assert gap["black_box_readiness"]["case_type"] == "black_box_ready"
+        entry = gap["entry_paths"][0]
+        assert entry["entry_kind"] == "route"
+        assert entry["entry_symbol"] == "process_payment"
+        assert entry["tool"] == "source-scan"
+        assert "Route(" in entry["evidence"]
+        assert entry["external_trigger"] == "POST /tenants/{tenant_id}/payments"
+        assert entry["input_hints"] == ["tenant_id", "amount"]
 
     async def test_aiohttp_router_add_post_registration_becomes_black_box_entry(
         self, tmp_path, monkeypatch

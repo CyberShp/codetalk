@@ -3755,10 +3755,46 @@ def _is_non_executable_symbol_reference(line_text: str, function_name: str) -> b
 def _line_mentions_symbol_in_code(line_text: str, function_name: str) -> bool:
     if not function_name:
         return False
+    if _line_mentions_symbol_in_public_registration(line_text, function_name):
+        return True
     code_text = _strip_line_literals_and_comments(line_text)
     if not code_text.strip():
         return False
     return re.search(rf"\b{re.escape(function_name)}\b", code_text) is not None
+
+
+def _line_mentions_symbol_in_public_registration(line_text: str, function_name: str) -> bool:
+    text = str(line_text or "").strip()
+    symbol = _last_qualified_symbol_part(function_name)
+    if not text or not symbol:
+        return False
+    route_like = (
+        _has_route_registration_call(text)
+        or bool(re.search(
+            r"\b(?:Route::|urlpatterns|path|re_path|url|routes)\b",
+            text,
+            re.IGNORECASE,
+        ))
+        or bool(_route_method_from_text(text))
+    )
+    if not route_like:
+        return False
+    quoted_values = _quoted_string_values(text)
+    if any(
+        value == symbol
+        or value.endswith(f"#{symbol}")
+        or value.endswith(f"@{symbol}")
+        or _last_qualified_symbol_part(value) == symbol
+        for value in quoted_values
+    ):
+        return True
+    return re.search(
+        rf"\b(?:endpoint|handler|view_func|callback|func|function|method|target)"
+        rf"\s*[:=]\s*&?(?:[A-Za-z_]\w*(?:(?:::|\.)[A-Za-z_]\w*)*\.)?"
+        rf"{re.escape(symbol)}\b",
+        text,
+        re.IGNORECASE,
+    ) is not None
 
 
 def _strip_line_literals_and_comments(line_text: str) -> str:
@@ -3886,7 +3922,10 @@ def _source_scan_call_sites(repo_root: Path, function_name: str) -> list[dict]:
         file_str = str(candidate)
         for idx, line in enumerate(lines, start=1):
             code_text = _strip_line_literals_and_comments(line)
-            if not pattern.search(code_text):
+            if not pattern.search(code_text) and not _line_mentions_symbol_in_public_registration(
+                line,
+                function_name,
+            ):
                 continue
             stripped = line.strip()
             if _is_definition_or_declaration_site(file_str, idx, function_name):
@@ -10904,15 +10943,58 @@ def _dispatch_table_positional_handler_line_index(window: list[str], traced_symb
 
 
 def _dispatch_table_handler_symbol_matches(handler_symbol: str, traced_symbol: str) -> bool:
-    value = _strip_callback_assignment_prefix(str(handler_symbol or "").strip())
     traced = str(traced_symbol or "").strip()
-    if not value or not traced:
+    if not traced:
         return False
-    return (
-        value == traced
-        or _last_qualified_symbol_part(value) == traced
-        or _last_qualified_symbol_part(value) == _last_qualified_symbol_part(traced)
+    traced_leaf = _last_qualified_symbol_part(traced)
+    for value in _dispatch_table_handler_symbol_candidates(handler_symbol):
+        if (
+            value == traced
+            or value == traced_leaf
+            or _last_qualified_symbol_part(value) == traced
+            or _last_qualified_symbol_part(value) == traced_leaf
+        ):
+            return True
+    return False
+
+
+def _dispatch_table_handler_symbol_candidates(handler_symbol: str) -> list[str]:
+    raw = str(handler_symbol or "").strip()
+    if not raw:
+        return []
+    seen: set[str] = set()
+    candidates: list[str] = []
+
+    def add(value: str) -> None:
+        text = str(value or "").strip().strip("[](){}")
+        text = _strip_callback_assignment_prefix(text)
+        text = text.strip().strip(",")
+        if not text or text in seen:
+            return
+        seen.add(text)
+        candidates.append(text)
+        leaf = _last_qualified_symbol_part(text)
+        if leaf and leaf not in seen:
+            seen.add(leaf)
+            candidates.append(leaf)
+        if "#" in text:
+            action = text.rsplit("#", 1)[-1].strip()
+            if action and action not in seen:
+                seen.add(action)
+                candidates.append(action)
+
+    add(raw)
+    for quoted in _quoted_string_values(raw):
+        add(quoted)
+    keyword_match = re.search(
+        r"\b(?:endpoint|handler|view_func|callback|func|function|method|target|to)\s*[:=]\s*"
+        r"(?P<symbol>&?[A-Za-z_]\w*(?:(?:::|\.)[A-Za-z_]\w*)*)\b",
+        raw,
+        re.IGNORECASE,
     )
+    if keyword_match:
+        add(keyword_match.group("symbol").lstrip("&"))
+    return candidates
 
 
 def _dispatch_table_positional_metadata_for_symbol(text: str, traced_symbol: str) -> dict | None:
@@ -11148,6 +11230,19 @@ def _callback_symbol_from_assignment(text: str) -> str | None:
 
 def _strip_callback_assignment_prefix(rhs: str) -> str:
     value = str(rhs or "").strip()
+    while True:
+        keyword_match = re.match(
+            r"(?P<name>[A-Za-z_]\w*)\s*[:=]\s*(?P<inner>.+)$",
+            value,
+        )
+        if not keyword_match:
+            break
+        if keyword_match.group("name").lower() not in {
+            "callback", "cb", "endpoint", "entry", "func", "function",
+            "handler", "method", "op", "ops", "target", "view", "view_func",
+        }:
+            break
+        value = keyword_match.group("inner").strip()
     while value.startswith("("):
         close_index = _find_matching_call_close(value, 0)
         if close_index is None:
