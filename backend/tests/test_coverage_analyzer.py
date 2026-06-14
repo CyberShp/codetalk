@@ -8176,6 +8176,44 @@ class TestCoverageTestDesign:
         assert card["candidate_external_entries"][0]["entry_symbol"] == "consume"
         assert "registry.register" in card["candidate_external_entries"][0]["evidence"]
 
+    async def test_signal_handler_registration_is_callback_entry_without_agent(
+        self, tmp_path, monkeypatch
+    ):
+        from app.services.coverage_analyzer import build_coverage_test_design
+
+        monkeypatch.setattr(
+            "app.services.coverage_analyzer.settings.external_agents_enabled",
+            False,
+        )
+        src = tmp_path / "src"
+        src.mkdir()
+        (src / "signals.py").write_text(
+            "import signal\n\n"
+            "def shutdown(signum, frame):\n"
+            "    if signum == signal.SIGTERM:\n"
+            "        return 'term'\n"
+            "    return 'other'\n\n"
+            "signal.signal(signal.SIGTERM, shutdown)\n",
+            encoding="utf-8",
+        )
+        modules = self._modules(
+            "feature,module,code_location,function,triggered,hit_count\n"
+            "runtime,signals,src/signals.py:3-6,shutdown,false,0\n"
+        )
+
+        design = await build_coverage_test_design(
+            modules, workspace_id="ws-1", repo_path=str(tmp_path)
+        )
+
+        gap = [g for g in design["gaps"] if g.get("kind") == "function"][0]
+        assert gap["gray_box_required"] is False
+        assert gap["black_box_readiness"]["case_type"] == "black_box_ready"
+        entry = gap["entry_paths"][0]
+        assert entry["entry_kind"] == "callback"
+        assert entry["entry_symbol"] == "shutdown"
+        assert "signal.signal" in entry["evidence"]
+        assert "SIGTERM" in entry["input_hints"]
+
     async def test_scheduler_add_job_registration_keeps_scheduler_entry_kind(self, tmp_path):
         from app.services.coverage_analyzer import build_coverage_test_design
 

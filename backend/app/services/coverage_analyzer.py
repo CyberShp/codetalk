@@ -552,6 +552,8 @@ _REGISTRATION_LINE_RE = re.compile(
     r"\b(?:[A-Z0-9_]*REGISTER[A-Z0-9_]*|register_[A-Za-z0-9_]+)\s*\("
     r"|\badd_[A-Za-z0-9_]*Servicer_to_server\s*\("
     r"|\b(?:[A-Za-z_]\w*(?:\.[A-Za-z_]\w*)*\s*\.\s*)?Handle(?:Func)?\s*\("
+    r"|\bsignal\s*\.\s*signal\s*\("
+    r"|(?<!\.)\bsignal\s*\("
     r"|\b(?:new\s+)?Worker\s*\("
     r"|\bQueue\s*\("
     r"|\.\s*process\s*\("
@@ -7121,6 +7123,29 @@ def _registration_channel_input_hints(registration_line: str, entry_type: str) -
     return hints[:8]
 
 
+def _signal_registration_input_hints(registration_line: str) -> list[str]:
+    if not re.search(r"\bsignal\b", registration_line or "", re.IGNORECASE):
+        return []
+    hints: list[str] = []
+    seen: set[str] = set()
+
+    def add(value: str) -> None:
+        text = value.strip()
+        if not text or text in seen:
+            return
+        seen.add(text)
+        hints.append(text)
+
+    for match in re.finditer(
+        r"\b(?:signal|syscall|os)\s*\.\s*(?P<name>SIG[A-Z0-9_]+|Interrupt)\b",
+        registration_line or "",
+    ):
+        add(match.group("name"))
+    for match in re.finditer(r"\b(?P<name>SIG[A-Z0-9_]+)\b", registration_line or ""):
+        add(match.group("name"))
+    return hints[:6]
+
+
 def _queue_registration_input_hints(site_text: str, entry_type: str) -> list[str]:
     if entry_type != "queue":
         return []
@@ -9074,7 +9099,11 @@ def _registration_entry_for_site(
     site_text: str,
     caller_chain: list[str],
 ) -> dict | None:
-    symbol = enclosing or _callback_symbol_from_assignment(site_text)
+    symbol = (
+        enclosing
+        or _callback_symbol_from_assignment(site_text)
+        or _registered_callback_symbol(site_text, caller_chain)
+    )
     if not symbol:
         return None
     try:
@@ -9101,7 +9130,7 @@ def _registration_entry_for_site(
         for token in (
             "callback", "_cb", "handler", "ops", "poller", "timer", "event",
             "register", "subscribe", ".on", ".once", "listener", "schedule", "scheduler", "job",
-            "worker", "queue", ".process", "grpc", "servicer_to_server",
+            "worker", "queue", ".process", "grpc", "servicer_to_server", "signal",
         )
     )
     if not (assignment_seen and registration_line and callback_like):
@@ -9133,7 +9162,10 @@ def _registration_entry_for_site(
         if route_trigger:
             metadata["external_trigger"] = route_trigger
     else:
-        channel_hints = _registration_channel_input_hints(registration_line, entry_type)
+        channel_hints = _merge_ordered_strings(
+            _registration_channel_input_hints(registration_line, entry_type),
+            _signal_registration_input_hints(registration_line),
+        )
         if entry_type == "message":
             channel_hints = _merge_ordered_strings(
                 channel_hints,
@@ -9384,6 +9416,13 @@ def _registered_route_symbol(site_text: str, caller_chain: list[str]) -> str | N
     return match.group(1) if match else None
 
 
+def _registered_callback_symbol(site_text: str, caller_chain: list[str]) -> str | None:
+    for candidate in reversed(caller_chain or []):
+        if candidate and re.search(rf"\b{re.escape(candidate)}\b", site_text or ""):
+            return candidate
+    return None
+
+
 def _callback_symbol_from_assignment(text: str) -> str | None:
     match = _CALLBACK_ASSIGN_RE.search(text or "")
     return match.group("symbol") if match else None
@@ -9411,7 +9450,7 @@ def _registered_entry_type(registration_line: str, window: list[str]) -> str:
         return "queue"
     if any(token in text for token in ("subscribe", "subscriber", "topic", "queue", "message", "event", "listener")):
         return "message"
-    if "service_register" in text or "ops" in text or "callback" in text or "_cb" in text:
+    if "service_register" in text or "ops" in text or "callback" in text or "_cb" in text or "signal" in text:
         return "callback"
     if any(token in text for token in ("scheduler", "schedule", "scheduled", "cron", "add_job", ".job", " job")):
         return "scheduler"
