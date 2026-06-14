@@ -2350,6 +2350,38 @@ def _merge_ordered_input_hints(*values: object) -> list[str]:
     ])
 
 
+def _merge_input_hints_preferring_qualified_fields(
+    primary_hints: object,
+    secondary_hints: object,
+) -> list[str]:
+    merged = _merge_ordered_input_hints(primary_hints, secondary_hints)
+    qualified_leaf_keys: set[str] = set()
+    for hint in merged:
+        text = str(hint or "").strip()
+        if not re.search(r"(?:\.|->|\[\s*['\"])", text):
+            continue
+        leaf_match = re.search(
+            r"(?:\.|->)\s*([A-Za-z_$][\w$]*)\s*$"
+            r"|\[\s*['\"]([^'\"]+)['\"]\s*\]\s*$",
+            text,
+        )
+        leaf = (leaf_match.group(1) or leaf_match.group(2)) if leaf_match else ""
+        if leaf:
+            qualified_leaf_keys.add(_input_hint_dedupe_key(leaf))
+    if not qualified_leaf_keys:
+        return merged
+    filtered: list[str] = []
+    for hint in merged:
+        text = str(hint or "").strip()
+        if (
+            re.fullmatch(r"[A-Za-z_$][\w$]*", text)
+            and _input_hint_dedupe_key(text) in qualified_leaf_keys
+        ):
+            continue
+        filtered.append(hint)
+    return filtered
+
+
 def _filter_route_input_hints(hints: object) -> list[str]:
     http_method_keys = {
         "get", "post", "put", "patch", "delete", "head", "options", "any",
@@ -7602,7 +7634,7 @@ def _augment_entry_input_hints_from_symbol_source(
         registration_hints,
         signature_hints,
     )
-    merged_hints = _merge_ordered_input_hints(
+    merged_hints = _merge_input_hints_preferring_qualified_fields(
         existing_hints,
         source_hints,
     )
@@ -7802,7 +7834,10 @@ def _filesystem_entry_for_site(
         enclosing,
     )
     fs_hints = _filesystem_operation_input_hints("\n".join(window))
-    input_hints = _merge_ordered_input_hints(fs_hints, metadata.pop("input_hints", []))
+    input_hints = _merge_input_hints_preferring_qualified_fields(
+        fs_hints,
+        metadata.pop("input_hints", []),
+    )
     entry_label = metadata.pop("entry_label", None)
     entry = {
         "entry_kind": "file",
@@ -8167,26 +8202,51 @@ def _filesystem_operation_input_hints(window_text: str) -> list[str]:
         def field_alias_vars(expr_text: str) -> list[str]:
             expr = expr_text.strip().rstrip(";").strip()
             expr = path_wrapper_inner_arg(expr) or expr
+
+            def normalize_field_path(path_text: str) -> str:
+                return re.sub(
+                    r"""\s*(\?\.|\.|->)\s*""",
+                    lambda match: "." if match.group(1) == "?." else match.group(1),
+                    path_text.strip(),
+                )
+
+            field_base_re = r"""[A-Za-z_$][\w$]*(?:\s*(?:\?\.|\.|->)\s*[A-Za-z_$][\w$]*)*"""
+
             for env_pattern in _ENV_FIELD_RES:
                 env_match = env_pattern.fullmatch(expr)
                 if env_match:
                     return [env_match.group(1)]
             bracket_match = re.fullmatch(
-                r"""(?P<base>[A-Za-z_$][\w$]*)\s*\[\s*['"](?P<field>[^'"]+)['"]\s*\]""",
+                rf"""(?P<base>{field_base_re})\s*\[\s*['"](?P<field>[^'"]+)['"]\s*\]""",
                 expr,
             )
             if bracket_match:
-                return [f"{bracket_match.group('base')}.{bracket_match.group('field')}"]
+                base = normalize_field_path(bracket_match.group("base"))
+                field = bracket_match.group("field")
+                return [
+                    f"{base}.{field}"
+                ]
+            getter_match = re.fullmatch(
+                rf"""(?P<base>{field_base_re})\s*\.\s*(?:get|Get)\s*\(\s*(?P<args>.*)\s*\)""",
+                expr,
+                re.DOTALL,
+            )
+            if getter_match:
+                args = split_top_level_args(getter_match.group("args"))
+                if args:
+                    field_match = re.fullmatch(
+                        r"""['"](?P<field>[^'"]+)['"]""",
+                        args[0].strip(),
+                    )
+                    if field_match:
+                        base = normalize_field_path(getter_match.group("base"))
+                        field = field_match.group("field")
+                        return [f"{base}.{field}"]
             if re.fullmatch(
                 r"""[A-Za-z_$][\w$]*(?:\s*(?:\?\.|\.|->)\s*[A-Za-z_$][\w$]*)+""",
                 expr,
             ):
-                normalized = re.sub(
-                    r"""\s*(\?\.|\.|->)\s*""",
-                    lambda match: "." if match.group(1) == "?." else match.group(1),
-                    expr,
-                )
-                return [normalized]
+                return [normalize_field_path(expr)]
             return []
 
         def normalized_destructuring_base(expr_text: str) -> str | None:
