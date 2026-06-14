@@ -9119,6 +9119,42 @@ class TestCoverageTestDesign:
         assert "asyncio.create_task" in entry["evidence"]
         assert entry["input_hints"] == ["cache-refresh", "force"]
 
+    async def test_asyncio_call_later_registration_is_timer_entry_without_agent(self, tmp_path):
+        from app.services.coverage_analyzer import build_coverage_test_design
+
+        src = tmp_path / "src"
+        src.mkdir()
+        (src / "jobs.py").write_text(
+            "def refresh_cache(force):\n"
+            "    if not force:\n"
+            "        return 'skip'\n"
+            "    return 'refreshed'\n",
+            encoding="utf-8",
+        )
+        (src / "bootstrap.py").write_text(
+            "from jobs import refresh_cache\n\n"
+            "def start_background_tasks(loop):\n"
+            "    loop.call_later(30, refresh_cache, True)\n",
+            encoding="utf-8",
+        )
+        modules = self._modules(
+            "feature,module,code_location,function,triggered,hit_count\n"
+            "cache,jobs,src/jobs.py:1-4,refresh_cache,false,0\n"
+        )
+
+        design = await build_coverage_test_design(
+            modules, workspace_id="ws-1", repo_path=str(tmp_path)
+        )
+
+        gap = [g for g in design["gaps"] if g.get("kind") == "function"][0]
+        assert gap["gray_box_required"] is False
+        assert gap["black_box_readiness"]["case_type"] == "black_box_ready"
+        entry = gap["entry_paths"][0]
+        assert entry["entry_kind"] == "timer"
+        assert entry["entry_symbol"] == "refresh_cache"
+        assert "loop.call_later(30, refresh_cache, True)" in entry["evidence"]
+        assert "30" in entry["input_hints"]
+
     async def test_message_subscribe_registration_keeps_message_entry_kind(self, tmp_path):
         from app.services.coverage_analyzer import build_coverage_test_design
 

@@ -571,6 +571,7 @@ _REGISTRATION_LINE_RE = re.compile(
     r"|\.\s*submit\s*\("
     r"|\.\s*(?:create_task|ensure_future)\s*\("
     r"|\basyncio\s*\.\s*(?:create_task|ensure_future)\s*\("
+    r"|\.\s*(?:call_soon|call_later|call_at)\s*\("
     r"|\bgo\s+[A-Za-z_]\w*(?:\.[A-Za-z_]\w*)?\s*\("
     r"|\b(?:setImmediate|queueMicrotask|requestAnimationFrame|requestIdleCallback)\s*\("
     r"|\bprocess\s*\.\s*nextTick\s*\("
@@ -7266,6 +7267,16 @@ def _timer_interval_input_hints(registration_line: str, entry_type: str) -> list
                 continue
             seen.add(value)
             hints.append(value)
+    for match in re.finditer(
+        r"\.\s*(?:call_later|call_at)\s*\(\s*(?P<delay>\d+(?:\.\d+)?)\b",
+        registration_line or "",
+        re.IGNORECASE,
+    ):
+        value = match.group("delay")
+        if value in seen:
+            continue
+        seen.add(value)
+        hints.append(value)
     return hints[:4]
 
 
@@ -9465,6 +9476,7 @@ def _registration_entry_for_site(
             "worker", "queue", ".process", "grpc", "servicer_to_server", "signal",
             "thread", "target=", "executor", ".submit", "go ", "uv_async", "async",
             "event_new", "event_assign", "evtimer_new", "evtimer_assign", "event_once",
+            "call_soon", "call_later", "call_at",
             "setimmediate", "queuemicrotask", "requestanimationframe",
             "requestidlecallback", "nexttick",
         )
@@ -9771,6 +9783,7 @@ def _registered_callback_symbol(site_text: str, caller_chain: list[str]) -> str 
 def _callback_registration_symbol_from_text(text: str, caller_chain: list[str]) -> str | None:
     candidates = _libuv_registration_symbols_from_text(text)
     candidates.extend(_libevent_registration_symbols_from_text(text))
+    candidates.extend(_asyncio_loop_registration_symbols_from_text(text))
     for candidate in candidates:
         if any(candidate == item for item in caller_chain or []):
             return candidate
@@ -9807,6 +9820,18 @@ def _libevent_registration_symbols_from_text(text: str) -> list[str]:
     ):
         for match in re.finditer(pattern, text or "", re.IGNORECASE):
             candidates.append(match.group("symbol"))
+    return candidates
+
+
+def _asyncio_loop_registration_symbols_from_text(text: str) -> list[str]:
+    candidates: list[str] = []
+    for pattern in (
+        r"\.\s*call_soon\s*\(\s*(?P<symbol>[A-Za-z_]\w*(?:\.[A-Za-z_]\w*)?)\b",
+        r"\.\s*(?:call_later|call_at)\s*\(\s*[^,]+,\s*"
+        r"(?P<symbol>[A-Za-z_]\w*(?:\.[A-Za-z_]\w*)?)\b",
+    ):
+        for match in re.finditer(pattern, text or "", re.IGNORECASE):
+            candidates.append(match.group("symbol").rsplit(".", 1)[-1])
     return candidates
 
 
@@ -9921,6 +9946,22 @@ def _looks_like_libevent_callback_registration(text: str) -> bool:
     ))
 
 
+def _looks_like_asyncio_timer_registration(text: str) -> bool:
+    return bool(re.search(
+        r"\.\s*(?:call_later|call_at)\s*\(",
+        text or "",
+        re.IGNORECASE,
+    ))
+
+
+def _looks_like_asyncio_callback_registration(text: str) -> bool:
+    return bool(re.search(
+        r"\.\s*call_soon\s*\(",
+        text or "",
+        re.IGNORECASE,
+    ))
+
+
 def _registered_entry_type(registration_line: str, window: list[str]) -> str:
     text = (registration_line + "\n" + "\n".join(window)).lower()
     if re.search(r"\.\s*(?:get|post|put|patch|delete|head|options|any|route)\s*\(", text):
@@ -9940,6 +9981,10 @@ def _registered_entry_type(registration_line: str, window: list[str]) -> str:
     if _looks_like_js_event_loop_callback_registration(registration_line + "\n" + "\n".join(window)):
         return "callback"
     if _looks_like_libevent_callback_registration(registration_line + "\n" + "\n".join(window)):
+        return "callback"
+    if _looks_like_asyncio_timer_registration(registration_line + "\n" + "\n".join(window)):
+        return "timer"
+    if _looks_like_asyncio_callback_registration(registration_line + "\n" + "\n".join(window)):
         return "callback"
     if _looks_like_worker_registration(registration_line + "\n" + "\n".join(window)):
         return "worker"
