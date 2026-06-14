@@ -7898,6 +7898,49 @@ class TestCoverageTestDesign:
         assert entry["entry_symbol"] == "on_async_flush"
         assert "uv_async_init(loop, &async_handle, on_async_flush)" in entry["evidence"]
 
+    async def test_c_libevent_event_new_registration_is_callback_entry_without_agent(
+        self, tmp_path, monkeypatch
+    ):
+        from app.services.coverage_analyzer import build_coverage_test_design
+
+        monkeypatch.setattr(
+            "app.services.coverage_analyzer.settings.external_agents_enabled",
+            False,
+        )
+        src = tmp_path / "src"
+        src.mkdir()
+        (src / "event_loop.c").write_text(
+            "#include <event2/event.h>\n\n"
+            "static void on_socket_ready(evutil_socket_t fd, short events, void *ctx) {\n"
+            "    if (ctx == NULL) {\n"
+            "        return;\n"
+            "    }\n"
+            "    flush_pending(ctx);\n"
+            "}\n\n"
+            "void init_socket_event(struct event_base *base, evutil_socket_t fd, void *ctx) {\n"
+            "    struct event *ev = event_new(base, fd, EV_READ | EV_PERSIST, on_socket_ready, ctx);\n"
+            "    event_add(ev, NULL);\n"
+            "}\n",
+            encoding="utf-8",
+        )
+        modules = self._modules(
+            "feature,module,code_location,function,triggered,hit_count\n"
+            "socket,event,src/event_loop.c:3-8,on_socket_ready,false,0\n"
+        )
+
+        design = await build_coverage_test_design(
+            modules, workspace_id="ws-1", repo_path=str(tmp_path)
+        )
+
+        gap = [g for g in design["gaps"] if g.get("kind") == "function"][0]
+        assert gap["gray_box_required"] is False
+        assert gap["black_box_readiness"]["case_type"] == "black_box_ready"
+        entry = gap["entry_paths"][0]
+        assert entry["entry_kind"] == "callback"
+        assert entry["entry_symbol"] == "on_socket_ready"
+        assert "event_new(base, fd, EV_READ | EV_PERSIST, on_socket_ready, ctx)" in entry["evidence"]
+        assert "ctx" in entry["input_hints"]
+
     async def test_argparse_main_entry_feeds_black_box_input_hints(self, tmp_path):
         from app.services.coverage_analyzer import build_coverage_test_design
 

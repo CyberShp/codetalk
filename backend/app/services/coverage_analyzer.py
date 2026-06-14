@@ -560,6 +560,7 @@ _REGISTRATION_LINE_RE = re.compile(
     r"|\b(?:new\s+)?Worker\s*\("
     r"|\buv_async_init\s*\("
     r"|\buv_timer_start\s*\("
+    r"|\b(?:event_new|event_assign|evtimer_new|evtimer_assign|event_once)\s*\("
     r"|\bQueue\s*\("
     r"|\.\s*process\s*\("
     r"|\bpthread_create\s*\("
@@ -9445,12 +9446,12 @@ def _registration_entry_for_site(
         registration_line = site_text.strip()
     if not registration_line and _registry_callback_symbol_from_assignment(site_text) == symbol:
         registration_line = site_text.strip()
-    registered_libuv_symbol = _libuv_registration_symbol_from_text(
+    registered_callback_symbol = _callback_registration_symbol_from_text(
         registration_line or site_text,
         caller_chain,
     )
-    if registered_libuv_symbol:
-        symbol = registered_libuv_symbol
+    if registered_callback_symbol:
+        symbol = registered_callback_symbol
     assignment_seen = any(
         _callback_symbol_from_assignment(line) == symbol
         or re.search(rf"\b{re.escape(symbol)}\b", line)
@@ -9463,6 +9464,7 @@ def _registration_entry_for_site(
             "register", "subscribe", ".on", ".once", "listener", "schedule", "scheduler", "job",
             "worker", "queue", ".process", "grpc", "servicer_to_server", "signal",
             "thread", "target=", "executor", ".submit", "go ", "uv_async", "async",
+            "event_new", "event_assign", "evtimer_new", "evtimer_assign", "event_once",
             "setimmediate", "queuemicrotask", "requestanimationframe",
             "requestidlecallback", "nexttick",
         )
@@ -9503,6 +9505,7 @@ def _registration_entry_for_site(
             _node_process_lifecycle_input_hints(registration_line),
             _python_process_lifecycle_input_hints(registration_line),
             _timer_interval_input_hints(registration_line, entry_type),
+            _libevent_registration_input_hints(registration_line),
             _worker_registration_input_hints("\n".join(window), entry_type),
         )
         if entry_type == "message":
@@ -9756,16 +9759,33 @@ def _registered_route_symbol(site_text: str, caller_chain: list[str]) -> str | N
 
 
 def _registered_callback_symbol(site_text: str, caller_chain: list[str]) -> str | None:
-    libuv_symbol = _libuv_registration_symbol_from_text(site_text, caller_chain)
-    if libuv_symbol:
-        return libuv_symbol
+    registration_symbol = _callback_registration_symbol_from_text(site_text, caller_chain)
+    if registration_symbol:
+        return registration_symbol
     for candidate in reversed(caller_chain or []):
         if candidate and re.search(rf"\b{re.escape(candidate)}\b", site_text or ""):
             return candidate
     return None
 
 
+def _callback_registration_symbol_from_text(text: str, caller_chain: list[str]) -> str | None:
+    candidates = _libuv_registration_symbols_from_text(text)
+    candidates.extend(_libevent_registration_symbols_from_text(text))
+    for candidate in candidates:
+        if any(candidate == item for item in caller_chain or []):
+            return candidate
+    return candidates[0] if candidates else None
+
+
 def _libuv_registration_symbol_from_text(text: str, caller_chain: list[str]) -> str | None:
+    candidates = _libuv_registration_symbols_from_text(text)
+    for candidate in candidates:
+        if any(candidate == item for item in caller_chain or []):
+            return candidate
+    return candidates[0] if candidates else None
+
+
+def _libuv_registration_symbols_from_text(text: str) -> list[str]:
     candidates: list[str] = []
     for pattern in (
         r"\buv_timer_start\s*\(\s*[^,]+,\s*(?P<symbol>[A-Za-z_]\w*)\b",
@@ -9773,10 +9793,21 @@ def _libuv_registration_symbol_from_text(text: str, caller_chain: list[str]) -> 
     ):
         for match in re.finditer(pattern, text or "", re.IGNORECASE):
             candidates.append(match.group("symbol"))
-    for candidate in candidates:
-        if any(candidate == item for item in caller_chain or []):
-            return candidate
-    return candidates[0] if candidates else None
+    return candidates
+
+
+def _libevent_registration_symbols_from_text(text: str) -> list[str]:
+    candidates: list[str] = []
+    for pattern in (
+        r"\bevent_new\s*\(\s*[^,]+,\s*[^,]+,\s*[^,]+,\s*(?P<symbol>[A-Za-z_]\w*)\b",
+        r"\bevent_assign\s*\(\s*[^,]+,\s*[^,]+,\s*[^,]+,\s*[^,]+,\s*(?P<symbol>[A-Za-z_]\w*)\b",
+        r"\bevtimer_new\s*\(\s*[^,]+,\s*(?P<symbol>[A-Za-z_]\w*)\b",
+        r"\bevtimer_assign\s*\(\s*[^,]+,\s*[^,]+,\s*(?P<symbol>[A-Za-z_]\w*)\b",
+        r"\bevent_once\s*\(\s*[^,]+,\s*[^,]+,\s*[^,]+,\s*(?P<symbol>[A-Za-z_]\w*)\b",
+    ):
+        for match in re.finditer(pattern, text or "", re.IGNORECASE):
+            candidates.append(match.group("symbol"))
+    return candidates
 
 
 def _callback_symbol_from_assignment(text: str) -> str | None:
@@ -9839,10 +9870,52 @@ def _python_process_lifecycle_input_hints(text: str) -> list[str]:
     return []
 
 
+def _libevent_registration_input_hints(text: str) -> list[str]:
+    hints: list[str] = []
+    seen: set[str] = set()
+    callback_arg_indexes = {
+        "event_new": 3,
+        "event_assign": 4,
+        "evtimer_new": 1,
+        "evtimer_assign": 2,
+        "event_once": 3,
+    }
+    for match in re.finditer(
+        r"\b(?P<name>event_new|event_assign|evtimer_new|evtimer_assign|event_once)\s*\(",
+        text or "",
+        re.IGNORECASE,
+    ):
+        name = match.group("name").lower()
+        arg_text = _signature_param_section((text or "")[match.start():])
+        if arg_text is None:
+            continue
+        args = _split_signature_params(arg_text)
+        user_arg_index = callback_arg_indexes[name] + 1
+        if user_arg_index >= len(args):
+            continue
+        hint = re.sub(r"^[*&\s]+", "", args[user_arg_index].strip())
+        hint = hint.strip("()")
+        if not re.match(r"^[A-Za-z_]\w*(?:->[A-Za-z_]\w*|\.[A-Za-z_]\w*)?$", hint):
+            continue
+        if hint.lower() in {"null", "nullptr"} or hint == "0" or hint in seen:
+            continue
+        seen.add(hint)
+        hints.append(hint)
+    return hints[:4]
+
+
 def _looks_like_js_event_loop_callback_registration(text: str) -> bool:
     return bool(re.search(
         r"\b(?:setImmediate|queueMicrotask|requestAnimationFrame|requestIdleCallback)\s*\("
         r"|\bprocess\s*\.\s*nextTick\s*\(",
+        text or "",
+        re.IGNORECASE,
+    ))
+
+
+def _looks_like_libevent_callback_registration(text: str) -> bool:
+    return bool(re.search(
+        r"\b(?:event_new|event_assign|evtimer_new|evtimer_assign|event_once)\s*\(",
         text or "",
         re.IGNORECASE,
     ))
@@ -9865,6 +9938,8 @@ def _registered_entry_type(registration_line: str, window: list[str]) -> str:
     if _node_process_lifecycle_input_hints(registration_line + "\n" + "\n".join(window)):
         return "callback"
     if _looks_like_js_event_loop_callback_registration(registration_line + "\n" + "\n".join(window)):
+        return "callback"
+    if _looks_like_libevent_callback_registration(registration_line + "\n" + "\n".join(window)):
         return "callback"
     if _looks_like_worker_registration(registration_line + "\n" + "\n".join(window)):
         return "worker"
