@@ -8086,19 +8086,46 @@ def _filesystem_operation_input_hints(window_text: str) -> list[str]:
 
     python_open_res = (
         re.compile(
-            r"""(?<!\.)\bopen\s*\(\s*(?P<arg>[^,\n\r\)]+)""",
+            r"""(?<!\.)\bopen\s*\(""",
             re.IGNORECASE,
         ),
     )
     for pattern in python_open_res:
         for match in pattern.finditer(window_text or ""):
-            arg_text = match.group("arg").strip()
+            arg_text = first_call_argument(window_text or "", match.end())
             literal = re.match(r"""['"](?P<path>[^'"]+)['"]""", arg_text)
             if literal:
                 continue
             add("input file")
+            expression_vars = path_expression_input_vars(arg_text)
+            if expression_vars:
+                for variable in expression_vars:
+                    add(variable_file_hint(variable))
+                continue
             if re.fullmatch(r"[A-Za-z_]\w*", arg_text):
                 add(variable_file_hint(arg_text))
+
+    python_pathlib_expr_res = (
+        re.compile(
+            r"""\b(?:Path|PurePath)\s*\(\s*(?P<base>.*?)\s*\)\s*\.\s*joinpath\s*\(\s*(?P<args>.*?)\s*\)\s*\.\s*(?:read_text|read_bytes|open)\s*\(""",
+            re.IGNORECASE | re.DOTALL,
+        ),
+        re.compile(
+            r"""\(\s*(?P<expr>(?:Path|PurePath)\s*\([^)]+\)\s*/[^)\n\r]+)\s*\)\s*\.\s*(?:read_text|read_bytes|open)\s*\(""",
+            re.IGNORECASE,
+        ),
+    )
+    for pattern in python_pathlib_expr_res:
+        for match in pattern.finditer(window_text or ""):
+            add("input file")
+            if "expr" in pattern.groupindex:
+                arg_text = match.group("expr").strip()
+            else:
+                arg_text = f"Path({match.group('base')}).joinpath({match.group('args')})"
+            expression_vars = path_expression_input_vars(arg_text)
+            if expression_vars:
+                for variable in expression_vars:
+                    add(variable_file_hint(variable))
 
     python_pathlib_res = (
         re.compile(

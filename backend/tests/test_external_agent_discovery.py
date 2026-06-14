@@ -7755,6 +7755,64 @@ def test_coverage_local_python_pathlib_reader_keeps_generic_path_input_hint(
     assert "input path" in json.dumps(gap["black_box_cases"], ensure_ascii=False)
 
 
+def test_python_file_reader_path_expressions_keep_argument_input_hints():
+    from app.services.coverage_analyzer import _filesystem_operation_input_hints
+
+    assert _filesystem_operation_input_hints(
+        'with open(os.path.join(base_dir, filename), "r") as fh: text = fh.read()'
+    ) == ["input file", "base_dir", "filename"]
+    assert _filesystem_operation_input_hints(
+        'with open(os.path.join(os.environ["DATA_DIR"], filename), "r") as fh: text = fh.read()'
+    ) == ["input file", "DATA_DIR", "filename"]
+    assert _filesystem_operation_input_hints(
+        "text = Path(base_dir).joinpath(filename).read_text()"
+    ) == ["input file", "base_dir", "filename"]
+    assert _filesystem_operation_input_hints(
+        "text = (Path(base_dir) / filename).read_text()"
+    ) == ["input file", "base_dir", "filename"]
+
+
+def test_coverage_local_python_open_join_reader_keeps_filename_input_hint(
+    tmp_path, monkeypatch
+):
+    import app.services.coverage_analyzer as coverage_mod
+    from app.services.coverage_analyzer import build_coverage_test_design
+
+    src = tmp_path / "src"
+    src.mkdir()
+    (src / "load.py").write_text(
+        "import os\n"
+        "def normalize_text(text):\n"
+        "    return text.strip()\n"
+        "def load(base_dir, filename):\n"
+        "    with open(os.path.join(base_dir, filename), 'r', encoding='utf-8') as fh:\n"
+        "        text = fh.read()\n"
+        "    return normalize_text(text)\n",
+        encoding="utf-8",
+    )
+
+    async def no_agent(_request, **_kwargs):
+        return []
+
+    monkeypatch.setattr(coverage_mod, "run_external_agent_discovery", no_agent, raising=False)
+    modules = _coverage_modules(
+        "feature,module,code_location,function,triggered,hit_count\n"
+        "files,load,src/load.py:2-3,normalize_text,false,0\n"
+    )
+
+    design = asyncio.run(
+        build_coverage_test_design(modules, workspace_id="ws-1", repo_path=str(tmp_path))
+    )
+
+    gap = [g for g in design["gaps"] if g.get("function_name") == "normalize_text"][0]
+    assert gap["black_box_readiness"]["case_type"] == "black_box_ready"
+    assert gap["entry_paths"][0]["entry_kind"] == "file"
+    assert gap["entry_paths"][0]["input_hints"] == ["input file", "base_dir", "filename"]
+    case_text = json.dumps(gap["black_box_cases"], ensure_ascii=False)
+    assert "base_dir" in case_text
+    assert "filename" in case_text
+
+
 def test_coverage_local_python_open_reader_keeps_generic_path_input_hint(
     tmp_path, monkeypatch
 ):
