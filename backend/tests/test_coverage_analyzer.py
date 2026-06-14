@@ -10108,6 +10108,43 @@ class TestCoverageTestDesign:
         assert "currency" in case_text
         assert "content" not in case_text
 
+    async def test_queue_job_data_fields_feed_black_box_input_hints(self, tmp_path):
+        from app.services.coverage_analyzer import build_coverage_test_design
+
+        src = tmp_path / "src"
+        src.mkdir()
+        (src / "worker.ts").write_text(
+            "export function processInvoice(amount, currency) {\n"
+            "  if (!amount || !currency) {\n"
+            "    return 'missing';\n"
+            "  }\n"
+            "  return `${amount}:${currency}`;\n"
+            "}\n\n"
+            "invoiceQueue.process('invoice_queue', async (job) => {\n"
+            "  return processInvoice(job.data.amount, job.data.currency);\n"
+            "});\n",
+            encoding="utf-8",
+        )
+        modules = self._modules(
+            "feature,module,code_location,function,triggered,hit_count\n"
+            "billing,worker,src/worker.ts:1-6,processInvoice,false,0\n"
+        )
+
+        design = await build_coverage_test_design(
+            modules, workspace_id="ws-1", repo_path=str(tmp_path)
+        )
+
+        gap = [g for g in design["gaps"] if g.get("kind") == "function"][0]
+        assert gap["black_box_readiness"]["case_type"] == "black_box_ready"
+        entry = gap["entry_paths"][0]
+        assert entry["entry_kind"] == "queue"
+        assert entry["input_hints"] == ["invoice_queue", "amount", "currency"]
+        case_text = json.dumps(gap["black_box_cases"], ensure_ascii=False)
+        assert "invoice_queue" in case_text
+        assert "amount" in case_text
+        assert "currency" in case_text
+        assert "job.data" not in case_text
+
     async def test_message_record_body_parse_skips_envelope_input_hint(self, tmp_path):
         from app.services.coverage_analyzer import build_coverage_test_design
 

@@ -7962,7 +7962,7 @@ def _looks_like_worker_registration(text: str) -> bool:
         r"|\bpthread_create\s*\("
         r"|\b(?:std\s*::\s*)?j?thread\s+[A-Za-z_]\w*\s*\("
         r"|\b(?:(?:std|tokio)\s*::\s*)?(?:thread|task)\s*::\s*spawn\s*\("
-        r"|\b(?:Thread|Process)\s*\("
+        r"|(?<!\.)\b(?:Thread|Process)\s*\("
         r"|\.\s*submit\s*\("
         r"|\.\s*(?:create_task|ensure_future)\s*\("
         r"|\basyncio\s*\.\s*(?:create_task|ensure_future)\s*\("
@@ -8083,10 +8083,11 @@ def _channel_registration_context_input_hints(
     start = max(0, idx - 12)
     end = min(len(lines), idx + 28)
     window_text = "\n".join(lines[start:end])
+    registration_text = _registration_expression_context(lines, idx)
     hints = _merge_ordered_strings(
-        _registration_channel_input_hints(window_text, entry_type),
-        _queue_registration_input_hints(window_text, entry_type),
-        _worker_registration_input_hints(window_text, entry_type),
+        _registration_channel_input_hints(registration_text, entry_type),
+        _queue_registration_input_hints(registration_text, entry_type),
+        _worker_registration_input_hints(registration_text, entry_type),
         _registration_config_path_input_hints(window_text),
     )
     if entry_type == "message":
@@ -8095,6 +8096,19 @@ def _channel_registration_context_input_hints(
             _kafka_topic_input_hints(window_text),
         )
     return hints
+
+
+def _registration_expression_context(lines: list[str], line_idx: int) -> str:
+    if not lines:
+        return ""
+    idx = max(0, min(line_idx, len(lines) - 1))
+    start_idx = idx
+    for pos in range(idx, max(-1, idx - 12), -1):
+        if _REGISTRATION_LINE_RE.search(lines[pos] or ""):
+            start_idx = pos
+            break
+    end_idx = _call_expression_window_end(lines, start_idx, idx)
+    return "\n".join(lines[start_idx:end_idx])
 
 
 def _symbol_channel_input_hints(symbol: str | None, entry_type: str) -> list[str]:
