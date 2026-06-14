@@ -8228,6 +8228,28 @@ def _filesystem_operation_input_hints(window_text: str) -> list[str]:
                         ))
             return pairs
 
+        def multi_assignment_alias_pairs(text_value: str) -> list[tuple[str, list[str]]]:
+            pairs: list[tuple[str, list[str]]] = []
+            assignment_re = re.compile(
+                r"""^\s*(?:\((?P<paren_names>[A-Za-z_$][\w$]*(?:\s*,\s*[A-Za-z_$][\w$]*)+)\)"""
+                r"""|(?P<names>[A-Za-z_$][\w$]*(?:\s*,\s*[A-Za-z_$][\w$]*)+))"""
+                r"""\s*(?::=|=)\s*(?P<exprs>.+?)\s*;?\s*$""",
+                re.MULTILINE,
+            )
+            for match in assignment_re.finditer(text_value or ""):
+                names_text = match.group("paren_names") or match.group("names") or ""
+                names = [name.strip() for name in split_top_level_args(names_text)]
+                exprs = split_top_level_args(match.group("exprs").strip().rstrip(";").strip())
+                if not names or len(names) != len(exprs):
+                    continue
+                for name, expr in zip(names, exprs):
+                    if not re.fullmatch(r"""[A-Za-z_$][\w$]*""", name):
+                        continue
+                    alias_values = field_alias_vars(expr)
+                    if alias_values:
+                        pairs.append((name, alias_values))
+            return pairs
+
         def expand_aliases(variables: list[str]) -> list[str]:
             expanded: list[str] = []
 
@@ -8340,6 +8362,8 @@ def _filesystem_operation_input_hints(window_text: str) -> list[str]:
                 if alias_values:
                     alias_vars[name] = expand_aliases(alias_values)
         for name, alias_values in destructured_alias_pairs(text or ""):
+            alias_vars[name] = expand_aliases(alias_values)
+        for name, alias_values in multi_assignment_alias_pairs(text or ""):
             alias_vars[name] = expand_aliases(alias_values)
         for pattern in assignment_res:
             for match in pattern.finditer(text or ""):
