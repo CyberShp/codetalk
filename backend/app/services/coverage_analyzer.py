@@ -3599,9 +3599,8 @@ def _is_definition_or_declaration_site(
     idx = line_number - 1
     if idx < 0 or idx >= len(lines):
         return False
-    return (
-        _definition_name_for_file(lines, idx, Path(abs_file).suffix.lower()) == function_name
-    )
+    defined_name = _definition_name_for_file(lines, idx, Path(abs_file).suffix.lower())
+    return bool(defined_name and defined_name in set(_function_name_candidates(function_name)))
 
 
 def _definition_name_for_file(lines: list[str], idx: int, suffix: str) -> str | None:

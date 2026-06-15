@@ -2211,6 +2211,50 @@ class TestCoverageTestDesign:
         pattern = seen_commands[0][seen_commands[0].index("-e") + 1]
         assert "processPayment" in pattern
 
+    async def test_ripgrep_call_sites_skip_qualified_leaf_definition(
+        self,
+        tmp_path,
+        monkeypatch,
+    ):
+        import subprocess
+        import app.services.coverage_analyzer as mod
+        from app.services.coverage_analyzer import _ripgrep_call_sites
+
+        src = tmp_path / "src"
+        src.mkdir()
+        payment_file = src / "payments.py"
+        payment_file.write_text(
+            "def processPayment(request):\n"
+            "    return {'status': 200}\n",
+            encoding="utf-8",
+        )
+
+        def fake_run(args, **_kwargs):
+            return subprocess.CompletedProcess(
+                args,
+                0,
+                stdout=f"{payment_file}:1:def processPayment(request):\n",
+                stderr="",
+            )
+
+        monkeypatch.setattr(mod.shutil, "which", lambda name: "rg" if name == "rg" else None)
+        monkeypatch.setattr(mod.subprocess, "run", fake_run)
+
+        assert _ripgrep_call_sites(tmp_path, "PaymentService.processPayment") == []
+
+    async def test_source_scan_call_sites_skip_qualified_leaf_definition(self, tmp_path):
+        from app.services.coverage_analyzer import _source_scan_call_sites
+
+        src = tmp_path / "src"
+        src.mkdir()
+        (src / "payments.py").write_text(
+            "def processPayment(request):\n"
+            "    return {'status': 200}\n",
+            encoding="utf-8",
+        )
+
+        assert _source_scan_call_sites(tmp_path, "PaymentService.processPayment") == []
+
     async def test_coverage_ripgrep_traces_qualified_hit_leaf_call_site(
         self,
         tmp_path,
