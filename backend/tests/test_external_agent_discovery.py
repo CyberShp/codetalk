@@ -1304,6 +1304,96 @@ def test_provider_health_normalizes_bare_ccr_code_for_noninteractive_prompt(tmp_
     assert health["configured_argv"][0:2] == ["C:/tools/ccr.exe", "code"]
 
 
+def test_provider_health_normalizes_bare_opencode_for_headless_json(monkeypatch):
+    from app.services.external_agent_discovery import check_provider_health
+
+    monkeypatch.setattr(
+        "app.services.external_agent_discovery.shutil.which",
+        lambda cmd: "C:/tools/opencode.cmd" if cmd == "opencode" else None,
+    )
+
+    health = check_provider_health("opencode", "opencode")
+
+    assert health["status"] == "available"
+    assert health["argv"] == ["C:/tools/opencode.cmd", "run", "--format", "json"]
+    assert health["configured_argv"] == ["C:/tools/opencode.cmd"]
+
+
+def test_opencode_prompt_is_passed_as_run_argument():
+    from app.services.external_agent_discovery import _agent_process_invocation
+
+    argv, stdin_payload, transport = _agent_process_invocation(
+        "opencode",
+        ["opencode", "run", "--format", "json"],
+        "find tls source",
+    )
+
+    assert transport == "argv"
+    assert stdin_payload == b""
+    assert argv == ["opencode", "run", "--format", "json", "find tls source"]
+
+
+def test_custom_external_agent_provider_is_loaded_from_settings(monkeypatch):
+    from app.services import external_agent_discovery as discovery
+
+    monkeypatch.setattr(
+        discovery.settings,
+        "external_agent_custom_providers",
+        '[{"id":"intranet-agent","command":"inner-agent discover","fallback_commands":["ccr code"],'
+        '"prompt_transport":"stdin","readonly_args":["--read-only"]}]',
+    )
+
+    specs = discovery.external_agent_provider_specs()
+
+    assert "intranet-agent" in specs
+    assert specs["intranet-agent"].command == "inner-agent discover"
+    assert specs["intranet-agent"].fallback_commands == ["ccr code"]
+    assert specs["intranet-agent"].prompt_transport == "stdin"
+    assert discovery.provider_readonly_args("intranet-agent") == ["--read-only"]
+
+
+def test_default_provider_selection_includes_custom_provider(monkeypatch):
+    from app.services import external_agent_discovery as discovery
+
+    monkeypatch.setattr(
+        discovery.settings,
+        "external_agent_custom_providers",
+        [{"id": "corp-agent", "command": "corp-agent --json"}],
+    )
+
+    assert "corp-agent" in discovery.external_agent_provider_ids()
+
+
+def test_run_external_agent_discovery_does_not_drop_custom_provider_at_parallel_limit(tmp_path, monkeypatch):
+    from app.services import external_agent_discovery as discovery
+    from app.services.external_agent_discovery import AgentDiscoveryRequest, AgentDiscoveryResult
+
+    monkeypatch.setattr(
+        discovery.settings,
+        "external_agent_custom_providers",
+        [{"id": "corp-agent", "command": "corp-agent --json"}],
+    )
+    monkeypatch.setattr(discovery.settings, "external_agent_max_parallel", 2)
+    seen: list[str] = []
+
+    async def fake_run_provider(provider, request, *, session=None):
+        seen.append(provider)
+        return AgentDiscoveryResult(provider=provider, status="unavailable")
+
+    monkeypatch.setattr(discovery, "_run_provider", fake_run_provider)
+
+    results = asyncio.run(discovery.run_external_agent_discovery(
+        AgentDiscoveryRequest(
+            request_id="custom-provider-selection",
+            repo_path=str(tmp_path),
+            analysis_object_text="tls",
+        )
+    ))
+
+    assert seen == ["claude-code", "opencode", "corp-agent"]
+    assert [result.provider for result in results] == seen
+
+
 def test_provider_health_injects_configured_ccr_config_path(tmp_path, monkeypatch):
     from app.config import settings
     from app.services.external_agent_discovery import check_provider_health
@@ -1497,15 +1587,38 @@ def test_provider_health_marks_ccr_misconfigured_when_default_config_is_not_disc
     )
 
     assert health["status"] == "available"
-    assert health["argv"][0] == str(claude)
-    assert health.get("used_fallback") is True
-    assert len(health["attempts"]) == 2
-    assert health["attempts"][0]["status"] == "configuration_error"
-    assert health["attempts"][1]["status"] == "available"
+    assert health.get("used_fallback") is False
+    assert len(health["attempts"]) == 1
+    assert health["attempts"][0]["status"] == "available"
     assert "default config not found" in health["attempts"][0]["config_hint"]
     assert str(tmp_path / "home" / ".claude-code-router" / "config-router.json") == (
         health["attempts"][0]["config_path"]
     )
+
+
+def test_provider_health_does_not_block_ccr_for_missing_default_config(tmp_path, monkeypatch):
+    from app.services.external_agent_discovery import check_provider_health
+
+    ccr = tmp_path / "bin" / "ccr.cmd"
+    ccr.parent.mkdir()
+    ccr.write_text("@echo off\n", encoding="utf-8")
+    monkeypatch.setattr("app.services.external_agent_discovery.platform.system", lambda: "Windows")
+    monkeypatch.setattr(
+        "app.services.external_agent_discovery.shutil.which",
+        lambda cmd: str(ccr) if cmd == "ccr" else None,
+    )
+    monkeypatch.delenv("CCR_CONFIG_PATH", raising=False)
+    monkeypatch.setenv("USERPROFILE", str(tmp_path / "home"))
+    monkeypatch.setattr(
+        "app.services.external_agent_discovery._windows_profile_ccr_config_path",
+        lambda: None,
+    )
+
+    health = check_provider_health("claude-code", "ccr code")
+
+    assert health["status"] == "available"
+    assert health["attempts"][0]["status"] == "available"
+    assert "default config not found" in health["attempts"][0]["config_hint"]
 
 
 def test_provider_health_allows_ccr_when_profile_exposes_config(tmp_path, monkeypatch):
@@ -1973,8 +2086,6 @@ def test_provider_health_uses_pwsh_profile_ccr_config_when_windows_powershell_la
     assert profile_env_calls == [
         "C:/Windows/System32/WindowsPowerShell/v1.0/powershell.exe",
         "C:/Program Files/PowerShell/7/pwsh.exe",
-        "C:/Windows/System32/WindowsPowerShell/v1.0/powershell.exe",
-        "C:/Program Files/PowerShell/7/pwsh.exe",
     ]
 
 
@@ -2073,8 +2184,8 @@ def test_external_agent_adapter_health_marks_default_ccr_config_hint_misconfigur
         adapter_mod.ExternalAgentAdapter("claude-code", "claude_code_command").health_check()
     )
 
-    assert health.is_healthy is False
-    assert health.container_status == "misconfigured"
+    assert health.is_healthy is True
+    assert health.container_status == "available"
     assert "default config not found" in health.last_check
     assert "Set CCR_CONFIG_PATH" in health.last_check
     assert "startup probe" in health.last_check
@@ -2706,10 +2817,10 @@ def test_run_provider_uses_fallback_after_default_ccr_run_invalid_output(tmp_pat
 
     assert results[0].status == "ok"
     assert results[0].raw_summary == "fallback_ok"
-    assert any("primary command configuration error" in item for item in results[0].warnings)
+    assert any("primary command failed" in item for item in results[0].warnings)
     assert len(results[0].runtime_attempts) == 2
-    assert results[0].runtime_attempts[0]["status"] == "configuration_error"
-    assert results[0].runtime_attempts[0]["run_status"] == "configuration_error"
+    assert results[0].runtime_attempts[0]["status"] == "available"
+    assert results[0].runtime_attempts[0]["run_status"] == "invalid_output"
     assert results[0].runtime_attempts[1]["run_status"] == "ok"
     assert runtime_attempts == results[0].runtime_attempts
 
@@ -3848,11 +3959,11 @@ def test_startup_probe_uses_fallback_after_default_ccr_run_invalid_output(tmp_pa
     assert result["status"] == "ok"
     assert result["message"] == "startup_probe_ok"
     assert result["health"]["used_fallback"] is True
-    assert "primary command configuration error" in result["health"]["reason"]
+    assert "primary command failed" in result["health"]["reason"]
     attempts = result["health"]["attempts"]
     assert len(attempts) == 2
-    assert attempts[0]["status"] == "configuration_error"
-    assert attempts[0]["probe_status"] == "configuration_error"
+    assert attempts[0]["status"] == "available"
+    assert attempts[0]["probe_status"] == "invalid_output"
     assert attempts[1]["probe_status"] == "ok"
 
 

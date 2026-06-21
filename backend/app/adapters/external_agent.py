@@ -20,7 +20,7 @@ from app.services.external_agent_discovery import (
 
 
 class ExternalAgentAdapter(BaseToolAdapter):
-    def __init__(self, provider: str, command_attr: str) -> None:
+    def __init__(self, provider: str, command_attr: str | None = None) -> None:
         self._provider = provider
         self._command_attr = command_attr
 
@@ -31,7 +31,13 @@ class ExternalAgentAdapter(BaseToolAdapter):
         return [ToolCapability.CODE_SEARCH]
 
     async def health_check(self) -> ToolHealth:
-        command = str(getattr(settings, self._command_attr, "") or "")
+        if self._command_attr:
+            command = str(getattr(settings, self._command_attr, "") or "")
+        else:
+            from app.services.external_agent_discovery import external_agent_provider_spec
+
+            spec = external_agent_provider_spec(self._provider)
+            command = spec.command if spec is not None else ""
         health = check_provider_health(
             self._provider,
             command,
@@ -155,10 +161,7 @@ def _has_configuration_error(item: object) -> bool:
 
 
 def _has_missing_ccr_config_hint(item: dict) -> bool:
-    if str(item.get("profile_config_path") or "").strip():
-        return False
-    hint = str(item.get("config_hint") or "")
-    return "CCR_CONFIG_PATH is not set" in hint and "default config not found" in hint
+    return False
 
 
 def _format_runtime_diagnostic(value: object) -> str:

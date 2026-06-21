@@ -43,6 +43,7 @@ def _register_defaults() -> None:
     from app.adapters.external_agent import ExternalAgentAdapter
     from app.adapters.gitnexus import GitNexusAdapter
     from app.adapters.joern import JoernAdapter
+    from app.services.external_agent_discovery import external_agent_provider_specs
 
     def cgc_factory() -> CGCAdapter:
         return CGCAdapter(base_url=settings.cgc_base_url)
@@ -72,6 +73,14 @@ def _register_defaults() -> None:
     register_adapter(codecompass_factory(), factory=codecompass_factory)
     register_adapter(claude_code_factory(), factory=claude_code_factory)
     register_adapter(opencode_factory(), factory=opencode_factory)
+    for provider_id in external_agent_provider_specs():
+        if provider_id in {"claude-code", "opencode"}:
+            continue
+
+        def custom_factory(provider: str = provider_id) -> ExternalAgentAdapter:
+            return ExternalAgentAdapter(provider)
+
+        register_adapter(custom_factory(), factory=custom_factory)
 
 
 _register_defaults()

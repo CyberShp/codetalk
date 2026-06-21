@@ -60,6 +60,14 @@ PROVIDER_READONLY_ARGS = {
     "opencode": "opencode_readonly_args",
 }
 
+ProviderPromptTransport = Literal[
+    "auto",
+    "stdin",
+    "claude_print_arg",
+    "opencode_run_arg",
+    "argv_last",
+]
+
 DISCOVERY_SCHEMA_KEYS = frozenset({
     "candidate_files",
     "candidate_symbols",
@@ -148,6 +156,111 @@ class CandidateValidation:
     resolved_path: str | None = None
     validated: bool = False
     validation_error: str | None = None
+
+
+@dataclass(frozen=True)
+class ExternalAgentProviderSpec:
+    id: str
+    command: str
+    fallback_commands: list[str] = field(default_factory=list)
+    readonly_args: list[str] = field(default_factory=list)
+    prompt_transport: ProviderPromptTransport = "auto"
+    display_name: str = ""
+    command_hint_env: str = ""
+
+
+def external_agent_provider_specs() -> dict[str, ExternalAgentProviderSpec]:
+    specs: dict[str, ExternalAgentProviderSpec] = {
+        "claude-code": ExternalAgentProviderSpec(
+            id="claude-code",
+            command=str(getattr(settings, "claude_code_command", "") or ""),
+            fallback_commands=_coerce_command_list(getattr(settings, "claude_code_fallback_commands", [])),
+            readonly_args=_coerce_command_list(getattr(settings, "claude_code_readonly_args", [])),
+            prompt_transport="claude_print_arg",
+            display_name="Claude Code",
+            command_hint_env="CLAUDE_CODE_COMMAND",
+        ),
+        "opencode": ExternalAgentProviderSpec(
+            id="opencode",
+            command=str(getattr(settings, "opencode_command", "") or ""),
+            fallback_commands=_coerce_command_list(getattr(settings, "opencode_fallback_commands", [])),
+            readonly_args=_coerce_command_list(getattr(settings, "opencode_readonly_args", [])),
+            prompt_transport="opencode_run_arg",
+            display_name="OpenCode",
+            command_hint_env="OPENCODE_COMMAND",
+        ),
+    }
+    for spec in _custom_external_agent_provider_specs():
+        if not spec.id:
+            continue
+        specs[spec.id] = spec
+    return specs
+
+
+def external_agent_provider_ids() -> list[str]:
+    return list(external_agent_provider_specs())
+
+
+def external_agent_provider_spec(provider: str | None) -> ExternalAgentProviderSpec | None:
+    if not provider:
+        return None
+    return external_agent_provider_specs().get(str(provider))
+
+
+def _custom_external_agent_provider_specs() -> list[ExternalAgentProviderSpec]:
+    raw = getattr(settings, "external_agent_custom_providers", [])
+    payload: object = raw
+    if isinstance(raw, str):
+        text = raw.strip()
+        if not text:
+            return []
+        try:
+            payload = json.loads(text)
+        except json.JSONDecodeError:
+            payload = _parse_custom_provider_shorthand(text)
+    if isinstance(payload, dict):
+        payload = [payload]
+    specs: list[ExternalAgentProviderSpec] = []
+    if not isinstance(payload, list):
+        return specs
+    for item in payload:
+        if not isinstance(item, dict):
+            continue
+        provider_id = _normalize_provider_id(item.get("id") or item.get("provider") or item.get("name"))
+        command = str(item.get("command") or "").strip()
+        if not provider_id or not command:
+            continue
+        transport = str(item.get("prompt_transport") or item.get("promptTransport") or "auto").strip()
+        if transport not in {"auto", "stdin", "claude_print_arg", "opencode_run_arg", "argv_last"}:
+            transport = "auto"
+        specs.append(ExternalAgentProviderSpec(
+            id=provider_id,
+            command=command,
+            fallback_commands=_coerce_command_list(item.get("fallback_commands") or item.get("fallbackCommands")),
+            readonly_args=_coerce_command_list(item.get("readonly_args") or item.get("readonlyArgs")),
+            prompt_transport=transport,  # type: ignore[arg-type]
+            display_name=str(item.get("display_name") or item.get("displayName") or provider_id).strip(),
+            command_hint_env=str(item.get("command_hint_env") or item.get("commandHintEnv") or "").strip(),
+        ))
+    return specs
+
+
+def _parse_custom_provider_shorthand(text: str) -> list[dict]:
+    # Supports: corp-agent=corp-agent discover; other=other-cli --json
+    specs: list[dict] = []
+    for part in _split_command_list_string(text):
+        if "=" not in part:
+            continue
+        provider_id, command = part.split("=", 1)
+        specs.append({"id": provider_id.strip(), "command": command.strip()})
+    return specs
+
+
+def _normalize_provider_id(value: object) -> str:
+    text = str(value or "").strip().lower()
+    text = re.sub(r"[^a-z0-9_.-]+", "-", text)
+    text = text.strip("-._")
+    return text
 
 
 def expand_agent_query_terms(text: str) -> list[str]:
@@ -894,13 +1007,13 @@ def _agent_command_configuration_hint(
     provider: str | None,
     attempted_commands: list[str],
 ) -> dict[str, str] | None:
-    attr = PROVIDER_COMMANDS.get(str(provider or ""))
-    if not attr:
+    spec = external_agent_provider_spec(provider)
+    if not spec:
         return None
-    env_name = attr.upper()
+    env_name = spec.command_hint_env or f"{str(provider or 'agent').upper().replace('-', '_')}_COMMAND"
     primary = next((str(item).strip() for item in attempted_commands if str(item).strip()), "")
     if not primary:
-        primary = str(getattr(settings, attr, "") or "").strip()
+        primary = spec.command
     executable = split_agent_command(primary)[0] if primary else ""
     example_name = "ccr.cmd" if executable.lower() in {"ccr", "ccr.cmd"} else (executable or "agent.cmd")
     suffix = ""
@@ -979,25 +1092,7 @@ def _provider_command_configuration_error(
             "reason": f"ccr config file not found: {config_path}",
             "config_path": config_path,
         }
-    profile_config_path = _windows_profile_ccr_config_path()
-    if profile_config_path:
-        return None
-    default_config_path = _default_ccr_config_path()
-    if not default_config_path:
-        return None
-    try:
-        if Path(default_config_path).expanduser().is_file():
-            return None
-    except OSError:
-        pass
-    return {
-        "reason": f"ccr config file not found: {default_config_path}",
-        "config_path": default_config_path,
-        "config_hint": (
-            "CCR_CONFIG_PATH is not set and default config not found: "
-            f"{default_config_path}"
-        ),
-    }
+    return None
 
 
 def _provider_command_configuration_hint(
@@ -1162,7 +1257,9 @@ def _looks_like_ccr_code_command(argv: list[str]) -> bool:
 
 def _normalize_agent_automation_argv(provider: str | None, argv: list[str]) -> list[str]:
     result = list(argv)
-    if provider != "claude-code":
+    if _should_use_opencode_run_arg_transport(provider, result):
+        return _normalize_opencode_run_argv(result)
+    if not _should_use_claude_print_arg_transport(provider, result):
         return result
     if _looks_like_ccr_code_command(result):
         return _normalize_ccr_code_print_argv(result)
@@ -1172,6 +1269,18 @@ def _normalize_agent_automation_argv(provider: str | None, argv: list[str]) -> l
         result.append("-p")
     if not _has_cli_option(result, "--output-format"):
         result.extend(["--output-format", "json"])
+    return result
+
+
+def _normalize_opencode_run_argv(argv: list[str]) -> list[str]:
+    result = list(argv)
+    if not result:
+        return result
+    tokens = [str(token).lower() for token in result[1:]]
+    if "run" not in tokens:
+        result.append("run")
+    if not _has_cli_option(result, "--format"):
+        result.extend(["--format", "json"])
     return result
 
 
@@ -1330,6 +1439,10 @@ def _agent_process_invocation(
 ) -> tuple[list[str], bytes, str]:
     if _should_pass_prompt_as_claude_print_arg(provider, argv):
         return _insert_claude_print_prompt_arg(argv, _prompt_as_cli_argument(prompt)), b"", "argv"
+    if _should_pass_prompt_as_opencode_run_arg(provider, argv):
+        return [*argv, prompt], b"", "argv"
+    if _should_pass_prompt_as_last_arg(provider):
+        return [*argv, prompt], b"", "argv"
     return list(argv), prompt.encode("utf-8"), "stdin"
 
 
@@ -1338,11 +1451,43 @@ def _prompt_as_cli_argument(prompt: str) -> str:
 
 
 def _should_pass_prompt_as_claude_print_arg(provider: str | None, argv: list[str]) -> bool:
-    if provider != "claude-code":
+    if not _should_use_claude_print_arg_transport(provider, argv):
         return False
     if _looks_like_ccr_code_command(argv):
         return _ccr_code_has_claude_print_mode(argv)
     return any(token in {"-p", "--print"} for token in argv)
+
+
+def _should_use_claude_print_arg_transport(provider: str | None, argv: list[str] | None = None) -> bool:
+    spec = external_agent_provider_spec(provider)
+    if spec and spec.prompt_transport == "claude_print_arg":
+        return True
+    if spec and spec.prompt_transport != "auto":
+        return False
+    return provider == "claude-code" or _looks_like_claude_print_capable_command(argv or [])
+
+
+def _should_use_opencode_run_arg_transport(provider: str | None, argv: list[str] | None = None) -> bool:
+    spec = external_agent_provider_spec(provider)
+    if spec and spec.prompt_transport == "opencode_run_arg":
+        return True
+    if spec and spec.prompt_transport != "auto":
+        return False
+    if provider == "opencode":
+        return True
+    if not argv:
+        return False
+    executable_name = Path(str(argv[0])).name.lower()
+    return executable_name in {"opencode", "opencode.cmd", "opencode.exe", "opencode.ps1"}
+
+
+def _should_pass_prompt_as_opencode_run_arg(provider: str | None, argv: list[str]) -> bool:
+    return _should_use_opencode_run_arg_transport(provider, argv)
+
+
+def _should_pass_prompt_as_last_arg(provider: str | None) -> bool:
+    spec = external_agent_provider_spec(provider)
+    return bool(spec and spec.prompt_transport == "argv_last")
 
 
 def _insert_claude_print_prompt_arg(argv: list[str], prompt: str) -> list[str]:
@@ -1380,6 +1525,9 @@ def _powershell_single_quote(value: str) -> str:
 
 
 def provider_fallback_commands(provider: str) -> list[str]:
+    spec = external_agent_provider_spec(provider)
+    if spec is not None:
+        return list(spec.fallback_commands)
     attr = PROVIDER_FALLBACK_COMMANDS.get(provider)
     if not attr:
         return []
@@ -1389,6 +1537,9 @@ def provider_fallback_commands(provider: str) -> list[str]:
 def provider_readonly_args(provider: str | None) -> list[str]:
     if not provider:
         return []
+    spec = external_agent_provider_spec(provider)
+    if spec is not None:
+        return list(spec.readonly_args)
     attr = PROVIDER_READONLY_ARGS.get(provider)
     if not attr:
         return []
@@ -2230,8 +2381,14 @@ async def run_external_agent_discovery(
 ) -> list[AgentDiscoveryResult]:
     if not settings.external_agents_enabled:
         return []
-    selected = (providers or list(PROVIDER_COMMANDS))[: max(1, settings.external_agent_max_parallel)]
-    tasks = [_run_provider(provider, request, session=session) for provider in selected]
+    selected = list(providers or external_agent_provider_ids())
+    semaphore = asyncio.Semaphore(max(1, settings.external_agent_max_parallel))
+
+    async def run_one(provider: str) -> AgentDiscoveryResult:
+        async with semaphore:
+            return await _run_provider(provider, request, session=session)
+
+    tasks = [run_one(provider) for provider in selected]
     gathered = await asyncio.gather(*tasks, return_exceptions=True)
     results: list[AgentDiscoveryResult] = []
     for provider, item in zip(selected, gathered):
@@ -2257,8 +2414,8 @@ async def probe_external_agent_startup(
     repo_path: str | Path | None = None,
 ) -> dict:
     """Start one provider with a minimal stdin probe and report diagnostics."""
-    command_attr = PROVIDER_COMMANDS.get(provider)
-    if not command_attr:
+    spec = external_agent_provider_spec(provider)
+    if not spec:
         return _redact_probe_response({
             "provider": provider,
             "healthy": False,
@@ -2266,7 +2423,7 @@ async def probe_external_agent_startup(
             "message": "unknown provider",
         })
 
-    command = str(getattr(settings, command_attr, "") or "")
+    command = spec.command
     cwd = Path(repo_path or os.getcwd()).resolve()
     if not cwd.exists() or not cwd.is_dir():
         return _redact_probe_response({
@@ -2463,10 +2620,10 @@ async def _run_provider(
     *,
     session: object | None = None,
 ) -> AgentDiscoveryResult:
-    command_attr = PROVIDER_COMMANDS.get(provider)
-    if not command_attr:
+    spec = external_agent_provider_spec(provider)
+    if not spec:
         return AgentDiscoveryResult(provider=provider, status="unavailable", raw_summary="unknown provider")
-    command = str(getattr(settings, command_attr, "") or "")
+    command = spec.command
     fallback_commands = provider_fallback_commands(provider)
     prompt = build_agent_prompt(request)
     commands = _provider_candidate_commands(command, fallback_commands)

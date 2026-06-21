@@ -102,6 +102,9 @@ class Settings(BaseSettings):
     opencode_command: str = "opencode"
     opencode_fallback_commands: list[str] | str = Field(default_factory=list)
     opencode_readonly_args: list[str] = Field(default_factory=list)
+    # JSON list of provider specs, e.g.
+    # [{"id":"corp-agent","command":"corp-agent discover","prompt_transport":"stdin"}]
+    external_agent_custom_providers: list[dict] | str = Field(default_factory=list)
     tiktoken_cache_dir: str = ""     # override path for tiktoken BPE cache (TIKTOKEN_CACHE_DIR)
     tool_health_interval: int = 30   # seconds between health checks
 

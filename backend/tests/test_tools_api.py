@@ -328,13 +328,13 @@ async def test_external_agent_health_marks_default_ccr_config_hint_misconfigured
 
     health = await ExternalAgentAdapter("claude-code", "claude_code_command").health_check()
 
-    assert health.is_healthy is False
-    assert health.container_status == "misconfigured"
+    assert health.is_healthy is True
+    assert health.container_status == "available"
     assert "CCR_CONFIG_PATH" in health.last_check
 
 
-async def test_external_agent_health_marks_missing_profile_ccr_config_hint_misconfigured(monkeypatch):
-    """PowerShell launch alone is not enough when no CCR config can be proven."""
+async def test_external_agent_health_keeps_missing_profile_ccr_config_hint_available(monkeypatch):
+    """Missing default CCR config is diagnostic only; startup probe decides runtime viability."""
     from app.adapters.external_agent import ExternalAgentAdapter
 
     monkeypatch.setattr(
@@ -360,8 +360,8 @@ async def test_external_agent_health_marks_missing_profile_ccr_config_hint_misco
 
     health = await ExternalAgentAdapter("claude-code", "claude_code_command").health_check()
 
-    assert health.is_healthy is False
-    assert health.container_status == "misconfigured"
+    assert health.is_healthy is True
+    assert health.container_status == "available"
     assert "powershell-profile" in health.last_check
 
 
