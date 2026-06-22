@@ -1123,16 +1123,40 @@ export default function AgentWorkbenchPage() {
                             </p>
                         )}
                         {result && (
-                          <div className="mt-2 flex flex-wrap gap-2 text-on-surface-variant">
-                            <span className="rounded bg-surface px-1.5 py-0.5">
-                              {result.status}
-                            </span>
-                            <span className="rounded bg-surface px-1.5 py-0.5">
-                              exit {result.exit_code ?? "-"}
-                            </span>
-                            <span className="rounded bg-surface px-1.5 py-0.5">
-                              {result.duration_ms}ms
-                            </span>
+                          <div className="mt-2 space-y-1 text-on-surface-variant">
+                            <div className="flex flex-wrap gap-2">
+                              <span className="rounded bg-surface px-1.5 py-0.5">
+                                {result.status}
+                              </span>
+                              <span className="rounded bg-surface px-1.5 py-0.5">
+                                exit {result.exit_code ?? "-"}
+                              </span>
+                              <span className="rounded bg-surface px-1.5 py-0.5">
+                                {result.duration_ms}ms
+                              </span>
+                            </div>
+                            {result.provider_diagnostics && (
+                              <div className="rounded bg-surface px-1.5 py-1 font-data text-[10px]">
+                                <span className="text-on-surface">
+                                  provider:
+                                  {result.provider_diagnostics.provider || agentRun.provider}
+                                </span>
+                                <span className="ml-1">
+                                  health:
+                                  {result.provider_diagnostics.health_status || "unknown"}
+                                </span>
+                                {result.provider_diagnostics.prompt_transport && (
+                                  <span className="ml-1">
+                                    transport:{result.provider_diagnostics.prompt_transport}
+                                  </span>
+                                )}
+                                {result.provider_diagnostics.startup_probe_endpoint && (
+                                  <span className="ml-1 break-all">
+                                    probe:{result.provider_diagnostics.startup_probe_endpoint}
+                                  </span>
+                                )}
+                              </div>
+                            )}
                           </div>
                         )}
                         {validation && (

@@ -353,6 +353,22 @@ export interface AgentRunExecutionResult {
   duration_ms: number;
   timed_out: boolean;
   error: string;
+  provider_diagnostics?: AgentProviderDiagnosticsSummary;
+}
+
+export interface AgentProviderDiagnosticsSummary {
+  artifact?: string;
+  provider?: string;
+  status?: string;
+  owner?: string;
+  agent_owned?: boolean;
+  codetalk_callable?: boolean;
+  health_status?: string;
+  launch_kind?: string;
+  used_fallback?: boolean;
+  startup_probe_endpoint?: string;
+  prompt_transport?: string;
+  mcp_credentials_owner?: string;
 }
 
 export interface MaterializeEvidenceResult {
@@ -380,20 +396,7 @@ export interface WorkflowExecutionResult {
       step_id?: string;
       status?: string;
       provider?: string;
-      provider_diagnostics?: {
-        artifact?: string;
-        provider?: string;
-        status?: string;
-        owner?: string;
-        agent_owned?: boolean;
-        codetalk_callable?: boolean;
-        health_status?: string;
-        launch_kind?: string;
-        used_fallback?: boolean;
-        startup_probe_endpoint?: string;
-        prompt_transport?: string;
-        mcp_credentials_owner?: string;
-      };
+      provider_diagnostics?: AgentProviderDiagnosticsSummary;
     }
   >;
   outputs?: Array<Record<string, unknown>>;
