@@ -91,6 +91,78 @@ def test_prepare_workbench_task_run_ingests_file_inputs(tmp_path):
     assert Path(file_info["chunks_path"]).exists()
 
 
+def test_prepare_workbench_task_run_injects_evidence_and_semantic_context(tmp_path):
+    from app.services.evidence_memory import EvidenceMemoryStore
+    from app.services.test_semantic_library import TestSemanticLibraryStore
+    from app.services.workflow_dsl import WorkflowStore
+    from app.services.workbench_task_run import WorkbenchTaskRunPreparer
+
+    memory = EvidenceMemoryStore(tmp_path / "memory.db")
+    memory.record_analysis_run(
+        run_id="run-prev",
+        workspace_id="ws1",
+        repo_path="E:/repo",
+        object_text="nvme tcp tls",
+        workflow_id="module_analysis",
+        status="completed",
+    )
+    memory.upsert_evidence_item(
+        run_id="run-prev",
+        workspace_id="ws1",
+        kind="changed_file",
+        subject_key="nof/nvmf_tcp/transport/tls/tls.c",
+        status="agent_mcp_verified",
+        source="claude-code",
+        path="nof/nvmf_tcp/transport/tls/tls.c",
+        reason="validated TLS source",
+        text="nvme tcp tls handshake cleanup",
+    )
+    semantics = TestSemanticLibraryStore(tmp_path / "semantics.db")
+    semantics.upsert_case({
+        "case_id": "TC_TLS_HANDSHAKE_FAIL",
+        "feature": "NVMe TCP TLS",
+        "module": "nvmf_tcp",
+        "scenario": "TLS handshake fails and connection is released",
+        "terms": ["TLS negotiation", "connection release"],
+        "tags": ["black_box", "resource_cleanup"],
+        "test_level": "black_box",
+    })
+    workflow_store = WorkflowStore(tmp_path / "workflows.db")
+    workflow_store.save_workflow({
+        "id": "mr_blackbox_test",
+        "name": "MR black-box",
+        "version": 1,
+        "inputs": [{"id": "module", "type": "free_text"}],
+        "steps": [{"id": "design", "type": "agent_task", "goal": "black-box test design"}],
+        "outputs": [{"id": "cases", "type": "markdown"}],
+    })
+
+    result = WorkbenchTaskRunPreparer(
+        artifact_root=tmp_path / "task_runs",
+        workflow_store=workflow_store,
+        evidence_memory=memory,
+        semantic_library=semantics,
+    ).prepare(
+        workflow_id="mr_blackbox_test",
+        workspace_id="ws1",
+        repo_path="E:/repo",
+        inputs={"module": "nvme tcp tls"},
+    )
+
+    context_bundle = result.task_bundle["context_bundle"]
+    assert context_bundle["query"] == "nvme tcp tls"
+    assert context_bundle["evidence"][0]["subject_key"] == "nof/nvmf_tcp/transport/tls/tls.c"
+    assert context_bundle["semantic_cases"][0]["case_id"] == "TC_TLS_HANDSHAKE_FAIL"
+    assert Path(result.artifact_dir, "context_bundle.json").exists()
+    step_bundle = json.loads(
+        Path(result.artifact_dir, "agent_runs", "design", "task_bundle.json").read_text(encoding="utf-8")
+    )
+    assert step_bundle["context_bundle"]["semantic_cases"][0]["terms"] == [
+        "TLS negotiation",
+        "connection release",
+    ]
+
+
 def test_workbench_task_run_store_loads_and_lists_prepared_runs(tmp_path):
     from app.services.workflow_dsl import WorkflowStore
     from app.services.workbench_task_run import (

@@ -10,10 +10,12 @@ from pathlib import Path
 from typing import Any
 
 from app.services.agent_run_harness import AgentRunHarness
+from app.services.evidence_memory import EvidenceMemoryStore
 from app.services.external_agent_discovery import (
     external_agent_provider_spec,
     split_agent_command,
 )
+from app.services.test_semantic_library import TestSemanticLibraryStore
 from app.services.workbench_input_ingest import ingest_workbench_inputs
 from app.services.workflow_dsl import WorkflowStore
 
@@ -43,9 +45,18 @@ class PreparedWorkbenchTaskRun:
 class WorkbenchTaskRunPreparer:
     """Freezes workflow/input state and creates Agent run envelopes."""
 
-    def __init__(self, *, artifact_root: str | Path, workflow_store: WorkflowStore) -> None:
+    def __init__(
+        self,
+        *,
+        artifact_root: str | Path,
+        workflow_store: WorkflowStore,
+        evidence_memory: EvidenceMemoryStore | None = None,
+        semantic_library: TestSemanticLibraryStore | None = None,
+    ) -> None:
         self.artifact_root = Path(artifact_root)
         self.workflow_store = workflow_store
+        self.evidence_memory = evidence_memory
+        self.semantic_library = semantic_library
 
     def prepare(
         self,
@@ -74,12 +85,19 @@ class WorkbenchTaskRunPreparer:
             inputs=dict(inputs or {}),
             artifact_dir=artifact_dir,
         )
+        context_bundle = build_workbench_context_bundle(
+            workspace_id=workspace_id,
+            input_snapshot=input_snapshot,
+            evidence_memory=self.evidence_memory,
+            semantic_library=self.semantic_library,
+        )
         task_bundle = {
             "task_run_id": task_run_id,
             "workflow_id": workflow_id,
             "workspace_id": workspace_id,
             "repo_path": repo_path,
             "inputs": input_snapshot,
+            "context_bundle": context_bundle,
             "required_artifacts_by_step": required_artifacts_by_step,
             "created_at": _now(),
         }
@@ -131,6 +149,7 @@ class WorkbenchTaskRunPreparer:
         _write_json(artifact_dir / "task_run.json", asdict(result))
         _write_json(artifact_dir / "workflow_snapshot.json", workflow_snapshot)
         _write_json(artifact_dir / "input_snapshot.json", input_snapshot)
+        _write_json(artifact_dir / "context_bundle.json", context_bundle)
         _write_json(artifact_dir / "task_bundle.json", task_bundle)
         return result
 
@@ -173,6 +192,45 @@ class WorkbenchTaskRunStore:
         return runs[: max(1, int(limit))]
 
 
+def build_workbench_context_bundle(
+    *,
+    workspace_id: str,
+    input_snapshot: dict[str, Any],
+    evidence_memory: EvidenceMemoryStore | None = None,
+    semantic_library: TestSemanticLibraryStore | None = None,
+    limit: int = 8,
+) -> dict[str, Any]:
+    query = _context_query_from_inputs(input_snapshot)
+    evidence = []
+    semantic_cases = []
+    if query and evidence_memory is not None:
+        evidence = [
+            _evidence_item_payload(item)
+            for item in evidence_memory.search_analysis_memory(
+                query,
+                workspace_id=workspace_id,
+                limit=limit,
+            )
+        ]
+    if query and semantic_library is not None:
+        semantic_cases = [
+            _semantic_case_payload(item)
+            for item in semantic_library.retrieve(
+                query=query,
+                limit=limit,
+            )
+        ]
+    return {
+        "query": query,
+        "evidence": evidence,
+        "semantic_cases": semantic_cases,
+        "limits": {
+            "evidence": limit,
+            "semantic_cases": limit,
+        },
+    }
+
+
 def _write_json(path: Path, payload: Any) -> None:
     path.write_text(json.dumps(payload, ensure_ascii=False, indent=2, sort_keys=True), encoding="utf-8")
 
@@ -207,3 +265,69 @@ def _safe_segment(value: str) -> str:
     if not text or "/" in text or "\\" in text or ".." in text:
         raise KeyError(value)
     return text
+
+
+def _context_query_from_inputs(input_snapshot: dict[str, Any]) -> str:
+    parts: list[str] = []
+    for value in input_snapshot.values():
+        if isinstance(value, str):
+            parts.append(value)
+        elif isinstance(value, dict):
+            for key in ("value", "text", "filename", "original_path", "path"):
+                if value.get(key):
+                    parts.append(str(value[key]))
+            parsed_text_path = value.get("parsed_text_path")
+            if parsed_text_path:
+                parsed = _read_text_prefix(Path(str(parsed_text_path)), max_chars=4000)
+                if parsed:
+                    parts.append(parsed)
+        elif isinstance(value, (list, tuple)):
+            parts.extend(str(item) for item in value if str(item))
+    query = " ".join(part.strip() for part in parts if part and part.strip())
+    return " ".join(query.split())[:8000]
+
+
+def _read_text_prefix(path: Path, *, max_chars: int) -> str:
+    try:
+        if not path.exists() or not path.is_file():
+            return ""
+        return path.read_text(encoding="utf-8", errors="replace")[:max_chars]
+    except OSError:
+        return ""
+
+
+def _evidence_item_payload(item: Any) -> dict[str, Any]:
+    return {
+        "evidence_id": item.evidence_id,
+        "run_id": item.run_id,
+        "kind": item.kind,
+        "subject_key": item.subject_key,
+        "status": item.status,
+        "source": item.source,
+        "path": item.path,
+        "symbol": item.symbol,
+        "reason": item.reason,
+        "confidence": item.confidence,
+        "text": item.text,
+        "provenance": item.provenance or {},
+    }
+
+
+def _semantic_case_payload(item: Any) -> dict[str, Any]:
+    return {
+        "semantic_id": item.semantic_id,
+        "case_id": item.case_id,
+        "feature": item.feature,
+        "module": item.module,
+        "scenario": item.scenario,
+        "preconditions": list(item.preconditions),
+        "actions": list(item.actions),
+        "expected": list(item.expected),
+        "test_level": item.test_level,
+        "interface": item.interface,
+        "terms": list(item.terms),
+        "assertion_style": item.assertion_style,
+        "tags": list(item.tags),
+        "source_ref": item.source_ref,
+        "status": item.status,
+    }

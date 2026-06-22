@@ -505,6 +505,21 @@ export default function AgentWorkbenchPage() {
                 <p className="mt-1 text-on-surface-variant">
                   Agent runs: {preparedRun.agent_runs.length}
                 </p>
+                {(() => {
+                  const contextBundle = preparedRun.task_bundle.context_bundle as
+                    | {
+                        evidence?: unknown[];
+                        semantic_cases?: unknown[];
+                      }
+                    | undefined;
+                  if (!contextBundle) return null;
+                  return (
+                    <p className="mt-1 text-on-surface-variant">
+                      Context: evidence {contextBundle.evidence?.length ?? 0} /
+                      semantics {contextBundle.semantic_cases?.length ?? 0}
+                    </p>
+                  );
+                })()}
                 {workflowExecution && (
                   <div className="mt-2 rounded bg-surface-container px-2 py-1.5 text-on-surface-variant">
                     Workflow: {workflowExecution.status} / steps{" "}

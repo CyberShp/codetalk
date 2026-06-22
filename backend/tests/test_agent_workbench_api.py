@@ -533,3 +533,67 @@ async def test_workbench_prepare_task_run_api(workbench_client):
     assert body["workflow_snapshot"]["id"] == "mr_test_design"
     assert body["task_bundle"]["inputs"]["mr_link"].startswith("https://codehub.local/")
     assert body["agent_runs"][0]["step_id"] == "collect_mr"
+
+
+async def test_workbench_prepare_task_run_api_injects_memory_and_semantics(workbench_client, tmp_path):
+    assert (await workbench_client.post(
+        "/api/workbench/memory/runs",
+        json={
+            "run_id": "run-context-prev",
+            "workspace_id": "ws-context",
+            "repo_path": str(tmp_path),
+            "object_text": "nvme tcp tls",
+            "workflow_id": "module_analysis",
+            "status": "completed",
+        },
+    )).status_code == 201
+    assert (await workbench_client.post(
+        "/api/workbench/memory/evidence",
+        json={
+            "run_id": "run-context-prev",
+            "workspace_id": "ws-context",
+            "kind": "source_file",
+            "subject_key": "nof/nvmf_tcp/transport/tls/tls.c",
+            "status": "verified_local",
+            "source": "fast-context",
+            "path": "nof/nvmf_tcp/transport/tls/tls.c",
+            "reason": "validated source",
+            "text": "nvme tcp tls handshake cleanup",
+        },
+    )).status_code == 201
+    assert (await workbench_client.post(
+        "/api/workbench/semantic-cases",
+        json={
+            "case_id": "TC_CONTEXT_TLS",
+            "feature": "NVMe TCP TLS",
+            "module": "nvmf_tcp",
+            "scenario": "TLS handshake failure releases connection",
+            "terms": ["TLS negotiation", "connection release"],
+            "tags": ["black_box"],
+            "test_level": "black_box",
+        },
+    )).status_code == 201
+    workflow = {
+        "id": "context_injected_workflow",
+        "name": "Context injected workflow",
+        "version": 1,
+        "inputs": [{"id": "module", "type": "free_text"}],
+        "steps": [{"id": "design", "type": "agent_task", "provider": "claude-code"}],
+        "outputs": [{"id": "cases", "type": "markdown"}],
+    }
+    assert (await workbench_client.post("/api/workbench/workflows", json=workflow)).status_code == 201
+
+    prepared = await workbench_client.post(
+        "/api/workbench/task-runs/prepare",
+        json={
+            "workflow_id": "context_injected_workflow",
+            "workspace_id": "ws-context",
+            "repo_path": str(tmp_path),
+            "inputs": {"module": "nvme tcp tls"},
+        },
+    )
+
+    assert prepared.status_code == 201
+    context_bundle = prepared.json()["task_bundle"]["context_bundle"]
+    assert context_bundle["evidence"][0]["subject_key"] == "nof/nvmf_tcp/transport/tls/tls.c"
+    assert context_bundle["semantic_cases"][0]["case_id"] == "TC_CONTEXT_TLS"

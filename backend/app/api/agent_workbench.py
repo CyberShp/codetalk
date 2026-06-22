@@ -448,6 +448,8 @@ async def prepare_task_run(payload: PrepareTaskRunRequest) -> dict[str, Any]:
         result = WorkbenchTaskRunPreparer(
             artifact_root=_task_runs_dir(),
             workflow_store=_workflow_store(),
+            evidence_memory=_memory_store(),
+            semantic_library=_semantic_store(),
         ).prepare(
             workflow_id=payload.workflow_id,
             workspace_id=payload.workspace_id,
