@@ -616,6 +616,73 @@ async def test_workbench_task_run_materialize_workflow_outputs_api(
     assert item["subject_key"].endswith("/cases")
 
 
+async def test_workbench_materialize_changed_files_output_as_structured_memory(
+    workbench_client,
+    tmp_path,
+):
+    patch_file = tmp_path / "tls.patch"
+    patch_file.write_text(
+        "diff --git a/src/tls.c b/src/tls.c\n"
+        "--- a/src/tls.c\n"
+        "+++ b/src/tls.c\n"
+        "@@ -1 +1 @@\n"
+        "-old\n"
+        "+new\n",
+        encoding="utf-8",
+    )
+    workflow = {
+        "id": "changed_files_memory_workflow",
+        "name": "Changed files memory workflow",
+        "version": 1,
+        "inputs": [{"id": "patch_diff", "type": "patch", "required": True}],
+        "steps": [{"id": "parse_patch", "type": "diff_parse"}],
+        "outputs": [
+            {
+                "id": "changed_files",
+                "type": "json",
+                "from": "parse_patch",
+                "artifact": "changed_files.json",
+            }
+        ],
+    }
+    assert (await workbench_client.post("/api/workbench/workflows", json=workflow)).status_code == 201
+    prepared = await workbench_client.post(
+        "/api/workbench/task-runs/prepare",
+        json={
+            "workflow_id": "changed_files_memory_workflow",
+            "workspace_id": "ws-changed-files-memory",
+            "repo_path": str(tmp_path),
+            "inputs": {"patch_diff": {"path": str(patch_file)}},
+        },
+    )
+    task_run_id = prepared.json()["task_run_id"]
+    executed = await workbench_client.post(
+        f"/api/workbench/task-runs/{task_run_id}/execute",
+        json={"timeout_sec": 10},
+    )
+    assert executed.status_code == 200
+    assert executed.json()["outputs"][0]["status"] == "ok"
+
+    materialized = await workbench_client.post(
+        f"/api/workbench/task-runs/{task_run_id}/materialize-outputs"
+    )
+
+    assert materialized.status_code == 200
+    body = materialized.json()
+    assert body["status"] == "ok"
+    assert body["evidence_count"] == 2
+    search = await workbench_client.get(
+        "/api/workbench/memory/search",
+        params={"q": "src/tls.c", "workspace_id": "ws-changed-files-memory"},
+    )
+    assert search.status_code == 200
+    items = search.json()["items"]
+    changed = [item for item in items if item["kind"] == "changed_file"]
+    assert changed
+    assert changed[0]["subject_key"] == "src/tls.c"
+    assert changed[0]["provenance"]["output_id"] == "changed_files"
+
+
 async def test_workbench_prepare_task_run_api(workbench_client):
     workflow = {
         "id": "mr_test_design",

@@ -725,7 +725,15 @@ def _materialize_workflow_output_evidence(
             rejected.append({"output": output_id, "reason": "output_sha256_mismatch"})
             continue
         text = _evidence_text_from_output(path, data, fallback=str(output.get("preview") or ""))
-        evidence_ids.append(store.upsert_evidence_item(
+        base_provenance = {
+            "task_run_id": task_run.task_run_id,
+            "workflow_id": task_run.workflow_id,
+            "output": output,
+            "artifact": "workflow_outputs.json",
+            "sha256": sha256,
+            "size_bytes": len(data),
+        }
+        output_evidence_id = store.upsert_evidence_item(
             run_id=task_run.task_run_id,
             workspace_id=task_run.workspace_id,
             kind="workflow_output",
@@ -735,16 +743,72 @@ def _materialize_workflow_output_evidence(
             path=str(path),
             reason="Workflow output passed CodeTalk local artifact validation.",
             text=text,
+            provenance=base_provenance,
+        )
+        evidence_ids.append(output_evidence_id)
+        evidence_ids.extend(_materialize_structured_workflow_output_evidence(
+            store=store,
+            task_run=task_run,
+            output=output,
+            output_id=output_id,
+            output_evidence_id=output_evidence_id,
+            path=path,
+            data=data,
+            sha256=sha256,
+        ))
+    return evidence_ids, rejected
+
+
+def _materialize_structured_workflow_output_evidence(
+    *,
+    store: EvidenceMemoryStore,
+    task_run: Any,
+    output: dict[str, Any],
+    output_id: str,
+    output_evidence_id: str,
+    path: Path,
+    data: bytes,
+    sha256: str,
+) -> list[str]:
+    if path.name != "changed_files.json" and output_id != "changed_files":
+        return []
+    try:
+        payload = json.loads(data.decode("utf-8"))
+    except (UnicodeDecodeError, json.JSONDecodeError):
+        return []
+    if not isinstance(payload, list):
+        return []
+    evidence_ids: list[str] = []
+    for item in payload:
+        if not isinstance(item, dict):
+            continue
+        changed_path = str(item.get("path") or "").replace("\\", "/").strip()
+        if not changed_path:
+            continue
+        evidence_ids.append(store.upsert_evidence_item(
+            run_id=task_run.task_run_id,
+            workspace_id=task_run.workspace_id,
+            kind="changed_file",
+            subject_key=changed_path,
+            status="verified_output",
+            source=str(output.get("from") or "workflow"),
+            path=changed_path,
+            reason="Changed file came from a locally verified workflow output.",
+            text=" ".join(
+                str(item.get(key) or "")
+                for key in ("path", "status", "old_path", "new_path")
+            ),
             provenance={
                 "task_run_id": task_run.task_run_id,
                 "workflow_id": task_run.workflow_id,
-                "output": output,
-                "artifact": "workflow_outputs.json",
+                "output_id": output_id,
+                "output_evidence_id": output_evidence_id,
+                "artifact_path": str(path),
                 "sha256": sha256,
-                "size_bytes": len(data),
+                "changed_file": item,
             },
         ))
-    return evidence_ids, rejected
+    return evidence_ids
 
 
 def _evidence_text_from_output(path: Path, data: bytes, *, fallback: str) -> str:
