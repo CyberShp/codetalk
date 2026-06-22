@@ -35,6 +35,27 @@ Current implementation note:
 - Candidate files returned by this provider are normalized through the same local source-file validation path as external Agent candidates.
 - Workbench task preparation reads applicable repo `AGENTS.md` files, stores them in `agent_instructions.json`, and injects them into every Agent task bundle. These instructions can require fast-context-first exploration while CodeTalk still records unavailable providers as non-blocking warnings.
 
+## Repo Agent Instructions
+
+CodeTalk must treat repo-local agent instructions as task input, not as hidden process behavior.
+
+`AGENTS.md` handling:
+
+- read the workspace root `AGENTS.md` during task preparation;
+- read nested `AGENTS.md` files implied by user-provided path hints and uploaded file locations;
+- store exact instruction files with path, size, sha256, truncation flag, and content in `agent_instructions.json`;
+- inject the same instruction payload into every Agent CLI task bundle;
+- expose the instruction payload in task artifacts so users can audit what the Agent was asked to obey.
+
+The fast-context rule from `AGENTS.md` is interpreted as:
+
+- CodeTalk should prefer `fast-context` MCP for exploratory source discovery when the MCP bridge is available to CodeTalk.
+- If CodeTalk cannot call the MCP directly, it records `fast-context` as unavailable or bridge-disabled and continues with local search, indexes, and Agent CLI execution.
+- Agent CLIs may still call their own MCP tools, including fast-context-like or internal CodeHub MCP tools, using their own credentials and configuration.
+- Agent CLI results still enter CodeTalk through artifacts or stdout and must pass local path, source, hash, and schema validation before becoming evidence.
+
+This keeps the user's repo instruction visible and auditable while avoiding a false assumption that every CodeTalk deployment can directly access the same MCP tools as the Agent CLI.
+
 ## Workflow Presets
 
 Initial built-in presets:
@@ -88,3 +109,4 @@ Do not directly copy the whole clowder-ai harness or memory system into CodeTalk
 4. Extend Evidence Memory retrieval so black-box test generation can use semantic test-library terminology and validated source/MR facts.
 5. Add UI views for task bundle, provider warnings, validated evidence, rejected evidence, and generated artifacts.
 6. Keep AGENTS.md and other repo-local agent instructions visible in task bundles and debug artifacts so external CLI behavior is auditable.
+7. Add a visible provider capability matrix that separates CodeTalk-callable MCP providers from Agent-owned MCP providers, so internal deployments can explain why CodeTalk cannot call a tool while `ccr code`, OpenCode, or a self-developed Agent CLI can.
