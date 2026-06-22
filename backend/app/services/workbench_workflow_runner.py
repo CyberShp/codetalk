@@ -86,6 +86,7 @@ class WorkbenchWorkflowRunner:
                 task_run_id=task_run.task_run_id,
                 step=step,
                 agent_run=agent_run,
+                prior_step_results=step_results,
                 timeout_sec=timeout_sec,
             )
             step_results.append(step_result)
@@ -121,6 +122,7 @@ class WorkbenchWorkflowRunner:
         task_run_id: str,
         step: dict[str, Any],
         agent_run: dict[str, Any],
+        prior_step_results: list[dict[str, Any]],
         timeout_sec: int,
     ) -> dict[str, Any]:
         step_id = str(step.get("id") or agent_run.get("step_id") or "")
@@ -135,6 +137,10 @@ class WorkbenchWorkflowRunner:
                 "error": "missing_run_id",
             }
 
+        _inject_prior_step_context(
+            artifact_dir=artifact_dir,
+            prior_step_results=prior_step_results,
+        )
         execution = AgentRunHarness(artifact_dir).execute_run(
             run_id,
             timeout_sec=timeout_sec,
@@ -252,6 +258,28 @@ class WorkbenchWorkflowRunner:
                 "artifact_dir": str(artifact_dir),
                 "artifacts": written,
                 "count": len(written),
+            }
+
+        if step_type == "diff_parse":
+            payload = _diff_parse_payload(task_run.input_snapshot)
+            parse_path = artifact_dir / f"{step_id}.json"
+            changed_files_path = artifact_dir / "changed_files.json"
+            summary_path = artifact_dir / "diff_summary.json"
+            _write_json(parse_path, payload)
+            _write_json(changed_files_path, payload["changed_files"])
+            _write_json(summary_path, payload["summary"])
+            return {
+                "step_id": step_id,
+                "type": step_type,
+                "status": "completed",
+                "artifact_dir": str(artifact_dir),
+                "artifact": parse_path.name,
+                "artifacts": [
+                    parse_path.name,
+                    changed_files_path.name,
+                    summary_path.name,
+                ],
+                "count": len(payload["changed_files"]),
             }
 
         if step_type in {"diff_parse", "file_ingest", "coverage_parse", "artifact_export"}:
@@ -404,6 +432,49 @@ def _validate_step_artifacts(
     return validator.validate_required_artifacts(required_artifacts=required_artifacts)
 
 
+def _inject_prior_step_context(
+    *,
+    artifact_dir: Path,
+    prior_step_results: list[dict[str, Any]],
+) -> None:
+    bundle_path = artifact_dir / "task_bundle.json"
+    bundle = _read_json(bundle_path)
+    if not isinstance(bundle, dict):
+        return
+    bundle["prior_step_results"] = prior_step_results
+    bundle["workflow_step_artifacts"] = _workflow_step_artifact_map(prior_step_results)
+    _write_json(bundle_path, bundle)
+
+
+def _workflow_step_artifact_map(
+    prior_step_results: list[dict[str, Any]],
+) -> dict[str, dict[str, str]]:
+    artifact_map: dict[str, dict[str, str]] = {}
+    for result in prior_step_results:
+        step_id = str(result.get("step_id") or "").strip()
+        artifact_dir = Path(str(result.get("artifact_dir") or ""))
+        if not step_id or not artifact_dir:
+            continue
+        step_artifacts: dict[str, str] = {}
+        for artifact in result.get("artifacts") or []:
+            artifact_name = str(artifact or "").strip()
+            artifact_path = _resolve_artifact_path(artifact_dir, artifact_name)
+            if artifact_path is None:
+                continue
+            key = _artifact_context_key(artifact_name)
+            step_artifacts[key] = str(artifact_path)
+        if step_artifacts:
+            artifact_map[step_id] = step_artifacts
+    return artifact_map
+
+
+def _artifact_context_key(artifact_name: str) -> str:
+    path = Path(artifact_name)
+    stem = "".join(char if char.isalnum() else "_" for char in path.stem.lower()).strip("_")
+    suffix = path.suffix.lower().lstrip(".")
+    return f"{stem}_{suffix}" if suffix else stem
+
+
 def _overall_status(step_results: list[dict[str, Any]]) -> str:
     actionable = [
         item for item in step_results
@@ -416,6 +487,122 @@ def _overall_status(step_results: list[dict[str, Any]]) -> str:
     if any(item.get("status") == "error" for item in actionable):
         return "error"
     return "invalid"
+
+
+def _diff_parse_payload(input_snapshot: dict[str, Any]) -> dict[str, Any]:
+    patch_inputs = _patch_input_payloads(input_snapshot)
+    changed_files: list[dict[str, str]] = []
+    warnings: list[str] = []
+    for item in patch_inputs:
+        text = _read_text_from_input_payload(item)
+        if not text:
+            warnings.append(f"{item.get('input_id') or item.get('filename') or 'patch'}: empty diff text")
+            continue
+        changed_files.extend(_changed_files_from_unified_diff(text))
+    unique_changed = _dedupe_changed_files(changed_files)
+    return {
+        "kind": "diff_parse",
+        "inputs": patch_inputs,
+        "changed_files": unique_changed,
+        "summary": {
+            "changed_files_count": len(unique_changed),
+            "paths": [item["path"] for item in unique_changed],
+            "warnings": warnings,
+        },
+    }
+
+
+def _patch_input_payloads(input_snapshot: dict[str, Any]) -> list[dict[str, Any]]:
+    payloads: list[dict[str, Any]] = []
+    for input_id, value in input_snapshot.items():
+        if not isinstance(value, dict):
+            continue
+        if value.get("kind") == "file_set":
+            for file_item in value.get("files") or []:
+                if isinstance(file_item, dict) and _is_patch_like_file(file_item):
+                    payloads.append(dict(file_item))
+            continue
+        if _is_patch_like_file(value):
+            payload = dict(value)
+            payload.setdefault("input_id", str(input_id))
+            payloads.append(payload)
+    return payloads
+
+
+def _is_patch_like_file(payload: dict[str, Any]) -> bool:
+    suffix = str(payload.get("suffix") or "").lower()
+    filename = str(payload.get("filename") or "").lower()
+    return suffix in {".patch", ".diff"} or filename.endswith((".patch", ".diff"))
+
+
+def _read_text_from_input_payload(payload: dict[str, Any]) -> str:
+    for key in ("parsed_text_path", "copied_path", "original_path"):
+        path_text = str(payload.get(key) or "")
+        if not path_text:
+            continue
+        try:
+            path = Path(path_text)
+            if path.exists() and path.is_file():
+                return path.read_text(encoding="utf-8", errors="replace")
+        except OSError:
+            continue
+    return ""
+
+
+def _changed_files_from_unified_diff(diff_text: str) -> list[dict[str, str]]:
+    changed: list[dict[str, str]] = []
+    for line in diff_text.splitlines():
+        if not line.startswith("diff --git "):
+            continue
+        parts = line.split()
+        if len(parts) < 4:
+            continue
+        old_path = _clean_diff_path(parts[-2])
+        new_path = _clean_diff_path(parts[-1])
+        path = new_path or old_path
+        if not path:
+            continue
+        changed.append({
+            "path": path,
+            "old_path": old_path or path,
+            "status": _diff_file_status(old_path, new_path),
+        })
+    return changed
+
+
+def _clean_diff_path(value: str) -> str:
+    text = str(value or "").strip().replace("\\", "/")
+    if text in {"/dev/null", "dev/null"}:
+        return ""
+    if text.startswith("a/") or text.startswith("b/"):
+        return text[2:]
+    return text
+
+
+def _diff_file_status(old_path: str, new_path: str) -> str:
+    if old_path and new_path and old_path != new_path:
+        return "renamed"
+    if old_path and new_path:
+        return "modified"
+    if new_path:
+        return "added"
+    return "deleted"
+
+
+def _dedupe_changed_files(items: list[dict[str, str]]) -> list[dict[str, str]]:
+    seen: set[tuple[str, str, str]] = set()
+    result: list[dict[str, str]] = []
+    for item in items:
+        key = (
+            str(item.get("path") or ""),
+            str(item.get("old_path") or ""),
+            str(item.get("status") or ""),
+        )
+        if key in seen:
+            continue
+        seen.add(key)
+        result.append(item)
+    return result
 
 
 def _read_json(path: Path) -> Any:

@@ -590,6 +590,89 @@ def test_workbench_workflow_runner_infers_output_from_builtin_step_artifact(tmp_
     assert result.outputs[0]["artifact"] == "validate_mr_evidence.json"
 
 
+def test_workbench_workflow_runner_injects_prior_step_artifacts_into_agent_task(
+    tmp_path,
+    monkeypatch,
+):
+    from app.config import settings
+    from app.services.workbench_task_run import WorkbenchTaskRunPreparer
+    from app.services.workbench_workflow_runner import WorkbenchWorkflowRunner
+    from app.services.workflow_dsl import WorkflowStore
+
+    patch_file = tmp_path / "tls.patch"
+    patch_file.write_text(
+        "diff --git a/src/tls.c b/src/tls.c\n"
+        "--- a/src/tls.c\n"
+        "+++ b/src/tls.c\n"
+        "@@ -1 +1 @@\n"
+        "-old\n"
+        "+new\n",
+        encoding="utf-8",
+    )
+    script_path = tmp_path / "agent_prior.py"
+    script_path.write_text(
+        "import json, pathlib, sys\n"
+        "payload=json.loads(sys.stdin.read())\n"
+        "bundle=payload['task_bundle']\n"
+        "root=pathlib.Path(payload['artifact_dir'])\n"
+        "(root/'agent_seen.json').write_text(json.dumps({"
+        "'prior': bundle.get('prior_step_results'),"
+        "'artifacts': bundle.get('workflow_step_artifacts')"
+        "}), encoding='utf-8')\n",
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(settings, "external_agent_custom_providers", [
+        {"id": "local-python", "command": f"python {script_path}"}
+    ])
+    workflow_store = WorkflowStore(tmp_path / "workflows.db")
+    workflow_store.save_workflow({
+        "id": "patch_prior_context",
+        "name": "Patch prior context",
+        "version": 1,
+        "inputs": [{"id": "patch_diff", "type": "patch", "required": True}],
+        "steps": [
+            {"id": "parse_patch", "type": "diff_parse"},
+            {
+                "id": "analyze",
+                "type": "agent_task",
+                "provider": "local-python",
+                "required_artifacts": ["agent_seen.json"],
+            },
+        ],
+        "outputs": [{"id": "agent_seen", "type": "json", "from": "analyze"}],
+    })
+    task_run = WorkbenchTaskRunPreparer(
+        artifact_root=tmp_path / "task_runs",
+        workflow_store=workflow_store,
+    ).prepare(
+        workflow_id="patch_prior_context",
+        workspace_id="ws-prior-artifacts",
+        repo_path=str(tmp_path),
+        inputs={"patch_diff": {"path": str(patch_file)}},
+    )
+
+    result = WorkbenchWorkflowRunner(tmp_path / "task_runs").execute_task_run(
+        task_run.task_run_id,
+        timeout_sec=10,
+    )
+
+    assert result.status == "completed"
+    parse_result = result.step_results[0]
+    assert parse_result["step_id"] == "parse_patch"
+    assert "changed_files.json" in parse_result["artifacts"]
+    seen = json.loads(
+        Path(
+            result.step_results[1]["artifact_dir"],
+            "agent_seen.json",
+        ).read_text(encoding="utf-8")
+    )
+    assert seen["prior"][0]["step_id"] == "parse_patch"
+    parse_artifacts = seen["artifacts"]["parse_patch"]
+    assert parse_artifacts["changed_files_json"].endswith("changed_files.json")
+    changed = json.loads(Path(parse_artifacts["changed_files_json"]).read_text(encoding="utf-8"))
+    assert changed == [{"path": "src/tls.c", "old_path": "src/tls.c", "status": "modified"}]
+
+
 def test_workbench_workflow_runner_executes_builtin_context_and_report_steps(tmp_path):
     from app.services.evidence_memory import EvidenceMemoryStore
     from app.services.test_semantic_library import TestSemanticLibraryStore
