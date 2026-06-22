@@ -157,6 +157,14 @@ test("agent workbench previews task run artifact content", async ({ page }) => {
         task_bundle: {
           context_bundle: { evidence: [], semantic_cases: [] },
           agent_instructions: { files: [] },
+          context_discovery_decision: {
+            "fast-context": {
+              requested_by_agent_instructions: true,
+              codetalk_callable: false,
+              fallback_path: ["local_search", "gitnexus", "cgc", "agent_cli"],
+              warnings: ["fast-context requested by AGENTS.md but backend MCP bridge is unavailable"],
+            },
+          },
         },
         agent_runs: [],
         created_at: "2026-06-23T00:00:00Z",
@@ -170,6 +178,14 @@ test("agent workbench previews task run artifact content", async ({ page }) => {
         task_run_id: "task_run_preview",
         artifact_dir: "E:/data/workbench/task_runs/task_run_preview",
         artifacts: [
+          {
+            relative_path: "context_discovery_decision.json",
+            path: "E:/data/workbench/task_runs/task_run_preview/context_discovery_decision.json",
+            kind: "context_discovery_decision",
+            size_bytes: 256,
+            sha256: "def456",
+            preview: "{\"fast-context\":{\"codetalk_callable\":false}}",
+          },
           {
             relative_path: "task_bundle.json",
             path: "E:/data/workbench/task_runs/task_run_preview/task_bundle.json",
@@ -213,7 +229,8 @@ test("agent workbench previews task run artifact content", async ({ page }) => {
   await expect(repoInput).toHaveValue("E:/repo");
   await expect(preparePanel.getByRole("button", { name: "Prepare run" })).toBeEnabled();
   await preparePanel.getByRole("button", { name: "Prepare run" }).click();
-  await expect(page.getByText("Audit artifacts: 1")).toBeVisible();
+  await expect(page.getByText("fast-context: fallback to agent_cli")).toBeVisible();
+  await expect(page.getByText("Audit artifacts: 2")).toBeVisible();
 
   await page.getByRole("button", { name: "task_bundle:task_bundle.json" }).click();
 

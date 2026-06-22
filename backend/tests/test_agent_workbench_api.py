@@ -684,6 +684,7 @@ async def test_workbench_task_run_artifacts_api_lists_audit_files(workbench_clie
     paths = {item["relative_path"]: item for item in body["artifacts"]}
     assert paths["task_bundle.json"]["sha256"]
     assert paths["agent_instructions.json"]["kind"] == "agent_instructions"
+    assert paths["context_discovery_decision.json"]["kind"] == "context_discovery_decision"
     assert paths["agent_runs/discover/task_bundle.json"]["kind"] == "agent_task_bundle"
 
 

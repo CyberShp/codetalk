@@ -322,6 +322,7 @@ export interface WorkflowExecutionResult {
   status: string;
   started_at: string;
   completed_at: string;
+  context_discovery_decision?: Record<string, unknown>;
   step_results: Array<Record<string, unknown>>;
   outputs?: Array<Record<string, unknown>>;
 }

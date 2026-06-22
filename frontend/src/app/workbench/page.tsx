@@ -97,6 +97,26 @@ function parseJsonObject(value: string): Record<string, unknown> {
   return parsed as Record<string, unknown>;
 }
 
+function fastContextDecisionSummary(taskBundle: Record<string, unknown>): string {
+  const decisions = taskBundle.context_discovery_decision;
+  if (!decisions || typeof decisions !== "object" || Array.isArray(decisions)) {
+    return "";
+  }
+  const fastContext = (decisions as Record<string, unknown>)["fast-context"];
+  if (!fastContext || typeof fastContext !== "object" || Array.isArray(fastContext)) {
+    return "";
+  }
+  const decision = fastContext as Record<string, unknown>;
+  if (decision.codetalk_callable === true) {
+    return "fast-context: CodeTalk callable";
+  }
+  const fallbackPath = Array.isArray(decision.fallback_path)
+    ? decision.fallback_path.map((item) => String(item)).filter(Boolean)
+    : [];
+  const lastFallback = fallbackPath[fallbackPath.length - 1] || "local_search";
+  return `fast-context: fallback to ${lastFallback}`;
+}
+
 function Panel({
   title,
   icon,
@@ -681,6 +701,15 @@ export default function AgentWorkbenchPage() {
                   return (
                     <p className="mt-1 text-on-surface-variant">
                       Agent instructions: {instructions.files?.length ?? 0}
+                    </p>
+                  );
+                })()}
+                {(() => {
+                  const summary = fastContextDecisionSummary(preparedRun.task_bundle);
+                  if (!summary) return null;
+                  return (
+                    <p className="mt-1 font-data text-[11px] text-on-surface-variant">
+                      {summary}
                     </p>
                   );
                 })()}
