@@ -108,15 +108,28 @@ async def test_workbench_provider_capabilities_matrix_api(workbench_client, monk
     assert by_id["claude-code"]["fallback_commands"] == [["claude"]]
     assert by_id["claude-code"]["capabilities"]["supports_mcp"] is True
     assert by_id["claude-code"]["capabilities"]["mcp_profiles"] == ["codehub-readonly"]
+    assert by_id["claude-code"]["diagnostics"]["health_endpoint"] == "/api/tools/claude-code/health"
+    assert by_id["claude-code"]["diagnostics"]["startup_probe_endpoint"] == "/api/tools/claude-code/startup-probe"
+    assert by_id["claude-code"]["diagnostics"]["configured_command_text"] == "ccr code"
+    assert by_id["claude-code"]["diagnostics"]["fallback_command_texts"] == ["claude"]
+    assert by_id["claude-code"]["diagnostics"]["prompt_transport"] == "claude_print_arg"
+    assert by_id["claude-code"]["diagnostics"]["startup_probe_transport"] == "claude_print_arg"
+    assert by_id["claude-code"]["diagnostics"]["mcp_credentials_owner"] == "agent_cli"
+    assert "PowerShell profile" in by_id["claude-code"]["diagnostics"]["troubleshooting"][0]
+    assert "ccr code" in by_id["claude-code"]["diagnostics"]["manual_probe_command"]
 
     assert by_id["corp-agent"]["owner"] == "agent_cli"
     assert by_id["corp-agent"]["command"] == ["corp-agent", "run"]
     assert by_id["corp-agent"]["capabilities"]["prompt_transport"] == "stdin"
+    assert by_id["corp-agent"]["diagnostics"]["startup_probe_transport"] == "stdin"
+    assert by_id["corp-agent"]["diagnostics"]["health_endpoint"] == "/api/tools/corp-agent/health"
 
     assert by_id["fast-context"]["owner"] == "codetalk_mcp_bridge"
     assert by_id["fast-context"]["status"] == "bridge_disabled"
     assert by_id["fast-context"]["non_blocking"] is True
     assert "continues" in by_id["fast-context"]["unavailable_behavior"]
+    assert by_id["fast-context"]["diagnostics"]["codetalk_callable"] is False
+    assert "Agent CLIs may still call their own MCP" in by_id["fast-context"]["diagnostics"]["credential_boundary"]
 
     assert by_id["local-search"]["owner"] == "codetalk_builtin"
     assert by_id["local-search"]["status"] == "available"
@@ -126,6 +139,7 @@ async def test_workbench_provider_capabilities_matrix_api(workbench_client, monk
     assert by_id["gitnexus"]["owner"] == "codetalk_index"
     assert by_id["gitnexus"]["non_blocking"] is True
     assert by_id["gitnexus"]["capabilities"]["supports_source_discovery"] is True
+    assert by_id["gitnexus"]["diagnostics"]["startup_probe_endpoint"] == "/api/tools/gitnexus/startup-probe"
 
     assert by_id["cgc"]["owner"] == "codetalk_index"
     assert by_id["cgc"]["capabilities"]["supports_call_graph"] is True

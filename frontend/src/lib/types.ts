@@ -155,6 +155,22 @@ export interface WorkbenchProviderMatrixItem {
   command_hint_env: string;
   capabilities: AgentProviderCapabilities;
   credential_boundary?: string;
+  diagnostics?: {
+    owner?: string;
+    status?: string;
+    codetalk_callable?: boolean;
+    health_endpoint?: string;
+    startup_probe_endpoint?: string;
+    configured_command_text?: string;
+    fallback_command_texts?: string[];
+    prompt_transport?: string;
+    startup_probe_transport?: string;
+    manual_probe_command?: string;
+    mcp_credentials_owner?: string;
+    codetalk_validation_role?: string;
+    credential_boundary?: string;
+    troubleshooting?: string[];
+  };
   unavailable_behavior: string;
 }
 

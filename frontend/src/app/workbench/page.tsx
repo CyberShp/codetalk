@@ -648,6 +648,37 @@ export default function AgentWorkbenchPage() {
                   {provider.credential_boundary}
                 </p>
               )}
+              {provider.diagnostics && (
+                <div className="mt-3 space-y-1 border-t border-outline-variant/30 pt-3 text-on-surface-variant">
+                  {provider.diagnostics.startup_probe_endpoint && (
+                    <p className="break-words">
+                      Probe:{" "}
+                      <span className="font-data text-on-surface">
+                        {provider.diagnostics.startup_probe_endpoint}
+                      </span>
+                    </p>
+                  )}
+                  {provider.diagnostics.startup_probe_transport && (
+                    <p>
+                      Transport:{" "}
+                      <span className="font-data text-on-surface">
+                        {provider.diagnostics.startup_probe_transport}
+                      </span>
+                    </p>
+                  )}
+                  {provider.diagnostics.manual_probe_command && (
+                    <p className="break-words">
+                      Manual:{" "}
+                      <span className="font-data text-on-surface">
+                        {provider.diagnostics.manual_probe_command}
+                      </span>
+                    </p>
+                  )}
+                  {provider.diagnostics.troubleshooting?.[0] && (
+                    <p className="leading-5">{provider.diagnostics.troubleshooting[0]}</p>
+                  )}
+                </div>
+              )}
             </div>
           ))}
           {!providerMatrix && (

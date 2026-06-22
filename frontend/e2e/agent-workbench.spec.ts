@@ -62,6 +62,20 @@ async function routeWorkbenchShell(page: import("@playwright/test").Page) {
             },
             credential_boundary:
               "Agent CLI owns its own MCP credentials and remote access; CodeTalk only validates returned artifacts.",
+            diagnostics: {
+              health_endpoint: "/api/tools/claude-code/health",
+              startup_probe_endpoint: "/api/tools/claude-code/startup-probe",
+              configured_command_text: "ccr code",
+              fallback_command_texts: ["claude"],
+              prompt_transport: "claude_print_arg",
+              startup_probe_transport: "claude_print_arg",
+              manual_probe_command:
+                "POST /api/tools/claude-code/startup-probe with repo_path, then verify the same backend shell can launch: ccr code",
+              mcp_credentials_owner: "agent_cli",
+              troubleshooting: [
+                "PowerShell profile, PATH, and service account environment may differ from an interactive terminal.",
+              ],
+            },
             unavailable_behavior: "Workflow continues with diagnostics.",
           },
           {
@@ -114,6 +128,16 @@ async function routeWorkbenchShell(page: import("@playwright/test").Page) {
             },
             credential_boundary:
               "CodeTalk can call this MCP only when the backend bridge exposes it.",
+            diagnostics: {
+              owner: "codetalk_mcp_bridge",
+              status: "bridge_disabled",
+              codetalk_callable: false,
+              credential_boundary:
+                "CodeTalk can call fast-context only through an exposed backend MCP bridge. Agent CLIs may still call their own MCP servers with their own credentials.",
+              troubleshooting: [
+                "If AGENTS.md requires fast-context but this bridge is disabled, CodeTalk records the gap and uses local search plus Agent CLI discovery.",
+              ],
+            },
             unavailable_behavior: "CodeTalk records unavailable and continues.",
           },
         ],
@@ -132,7 +156,12 @@ test("agent workbench renders workflow and task-run controls", async ({ page }) 
 
   await expect(page.getByRole("heading", { name: "Agent Workbench" })).toBeVisible();
   await expect(page.getByRole("heading", { name: "Provider Matrix" })).toBeVisible();
-  await expect(page.getByText("ccr code")).toBeVisible();
+  await expect(page.getByText("ccr code", { exact: true })).toBeVisible();
+  await expect(
+    page.getByText("/api/tools/claude-code/startup-probe", { exact: true }),
+  ).toBeVisible();
+  await expect(page.getByText("claude_print_arg").first()).toBeVisible();
+  await expect(page.getByText(/PowerShell profile/)).toBeVisible();
   await expect(page.getByText("Agent-owned").first()).toBeVisible();
   await expect(page.getByText("CodeTalk callable").first()).toBeVisible();
   await expect(page.getByText("Local repo search")).toBeVisible();
@@ -370,7 +399,7 @@ test("agent workbench previews task run artifact content", async ({ page }) => {
   );
 
   await page.goto("/workbench", { waitUntil: "domcontentloaded" });
-  await expect(page.getByText("ccr code")).toBeVisible();
+  await expect(page.getByText("ccr code", { exact: true })).toBeVisible();
   const preparePanel = page
     .locator("section")
     .filter({ has: page.getByRole("heading", { name: "Prepare Task Run" }) });

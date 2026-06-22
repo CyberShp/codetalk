@@ -455,6 +455,7 @@ def build_agent_provider_snapshot(
                 "credential_boundary": (
                     "Provider is not configured; CodeTalk cannot launch it or validate its capability claims."
                 ),
+                "diagnostics": _unknown_agent_cli_provider_diagnostics(provider),
             }
             warnings.append(f"{provider}: provider is not configured")
             continue
@@ -479,6 +480,7 @@ def build_agent_provider_snapshot(
                 "Agent CLI owns its own MCP credentials and remote access; CodeTalk only "
                 "passes task bundles and validates returned artifacts."
             ),
+            "diagnostics": build_agent_cli_provider_diagnostics(provider, spec),
         }
         if not spec.command:
             warnings.append(f"{provider}: command is not configured")
@@ -616,7 +618,116 @@ def _codetalk_provider_snapshot_item(
         "capabilities": capabilities,
         "credential_boundary": "CodeTalk owns this provider and validates any materialized evidence locally.",
         "unavailable_behavior": unavailable_behavior,
+        "diagnostics": _codetalk_provider_diagnostics(
+            provider=provider,
+            owner=owner,
+            status=status,
+            codetalk_callable=status in {"available", "configured"},
+        ),
     }
+
+
+def build_agent_cli_provider_diagnostics(provider: str, spec: Any) -> dict[str, Any]:
+    """Return side-effect-free launch diagnostics for Agent-owned providers."""
+    command_text = str(getattr(spec, "command", "") or "").strip()
+    fallback_texts = [
+        str(command).strip()
+        for command in getattr(spec, "fallback_commands", []) or []
+        if str(command).strip()
+    ]
+    prompt_transport = str(getattr(spec, "prompt_transport", "") or "auto").strip() or "auto"
+    command_hint_env = str(getattr(spec, "command_hint_env", "") or "").strip()
+    manual_probe = (
+        f"POST /api/tools/{provider}/startup-probe with repo_path, then verify the "
+        f"same backend shell can launch: {command_text or provider}"
+    )
+    hints = [
+        (
+            "PowerShell profile, PATH, and service account environment may differ from "
+            "an interactive terminal; verify the backend process can resolve the command."
+        ),
+        (
+            "For CCR/Claude Code Router, prefer configuring claude_code_command as "
+            "`ccr code` and run the startup probe to validate non-interactive launch mode."
+        ),
+        (
+            "MCP credentials belong to the Agent CLI process. CodeTalk passes task "
+            "bundles and validates artifacts; it does not fetch protected MR data itself."
+        ),
+    ]
+    if command_hint_env:
+        hints.append(f"Override this provider with {command_hint_env} when backend PATH differs.")
+    return {
+        "health_endpoint": f"/api/tools/{provider}/health",
+        "startup_probe_endpoint": f"/api/tools/{provider}/startup-probe",
+        "configured_command_text": command_text,
+        "fallback_command_texts": fallback_texts,
+        "prompt_transport": prompt_transport,
+        "startup_probe_transport": prompt_transport,
+        "manual_probe_command": manual_probe,
+        "mcp_credentials_owner": "agent_cli",
+        "codetalk_validation_role": (
+            "CodeTalk treats Agent output as candidate evidence until local artifact, "
+            "path, schema, or source-slice validation accepts it."
+        ),
+        "troubleshooting": hints,
+    }
+
+
+def _unknown_agent_cli_provider_diagnostics(provider: str) -> dict[str, Any]:
+    return {
+        "health_endpoint": f"/api/tools/{provider}/health",
+        "startup_probe_endpoint": f"/api/tools/{provider}/startup-probe",
+        "configured_command_text": "",
+        "fallback_command_texts": [],
+        "prompt_transport": "",
+        "startup_probe_transport": "",
+        "manual_probe_command": f"Configure external_agent_custom_providers for {provider}.",
+        "mcp_credentials_owner": "agent_cli",
+        "codetalk_validation_role": "No Agent output can be trusted until the provider is configured and artifacts validate.",
+        "troubleshooting": [
+            "Provider is referenced by a workflow but missing from CodeTalk settings.",
+            "Add it to external_agent_custom_providers with command and prompt_transport.",
+        ],
+    }
+
+
+def _codetalk_provider_diagnostics(
+    *,
+    provider: str,
+    owner: str,
+    status: str,
+    codetalk_callable: bool,
+) -> dict[str, Any]:
+    diagnostics: dict[str, Any] = {
+        "owner": owner,
+        "status": status,
+        "codetalk_callable": codetalk_callable,
+        "health_endpoint": "",
+        "startup_probe_endpoint": "",
+        "credential_boundary": "CodeTalk owns this provider and uses backend credentials/configuration.",
+        "troubleshooting": [],
+    }
+    if provider in {"gitnexus", "cgc"}:
+        diagnostics["health_endpoint"] = f"/api/tools/{provider}/health"
+        diagnostics["startup_probe_endpoint"] = f"/api/tools/{provider}/startup-probe"
+        diagnostics["troubleshooting"] = [
+            f"Run the startup probe for {provider} with repo_path before trusting graph/index coverage.",
+            "Unavailable index providers are non-blocking; local search and Agent CLI discovery continue.",
+        ]
+    elif provider == "local-search":
+        diagnostics["troubleshooting"] = [
+            "Requires only a readable repo_path; failures usually mean the task repository path is wrong."
+        ]
+    elif provider == "evidence-memory":
+        diagnostics["troubleshooting"] = [
+            "No matches means no prior validated facts, not an infrastructure failure."
+        ]
+    elif provider == "semantic-library":
+        diagnostics["troubleshooting"] = [
+            "No matches means imported test semantics do not cover this module or feature yet."
+        ]
+    return diagnostics
 
 
 def build_context_discovery_decision(

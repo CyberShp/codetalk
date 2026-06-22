@@ -444,11 +444,20 @@ def test_prepare_workbench_task_run_embeds_agent_provider_snapshot(tmp_path, mon
     assert known["capabilities"]["supports_mcp"] is True
     assert known["agent_owned"] is True
     assert known["codetalk_callable"] is False
+    assert known["diagnostics"]["health_endpoint"] == "/api/tools/corp-agent/health"
+    assert known["diagnostics"]["startup_probe_endpoint"] == "/api/tools/corp-agent/startup-probe"
+    assert known["diagnostics"]["configured_command_text"] == "corp-agent run --json"
+    assert known["diagnostics"]["fallback_command_texts"] == ["corp-agent --legacy"]
+    assert known["diagnostics"]["mcp_credentials_owner"] == "agent_cli"
     assert snapshot["steps"]["known"]["provider"] == "corp-agent"
     assert snapshot["providers"]["missing-agent"]["status"] == "unknown_provider"
+    assert snapshot["providers"]["missing-agent"]["diagnostics"]["manual_probe_command"]
     assert snapshot["codetalk_providers"]["local-search"]["codetalk_callable"] is True
     assert snapshot["codetalk_providers"]["local-search"]["capabilities"]["supports_source_slices"] is True
     assert snapshot["codetalk_providers"]["gitnexus"]["owner"] == "codetalk_index"
+    assert snapshot["codetalk_providers"]["gitnexus"]["diagnostics"]["startup_probe_endpoint"] == (
+        "/api/tools/gitnexus/startup-probe"
+    )
     assert snapshot["codetalk_providers"]["cgc"]["capabilities"]["supports_call_graph"] is True
     assert snapshot["codetalk_providers"]["evidence-memory"]["owner"] == "codetalk_memory"
     assert snapshot["codetalk_providers"]["semantic-library"]["capabilities"]["supports_black_box_terms"] is True
@@ -462,6 +471,7 @@ def test_prepare_workbench_task_run_embeds_agent_provider_snapshot(tmp_path, mon
         Path(result.artifact_dir, "agent_runs", "known", "task_bundle.json").read_text(encoding="utf-8")
     )
     assert step_bundle["provider_snapshot"]["providers"]["corp-agent"]["status"] == "configured"
+    assert step_bundle["provider_snapshot"]["providers"]["corp-agent"]["diagnostics"]["manual_probe_command"]
     assert step_bundle["provider_snapshot"]["codetalk_providers"]["gitnexus"]["owner"] == "codetalk_index"
 
 

@@ -25,6 +25,7 @@ from app.services.test_semantic_library import (
 )
 from app.services.workbench_task_run import WorkbenchTaskRunPreparer
 from app.services.workbench_task_run import WorkbenchTaskRunStore
+from app.services.workbench_task_run import build_agent_cli_provider_diagnostics
 from app.services.workbench_task_run import build_codetalk_provider_snapshot
 from app.services.workbench_workflow_runner import WorkbenchWorkflowRunner
 from app.services.workflow_dsl import WorkflowStore, WorkflowValidationError
@@ -589,6 +590,7 @@ def _agent_cli_provider_matrix_item(provider_id: str, spec: Any) -> dict[str, An
             "Agent CLI owns its own MCP credentials and remote access; CodeTalk only "
             "passes task bundles and validates returned artifacts."
         ),
+        "diagnostics": build_agent_cli_provider_diagnostics(provider_id, spec),
         "unavailable_behavior": (
             "Workflow preparation continues; execution records unavailable or failed "
             "Agent diagnostics without trusting unvalidated output."
@@ -633,6 +635,21 @@ def _fast_context_provider_matrix_item() -> dict[str, Any]:
             "CodeTalk can call this MCP only when the backend bridge exposes it; "
             "otherwise Agent CLIs may still have their own fast-context MCP."
         ),
+        "diagnostics": {
+            "owner": "codetalk_mcp_bridge",
+            "status": status,
+            "codetalk_callable": status == "configured",
+            "health_endpoint": "",
+            "startup_probe_endpoint": "",
+            "credential_boundary": (
+                "CodeTalk can call fast-context only through an exposed backend MCP bridge. "
+                "Agent CLIs may still call their own MCP servers with their own credentials."
+            ),
+            "troubleshooting": [
+                "If AGENTS.md requires fast-context but this bridge is disabled, CodeTalk records the gap and uses local search plus Agent CLI discovery.",
+                "When an Agent CLI owns fast-context credentials, expose that requirement in the workflow task bundle instead of expecting CodeTalk to call it.",
+            ],
+        },
         "unavailable_behavior": (
             "CodeTalk records fast-context as unavailable and continues with local "
             "search, GitNexus/CGC, and Agent CLI providers."
