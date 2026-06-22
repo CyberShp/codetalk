@@ -288,6 +288,17 @@ def test_agent_run_harness_executes_cli_with_task_bundle_and_audit_events(tmp_pa
     assert execution_input["command"] == ["python", "-c", script, str(output_file)]
     assert execution_input["cwd"] == str(tmp_path)
     assert execution_input["timeout_sec"] == 10
+    assert execution_input["turn_id"] == "turn_1"
+    assert execution_input["task_bundle_sha256"]
+    assert execution_input["workflow_snapshot_sha256"]
+    run_payload = json.loads((artifact_dir / "agent_run.json").read_text(encoding="utf-8"))
+    assert run_payload["turn_id"] == "turn_1"
+    events = [
+        json.loads(line)
+        for line in (artifact_dir / "runtime_events.jsonl").read_text(encoding="utf-8").splitlines()
+        if line.strip()
+    ]
+    assert all(event.get("turn_id") == "turn_1" for event in events)
     assert execution_input["env_hints"] == {
         "CODETALK_AGENT_READONLY": "1",
         "CODETALK_REPO_PATH": str(tmp_path),

@@ -22,9 +22,15 @@ def _new_id(prefix: str) -> str:
     return f"{prefix}_{uuid.uuid4().hex}"
 
 
+def _json_sha256(payload: Any) -> str:
+    data = json.dumps(payload, ensure_ascii=False, sort_keys=True).encode("utf-8")
+    return hashlib.sha256(data).hexdigest()
+
+
 @dataclass(frozen=True)
 class AgentRunRecord:
     run_id: str
+    turn_id: str
     provider: str
     command: list[str]
     cwd: str
@@ -74,9 +80,11 @@ class AgentRunHarness:
         task_bundle: dict[str, Any],
         mcp_profile: str = "",
         run_id: str | None = None,
+        turn_id: str = "turn_1",
     ) -> AgentRunRecord:
         run = AgentRunRecord(
             run_id=run_id or _new_id("agent_run"),
+            turn_id=turn_id or "turn_1",
             provider=provider,
             command=[str(part) for part in command],
             cwd=cwd,
@@ -89,6 +97,12 @@ class AgentRunHarness:
         return run
 
     def record_raw_output(self, run_id: str, *, stdout: str, stderr: str = "") -> None:
+        run_payload = self._read_json_file("agent_run.json")
+        turn_id = (
+            str(run_payload.get("turn_id") or "turn_1")
+            if isinstance(run_payload, dict)
+            else "turn_1"
+        )
         payload = "\n".join(part for part in [stdout, stderr] if part)
         self._write_text("raw_output.txt", _redact(payload))
         self._write_json(
@@ -96,6 +110,7 @@ class AgentRunHarness:
             {
                 "event": "raw_output_recorded",
                 "run_id": run_id,
+                "turn_id": turn_id,
                 "created_at": _now(),
             },
             append_jsonl=True,
@@ -114,8 +129,10 @@ class AgentRunHarness:
 
         task_bundle = self._read_json_file("task_bundle.json")
         workflow_snapshot = self._read_json_file("workflow_snapshot.json")
+        turn_id = str(run_payload.get("turn_id") or "turn_1")
         stdin_payload_obj = {
             "run_id": run_id,
+            "turn_id": turn_id,
             "provider": run_payload.get("provider") or "",
             "mcp_profile": run_payload.get("mcp_profile") or "",
             "workflow_snapshot": workflow_snapshot if isinstance(workflow_snapshot, dict) else {},
@@ -123,6 +140,10 @@ class AgentRunHarness:
             "artifact_dir": str(self.artifact_dir),
         }
         stdin_payload = json.dumps(stdin_payload_obj, ensure_ascii=False)
+        task_bundle_sha256 = _json_sha256(task_bundle if isinstance(task_bundle, dict) else {})
+        workflow_snapshot_sha256 = _json_sha256(
+            workflow_snapshot if isinstance(workflow_snapshot, dict) else {}
+        )
         env_hints = {
             "CODETALK_AGENT_READONLY": "1",
             "CODETALK_REPO_PATH": cwd,
@@ -132,12 +153,15 @@ class AgentRunHarness:
             "execution_input.json",
             {
                 "run_id": run_id,
+                "turn_id": turn_id,
                 "provider": run_payload.get("provider") or "",
                 "command": command,
                 "cwd": cwd,
                 "timeout_sec": max(1, int(timeout_sec)),
                 "mcp_profile": run_payload.get("mcp_profile") or "",
                 "env_hints": env_hints,
+                "task_bundle_sha256": task_bundle_sha256,
+                "workflow_snapshot_sha256": workflow_snapshot_sha256,
                 "stdin": stdin_payload_obj,
                 "stdin_json_sha256": hashlib.sha256(
                     stdin_payload.encode("utf-8")
@@ -151,7 +175,10 @@ class AgentRunHarness:
             {
                 "event": "agent_execution_input_prepared",
                 "run_id": run_id,
+                "turn_id": turn_id,
                 "artifact": "execution_input.json",
+                "task_bundle_sha256": task_bundle_sha256,
+                "workflow_snapshot_sha256": workflow_snapshot_sha256,
                 "created_at": started_at,
             },
             append_jsonl=True,
@@ -161,6 +188,7 @@ class AgentRunHarness:
             {
                 "event": "agent_run_started",
                 "run_id": run_id,
+                "turn_id": turn_id,
                 "command": command,
                 "created_at": started_at,
             },
@@ -217,6 +245,7 @@ class AgentRunHarness:
             {
                 "event": "agent_run_completed",
                 "run_id": run_id,
+                "turn_id": turn_id,
                 "status": status,
                 "exit_code": exit_code,
                 "timed_out": timed_out,

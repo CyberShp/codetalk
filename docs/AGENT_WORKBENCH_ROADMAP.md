@@ -39,6 +39,7 @@ Current implementation note:
 - Workbench artifact preview renders `evidence_validation.json` with accepted/rejected counts and accepted artifact sha256 snippets, so validation evidence is visible without reading raw JSON first.
 - Workbench provider matrix now separates CodeTalk built-in/local providers, CodeTalk index providers, CodeTalk memory providers, CodeTalk MCP bridge providers, and Agent-owned CLI providers. The same capability boundary is visible in the UI and persisted in task bundles through `provider_snapshot.json`.
 - Workbench `report_render` includes artifact validation details and Evidence Memory source slices, so final reports show accepted/rejected artifacts, sha256 values, and verified source line ranges instead of only high-level task summaries.
+- Agent run envelopes now include `turn_id`, `task_bundle_sha256`, and `workflow_snapshot_sha256` in execution artifacts and runtime events, so disposable Agent CLI processes still have auditable task-continuity metadata.
 
 ## Repo Agent Instructions
 
