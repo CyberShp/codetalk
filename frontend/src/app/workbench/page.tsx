@@ -1100,6 +1100,16 @@ export default function AgentWorkbenchPage() {
                   {item.reason && (
                     <p className="mt-1 text-on-surface-variant">{item.reason}</p>
                   )}
+                  {item.source_slices && item.source_slices.length > 0 && (
+                    <div className="mt-2 space-y-1 text-on-surface-variant">
+                      {item.source_slices.slice(0, 3).map((slice) => (
+                        <p key={slice.slice_id} className="break-words font-data text-[11px]">
+                          slice {slice.file_path}:{slice.start_line}-{slice.end_line} sha:
+                          {slice.sha256.slice(0, 12)}
+                        </p>
+                      ))}
+                    </div>
+                  )}
                 </div>
               ))}
             </div>

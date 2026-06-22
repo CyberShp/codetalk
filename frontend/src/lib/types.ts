@@ -253,6 +253,17 @@ export interface SemanticCase {
   raw: Record<string, unknown>;
 }
 
+export interface EvidenceSourceSlice {
+  slice_id: string;
+  evidence_id: string;
+  file_path: string;
+  start_line: number;
+  end_line: number;
+  sha256: string;
+  excerpt: string;
+  created_at: string;
+}
+
 export interface EvidenceMemoryItem {
   evidence_id: string;
   run_id: string;
@@ -267,6 +278,7 @@ export interface EvidenceMemoryItem {
   confidence?: number | null;
   text: string;
   provenance: Record<string, unknown>;
+  source_slices?: EvidenceSourceSlice[];
   created_at: string;
   updated_at: string;
 }
@@ -717,6 +729,9 @@ export interface CoverageBlackBoxCase {
   expected?: string;
   observable_signals?: string[];
   evidence?: string | null;
+  evidence_memory_refs?: string[];
+  evidence_memory_subjects?: string[];
+  evidence_source_slices?: EvidenceSourceSlice[];
 }
 
 export interface CoverageGrayBox {
@@ -813,6 +828,7 @@ export interface CoverageModuleResult {
   ai_scenario_count?: number;
   deterministic_case_role?: string;
   evidence_gaps?: string[];
+  evidence_memory?: EvidenceMemoryItem[];
   tool_status?: CoverageToolStatus;
   // branch-gap fields
   branch?: string;

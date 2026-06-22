@@ -110,7 +110,7 @@ test("agent workbench renders workflow and task-run controls", async ({ page }) 
 
 test("agent workbench searches semantic cases and evidence memory", async ({ page }) => {
   await routeWorkbenchShell(page);
-  await page.route("**/api/workbench/semantic-cases/search*", async (route) => {
+  await page.route("**:8100/api/workbench/semantic-cases/search*", async (route) => {
     await route.fulfill({
       headers: corsHeaders(route.request().headers().origin),
       json: {
@@ -134,11 +134,70 @@ test("agent workbench searches semantic cases and evidence memory", async ({ pag
       },
     });
   });
+  await page.route("**:8100/api/workbench/memory/search*", async (route) => {
+    await route.fulfill({
+      headers: corsHeaders(route.request().headers().origin),
+      json: {
+        items: [
+          {
+            evidence_id: "ev_tls_cleanup",
+            run_id: "run_tls",
+            workspace_id: "ws_tls",
+            kind: "source_file",
+            subject_key: "nof/nvmf_tcp/transport/tls/tls.c",
+            status: "verified_output",
+            source: "external_agent",
+            path: "nof/nvmf_tcp/transport/tls/tls.c",
+            symbol: "nvmf_tcp_tls_handshake",
+            reason: "validated TLS source",
+            confidence: 0.9,
+            text: "nvme tcp tls handshake cleanup",
+            provenance: {},
+            source_slices: [
+              {
+                slice_id: "slice_tls",
+                evidence_id: "ev_tls_cleanup",
+                file_path: "nof/nvmf_tcp/transport/tls/tls.c",
+                start_line: 10,
+                end_line: 18,
+                sha256: "slicehash1234567890",
+                excerpt: "int nvmf_tcp_tls_handshake(void) { return 0; }",
+                created_at: "2026-06-23T00:00:00Z",
+              },
+            ],
+            created_at: "2026-06-23T00:00:00Z",
+            updated_at: "2026-06-23T00:00:00Z",
+          },
+        ],
+      },
+    });
+  });
   await page.goto("/workbench", { waitUntil: "domcontentloaded" });
+  await page.waitForLoadState("networkidle");
+  await expect(page.getByRole("heading", { name: "Evidence Memory" })).toBeVisible();
 
-  await page.getByRole("button", { name: "Search", exact: true }).click();
-  await expect(page.getByText("TLS handshake fails and connection is released")).toBeVisible();
+  await Promise.all([
+    page.waitForResponse((response) =>
+      response.url().includes("/api/workbench/semantic-cases/search") &&
+      response.status() === 200,
+    ),
+    page.getByRole("button", { name: "Search", exact: true }).click(),
+  ]);
+  await expect(page.getByText("Semantic results: 1")).toBeVisible();
+  await expect(
+    page.getByText("TLS handshake fails and connection is released", { exact: true }),
+  ).toBeVisible();
   await expect(page.getByText("Memory facts are structured evidence only")).toBeVisible();
+  await Promise.all([
+    page.waitForResponse((response) =>
+      response.url().includes("/api/workbench/memory/search") &&
+      response.status() === 200,
+    ),
+    page.getByRole("button", { name: "Search memory" }).click(),
+  ]);
+  await expect(page.getByText("Memory results: 1")).toBeVisible();
+  await expect(page.getByText("nof/nvmf_tcp/transport/tls/tls.c").first()).toBeVisible();
+  await expect(page.getByText("slicehash123")).toBeVisible();
 });
 
 test("agent workbench previews task run artifact content", async ({ page }) => {

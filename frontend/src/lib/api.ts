@@ -27,6 +27,7 @@ import type {
   WorkflowPreset,
   SemanticCase,
   EvidenceMemoryItem,
+  EvidenceSourceSlice,
   AgentRunRecord,
   ArtifactValidationResult,
   AgentRunExecutionResult,
@@ -568,6 +569,11 @@ export const api = {
           `/api/workbench/memory/search?${query.toString()}`,
         );
       },
+
+      sourceSlices: (evidenceId: string) =>
+        request<{ items: EvidenceSourceSlice[] }>(
+          `/api/workbench/memory/evidence/${encodeURIComponent(evidenceId)}/source-slices`,
+        ),
 
       recent: (params?: { workspace_id?: string; limit?: number }) => {
         const query = new URLSearchParams({
