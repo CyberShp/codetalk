@@ -160,6 +160,15 @@ class AgentRunHarness:
             "CODETALK_REPO_PATH": cwd,
             "CODETALK_AGENT_ARTIFACT_DIR": str(self.artifact_dir),
         }
+        launch_command, command_resolution = _launch_command_from_provider_health(
+            command,
+            provider_diagnostics,
+        )
+        process_command, stdin_payload_bytes, prompt_transport = _agent_process_invocation_for_harness(
+            provider=str(run_payload.get("provider") or ""),
+            command=launch_command,
+            prompt=stdin_payload,
+        )
         self._write_json(
             "execution_input.json",
             {
@@ -167,6 +176,10 @@ class AgentRunHarness:
                 "turn_id": turn_id,
                 "provider": run_payload.get("provider") or "",
                 "command": command,
+                "launch_command": launch_command,
+                "command_resolution": command_resolution,
+                "process_command": process_command,
+                "prompt_transport": prompt_transport,
                 "cwd": cwd,
                 "timeout_sec": max(1, int(timeout_sec)),
                 "mcp_profile": run_payload.get("mcp_profile") or "",
@@ -205,12 +218,19 @@ class AgentRunHarness:
                 "run_id": run_id,
                 "turn_id": turn_id,
                 "command": command,
+                "launch_command": launch_command,
+                "command_resolution": command_resolution,
+                "process_command": process_command,
+                "prompt_transport": prompt_transport,
                 "created_at": started_at,
             },
             append_jsonl=True,
         )
         started = datetime.now(timezone.utc)
-        env = os.environ.copy()
+        env = _agent_process_env_for_harness(
+            provider=str(run_payload.get("provider") or ""),
+            repo_path=cwd,
+        )
         env.update(env_hints)
 
         exit_code: int | None = None
@@ -220,18 +240,17 @@ class AgentRunHarness:
         error = ""
         try:
             completed = subprocess.run(
-                command,
+                process_command,
                 cwd=cwd,
-                input=stdin_payload,
-                text=True,
+                input=stdin_payload_bytes,
                 capture_output=True,
                 timeout=max(1, int(timeout_sec)),
                 env=env,
                 check=False,
             )
             exit_code = completed.returncode
-            stdout = completed.stdout or ""
-            stderr = completed.stderr or ""
+            stdout = _decode_subprocess_text(completed.stdout)
+            stderr = _decode_subprocess_text(completed.stderr)
         except subprocess.TimeoutExpired as exc:
             timed_out = True
             stdout = _decode_subprocess_text(exc.stdout)
@@ -485,6 +504,63 @@ def _context_discovery_decision_summary(task_bundle: dict[str, Any]) -> dict[str
     return summary
 
 
+def _agent_process_invocation_for_harness(
+    *,
+    provider: str,
+    command: list[str],
+    prompt: str,
+) -> tuple[list[str], bytes, str]:
+    """Reuse external-agent prompt transport rules for Workbench task runs."""
+    try:
+        from app.services.external_agent_discovery import _agent_process_invocation
+
+        return _agent_process_invocation(provider, command, prompt)
+    except Exception:
+        return list(command), prompt.encode("utf-8"), "stdin"
+
+
+def _agent_process_env_for_harness(*, provider: str, repo_path: str) -> dict[str, str]:
+    """Use the same environment hints as source discovery, including CCR config."""
+    try:
+        from app.services.external_agent_discovery import _agent_process_env
+
+        return _agent_process_env(provider, repo_path)
+    except Exception:
+        return os.environ.copy()
+
+
+def _launch_command_from_provider_health(
+    configured_command: list[str],
+    provider_diagnostics: dict[str, Any],
+) -> tuple[list[str], dict[str, Any]]:
+    health = provider_diagnostics.get("health")
+    if not isinstance(health, dict) or health.get("status") != "available":
+        return list(configured_command), {"source": "configured_command"}
+    argv = health.get("argv")
+    if not isinstance(argv, list) or not argv:
+        return list(configured_command), {"source": "configured_command", "reason": "health_argv_missing"}
+    launch_kind = str(health.get("launch_kind") or "")
+    should_use_health_argv = (
+        bool(provider_diagnostics.get("provider_snapshot_present"))
+        or bool(health.get("used_fallback", False))
+        or launch_kind in {"powershell", "powershell-profile", "powershell-script"}
+    )
+    if not should_use_health_argv:
+        return list(configured_command), {
+            "source": "configured_command",
+            "health_status": "available",
+            "reason": "ad_hoc_command_preserved",
+        }
+    launch_command = [str(part) for part in argv]
+    return launch_command, {
+        "source": "provider_health",
+        "used_fallback": bool(health.get("used_fallback", False)),
+        "launch_kind": launch_kind,
+        "configured_command": str(health.get("configured_command") or ""),
+        "path": str(health.get("path") or ""),
+    }
+
+
 def _provider_diagnostics_snapshot(
     *,
     run_payload: dict[str, Any],
@@ -516,6 +592,7 @@ def _provider_diagnostics_snapshot(
     return {
         "provider": provider,
         "status": str(provider_info.get("status") or "unknown") if provider_info else "unknown",
+        "provider_snapshot_present": bool(provider_info),
         "owner": str(provider_info.get("owner") or "agent_cli") if provider_info else "agent_cli",
         "agent_owned": bool(provider_info.get("agent_owned", True)) if provider_info else True,
         "codetalk_callable": bool(provider_info.get("codetalk_callable", False)) if provider_info else False,

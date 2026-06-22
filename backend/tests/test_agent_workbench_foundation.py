@@ -1,5 +1,6 @@
 import hashlib
 import json
+import sys
 
 import pytest
 
@@ -362,6 +363,9 @@ def test_agent_run_harness_executes_cli_with_task_bundle_and_audit_events(tmp_pa
     execution_input = json.loads((artifact_dir / "execution_input.json").read_text(encoding="utf-8"))
     assert execution_input["stdin"]["task_bundle"]["task_id"] == "task-42"
     assert execution_input["command"] == ["python", "-c", script, str(output_file)]
+    assert execution_input["launch_command"][1:] == execution_input["command"][1:]
+    assert execution_input["process_command"][1:] == execution_input["command"][1:]
+    assert execution_input["prompt_transport"] == "stdin"
     assert execution_input["cwd"] == str(tmp_path)
     assert execution_input["timeout_sec"] == 10
     assert execution_input["turn_id"] == "turn_1"
@@ -397,3 +401,111 @@ def test_agent_run_harness_executes_cli_with_task_bundle_and_audit_events(tmp_pa
     assert "agent_execution_input_prepared" in events
     assert "agent_run_started" in events
     assert "agent_run_completed" in events
+
+
+def test_agent_run_harness_uses_provider_prompt_transport_for_argv_last(
+    tmp_path, monkeypatch
+):
+    from app.config import settings
+    from app.services.agent_run_harness import AgentRunHarness
+
+    monkeypatch.setattr(settings, "external_agent_custom_providers", [
+        {
+            "id": "local-argv-agent",
+            "command": "python",
+            "prompt_transport": "argv_last",
+        }
+    ])
+    artifact_dir = tmp_path / "agent-run-argv"
+    output_file = artifact_dir / "agent_seen.json"
+    script = (
+        "import json, pathlib, sys; "
+        "payload=json.loads(sys.argv[2]); "
+        "pathlib.Path(sys.argv[1]).write_text(json.dumps({"
+        "'bundle_id': payload['task_bundle']['task_id'], "
+        "'stdin_empty': sys.stdin.read() == ''"
+        "}), encoding='utf-8')"
+    )
+    harness = AgentRunHarness(artifact_dir)
+    run = harness.create_run(
+        run_id="agent_run_argv",
+        provider="local-argv-agent",
+        command=["python", "-c", script, str(output_file)],
+        cwd=str(tmp_path),
+        workflow_snapshot={"id": "wf"},
+        task_bundle={"task_id": "task-argv"},
+    )
+
+    executed = harness.execute_run(run.run_id, timeout_sec=10)
+
+    assert executed.status == "completed"
+    seen = json.loads(output_file.read_text(encoding="utf-8"))
+    assert seen == {"bundle_id": "task-argv", "stdin_empty": True}
+    execution_input = json.loads((artifact_dir / "execution_input.json").read_text(encoding="utf-8"))
+    assert execution_input["command"] == ["python", "-c", script, str(output_file)]
+    assert execution_input["process_command"][1:-1] == execution_input["command"][1:]
+    assert json.loads(execution_input["process_command"][-1])["task_bundle"]["task_id"] == "task-argv"
+    assert execution_input["prompt_transport"] == "argv"
+
+
+def test_agent_run_harness_executes_provider_health_fallback_command(
+    tmp_path, monkeypatch
+):
+    from app.config import settings
+    from app.services.agent_run_harness import AgentRunHarness
+
+    artifact_dir = tmp_path / "agent-run-fallback"
+    output_file = artifact_dir / "agent_seen.json"
+    script = (
+        "import json, pathlib, sys; "
+        "payload=json.load(sys.stdin); "
+        "pathlib.Path(sys.argv[1]).write_text(json.dumps({"
+        "'bundle_id': payload['task_bundle']['task_id']"
+        "}), encoding='utf-8')"
+    )
+    fallback_command = f'"{sys.executable}" -c "{script}" "{output_file}"'
+    monkeypatch.setattr(settings, "external_agent_custom_providers", [
+        {
+            "id": "local-fallback-agent",
+            "command": "missing-codetalk-agent-command",
+            "fallback_commands": [fallback_command],
+            "prompt_transport": "stdin",
+        }
+    ])
+    task_bundle = {
+        "task_id": "task-fallback",
+        "provider_snapshot": {
+            "providers": {
+                "local-fallback-agent": {
+                    "status": "configured",
+                    "owner": "agent_cli",
+                    "agent_owned": True,
+                    "diagnostics": {
+                        "configured_command_text": "missing-codetalk-agent-command",
+                        "fallback_command_texts": [fallback_command],
+                        "prompt_transport": "stdin",
+                    },
+                }
+            }
+        },
+    }
+    harness = AgentRunHarness(artifact_dir)
+    run = harness.create_run(
+        run_id="agent_run_fallback",
+        provider="local-fallback-agent",
+        command=["missing-codetalk-agent-command"],
+        cwd=str(tmp_path),
+        workflow_snapshot={"id": "wf"},
+        task_bundle=task_bundle,
+    )
+
+    executed = harness.execute_run(run.run_id, timeout_sec=10)
+
+    assert executed.status == "completed"
+    seen = json.loads(output_file.read_text(encoding="utf-8"))
+    assert seen == {"bundle_id": "task-fallback"}
+    execution_input = json.loads((artifact_dir / "execution_input.json").read_text(encoding="utf-8"))
+    assert execution_input["command"] == ["missing-codetalk-agent-command"]
+    assert execution_input["command_resolution"]["source"] == "provider_health"
+    assert execution_input["command_resolution"]["used_fallback"] is True
+    assert execution_input["launch_command"][1:] == ["-c", script, str(output_file)]
