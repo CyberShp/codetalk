@@ -1229,6 +1229,100 @@ class TestCoverageTestDesign:
         from app.adapters.coverage import parse_internal_function_hits
         return parse_internal_function_hits(csv_text).modules
 
+    async def test_coverage_design_enriches_black_box_cases_from_semantic_library(
+        self,
+        tmp_path,
+        monkeypatch,
+    ):
+        from app.config import settings
+        from app.services.test_semantic_library import TestSemanticLibraryStore
+
+        data_dir = tmp_path / "data"
+        monkeypatch.setattr(settings, "data_dir", str(data_dir))
+        semantic_store = TestSemanticLibraryStore(data_dir / "workbench" / "test_semantics.db")
+        semantic_store.upsert_case({
+            "case_id": "TC_TLS_NEG_FAIL",
+            "feature": "NVMe TCP TLS",
+            "module": "src/session.c",
+            "scenario": "TLS negotiation fails and the connection is released",
+            "terms": ["TLS negotiation", "connection release", "recover_session"],
+            "actions": ["Create a TLS connection with invalid credentials"],
+            "expected": ["Handshake is rejected and connection resources are released"],
+            "assertion_style": "status + log + connection lifecycle",
+            "test_level": "black_box",
+            "status": "active",
+        })
+        self._make_repo(tmp_path)
+        modules = self._modules(
+            "feature,module,code_location,function,triggered,hit_count\n"
+            "tls,session,src/session.c:1-6,recover_session,false,0\n"
+        )
+
+        design = await build_coverage_test_design(
+            modules,
+            workspace_id="ws-semantic",
+            repo_path=str(tmp_path),
+        )
+
+        gap = next(g for g in design["gaps"] if g.get("function_name") == "recover_session")
+        case_text = json.dumps(gap["black_box_cases"], ensure_ascii=False)
+        assert "TC_TLS_NEG_FAIL" in case_text
+        assert "TLS negotiation" in case_text
+        assert "connection release" in case_text
+        assert gap["semantic_cases"][0]["case_id"] == "TC_TLS_NEG_FAIL"
+        assert design["test_context"]["evidence_source_counts"]["semantic_case"] == 1
+
+    async def test_coverage_design_enriches_cases_from_evidence_memory(
+        self,
+        tmp_path,
+        monkeypatch,
+    ):
+        from app.config import settings
+        from app.services.evidence_memory import EvidenceMemoryStore
+
+        data_dir = tmp_path / "data"
+        monkeypatch.setattr(settings, "data_dir", str(data_dir))
+        memory = EvidenceMemoryStore(data_dir / "workbench" / "evidence_memory.db")
+        memory.record_analysis_run(
+            run_id="run-tls-memory",
+            workspace_id="ws-memory",
+            repo_path=str(tmp_path),
+            object_text="recover_session TLS cleanup",
+            workflow_id="module_analysis",
+            status="completed",
+        )
+        memory.upsert_evidence_item(
+            evidence_id="ev_tls_cleanup",
+            run_id="run-tls-memory",
+            workspace_id="ws-memory",
+            kind="workflow_output",
+            subject_key="tls-cleanup-recommendation",
+            status="verified_output",
+            source="render_blackbox_cases",
+            path="cases.md",
+            symbol="recover_session",
+            reason="Existing black-box recommendation for TLS cleanup",
+            text="recover_session should verify TLS cleanup by observing connection lifecycle",
+        )
+        self._make_repo(tmp_path)
+        modules = self._modules(
+            "feature,module,code_location,function,triggered,hit_count\n"
+            "tls,session,src/session.c:1-6,recover_session,false,0\n"
+        )
+
+        design = await build_coverage_test_design(
+            modules,
+            workspace_id="ws-memory",
+            repo_path=str(tmp_path),
+        )
+
+        gap = next(g for g in design["gaps"] if g.get("function_name") == "recover_session")
+        case_text = json.dumps(gap["black_box_cases"], ensure_ascii=False)
+        assert "ev_tls_cleanup" in case_text
+        assert "tls-cleanup-recommendation" in case_text
+        assert gap["evidence_memory"][0]["evidence_id"] == "ev_tls_cleanup"
+        assert design["test_context"]["evidence_source_counts"]["evidence_memory"] == 1
+
     async def test_agent_duplicate_entry_confirms_existing_path_without_duplicate_case(self):
         from app.services.coverage_analyzer import _build_black_box_cases, _merge_agent_entry_paths
 

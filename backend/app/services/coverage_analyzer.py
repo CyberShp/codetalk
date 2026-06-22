@@ -11841,6 +11841,256 @@ def _build_branch_gaps(
     return gaps
 
 
+def _load_coverage_workbench_context(
+    gaps: list[dict],
+    *,
+    workspace_id: str | None,
+    limit_per_gap: int = 3,
+) -> dict:
+    """Load task-scoped Workbench memory for coverage recommendations.
+
+    This is read-only enrichment.  Semantic cases and evidence memory are
+    terminology/provenance hints; they do not make an unverified entry ready.
+    """
+    workbench_dir = settings.data_path / "workbench"
+    semantic_db = workbench_dir / "test_semantics.db"
+    memory_db = workbench_dir / "evidence_memory.db"
+    by_gap: dict[str, dict[str, list[dict]]] = {}
+    semantic_cases: list[dict] = []
+    evidence_memory: list[dict] = []
+    semantic_seen: set[str] = set()
+    memory_seen: set[str] = set()
+
+    semantic_store = None
+    if semantic_db.exists():
+        try:
+            from app.services.test_semantic_library import TestSemanticLibraryStore
+
+            semantic_store = TestSemanticLibraryStore(semantic_db)
+        except Exception as exc:
+            logger.info("Coverage semantic library unavailable: %s", exc)
+            semantic_store = None
+
+    memory_store = None
+    if memory_db.exists():
+        try:
+            from app.services.evidence_memory import EvidenceMemoryStore
+
+            memory_store = EvidenceMemoryStore(memory_db)
+        except Exception as exc:
+            logger.info("Coverage evidence memory unavailable: %s", exc)
+            memory_store = None
+
+    for gap in gaps[:80]:
+        gap_key = _coverage_workbench_gap_key(gap)
+        if not gap_key:
+            continue
+        by_gap.setdefault(gap_key, {"semantic_cases": [], "evidence_memory": []})
+        queries = _coverage_workbench_gap_queries(gap)
+        if semantic_store is not None:
+            for query in queries:
+                try:
+                    results = semantic_store.retrieve(query=query, limit=limit_per_gap)
+                except Exception as exc:
+                    logger.info("Coverage semantic lookup failed: %s", exc)
+                    break
+                for item in results:
+                    payload = _coverage_semantic_case_payload(item)
+                    semantic_id = str(payload.get("semantic_id") or payload.get("case_id") or "")
+                    if not semantic_id:
+                        continue
+                    if semantic_id not in {
+                        str(existing.get("semantic_id") or existing.get("case_id") or "")
+                        for existing in by_gap[gap_key]["semantic_cases"]
+                    }:
+                        by_gap[gap_key]["semantic_cases"].append(payload)
+                    if semantic_id not in semantic_seen:
+                        semantic_seen.add(semantic_id)
+                        semantic_cases.append(payload)
+        if memory_store is not None:
+            for query in queries:
+                try:
+                    results = memory_store.search_analysis_memory(
+                        query,
+                        workspace_id=workspace_id or None,
+                        limit=limit_per_gap,
+                    )
+                except Exception as exc:
+                    logger.info("Coverage evidence memory lookup failed: %s", exc)
+                    break
+                for item in results:
+                    payload = _coverage_evidence_memory_payload(item)
+                    evidence_id = str(payload.get("evidence_id") or "")
+                    if not evidence_id:
+                        continue
+                    if evidence_id not in {
+                        str(existing.get("evidence_id") or "")
+                        for existing in by_gap[gap_key]["evidence_memory"]
+                    }:
+                        by_gap[gap_key]["evidence_memory"].append(payload)
+                    if evidence_id not in memory_seen:
+                        memory_seen.add(evidence_id)
+                        evidence_memory.append(payload)
+
+    return {
+        "semantic_cases": semantic_cases[:80],
+        "evidence_memory": evidence_memory[:80],
+        "by_gap": by_gap,
+    }
+
+
+def _apply_coverage_workbench_context(gaps: list[dict], context: dict) -> None:
+    by_gap = context.get("by_gap") if isinstance(context, dict) else {}
+    if not isinstance(by_gap, dict):
+        return
+    for gap in gaps:
+        gap_key = _coverage_workbench_gap_key(gap)
+        if not gap_key:
+            continue
+        matches = by_gap.get(gap_key) or {}
+        semantic_cases = matches.get("semantic_cases") or []
+        evidence_memory = matches.get("evidence_memory") or []
+        if semantic_cases:
+            gap["semantic_cases"] = semantic_cases[:5]
+            _apply_semantic_cases_to_black_box_cases(gap, semantic_cases[:3])
+        if evidence_memory:
+            gap["evidence_memory"] = evidence_memory[:5]
+            _apply_evidence_memory_to_black_box_cases(gap, evidence_memory[:3])
+
+
+def _apply_semantic_cases_to_black_box_cases(gap: dict, semantic_cases: list[dict]) -> None:
+    case_refs = [str(item.get("case_id") or item.get("semantic_id") or "") for item in semantic_cases]
+    case_refs = [item for item in case_refs if item]
+    terms = _dedupe_text_values(
+        term
+        for item in semantic_cases
+        for term in (item.get("terms") or [])
+    )
+    scenarios = [
+        str(item.get("scenario") or "").strip()
+        for item in semantic_cases
+        if str(item.get("scenario") or "").strip()
+    ]
+    actions = _dedupe_text_values(
+        action
+        for item in semantic_cases
+        for action in (item.get("actions") or [])
+    )
+    expected = _dedupe_text_values(
+        value
+        for item in semantic_cases
+        for value in (item.get("expected") or [])
+    )
+    for case in gap.get("black_box_cases") or []:
+        case["semantic_case_refs"] = case_refs
+        if terms:
+            case["semantic_terms"] = terms[:12]
+            case["existing_test_terminology"] = ", ".join(terms[:8])
+        if scenarios:
+            case["semantic_scenarios"] = scenarios[:3]
+        steps = case.get("steps")
+        if isinstance(steps, list) and actions:
+            note = "Reuse existing semantic-library action vocabulary: " + "; ".join(actions[:3])
+            if note not in steps:
+                steps.append(note)
+        if expected:
+            suffix = " Existing semantic-library expected result: " + "; ".join(expected[:2])
+            current = str(case.get("expected") or "")
+            if suffix.strip() not in current:
+                case["expected"] = (current + suffix).strip()
+
+
+def _apply_evidence_memory_to_black_box_cases(gap: dict, evidence_items: list[dict]) -> None:
+    refs = [str(item.get("evidence_id") or "") for item in evidence_items if item.get("evidence_id")]
+    subjects = _dedupe_text_values(
+        str(item.get("subject_key") or item.get("path") or item.get("symbol") or "")
+        for item in evidence_items
+    )
+    for case in gap.get("black_box_cases") or []:
+        if refs:
+            case["evidence_memory_refs"] = refs[:8]
+        if subjects:
+            case["evidence_memory_subjects"] = subjects[:8]
+
+
+def _coverage_workbench_gap_key(gap: dict) -> str:
+    value = (
+        gap.get("function_name")
+        or gap.get("condition")
+        or gap.get("file_path")
+        or gap.get("module_path")
+    )
+    return str(value or "").strip()
+
+
+def _coverage_workbench_gap_queries(gap: dict) -> list[str]:
+    values = [
+        gap.get("function_name"),
+        gap.get("file_path"),
+        gap.get("module_path"),
+        gap.get("feature_name"),
+        gap.get("condition"),
+    ]
+    for entry in gap.get("entry_paths") or []:
+        if isinstance(entry, dict):
+            values.extend([
+                entry.get("entry_label"),
+                entry.get("entry_symbol"),
+                entry.get("external_trigger"),
+            ])
+    return _dedupe_text_values(str(value or "") for value in values if str(value or "").strip())[:8]
+
+
+def _coverage_semantic_case_payload(item: object) -> dict:
+    return {
+        "semantic_id": str(getattr(item, "semantic_id", "")),
+        "case_id": str(getattr(item, "case_id", "")),
+        "feature": str(getattr(item, "feature", "")),
+        "module": str(getattr(item, "module", "")),
+        "scenario": str(getattr(item, "scenario", "")),
+        "preconditions": list(getattr(item, "preconditions", []) or []),
+        "actions": list(getattr(item, "actions", []) or []),
+        "expected": list(getattr(item, "expected", []) or []),
+        "test_level": str(getattr(item, "test_level", "")),
+        "interface": str(getattr(item, "interface", "")),
+        "terms": list(getattr(item, "terms", []) or []),
+        "assertion_style": str(getattr(item, "assertion_style", "")),
+        "tags": list(getattr(item, "tags", []) or []),
+        "source_ref": str(getattr(item, "source_ref", "")),
+    }
+
+
+def _coverage_evidence_memory_payload(item: object) -> dict:
+    return {
+        "evidence_id": str(getattr(item, "evidence_id", "")),
+        "kind": str(getattr(item, "kind", "")),
+        "subject_key": str(getattr(item, "subject_key", "")),
+        "status": str(getattr(item, "status", "")),
+        "source": str(getattr(item, "source", "")),
+        "path": str(getattr(item, "path", "")),
+        "symbol": str(getattr(item, "symbol", "")),
+        "reason": str(getattr(item, "reason", "")),
+        "confidence": getattr(item, "confidence", None),
+        "text": _excerpt(str(getattr(item, "text", "") or ""), 600),
+        "provenance": getattr(item, "provenance", None) or {},
+    }
+
+
+def _dedupe_text_values(values: object) -> list[str]:
+    out: list[str] = []
+    seen: set[str] = set()
+    for value in values:
+        text = str(value or "").strip()
+        if not text:
+            continue
+        key = text.lower()
+        if key in seen:
+            continue
+        seen.add(key)
+        out.append(text)
+    return out
+
+
 async def build_coverage_test_context(
     modules: list[ModuleCoverage],
     *,
@@ -11848,10 +12098,16 @@ async def build_coverage_test_context(
     repo_path: str | None,
     deterministic_gaps: list[dict],
     report_output_dir: Path | None = None,
+    workbench_context: dict | None = None,
 ) -> dict:
     """Build the evidence package used by AI test-case generation."""
     reports = await _load_coverage_report_context(workspace_id, report_output_dir)
     materials = await _load_coverage_material_context(workspace_id)
+    workbench_context = workbench_context or {
+        "semantic_cases": [],
+        "evidence_memory": [],
+        "by_gap": {},
+    }
     coverage = _coverage_context_from_modules(modules)
     source = _source_context_from_gaps(deterministic_gaps)
     gitnexus = _tool_context_from_gaps(deterministic_gaps, "gitnexus_scope")
@@ -11874,6 +12130,8 @@ async def build_coverage_test_context(
         "report": len(reports),
         "material": len(materials),
         "entry_discovery": len(entry_discovery.get("cards") or []),
+        "semantic_case": len(workbench_context.get("semantic_cases") or []),
+        "evidence_memory": len(workbench_context.get("evidence_memory") or []),
     }
     return {
         "version": COVERAGE_TEST_CONTEXT_VERSION,
@@ -11886,6 +12144,8 @@ async def build_coverage_test_context(
         "cgc": cgc,
         "reports": reports,
         "materials": materials,
+        "semantic_cases": workbench_context.get("semantic_cases") or [],
+        "evidence_memory": workbench_context.get("evidence_memory") or [],
         "external_trigger_candidates": external_trigger_candidates,
         "entry_discovery": entry_discovery,
         "deterministic_gaps": _context_safe_gaps(deterministic_gaps),
@@ -12629,6 +12889,8 @@ def _context_safe_gaps(gaps: list[dict]) -> list[dict]:
             "entry_trace_status": gap.get("entry_trace_status"),
             "entry_discovery": gap.get("entry_discovery"),
             "evidence_gaps": gap.get("evidence_gaps") or [],
+            "semantic_cases": gap.get("semantic_cases") or [],
+            "evidence_memory": gap.get("evidence_memory") or [],
         })
     return safe
 
@@ -13246,12 +13508,18 @@ async def build_coverage_test_design(
     )
     branch_gaps = _build_branch_gaps(modules, workspace_bound=workspace_bound)
     gaps = [*function_gaps, *branch_gaps]
+    workbench_context = _load_coverage_workbench_context(
+        gaps,
+        workspace_id=workspace_id,
+    )
+    _apply_coverage_workbench_context(gaps, workbench_context)
     context = await build_coverage_test_context(
         modules,
         workspace_id=workspace_id,
         repo_path=repo_path,
         deterministic_gaps=gaps,
         report_output_dir=report_output_dir,
+        workbench_context=workbench_context,
     )
     entry_discovery = context.get("entry_discovery") or {
         "version": COVERAGE_ENTRY_DISCOVERY_VERSION,
