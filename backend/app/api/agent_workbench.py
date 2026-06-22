@@ -8,7 +8,7 @@ from dataclasses import asdict
 from pathlib import Path
 from typing import Any
 
-from fastapi import APIRouter, HTTPException, Query
+from fastapi import APIRouter, Body, HTTPException, Query
 from pydantic import BaseModel, Field
 
 from app.config import settings
@@ -222,6 +222,14 @@ async def upsert_semantic_case(payload: dict[str, Any]) -> dict[str, Any]:
     except SemanticCaseValidationError as exc:
         raise HTTPException(status_code=422, detail=str(exc))
     return {"semantic_id": semantic_id, "case_id": str(payload.get("case_id") or "")}
+
+
+@router.post("/semantic-cases/import", status_code=201)
+async def import_semantic_cases(payload: Any = Body(...)) -> dict[str, Any]:
+    try:
+        return _semantic_store().import_cases(payload)
+    except SemanticCaseValidationError as exc:
+        raise HTTPException(status_code=422, detail=str(exc))
 
 
 @router.get("/semantic-cases/search")

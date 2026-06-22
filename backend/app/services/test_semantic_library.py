@@ -153,6 +153,42 @@ class TestSemanticLibraryStore:
             )
         return semantic_id
 
+    def import_cases(self, payload: Any) -> dict[str, Any]:
+        cases, defaults, source_ref = _normalize_import_payload(payload)
+        imported: list[dict[str, str]] = []
+        rejected: list[dict[str, Any]] = []
+        for index, item in enumerate(cases):
+            if not isinstance(item, dict):
+                rejected.append({
+                    "index": index,
+                    "case_id": "",
+                    "reason": "semantic case must be an object",
+                })
+                continue
+            case_payload = _merge_case_defaults(item, defaults)
+            if source_ref and not str(case_payload.get("source_ref") or "").strip():
+                case_payload["source_ref"] = source_ref
+            try:
+                semantic_id = self.upsert_case(case_payload)
+            except SemanticCaseValidationError as exc:
+                rejected.append({
+                    "index": index,
+                    "case_id": str(item.get("case_id") or ""),
+                    "reason": str(exc),
+                })
+                continue
+            imported.append({
+                "index": index,
+                "semantic_id": semantic_id,
+                "case_id": str(case_payload.get("case_id") or ""),
+            })
+        return {
+            "imported_count": len(imported),
+            "rejected_count": len(rejected),
+            "imported": imported,
+            "rejected": rejected,
+        }
+
     def retrieve(
         self,
         *,
@@ -210,6 +246,47 @@ def _normalize_case_payload(payload: dict[str, Any]) -> dict[str, Any]:
         "source_ref": str(payload.get("source_ref") or ""),
         "status": str(payload.get("status") or "active"),
     }
+
+
+def _normalize_import_payload(payload: Any) -> tuple[list[Any], dict[str, Any], str]:
+    if isinstance(payload, list):
+        return list(payload), {}, ""
+    if not isinstance(payload, dict):
+        raise SemanticCaseValidationError("semantic case import payload must be an object or list")
+    raw_cases = payload.get("cases")
+    if raw_cases is None:
+        raw_cases = payload.get("items")
+    if raw_cases is None and isinstance(payload.get("case_id"), str):
+        raw_cases = [payload]
+    if not isinstance(raw_cases, list):
+        raise SemanticCaseValidationError("semantic case import cases must be a list")
+    defaults = payload.get("defaults") or {}
+    if not isinstance(defaults, dict):
+        raise SemanticCaseValidationError("semantic case import defaults must be an object")
+    return list(raw_cases), dict(defaults), str(payload.get("source_ref") or "")
+
+
+def _merge_case_defaults(item: dict[str, Any], defaults: dict[str, Any]) -> dict[str, Any]:
+    merged = dict(defaults)
+    merged.update(item)
+    for list_key in ("tags", "terms", "preconditions", "actions", "expected"):
+        if list_key in defaults and list_key in item:
+            merged[list_key] = _dedupe_strings([
+                *_string_list(defaults.get(list_key)),
+                *_string_list(item.get(list_key)),
+            ])
+    return merged
+
+
+def _dedupe_strings(values: list[str]) -> list[str]:
+    seen: set[str] = set()
+    result: list[str] = []
+    for value in values:
+        if value in seen:
+            continue
+        seen.add(value)
+        result.append(value)
+    return result
 
 
 def _row_to_case(row: sqlite3.Row) -> SemanticCase:

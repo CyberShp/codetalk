@@ -88,6 +88,8 @@ Current validation note:
 
 - Workflow definitions reject duplicate input, step, and output ids.
 - Plain output `from` / `source` references must point to an existing step; templated references such as `{{steps.render.output}}` remain allowed for compatibility.
+- User-defined JSON output schemas are validated when workflows are saved and then enforced when workflow outputs are collected.
+- Prepared task runs write `workflow_contract.json`, summarizing inputs, Agent-owned MCP links, Agent step contracts, required artifacts, and output schemas for audit.
 
 ## Evidence Memory
 
@@ -113,6 +115,7 @@ Current implementation note:
 - Evidence Memory hits without source slices are marked `no_source_slices` and are not treated as source evidence; retrieval remains a navigation signal until CodeTalk has a validated source slice or accepted artifact.
 - Coverage black-box recommendation enrichment also carries Evidence Memory source slices into gaps and generated cases as structured evidence references.
 - These source slices are the durable context chain for later Agent prompts and black-box test recommendations; raw Agent summaries remain audit material, not facts.
+- Test Semantic Library supports single-case upsert and bulk import with defaults, source references, imported/rejected counts, and per-row rejection reasons, so existing feature cases or Agent-produced semantic case JSON can be fed into black-box terminology retrieval without becoming source truth.
 
 ## Agent Run Harness
 

@@ -77,12 +77,15 @@ const DEFAULT_SEMANTIC_CASE = {
   scenario: "TLS handshake fails and connection is released",
   terms: ["TLS negotiation", "queue pair", "connection release"],
   tags: ["resource_cleanup", "exception_branch"],
-  preconditions: "Target configured with TLS enabled",
-  steps: [
+  preconditions: ["Target configured with TLS enabled"],
+  actions: [
     "Create an NVMe TCP connection with invalid TLS credentials",
     "Observe connection setup failure",
   ],
-  expected: "The session is rejected and all allocated connection resources are released",
+  expected: [
+    "The session is rejected",
+    "All allocated connection resources are released",
+  ],
   assertion_style: "Prefer observable status, logs, counters, and connection lifecycle checks",
 };
 
@@ -96,6 +99,17 @@ function parseJsonObject(value: string): Record<string, unknown> {
     throw new Error("JSON must be an object");
   }
   return parsed as Record<string, unknown>;
+}
+
+function parseJsonValue(value: string): unknown {
+  return JSON.parse(value) as unknown;
+}
+
+function isBulkSemanticImportPayload(value: unknown): boolean {
+  if (Array.isArray(value)) return true;
+  if (!value || typeof value !== "object") return false;
+  const payload = value as Record<string, unknown>;
+  return Array.isArray(payload.cases) || Array.isArray(payload.items);
 }
 
 function fastContextDecisionSummary(taskBundle: Record<string, unknown>): string {
@@ -453,8 +467,20 @@ export default function AgentWorkbenchPage() {
 
   const importSemanticCase = () =>
     runAction("import-semantic-case", async () => {
-      const payload = parseJsonObject(semanticJson);
-      const result = await api.workbench.semanticCases.create(payload);
+      const payload = parseJsonValue(semanticJson);
+      if (isBulkSemanticImportPayload(payload)) {
+        const result = await api.workbench.semanticCases.importMany(payload);
+        setMessage(
+          `Semantic cases imported: ${result.imported_count}, rejected: ${result.rejected_count}`,
+        );
+        return;
+      }
+      if (!payload || typeof payload !== "object" || Array.isArray(payload)) {
+        throw new Error("Semantic import JSON must be an object or array");
+      }
+      const result = await api.workbench.semanticCases.create(
+        payload as Record<string, unknown>,
+      );
       setMessage(`Semantic case stored: ${result.case_id}`);
     });
 
@@ -1119,7 +1145,7 @@ export default function AgentWorkbenchPage() {
                 className="inline-flex items-center justify-center gap-2 rounded-lg bg-primary px-3 py-2 text-sm font-medium text-on-primary transition-opacity hover:opacity-90 disabled:opacity-50"
               >
                 <Save size={14} />
-                Import case
+                Import case(s)
               </button>
               <input
                 value={semanticQuery}

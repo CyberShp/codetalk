@@ -166,6 +166,46 @@ async def test_workbench_semantic_library_api(workbench_client):
     assert [item["case_id"] for item in search.json()["items"]] == ["TC_TLS_001"]
 
 
+async def test_workbench_semantic_library_bulk_import_api(workbench_client):
+    imported = await workbench_client.post(
+        "/api/workbench/semantic-cases/import",
+        json={
+            "source_ref": "feature_cases/nvmf_tls.json",
+            "defaults": {
+                "feature": "NVMe TCP TLS",
+                "module": "nvmf_tcp/transport/tls",
+                "test_level": "black_box",
+            },
+            "cases": [
+                {
+                    "case_id": "TC_TLS_BULK_001",
+                    "scenario": "TLS certificate is rejected",
+                    "terms": ["certificate", "handshake"],
+                },
+                {"scenario": "missing id"},
+            ],
+        },
+    )
+
+    assert imported.status_code == 201
+    body = imported.json()
+    assert body["imported_count"] == 1
+    assert body["rejected_count"] == 1
+    assert body["imported"][0]["case_id"] == "TC_TLS_BULK_001"
+    assert body["rejected"][0]["reason"] == "case_id is required"
+
+    search = await workbench_client.get(
+        "/api/workbench/semantic-cases/search",
+        params={
+            "q": "certificate handshake",
+            "module": "nvmf_tcp/transport/tls",
+            "test_level": "black_box",
+        },
+    )
+    assert [item["case_id"] for item in search.json()["items"]] == ["TC_TLS_BULK_001"]
+    assert search.json()["items"][0]["source_ref"] == "feature_cases/nvmf_tls.json"
+
+
 async def test_workbench_memory_api(workbench_client):
     run_resp = await workbench_client.post(
         "/api/workbench/memory/runs",

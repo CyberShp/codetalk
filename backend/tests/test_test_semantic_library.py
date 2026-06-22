@@ -56,3 +56,71 @@ def test_test_semantic_library_rejects_missing_case_id(tmp_path):
         assert "case_id" in str(exc)
     else:
         raise AssertionError("missing case_id should be rejected")
+
+
+def test_test_semantic_library_bulk_imports_cases_with_defaults(tmp_path):
+    from app.services.test_semantic_library import TestSemanticLibraryStore
+
+    store = TestSemanticLibraryStore(tmp_path / "semantic.db")
+    result = store.import_cases({
+        "source_ref": "feature_cases/nvmf_tls.json",
+        "defaults": {
+            "feature": "NVMe TCP TLS",
+            "module": "nvmf_tcp/transport/tls",
+            "test_level": "black_box",
+            "tags": ["regression"],
+        },
+        "cases": [
+            {
+                "case_id": "TC_TLS_CERT_REJECT",
+                "scenario": "certificate rejected during TLS handshake",
+                "terms": ["certificate", "handshake"],
+            },
+            {
+                "case_id": "",
+                "scenario": "bad row",
+            },
+            {
+                "case_id": "TC_TLS_CLEANUP",
+                "scenario": "connection resources are released after auth failure",
+                "terms": ["connection release"],
+                "tags": ["cleanup"],
+            },
+        ],
+    })
+
+    assert result["imported_count"] == 2
+    assert result["rejected_count"] == 1
+    assert result["rejected"][0]["index"] == 1
+    assert result["rejected"][0]["reason"] == "case_id is required"
+    assert [item["case_id"] for item in result["imported"]] == [
+        "TC_TLS_CERT_REJECT",
+        "TC_TLS_CLEANUP",
+    ]
+
+    results = store.retrieve(
+        query="certificate handshake",
+        module="nvmf_tcp/transport/tls",
+        test_level="black_box",
+    )
+    assert [item.case_id for item in results] == ["TC_TLS_CERT_REJECT"]
+    assert results[0].source_ref == "feature_cases/nvmf_tls.json"
+    assert results[0].tags == ["regression"]
+
+
+def test_test_semantic_library_bulk_import_accepts_top_level_list(tmp_path):
+    from app.services.test_semantic_library import TestSemanticLibraryStore
+
+    store = TestSemanticLibraryStore(tmp_path / "semantic.db")
+    result = store.import_cases([
+        {
+            "case_id": "TC_DIRECT_LIST",
+            "feature": "NVMe TCP TLS",
+            "module": "nvmf_tcp/transport/tls",
+            "scenario": "direct list import",
+            "terms": ["direct", "list"],
+        }
+    ])
+
+    assert result["imported_count"] == 1
+    assert result["rejected_count"] == 0

@@ -26,6 +26,7 @@ import type {
   WorkflowDefinition,
   WorkflowPreset,
   SemanticCase,
+  SemanticCaseImportResult,
   EvidenceMemoryItem,
   EvidenceSourceSlice,
   AgentRunRecord,
@@ -515,6 +516,15 @@ export const api = {
       create: (data: Record<string, unknown>) =>
         request<{ semantic_id: string; case_id: string }>(
           "/api/workbench/semantic-cases",
+          {
+            method: "POST",
+            body: JSON.stringify(data),
+          },
+        ),
+
+      importMany: (data: unknown) =>
+        request<SemanticCaseImportResult>(
+          "/api/workbench/semantic-cases/import",
           {
             method: "POST",
             body: JSON.stringify(data),

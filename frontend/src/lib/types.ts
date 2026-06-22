@@ -253,11 +253,26 @@ export interface SemanticCase {
   scenario: string;
   terms: string[];
   tags: string[];
-  preconditions: string;
-  steps: string[];
-  expected: string;
+  preconditions: string[];
+  actions: string[];
+  expected: string[];
   assertion_style: string;
   raw: Record<string, unknown>;
+}
+
+export interface SemanticCaseImportResult {
+  imported_count: number;
+  rejected_count: number;
+  imported: Array<{
+    index: number;
+    semantic_id: string;
+    case_id: string;
+  }>;
+  rejected: Array<{
+    index: number;
+    case_id: string;
+    reason: string;
+  }>;
 }
 
 export interface EvidenceSourceSlice {
