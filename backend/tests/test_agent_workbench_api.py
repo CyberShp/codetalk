@@ -360,6 +360,9 @@ async def test_workbench_agent_run_execute_api(workbench_client, tmp_path):
     body = executed.json()
     assert body["status"] == "completed"
     assert body["exit_code"] == 0
+    assert body["provider_diagnostics"]["provider"] == "local-python"
+    assert body["provider_diagnostics"]["health_status"]
+    assert body["provider_diagnostics"]["artifact"] == "provider_diagnostics.json"
     assert output_file.read_text(encoding="utf-8") == "task-execute"
     from pathlib import Path
 
@@ -404,7 +407,10 @@ async def test_workbench_task_scoped_agent_run_execute_api(workbench_client, tmp
     )
 
     assert executed.status_code == 200
-    assert executed.json()["status"] == "completed"
+    body = executed.json()
+    assert body["status"] == "completed"
+    assert body["provider_diagnostics"]["provider"] == "local-python"
+    assert body["provider_diagnostics"]["health_status"]
     assert output_file.read_text(encoding="utf-8") == f"{task_run_id}_{step_id}"
 
 

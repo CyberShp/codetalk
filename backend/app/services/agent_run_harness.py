@@ -61,6 +61,7 @@ class AgentRunExecutionResult:
     duration_ms: int
     timed_out: bool = False
     error: str = ""
+    provider_diagnostics: dict[str, Any] = field(default_factory=dict)
 
 
 class AgentRunHarness:
@@ -252,6 +253,7 @@ class AgentRunHarness:
             duration_ms=duration_ms,
             timed_out=timed_out,
             error=error,
+            provider_diagnostics=_provider_diagnostics_result_summary(provider_diagnostics),
         )
         self._write_json("execution_result.json", asdict(result))
         self._write_json(
@@ -565,6 +567,33 @@ def _redact_diagnostic_payload(payload: Any, redactor: Any) -> Any:
     if isinstance(payload, str):
         return redactor(payload)
     return payload
+
+
+def _provider_diagnostics_result_summary(payload: dict[str, Any]) -> dict[str, Any]:
+    diagnostics = payload.get("diagnostics")
+    if not isinstance(diagnostics, dict):
+        diagnostics = {}
+    health = payload.get("health")
+    if not isinstance(health, dict):
+        health = {}
+    return {
+        "artifact": "provider_diagnostics.json",
+        "provider": str(payload.get("provider") or ""),
+        "status": str(payload.get("status") or ""),
+        "owner": str(payload.get("owner") or ""),
+        "agent_owned": bool(payload.get("agent_owned", False)),
+        "codetalk_callable": bool(payload.get("codetalk_callable", False)),
+        "health_status": str(health.get("status") or "unknown"),
+        "launch_kind": str(health.get("launch_kind") or ""),
+        "used_fallback": bool(health.get("used_fallback", False)),
+        "startup_probe_endpoint": str(diagnostics.get("startup_probe_endpoint") or ""),
+        "prompt_transport": str(
+            diagnostics.get("startup_probe_transport")
+            or diagnostics.get("prompt_transport")
+            or ""
+        ),
+        "mcp_credentials_owner": str(diagnostics.get("mcp_credentials_owner") or ""),
+    }
 
 
 _SECRET_RE = re.compile(
