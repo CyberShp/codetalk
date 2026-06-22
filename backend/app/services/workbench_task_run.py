@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import hashlib
 import json
 import uuid
 from dataclasses import asdict, dataclass, field
@@ -91,12 +92,17 @@ class WorkbenchTaskRunPreparer:
             evidence_memory=self.evidence_memory,
             semantic_library=self.semantic_library,
         )
+        agent_instructions = collect_agent_instructions(
+            repo_path=repo_path,
+            input_snapshot=input_snapshot,
+        )
         task_bundle = {
             "task_run_id": task_run_id,
             "workflow_id": workflow_id,
             "workspace_id": workspace_id,
             "repo_path": repo_path,
             "inputs": input_snapshot,
+            "agent_instructions": agent_instructions,
             "context_bundle": context_bundle,
             "required_artifacts_by_step": required_artifacts_by_step,
             "created_at": _now(),
@@ -149,6 +155,7 @@ class WorkbenchTaskRunPreparer:
         _write_json(artifact_dir / "task_run.json", asdict(result))
         _write_json(artifact_dir / "workflow_snapshot.json", workflow_snapshot)
         _write_json(artifact_dir / "input_snapshot.json", input_snapshot)
+        _write_json(artifact_dir / "agent_instructions.json", agent_instructions)
         _write_json(artifact_dir / "context_bundle.json", context_bundle)
         _write_json(artifact_dir / "task_bundle.json", task_bundle)
         return result
@@ -228,6 +235,122 @@ def build_workbench_context_bundle(
             "evidence": limit,
             "semantic_cases": limit,
         },
+    }
+
+
+def collect_agent_instructions(
+    *,
+    repo_path: str | Path,
+    input_snapshot: dict[str, Any],
+    max_chars_per_file: int = 24000,
+) -> dict[str, Any]:
+    repo_root = Path(repo_path)
+    files: list[dict[str, Any]] = []
+    warnings: list[str] = []
+    try:
+        root = repo_root.resolve()
+    except OSError:
+        return {
+            "files": files,
+            "warnings": ["repo_path could not be resolved"],
+            "policy": _agent_instruction_policy(),
+        }
+    if not root.exists() or not root.is_dir():
+        return {
+            "files": files,
+            "warnings": ["repo_path is not an existing directory"],
+            "policy": _agent_instruction_policy(),
+        }
+
+    seen: set[Path] = set()
+    for candidate in _agent_instruction_candidates(root, input_snapshot):
+        try:
+            path = candidate.resolve()
+        except OSError:
+            continue
+        if path in seen or not _is_within(path, root):
+            continue
+        seen.add(path)
+        if not path.exists() or not path.is_file():
+            continue
+        data = path.read_bytes()
+        content = data.decode("utf-8", errors="replace")
+        truncated = len(content) > max_chars_per_file
+        files.append({
+            "relative_path": path.relative_to(root).as_posix(),
+            "path": str(path),
+            "sha256": hashlib.sha256(data).hexdigest(),
+            "size_bytes": len(data),
+            "content": content[:max_chars_per_file],
+            "truncated": truncated,
+        })
+    return {
+        "files": files,
+        "warnings": warnings,
+        "policy": _agent_instruction_policy(),
+    }
+
+
+def _agent_instruction_candidates(root: Path, input_snapshot: dict[str, Any]) -> list[Path]:
+    candidates = [root / "AGENTS.md"]
+    for hint in _input_path_hints(input_snapshot):
+        path = Path(hint)
+        if path.is_absolute():
+            try:
+                resolved = path.resolve()
+            except OSError:
+                continue
+            if not _is_within(resolved, root):
+                continue
+            relative = resolved.relative_to(root)
+        else:
+            relative = path
+        if any(part in {"", ".", ".."} for part in relative.parts):
+            continue
+        current = root
+        for part in relative.parts[:-1]:
+            current = current / part
+            candidates.append(current / "AGENTS.md")
+        if len(relative.parts) and (root / relative).is_dir():
+            candidates.append(root / relative / "AGENTS.md")
+    return candidates
+
+
+def _input_path_hints(input_snapshot: dict[str, Any]) -> list[str]:
+    hints: list[str] = []
+    for value in input_snapshot.values():
+        if isinstance(value, str):
+            if _looks_like_path(value):
+                hints.append(value)
+        elif isinstance(value, dict):
+            for key in ("value", "path", "original_path", "copied_path", "filename"):
+                item = value.get(key)
+                if item and _looks_like_path(str(item)):
+                    hints.append(str(item))
+        elif isinstance(value, (list, tuple)):
+            for item in value:
+                text = str(item)
+                if _looks_like_path(text):
+                    hints.append(text)
+    return hints
+
+
+def _looks_like_path(value: str) -> bool:
+    text = value.strip()
+    return bool(text) and ("/" in text or "\\" in text)
+
+
+def _is_within(path: Path, root: Path) -> bool:
+    return path == root or root in path.parents
+
+
+def _agent_instruction_policy() -> dict[str, Any]:
+    return {
+        "scope": "task",
+        "source": "repo_AGENTS_md",
+        "preferred_code_locator": "fast-context",
+        "fast_context_required": False,
+        "unavailable_provider_behavior": "record warning and continue",
     }
 
 

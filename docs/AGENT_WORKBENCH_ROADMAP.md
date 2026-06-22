@@ -33,6 +33,7 @@ Current implementation note:
 - `fast-context` is registered as a diagnostic adapter and an optional source-discovery provider.
 - Backend scope resolution only invokes it when `fast_context_backend_bridge_enabled=true`; by default CodeTalk reports the bridge as unavailable without blocking analysis.
 - Candidate files returned by this provider are normalized through the same local source-file validation path as external Agent candidates.
+- Workbench task preparation reads applicable repo `AGENTS.md` files, stores them in `agent_instructions.json`, and injects them into every Agent task bundle. These instructions can require fast-context-first exploration while CodeTalk still records unavailable providers as non-blocking warnings.
 
 ## Workflow Presets
 
@@ -86,3 +87,4 @@ Do not directly copy the whole clowder-ai harness or memory system into CodeTalk
 3. Route workflow execution through the Agent Run Harness end to end, including artifact validation and materialization.
 4. Extend Evidence Memory retrieval so black-box test generation can use semantic test-library terminology and validated source/MR facts.
 5. Add UI views for task bundle, provider warnings, validated evidence, rejected evidence, and generated artifacts.
+6. Keep AGENTS.md and other repo-local agent instructions visible in task bundles and debug artifacts so external CLI behavior is auditable.

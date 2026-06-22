@@ -520,6 +520,19 @@ export default function AgentWorkbenchPage() {
                     </p>
                   );
                 })()}
+                {(() => {
+                  const instructions = preparedRun.task_bundle.agent_instructions as
+                    | {
+                        files?: unknown[];
+                      }
+                    | undefined;
+                  if (!instructions) return null;
+                  return (
+                    <p className="mt-1 text-on-surface-variant">
+                      Agent instructions: {instructions.files?.length ?? 0}
+                    </p>
+                  );
+                })()}
                 {workflowExecution && (
                   <div className="mt-2 rounded bg-surface-container px-2 py-1.5 text-on-surface-variant">
                     Workflow: {workflowExecution.status} / steps{" "}

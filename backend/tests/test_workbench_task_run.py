@@ -163,6 +163,60 @@ def test_prepare_workbench_task_run_injects_evidence_and_semantic_context(tmp_pa
     ]
 
 
+def test_prepare_workbench_task_run_embeds_repo_agent_instructions(tmp_path):
+    from app.services.workflow_dsl import WorkflowStore
+    from app.services.workbench_task_run import WorkbenchTaskRunPreparer
+
+    repo = tmp_path / "repo"
+    target_dir = repo / "lib" / "thread"
+    target_dir.mkdir(parents=True)
+    (repo / "AGENTS.md").write_text(
+        "# Repo instructions\n\nPrefer fast-context before grep.\n",
+        encoding="utf-8",
+    )
+    (target_dir / "AGENTS.md").write_text(
+        "# Thread instructions\n\nUse GitNexus process context.\n",
+        encoding="utf-8",
+    )
+    workflow_store = WorkflowStore(tmp_path / "workflows.db")
+    workflow_store.save_workflow({
+        "id": "module_review",
+        "name": "Module review",
+        "version": 1,
+        "inputs": [{"id": "module_path", "type": "free_text"}],
+        "steps": [{"id": "discover", "type": "agent_task"}],
+        "outputs": [{"id": "report", "type": "markdown"}],
+    })
+
+    result = WorkbenchTaskRunPreparer(
+        artifact_root=tmp_path / "task_runs",
+        workflow_store=workflow_store,
+    ).prepare(
+        workflow_id="module_review",
+        workspace_id="ws1",
+        repo_path=str(repo),
+        inputs={"module_path": "lib/thread/thread.c"},
+    )
+
+    instructions = result.task_bundle["agent_instructions"]
+    assert [item["relative_path"] for item in instructions["files"]] == [
+        "AGENTS.md",
+        "lib/thread/AGENTS.md",
+    ]
+    assert instructions["files"][0]["sha256"] == hashlib.sha256(
+        (repo / "AGENTS.md").read_bytes()
+    ).hexdigest()
+    assert "fast-context" in instructions["files"][0]["content"]
+    root_payload = json.loads(
+        Path(result.artifact_dir, "agent_instructions.json").read_text(encoding="utf-8")
+    )
+    assert root_payload["files"][1]["relative_path"] == "lib/thread/AGENTS.md"
+    step_bundle = json.loads(
+        Path(result.artifact_dir, "agent_runs", "discover", "task_bundle.json").read_text(encoding="utf-8")
+    )
+    assert step_bundle["agent_instructions"]["files"][0]["relative_path"] == "AGENTS.md"
+
+
 def test_workbench_task_run_store_loads_and_lists_prepared_runs(tmp_path):
     from app.services.workflow_dsl import WorkflowStore
     from app.services.workbench_task_run import (
