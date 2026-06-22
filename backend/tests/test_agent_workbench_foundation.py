@@ -267,7 +267,18 @@ def test_agent_run_harness_executes_cli_with_task_bundle_and_audit_events(tmp_pa
         command=["python", "-c", script, str(output_file)],
         cwd=str(tmp_path),
         workflow_snapshot={"id": "wf"},
-        task_bundle={"task_id": "task-42"},
+        task_bundle={
+            "task_id": "task-42",
+            "context_discovery_decision": {
+                "fast-context": {
+                    "requested_by_agent_instructions": True,
+                    "codetalk_callable": False,
+                    "agent_owned_possible": True,
+                    "fallback_path": ["local_search", "agent_cli"],
+                    "warnings": ["fast-context requested by AGENTS.md but backend MCP bridge is unavailable"],
+                }
+            },
+        },
         mcp_profile="",
     )
 
@@ -291,6 +302,18 @@ def test_agent_run_harness_executes_cli_with_task_bundle_and_audit_events(tmp_pa
     assert execution_input["turn_id"] == "turn_1"
     assert execution_input["task_bundle_sha256"]
     assert execution_input["workflow_snapshot_sha256"]
+    assert execution_input["context_discovery_decision_summary"] == {
+        "fast-context": {
+            "requested_by_agent_instructions": True,
+            "codetalk_callable": False,
+            "agent_owned_possible": True,
+            "fallback_path": ["local_search", "agent_cli"],
+            "warnings": ["fast-context requested by AGENTS.md but backend MCP bridge is unavailable"],
+        }
+    }
+    assert execution_input["stdin"]["context_discovery_decision_summary"] == (
+        execution_input["context_discovery_decision_summary"]
+    )
     run_payload = json.loads((artifact_dir / "agent_run.json").read_text(encoding="utf-8"))
     assert run_payload["turn_id"] == "turn_1"
     events = [

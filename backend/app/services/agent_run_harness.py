@@ -130,6 +130,9 @@ class AgentRunHarness:
         task_bundle = self._read_json_file("task_bundle.json")
         workflow_snapshot = self._read_json_file("workflow_snapshot.json")
         turn_id = str(run_payload.get("turn_id") or "turn_1")
+        context_discovery_decision_summary = _context_discovery_decision_summary(
+            task_bundle if isinstance(task_bundle, dict) else {}
+        )
         stdin_payload_obj = {
             "run_id": run_id,
             "turn_id": turn_id,
@@ -137,6 +140,7 @@ class AgentRunHarness:
             "mcp_profile": run_payload.get("mcp_profile") or "",
             "workflow_snapshot": workflow_snapshot if isinstance(workflow_snapshot, dict) else {},
             "task_bundle": task_bundle if isinstance(task_bundle, dict) else {},
+            "context_discovery_decision_summary": context_discovery_decision_summary,
             "artifact_dir": str(self.artifact_dir),
         }
         stdin_payload = json.dumps(stdin_payload_obj, ensure_ascii=False)
@@ -162,6 +166,7 @@ class AgentRunHarness:
                 "env_hints": env_hints,
                 "task_bundle_sha256": task_bundle_sha256,
                 "workflow_snapshot_sha256": workflow_snapshot_sha256,
+                "context_discovery_decision_summary": context_discovery_decision_summary,
                 "stdin": stdin_payload_obj,
                 "stdin_json_sha256": hashlib.sha256(
                     stdin_payload.encode("utf-8")
@@ -179,6 +184,7 @@ class AgentRunHarness:
                 "artifact": "execution_input.json",
                 "task_bundle_sha256": task_bundle_sha256,
                 "workflow_snapshot_sha256": workflow_snapshot_sha256,
+                "context_discovery_decision_summary": context_discovery_decision_summary,
                 "created_at": started_at,
             },
             append_jsonl=True,
@@ -444,6 +450,29 @@ def _artifact_detail(path: Path, *, artifact: str) -> dict[str, Any]:
         "sha256": hashlib.sha256(data).hexdigest(),
         "size_bytes": len(data),
     }
+
+
+def _context_discovery_decision_summary(task_bundle: dict[str, Any]) -> dict[str, Any]:
+    decision = task_bundle.get("context_discovery_decision")
+    if not isinstance(decision, dict):
+        return {}
+    summary: dict[str, Any] = {}
+    for provider, payload in decision.items():
+        if not isinstance(provider, str) or not isinstance(payload, dict):
+            continue
+        item: dict[str, Any] = {}
+        for key in (
+            "requested_by_agent_instructions",
+            "codetalk_callable",
+            "agent_owned_possible",
+            "fallback_path",
+            "warnings",
+        ):
+            if key in payload:
+                item[key] = payload[key]
+        if item:
+            summary[provider] = item
+    return summary
 
 
 _SECRET_RE = re.compile(
