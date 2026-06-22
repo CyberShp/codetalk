@@ -296,6 +296,7 @@ export interface WorkflowExecutionResult {
   started_at: string;
   completed_at: string;
   step_results: Array<Record<string, unknown>>;
+  outputs?: Array<Record<string, unknown>>;
 }
 
 export interface PreparedAgentRun {

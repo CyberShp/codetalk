@@ -467,7 +467,7 @@ async def test_workbench_task_run_execute_workflow_api(workbench_client, tmp_pat
                 "required_artifacts": ["result.json"],
             }
         ],
-        "outputs": [{"id": "result", "type": "json"}],
+        "outputs": [{"id": "result", "type": "json", "artifact": "result.json"}],
     }
     assert (await workbench_client.post("/api/workbench/workflows", json=workflow)).status_code == 201
     prepared = await workbench_client.post(
@@ -491,8 +491,13 @@ async def test_workbench_task_run_execute_workflow_api(workbench_client, tmp_pat
     assert body["status"] == "completed"
     assert body["step_results"][0]["step_id"] == "discover"
     assert body["step_results"][0]["validation"]["status"] == "ok"
+    assert body["outputs"][0]["id"] == "result"
+    assert body["outputs"][0]["status"] == "ok"
+    assert body["outputs"][0]["from"] == "discover"
+    assert body["outputs"][0]["artifact"] == "result.json"
     artifact_dir = Path(prepared.json()["artifact_dir"])
     assert (artifact_dir / "workflow_execution.json").exists()
+    assert (artifact_dir / "workflow_outputs.json").exists()
     assert "secret-value" not in (
         artifact_dir / "agent_runs" / "discover" / "raw_output.txt"
     ).read_text(encoding="utf-8")

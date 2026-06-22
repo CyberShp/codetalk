@@ -523,7 +523,21 @@ export default function AgentWorkbenchPage() {
                 {workflowExecution && (
                   <div className="mt-2 rounded bg-surface-container px-2 py-1.5 text-on-surface-variant">
                     Workflow: {workflowExecution.status} / steps{" "}
-                    {workflowExecution.step_results.length}
+                    {workflowExecution.step_results.length} / outputs{" "}
+                    {workflowExecution.outputs?.length ?? 0}
+                    {(workflowExecution.outputs?.length ?? 0) > 0 && (
+                      <div className="mt-1 flex flex-wrap gap-1.5">
+                        {workflowExecution.outputs?.map((output, index) => (
+                          <span
+                            key={`${String(output.id ?? "output")}-${index}`}
+                            className="rounded bg-surface px-1.5 py-0.5 font-data text-[10px]"
+                          >
+                            {String(output.id ?? "output")}:
+                            {String(output.status ?? "unknown")}
+                          </span>
+                        ))}
+                      </div>
+                    )}
                   </div>
                 )}
                 <div className="mt-3 space-y-2">

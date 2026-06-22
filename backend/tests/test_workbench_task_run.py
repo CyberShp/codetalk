@@ -225,6 +225,7 @@ def test_workbench_workflow_runner_executes_agent_steps_and_validates_artifacts(
         "sha=hashlib.sha256(diff.encode()).hexdigest()\n"
         "(root/'diff.patch').write_text(diff, encoding='utf-8')\n"
         "(root/'changed_files.json').write_text(json.dumps([{'path':'src/tls.c','status':'modified'}]), encoding='utf-8')\n"
+        "(root/'report.md').write_text('# TLS report\\n\\nready', encoding='utf-8')\n"
         "(root/'mr_snapshot.json').write_text(json.dumps({"
         "'source':'agent_mcp','mcp_profile':'codehub-readonly','mr_url':'https://codehub.local/p/merge_requests/1',"
         "'project':'p','mr_id':'1','title':'TLS','source_branch':'feature','target_branch':'main',"
@@ -252,7 +253,7 @@ def test_workbench_workflow_runner_executes_agent_steps_and_validates_artifacts(
             },
             {"id": "render", "type": "report_render"},
         ],
-        "outputs": [{"id": "report", "type": "markdown"}],
+        "outputs": [{"id": "report", "type": "markdown", "from": "collect_mr", "artifact": "report.md"}],
     })
     task_run = WorkbenchTaskRunPreparer(
         artifact_root=tmp_path / "task_runs",
@@ -274,8 +275,17 @@ def test_workbench_workflow_runner_executes_agent_steps_and_validates_artifacts(
     assert result.step_results[0]["step_id"] == "collect_mr"
     assert result.step_results[0]["execution"]["status"] == "completed"
     assert result.step_results[0]["validation"]["status"] == "ok"
+    assert result.outputs[0]["id"] == "report"
+    assert result.outputs[0]["status"] == "ok"
+    assert result.outputs[0]["from"] == "collect_mr"
+    assert result.outputs[0]["artifact"] == "report.md"
+    assert result.outputs[0]["sha256"] == hashlib.sha256(
+        Path(result.outputs[0]["path"]).read_bytes()
+    ).hexdigest()
     root = Path(task_run.artifact_dir)
     assert (root / "workflow_execution.json").exists()
+    workflow_outputs = json.loads((root / "workflow_outputs.json").read_text(encoding="utf-8"))
+    assert workflow_outputs["outputs"][0]["id"] == "report"
     assert "secret-value" not in (
         root / "agent_runs" / "collect_mr" / "raw_output.txt"
     ).read_text(encoding="utf-8")
