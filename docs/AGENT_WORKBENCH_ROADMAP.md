@@ -41,6 +41,16 @@ Current implementation note:
 - Workbench `report_render` includes artifact validation details and Evidence Memory source slices, so final reports show accepted/rejected artifacts, sha256 values, and verified source line ranges instead of only high-level task summaries.
 - Agent run envelopes now include `turn_id`, `task_bundle_sha256`, and `workflow_snapshot_sha256` in execution artifacts and runtime events, so disposable Agent CLI processes still have auditable task-continuity metadata.
 
+Operational requirement from repo `AGENTS.md`:
+
+- The rule `mcp__fast-context__fast_context_search` is interpreted as a source-discovery preference for every exploratory code-understanding task, including workspace scope discovery, coverage entry discovery, MR/diff analysis, patch impact review, and black-box test recommendation.
+- CodeTalk should attempt the fast-context path at the earliest context-discovery stage only when the MCP bridge is actually exposed to the backend process.
+- If this CodeTalk process cannot see the MCP tool, the task must record `fast_context_unavailable_to_codetalk` or `fast_context_backend_bridge_unavailable` in `context_discovery_decision.json`, `degraded_retrieval.json`, and the provider matrix.
+- The same instruction must still be handed to the Agent CLI in `agent_instructions.json` and the per-step task bundle, because the Agent may have its own MCP configuration and credentials inside `ccr code`, OpenCode, Claude Code, or a self-developed internal CLI.
+- CodeTalk must distinguish three states in UI and artifacts: `codetalk_callable`, `agent_owned_possible`, and `unavailable`. A missing CodeTalk MCP bridge is degraded mode, not a silent fallback.
+- Results from fast-context, whether produced directly by CodeTalk or indirectly by an Agent CLI artifact, are only navigation candidates until CodeTalk validates repo-local path, source extension, optional symbol location, line range, and sha256-backed source slice.
+- The current desktop session exposes the instruction through `AGENTS.md`, but no callable `mcp__fast-context__fast_context_search` tool is available to this process. This is exactly the degraded path the product must make visible and non-blocking.
+
 ## Repo Agent Instructions
 
 CodeTalk must treat repo-local agent instructions as task input, not as hidden process behavior.
@@ -302,10 +312,13 @@ Tests:
 
 The root `AGENTS.md` rule says exploratory code understanding should prefer `mcp__fast-context__fast_context_search`. CodeTalk must preserve this as a first-class plan item:
 
+- detect repo and nested `AGENTS.md` files before preparing any Agent task bundle;
+- parse fast-context-first instructions as structured policy, not as prompt-only prose;
 - if the fast-context MCP tool is exposed to CodeTalk, call it before local/index/Agent discovery;
-- if it is not exposed, record `fast_context_unavailable_to_codetalk` and continue;
+- if it is not exposed, record `fast_context_unavailable_to_codetalk` or `fast_context_backend_bridge_unavailable` and continue;
 - if the Agent CLI may have fast-context or CodeHub MCP inside its own runtime, mark it as `agent_owned_possible`;
 - include the exact AGENTS instruction, provider decision, and fallback chain in task artifacts;
+- include the decision in every Agent turn envelope so fresh Agent CLI processes do not lose the rule after context compaction or restart;
 - never silently treat a missing MCP as if the instruction did not exist.
 
 Tests:
@@ -314,6 +327,8 @@ Tests:
 - unavailable warning appears in task preparation artifacts and provider matrix;
 - Agent task bundle still includes the fast-context-first instruction;
 - local validation remains mandatory for fast-context and Agent results.
+- context-discovery artifacts distinguish CodeTalk-callable fast-context from Agent-owned fast-context or CodeHub MCP.
+- coverage and black-box recommendation workflows preserve the same AGENTS.md instruction path, not only module-scope workflows.
 
 ## Next Implementation Phases
 
