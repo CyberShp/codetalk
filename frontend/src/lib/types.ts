@@ -290,6 +290,13 @@ export interface MaterializeEvidenceResult {
   evidence_ids: string[];
 }
 
+export interface MaterializeWorkflowOutputsResult {
+  status: string;
+  evidence_count: number;
+  evidence_ids: string[];
+  rejected_outputs: Array<Record<string, string>>;
+}
+
 export interface WorkflowExecutionResult {
   task_run_id: string;
   status: string;

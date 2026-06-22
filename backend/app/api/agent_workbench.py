@@ -422,6 +422,30 @@ async def execute_task_run_workflow(
     return asdict(result)
 
 
+@router.post("/task-runs/{task_run_id}/materialize-outputs")
+async def materialize_task_run_outputs(task_run_id: str) -> dict[str, Any]:
+    try:
+        task_run = WorkbenchTaskRunStore(_task_runs_dir()).load(task_run_id)
+    except KeyError:
+        raise HTTPException(status_code=404, detail=f"Unknown task run: {task_run_id}")
+    workflow_outputs = _read_json(Path(task_run.artifact_dir) / "workflow_outputs.json")
+    if not isinstance(workflow_outputs, dict):
+        raise HTTPException(
+            status_code=400,
+            detail="workflow outputs have not been generated",
+        )
+    evidence_ids, rejected = _materialize_workflow_output_evidence(
+        task_run=task_run,
+        workflow_outputs=workflow_outputs,
+    )
+    return {
+        "status": "ok" if not rejected else "partial",
+        "evidence_count": len(evidence_ids),
+        "evidence_ids": evidence_ids,
+        "rejected_outputs": rejected,
+    }
+
+
 @router.get("/task-runs")
 async def list_task_runs(
     workspace_id: str = "",
@@ -559,6 +583,70 @@ def _materialize_mr_artifact_evidence(
                 provenance={**provenance_base, "artifact": "changed_files.json", "changed_file": item},
             ))
     return evidence_ids
+
+
+def _materialize_workflow_output_evidence(
+    *,
+    task_run: Any,
+    workflow_outputs: dict[str, Any],
+) -> tuple[list[str], list[dict[str, str]]]:
+    store = _memory_store()
+    store.record_analysis_run(
+        run_id=task_run.task_run_id,
+        workspace_id=task_run.workspace_id,
+        repo_path=task_run.repo_path,
+        object_text=_object_text_from_task_run(task_run, workflow_outputs),
+        workflow_id=task_run.workflow_id,
+        status="completed",
+    )
+    evidence_ids: list[str] = []
+    rejected: list[dict[str, str]] = []
+    for output in workflow_outputs.get("outputs") or []:
+        if not isinstance(output, dict):
+            continue
+        output_id = str(output.get("id") or "").strip()
+        if not output_id:
+            rejected.append({"output": "", "reason": "missing_output_id"})
+            continue
+        if output.get("status") != "ok":
+            rejected.append({"output": output_id, "reason": "output_not_ok"})
+            continue
+        path = Path(str(output.get("path") or ""))
+        if not path.exists() or not path.is_file():
+            rejected.append({"output": output_id, "reason": "output_file_missing"})
+            continue
+        data = path.read_bytes()
+        sha256 = hashlib.sha256(data).hexdigest()
+        if output.get("sha256") and output.get("sha256") != sha256:
+            rejected.append({"output": output_id, "reason": "output_sha256_mismatch"})
+            continue
+        text = _evidence_text_from_output(path, data, fallback=str(output.get("preview") or ""))
+        evidence_ids.append(store.upsert_evidence_item(
+            run_id=task_run.task_run_id,
+            workspace_id=task_run.workspace_id,
+            kind="workflow_output",
+            subject_key=f"{task_run.task_run_id}/{output_id}",
+            status="verified_output",
+            source=str(output.get("from") or "workflow"),
+            path=str(path),
+            reason="Workflow output passed CodeTalk local artifact validation.",
+            text=text,
+            provenance={
+                "task_run_id": task_run.task_run_id,
+                "workflow_id": task_run.workflow_id,
+                "output": output,
+                "artifact": "workflow_outputs.json",
+                "sha256": sha256,
+                "size_bytes": len(data),
+            },
+        ))
+    return evidence_ids, rejected
+
+
+def _evidence_text_from_output(path: Path, data: bytes, *, fallback: str) -> str:
+    if path.suffix.lower() in {".json", ".md", ".txt", ".patch", ".diff", ".log"}:
+        return data[:16000].decode("utf-8", errors="replace")
+    return fallback
 
 
 def _object_text_from_task_run(task_run: Any, snapshot: Any) -> str:

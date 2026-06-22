@@ -503,6 +503,75 @@ async def test_workbench_task_run_execute_workflow_api(workbench_client, tmp_pat
     ).read_text(encoding="utf-8")
 
 
+async def test_workbench_task_run_materialize_workflow_outputs_api(
+    workbench_client,
+    tmp_path,
+    monkeypatch,
+):
+    from app.config import settings
+
+    script_path = tmp_path / "agent_write_cases.py"
+    script_path.write_text(
+        "import pathlib, os\n"
+        "root=pathlib.Path(os.environ['CODETALK_AGENT_ARTIFACT_DIR'])\n"
+        "(root/'cases.md').write_text('TLS negotiation black-box case', encoding='utf-8')\n"
+        "print('cases ready')\n",
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(settings, "external_agent_custom_providers", [
+        {"id": "local-python", "command": f"python {script_path}"}
+    ])
+    workflow = {
+        "id": "output_memory_workflow",
+        "name": "Output memory workflow",
+        "version": 1,
+        "inputs": [{"id": "module", "type": "free_text"}],
+        "steps": [
+            {
+                "id": "design",
+                "type": "agent_task",
+                "provider": "local-python",
+                "required_artifacts": ["cases.md"],
+            }
+        ],
+        "outputs": [{"id": "cases", "type": "markdown", "from": "design", "artifact": "cases.md"}],
+    }
+    assert (await workbench_client.post("/api/workbench/workflows", json=workflow)).status_code == 201
+    prepared = await workbench_client.post(
+        "/api/workbench/task-runs/prepare",
+        json={
+            "workflow_id": "output_memory_workflow",
+            "workspace_id": "ws-output-memory",
+            "repo_path": str(tmp_path),
+            "inputs": {"module": "nvme-tcp-tls"},
+        },
+    )
+    task_run_id = prepared.json()["task_run_id"]
+    executed = await workbench_client.post(
+        f"/api/workbench/task-runs/{task_run_id}/execute",
+        json={"timeout_sec": 10},
+    )
+    assert executed.status_code == 200
+    assert executed.json()["outputs"][0]["status"] == "ok"
+
+    materialized = await workbench_client.post(
+        f"/api/workbench/task-runs/{task_run_id}/materialize-outputs"
+    )
+
+    assert materialized.status_code == 200
+    body = materialized.json()
+    assert body["status"] == "ok"
+    assert body["evidence_count"] == 1
+    search = await workbench_client.get(
+        "/api/workbench/memory/search",
+        params={"q": "TLS negotiation", "workspace_id": "ws-output-memory"},
+    )
+    assert search.status_code == 200
+    item = search.json()["items"][0]
+    assert item["kind"] == "workflow_output"
+    assert item["subject_key"].endswith("/cases")
+
+
 async def test_workbench_prepare_task_run_api(workbench_client):
     workflow = {
         "id": "mr_test_design",

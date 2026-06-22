@@ -18,6 +18,7 @@ import type {
   AgentRunExecutionResult,
   ArtifactValidationResult,
   MaterializeEvidenceResult,
+  MaterializeWorkflowOutputsResult,
   PreparedWorkbenchTaskRun,
   SemanticCase,
   WorkflowDefinition,
@@ -134,6 +135,8 @@ export default function AgentWorkbenchPage() {
   const [artifactManifest, setArtifactManifest] =
     useState<WorkbenchTaskArtifactManifest | null>(null);
   const [workflowExecution, setWorkflowExecution] = useState<WorkflowExecutionResult | null>(null);
+  const [workflowOutputMaterialize, setWorkflowOutputMaterialize] =
+    useState<MaterializeWorkflowOutputsResult | null>(null);
   const [executionResults, setExecutionResults] = useState<
     Record<string, AgentRunExecutionResult>
   >({});
@@ -249,6 +252,7 @@ export default function AgentWorkbenchPage() {
       setValidationResults({});
       setMaterializeResults({});
       setWorkflowExecution(null);
+      setWorkflowOutputMaterialize(null);
       await refreshArtifactManifest(result.task_run_id);
       setMessage(`Task run prepared: ${result.task_run_id}`);
     });
@@ -272,6 +276,16 @@ export default function AgentWorkbenchPage() {
       await refreshArtifactManifest(preparedRun.task_run_id);
       setMessage(`Workflow execution ${result.status}: ${result.task_run_id}`);
       await loadWorkflows();
+    });
+
+  const materializePreparedWorkflowOutputs = () =>
+    runAction("materialize-workflow-outputs", async () => {
+      if (!preparedRun) return;
+      const result = await api.workbench.taskRuns.materializeOutputs(
+        preparedRun.task_run_id,
+      );
+      setWorkflowOutputMaterialize(result);
+      setMessage(`Workflow outputs materialized: ${result.evidence_count}`);
     });
 
   const executePreparedAgentRun = (stepId: string) =>
@@ -525,6 +539,22 @@ export default function AgentWorkbenchPage() {
               )}
               Audit artifacts
             </button>
+            <button
+              onClick={materializePreparedWorkflowOutputs}
+              disabled={
+                busyAction === "materialize-workflow-outputs" ||
+                !preparedRun ||
+                !workflowExecution
+              }
+              className="ml-2 inline-flex items-center gap-2 rounded-lg bg-surface px-3 py-2 text-sm font-medium text-on-surface transition-colors hover:bg-surface-container-high disabled:opacity-50"
+            >
+              {busyAction === "materialize-workflow-outputs" ? (
+                <Loader2 size={14} className="animate-spin" />
+              ) : (
+                <Database size={14} />
+              )}
+              Materialize outputs
+            </button>
             {preparedRun && (
               <div className="rounded-lg border border-outline-variant/30 bg-surface p-3 text-xs">
                 <p className="font-medium text-on-surface">{preparedRun.task_run_id}</p>
@@ -594,6 +624,17 @@ export default function AgentWorkbenchPage() {
                           </span>
                         ))}
                       </div>
+                    )}
+                  </div>
+                )}
+                {workflowOutputMaterialize && (
+                  <div className="mt-2 rounded bg-surface-container px-2 py-1.5 text-on-surface-variant">
+                    Output evidence: {workflowOutputMaterialize.status} /{" "}
+                    {workflowOutputMaterialize.evidence_count} items
+                    {workflowOutputMaterialize.rejected_outputs.length > 0 && (
+                      <span className="ml-2 text-warning">
+                        rejected {workflowOutputMaterialize.rejected_outputs.length}
+                      </span>
                     )}
                   </div>
                 )}

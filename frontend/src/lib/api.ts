@@ -31,6 +31,7 @@ import type {
   ArtifactValidationResult,
   AgentRunExecutionResult,
   MaterializeEvidenceResult,
+  MaterializeWorkflowOutputsResult,
   PreparedWorkbenchTaskRun,
   WorkflowExecutionResult,
   WorkbenchTaskArtifactManifest,
@@ -658,6 +659,14 @@ export const api = {
               timeout_sec: timeoutSec,
               stop_on_error: stopOnError,
             }),
+          },
+        ),
+
+      materializeOutputs: (taskRunId: string) =>
+        request<MaterializeWorkflowOutputsResult>(
+          `/api/workbench/task-runs/${encodeURIComponent(taskRunId)}/materialize-outputs`,
+          {
+            method: "POST",
           },
         ),
 
