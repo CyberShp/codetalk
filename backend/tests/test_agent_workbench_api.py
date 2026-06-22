@@ -1182,11 +1182,16 @@ async def test_workbench_task_run_artifacts_api_lists_audit_files(workbench_clie
     repo = tmp_path / "repo"
     repo.mkdir()
     (repo / "AGENTS.md").write_text("Prefer fast-context first.\n", encoding="utf-8")
+    patch_plan = tmp_path / "patch-plan.md"
+    patch_plan.write_text("# Patch plan\nUpdate TLS cleanup.\n", encoding="utf-8")
     workflow = {
         "id": "artifact_audit_workflow",
         "name": "Artifact audit workflow",
         "version": 1,
-        "inputs": [{"id": "module", "type": "free_text"}],
+        "inputs": [
+            {"id": "module", "type": "free_text"},
+            {"id": "patch_plan", "type": "file"},
+        ],
         "steps": [{"id": "discover", "type": "agent_task", "provider": "claude-code"}],
         "outputs": [{"id": "report", "type": "markdown"}],
     }
@@ -1197,7 +1202,10 @@ async def test_workbench_task_run_artifacts_api_lists_audit_files(workbench_clie
             "workflow_id": "artifact_audit_workflow",
             "workspace_id": "ws-artifacts",
             "repo_path": str(repo),
-            "inputs": {"module": "lib/thread/thread.c"},
+            "inputs": {
+                "module": "lib/thread/thread.c",
+                "patch_plan": {"path": str(patch_plan)},
+            },
         },
     )
     task_run_id = prepared.json()["task_run_id"]
@@ -1208,6 +1216,11 @@ async def test_workbench_task_run_artifacts_api_lists_audit_files(workbench_clie
     body = artifacts.json()
     paths = {item["relative_path"]: item for item in body["artifacts"]}
     assert paths["task_bundle.json"]["sha256"]
+    assert paths["input_snapshot.json"]["kind"] == "input_snapshot"
+    assert paths["inputs/patch_plan/file_metadata.json"]["kind"] == "input_file_metadata"
+    assert paths["inputs/patch_plan/parsed_text.txt"]["kind"] == "input_parsed_text"
+    assert paths["inputs/patch_plan/chunks.json"]["kind"] == "input_chunks"
+    assert paths["inputs/patch_plan/original/patch-plan.md"]["kind"] == "input_original_file"
     assert paths["agent_instructions.json"]["kind"] == "agent_instructions"
     assert paths["workflow_contract.json"]["kind"] == "workflow_contract"
     assert paths["context_discovery_decision.json"]["kind"] == "context_discovery_decision"

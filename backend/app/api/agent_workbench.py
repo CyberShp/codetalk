@@ -1486,6 +1486,7 @@ def _artifact_manifest(task_dir: Path) -> list[dict[str, Any]]:
 
 def _artifact_kind(relative_path: str) -> str:
     name = relative_path.rsplit("/", 1)[-1]
+    parts = relative_path.split("/")
     if "/turns/" in relative_path:
         if name == "execution_input.json":
             return "agent_turn_execution_input"
@@ -1511,6 +1512,20 @@ def _artifact_kind(relative_path: str) -> str:
         return "agent_instructions"
     if name == "provider_snapshot.json":
         return "provider_snapshot"
+    if name == "input_snapshot.json":
+        return "input_snapshot"
+    if parts and parts[0] == "inputs":
+        if name == "file_metadata.json":
+            return "input_file_metadata"
+        if name == "file_set_manifest.json":
+            return "input_file_set_manifest"
+        if name == "parsed_text.txt":
+            return "input_parsed_text"
+        if name == "chunks.json":
+            return "input_chunks"
+        if "original" in parts:
+            return "input_original_file"
+        return "input_artifact"
     if name == "workflow_contract.json":
         return "workflow_contract"
     if name == "context_discovery_decision.json":
