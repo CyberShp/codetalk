@@ -24,6 +24,7 @@ import type {
   WorkflowDefinition,
   WorkflowExecutionResult,
   WorkflowPreset,
+  WorkbenchProviderCapabilitiesMatrix,
   WorkbenchTaskArtifactManifest,
 } from "@/lib/types";
 
@@ -130,6 +131,8 @@ export default function AgentWorkbenchPage() {
   const [semanticResults, setSemanticResults] = useState<SemanticCase[]>([]);
   const [memoryQuery, setMemoryQuery] = useState("nvme tcp tls");
   const [memoryResults, setMemoryResults] = useState<EvidenceMemoryItem[]>([]);
+  const [providerMatrix, setProviderMatrix] =
+    useState<WorkbenchProviderCapabilitiesMatrix | null>(null);
   const [taskRuns, setTaskRuns] = useState<PreparedWorkbenchTaskRun[]>([]);
   const [preparedRun, setPreparedRun] = useState<PreparedWorkbenchTaskRun | null>(null);
   const [artifactManifest, setArtifactManifest] =
@@ -160,13 +163,15 @@ export default function AgentWorkbenchPage() {
     setLoading(true);
     setError(null);
     try {
-      const [workflowData, taskRunData] = await Promise.all([
+      const [workflowData, taskRunData, providerData] = await Promise.all([
         api.workbench.workflows.list(),
         api.workbench.taskRuns.list({ limit: 10 }),
+        api.workbench.providerCapabilities(),
       ]);
       const presetData = await api.workbench.workflows.presets();
       setWorkflows(workflowData);
       setWorkflowPresets(presetData.items);
+      setProviderMatrix(providerData);
       if (!selectedPresetId && presetData.items.length > 0) {
         setSelectedPresetId(presetData.items[0].id);
       }
@@ -384,6 +389,78 @@ export default function AgentWorkbenchPage() {
           {error ?? message}
         </div>
       )}
+
+      <Panel title="Provider Matrix" icon={<AlertTriangle size={16} />}>
+        <div className="grid gap-3 lg:grid-cols-3">
+          {(providerMatrix?.providers ?? []).map((provider) => (
+            <div
+              key={provider.provider}
+              className="rounded-lg border border-outline-variant/30 bg-surface p-3 text-xs"
+            >
+              <div className="flex items-start justify-between gap-2">
+                <div className="min-w-0">
+                  <p className="truncate text-sm font-semibold text-on-surface">
+                    {provider.display_name || provider.provider}
+                  </p>
+                  <p className="font-data text-[11px] text-on-surface-variant">
+                    {provider.provider}
+                  </p>
+                </div>
+                <span className="shrink-0 rounded bg-surface-container px-2 py-0.5 font-data text-[10px] text-on-surface-variant">
+                  {provider.status}
+                </span>
+              </div>
+              <div className="mt-3 space-y-1 text-on-surface-variant">
+                <p>
+                  Owner:{" "}
+                  <span className="font-data text-on-surface">{provider.owner}</span>
+                </p>
+                <p className="break-words">
+                  Command:{" "}
+                  <span className="font-data text-on-surface">
+                    {provider.command.length > 0 ? provider.command.join(" ") : "n/a"}
+                  </span>
+                </p>
+                <p>
+                  MCP:{" "}
+                  <span className="font-data text-on-surface">
+                    {provider.capabilities.supports_mcp
+                      ? provider.capabilities.mcp_profiles.length > 0
+                        ? provider.capabilities.mcp_profiles.join(", ")
+                        : "yes"
+                      : "no"}
+                  </span>
+                </p>
+                <p>
+                  Artifacts/json:{" "}
+                  <span className="font-data text-on-surface">
+                    {provider.capabilities.supports_artifact_export ? "artifact" : "no-artifact"}
+                    {" / "}
+                    {provider.capabilities.supports_json_output ? "json" : "no-json"}
+                  </span>
+                </p>
+              </div>
+            </div>
+          ))}
+          {!providerMatrix && (
+            <p className="text-sm text-on-surface-variant">
+              Provider diagnostics load with Workbench data.
+            </p>
+          )}
+        </div>
+        {providerMatrix?.notes?.length ? (
+          <div className="mt-3 flex flex-wrap gap-2">
+            {providerMatrix.notes.map((note) => (
+              <span
+                key={note}
+                className="rounded bg-surface px-2 py-1 text-xs text-on-surface-variant"
+              >
+                {note}
+              </span>
+            ))}
+          </div>
+        ) : null}
+      </Panel>
 
       <div className="grid grid-cols-1 gap-5 xl:grid-cols-2">
         <Panel title="Workflow Registry" icon={<ClipboardList size={16} />}>

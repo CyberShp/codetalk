@@ -75,6 +75,50 @@ async def test_workbench_workflow_preset_api(workbench_client):
     assert [item["id"] for item in listed.json()] == ["mr_blackbox_test"]
 
 
+async def test_workbench_provider_capabilities_matrix_api(workbench_client, monkeypatch):
+    monkeypatch.setattr(settings, "claude_code_command", "ccr code")
+    monkeypatch.setattr(settings, "claude_code_fallback_commands", ["claude"])
+    monkeypatch.setattr(settings, "claude_code_mcp_profiles", ["codehub-readonly"])
+    monkeypatch.setattr(settings, "opencode_command", "opencode")
+    monkeypatch.setattr(settings, "fast_context_enabled", True)
+    monkeypatch.setattr(settings, "fast_context_backend_bridge_enabled", False)
+    monkeypatch.setattr(
+        settings,
+        "external_agent_custom_providers",
+        [
+            {
+                "id": "corp-agent",
+                "command": "corp-agent run",
+                "supports_mcp": True,
+                "mcp_profiles": ["codehub"],
+                "prompt_transport": "stdin",
+            }
+        ],
+    )
+
+    resp = await workbench_client.get("/api/workbench/provider-capabilities")
+
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["status"] == "ok"
+    by_id = {item["provider"]: item for item in body["providers"]}
+
+    assert by_id["claude-code"]["owner"] == "agent_cli"
+    assert by_id["claude-code"]["command"] == ["ccr", "code"]
+    assert by_id["claude-code"]["fallback_commands"] == [["claude"]]
+    assert by_id["claude-code"]["capabilities"]["supports_mcp"] is True
+    assert by_id["claude-code"]["capabilities"]["mcp_profiles"] == ["codehub-readonly"]
+
+    assert by_id["corp-agent"]["owner"] == "agent_cli"
+    assert by_id["corp-agent"]["command"] == ["corp-agent", "run"]
+    assert by_id["corp-agent"]["capabilities"]["prompt_transport"] == "stdin"
+
+    assert by_id["fast-context"]["owner"] == "codetalk_mcp_bridge"
+    assert by_id["fast-context"]["status"] == "bridge_disabled"
+    assert by_id["fast-context"]["non_blocking"] is True
+    assert "continues" in by_id["fast-context"]["unavailable_behavior"]
+
+
 async def test_workbench_semantic_library_api(workbench_client):
     created = await workbench_client.post(
         "/api/workbench/semantic-cases",

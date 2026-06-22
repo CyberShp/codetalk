@@ -137,6 +137,26 @@ export interface AgentProviderCapabilities {
   prompt_transport?: string;
 }
 
+export interface WorkbenchProviderMatrixItem {
+  provider: string;
+  display_name: string;
+  owner: "agent_cli" | "codetalk_mcp_bridge" | string;
+  status: string;
+  non_blocking: boolean;
+  command: string[];
+  fallback_commands: string[][];
+  readonly_args: string[];
+  command_hint_env: string;
+  capabilities: AgentProviderCapabilities;
+  unavailable_behavior: string;
+}
+
+export interface WorkbenchProviderCapabilitiesMatrix {
+  status: string;
+  providers: WorkbenchProviderMatrixItem[];
+  notes: string[];
+}
+
 export interface ExternalAgentProbeAttempt {
   command?: string;
   status?: string;

@@ -14,6 +14,11 @@ from pydantic import BaseModel, Field
 from app.config import settings
 from app.services.agent_run_harness import AgentRunHarness, ArtifactValidationHarness
 from app.services.evidence_memory import EvidenceMemoryStore
+from app.services.external_agent_discovery import (
+    external_agent_provider_capabilities,
+    external_agent_provider_specs,
+    split_agent_command,
+)
 from app.services.test_semantic_library import (
     SemanticCaseValidationError,
     TestSemanticLibraryStore,
@@ -186,6 +191,26 @@ async def install_builtin_workflow_preset(preset_id: str) -> dict[str, Any]:
     except KeyError:
         raise HTTPException(status_code=404, detail=f"Unknown workflow preset: {preset_id}")
     return _workflow_response(workflow.raw)
+
+
+@router.get("/provider-capabilities")
+async def list_provider_capabilities() -> dict[str, Any]:
+    """Return a side-effect-free capability matrix for Workbench Agent routing."""
+    providers = [
+        _agent_cli_provider_matrix_item(provider_id, spec)
+        for provider_id, spec in external_agent_provider_specs().items()
+    ]
+    providers.append(_fast_context_provider_matrix_item())
+    providers.sort(key=lambda item: (str(item.get("owner")), str(item.get("provider"))))
+    return {
+        "status": "ok",
+        "providers": providers,
+        "notes": [
+            "Agent CLI providers may call their own MCP tools with their own credentials.",
+            "CodeTalk validates Agent artifacts before materializing evidence.",
+            "Unavailable providers are non-blocking for workflow preparation.",
+        ],
+    }
 
 
 @router.post("/semantic-cases", status_code=201)
@@ -503,6 +528,66 @@ async def prepare_task_run(payload: PrepareTaskRunRequest) -> dict[str, Any]:
 
 def _workflow_response(payload: dict[str, Any]) -> dict[str, Any]:
     return dict(payload)
+
+
+def _agent_cli_provider_matrix_item(provider_id: str, spec: Any) -> dict[str, Any]:
+    command = split_agent_command(spec.command) if spec.command else []
+    fallback_commands = [
+        split_agent_command(command_text)
+        for command_text in spec.fallback_commands
+        if command_text
+    ]
+    status = "configured" if command else "missing_command"
+    return {
+        "provider": provider_id,
+        "display_name": spec.display_name or provider_id,
+        "owner": "agent_cli",
+        "status": status,
+        "non_blocking": True,
+        "command": command,
+        "fallback_commands": fallback_commands,
+        "readonly_args": list(spec.readonly_args),
+        "command_hint_env": spec.command_hint_env,
+        "capabilities": external_agent_provider_capabilities(provider_id),
+        "unavailable_behavior": (
+            "Workflow preparation continues; execution records unavailable or failed "
+            "Agent diagnostics without trusting unvalidated output."
+        ),
+    }
+
+
+def _fast_context_provider_matrix_item() -> dict[str, Any]:
+    enabled = bool(getattr(settings, "fast_context_enabled", False))
+    bridge_enabled = bool(getattr(settings, "fast_context_backend_bridge_enabled", False))
+    if not enabled:
+        status = "disabled"
+    elif not bridge_enabled:
+        status = "bridge_disabled"
+    else:
+        status = "configured"
+    return {
+        "provider": "fast-context",
+        "display_name": "fast-context",
+        "owner": "codetalk_mcp_bridge",
+        "status": status,
+        "non_blocking": True,
+        "command": [],
+        "fallback_commands": [],
+        "readonly_args": [],
+        "command_hint_env": "",
+        "capabilities": {
+            "provider": "fast-context",
+            "supports_mcp": True,
+            "mcp_profiles": [],
+            "supports_artifact_export": False,
+            "supports_json_output": True,
+            "prompt_transport": "mcp",
+        },
+        "unavailable_behavior": (
+            "CodeTalk records fast-context as unavailable and continues with local "
+            "search, GitNexus/CGC, and Agent CLI providers."
+        ),
+    }
 
 
 def _materialize_mr_artifact_evidence(

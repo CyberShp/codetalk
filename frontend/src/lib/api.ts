@@ -34,6 +34,7 @@ import type {
   MaterializeWorkflowOutputsResult,
   PreparedWorkbenchTaskRun,
   WorkflowExecutionResult,
+  WorkbenchProviderCapabilitiesMatrix,
   WorkbenchTaskArtifactManifest,
 } from "./types";
 
@@ -476,6 +477,11 @@ export const api = {
   },
 
   workbench: {
+    providerCapabilities: () =>
+      request<WorkbenchProviderCapabilitiesMatrix>(
+        "/api/workbench/provider-capabilities",
+      ),
+
     workflows: {
       presets: () =>
         request<{ items: WorkflowPreset[] }>("/api/workbench/workflow-presets"),
