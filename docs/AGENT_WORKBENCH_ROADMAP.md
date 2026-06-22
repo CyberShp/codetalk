@@ -40,6 +40,7 @@ Current implementation note:
 - Workbench provider matrix now separates CodeTalk built-in/local providers, CodeTalk index providers, CodeTalk memory providers, CodeTalk MCP bridge providers, and Agent-owned CLI providers. The same capability boundary is visible in the UI and persisted in task bundles through `provider_snapshot.json`.
 - Workbench `report_render` includes artifact validation details and Evidence Memory source slices, so final reports show accepted/rejected artifacts, sha256 values, and verified source line ranges instead of only high-level task summaries.
 - Agent run envelopes now include `turn_id`, `task_bundle_sha256`, and `workflow_snapshot_sha256` in execution artifacts and runtime events, so disposable Agent CLI processes still have auditable task-continuity metadata.
+- Workbench Agent steps can run a second turn when the first Agent turn writes `source_slice_requests.json`; CodeTalk validates repo-local source paths, writes `source_slices.json`, injects `requested_source_slices` into the task bundle, and records turn count plus warnings in the step result.
 
 Operational requirement from repo `AGENTS.md`:
 
@@ -131,6 +132,7 @@ The harness launches configured Agent CLIs with a task bundle on stdin and captu
 - each Agent step validation result now carries accepted/rejected artifact details, including path, sha256, size, and rejection reason, so workflow execution itself is a close-gate audit record.
 - changed-file workflow outputs are materialized only when each path is backed by a repo-local file or a task patch/diff snapshot; unsupported paths are rejected per item instead of becoming Evidence Memory facts.
 - user-defined output schemas are persisted in `output_schemas_by_step.json`, injected into Agent task bundles, and enforced when workflow outputs are collected; schema failures mark the output and workflow invalid.
+- Agent steps can request source slices between turns through `source_slice_requests.json`; CodeTalk supplies only repo-local source files with sha256-backed excerpts before rerunning the Agent.
 
 The first implementation still relies on process timeout and prompt-level readonly rules rather than OS sandboxing. That residual risk must stay visible in docs and diagnostics.
 

@@ -145,6 +145,27 @@ class WorkbenchWorkflowRunner:
             run_id,
             timeout_sec=timeout_sec,
         )
+        executions = [asdict(execution)]
+        source_slice_requests = _agent_source_slice_requests(artifact_dir)
+        injected_source_slices: list[dict[str, Any]] = []
+        source_slice_warnings: list[str] = []
+        if source_slice_requests:
+            injected_source_slices, source_slice_warnings = _materialize_requested_source_slices(
+                repo_path=str((run_payload or {}).get("cwd") or ""),
+                requests=source_slice_requests,
+            )
+            _write_json(artifact_dir / "source_slices.json", injected_source_slices)
+            _inject_requested_source_slices(
+                artifact_dir=artifact_dir,
+                source_slices=injected_source_slices,
+                warnings=source_slice_warnings,
+            )
+            _set_agent_turn_id(artifact_dir=artifact_dir, turn_id="turn_2")
+            execution = AgentRunHarness(artifact_dir).execute_run(
+                run_id,
+                timeout_sec=timeout_sec,
+            )
+            executions.append(asdict(execution))
         required_artifacts = [
             str(item)
             for item in (
@@ -168,6 +189,11 @@ class WorkbenchWorkflowRunner:
             "provider": agent_run.get("provider") or (run_payload or {}).get("provider") or "",
             "artifact_dir": str(artifact_dir),
             "execution": asdict(execution),
+            "executions": executions,
+            "turn_count": len(executions),
+            "source_slice_requests": source_slice_requests,
+            "injected_source_slices": injected_source_slices,
+            "source_slice_warnings": source_slice_warnings,
             "validation": asdict(validation),
             "required_artifacts": required_artifacts,
         }
@@ -530,6 +556,137 @@ def _validate_step_artifacts(
     if {"mr_snapshot.json", "diff.patch", "changed_files.json"}.issubset(required):
         return validator.validate_mr_artifacts(required_artifacts=required_artifacts)
     return validator.validate_required_artifacts(required_artifacts=required_artifacts)
+
+
+SOURCE_EXTENSIONS = frozenset({
+    ".c", ".h", ".cc", ".cpp", ".hpp", ".py", ".go", ".rs", ".java",
+    ".ts", ".tsx", ".js", ".jsx",
+})
+
+
+def _agent_source_slice_requests(artifact_dir: Path) -> list[dict[str, Any]]:
+    payload = _read_json(artifact_dir / "source_slice_requests.json")
+    if payload is None:
+        payload = _read_json(artifact_dir / "source_slices_request.json")
+    if isinstance(payload, dict):
+        raw_items = payload.get("need_source_slices") or payload.get("source_slices") or []
+    elif isinstance(payload, list):
+        raw_items = payload
+    else:
+        raw_items = []
+    requests: list[dict[str, Any]] = []
+    for item in raw_items:
+        if not isinstance(item, dict):
+            continue
+        file_path = str(item.get("file_path") or item.get("path") or "").strip()
+        if not file_path:
+            continue
+        requests.append({
+            "file_path": file_path.replace("\\", "/"),
+            "start_line": _positive_int(item.get("start_line"), default=1),
+            "end_line": _positive_int(item.get("end_line"), default=0),
+            "symbol": str(item.get("symbol") or ""),
+            "reason": str(item.get("reason") or "agent requested source slice"),
+        })
+    return requests[:24]
+
+
+def _materialize_requested_source_slices(
+    *,
+    repo_path: str,
+    requests: list[dict[str, Any]],
+) -> tuple[list[dict[str, Any]], list[str]]:
+    repo = Path(repo_path)
+    slices: list[dict[str, Any]] = []
+    warnings: list[str] = []
+    try:
+        root = repo.resolve()
+    except OSError:
+        return [], ["repo_path could not be resolved"]
+    for request in requests:
+        file_path = str(request.get("file_path") or "")
+        resolved = _resolve_repo_source_path(root, file_path)
+        if resolved is None:
+            warnings.append(f"{file_path}: rejected_source_path")
+            continue
+        try:
+            data = resolved.read_bytes()
+            text = data.decode("utf-8", errors="replace")
+        except OSError:
+            warnings.append(f"{file_path}: read_failed")
+            continue
+        lines = text.splitlines()
+        if not lines:
+            start_line = 1
+            end_line = 1
+            excerpt = ""
+        else:
+            start_line = max(1, int(request.get("start_line") or 1))
+            requested_end = int(request.get("end_line") or 0)
+            end_line = requested_end if requested_end >= start_line else start_line + 119
+            end_line = min(len(lines), end_line)
+            excerpt = "\n".join(lines[start_line - 1:end_line])
+        slices.append({
+            "file_path": resolved.relative_to(root).as_posix(),
+            "start_line": start_line,
+            "end_line": end_line,
+            "symbol": str(request.get("symbol") or ""),
+            "reason": str(request.get("reason") or ""),
+            "sha256": hashlib.sha256(data).hexdigest(),
+            "excerpt": excerpt,
+        })
+    return slices, warnings
+
+
+def _resolve_repo_source_path(root: Path, file_path: str) -> Path | None:
+    candidate = Path(file_path)
+    if candidate.is_absolute():
+        path = candidate
+    else:
+        path = root / candidate
+    try:
+        resolved = path.resolve()
+    except OSError:
+        return None
+    if resolved == root or root not in resolved.parents:
+        return None
+    if not resolved.exists() or not resolved.is_file():
+        return None
+    if resolved.suffix.lower() not in SOURCE_EXTENSIONS:
+        return None
+    return resolved
+
+
+def _inject_requested_source_slices(
+    *,
+    artifact_dir: Path,
+    source_slices: list[dict[str, Any]],
+    warnings: list[str],
+) -> None:
+    bundle_path = artifact_dir / "task_bundle.json"
+    bundle = _read_json(bundle_path)
+    if not isinstance(bundle, dict):
+        return
+    bundle["requested_source_slices"] = source_slices
+    bundle["source_slice_request_warnings"] = warnings
+    _write_json(bundle_path, bundle)
+
+
+def _set_agent_turn_id(*, artifact_dir: Path, turn_id: str) -> None:
+    run_path = artifact_dir / "agent_run.json"
+    payload = _read_json(run_path)
+    if not isinstance(payload, dict):
+        return
+    payload["turn_id"] = turn_id
+    _write_json(run_path, payload)
+
+
+def _positive_int(value: Any, *, default: int) -> int:
+    try:
+        parsed = int(value)
+    except (TypeError, ValueError):
+        return default
+    return parsed if parsed > 0 else default
 
 
 def _inject_prior_step_context(

@@ -1063,6 +1063,97 @@ def test_workbench_workflow_runner_injects_prior_step_artifacts_into_agent_task(
     assert changed == [{"path": "src/tls.c", "old_path": "src/tls.c", "status": "modified"}]
 
 
+def test_workbench_workflow_runner_runs_second_agent_turn_for_source_slice_requests(
+    tmp_path,
+    monkeypatch,
+):
+    from app.config import settings
+    from app.services.workbench_task_run import WorkbenchTaskRunPreparer
+    from app.services.workbench_workflow_runner import WorkbenchWorkflowRunner
+    from app.services.workflow_dsl import WorkflowStore
+
+    source = tmp_path / "src" / "tls.c"
+    source.parent.mkdir()
+    source.write_text(
+        "int nvmf_tcp_tls_handshake(void) {\n"
+        "    return 0;\n"
+        "}\n",
+        encoding="utf-8",
+    )
+    script_path = tmp_path / "agent_slice_turns.py"
+    script_path.write_text(
+        "import json, pathlib, sys\n"
+        "payload=json.loads(sys.stdin.read())\n"
+        "bundle=payload['task_bundle']\n"
+        "root=pathlib.Path(payload['artifact_dir'])\n"
+        "slices=bundle.get('requested_source_slices') or []\n"
+        "if not slices:\n"
+        "    (root/'source_slice_requests.json').write_text(json.dumps({"
+        "'need_source_slices':[{'file_path':'src/tls.c','start_line':1,'end_line':3,"
+        "'reason':'need handshake implementation'}]}"
+        "), encoding='utf-8')\n"
+        "else:\n"
+        "    (root/'source_scope.json').write_text(json.dumps({"
+        "'files':[{'path':slices[0]['file_path'],'sha256':slices[0]['sha256']}],"
+        "'excerpt':slices[0]['excerpt']"
+        "}), encoding='utf-8')\n",
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(settings, "external_agent_custom_providers", [
+        {"id": "local-python", "command": f"python {script_path}"}
+    ])
+    workflow_store = WorkflowStore(tmp_path / "workflows.db")
+    workflow_store.save_workflow({
+        "id": "source_slice_turns",
+        "name": "Source slice turns",
+        "version": 1,
+        "inputs": [{"id": "module", "type": "free_text"}],
+        "steps": [
+            {
+                "id": "discover",
+                "type": "agent_task",
+                "provider": "local-python",
+                "required_artifacts": ["source_scope.json"],
+            }
+        ],
+        "outputs": [
+            {
+                "id": "source_scope",
+                "type": "json",
+                "from": "discover",
+                "artifact": "source_scope.json",
+            }
+        ],
+    })
+    task_run = WorkbenchTaskRunPreparer(
+        artifact_root=tmp_path / "task_runs",
+        workflow_store=workflow_store,
+    ).prepare(
+        workflow_id="source_slice_turns",
+        workspace_id="ws-source-slice-turns",
+        repo_path=str(tmp_path),
+        inputs={"module": "nvme tcp tls"},
+    )
+
+    result = WorkbenchWorkflowRunner(tmp_path / "task_runs").execute_task_run(
+        task_run.task_run_id,
+        timeout_sec=10,
+    )
+
+    assert result.status == "completed"
+    step = result.step_results[0]
+    assert step["turn_count"] == 2
+    assert step["source_slice_requests"][0]["file_path"] == "src/tls.c"
+    assert step["injected_source_slices"][0]["file_path"] == "src/tls.c"
+    assert "nvmf_tcp_tls_handshake" in step["injected_source_slices"][0]["excerpt"]
+    artifact_dir = Path(step["artifact_dir"])
+    source_slices = json.loads((artifact_dir / "source_slices.json").read_text(encoding="utf-8"))
+    assert source_slices[0]["sha256"]
+    source_scope = json.loads((artifact_dir / "source_scope.json").read_text(encoding="utf-8"))
+    assert source_scope["files"][0]["path"] == "src/tls.c"
+    assert result.outputs[0]["status"] == "ok"
+
+
 def test_workbench_workflow_runner_parses_coverage_before_agent_task(
     tmp_path,
     monkeypatch,
