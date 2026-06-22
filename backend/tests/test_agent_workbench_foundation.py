@@ -160,6 +160,71 @@ def test_workflow_dsl_rejects_duplicate_ids_and_missing_output_step():
     assert templated_source.outputs[0].source == "{{steps.discover.output}}"
 
 
+def test_workflow_dsl_validates_user_defined_output_schema():
+    from app.services.workflow_dsl import WorkflowValidationError, validate_workflow_definition
+
+    valid = validate_workflow_definition({
+        "id": "schema_workflow",
+        "name": "Schema workflow",
+        "version": 1,
+        "inputs": [{"id": "module", "type": "free_text"}],
+        "steps": [{"id": "discover", "type": "agent_task"}],
+        "outputs": [
+            {
+                "id": "scope",
+                "type": "json",
+                "from": "discover",
+                "artifact": "source_scope.json",
+                "schema": {
+                    "type": "object",
+                    "required": ["files"],
+                    "properties": {
+                        "files": {"type": "array"},
+                        "module": {"type": "string"},
+                    },
+                },
+            }
+        ],
+    })
+    assert valid.outputs[0].raw["schema"]["required"] == ["files"]
+
+    invalid_type = dict(valid.raw)
+    invalid_type["outputs"] = [
+        {
+            "id": "scope",
+            "type": "json",
+            "from": "discover",
+            "schema": {"type": "map"},
+        }
+    ]
+    with pytest.raises(WorkflowValidationError, match="unsupported schema type"):
+        validate_workflow_definition(invalid_type)
+
+    invalid_required = dict(valid.raw)
+    invalid_required["outputs"] = [
+        {
+            "id": "scope",
+            "type": "json",
+            "from": "discover",
+            "schema": {"type": "object", "required": ["files", 3]},
+        }
+    ]
+    with pytest.raises(WorkflowValidationError, match="schema required must be a list of strings"):
+        validate_workflow_definition(invalid_required)
+
+    markdown_schema = dict(valid.raw)
+    markdown_schema["outputs"] = [
+        {
+            "id": "report",
+            "type": "markdown",
+            "from": "discover",
+            "schema": {"type": "object"},
+        }
+    ]
+    with pytest.raises(WorkflowValidationError, match="schema requires json output type"):
+        validate_workflow_definition(markdown_schema)
+
+
 def test_workflow_store_persists_and_freezes_custom_workflow(tmp_path):
     from app.services.workflow_dsl import WorkflowStore
 

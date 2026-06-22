@@ -43,6 +43,16 @@ ALLOWED_INPUT_TYPES = frozenset({
     "number",
 })
 
+ALLOWED_JSON_SCHEMA_TYPES = frozenset({
+    "object",
+    "array",
+    "string",
+    "number",
+    "integer",
+    "boolean",
+    "null",
+})
+
 
 class WorkflowValidationError(ValueError):
     pass
@@ -249,9 +259,15 @@ def _parse_step(item: Any) -> WorkflowStep:
 def _parse_output(item: Any) -> WorkflowOutput:
     if not isinstance(item, dict):
         raise WorkflowValidationError("workflow output must be an object")
+    output_type = _required_str(item, "type")
+    schema = item.get("schema") or item.get("json_schema")
+    if schema is not None:
+        if output_type != "json":
+            raise WorkflowValidationError("workflow output schema requires json output type")
+        _validate_output_schema_definition(schema)
     return WorkflowOutput(
         id=_required_str(item, "id"),
-        type=_required_str(item, "type"),
+        type=output_type,
         source=str(item.get("from") or item.get("source") or ""),
         raw=dict(item),
     )
@@ -273,6 +289,36 @@ def _required_str(payload: dict[str, Any], key: str) -> str:
     if not value:
         raise WorkflowValidationError(f"workflow {key} is required")
     return value
+
+
+def _validate_output_schema_definition(schema: Any) -> None:
+    if not isinstance(schema, dict):
+        raise WorkflowValidationError("workflow output schema must be an object")
+    _validate_schema_type(schema)
+    required = schema.get("required")
+    if required is not None:
+        if not isinstance(required, list) or not all(isinstance(item, str) for item in required):
+            raise WorkflowValidationError("workflow output schema required must be a list of strings")
+    properties = schema.get("properties")
+    if properties is not None:
+        if not isinstance(properties, dict):
+            raise WorkflowValidationError("workflow output schema properties must be an object")
+        for field_name, property_schema in properties.items():
+            if not isinstance(field_name, str):
+                raise WorkflowValidationError("workflow output schema property names must be strings")
+            if not isinstance(property_schema, dict):
+                raise WorkflowValidationError(
+                    f"workflow output schema property {field_name} must be an object"
+                )
+            _validate_schema_type(property_schema, field_name=field_name)
+
+
+def _validate_schema_type(schema: dict[str, Any], *, field_name: str = "$") -> None:
+    schema_type = schema.get("type")
+    if schema_type is None:
+        return
+    if not isinstance(schema_type, str) or schema_type not in ALLOWED_JSON_SCHEMA_TYPES:
+        raise WorkflowValidationError(f"unsupported schema type for {field_name}: {schema_type}")
 
 
 def _list(payload: dict[str, Any], key: str) -> list[Any]:
