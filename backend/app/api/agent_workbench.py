@@ -699,6 +699,8 @@ def _artifact_kind(relative_path: str) -> str:
         return "task_bundle"
     if name == "agent_instructions.json":
         return "agent_instructions"
+    if name == "provider_snapshot.json":
+        return "provider_snapshot"
     if name == "context_bundle.json":
         return "context_bundle"
     if name == "workflow_outputs.json":

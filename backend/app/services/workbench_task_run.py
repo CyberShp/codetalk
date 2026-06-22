@@ -13,6 +13,7 @@ from typing import Any
 from app.services.agent_run_harness import AgentRunHarness
 from app.services.evidence_memory import EvidenceMemoryStore
 from app.services.external_agent_discovery import (
+    external_agent_provider_capabilities,
     external_agent_provider_spec,
     split_agent_command,
 )
@@ -96,6 +97,10 @@ class WorkbenchTaskRunPreparer:
             repo_path=repo_path,
             input_snapshot=input_snapshot,
         )
+        provider_snapshot = build_agent_provider_snapshot(
+            workflow_snapshot=workflow_snapshot,
+            provider_override=provider_override,
+        )
         task_bundle = {
             "task_run_id": task_run_id,
             "workflow_id": workflow_id,
@@ -103,6 +108,7 @@ class WorkbenchTaskRunPreparer:
             "repo_path": repo_path,
             "inputs": input_snapshot,
             "agent_instructions": agent_instructions,
+            "provider_snapshot": provider_snapshot,
             "context_bundle": context_bundle,
             "required_artifacts_by_step": required_artifacts_by_step,
             "created_at": _now(),
@@ -156,6 +162,7 @@ class WorkbenchTaskRunPreparer:
         _write_json(artifact_dir / "workflow_snapshot.json", workflow_snapshot)
         _write_json(artifact_dir / "input_snapshot.json", input_snapshot)
         _write_json(artifact_dir / "agent_instructions.json", agent_instructions)
+        _write_json(artifact_dir / "provider_snapshot.json", provider_snapshot)
         _write_json(artifact_dir / "context_bundle.json", context_bundle)
         _write_json(artifact_dir / "task_bundle.json", task_bundle)
         return result
@@ -235,6 +242,63 @@ def build_workbench_context_bundle(
             "evidence": limit,
             "semantic_cases": limit,
         },
+    }
+
+
+def build_agent_provider_snapshot(
+    *,
+    workflow_snapshot: dict[str, Any],
+    provider_override: str | None = None,
+) -> dict[str, Any]:
+    providers: dict[str, dict[str, Any]] = {}
+    steps: dict[str, dict[str, Any]] = {}
+    warnings: list[str] = []
+    for step in workflow_snapshot.get("steps") or []:
+        if not isinstance(step, dict) or step.get("type") != "agent_task":
+            continue
+        step_id = str(step.get("id") or f"step_{len(steps) + 1}")
+        provider = str(provider_override or step.get("provider") or "claude-code")
+        steps[step_id] = {
+            "provider": provider,
+            "mcp_profile": str(step.get("mcp_profile") or ""),
+            "provider_override": bool(provider_override),
+        }
+        if provider in providers:
+            continue
+        spec = external_agent_provider_spec(provider)
+        if spec is None:
+            providers[provider] = {
+                "provider": provider,
+                "status": "unknown_provider",
+                "command": [provider],
+                "fallback_commands": [],
+                "capabilities": {},
+                "prompt_transport": "",
+            }
+            warnings.append(f"{provider}: provider is not configured")
+            continue
+        providers[provider] = {
+            "provider": provider,
+            "status": "configured" if spec.command else "missing_command",
+            "display_name": spec.display_name or provider,
+            "command": split_agent_command(spec.command) if spec.command else [],
+            "fallback_commands": [
+                split_agent_command(command)
+                for command in spec.fallback_commands
+                if command
+            ],
+            "readonly_args": list(spec.readonly_args),
+            "command_hint_env": spec.command_hint_env,
+            "prompt_transport": spec.prompt_transport,
+            "capabilities": external_agent_provider_capabilities(provider),
+        }
+        if not spec.command:
+            warnings.append(f"{provider}: command is not configured")
+    return {
+        "created_at": _now(),
+        "providers": providers,
+        "steps": steps,
+        "warnings": warnings,
     }
 
 

@@ -217,6 +217,64 @@ def test_prepare_workbench_task_run_embeds_repo_agent_instructions(tmp_path):
     assert step_bundle["agent_instructions"]["files"][0]["relative_path"] == "AGENTS.md"
 
 
+def test_prepare_workbench_task_run_embeds_agent_provider_snapshot(tmp_path, monkeypatch):
+    from app.config import settings
+    from app.services.workflow_dsl import WorkflowStore
+    from app.services.workbench_task_run import WorkbenchTaskRunPreparer
+
+    monkeypatch.setattr(settings, "external_agent_custom_providers", [
+        {
+            "id": "corp-agent",
+            "command": "corp-agent run --json",
+            "fallback_commands": ["corp-agent --legacy"],
+            "supports_mcp": True,
+            "mcp_profiles": ["codehub-readonly"],
+            "supports_artifact_export": True,
+            "supports_json_output": True,
+        }
+    ])
+    workflow_store = WorkflowStore(tmp_path / "workflows.db")
+    workflow_store.save_workflow({
+        "id": "provider_snapshot_workflow",
+        "name": "Provider snapshot workflow",
+        "version": 1,
+        "inputs": [{"id": "module", "type": "free_text"}],
+        "steps": [
+            {"id": "known", "type": "agent_task", "provider": "corp-agent"},
+            {"id": "unknown", "type": "agent_task", "provider": "missing-agent"},
+        ],
+        "outputs": [{"id": "report", "type": "markdown"}],
+    })
+
+    result = WorkbenchTaskRunPreparer(
+        artifact_root=tmp_path / "task_runs",
+        workflow_store=workflow_store,
+    ).prepare(
+        workflow_id="provider_snapshot_workflow",
+        workspace_id="ws1",
+        repo_path=str(tmp_path),
+        inputs={"module": "nvme-tcp-tls"},
+    )
+
+    snapshot = result.task_bundle["provider_snapshot"]
+    known = snapshot["providers"]["corp-agent"]
+    assert known["status"] == "configured"
+    assert known["command"] == ["corp-agent", "run", "--json"]
+    assert known["fallback_commands"] == [["corp-agent", "--legacy"]]
+    assert known["capabilities"]["supports_mcp"] is True
+    assert snapshot["steps"]["known"]["provider"] == "corp-agent"
+    assert snapshot["providers"]["missing-agent"]["status"] == "unknown_provider"
+    assert "missing-agent" in snapshot["warnings"][0]
+    persisted = json.loads(
+        Path(result.artifact_dir, "provider_snapshot.json").read_text(encoding="utf-8")
+    )
+    assert persisted["steps"]["unknown"]["provider"] == "missing-agent"
+    step_bundle = json.loads(
+        Path(result.artifact_dir, "agent_runs", "known", "task_bundle.json").read_text(encoding="utf-8")
+    )
+    assert step_bundle["provider_snapshot"]["providers"]["corp-agent"]["status"] == "configured"
+
+
 def test_workbench_task_run_store_loads_and_lists_prepared_runs(tmp_path):
     from app.services.workflow_dsl import WorkflowStore
     from app.services.workbench_task_run import (
