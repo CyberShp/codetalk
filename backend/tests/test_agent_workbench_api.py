@@ -540,6 +540,40 @@ async def test_workbench_prepare_task_run_api(workbench_client):
     assert body["agent_runs"][0]["step_id"] == "collect_mr"
 
 
+async def test_workbench_task_run_artifacts_api_lists_audit_files(workbench_client, tmp_path):
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    (repo / "AGENTS.md").write_text("Prefer fast-context first.\n", encoding="utf-8")
+    workflow = {
+        "id": "artifact_audit_workflow",
+        "name": "Artifact audit workflow",
+        "version": 1,
+        "inputs": [{"id": "module", "type": "free_text"}],
+        "steps": [{"id": "discover", "type": "agent_task", "provider": "claude-code"}],
+        "outputs": [{"id": "report", "type": "markdown"}],
+    }
+    assert (await workbench_client.post("/api/workbench/workflows", json=workflow)).status_code == 201
+    prepared = await workbench_client.post(
+        "/api/workbench/task-runs/prepare",
+        json={
+            "workflow_id": "artifact_audit_workflow",
+            "workspace_id": "ws-artifacts",
+            "repo_path": str(repo),
+            "inputs": {"module": "lib/thread/thread.c"},
+        },
+    )
+    task_run_id = prepared.json()["task_run_id"]
+
+    artifacts = await workbench_client.get(f"/api/workbench/task-runs/{task_run_id}/artifacts")
+
+    assert artifacts.status_code == 200
+    body = artifacts.json()
+    paths = {item["relative_path"]: item for item in body["artifacts"]}
+    assert paths["task_bundle.json"]["sha256"]
+    assert paths["agent_instructions.json"]["kind"] == "agent_instructions"
+    assert paths["agent_runs/discover/task_bundle.json"]["kind"] == "agent_task_bundle"
+
+
 async def test_workbench_prepare_task_run_api_injects_memory_and_semantics(workbench_client, tmp_path):
     assert (await workbench_client.post(
         "/api/workbench/memory/runs",

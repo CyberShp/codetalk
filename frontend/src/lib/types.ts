@@ -299,6 +299,21 @@ export interface WorkflowExecutionResult {
   outputs?: Array<Record<string, unknown>>;
 }
 
+export interface WorkbenchTaskArtifact {
+  relative_path: string;
+  path: string;
+  kind: string;
+  size_bytes: number;
+  sha256: string;
+  preview?: string;
+}
+
+export interface WorkbenchTaskArtifactManifest {
+  task_run_id: string;
+  artifact_dir: string;
+  artifacts: WorkbenchTaskArtifact[];
+}
+
 export interface PreparedAgentRun {
   step_id: string;
   run_id: string;

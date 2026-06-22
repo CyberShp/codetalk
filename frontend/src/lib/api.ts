@@ -33,6 +33,7 @@ import type {
   MaterializeEvidenceResult,
   PreparedWorkbenchTaskRun,
   WorkflowExecutionResult,
+  WorkbenchTaskArtifactManifest,
 } from "./types";
 
 const CONFIGURED_API_BASE = process.env.NEXT_PUBLIC_API_URL?.replace(/\/$/, "");
@@ -629,6 +630,11 @@ export const api = {
       get: (taskRunId: string) =>
         request<PreparedWorkbenchTaskRun>(
           `/api/workbench/task-runs/${encodeURIComponent(taskRunId)}`,
+        ),
+
+      artifacts: (taskRunId: string) =>
+        request<WorkbenchTaskArtifactManifest>(
+          `/api/workbench/task-runs/${encodeURIComponent(taskRunId)}/artifacts`,
         ),
 
       prepare: (data: {

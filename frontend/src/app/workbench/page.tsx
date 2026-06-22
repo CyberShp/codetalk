@@ -23,6 +23,7 @@ import type {
   WorkflowDefinition,
   WorkflowExecutionResult,
   WorkflowPreset,
+  WorkbenchTaskArtifactManifest,
 } from "@/lib/types";
 
 const DEFAULT_WORKFLOW = {
@@ -130,6 +131,8 @@ export default function AgentWorkbenchPage() {
   const [memoryResults, setMemoryResults] = useState<EvidenceMemoryItem[]>([]);
   const [taskRuns, setTaskRuns] = useState<PreparedWorkbenchTaskRun[]>([]);
   const [preparedRun, setPreparedRun] = useState<PreparedWorkbenchTaskRun | null>(null);
+  const [artifactManifest, setArtifactManifest] =
+    useState<WorkbenchTaskArtifactManifest | null>(null);
   const [workflowExecution, setWorkflowExecution] = useState<WorkflowExecutionResult | null>(null);
   const [executionResults, setExecutionResults] = useState<
     Record<string, AgentRunExecutionResult>
@@ -195,6 +198,11 @@ export default function AgentWorkbenchPage() {
     }
   }
 
+  async function refreshArtifactManifest(taskRunId: string) {
+    const manifest = await api.workbench.taskRuns.artifacts(taskRunId);
+    setArtifactManifest(manifest);
+  }
+
   const saveWorkflow = () =>
     runAction("save-workflow", async () => {
       const payload = parseJsonObject(workflowJson);
@@ -241,7 +249,15 @@ export default function AgentWorkbenchPage() {
       setValidationResults({});
       setMaterializeResults({});
       setWorkflowExecution(null);
+      await refreshArtifactManifest(result.task_run_id);
       setMessage(`Task run prepared: ${result.task_run_id}`);
+    });
+
+  const loadPreparedArtifacts = () =>
+    runAction("load-artifacts", async () => {
+      if (!preparedRun) return;
+      await refreshArtifactManifest(preparedRun.task_run_id);
+      setMessage(`Artifacts loaded: ${preparedRun.task_run_id}`);
     });
 
   const executePreparedWorkflow = () =>
@@ -253,6 +269,7 @@ export default function AgentWorkbenchPage() {
         true,
       );
       setWorkflowExecution(result);
+      await refreshArtifactManifest(preparedRun.task_run_id);
       setMessage(`Workflow execution ${result.status}: ${result.task_run_id}`);
       await loadWorkflows();
     });
@@ -496,6 +513,18 @@ export default function AgentWorkbenchPage() {
               )}
               Execute workflow
             </button>
+            <button
+              onClick={loadPreparedArtifacts}
+              disabled={busyAction === "load-artifacts" || !preparedRun}
+              className="ml-2 inline-flex items-center gap-2 rounded-lg bg-surface px-3 py-2 text-sm font-medium text-on-surface transition-colors hover:bg-surface-container-high disabled:opacity-50"
+            >
+              {busyAction === "load-artifacts" ? (
+                <Loader2 size={14} className="animate-spin" />
+              ) : (
+                <ClipboardList size={14} />
+              )}
+              Audit artifacts
+            </button>
             {preparedRun && (
               <div className="rounded-lg border border-outline-variant/30 bg-surface p-3 text-xs">
                 <p className="font-medium text-on-surface">{preparedRun.task_run_id}</p>
@@ -533,6 +562,21 @@ export default function AgentWorkbenchPage() {
                     </p>
                   );
                 })()}
+                {artifactManifest && artifactManifest.task_run_id === preparedRun.task_run_id && (
+                  <div className="mt-2 rounded bg-surface-container px-2 py-1.5 text-on-surface-variant">
+                    Audit artifacts: {artifactManifest.artifacts.length}
+                    <div className="mt-1 flex flex-wrap gap-1.5">
+                      {artifactManifest.artifacts.slice(0, 6).map((artifact) => (
+                        <span
+                          key={artifact.relative_path}
+                          className="rounded bg-surface px-1.5 py-0.5 font-data text-[10px]"
+                        >
+                          {artifact.kind}:{artifact.relative_path}
+                        </span>
+                      ))}
+                    </div>
+                  </div>
+                )}
                 {workflowExecution && (
                   <div className="mt-2 rounded bg-surface-container px-2 py-1.5 text-on-surface-variant">
                     Workflow: {workflowExecution.status} / steps{" "}

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import hashlib
 import json
 from dataclasses import asdict
 from pathlib import Path
@@ -442,6 +443,20 @@ async def get_task_run(task_run_id: str) -> dict[str, Any]:
     return asdict(task_run)
 
 
+@router.get("/task-runs/{task_run_id}/artifacts")
+async def list_task_run_artifacts(task_run_id: str) -> dict[str, Any]:
+    try:
+        task_run = WorkbenchTaskRunStore(_task_runs_dir()).load(task_run_id)
+    except KeyError:
+        raise HTTPException(status_code=404, detail=f"Unknown task run: {task_run_id}")
+    task_dir = Path(task_run.artifact_dir)
+    return {
+        "task_run_id": task_run.task_run_id,
+        "artifact_dir": str(task_dir),
+        "artifacts": _artifact_manifest(task_dir),
+    }
+
+
 @router.post("/task-runs/prepare", status_code=201)
 async def prepare_task_run(payload: PrepareTaskRunRequest) -> dict[str, Any]:
     try:
@@ -553,6 +568,71 @@ def _object_text_from_task_run(task_run: Any, snapshot: Any) -> str:
         if isinstance(value, str) and value:
             return value
     return task_run.workflow_id
+
+
+def _artifact_manifest(task_dir: Path) -> list[dict[str, Any]]:
+    try:
+        root = task_dir.resolve()
+    except OSError:
+        return []
+    if not root.exists() or not root.is_dir():
+        return []
+    artifacts: list[dict[str, Any]] = []
+    for path in sorted(root.rglob("*"), key=lambda item: item.as_posix()):
+        if not path.is_file():
+            continue
+        try:
+            resolved = path.resolve()
+        except OSError:
+            continue
+        if resolved != root and root not in resolved.parents:
+            continue
+        data = resolved.read_bytes()
+        relative_path = resolved.relative_to(root).as_posix()
+        item: dict[str, Any] = {
+            "relative_path": relative_path,
+            "path": str(resolved),
+            "kind": _artifact_kind(relative_path),
+            "size_bytes": len(data),
+            "sha256": hashlib.sha256(data).hexdigest(),
+        }
+        preview = _artifact_preview(resolved, data)
+        if preview:
+            item["preview"] = preview
+        artifacts.append(item)
+    return artifacts
+
+
+def _artifact_kind(relative_path: str) -> str:
+    name = relative_path.rsplit("/", 1)[-1]
+    if relative_path.endswith("/task_bundle.json"):
+        return "agent_task_bundle"
+    if name == "task_bundle.json":
+        return "task_bundle"
+    if name == "agent_instructions.json":
+        return "agent_instructions"
+    if name == "context_bundle.json":
+        return "context_bundle"
+    if name == "workflow_outputs.json":
+        return "workflow_outputs"
+    if name == "workflow_execution.json":
+        return "workflow_execution"
+    if name == "raw_output.txt":
+        return "agent_raw_output"
+    if name == "agent_run.json":
+        return "agent_run"
+    if name.endswith(".json"):
+        return "json"
+    if name.endswith((".md", ".txt", ".patch", ".diff", ".log")):
+        return "text"
+    return "artifact"
+
+
+def _artifact_preview(path: Path, data: bytes, *, max_chars: int = 1200) -> str:
+    if path.suffix.lower() not in {".json", ".md", ".txt", ".patch", ".diff", ".log"}:
+        return ""
+    text = data[: max_chars * 4].decode("utf-8", errors="replace")
+    return text[:max_chars]
 
 
 def _read_json(path: Path) -> Any:
