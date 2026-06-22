@@ -924,18 +924,38 @@ def _evidence_validation_payload(
     step_id: str,
     prior_step_results: list[dict[str, Any]],
 ) -> dict[str, Any]:
-    validations = [
-        item.get("validation")
-        for item in prior_step_results
-        if isinstance(item.get("validation"), dict)
-    ]
     accepted = []
     rejected = []
+    accepted_details = []
+    rejected_details = []
     warnings = []
-    for validation in validations:
-        accepted.extend(validation.get("accepted_artifacts") or [])
-        rejected.extend(validation.get("rejected_artifacts") or [])
+    for result in prior_step_results:
+        validation = result.get("validation")
+        if not isinstance(validation, dict):
+            continue
+        source_step_id = str(result.get("step_id") or "")
+        artifact_dir = Path(str(result.get("artifact_dir") or ""))
+        accepted_artifacts = [str(item) for item in validation.get("accepted_artifacts") or []]
+        rejected_artifacts = [
+            item for item in validation.get("rejected_artifacts") or []
+            if isinstance(item, dict)
+        ]
+        accepted.extend(accepted_artifacts)
+        rejected.extend(rejected_artifacts)
         warnings.extend(validation.get("warnings") or [])
+        for artifact in accepted_artifacts:
+            detail = _accepted_artifact_detail(
+                artifact_dir=artifact_dir,
+                artifact=artifact,
+                source_step_id=source_step_id,
+            )
+            if detail:
+                accepted_details.append(detail)
+        for item in rejected_artifacts:
+            rejected_details.append({
+                **item,
+                "source_step_id": source_step_id,
+            })
     context_bundle = task_run.task_bundle.get("context_bundle") or {}
     payload = {
         "step_id": step_id,
@@ -944,6 +964,8 @@ def _evidence_validation_payload(
         "workspace_id": task_run.workspace_id,
         "accepted_artifacts": accepted,
         "rejected_artifacts": rejected,
+        "accepted_artifact_details": accepted_details,
+        "rejected_artifact_details": rejected_details,
         "warnings": warnings,
         "accepted_count": len(accepted),
         "rejected_count": len(rejected),
@@ -951,6 +973,25 @@ def _evidence_validation_payload(
         "semantic_case_count": len(context_bundle.get("semantic_cases") or []),
     }
     return payload
+
+
+def _accepted_artifact_detail(
+    *,
+    artifact_dir: Path,
+    artifact: str,
+    source_step_id: str,
+) -> dict[str, Any] | None:
+    path = _resolve_artifact_path(artifact_dir, artifact)
+    if path is None or not path.exists() or not path.is_file():
+        return None
+    data = path.read_bytes()
+    return {
+        "artifact": artifact,
+        "source_step_id": source_step_id,
+        "path": str(path),
+        "sha256": hashlib.sha256(data).hexdigest(),
+        "size_bytes": len(data),
+    }
 
 
 def _render_report_artifacts(

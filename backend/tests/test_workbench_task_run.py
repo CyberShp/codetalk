@@ -765,6 +765,76 @@ def test_workbench_workflow_runner_parses_coverage_before_agent_task(
     ]
 
 
+def test_workbench_evidence_validate_records_artifact_hashes(
+    tmp_path,
+    monkeypatch,
+):
+    from app.config import settings
+    from app.services.workbench_task_run import WorkbenchTaskRunPreparer
+    from app.services.workbench_workflow_runner import WorkbenchWorkflowRunner
+    from app.services.workflow_dsl import WorkflowStore
+
+    script_path = tmp_path / "agent_scope.py"
+    script_path.write_text(
+        "import json, os, pathlib\n"
+        "root=pathlib.Path(os.environ['CODETALK_AGENT_ARTIFACT_DIR'])\n"
+        "(root/'source_scope.json').write_text(json.dumps({'files':['src/tls.c']}), encoding='utf-8')\n"
+        "(root/'evidence_cards.json').write_text(json.dumps([{'path':'src/tls.c'}]), encoding='utf-8')\n",
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(settings, "external_agent_custom_providers", [
+        {"id": "local-python", "command": f"python {script_path}"}
+    ])
+    workflow_store = WorkflowStore(tmp_path / "workflows.db")
+    workflow_store.save_workflow({
+        "id": "evidence_hash_audit",
+        "name": "Evidence hash audit",
+        "version": 1,
+        "inputs": [{"id": "module", "type": "free_text"}],
+        "steps": [
+            {
+                "id": "discover",
+                "type": "agent_task",
+                "provider": "local-python",
+                "required_artifacts": ["source_scope.json", "evidence_cards.json"],
+            },
+            {"id": "validate_evidence", "type": "evidence_validate"},
+        ],
+        "outputs": [{"id": "validation", "type": "json", "from": "validate_evidence"}],
+    })
+    task_run = WorkbenchTaskRunPreparer(
+        artifact_root=tmp_path / "task_runs",
+        workflow_store=workflow_store,
+    ).prepare(
+        workflow_id="evidence_hash_audit",
+        workspace_id="ws-evidence-hash",
+        repo_path=str(tmp_path),
+        inputs={"module": "nvme tcp tls"},
+    )
+
+    result = WorkbenchWorkflowRunner(tmp_path / "task_runs").execute_task_run(
+        task_run.task_run_id,
+        timeout_sec=10,
+    )
+
+    assert result.status == "completed"
+    validation_path = (
+        Path(task_run.artifact_dir)
+        / "steps"
+        / "validate_evidence"
+        / "evidence_validation.json"
+    )
+    validation = json.loads(validation_path.read_text(encoding="utf-8"))
+    details = validation["accepted_artifact_details"]
+    assert {item["artifact"] for item in details} == {
+        "source_scope.json",
+        "evidence_cards.json",
+    }
+    assert {item["source_step_id"] for item in details} == {"discover"}
+    assert all(item["sha256"] and item["size_bytes"] > 0 for item in details)
+    assert all(Path(item["path"]).is_file() for item in details)
+
+
 def test_workbench_workflow_runner_executes_builtin_context_and_report_steps(tmp_path):
     from app.services.evidence_memory import EvidenceMemoryStore
     from app.services.test_semantic_library import TestSemanticLibraryStore
