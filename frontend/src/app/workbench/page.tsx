@@ -190,6 +190,7 @@ function evidenceValidationSummary(
 const AUDIT_ARTIFACT_KIND_ORDER = [
   "task_bundle",
   "input_snapshot",
+  "input_context",
   "input_file_metadata",
   "input_file_set_manifest",
   "input_parsed_text",

@@ -99,6 +99,7 @@ class WorkbenchTaskRunPreparer:
             repo_path=repo_path,
             input_snapshot=input_snapshot,
         )
+        input_context = build_input_context(input_snapshot)
         provider_snapshot = build_agent_provider_snapshot(
             workflow_snapshot=workflow_snapshot,
             provider_override=provider_override,
@@ -123,6 +124,7 @@ class WorkbenchTaskRunPreparer:
             "workspace_id": workspace_id,
             "repo_path": repo_path,
             "inputs": input_snapshot,
+            "input_context": input_context,
             "workflow_contract": workflow_contract,
             "agent_instructions": agent_instructions,
             "provider_snapshot": provider_snapshot,
@@ -186,6 +188,7 @@ class WorkbenchTaskRunPreparer:
         _write_json(artifact_dir / "workflow_snapshot.json", workflow_snapshot)
         _write_json(artifact_dir / "workflow_contract.json", workflow_contract)
         _write_json(artifact_dir / "input_snapshot.json", input_snapshot)
+        _write_json(artifact_dir / "input_context.json", input_context)
         _write_json(artifact_dir / "agent_instructions.json", agent_instructions)
         _write_json(artifact_dir / "provider_snapshot.json", provider_snapshot)
         _write_json(artifact_dir / "context_discovery_decision.json", context_discovery_decision)
@@ -280,6 +283,94 @@ def build_workbench_context_bundle(
             "semantic_cases": limit,
         },
     }
+
+
+def build_input_context(input_snapshot: dict[str, Any], *, preview_chars: int = 4000) -> dict[str, Any]:
+    inputs: list[dict[str, Any]] = []
+    for input_id, value in input_snapshot.items():
+        if not isinstance(value, dict):
+            continue
+        kind = str(value.get("kind") or "")
+        if kind == "file":
+            inputs.append(
+                _input_context_file(
+                    input_id=str(input_id),
+                    payload=value,
+                    preview_chars=preview_chars,
+                )
+            )
+        elif kind == "file_set":
+            files = [
+                _input_context_file(
+                    input_id=str(file_payload.get("input_id") or f"{input_id}_{index + 1}"),
+                    payload=file_payload,
+                    preview_chars=preview_chars,
+                )
+                for index, file_payload in enumerate(value.get("files") or [])
+                if isinstance(file_payload, dict)
+            ]
+            inputs.append({
+                "input_id": str(input_id),
+                "kind": "file_set",
+                "count": int(value.get("count") or len(files)),
+                "manifest_path": str(value.get("manifest_path") or ""),
+                "files": files,
+            })
+    return {
+        "inputs": inputs,
+        "file_count": sum(
+            len(item.get("files") or [item])
+            for item in inputs
+            if isinstance(item, dict)
+        ),
+        "preview_chars_per_file": preview_chars,
+    }
+
+
+def _input_context_file(
+    *,
+    input_id: str,
+    payload: dict[str, Any],
+    preview_chars: int,
+) -> dict[str, Any]:
+    parsed_text_path = str(payload.get("parsed_text_path") or "")
+    chunks_path = str(payload.get("chunks_path") or "")
+    chunks = _read_json(Path(chunks_path)) if chunks_path else None
+    chunk_count = len(chunks) if isinstance(chunks, list) else 0
+    return {
+        "input_id": input_id,
+        "kind": "file",
+        "filename": str(payload.get("filename") or ""),
+        "suffix": str(payload.get("suffix") or ""),
+        "size_bytes": int(payload.get("size_bytes") or 0),
+        "sha256": str(payload.get("sha256") or ""),
+        "original_path": str(payload.get("original_path") or ""),
+        "copied_path": str(payload.get("copied_path") or ""),
+        "parsed_text_path": parsed_text_path,
+        "chunks_path": chunks_path,
+        "chunk_count": chunk_count,
+        "text_preview": _read_text_preview(parsed_text_path, preview_chars),
+        "text_truncated": _text_file_exceeds(parsed_text_path, preview_chars),
+        "parse_warnings": [str(item) for item in payload.get("parse_warnings") or []],
+    }
+
+
+def _read_text_preview(path_text: str, max_chars: int) -> str:
+    if not path_text:
+        return ""
+    try:
+        return Path(path_text).read_text(encoding="utf-8", errors="replace")[:max_chars]
+    except OSError:
+        return ""
+
+
+def _text_file_exceeds(path_text: str, max_chars: int) -> bool:
+    if not path_text:
+        return False
+    try:
+        return len(Path(path_text).read_text(encoding="utf-8", errors="replace")) > max_chars
+    except OSError:
+        return False
 
 
 def build_output_schemas_by_step(workflow_snapshot: dict[str, Any]) -> dict[str, list[dict[str, Any]]]:

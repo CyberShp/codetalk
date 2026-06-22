@@ -89,6 +89,20 @@ def test_prepare_workbench_task_run_ingests_file_inputs(tmp_path):
     assert Path(file_info["copied_path"]).exists()
     assert Path(file_info["parsed_text_path"]).read_text(encoding="utf-8").startswith("# Patch plan")
     assert Path(file_info["chunks_path"]).exists()
+    input_context = result.task_bundle["input_context"]
+    assert input_context["inputs"][0]["input_id"] == "patch_plan"
+    assert input_context["inputs"][0]["kind"] == "file"
+    assert input_context["inputs"][0]["filename"] == "patch-plan.md"
+    assert input_context["inputs"][0]["text_preview"].startswith("# Patch plan")
+    assert input_context["inputs"][0]["chunk_count"] == 1
+    assert input_context["inputs"][0]["chunks_path"] == file_info["chunks_path"]
+    step_bundle = json.loads(
+        Path(result.artifact_dir, "agent_runs", "analyze", "task_bundle.json").read_text(
+            encoding="utf-8"
+        )
+    )
+    assert step_bundle["input_context"]["inputs"][0]["input_id"] == "patch_plan"
+    assert Path(result.artifact_dir, "input_context.json").exists()
 
 
 def test_prepare_workbench_task_run_validates_required_inputs(tmp_path):
@@ -160,6 +174,12 @@ def test_prepare_workbench_task_run_ingests_file_set_inputs(tmp_path):
     assert "TLS must fail closed" in Path(docs["files"][0]["parsed_text_path"]).read_text(
         encoding="utf-8"
     )
+    input_context = result.task_bundle["input_context"]
+    assert input_context["inputs"][0]["input_id"] == "docs"
+    assert input_context["inputs"][0]["kind"] == "file_set"
+    assert input_context["inputs"][0]["count"] == 2
+    assert input_context["inputs"][0]["files"][0]["filename"] == "requirements.md"
+    assert "TLS must fail closed" in input_context["inputs"][0]["files"][0]["text_preview"]
 
 
 def test_prepare_workbench_task_run_injects_evidence_and_semantic_context(tmp_path):

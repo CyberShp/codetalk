@@ -1514,6 +1514,8 @@ def _artifact_kind(relative_path: str) -> str:
         return "provider_snapshot"
     if name == "input_snapshot.json":
         return "input_snapshot"
+    if name == "input_context.json":
+        return "input_context"
     if parts and parts[0] == "inputs":
         if name == "file_metadata.json":
             return "input_file_metadata"
