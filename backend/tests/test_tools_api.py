@@ -261,6 +261,25 @@ async def test_tools_status_exposes_external_agent_provider_capabilities(tools_c
     assert body["agent_provider"]["supports_json_output"] is True
 
 
+async def test_tools_status_exposes_fast_context_diagnostics(tools_client, monkeypatch):
+    from app.adapters.context_discovery import FastContextAdapter
+    from app.config import settings
+
+    client, _mock_pm = tools_client
+    monkeypatch.setattr(settings, "fast_context_enabled", True)
+    monkeypatch.setattr(settings, "fast_context_backend_bridge_enabled", False)
+    monkeypatch.setattr(tools, "get_all_adapters", lambda: [FastContextAdapter()])
+
+    resp = await client.get("/api/tools/status")
+
+    assert resp.status_code == 200
+    body = resp.json()["fast-context"]
+    assert body["healthy"] is False
+    assert body["container_status"] == "unavailable"
+    assert "backend bridge is not configured" in body["message"]
+    assert body["capabilities"] == ["code_search"]
+
+
 async def test_tool_health_exception_exposes_diagnostic_message(tools_client, monkeypatch):
     """Health endpoint errors should remain actionable instead of returning null text."""
 

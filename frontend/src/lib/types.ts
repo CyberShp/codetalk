@@ -479,6 +479,7 @@ export interface AnalysisPlan {
 export type ScopeCandidateSource =
   | "gitnexus"
   | "repo_search"
+  | "fast_context"
   | "external_agent"
   | "material"
   | "manual";

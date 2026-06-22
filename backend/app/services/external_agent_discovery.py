@@ -2327,16 +2327,18 @@ def merge_source_candidates(
                 continue
             key = validation.path.lower()
             providers_by_key.setdefault(key, set()).add(result.provider)
-            reason = f"external agent {result.provider}: {file.reason or 'validated source path'}"
+            candidate_source = "fast_context" if result.provider == "fast-context" else "external_agent"
+            reason_prefix = "fast-context" if result.provider == "fast-context" else f"external agent {result.provider}"
+            reason = f"{reason_prefix}: {file.reason or 'validated source path'}"
             confidence = "high" if _normalize_confidence(file.confidence) == "high" else "medium"
-            if key in by_key and by_key[key].source == "external_agent":
+            if key in by_key and by_key[key].source in {"external_agent", "fast_context"}:
                 if len(providers_by_key[key]) > 1:
                     confidence = "high"
                 by_key[key] = by_key[key].model_copy(update={
                     "confidence": confidence,
                     "reason": by_key[key].reason + f"; {result.provider} also matched",
                 })
-            elif key in by_key and _source_candidate_priority(by_key[key].source) <= _source_candidate_priority("external_agent"):
+            elif key in by_key and _source_candidate_priority(by_key[key].source) <= _source_candidate_priority(candidate_source):
                 existing_confidence = by_key[key].confidence
                 by_key[key] = by_key[key].model_copy(update={
                     "confidence": "high" if "high" in {existing_confidence, confidence} else existing_confidence,
@@ -2345,7 +2347,7 @@ def merge_source_candidates(
             else:
                 by_key[key] = ScopeCandidate(
                     path=validation.resolved_path,
-                    source="external_agent",
+                    source=candidate_source,
                     confidence=confidence,
                     reason=reason,
                     role="primary",
@@ -2367,9 +2369,10 @@ def _source_candidate_priority(source: str) -> int:
     return {
         "manual": 0,
         "repo_search": 0,
-        "external_agent": 1,
-        "gitnexus": 2,
-        "material": 3,
+        "fast_context": 1,
+        "external_agent": 2,
+        "gitnexus": 3,
+        "material": 4,
     }.get(str(source or ""), 9)
 
 

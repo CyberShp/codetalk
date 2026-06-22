@@ -56,6 +56,10 @@ from app.services.agent_discovery_session import (
     AgentDiscoverySession,
     create_agent_discovery_session,
 )
+from app.services.context_discovery import (
+    ContextDiscoveryRequest,
+    run_context_source_discovery,
+)
 from app.utils.repo_paths import to_tool_repo_path
 
 logger = logging.getLogger(__name__)
@@ -1193,7 +1197,12 @@ def _scope_external_agent_warnings(resolved: list[ResolvedAnalysisObject]) -> li
             text = str(warning).strip()
             if not text:
                 continue
-            if "claude-code:" not in text and "opencode:" not in text and "external agent" not in text:
+            if (
+                "claude-code:" not in text
+                and "opencode:" not in text
+                and "fast-context:" not in text
+                and "external agent" not in text
+            ):
                 continue
             warnings.append(f"{obj.object_id}: {text}")
             if len(warnings) >= 16:
@@ -1216,7 +1225,7 @@ def _scope_external_agent_status_from_warnings(
         "configuration_error",
         "error",
     }
-    provider_re = re.compile(r"^(claude-code|opencode|external_agent):\s*([a-z_]+)\b")
+    provider_re = re.compile(r"^(claude-code|opencode|fast-context|external_agent):\s*([a-z_]+)\b")
     rank = {
         "ok": 0,
         "available": 0,
@@ -2019,9 +2028,25 @@ class WorkspaceScopeResolver:
                 ),
                 session=agent_session,
             ))
+        context_task: asyncio.Task | None = None
+        if settings.context_discovery_enabled and settings.fast_context_backend_bridge_enabled:
+            context_task = asyncio.create_task(run_context_source_discovery(
+                ContextDiscoveryRequest(
+                    request_id=f"{ws_id}:{obj.id}",
+                    repo_path=repo_path,
+                    analysis_object_text=obj.text,
+                    path_hints=search_hints,
+                    scope_hints=[
+                        {"path": path, "role": role} for path, role in role_hints
+                    ],
+                    existing_candidates=[],
+                    goal="source_scope",
+                )
+            ))
 
         if not expanded_keywords:
             await _cancel_and_drain_task(agent_task)
+            await _cancel_and_drain_task(context_task)
             obj_warnings.append("分析对象过于笼统，未提取到可检索关键字。")
             return ResolvedAnalysisObject(
                 object_id=obj.id,
@@ -2242,22 +2267,40 @@ class WorkspaceScopeResolver:
                     exc=exc,
                 )
             ]
+        try:
+            context_results = await context_task if context_task is not None else []
+        except Exception as exc:
+            context_results = [
+                AgentDiscoveryResult(
+                    provider="fast-context",
+                    status="error",
+                    raw_summary=str(exc),
+                    warnings=[str(exc)],
+                )
+            ]
         _record_agent_scope_results(
             agent_session,
             object_id=obj.id,
             repo_path=repo_path,
             results=agent_results,
         )
+        _record_agent_scope_results(
+            agent_session,
+            object_id=obj.id,
+            repo_path=repo_path,
+            results=context_results,
+        )
+        discovery_results = [*context_results, *agent_results]
         if (
             agent_session is not None
             and settings.agent_discovery_max_rounds > 1
             and (
-                (not file_candidates and any(r.status == "ok" for r in agent_results))
-                or _agent_requests_source_slices(agent_results)
+                (not file_candidates and any(r.status == "ok" for r in discovery_results))
+                or _agent_requests_source_slices(discovery_results)
                 or (_agent_has_rejected_files(agent_session, obj.id) and bool(file_candidates))
             )
         ):
-            for result in agent_results:
+            for result in discovery_results:
                 if result.need_source_slices:
                     agent_session.add_source_slices_from_requests(
                         result.need_source_slices,
@@ -2316,14 +2359,14 @@ class WorkspaceScopeResolver:
                 repo_path=repo_path,
                 results=round2_results,
             )
-            agent_results = [*agent_results, *round2_results]
-        if agent_results:
+            discovery_results = [*discovery_results, *round2_results]
+        if discovery_results:
             merged_files, agent_warnings = merge_source_candidates(
-                repo_path, file_candidates, agent_results
+                repo_path, file_candidates, discovery_results
             )
             file_candidates = merged_files[: limits.max_files_per_object]
             obj_warnings.extend(agent_warnings)
-            for result in agent_results:
+            for result in discovery_results:
                 for file in result.candidate_files:
                     if file.validated:
                         validation = validate_agent_candidate_file(repo_path, file.path)

@@ -109,6 +109,9 @@ class Settings(BaseSettings):
     # JSON list of provider specs, e.g.
     # [{"id":"corp-agent","command":"corp-agent discover","prompt_transport":"stdin"}]
     external_agent_custom_providers: list[dict] | str = Field(default_factory=list)
+    context_discovery_enabled: bool = True
+    fast_context_enabled: bool = True
+    fast_context_backend_bridge_enabled: bool = False
     tiktoken_cache_dir: str = ""     # override path for tiktoken BPE cache (TIKTOKEN_CACHE_DIR)
     tool_health_interval: int = 30   # seconds between health checks
 

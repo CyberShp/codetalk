@@ -27,7 +27,7 @@ logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/api/tools", tags=["tools"])
 
 _HEALTH_TIMEOUT = 4.0  # seconds; adapters slower than this are reported as busy
-_ADAPTER_ONLY_TOOL_NAMES = set(external_agent_provider_ids())
+_ADAPTER_ONLY_TOOL_NAMES = {*external_agent_provider_ids(), "fast-context"}
 _MANAGED_STARTUP_PROBE_TOOL_NAMES = {"gitnexus"}
 
 

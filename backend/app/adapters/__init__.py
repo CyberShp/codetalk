@@ -39,6 +39,7 @@ def get_all_adapters() -> list[BaseToolAdapter]:
 def _register_defaults() -> None:
     from app.adapters.cgc import CGCAdapter
     from app.adapters.codecompass import CodeCompassAdapter
+    from app.adapters.context_discovery import FastContextAdapter
     from app.adapters.deepwiki import DeepwikiAdapter
     from app.adapters.external_agent import ExternalAgentAdapter
     from app.adapters.gitnexus import GitNexusAdapter
@@ -60,6 +61,9 @@ def _register_defaults() -> None:
     def codecompass_factory() -> CodeCompassAdapter:
         return CodeCompassAdapter(base_url=settings.codecompass_base_url)
 
+    def fast_context_factory() -> FastContextAdapter:
+        return FastContextAdapter()
+
     def claude_code_factory() -> ExternalAgentAdapter:
         return ExternalAgentAdapter("claude-code", "claude_code_command")
 
@@ -71,6 +75,7 @@ def _register_defaults() -> None:
     register_adapter(gitnexus_factory(), factory=gitnexus_factory)
     register_adapter(joern_factory(), factory=joern_factory)
     register_adapter(codecompass_factory(), factory=codecompass_factory)
+    register_adapter(fast_context_factory(), factory=fast_context_factory)
     register_adapter(claude_code_factory(), factory=claude_code_factory)
     register_adapter(opencode_factory(), factory=opencode_factory)
     for provider_id in external_agent_provider_specs():

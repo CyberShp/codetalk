@@ -135,6 +135,9 @@ export default function ScopePreviewPanel({ preview, loading }: Props) {
                 {sourceCounts.external_agent ? (
                   <span>Agent {sourceCounts.external_agent}</span>
                 ) : null}
+                {sourceCounts.fast_context ? (
+                  <span>fast-context {sourceCounts.fast_context}</span>
+                ) : null}
               </div>
               {obj.warnings.length > 0 && (
                 <div className="mt-1 text-[10px] text-amber-500/90">

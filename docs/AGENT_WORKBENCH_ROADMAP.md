@@ -28,6 +28,12 @@ Rules:
 - Search results from all providers enter the evidence ledger with provider, command, confidence, and validation status.
 - Agent CLI output never bypasses CodeTalk validation.
 
+Current implementation note:
+
+- `fast-context` is registered as a diagnostic adapter and an optional source-discovery provider.
+- Backend scope resolution only invokes it when `fast_context_backend_bridge_enabled=true`; by default CodeTalk reports the bridge as unavailable without blocking analysis.
+- Candidate files returned by this provider are normalized through the same local source-file validation path as external Agent candidates.
+
 ## Workflow Presets
 
 Initial built-in presets:

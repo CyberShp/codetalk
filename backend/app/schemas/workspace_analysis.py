@@ -133,7 +133,7 @@ class ScopeCandidate(BaseModel):
 
     path: str | None = None
     symbol: str | None = None
-    source: Literal["gitnexus", "repo_search", "material", "manual", "external_agent"]
+    source: Literal["gitnexus", "repo_search", "material", "manual", "external_agent", "fast_context"]
     confidence: Literal["high", "medium", "low"]
     reason: str
     role: Literal["primary", "supporting", "related", "external"] | None = None
