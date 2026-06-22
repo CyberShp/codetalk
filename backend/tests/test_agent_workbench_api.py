@@ -553,6 +553,10 @@ async def test_workbench_task_run_execute_workflow_api(workbench_client, tmp_pat
     assert body["status"] == "completed"
     assert body["step_results"][0]["step_id"] == "discover"
     assert body["step_results"][0]["validation"]["status"] == "ok"
+    assert body["step_results"][0]["validation"]["accepted_artifact_details"][0]["artifact"] == (
+        "result.json"
+    )
+    assert body["step_results"][0]["validation"]["accepted_artifact_details"][0]["sha256"]
     assert body["outputs"][0]["id"] == "result"
     assert body["outputs"][0]["status"] == "ok"
     assert body["outputs"][0]["from"] == "discover"

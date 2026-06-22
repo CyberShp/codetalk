@@ -577,6 +577,14 @@ def test_workbench_workflow_runner_executes_agent_steps_and_validates_artifacts(
     assert result.step_results[0]["step_id"] == "collect_mr"
     assert result.step_results[0]["execution"]["status"] == "completed"
     assert result.step_results[0]["validation"]["status"] == "ok"
+    accepted_details = result.step_results[0]["validation"]["accepted_artifact_details"]
+    assert {item["artifact"] for item in accepted_details} == {
+        "mr_snapshot.json",
+        "diff.patch",
+        "changed_files.json",
+    }
+    assert all(item["sha256"] and item["size_bytes"] > 0 for item in accepted_details)
+    assert all(Path(item["path"]).is_file() for item in accepted_details)
     assert result.outputs[0]["id"] == "report"
     assert result.outputs[0]["status"] == "ok"
     assert result.outputs[0]["from"] == "collect_mr"
@@ -591,6 +599,76 @@ def test_workbench_workflow_runner_executes_agent_steps_and_validates_artifacts(
     assert "secret-value" not in (
         root / "agent_runs" / "collect_mr" / "raw_output.txt"
     ).read_text(encoding="utf-8")
+
+
+def test_workbench_workflow_runner_rejects_missing_required_agent_artifact(
+    tmp_path,
+    monkeypatch,
+):
+    from app.config import settings
+    from app.services.workbench_task_run import WorkbenchTaskRunPreparer
+    from app.services.workbench_workflow_runner import WorkbenchWorkflowRunner
+    from app.services.workflow_dsl import WorkflowStore
+
+    script_path = tmp_path / "agent_missing_artifact.py"
+    script_path.write_text(
+        "import os, pathlib\n"
+        "root=pathlib.Path(os.environ['CODETALK_AGENT_ARTIFACT_DIR'])\n"
+        "(root/'source_scope.json').write_text('{\"files\":[]}', encoding='utf-8')\n",
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(settings, "external_agent_custom_providers", [
+        {"id": "local-python", "command": f"python {script_path}"}
+    ])
+    workflow_store = WorkflowStore(tmp_path / "workflows.db")
+    workflow_store.save_workflow({
+        "id": "missing_artifact_workflow",
+        "name": "Missing artifact workflow",
+        "version": 1,
+        "inputs": [{"id": "module", "type": "free_text"}],
+        "steps": [
+            {
+                "id": "discover",
+                "type": "agent_task",
+                "provider": "local-python",
+                "required_artifacts": ["source_scope.json", "evidence_cards.json"],
+            },
+            {"id": "render", "type": "report_render"},
+        ],
+        "outputs": [{"id": "report", "type": "markdown", "from": "render"}],
+    })
+    task_run = WorkbenchTaskRunPreparer(
+        artifact_root=tmp_path / "task_runs",
+        workflow_store=workflow_store,
+    ).prepare(
+        workflow_id="missing_artifact_workflow",
+        workspace_id="ws-missing-artifact",
+        repo_path=str(tmp_path),
+        inputs={"module": "nvme tcp tls"},
+    )
+
+    result = WorkbenchWorkflowRunner(tmp_path / "task_runs").execute_task_run(
+        task_run.task_run_id,
+        timeout_sec=10,
+    )
+
+    assert result.status == "invalid"
+    assert result.step_results[0]["status"] == "invalid"
+    validation = result.step_results[0]["validation"]
+    assert validation["accepted_artifact_details"][0]["artifact"] == "source_scope.json"
+    rejected = validation["rejected_artifact_details"]
+    assert rejected == [
+        {
+            "artifact": "evidence_cards.json",
+            "reason": "missing_required_artifact",
+            "path": str(
+                Path(task_run.artifact_dir)
+                / "agent_runs"
+                / "discover"
+                / "evidence_cards.json"
+            ),
+        }
+    ]
 
 
 def test_workbench_workflow_runner_infers_output_from_required_agent_artifact(

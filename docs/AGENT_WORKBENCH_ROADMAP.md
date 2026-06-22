@@ -113,6 +113,7 @@ The harness launches configured Agent CLIs with a task bundle on stdin and captu
 - stdout/stderr with secret redaction;
 - expected artifact declarations;
 - validation results, including accepted artifact path, size, and sha256 in `evidence_validation.json`.
+- each Agent step validation result now carries accepted/rejected artifact details, including path, sha256, size, and rejection reason, so workflow execution itself is a close-gate audit record.
 
 The first implementation still relies on process timeout and prompt-level readonly rules rather than OS sandboxing. That residual risk must stay visible in docs and diagnostics.
 

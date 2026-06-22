@@ -1031,11 +1031,31 @@ export default function AgentWorkbenchPage() {
                               Validation: {validation.status} /{" "}
                               {validation.provenance_status}
                             </p>
+                            {validation.accepted_artifact_details?.length ? (
+                              <div className="mt-1 space-y-0.5 font-data text-[10px]">
+                                {validation.accepted_artifact_details.slice(0, 3).map((item) => (
+                                  <div key={String(item.artifact ?? item.path ?? item.sha256)}>
+                                    {String(item.artifact ?? "artifact")} sha:
+                                    {String(item.sha256 ?? "").slice(0, 12)}
+                                  </div>
+                                ))}
+                              </div>
+                            ) : null}
                             {validation.rejected_artifacts.length > 0 && (
                               <p className="mt-1 text-amber-400">
                                 Rejected: {validation.rejected_artifacts.length}
                               </p>
                             )}
+                            {validation.rejected_artifact_details?.length ? (
+                              <div className="mt-1 space-y-0.5 font-data text-[10px] text-warning">
+                                {validation.rejected_artifact_details.slice(0, 3).map((item) => (
+                                  <div key={`${String(item.artifact ?? "artifact")}:${String(item.reason ?? "rejected")}`}>
+                                    {String(item.artifact ?? "artifact")} rejected:
+                                    {String(item.reason ?? "unknown")}
+                                  </div>
+                                ))}
+                              </div>
+                            ) : null}
                           </div>
                         )}
                         {materialized && (

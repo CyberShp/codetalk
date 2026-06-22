@@ -308,6 +308,8 @@ export interface ArtifactValidationResult {
   provenance_status: string;
   accepted_artifacts: string[];
   rejected_artifacts: Array<Record<string, unknown>>;
+  accepted_artifact_details?: Array<Record<string, unknown>>;
+  rejected_artifact_details?: Array<Record<string, unknown>>;
   warnings: string[];
 }
 

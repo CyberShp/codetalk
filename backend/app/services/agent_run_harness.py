@@ -40,6 +40,8 @@ class ArtifactValidationResult:
     provenance_status: str
     accepted_artifacts: list[str] = field(default_factory=list)
     rejected_artifacts: list[dict[str, str]] = field(default_factory=list)
+    accepted_artifact_details: list[dict[str, Any]] = field(default_factory=list)
+    rejected_artifact_details: list[dict[str, str]] = field(default_factory=list)
     warnings: list[str] = field(default_factory=list)
 
 
@@ -253,51 +255,94 @@ class ArtifactValidationHarness:
     def validate_required_artifacts(self, *, required_artifacts: list[str]) -> ArtifactValidationResult:
         accepted: list[str] = []
         rejected: list[dict[str, str]] = []
+        accepted_details: list[dict[str, Any]] = []
+        rejected_details: list[dict[str, str]] = []
         for artifact in required_artifacts:
             safe_artifact = str(artifact or "").strip().replace("\\", "/")
             if not safe_artifact or safe_artifact.startswith("/") or ".." in Path(safe_artifact).parts:
-                rejected.append({"artifact": artifact, "reason": "invalid_artifact_path"})
+                item = {"artifact": artifact, "reason": "invalid_artifact_path", "path": ""}
+                rejected.append({"artifact": artifact, "reason": item["reason"]})
+                rejected_details.append(item)
                 continue
             path = self.artifact_dir / safe_artifact
             if not path.exists():
-                rejected.append({"artifact": artifact, "reason": "missing_required_artifact"})
+                item = {
+                    "artifact": artifact,
+                    "reason": "missing_required_artifact",
+                    "path": str(path),
+                }
+                rejected.append({"artifact": artifact, "reason": item["reason"]})
+                rejected_details.append(item)
             elif path.is_dir():
-                rejected.append({"artifact": artifact, "reason": "artifact_is_directory"})
+                item = {
+                    "artifact": artifact,
+                    "reason": "artifact_is_directory",
+                    "path": str(path),
+                }
+                rejected.append({"artifact": artifact, "reason": item["reason"]})
+                rejected_details.append(item)
             else:
                 accepted.append(safe_artifact)
+                accepted_details.append(_artifact_detail(path, artifact=safe_artifact))
         return ArtifactValidationResult(
             status="invalid" if rejected else "ok",
             provenance_status="agent_artifact_present" if not rejected else "unverified_agent_claim",
             accepted_artifacts=accepted,
             rejected_artifacts=rejected,
+            accepted_artifact_details=accepted_details,
+            rejected_artifact_details=rejected_details,
         )
 
     def validate_mr_artifacts(self, *, required_artifacts: list[str]) -> ArtifactValidationResult:
         accepted: list[str] = []
         rejected: list[dict[str, str]] = []
+        accepted_details: list[dict[str, Any]] = []
+        rejected_details: list[dict[str, str]] = []
         warnings: list[str] = []
 
         for artifact in required_artifacts:
             path = self.artifact_dir / artifact
             if not path.exists():
-                rejected.append({"artifact": artifact, "reason": "missing_required_artifact"})
+                item = {
+                    "artifact": artifact,
+                    "reason": "missing_required_artifact",
+                    "path": str(path),
+                }
+                rejected.append({"artifact": artifact, "reason": item["reason"]})
+                rejected_details.append(item)
             else:
                 accepted.append(artifact)
+                if path.is_file():
+                    accepted_details.append(_artifact_detail(path, artifact=artifact))
         if rejected:
             return ArtifactValidationResult(
                 status="invalid",
                 provenance_status="unverified_agent_claim",
                 accepted_artifacts=accepted,
                 rejected_artifacts=rejected,
+                accepted_artifact_details=accepted_details,
+                rejected_artifact_details=rejected_details,
             )
 
         snapshot = self._read_json("mr_snapshot.json")
         diff_text = (self.artifact_dir / "diff.patch").read_text(encoding="utf-8")
         changed_files = self._read_json("changed_files.json")
         if not isinstance(snapshot, dict):
-            rejected.append({"artifact": "mr_snapshot.json", "reason": "invalid_json_object"})
+            item = {
+                "artifact": "mr_snapshot.json",
+                "reason": "invalid_json_object",
+                "path": str(self.artifact_dir / "mr_snapshot.json"),
+            }
+            rejected.append({"artifact": item["artifact"], "reason": item["reason"]})
+            rejected_details.append(item)
         if not isinstance(changed_files, list):
-            rejected.append({"artifact": "changed_files.json", "reason": "invalid_json_array"})
+            item = {
+                "artifact": "changed_files.json",
+                "reason": "invalid_json_array",
+                "path": str(self.artifact_dir / "changed_files.json"),
+            }
+            rejected.append({"artifact": item["artifact"], "reason": item["reason"]})
+            rejected_details.append(item)
 
         for field_name in (
             "source", "mcp_profile", "mr_url", "project", "mr_id", "title",
@@ -305,12 +350,24 @@ class ArtifactValidationHarness:
             "diff_sha256", "changed_files_count",
         ):
             if isinstance(snapshot, dict) and snapshot.get(field_name) in {None, ""}:
-                rejected.append({"artifact": "mr_snapshot.json", "reason": f"missing_{field_name}"})
+                item = {
+                    "artifact": "mr_snapshot.json",
+                    "reason": f"missing_{field_name}",
+                    "path": str(self.artifact_dir / "mr_snapshot.json"),
+                }
+                rejected.append({"artifact": item["artifact"], "reason": item["reason"]})
+                rejected_details.append(item)
 
         if isinstance(snapshot, dict):
             actual_sha = hashlib.sha256(diff_text.encode("utf-8")).hexdigest()
             if snapshot.get("diff_sha256") != actual_sha:
-                rejected.append({"artifact": "diff.patch", "reason": "diff_sha256_mismatch"})
+                item = {
+                    "artifact": "diff.patch",
+                    "reason": "diff_sha256_mismatch",
+                    "path": str(self.artifact_dir / "diff.patch"),
+                }
+                rejected.append({"artifact": item["artifact"], "reason": item["reason"]})
+                rejected_details.append(item)
 
         if isinstance(changed_files, list):
             diff_paths = _paths_from_unified_diff(diff_text)
@@ -324,6 +381,8 @@ class ArtifactValidationHarness:
             provenance_status="agent_mcp_provenance" if not rejected else "unverified_agent_claim",
             accepted_artifacts=accepted,
             rejected_artifacts=rejected,
+            accepted_artifact_details=accepted_details,
+            rejected_artifact_details=rejected_details,
             warnings=warnings,
         )
 
@@ -346,6 +405,16 @@ def _paths_from_unified_diff(diff_text: str) -> set[str]:
         elif line.startswith(("--- a/", "+++ b/")):
             paths.add(line[6:].replace("\\", "/"))
     return paths
+
+
+def _artifact_detail(path: Path, *, artifact: str) -> dict[str, Any]:
+    data = path.read_bytes()
+    return {
+        "artifact": artifact,
+        "path": str(path),
+        "sha256": hashlib.sha256(data).hexdigest(),
+        "size_bytes": len(data),
+    }
 
 
 _SECRET_RE = re.compile(
