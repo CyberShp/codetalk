@@ -71,6 +71,11 @@ Initial built-in presets:
 
 Each preset is an editable workflow definition. Installing a preset copies it into the workflow registry so users can customize it without changing the built-in template.
 
+Current validation note:
+
+- Workflow definitions reject duplicate input, step, and output ids.
+- Plain output `from` / `source` references must point to an existing step; templated references such as `{{steps.render.output}}` remain allowed for compatibility.
+
 ## Evidence Memory
 
 Evidence Memory stores structured facts rather than natural-language summaries:

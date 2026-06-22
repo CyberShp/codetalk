@@ -107,6 +107,59 @@ def test_workflow_dsl_accepts_agent_mcp_and_rejects_arbitrary_shell_steps():
         validate_workflow_definition(bad)
 
 
+def test_workflow_dsl_rejects_duplicate_ids_and_missing_output_step():
+    from app.services.workflow_dsl import WorkflowValidationError, validate_workflow_definition
+
+    duplicate_input = {
+        "id": "bad_inputs",
+        "name": "Bad inputs",
+        "version": 1,
+        "inputs": [
+            {"id": "module", "type": "free_text"},
+            {"id": "module", "type": "file"},
+        ],
+        "steps": [{"id": "discover", "type": "agent_task"}],
+        "outputs": [{"id": "scope", "type": "json", "from": "discover"}],
+    }
+    with pytest.raises(WorkflowValidationError, match="duplicate workflow input id: module"):
+        validate_workflow_definition(duplicate_input)
+
+    duplicate_output = {
+        "id": "bad_outputs",
+        "name": "Bad outputs",
+        "version": 1,
+        "inputs": [{"id": "module", "type": "free_text"}],
+        "steps": [{"id": "discover", "type": "agent_task"}],
+        "outputs": [
+            {"id": "scope", "type": "json", "from": "discover"},
+            {"id": "scope", "type": "markdown", "from": "discover"},
+        ],
+    }
+    with pytest.raises(WorkflowValidationError, match="duplicate workflow output id: scope"):
+        validate_workflow_definition(duplicate_output)
+
+    missing_step = {
+        "id": "bad_output_source",
+        "name": "Bad output source",
+        "version": 1,
+        "inputs": [{"id": "module", "type": "free_text"}],
+        "steps": [{"id": "discover", "type": "agent_task"}],
+        "outputs": [{"id": "scope", "type": "json", "from": "missing_step"}],
+    }
+    with pytest.raises(WorkflowValidationError, match="unknown workflow output source step: missing_step"):
+        validate_workflow_definition(missing_step)
+
+    templated_source = validate_workflow_definition({
+        "id": "templated_output_source",
+        "name": "Templated output source",
+        "version": 1,
+        "inputs": [{"id": "module", "type": "free_text"}],
+        "steps": [{"id": "discover", "type": "agent_task"}],
+        "outputs": [{"id": "scope", "type": "json", "from": "{{steps.discover.output}}"}],
+    })
+    assert templated_source.outputs[0].source == "{{steps.discover.output}}"
+
+
 def test_workflow_store_persists_and_freezes_custom_workflow(tmp_path):
     from app.services.workflow_dsl import WorkflowStore
 

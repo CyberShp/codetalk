@@ -177,11 +177,25 @@ def validate_workflow_definition(payload: dict[str, Any]) -> WorkflowDefinition:
     steps = [_parse_step(item) for item in _list(payload, "steps")]
     outputs = [_parse_output(item) for item in _list(payload, "outputs")]
 
+    seen_inputs: set[str] = set()
+    for workflow_input in inputs:
+        if workflow_input.id in seen_inputs:
+            raise WorkflowValidationError(f"duplicate workflow input id: {workflow_input.id}")
+        seen_inputs.add(workflow_input.id)
+
     seen_steps: set[str] = set()
     for step in steps:
         if step.id in seen_steps:
             raise WorkflowValidationError(f"duplicate workflow step id: {step.id}")
         seen_steps.add(step.id)
+
+    seen_outputs: set[str] = set()
+    for output in outputs:
+        if output.id in seen_outputs:
+            raise WorkflowValidationError(f"duplicate workflow output id: {output.id}")
+        seen_outputs.add(output.id)
+        if output.source and _is_plain_step_reference(output.source) and output.source not in seen_steps:
+            raise WorkflowValidationError(f"unknown workflow output source step: {output.source}")
 
     return WorkflowDefinition(
         id=workflow_id,
@@ -241,6 +255,17 @@ def _parse_output(item: Any) -> WorkflowOutput:
         source=str(item.get("from") or item.get("source") or ""),
         raw=dict(item),
     )
+
+
+def _is_plain_step_reference(value: str) -> bool:
+    text = str(value or "").strip()
+    if not text:
+        return False
+    if "{{" in text or "}}" in text:
+        return False
+    if "/" in text or "\\" in text:
+        return False
+    return True
 
 
 def _required_str(payload: dict[str, Any], key: str) -> str:
