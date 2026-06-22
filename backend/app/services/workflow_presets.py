@@ -39,6 +39,7 @@ def builtin_workflow_presets() -> list[dict[str, Any]]:
                 ],
                 "outputs": [
                     {"id": "scope", "type": "json", "from": "discover_scope"},
+                    {"id": "evidence_cards", "type": "json", "from": "discover_scope", "artifact": "evidence_cards.json"},
                     {"id": "report", "type": "markdown", "from": "render_report"},
                 ],
             },
@@ -69,6 +70,7 @@ def builtin_workflow_presets() -> list[dict[str, Any]]:
                 ],
                 "outputs": [
                     {"id": "risk_findings", "type": "json", "from": "hunt_risks"},
+                    {"id": "evidence_cards", "type": "json", "from": "hunt_risks", "artifact": "evidence_cards.json"},
                     {"id": "report", "type": "markdown", "from": "render_report"},
                 ],
             },

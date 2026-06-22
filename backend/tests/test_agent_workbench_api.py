@@ -854,6 +854,92 @@ async def test_workbench_materialize_source_scope_output_as_structured_memory(
     assert rejected == []
 
 
+async def test_workbench_materialize_evidence_cards_output_as_structured_memory(
+    workbench_client,
+    tmp_path,
+    monkeypatch,
+):
+    from app.config import settings
+
+    source_file = tmp_path / "src" / "tls.c"
+    source_file.parent.mkdir(parents=True)
+    source_file.write_text("int nvmf_tcp_tls_cleanup(void) { return 0; }\n", encoding="utf-8")
+    script_path = tmp_path / "agent_cards.py"
+    script_path.write_text(
+        "import json, os, pathlib\n"
+        "root=pathlib.Path(os.environ['CODETALK_AGENT_ARTIFACT_DIR'])\n"
+        "cards=[\n"
+        "  {'card_id':'card_tls_cleanup','path':'src/tls.c','symbol':'nvmf_tcp_tls_cleanup',"
+        "   'reason':'cleanup evidence','excerpt':'cleanup releases resources'},\n"
+        "  {'card_id':'card_missing','path':'src/missing.c','symbol':'missing_symbol',"
+        "   'reason':'bad evidence'}\n"
+        "]\n"
+        "(root/'evidence_cards.json').write_text(json.dumps(cards), encoding='utf-8')\n",
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(settings, "external_agent_custom_providers", [
+        {"id": "local-python", "command": f"python {script_path}"}
+    ])
+    workflow = {
+        "id": "evidence_cards_memory_workflow",
+        "name": "Evidence cards memory workflow",
+        "version": 1,
+        "inputs": [{"id": "module", "type": "free_text", "required": True}],
+        "steps": [
+            {
+                "id": "discover",
+                "type": "agent_task",
+                "provider": "local-python",
+                "required_artifacts": ["evidence_cards.json"],
+            }
+        ],
+        "outputs": [
+            {
+                "id": "evidence_cards",
+                "type": "json",
+                "from": "discover",
+                "artifact": "evidence_cards.json",
+            }
+        ],
+    }
+    assert (await workbench_client.post("/api/workbench/workflows", json=workflow)).status_code == 201
+    prepared = await workbench_client.post(
+        "/api/workbench/task-runs/prepare",
+        json={
+            "workflow_id": "evidence_cards_memory_workflow",
+            "workspace_id": "ws-evidence-cards-memory",
+            "repo_path": str(tmp_path),
+            "inputs": {"module": "nvme-tcp-tls"},
+        },
+    )
+    task_run_id = prepared.json()["task_run_id"]
+    executed = await workbench_client.post(
+        f"/api/workbench/task-runs/{task_run_id}/execute",
+        json={"timeout_sec": 10},
+    )
+    assert executed.status_code == 200
+    assert executed.json()["outputs"][0]["status"] == "ok"
+
+    materialized = await workbench_client.post(
+        f"/api/workbench/task-runs/{task_run_id}/materialize-outputs"
+    )
+
+    assert materialized.status_code == 200
+    body = materialized.json()
+    assert body["status"] == "ok"
+    assert body["evidence_count"] == 2
+    search = await workbench_client.get(
+        "/api/workbench/memory/search",
+        params={"q": "cleanup releases resources", "workspace_id": "ws-evidence-cards-memory"},
+    )
+    assert search.status_code == 200
+    cards = [item for item in search.json()["items"] if item["kind"] == "evidence_card"]
+    assert cards
+    assert cards[0]["subject_key"] == "card_tls_cleanup"
+    assert cards[0]["path"] == "src/tls.c"
+    assert cards[0]["symbol"] == "nvmf_tcp_tls_cleanup"
+
+
 async def test_workbench_prepare_task_run_api(workbench_client):
     workflow = {
         "id": "mr_test_design",

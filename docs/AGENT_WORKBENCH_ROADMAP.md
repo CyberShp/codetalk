@@ -82,6 +82,7 @@ Evidence Memory stores structured facts rather than natural-language summaries:
 
 - validated and rejected files;
 - source files and symbols from verified `source_scope.json` workflow outputs;
+- evidence cards from verified `evidence_cards.json` workflow outputs;
 - changed files and MR artifacts;
 - coverage gaps from verified `uncovered_functions.json` workflow outputs;
 - symbols, entries, source slices, and hashes;

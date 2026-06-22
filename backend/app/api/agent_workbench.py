@@ -781,6 +781,17 @@ def _materialize_structured_workflow_output_evidence(
             data=data,
             sha256=sha256,
         )
+    if path.name == "evidence_cards.json" or output_id == "evidence_cards":
+        return _materialize_evidence_card_output(
+            store=store,
+            task_run=task_run,
+            output=output,
+            output_id=output_id,
+            output_evidence_id=output_evidence_id,
+            path=path,
+            data=data,
+            sha256=sha256,
+        )
     if path.name == "uncovered_functions.json" or output_id == "uncovered_functions":
         return _materialize_uncovered_function_evidence(
             store=store,
@@ -951,6 +962,65 @@ def _materialize_source_scope_evidence(
                 "file_path": rel_path,
                 "symbol": symbol_name,
                 "line_start": line_start,
+            },
+        ))
+    return evidence_ids
+
+
+def _materialize_evidence_card_output(
+    *,
+    store: EvidenceMemoryStore,
+    task_run: Any,
+    output: dict[str, Any],
+    output_id: str,
+    output_evidence_id: str,
+    path: Path,
+    data: bytes,
+    sha256: str,
+) -> list[str]:
+    try:
+        payload = json.loads(data.decode("utf-8"))
+    except (UnicodeDecodeError, json.JSONDecodeError):
+        return []
+    cards = payload if isinstance(payload, list) else payload.get("evidence_cards") if isinstance(payload, dict) else []
+    if not isinstance(cards, list):
+        return []
+    evidence_ids: list[str] = []
+    seen_cards: set[str] = set()
+    for card in cards:
+        if not isinstance(card, dict):
+            continue
+        candidate_path = _source_scope_item_path(card)
+        resolved = _validated_repo_source_path(task_run.repo_path, candidate_path)
+        if resolved is None:
+            continue
+        rel_path, _resolved_path = resolved
+        card_id = str(card.get("card_id") or card.get("id") or f"{rel_path}:{card.get('symbol') or ''}").strip()
+        if not card_id or card_id in seen_cards:
+            continue
+        seen_cards.add(card_id)
+        symbol = str(card.get("symbol") or card.get("function_name") or card.get("entry_symbol") or "").strip()
+        reason = str(card.get("reason") or card.get("title") or "Evidence card came from a locally verified workflow output.").strip()
+        excerpt = str(card.get("excerpt") or card.get("text") or card.get("summary") or "").strip()
+        evidence_ids.append(store.upsert_evidence_item(
+            run_id=task_run.task_run_id,
+            workspace_id=task_run.workspace_id,
+            kind="evidence_card",
+            subject_key=card_id,
+            status="verified_output",
+            source=str(output.get("from") or "workflow"),
+            path=rel_path,
+            symbol=symbol,
+            reason=reason,
+            text=" ".join(part for part in [rel_path, symbol, reason, excerpt] if part),
+            provenance={
+                "task_run_id": task_run.task_run_id,
+                "workflow_id": task_run.workflow_id,
+                "output_id": output_id,
+                "output_evidence_id": output_evidence_id,
+                "artifact_path": str(path),
+                "sha256": sha256,
+                "card": card,
             },
         ))
     return evidence_ids
