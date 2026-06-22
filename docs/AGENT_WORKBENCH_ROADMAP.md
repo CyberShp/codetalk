@@ -95,6 +95,7 @@ Current implementation note:
 
 - Verified `source_scope.json`, `evidence_cards.json`, and repo-local `uncovered_functions.json` outputs create Evidence Memory facts only after local repo/source validation.
 - Materialized source-file, evidence-card, and coverage-gap facts get source slices with repo-relative path, line range, sha256, and local excerpt, exposed through the memory source-slices API.
+- Prepared task bundles include source slices for retrieved Evidence Memory facts so the next Agent CLI turn sees structured code context instead of a lossy summary.
 - These source slices are the durable context chain for later Agent prompts and black-box test recommendations; raw Agent summaries remain audit material, not facts.
 
 ## Agent Run Harness

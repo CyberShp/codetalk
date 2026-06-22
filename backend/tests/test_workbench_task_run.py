@@ -177,7 +177,7 @@ def test_prepare_workbench_task_run_injects_evidence_and_semantic_context(tmp_pa
         workflow_id="module_analysis",
         status="completed",
     )
-    memory.upsert_evidence_item(
+    evidence_id = memory.upsert_evidence_item(
         run_id="run-prev",
         workspace_id="ws1",
         kind="changed_file",
@@ -187,6 +187,14 @@ def test_prepare_workbench_task_run_injects_evidence_and_semantic_context(tmp_pa
         path="nof/nvmf_tcp/transport/tls/tls.c",
         reason="validated TLS source",
         text="nvme tcp tls handshake cleanup",
+    )
+    memory.add_source_slice(
+        evidence_id=evidence_id,
+        file_path="nof/nvmf_tcp/transport/tls/tls.c",
+        start_line=10,
+        end_line=18,
+        sha256="abc123",
+        excerpt="int nvmf_tcp_tls_handshake(void) { return -EINVAL; }",
     )
     semantics = TestSemanticLibraryStore(tmp_path / "semantics.db")
     semantics.upsert_case({
@@ -223,6 +231,11 @@ def test_prepare_workbench_task_run_injects_evidence_and_semantic_context(tmp_pa
     context_bundle = result.task_bundle["context_bundle"]
     assert context_bundle["query"] == "nvme tcp tls"
     assert context_bundle["evidence"][0]["subject_key"] == "nof/nvmf_tcp/transport/tls/tls.c"
+    assert context_bundle["evidence"][0]["source_slices"][0]["file_path"] == (
+        "nof/nvmf_tcp/transport/tls/tls.c"
+    )
+    assert context_bundle["evidence"][0]["source_slices"][0]["start_line"] == 10
+    assert "nvmf_tcp_tls_handshake" in context_bundle["evidence"][0]["source_slices"][0]["excerpt"]
     assert context_bundle["semantic_cases"][0]["case_id"] == "TC_TLS_HANDSHAKE_FAIL"
     assert Path(result.artifact_dir, "context_bundle.json").exists()
     step_bundle = json.loads(
@@ -232,6 +245,7 @@ def test_prepare_workbench_task_run_injects_evidence_and_semantic_context(tmp_pa
         "TLS negotiation",
         "connection release",
     ]
+    assert step_bundle["context_bundle"]["evidence"][0]["source_slices"][0]["sha256"] == "abc123"
 
 
 def test_prepare_workbench_task_run_embeds_repo_agent_instructions(tmp_path, monkeypatch):

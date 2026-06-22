@@ -226,7 +226,10 @@ def build_workbench_context_bundle(
     semantic_cases = []
     if query and evidence_memory is not None:
         evidence = [
-            _evidence_item_payload(item)
+            _evidence_item_payload(
+                item,
+                source_slices=evidence_memory.list_source_slices(item.evidence_id),
+            )
             for item in evidence_memory.search_analysis_memory(
                 query,
                 workspace_id=workspace_id,
@@ -568,8 +571,8 @@ def _read_text_prefix(path: Path, *, max_chars: int) -> str:
         return ""
 
 
-def _evidence_item_payload(item: Any) -> dict[str, Any]:
-    return {
+def _evidence_item_payload(item: Any, *, source_slices: list[Any] | None = None) -> dict[str, Any]:
+    payload = {
         "evidence_id": item.evidence_id,
         "run_id": item.run_id,
         "kind": item.kind,
@@ -582,6 +585,25 @@ def _evidence_item_payload(item: Any) -> dict[str, Any]:
         "confidence": item.confidence,
         "text": item.text,
         "provenance": item.provenance or {},
+    }
+    if source_slices:
+        payload["source_slices"] = [
+            _source_slice_payload(source_slice)
+            for source_slice in source_slices
+        ]
+    return payload
+
+
+def _source_slice_payload(item: Any) -> dict[str, Any]:
+    return {
+        "slice_id": item.slice_id,
+        "evidence_id": item.evidence_id,
+        "file_path": item.file_path,
+        "start_line": item.start_line,
+        "end_line": item.end_line,
+        "sha256": item.sha256,
+        "excerpt": item.excerpt,
+        "created_at": item.created_at,
     }
 
 
