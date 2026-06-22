@@ -472,15 +472,21 @@ def _infer_output_artifact_name(
     output_id = str(output.get("id") or "").strip()
     output_type = str(output.get("type") or "").strip().lower()
     step_id = str(step_result.get("step_id") or "").strip()
-    required_artifacts = [
+    candidate_artifacts = [
         str(item)
-        for item in step_result.get("required_artifacts") or []
+        for item in (
+            list(step_result.get("artifacts") or [])
+            + list(step_result.get("required_artifacts") or [])
+        )
         if str(item).strip()
     ]
-    for ext in _output_extensions(output_type):
-        candidate = f"{output_id}{ext}"
-        if candidate in required_artifacts:
-            return candidate
+    exact_candidates = _matching_artifact_candidates(
+        output_id=output_id,
+        output_type=output_type,
+        artifacts=candidate_artifacts,
+    )
+    if exact_candidates:
+        return exact_candidates[0]
     if output_id:
         for ext in _output_extensions(output_type):
             return f"{output_id}{ext}"
@@ -488,6 +494,61 @@ def _infer_output_artifact_name(
         for ext in _output_extensions(output_type):
             return f"{step_id}{ext}"
     return ""
+
+
+def _matching_artifact_candidates(
+    *,
+    output_id: str,
+    output_type: str,
+    artifacts: list[str],
+) -> list[str]:
+    compatible = [
+        artifact
+        for artifact in _dedupe_strings(artifacts)
+        if _artifact_extension_matches_output_type(artifact, output_type)
+    ]
+    if not compatible:
+        return []
+    if output_id:
+        normalized_output = _artifact_match_key(output_id)
+        matches = [
+            artifact
+            for artifact in compatible
+            if normalized_output
+            and normalized_output in _artifact_match_key(Path(artifact).stem)
+        ]
+        if matches:
+            return matches
+        exact_name = [
+            artifact
+            for artifact in compatible
+            if _artifact_match_key(Path(artifact).stem) == normalized_output
+        ]
+        if exact_name:
+            return exact_name
+    if len(compatible) == 1:
+        return compatible
+    return []
+
+
+def _artifact_extension_matches_output_type(artifact: str, output_type: str) -> bool:
+    suffix = Path(artifact).suffix.lower()
+    return suffix in _output_extensions(output_type)
+
+
+def _artifact_match_key(value: str) -> str:
+    return "".join(char for char in str(value).lower() if char.isalnum())
+
+
+def _dedupe_strings(values: list[str]) -> list[str]:
+    seen: set[str] = set()
+    result: list[str] = []
+    for value in values:
+        if value in seen:
+            continue
+        seen.add(value)
+        result.append(value)
+    return result
 
 
 def _output_extensions(output_type: str) -> list[str]:
