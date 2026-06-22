@@ -25,6 +25,7 @@ import type {
   WorkflowExecutionResult,
   WorkflowPreset,
   WorkbenchProviderCapabilitiesMatrix,
+  WorkbenchTaskArtifact,
   WorkbenchTaskArtifactContent,
   WorkbenchTaskArtifactManifest,
 } from "@/lib/types";
@@ -169,6 +170,35 @@ function evidenceValidationSummary(
     acceptedDetails,
     rejectedDetails,
   };
+}
+
+const AUDIT_ARTIFACT_KIND_ORDER = [
+  "task_bundle",
+  "agent_task_bundle",
+  "agent_instructions",
+  "provider_snapshot",
+  "context_discovery_decision",
+  "context_bundle",
+  "memory_retrieval",
+  "source_read_chain",
+  "evidence_consumption_trajectory",
+  "degraded_retrieval",
+  "evidence_validation",
+  "workflow_outputs",
+  "workflow_execution",
+];
+
+function prioritizedAuditArtifacts(artifacts: WorkbenchTaskArtifact[]): WorkbenchTaskArtifact[] {
+  return [...artifacts].sort((left, right) => {
+    const leftRank = AUDIT_ARTIFACT_KIND_ORDER.indexOf(left.kind);
+    const rightRank = AUDIT_ARTIFACT_KIND_ORDER.indexOf(right.kind);
+    const normalizedLeftRank = leftRank === -1 ? AUDIT_ARTIFACT_KIND_ORDER.length : leftRank;
+    const normalizedRightRank = rightRank === -1 ? AUDIT_ARTIFACT_KIND_ORDER.length : rightRank;
+    if (normalizedLeftRank !== normalizedRightRank) {
+      return normalizedLeftRank - normalizedRightRank;
+    }
+    return left.relative_path.localeCompare(right.relative_path);
+  });
 }
 
 function Panel({
@@ -815,7 +845,7 @@ export default function AgentWorkbenchPage() {
                   <div className="mt-2 rounded bg-surface-container px-2 py-1.5 text-on-surface-variant">
                     Audit artifacts: {artifactManifest.artifacts.length}
                     <div className="mt-1 flex flex-wrap gap-1.5">
-                      {artifactManifest.artifacts.slice(0, 8).map((artifact) => (
+                      {prioritizedAuditArtifacts(artifactManifest.artifacts).slice(0, 12).map((artifact) => (
                         <button
                           key={artifact.relative_path}
                           onClick={() => previewArtifact(artifact.relative_path)}

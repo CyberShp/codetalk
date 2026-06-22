@@ -1062,6 +1062,12 @@ async def test_workbench_task_run_artifacts_api_lists_audit_files(workbench_clie
     assert paths["task_bundle.json"]["sha256"]
     assert paths["agent_instructions.json"]["kind"] == "agent_instructions"
     assert paths["context_discovery_decision.json"]["kind"] == "context_discovery_decision"
+    assert paths["memory_retrieval.json"]["kind"] == "memory_retrieval"
+    assert paths["source_read_chain.json"]["kind"] == "source_read_chain"
+    assert paths["evidence_consumption_trajectory.json"]["kind"] == (
+        "evidence_consumption_trajectory"
+    )
+    assert paths["degraded_retrieval.json"]["kind"] == "degraded_retrieval"
     assert paths["agent_runs/discover/task_bundle.json"]["kind"] == "agent_task_bundle"
 
 

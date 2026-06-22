@@ -106,6 +106,12 @@ class WorkbenchTaskRunPreparer:
             agent_instructions=agent_instructions,
             provider_snapshot=provider_snapshot,
         )
+        context_artifacts = build_context_artifact_payloads(
+            context_bundle=context_bundle,
+            context_discovery_decision=context_discovery_decision,
+            evidence_memory_configured=self.evidence_memory is not None,
+            semantic_library_configured=self.semantic_library is not None,
+        )
         task_bundle = {
             "task_run_id": task_run_id,
             "workflow_id": workflow_id,
@@ -116,6 +122,10 @@ class WorkbenchTaskRunPreparer:
             "provider_snapshot": provider_snapshot,
             "context_discovery_decision": context_discovery_decision,
             "context_bundle": context_bundle,
+            "memory_retrieval": context_artifacts["memory_retrieval"],
+            "source_read_chain": context_artifacts["source_read_chain"],
+            "evidence_consumption_trajectory": context_artifacts["evidence_consumption_trajectory"],
+            "degraded_retrieval": context_artifacts["degraded_retrieval"],
             "required_artifacts_by_step": required_artifacts_by_step,
             "created_at": _now(),
         }
@@ -171,6 +181,13 @@ class WorkbenchTaskRunPreparer:
         _write_json(artifact_dir / "provider_snapshot.json", provider_snapshot)
         _write_json(artifact_dir / "context_discovery_decision.json", context_discovery_decision)
         _write_json(artifact_dir / "context_bundle.json", context_bundle)
+        _write_json(artifact_dir / "memory_retrieval.json", context_artifacts["memory_retrieval"])
+        _write_json(artifact_dir / "source_read_chain.json", context_artifacts["source_read_chain"])
+        _write_json(
+            artifact_dir / "evidence_consumption_trajectory.json",
+            context_artifacts["evidence_consumption_trajectory"],
+        )
+        _write_json(artifact_dir / "degraded_retrieval.json", context_artifacts["degraded_retrieval"])
         _write_json(artifact_dir / "task_bundle.json", task_bundle)
         return result
 
@@ -518,6 +535,166 @@ def build_context_discovery_decision(
     }
 
 
+def build_context_artifact_payloads(
+    *,
+    context_bundle: dict[str, Any],
+    context_discovery_decision: dict[str, Any],
+    evidence_memory_configured: bool,
+    semantic_library_configured: bool,
+) -> dict[str, Any]:
+    query = str(context_bundle.get("query") or "")
+    evidence = [
+        item for item in context_bundle.get("evidence") or []
+        if isinstance(item, dict)
+    ]
+    semantic_cases = [
+        item for item in context_bundle.get("semantic_cases") or []
+        if isinstance(item, dict)
+    ]
+    memory_retrieval = {
+        "provider": "evidence-memory",
+        "query": query,
+        "retrieved_count": len(evidence),
+        "limit": (context_bundle.get("limits") or {}).get("evidence"),
+        "authority_rule": (
+            "retrieval is navigation only; source evidence requires validated source_slices"
+        ),
+        "items": [
+            {
+                "evidence_id": item.get("evidence_id") or "",
+                "kind": item.get("kind") or "",
+                "subject_key": item.get("subject_key") or "",
+                "status": item.get("status") or "",
+                "source": item.get("source") or "",
+                "source_read_status": item.get("source_read_status") or "no_source_slices",
+                "usable_as_source_evidence": bool(item.get("usable_as_source_evidence")),
+                "source_slice_count": len(item.get("source_slices") or []),
+            }
+            for item in evidence
+        ],
+    }
+    reads: list[dict[str, Any]] = []
+    events: list[dict[str, Any]] = []
+    for item in evidence:
+        evidence_id = str(item.get("evidence_id") or "")
+        events.append({
+            "event": "memory_retrieved",
+            "provider": "evidence-memory",
+            "evidence_id": evidence_id,
+            "subject_key": item.get("subject_key") or "",
+            "usable_as_source_evidence": bool(item.get("usable_as_source_evidence")),
+        })
+        for source_slice in item.get("source_slices") or []:
+            if not isinstance(source_slice, dict):
+                continue
+            read = {
+                "event": "source_slice_attached",
+                "evidence_id": evidence_id,
+                "slice_id": source_slice.get("slice_id") or "",
+                "file_path": source_slice.get("file_path") or "",
+                "start_line": source_slice.get("start_line"),
+                "end_line": source_slice.get("end_line"),
+                "sha256": source_slice.get("sha256") or "",
+                "status": "validated_source_slice",
+                "excerpt_chars": len(str(source_slice.get("excerpt") or "")),
+            }
+            reads.append(read)
+            events.append(read)
+    for item in semantic_cases:
+        events.append({
+            "event": "semantic_case_retrieved",
+            "provider": "semantic-library",
+            "semantic_id": item.get("semantic_id") or "",
+            "case_id": item.get("case_id") or "",
+            "terms": item.get("terms") or [],
+        })
+    source_read_chain = {
+        "query": query,
+        "reads": reads,
+        "read_count": len(reads),
+        "rejected": [],
+        "authority_rule": "only validated_source_slice reads may support source evidence",
+    }
+    evidence_consumption_trajectory = {
+        "query": query,
+        "task_phase": "prepare",
+        "scoring_policy": "navigation_only_not_authority",
+        "events": events,
+    }
+    degraded_retrieval = {
+        "query": query,
+        "non_blocking": True,
+        "degraded": _degraded_retrieval_items(
+            context_bundle=context_bundle,
+            context_discovery_decision=context_discovery_decision,
+            evidence_memory_configured=evidence_memory_configured,
+            semantic_library_configured=semantic_library_configured,
+        ),
+    }
+    return {
+        "memory_retrieval": memory_retrieval,
+        "source_read_chain": source_read_chain,
+        "evidence_consumption_trajectory": evidence_consumption_trajectory,
+        "degraded_retrieval": degraded_retrieval,
+    }
+
+
+def _degraded_retrieval_items(
+    *,
+    context_bundle: dict[str, Any],
+    context_discovery_decision: dict[str, Any],
+    evidence_memory_configured: bool,
+    semantic_library_configured: bool,
+) -> list[dict[str, Any]]:
+    degraded: list[dict[str, Any]] = []
+    fast_context = context_discovery_decision.get("fast-context") or {}
+    if (
+        isinstance(fast_context, dict)
+        and fast_context.get("requested_by_agent_instructions")
+        and not fast_context.get("codetalk_callable")
+    ):
+        settings_snapshot = fast_context.get("codetalk_settings") or {}
+        if not settings_snapshot.get("context_discovery_enabled", True):
+            reason = "context_discovery_disabled"
+        elif not settings_snapshot.get("fast_context_enabled", True):
+            reason = "provider_disabled"
+        else:
+            reason = "backend_mcp_bridge_unavailable"
+        degraded.append({
+            "provider": "fast-context",
+            "reason": reason,
+            "fallback_path": fast_context.get("fallback_path") or [],
+            "warnings": fast_context.get("warnings") or [],
+        })
+    evidence = context_bundle.get("evidence") or []
+    semantic_cases = context_bundle.get("semantic_cases") or []
+    if not evidence_memory_configured:
+        degraded.append({
+            "provider": "evidence-memory",
+            "reason": "store_not_configured",
+            "fallback_path": ["local_search", "gitnexus", "cgc", "agent_cli"],
+        })
+    elif not evidence:
+        degraded.append({
+            "provider": "evidence-memory",
+            "reason": "no_matching_evidence",
+            "fallback_path": ["local_search", "gitnexus", "cgc", "agent_cli"],
+        })
+    if not semantic_library_configured:
+        degraded.append({
+            "provider": "semantic-library",
+            "reason": "store_not_configured",
+            "fallback_path": ["validated_entries", "source_evidence", "agent_cli"],
+        })
+    elif not semantic_cases:
+        degraded.append({
+            "provider": "semantic-library",
+            "reason": "no_matching_cases",
+            "fallback_path": ["validated_entries", "source_evidence", "agent_cli"],
+        })
+    return degraded
+
+
 def _instruction_files_requesting_fast_context(agent_instructions: dict[str, Any]) -> list[str]:
     requested: list[str] = []
     for item in agent_instructions.get("files") or []:
@@ -714,6 +891,10 @@ def _read_text_prefix(path: Path, *, max_chars: int) -> str:
 
 
 def _evidence_item_payload(item: Any, *, source_slices: list[Any] | None = None) -> dict[str, Any]:
+    source_slice_payloads = [
+        _source_slice_payload(source_slice)
+        for source_slice in (source_slices or [])
+    ]
     payload = {
         "evidence_id": item.evidence_id,
         "run_id": item.run_id,
@@ -727,12 +908,14 @@ def _evidence_item_payload(item: Any, *, source_slices: list[Any] | None = None)
         "confidence": item.confidence,
         "text": item.text,
         "provenance": item.provenance or {},
+        "source_read_status": (
+            "source_slices_attached"
+            if source_slice_payloads else "no_source_slices"
+        ),
+        "usable_as_source_evidence": bool(source_slice_payloads),
     }
-    if source_slices:
-        payload["source_slices"] = [
-            _source_slice_payload(source_slice)
-            for source_slice in source_slices
-        ]
+    if source_slice_payloads:
+        payload["source_slices"] = source_slice_payloads
     return payload
 
 

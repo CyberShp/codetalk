@@ -98,6 +98,8 @@ Current implementation note:
 - Verified `source_scope.json`, `evidence_cards.json`, and repo-local `uncovered_functions.json` outputs create Evidence Memory facts only after local repo/source validation.
 - Materialized source-file, evidence-card, and coverage-gap facts get source slices with repo-relative path, line range, sha256, and local excerpt, exposed through the memory source-slices API.
 - Prepared task bundles include source slices for retrieved Evidence Memory facts so the next Agent CLI turn sees structured code context instead of a lossy summary.
+- Prepared task runs now write `memory_retrieval.json`, `source_read_chain.json`, `evidence_consumption_trajectory.json`, and `degraded_retrieval.json` so retrieval, source reads, consumption events, and provider fallback decisions are auditable outside the prompt.
+- Evidence Memory hits without source slices are marked `no_source_slices` and are not treated as source evidence; retrieval remains a navigation signal until CodeTalk has a validated source slice or accepted artifact.
 - Coverage black-box recommendation enrichment also carries Evidence Memory source slices into gaps and generated cases as structured evidence references.
 - These source slices are the durable context chain for later Agent prompts and black-box test recommendations; raw Agent summaries remain audit material, not facts.
 

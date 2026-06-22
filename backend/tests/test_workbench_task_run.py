@@ -231,6 +231,8 @@ def test_prepare_workbench_task_run_injects_evidence_and_semantic_context(tmp_pa
     context_bundle = result.task_bundle["context_bundle"]
     assert context_bundle["query"] == "nvme tcp tls"
     assert context_bundle["evidence"][0]["subject_key"] == "nof/nvmf_tcp/transport/tls/tls.c"
+    assert context_bundle["evidence"][0]["source_read_status"] == "source_slices_attached"
+    assert context_bundle["evidence"][0]["usable_as_source_evidence"] is True
     assert context_bundle["evidence"][0]["source_slices"][0]["file_path"] == (
         "nof/nvmf_tcp/transport/tls/tls.c"
     )
@@ -246,6 +248,73 @@ def test_prepare_workbench_task_run_injects_evidence_and_semantic_context(tmp_pa
         "connection release",
     ]
     assert step_bundle["context_bundle"]["evidence"][0]["source_slices"][0]["sha256"] == "abc123"
+    memory_retrieval = json.loads(
+        Path(result.artifact_dir, "memory_retrieval.json").read_text(encoding="utf-8")
+    )
+    assert memory_retrieval["provider"] == "evidence-memory"
+    assert memory_retrieval["retrieved_count"] == 1
+    assert memory_retrieval["items"][0]["source_slice_count"] == 1
+    source_read_chain = json.loads(
+        Path(result.artifact_dir, "source_read_chain.json").read_text(encoding="utf-8")
+    )
+    assert source_read_chain["reads"][0]["file_path"] == "nof/nvmf_tcp/transport/tls/tls.c"
+    assert source_read_chain["reads"][0]["sha256"] == "abc123"
+    trajectory = json.loads(
+        Path(result.artifact_dir, "evidence_consumption_trajectory.json").read_text(encoding="utf-8")
+    )
+    assert trajectory["scoring_policy"] == "navigation_only_not_authority"
+    assert [event["event"] for event in trajectory["events"]] == [
+        "memory_retrieved",
+        "source_slice_attached",
+        "semantic_case_retrieved",
+    ]
+
+
+def test_prepare_workbench_task_run_records_degraded_retrieval_artifact(tmp_path, monkeypatch):
+    from app.config import settings
+    from app.services.workflow_dsl import WorkflowStore
+    from app.services.workbench_task_run import WorkbenchTaskRunPreparer
+
+    monkeypatch.setattr(settings, "context_discovery_enabled", True)
+    monkeypatch.setattr(settings, "fast_context_enabled", True)
+    monkeypatch.setattr(settings, "fast_context_backend_bridge_enabled", False)
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    (repo / "AGENTS.md").write_text(
+        "Prefer mcp__fast-context__fast_context_search before local grep.\n",
+        encoding="utf-8",
+    )
+    workflow_store = WorkflowStore(tmp_path / "workflows.db")
+    workflow_store.save_workflow({
+        "id": "degraded_context_workflow",
+        "name": "Degraded context workflow",
+        "version": 1,
+        "inputs": [{"id": "module", "type": "free_text"}],
+        "steps": [{"id": "discover", "type": "agent_task"}],
+        "outputs": [{"id": "report", "type": "markdown"}],
+    })
+
+    result = WorkbenchTaskRunPreparer(
+        artifact_root=tmp_path / "task_runs",
+        workflow_store=workflow_store,
+    ).prepare(
+        workflow_id="degraded_context_workflow",
+        workspace_id="ws-degraded",
+        repo_path=str(repo),
+        inputs={"module": "nvme tcp tls"},
+    )
+
+    degraded = json.loads(
+        Path(result.artifact_dir, "degraded_retrieval.json").read_text(encoding="utf-8")
+    )
+    reasons = {item["provider"]: item["reason"] for item in degraded["degraded"]}
+    assert reasons["fast-context"] == "backend_mcp_bridge_unavailable"
+    assert reasons["evidence-memory"] == "store_not_configured"
+    assert reasons["semantic-library"] == "store_not_configured"
+    step_bundle = json.loads(
+        Path(result.artifact_dir, "agent_runs", "discover", "task_bundle.json").read_text(encoding="utf-8")
+    )
+    assert step_bundle["degraded_retrieval"]["degraded"][0]["provider"] == "fast-context"
 
 
 def test_prepare_workbench_task_run_embeds_repo_agent_instructions(tmp_path, monkeypatch):

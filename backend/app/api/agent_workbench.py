@@ -1340,6 +1340,14 @@ def _artifact_kind(relative_path: str) -> str:
         return "context_discovery_decision"
     if name == "context_bundle.json":
         return "context_bundle"
+    if name == "memory_retrieval.json":
+        return "memory_retrieval"
+    if name == "source_read_chain.json":
+        return "source_read_chain"
+    if name == "evidence_consumption_trajectory.json":
+        return "evidence_consumption_trajectory"
+    if name == "degraded_retrieval.json":
+        return "degraded_retrieval"
     if name == "workflow_outputs.json":
         return "workflow_outputs"
     if name == "workflow_execution.json":
