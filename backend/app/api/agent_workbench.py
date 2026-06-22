@@ -1469,6 +1469,21 @@ def _artifact_manifest(task_dir: Path) -> list[dict[str, Any]]:
 
 def _artifact_kind(relative_path: str) -> str:
     name = relative_path.rsplit("/", 1)[-1]
+    if "/turns/" in relative_path:
+        if name == "execution_input.json":
+            return "agent_turn_execution_input"
+        if name == "task_bundle.json":
+            return "agent_turn_task_bundle"
+        if name == "raw_output.txt":
+            return "agent_turn_raw_output"
+        if name == "execution_result.json":
+            return "agent_turn_execution_result"
+        if name == "source_slice_requests.json":
+            return "agent_turn_source_slice_requests"
+        if name == "source_slices.json":
+            return "agent_turn_source_slices"
+        if name == "agent_run.json":
+            return "agent_turn_run"
     if relative_path.endswith("/task_bundle.json"):
         return "agent_task_bundle"
     if name == "task_bundle.json":

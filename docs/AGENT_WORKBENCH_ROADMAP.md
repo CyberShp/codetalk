@@ -42,6 +42,7 @@ Current implementation note:
 - Agent run envelopes now include `turn_id`, `task_bundle_sha256`, and `workflow_snapshot_sha256` in execution artifacts and runtime events, so disposable Agent CLI processes still have auditable task-continuity metadata.
 - Workbench Agent steps can run a second turn when the first Agent turn writes `source_slice_requests.json`; CodeTalk validates repo-local source paths, writes `source_slices.json`, injects `requested_source_slices` into the task bundle, and records turn count plus warnings in the step result.
 - Each Workbench Agent turn is snapshotted under `turns/<turn_id>/` with execution input, task bundle, raw output, result, and source-slice request artifacts so later turns do not overwrite the audit trail.
+- Turn snapshots are exposed through the Workbench artifact API with dedicated kinds such as `agent_turn_execution_input`, `agent_turn_task_bundle`, and `agent_turn_source_slices`, and the UI sorts them with other first-class audit artifacts.
 
 Operational requirement from repo `AGENTS.md`:
 

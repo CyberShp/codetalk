@@ -1295,6 +1295,84 @@ async def test_workbench_task_run_artifacts_api_labels_agent_execution_input(
     )
 
 
+async def test_workbench_task_run_artifacts_api_labels_agent_turn_snapshots(
+    workbench_client,
+    tmp_path,
+    monkeypatch,
+):
+    from app.config import settings
+
+    source = tmp_path / "src" / "tls.c"
+    source.parent.mkdir()
+    source.write_text("int nvmf_tcp_tls_handshake(void) { return 0; }\n", encoding="utf-8")
+    script_path = tmp_path / "agent_turns.py"
+    script_path.write_text(
+        "import json, pathlib, sys\n"
+        "payload=json.loads(sys.stdin.read())\n"
+        "bundle=payload['task_bundle']\n"
+        "root=pathlib.Path(payload['artifact_dir'])\n"
+        "if not bundle.get('requested_source_slices'):\n"
+        "    (root/'source_slice_requests.json').write_text(json.dumps({"
+        "'need_source_slices':[{'file_path':'src/tls.c'}]}"
+        "), encoding='utf-8')\n"
+        "else:\n"
+        "    (root/'source_scope.json').write_text(json.dumps({'files':[{'path':'src/tls.c'}]}), encoding='utf-8')\n",
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(settings, "external_agent_custom_providers", [
+        {"id": "local-python", "command": f"python {script_path}"}
+    ])
+    workflow = {
+        "id": "turn_snapshot_audit_workflow",
+        "name": "Turn snapshot audit workflow",
+        "version": 1,
+        "inputs": [{"id": "module", "type": "free_text"}],
+        "steps": [
+            {
+                "id": "discover",
+                "type": "agent_task",
+                "provider": "local-python",
+                "required_artifacts": ["source_scope.json"],
+            }
+        ],
+        "outputs": [{"id": "scope", "type": "json", "from": "discover", "artifact": "source_scope.json"}],
+    }
+    assert (await workbench_client.post("/api/workbench/workflows", json=workflow)).status_code == 201
+    prepared = await workbench_client.post(
+        "/api/workbench/task-runs/prepare",
+        json={
+            "workflow_id": "turn_snapshot_audit_workflow",
+            "workspace_id": "ws-turn-snapshots",
+            "repo_path": str(tmp_path),
+            "inputs": {"module": "nvme tcp tls"},
+        },
+    )
+    task_run_id = prepared.json()["task_run_id"]
+    executed = await workbench_client.post(
+        f"/api/workbench/task-runs/{task_run_id}/execute",
+        json={"timeout_sec": 10},
+    )
+    assert executed.status_code == 200
+
+    artifacts = await workbench_client.get(f"/api/workbench/task-runs/{task_run_id}/artifacts")
+
+    paths = {item["relative_path"]: item for item in artifacts.json()["artifacts"]}
+    assert (
+        paths["agent_runs/discover/turns/turn_1/execution_input.json"]["kind"]
+        == "agent_turn_execution_input"
+    )
+    assert paths["agent_runs/discover/turns/turn_1/raw_output.txt"]["kind"] == "agent_turn_raw_output"
+    assert paths["agent_runs/discover/turns/turn_2/task_bundle.json"]["kind"] == "agent_turn_task_bundle"
+    assert paths["agent_runs/discover/turns/turn_2/source_slices.json"]["kind"] == "agent_turn_source_slices"
+    content = await workbench_client.get(
+        f"/api/workbench/task-runs/{task_run_id}/artifacts/content/"
+        "agent_runs/discover/turns/turn_2/task_bundle.json"
+    )
+    assert content.status_code == 200
+    assert content.json()["kind"] == "agent_turn_task_bundle"
+    assert "requested_source_slices" in content.json()["content"]
+
+
 async def test_workbench_prepare_task_run_api_injects_memory_and_semantics(workbench_client, tmp_path):
     assert (await workbench_client.post(
         "/api/workbench/memory/runs",
