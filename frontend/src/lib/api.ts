@@ -28,6 +28,7 @@ import type {
   EvidenceMemoryItem,
   AgentRunRecord,
   ArtifactValidationResult,
+  AgentRunExecutionResult,
   PreparedWorkbenchTaskRun,
 } from "./types";
 
@@ -582,6 +583,15 @@ export const api = {
           },
         ),
 
+      execute: (runId: string, timeoutSec = 90) =>
+        request<AgentRunExecutionResult>(
+          `/api/workbench/agent-runs/${encodeURIComponent(runId)}/execute`,
+          {
+            method: "POST",
+            body: JSON.stringify({ timeout_sec: timeoutSec }),
+          },
+        ),
+
       validateMrArtifacts: (runId: string, requiredArtifacts: string[]) =>
         request<ArtifactValidationResult>(
           `/api/workbench/agent-runs/${encodeURIComponent(runId)}/validate-mr-artifacts`,
@@ -604,6 +614,28 @@ export const api = {
           method: "POST",
           body: JSON.stringify(data),
         }),
+
+      executeAgentRun: (taskRunId: string, stepId: string, timeoutSec = 90) =>
+        request<AgentRunExecutionResult>(
+          `/api/workbench/task-runs/${encodeURIComponent(taskRunId)}/agent-runs/${encodeURIComponent(stepId)}/execute`,
+          {
+            method: "POST",
+            body: JSON.stringify({ timeout_sec: timeoutSec }),
+          },
+        ),
+
+      validateMrArtifacts: (
+        taskRunId: string,
+        stepId: string,
+        requiredArtifacts: string[],
+      ) =>
+        request<ArtifactValidationResult>(
+          `/api/workbench/task-runs/${encodeURIComponent(taskRunId)}/agent-runs/${encodeURIComponent(stepId)}/validate-mr-artifacts`,
+          {
+            method: "POST",
+            body: JSON.stringify({ required_artifacts: requiredArtifacts }),
+          },
+        ),
     },
   },
 };

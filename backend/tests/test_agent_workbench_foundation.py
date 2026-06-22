@@ -190,3 +190,46 @@ def test_agent_run_harness_records_run_and_validates_agent_side_mr_artifacts(tmp
     assert validation.provenance_status == "agent_mcp_provenance"
     assert validation.accepted_artifacts == ["mr_snapshot.json", "diff.patch", "changed_files.json"]
     assert "secret-value" not in (artifact_dir / "raw_output.txt").read_text(encoding="utf-8")
+
+
+def test_agent_run_harness_executes_cli_with_task_bundle_and_audit_events(tmp_path):
+    from app.services.agent_run_harness import AgentRunHarness
+
+    artifact_dir = tmp_path / "agent-run"
+    output_file = artifact_dir / "agent_seen.json"
+    script = (
+        "import json, os, pathlib, sys; "
+        "payload=json.load(sys.stdin); "
+        "pathlib.Path(sys.argv[1]).write_text(json.dumps({"
+        "'readonly': os.environ.get('CODETALK_AGENT_READONLY'), "
+        "'repo': os.environ.get('CODETALK_REPO_PATH'), "
+        "'bundle_id': payload['task_bundle']['task_id']"
+        "}), encoding='utf-8'); "
+        "print('agent finished token=secret-value')"
+    )
+    harness = AgentRunHarness(artifact_dir)
+    run = harness.create_run(
+        run_id="agent_run_exec",
+        provider="local-python",
+        command=["python", "-c", script, str(output_file)],
+        cwd=str(tmp_path),
+        workflow_snapshot={"id": "wf"},
+        task_bundle={"task_id": "task-42"},
+        mcp_profile="",
+    )
+
+    executed = harness.execute_run(run.run_id, timeout_sec=10)
+
+    assert executed.status == "completed"
+    assert executed.exit_code == 0
+    assert output_file.exists()
+    seen = json.loads(output_file.read_text(encoding="utf-8"))
+    assert seen == {
+        "readonly": "1",
+        "repo": str(tmp_path),
+        "bundle_id": "task-42",
+    }
+    assert "secret-value" not in (artifact_dir / "raw_output.txt").read_text(encoding="utf-8")
+    events = (artifact_dir / "runtime_events.jsonl").read_text(encoding="utf-8")
+    assert "agent_run_started" in events
+    assert "agent_run_completed" in events

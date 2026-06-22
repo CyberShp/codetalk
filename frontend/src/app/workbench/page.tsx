@@ -15,6 +15,8 @@ import {
 import { api } from "@/lib/api";
 import type {
   EvidenceMemoryItem,
+  AgentRunExecutionResult,
+  ArtifactValidationResult,
   PreparedWorkbenchTaskRun,
   SemanticCase,
   WorkflowDefinition,
@@ -122,6 +124,12 @@ export default function AgentWorkbenchPage() {
   const [memoryQuery, setMemoryQuery] = useState("nvme tcp tls");
   const [memoryResults, setMemoryResults] = useState<EvidenceMemoryItem[]>([]);
   const [preparedRun, setPreparedRun] = useState<PreparedWorkbenchTaskRun | null>(null);
+  const [executionResults, setExecutionResults] = useState<
+    Record<string, AgentRunExecutionResult>
+  >({});
+  const [validationResults, setValidationResults] = useState<
+    Record<string, ArtifactValidationResult>
+  >({});
   const [loading, setLoading] = useState(false);
   const [busyAction, setBusyAction] = useState<string | null>(null);
   const [message, setMessage] = useState<string | null>(null);
@@ -185,7 +193,33 @@ export default function AgentWorkbenchPage() {
         provider_override: providerOverride.trim() || null,
       });
       setPreparedRun(result);
+      setExecutionResults({});
+      setValidationResults({});
       setMessage(`Task run prepared: ${result.task_run_id}`);
+    });
+
+  const executePreparedAgentRun = (stepId: string) =>
+    runAction(`execute-${stepId}`, async () => {
+      if (!preparedRun) return;
+      const result = await api.workbench.taskRuns.executeAgentRun(
+        preparedRun.task_run_id,
+        stepId,
+        90,
+      );
+      setExecutionResults((current) => ({ ...current, [stepId]: result }));
+      setMessage(`Agent run ${result.status}: ${result.run_id}`);
+    });
+
+  const validatePreparedAgentRun = (stepId: string, requiredArtifacts: string[]) =>
+    runAction(`validate-${stepId}`, async () => {
+      if (!preparedRun) return;
+      const result = await api.workbench.taskRuns.validateMrArtifacts(
+        preparedRun.task_run_id,
+        stepId,
+        requiredArtifacts,
+      );
+      setValidationResults((current) => ({ ...current, [stepId]: result }));
+      setMessage(`Artifact validation ${result.status}: ${stepId}`);
     });
 
   const importSemanticCase = () =>
@@ -354,6 +388,88 @@ export default function AgentWorkbenchPage() {
                 <p className="mt-1 text-on-surface-variant">
                   Agent runs: {preparedRun.agent_runs.length}
                 </p>
+                <div className="mt-3 space-y-2">
+                  {preparedRun.agent_runs.map((agentRun) => {
+                    const stepId = agentRun.step_id;
+                    const result = executionResults[stepId];
+                    const validation = validationResults[stepId];
+                    const isExecuting = busyAction === `execute-${stepId}`;
+                    const isValidating = busyAction === `validate-${stepId}`;
+                    const requiredArtifacts = agentRun.required_artifacts ?? [];
+                    return (
+                      <div
+                        key={agentRun.run_id}
+                        className="rounded-md border border-outline-variant/30 bg-surface-container px-2.5 py-2"
+                      >
+                        <div className="flex flex-wrap items-center justify-between gap-2">
+                          <div className="min-w-0">
+                            <p className="font-medium text-on-surface">{stepId}</p>
+                            <p className="break-words font-data text-[11px] text-on-surface-variant">
+                              {agentRun.provider} / {agentRun.run_id}
+                            </p>
+                          </div>
+                          <button
+                            onClick={() => executePreparedAgentRun(stepId)}
+                            disabled={isExecuting}
+                            className="inline-flex items-center gap-1.5 rounded bg-primary px-2.5 py-1.5 text-xs font-medium text-on-primary transition-opacity hover:opacity-90 disabled:opacity-50"
+                          >
+                            {isExecuting ? (
+                              <Loader2 size={12} className="animate-spin" />
+                            ) : (
+                              <PlayCircle size={12} />
+                            )}
+                            Execute
+                          </button>
+                          <button
+                            onClick={() =>
+                              validatePreparedAgentRun(stepId, requiredArtifacts)
+                            }
+                            disabled={isValidating || requiredArtifacts.length === 0}
+                            className="inline-flex items-center gap-1.5 rounded bg-surface px-2.5 py-1.5 text-xs font-medium text-on-surface transition-colors hover:bg-surface-container-high disabled:opacity-50"
+                          >
+                            {isValidating ? (
+                              <Loader2 size={12} className="animate-spin" />
+                            ) : (
+                              <Search size={12} />
+                            )}
+                            Validate
+                          </button>
+                        </div>
+                        {requiredArtifacts.length > 0 && (
+                            <p className="mt-1 text-on-surface-variant">
+                              Required artifacts: {requiredArtifacts.join(", ")}
+                            </p>
+                        )}
+                        {result && (
+                          <div className="mt-2 flex flex-wrap gap-2 text-on-surface-variant">
+                            <span className="rounded bg-surface px-1.5 py-0.5">
+                              {result.status}
+                            </span>
+                            <span className="rounded bg-surface px-1.5 py-0.5">
+                              exit {result.exit_code ?? "-"}
+                            </span>
+                            <span className="rounded bg-surface px-1.5 py-0.5">
+                              {result.duration_ms}ms
+                            </span>
+                          </div>
+                        )}
+                        {validation && (
+                          <div className="mt-2 rounded bg-surface px-2 py-1.5 text-on-surface-variant">
+                            <p>
+                              Validation: {validation.status} /{" "}
+                              {validation.provenance_status}
+                            </p>
+                            {validation.rejected_artifacts.length > 0 && (
+                              <p className="mt-1 text-amber-400">
+                                Rejected: {validation.rejected_artifacts.length}
+                              </p>
+                            )}
+                          </div>
+                        )}
+                      </div>
+                    );
+                  })}
+                </div>
               </div>
             )}
           </div>

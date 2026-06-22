@@ -196,6 +196,141 @@ async def test_workbench_agent_run_harness_api(workbench_client):
     assert "secret-value" not in (root / "raw_output.txt").read_text(encoding="utf-8")
 
 
+async def test_workbench_agent_run_execute_api(workbench_client, tmp_path):
+    output_file = tmp_path / "agent-output.txt"
+    script = (
+        "import json, pathlib, sys; "
+        "payload=json.load(sys.stdin); "
+        "pathlib.Path(sys.argv[1]).write_text(payload['task_bundle']['task_id'], encoding='utf-8'); "
+        "print('done token=secret-value')"
+    )
+    create = await workbench_client.post(
+        "/api/workbench/agent-runs",
+        json={
+            "provider": "local-python",
+            "command": ["python", "-c", script, str(output_file)],
+            "cwd": str(tmp_path),
+            "workflow_snapshot": {"id": "wf"},
+            "task_bundle": {"task_id": "task-execute"},
+        },
+    )
+    assert create.status_code == 201
+    run = create.json()
+
+    executed = await workbench_client.post(
+        f"/api/workbench/agent-runs/{run['run_id']}/execute",
+        json={"timeout_sec": 10},
+    )
+
+    assert executed.status_code == 200
+    body = executed.json()
+    assert body["status"] == "completed"
+    assert body["exit_code"] == 0
+    assert output_file.read_text(encoding="utf-8") == "task-execute"
+    from pathlib import Path
+
+    raw_output = Path(run["artifact_dir"]) / "raw_output.txt"
+    assert "done" in raw_output.read_text(encoding="utf-8")
+    assert "secret-value" not in raw_output.read_text(encoding="utf-8")
+
+
+async def test_workbench_task_scoped_agent_run_execute_api(workbench_client, tmp_path):
+    from app.services.agent_run_harness import AgentRunHarness
+
+    task_run_id = "task_run_unit"
+    step_id = "collect_mr"
+    artifact_dir = (
+        tmp_path
+        / "data"
+        / "workbench"
+        / "task_runs"
+        / task_run_id
+        / "agent_runs"
+        / step_id
+    )
+    output_file = artifact_dir / "task-agent-output.txt"
+    script = (
+        "import json, pathlib, sys; "
+        "payload=json.load(sys.stdin); "
+        "pathlib.Path(sys.argv[1]).write_text(payload['run_id'], encoding='utf-8'); "
+        "print('task scoped run complete')"
+    )
+    AgentRunHarness(artifact_dir).create_run(
+        run_id=f"{task_run_id}_{step_id}",
+        provider="local-python",
+        command=["python", "-c", script, str(output_file)],
+        cwd=str(tmp_path),
+        workflow_snapshot={"id": "wf"},
+        task_bundle={"task_id": task_run_id},
+    )
+
+    executed = await workbench_client.post(
+        f"/api/workbench/task-runs/{task_run_id}/agent-runs/{step_id}/execute",
+        json={"timeout_sec": 10},
+    )
+
+    assert executed.status_code == 200
+    assert executed.json()["status"] == "completed"
+    assert output_file.read_text(encoding="utf-8") == f"{task_run_id}_{step_id}"
+
+
+async def test_workbench_task_scoped_agent_run_validate_mr_artifacts_api(workbench_client, tmp_path):
+    from app.services.agent_run_harness import AgentRunHarness
+
+    task_run_id = "task_run_validate"
+    step_id = "collect_mr"
+    artifact_dir = (
+        tmp_path
+        / "data"
+        / "workbench"
+        / "task_runs"
+        / task_run_id
+        / "agent_runs"
+        / step_id
+    )
+    diff_text = "diff --git a/src/tls.c b/src/tls.c\n--- a/src/tls.c\n+++ b/src/tls.c\n"
+    diff_sha = hashlib.sha256(diff_text.encode("utf-8")).hexdigest()
+    AgentRunHarness(artifact_dir).create_run(
+        run_id=f"{task_run_id}_{step_id}",
+        provider="local-agent",
+        command=["python", "-c", "print('noop')"],
+        cwd=str(tmp_path),
+        workflow_snapshot={"id": "wf"},
+        task_bundle={"task_id": task_run_id},
+    )
+    (artifact_dir / "mr_snapshot.json").write_text(
+        json.dumps({
+            "source": "agent_mcp",
+            "mcp_profile": "codehub-readonly",
+            "mr_url": "https://codehub.local/project/merge_requests/1",
+            "project": "project",
+            "mr_id": "1",
+            "title": "TLS change",
+            "source_branch": "feature",
+            "target_branch": "main",
+            "base_commit": "base",
+            "head_commit": "head",
+            "diff_sha256": diff_sha,
+            "changed_files_count": 1,
+        }),
+        encoding="utf-8",
+    )
+    (artifact_dir / "diff.patch").write_text(diff_text, encoding="utf-8")
+    (artifact_dir / "changed_files.json").write_text(
+        json.dumps([{"path": "src/tls.c", "status": "modified"}]),
+        encoding="utf-8",
+    )
+
+    validation = await workbench_client.post(
+        f"/api/workbench/task-runs/{task_run_id}/agent-runs/{step_id}/validate-mr-artifacts",
+        json={"required_artifacts": ["mr_snapshot.json", "diff.patch", "changed_files.json"]},
+    )
+
+    assert validation.status_code == 200
+    assert validation.json()["status"] == "ok"
+    assert validation.json()["provenance_status"] == "agent_mcp_provenance"
+
+
 async def test_workbench_prepare_task_run_api(workbench_client):
     workflow = {
         "id": "mr_test_design",

@@ -258,11 +258,31 @@ export interface AgentRunRecord {
 }
 
 export interface ArtifactValidationResult {
-  ok: boolean;
+  status: string;
+  provenance_status: string;
   accepted_artifacts: string[];
   rejected_artifacts: Array<Record<string, unknown>>;
   warnings: string[];
-  provenance: Record<string, unknown>;
+}
+
+export interface AgentRunExecutionResult {
+  run_id: string;
+  status: string;
+  exit_code?: number | null;
+  started_at: string;
+  completed_at: string;
+  duration_ms: number;
+  timed_out: boolean;
+  error: string;
+}
+
+export interface PreparedAgentRun {
+  step_id: string;
+  run_id: string;
+  provider: string;
+  artifact_dir: string;
+  mcp_profile?: string;
+  required_artifacts?: string[];
 }
 
 export interface PreparedWorkbenchTaskRun {
@@ -274,7 +294,7 @@ export interface PreparedWorkbenchTaskRun {
   workflow_snapshot: Record<string, unknown>;
   input_snapshot: Record<string, unknown>;
   task_bundle: Record<string, unknown>;
-  agent_runs: Array<Record<string, unknown>>;
+  agent_runs: PreparedAgentRun[];
   created_at: string;
 }
 

@@ -4,7 +4,9 @@ from __future__ import annotations
 
 import hashlib
 import json
+import os
 import re
+import subprocess
 import uuid
 from dataclasses import asdict, dataclass, field
 from datetime import datetime, timezone
@@ -39,6 +41,18 @@ class ArtifactValidationResult:
     accepted_artifacts: list[str] = field(default_factory=list)
     rejected_artifacts: list[dict[str, str]] = field(default_factory=list)
     warnings: list[str] = field(default_factory=list)
+
+
+@dataclass(frozen=True)
+class AgentRunExecutionResult:
+    run_id: str
+    status: str
+    exit_code: int | None
+    started_at: str
+    completed_at: str
+    duration_ms: int
+    timed_out: bool = False
+    error: str = ""
 
 
 class AgentRunHarness:
@@ -85,6 +99,106 @@ class AgentRunHarness:
             append_jsonl=True,
         )
 
+    def execute_run(self, run_id: str, *, timeout_sec: int = 90) -> AgentRunExecutionResult:
+        run_payload = self._read_json_file("agent_run.json")
+        if not isinstance(run_payload, dict) or run_payload.get("run_id") != run_id:
+            raise ValueError(f"unknown agent run: {run_id}")
+        command = [str(part) for part in run_payload.get("command") or []]
+        if not command:
+            raise ValueError("agent run command is empty")
+        cwd = str(run_payload.get("cwd") or "")
+        if not cwd:
+            raise ValueError("agent run cwd is empty")
+
+        task_bundle = self._read_json_file("task_bundle.json")
+        workflow_snapshot = self._read_json_file("workflow_snapshot.json")
+        stdin_payload = json.dumps(
+            {
+                "run_id": run_id,
+                "provider": run_payload.get("provider") or "",
+                "mcp_profile": run_payload.get("mcp_profile") or "",
+                "workflow_snapshot": workflow_snapshot if isinstance(workflow_snapshot, dict) else {},
+                "task_bundle": task_bundle if isinstance(task_bundle, dict) else {},
+                "artifact_dir": str(self.artifact_dir),
+            },
+            ensure_ascii=False,
+        )
+
+        started_at = _now()
+        self._write_json(
+            "runtime_events.jsonl",
+            {
+                "event": "agent_run_started",
+                "run_id": run_id,
+                "command": command,
+                "created_at": started_at,
+            },
+            append_jsonl=True,
+        )
+        started = datetime.now(timezone.utc)
+        env = os.environ.copy()
+        env["CODETALK_AGENT_READONLY"] = "1"
+        env["CODETALK_REPO_PATH"] = cwd
+        env["CODETALK_AGENT_ARTIFACT_DIR"] = str(self.artifact_dir)
+
+        exit_code: int | None = None
+        stdout = ""
+        stderr = ""
+        timed_out = False
+        error = ""
+        try:
+            completed = subprocess.run(
+                command,
+                cwd=cwd,
+                input=stdin_payload,
+                text=True,
+                capture_output=True,
+                timeout=max(1, int(timeout_sec)),
+                env=env,
+                check=False,
+            )
+            exit_code = completed.returncode
+            stdout = completed.stdout or ""
+            stderr = completed.stderr or ""
+        except subprocess.TimeoutExpired as exc:
+            timed_out = True
+            stdout = _decode_subprocess_text(exc.stdout)
+            stderr = _decode_subprocess_text(exc.stderr)
+            error = f"agent run timed out after {timeout_sec}s"
+        except OSError as exc:
+            error = str(exc)
+
+        completed_at = _now()
+        duration_ms = int((datetime.now(timezone.utc) - started).total_seconds() * 1000)
+        status = "timeout" if timed_out else "completed" if exit_code == 0 else "error"
+        self.record_raw_output(run_id, stdout=stdout, stderr=stderr)
+        result = AgentRunExecutionResult(
+            run_id=run_id,
+            status=status,
+            exit_code=exit_code,
+            started_at=started_at,
+            completed_at=completed_at,
+            duration_ms=duration_ms,
+            timed_out=timed_out,
+            error=error,
+        )
+        self._write_json("execution_result.json", asdict(result))
+        self._write_json(
+            "runtime_events.jsonl",
+            {
+                "event": "agent_run_completed",
+                "run_id": run_id,
+                "status": status,
+                "exit_code": exit_code,
+                "timed_out": timed_out,
+                "error": error,
+                "created_at": completed_at,
+            },
+            append_jsonl=True,
+        )
+        self._write_json("agent_run.json", {**run_payload, "status": status})
+        return result
+
     def _write_json(self, filename: str, payload: Any, *, append_jsonl: bool = False) -> None:
         path = self.artifact_dir / filename
         if append_jsonl:
@@ -95,6 +209,12 @@ class AgentRunHarness:
 
     def _write_text(self, filename: str, content: str) -> None:
         (self.artifact_dir / filename).write_text(content, encoding="utf-8")
+
+    def _read_json_file(self, filename: str) -> Any:
+        try:
+            return json.loads((self.artifact_dir / filename).read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError):
+            return None
 
 
 class ArtifactValidationHarness:
@@ -188,3 +308,11 @@ _BEARER_RE = re.compile(r"(?i)(bearer\s+)[A-Za-z0-9._~+/=-]{8,}")
 def _redact(text: str) -> str:
     value = _SECRET_RE.sub(lambda m: f"{m.group(1)}=<redacted>", text or "")
     return _BEARER_RE.sub(r"\1<redacted>", value)
+
+
+def _decode_subprocess_text(value: str | bytes | None) -> str:
+    if value is None:
+        return ""
+    if isinstance(value, bytes):
+        return value.decode("utf-8", errors="replace")
+    return value

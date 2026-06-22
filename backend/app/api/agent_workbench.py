@@ -61,6 +61,10 @@ class RawOutputCreate(BaseModel):
     stderr: str = ""
 
 
+class AgentRunExecuteRequest(BaseModel):
+    timeout_sec: int = Field(default=90, ge=1, le=3600)
+
+
 class ValidateMrArtifactsRequest(BaseModel):
     required_artifacts: list[str]
 
@@ -104,10 +108,21 @@ def _task_runs_dir() -> Path:
 
 
 def _agent_run_dir(run_id: str) -> Path:
-    value = run_id.strip()
-    if not value or "/" in value or "\\" in value or ".." in value:
-        raise HTTPException(status_code=400, detail="invalid run_id")
+    value = _safe_segment(run_id, "run_id")
     return _agent_runs_dir() / value
+
+
+def _task_agent_run_dir(task_run_id: str, step_id: str) -> Path:
+    task_value = _safe_segment(task_run_id, "task_run_id")
+    step_value = _safe_segment(step_id, "step_id")
+    return _task_runs_dir() / task_value / "agent_runs" / step_value
+
+
+def _safe_segment(value: str, label: str) -> str:
+    value = value.strip()
+    if not value or "/" in value or "\\" in value or ".." in value:
+        raise HTTPException(status_code=400, detail=f"invalid {label}")
+    return value
 
 
 @router.post("/workflows", status_code=201)
@@ -236,6 +251,53 @@ async def record_agent_run_raw_output(run_id: str, payload: RawOutputCreate) -> 
     return {"ok": True}
 
 
+@router.post("/agent-runs/{run_id}/execute")
+async def execute_agent_run(
+    run_id: str,
+    payload: AgentRunExecuteRequest,
+) -> dict[str, Any]:
+    artifact_dir = _agent_run_dir(run_id)
+    if not (artifact_dir / "agent_run.json").exists():
+        raise HTTPException(status_code=404, detail=f"Unknown agent run: {run_id}")
+    try:
+        result = AgentRunHarness(artifact_dir).execute_run(
+            run_id,
+            timeout_sec=payload.timeout_sec,
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+    return asdict(result)
+
+
+@router.post("/task-runs/{task_run_id}/agent-runs/{step_id}/execute")
+async def execute_task_agent_run(
+    task_run_id: str,
+    step_id: str,
+    payload: AgentRunExecuteRequest,
+) -> dict[str, Any]:
+    artifact_dir = _task_agent_run_dir(task_run_id, step_id)
+    agent_run_path = artifact_dir / "agent_run.json"
+    if not agent_run_path.exists():
+        raise HTTPException(
+            status_code=404,
+            detail=f"Unknown task agent run: {task_run_id}/{step_id}",
+        )
+    try:
+        import json
+
+        run_payload = json.loads(agent_run_path.read_text(encoding="utf-8"))
+        run_id = str(run_payload.get("run_id") or "")
+        result = AgentRunHarness(artifact_dir).execute_run(
+            run_id,
+            timeout_sec=payload.timeout_sec,
+        )
+    except json.JSONDecodeError:
+        raise HTTPException(status_code=400, detail="invalid agent_run.json")
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+    return asdict(result)
+
+
 @router.post("/agent-runs/{run_id}/validate-mr-artifacts")
 async def validate_agent_run_mr_artifacts(
     run_id: str,
@@ -244,6 +306,24 @@ async def validate_agent_run_mr_artifacts(
     artifact_dir = _agent_run_dir(run_id)
     if not (artifact_dir / "agent_run.json").exists():
         raise HTTPException(status_code=404, detail=f"Unknown agent run: {run_id}")
+    result = ArtifactValidationHarness(artifact_dir).validate_mr_artifacts(
+        required_artifacts=payload.required_artifacts,
+    )
+    return asdict(result)
+
+
+@router.post("/task-runs/{task_run_id}/agent-runs/{step_id}/validate-mr-artifacts")
+async def validate_task_agent_run_mr_artifacts(
+    task_run_id: str,
+    step_id: str,
+    payload: ValidateMrArtifactsRequest,
+) -> dict[str, Any]:
+    artifact_dir = _task_agent_run_dir(task_run_id, step_id)
+    if not (artifact_dir / "agent_run.json").exists():
+        raise HTTPException(
+            status_code=404,
+            detail=f"Unknown task agent run: {task_run_id}/{step_id}",
+        )
     result = ArtifactValidationHarness(artifact_dir).validate_mr_artifacts(
         required_artifacts=payload.required_artifacts,
     )
