@@ -770,6 +770,17 @@ def _materialize_structured_workflow_output_evidence(
     data: bytes,
     sha256: str,
 ) -> list[str]:
+    if path.name == "source_scope.json" or output_id in {"source_scope", "scope"}:
+        return _materialize_source_scope_evidence(
+            store=store,
+            task_run=task_run,
+            output=output,
+            output_id=output_id,
+            output_evidence_id=output_evidence_id,
+            path=path,
+            data=data,
+            sha256=sha256,
+        )
     if path.name == "uncovered_functions.json" or output_id == "uncovered_functions":
         return _materialize_uncovered_function_evidence(
             store=store,
@@ -817,6 +828,129 @@ def _materialize_structured_workflow_output_evidence(
                 "artifact_path": str(path),
                 "sha256": sha256,
                 "changed_file": item,
+            },
+        ))
+    return evidence_ids
+
+
+def _materialize_source_scope_evidence(
+    *,
+    store: EvidenceMemoryStore,
+    task_run: Any,
+    output: dict[str, Any],
+    output_id: str,
+    output_evidence_id: str,
+    path: Path,
+    data: bytes,
+    sha256: str,
+) -> list[str]:
+    try:
+        payload = json.loads(data.decode("utf-8"))
+    except (UnicodeDecodeError, json.JSONDecodeError):
+        return []
+    if not isinstance(payload, dict):
+        return []
+    evidence_ids: list[str] = []
+    seen_files: set[str] = set()
+    seen_symbols: set[tuple[str, str]] = set()
+    for file_item in _source_scope_file_items(payload):
+        candidate_path = _source_scope_item_path(file_item)
+        resolved = _validated_repo_source_path(task_run.repo_path, candidate_path)
+        if resolved is None:
+            continue
+        rel_path, resolved_path = resolved
+        if rel_path not in seen_files:
+            seen_files.add(rel_path)
+            evidence_ids.append(store.upsert_evidence_item(
+                run_id=task_run.task_run_id,
+                workspace_id=task_run.workspace_id,
+                kind="source_file",
+                subject_key=rel_path,
+                status="verified_output",
+                source=str(output.get("from") or "workflow"),
+                path=rel_path,
+                reason=_source_scope_item_reason(file_item) or (
+                    "Source file came from a locally verified workflow source scope output."
+                ),
+                text=f"{rel_path} {_source_scope_item_reason(file_item)}".strip(),
+                provenance={
+                    "task_run_id": task_run.task_run_id,
+                    "workflow_id": task_run.workflow_id,
+                    "output_id": output_id,
+                    "output_evidence_id": output_evidence_id,
+                    "artifact_path": str(path),
+                    "sha256": sha256,
+                    "file_path": rel_path,
+                    "resolved_path": str(resolved_path),
+                },
+            ))
+        for symbol_item in _source_scope_item_symbols(file_item):
+            symbol_name = _source_scope_symbol_name(symbol_item)
+            if not symbol_name:
+                continue
+            symbol_key = (rel_path, symbol_name)
+            if symbol_key in seen_symbols:
+                continue
+            seen_symbols.add(symbol_key)
+            line_start = _safe_int(symbol_item.get("line_start") if isinstance(symbol_item, dict) else None)
+            evidence_ids.append(store.upsert_evidence_item(
+                run_id=task_run.task_run_id,
+                workspace_id=task_run.workspace_id,
+                kind="symbol",
+                subject_key=f"{rel_path}:{symbol_name}",
+                status="verified_output",
+                source=str(output.get("from") or "workflow"),
+                path=rel_path,
+                symbol=symbol_name,
+                reason="Symbol came from a locally verified workflow source scope output.",
+                text=f"{rel_path} {symbol_name} line_start={line_start}",
+                provenance={
+                    "task_run_id": task_run.task_run_id,
+                    "workflow_id": task_run.workflow_id,
+                    "output_id": output_id,
+                    "output_evidence_id": output_evidence_id,
+                    "artifact_path": str(path),
+                    "sha256": sha256,
+                    "file_path": rel_path,
+                    "symbol": symbol_name,
+                    "line_start": line_start,
+                },
+            ))
+    for symbol_item in _source_scope_top_level_symbols(payload):
+        if not isinstance(symbol_item, dict):
+            continue
+        candidate_path = _source_scope_item_path(symbol_item)
+        resolved = _validated_repo_source_path(task_run.repo_path, candidate_path)
+        symbol_name = _source_scope_symbol_name(symbol_item)
+        if resolved is None or not symbol_name:
+            continue
+        rel_path, _resolved_path = resolved
+        symbol_key = (rel_path, symbol_name)
+        if symbol_key in seen_symbols:
+            continue
+        seen_symbols.add(symbol_key)
+        line_start = _safe_int(symbol_item.get("line_start"))
+        evidence_ids.append(store.upsert_evidence_item(
+            run_id=task_run.task_run_id,
+            workspace_id=task_run.workspace_id,
+            kind="symbol",
+            subject_key=f"{rel_path}:{symbol_name}",
+            status="verified_output",
+            source=str(output.get("from") or "workflow"),
+            path=rel_path,
+            symbol=symbol_name,
+            reason="Symbol came from a locally verified workflow source scope output.",
+            text=f"{rel_path} {symbol_name} line_start={line_start}",
+            provenance={
+                "task_run_id": task_run.task_run_id,
+                "workflow_id": task_run.workflow_id,
+                "output_id": output_id,
+                "output_evidence_id": output_evidence_id,
+                "artifact_path": str(path),
+                "sha256": sha256,
+                "file_path": rel_path,
+                "symbol": symbol_name,
+                "line_start": line_start,
             },
         ))
     return evidence_ids
@@ -878,6 +1012,88 @@ def _materialize_uncovered_function_evidence(
             },
         ))
     return evidence_ids
+
+
+_SOURCE_EXTENSIONS = {".c", ".h", ".cc", ".cpp", ".hpp", ".py", ".go", ".rs", ".java", ".ts", ".tsx", ".js", ".jsx"}
+
+
+def _source_scope_file_items(payload: dict[str, Any]) -> list[Any]:
+    items: list[Any] = []
+    for key in ("files", "source_files", "candidate_files"):
+        value = payload.get(key)
+        if isinstance(value, list):
+            items.extend(value)
+    return items
+
+
+def _source_scope_top_level_symbols(payload: dict[str, Any]) -> list[Any]:
+    value = payload.get("symbols")
+    return value if isinstance(value, list) else []
+
+
+def _source_scope_item_path(item: Any) -> str:
+    if isinstance(item, str):
+        return item
+    if not isinstance(item, dict):
+        return ""
+    for key in ("path", "file_path", "file", "entry_file"):
+        value = str(item.get(key) or "").strip()
+        if value:
+            return value
+    return ""
+
+
+def _source_scope_item_reason(item: Any) -> str:
+    if not isinstance(item, dict):
+        return ""
+    return str(item.get("reason") or item.get("evidence") or "").strip()
+
+
+def _source_scope_item_symbols(item: Any) -> list[Any]:
+    if not isinstance(item, dict):
+        return []
+    value = item.get("symbols")
+    if isinstance(value, list):
+        return value
+    return []
+
+
+def _source_scope_symbol_name(item: Any) -> str:
+    if isinstance(item, str):
+        return item.strip()
+    if not isinstance(item, dict):
+        return ""
+    for key in ("name", "symbol", "function_name", "entry_symbol"):
+        value = str(item.get(key) or "").strip()
+        if value:
+            return value
+    return ""
+
+
+def _validated_repo_source_path(repo_path: str, candidate_path: str) -> tuple[str, Path] | None:
+    candidate_text = str(candidate_path or "").replace("\\", "/").strip()
+    if not candidate_text:
+        return None
+    try:
+        repo = Path(repo_path).resolve()
+    except OSError:
+        return None
+    candidate = Path(candidate_text)
+    try:
+        resolved = candidate.resolve() if candidate.is_absolute() else (repo / candidate).resolve()
+    except OSError:
+        return None
+    if resolved != repo and repo not in resolved.parents:
+        return None
+    if not resolved.exists() or not resolved.is_file():
+        return None
+    if resolved.suffix.lower() not in _SOURCE_EXTENSIONS:
+        return None
+    try:
+        rel_path = resolved.relative_to(repo).as_posix()
+    except ValueError:
+        return None
+    return rel_path, resolved
 
 
 def _evidence_text_from_output(path: Path, data: bytes, *, fallback: str) -> str:

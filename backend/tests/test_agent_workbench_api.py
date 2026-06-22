@@ -752,6 +752,108 @@ async def test_workbench_materialize_uncovered_functions_output_as_structured_me
     assert gaps[0]["provenance"]["line_start"] == 42
 
 
+async def test_workbench_materialize_source_scope_output_as_structured_memory(
+    workbench_client,
+    tmp_path,
+    monkeypatch,
+):
+    from app.config import settings
+
+    source_file = tmp_path / "nof" / "nvmf_tcp" / "transport" / "tls" / "tls.c"
+    source_file.parent.mkdir(parents=True)
+    source_file.write_text("int nvmf_tcp_tls_handshake(void) { return 0; }\n", encoding="utf-8")
+    (tmp_path / "README.md").write_text("not source evidence\n", encoding="utf-8")
+    script_path = tmp_path / "agent_scope.py"
+    script_path.write_text(
+        "import json, os, pathlib\n"
+        "root=pathlib.Path(os.environ['CODETALK_AGENT_ARTIFACT_DIR'])\n"
+        "payload={\n"
+        "  'files': [\n"
+        "    {'path':'nof/nvmf_tcp/transport/tls/tls.c','reason':'TLS transport source',"
+        "     'symbols':[{'name':'nvmf_tcp_tls_handshake','line_start':1}]},\n"
+        "    {'path':'missing/tls.c','reason':'agent guessed path'},\n"
+        "    {'path':'README.md','reason':'not source'}\n"
+        "  ]\n"
+        "}\n"
+        "(root/'source_scope.json').write_text(json.dumps(payload), encoding='utf-8')\n",
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(settings, "external_agent_custom_providers", [
+        {"id": "local-python", "command": f"python {script_path}"}
+    ])
+    workflow = {
+        "id": "source_scope_memory_workflow",
+        "name": "Source scope memory workflow",
+        "version": 1,
+        "inputs": [{"id": "module", "type": "free_text", "required": True}],
+        "steps": [
+            {
+                "id": "discover",
+                "type": "agent_task",
+                "provider": "local-python",
+                "required_artifacts": ["source_scope.json"],
+            }
+        ],
+        "outputs": [
+            {
+                "id": "source_scope",
+                "type": "json",
+                "from": "discover",
+                "artifact": "source_scope.json",
+            }
+        ],
+    }
+    assert (await workbench_client.post("/api/workbench/workflows", json=workflow)).status_code == 201
+    prepared = await workbench_client.post(
+        "/api/workbench/task-runs/prepare",
+        json={
+            "workflow_id": "source_scope_memory_workflow",
+            "workspace_id": "ws-source-scope-memory",
+            "repo_path": str(tmp_path),
+            "inputs": {"module": "nvme-tcp-tls"},
+        },
+    )
+    task_run_id = prepared.json()["task_run_id"]
+    executed = await workbench_client.post(
+        f"/api/workbench/task-runs/{task_run_id}/execute",
+        json={"timeout_sec": 10},
+    )
+    assert executed.status_code == 200
+    assert executed.json()["outputs"][0]["status"] == "ok"
+
+    materialized = await workbench_client.post(
+        f"/api/workbench/task-runs/{task_run_id}/materialize-outputs"
+    )
+
+    assert materialized.status_code == 200
+    body = materialized.json()
+    assert body["status"] == "ok"
+    assert body["evidence_count"] == 3
+    source_search = await workbench_client.get(
+        "/api/workbench/memory/search",
+        params={"q": "TLS transport source", "workspace_id": "ws-source-scope-memory"},
+    )
+    assert source_search.status_code == 200
+    source_items = source_search.json()["items"]
+    source_files = [item for item in source_items if item["kind"] == "source_file"]
+    assert source_files
+    assert source_files[0]["subject_key"] == "nof/nvmf_tcp/transport/tls/tls.c"
+    assert source_files[0]["status"] == "verified_output"
+
+    symbol_search = await workbench_client.get(
+        "/api/workbench/memory/search",
+        params={"q": "nvmf_tcp_tls_handshake", "workspace_id": "ws-source-scope-memory"},
+    )
+    assert symbol_search.status_code == 200
+    symbol_items = symbol_search.json()["items"]
+    symbols = [item for item in symbol_items if item["kind"] == "symbol"]
+    assert symbols
+    assert symbols[0]["path"] == "nof/nvmf_tcp/transport/tls/tls.c"
+    assert symbols[0]["symbol"] == "nvmf_tcp_tls_handshake"
+    rejected = [item for item in symbol_items if item["path"] == "README.md"]
+    assert rejected == []
+
+
 async def test_workbench_prepare_task_run_api(workbench_client):
     workflow = {
         "id": "mr_test_design",

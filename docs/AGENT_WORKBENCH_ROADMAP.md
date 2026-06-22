@@ -76,6 +76,7 @@ Each preset is an editable workflow definition. Installing a preset copies it in
 Evidence Memory stores structured facts rather than natural-language summaries:
 
 - validated and rejected files;
+- source files and symbols from verified `source_scope.json` workflow outputs;
 - changed files and MR artifacts;
 - coverage gaps from verified `uncovered_functions.json` workflow outputs;
 - symbols, entries, source slices, and hashes;
