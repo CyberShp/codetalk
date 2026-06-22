@@ -10,6 +10,7 @@ import {
   Shield,
   BookOpen,
   FolderOpen,
+  Workflow,
 } from "lucide-react";
 import type { ReactNode } from "react";
 
@@ -22,6 +23,7 @@ interface NavItem {
 const navItems: NavItem[] = [
   { label: "工作台", href: "/", icon: <LayoutDashboard size={18} /> },
   { label: "工作空间", href: "/workspaces", icon: <FolderOpen size={18} /> },
+  { label: "Agent Workbench", href: "/workbench", icon: <Workflow size={18} /> },
   { label: "DeepWiki", href: "/deepwiki", icon: <BookOpen size={18} /> },
   { label: "历史任务", href: "/tasks", icon: <Archive size={18} /> },
   { label: "覆盖率分析", href: "/coverage", icon: <Shield size={18} /> },

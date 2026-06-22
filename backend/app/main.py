@@ -53,12 +53,13 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-from app.api import tasks, settings as settings_router, tools, export, prompts, coverage, ws, repo_wiki  # noqa: E402
+from app.api import agent_workbench, tasks, settings as settings_router, tools, export, prompts, coverage, ws, repo_wiki  # noqa: E402
 from app.api.repo_analysis import router as repo_analysis_router  # noqa: E402
 from app.api.workspaces import router as workspaces_router  # noqa: E402
 from app.api.deepwiki_pages import router as deepwiki_router  # noqa: E402
 
 app.include_router(tasks.router)
+app.include_router(agent_workbench.router)
 app.include_router(settings_router.router)
 app.include_router(tools.router)
 app.include_router(export.router)

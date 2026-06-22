@@ -81,6 +81,7 @@ class Settings(BaseSettings):
     claude_code_command: str = "ccr code"
     claude_code_config_path: str = ""
     claude_code_fallback_commands: list[str] | str = Field(default_factory=list)
+    claude_code_mcp_profiles: list[str] | str = Field(default_factory=list)
     claude_code_readonly_args: list[str] = Field(
         default_factory=lambda: [
             "--allowedTools",
@@ -101,7 +102,10 @@ class Settings(BaseSettings):
     )
     opencode_command: str = "opencode"
     opencode_fallback_commands: list[str] | str = Field(default_factory=list)
+    opencode_mcp_profiles: list[str] | str = Field(default_factory=list)
     opencode_readonly_args: list[str] = Field(default_factory=list)
+    external_agent_supports_artifact_export: bool = True
+    external_agent_supports_json_output: bool = True
     # JSON list of provider specs, e.g.
     # [{"id":"corp-agent","command":"corp-agent discover","prompt_transport":"stdin"}]
     external_agent_custom_providers: list[dict] | str = Field(default_factory=list)

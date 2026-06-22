@@ -15,6 +15,7 @@ import {
 } from "lucide-react";
 import { api } from "@/lib/api";
 import type {
+  AgentProviderCapabilities,
   ExternalAgentStartupProbeResult,
   GitNexusRepoIndexDiagnostic,
   ToolInfo,
@@ -133,6 +134,70 @@ function RepoIndexDiagnostics({ repoIndex }: { repoIndex?: GitNexusRepoIndexDiag
           nodes: {repoIndex.node_count ?? "-"} / edges: {repoIndex.edge_count ?? "-"} / files:{" "}
           {repoIndex.file_count ?? "-"}
         </p>
+      )}
+    </div>
+  );
+}
+
+function AgentProviderCapabilitiesCard({
+  capabilities,
+}: {
+  capabilities?: AgentProviderCapabilities;
+}) {
+  if (!capabilities) return null;
+  return (
+    <div className="mb-4 rounded-lg border border-outline-variant/30 bg-surface px-3 py-2 text-xs">
+      <div className="mb-2 flex flex-wrap items-center gap-2">
+        <span className="rounded-full bg-primary/10 px-2 py-0.5 font-medium text-primary">
+          agent provider
+        </span>
+        <span className="text-on-surface">{capabilities.provider}</span>
+        {capabilities.prompt_transport && (
+          <span className="text-on-surface-variant">
+            prompt: {capabilities.prompt_transport}
+          </span>
+        )}
+      </div>
+      <div className="flex flex-wrap gap-2 text-on-surface-variant">
+        <span
+          className={`rounded px-1.5 py-0.5 ${
+            capabilities.supports_mcp
+              ? "bg-green-400/10 text-green-500"
+              : "bg-surface-container text-on-surface-variant"
+          }`}
+        >
+          MCP {capabilities.supports_mcp ? "enabled" : "off"}
+        </span>
+        <span
+          className={`rounded px-1.5 py-0.5 ${
+            capabilities.supports_artifact_export
+              ? "bg-green-400/10 text-green-500"
+              : "bg-amber-400/10 text-amber-500"
+          }`}
+        >
+          artifacts {capabilities.supports_artifact_export ? "expected" : "unknown"}
+        </span>
+        <span
+          className={`rounded px-1.5 py-0.5 ${
+            capabilities.supports_json_output
+              ? "bg-green-400/10 text-green-500"
+              : "bg-amber-400/10 text-amber-500"
+          }`}
+        >
+          JSON {capabilities.supports_json_output ? "expected" : "unknown"}
+        </span>
+      </div>
+      {capabilities.mcp_profiles.length > 0 && (
+        <div className="mt-2 flex flex-wrap gap-1.5">
+          {capabilities.mcp_profiles.map((profile) => (
+            <code
+              key={profile}
+              className="rounded bg-surface-container px-1.5 py-0.5 font-data text-[11px] text-on-surface"
+            >
+              {profile}
+            </code>
+          ))}
+        </div>
       )}
     </div>
   );
@@ -457,6 +522,8 @@ export default function ToolsPage() {
                     {tool.message}
                   </div>
                 )}
+
+                <AgentProviderCapabilitiesCard capabilities={tool.agent_provider} />
 
                 <div className="flex items-center gap-2">
                   {!managed ? (

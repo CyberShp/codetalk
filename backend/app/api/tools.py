@@ -13,6 +13,7 @@ from app.adapters.gitnexus import resolve_indexed_repo
 from app.config import settings
 from app.services import process_manager as process_manager_module
 from app.services.external_agent_discovery import (
+    external_agent_provider_capabilities,
     external_agent_provider_spec,
     external_agent_provider_ids,
     redact_agent_diagnostic_text,
@@ -73,6 +74,10 @@ def _display_name(name: str) -> str:
     }.get(name, name)
 
 
+def _agent_provider_capabilities(name: str) -> dict[str, Any]:
+    return external_agent_provider_capabilities(name)
+
+
 async def _adapter_proc_status(adapter) -> dict[str, Any]:
     try:
         health = await asyncio.wait_for(adapter.health_check(), timeout=_HEALTH_TIMEOUT)
@@ -86,6 +91,7 @@ async def _adapter_proc_status(adapter) -> dict[str, Any]:
             "version": health.version,
             "last_check": health.last_check,
             "message": health.last_check or health.version,
+            "agent_provider": _agent_provider_capabilities(adapter.name()),
         }
     except asyncio.TimeoutError:
         return {
@@ -97,6 +103,7 @@ async def _adapter_proc_status(adapter) -> dict[str, Any]:
             "capabilities": [c.value for c in adapter.capabilities()],
             "last_check": "health check timed out",
             "message": "health check timed out",
+            "agent_provider": _agent_provider_capabilities(adapter.name()),
         }
     except Exception as exc:
         message = redact_agent_diagnostic_text(str(exc))
@@ -109,6 +116,7 @@ async def _adapter_proc_status(adapter) -> dict[str, Any]:
             "capabilities": [c.value for c in adapter.capabilities()],
             "last_check": message,
             "message": message,
+            "agent_provider": _agent_provider_capabilities(adapter.name()),
         }
 
 
@@ -142,6 +150,7 @@ async def get_tools_status() -> dict[str, dict[str, Any]]:
                 "last_check": last_check,
                 "message": last_check or health.version or health.last_index_error,
                 "capabilities": [c.value for c in adapter.capabilities()],
+                "agent_provider": _agent_provider_capabilities(adapter.name()),
             }
         except asyncio.TimeoutError:
             results[adapter.name()] = {
@@ -153,6 +162,7 @@ async def get_tools_status() -> dict[str, dict[str, Any]]:
                 "last_check": "health check timed out",
                 "message": "health check timed out",
                 "capabilities": [c.value for c in adapter.capabilities()],
+                "agent_provider": _agent_provider_capabilities(adapter.name()),
             }
         except Exception as exc:
             message = redact_agent_diagnostic_text(str(exc))
@@ -165,6 +175,7 @@ async def get_tools_status() -> dict[str, dict[str, Any]]:
                 "last_check": message,
                 "message": message,
                 "capabilities": [c.value for c in adapter.capabilities()],
+                "agent_provider": _agent_provider_capabilities(adapter.name()),
             }
     return results
 
@@ -200,6 +211,7 @@ async def get_tool_health(tool_name: str) -> dict[str, Any]:
             "version": health.version,
             "last_check": health.last_check,
             "message": health.last_check or health.version,
+            "agent_provider": _agent_provider_capabilities(adapter.name()),
         }
     except asyncio.TimeoutError:
         return {
@@ -209,6 +221,7 @@ async def get_tool_health(tool_name: str) -> dict[str, Any]:
             "version": None,
             "last_check": "health check timed out",
             "message": "health check timed out",
+            "agent_provider": _agent_provider_capabilities(adapter.name()),
         }
     except Exception as exc:
         message = redact_agent_diagnostic_text(str(exc))
@@ -219,6 +232,7 @@ async def get_tool_health(tool_name: str) -> dict[str, Any]:
             "version": None,
             "last_check": message,
             "message": message,
+            "agent_provider": _agent_provider_capabilities(adapter.name()),
         }
 
 

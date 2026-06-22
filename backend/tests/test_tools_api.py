@@ -218,6 +218,49 @@ async def test_tools_status_exposes_adapter_diagnostics(tools_client, monkeypatc
     assert body["capabilities"] == ["code_search"]
 
 
+async def test_tools_status_exposes_external_agent_provider_capabilities(tools_client, monkeypatch):
+    """Agent workbench UI needs MCP/artifact capability hints, not just health."""
+    from app.adapters.base import ToolCapability, ToolHealth
+
+    class FakeAgentAdapter:
+        def name(self):
+            return "ccr-code"
+
+        def capabilities(self):
+            return [ToolCapability.CODE_SEARCH]
+
+        async def health_check(self):
+            return ToolHealth(
+                True,
+                "available",
+                version="ccr code",
+                last_check="ok",
+            )
+
+    client, _mock_pm = tools_client
+    monkeypatch.setattr(tools, "get_all_adapters", lambda: [FakeAgentAdapter()])
+    monkeypatch.setattr(
+        tools,
+        "external_agent_provider_capabilities",
+        lambda name: {
+            "supports_mcp": name == "ccr-code",
+            "mcp_profiles": ["codehub-readonly"],
+            "supports_artifact_export": True,
+            "supports_json_output": True,
+            "prompt_transport": "claude_print_arg",
+        },
+    )
+
+    resp = await client.get("/api/tools/status")
+
+    assert resp.status_code == 200
+    body = resp.json()["ccr-code"]
+    assert body["agent_provider"]["supports_mcp"] is True
+    assert body["agent_provider"]["mcp_profiles"] == ["codehub-readonly"]
+    assert body["agent_provider"]["supports_artifact_export"] is True
+    assert body["agent_provider"]["supports_json_output"] is True
+
+
 async def test_tool_health_exception_exposes_diagnostic_message(tools_client, monkeypatch):
     """Health endpoint errors should remain actionable instead of returning null text."""
 

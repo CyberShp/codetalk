@@ -1,6 +1,7 @@
 from fastapi import APIRouter
 
 from app.api.analysis_global import router as analysis_global_router
+from app.api.agent_workbench import router as agent_workbench_router
 from app.api.chat import router as chat_router
 from app.api.projects import router as projects_router
 from app.api.tasks import router as tasks_router
@@ -19,6 +20,7 @@ from app.api.ws_chat import router as ws_chat_router
 
 api_router = APIRouter()
 api_router.include_router(analysis_global_router)
+api_router.include_router(agent_workbench_router)
 api_router.include_router(chat_router)
 api_router.include_router(projects_router)
 api_router.include_router(tasks_router)

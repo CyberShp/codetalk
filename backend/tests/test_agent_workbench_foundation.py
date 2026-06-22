@@ -1,0 +1,192 @@
+import hashlib
+import json
+
+import pytest
+
+
+def test_evidence_memory_search_anchor_and_recent(tmp_path):
+    from app.services.evidence_memory import EvidenceMemoryStore
+
+    db_path = tmp_path / "evidence_memory.db"
+    repo = tmp_path / "repo"
+    source = repo / "nof" / "nvmf_tcp" / "transport" / "tls" / "tls.c"
+    source.parent.mkdir(parents=True)
+    source.write_text("int nvmf_tcp_tls_handshake(void) { return 0; }\n", encoding="utf-8")
+
+    store = EvidenceMemoryStore(db_path)
+    store.initialize()
+    run_id = store.record_analysis_run(
+        workspace_id="ws-nvme",
+        repo_path=str(repo),
+        object_text="nvme-tcp-tls",
+        workflow_id="module_review",
+        status="completed",
+    )
+    evidence_id = store.upsert_evidence_item(
+        run_id=run_id,
+        workspace_id="ws-nvme",
+        kind="source_file",
+        subject_key="nof/nvmf_tcp/transport/tls/tls.c",
+        status="verified_local",
+        source="ccr-code",
+        path="nof/nvmf_tcp/transport/tls/tls.c",
+        reason="Agent found source and CodeTalk validated the path.",
+        confidence=0.92,
+        text="nvme tcp tls nvmf_tcp transport tls source file",
+    )
+    slice_id = store.add_source_slice(
+        evidence_id=evidence_id,
+        file_path="nof/nvmf_tcp/transport/tls/tls.c",
+        start_line=1,
+        end_line=1,
+        excerpt=source.read_text(encoding="utf-8"),
+        sha256=hashlib.sha256(source.read_bytes()).hexdigest(),
+    )
+
+    results = store.search_analysis_memory("nvme tls", workspace_id="ws-nvme")
+    assert [item.subject_key for item in results] == ["nof/nvmf_tcp/transport/tls/tls.c"]
+    assert results[0].status == "verified_local"
+
+    anchored = store.resolve_evidence_anchor("nof/nvmf_tcp/transport/tls/tls.c")
+    assert anchored and anchored[0].evidence_id == evidence_id
+    assert store.get_source_slice(slice_id).sha256 == hashlib.sha256(source.read_bytes()).hexdigest()
+
+    recent = store.list_recent_analysis(workspace_id="ws-nvme")
+    assert recent[0]["run_id"] == run_id
+    assert recent[0]["object_text"] == "nvme-tcp-tls"
+
+
+def test_workflow_dsl_accepts_agent_mcp_and_rejects_arbitrary_shell_steps():
+    from app.services.workflow_dsl import WorkflowValidationError, validate_workflow_definition
+
+    workflow = validate_workflow_definition({
+        "id": "custom_mr_blackbox",
+        "name": "MR black-box test design",
+        "version": 1,
+        "inputs": [
+            {
+                "id": "mr_link",
+                "type": "external_link",
+                "role": "merge_request",
+                "resolver": "agent_mcp",
+                "required": True,
+            }
+        ],
+        "steps": [
+            {
+                "id": "collect_mr",
+                "type": "agent_task",
+                "goal": "mr_context_collect",
+                "provider": "auto",
+                "mcp_profile": "codehub-readonly",
+                "required_artifacts": ["mr_snapshot.json", "diff.patch", "changed_files.json"],
+            },
+            {
+                "id": "render",
+                "type": "report_render",
+                "template": "mr_test_report.md",
+            },
+        ],
+        "outputs": [
+            {"id": "report", "type": "markdown", "from": "{{steps.render.output}}"}
+        ],
+    })
+
+    assert workflow.steps[0].mcp_profile == "codehub-readonly"
+    assert workflow.inputs[0].resolver == "agent_mcp"
+
+    bad = {
+        "id": "unsafe",
+        "name": "unsafe",
+        "version": 1,
+        "inputs": [],
+        "steps": [{"id": "run_shell", "type": "powershell", "command": "Remove-Item *"}],
+        "outputs": [],
+    }
+    with pytest.raises(WorkflowValidationError, match="unsupported workflow step type"):
+        validate_workflow_definition(bad)
+
+
+def test_workflow_store_persists_and_freezes_custom_workflow(tmp_path):
+    from app.services.workflow_dsl import WorkflowStore
+
+    store = WorkflowStore(tmp_path / "workflows.db")
+    workflow_payload = {
+        "id": "custom_patch_impact",
+        "name": "Patch impact review",
+        "version": 3,
+        "inputs": [{"id": "patch_plan", "type": "file", "required": True}],
+        "steps": [{"id": "analyze", "type": "agent_task", "goal": "patch_impact_review"}],
+        "outputs": [{"id": "report", "type": "markdown", "from": "{{steps.analyze.output}}"}],
+    }
+
+    saved = store.save_workflow(workflow_payload)
+    loaded = store.get_workflow("custom_patch_impact")
+    snapshot = store.freeze_workflow_snapshot("custom_patch_impact")
+
+    assert saved.version == 3
+    assert loaded.name == "Patch impact review"
+    assert snapshot["id"] == "custom_patch_impact"
+    assert snapshot["version"] == 3
+    assert [item.id for item in store.list_workflows()] == ["custom_patch_impact"]
+
+
+def test_agent_run_harness_records_run_and_validates_agent_side_mr_artifacts(tmp_path):
+    from app.services.agent_run_harness import AgentRunHarness, ArtifactValidationHarness
+
+    artifact_dir = tmp_path / "task-artifacts"
+    diff_text = "diff --git a/src/tls.c b/src/tls.c\n--- a/src/tls.c\n+++ b/src/tls.c\n@@ -1 +1 @@\n-old\n+new\n"
+    diff_sha = hashlib.sha256(diff_text.encode("utf-8")).hexdigest()
+    workflow_snapshot = {
+        "id": "mr_test_design",
+        "version": 1,
+        "steps": [{"id": "collect_mr", "type": "agent_task"}],
+    }
+    task_bundle = {
+        "task_id": "task-1",
+        "input": {"mr_link": "https://codehub.local/project/merge_requests/1"},
+        "required_artifacts": ["mr_snapshot.json", "diff.patch", "changed_files.json"],
+    }
+
+    harness = AgentRunHarness(artifact_dir)
+    run = harness.create_run(
+        provider="ccr-code",
+        command=["ccr", "code"],
+        cwd=str(tmp_path),
+        workflow_snapshot=workflow_snapshot,
+        task_bundle=task_bundle,
+        mcp_profile="codehub-readonly",
+    )
+    harness.record_raw_output(run.run_id, stdout="agent stdout", stderr="token=secret-value")
+
+    (artifact_dir / "mr_snapshot.json").write_text(
+        json.dumps({
+            "source": "agent_mcp",
+            "mcp_profile": "codehub-readonly",
+            "mr_url": task_bundle["input"]["mr_link"],
+            "project": "project",
+            "mr_id": "1",
+            "title": "TLS change",
+            "source_branch": "feature",
+            "target_branch": "main",
+            "base_commit": "base",
+            "head_commit": "head",
+            "diff_sha256": diff_sha,
+            "changed_files_count": 1,
+        }),
+        encoding="utf-8",
+    )
+    (artifact_dir / "diff.patch").write_text(diff_text, encoding="utf-8")
+    (artifact_dir / "changed_files.json").write_text(
+        json.dumps([{"path": "src/tls.c", "status": "modified"}]),
+        encoding="utf-8",
+    )
+
+    validation = ArtifactValidationHarness(artifact_dir).validate_mr_artifacts(
+        required_artifacts=task_bundle["required_artifacts"]
+    )
+
+    assert validation.status == "ok"
+    assert validation.provenance_status == "agent_mcp_provenance"
+    assert validation.accepted_artifacts == ["mr_snapshot.json", "diff.patch", "changed_files.json"]
+    assert "secret-value" not in (artifact_dir / "raw_output.txt").read_text(encoding="utf-8")

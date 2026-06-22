@@ -14,6 +14,14 @@ test("tools page renders readable management copy", async ({ page }) => {
           managed: false,
           message: "claude-code available",
           capabilities: ["code_search"],
+          agent_provider: {
+            provider: "claude-code",
+            supports_mcp: true,
+            mcp_profiles: ["codehub-mcp"],
+            supports_artifact_export: true,
+            supports_json_output: true,
+            prompt_transport: "stdin",
+          },
         },
       ],
     });

@@ -23,6 +23,12 @@ import type {
   AnalysisPlan,
   ScopePreview,
   ExternalAgentStartupProbeResult,
+  WorkflowDefinition,
+  SemanticCase,
+  EvidenceMemoryItem,
+  AgentRunRecord,
+  ArtifactValidationResult,
+  PreparedWorkbenchTaskRun,
 } from "./types";
 
 const CONFIGURED_API_BASE = process.env.NEXT_PUBLIC_API_URL?.replace(/\/$/, "");
@@ -461,5 +467,143 @@ export const api = {
 
     page: (id: string, index: number) =>
       request<import("./types").DeepWikiPage>(`/api/deepwiki/repos/${id}/pages/${index}`),
+  },
+
+  workbench: {
+    workflows: {
+      list: () => request<WorkflowDefinition[]>("/api/workbench/workflows"),
+
+      create: (data: WorkflowDefinition | Record<string, unknown>) =>
+        request<WorkflowDefinition>("/api/workbench/workflows", {
+          method: "POST",
+          body: JSON.stringify(data),
+        }),
+
+      get: (id: string) =>
+        request<WorkflowDefinition>(`/api/workbench/workflows/${encodeURIComponent(id)}`),
+
+      snapshot: (id: string) =>
+        request<Record<string, unknown>>(
+          `/api/workbench/workflows/${encodeURIComponent(id)}/snapshot`,
+        ),
+    },
+
+    semanticCases: {
+      create: (data: Record<string, unknown>) =>
+        request<{ semantic_id: string; case_id: string }>(
+          "/api/workbench/semantic-cases",
+          {
+            method: "POST",
+            body: JSON.stringify(data),
+          },
+        ),
+
+      search: (params: {
+        q: string;
+        module?: string;
+        test_level?: string;
+        limit?: number;
+      }) => {
+        const query = new URLSearchParams({
+          q: params.q,
+          ...(params.module ? { module: params.module } : {}),
+          ...(params.test_level ? { test_level: params.test_level } : {}),
+          ...(params.limit ? { limit: String(params.limit) } : {}),
+        });
+        return request<{ items: SemanticCase[] }>(
+          `/api/workbench/semantic-cases/search?${query.toString()}`,
+        );
+      },
+    },
+
+    memory: {
+      createRun: (data: {
+        workspace_id: string;
+        repo_path: string;
+        object_text: string;
+        workflow_id: string;
+        status?: string;
+        run_id?: string;
+      }) =>
+        request<{ run_id: string }>("/api/workbench/memory/runs", {
+          method: "POST",
+          body: JSON.stringify(data),
+        }),
+
+      createEvidence: (data: Record<string, unknown>) =>
+        request<{ evidence_id: string }>("/api/workbench/memory/evidence", {
+          method: "POST",
+          body: JSON.stringify(data),
+        }),
+
+      search: (params: { q: string; workspace_id?: string; limit?: number }) => {
+        const query = new URLSearchParams({
+          q: params.q,
+          ...(params.workspace_id ? { workspace_id: params.workspace_id } : {}),
+          ...(params.limit ? { limit: String(params.limit) } : {}),
+        });
+        return request<{ items: EvidenceMemoryItem[] }>(
+          `/api/workbench/memory/search?${query.toString()}`,
+        );
+      },
+
+      recent: (params?: { workspace_id?: string; limit?: number }) => {
+        const query = new URLSearchParams({
+          ...(params?.workspace_id ? { workspace_id: params.workspace_id } : {}),
+          ...(params?.limit ? { limit: String(params.limit) } : {}),
+        });
+        const suffix = query.toString() ? `?${query.toString()}` : "";
+        return request<{ items: Array<Record<string, unknown>> }>(
+          `/api/workbench/memory/recent${suffix}`,
+        );
+      },
+    },
+
+    agentRuns: {
+      create: (data: {
+        provider: string;
+        command: string[];
+        cwd: string;
+        workflow_snapshot?: Record<string, unknown>;
+        task_bundle?: Record<string, unknown>;
+        mcp_profile?: string;
+      }) =>
+        request<AgentRunRecord>("/api/workbench/agent-runs", {
+          method: "POST",
+          body: JSON.stringify(data),
+        }),
+
+      recordRawOutput: (runId: string, data: { stdout?: string; stderr?: string }) =>
+        request<{ ok: boolean }>(
+          `/api/workbench/agent-runs/${encodeURIComponent(runId)}/raw-output`,
+          {
+            method: "POST",
+            body: JSON.stringify(data),
+          },
+        ),
+
+      validateMrArtifacts: (runId: string, requiredArtifacts: string[]) =>
+        request<ArtifactValidationResult>(
+          `/api/workbench/agent-runs/${encodeURIComponent(runId)}/validate-mr-artifacts`,
+          {
+            method: "POST",
+            body: JSON.stringify({ required_artifacts: requiredArtifacts }),
+          },
+        ),
+    },
+
+    taskRuns: {
+      prepare: (data: {
+        workflow_id: string;
+        workspace_id: string;
+        repo_path: string;
+        inputs?: Record<string, unknown>;
+        provider_override?: string | null;
+      }) =>
+        request<PreparedWorkbenchTaskRun>("/api/workbench/task-runs/prepare", {
+          method: "POST",
+          body: JSON.stringify(data),
+        }),
+    },
   },
 };

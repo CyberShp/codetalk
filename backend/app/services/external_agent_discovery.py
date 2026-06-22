@@ -167,6 +167,10 @@ class ExternalAgentProviderSpec:
     prompt_transport: ProviderPromptTransport = "auto"
     display_name: str = ""
     command_hint_env: str = ""
+    supports_mcp: bool = False
+    mcp_profiles: list[str] = field(default_factory=list)
+    supports_artifact_export: bool = True
+    supports_json_output: bool = True
 
 
 def external_agent_provider_specs() -> dict[str, ExternalAgentProviderSpec]:
@@ -179,6 +183,9 @@ def external_agent_provider_specs() -> dict[str, ExternalAgentProviderSpec]:
             prompt_transport="claude_print_arg",
             display_name="Claude Code",
             command_hint_env="CLAUDE_CODE_COMMAND",
+            mcp_profiles=_coerce_string_list(getattr(settings, "claude_code_mcp_profiles", [])),
+            supports_artifact_export=bool(getattr(settings, "external_agent_supports_artifact_export", True)),
+            supports_json_output=bool(getattr(settings, "external_agent_supports_json_output", True)),
         ),
         "opencode": ExternalAgentProviderSpec(
             id="opencode",
@@ -188,6 +195,9 @@ def external_agent_provider_specs() -> dict[str, ExternalAgentProviderSpec]:
             prompt_transport="opencode_run_arg",
             display_name="OpenCode",
             command_hint_env="OPENCODE_COMMAND",
+            mcp_profiles=_coerce_string_list(getattr(settings, "opencode_mcp_profiles", [])),
+            supports_artifact_export=bool(getattr(settings, "external_agent_supports_artifact_export", True)),
+            supports_json_output=bool(getattr(settings, "external_agent_supports_json_output", True)),
         ),
     }
     for spec in _custom_external_agent_provider_specs():
@@ -241,8 +251,27 @@ def _custom_external_agent_provider_specs() -> list[ExternalAgentProviderSpec]:
             prompt_transport=transport,  # type: ignore[arg-type]
             display_name=str(item.get("display_name") or item.get("displayName") or provider_id).strip(),
             command_hint_env=str(item.get("command_hint_env") or item.get("commandHintEnv") or "").strip(),
+            supports_mcp=bool(item.get("supports_mcp") or item.get("supportsMcp") or item.get("mcp_profiles") or item.get("mcpProfiles")),
+            mcp_profiles=_coerce_string_list(item.get("mcp_profiles") or item.get("mcpProfiles")),
+            supports_artifact_export=bool(item.get("supports_artifact_export", item.get("supportsArtifactExport", True))),
+            supports_json_output=bool(item.get("supports_json_output", item.get("supportsJsonOutput", True))),
         ))
     return specs
+
+
+def external_agent_provider_capabilities(provider: str | None) -> dict:
+    spec = external_agent_provider_spec(provider)
+    if spec is None:
+        return {}
+    supports_mcp = bool(spec.supports_mcp or spec.mcp_profiles)
+    return {
+        "provider": spec.id,
+        "supports_mcp": supports_mcp,
+        "mcp_profiles": list(spec.mcp_profiles),
+        "supports_artifact_export": bool(spec.supports_artifact_export),
+        "supports_json_output": bool(spec.supports_json_output),
+        "prompt_transport": spec.prompt_transport,
+    }
 
 
 def _parse_custom_provider_shorthand(text: str) -> list[dict]:

@@ -125,6 +125,16 @@ export interface ToolInfo {
   message?: string;
   version?: string | null;
   capabilities?: string[];
+  agent_provider?: AgentProviderCapabilities;
+}
+
+export interface AgentProviderCapabilities {
+  provider: string;
+  supports_mcp: boolean;
+  mcp_profiles: string[];
+  supports_artifact_export: boolean;
+  supports_json_output: boolean;
+  prompt_transport?: string;
 }
 
 export interface ExternalAgentProbeAttempt {
@@ -187,6 +197,85 @@ export interface ExternalAgentStartupProbeResult {
   diagnostics?: {
     repo_index?: GitNexusRepoIndexDiagnostic;
   };
+}
+
+/* Agent Workbench */
+
+export interface WorkflowDefinition {
+  id: string;
+  name: string;
+  version: number;
+  inputs: Array<Record<string, unknown>>;
+  steps: Array<Record<string, unknown>>;
+  outputs: Array<Record<string, unknown>>;
+}
+
+export interface SemanticCase {
+  semantic_id: string;
+  case_id: string;
+  feature: string;
+  module: string;
+  test_level: string;
+  scenario: string;
+  terms: string[];
+  tags: string[];
+  preconditions: string;
+  steps: string[];
+  expected: string;
+  assertion_style: string;
+  raw: Record<string, unknown>;
+}
+
+export interface EvidenceMemoryItem {
+  evidence_id: string;
+  run_id: string;
+  workspace_id: string;
+  kind: string;
+  subject_key: string;
+  status: string;
+  source: string;
+  path: string;
+  symbol: string;
+  reason: string;
+  confidence?: number | null;
+  text: string;
+  provenance: Record<string, unknown>;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface AgentRunRecord {
+  run_id: string;
+  provider: string;
+  command: string[];
+  cwd: string;
+  artifact_dir: string;
+  workflow_snapshot: Record<string, unknown>;
+  task_bundle: Record<string, unknown>;
+  mcp_profile: string;
+  status: string;
+  created_at: string;
+}
+
+export interface ArtifactValidationResult {
+  ok: boolean;
+  accepted_artifacts: string[];
+  rejected_artifacts: Array<Record<string, unknown>>;
+  warnings: string[];
+  provenance: Record<string, unknown>;
+}
+
+export interface PreparedWorkbenchTaskRun {
+  task_run_id: string;
+  workflow_id: string;
+  workspace_id: string;
+  repo_path: string;
+  artifact_dir: string;
+  workflow_snapshot: Record<string, unknown>;
+  input_snapshot: Record<string, unknown>;
+  task_bundle: Record<string, unknown>;
+  agent_runs: Array<Record<string, unknown>>;
+  created_at: string;
 }
 
 export type ExportFormat = "md" | "docx" | "xml";
