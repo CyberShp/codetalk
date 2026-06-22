@@ -38,6 +38,7 @@ Current implementation note:
 - Every prepared task bundle and execution audit should make the fast-context decision explicit: requested by repo instructions, callable by CodeTalk or not, fallback path used, and whether the external Agent CLI may satisfy the same instruction through its own MCP credentials.
 - Workbench artifact preview renders `evidence_validation.json` with accepted/rejected counts and accepted artifact sha256 snippets, so validation evidence is visible without reading raw JSON first.
 - Workbench provider matrix now separates CodeTalk built-in/local providers, CodeTalk index providers, CodeTalk memory providers, CodeTalk MCP bridge providers, and Agent-owned CLI providers. The same capability boundary is visible in the UI and persisted in task bundles through `provider_snapshot.json`.
+- Workbench `report_render` includes artifact validation details and Evidence Memory source slices, so final reports show accepted/rejected artifacts, sha256 values, and verified source line ranges instead of only high-level task summaries.
 
 ## Repo Agent Instructions
 
@@ -244,7 +245,7 @@ Tests:
 - Agent exits 0 but missing artifact keeps step failed or degraded;
 - invalid JSON is stored raw but not materialized;
 - accepted/rejected counts are visible in API and UI preview;
-- report output cites validated evidence ids, not raw Agent text.
+- report output cites validated evidence ids, artifact hashes, rejected reasons, and source slice line ranges, not raw Agent text.
 
 ### Phase E: Agent Session and Context Budget Policy
 

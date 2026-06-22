@@ -859,6 +859,105 @@ def test_workbench_evidence_validate_records_artifact_hashes(
     assert all(Path(item["path"]).is_file() for item in details)
 
 
+def test_workbench_report_render_includes_validation_hashes_and_source_slices(
+    tmp_path,
+    monkeypatch,
+):
+    from app.config import settings
+    from app.services.evidence_memory import EvidenceMemoryStore
+    from app.services.workbench_task_run import WorkbenchTaskRunPreparer
+    from app.services.workbench_workflow_runner import WorkbenchWorkflowRunner
+    from app.services.workflow_dsl import WorkflowStore
+
+    memory = EvidenceMemoryStore(tmp_path / "memory.db")
+    memory.record_analysis_run(
+        run_id="run-prev",
+        workspace_id="ws-report-audit",
+        repo_path=str(tmp_path),
+        object_text="nvme tcp tls",
+        workflow_id="module_analysis",
+        status="completed",
+    )
+    evidence_id = memory.upsert_evidence_item(
+        run_id="run-prev",
+        workspace_id="ws-report-audit",
+        kind="source_file",
+        subject_key="nof/nvmf_tcp/transport/tls/tls.c",
+        status="verified_local",
+        source="external_agent",
+        path="nof/nvmf_tcp/transport/tls/tls.c",
+        reason="validated TLS source",
+        text="nvme tcp tls handshake cleanup",
+    )
+    memory.add_source_slice(
+        evidence_id=evidence_id,
+        file_path="nof/nvmf_tcp/transport/tls/tls.c",
+        start_line=10,
+        end_line=18,
+        sha256="sliceabc123456",
+        excerpt="int nvmf_tcp_tls_handshake(void) { return -EINVAL; }",
+    )
+    script_path = tmp_path / "agent_scope.py"
+    script_path.write_text(
+        "import json, os, pathlib\n"
+        "root=pathlib.Path(os.environ['CODETALK_AGENT_ARTIFACT_DIR'])\n"
+        "(root/'source_scope.json').write_text(json.dumps({'files':['src/tls.c']}), encoding='utf-8')\n"
+        "(root/'evidence_cards.json').write_text(json.dumps([{'path':'src/tls.c'}]), encoding='utf-8')\n",
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(settings, "external_agent_custom_providers", [
+        {"id": "local-python", "command": f"python {script_path}"}
+    ])
+    workflow_store = WorkflowStore(tmp_path / "workflows.db")
+    workflow_store.save_workflow({
+        "id": "report_audit_workflow",
+        "name": "Report audit workflow",
+        "version": 1,
+        "inputs": [{"id": "module", "type": "free_text"}],
+        "steps": [
+            {
+                "id": "discover",
+                "type": "agent_task",
+                "provider": "local-python",
+                "required_artifacts": ["source_scope.json", "evidence_cards.json"],
+            },
+            {"id": "validate_evidence", "type": "evidence_validate"},
+            {"id": "render_report", "type": "report_render"},
+        ],
+        "outputs": [{"id": "report", "type": "markdown", "from": "render_report"}],
+    })
+    task_run = WorkbenchTaskRunPreparer(
+        artifact_root=tmp_path / "task_runs",
+        workflow_store=workflow_store,
+        evidence_memory=memory,
+    ).prepare(
+        workflow_id="report_audit_workflow",
+        workspace_id="ws-report-audit",
+        repo_path=str(tmp_path),
+        inputs={"module": "nvme tcp tls"},
+    )
+
+    result = WorkbenchWorkflowRunner(tmp_path / "task_runs").execute_task_run(
+        task_run.task_run_id,
+        timeout_sec=10,
+    )
+
+    assert result.status == "completed"
+    report = (
+        Path(task_run.artifact_dir)
+        / "steps"
+        / "render_report"
+        / "report.md"
+    ).read_text(encoding="utf-8")
+    assert "## Artifact Validation" in report
+    assert "source_scope.json" in report
+    assert "evidence_cards.json" in report
+    assert "sha256" in report
+    assert "## Source Slices" in report
+    assert "nof/nvmf_tcp/transport/tls/tls.c:10-18" in report
+    assert "sliceabc123456" in report
+
+
 def test_workbench_workflow_runner_executes_builtin_context_and_report_steps(tmp_path):
     from app.services.evidence_memory import EvidenceMemoryStore
     from app.services.test_semantic_library import TestSemanticLibraryStore

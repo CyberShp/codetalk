@@ -1071,6 +1071,37 @@ def _render_report_content(
             lines.append(
                 f"- {item.get('kind') or 'evidence'} `{subject}`: {reason}"
             )
+    validation_payloads = _report_validation_payloads(prior_step_results)
+    if validation_payloads:
+        lines.extend(["", "## Artifact Validation"])
+        for payload in validation_payloads:
+            step_id = payload.get("step_id") or "evidence_validate"
+            accepted = payload.get("accepted_artifact_details") or []
+            rejected = payload.get("rejected_artifact_details") or []
+            lines.append(
+                f"- `{step_id}` accepted {len(accepted)}, rejected {len(rejected)}"
+            )
+            for item in accepted[:24]:
+                artifact = item.get("artifact") or ""
+                source_step_id = item.get("source_step_id") or ""
+                sha256 = item.get("sha256") or ""
+                size_bytes = item.get("size_bytes")
+                lines.append(
+                    "- accepted "
+                    f"`{artifact}` from `{source_step_id}` "
+                    f"sha256 `{sha256}` size {size_bytes}"
+                )
+            for item in rejected[:24]:
+                artifact = item.get("artifact") or item.get("path") or ""
+                source_step_id = item.get("source_step_id") or ""
+                reason = item.get("reason") or item.get("error") or "rejected"
+                lines.append(
+                    f"- rejected `{artifact}` from `{source_step_id}`: {reason}"
+                )
+    source_slice_lines = _report_source_slice_lines(evidence)
+    if source_slice_lines:
+        lines.extend(["", "## Source Slices"])
+        lines.extend(source_slice_lines)
     if semantics:
         lines.extend(["", "## Semantic Cases"])
         for item in semantics[:12]:
@@ -1079,6 +1110,57 @@ def _render_report_content(
                 f"- {item.get('case_id')}: {item.get('scenario') or ''} ({terms})"
             )
     return "\n".join(lines).strip() + "\n"
+
+
+def _report_validation_payloads(
+    prior_step_results: list[dict[str, Any]],
+) -> list[dict[str, Any]]:
+    payloads: list[dict[str, Any]] = []
+    for result in prior_step_results:
+        if result.get("type") != "evidence_validate":
+            continue
+        artifact_dir_text = str(result.get("artifact_dir") or "")
+        if not artifact_dir_text:
+            continue
+        artifact_dir = Path(artifact_dir_text)
+        candidates = [artifact_dir / "evidence_validation.json"]
+        artifact = str(result.get("artifact") or "")
+        if artifact:
+            candidates.append(artifact_dir / artifact)
+        for path in candidates:
+            payload = _read_json(path)
+            if isinstance(payload, dict):
+                payloads.append(payload)
+                break
+    return payloads
+
+
+def _report_source_slice_lines(evidence: list[Any]) -> list[str]:
+    lines: list[str] = []
+    for item in evidence:
+        if not isinstance(item, dict):
+            continue
+        subject = item.get("subject_key") or item.get("path") or ""
+        slices = item.get("source_slices") or []
+        if not isinstance(slices, list):
+            continue
+        for source_slice in slices:
+            if not isinstance(source_slice, dict):
+                continue
+            file_path = source_slice.get("file_path") or ""
+            start_line = source_slice.get("start_line")
+            end_line = source_slice.get("end_line")
+            sha256 = source_slice.get("sha256") or ""
+            reason = source_slice.get("reason") or source_slice.get("symbol") or subject
+            if not file_path or start_line is None or end_line is None:
+                continue
+            lines.append(
+                f"- `{file_path}:{start_line}-{end_line}` "
+                f"sha256 `{sha256}`: {reason}"
+            )
+            if len(lines) >= 24:
+                return lines
+    return lines
 
 
 def _preview_bytes(data: bytes, *, max_chars: int = 4000) -> str:
