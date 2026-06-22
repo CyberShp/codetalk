@@ -19,6 +19,7 @@ from app.services.test_semantic_library import (
 )
 from app.services.workbench_task_run import WorkbenchTaskRunPreparer
 from app.services.workbench_task_run import WorkbenchTaskRunStore
+from app.services.workbench_workflow_runner import WorkbenchWorkflowRunner
 from app.services.workflow_dsl import WorkflowStore, WorkflowValidationError
 from app.services.workflow_presets import (
     builtin_workflow_presets,
@@ -69,6 +70,11 @@ class RawOutputCreate(BaseModel):
 
 class AgentRunExecuteRequest(BaseModel):
     timeout_sec: int = Field(default=90, ge=1, le=3600)
+
+
+class TaskRunExecuteRequest(BaseModel):
+    timeout_sec: int = Field(default=90, ge=1, le=3600)
+    stop_on_error: bool = True
 
 
 class ValidateMrArtifactsRequest(BaseModel):
@@ -395,6 +401,24 @@ async def materialize_task_agent_run_evidence(
         "evidence_count": len(evidence_ids),
         "evidence_ids": evidence_ids,
     }
+
+
+@router.post("/task-runs/{task_run_id}/execute")
+async def execute_task_run_workflow(
+    task_run_id: str,
+    payload: TaskRunExecuteRequest,
+) -> dict[str, Any]:
+    try:
+        result = WorkbenchWorkflowRunner(_task_runs_dir()).execute_task_run(
+            task_run_id,
+            timeout_sec=payload.timeout_sec,
+            stop_on_error=payload.stop_on_error,
+        )
+    except KeyError:
+        raise HTTPException(status_code=404, detail=f"Unknown task run: {task_run_id}")
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+    return asdict(result)
 
 
 @router.get("/task-runs")

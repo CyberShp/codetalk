@@ -223,6 +223,28 @@ class ArtifactValidationHarness:
     def __init__(self, artifact_dir: str | Path) -> None:
         self.artifact_dir = Path(artifact_dir)
 
+    def validate_required_artifacts(self, *, required_artifacts: list[str]) -> ArtifactValidationResult:
+        accepted: list[str] = []
+        rejected: list[dict[str, str]] = []
+        for artifact in required_artifacts:
+            safe_artifact = str(artifact or "").strip().replace("\\", "/")
+            if not safe_artifact or safe_artifact.startswith("/") or ".." in Path(safe_artifact).parts:
+                rejected.append({"artifact": artifact, "reason": "invalid_artifact_path"})
+                continue
+            path = self.artifact_dir / safe_artifact
+            if not path.exists():
+                rejected.append({"artifact": artifact, "reason": "missing_required_artifact"})
+            elif path.is_dir():
+                rejected.append({"artifact": artifact, "reason": "artifact_is_directory"})
+            else:
+                accepted.append(safe_artifact)
+        return ArtifactValidationResult(
+            status="invalid" if rejected else "ok",
+            provenance_status="agent_artifact_present" if not rejected else "unverified_agent_claim",
+            accepted_artifacts=accepted,
+            rejected_artifacts=rejected,
+        )
+
     def validate_mr_artifacts(self, *, required_artifacts: list[str]) -> ArtifactValidationResult:
         accepted: list[str] = []
         rejected: list[dict[str, str]] = []

@@ -32,6 +32,7 @@ import type {
   AgentRunExecutionResult,
   MaterializeEvidenceResult,
   PreparedWorkbenchTaskRun,
+  WorkflowExecutionResult,
 } from "./types";
 
 const CONFIGURED_API_BASE = process.env.NEXT_PUBLIC_API_URL?.replace(/\/$/, "");
@@ -641,6 +642,18 @@ export const api = {
           method: "POST",
           body: JSON.stringify(data),
         }),
+
+      execute: (taskRunId: string, timeoutSec = 90, stopOnError = true) =>
+        request<WorkflowExecutionResult>(
+          `/api/workbench/task-runs/${encodeURIComponent(taskRunId)}/execute`,
+          {
+            method: "POST",
+            body: JSON.stringify({
+              timeout_sec: timeoutSec,
+              stop_on_error: stopOnError,
+            }),
+          },
+        ),
 
       executeAgentRun: (taskRunId: string, stepId: string, timeoutSec = 90) =>
         request<AgentRunExecutionResult>(

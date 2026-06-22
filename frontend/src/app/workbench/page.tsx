@@ -21,6 +21,7 @@ import type {
   PreparedWorkbenchTaskRun,
   SemanticCase,
   WorkflowDefinition,
+  WorkflowExecutionResult,
   WorkflowPreset,
 } from "@/lib/types";
 
@@ -129,6 +130,7 @@ export default function AgentWorkbenchPage() {
   const [memoryResults, setMemoryResults] = useState<EvidenceMemoryItem[]>([]);
   const [taskRuns, setTaskRuns] = useState<PreparedWorkbenchTaskRun[]>([]);
   const [preparedRun, setPreparedRun] = useState<PreparedWorkbenchTaskRun | null>(null);
+  const [workflowExecution, setWorkflowExecution] = useState<WorkflowExecutionResult | null>(null);
   const [executionResults, setExecutionResults] = useState<
     Record<string, AgentRunExecutionResult>
   >({});
@@ -238,7 +240,21 @@ export default function AgentWorkbenchPage() {
       setExecutionResults({});
       setValidationResults({});
       setMaterializeResults({});
+      setWorkflowExecution(null);
       setMessage(`Task run prepared: ${result.task_run_id}`);
+    });
+
+  const executePreparedWorkflow = () =>
+    runAction("execute-workflow", async () => {
+      if (!preparedRun) return;
+      const result = await api.workbench.taskRuns.execute(
+        preparedRun.task_run_id,
+        90,
+        true,
+      );
+      setWorkflowExecution(result);
+      setMessage(`Workflow execution ${result.status}: ${result.task_run_id}`);
+      await loadWorkflows();
     });
 
   const executePreparedAgentRun = (stepId: string) =>
@@ -468,6 +484,18 @@ export default function AgentWorkbenchPage() {
               )}
               Prepare run
             </button>
+            <button
+              onClick={executePreparedWorkflow}
+              disabled={busyAction === "execute-workflow" || !preparedRun}
+              className="ml-2 inline-flex items-center gap-2 rounded-lg bg-surface px-3 py-2 text-sm font-medium text-on-surface transition-colors hover:bg-surface-container-high disabled:opacity-50"
+            >
+              {busyAction === "execute-workflow" ? (
+                <Loader2 size={14} className="animate-spin" />
+              ) : (
+                <PlayCircle size={14} />
+              )}
+              Execute workflow
+            </button>
             {preparedRun && (
               <div className="rounded-lg border border-outline-variant/30 bg-surface p-3 text-xs">
                 <p className="font-medium text-on-surface">{preparedRun.task_run_id}</p>
@@ -477,6 +505,12 @@ export default function AgentWorkbenchPage() {
                 <p className="mt-1 text-on-surface-variant">
                   Agent runs: {preparedRun.agent_runs.length}
                 </p>
+                {workflowExecution && (
+                  <div className="mt-2 rounded bg-surface-container px-2 py-1.5 text-on-surface-variant">
+                    Workflow: {workflowExecution.status} / steps{" "}
+                    {workflowExecution.step_results.length}
+                  </div>
+                )}
                 <div className="mt-3 space-y-2">
                   {preparedRun.agent_runs.map((agentRun) => {
                     const stepId = agentRun.step_id;

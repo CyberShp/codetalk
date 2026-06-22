@@ -290,6 +290,14 @@ export interface MaterializeEvidenceResult {
   evidence_ids: string[];
 }
 
+export interface WorkflowExecutionResult {
+  task_run_id: string;
+  status: string;
+  started_at: string;
+  completed_at: string;
+  step_results: Array<Record<string, unknown>>;
+}
+
 export interface PreparedAgentRun {
   step_id: string;
   run_id: string;

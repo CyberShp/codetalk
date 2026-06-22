@@ -137,3 +137,73 @@ def test_workbench_task_run_store_loads_and_lists_prepared_runs(tmp_path):
     assert [item.task_run_id for item in store.list(workspace_id="ws1")] == [
         first.task_run_id,
     ]
+
+
+def test_workbench_workflow_runner_executes_agent_steps_and_validates_artifacts(tmp_path, monkeypatch):
+    from app.config import settings
+    from app.services.workbench_task_run import WorkbenchTaskRunPreparer
+    from app.services.workbench_workflow_runner import WorkbenchWorkflowRunner
+    from app.services.workflow_dsl import WorkflowStore
+
+    script_path = tmp_path / "agent_collect_mr.py"
+    script_path.write_text(
+        "import hashlib, json, os, pathlib\n"
+        "root=pathlib.Path(os.environ['CODETALK_AGENT_ARTIFACT_DIR'])\n"
+        "diff='diff --git a/src/tls.c b/src/tls.c\\n--- a/src/tls.c\\n+++ b/src/tls.c\\n'\n"
+        "sha=hashlib.sha256(diff.encode()).hexdigest()\n"
+        "(root/'diff.patch').write_text(diff, encoding='utf-8')\n"
+        "(root/'changed_files.json').write_text(json.dumps([{'path':'src/tls.c','status':'modified'}]), encoding='utf-8')\n"
+        "(root/'mr_snapshot.json').write_text(json.dumps({"
+        "'source':'agent_mcp','mcp_profile':'codehub-readonly','mr_url':'https://codehub.local/p/merge_requests/1',"
+        "'project':'p','mr_id':'1','title':'TLS','source_branch':'feature','target_branch':'main',"
+        "'base_commit':'base','head_commit':'head','diff_sha256':sha,'changed_files_count':1"
+        "}), encoding='utf-8')\n"
+        "print('ok token=secret-value')\n",
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(settings, "external_agent_custom_providers", [
+        {"id": "local-python", "command": f"python {script_path}"}
+    ])
+    workflow_store = WorkflowStore(tmp_path / "workflows.db")
+    workflow_store.save_workflow({
+        "id": "mr_test_design",
+        "name": "MR test design",
+        "version": 1,
+        "inputs": [{"id": "mr_link", "type": "mr_link", "resolver": "agent_mcp"}],
+        "steps": [
+            {
+                "id": "collect_mr",
+                "type": "agent_task",
+                "provider": "local-python",
+                "mcp_profile": "codehub-readonly",
+                "required_artifacts": ["mr_snapshot.json", "diff.patch", "changed_files.json"],
+            },
+            {"id": "render", "type": "report_render"},
+        ],
+        "outputs": [{"id": "report", "type": "markdown"}],
+    })
+    task_run = WorkbenchTaskRunPreparer(
+        artifact_root=tmp_path / "task_runs",
+        workflow_store=workflow_store,
+    ).prepare(
+        workflow_id="mr_test_design",
+        workspace_id="ws-runner",
+        repo_path=str(tmp_path),
+        inputs={"mr_link": "https://codehub.local/p/merge_requests/1"},
+    )
+
+    result = WorkbenchWorkflowRunner(tmp_path / "task_runs").execute_task_run(
+        task_run.task_run_id,
+        timeout_sec=10,
+    )
+
+    assert result.status == "completed"
+    assert result.task_run_id == task_run.task_run_id
+    assert result.step_results[0]["step_id"] == "collect_mr"
+    assert result.step_results[0]["execution"]["status"] == "completed"
+    assert result.step_results[0]["validation"]["status"] == "ok"
+    root = Path(task_run.artifact_dir)
+    assert (root / "workflow_execution.json").exists()
+    assert "secret-value" not in (
+        root / "agent_runs" / "collect_mr" / "raw_output.txt"
+    ).read_text(encoding="utf-8")
