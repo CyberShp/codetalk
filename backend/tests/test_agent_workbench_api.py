@@ -705,6 +705,88 @@ async def test_workbench_materialize_changed_files_output_as_structured_memory(
     assert changed[0]["provenance"]["output_id"] == "changed_files"
 
 
+async def test_workbench_materialize_rejects_changed_files_without_repo_or_patch_evidence(
+    workbench_client,
+    tmp_path,
+    monkeypatch,
+):
+    from app.config import settings
+
+    script_path = tmp_path / "agent_changed_files.py"
+    script_path.write_text(
+        "import json, os, pathlib\n"
+        "root=pathlib.Path(os.environ['CODETALK_AGENT_ARTIFACT_DIR'])\n"
+        "diff='diff --git a/src/tls.c b/src/tls.c\\n--- a/src/tls.c\\n+++ b/src/tls.c\\n'\n"
+        "(root/'diff.patch').write_text(diff, encoding='utf-8')\n"
+        "(root/'changed_files.json').write_text(json.dumps([\n"
+        "  {'path':'src/tls.c','status':'modified'},\n"
+        "  {'path':'src/not_in_patch.c','status':'modified'}\n"
+        "]), encoding='utf-8')\n",
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(settings, "external_agent_custom_providers", [
+        {"id": "local-python", "command": f"python {script_path}"}
+    ])
+    workflow = {
+        "id": "changed_files_validation_workflow",
+        "name": "Changed files validation workflow",
+        "version": 1,
+        "inputs": [{"id": "mr_link", "type": "mr_link", "resolver": "agent_mcp"}],
+        "steps": [
+            {
+                "id": "collect",
+                "type": "agent_task",
+                "provider": "local-python",
+                "required_artifacts": ["diff.patch", "changed_files.json"],
+            }
+        ],
+        "outputs": [
+            {
+                "id": "changed_files",
+                "type": "json",
+                "from": "collect",
+                "artifact": "changed_files.json",
+            }
+        ],
+    }
+    assert (await workbench_client.post("/api/workbench/workflows", json=workflow)).status_code == 201
+    prepared = await workbench_client.post(
+        "/api/workbench/task-runs/prepare",
+        json={
+            "workflow_id": "changed_files_validation_workflow",
+            "workspace_id": "ws-changed-files-validated",
+            "repo_path": str(tmp_path),
+            "inputs": {"mr_link": "https://codehub.local/project/merge_requests/1"},
+        },
+    )
+    task_run_id = prepared.json()["task_run_id"]
+    executed = await workbench_client.post(
+        f"/api/workbench/task-runs/{task_run_id}/execute",
+        json={"timeout_sec": 10},
+    )
+    assert executed.status_code == 200
+    assert executed.json()["status"] == "completed"
+
+    materialized = await workbench_client.post(
+        f"/api/workbench/task-runs/{task_run_id}/materialize-outputs"
+    )
+
+    assert materialized.status_code == 200
+    body = materialized.json()
+    assert body["status"] == "partial"
+    assert any(
+        item["reason"] == "changed_file_not_in_repo_or_patch_snapshot"
+        and item["path"] == "src/not_in_patch.c"
+        for item in body["rejected_outputs"]
+    )
+    search = await workbench_client.get(
+        "/api/workbench/memory/search",
+        params={"q": "src/tls.c", "workspace_id": "ws-changed-files-validated"},
+    )
+    changed = [item for item in search.json()["items"] if item["kind"] == "changed_file"]
+    assert [item["subject_key"] for item in changed] == ["src/tls.c"]
+
+
 async def test_workbench_materialize_uncovered_functions_output_as_structured_memory(
     workbench_client,
     tmp_path,

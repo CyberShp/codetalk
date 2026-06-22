@@ -773,7 +773,7 @@ def _materialize_workflow_output_evidence(
             provenance=base_provenance,
         )
         evidence_ids.append(output_evidence_id)
-        evidence_ids.extend(_materialize_structured_workflow_output_evidence(
+        structured_ids, structured_rejected = _materialize_structured_workflow_output_evidence(
             store=store,
             task_run=task_run,
             output=output,
@@ -782,7 +782,9 @@ def _materialize_workflow_output_evidence(
             path=path,
             data=data,
             sha256=sha256,
-        ))
+        )
+        evidence_ids.extend(structured_ids)
+        rejected.extend(structured_rejected)
     return evidence_ids, rejected
 
 
@@ -796,54 +798,100 @@ def _materialize_structured_workflow_output_evidence(
     path: Path,
     data: bytes,
     sha256: str,
-) -> list[str]:
+) -> tuple[list[str], list[dict[str, str]]]:
     if path.name == "source_scope.json" or output_id in {"source_scope", "scope"}:
-        return _materialize_source_scope_evidence(
-            store=store,
-            task_run=task_run,
-            output=output,
-            output_id=output_id,
-            output_evidence_id=output_evidence_id,
-            path=path,
-            data=data,
-            sha256=sha256,
+        return (
+            _materialize_source_scope_evidence(
+                store=store,
+                task_run=task_run,
+                output=output,
+                output_id=output_id,
+                output_evidence_id=output_evidence_id,
+                path=path,
+                data=data,
+                sha256=sha256,
+            ),
+            [],
         )
     if path.name == "evidence_cards.json" or output_id == "evidence_cards":
-        return _materialize_evidence_card_output(
-            store=store,
-            task_run=task_run,
-            output=output,
-            output_id=output_id,
-            output_evidence_id=output_evidence_id,
-            path=path,
-            data=data,
-            sha256=sha256,
+        return (
+            _materialize_evidence_card_output(
+                store=store,
+                task_run=task_run,
+                output=output,
+                output_id=output_id,
+                output_evidence_id=output_evidence_id,
+                path=path,
+                data=data,
+                sha256=sha256,
+            ),
+            [],
         )
     if path.name == "uncovered_functions.json" or output_id == "uncovered_functions":
-        return _materialize_uncovered_function_evidence(
-            store=store,
-            task_run=task_run,
-            output=output,
-            output_id=output_id,
-            output_evidence_id=output_evidence_id,
-            path=path,
-            data=data,
-            sha256=sha256,
+        return (
+            _materialize_uncovered_function_evidence(
+                store=store,
+                task_run=task_run,
+                output=output,
+                output_id=output_id,
+                output_evidence_id=output_evidence_id,
+                path=path,
+                data=data,
+                sha256=sha256,
+            ),
+            [],
         )
     if path.name != "changed_files.json" and output_id != "changed_files":
-        return []
+        return [], []
     try:
         payload = json.loads(data.decode("utf-8"))
     except (UnicodeDecodeError, json.JSONDecodeError):
-        return []
+        return [], []
     if not isinstance(payload, list):
-        return []
+        return [], []
+    return _materialize_changed_file_output(
+        store=store,
+        task_run=task_run,
+        output=output,
+        output_id=output_id,
+        output_evidence_id=output_evidence_id,
+        path=path,
+        sha256=sha256,
+        payload=payload,
+    )
+
+
+def _materialize_changed_file_output(
+    *,
+    store: EvidenceMemoryStore,
+    task_run: Any,
+    output: dict[str, Any],
+    output_id: str,
+    output_evidence_id: str,
+    path: Path,
+    sha256: str,
+    payload: list[Any],
+) -> tuple[list[str], list[dict[str, str]]]:
+    patch_paths = _patch_snapshot_paths_for_task(task_run)
     evidence_ids: list[str] = []
+    rejected: list[dict[str, str]] = []
     for item in payload:
         if not isinstance(item, dict):
             continue
         changed_path = str(item.get("path") or "").replace("\\", "/").strip()
         if not changed_path:
+            continue
+        validation_source = _changed_file_validation_source(
+            task_run=task_run,
+            changed_path=changed_path,
+            patch_paths=patch_paths,
+        )
+        if not validation_source:
+            rejected.append({
+                "output": output_id,
+                "path": changed_path,
+                "reason": "changed_file_not_in_repo_or_patch_snapshot",
+            })
             continue
         evidence_ids.append(store.upsert_evidence_item(
             run_id=task_run.task_run_id,
@@ -866,9 +914,94 @@ def _materialize_structured_workflow_output_evidence(
                 "artifact_path": str(path),
                 "sha256": sha256,
                 "changed_file": item,
+                "validation_source": validation_source,
             },
         ))
-    return evidence_ids
+    return evidence_ids, rejected
+
+
+def _changed_file_validation_source(
+    *,
+    task_run: Any,
+    changed_path: str,
+    patch_paths: set[str],
+) -> str:
+    normalized = changed_path.replace("\\", "/").strip("/")
+    candidate = Path(normalized)
+    if (
+        not normalized
+        or candidate.is_absolute()
+        or any(part in {"", ".", ".."} for part in candidate.parts)
+    ):
+        return ""
+    try:
+        repo_root = Path(str(task_run.repo_path)).resolve()
+        repo_candidate = (repo_root / candidate).resolve()
+    except OSError:
+        repo_candidate = None
+        repo_root = None
+    if repo_candidate is not None and repo_root is not None:
+        if (
+            (repo_candidate == repo_root or repo_root in repo_candidate.parents)
+            and repo_candidate.exists()
+        ):
+            return "repo"
+    if normalized in patch_paths:
+        return "patch_snapshot"
+    return ""
+
+
+def _patch_snapshot_paths_for_task(task_run: Any) -> set[str]:
+    try:
+        task_root = Path(str(task_run.artifact_dir)).resolve()
+    except OSError:
+        return set()
+    if not task_root.exists() or not task_root.is_dir():
+        return set()
+    paths: set[str] = set()
+    for patch_path in task_root.rglob("*"):
+        if (
+            not patch_path.is_file()
+            or patch_path.suffix.lower() not in {".patch", ".diff"}
+        ):
+            continue
+        try:
+            resolved = patch_path.resolve()
+        except OSError:
+            continue
+        if resolved != task_root and task_root not in resolved.parents:
+            continue
+        try:
+            text = resolved.read_text(encoding="utf-8", errors="replace")
+            paths.update(_changed_paths_from_patch_text(text))
+        except OSError:
+            continue
+    return paths
+
+
+def _changed_paths_from_patch_text(diff_text: str) -> set[str]:
+    paths: set[str] = set()
+    for line in diff_text.splitlines():
+        if line.startswith("diff --git "):
+            parts = line.split()
+            for candidate in parts[-2:]:
+                cleaned = _clean_diff_path(candidate)
+                if cleaned:
+                    paths.add(cleaned)
+        elif line.startswith(("--- ", "+++ ")):
+            cleaned = _clean_diff_path(line[4:].strip())
+            if cleaned:
+                paths.add(cleaned)
+    return paths
+
+
+def _clean_diff_path(value: str) -> str:
+    text = str(value or "").strip().strip('"').replace("\\", "/")
+    if not text or text == "/dev/null":
+        return ""
+    if text.startswith("a/") or text.startswith("b/"):
+        text = text[2:]
+    return text.strip("/")
 
 
 def _materialize_source_scope_evidence(
