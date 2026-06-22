@@ -282,7 +282,29 @@ class WorkbenchWorkflowRunner:
                 "count": len(payload["changed_files"]),
             }
 
-        if step_type in {"diff_parse", "file_ingest", "coverage_parse", "artifact_export"}:
+        if step_type == "coverage_parse":
+            payload = _coverage_parse_payload(task_run.input_snapshot)
+            parse_path = artifact_dir / f"{step_id}.json"
+            summary_path = artifact_dir / "coverage_summary.json"
+            uncovered_path = artifact_dir / "uncovered_functions.json"
+            _write_json(parse_path, payload)
+            _write_json(summary_path, payload["summary"])
+            _write_json(uncovered_path, payload["uncovered_functions"])
+            return {
+                "step_id": step_id,
+                "type": step_type,
+                "status": "completed",
+                "artifact_dir": str(artifact_dir),
+                "artifact": parse_path.name,
+                "artifacts": [
+                    parse_path.name,
+                    summary_path.name,
+                    uncovered_path.name,
+                ],
+                "count": len(payload["uncovered_functions"]),
+            }
+
+        if step_type in {"file_ingest", "artifact_export"}:
             payload = {
                 "step_id": step_id,
                 "type": step_type,
@@ -603,6 +625,134 @@ def _dedupe_changed_files(items: list[dict[str, str]]) -> list[dict[str, str]]:
         seen.add(key)
         result.append(item)
     return result
+
+
+def _coverage_parse_payload(input_snapshot: dict[str, Any]) -> dict[str, Any]:
+    coverage_inputs = _coverage_input_payloads(input_snapshot)
+    files: list[dict[str, Any]] = []
+    uncovered_functions: list[dict[str, Any]] = []
+    warnings: list[str] = []
+    for item in coverage_inputs:
+        text = _read_text_from_input_payload(item)
+        if not text:
+            warnings.append(f"{item.get('input_id') or item.get('filename') or 'coverage'}: empty coverage text")
+            continue
+        parsed = _parse_lcov(text)
+        files.extend(parsed["files"])
+        uncovered_functions.extend(parsed["uncovered_functions"])
+    summary = _coverage_summary(files, uncovered_functions, warnings)
+    return {
+        "kind": "coverage_parse",
+        "inputs": coverage_inputs,
+        "files": files,
+        "uncovered_functions": uncovered_functions,
+        "summary": summary,
+    }
+
+
+def _coverage_input_payloads(input_snapshot: dict[str, Any]) -> list[dict[str, Any]]:
+    payloads: list[dict[str, Any]] = []
+    for input_id, value in input_snapshot.items():
+        if not isinstance(value, dict):
+            continue
+        if value.get("kind") == "file_set":
+            for file_item in value.get("files") or []:
+                if isinstance(file_item, dict) and _is_coverage_like_file(file_item):
+                    payloads.append(dict(file_item))
+            continue
+        if _is_coverage_like_file(value):
+            payload = dict(value)
+            payload.setdefault("input_id", str(input_id))
+            payloads.append(payload)
+    return payloads
+
+
+def _is_coverage_like_file(payload: dict[str, Any]) -> bool:
+    suffix = str(payload.get("suffix") or "").lower()
+    filename = str(payload.get("filename") or "").lower()
+    return suffix in {".lcov", ".info"} or "coverage" in filename
+
+
+def _parse_lcov(text: str) -> dict[str, Any]:
+    files: list[dict[str, Any]] = []
+    uncovered: list[dict[str, Any]] = []
+    current_file = ""
+    function_lines: dict[str, int] = {}
+    function_hits: dict[str, int] = {}
+    for raw_line in text.splitlines():
+        line = raw_line.strip()
+        if line.startswith("SF:"):
+            current_file = line[3:].replace("\\", "/")
+            function_lines = {}
+            function_hits = {}
+            continue
+        if line.startswith("FN:"):
+            payload = line[3:]
+            line_text, _, function_name = payload.partition(",")
+            if function_name:
+                function_lines[function_name] = _safe_int(line_text)
+            continue
+        if line.startswith("FNDA:"):
+            payload = line[5:]
+            hit_text, _, function_name = payload.partition(",")
+            if function_name:
+                function_hits[function_name] = _safe_int(hit_text)
+            continue
+        if line == "end_of_record":
+            if current_file:
+                file_uncovered: list[dict[str, Any]] = []
+                for function_name, line_start in function_lines.items():
+                    hit_count = function_hits.get(function_name, 0)
+                    if hit_count == 0:
+                        item = {
+                            "file_path": current_file,
+                            "function_name": function_name,
+                            "line_start": line_start,
+                            "hit_count": hit_count,
+                        }
+                        file_uncovered.append(item)
+                        uncovered.append(item)
+                files.append({
+                    "file_path": current_file,
+                    "function_count": len(function_lines),
+                    "covered_function_count": sum(
+                        1 for function_name in function_lines
+                        if function_hits.get(function_name, 0) > 0
+                    ),
+                    "uncovered_function_count": len(file_uncovered),
+                })
+            current_file = ""
+            function_lines = {}
+            function_hits = {}
+    return {"files": files, "uncovered_functions": uncovered}
+
+
+def _coverage_summary(
+    files: list[dict[str, Any]],
+    uncovered_functions: list[dict[str, Any]],
+    warnings: list[str],
+) -> dict[str, Any]:
+    function_count = sum(int(item.get("function_count") or 0) for item in files)
+    covered_count = sum(int(item.get("covered_function_count") or 0) for item in files)
+    return {
+        "files_count": len(files),
+        "function_count": function_count,
+        "covered_function_count": covered_count,
+        "uncovered_function_count": len(uncovered_functions),
+        "function_coverage_percent": (
+            round(covered_count * 100 / function_count, 2)
+            if function_count
+            else 0.0
+        ),
+        "warnings": warnings,
+    }
+
+
+def _safe_int(value: str) -> int:
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        return 0
 
 
 def _read_json(path: Path) -> Any:

@@ -24,6 +24,7 @@ For any code-understanding workflow, CodeTalk should assemble context in this or
 Rules:
 
 - `fast-context` is a preferred first-pass code locator, not a hard dependency.
+- Repo `AGENTS.md` can make this preference explicit. When it says exploratory code understanding should use `mcp__fast-context__fast_context_search` first, task preparation must preserve that instruction as structured task context rather than treating it as an informal note.
 - If `fast-context` is unavailable, the task continues and records a non-blocking provider warning.
 - Search results from all providers enter the evidence ledger with provider, command, confidence, and validation status.
 - Agent CLI output never bypasses CodeTalk validation.
@@ -47,6 +48,7 @@ CodeTalk must treat repo-local agent instructions as task input, not as hidden p
 - store exact instruction files with path, size, sha256, truncation flag, and content in `agent_instructions.json`;
 - inject the same instruction payload into every Agent CLI task bundle;
 - expose the instruction payload in task artifacts so users can audit what the Agent was asked to obey.
+- derive a `context_discovery_decision` from those instructions before execution, including whether `fast-context` was requested, whether CodeTalk can call it directly, which fallback providers are used, and whether the external Agent CLI may satisfy the same MCP requirement through its own configured credentials.
 
 The fast-context rule from `AGENTS.md` is interpreted as:
 

@@ -673,6 +673,98 @@ def test_workbench_workflow_runner_injects_prior_step_artifacts_into_agent_task(
     assert changed == [{"path": "src/tls.c", "old_path": "src/tls.c", "status": "modified"}]
 
 
+def test_workbench_workflow_runner_parses_coverage_before_agent_task(
+    tmp_path,
+    monkeypatch,
+):
+    from app.config import settings
+    from app.services.workbench_task_run import WorkbenchTaskRunPreparer
+    from app.services.workbench_workflow_runner import WorkbenchWorkflowRunner
+    from app.services.workflow_dsl import WorkflowStore
+
+    coverage_file = tmp_path / "coverage.info"
+    coverage_file.write_text(
+        "TN:\n"
+        "SF:src/tls.c\n"
+        "FN:10,nvmf_tcp_tls_handshake\n"
+        "FNDA:0,nvmf_tcp_tls_handshake\n"
+        "FN:30,nvmf_tcp_tls_cleanup\n"
+        "FNDA:3,nvmf_tcp_tls_cleanup\n"
+        "FNF:2\n"
+        "FNH:1\n"
+        "end_of_record\n",
+        encoding="utf-8",
+    )
+    script_path = tmp_path / "agent_coverage.py"
+    script_path.write_text(
+        "import json, pathlib, sys\n"
+        "payload=json.loads(sys.stdin.read())\n"
+        "bundle=payload['task_bundle']\n"
+        "root=pathlib.Path(payload['artifact_dir'])\n"
+        "(root/'agent_seen_coverage.json').write_text(json.dumps("
+        "bundle.get('workflow_step_artifacts')"
+        "), encoding='utf-8')\n",
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(settings, "external_agent_custom_providers", [
+        {"id": "local-python", "command": f"python {script_path}"}
+    ])
+    workflow_store = WorkflowStore(tmp_path / "workflows.db")
+    workflow_store.save_workflow({
+        "id": "coverage_prior_context",
+        "name": "Coverage prior context",
+        "version": 1,
+        "inputs": [{"id": "coverage_report", "type": "coverage_report", "required": True}],
+        "steps": [
+            {"id": "parse_coverage", "type": "coverage_parse"},
+            {
+                "id": "design",
+                "type": "agent_task",
+                "provider": "local-python",
+                "required_artifacts": ["agent_seen_coverage.json"],
+            },
+        ],
+        "outputs": [{"id": "agent_seen_coverage", "type": "json", "from": "design"}],
+    })
+    task_run = WorkbenchTaskRunPreparer(
+        artifact_root=tmp_path / "task_runs",
+        workflow_store=workflow_store,
+    ).prepare(
+        workflow_id="coverage_prior_context",
+        workspace_id="ws-coverage-prior",
+        repo_path=str(tmp_path),
+        inputs={"coverage_report": {"path": str(coverage_file)}},
+    )
+
+    result = WorkbenchWorkflowRunner(tmp_path / "task_runs").execute_task_run(
+        task_run.task_run_id,
+        timeout_sec=10,
+    )
+
+    assert result.status == "completed"
+    parse_result = result.step_results[0]
+    assert "coverage_summary.json" in parse_result["artifacts"]
+    assert "uncovered_functions.json" in parse_result["artifacts"]
+    artifacts = json.loads(
+        Path(
+            result.step_results[1]["artifact_dir"],
+            "agent_seen_coverage.json",
+        ).read_text(encoding="utf-8")
+    )
+    coverage_artifacts = artifacts["parse_coverage"]
+    uncovered = json.loads(
+        Path(coverage_artifacts["uncovered_functions_json"]).read_text(encoding="utf-8")
+    )
+    assert uncovered == [
+        {
+            "file_path": "src/tls.c",
+            "function_name": "nvmf_tcp_tls_handshake",
+            "line_start": 10,
+            "hit_count": 0,
+        }
+    ]
+
+
 def test_workbench_workflow_runner_executes_builtin_context_and_report_steps(tmp_path):
     from app.services.evidence_memory import EvidenceMemoryStore
     from app.services.test_semantic_library import TestSemanticLibraryStore
