@@ -839,6 +839,16 @@ async def test_workbench_materialize_source_scope_output_as_structured_memory(
     assert source_files
     assert source_files[0]["subject_key"] == "nof/nvmf_tcp/transport/tls/tls.c"
     assert source_files[0]["status"] == "verified_output"
+    slices = await workbench_client.get(
+        f"/api/workbench/memory/evidence/{source_files[0]['evidence_id']}/source-slices"
+    )
+    assert slices.status_code == 200
+    slice_items = slices.json()["items"]
+    assert slice_items
+    assert slice_items[0]["file_path"] == "nof/nvmf_tcp/transport/tls/tls.c"
+    assert slice_items[0]["start_line"] == 1
+    assert "nvmf_tcp_tls_handshake" in slice_items[0]["excerpt"]
+    assert slice_items[0]["sha256"]
 
     symbol_search = await workbench_client.get(
         "/api/workbench/memory/search",

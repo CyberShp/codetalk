@@ -91,6 +91,12 @@ Evidence Memory stores structured facts rather than natural-language summaries:
 
 Natural-language summaries are allowed as display material, but they are not the source of truth for later analysis.
 
+Current implementation note:
+
+- Verified `source_scope.json`, `evidence_cards.json`, and repo-local `uncovered_functions.json` outputs create Evidence Memory facts only after local repo/source validation.
+- Materialized source-file, evidence-card, and coverage-gap facts get source slices with repo-relative path, line range, sha256, and local excerpt, exposed through the memory source-slices API.
+- These source slices are the durable context chain for later Agent prompts and black-box test recommendations; raw Agent summaries remain audit material, not facts.
+
 ## Agent Run Harness
 
 The harness launches configured Agent CLIs with a task bundle on stdin and captures:

@@ -331,6 +331,20 @@ class EvidenceMemoryStore:
             raise KeyError(slice_id)
         return SourceSliceRecord(**dict(row))
 
+    def list_source_slices(self, evidence_id: str) -> list[SourceSliceRecord]:
+        self.initialize()
+        with self._connect() as db:
+            rows = db.execute(
+                """
+                SELECT *
+                FROM source_slices
+                WHERE evidence_id = ?
+                ORDER BY start_line, end_line, created_at
+                """,
+                (evidence_id,),
+            ).fetchall()
+        return [SourceSliceRecord(**dict(row)) for row in rows]
+
     def _connect(self) -> sqlite3.Connection:
         conn = sqlite3.connect(str(self.db_path))
         conn.row_factory = sqlite3.Row

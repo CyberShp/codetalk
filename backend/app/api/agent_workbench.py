@@ -264,6 +264,11 @@ async def search_memory(
     return {"items": [asdict(item) for item in items]}
 
 
+@router.get("/memory/evidence/{evidence_id}/source-slices")
+async def list_memory_source_slices(evidence_id: str) -> dict[str, Any]:
+    return {"items": [asdict(item) for item in _memory_store().list_source_slices(evidence_id)]}
+
+
 @router.get("/memory/recent")
 async def recent_memory(
     workspace_id: str = "",
@@ -872,7 +877,7 @@ def _materialize_source_scope_evidence(
         rel_path, resolved_path = resolved
         if rel_path not in seen_files:
             seen_files.add(rel_path)
-            evidence_ids.append(store.upsert_evidence_item(
+            source_evidence_id = store.upsert_evidence_item(
                 run_id=task_run.task_run_id,
                 workspace_id=task_run.workspace_id,
                 kind="source_file",
@@ -894,7 +899,15 @@ def _materialize_source_scope_evidence(
                     "file_path": rel_path,
                     "resolved_path": str(resolved_path),
                 },
-            ))
+            )
+            evidence_ids.append(source_evidence_id)
+            _add_workbench_source_slice(
+                store=store,
+                evidence_id=source_evidence_id,
+                repo_path=task_run.repo_path,
+                rel_path=rel_path,
+                line_start=_source_scope_item_line_start(file_item),
+            )
         for symbol_item in _source_scope_item_symbols(file_item):
             symbol_name = _source_scope_symbol_name(symbol_item)
             if not symbol_name:
@@ -1002,7 +1015,7 @@ def _materialize_evidence_card_output(
         symbol = str(card.get("symbol") or card.get("function_name") or card.get("entry_symbol") or "").strip()
         reason = str(card.get("reason") or card.get("title") or "Evidence card came from a locally verified workflow output.").strip()
         excerpt = str(card.get("excerpt") or card.get("text") or card.get("summary") or "").strip()
-        evidence_ids.append(store.upsert_evidence_item(
+        card_evidence_id = store.upsert_evidence_item(
             run_id=task_run.task_run_id,
             workspace_id=task_run.workspace_id,
             kind="evidence_card",
@@ -1022,7 +1035,15 @@ def _materialize_evidence_card_output(
                 "sha256": sha256,
                 "card": card,
             },
-        ))
+        )
+        evidence_ids.append(card_evidence_id)
+        _add_workbench_source_slice(
+            store=store,
+            evidence_id=card_evidence_id,
+            repo_path=task_run.repo_path,
+            rel_path=rel_path,
+            line_start=_safe_int(card.get("line_start") or card.get("start_line") or card.get("line") or 1),
+        )
     return evidence_ids
 
 
@@ -1054,7 +1075,7 @@ def _materialize_uncovered_function_evidence(
         line_start = _safe_int(item.get("line_start"))
         hit_count = _safe_int(item.get("hit_count"))
         subject_key = f"{file_path}:{function_name}"
-        evidence_ids.append(store.upsert_evidence_item(
+        gap_evidence_id = store.upsert_evidence_item(
             run_id=task_run.task_run_id,
             workspace_id=task_run.workspace_id,
             kind="coverage_gap",
@@ -1080,7 +1101,16 @@ def _materialize_uncovered_function_evidence(
                 "line_start": line_start,
                 "hit_count": hit_count,
             },
-        ))
+        )
+        evidence_ids.append(gap_evidence_id)
+        if _validated_repo_source_path(task_run.repo_path, file_path) is not None:
+            _add_workbench_source_slice(
+                store=store,
+                evidence_id=gap_evidence_id,
+                repo_path=task_run.repo_path,
+                rel_path=file_path,
+                line_start=line_start or 1,
+            )
     return evidence_ids
 
 
@@ -1140,6 +1170,22 @@ def _source_scope_symbol_name(item: Any) -> str:
     return ""
 
 
+def _source_scope_item_line_start(item: Any) -> int:
+    if not isinstance(item, dict):
+        return 1
+    for key in ("line_start", "start_line", "line"):
+        value = _safe_int(item.get(key))
+        if value > 0:
+            return value
+    for symbol_item in _source_scope_item_symbols(item):
+        if isinstance(symbol_item, dict):
+            for key in ("line_start", "start_line", "line"):
+                value = _safe_int(symbol_item.get(key))
+                if value > 0:
+                    return value
+    return 1
+
+
 def _validated_repo_source_path(repo_path: str, candidate_path: str) -> tuple[str, Path] | None:
     candidate_text = str(candidate_path or "").replace("\\", "/").strip()
     if not candidate_text:
@@ -1164,6 +1210,43 @@ def _validated_repo_source_path(repo_path: str, candidate_path: str) -> tuple[st
     except ValueError:
         return None
     return rel_path, resolved
+
+
+def _add_workbench_source_slice(
+    *,
+    store: EvidenceMemoryStore,
+    evidence_id: str,
+    repo_path: str,
+    rel_path: str,
+    line_start: int = 1,
+) -> str | None:
+    resolved = _validated_repo_source_path(repo_path, rel_path)
+    if resolved is None:
+        return None
+    normalized_path, resolved_path = resolved
+    try:
+        data = resolved_path.read_bytes()
+    except OSError:
+        return None
+    text = data.decode("utf-8", errors="replace")
+    lines = text.splitlines()
+    if not lines:
+        return None
+    max_lines = _safe_int(getattr(settings, "agent_discovery_source_slice_lines", 120)) or 120
+    max_lines = max(1, max_lines)
+    anchor = line_start if line_start > 0 else 1
+    start_line = max(1, anchor - (max_lines // 2))
+    end_line = min(len(lines), start_line + max_lines - 1)
+    start_line = max(1, min(start_line, max(1, end_line - max_lines + 1)))
+    excerpt = "\n".join(lines[start_line - 1:end_line])
+    return store.add_source_slice(
+        evidence_id=evidence_id,
+        file_path=normalized_path,
+        start_line=start_line,
+        end_line=end_line,
+        excerpt=excerpt,
+        sha256=hashlib.sha256(data).hexdigest(),
+    )
 
 
 def _evidence_text_from_output(path: Path, data: bytes, *, fallback: str) -> str:
