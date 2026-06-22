@@ -1009,6 +1009,38 @@ export default function AgentWorkbenchPage() {
                         ))}
                       </div>
                     )}
+                    {workflowExecution.step_results.length > 0 && (
+                      <div className="mt-1 space-y-1">
+                        {workflowExecution.step_results.map((step, index) => {
+                          const diagnostics = step.provider_diagnostics;
+                          if (!diagnostics) return null;
+                          return (
+                            <div
+                              key={`${String(step.step_id ?? "step")}-${index}`}
+                              className="rounded bg-surface px-1.5 py-1 font-data text-[10px]"
+                            >
+                              <span className="text-on-surface">
+                                {String(step.step_id ?? "step")} provider:
+                                {diagnostics.provider || String(step.provider ?? "")}
+                              </span>
+                              <span className="ml-1">
+                                health:{diagnostics.health_status || "unknown"}
+                              </span>
+                              {diagnostics.prompt_transport && (
+                                <span className="ml-1">
+                                  transport:{diagnostics.prompt_transport}
+                                </span>
+                              )}
+                              {diagnostics.startup_probe_endpoint && (
+                                <span className="ml-1 break-all">
+                                  probe:{diagnostics.startup_probe_endpoint}
+                                </span>
+                              )}
+                            </div>
+                          );
+                        })}
+                      </div>
+                    )}
                   </div>
                 )}
                 {workflowOutputMaterialize && (

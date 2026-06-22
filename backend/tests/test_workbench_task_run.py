@@ -569,6 +569,13 @@ def test_agent_execution_persists_provider_diagnostics_snapshot(tmp_path, monkey
     assert provider_diagnostics["health"]["status"] == "available"
     assert provider_diagnostics["health"]["configured_command"].startswith("python ")
     assert provider_diagnostics["health"]["attempts"][0]["status"] == "available"
+    step_result = executed.step_results[0]
+    assert step_result["provider_diagnostics"]["provider"] == "corp-agent"
+    assert step_result["provider_diagnostics"]["health_status"] == "available"
+    assert step_result["provider_diagnostics"]["startup_probe_endpoint"] == (
+        "/api/tools/corp-agent/startup-probe"
+    )
+    assert step_result["provider_diagnostics"]["artifact"] == "provider_diagnostics.json"
     execution_input = json.loads(
         (artifact_dir / "execution_input.json").read_text(encoding="utf-8")
     )

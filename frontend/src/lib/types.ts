@@ -375,7 +375,27 @@ export interface WorkflowExecutionResult {
   started_at: string;
   completed_at: string;
   context_discovery_decision?: Record<string, unknown>;
-  step_results: Array<Record<string, unknown>>;
+  step_results: Array<
+    Record<string, unknown> & {
+      step_id?: string;
+      status?: string;
+      provider?: string;
+      provider_diagnostics?: {
+        artifact?: string;
+        provider?: string;
+        status?: string;
+        owner?: string;
+        agent_owned?: boolean;
+        codetalk_callable?: boolean;
+        health_status?: string;
+        launch_kind?: string;
+        used_fallback?: boolean;
+        startup_probe_endpoint?: string;
+        prompt_transport?: string;
+        mcp_credentials_owner?: string;
+      };
+    }
+  >;
   outputs?: Array<Record<string, unknown>>;
 }
 

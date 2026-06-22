@@ -190,6 +190,7 @@ class WorkbenchWorkflowRunner:
             "type": "agent_task",
             "status": status,
             "provider": agent_run.get("provider") or (run_payload or {}).get("provider") or "",
+            "provider_diagnostics": _provider_diagnostics_summary(artifact_dir),
             "artifact_dir": str(artifact_dir),
             "execution": asdict(execution),
             "executions": executions,
@@ -704,6 +705,40 @@ def _snapshot_agent_turn_artifacts(artifact_dir: Path, *, turn_id: str) -> str:
         if source.exists() and source.is_file():
             shutil.copy2(source, turn_dir / filename)
     return f"turns/{safe_turn_id}"
+
+
+def _provider_diagnostics_summary(artifact_dir: Path) -> dict[str, Any]:
+    payload = _read_json(artifact_dir / "provider_diagnostics.json")
+    if not isinstance(payload, dict):
+        return {
+            "artifact": "provider_diagnostics.json",
+            "status": "missing",
+            "health_status": "unknown",
+        }
+    diagnostics = payload.get("diagnostics")
+    if not isinstance(diagnostics, dict):
+        diagnostics = {}
+    health = payload.get("health")
+    if not isinstance(health, dict):
+        health = {}
+    return {
+        "artifact": "provider_diagnostics.json",
+        "provider": str(payload.get("provider") or ""),
+        "status": str(payload.get("status") or ""),
+        "owner": str(payload.get("owner") or ""),
+        "agent_owned": bool(payload.get("agent_owned", False)),
+        "codetalk_callable": bool(payload.get("codetalk_callable", False)),
+        "health_status": str(health.get("status") or "unknown"),
+        "launch_kind": str(health.get("launch_kind") or ""),
+        "used_fallback": bool(health.get("used_fallback", False)),
+        "startup_probe_endpoint": str(diagnostics.get("startup_probe_endpoint") or ""),
+        "prompt_transport": str(
+            diagnostics.get("startup_probe_transport")
+            or diagnostics.get("prompt_transport")
+            or ""
+        ),
+        "mcp_credentials_owner": str(diagnostics.get("mcp_credentials_owner") or ""),
+    }
 
 
 def _positive_int(value: Any, *, default: int) -> int:
