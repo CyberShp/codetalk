@@ -194,6 +194,14 @@ test("agent workbench previews task run artifact content", async ({ page }) => {
             sha256: "abc123",
             preview: "{\"workflow_id\":\"mr-blackbox-workflow\"}",
           },
+          {
+            relative_path: "steps/validate_evidence/evidence_validation.json",
+            path: "E:/data/workbench/task_runs/task_run_preview/steps/validate_evidence/evidence_validation.json",
+            kind: "evidence_validation",
+            size_bytes: 512,
+            sha256: "fedcba9876543210",
+            preview: "{\"accepted_count\":2,\"rejected_count\":1}",
+          },
         ],
       },
     });
@@ -217,6 +225,49 @@ test("agent workbench previews task run artifact content", async ({ page }) => {
       });
     },
   );
+  await page.route(
+    "**/api/workbench/task-runs/task_run_preview/artifacts/content/steps/validate_evidence/evidence_validation.json",
+    async (route) => {
+      await route.fulfill({
+        headers: corsHeaders(route.request().headers().origin),
+        json: {
+          relative_path: "steps/validate_evidence/evidence_validation.json",
+          path: "E:/data/workbench/task_runs/task_run_preview/steps/validate_evidence/evidence_validation.json",
+          kind: "evidence_validation",
+          size_bytes: 512,
+          sha256: "fedcba9876543210",
+          preview: "{\"accepted_count\":2,\"rejected_count\":1}",
+          is_text: true,
+          truncated: false,
+          content: JSON.stringify({
+            accepted_count: 2,
+            rejected_count: 1,
+            accepted_artifact_details: [
+              {
+                artifact: "source_scope.json",
+                source_step_id: "discover",
+                sha256: "1111222233334444555566667777888899990000aaaabbbbccccdddd",
+                size_bytes: 64,
+              },
+              {
+                artifact: "evidence_cards.json",
+                source_step_id: "discover",
+                sha256: "aaaabbbbccccdddd1111222233334444555566667777888899990000",
+                size_bytes: 128,
+              },
+            ],
+            rejected_artifact_details: [
+              {
+                artifact: "../secret.txt",
+                source_step_id: "discover",
+                reason: "invalid_artifact_path",
+              },
+            ],
+          }),
+        },
+      });
+    },
+  );
 
   await page.goto("/workbench", { waitUntil: "domcontentloaded" });
   await expect(page.getByText("ccr code")).toBeVisible();
@@ -230,10 +281,20 @@ test("agent workbench previews task run artifact content", async ({ page }) => {
   await expect(preparePanel.getByRole("button", { name: "Prepare run" })).toBeEnabled();
   await preparePanel.getByRole("button", { name: "Prepare run" }).click();
   await expect(page.getByText("fast-context: fallback to agent_cli")).toBeVisible();
-  await expect(page.getByText("Audit artifacts: 2")).toBeVisible();
+  await expect(page.getByText("Audit artifacts: 3")).toBeVisible();
 
   await page.getByRole("button", { name: "task_bundle:task_bundle.json" }).click();
 
   await expect(page.getByText("sha:abc123abc123")).toBeVisible();
   await expect(page.getByText("\"provider\":\"claude-code\"", { exact: false })).toBeVisible();
+
+  await page
+    .getByRole("button", {
+      name: "evidence_validation:steps/validate_evidence/evidence_validation.json",
+    })
+    .click();
+
+  await expect(page.getByText("Accepted artifacts: 2")).toBeVisible();
+  await expect(page.getByText("Rejected artifacts: 1")).toBeVisible();
+  await expect(page.getByText("source_scope.json sha:111122223333")).toBeVisible();
 });

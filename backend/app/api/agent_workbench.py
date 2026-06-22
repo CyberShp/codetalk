@@ -953,6 +953,8 @@ def _artifact_kind(relative_path: str) -> str:
         return "workflow_outputs"
     if name == "workflow_execution.json":
         return "workflow_execution"
+    if name == "evidence_validation.json":
+        return "evidence_validation"
     if name == "raw_output.txt":
         return "agent_raw_output"
     if name == "agent_run.json":

@@ -36,6 +36,7 @@ Current implementation note:
 - Candidate files returned by this provider are normalized through the same local source-file validation path as external Agent candidates.
 - Workbench task preparation reads applicable repo `AGENTS.md` files, stores them in `agent_instructions.json`, and injects them into every Agent task bundle. These instructions can require fast-context-first exploration while CodeTalk still records unavailable providers as non-blocking warnings.
 - Every prepared task bundle and execution audit should make the fast-context decision explicit: requested by repo instructions, callable by CodeTalk or not, fallback path used, and whether the external Agent CLI may satisfy the same instruction through its own MCP credentials.
+- Workbench artifact preview renders `evidence_validation.json` with accepted/rejected counts and accepted artifact sha256 snippets, so validation evidence is visible without reading raw JSON first.
 
 ## Repo Agent Instructions
 

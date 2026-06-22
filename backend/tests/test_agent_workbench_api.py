@@ -910,7 +910,10 @@ async def test_workbench_task_run_artifacts_api_labels_agent_execution_input(
         "name": "Execution input audit workflow",
         "version": 1,
         "inputs": [{"id": "module", "type": "free_text"}],
-        "steps": [{"id": "discover", "type": "agent_task", "provider": "local-python"}],
+        "steps": [
+            {"id": "discover", "type": "agent_task", "provider": "local-python"},
+            {"id": "validate_evidence", "type": "evidence_validate"},
+        ],
         "outputs": [{"id": "report", "type": "markdown"}],
     }
     assert (await workbench_client.post("/api/workbench/workflows", json=workflow)).status_code == 201
@@ -936,6 +939,10 @@ async def test_workbench_task_run_artifacts_api_labels_agent_execution_input(
     execution_input = paths["agent_runs/discover/execution_input.json"]
     assert execution_input["kind"] == "agent_execution_input"
     assert "CODETALK_AGENT_READONLY" in execution_input["preview"]
+    assert (
+        paths["steps/validate_evidence/evidence_validation.json"]["kind"]
+        == "evidence_validation"
+    )
 
 
 async def test_workbench_prepare_task_run_api_injects_memory_and_semantics(workbench_client, tmp_path):

@@ -117,6 +117,60 @@ function fastContextDecisionSummary(taskBundle: Record<string, unknown>): string
   return `fast-context: fallback to ${lastFallback}`;
 }
 
+type EvidenceValidationSummary = {
+  acceptedCount: number;
+  rejectedCount: number;
+  acceptedDetails: Array<{ artifact: string; sha256: string; sourceStepId: string }>;
+  rejectedDetails: Array<{ artifact: string; reason: string; sourceStepId: string }>;
+};
+
+function evidenceValidationSummary(
+  artifact: WorkbenchTaskArtifactContent,
+): EvidenceValidationSummary | null {
+  if (!artifact.is_text || !artifact.content.trim()) return null;
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(artifact.content);
+  } catch {
+    return null;
+  }
+  if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) return null;
+  const payload = parsed as Record<string, unknown>;
+  if (
+    artifact.kind !== "evidence_validation" &&
+    !("accepted_artifact_details" in payload) &&
+    !("rejected_artifact_details" in payload)
+  ) {
+    return null;
+  }
+  const acceptedDetails = Array.isArray(payload.accepted_artifact_details)
+    ? payload.accepted_artifact_details
+        .filter((item): item is Record<string, unknown> => Boolean(item && typeof item === "object" && !Array.isArray(item)))
+        .map((item) => ({
+          artifact: String(item.artifact ?? ""),
+          sha256: String(item.sha256 ?? ""),
+          sourceStepId: String(item.source_step_id ?? ""),
+        }))
+        .filter((item) => item.artifact)
+    : [];
+  const rejectedDetails = Array.isArray(payload.rejected_artifact_details)
+    ? payload.rejected_artifact_details
+        .filter((item): item is Record<string, unknown> => Boolean(item && typeof item === "object" && !Array.isArray(item)))
+        .map((item) => ({
+          artifact: String(item.artifact ?? ""),
+          reason: String(item.reason ?? ""),
+          sourceStepId: String(item.source_step_id ?? ""),
+        }))
+        .filter((item) => item.artifact || item.reason)
+    : [];
+  return {
+    acceptedCount: Number(payload.accepted_count ?? acceptedDetails.length) || 0,
+    rejectedCount: Number(payload.rejected_count ?? rejectedDetails.length) || 0,
+    acceptedDetails,
+    rejectedDetails,
+  };
+}
+
 function Panel({
   title,
   icon,
@@ -742,6 +796,36 @@ export default function AgentWorkbenchPage() {
                             <span className="text-warning">truncated</span>
                           )}
                         </div>
+                        {(() => {
+                          const summary = evidenceValidationSummary(artifactContent);
+                          if (!summary) return null;
+                          return (
+                            <div className="mt-2 rounded bg-surface-container px-2 py-1.5 text-[11px] text-on-surface-variant">
+                              <div className="flex flex-wrap gap-2">
+                                <span>Accepted artifacts: {summary.acceptedCount}</span>
+                                <span>Rejected artifacts: {summary.rejectedCount}</span>
+                              </div>
+                              {summary.acceptedDetails.length > 0 && (
+                                <div className="mt-1 space-y-0.5 font-data text-[10px]">
+                                  {summary.acceptedDetails.slice(0, 4).map((item) => (
+                                    <div key={`${item.sourceStepId}:${item.artifact}`}>
+                                      {item.artifact} sha:{item.sha256.slice(0, 12)}
+                                    </div>
+                                  ))}
+                                </div>
+                              )}
+                              {summary.rejectedDetails.length > 0 && (
+                                <div className="mt-1 space-y-0.5 font-data text-[10px] text-warning">
+                                  {summary.rejectedDetails.slice(0, 3).map((item) => (
+                                    <div key={`${item.sourceStepId}:${item.artifact}:${item.reason}`}>
+                                      {item.artifact || "artifact"} rejected:{item.reason || "unknown"}
+                                    </div>
+                                  ))}
+                                </div>
+                              )}
+                            </div>
+                          );
+                        })()}
                         {artifactContent.is_text ? (
                           <pre className="mt-2 max-h-52 overflow-auto whitespace-pre-wrap break-words rounded bg-surface-container p-2 font-data text-[10px] text-on-surface">
                             {artifactContent.content}
