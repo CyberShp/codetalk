@@ -621,6 +621,8 @@ def _artifact_kind(relative_path: str) -> str:
         return "agent_raw_output"
     if name == "agent_run.json":
         return "agent_run"
+    if name == "execution_input.json":
+        return "agent_execution_input"
     if name.endswith(".json"):
         return "json"
     if name.endswith((".md", ".txt", ".patch", ".diff", ".log")):

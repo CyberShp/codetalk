@@ -112,19 +112,48 @@ class AgentRunHarness:
 
         task_bundle = self._read_json_file("task_bundle.json")
         workflow_snapshot = self._read_json_file("workflow_snapshot.json")
-        stdin_payload = json.dumps(
+        stdin_payload_obj = {
+            "run_id": run_id,
+            "provider": run_payload.get("provider") or "",
+            "mcp_profile": run_payload.get("mcp_profile") or "",
+            "workflow_snapshot": workflow_snapshot if isinstance(workflow_snapshot, dict) else {},
+            "task_bundle": task_bundle if isinstance(task_bundle, dict) else {},
+            "artifact_dir": str(self.artifact_dir),
+        }
+        stdin_payload = json.dumps(stdin_payload_obj, ensure_ascii=False)
+        env_hints = {
+            "CODETALK_AGENT_READONLY": "1",
+            "CODETALK_REPO_PATH": cwd,
+            "CODETALK_AGENT_ARTIFACT_DIR": str(self.artifact_dir),
+        }
+        self._write_json(
+            "execution_input.json",
             {
                 "run_id": run_id,
                 "provider": run_payload.get("provider") or "",
+                "command": command,
+                "cwd": cwd,
+                "timeout_sec": max(1, int(timeout_sec)),
                 "mcp_profile": run_payload.get("mcp_profile") or "",
-                "workflow_snapshot": workflow_snapshot if isinstance(workflow_snapshot, dict) else {},
-                "task_bundle": task_bundle if isinstance(task_bundle, dict) else {},
-                "artifact_dir": str(self.artifact_dir),
+                "env_hints": env_hints,
+                "stdin": stdin_payload_obj,
+                "stdin_json_sha256": hashlib.sha256(
+                    stdin_payload.encode("utf-8")
+                ).hexdigest(),
             },
-            ensure_ascii=False,
         )
 
         started_at = _now()
+        self._write_json(
+            "runtime_events.jsonl",
+            {
+                "event": "agent_execution_input_prepared",
+                "run_id": run_id,
+                "artifact": "execution_input.json",
+                "created_at": started_at,
+            },
+            append_jsonl=True,
+        )
         self._write_json(
             "runtime_events.jsonl",
             {
@@ -137,9 +166,7 @@ class AgentRunHarness:
         )
         started = datetime.now(timezone.utc)
         env = os.environ.copy()
-        env["CODETALK_AGENT_READONLY"] = "1"
-        env["CODETALK_REPO_PATH"] = cwd
-        env["CODETALK_AGENT_ARTIFACT_DIR"] = str(self.artifact_dir)
+        env.update(env_hints)
 
         exit_code: int | None = None
         stdout = ""

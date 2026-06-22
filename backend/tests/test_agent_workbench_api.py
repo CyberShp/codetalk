@@ -574,6 +574,56 @@ async def test_workbench_task_run_artifacts_api_lists_audit_files(workbench_clie
     assert paths["agent_runs/discover/task_bundle.json"]["kind"] == "agent_task_bundle"
 
 
+async def test_workbench_task_run_artifacts_api_labels_agent_execution_input(
+    workbench_client,
+    tmp_path,
+    monkeypatch,
+):
+    from app.config import settings
+
+    script_path = tmp_path / "agent_noop.py"
+    script_path.write_text(
+        "import json, sys\n"
+        "json.load(sys.stdin)\n"
+        "print('done')\n",
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(settings, "external_agent_custom_providers", [
+        {"id": "local-python", "command": f"python {script_path}"}
+    ])
+    workflow = {
+        "id": "execution_input_audit_workflow",
+        "name": "Execution input audit workflow",
+        "version": 1,
+        "inputs": [{"id": "module", "type": "free_text"}],
+        "steps": [{"id": "discover", "type": "agent_task", "provider": "local-python"}],
+        "outputs": [{"id": "report", "type": "markdown"}],
+    }
+    assert (await workbench_client.post("/api/workbench/workflows", json=workflow)).status_code == 201
+    prepared = await workbench_client.post(
+        "/api/workbench/task-runs/prepare",
+        json={
+            "workflow_id": "execution_input_audit_workflow",
+            "workspace_id": "ws-execution-input",
+            "repo_path": str(tmp_path),
+            "inputs": {"module": "nvme-tcp-tls"},
+        },
+    )
+    task_run_id = prepared.json()["task_run_id"]
+    executed = await workbench_client.post(
+        f"/api/workbench/task-runs/{task_run_id}/execute",
+        json={"timeout_sec": 10},
+    )
+    assert executed.status_code == 200
+
+    artifacts = await workbench_client.get(f"/api/workbench/task-runs/{task_run_id}/artifacts")
+
+    paths = {item["relative_path"]: item for item in artifacts.json()["artifacts"]}
+    execution_input = paths["agent_runs/discover/execution_input.json"]
+    assert execution_input["kind"] == "agent_execution_input"
+    assert "CODETALK_AGENT_READONLY" in execution_input["preview"]
+
+
 async def test_workbench_prepare_task_run_api_injects_memory_and_semantics(workbench_client, tmp_path):
     assert (await workbench_client.post(
         "/api/workbench/memory/runs",

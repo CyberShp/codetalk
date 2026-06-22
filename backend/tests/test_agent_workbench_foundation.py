@@ -230,6 +230,18 @@ def test_agent_run_harness_executes_cli_with_task_bundle_and_audit_events(tmp_pa
         "bundle_id": "task-42",
     }
     assert "secret-value" not in (artifact_dir / "raw_output.txt").read_text(encoding="utf-8")
+    execution_input = json.loads((artifact_dir / "execution_input.json").read_text(encoding="utf-8"))
+    assert execution_input["stdin"]["task_bundle"]["task_id"] == "task-42"
+    assert execution_input["command"] == ["python", "-c", script, str(output_file)]
+    assert execution_input["cwd"] == str(tmp_path)
+    assert execution_input["timeout_sec"] == 10
+    assert execution_input["env_hints"] == {
+        "CODETALK_AGENT_READONLY": "1",
+        "CODETALK_REPO_PATH": str(tmp_path),
+        "CODETALK_AGENT_ARTIFACT_DIR": str(artifact_dir),
+    }
+    assert execution_input["stdin_json_sha256"]
     events = (artifact_dir / "runtime_events.jsonl").read_text(encoding="utf-8")
+    assert "agent_execution_input_prepared" in events
     assert "agent_run_started" in events
     assert "agent_run_completed" in events
