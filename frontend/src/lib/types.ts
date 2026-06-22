@@ -210,6 +210,13 @@ export interface WorkflowDefinition {
   outputs: Array<Record<string, unknown>>;
 }
 
+export interface WorkflowPreset {
+  id: string;
+  name: string;
+  description: string;
+  definition: WorkflowDefinition;
+}
+
 export interface SemanticCase {
   semantic_id: string;
   case_id: string;

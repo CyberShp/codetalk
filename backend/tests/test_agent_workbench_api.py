@@ -58,6 +58,23 @@ async def test_workbench_workflow_crud_api(workbench_client):
     assert frozen.json()["version"] == 1
 
 
+async def test_workbench_workflow_preset_api(workbench_client):
+    presets = await workbench_client.get("/api/workbench/workflow-presets")
+    assert presets.status_code == 200
+    preset_ids = {item["id"] for item in presets.json()["items"]}
+    assert "mr_blackbox_test" in preset_ids
+    assert "resource_leak_hunt" in preset_ids
+
+    installed = await workbench_client.post(
+        "/api/workbench/workflow-presets/mr_blackbox_test/install"
+    )
+    assert installed.status_code == 201
+    assert installed.json()["id"] == "mr_blackbox_test"
+
+    listed = await workbench_client.get("/api/workbench/workflows")
+    assert [item["id"] for item in listed.json()] == ["mr_blackbox_test"]
+
+
 async def test_workbench_semantic_library_api(workbench_client):
     created = await workbench_client.post(
         "/api/workbench/semantic-cases",

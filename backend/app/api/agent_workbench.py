@@ -20,6 +20,10 @@ from app.services.test_semantic_library import (
 from app.services.workbench_task_run import WorkbenchTaskRunPreparer
 from app.services.workbench_task_run import WorkbenchTaskRunStore
 from app.services.workflow_dsl import WorkflowStore, WorkflowValidationError
+from app.services.workflow_presets import (
+    builtin_workflow_presets,
+    install_workflow_preset,
+)
 
 router = APIRouter(prefix="/api/workbench", tags=["agent-workbench"])
 
@@ -161,6 +165,20 @@ async def get_workflow_snapshot(workflow_id: str) -> dict[str, Any]:
         return _workflow_store().freeze_workflow_snapshot(workflow_id)
     except KeyError:
         raise HTTPException(status_code=404, detail=f"Unknown workflow: {workflow_id}")
+
+
+@router.get("/workflow-presets")
+async def list_workflow_presets() -> dict[str, Any]:
+    return {"items": builtin_workflow_presets()}
+
+
+@router.post("/workflow-presets/{preset_id}/install", status_code=201)
+async def install_builtin_workflow_preset(preset_id: str) -> dict[str, Any]:
+    try:
+        workflow = install_workflow_preset(_workflow_store(), preset_id)
+    except KeyError:
+        raise HTTPException(status_code=404, detail=f"Unknown workflow preset: {preset_id}")
+    return _workflow_response(workflow.raw)
 
 
 @router.post("/semantic-cases", status_code=201)

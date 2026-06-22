@@ -23,6 +23,8 @@ test("agent workbench renders workflow and task-run controls", async ({ page }) 
 
   await expect(page.getByRole("heading", { name: "Agent Workbench" })).toBeVisible();
   await expect(page.getByRole("heading", { name: "Workflow Registry" })).toBeVisible();
+  await expect(page.getByRole("button", { name: "Apply preset" })).toBeVisible();
+  await expect(page.getByRole("button", { name: "Install preset" })).toBeVisible();
   await expect(page.getByText("codehub-mcp")).toBeVisible();
   await expect(page.getByRole("button", { name: "Prepare run" })).toBeDisabled();
   await expect(page.getByLabel("Repo path")).toBeVisible();

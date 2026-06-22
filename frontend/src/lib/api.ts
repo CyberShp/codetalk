@@ -24,6 +24,7 @@ import type {
   ScopePreview,
   ExternalAgentStartupProbeResult,
   WorkflowDefinition,
+  WorkflowPreset,
   SemanticCase,
   EvidenceMemoryItem,
   AgentRunRecord,
@@ -473,6 +474,15 @@ export const api = {
 
   workbench: {
     workflows: {
+      presets: () =>
+        request<{ items: WorkflowPreset[] }>("/api/workbench/workflow-presets"),
+
+      installPreset: (id: string) =>
+        request<WorkflowDefinition>(
+          `/api/workbench/workflow-presets/${encodeURIComponent(id)}/install`,
+          { method: "POST" },
+        ),
+
       list: () => request<WorkflowDefinition[]>("/api/workbench/workflows"),
 
       create: (data: WorkflowDefinition | Record<string, unknown>) =>

@@ -21,6 +21,7 @@ import type {
   PreparedWorkbenchTaskRun,
   SemanticCase,
   WorkflowDefinition,
+  WorkflowPreset,
 } from "@/lib/types";
 
 const DEFAULT_WORKFLOW = {
@@ -113,7 +114,9 @@ function Panel({
 
 export default function AgentWorkbenchPage() {
   const [workflows, setWorkflows] = useState<WorkflowDefinition[]>([]);
+  const [workflowPresets, setWorkflowPresets] = useState<WorkflowPreset[]>([]);
   const [workflowJson, setWorkflowJson] = useState(pretty(DEFAULT_WORKFLOW));
+  const [selectedPresetId, setSelectedPresetId] = useState("");
   const [selectedWorkflowId, setSelectedWorkflowId] = useState(DEFAULT_WORKFLOW.id);
   const [workspaceId, setWorkspaceId] = useState("manual-workspace");
   const [repoPath, setRepoPath] = useState("");
@@ -153,7 +156,12 @@ export default function AgentWorkbenchPage() {
         api.workbench.workflows.list(),
         api.workbench.taskRuns.list({ limit: 10 }),
       ]);
+      const presetData = await api.workbench.workflows.presets();
       setWorkflows(workflowData);
+      setWorkflowPresets(presetData.items);
+      if (!selectedPresetId && presetData.items.length > 0) {
+        setSelectedPresetId(presetData.items[0].id);
+      }
       setTaskRuns(taskRunData.items);
       if (
         workflowData.length > 0 &&
@@ -166,7 +174,7 @@ export default function AgentWorkbenchPage() {
     } finally {
       setLoading(false);
     }
-  }, [selectedWorkflowId]);
+  }, [selectedPresetId, selectedWorkflowId]);
 
   useEffect(() => {
     void loadWorkflows();
@@ -191,6 +199,24 @@ export default function AgentWorkbenchPage() {
       const saved = await api.workbench.workflows.create(payload);
       setSelectedWorkflowId(saved.id);
       setMessage(`Workflow saved: ${saved.id}`);
+      await loadWorkflows();
+    });
+
+  const applyPreset = () => {
+    const preset = workflowPresets.find((item) => item.id === selectedPresetId);
+    if (!preset) return;
+    setWorkflowJson(pretty(preset.definition));
+    setSelectedWorkflowId(preset.definition.id);
+    setMessage(`Preset applied: ${preset.name}`);
+  };
+
+  const installPreset = () =>
+    runAction("install-preset", async () => {
+      if (!selectedPresetId) return;
+      const workflow = await api.workbench.workflows.installPreset(selectedPresetId);
+      setWorkflowJson(pretty(workflow));
+      setSelectedWorkflowId(workflow.id);
+      setMessage(`Preset installed: ${workflow.id}`);
       await loadWorkflows();
     });
 
@@ -315,6 +341,39 @@ export default function AgentWorkbenchPage() {
       <div className="grid grid-cols-1 gap-5 xl:grid-cols-2">
         <Panel title="Workflow Registry" icon={<ClipboardList size={16} />}>
           <div className="mb-3 flex flex-wrap items-center gap-2">
+            {workflowPresets.length > 0 && (
+              <select
+                value={selectedPresetId}
+                onChange={(event) => setSelectedPresetId(event.target.value)}
+                className="min-w-0 rounded-lg border border-outline-variant/30 bg-surface px-3 py-2 text-sm text-on-surface outline-none focus:border-primary"
+                aria-label="Workflow preset"
+              >
+                {workflowPresets.map((preset) => (
+                  <option key={preset.id} value={preset.id}>
+                    {preset.name}
+                  </option>
+                ))}
+              </select>
+            )}
+            <button
+              onClick={applyPreset}
+              disabled={!selectedPresetId}
+              className="inline-flex items-center gap-2 rounded-lg bg-surface px-3 py-2 text-sm font-medium text-on-surface transition-colors hover:bg-surface-container-high disabled:opacity-50"
+            >
+              Apply preset
+            </button>
+            <button
+              onClick={installPreset}
+              disabled={busyAction === "install-preset" || !selectedPresetId}
+              className="inline-flex items-center gap-2 rounded-lg bg-surface px-3 py-2 text-sm font-medium text-on-surface transition-colors hover:bg-surface-container-high disabled:opacity-50"
+            >
+              {busyAction === "install-preset" ? (
+                <Loader2 size={14} className="animate-spin" />
+              ) : (
+                <Save size={14} />
+              )}
+              Install preset
+            </button>
             <button
               onClick={saveWorkflow}
               disabled={busyAction === "save-workflow"}
