@@ -113,6 +113,7 @@ Current implementation note:
 - Prepared task bundles include source slices for retrieved Evidence Memory facts so the next Agent CLI turn sees structured code context instead of a lossy summary.
 - Prepared task runs now write `memory_retrieval.json`, `source_read_chain.json`, `evidence_consumption_trajectory.json`, and `degraded_retrieval.json` so retrieval, source reads, consumption events, and provider fallback decisions are auditable outside the prompt.
 - Evidence Memory hits without source slices are marked `no_source_slices` and are not treated as source evidence; retrieval remains a navigation signal until CodeTalk has a validated source slice or accepted artifact.
+- The Workbench UI can load Evidence Memory source slices per evidence item, showing repo path, line range, sha256, and excerpt instead of forcing users to trust a search hit.
 - Coverage black-box recommendation enrichment also carries Evidence Memory source slices into gaps and generated cases as structured evidence references.
 - These source slices are the durable context chain for later Agent prompts and black-box test recommendations; raw Agent summaries remain audit material, not facts.
 - Test Semantic Library supports single-case upsert and bulk import with defaults, source references, imported/rejected counts, and per-row rejection reasons, so existing feature cases or Agent-produced semantic case JSON can be fed into black-box terminology retrieval without becoming source truth.

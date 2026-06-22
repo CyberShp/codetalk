@@ -15,6 +15,7 @@ import {
 import { api } from "@/lib/api";
 import type {
   EvidenceMemoryItem,
+  EvidenceSourceSlice,
   AgentRunExecutionResult,
   ArtifactValidationResult,
   MaterializeEvidenceResult,
@@ -252,6 +253,7 @@ export default function AgentWorkbenchPage() {
   const [semanticResults, setSemanticResults] = useState<SemanticCase[]>([]);
   const [memoryQuery, setMemoryQuery] = useState("nvme tcp tls");
   const [memoryResults, setMemoryResults] = useState<EvidenceMemoryItem[]>([]);
+  const [memorySlices, setMemorySlices] = useState<Record<string, EvidenceSourceSlice[]>>({});
   const [providerMatrix, setProviderMatrix] =
     useState<WorkbenchProviderCapabilitiesMatrix | null>(null);
   const [taskRuns, setTaskRuns] = useState<PreparedWorkbenchTaskRun[]>([]);
@@ -501,7 +503,15 @@ export default function AgentWorkbenchPage() {
         limit: 10,
       });
       setMemoryResults(result.items);
+      setMemorySlices({});
       setMessage(`Memory results: ${result.items.length}`);
+    });
+
+  const loadMemorySlices = (evidenceId: string) =>
+    runAction(`memory-slices-${evidenceId}`, async () => {
+      const result = await api.workbench.memory.sourceSlices(evidenceId);
+      setMemorySlices((current) => ({ ...current, [evidenceId]: result.items }));
+      setMessage(`Source slices loaded: ${result.items.length}`);
     });
 
   return (
@@ -1222,7 +1232,44 @@ export default function AgentWorkbenchPage() {
                   {item.reason && (
                     <p className="mt-1 text-on-surface-variant">{item.reason}</p>
                   )}
-                  {item.source_slices && item.source_slices.length > 0 && (
+                  <div className="mt-2 flex flex-wrap items-center gap-2">
+                    <button
+                      onClick={() => loadMemorySlices(item.evidence_id)}
+                      disabled={busyAction === `memory-slices-${item.evidence_id}`}
+                      className="inline-flex items-center gap-1 rounded bg-surface-container px-2 py-1 text-[11px] text-on-surface-variant transition-colors hover:bg-surface-container-high disabled:opacity-50"
+                    >
+                      {busyAction === `memory-slices-${item.evidence_id}` ? (
+                        <Loader2 size={12} className="animate-spin" />
+                      ) : (
+                        <ClipboardList size={12} />
+                      )}
+                      Source slices
+                    </button>
+                    {memorySlices[item.evidence_id] && (
+                      <span className="font-data text-[11px] text-on-surface-variant">
+                        {memorySlices[item.evidence_id].length} slice(s)
+                      </span>
+                    )}
+                  </div>
+                  {memorySlices[item.evidence_id] && memorySlices[item.evidence_id].length > 0 && (
+                    <div className="mt-2 space-y-2 text-on-surface-variant">
+                      {memorySlices[item.evidence_id].slice(0, 3).map((slice) => (
+                        <div
+                          key={slice.slice_id}
+                          className="rounded bg-surface-container px-2 py-1.5"
+                        >
+                          <p className="break-words font-data text-[11px]">
+                            {slice.file_path}:{slice.start_line}-{slice.end_line} sha:
+                            {slice.sha256.slice(0, 12)}
+                          </p>
+                          <pre className="mt-1 max-h-28 overflow-auto whitespace-pre-wrap break-words font-data text-[10px] text-on-surface">
+                            {slice.excerpt}
+                          </pre>
+                        </div>
+                      ))}
+                    </div>
+                  )}
+                  {item.source_slices && item.source_slices.length > 0 && !memorySlices[item.evidence_id] && (
                     <div className="mt-2 space-y-1 text-on-surface-variant">
                       {item.source_slices.slice(0, 3).map((slice) => (
                         <p key={slice.slice_id} className="break-words font-data text-[11px]">
