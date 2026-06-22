@@ -1,6 +1,7 @@
 from contextlib import asynccontextmanager
 import hashlib
 import json
+from pathlib import Path
 
 import pytest
 from fastapi import FastAPI
@@ -329,6 +330,97 @@ async def test_workbench_task_scoped_agent_run_validate_mr_artifacts_api(workben
     assert validation.status_code == 200
     assert validation.json()["status"] == "ok"
     assert validation.json()["provenance_status"] == "agent_mcp_provenance"
+
+
+async def test_workbench_task_run_list_get_and_materialize_evidence_api(workbench_client, tmp_path):
+    workflow = {
+        "id": "mr_test_design",
+        "name": "MR test design",
+        "version": 1,
+        "inputs": [{"id": "mr_link", "type": "external_link", "resolver": "agent_mcp"}],
+        "steps": [
+            {
+                "id": "collect_mr",
+                "type": "agent_task",
+                "provider": "local-agent",
+                "mcp_profile": "codehub-readonly",
+                "required_artifacts": ["mr_snapshot.json", "diff.patch", "changed_files.json"],
+            }
+        ],
+        "outputs": [{"id": "report", "type": "markdown"}],
+    }
+    assert (await workbench_client.post("/api/workbench/workflows", json=workflow)).status_code == 201
+    prepared = await workbench_client.post(
+        "/api/workbench/task-runs/prepare",
+        json={
+            "workflow_id": "mr_test_design",
+            "workspace_id": "ws-materialize",
+            "repo_path": str(tmp_path),
+            "inputs": {"mr_link": "https://codehub.local/project/merge_requests/1"},
+        },
+    )
+    assert prepared.status_code == 201
+    task_run = prepared.json()
+    task_run_id = task_run["task_run_id"]
+    step_id = "collect_mr"
+
+    listed = await workbench_client.get(
+        "/api/workbench/task-runs",
+        params={"workspace_id": "ws-materialize"},
+    )
+    assert listed.status_code == 200
+    assert listed.json()["items"][0]["task_run_id"] == task_run_id
+
+    loaded = await workbench_client.get(f"/api/workbench/task-runs/{task_run_id}")
+    assert loaded.status_code == 200
+    assert loaded.json()["workflow_id"] == "mr_test_design"
+
+    artifact_dir = Path(task_run["artifact_dir"]) / "agent_runs" / step_id
+    diff_text = "diff --git a/src/tls.c b/src/tls.c\n--- a/src/tls.c\n+++ b/src/tls.c\n"
+    diff_sha = hashlib.sha256(diff_text.encode("utf-8")).hexdigest()
+    (artifact_dir / "mr_snapshot.json").write_text(
+        json.dumps({
+            "source": "agent_mcp",
+            "mcp_profile": "codehub-readonly",
+            "mr_url": "https://codehub.local/project/merge_requests/1",
+            "project": "project",
+            "mr_id": "1",
+            "title": "TLS change",
+            "source_branch": "feature",
+            "target_branch": "main",
+            "base_commit": "base",
+            "head_commit": "head",
+            "diff_sha256": diff_sha,
+            "changed_files_count": 1,
+        }),
+        encoding="utf-8",
+    )
+    (artifact_dir / "diff.patch").write_text(diff_text, encoding="utf-8")
+    (artifact_dir / "changed_files.json").write_text(
+        json.dumps([{"path": "src/tls.c", "status": "modified"}]),
+        encoding="utf-8",
+    )
+
+    materialized = await workbench_client.post(
+        f"/api/workbench/task-runs/{task_run_id}/agent-runs/{step_id}/materialize-evidence",
+        json={
+            "required_artifacts": ["mr_snapshot.json", "diff.patch", "changed_files.json"],
+            "object_text": "MR 1 TLS change",
+        },
+    )
+
+    assert materialized.status_code == 200
+    body = materialized.json()
+    assert body["status"] == "ok"
+    assert body["evidence_count"] >= 3
+
+    search = await workbench_client.get(
+        "/api/workbench/memory/search",
+        params={"q": "src/tls.c", "workspace_id": "ws-materialize"},
+    )
+    assert search.status_code == 200
+    assert search.json()["items"][0]["kind"] == "changed_file"
+    assert search.json()["items"][0]["subject_key"] == "src/tls.c"
 
 
 async def test_workbench_prepare_task_run_api(workbench_client):

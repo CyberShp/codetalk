@@ -276,6 +276,13 @@ export interface AgentRunExecutionResult {
   error: string;
 }
 
+export interface MaterializeEvidenceResult {
+  status: string;
+  validation: ArtifactValidationResult;
+  evidence_count: number;
+  evidence_ids: string[];
+}
+
 export interface PreparedAgentRun {
   step_id: string;
   run_id: string;

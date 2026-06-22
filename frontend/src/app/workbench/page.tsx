@@ -17,6 +17,7 @@ import type {
   EvidenceMemoryItem,
   AgentRunExecutionResult,
   ArtifactValidationResult,
+  MaterializeEvidenceResult,
   PreparedWorkbenchTaskRun,
   SemanticCase,
   WorkflowDefinition,
@@ -123,12 +124,16 @@ export default function AgentWorkbenchPage() {
   const [semanticResults, setSemanticResults] = useState<SemanticCase[]>([]);
   const [memoryQuery, setMemoryQuery] = useState("nvme tcp tls");
   const [memoryResults, setMemoryResults] = useState<EvidenceMemoryItem[]>([]);
+  const [taskRuns, setTaskRuns] = useState<PreparedWorkbenchTaskRun[]>([]);
   const [preparedRun, setPreparedRun] = useState<PreparedWorkbenchTaskRun | null>(null);
   const [executionResults, setExecutionResults] = useState<
     Record<string, AgentRunExecutionResult>
   >({});
   const [validationResults, setValidationResults] = useState<
     Record<string, ArtifactValidationResult>
+  >({});
+  const [materializeResults, setMaterializeResults] = useState<
+    Record<string, MaterializeEvidenceResult>
   >({});
   const [loading, setLoading] = useState(false);
   const [busyAction, setBusyAction] = useState<string | null>(null);
@@ -144,13 +149,20 @@ export default function AgentWorkbenchPage() {
     setLoading(true);
     setError(null);
     try {
-      const data = await api.workbench.workflows.list();
-      setWorkflows(data);
-      if (data.length > 0 && !data.some((item) => item.id === selectedWorkflowId)) {
-        setSelectedWorkflowId(data[0].id);
+      const [workflowData, taskRunData] = await Promise.all([
+        api.workbench.workflows.list(),
+        api.workbench.taskRuns.list({ limit: 10 }),
+      ]);
+      setWorkflows(workflowData);
+      setTaskRuns(taskRunData.items);
+      if (
+        workflowData.length > 0 &&
+        !workflowData.some((item) => item.id === selectedWorkflowId)
+      ) {
+        setSelectedWorkflowId(workflowData[0].id);
       }
     } catch (err: unknown) {
-      setError(err instanceof Error ? err.message : "Failed to load workflows");
+      setError(err instanceof Error ? err.message : "Failed to load workbench data");
     } finally {
       setLoading(false);
     }
@@ -193,8 +205,13 @@ export default function AgentWorkbenchPage() {
         provider_override: providerOverride.trim() || null,
       });
       setPreparedRun(result);
+      setTaskRuns((current) => [
+        result,
+        ...current.filter((item) => item.task_run_id !== result.task_run_id),
+      ].slice(0, 10));
       setExecutionResults({});
       setValidationResults({});
+      setMaterializeResults({});
       setMessage(`Task run prepared: ${result.task_run_id}`);
     });
 
@@ -220,6 +237,19 @@ export default function AgentWorkbenchPage() {
       );
       setValidationResults((current) => ({ ...current, [stepId]: result }));
       setMessage(`Artifact validation ${result.status}: ${stepId}`);
+    });
+
+  const materializePreparedAgentRun = (stepId: string, requiredArtifacts: string[]) =>
+    runAction(`materialize-${stepId}`, async () => {
+      if (!preparedRun) return;
+      const result = await api.workbench.taskRuns.materializeEvidence(
+        preparedRun.task_run_id,
+        stepId,
+        requiredArtifacts,
+        `${preparedRun.workflow_id} ${preparedRun.task_run_id}`,
+      );
+      setMaterializeResults((current) => ({ ...current, [stepId]: result }));
+      setMessage(`Evidence materialized: ${result.evidence_count}`);
     });
 
   const importSemanticCase = () =>
@@ -393,8 +423,10 @@ export default function AgentWorkbenchPage() {
                     const stepId = agentRun.step_id;
                     const result = executionResults[stepId];
                     const validation = validationResults[stepId];
+                    const materialized = materializeResults[stepId];
                     const isExecuting = busyAction === `execute-${stepId}`;
                     const isValidating = busyAction === `validate-${stepId}`;
+                    const isMaterializing = busyAction === `materialize-${stepId}`;
                     const requiredArtifacts = agentRun.required_artifacts ?? [];
                     return (
                       <div
@@ -434,6 +466,20 @@ export default function AgentWorkbenchPage() {
                             )}
                             Validate
                           </button>
+                          <button
+                            onClick={() =>
+                              materializePreparedAgentRun(stepId, requiredArtifacts)
+                            }
+                            disabled={isMaterializing || requiredArtifacts.length === 0}
+                            className="inline-flex items-center gap-1.5 rounded bg-surface px-2.5 py-1.5 text-xs font-medium text-on-surface transition-colors hover:bg-surface-container-high disabled:opacity-50"
+                          >
+                            {isMaterializing ? (
+                              <Loader2 size={12} className="animate-spin" />
+                            ) : (
+                              <Database size={12} />
+                            )}
+                            Materialize
+                          </button>
                         </div>
                         {requiredArtifacts.length > 0 && (
                             <p className="mt-1 text-on-surface-variant">
@@ -466,9 +512,43 @@ export default function AgentWorkbenchPage() {
                             )}
                           </div>
                         )}
+                        {materialized && (
+                          <div className="mt-2 rounded bg-surface px-2 py-1.5 text-on-surface-variant">
+                            <p>
+                              Evidence: {materialized.status} /{" "}
+                              {materialized.evidence_count} items
+                            </p>
+                          </div>
+                        )}
                       </div>
                     );
                   })}
+                </div>
+              </div>
+            )}
+            {taskRuns.length > 0 && (
+              <div className="rounded-lg border border-outline-variant/30 bg-surface p-3 text-xs">
+                <p className="mb-2 font-medium text-on-surface">Recent task runs</p>
+                <div className="space-y-2">
+                  {taskRuns.map((run) => (
+                    <button
+                      key={run.task_run_id}
+                      onClick={() => {
+                        setPreparedRun(run);
+                        setExecutionResults({});
+                        setValidationResults({});
+                        setMaterializeResults({});
+                      }}
+                      className="block w-full rounded-md bg-surface-container px-2.5 py-2 text-left transition-colors hover:bg-surface-container-high"
+                    >
+                      <span className="block font-medium text-on-surface">
+                        {run.workflow_id}
+                      </span>
+                      <span className="block break-words font-data text-[11px] text-on-surface-variant">
+                        {run.task_run_id}
+                      </span>
+                    </button>
+                  ))}
                 </div>
               </div>
             )}

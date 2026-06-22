@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 from dataclasses import asdict
 from pathlib import Path
 from typing import Any
@@ -17,6 +18,7 @@ from app.services.test_semantic_library import (
     TestSemanticLibraryStore,
 )
 from app.services.workbench_task_run import WorkbenchTaskRunPreparer
+from app.services.workbench_task_run import WorkbenchTaskRunStore
 from app.services.workflow_dsl import WorkflowStore, WorkflowValidationError
 
 router = APIRouter(prefix="/api/workbench", tags=["agent-workbench"])
@@ -67,6 +69,11 @@ class AgentRunExecuteRequest(BaseModel):
 
 class ValidateMrArtifactsRequest(BaseModel):
     required_artifacts: list[str]
+
+
+class MaterializeEvidenceRequest(BaseModel):
+    required_artifacts: list[str]
+    object_text: str = ""
 
 
 class PrepareTaskRunRequest(BaseModel):
@@ -330,6 +337,69 @@ async def validate_task_agent_run_mr_artifacts(
     return asdict(result)
 
 
+@router.post("/task-runs/{task_run_id}/agent-runs/{step_id}/materialize-evidence")
+async def materialize_task_agent_run_evidence(
+    task_run_id: str,
+    step_id: str,
+    payload: MaterializeEvidenceRequest,
+) -> dict[str, Any]:
+    artifact_dir = _task_agent_run_dir(task_run_id, step_id)
+    if not (artifact_dir / "agent_run.json").exists():
+        raise HTTPException(
+            status_code=404,
+            detail=f"Unknown task agent run: {task_run_id}/{step_id}",
+        )
+    try:
+        task_run = WorkbenchTaskRunStore(_task_runs_dir()).load(task_run_id)
+    except KeyError:
+        raise HTTPException(status_code=404, detail=f"Unknown task run: {task_run_id}")
+
+    validation = ArtifactValidationHarness(artifact_dir).validate_mr_artifacts(
+        required_artifacts=payload.required_artifacts,
+    )
+    if validation.status != "ok":
+        return {
+            "status": validation.status,
+            "validation": asdict(validation),
+            "evidence_count": 0,
+            "evidence_ids": [],
+        }
+    evidence_ids = _materialize_mr_artifact_evidence(
+        task_run=task_run,
+        step_id=step_id,
+        artifact_dir=artifact_dir,
+        object_text=payload.object_text,
+        required_artifacts=payload.required_artifacts,
+    )
+    return {
+        "status": "ok",
+        "validation": asdict(validation),
+        "evidence_count": len(evidence_ids),
+        "evidence_ids": evidence_ids,
+    }
+
+
+@router.get("/task-runs")
+async def list_task_runs(
+    workspace_id: str = "",
+    limit: int = Query(50, ge=1, le=200),
+) -> dict[str, Any]:
+    items = WorkbenchTaskRunStore(_task_runs_dir()).list(
+        workspace_id=workspace_id or None,
+        limit=limit,
+    )
+    return {"items": [asdict(item) for item in items]}
+
+
+@router.get("/task-runs/{task_run_id}")
+async def get_task_run(task_run_id: str) -> dict[str, Any]:
+    try:
+        task_run = WorkbenchTaskRunStore(_task_runs_dir()).load(task_run_id)
+    except KeyError:
+        raise HTTPException(status_code=404, detail=f"Unknown task run: {task_run_id}")
+    return asdict(task_run)
+
+
 @router.post("/task-runs/prepare", status_code=201)
 async def prepare_task_run(payload: PrepareTaskRunRequest) -> dict[str, Any]:
     try:
@@ -350,3 +420,99 @@ async def prepare_task_run(payload: PrepareTaskRunRequest) -> dict[str, Any]:
 
 def _workflow_response(payload: dict[str, Any]) -> dict[str, Any]:
     return dict(payload)
+
+
+def _materialize_mr_artifact_evidence(
+    *,
+    task_run: Any,
+    step_id: str,
+    artifact_dir: Path,
+    object_text: str,
+    required_artifacts: list[str],
+) -> list[str]:
+    agent_run = _read_json(artifact_dir / "agent_run.json")
+    snapshot = _read_json(artifact_dir / "mr_snapshot.json")
+    changed_files = _read_json(artifact_dir / "changed_files.json")
+    provider = str(agent_run.get("provider") or "external_agent") if isinstance(agent_run, dict) else "external_agent"
+    run_id = task_run.task_run_id
+    workspace_id = task_run.workspace_id
+    store = _memory_store()
+    store.record_analysis_run(
+        run_id=run_id,
+        workspace_id=workspace_id,
+        repo_path=task_run.repo_path,
+        object_text=object_text or _object_text_from_task_run(task_run, snapshot),
+        workflow_id=task_run.workflow_id,
+        status="completed",
+    )
+    evidence_ids: list[str] = []
+    provenance_base = {
+        "task_run_id": task_run.task_run_id,
+        "step_id": step_id,
+        "provider": provider,
+        "artifact_dir": str(artifact_dir),
+        "provenance_status": "agent_mcp_provenance",
+    }
+    if isinstance(snapshot, dict):
+        mr_url = str(snapshot.get("mr_url") or "")
+        evidence_ids.append(store.upsert_evidence_item(
+            run_id=run_id,
+            workspace_id=workspace_id,
+            kind="merge_request",
+            subject_key=mr_url or f"{task_run.task_run_id}/{step_id}/mr",
+            status="agent_mcp_verified",
+            source=provider,
+            reason="MR metadata was produced by Agent MCP and verified against required artifacts.",
+            text=" ".join(str(snapshot.get(key) or "") for key in ("project", "title", "source_branch", "target_branch")),
+            provenance={**provenance_base, "artifact": "mr_snapshot.json", "snapshot": snapshot},
+        ))
+    for artifact in required_artifacts:
+        path = artifact_dir / artifact
+        evidence_ids.append(store.upsert_evidence_item(
+            run_id=run_id,
+            workspace_id=workspace_id,
+            kind="agent_artifact",
+            subject_key=f"{task_run.task_run_id}/{step_id}/{artifact}",
+            status="verified_artifact",
+            source=provider,
+            path=str(path),
+            reason="Required Agent artifact passed CodeTalk validation.",
+            text=artifact,
+            provenance={**provenance_base, "artifact": artifact},
+        ))
+    if isinstance(changed_files, list):
+        for item in changed_files:
+            if not isinstance(item, dict):
+                continue
+            changed_path = str(item.get("path") or "").replace("\\", "/")
+            if not changed_path:
+                continue
+            evidence_ids.append(store.upsert_evidence_item(
+                run_id=run_id,
+                workspace_id=workspace_id,
+                kind="changed_file",
+                subject_key=changed_path,
+                status="agent_mcp_verified",
+                source=provider,
+                path=changed_path,
+                reason="Changed file came from Agent MCP MR artifacts and CodeTalk validation.",
+                text=" ".join(str(item.get(key) or "") for key in ("path", "status", "old_path", "new_path")),
+                provenance={**provenance_base, "artifact": "changed_files.json", "changed_file": item},
+            ))
+    return evidence_ids
+
+
+def _object_text_from_task_run(task_run: Any, snapshot: Any) -> str:
+    if isinstance(snapshot, dict) and snapshot.get("mr_url"):
+        return str(snapshot["mr_url"])
+    for value in (task_run.input_snapshot or {}).values():
+        if isinstance(value, str) and value:
+            return value
+    return task_run.workflow_id
+
+
+def _read_json(path: Path) -> Any:
+    try:
+        return json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return None

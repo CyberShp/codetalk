@@ -89,3 +89,51 @@ def test_prepare_workbench_task_run_ingests_file_inputs(tmp_path):
     assert Path(file_info["copied_path"]).exists()
     assert Path(file_info["parsed_text_path"]).read_text(encoding="utf-8").startswith("# Patch plan")
     assert Path(file_info["chunks_path"]).exists()
+
+
+def test_workbench_task_run_store_loads_and_lists_prepared_runs(tmp_path):
+    from app.services.workflow_dsl import WorkflowStore
+    from app.services.workbench_task_run import (
+        WorkbenchTaskRunPreparer,
+        WorkbenchTaskRunStore,
+    )
+
+    workflow_store = WorkflowStore(tmp_path / "workflows.db")
+    workflow_store.save_workflow({
+        "id": "module_review",
+        "name": "Module review",
+        "version": 1,
+        "inputs": [{"id": "module", "type": "free_text"}],
+        "steps": [{"id": "discover", "type": "agent_task"}],
+        "outputs": [{"id": "report", "type": "markdown"}],
+    })
+    root = tmp_path / "task_runs"
+    first = WorkbenchTaskRunPreparer(
+        artifact_root=root,
+        workflow_store=workflow_store,
+    ).prepare(
+        workflow_id="module_review",
+        workspace_id="ws1",
+        repo_path="E:/repo",
+        inputs={"module": "nvme-tcp-tls"},
+    )
+    second = WorkbenchTaskRunPreparer(
+        artifact_root=root,
+        workflow_store=workflow_store,
+    ).prepare(
+        workflow_id="module_review",
+        workspace_id="ws2",
+        repo_path="E:/repo",
+        inputs={"module": "bdev"},
+    )
+
+    store = WorkbenchTaskRunStore(root)
+
+    assert store.load(first.task_run_id).task_run_id == first.task_run_id
+    assert [item.task_run_id for item in store.list(limit=10)] == [
+        second.task_run_id,
+        first.task_run_id,
+    ]
+    assert [item.task_run_id for item in store.list(workspace_id="ws1")] == [
+        first.task_run_id,
+    ]

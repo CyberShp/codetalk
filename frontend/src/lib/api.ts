@@ -29,6 +29,7 @@ import type {
   AgentRunRecord,
   ArtifactValidationResult,
   AgentRunExecutionResult,
+  MaterializeEvidenceResult,
   PreparedWorkbenchTaskRun,
 } from "./types";
 
@@ -603,6 +604,22 @@ export const api = {
     },
 
     taskRuns: {
+      list: (params?: { workspace_id?: string; limit?: number }) => {
+        const query = new URLSearchParams({
+          ...(params?.workspace_id ? { workspace_id: params.workspace_id } : {}),
+          ...(params?.limit ? { limit: String(params.limit) } : {}),
+        });
+        const suffix = query.toString() ? `?${query.toString()}` : "";
+        return request<{ items: PreparedWorkbenchTaskRun[] }>(
+          `/api/workbench/task-runs${suffix}`,
+        );
+      },
+
+      get: (taskRunId: string) =>
+        request<PreparedWorkbenchTaskRun>(
+          `/api/workbench/task-runs/${encodeURIComponent(taskRunId)}`,
+        ),
+
       prepare: (data: {
         workflow_id: string;
         workspace_id: string;
@@ -634,6 +651,23 @@ export const api = {
           {
             method: "POST",
             body: JSON.stringify({ required_artifacts: requiredArtifacts }),
+          },
+        ),
+
+      materializeEvidence: (
+        taskRunId: string,
+        stepId: string,
+        requiredArtifacts: string[],
+        objectText = "",
+      ) =>
+        request<MaterializeEvidenceResult>(
+          `/api/workbench/task-runs/${encodeURIComponent(taskRunId)}/agent-runs/${encodeURIComponent(stepId)}/materialize-evidence`,
+          {
+            method: "POST",
+            body: JSON.stringify({
+              required_artifacts: requiredArtifacts,
+              object_text: objectText,
+            }),
           },
         ),
     },

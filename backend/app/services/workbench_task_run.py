@@ -135,5 +135,75 @@ class WorkbenchTaskRunPreparer:
         return result
 
 
+class WorkbenchTaskRunStore:
+    """Loads prepared task-run artifacts back into the Workbench."""
+
+    def __init__(self, artifact_root: str | Path) -> None:
+        self.artifact_root = Path(artifact_root)
+
+    def load(self, task_run_id: str) -> PreparedWorkbenchTaskRun:
+        task_run_dir = self.artifact_root / _safe_segment(task_run_id)
+        payload = _read_json(task_run_dir / "task_run.json")
+        if not isinstance(payload, dict):
+            raise KeyError(task_run_id)
+        return _prepared_task_run_from_payload(payload)
+
+    def list(
+        self,
+        *,
+        workspace_id: str | None = None,
+        limit: int = 50,
+    ) -> list[PreparedWorkbenchTaskRun]:
+        if not self.artifact_root.exists():
+            return []
+        runs: list[PreparedWorkbenchTaskRun] = []
+        for path in self.artifact_root.iterdir():
+            if not path.is_dir():
+                continue
+            payload = _read_json(path / "task_run.json")
+            if not isinstance(payload, dict):
+                continue
+            if workspace_id and payload.get("workspace_id") != workspace_id:
+                continue
+            try:
+                runs.append(_prepared_task_run_from_payload(payload))
+            except (KeyError, TypeError, ValueError):
+                continue
+        runs.sort(key=lambda item: item.created_at, reverse=True)
+        return runs[: max(1, int(limit))]
+
+
 def _write_json(path: Path, payload: Any) -> None:
     path.write_text(json.dumps(payload, ensure_ascii=False, indent=2, sort_keys=True), encoding="utf-8")
+
+
+def _read_json(path: Path) -> Any:
+    try:
+        return json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return None
+
+
+def _prepared_task_run_from_payload(payload: dict[str, Any]) -> PreparedWorkbenchTaskRun:
+    return PreparedWorkbenchTaskRun(
+        task_run_id=str(payload["task_run_id"]),
+        workflow_id=str(payload["workflow_id"]),
+        workspace_id=str(payload["workspace_id"]),
+        repo_path=str(payload["repo_path"]),
+        artifact_dir=str(payload["artifact_dir"]),
+        workflow_snapshot=dict(payload.get("workflow_snapshot") or {}),
+        input_snapshot=dict(payload.get("input_snapshot") or {}),
+        task_bundle=dict(payload.get("task_bundle") or {}),
+        agent_runs=[
+            dict(item) for item in payload.get("agent_runs") or []
+            if isinstance(item, dict)
+        ],
+        created_at=str(payload.get("created_at") or ""),
+    )
+
+
+def _safe_segment(value: str) -> str:
+    text = str(value or "").strip()
+    if not text or "/" in text or "\\" in text or ".." in text:
+        raise KeyError(value)
+    return text
