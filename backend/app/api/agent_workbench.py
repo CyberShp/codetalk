@@ -770,6 +770,17 @@ def _materialize_structured_workflow_output_evidence(
     data: bytes,
     sha256: str,
 ) -> list[str]:
+    if path.name == "uncovered_functions.json" or output_id == "uncovered_functions":
+        return _materialize_uncovered_function_evidence(
+            store=store,
+            task_run=task_run,
+            output=output,
+            output_id=output_id,
+            output_evidence_id=output_evidence_id,
+            path=path,
+            data=data,
+            sha256=sha256,
+        )
     if path.name != "changed_files.json" and output_id != "changed_files":
         return []
     try:
@@ -811,6 +822,64 @@ def _materialize_structured_workflow_output_evidence(
     return evidence_ids
 
 
+def _materialize_uncovered_function_evidence(
+    *,
+    store: EvidenceMemoryStore,
+    task_run: Any,
+    output: dict[str, Any],
+    output_id: str,
+    output_evidence_id: str,
+    path: Path,
+    data: bytes,
+    sha256: str,
+) -> list[str]:
+    try:
+        payload = json.loads(data.decode("utf-8"))
+    except (UnicodeDecodeError, json.JSONDecodeError):
+        return []
+    if not isinstance(payload, list):
+        return []
+    evidence_ids: list[str] = []
+    for item in payload:
+        if not isinstance(item, dict):
+            continue
+        file_path = str(item.get("file_path") or "").replace("\\", "/").strip()
+        function_name = str(item.get("function_name") or item.get("symbol") or "").strip()
+        if not file_path or not function_name:
+            continue
+        line_start = _safe_int(item.get("line_start"))
+        hit_count = _safe_int(item.get("hit_count"))
+        subject_key = f"{file_path}:{function_name}"
+        evidence_ids.append(store.upsert_evidence_item(
+            run_id=task_run.task_run_id,
+            workspace_id=task_run.workspace_id,
+            kind="coverage_gap",
+            subject_key=subject_key,
+            status="verified_output",
+            source=str(output.get("from") or "workflow"),
+            path=file_path,
+            symbol=function_name,
+            reason="Uncovered function came from a locally verified workflow coverage output.",
+            text=(
+                f"{file_path} {function_name} line_start={line_start} "
+                f"hit_count={hit_count}"
+            ),
+            provenance={
+                "task_run_id": task_run.task_run_id,
+                "workflow_id": task_run.workflow_id,
+                "output_id": output_id,
+                "output_evidence_id": output_evidence_id,
+                "artifact_path": str(path),
+                "sha256": sha256,
+                "file_path": file_path,
+                "function_name": function_name,
+                "line_start": line_start,
+                "hit_count": hit_count,
+            },
+        ))
+    return evidence_ids
+
+
 def _evidence_text_from_output(path: Path, data: bytes, *, fallback: str) -> str:
     if path.suffix.lower() in {".json", ".md", ".txt", ".patch", ".diff", ".log"}:
         return data[:16000].decode("utf-8", errors="replace")
@@ -824,6 +893,13 @@ def _object_text_from_task_run(task_run: Any, snapshot: Any) -> str:
         if isinstance(value, str) and value:
             return value
     return task_run.workflow_id
+
+
+def _safe_int(value: Any) -> int:
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        return 0
 
 
 def _artifact_manifest(task_dir: Path) -> list[dict[str, Any]]:

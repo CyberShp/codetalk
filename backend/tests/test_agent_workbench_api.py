@@ -683,6 +683,75 @@ async def test_workbench_materialize_changed_files_output_as_structured_memory(
     assert changed[0]["provenance"]["output_id"] == "changed_files"
 
 
+async def test_workbench_materialize_uncovered_functions_output_as_structured_memory(
+    workbench_client,
+    tmp_path,
+):
+    coverage_file = tmp_path / "coverage.info"
+    coverage_file.write_text(
+        "TN:\n"
+        "SF:nof/nvmf_tcp/transport/tls/tls.c\n"
+        "FN:42,nvmf_tcp_tls_handshake\n"
+        "FNDA:0,nvmf_tcp_tls_handshake\n"
+        "FN:88,nvmf_tcp_tls_cleanup\n"
+        "FNDA:4,nvmf_tcp_tls_cleanup\n"
+        "end_of_record\n",
+        encoding="utf-8",
+    )
+    workflow = {
+        "id": "coverage_gap_memory_workflow",
+        "name": "Coverage gap memory workflow",
+        "version": 1,
+        "inputs": [{"id": "coverage_report", "type": "coverage_report", "required": True}],
+        "steps": [{"id": "parse_coverage", "type": "coverage_parse"}],
+        "outputs": [
+            {
+                "id": "uncovered_functions",
+                "type": "json",
+                "from": "parse_coverage",
+                "artifact": "uncovered_functions.json",
+            }
+        ],
+    }
+    assert (await workbench_client.post("/api/workbench/workflows", json=workflow)).status_code == 201
+    prepared = await workbench_client.post(
+        "/api/workbench/task-runs/prepare",
+        json={
+            "workflow_id": "coverage_gap_memory_workflow",
+            "workspace_id": "ws-coverage-gap-memory",
+            "repo_path": str(tmp_path),
+            "inputs": {"coverage_report": {"path": str(coverage_file)}},
+        },
+    )
+    task_run_id = prepared.json()["task_run_id"]
+    executed = await workbench_client.post(
+        f"/api/workbench/task-runs/{task_run_id}/execute",
+        json={"timeout_sec": 10},
+    )
+    assert executed.status_code == 200
+    assert executed.json()["outputs"][0]["status"] == "ok"
+
+    materialized = await workbench_client.post(
+        f"/api/workbench/task-runs/{task_run_id}/materialize-outputs"
+    )
+
+    assert materialized.status_code == 200
+    body = materialized.json()
+    assert body["status"] == "ok"
+    assert body["evidence_count"] == 2
+    search = await workbench_client.get(
+        "/api/workbench/memory/search",
+        params={"q": "nvmf_tcp_tls_handshake", "workspace_id": "ws-coverage-gap-memory"},
+    )
+    assert search.status_code == 200
+    items = search.json()["items"]
+    gaps = [item for item in items if item["kind"] == "coverage_gap"]
+    assert gaps
+    assert gaps[0]["subject_key"] == "nof/nvmf_tcp/transport/tls/tls.c:nvmf_tcp_tls_handshake"
+    assert gaps[0]["symbol"] == "nvmf_tcp_tls_handshake"
+    assert gaps[0]["provenance"]["line_start"] == 42
+
+
 async def test_workbench_prepare_task_run_api(workbench_client):
     workflow = {
         "id": "mr_test_design",

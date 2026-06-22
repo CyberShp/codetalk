@@ -76,6 +76,7 @@ Evidence Memory stores structured facts rather than natural-language summaries:
 
 - validated and rejected files;
 - changed files and MR artifacts;
+- coverage gaps from verified `uncovered_functions.json` workflow outputs;
 - symbols, entries, source slices, and hashes;
 - provider status and command/runtime history;
 - validation errors and rejection reasons.
