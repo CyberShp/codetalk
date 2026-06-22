@@ -133,6 +133,11 @@ class AgentRunHarness:
         context_discovery_decision_summary = _context_discovery_decision_summary(
             task_bundle if isinstance(task_bundle, dict) else {}
         )
+        provider_diagnostics = _provider_diagnostics_snapshot(
+            run_payload=run_payload,
+            task_bundle=task_bundle if isinstance(task_bundle, dict) else {},
+        )
+        self._write_json("provider_diagnostics.json", provider_diagnostics)
         stdin_payload_obj = {
             "run_id": run_id,
             "turn_id": turn_id,
@@ -141,6 +146,7 @@ class AgentRunHarness:
             "workflow_snapshot": workflow_snapshot if isinstance(workflow_snapshot, dict) else {},
             "task_bundle": task_bundle if isinstance(task_bundle, dict) else {},
             "context_discovery_decision_summary": context_discovery_decision_summary,
+            "provider_diagnostics": provider_diagnostics,
             "artifact_dir": str(self.artifact_dir),
         }
         stdin_payload = json.dumps(stdin_payload_obj, ensure_ascii=False)
@@ -167,6 +173,7 @@ class AgentRunHarness:
                 "task_bundle_sha256": task_bundle_sha256,
                 "workflow_snapshot_sha256": workflow_snapshot_sha256,
                 "context_discovery_decision_summary": context_discovery_decision_summary,
+                "provider_diagnostics": provider_diagnostics,
                 "stdin": stdin_payload_obj,
                 "stdin_json_sha256": hashlib.sha256(
                     stdin_payload.encode("utf-8")
@@ -185,6 +192,7 @@ class AgentRunHarness:
                 "task_bundle_sha256": task_bundle_sha256,
                 "workflow_snapshot_sha256": workflow_snapshot_sha256,
                 "context_discovery_decision_summary": context_discovery_decision_summary,
+                "provider_diagnostics_artifact": "provider_diagnostics.json",
                 "created_at": started_at,
             },
             append_jsonl=True,
@@ -473,6 +481,38 @@ def _context_discovery_decision_summary(task_bundle: dict[str, Any]) -> dict[str
         if item:
             summary[provider] = item
     return summary
+
+
+def _provider_diagnostics_snapshot(
+    *,
+    run_payload: dict[str, Any],
+    task_bundle: dict[str, Any],
+) -> dict[str, Any]:
+    provider = str(run_payload.get("provider") or "").strip()
+    snapshot = task_bundle.get("provider_snapshot")
+    provider_info: dict[str, Any] = {}
+    if isinstance(snapshot, dict):
+        providers = snapshot.get("providers")
+        if isinstance(providers, dict):
+            raw_provider = providers.get(provider)
+            if isinstance(raw_provider, dict):
+                provider_info = raw_provider
+    diagnostics = provider_info.get("diagnostics") if isinstance(provider_info, dict) else {}
+    if not isinstance(diagnostics, dict):
+        diagnostics = {}
+    return {
+        "provider": provider,
+        "status": str(provider_info.get("status") or "unknown") if provider_info else "unknown",
+        "owner": str(provider_info.get("owner") or "agent_cli") if provider_info else "agent_cli",
+        "agent_owned": bool(provider_info.get("agent_owned", True)) if provider_info else True,
+        "codetalk_callable": bool(provider_info.get("codetalk_callable", False)) if provider_info else False,
+        "command": [str(part) for part in run_payload.get("command") or []],
+        "cwd": str(run_payload.get("cwd") or ""),
+        "mcp_profile": str(run_payload.get("mcp_profile") or ""),
+        "diagnostics": diagnostics,
+        "credential_boundary": str(provider_info.get("credential_boundary") or "") if provider_info else "",
+        "unavailable_behavior": str(provider_info.get("unavailable_behavior") or "") if provider_info else "",
+    }
 
 
 _SECRET_RE = re.compile(

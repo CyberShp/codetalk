@@ -190,7 +190,9 @@ function evidenceValidationSummary(
 const AUDIT_ARTIFACT_KIND_ORDER = [
   "task_bundle",
   "agent_task_bundle",
+  "agent_provider_diagnostics",
   "agent_turn_task_bundle",
+  "agent_turn_provider_diagnostics",
   "agent_turn_execution_input",
   "agent_turn_execution_result",
   "agent_turn_source_slice_requests",

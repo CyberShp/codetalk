@@ -475,6 +475,86 @@ def test_prepare_workbench_task_run_embeds_agent_provider_snapshot(tmp_path, mon
     assert step_bundle["provider_snapshot"]["codetalk_providers"]["gitnexus"]["owner"] == "codetalk_index"
 
 
+def test_agent_execution_persists_provider_diagnostics_snapshot(tmp_path, monkeypatch):
+    from app.config import settings
+    from app.services.workflow_dsl import WorkflowStore
+    from app.services.workbench_task_run import WorkbenchTaskRunPreparer
+    from app.services.workbench_workflow_runner import WorkbenchWorkflowRunner
+
+    script_path = tmp_path / "agent_echo_diagnostics.py"
+    script_path.write_text(
+        "import json, os, pathlib, sys\n"
+        "payload=json.loads(sys.stdin.read())\n"
+        "root=pathlib.Path(os.environ['CODETALK_AGENT_ARTIFACT_DIR'])\n"
+        "(root/'result.json').write_text(json.dumps(payload['provider_diagnostics']), encoding='utf-8')\n",
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(settings, "external_agent_custom_providers", [
+        {
+            "id": "corp-agent",
+            "command": f"python {script_path}",
+            "fallback_commands": ["corp-agent --legacy"],
+            "prompt_transport": "stdin",
+            "supports_mcp": True,
+            "mcp_profiles": ["codehub-readonly"],
+        }
+    ])
+    workflow_store = WorkflowStore(tmp_path / "workflows.db")
+    workflow_store.save_workflow({
+        "id": "provider_diagnostics_execution",
+        "name": "Provider diagnostics execution",
+        "version": 1,
+        "inputs": [{"id": "module", "type": "free_text"}],
+        "steps": [
+            {
+                "id": "discover",
+                "type": "agent_task",
+                "provider": "corp-agent",
+                "required_artifacts": ["result.json"],
+            }
+        ],
+        "outputs": [{"id": "result", "type": "json", "artifact": "result.json"}],
+    })
+    artifact_root = tmp_path / "task_runs"
+    prepared = WorkbenchTaskRunPreparer(
+        artifact_root=artifact_root,
+        workflow_store=workflow_store,
+    ).prepare(
+        workflow_id="provider_diagnostics_execution",
+        workspace_id="ws1",
+        repo_path=str(tmp_path),
+        inputs={"module": "nvme-tcp-tls"},
+    )
+
+    executed = WorkbenchWorkflowRunner(artifact_root).execute_task_run(
+        prepared.task_run_id,
+        timeout_sec=10,
+    )
+
+    assert executed.status == "completed"
+    artifact_dir = Path(prepared.artifact_dir, "agent_runs", "discover")
+    provider_diagnostics = json.loads(
+        (artifact_dir / "provider_diagnostics.json").read_text(encoding="utf-8")
+    )
+    assert provider_diagnostics["provider"] == "corp-agent"
+    assert provider_diagnostics["diagnostics"]["startup_probe_endpoint"] == (
+        "/api/tools/corp-agent/startup-probe"
+    )
+    assert provider_diagnostics["diagnostics"]["mcp_credentials_owner"] == "agent_cli"
+    execution_input = json.loads(
+        (artifact_dir / "execution_input.json").read_text(encoding="utf-8")
+    )
+    assert execution_input["provider_diagnostics"]["provider"] == "corp-agent"
+    agent_seen = json.loads((artifact_dir / "result.json").read_text(encoding="utf-8"))
+    assert agent_seen["diagnostics"]["startup_probe_transport"] == "stdin"
+    turn_snapshot = json.loads(
+        (artifact_dir / "turns" / "turn_1" / "provider_diagnostics.json").read_text(
+            encoding="utf-8"
+        )
+    )
+    assert turn_snapshot["diagnostics"]["configured_command_text"].startswith("python ")
+
+
 def test_workbench_task_run_store_loads_and_lists_prepared_runs(tmp_path):
     from app.services.workflow_dsl import WorkflowStore
     from app.services.workbench_task_run import (

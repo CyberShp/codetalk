@@ -1303,6 +1303,9 @@ async def test_workbench_task_run_artifacts_api_labels_agent_execution_input(
     execution_input = paths["agent_runs/discover/execution_input.json"]
     assert execution_input["kind"] == "agent_execution_input"
     assert "CODETALK_AGENT_READONLY" in execution_input["preview"]
+    provider_diagnostics = paths["agent_runs/discover/provider_diagnostics.json"]
+    assert provider_diagnostics["kind"] == "agent_provider_diagnostics"
+    assert "startup_probe_endpoint" in provider_diagnostics["preview"]
     assert (
         paths["steps/validate_evidence/evidence_validation.json"]["kind"]
         == "evidence_validation"
@@ -1374,6 +1377,10 @@ async def test_workbench_task_run_artifacts_api_labels_agent_turn_snapshots(
     assert (
         paths["agent_runs/discover/turns/turn_1/execution_input.json"]["kind"]
         == "agent_turn_execution_input"
+    )
+    assert (
+        paths["agent_runs/discover/turns/turn_1/provider_diagnostics.json"]["kind"]
+        == "agent_turn_provider_diagnostics"
     )
     assert paths["agent_runs/discover/turns/turn_1/raw_output.txt"]["kind"] == "agent_turn_raw_output"
     assert paths["agent_runs/discover/turns/turn_2/task_bundle.json"]["kind"] == "agent_turn_task_bundle"

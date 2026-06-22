@@ -1495,6 +1495,8 @@ def _artifact_kind(relative_path: str) -> str:
             return "agent_turn_raw_output"
         if name == "execution_result.json":
             return "agent_turn_execution_result"
+        if name == "provider_diagnostics.json":
+            return "agent_turn_provider_diagnostics"
         if name == "source_slice_requests.json":
             return "agent_turn_source_slice_requests"
         if name == "source_slices.json":
@@ -1537,6 +1539,8 @@ def _artifact_kind(relative_path: str) -> str:
         return "agent_run"
     if name == "execution_input.json":
         return "agent_execution_input"
+    if name == "provider_diagnostics.json":
+        return "agent_provider_diagnostics"
     if name.endswith(".json"):
         return "json"
     if name.endswith((".md", ".txt", ".patch", ".diff", ".log")):

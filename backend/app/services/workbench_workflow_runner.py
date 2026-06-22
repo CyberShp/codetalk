@@ -693,6 +693,7 @@ def _snapshot_agent_turn_artifacts(artifact_dir: Path, *, turn_id: str) -> str:
         "agent_run.json",
         "task_bundle.json",
         "workflow_snapshot.json",
+        "provider_diagnostics.json",
         "execution_input.json",
         "execution_result.json",
         "raw_output.txt",
