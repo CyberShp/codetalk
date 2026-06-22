@@ -91,6 +91,77 @@ def test_prepare_workbench_task_run_ingests_file_inputs(tmp_path):
     assert Path(file_info["chunks_path"]).exists()
 
 
+def test_prepare_workbench_task_run_validates_required_inputs(tmp_path):
+    from app.services.workflow_dsl import WorkflowStore
+    from app.services.workbench_task_run import WorkbenchTaskRunPreparer
+
+    workflow_store = WorkflowStore(tmp_path / "workflows.db")
+    workflow_store.save_workflow({
+        "id": "required_input_workflow",
+        "name": "Required input workflow",
+        "version": 1,
+        "inputs": [{"id": "target_scope", "type": "free_text", "required": True}],
+        "steps": [{"id": "render", "type": "report_render"}],
+        "outputs": [{"id": "report", "type": "markdown"}],
+    })
+
+    try:
+        WorkbenchTaskRunPreparer(
+            artifact_root=tmp_path / "task_runs",
+            workflow_store=workflow_store,
+        ).prepare(
+            workflow_id="required_input_workflow",
+            workspace_id="ws1",
+            repo_path=str(tmp_path),
+            inputs={},
+        )
+    except ValueError as exc:
+        assert "required input target_scope is missing" in str(exc)
+    else:
+        raise AssertionError("missing required input should fail task preparation")
+
+
+def test_prepare_workbench_task_run_ingests_file_set_inputs(tmp_path):
+    from app.services.workflow_dsl import WorkflowStore
+    from app.services.workbench_task_run import WorkbenchTaskRunPreparer
+
+    req = tmp_path / "requirements.md"
+    design = tmp_path / "design.md"
+    req.write_text("# Requirements\n\nTLS must fail closed.\n", encoding="utf-8")
+    design.write_text("# Design\n\nHandshake cleanup path.\n", encoding="utf-8")
+    workflow_store = WorkflowStore(tmp_path / "workflows.db")
+    workflow_store.save_workflow({
+        "id": "file_set_workflow",
+        "name": "File set workflow",
+        "version": 1,
+        "inputs": [{"id": "docs", "type": "file_set", "required": True}],
+        "steps": [{"id": "render", "type": "report_render"}],
+        "outputs": [{"id": "report", "type": "markdown"}],
+    })
+
+    result = WorkbenchTaskRunPreparer(
+        artifact_root=tmp_path / "task_runs",
+        workflow_store=workflow_store,
+    ).prepare(
+        workflow_id="file_set_workflow",
+        workspace_id="ws1",
+        repo_path=str(tmp_path),
+        inputs={"docs": [{"path": str(req)}, {"path": str(design)}]},
+    )
+
+    docs = result.input_snapshot["docs"]
+    assert docs["kind"] == "file_set"
+    assert docs["count"] == 2
+    assert [item["filename"] for item in docs["files"]] == [
+        "requirements.md",
+        "design.md",
+    ]
+    assert Path(docs["manifest_path"]).exists()
+    assert "TLS must fail closed" in Path(docs["files"][0]["parsed_text_path"]).read_text(
+        encoding="utf-8"
+    )
+
+
 def test_prepare_workbench_task_run_injects_evidence_and_semantic_context(tmp_path):
     from app.services.evidence_memory import EvidenceMemoryStore
     from app.services.test_semantic_library import TestSemanticLibraryStore

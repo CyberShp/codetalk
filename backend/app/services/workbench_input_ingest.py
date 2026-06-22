@@ -29,18 +29,66 @@ def ingest_workbench_inputs(
         if isinstance(item, dict) and item.get("id")
     }
     snapshot: dict[str, Any] = {}
+    for input_id, definition in defs_by_id.items():
+        if bool(definition.get("required", False)) and _is_missing_input((inputs or {}).get(input_id)):
+            raise ValueError(f"required input {input_id} is missing")
     for input_id, value in (inputs or {}).items():
-        definition = defs_by_id.get(str(input_id), {})
+        input_key = str(input_id)
+        definition = defs_by_id.get(input_key, {})
         input_type = str(definition.get("type") or "")
         if input_type in {"file", "coverage_report", "diff", "patch"}:
-            snapshot[str(input_id)] = _ingest_file(
-                input_id=str(input_id),
+            snapshot[input_key] = _ingest_file(
+                input_id=input_key,
+                value=value,
+                root=root,
+            )
+        elif input_type == "file_set":
+            snapshot[input_key] = _ingest_file_set(
+                input_id=input_key,
                 value=value,
                 root=root,
             )
         else:
-            snapshot[str(input_id)] = value
+            snapshot[input_key] = value
     return snapshot
+
+
+def _is_missing_input(value: Any) -> bool:
+    if value is None:
+        return True
+    if isinstance(value, str):
+        return not value.strip()
+    if isinstance(value, (list, tuple, dict, set)):
+        return len(value) == 0
+    return False
+
+
+def _ingest_file_set(*, input_id: str, value: Any, root: Path) -> dict[str, Any]:
+    if not isinstance(value, (list, tuple)):
+        raise ValueError(f"file_set input {input_id} must be a list of file paths")
+    input_root = root / _safe_name(input_id)
+    files: list[dict[str, Any]] = []
+    for index, item in enumerate(value):
+        file_info = _ingest_file(
+            input_id=f"{input_id}_{index + 1}",
+            value=item,
+            root=input_root,
+        )
+        file_info["file_set_index"] = index
+        files.append(file_info)
+    if not files:
+        raise ValueError(f"file_set input {input_id} is missing files")
+    manifest = {
+        "kind": "file_set",
+        "input_id": input_id,
+        "count": len(files),
+        "files": files,
+    }
+    manifest_path = input_root / "file_set_manifest.json"
+    manifest_path.parent.mkdir(parents=True, exist_ok=True)
+    manifest_path.write_text(json.dumps(manifest, ensure_ascii=False, indent=2), encoding="utf-8")
+    manifest["manifest_path"] = str(manifest_path)
+    return manifest
 
 
 def _ingest_file(*, input_id: str, value: Any, root: Path) -> dict[str, Any]:

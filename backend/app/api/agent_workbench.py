@@ -540,6 +540,8 @@ async def prepare_task_run(payload: PrepareTaskRunRequest) -> dict[str, Any]:
         )
     except KeyError:
         raise HTTPException(status_code=404, detail=f"Unknown workflow: {payload.workflow_id}")
+    except (FileNotFoundError, ValueError) as exc:
+        raise HTTPException(status_code=422, detail=str(exc))
     return asdict(result)
 
 

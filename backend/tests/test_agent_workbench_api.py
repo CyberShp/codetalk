@@ -653,6 +653,31 @@ async def test_workbench_prepare_task_run_api(workbench_client):
     assert body["agent_runs"][0]["step_id"] == "collect_mr"
 
 
+async def test_workbench_prepare_task_run_api_rejects_missing_required_input(workbench_client, tmp_path):
+    workflow = {
+        "id": "required_api_workflow",
+        "name": "Required API workflow",
+        "version": 1,
+        "inputs": [{"id": "target_scope", "type": "free_text", "required": True}],
+        "steps": [{"id": "render", "type": "report_render"}],
+        "outputs": [{"id": "report", "type": "markdown"}],
+    }
+    assert (await workbench_client.post("/api/workbench/workflows", json=workflow)).status_code == 201
+
+    resp = await workbench_client.post(
+        "/api/workbench/task-runs/prepare",
+        json={
+            "workflow_id": "required_api_workflow",
+            "workspace_id": "ws-required",
+            "repo_path": str(tmp_path),
+            "inputs": {},
+        },
+    )
+
+    assert resp.status_code == 422
+    assert "required input target_scope is missing" in resp.json()["detail"]
+
+
 async def test_workbench_task_run_artifacts_api_lists_audit_files(workbench_client, tmp_path):
     repo = tmp_path / "repo"
     repo.mkdir()
