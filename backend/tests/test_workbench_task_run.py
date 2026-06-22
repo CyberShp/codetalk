@@ -792,6 +792,104 @@ def test_prepare_workbench_task_run_includes_output_schemas_in_agent_bundle(
     ]
 
 
+def test_prepare_workbench_task_run_writes_workflow_contract_artifact(tmp_path, monkeypatch):
+    from app.config import settings
+    from app.services.workbench_task_run import WorkbenchTaskRunPreparer
+    from app.services.workflow_dsl import WorkflowStore
+
+    monkeypatch.setattr(settings, "external_agent_custom_providers", [
+        {
+            "id": "corp-agent",
+            "command": "corp-agent run --json",
+            "supports_mcp": True,
+            "mcp_profiles": ["codehub-readonly"],
+            "supports_artifact_export": True,
+            "supports_json_output": True,
+        }
+    ])
+
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    workflow_store = WorkflowStore(tmp_path / "workflows.db")
+    workflow_store.save_workflow({
+        "id": "contract_workflow",
+        "name": "Contract workflow",
+        "version": 1,
+        "inputs": [
+            {
+                "id": "mr_link",
+                "type": "mr_link",
+                "required": True,
+                "resolver": "agent_mcp",
+                "role": "merge request URL",
+            },
+            {"id": "design_doc", "type": "file", "required": False, "role": "design"},
+        ],
+        "steps": [
+            {
+                "id": "collect_mr",
+                "type": "agent_task",
+                "provider": "corp-agent",
+                "mcp_profile": "codehub-readonly",
+                "goal": "Collect MR context through Agent MCP.",
+                "required_artifacts": ["mr_snapshot.json", "changed_files.json"],
+            }
+        ],
+        "outputs": [
+            {
+                "id": "mr_scope",
+                "type": "json",
+                "from": "collect_mr",
+                "artifact": "mr_snapshot.json",
+                "schema": {
+                    "type": "object",
+                    "required": ["mr_url", "changed_files_count"],
+                    "properties": {
+                        "mr_url": {"type": "string"},
+                        "changed_files_count": {"type": "integer"},
+                    },
+                },
+            }
+        ],
+    })
+
+    result = WorkbenchTaskRunPreparer(
+        artifact_root=tmp_path / "task_runs",
+        workflow_store=workflow_store,
+    ).prepare(
+        workflow_id="contract_workflow",
+        workspace_id="ws-contract",
+        repo_path=str(repo),
+        inputs={"mr_link": "https://codehub.local/project/merge_requests/7"},
+    )
+
+    contract = result.task_bundle["workflow_contract"]
+    assert contract["workflow_id"] == "contract_workflow"
+    assert contract["inputs"][0] == {
+        "id": "mr_link",
+        "type": "mr_link",
+        "required": True,
+        "role": "merge request URL",
+        "resolver": "agent_mcp",
+        "agent_owned": True,
+    }
+    assert contract["agent_steps"][0]["provider"] == "corp-agent"
+    assert contract["agent_steps"][0]["mcp_profile"] == "codehub-readonly"
+    assert contract["agent_steps"][0]["agent_owned_mcp"] is True
+    assert contract["outputs"][0]["schema_required"] == ["mr_url", "changed_files_count"]
+    assert contract["outputs"][0]["has_schema"] is True
+    persisted = json.loads(
+        Path(result.artifact_dir, "workflow_contract.json").read_text(encoding="utf-8")
+    )
+    assert persisted == contract
+    step_bundle = json.loads(
+        Path(result.artifact_dir, "agent_runs", "collect_mr", "task_bundle.json").read_text(
+            encoding="utf-8"
+        )
+    )
+    assert step_bundle["workflow_contract"]["agent_steps"][0]["agent_owned_mcp"] is True
+
+
 def test_workbench_workflow_runner_infers_output_from_required_agent_artifact(
     tmp_path,
     monkeypatch,

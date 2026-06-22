@@ -103,6 +103,10 @@ class WorkbenchTaskRunPreparer:
             workflow_snapshot=workflow_snapshot,
             provider_override=provider_override,
         )
+        workflow_contract = build_workflow_contract(
+            workflow_snapshot=workflow_snapshot,
+            provider_snapshot=provider_snapshot,
+        )
         context_discovery_decision = build_context_discovery_decision(
             agent_instructions=agent_instructions,
             provider_snapshot=provider_snapshot,
@@ -119,6 +123,7 @@ class WorkbenchTaskRunPreparer:
             "workspace_id": workspace_id,
             "repo_path": repo_path,
             "inputs": input_snapshot,
+            "workflow_contract": workflow_contract,
             "agent_instructions": agent_instructions,
             "provider_snapshot": provider_snapshot,
             "context_discovery_decision": context_discovery_decision,
@@ -179,6 +184,7 @@ class WorkbenchTaskRunPreparer:
         )
         _write_json(artifact_dir / "task_run.json", asdict(result))
         _write_json(artifact_dir / "workflow_snapshot.json", workflow_snapshot)
+        _write_json(artifact_dir / "workflow_contract.json", workflow_contract)
         _write_json(artifact_dir / "input_snapshot.json", input_snapshot)
         _write_json(artifact_dir / "agent_instructions.json", agent_instructions)
         _write_json(artifact_dir / "provider_snapshot.json", provider_snapshot)
@@ -294,6 +300,124 @@ def build_output_schemas_by_step(workflow_snapshot: dict[str, Any]) -> dict[str,
             "schema": dict(schema),
         })
     return schemas
+
+
+def build_workflow_contract(
+    *,
+    workflow_snapshot: dict[str, Any],
+    provider_snapshot: dict[str, Any],
+) -> dict[str, Any]:
+    steps = provider_snapshot.get("steps") or {}
+    providers = provider_snapshot.get("providers") or {}
+    return {
+        "workflow_id": str(workflow_snapshot.get("id") or ""),
+        "workflow_name": str(workflow_snapshot.get("name") or ""),
+        "version": workflow_snapshot.get("version", 1),
+        "inputs": [
+            _workflow_contract_input(item)
+            for item in workflow_snapshot.get("inputs") or []
+            if isinstance(item, dict)
+        ],
+        "agent_steps": [
+            _workflow_contract_agent_step(
+                step,
+                provider_payload=_workflow_contract_provider_payload(
+                    step,
+                    providers=providers,
+                    steps=steps,
+                ),
+                step_payload=steps.get(str(step.get("id") or ""), {}) if isinstance(steps, dict) else {},
+            )
+            for step in workflow_snapshot.get("steps") or []
+            if isinstance(step, dict) and step.get("type") == "agent_task"
+        ],
+        "outputs": [
+            _workflow_contract_output(item)
+            for item in workflow_snapshot.get("outputs") or []
+            if isinstance(item, dict)
+        ],
+    }
+
+
+def _workflow_contract_input(item: dict[str, Any]) -> dict[str, Any]:
+    resolver = str(item.get("resolver") or "")
+    return {
+        "id": str(item.get("id") or ""),
+        "type": str(item.get("type") or ""),
+        "required": bool(item.get("required", False)),
+        "role": str(item.get("role") or ""),
+        "resolver": resolver,
+        "agent_owned": resolver == "agent_mcp",
+    }
+
+
+def _workflow_contract_provider_payload(
+    step: dict[str, Any],
+    *,
+    providers: Any,
+    steps: Any,
+) -> Any:
+    if not isinstance(providers, dict):
+        return {}
+    step_id = str(step.get("id") or "")
+    step_payload = steps.get(step_id, {}) if isinstance(steps, dict) else {}
+    provider = (
+        str(step_payload.get("provider") or "")
+        if isinstance(step_payload, dict)
+        else ""
+    )
+    if not provider:
+        provider = str(step.get("provider") or "claude-code")
+    return providers.get(provider, {})
+
+
+def _workflow_contract_agent_step(
+    step: dict[str, Any],
+    *,
+    provider_payload: Any,
+    step_payload: Any,
+) -> dict[str, Any]:
+    provider = str(
+        (step_payload or {}).get("provider")
+        if isinstance(step_payload, dict)
+        else step.get("provider") or "claude-code"
+    )
+    capabilities = (
+        provider_payload.get("capabilities")
+        if isinstance(provider_payload, dict) and isinstance(provider_payload.get("capabilities"), dict)
+        else {}
+    )
+    mcp_profile = str(step.get("mcp_profile") or "")
+    supports_mcp = bool(capabilities.get("supports_mcp"))
+    return {
+        "id": str(step.get("id") or ""),
+        "provider": provider,
+        "mcp_profile": mcp_profile,
+        "goal": str(step.get("goal") or ""),
+        "required_artifacts": [str(item) for item in step.get("required_artifacts") or []],
+        "prompt_transport": str(capabilities.get("prompt_transport") or ""),
+        "supports_mcp": supports_mcp,
+        "mcp_profiles": list(capabilities.get("mcp_profiles") or []),
+        "agent_owned_mcp": bool(mcp_profile or supports_mcp),
+    }
+
+
+def _workflow_contract_output(item: dict[str, Any]) -> dict[str, Any]:
+    schema = item.get("schema") or item.get("json_schema")
+    schema_required = []
+    schema_type = ""
+    if isinstance(schema, dict):
+        schema_required = [str(value) for value in schema.get("required") or []]
+        schema_type = str(schema.get("type") or "")
+    return {
+        "id": str(item.get("id") or ""),
+        "type": str(item.get("type") or ""),
+        "from": str(item.get("from") or item.get("source") or ""),
+        "artifact": str(item.get("artifact") or item.get("path") or ""),
+        "has_schema": isinstance(schema, dict),
+        "schema_type": schema_type,
+        "schema_required": schema_required,
+    }
 
 
 def build_agent_provider_snapshot(
