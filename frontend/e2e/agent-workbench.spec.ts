@@ -170,9 +170,16 @@ test("agent workbench renders workflow and task-run controls", async ({ page }) 
   await expect(page.getByText("fast-context").first()).toBeVisible();
   await expect(page.getByText("codetalk_mcp_bridge")).toBeVisible();
   await expect(page.getByRole("heading", { name: "Workflow Registry" })).toBeVisible();
+  await expect(page.getByLabel("Workflow builder scenario")).toBeVisible();
   await expect(page.getByRole("button", { name: "Apply preset" })).toBeVisible();
   await expect(page.getByRole("button", { name: "Install preset" })).toBeVisible();
   await expect(page.getByText("codehub-mcp")).toBeVisible();
+  await page.getByLabel("Workflow builder scenario").selectOption("patch_impact");
+  await page.getByRole("button", { name: "Generate draft" }).click();
+  await expect(page.getByText("Workflow draft generated: custom_mr_blackbox")).toBeVisible();
+  await expect(page.getByLabel("Workflow JSON")).toHaveValue(/"patch_file"/);
+  await expect(page.getByLabel("Workflow JSON")).toHaveValue(/"before_after_flow"/);
+  await expect(page.getByLabel("Workflow JSON")).toHaveValue(/"render_report"/);
   await expect(page.getByRole("button", { name: "Prepare run" })).toBeDisabled();
   await expect(page.getByRole("button", { name: "Execute workflow" })).toBeDisabled();
   await expect(page.getByLabel("Repo path")).toBeVisible();

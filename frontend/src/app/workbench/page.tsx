@@ -70,6 +70,37 @@ const DEFAULT_INPUTS = {
   coverage_report: "",
 };
 
+const WORKFLOW_BUILDER_SCENARIOS = {
+  module_analysis: {
+    name: "Module Analysis",
+    inputs: "analysis_object:free_text, design_doc:file, coverage_report:coverage_report",
+    outputs: "source_scope:scope_report, risk_findings:json, test_cases:test_cases",
+    goal: "Analyze the requested module, validate source scope, identify risk paths, and produce black-box oriented test cases.",
+    artifacts: "source_scope.json, risk_findings.json, black_box_cases.json",
+  },
+  issue_hunt: {
+    name: "Resource / Exception Hunt",
+    inputs: "analysis_object:free_text, issue_type:free_text, design_doc:file",
+    outputs: "issue_candidates:json, repro_paths:json, test_cases:test_cases",
+    goal: "Find resource leaks or exception-branch defects matching the requested issue type, with verifiable source evidence and observable tests.",
+    artifacts: "issue_candidates.json, repro_paths.json, black_box_cases.json",
+  },
+  mr_blackbox: {
+    name: "MR Black-box Tests",
+    inputs: "mr_link:mr_link, design_doc:file, coverage_report:coverage_report",
+    outputs: "mr_scope:scope_report, changed_behavior:json, black_box_cases:test_cases",
+    goal: "Use Agent-owned MCP credentials to read the MR, identify changed behavior and affected scope, then produce black-box test cases.",
+    artifacts: "mr_snapshot.json, diff.patch, changed_files.json, black_box_cases.json",
+  },
+  patch_impact: {
+    name: "Patch Impact Plan",
+    inputs: "patch_file:patch, design_doc:file, analysis_object:free_text",
+    outputs: "before_after_flow:markdown, impact_scope:scope_report, test_cases:test_cases",
+    goal: "Read the patch proposal, compare before/after flow, validate impact scope, and produce implementation and test recommendations.",
+    artifacts: "patch_summary.json, before_after_flow.md, impact_scope.json, black_box_cases.json",
+  },
+} as const;
+
 const DEFAULT_SEMANTIC_CASE = {
   case_id: "nvme_tcp_tls_handshake_fail",
   feature: "NVMe TCP TLS",
@@ -104,6 +135,26 @@ function parseJsonObject(value: string): Record<string, unknown> {
 
 function parseJsonValue(value: string): unknown {
   return JSON.parse(value) as unknown;
+}
+
+function parseCommaSeparated(value: string): string[] {
+  return value
+    .split(",")
+    .map((item) => item.trim())
+    .filter(Boolean);
+}
+
+function parseWorkflowSpecList(value: string, defaultType: string): Array<{
+  id: string;
+  type: string;
+}> {
+  return parseCommaSeparated(value).map((item) => {
+    const [id, type] = item.split(":").map((part) => part.trim());
+    if (!id) {
+      throw new Error("Workflow builder entries must use id:type");
+    }
+    return { id, type: type || defaultType };
+  });
 }
 
 function isBulkSemanticImportPayload(value: unknown): boolean {
@@ -307,6 +358,24 @@ export default function AgentWorkbenchPage() {
   const [workflows, setWorkflows] = useState<WorkflowDefinition[]>([]);
   const [workflowPresets, setWorkflowPresets] = useState<WorkflowPreset[]>([]);
   const [workflowJson, setWorkflowJson] = useState(pretty(DEFAULT_WORKFLOW));
+  const [builderScenario, setBuilderScenario] =
+    useState<keyof typeof WORKFLOW_BUILDER_SCENARIOS>("mr_blackbox");
+  const [builderWorkflowId, setBuilderWorkflowId] = useState("custom_mr_blackbox");
+  const [builderWorkflowName, setBuilderWorkflowName] = useState("Custom MR black-box workflow");
+  const [builderInputSpec, setBuilderInputSpec] = useState(
+    WORKFLOW_BUILDER_SCENARIOS.mr_blackbox.inputs,
+  );
+  const [builderOutputSpec, setBuilderOutputSpec] = useState(
+    WORKFLOW_BUILDER_SCENARIOS.mr_blackbox.outputs,
+  );
+  const [builderProvider, setBuilderProvider] = useState("claude-code");
+  const [builderMcpProfile, setBuilderMcpProfile] = useState("codehub-mcp");
+  const [builderGoal, setBuilderGoal] = useState(
+    WORKFLOW_BUILDER_SCENARIOS.mr_blackbox.goal,
+  );
+  const [builderArtifacts, setBuilderArtifacts] = useState(
+    WORKFLOW_BUILDER_SCENARIOS.mr_blackbox.artifacts,
+  );
   const [selectedPresetId, setSelectedPresetId] = useState("");
   const [selectedWorkflowId, setSelectedWorkflowId] = useState(DEFAULT_WORKFLOW.id);
   const [workspaceId, setWorkspaceId] = useState("manual-workspace");
@@ -400,6 +469,68 @@ export default function AgentWorkbenchPage() {
     const manifest = await api.workbench.taskRuns.artifacts(taskRunId);
     setArtifactManifest(manifest);
   }
+
+  function applyBuilderScenario(scenarioId: keyof typeof WORKFLOW_BUILDER_SCENARIOS) {
+    const scenario = WORKFLOW_BUILDER_SCENARIOS[scenarioId];
+    setBuilderScenario(scenarioId);
+    setBuilderWorkflowName(`Custom ${scenario.name}`);
+    setBuilderInputSpec(scenario.inputs);
+    setBuilderOutputSpec(scenario.outputs);
+    setBuilderGoal(scenario.goal);
+    setBuilderArtifacts(scenario.artifacts);
+  }
+
+  function generateWorkflowFromBuilder() {
+    const workflowId = builderWorkflowId.trim();
+    const workflowName = builderWorkflowName.trim();
+    if (!workflowId || !workflowName) {
+      throw new Error("Workflow builder requires workflow id and name");
+    }
+    const inputs = parseWorkflowSpecList(builderInputSpec, "free_text").map((input) => ({
+      id: input.id,
+      type: input.type,
+      required: input.type !== "file" && input.type !== "file_set",
+      resolver: input.type === "mr_link" || input.type === "external_link" ? "agent_mcp" : "manual",
+      role:
+        input.type === "mr_link"
+          ? "remote change source resolved by Agent CLI MCP credentials"
+          : "user-provided workflow input",
+    }));
+    const requiredArtifacts = parseCommaSeparated(builderArtifacts);
+    const outputs = parseWorkflowSpecList(builderOutputSpec, "json").map((output) => ({
+      id: output.id,
+      type: output.type,
+      from: "render_report",
+    }));
+    const workflow = {
+      id: workflowId,
+      name: workflowName,
+      version: 1,
+      inputs,
+      steps: [
+        {
+          id: "agent_collect",
+          type: "agent_task",
+          provider: builderProvider.trim() || "claude-code",
+          mcp_profile: builderMcpProfile.trim(),
+          goal: builderGoal.trim(),
+          required_artifacts: requiredArtifacts,
+        },
+        { id: "validate_evidence", type: "evidence_validate" },
+        { id: "semantic_retrieve", type: "semantic_retrieve" },
+        { id: "render_report", type: "report_render" },
+      ],
+      outputs,
+    };
+    setWorkflowJson(pretty(workflow));
+    setSelectedWorkflowId(workflow.id);
+    setMessage(`Workflow draft generated: ${workflow.id}`);
+  }
+
+  const generateWorkflowDraft = () =>
+    runAction("generate-workflow", async () => {
+      generateWorkflowFromBuilder();
+    });
 
   const saveWorkflow = () =>
     runAction("save-workflow", async () => {
@@ -811,10 +942,126 @@ export default function AgentWorkbenchPage() {
               {workflows.length} registered
             </span>
           </div>
+          <div className="mb-3 rounded-lg border border-outline-variant/30 bg-surface p-3">
+            <div className="mb-3 flex flex-wrap items-end gap-2">
+              <label className="min-w-48 flex-1">
+                <span className="mb-1 block text-xs text-on-surface-variant">Scenario</span>
+                <select
+                  value={builderScenario}
+                  onChange={(event) =>
+                    applyBuilderScenario(
+                      event.target.value as keyof typeof WORKFLOW_BUILDER_SCENARIOS,
+                    )
+                  }
+                  className="w-full rounded-lg border border-outline-variant/30 bg-surface-container px-3 py-2 text-sm text-on-surface outline-none focus:border-primary"
+                  aria-label="Workflow builder scenario"
+                >
+                  {Object.entries(WORKFLOW_BUILDER_SCENARIOS).map(([id, scenario]) => (
+                    <option key={id} value={id}>
+                      {scenario.name}
+                    </option>
+                  ))}
+                </select>
+              </label>
+              <button
+                onClick={generateWorkflowDraft}
+                disabled={busyAction === "generate-workflow"}
+                className="inline-flex items-center gap-2 rounded-lg bg-surface-container px-3 py-2 text-sm font-medium text-on-surface transition-colors hover:bg-surface-container-high disabled:opacity-50"
+              >
+                {busyAction === "generate-workflow" ? (
+                  <Loader2 size={14} className="animate-spin" />
+                ) : (
+                  <ClipboardList size={14} />
+                )}
+                Generate draft
+              </button>
+            </div>
+            <div className="grid gap-2 md:grid-cols-2">
+              <label className="block">
+                <span className="mb-1 block text-xs text-on-surface-variant">Workflow ID</span>
+                <input
+                  value={builderWorkflowId}
+                  onChange={(event) => setBuilderWorkflowId(event.target.value)}
+                  className="w-full rounded-lg border border-outline-variant/30 bg-surface-container px-3 py-2 text-sm text-on-surface outline-none focus:border-primary"
+                  aria-label="Workflow builder id"
+                />
+              </label>
+              <label className="block">
+                <span className="mb-1 block text-xs text-on-surface-variant">Workflow name</span>
+                <input
+                  value={builderWorkflowName}
+                  onChange={(event) => setBuilderWorkflowName(event.target.value)}
+                  className="w-full rounded-lg border border-outline-variant/30 bg-surface-container px-3 py-2 text-sm text-on-surface outline-none focus:border-primary"
+                  aria-label="Workflow builder name"
+                />
+              </label>
+              <label className="block">
+                <span className="mb-1 block text-xs text-on-surface-variant">Provider</span>
+                <input
+                  value={builderProvider}
+                  onChange={(event) => setBuilderProvider(event.target.value)}
+                  className="w-full rounded-lg border border-outline-variant/30 bg-surface-container px-3 py-2 text-sm text-on-surface outline-none focus:border-primary"
+                  aria-label="Workflow builder provider"
+                />
+              </label>
+              <label className="block">
+                <span className="mb-1 block text-xs text-on-surface-variant">MCP profile</span>
+                <input
+                  value={builderMcpProfile}
+                  onChange={(event) => setBuilderMcpProfile(event.target.value)}
+                  className="w-full rounded-lg border border-outline-variant/30 bg-surface-container px-3 py-2 text-sm text-on-surface outline-none focus:border-primary"
+                  aria-label="Workflow builder MCP profile"
+                />
+              </label>
+            </div>
+            <label className="mt-2 block">
+              <span className="mb-1 block text-xs text-on-surface-variant">
+                Inputs as id:type
+              </span>
+              <input
+                value={builderInputSpec}
+                onChange={(event) => setBuilderInputSpec(event.target.value)}
+                className="w-full rounded-lg border border-outline-variant/30 bg-surface-container px-3 py-2 font-data text-xs text-on-surface outline-none focus:border-primary"
+                aria-label="Workflow builder inputs"
+              />
+            </label>
+            <label className="mt-2 block">
+              <span className="mb-1 block text-xs text-on-surface-variant">
+                Outputs as id:type
+              </span>
+              <input
+                value={builderOutputSpec}
+                onChange={(event) => setBuilderOutputSpec(event.target.value)}
+                className="w-full rounded-lg border border-outline-variant/30 bg-surface-container px-3 py-2 font-data text-xs text-on-surface outline-none focus:border-primary"
+                aria-label="Workflow builder outputs"
+              />
+            </label>
+            <label className="mt-2 block">
+              <span className="mb-1 block text-xs text-on-surface-variant">
+                Required artifacts
+              </span>
+              <input
+                value={builderArtifacts}
+                onChange={(event) => setBuilderArtifacts(event.target.value)}
+                className="w-full rounded-lg border border-outline-variant/30 bg-surface-container px-3 py-2 font-data text-xs text-on-surface outline-none focus:border-primary"
+                aria-label="Workflow builder required artifacts"
+              />
+            </label>
+            <label className="mt-2 block">
+              <span className="mb-1 block text-xs text-on-surface-variant">Agent goal</span>
+              <textarea
+                value={builderGoal}
+                onChange={(event) => setBuilderGoal(event.target.value)}
+                className="h-20 w-full resize-y rounded-lg border border-outline-variant/30 bg-surface-container p-3 text-xs text-on-surface outline-none focus:border-primary"
+                aria-label="Workflow builder goal"
+              />
+            </label>
+          </div>
           <textarea
             value={workflowJson}
             onChange={(event) => setWorkflowJson(event.target.value)}
             className="h-80 w-full resize-y rounded-lg border border-outline-variant/30 bg-surface p-3 font-data text-xs text-on-surface outline-none focus:border-primary"
+            aria-label="Workflow JSON"
             spellCheck={false}
           />
         </Panel>
