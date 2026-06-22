@@ -25,6 +25,7 @@ from app.services.test_semantic_library import (
 )
 from app.services.workbench_task_run import WorkbenchTaskRunPreparer
 from app.services.workbench_task_run import WorkbenchTaskRunStore
+from app.services.workbench_task_run import build_codetalk_provider_snapshot
 from app.services.workbench_workflow_runner import WorkbenchWorkflowRunner
 from app.services.workflow_dsl import WorkflowStore, WorkflowValidationError
 from app.services.workflow_presets import (
@@ -196,7 +197,7 @@ async def install_builtin_workflow_preset(preset_id: str) -> dict[str, Any]:
 @router.get("/provider-capabilities")
 async def list_provider_capabilities() -> dict[str, Any]:
     """Return a side-effect-free capability matrix for Workbench Agent routing."""
-    providers = [
+    providers = _codetalk_provider_matrix_items() + [
         _agent_cli_provider_matrix_item(provider_id, spec)
         for provider_id, spec in external_agent_provider_specs().items()
     ]
@@ -209,6 +210,7 @@ async def list_provider_capabilities() -> dict[str, Any]:
             "Agent CLI providers may call their own MCP tools with their own credentials.",
             "CodeTalk validates Agent artifacts before materializing evidence.",
             "Unavailable providers are non-blocking for workflow preparation.",
+            "CodeTalk-callable providers and Agent-owned providers have separate credential boundaries.",
         ],
     }
 
@@ -568,11 +570,17 @@ def _agent_cli_provider_matrix_item(provider_id: str, spec: Any) -> dict[str, An
         "owner": "agent_cli",
         "status": status,
         "non_blocking": True,
+        "codetalk_callable": False,
+        "agent_owned": True,
         "command": command,
         "fallback_commands": fallback_commands,
         "readonly_args": list(spec.readonly_args),
         "command_hint_env": spec.command_hint_env,
         "capabilities": external_agent_provider_capabilities(provider_id),
+        "credential_boundary": (
+            "Agent CLI owns its own MCP credentials and remote access; CodeTalk only "
+            "passes task bundles and validates returned artifacts."
+        ),
         "unavailable_behavior": (
             "Workflow preparation continues; execution records unavailable or failed "
             "Agent diagnostics without trusting unvalidated output."
@@ -595,6 +603,8 @@ def _fast_context_provider_matrix_item() -> dict[str, Any]:
         "owner": "codetalk_mcp_bridge",
         "status": status,
         "non_blocking": True,
+        "codetalk_callable": status == "configured",
+        "agent_owned": False,
         "command": [],
         "fallback_commands": [],
         "readonly_args": [],
@@ -606,12 +616,24 @@ def _fast_context_provider_matrix_item() -> dict[str, Any]:
             "supports_artifact_export": False,
             "supports_json_output": True,
             "prompt_transport": "mcp",
+            "supports_source_discovery": True,
+            "supports_call_graph": False,
+            "supports_source_slices": False,
+            "supports_black_box_terms": False,
         },
+        "credential_boundary": (
+            "CodeTalk can call this MCP only when the backend bridge exposes it; "
+            "otherwise Agent CLIs may still have their own fast-context MCP."
+        ),
         "unavailable_behavior": (
             "CodeTalk records fast-context as unavailable and continues with local "
             "search, GitNexus/CGC, and Agent CLI providers."
         ),
     }
+
+
+def _codetalk_provider_matrix_items() -> list[dict[str, Any]]:
+    return list(build_codetalk_provider_snapshot().values())
 
 
 def _materialize_mr_artifact_evidence(

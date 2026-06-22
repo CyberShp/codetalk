@@ -46,6 +46,8 @@ async function routeWorkbenchShell(page: import("@playwright/test").Page) {
             owner: "agent_cli",
             status: "configured",
             non_blocking: true,
+            codetalk_callable: false,
+            agent_owned: true,
             command: ["ccr", "code"],
             fallback_commands: [["claude"]],
             readonly_args: [],
@@ -58,7 +60,37 @@ async function routeWorkbenchShell(page: import("@playwright/test").Page) {
               supports_json_output: true,
               prompt_transport: "claude_print_arg",
             },
+            credential_boundary:
+              "Agent CLI owns its own MCP credentials and remote access; CodeTalk only validates returned artifacts.",
             unavailable_behavior: "Workflow continues with diagnostics.",
+          },
+          {
+            provider: "local-search",
+            display_name: "Local repo search",
+            owner: "codetalk_builtin",
+            status: "available",
+            non_blocking: true,
+            codetalk_callable: true,
+            agent_owned: false,
+            command: [],
+            fallback_commands: [],
+            readonly_args: [],
+            command_hint_env: "",
+            capabilities: {
+              provider: "local-search",
+              supports_mcp: false,
+              mcp_profiles: [],
+              supports_artifact_export: false,
+              supports_json_output: true,
+              prompt_transport: "none",
+              supports_source_discovery: true,
+              supports_call_graph: false,
+              supports_source_slices: true,
+              supports_black_box_terms: false,
+            },
+            credential_boundary:
+              "CodeTalk owns this provider and validates any materialized evidence locally.",
+            unavailable_behavior: "Always available when the repository path is readable.",
           },
           {
             provider: "fast-context",
@@ -66,6 +98,8 @@ async function routeWorkbenchShell(page: import("@playwright/test").Page) {
             owner: "codetalk_mcp_bridge",
             status: "bridge_disabled",
             non_blocking: true,
+            codetalk_callable: false,
+            agent_owned: false,
             command: [],
             fallback_commands: [],
             readonly_args: [],
@@ -78,6 +112,8 @@ async function routeWorkbenchShell(page: import("@playwright/test").Page) {
               supports_json_output: true,
               prompt_transport: "mcp",
             },
+            credential_boundary:
+              "CodeTalk can call this MCP only when the backend bridge exposes it.",
             unavailable_behavior: "CodeTalk records unavailable and continues.",
           },
         ],
@@ -97,6 +133,11 @@ test("agent workbench renders workflow and task-run controls", async ({ page }) 
   await expect(page.getByRole("heading", { name: "Agent Workbench" })).toBeVisible();
   await expect(page.getByRole("heading", { name: "Provider Matrix" })).toBeVisible();
   await expect(page.getByText("ccr code")).toBeVisible();
+  await expect(page.getByText("Agent-owned").first()).toBeVisible();
+  await expect(page.getByText("CodeTalk callable").first()).toBeVisible();
+  await expect(page.getByText("Local repo search")).toBeVisible();
+  await expect(page.getByText("source discovery")).toBeVisible();
+  await expect(page.getByText("source slices")).toBeVisible();
   await expect(page.getByText("fast-context").first()).toBeVisible();
   await expect(page.getByText("codetalk_mcp_bridge")).toBeVisible();
   await expect(page.getByRole("heading", { name: "Workflow Registry" })).toBeVisible();

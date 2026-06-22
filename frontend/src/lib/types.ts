@@ -135,6 +135,10 @@ export interface AgentProviderCapabilities {
   supports_artifact_export: boolean;
   supports_json_output: boolean;
   prompt_transport?: string;
+  supports_source_discovery?: boolean;
+  supports_call_graph?: boolean;
+  supports_source_slices?: boolean;
+  supports_black_box_terms?: boolean;
 }
 
 export interface WorkbenchProviderMatrixItem {
@@ -143,11 +147,14 @@ export interface WorkbenchProviderMatrixItem {
   owner: "agent_cli" | "codetalk_mcp_bridge" | string;
   status: string;
   non_blocking: boolean;
+  codetalk_callable?: boolean;
+  agent_owned?: boolean;
   command: string[];
   fallback_commands: string[][];
   readonly_args: string[];
   command_hint_env: string;
   capabilities: AgentProviderCapabilities;
+  credential_boundary?: string;
   unavailable_behavior: string;
 }
 

@@ -118,6 +118,24 @@ async def test_workbench_provider_capabilities_matrix_api(workbench_client, monk
     assert by_id["fast-context"]["non_blocking"] is True
     assert "continues" in by_id["fast-context"]["unavailable_behavior"]
 
+    assert by_id["local-search"]["owner"] == "codetalk_builtin"
+    assert by_id["local-search"]["status"] == "available"
+    assert by_id["local-search"]["codetalk_callable"] is True
+    assert by_id["local-search"]["agent_owned"] is False
+
+    assert by_id["gitnexus"]["owner"] == "codetalk_index"
+    assert by_id["gitnexus"]["non_blocking"] is True
+    assert by_id["gitnexus"]["capabilities"]["supports_source_discovery"] is True
+
+    assert by_id["cgc"]["owner"] == "codetalk_index"
+    assert by_id["cgc"]["capabilities"]["supports_call_graph"] is True
+
+    assert by_id["evidence-memory"]["owner"] == "codetalk_memory"
+    assert by_id["evidence-memory"]["capabilities"]["supports_source_slices"] is True
+
+    assert by_id["semantic-library"]["owner"] == "codetalk_memory"
+    assert by_id["semantic-library"]["capabilities"]["supports_black_box_terms"] is True
+
 
 async def test_workbench_semantic_library_api(workbench_client):
     created = await workbench_client.post(

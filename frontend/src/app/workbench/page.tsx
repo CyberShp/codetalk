@@ -499,6 +499,23 @@ export default function AgentWorkbenchPage() {
                   {provider.status}
                 </span>
               </div>
+              <div className="mt-3 flex flex-wrap gap-1.5">
+                {provider.codetalk_callable && (
+                  <span className="rounded bg-green-400/10 px-2 py-0.5 text-[11px] font-medium text-green-500">
+                    CodeTalk callable
+                  </span>
+                )}
+                {provider.agent_owned && (
+                  <span className="rounded bg-primary/10 px-2 py-0.5 text-[11px] font-medium text-primary">
+                    Agent-owned
+                  </span>
+                )}
+                {!provider.codetalk_callable && !provider.agent_owned && (
+                  <span className="rounded bg-amber-400/10 px-2 py-0.5 text-[11px] font-medium text-amber-500">
+                    delegated or unavailable
+                  </span>
+                )}
+              </div>
               <div className="mt-3 space-y-1 text-on-surface-variant">
                 <p>
                   Owner:{" "}
@@ -529,6 +546,33 @@ export default function AgentWorkbenchPage() {
                   </span>
                 </p>
               </div>
+              <div className="mt-3 flex flex-wrap gap-1.5">
+                {provider.capabilities.supports_source_discovery && (
+                  <span className="rounded bg-surface-container px-2 py-0.5 text-[11px] text-on-surface">
+                    source discovery
+                  </span>
+                )}
+                {provider.capabilities.supports_call_graph && (
+                  <span className="rounded bg-surface-container px-2 py-0.5 text-[11px] text-on-surface">
+                    call graph
+                  </span>
+                )}
+                {provider.capabilities.supports_source_slices && (
+                  <span className="rounded bg-surface-container px-2 py-0.5 text-[11px] text-on-surface">
+                    source slices
+                  </span>
+                )}
+                {provider.capabilities.supports_black_box_terms && (
+                  <span className="rounded bg-surface-container px-2 py-0.5 text-[11px] text-on-surface">
+                    black-box terms
+                  </span>
+                )}
+              </div>
+              {provider.credential_boundary && (
+                <p className="mt-3 text-xs leading-5 text-on-surface-variant">
+                  {provider.credential_boundary}
+                </p>
+              )}
             </div>
           ))}
           {!providerMatrix && (

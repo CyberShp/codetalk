@@ -280,16 +280,25 @@ def build_agent_provider_snapshot(
             providers[provider] = {
                 "provider": provider,
                 "status": "unknown_provider",
+                "owner": "agent_cli",
+                "codetalk_callable": False,
+                "agent_owned": True,
                 "command": [provider],
                 "fallback_commands": [],
                 "capabilities": {},
                 "prompt_transport": "",
+                "credential_boundary": (
+                    "Provider is not configured; CodeTalk cannot launch it or validate its capability claims."
+                ),
             }
             warnings.append(f"{provider}: provider is not configured")
             continue
         providers[provider] = {
             "provider": provider,
             "status": "configured" if spec.command else "missing_command",
+            "owner": "agent_cli",
+            "codetalk_callable": False,
+            "agent_owned": True,
             "display_name": spec.display_name or provider,
             "command": split_agent_command(spec.command) if spec.command else [],
             "fallback_commands": [
@@ -301,14 +310,147 @@ def build_agent_provider_snapshot(
             "command_hint_env": spec.command_hint_env,
             "prompt_transport": spec.prompt_transport,
             "capabilities": external_agent_provider_capabilities(provider),
+            "credential_boundary": (
+                "Agent CLI owns its own MCP credentials and remote access; CodeTalk only "
+                "passes task bundles and validates returned artifacts."
+            ),
         }
         if not spec.command:
             warnings.append(f"{provider}: command is not configured")
     return {
         "created_at": _now(),
         "providers": providers,
+        "codetalk_providers": build_codetalk_provider_snapshot(),
         "steps": steps,
         "warnings": warnings,
+    }
+
+
+def build_codetalk_provider_snapshot() -> dict[str, dict[str, Any]]:
+    providers = [
+        _codetalk_provider_snapshot_item(
+            provider="local-search",
+            display_name="Local repo search",
+            owner="codetalk_builtin",
+            status="available",
+            capabilities={
+                "provider": "local-search",
+                "supports_mcp": False,
+                "mcp_profiles": [],
+                "supports_artifact_export": False,
+                "supports_json_output": True,
+                "prompt_transport": "none",
+                "supports_source_discovery": True,
+                "supports_call_graph": False,
+                "supports_source_slices": True,
+                "supports_black_box_terms": False,
+            },
+            unavailable_behavior="Always available when the repository path is readable.",
+        ),
+        _codetalk_provider_snapshot_item(
+            provider="gitnexus",
+            display_name="GitNexus",
+            owner="codetalk_index",
+            status="configured" if getattr(settings, "gitnexus_base_url", "") else "missing_config",
+            capabilities={
+                "provider": "gitnexus",
+                "supports_mcp": False,
+                "mcp_profiles": [],
+                "supports_artifact_export": False,
+                "supports_json_output": True,
+                "prompt_transport": "http",
+                "supports_source_discovery": True,
+                "supports_call_graph": True,
+                "supports_source_slices": False,
+                "supports_black_box_terms": False,
+            },
+            unavailable_behavior="CodeTalk records GitNexus as unavailable and continues with local search, CGC, memory, and Agent CLI providers.",
+        ),
+        _codetalk_provider_snapshot_item(
+            provider="cgc",
+            display_name="CGC",
+            owner="codetalk_index",
+            status="configured" if getattr(settings, "cgc_base_url", "") else "missing_config",
+            capabilities={
+                "provider": "cgc",
+                "supports_mcp": False,
+                "mcp_profiles": [],
+                "supports_artifact_export": False,
+                "supports_json_output": True,
+                "prompt_transport": "http_or_cli",
+                "supports_source_discovery": True,
+                "supports_call_graph": True,
+                "supports_source_slices": False,
+                "supports_black_box_terms": False,
+            },
+            unavailable_behavior="CodeTalk records CGC as unavailable and continues with local search, GitNexus, memory, and Agent CLI providers.",
+        ),
+        _codetalk_provider_snapshot_item(
+            provider="evidence-memory",
+            display_name="Evidence Memory",
+            owner="codetalk_memory",
+            status="available",
+            capabilities={
+                "provider": "evidence-memory",
+                "supports_mcp": False,
+                "mcp_profiles": [],
+                "supports_artifact_export": False,
+                "supports_json_output": True,
+                "prompt_transport": "none",
+                "supports_source_discovery": True,
+                "supports_call_graph": False,
+                "supports_source_slices": True,
+                "supports_black_box_terms": False,
+            },
+            unavailable_behavior="If no memory facts exist, CodeTalk continues with live discovery providers.",
+        ),
+        _codetalk_provider_snapshot_item(
+            provider="semantic-library",
+            display_name="Semantic Test Library",
+            owner="codetalk_memory",
+            status="available",
+            capabilities={
+                "provider": "semantic-library",
+                "supports_mcp": False,
+                "mcp_profiles": [],
+                "supports_artifact_export": False,
+                "supports_json_output": True,
+                "prompt_transport": "none",
+                "supports_source_discovery": False,
+                "supports_call_graph": False,
+                "supports_source_slices": False,
+                "supports_black_box_terms": True,
+            },
+            unavailable_behavior="If no semantic cases match, black-box generation falls back to validated entries and source evidence.",
+        ),
+    ]
+    return {item["provider"]: item for item in providers}
+
+
+def _codetalk_provider_snapshot_item(
+    *,
+    provider: str,
+    display_name: str,
+    owner: str,
+    status: str,
+    capabilities: dict[str, Any],
+    unavailable_behavior: str,
+) -> dict[str, Any]:
+    return {
+        "provider": provider,
+        "display_name": display_name,
+        "owner": owner,
+        "status": status,
+        "non_blocking": True,
+        "codetalk_callable": status in {"available", "configured"},
+        "agent_owned": False,
+        "command": [],
+        "fallback_commands": [],
+        "readonly_args": [],
+        "command_hint_env": "",
+        "capabilities": capabilities,
+        "credential_boundary": "CodeTalk owns this provider and validates any materialized evidence locally.",
+        "unavailable_behavior": unavailable_behavior,
     }
 
 
