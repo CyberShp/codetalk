@@ -133,6 +133,54 @@ function fastContextDecisionSummary(taskBundle: Record<string, unknown>): string
   return `fast-context: fallback to ${lastFallback}`;
 }
 
+type InputContextFileSummary = {
+  inputId: string;
+  kind: string;
+  filename: string;
+  suffix: string;
+  chunkCount: number;
+  textTruncated: boolean;
+  parseWarnings: string[];
+};
+
+type InputContextSummary = {
+  fileCount: number;
+  inputs: InputContextFileSummary[];
+};
+
+function inputContextSummary(taskBundle: Record<string, unknown>): InputContextSummary | null {
+  const inputContext = taskBundle.input_context;
+  if (!inputContext || typeof inputContext !== "object" || Array.isArray(inputContext)) {
+    return null;
+  }
+  const payload = inputContext as Record<string, unknown>;
+  const rawInputs = Array.isArray(payload.inputs) ? payload.inputs : [];
+  const inputs = rawInputs.flatMap((item) => {
+    if (!item || typeof item !== "object" || Array.isArray(item)) return [];
+    const rawInput = item as Record<string, unknown>;
+    const rawFiles = Array.isArray(rawInput.files) ? rawInput.files : [rawInput];
+    return rawFiles
+      .filter((file): file is Record<string, unknown> =>
+        Boolean(file && typeof file === "object" && !Array.isArray(file)),
+      )
+      .map((file) => ({
+        inputId: String(file.input_id ?? rawInput.input_id ?? ""),
+        kind: String(file.kind ?? rawInput.kind ?? ""),
+        filename: String(file.filename ?? file.original_path ?? file.copied_path ?? ""),
+        suffix: String(file.suffix ?? ""),
+        chunkCount: Number(file.chunk_count ?? 0) || 0,
+        textTruncated: file.text_truncated === true,
+        parseWarnings: Array.isArray(file.parse_warnings)
+          ? file.parse_warnings.map((warning) => String(warning)).filter(Boolean)
+          : [],
+      }))
+      .filter((file) => file.filename || file.inputId);
+  });
+  const fileCount = Number(payload.file_count ?? inputs.length) || inputs.length;
+  if (!fileCount && inputs.length === 0) return null;
+  return { fileCount, inputs };
+}
+
 type EvidenceValidationSummary = {
   acceptedCount: number;
   rejectedCount: number;
@@ -916,6 +964,46 @@ export default function AgentWorkbenchPage() {
                     <p className="mt-1 text-on-surface-variant">
                       Agent instructions: {instructions.files?.length ?? 0}
                     </p>
+                  );
+                })()}
+                {(() => {
+                  const summary = inputContextSummary(preparedRun.task_bundle);
+                  if (!summary) return null;
+                  return (
+                    <div className="mt-2 rounded bg-surface-container px-2 py-1.5 text-on-surface-variant">
+                      <p>Input context: {summary.fileCount} files</p>
+                      {summary.inputs.length > 0 && (
+                        <div className="mt-1 space-y-1">
+                          {summary.inputs.slice(0, 4).map((input, index) => (
+                            <div
+                              key={`${input.inputId}-${input.filename}-${index}`}
+                              className="rounded bg-surface px-1.5 py-1 font-data text-[10px]"
+                            >
+                              <span className="text-on-surface">
+                                {input.filename || input.inputId}
+                              </span>
+                              <span className="ml-1">
+                                {input.suffix || input.kind || "file"}
+                              </span>
+                              <span className="ml-1">chunks:{input.chunkCount}</span>
+                              {input.textTruncated && (
+                                <span className="ml-1 text-warning">truncated</span>
+                              )}
+                              {input.parseWarnings.length > 0 && (
+                                <span className="ml-1 text-warning">
+                                  warnings:{input.parseWarnings.length}
+                                </span>
+                              )}
+                            </div>
+                          ))}
+                          {summary.inputs.length > 4 && (
+                            <p className="font-data text-[10px]">
+                              +{summary.inputs.length - 4} more
+                            </p>
+                          )}
+                        </div>
+                      )}
+                    </div>
                   );
                 })()}
                 {(() => {

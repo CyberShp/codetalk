@@ -284,6 +284,20 @@ test("agent workbench previews task run artifact content", async ({ page }) => {
         workflow_snapshot: {},
         input_snapshot: {},
         task_bundle: {
+          input_context: {
+            file_count: 1,
+            inputs: [
+              {
+                input_id: "design_doc",
+                kind: "file",
+                filename: "tls-design.md",
+                suffix: ".md",
+                chunk_count: 2,
+                text_truncated: true,
+                parse_warnings: ["preview truncated"],
+              },
+            ],
+          },
           context_bundle: { evidence: [], semantic_cases: [] },
           agent_instructions: { files: [] },
           context_discovery_decision: {
@@ -409,6 +423,10 @@ test("agent workbench previews task run artifact content", async ({ page }) => {
   await expect(repoInput).toHaveValue("E:/repo");
   await expect(preparePanel.getByRole("button", { name: "Prepare run" })).toBeEnabled();
   await preparePanel.getByRole("button", { name: "Prepare run" }).click();
+  await expect(page.getByText("Input context: 1 files")).toBeVisible();
+  await expect(page.getByText("tls-design.md")).toBeVisible();
+  await expect(page.getByText("chunks:2")).toBeVisible();
+  await expect(page.getByText("warnings:1")).toBeVisible();
   await expect(page.getByText("fast-context: fallback to agent_cli")).toBeVisible();
   await expect(page.getByText("Audit artifacts: 3")).toBeVisible();
 
