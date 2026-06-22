@@ -401,3 +401,96 @@ def test_workbench_workflow_runner_executes_agent_steps_and_validates_artifacts(
     assert "secret-value" not in (
         root / "agent_runs" / "collect_mr" / "raw_output.txt"
     ).read_text(encoding="utf-8")
+
+
+def test_workbench_workflow_runner_executes_builtin_context_and_report_steps(tmp_path):
+    from app.services.evidence_memory import EvidenceMemoryStore
+    from app.services.test_semantic_library import TestSemanticLibraryStore
+    from app.services.workbench_task_run import WorkbenchTaskRunPreparer
+    from app.services.workbench_workflow_runner import WorkbenchWorkflowRunner
+    from app.services.workflow_dsl import WorkflowStore
+
+    memory = EvidenceMemoryStore(tmp_path / "memory.db")
+    memory.record_analysis_run(
+        run_id="run-prev",
+        workspace_id="ws-runner-builtins",
+        repo_path=str(tmp_path),
+        object_text="nvme tcp tls",
+        workflow_id="module_analysis",
+        status="completed",
+    )
+    memory.upsert_evidence_item(
+        run_id="run-prev",
+        workspace_id="ws-runner-builtins",
+        kind="source_file",
+        subject_key="nof/nvmf_tcp/transport/tls/tls.c",
+        status="verified_local",
+        source="external_agent",
+        path="nof/nvmf_tcp/transport/tls/tls.c",
+        reason="validated TLS source",
+        text="nvme tcp tls handshake cleanup",
+    )
+    semantics = TestSemanticLibraryStore(tmp_path / "semantics.db")
+    semantics.upsert_case({
+        "case_id": "TC_TLS_HANDSHAKE_FAIL",
+        "feature": "NVMe TCP TLS",
+        "module": "nvmf_tcp",
+        "scenario": "TLS handshake fails and connection is released",
+        "terms": ["TLS negotiation", "connection release"],
+        "test_level": "black_box",
+    })
+    workflow_store = WorkflowStore(tmp_path / "workflows.db")
+    workflow_store.save_workflow({
+        "id": "builtin_steps_workflow",
+        "name": "Builtin steps workflow",
+        "version": 1,
+        "inputs": [{"id": "module", "type": "free_text"}],
+        "steps": [
+            {"id": "semantic_lookup", "type": "semantic_retrieve"},
+            {"id": "memory_lookup", "type": "memory_retrieve"},
+            {"id": "validate_evidence", "type": "evidence_validate"},
+            {"id": "render_report", "type": "report_render"},
+        ],
+        "outputs": [
+            {"id": "report", "type": "markdown", "from": "render_report"},
+            {"id": "semantic_lookup", "type": "json", "from": "semantic_lookup"},
+            {"id": "memory_lookup", "type": "json", "from": "memory_lookup"},
+        ],
+    })
+    task_run = WorkbenchTaskRunPreparer(
+        artifact_root=tmp_path / "task_runs",
+        workflow_store=workflow_store,
+        evidence_memory=memory,
+        semantic_library=semantics,
+    ).prepare(
+        workflow_id="builtin_steps_workflow",
+        workspace_id="ws-runner-builtins",
+        repo_path=str(tmp_path),
+        inputs={"module": "nvme tcp tls"},
+    )
+
+    result = WorkbenchWorkflowRunner(tmp_path / "task_runs").execute_task_run(
+        task_run.task_run_id,
+        timeout_sec=10,
+    )
+
+    assert result.status == "completed"
+    assert [item["status"] for item in result.step_results] == [
+        "completed",
+        "completed",
+        "completed",
+        "completed",
+    ]
+    root = Path(task_run.artifact_dir)
+    semantic_artifact = root / "steps" / "semantic_lookup" / "semantic_lookup.json"
+    memory_artifact = root / "steps" / "memory_lookup" / "memory_lookup.json"
+    report_artifact = root / "steps" / "render_report" / "report.md"
+    assert "TC_TLS_HANDSHAKE_FAIL" in semantic_artifact.read_text(encoding="utf-8")
+    assert "nof/nvmf_tcp/transport/tls/tls.c" in memory_artifact.read_text(encoding="utf-8")
+    assert "TC_TLS_HANDSHAKE_FAIL" in report_artifact.read_text(encoding="utf-8")
+    output_status = {item["id"]: item["status"] for item in result.outputs}
+    assert output_status == {
+        "report": "ok",
+        "semantic_lookup": "ok",
+        "memory_lookup": "ok",
+    }

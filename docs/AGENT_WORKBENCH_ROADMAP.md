@@ -34,6 +34,7 @@ Current implementation note:
 - Backend scope resolution only invokes it when `fast_context_backend_bridge_enabled=true`; by default CodeTalk reports the bridge as unavailable without blocking analysis.
 - Candidate files returned by this provider are normalized through the same local source-file validation path as external Agent candidates.
 - Workbench task preparation reads applicable repo `AGENTS.md` files, stores them in `agent_instructions.json`, and injects them into every Agent task bundle. These instructions can require fast-context-first exploration while CodeTalk still records unavailable providers as non-blocking warnings.
+- Every prepared task bundle and execution audit should make the fast-context decision explicit: requested by repo instructions, callable by CodeTalk or not, fallback path used, and whether the external Agent CLI may satisfy the same instruction through its own MCP credentials.
 
 ## Repo Agent Instructions
 
@@ -110,3 +111,4 @@ Do not directly copy the whole clowder-ai harness or memory system into CodeTalk
 5. Add UI views for task bundle, provider warnings, validated evidence, rejected evidence, and generated artifacts.
 6. Keep AGENTS.md and other repo-local agent instructions visible in task bundles and debug artifacts so external CLI behavior is auditable.
 7. Add a visible provider capability matrix that separates CodeTalk-callable MCP providers from Agent-owned MCP providers, so internal deployments can explain why CodeTalk cannot call a tool while `ccr code`, OpenCode, or a self-developed Agent CLI can.
+8. Add regression coverage that a repo `AGENTS.md` fast-context-first rule is captured in the task bundle, appears in execution artifacts, and degrades cleanly when the MCP bridge is unavailable.

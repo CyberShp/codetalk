@@ -59,12 +59,14 @@ class WorkbenchWorkflowRunner:
             step_id = str(step.get("id") or "")
             step_type = str(step.get("type") or "")
             if step_type != "agent_task":
-                step_results.append({
-                    "step_id": step_id,
-                    "type": step_type,
-                    "status": "skipped",
-                    "reason": "step type is not executable by Agent Run Harness",
-                })
+                step_result = self._execute_builtin_step(
+                    task_run=task_run,
+                    step=step,
+                    prior_step_results=step_results,
+                )
+                step_results.append(step_result)
+                if stop_on_error and step_result.get("status") in {"error", "invalid"}:
+                    break
                 continue
 
             agent_run = agent_runs_by_step.get(step_id)
@@ -160,6 +162,129 @@ class WorkbenchWorkflowRunner:
             "required_artifacts": required_artifacts,
         }
 
+    def _execute_builtin_step(
+        self,
+        *,
+        task_run: Any,
+        step: dict[str, Any],
+        prior_step_results: list[dict[str, Any]],
+    ) -> dict[str, Any]:
+        step_id = str(step.get("id") or "")
+        step_type = str(step.get("type") or "")
+        artifact_dir = (
+            self.artifact_root
+            / _safe_segment(task_run.task_run_id)
+            / "steps"
+            / _safe_segment(step_id)
+        )
+        artifact_dir.mkdir(parents=True, exist_ok=True)
+
+        context_bundle = task_run.task_bundle.get("context_bundle") or {}
+        if step_type == "semantic_retrieve":
+            payload = {
+                "step_id": step_id,
+                "type": step_type,
+                "query": context_bundle.get("query") or "",
+                "semantic_cases": context_bundle.get("semantic_cases") or [],
+                "count": len(context_bundle.get("semantic_cases") or []),
+            }
+            artifact_path = artifact_dir / f"{step_id}.json"
+            _write_json(artifact_path, payload)
+            return _builtin_step_result(
+                step_id,
+                step_type,
+                artifact_dir,
+                artifact_path,
+                payload["count"],
+            )
+
+        if step_type == "memory_retrieve":
+            payload = {
+                "step_id": step_id,
+                "type": step_type,
+                "query": context_bundle.get("query") or "",
+                "evidence": context_bundle.get("evidence") or [],
+                "count": len(context_bundle.get("evidence") or []),
+            }
+            artifact_path = artifact_dir / f"{step_id}.json"
+            _write_json(artifact_path, payload)
+            return _builtin_step_result(
+                step_id,
+                step_type,
+                artifact_dir,
+                artifact_path,
+                payload["count"],
+            )
+
+        if step_type == "evidence_validate":
+            payload = _evidence_validation_payload(
+                task_run=task_run,
+                step_id=step_id,
+                prior_step_results=prior_step_results,
+            )
+            artifact_path = artifact_dir / f"{step_id}.json"
+            _write_json(artifact_path, payload)
+            _write_json(artifact_dir / "evidence_validation.json", payload)
+            return _builtin_step_result(
+                step_id,
+                step_type,
+                artifact_dir,
+                artifact_path,
+                payload.get("accepted_count", 0),
+            )
+
+        if step_type == "report_render":
+            written = _render_report_artifacts(
+                artifact_dir=artifact_dir,
+                step=step,
+                workflow_snapshot=task_run.workflow_snapshot,
+                task_run=task_run,
+                prior_step_results=prior_step_results,
+            )
+            return {
+                "step_id": step_id,
+                "type": step_type,
+                "status": "completed",
+                "artifact_dir": str(artifact_dir),
+                "artifacts": written,
+                "count": len(written),
+            }
+
+        if step_type in {"diff_parse", "file_ingest", "coverage_parse", "artifact_export"}:
+            payload = {
+                "step_id": step_id,
+                "type": step_type,
+                "status": "completed",
+                "inputs": task_run.input_snapshot,
+                "message": "Built-in step captured prepared input snapshot for downstream Agent steps.",
+            }
+            artifact_path = artifact_dir / f"{step_id}.json"
+            _write_json(artifact_path, payload)
+            return _builtin_step_result(
+                step_id,
+                step_type,
+                artifact_dir,
+                artifact_path,
+                len(task_run.input_snapshot),
+            )
+
+        payload = {
+            "step_id": step_id,
+            "type": step_type,
+            "status": "skipped",
+            "reason": "step type is not executable by Workbench runner",
+        }
+        artifact_path = artifact_dir / f"{step_id}.json"
+        _write_json(artifact_path, payload)
+        return {
+            "step_id": step_id,
+            "type": step_type,
+            "status": "skipped",
+            "artifact_dir": str(artifact_dir),
+            "artifact": str(artifact_path),
+            "reason": payload["reason"],
+        }
+
     def _collect_workflow_outputs(
         self,
         *,
@@ -186,10 +311,6 @@ class WorkbenchWorkflowRunner:
                 "artifact": artifact_name,
                 "status": "unresolved",
             }
-            if not artifact_name:
-                item["reason"] = "output artifact is not declared"
-                outputs.append(item)
-                continue
             step_result = steps_by_id.get(source_step) if source_step else None
             if step_result is None and not source_step:
                 inferred = _infer_output_step(steps_by_id, artifact_name)
@@ -204,6 +325,16 @@ class WorkbenchWorkflowRunner:
                 outputs.append(item)
                 continue
             artifact_dir = Path(str(step_result.get("artifact_dir") or ""))
+            if not artifact_name:
+                artifact_name = _infer_output_artifact_name(
+                    output=output,
+                    step_result=step_result,
+                )
+                item["artifact"] = artifact_name
+            if not artifact_name:
+                item["reason"] = "output artifact is not declared"
+                outputs.append(item)
+                continue
             artifact_path = _resolve_artifact_path(artifact_dir, artifact_name)
             if artifact_path is None:
                 item.update({
@@ -270,12 +401,15 @@ def _validate_step_artifacts(
 
 
 def _overall_status(step_results: list[dict[str, Any]]) -> str:
-    executed = [item for item in step_results if item.get("type") == "agent_task"]
-    if not executed:
+    actionable = [
+        item for item in step_results
+        if item.get("status") != "skipped"
+    ]
+    if not actionable:
         return "skipped"
-    if all(item.get("status") == "completed" for item in executed):
+    if all(item.get("status") == "completed" for item in actionable):
         return "completed"
-    if any(item.get("status") == "error" for item in executed):
+    if any(item.get("status") == "error" for item in actionable):
         return "error"
     return "invalid"
 
@@ -326,6 +460,184 @@ def _infer_output_step(
     return None
 
 
+def _infer_output_artifact_name(
+    *,
+    output: dict[str, Any],
+    step_result: dict[str, Any],
+) -> str:
+    output_id = str(output.get("id") or "").strip()
+    output_type = str(output.get("type") or "").strip().lower()
+    step_id = str(step_result.get("step_id") or "").strip()
+    required_artifacts = [
+        str(item)
+        for item in step_result.get("required_artifacts") or []
+        if str(item).strip()
+    ]
+    for ext in _output_extensions(output_type):
+        candidate = f"{output_id}{ext}"
+        if candidate in required_artifacts:
+            return candidate
+    if output_id:
+        for ext in _output_extensions(output_type):
+            return f"{output_id}{ext}"
+    if step_id:
+        for ext in _output_extensions(output_type):
+            return f"{step_id}{ext}"
+    return ""
+
+
+def _output_extensions(output_type: str) -> list[str]:
+    if output_type in {"markdown", "md", "report"}:
+        return [".md"]
+    if output_type in {"json", "scope_report", "test_cases"}:
+        return [".json"]
+    if output_type in {"patch", "diff"}:
+        return [".patch", ".diff"]
+    if output_type in {"text", "txt", "log"}:
+        return [".txt"]
+    return [".json"]
+
+
+def _builtin_step_result(
+    step_id: str,
+    step_type: str,
+    artifact_dir: Path,
+    artifact_path: Path,
+    count: int,
+) -> dict[str, Any]:
+    return {
+        "step_id": step_id,
+        "type": step_type,
+        "status": "completed",
+        "artifact_dir": str(artifact_dir),
+        "artifact": artifact_path.name,
+        "artifacts": [artifact_path.name],
+        "count": count,
+    }
+
+
+def _evidence_validation_payload(
+    *,
+    task_run: Any,
+    step_id: str,
+    prior_step_results: list[dict[str, Any]],
+) -> dict[str, Any]:
+    validations = [
+        item.get("validation")
+        for item in prior_step_results
+        if isinstance(item.get("validation"), dict)
+    ]
+    accepted = []
+    rejected = []
+    warnings = []
+    for validation in validations:
+        accepted.extend(validation.get("accepted_artifacts") or [])
+        rejected.extend(validation.get("rejected_artifacts") or [])
+        warnings.extend(validation.get("warnings") or [])
+    context_bundle = task_run.task_bundle.get("context_bundle") or {}
+    payload = {
+        "step_id": step_id,
+        "status": "completed",
+        "task_run_id": task_run.task_run_id,
+        "workspace_id": task_run.workspace_id,
+        "accepted_artifacts": accepted,
+        "rejected_artifacts": rejected,
+        "warnings": warnings,
+        "accepted_count": len(accepted),
+        "rejected_count": len(rejected),
+        "context_evidence_count": len(context_bundle.get("evidence") or []),
+        "semantic_case_count": len(context_bundle.get("semantic_cases") or []),
+    }
+    return payload
+
+
+def _render_report_artifacts(
+    *,
+    artifact_dir: Path,
+    step: dict[str, Any],
+    workflow_snapshot: dict[str, Any],
+    task_run: Any,
+    prior_step_results: list[dict[str, Any]],
+) -> list[str]:
+    step_id = str(step.get("id") or "")
+    outputs = [
+        output for output in workflow_snapshot.get("outputs") or []
+        if isinstance(output, dict)
+        and str(output.get("from") or output.get("source") or "") == step_id
+    ]
+    if not outputs:
+        outputs = [{"id": "report", "type": "markdown", "from": step_id}]
+    written: list[str] = []
+    content = _render_report_content(
+        task_run=task_run,
+        prior_step_results=prior_step_results,
+    )
+    for output in outputs:
+        output_id = str(output.get("id") or "report").strip() or "report"
+        artifact_name = str(output.get("artifact") or output.get("path") or "").strip()
+        if not artifact_name:
+            output_type = str(output.get("type") or "").lower()
+            ext = (
+                ".md"
+                if output_type in {"markdown", "md", ""}
+                else _output_extensions(output_type)[0]
+            )
+            artifact_name = f"{output_id}{ext}"
+        artifact_path = _resolve_artifact_path(artifact_dir, artifact_name)
+        if artifact_path is None:
+            continue
+        if artifact_path.suffix.lower() == ".json":
+            _write_json(artifact_path, {
+                "task_run_id": task_run.task_run_id,
+                "workflow_id": task_run.workflow_id,
+                "content": content,
+            })
+        else:
+            artifact_path.write_text(content, encoding="utf-8")
+        written.append(artifact_path.name)
+    return written
+
+
+def _render_report_content(
+    *,
+    task_run: Any,
+    prior_step_results: list[dict[str, Any]],
+) -> str:
+    context_bundle = task_run.task_bundle.get("context_bundle") or {}
+    lines = [
+        f"# {task_run.workflow_id} report",
+        "",
+        f"- Task run: `{task_run.task_run_id}`",
+        f"- Workspace: `{task_run.workspace_id}`",
+        f"- Repo: `{task_run.repo_path}`",
+        f"- Query: {context_bundle.get('query') or ''}",
+        "",
+        "## Workflow Steps",
+    ]
+    for result in prior_step_results:
+        lines.append(
+            f"- `{result.get('step_id')}` {result.get('type')}: {result.get('status')}"
+        )
+    evidence = context_bundle.get("evidence") or []
+    semantics = context_bundle.get("semantic_cases") or []
+    if evidence:
+        lines.extend(["", "## Evidence Memory"])
+        for item in evidence[:12]:
+            subject = item.get("subject_key") or item.get("path") or ""
+            reason = item.get("reason") or item.get("text") or ""
+            lines.append(
+                f"- {item.get('kind') or 'evidence'} `{subject}`: {reason}"
+            )
+    if semantics:
+        lines.extend(["", "## Semantic Cases"])
+        for item in semantics[:12]:
+            terms = ", ".join(item.get("terms") or [])
+            lines.append(
+                f"- {item.get('case_id')}: {item.get('scenario') or ''} ({terms})"
+            )
+    return "\n".join(lines).strip() + "\n"
+
+
 def _preview_bytes(data: bytes, *, max_chars: int = 4000) -> str:
     text = data[: max_chars * 4].decode("utf-8", errors="replace")
     if len(text) > max_chars:
@@ -338,3 +650,10 @@ def _safe_segment(value: str) -> str:
     if not text or "/" in text or "\\" in text or ".." in text:
         raise KeyError(value)
     return text
+
+
+def _write_json(path: Path, payload: Any) -> None:
+    path.write_text(
+        json.dumps(payload, ensure_ascii=False, indent=2, sort_keys=True),
+        encoding="utf-8",
+    )
