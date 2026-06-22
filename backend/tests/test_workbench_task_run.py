@@ -163,10 +163,14 @@ def test_prepare_workbench_task_run_injects_evidence_and_semantic_context(tmp_pa
     ]
 
 
-def test_prepare_workbench_task_run_embeds_repo_agent_instructions(tmp_path):
+def test_prepare_workbench_task_run_embeds_repo_agent_instructions(tmp_path, monkeypatch):
+    from app.config import settings
     from app.services.workflow_dsl import WorkflowStore
     from app.services.workbench_task_run import WorkbenchTaskRunPreparer
 
+    monkeypatch.setattr(settings, "context_discovery_enabled", True)
+    monkeypatch.setattr(settings, "fast_context_enabled", True)
+    monkeypatch.setattr(settings, "fast_context_backend_bridge_enabled", False)
     repo = tmp_path / "repo"
     target_dir = repo / "lib" / "thread"
     target_dir.mkdir(parents=True)
@@ -215,6 +219,28 @@ def test_prepare_workbench_task_run_embeds_repo_agent_instructions(tmp_path):
         Path(result.artifact_dir, "agent_runs", "discover", "task_bundle.json").read_text(encoding="utf-8")
     )
     assert step_bundle["agent_instructions"]["files"][0]["relative_path"] == "AGENTS.md"
+    decision = result.task_bundle["context_discovery_decision"]["fast-context"]
+    assert decision["requested_by_agent_instructions"] is True
+    assert decision["codetalk_callable"] is bool(
+        settings.context_discovery_enabled
+        and settings.fast_context_enabled
+        and settings.fast_context_backend_bridge_enabled
+    )
+    assert decision["fallback_path"] == [
+        "local_search",
+        "gitnexus",
+        "cgc",
+        "agent_cli",
+    ]
+    assert "bridge" in " ".join(decision["warnings"]).lower()
+    persisted_decision = json.loads(
+        Path(result.artifact_dir, "context_discovery_decision.json").read_text(encoding="utf-8")
+    )
+    assert persisted_decision["fast-context"]["requested_by_files"] == ["AGENTS.md"]
+    assert (
+        step_bundle["context_discovery_decision"]["fast-context"]["codetalk_callable"]
+        is decision["codetalk_callable"]
+    )
 
 
 def test_prepare_workbench_task_run_embeds_agent_provider_snapshot(tmp_path, monkeypatch):
@@ -410,6 +436,10 @@ def test_workbench_workflow_runner_executes_builtin_context_and_report_steps(tmp
     from app.services.workbench_workflow_runner import WorkbenchWorkflowRunner
     from app.services.workflow_dsl import WorkflowStore
 
+    (tmp_path / "AGENTS.md").write_text(
+        "Prefer fast-context before local grep.\n",
+        encoding="utf-8",
+    )
     memory = EvidenceMemoryStore(tmp_path / "memory.db")
     memory.record_analysis_run(
         run_id="run-prev",
@@ -494,3 +524,6 @@ def test_workbench_workflow_runner_executes_builtin_context_and_report_steps(tmp
         "semantic_lookup": "ok",
         "memory_lookup": "ok",
     }
+    execution = json.loads((root / "workflow_execution.json").read_text(encoding="utf-8"))
+    assert execution["context_discovery_decision"]["fast-context"]["requested_by_agent_instructions"] is True
+    assert execution["context_discovery_decision"]["fast-context"]["fallback_path"][-1] == "agent_cli"

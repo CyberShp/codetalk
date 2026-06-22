@@ -26,6 +26,7 @@ class WorkbenchWorkflowExecutionResult:
     status: str
     started_at: str
     completed_at: str
+    context_discovery_decision: dict[str, Any] = field(default_factory=dict)
     step_results: list[dict[str, Any]] = field(default_factory=list)
     outputs: list[dict[str, Any]] = field(default_factory=list)
 
@@ -105,6 +106,9 @@ class WorkbenchWorkflowRunner:
             status=status,
             started_at=started_at,
             completed_at=_now(),
+            context_discovery_decision=dict(
+                task_run.task_bundle.get("context_discovery_decision") or {}
+            ),
             step_results=step_results,
             outputs=outputs,
         )

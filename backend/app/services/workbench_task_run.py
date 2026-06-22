@@ -10,6 +10,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
+from app.config import settings
 from app.services.agent_run_harness import AgentRunHarness
 from app.services.evidence_memory import EvidenceMemoryStore
 from app.services.external_agent_discovery import (
@@ -101,6 +102,10 @@ class WorkbenchTaskRunPreparer:
             workflow_snapshot=workflow_snapshot,
             provider_override=provider_override,
         )
+        context_discovery_decision = build_context_discovery_decision(
+            agent_instructions=agent_instructions,
+            provider_snapshot=provider_snapshot,
+        )
         task_bundle = {
             "task_run_id": task_run_id,
             "workflow_id": workflow_id,
@@ -109,6 +114,7 @@ class WorkbenchTaskRunPreparer:
             "inputs": input_snapshot,
             "agent_instructions": agent_instructions,
             "provider_snapshot": provider_snapshot,
+            "context_discovery_decision": context_discovery_decision,
             "context_bundle": context_bundle,
             "required_artifacts_by_step": required_artifacts_by_step,
             "created_at": _now(),
@@ -163,6 +169,7 @@ class WorkbenchTaskRunPreparer:
         _write_json(artifact_dir / "input_snapshot.json", input_snapshot)
         _write_json(artifact_dir / "agent_instructions.json", agent_instructions)
         _write_json(artifact_dir / "provider_snapshot.json", provider_snapshot)
+        _write_json(artifact_dir / "context_discovery_decision.json", context_discovery_decision)
         _write_json(artifact_dir / "context_bundle.json", context_bundle)
         _write_json(artifact_dir / "task_bundle.json", task_bundle)
         return result
@@ -300,6 +307,84 @@ def build_agent_provider_snapshot(
         "steps": steps,
         "warnings": warnings,
     }
+
+
+def build_context_discovery_decision(
+    *,
+    agent_instructions: dict[str, Any],
+    provider_snapshot: dict[str, Any],
+) -> dict[str, Any]:
+    requested_files = _instruction_files_requesting_fast_context(agent_instructions)
+    codetalk_callable = bool(
+        getattr(settings, "context_discovery_enabled", True)
+        and getattr(settings, "fast_context_enabled", True)
+        and getattr(settings, "fast_context_backend_bridge_enabled", False)
+    )
+    providers = provider_snapshot.get("providers") or {}
+    steps = provider_snapshot.get("steps") or {}
+    agent_mcp_providers = [
+        provider
+        for provider, payload in providers.items()
+        if isinstance(payload, dict)
+        and bool((payload.get("capabilities") or {}).get("supports_mcp"))
+    ]
+    agent_steps_with_mcp_profile = [
+        step_id
+        for step_id, payload in steps.items()
+        if isinstance(payload, dict) and str(payload.get("mcp_profile") or "").strip()
+    ]
+    warnings: list[str] = []
+    if requested_files and not codetalk_callable:
+        if not getattr(settings, "context_discovery_enabled", True):
+            warnings.append("fast-context requested by AGENTS.md but context discovery is disabled")
+        elif not getattr(settings, "fast_context_enabled", True):
+            warnings.append("fast-context requested by AGENTS.md but provider is disabled")
+        else:
+            warnings.append("fast-context requested by AGENTS.md but backend MCP bridge is unavailable")
+    if requested_files and not agent_mcp_providers and not agent_steps_with_mcp_profile:
+        warnings.append("no Agent CLI step advertises MCP support or an MCP profile")
+    return {
+        "fast-context": {
+            "requested_by_agent_instructions": bool(requested_files),
+            "requested_by_files": requested_files,
+            "codetalk_provider": "fast-context",
+            "codetalk_callable": codetalk_callable,
+            "codetalk_settings": {
+                "context_discovery_enabled": bool(getattr(settings, "context_discovery_enabled", True)),
+                "fast_context_enabled": bool(getattr(settings, "fast_context_enabled", True)),
+                "fast_context_backend_bridge_enabled": bool(
+                    getattr(settings, "fast_context_backend_bridge_enabled", False)
+                ),
+            },
+            "fallback_path": [
+                "local_search",
+                "gitnexus",
+                "cgc",
+                "agent_cli",
+            ],
+            "agent_cli_mcp_possible": bool(agent_mcp_providers or agent_steps_with_mcp_profile),
+            "agent_cli_mcp_providers": agent_mcp_providers,
+            "agent_cli_mcp_steps": agent_steps_with_mcp_profile,
+            "agent_cli_credential_boundary": (
+                "Agent CLI may use its own MCP credentials; CodeTalk validates only returned artifacts."
+            ),
+            "warnings": warnings,
+        }
+    }
+
+
+def _instruction_files_requesting_fast_context(agent_instructions: dict[str, Any]) -> list[str]:
+    requested: list[str] = []
+    for item in agent_instructions.get("files") or []:
+        if not isinstance(item, dict):
+            continue
+        content = str(item.get("content") or "").lower()
+        if "fast-context" not in content and "fast_context" not in content:
+            continue
+        relative_path = str(item.get("relative_path") or item.get("path") or "").strip()
+        if relative_path:
+            requested.append(relative_path)
+    return requested
 
 
 def collect_agent_instructions(
