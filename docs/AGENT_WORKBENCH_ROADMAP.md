@@ -114,20 +114,208 @@ The first implementation still relies on process timeout and prompt-level readon
 
 ## Clowder-AI Reuse Policy
 
-Do not directly copy the whole clowder-ai harness or memory system into CodeTalk. Reuse the ideas, not the full runtime:
+Do not directly copy the whole clowder-ai harness or memory system into CodeTalk. Reuse the ideas, contracts, and verification habits, not the full runtime:
 
 - adopt task-scoped structured memory and evidence ledgers;
 - adopt explicit handoff/task bundles for Agent CLIs;
 - adopt audit artifacts for prompts, raw outputs, and validated facts;
-- avoid importing unrelated persona, long-term workspace memory, or broad orchestration machinery that would make CodeTalk harder to reason about.
+- adopt provider capability profiles so CodeTalk can explain what it can call directly, what the Agent CLI can call with its own credentials, and what is unavailable;
+- adopt "search result is an index, not an answer" discipline: any high-confidence memory/search hit must be backed by source reads, source slices, hashes, or validated artifacts before becoming evidence;
+- adopt consumption/trajectory telemetry for Evidence Memory retrieval, but use it only for navigation utility and audit, not as correctness or authority scoring;
+- avoid importing unrelated persona, multi-character collaboration behavior, long-term personal memory, or broad orchestration machinery that would make CodeTalk harder to reason about.
+
+Concrete decisions:
+
+1. Memory architecture to borrow:
+   - structured facts, source slices, hashes, provenance, accepted/rejected ledgers, and task trajectories;
+   - lexical/semantic/hybrid retrieval as separate paths, with explicit degraded mode when embeddings or external providers are unavailable;
+   - retrieval feedback such as "retrieved -> source read -> artifact used -> validated output" as an audit signal.
+2. Memory architecture not to borrow:
+   - natural-language conversation summaries as durable facts;
+   - workspace-wide personal memory by default;
+   - algorithmic truth/authority scoring from consumption metrics.
+3. Harness architecture to borrow:
+   - provider registry, health probes, launch diagnostics, stdout/stderr capture, artifact declarations, validation matrix, and close-gate style evidence accounting;
+   - provider-specific command profiles such as `ccr code`, `claude`, `opencode`, and self-developed internal Agent CLIs;
+   - capability profiles for MCP support, context budget, resume/session support, network requirements, and expected artifact protocol.
+4. Harness architecture not to borrow:
+   - direct control over the Agent's private MCP credentials;
+   - hidden long-lived sessions without CodeTalk-visible task bundles;
+   - trusting Agent-generated final conclusions without local validation.
+
+This means CodeTalk stays the deterministic control plane: it prepares the task bundle, launches or delegates to the Agent CLI, records what was requested, validates returned artifacts locally, and materializes only verified evidence. The Agent CLI can still perform credentialed work that CodeTalk cannot perform, such as CodeHub MCP access for an internal MR link.
+
+## Clowder-AI-Inspired Implementation Plan
+
+### Phase A: Capability Profiles and Provider Matrix
+
+Add a provider capability profile model for every context source and Agent CLI:
+
+- CodeTalk-callable providers: local search, fast-context bridge, GitNexus, CGC, semantic library, Evidence Memory.
+- Agent-owned providers: Agent CLI MCP servers such as CodeHub MCP, fast-context configured only inside `ccr code`, OpenCode MCP, or a self-developed internal Agent CLI.
+- CLI providers: `ccr code`, `claude`, `opencode`, and user-defined commands.
+
+Artifacts and UI must show:
+
+- command discovered or missing;
+- command launchable or configuration-error;
+- MCP callable by CodeTalk or only by Agent CLI;
+- auth boundary, for example "CodeTalk cannot fetch this MR; Agent CLI may fetch it through its configured CodeHub MCP";
+- degraded fallback path used.
+
+Tests:
+
+- `ccr code` command is parsed as an argv vector, not a single executable name;
+- missing `opencode` is unavailable without blocking;
+- configured Agent-owned MCP is shown as `agent_owned`, not `codetalk_callable`;
+- fast-context requested by `AGENTS.md` but unavailable to CodeTalk records a non-blocking warning.
+
+### Phase B: Task Bundle as the Handoff Boundary
+
+Every workflow run should produce a task bundle before Agent execution. The bundle is the only memory passed to a fresh Agent process.
+
+Bundle contents:
+
+- workflow id and step id;
+- user inputs and uploaded files;
+- repo instructions such as `AGENTS.md`;
+- provider capability profile;
+- context discovery decision;
+- Evidence Memory hits with source slices;
+- semantic test-library terms;
+- accepted/rejected evidence so far;
+- expected output schemas and artifact declarations;
+- readonly/safety instructions.
+
+The Agent may call its own MCP tools using its own credentials. CodeTalk does not attempt to steal or proxy those credentials. CodeTalk only validates the artifacts or JSON/stdout the Agent returns.
+
+Tests:
+
+- `AGENTS.md` fast-context-first instruction appears in every task bundle;
+- task bundle explicitly states whether CodeTalk can call fast-context itself;
+- uploaded docs and MR links are represented as structured inputs;
+- task bundle excludes raw previous Agent output unless it has been converted into validated facts.
+
+### Phase C: Evidence Memory Retrieval and Source-Read Discipline
+
+Bring the clowder-style "search -> read -> use -> verify" chain into CodeTalk Evidence Memory.
+
+Rules:
+
+- search results are pointers, not facts;
+- validated source slices are facts;
+- semantic-library matches can influence terminology in black-box cases, but not source or entry truth;
+- consumption telemetry can rerank future retrieval only after enough events and only as a navigation signal;
+- authority remains local validation, user-provided material, verified source, and accepted artifacts.
+
+Artifacts:
+
+- `memory_retrieval.json`;
+- `source_read_chain.json`;
+- `evidence_consumption_trajectory.json`;
+- `degraded_retrieval.json` when semantic or fast-context providers are unavailable.
+
+Tests:
+
+- Evidence Memory hit without source slice does not become source evidence;
+- semantic library terms can appear in recommended black-box case wording;
+- rejected paths enter `do_not_repeat`;
+- retrieval telemetry never marks evidence as validated by itself.
+
+### Phase D: Harness Close Gate and Artifact Validation Matrix
+
+Adopt clowder-ai's close-gate shape for CodeTalk workflow steps.
+
+For each workflow output, generate:
+
+- expected artifact;
+- producer step and provider;
+- schema validation result;
+- local path/source validation result;
+- sha256, size, and storage path;
+- accepted/rejected status and reason;
+- materialization target, if accepted.
+
+No workflow step should be considered complete merely because the Agent process exited successfully. It is complete only when required artifacts are either accepted or explicitly rejected with a visible reason and a configured fallback.
+
+Tests:
+
+- Agent exits 0 but missing artifact keeps step failed or degraded;
+- invalid JSON is stored raw but not materialized;
+- accepted/rejected counts are visible in API and UI preview;
+- report output cites validated evidence ids, not raw Agent text.
+
+### Phase E: Agent Session and Context Budget Policy
+
+Do not require persistent external Agent sessions in v1. Treat each Agent call as disposable, and let CodeTalk provide continuity through task bundles and Evidence Memory.
+
+Session behavior:
+
+- each Agent run has `run_id`, `turn_id`, provider, command, cwd, env hints, prompt/task bundle sha256, timeout, and artifacts;
+- optional provider-specific resume support can be added later, but it must remain visible in diagnostics;
+- context overflow triggers source-slice requests and additional turns, not free-text compression;
+- raw output stays in artifacts, not in future prompts unless validated.
+
+Tests:
+
+- second turn receives ledger facts and source slices, not raw first-turn prose;
+- context packet truncation records what was omitted and why;
+- provider resume disabled still produces deterministic task continuity.
+
+### Phase F: Custom Workflow Inputs and Agent-Owned MCP
+
+Workflow definitions must allow file inputs and link inputs without forcing CodeTalk to fetch everything itself.
+
+Input examples:
+
+- requirement/design documents;
+- coverage reports;
+- patch plans;
+- MR links;
+- patch files and diffs;
+- existing feature test cases for the semantic test library.
+
+For MR links and internal systems:
+
+- CodeTalk records the link as a structured input;
+- Agent CLI receives the link and the provider profile saying which MCP it may use;
+- Agent fetches through its own credentialed MCP;
+- Agent returns artifacts such as `mr_summary.json`, `changed_files.json`, or `patch_diff.json`;
+- CodeTalk validates any referenced repo files and hashes locally before materialization.
+
+Tests:
+
+- workflow can define required file input and optional link input;
+- Agent-owned CodeHub MCP capability appears in bundle and UI;
+- MR artifacts from Agent are rejected if changed files do not exist in the local repo or patch snapshot;
+- user-defined workflow output schemas are enforced.
+
+### Phase G: Fast-Context and AGENTS.md Compliance
+
+The root `AGENTS.md` rule says exploratory code understanding should prefer `mcp__fast-context__fast_context_search`. CodeTalk must preserve this as a first-class plan item:
+
+- if the fast-context MCP tool is exposed to CodeTalk, call it before local/index/Agent discovery;
+- if it is not exposed, record `fast_context_unavailable_to_codetalk` and continue;
+- if the Agent CLI may have fast-context or CodeHub MCP inside its own runtime, mark it as `agent_owned_possible`;
+- include the exact AGENTS instruction, provider decision, and fallback chain in task artifacts;
+- never silently treat a missing MCP as if the instruction did not exist.
+
+Tests:
+
+- fast-context unavailable does not block scope resolution;
+- unavailable warning appears in task preparation artifacts and provider matrix;
+- Agent task bundle still includes the fast-context-first instruction;
+- local validation remains mandatory for fast-context and Agent results.
 
 ## Next Implementation Phases
 
-1. Add provider diagnostics for `fast-context` MCP availability and record it in tool status.
-2. Add a `fast-context` source discovery provider that feeds the same candidate validation pipeline as local search, GitNexus, CGC, and external Agent CLI.
-3. Route workflow execution through the Agent Run Harness end to end, including artifact validation and materialization.
-4. Extend Evidence Memory retrieval so black-box test generation can use semantic test-library terminology and validated source/MR facts.
-5. Add UI views for task bundle, provider warnings, validated evidence, rejected evidence, and generated artifacts.
-6. Keep AGENTS.md and other repo-local agent instructions visible in task bundles and debug artifacts so external CLI behavior is auditable.
-7. Add a visible provider capability matrix that separates CodeTalk-callable MCP providers from Agent-owned MCP providers, so internal deployments can explain why CodeTalk cannot call a tool while `ccr code`, OpenCode, or a self-developed Agent CLI can.
-8. Add regression coverage that a repo `AGENTS.md` fast-context-first rule is captured in the task bundle, appears in execution artifacts, and degrades cleanly when the MCP bridge is unavailable.
+1. Finish the visible provider capability matrix, separating CodeTalk-callable MCP providers, Agent-owned MCP providers, local deterministic tools, GitNexus, CGC, and semantic memory.
+2. Add or harden provider diagnostics for `fast-context` MCP, `ccr code`, Claude Code, OpenCode, and user-defined internal Agent CLIs.
+3. Complete Agent Run Harness routing for workflow execution, including task bundles, artifact declarations, validation matrix, accepted/rejected evidence, and materialization.
+4. Extend Evidence Memory retrieval so black-box test generation can use semantic test-library terminology, validated source facts, source slices, MR facts, and coverage facts.
+5. Add source-read and consumption trajectory artifacts so the UI can answer "which search hit was actually read and used".
+6. Add UI views for task bundle, provider warnings, provider ownership, validated evidence, rejected evidence, generated artifacts, and source slices.
+7. Keep AGENTS.md and other repo-local agent instructions visible in task bundles and debug artifacts so external CLI behavior is auditable.
+8. Add custom workflow input/output schema editing, including file inputs, link inputs, user-defined artifacts, and Agent-owned MCP hints.
+9. Add regression coverage that a repo `AGENTS.md` fast-context-first rule is captured in the task bundle, appears in execution artifacts, and degrades cleanly when the MCP bridge is unavailable.
+10. Add regression coverage that Agent-owned MCP links, such as internal MR links, are passed to the Agent CLI but still require CodeTalk-local artifact and source validation before evidence materialization.
