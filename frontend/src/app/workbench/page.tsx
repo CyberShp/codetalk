@@ -179,6 +179,7 @@ const AUDIT_ARTIFACT_KIND_ORDER = [
   "provider_snapshot",
   "context_discovery_decision",
   "context_bundle",
+  "output_schemas",
   "memory_retrieval",
   "source_read_chain",
   "evidence_consumption_trajectory",

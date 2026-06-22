@@ -671,6 +671,127 @@ def test_workbench_workflow_runner_rejects_missing_required_agent_artifact(
     ]
 
 
+def test_workbench_workflow_runner_enforces_user_output_schema(
+    tmp_path,
+    monkeypatch,
+):
+    from app.config import settings
+    from app.services.workbench_task_run import WorkbenchTaskRunPreparer
+    from app.services.workbench_workflow_runner import WorkbenchWorkflowRunner
+    from app.services.workflow_dsl import WorkflowStore
+
+    script_path = tmp_path / "agent_bad_schema.py"
+    script_path.write_text(
+        "import json, os, pathlib\n"
+        "root=pathlib.Path(os.environ['CODETALK_AGENT_ARTIFACT_DIR'])\n"
+        "(root/'source_scope.json').write_text(json.dumps({'wrong': []}), encoding='utf-8')\n",
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(settings, "external_agent_custom_providers", [
+        {"id": "local-python", "command": f"python {script_path}"}
+    ])
+    workflow_store = WorkflowStore(tmp_path / "workflows.db")
+    workflow_store.save_workflow({
+        "id": "schema_enforced_workflow",
+        "name": "Schema enforced workflow",
+        "version": 1,
+        "inputs": [{"id": "module", "type": "free_text"}],
+        "steps": [
+            {
+                "id": "discover",
+                "type": "agent_task",
+                "provider": "local-python",
+                "required_artifacts": ["source_scope.json"],
+            }
+        ],
+        "outputs": [
+            {
+                "id": "scope",
+                "type": "json",
+                "from": "discover",
+                "artifact": "source_scope.json",
+                "schema": {"type": "object", "required": ["files"]},
+            }
+        ],
+    })
+    task_run = WorkbenchTaskRunPreparer(
+        artifact_root=tmp_path / "task_runs",
+        workflow_store=workflow_store,
+    ).prepare(
+        workflow_id="schema_enforced_workflow",
+        workspace_id="ws-schema",
+        repo_path=str(tmp_path),
+        inputs={"module": "nvme tcp tls"},
+    )
+
+    result = WorkbenchWorkflowRunner(tmp_path / "task_runs").execute_task_run(
+        task_run.task_run_id,
+        timeout_sec=10,
+    )
+
+    assert result.status == "invalid"
+    assert result.outputs[0]["status"] == "invalid"
+    assert result.outputs[0]["reason"] == "schema_validation_failed"
+    assert "missing required field: files" in result.outputs[0]["schema_errors"]
+
+
+def test_prepare_workbench_task_run_includes_output_schemas_in_agent_bundle(
+    tmp_path,
+):
+    from app.services.workbench_task_run import WorkbenchTaskRunPreparer
+    from app.services.workflow_dsl import WorkflowStore
+
+    workflow_store = WorkflowStore(tmp_path / "workflows.db")
+    workflow_store.save_workflow({
+        "id": "schema_bundle_workflow",
+        "name": "Schema bundle workflow",
+        "version": 1,
+        "inputs": [{"id": "module", "type": "free_text"}],
+        "steps": [
+            {
+                "id": "discover",
+                "type": "agent_task",
+                "provider": "local-python",
+                "required_artifacts": ["source_scope.json"],
+            }
+        ],
+        "outputs": [
+            {
+                "id": "scope",
+                "type": "json",
+                "from": "discover",
+                "artifact": "source_scope.json",
+                "schema": {"type": "object", "required": ["files"]},
+            }
+        ],
+    })
+
+    result = WorkbenchTaskRunPreparer(
+        artifact_root=tmp_path / "task_runs",
+        workflow_store=workflow_store,
+    ).prepare(
+        workflow_id="schema_bundle_workflow",
+        workspace_id="ws-schema-bundle",
+        repo_path=str(tmp_path),
+        inputs={"module": "nvme tcp tls"},
+    )
+
+    assert result.task_bundle["output_schemas_by_step"]["discover"][0] == {
+        "output_id": "scope",
+        "artifact": "source_scope.json",
+        "type": "json",
+        "schema": {"type": "object", "required": ["files"]},
+    }
+    step_bundle = json.loads(
+        Path(result.artifact_dir, "agent_runs", "discover", "task_bundle.json").read_text(
+            encoding="utf-8"
+        )
+    )
+    assert step_bundle["output_schemas_by_step"]["discover"][0]["schema"]["required"] == [
+        "files"
+    ]
+
+
 def test_workbench_workflow_runner_infers_output_from_required_agent_artifact(
     tmp_path,
     monkeypatch,

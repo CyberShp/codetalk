@@ -115,6 +115,7 @@ The harness launches configured Agent CLIs with a task bundle on stdin and captu
 - validation results, including accepted artifact path, size, and sha256 in `evidence_validation.json`.
 - each Agent step validation result now carries accepted/rejected artifact details, including path, sha256, size, and rejection reason, so workflow execution itself is a close-gate audit record.
 - changed-file workflow outputs are materialized only when each path is backed by a repo-local file or a task patch/diff snapshot; unsupported paths are rejected per item instead of becoming Evidence Memory facts.
+- user-defined output schemas are persisted in `output_schemas_by_step.json`, injected into Agent task bundles, and enforced when workflow outputs are collected; schema failures mark the output and workflow invalid.
 
 The first implementation still relies on process timeout and prompt-level readonly rules rather than OS sandboxing. That residual risk must stay visible in docs and diagnostics.
 

@@ -1473,6 +1473,8 @@ def _artifact_kind(relative_path: str) -> str:
         return "context_discovery_decision"
     if name == "context_bundle.json":
         return "context_bundle"
+    if name == "output_schemas_by_step.json":
+        return "output_schemas"
     if name == "memory_retrieval.json":
         return "memory_retrieval"
     if name == "source_read_chain.json":

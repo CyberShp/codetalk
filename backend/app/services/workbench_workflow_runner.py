@@ -406,6 +406,20 @@ class WorkbenchWorkflowRunner:
                 outputs.append(item)
                 continue
             data = artifact_path.read_bytes()
+            schema_errors = _validate_output_schema(
+                output=output,
+                data=data,
+                artifact_path=artifact_path,
+            )
+            if schema_errors:
+                item.update({
+                    "status": "invalid",
+                    "reason": "schema_validation_failed",
+                    "path": str(artifact_path),
+                    "schema_errors": schema_errors,
+                })
+                outputs.append(item)
+                continue
             item.update({
                 "status": "ok",
                 "path": str(artifact_path),
@@ -441,6 +455,70 @@ class WorkbenchWorkflowRunner:
             ),
             encoding="utf-8",
         )
+
+
+def _validate_output_schema(
+    *,
+    output: dict[str, Any],
+    data: bytes,
+    artifact_path: Path,
+) -> list[str]:
+    schema = output.get("schema") or output.get("json_schema")
+    if not isinstance(schema, dict):
+        return []
+    if artifact_path.suffix.lower() != ".json":
+        return ["schema validation requires a JSON artifact"]
+    try:
+        payload = json.loads(data.decode("utf-8"))
+    except (UnicodeDecodeError, json.JSONDecodeError) as exc:
+        return [f"invalid JSON: {exc}"]
+    return _validate_json_schema_fragment(payload, schema)
+
+
+def _validate_json_schema_fragment(payload: Any, schema: dict[str, Any]) -> list[str]:
+    errors: list[str] = []
+    expected_type = str(schema.get("type") or "").strip()
+    if expected_type:
+        type_error = _json_type_error(payload, expected_type)
+        if type_error:
+            errors.append(type_error)
+            return errors
+    if isinstance(payload, dict):
+        for field in schema.get("required") or []:
+            field_name = str(field)
+            if field_name not in payload:
+                errors.append(f"missing required field: {field_name}")
+        properties = schema.get("properties") or {}
+        if isinstance(properties, dict):
+            for field_name, property_schema in properties.items():
+                if field_name not in payload or not isinstance(property_schema, dict):
+                    continue
+                property_type = str(property_schema.get("type") or "").strip()
+                if property_type:
+                    type_error = _json_type_error(
+                        payload[field_name],
+                        property_type,
+                        path=str(field_name),
+                    )
+                    if type_error:
+                        errors.append(type_error)
+    return errors
+
+
+def _json_type_error(value: Any, expected_type: str, *, path: str = "$") -> str:
+    validators = {
+        "object": lambda item: isinstance(item, dict),
+        "array": lambda item: isinstance(item, list),
+        "string": lambda item: isinstance(item, str),
+        "number": lambda item: isinstance(item, (int, float)) and not isinstance(item, bool),
+        "integer": lambda item: isinstance(item, int) and not isinstance(item, bool),
+        "boolean": lambda item: isinstance(item, bool),
+        "null": lambda item: item is None,
+    }
+    validator = validators.get(expected_type)
+    if validator is None or validator(value):
+        return ""
+    return f"{path} expected {expected_type}"
 
 
 def _validate_step_artifacts(

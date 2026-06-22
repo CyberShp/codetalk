@@ -80,6 +80,7 @@ class WorkbenchTaskRunPreparer:
             for step in workflow_snapshot.get("steps") or []
             if isinstance(step, dict) and step.get("type") == "agent_task"
         }
+        output_schemas_by_step = build_output_schemas_by_step(workflow_snapshot)
         input_snapshot = ingest_workbench_inputs(
             input_definitions=[
                 item for item in workflow_snapshot.get("inputs") or []
@@ -127,6 +128,7 @@ class WorkbenchTaskRunPreparer:
             "evidence_consumption_trajectory": context_artifacts["evidence_consumption_trajectory"],
             "degraded_retrieval": context_artifacts["degraded_retrieval"],
             "required_artifacts_by_step": required_artifacts_by_step,
+            "output_schemas_by_step": output_schemas_by_step,
             "created_at": _now(),
         }
 
@@ -143,6 +145,7 @@ class WorkbenchTaskRunPreparer:
                 "step_id": step_id,
                 "goal": step.get("goal") or "",
                 "required_artifacts": required_artifacts_by_step.get(step_id, []),
+                "expected_output_schemas": output_schemas_by_step.get(step_id, []),
                 "mcp_profile": step.get("mcp_profile") or "",
             }
             agent_run = AgentRunHarness(artifact_dir / "agent_runs" / step_id).create_run(
@@ -181,6 +184,7 @@ class WorkbenchTaskRunPreparer:
         _write_json(artifact_dir / "provider_snapshot.json", provider_snapshot)
         _write_json(artifact_dir / "context_discovery_decision.json", context_discovery_decision)
         _write_json(artifact_dir / "context_bundle.json", context_bundle)
+        _write_json(artifact_dir / "output_schemas_by_step.json", output_schemas_by_step)
         _write_json(artifact_dir / "memory_retrieval.json", context_artifacts["memory_retrieval"])
         _write_json(artifact_dir / "source_read_chain.json", context_artifacts["source_read_chain"])
         _write_json(
@@ -270,6 +274,26 @@ def build_workbench_context_bundle(
             "semantic_cases": limit,
         },
     }
+
+
+def build_output_schemas_by_step(workflow_snapshot: dict[str, Any]) -> dict[str, list[dict[str, Any]]]:
+    schemas: dict[str, list[dict[str, Any]]] = {}
+    for output in workflow_snapshot.get("outputs") or []:
+        if not isinstance(output, dict):
+            continue
+        schema = output.get("schema") or output.get("json_schema")
+        if not isinstance(schema, dict):
+            continue
+        source_step = str(output.get("from") or output.get("source") or "").strip()
+        if not source_step:
+            continue
+        schemas.setdefault(source_step, []).append({
+            "output_id": str(output.get("id") or ""),
+            "artifact": str(output.get("artifact") or output.get("path") or ""),
+            "type": str(output.get("type") or ""),
+            "schema": dict(schema),
+        })
+    return schemas
 
 
 def build_agent_provider_snapshot(
