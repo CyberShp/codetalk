@@ -687,6 +687,45 @@ async def test_workbench_task_run_artifacts_api_lists_audit_files(workbench_clie
     assert paths["agent_runs/discover/task_bundle.json"]["kind"] == "agent_task_bundle"
 
 
+async def test_workbench_task_run_artifact_content_api_is_safe(workbench_client, tmp_path):
+    workflow = {
+        "id": "artifact_content_workflow",
+        "name": "Artifact content workflow",
+        "version": 1,
+        "inputs": [{"id": "module", "type": "free_text"}],
+        "steps": [{"id": "discover", "type": "agent_task", "provider": "claude-code"}],
+        "outputs": [{"id": "report", "type": "markdown"}],
+    }
+    assert (await workbench_client.post("/api/workbench/workflows", json=workflow)).status_code == 201
+    prepared = await workbench_client.post(
+        "/api/workbench/task-runs/prepare",
+        json={
+            "workflow_id": "artifact_content_workflow",
+            "workspace_id": "ws-artifact-content",
+            "repo_path": str(tmp_path),
+            "inputs": {"module": "nvme-tcp-tls"},
+        },
+    )
+    task_run_id = prepared.json()["task_run_id"]
+
+    content = await workbench_client.get(
+        f"/api/workbench/task-runs/{task_run_id}/artifacts/content/task_bundle.json"
+    )
+
+    assert content.status_code == 200
+    body = content.json()
+    assert body["relative_path"] == "task_bundle.json"
+    assert body["kind"] == "task_bundle"
+    assert body["sha256"]
+    assert body["truncated"] is False
+    assert "artifact_content_workflow" in body["content"]
+
+    escaped = await workbench_client.get(
+        f"/api/workbench/task-runs/{task_run_id}/artifacts/content/%2E%2E/outside.txt"
+    )
+    assert escaped.status_code == 400
+
+
 async def test_workbench_task_run_artifacts_api_labels_agent_execution_input(
     workbench_client,
     tmp_path,

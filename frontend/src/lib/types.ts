@@ -341,6 +341,12 @@ export interface WorkbenchTaskArtifactManifest {
   artifacts: WorkbenchTaskArtifact[];
 }
 
+export interface WorkbenchTaskArtifactContent extends WorkbenchTaskArtifact {
+  is_text: boolean;
+  truncated: boolean;
+  content: string;
+}
+
 export interface PreparedAgentRun {
   step_id: string;
   run_id: string;

@@ -506,6 +506,23 @@ async def list_task_run_artifacts(task_run_id: str) -> dict[str, Any]:
     }
 
 
+@router.get("/task-runs/{task_run_id}/artifacts/content/{artifact_path:path}")
+async def get_task_run_artifact_content(
+    task_run_id: str,
+    artifact_path: str,
+    max_chars: int = Query(20000, ge=1, le=200000),
+) -> dict[str, Any]:
+    try:
+        task_run = WorkbenchTaskRunStore(_task_runs_dir()).load(task_run_id)
+    except KeyError:
+        raise HTTPException(status_code=404, detail=f"Unknown task run: {task_run_id}")
+    task_dir = Path(task_run.artifact_dir)
+    path = _resolve_task_artifact_path(task_dir, artifact_path)
+    if not path.exists() or not path.is_file():
+        raise HTTPException(status_code=404, detail=f"Unknown artifact: {artifact_path}")
+    return _artifact_content_payload(task_dir, path, max_chars=max_chars)
+
+
 @router.post("/task-runs/prepare", status_code=201)
 async def prepare_task_run(payload: PrepareTaskRunRequest) -> dict[str, Any]:
     try:
@@ -810,6 +827,45 @@ def _artifact_preview(path: Path, data: bytes, *, max_chars: int = 1200) -> str:
         return ""
     text = data[: max_chars * 4].decode("utf-8", errors="replace")
     return text[:max_chars]
+
+
+def _resolve_task_artifact_path(task_dir: Path, artifact_path: str) -> Path:
+    normalized = str(artifact_path or "").replace("\\", "/").strip("/")
+    if not normalized:
+        raise HTTPException(status_code=400, detail="artifact path is required")
+    relative = Path(normalized)
+    if relative.is_absolute() or any(part in {"", ".", ".."} for part in relative.parts):
+        raise HTTPException(status_code=400, detail="invalid artifact path")
+    try:
+        root = task_dir.resolve()
+        resolved = (root / relative).resolve()
+    except OSError:
+        raise HTTPException(status_code=400, detail="invalid artifact path")
+    if resolved != root and root not in resolved.parents:
+        raise HTTPException(status_code=400, detail="artifact path escapes task directory")
+    return resolved
+
+
+def _artifact_content_payload(task_dir: Path, path: Path, *, max_chars: int) -> dict[str, Any]:
+    data = path.read_bytes()
+    relative_path = path.resolve().relative_to(task_dir.resolve()).as_posix()
+    is_text = path.suffix.lower() in {".json", ".md", ".txt", ".patch", ".diff", ".log"}
+    content = ""
+    truncated = False
+    if is_text:
+        text = data.decode("utf-8", errors="replace")
+        truncated = len(text) > max_chars
+        content = text[:max_chars]
+    return {
+        "relative_path": relative_path,
+        "path": str(path.resolve()),
+        "kind": _artifact_kind(relative_path),
+        "size_bytes": len(data),
+        "sha256": hashlib.sha256(data).hexdigest(),
+        "is_text": is_text,
+        "truncated": truncated,
+        "content": content,
+    }
 
 
 def _read_json(path: Path) -> Any:

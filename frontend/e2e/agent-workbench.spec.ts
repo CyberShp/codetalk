@@ -17,7 +17,13 @@ async function routeWorkbenchShell(page: import("@playwright/test").Page) {
       headers: corsHeaders(route.request().headers().origin),
     });
   });
-  await page.route("**/api/workbench/task-runs*", async (route) => {
+  await page.route("**/api/workbench/task-runs", async (route) => {
+    await route.fulfill({
+      json: { items: [] },
+      headers: corsHeaders(route.request().headers().origin),
+    });
+  });
+  await page.route("**/api/workbench/task-runs?*", async (route) => {
     await route.fulfill({
       json: { items: [] },
       headers: corsHeaders(route.request().headers().origin),
@@ -133,4 +139,84 @@ test("agent workbench searches semantic cases and evidence memory", async ({ pag
   await page.getByRole("button", { name: "Search", exact: true }).click();
   await expect(page.getByText("TLS handshake fails and connection is released")).toBeVisible();
   await expect(page.getByText("Memory facts are structured evidence only")).toBeVisible();
+});
+
+test("agent workbench previews task run artifact content", async ({ page }) => {
+  await routeWorkbenchShell(page);
+  await page.route("**/api/workbench/task-runs/prepare", async (route) => {
+    await route.fulfill({
+      headers: corsHeaders(route.request().headers().origin),
+      json: {
+        task_run_id: "task_run_preview",
+        workflow_id: "mr-blackbox-workflow",
+        workspace_id: "manual-workspace",
+        repo_path: "E:/repo",
+        artifact_dir: "E:/data/workbench/task_runs/task_run_preview",
+        workflow_snapshot: {},
+        input_snapshot: {},
+        task_bundle: {
+          context_bundle: { evidence: [], semantic_cases: [] },
+          agent_instructions: { files: [] },
+        },
+        agent_runs: [],
+        created_at: "2026-06-23T00:00:00Z",
+      },
+    });
+  });
+  await page.route("**/api/workbench/task-runs/task_run_preview/artifacts", async (route) => {
+    await route.fulfill({
+      headers: corsHeaders(route.request().headers().origin),
+      json: {
+        task_run_id: "task_run_preview",
+        artifact_dir: "E:/data/workbench/task_runs/task_run_preview",
+        artifacts: [
+          {
+            relative_path: "task_bundle.json",
+            path: "E:/data/workbench/task_runs/task_run_preview/task_bundle.json",
+            kind: "task_bundle",
+            size_bytes: 128,
+            sha256: "abc123",
+            preview: "{\"workflow_id\":\"mr-blackbox-workflow\"}",
+          },
+        ],
+      },
+    });
+  });
+  await page.route(
+    "**/api/workbench/task-runs/task_run_preview/artifacts/content/task_bundle.json",
+    async (route) => {
+      await route.fulfill({
+        headers: corsHeaders(route.request().headers().origin),
+        json: {
+          relative_path: "task_bundle.json",
+          path: "E:/data/workbench/task_runs/task_run_preview/task_bundle.json",
+          kind: "task_bundle",
+          size_bytes: 128,
+          sha256: "abc123abc123abc123",
+          preview: "{\"workflow_id\":\"mr-blackbox-workflow\"}",
+          is_text: true,
+          truncated: false,
+          content: "{\"workflow_id\":\"mr-blackbox-workflow\",\"provider\":\"claude-code\"}",
+        },
+      });
+    },
+  );
+
+  await page.goto("/workbench", { waitUntil: "domcontentloaded" });
+  await expect(page.getByText("ccr code")).toBeVisible();
+  const preparePanel = page
+    .locator("section")
+    .filter({ has: page.getByRole("heading", { name: "Prepare Task Run" }) });
+  const repoInput = preparePanel.getByLabel("Repo path");
+  await repoInput.click();
+  await repoInput.pressSequentially("E:/repo");
+  await expect(repoInput).toHaveValue("E:/repo");
+  await expect(preparePanel.getByRole("button", { name: "Prepare run" })).toBeEnabled();
+  await preparePanel.getByRole("button", { name: "Prepare run" }).click();
+  await expect(page.getByText("Audit artifacts: 1")).toBeVisible();
+
+  await page.getByRole("button", { name: "task_bundle:task_bundle.json" }).click();
+
+  await expect(page.getByText("sha:abc123abc123")).toBeVisible();
+  await expect(page.getByText("\"provider\":\"claude-code\"", { exact: false })).toBeVisible();
 });

@@ -35,6 +35,7 @@ import type {
   PreparedWorkbenchTaskRun,
   WorkflowExecutionResult,
   WorkbenchProviderCapabilitiesMatrix,
+  WorkbenchTaskArtifactContent,
   WorkbenchTaskArtifactManifest,
 } from "./types";
 
@@ -643,6 +644,16 @@ export const api = {
         request<WorkbenchTaskArtifactManifest>(
           `/api/workbench/task-runs/${encodeURIComponent(taskRunId)}/artifacts`,
         ),
+
+      artifactContent: (taskRunId: string, artifactPath: string) => {
+        const encodedPath = artifactPath
+          .split("/")
+          .map((part) => encodeURIComponent(part))
+          .join("/");
+        return request<WorkbenchTaskArtifactContent>(
+          `/api/workbench/task-runs/${encodeURIComponent(taskRunId)}/artifacts/content/${encodedPath}`,
+        );
+      },
 
       prepare: (data: {
         workflow_id: string;

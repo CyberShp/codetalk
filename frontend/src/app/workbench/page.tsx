@@ -25,6 +25,7 @@ import type {
   WorkflowExecutionResult,
   WorkflowPreset,
   WorkbenchProviderCapabilitiesMatrix,
+  WorkbenchTaskArtifactContent,
   WorkbenchTaskArtifactManifest,
 } from "@/lib/types";
 
@@ -137,6 +138,8 @@ export default function AgentWorkbenchPage() {
   const [preparedRun, setPreparedRun] = useState<PreparedWorkbenchTaskRun | null>(null);
   const [artifactManifest, setArtifactManifest] =
     useState<WorkbenchTaskArtifactManifest | null>(null);
+  const [artifactContent, setArtifactContent] =
+    useState<WorkbenchTaskArtifactContent | null>(null);
   const [workflowExecution, setWorkflowExecution] = useState<WorkflowExecutionResult | null>(null);
   const [workflowOutputMaterialize, setWorkflowOutputMaterialize] =
     useState<MaterializeWorkflowOutputsResult | null>(null);
@@ -258,6 +261,7 @@ export default function AgentWorkbenchPage() {
       setMaterializeResults({});
       setWorkflowExecution(null);
       setWorkflowOutputMaterialize(null);
+      setArtifactContent(null);
       await refreshArtifactManifest(result.task_run_id);
       setMessage(`Task run prepared: ${result.task_run_id}`);
     });
@@ -267,6 +271,17 @@ export default function AgentWorkbenchPage() {
       if (!preparedRun) return;
       await refreshArtifactManifest(preparedRun.task_run_id);
       setMessage(`Artifacts loaded: ${preparedRun.task_run_id}`);
+    });
+
+  const previewArtifact = (relativePath: string) =>
+    runAction(`preview-artifact-${relativePath}`, async () => {
+      if (!preparedRun) return;
+      const result = await api.workbench.taskRuns.artifactContent(
+        preparedRun.task_run_id,
+        relativePath,
+      );
+      setArtifactContent(result);
+      setMessage(`Artifact preview loaded: ${relativePath}`);
     });
 
   const executePreparedWorkflow = () =>
@@ -673,15 +688,42 @@ export default function AgentWorkbenchPage() {
                   <div className="mt-2 rounded bg-surface-container px-2 py-1.5 text-on-surface-variant">
                     Audit artifacts: {artifactManifest.artifacts.length}
                     <div className="mt-1 flex flex-wrap gap-1.5">
-                      {artifactManifest.artifacts.slice(0, 6).map((artifact) => (
-                        <span
+                      {artifactManifest.artifacts.slice(0, 8).map((artifact) => (
+                        <button
                           key={artifact.relative_path}
-                          className="rounded bg-surface px-1.5 py-0.5 font-data text-[10px]"
+                          onClick={() => previewArtifact(artifact.relative_path)}
+                          disabled={busyAction === `preview-artifact-${artifact.relative_path}`}
+                          className="rounded bg-surface px-1.5 py-0.5 text-left font-data text-[10px] transition-colors hover:bg-surface-container-high disabled:opacity-50"
                         >
                           {artifact.kind}:{artifact.relative_path}
-                        </span>
+                        </button>
                       ))}
                     </div>
+                    {artifactContent && (
+                      <div className="mt-2 rounded border border-outline-variant/30 bg-surface p-2">
+                        <div className="flex flex-wrap items-center gap-2 text-[11px]">
+                          <span className="font-medium text-on-surface">
+                            {artifactContent.relative_path}
+                          </span>
+                          <span className="font-data">{artifactContent.kind}</span>
+                          <span className="font-data">
+                            sha:{artifactContent.sha256.slice(0, 12)}
+                          </span>
+                          {artifactContent.truncated && (
+                            <span className="text-warning">truncated</span>
+                          )}
+                        </div>
+                        {artifactContent.is_text ? (
+                          <pre className="mt-2 max-h-52 overflow-auto whitespace-pre-wrap break-words rounded bg-surface-container p-2 font-data text-[10px] text-on-surface">
+                            {artifactContent.content}
+                          </pre>
+                        ) : (
+                          <p className="mt-2 text-[11px] text-on-surface-variant">
+                            Binary artifact content is not rendered inline.
+                          </p>
+                        )}
+                      </div>
+                    )}
                   </div>
                 )}
                 {workflowExecution && (
@@ -835,6 +877,7 @@ export default function AgentWorkbenchPage() {
                         setExecutionResults({});
                         setValidationResults({});
                         setMaterializeResults({});
+                        setArtifactContent(null);
                       }}
                       className="block w-full rounded-md bg-surface-container px-2.5 py-2 text-left transition-colors hover:bg-surface-container-high"
                     >
