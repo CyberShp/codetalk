@@ -499,6 +499,31 @@ def test_agent_execution_persists_provider_diagnostics_snapshot(tmp_path, monkey
             "mcp_profiles": ["codehub-readonly"],
         }
     ])
+
+    def fake_health(provider, command, fallback_commands=None):
+        return {
+            "provider": provider,
+            "status": "available",
+            "configured_command": command,
+            "command": command,
+            "argv": ["python", str(script_path)],
+            "path": str(script_path),
+            "launch_kind": "exec",
+            "used_fallback": False,
+            "attempts": [
+                {
+                    "command": command,
+                    "status": "available",
+                    "launch_kind": "exec",
+                    "path": str(script_path),
+                }
+            ],
+        }
+
+    monkeypatch.setattr(
+        "app.services.external_agent_discovery.check_provider_health",
+        fake_health,
+    )
     workflow_store = WorkflowStore(tmp_path / "workflows.db")
     workflow_store.save_workflow({
         "id": "provider_diagnostics_execution",
@@ -541,18 +566,103 @@ def test_agent_execution_persists_provider_diagnostics_snapshot(tmp_path, monkey
         "/api/tools/corp-agent/startup-probe"
     )
     assert provider_diagnostics["diagnostics"]["mcp_credentials_owner"] == "agent_cli"
+    assert provider_diagnostics["health"]["status"] == "available"
+    assert provider_diagnostics["health"]["configured_command"].startswith("python ")
+    assert provider_diagnostics["health"]["attempts"][0]["status"] == "available"
     execution_input = json.loads(
         (artifact_dir / "execution_input.json").read_text(encoding="utf-8")
     )
     assert execution_input["provider_diagnostics"]["provider"] == "corp-agent"
+    assert execution_input["provider_diagnostics"]["health"]["launch_kind"] == "exec"
     agent_seen = json.loads((artifact_dir / "result.json").read_text(encoding="utf-8"))
     assert agent_seen["diagnostics"]["startup_probe_transport"] == "stdin"
+    assert agent_seen["health"]["status"] == "available"
     turn_snapshot = json.loads(
         (artifact_dir / "turns" / "turn_1" / "provider_diagnostics.json").read_text(
             encoding="utf-8"
         )
     )
     assert turn_snapshot["diagnostics"]["configured_command_text"].startswith("python ")
+
+
+def test_agent_execution_provider_health_snapshot_redacts_secrets(tmp_path, monkeypatch):
+    from app.config import settings
+    from app.services.workflow_dsl import WorkflowStore
+    from app.services.workbench_task_run import WorkbenchTaskRunPreparer
+    from app.services.workbench_workflow_runner import WorkbenchWorkflowRunner
+
+    script_path = tmp_path / "agent_write_result.py"
+    script_path.write_text(
+        "import json, os, pathlib, sys\n"
+        "json.loads(sys.stdin.read())\n"
+        "root=pathlib.Path(os.environ['CODETALK_AGENT_ARTIFACT_DIR'])\n"
+        "(root/'result.json').write_text('{\"ok\": true}', encoding='utf-8')\n",
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(settings, "external_agent_custom_providers", [
+        {"id": "secret-agent", "command": f"python {script_path}"}
+    ])
+
+    def fake_health(provider, command, fallback_commands=None):
+        return {
+            "provider": provider,
+            "status": "unavailable",
+            "reason": "spawn failed token=super-secret-token",
+            "attempts": [
+                {
+                    "command": command,
+                    "status": "unavailable",
+                    "config_hint": "api_key=sk-test-secret",
+                }
+            ],
+        }
+
+    monkeypatch.setattr(
+        "app.services.external_agent_discovery.check_provider_health",
+        fake_health,
+    )
+    workflow_store = WorkflowStore(tmp_path / "workflows.db")
+    workflow_store.save_workflow({
+        "id": "provider_health_redaction",
+        "name": "Provider health redaction",
+        "version": 1,
+        "inputs": [{"id": "module", "type": "free_text"}],
+        "steps": [
+            {
+                "id": "discover",
+                "type": "agent_task",
+                "provider": "secret-agent",
+                "required_artifacts": ["result.json"],
+            }
+        ],
+        "outputs": [{"id": "result", "type": "json", "artifact": "result.json"}],
+    })
+    artifact_root = tmp_path / "task_runs"
+    prepared = WorkbenchTaskRunPreparer(
+        artifact_root=artifact_root,
+        workflow_store=workflow_store,
+    ).prepare(
+        workflow_id="provider_health_redaction",
+        workspace_id="ws1",
+        repo_path=str(tmp_path),
+        inputs={"module": "nvme-tcp-tls"},
+    )
+
+    executed = WorkbenchWorkflowRunner(artifact_root).execute_task_run(
+        prepared.task_run_id,
+        timeout_sec=10,
+    )
+
+    assert executed.status == "completed"
+    text = Path(
+        prepared.artifact_dir,
+        "agent_runs",
+        "discover",
+        "provider_diagnostics.json",
+    ).read_text(encoding="utf-8")
+    assert "super-secret-token" not in text
+    assert "sk-test-secret" not in text
+    assert "<redacted>" in text
 
 
 def test_workbench_task_run_store_loads_and_lists_prepared_runs(tmp_path):

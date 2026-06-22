@@ -500,6 +500,17 @@ def _provider_diagnostics_snapshot(
     diagnostics = provider_info.get("diagnostics") if isinstance(provider_info, dict) else {}
     if not isinstance(diagnostics, dict):
         diagnostics = {}
+    health = _agent_provider_health_snapshot(
+        provider=provider,
+        command=str(diagnostics.get("configured_command_text") or " ".join(
+            str(part) for part in run_payload.get("command") or []
+        )).strip(),
+        fallback_commands=[
+            str(command).strip()
+            for command in diagnostics.get("fallback_command_texts") or []
+            if str(command).strip()
+        ],
+    )
     return {
         "provider": provider,
         "status": str(provider_info.get("status") or "unknown") if provider_info else "unknown",
@@ -510,9 +521,50 @@ def _provider_diagnostics_snapshot(
         "cwd": str(run_payload.get("cwd") or ""),
         "mcp_profile": str(run_payload.get("mcp_profile") or ""),
         "diagnostics": diagnostics,
+        "health": health,
         "credential_boundary": str(provider_info.get("credential_boundary") or "") if provider_info else "",
         "unavailable_behavior": str(provider_info.get("unavailable_behavior") or "") if provider_info else "",
     }
+
+
+def _agent_provider_health_snapshot(
+    *,
+    provider: str,
+    command: str,
+    fallback_commands: list[str],
+) -> dict[str, Any]:
+    if not provider:
+        return {"status": "unknown", "reason": "missing provider"}
+    try:
+        from app.services.external_agent_discovery import (
+            check_provider_health,
+            redact_agent_diagnostic_text,
+        )
+
+        health = check_provider_health(
+            provider,
+            command,
+            fallback_commands=fallback_commands,
+        )
+        return _redact_diagnostic_payload(health, redact_agent_diagnostic_text)
+    except Exception as exc:
+        return {
+            "status": "error",
+            "reason": _redact(str(exc)),
+        }
+
+
+def _redact_diagnostic_payload(payload: Any, redactor: Any) -> Any:
+    if isinstance(payload, dict):
+        return {
+            str(key): _redact_diagnostic_payload(value, redactor)
+            for key, value in payload.items()
+        }
+    if isinstance(payload, list):
+        return [_redact_diagnostic_payload(item, redactor) for item in payload]
+    if isinstance(payload, str):
+        return redactor(payload)
+    return payload
 
 
 _SECRET_RE = re.compile(
