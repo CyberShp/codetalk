@@ -1291,7 +1291,7 @@ class TestCoverageTestDesign:
             workflow_id="module_analysis",
             status="completed",
         )
-        memory.upsert_evidence_item(
+        evidence_id = memory.upsert_evidence_item(
             evidence_id="ev_tls_cleanup",
             run_id="run-tls-memory",
             workspace_id="ws-memory",
@@ -1303,6 +1303,14 @@ class TestCoverageTestDesign:
             symbol="recover_session",
             reason="Existing black-box recommendation for TLS cleanup",
             text="recover_session should verify TLS cleanup by observing connection lifecycle",
+        )
+        memory.add_source_slice(
+            evidence_id=evidence_id,
+            file_path="src/session.c",
+            start_line=1,
+            end_line=6,
+            sha256="slicehash",
+            excerpt="void recover_session(session_t *s) { cleanup(s); }",
         )
         self._make_repo(tmp_path)
         modules = self._modules(
@@ -1321,6 +1329,9 @@ class TestCoverageTestDesign:
         assert "ev_tls_cleanup" in case_text
         assert "tls-cleanup-recommendation" in case_text
         assert gap["evidence_memory"][0]["evidence_id"] == "ev_tls_cleanup"
+        assert gap["evidence_memory"][0]["source_slices"][0]["file_path"] == "src/session.c"
+        assert gap["evidence_memory"][0]["source_slices"][0]["sha256"] == "slicehash"
+        assert gap["black_box_cases"][0]["evidence_source_slices"][0]["file_path"] == "src/session.c"
         assert design["test_context"]["evidence_source_counts"]["evidence_memory"] == 1
 
     async def test_agent_duplicate_entry_confirms_existing_path_without_duplicate_case(self):

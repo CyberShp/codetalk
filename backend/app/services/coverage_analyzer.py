@@ -11919,7 +11919,15 @@ def _load_coverage_workbench_context(
                     logger.info("Coverage evidence memory lookup failed: %s", exc)
                     break
                 for item in results:
-                    payload = _coverage_evidence_memory_payload(item)
+                    source_slices = []
+                    try:
+                        source_slices = memory_store.list_source_slices(item.evidence_id)
+                    except Exception as exc:
+                        logger.info("Coverage evidence source-slice lookup failed: %s", exc)
+                    payload = _coverage_evidence_memory_payload(
+                        item,
+                        source_slices=source_slices,
+                    )
                     evidence_id = str(payload.get("evidence_id") or "")
                     if not evidence_id:
                         continue
@@ -12006,11 +12014,19 @@ def _apply_evidence_memory_to_black_box_cases(gap: dict, evidence_items: list[di
         str(item.get("subject_key") or item.get("path") or item.get("symbol") or "")
         for item in evidence_items
     )
+    source_slices = [
+        source_slice
+        for item in evidence_items
+        for source_slice in (item.get("source_slices") or [])
+        if isinstance(source_slice, dict)
+    ]
     for case in gap.get("black_box_cases") or []:
         if refs:
             case["evidence_memory_refs"] = refs[:8]
         if subjects:
             case["evidence_memory_subjects"] = subjects[:8]
+        if source_slices:
+            case["evidence_source_slices"] = source_slices[:8]
 
 
 def _coverage_workbench_gap_key(gap: dict) -> str:
@@ -12060,8 +12076,8 @@ def _coverage_semantic_case_payload(item: object) -> dict:
     }
 
 
-def _coverage_evidence_memory_payload(item: object) -> dict:
-    return {
+def _coverage_evidence_memory_payload(item: object, *, source_slices: list[object] | None = None) -> dict:
+    payload = {
         "evidence_id": str(getattr(item, "evidence_id", "")),
         "kind": str(getattr(item, "kind", "")),
         "subject_key": str(getattr(item, "subject_key", "")),
@@ -12073,6 +12089,25 @@ def _coverage_evidence_memory_payload(item: object) -> dict:
         "confidence": getattr(item, "confidence", None),
         "text": _excerpt(str(getattr(item, "text", "") or ""), 600),
         "provenance": getattr(item, "provenance", None) or {},
+    }
+    if source_slices:
+        payload["source_slices"] = [
+            _coverage_source_slice_payload(source_slice)
+            for source_slice in source_slices
+        ]
+    return payload
+
+
+def _coverage_source_slice_payload(item: object) -> dict:
+    return {
+        "slice_id": str(getattr(item, "slice_id", "")),
+        "evidence_id": str(getattr(item, "evidence_id", "")),
+        "file_path": str(getattr(item, "file_path", "")),
+        "start_line": int(getattr(item, "start_line", 0) or 0),
+        "end_line": int(getattr(item, "end_line", 0) or 0),
+        "sha256": str(getattr(item, "sha256", "")),
+        "excerpt": _excerpt(str(getattr(item, "excerpt", "") or ""), 1200),
+        "created_at": str(getattr(item, "created_at", "")),
     }
 
 
