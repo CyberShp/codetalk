@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import hashlib
+import shutil
 from dataclasses import asdict, dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
@@ -146,6 +147,7 @@ class WorkbenchWorkflowRunner:
             timeout_sec=timeout_sec,
         )
         executions = [asdict(execution)]
+        turn_artifacts = [_snapshot_agent_turn_artifacts(artifact_dir, turn_id="turn_1")]
         source_slice_requests = _agent_source_slice_requests(artifact_dir)
         injected_source_slices: list[dict[str, Any]] = []
         source_slice_warnings: list[str] = []
@@ -166,6 +168,7 @@ class WorkbenchWorkflowRunner:
                 timeout_sec=timeout_sec,
             )
             executions.append(asdict(execution))
+            turn_artifacts.append(_snapshot_agent_turn_artifacts(artifact_dir, turn_id="turn_2"))
         required_artifacts = [
             str(item)
             for item in (
@@ -191,6 +194,7 @@ class WorkbenchWorkflowRunner:
             "execution": asdict(execution),
             "executions": executions,
             "turn_count": len(executions),
+            "turn_artifacts": turn_artifacts,
             "source_slice_requests": source_slice_requests,
             "injected_source_slices": injected_source_slices,
             "source_slice_warnings": source_slice_warnings,
@@ -679,6 +683,26 @@ def _set_agent_turn_id(*, artifact_dir: Path, turn_id: str) -> None:
         return
     payload["turn_id"] = turn_id
     _write_json(run_path, payload)
+
+
+def _snapshot_agent_turn_artifacts(artifact_dir: Path, *, turn_id: str) -> str:
+    safe_turn_id = _safe_segment(turn_id)
+    turn_dir = artifact_dir / "turns" / safe_turn_id
+    turn_dir.mkdir(parents=True, exist_ok=True)
+    for filename in (
+        "agent_run.json",
+        "task_bundle.json",
+        "workflow_snapshot.json",
+        "execution_input.json",
+        "execution_result.json",
+        "raw_output.txt",
+        "source_slice_requests.json",
+        "source_slices.json",
+    ):
+        source = artifact_dir / filename
+        if source.exists() and source.is_file():
+            shutil.copy2(source, turn_dir / filename)
+    return f"turns/{safe_turn_id}"
 
 
 def _positive_int(value: Any, *, default: int) -> int:

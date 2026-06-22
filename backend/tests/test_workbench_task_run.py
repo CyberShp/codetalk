@@ -1152,6 +1152,28 @@ def test_workbench_workflow_runner_runs_second_agent_turn_for_source_slice_reque
     source_scope = json.loads((artifact_dir / "source_scope.json").read_text(encoding="utf-8"))
     assert source_scope["files"][0]["path"] == "src/tls.c"
     assert result.outputs[0]["status"] == "ok"
+    turn_1 = artifact_dir / "turns" / "turn_1"
+    turn_2 = artifact_dir / "turns" / "turn_2"
+    assert json.loads((turn_1 / "execution_input.json").read_text(encoding="utf-8"))[
+        "turn_id"
+    ] == "turn_1"
+    assert json.loads((turn_2 / "execution_input.json").read_text(encoding="utf-8"))[
+        "turn_id"
+    ] == "turn_2"
+    assert not json.loads((turn_1 / "task_bundle.json").read_text(encoding="utf-8")).get(
+        "requested_source_slices"
+    )
+    assert json.loads((turn_2 / "task_bundle.json").read_text(encoding="utf-8"))[
+        "requested_source_slices"
+    ][0]["file_path"] == "src/tls.c"
+    assert (turn_1 / "raw_output.txt").exists()
+    assert (turn_2 / "raw_output.txt").exists()
+    assert (turn_1 / "execution_result.json").exists()
+    assert (turn_2 / "execution_result.json").exists()
+    assert step["turn_artifacts"] == [
+        "turns/turn_1",
+        "turns/turn_2",
+    ]
 
 
 def test_workbench_workflow_runner_parses_coverage_before_agent_task(
