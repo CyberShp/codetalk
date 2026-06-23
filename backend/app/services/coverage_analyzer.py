@@ -2483,20 +2483,6 @@ def _input_hint_is_internal_context(value: str) -> bool:
         text,
     )
     if prefix_match and prefix_match.group(1).lower() in _INTERNAL_CONTEXT_HINT_PREFIXES:
-        leaf_match = re.search(
-            r"(?:\?\.|\.|->)\s*([A-Za-z_][A-Za-z0-9_]*)\s*$"
-            r"|\[\s*['\"]([^'\"]+)['\"]\s*\]\s*$",
-            text,
-        )
-        leaf = (leaf_match.group(1) or leaf_match.group(2)) if leaf_match else ""
-        leaf_key = _input_hint_dedupe_key(leaf)
-        if (
-            leaf_key
-            and leaf_key not in _INTERNAL_INPUT_HINTS
-            and leaf_key not in _TYPE_ONLY_INPUT_HINTS
-            and leaf_key not in _INTERNAL_CONTEXT_CONTAINER_FIELDS
-        ):
-            return False
         return True
     if normalized.endswith(("_ctx", "_context")):
         return True
