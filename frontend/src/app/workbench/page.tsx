@@ -2919,7 +2919,17 @@ export default function AgentWorkbenchPage() {
             )}
           </div>
           <div className="mt-1 flex flex-wrap gap-1.5 font-data text-[10px]">
-            {["file", "file_set", "coverage_report", "mr_link"].map((inputType) => (
+            {[
+              "file",
+              "file_set",
+              "patch",
+              "diff",
+              "coverage_report",
+              "mr_link",
+              "external_link",
+              "directory",
+              "semantic_library_ref",
+            ].map((inputType) => (
               <span
                 key={inputType}
                 className={`rounded bg-surface px-1.5 py-0.5 ${
