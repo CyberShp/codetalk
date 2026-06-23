@@ -799,6 +799,18 @@ type InputMaterialsSummary = {
   materialsAreSourceTruth: boolean;
 };
 
+type FailureRetryContextSummary = {
+  stepId: string;
+  failureKind: string;
+  retryable: boolean;
+  exitCode: string;
+  missingArtifacts: string[];
+  stdoutExcerpt: string;
+  stderrExcerpt: string;
+  mustProduceArtifacts: string[];
+  doNotRepeat: string[];
+};
+
 type AcceptanceProviderIssue = {
   provider: string;
   status: string;
@@ -1286,6 +1298,61 @@ function inputMaterialsSummary(
   };
 }
 
+function failureRetryContextSummary(
+  artifact: WorkbenchTaskArtifactContent,
+): FailureRetryContextSummary | null {
+  if (!artifact.is_text || !artifact.content.trim()) return null;
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(artifact.content);
+  } catch {
+    return null;
+  }
+  if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) return null;
+  const payload = parsed as Record<string, unknown>;
+  if (
+    artifact.kind !== "agent_failure_retry_context" &&
+    payload.kind !== "agent_failure_retry_context"
+  ) {
+    return null;
+  }
+  const previousExecution =
+    payload.previous_execution &&
+    typeof payload.previous_execution === "object" &&
+    !Array.isArray(payload.previous_execution)
+      ? (payload.previous_execution as Record<string, unknown>)
+      : {};
+  const previousOutput =
+    payload.previous_output &&
+    typeof payload.previous_output === "object" &&
+    !Array.isArray(payload.previous_output)
+      ? (payload.previous_output as Record<string, unknown>)
+      : {};
+  const retryInstructions =
+    payload.retry_instructions &&
+    typeof payload.retry_instructions === "object" &&
+    !Array.isArray(payload.retry_instructions)
+      ? (payload.retry_instructions as Record<string, unknown>)
+      : {};
+  return {
+    stepId: String(payload.step_id ?? ""),
+    failureKind: String(payload.failure_kind ?? ""),
+    retryable: Boolean(payload.retryable ?? false),
+    exitCode: String(previousExecution.exit_code ?? ""),
+    missingArtifacts: Array.isArray(payload.missing_artifacts)
+      ? payload.missing_artifacts.map((item) => String(item)).filter(Boolean)
+      : [],
+    stdoutExcerpt: String(previousOutput.stdout_excerpt ?? ""),
+    stderrExcerpt: String(previousOutput.stderr_excerpt ?? ""),
+    mustProduceArtifacts: Array.isArray(retryInstructions.must_produce_artifacts)
+      ? retryInstructions.must_produce_artifacts.map((item) => String(item)).filter(Boolean)
+      : [],
+    doNotRepeat: Array.isArray(retryInstructions.do_not_repeat)
+      ? retryInstructions.do_not_repeat.map((item) => String(item)).filter(Boolean)
+      : [],
+  };
+}
+
 function rejectedOutputLabel(item: Record<string, unknown>): string {
   return String(
     item.output ??
@@ -1360,6 +1427,7 @@ const AUDIT_ARTIFACT_KIND_ORDER = [
   "agent_replay_plan",
   "agent_run_lifecycle",
   "agent_failure_recovery",
+  "agent_failure_retry_context",
   "agent_turn_task_bundle",
   "agent_turn_output_contract",
   "agent_turn_provider_diagnostics",
@@ -4278,6 +4346,50 @@ export default function AgentWorkbenchPage() {
                               {summary.firstChunksPath && (
                                 <div className="mt-1 break-words font-data text-[10px]">
                                   chunks:{summary.firstChunksPath}
+                                </div>
+                              )}
+                            </div>
+                          );
+                        })()}
+                        {(() => {
+                          const summary = failureRetryContextSummary(artifactContent);
+                          if (!summary) return null;
+                          return (
+                            <div className="mt-2 rounded bg-surface-container px-2 py-1.5 text-[11px] text-on-surface-variant">
+                              <div className="flex flex-wrap gap-2">
+                                <span>Failure retry</span>
+                                {summary.stepId && <span>step:{summary.stepId}</span>}
+                                {summary.failureKind && (
+                                  <span>kind:{summary.failureKind}</span>
+                                )}
+                                <span>retryable:{String(summary.retryable)}</span>
+                                {summary.exitCode && <span>exit:{summary.exitCode}</span>}
+                              </div>
+                              {summary.missingArtifacts.length > 0 && (
+                                <div className="mt-1 break-words font-data text-[10px]">
+                                  missing:{summary.missingArtifacts.slice(0, 6).join(",")}
+                                </div>
+                              )}
+                              {summary.mustProduceArtifacts.length > 0 && (
+                                <div className="mt-1 break-words font-data text-[10px]">
+                                  must-produce:{summary.mustProduceArtifacts.slice(0, 6).join(",")}
+                                </div>
+                              )}
+                              {summary.doNotRepeat.length > 0 && (
+                                <div className="mt-1 flex flex-wrap gap-2 font-data text-[10px] text-warning">
+                                  {summary.doNotRepeat.slice(0, 3).map((item) => (
+                                    <span key={item}>do-not:{item}</span>
+                                  ))}
+                                </div>
+                              )}
+                              {summary.stderrExcerpt && (
+                                <div className="mt-1 break-words text-[10px]">
+                                  stderr:{summary.stderrExcerpt.slice(0, 180)}
+                                </div>
+                              )}
+                              {summary.stdoutExcerpt && (
+                                <div className="mt-1 break-words text-[10px]">
+                                  stdout:{summary.stdoutExcerpt.slice(0, 180)}
                                 </div>
                               )}
                             </div>

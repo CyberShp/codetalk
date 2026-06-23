@@ -221,6 +221,16 @@ class WorkbenchWorkflowRunner:
             validation=asdict(validation),
         )
         if failure_recovery:
+            retry_context = _failure_retry_context_payload(
+                step_id=step_id,
+                artifact_dir=artifact_dir,
+                execution=asdict(execution),
+                validation=asdict(validation),
+                failure_recovery=failure_recovery,
+                required_artifacts=required_artifacts,
+            )
+            _write_json(artifact_dir / "failure_retry_context.json", retry_context)
+            failure_recovery["retry_context_artifact"] = "failure_retry_context.json"
             step_payload["failure_recovery"] = failure_recovery
             _write_json(artifact_dir / "failure_recovery.json", failure_recovery)
         lifecycle = _agent_run_lifecycle_summary(
@@ -930,6 +940,132 @@ def _failure_recovery_summary(
     }
 
 
+def _failure_retry_context_payload(
+    *,
+    step_id: str,
+    artifact_dir: Path,
+    execution: dict[str, Any],
+    validation: dict[str, Any],
+    failure_recovery: dict[str, Any],
+    required_artifacts: list[str],
+) -> dict[str, Any]:
+    raw_output = _read_text(artifact_dir / "raw_output.txt", max_chars=12000)
+    stdout_excerpt, stderr_excerpt = _split_raw_output_excerpt(raw_output)
+    missing_artifacts = [
+        str(item)
+        for item in (
+            failure_recovery.get("missing_artifacts")
+            or _missing_artifacts_from_validation(validation)
+        )
+        if str(item).strip()
+    ]
+    do_not_repeat = ["do not treat raw stdout/stderr as accepted evidence"]
+    if str(validation.get("status") or "") != "ok":
+        do_not_repeat.append("do not materialize outputs until required artifacts validate")
+    return {
+        "kind": "agent_failure_retry_context",
+        "step_id": step_id,
+        "failure_kind": str(failure_recovery.get("failure_kind") or ""),
+        "retryable": bool(failure_recovery.get("retryable", False)),
+        "created_at": _now(),
+        "artifacts": {
+            "failure_recovery": "failure_recovery.json",
+            "execution_result": (
+                "execution_result.json"
+                if (artifact_dir / "execution_result.json").exists()
+                else ""
+            ),
+            "agent_replay_plan": (
+                "agent_replay_plan.json"
+                if (artifact_dir / "agent_replay_plan.json").exists()
+                else ""
+            ),
+            "raw_output": "raw_output.txt" if (artifact_dir / "raw_output.txt").exists() else "",
+            "task_bundle": "task_bundle.json" if (artifact_dir / "task_bundle.json").exists() else "",
+            "agent_output_contract": (
+                "agent_output_contract.json"
+                if (artifact_dir / "agent_output_contract.json").exists()
+                else ""
+            ),
+        },
+        "previous_execution": {
+            "status": str(execution.get("status") or ""),
+            "exit_code": execution.get("exit_code"),
+            "timed_out": bool(execution.get("timed_out", False)),
+            "error": str(execution.get("error") or ""),
+            "duration_ms": execution.get("duration_ms"),
+        },
+        "previous_output": {
+            "stdout_excerpt": stdout_excerpt,
+            "stderr_excerpt": stderr_excerpt,
+            "raw_output_artifact": "raw_output.txt" if raw_output else "",
+        },
+        "validation": {
+            "status": str(validation.get("status") or ""),
+            "provenance_status": str(validation.get("provenance_status") or ""),
+            "accepted_artifacts": [
+                str(item) for item in validation.get("accepted_artifacts") or []
+            ],
+            "rejected_artifacts": [
+                item for item in validation.get("rejected_artifact_details") or []
+                if isinstance(item, dict)
+            ],
+        },
+        "missing_artifacts": missing_artifacts,
+        "retry_instructions": {
+            "recommended_action": "rerun_agent_step",
+            "must_produce_artifacts": missing_artifacts or [str(item) for item in required_artifacts],
+            "do_not_repeat": do_not_repeat,
+            "reuse_context_from": [
+                "task_bundle.json",
+                "agent_output_contract.json",
+                "agent_replay_plan.json",
+            ],
+            "raw_output_boundary": "diagnostic_only_not_evidence",
+        },
+        "provider_diagnostics": failure_recovery.get("provider_diagnostics") or {},
+    }
+
+
+def _missing_artifacts_from_validation(validation: dict[str, Any]) -> list[str]:
+    missing: list[str] = []
+    for item in validation.get("rejected_artifact_details") or []:
+        if not isinstance(item, dict):
+            continue
+        if item.get("reason") != "missing_required_artifact":
+            continue
+        artifact = str(item.get("artifact") or "")
+        if artifact:
+            missing.append(artifact)
+    return missing
+
+
+def _read_text(path: Path, *, max_chars: int) -> str:
+    try:
+        text = path.read_text(encoding="utf-8", errors="replace")
+    except OSError:
+        return ""
+    return text[:max_chars]
+
+
+def _split_raw_output_excerpt(raw_output: str) -> tuple[str, str]:
+    if not raw_output:
+        return "", ""
+    lines = raw_output.splitlines()
+    stdout_lines: list[str] = []
+    stderr_lines: list[str] = []
+    for line in lines:
+        if "fatal" in line.lower() or "error" in line.lower() or "traceback" in line.lower():
+            stderr_lines.append(line)
+        else:
+            stdout_lines.append(line)
+    if not stderr_lines:
+        stderr_lines = lines[-20:]
+    if not stdout_lines:
+        stdout_lines = lines[:20]
+    return "\n".join(stdout_lines)[:4000], "\n".join(stderr_lines)[:4000]
+
+
 def _provider_failure_diagnostics_summary(artifact_dir: Path) -> dict[str, Any]:
     payload = _read_json(artifact_dir / "provider_diagnostics.json")
     execution_input = _read_json(artifact_dir / "execution_input.json")
@@ -1254,6 +1390,12 @@ def _workflow_rerun_plan(
                     f"agent_runs/{_safe_segment(step_id or 'step')}/failure_recovery.json"
                     if step_type == "agent_task"
                     else "failure_recovery.json"
+                )
+            if (artifact_dir / "failure_retry_context.json").exists():
+                item["retry_context_artifact"] = (
+                    f"agent_runs/{_safe_segment(step_id or 'step')}/failure_retry_context.json"
+                    if step_type == "agent_task"
+                    else "failure_retry_context.json"
                 )
             if (artifact_dir / "agent_run_lifecycle.json").exists():
                 item["lifecycle_artifact"] = (

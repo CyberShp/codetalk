@@ -667,6 +667,14 @@ test("agent workbench previews task run artifact content", async ({ page }) => {
             preview: "{\"replay_status\":\"ready\",\"prompt_source\":\"execution_input.json:stdin\"}",
           },
           {
+            relative_path: "agent_runs/discover/failure_retry_context.json",
+            path: "E:/data/workbench/task_runs/task_run_preview/agent_runs/discover/failure_retry_context.json",
+            kind: "agent_failure_retry_context",
+            size_bytes: 768,
+            sha256: "retryhash111122223333444455556666",
+            preview: "{\"kind\":\"agent_failure_retry_context\",\"failure_kind\":\"agent_error\"}",
+          },
+          {
             relative_path: "agent_runs/discover/execution_input.json",
             path: "E:/data/workbench/task_runs/task_run_preview/agent_runs/discover/execution_input.json",
             kind: "agent_execution_input",
@@ -984,6 +992,46 @@ test("agent workbench previews task run artifact content", async ({ page }) => {
     },
   );
   await page.route(
+    "**/api/workbench/task-runs/task_run_preview/artifacts/content/agent_runs/discover/failure_retry_context.json",
+    async (route) => {
+      await route.fulfill({
+        headers: corsHeaders(route.request().headers().origin),
+        json: {
+          relative_path: "agent_runs/discover/failure_retry_context.json",
+          path: "E:/data/workbench/task_runs/task_run_preview/agent_runs/discover/failure_retry_context.json",
+          kind: "agent_failure_retry_context",
+          size_bytes: 768,
+          sha256: "retryhash111122223333444455556666",
+          preview: "{\"kind\":\"agent_failure_retry_context\",\"failure_kind\":\"agent_error\"}",
+          is_text: true,
+          truncated: false,
+          content: JSON.stringify({
+            kind: "agent_failure_retry_context",
+            step_id: "discover",
+            failure_kind: "agent_error",
+            retryable: true,
+            missing_artifacts: ["source_scope.json"],
+            previous_execution: {
+              status: "error",
+              exit_code: 7,
+            },
+            previous_output: {
+              stdout_excerpt: "partial stdout before failure",
+              stderr_excerpt: "fatal diagnostic",
+            },
+            retry_instructions: {
+              must_produce_artifacts: ["source_scope.json"],
+              do_not_repeat: [
+                "do not treat raw stdout/stderr as accepted evidence",
+                "do not materialize outputs until required artifacts validate",
+              ],
+            },
+          }),
+        },
+      });
+    },
+  );
+  await page.route(
     "**/api/workbench/task-runs/task_run_preview/artifacts/content/agent_runs/discover/execution_input.json",
     async (route) => {
       await route.fulfill({
@@ -1098,7 +1146,7 @@ test("agent workbench previews task run artifact content", async ({ page }) => {
   await expect(
     page.getByText("manual:POST /api/tools/claude-code/startup-probe", { exact: false }),
   ).toBeVisible();
-  await expect(page.getByText("Audit artifacts: 10")).toBeVisible();
+  await expect(page.getByText("Audit artifacts: 11")).toBeVisible();
 
   await page.getByRole("button", { name: "task_bundle:task_bundle.json" }).click();
 
@@ -1210,6 +1258,23 @@ test("agent workbench previews task run artifact content", async ({ page }) => {
   await expect(page.getByText("stdin redacted:true")).toBeVisible();
   await expect(page.getByText("stdin sha:stdinsha1234")).toBeVisible();
   await expect(page.getByText("contract sha:contracthash")).toBeVisible();
+
+  await page
+    .getByRole("button", {
+      name: "agent_failure_retry_context:agent_runs/discover/failure_retry_context.json",
+    })
+    .click();
+  await expect(page.getByText("Failure retry")).toBeVisible();
+  await expect(page.getByText("step:discover")).toBeVisible();
+  await expect(page.getByText("kind:agent_error")).toBeVisible();
+  await expect(page.getByText("retryable:true")).toBeVisible();
+  await expect(page.getByText("exit:7")).toBeVisible();
+  await expect(page.getByText("missing:source_scope.json")).toBeVisible();
+  await expect(page.getByText("must-produce:source_scope.json")).toBeVisible();
+  await expect(
+    page.getByText("do-not:do not treat raw stdout/stderr as accepted evidence"),
+  ).toBeVisible();
+  await expect(page.getByText("stderr:fatal diagnostic")).toBeVisible();
 
   await page.getByRole("button", { name: "Acceptance audit" }).click();
   await expect(page.getByText("Agent instruction policy")).toBeVisible();

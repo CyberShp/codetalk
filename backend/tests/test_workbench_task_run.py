@@ -1502,6 +1502,31 @@ def test_workbench_workflow_runner_records_agent_failure_recovery(tmp_path, monk
     }
     assert step["failure_recovery"]["provider_diagnostics"]["provider"] == "local-python"
     assert step["failure_recovery"]["provider_diagnostics"]["health_status"] == "available"
+    assert step["failure_recovery"]["retry_context_artifact"] == "failure_retry_context.json"
+    retry_context = json.loads(
+        (
+            Path(task_run.artifact_dir)
+            / "agent_runs"
+            / "discover"
+            / "failure_retry_context.json"
+        ).read_text(encoding="utf-8")
+    )
+    assert retry_context["kind"] == "agent_failure_retry_context"
+    assert retry_context["step_id"] == "discover"
+    assert retry_context["failure_kind"] == "agent_error"
+    assert retry_context["retryable"] is True
+    assert retry_context["missing_artifacts"] == ["source_scope.json"]
+    assert retry_context["previous_execution"]["status"] == "error"
+    assert retry_context["previous_execution"]["exit_code"] == 7
+    assert "fatal diagnostic" in retry_context["previous_output"]["stderr_excerpt"]
+    assert "partial stdout" in retry_context["previous_output"]["stdout_excerpt"]
+    assert retry_context["retry_instructions"]["do_not_repeat"] == [
+        "do not treat raw stdout/stderr as accepted evidence",
+        "do not materialize outputs until required artifacts validate",
+    ]
+    assert retry_context["retry_instructions"]["must_produce_artifacts"] == [
+        "source_scope.json"
+    ]
     lifecycle = step["lifecycle"]
     assert lifecycle["status"] == "invalid"
     assert lifecycle["failure_kind"] == "agent_error"
@@ -1522,6 +1547,9 @@ def test_workbench_workflow_runner_records_agent_failure_recovery(tmp_path, monk
     assert rerun_plan["steps"][0]["step_id"] == "discover"
     assert rerun_plan["steps"][0]["recommended_action"] == "rerun_agent_step"
     assert rerun_plan["steps"][0]["failure_kind"] == "agent_error"
+    assert rerun_plan["steps"][0]["retry_context_artifact"] == (
+        "agent_runs/discover/failure_retry_context.json"
+    )
     assert rerun_plan["steps"][0]["overwrite_risk_artifacts"] == [
         "raw_output.txt",
         "execution_result.json",

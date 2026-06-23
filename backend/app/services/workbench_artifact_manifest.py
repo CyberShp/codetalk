@@ -177,6 +177,8 @@ def workbench_artifact_kind(relative_path: str) -> str:
         return "agent_replay_plan"
     if name == "failure_recovery.json":
         return "agent_failure_recovery"
+    if name == "failure_retry_context.json":
+        return "agent_failure_retry_context"
     if name.endswith(".json"):
         return "json"
     if name.endswith((".md", ".txt", ".patch", ".diff", ".log")):
