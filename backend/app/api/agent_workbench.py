@@ -1642,6 +1642,8 @@ def _artifact_kind(relative_path: str) -> str:
         return "input_artifact"
     if name == "workflow_contract.json":
         return "workflow_contract"
+    if name == "agent_mcp_requests.json":
+        return "agent_mcp_requests"
     if name == "context_discovery_decision.json":
         return "context_discovery_decision"
     if name == "context_bundle.json":

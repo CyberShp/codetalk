@@ -110,6 +110,11 @@ class WorkbenchTaskRunPreparer:
             workflow_snapshot=workflow_snapshot,
             provider_snapshot=provider_snapshot,
         )
+        agent_mcp_requests = build_agent_mcp_requests(
+            workflow_snapshot=workflow_snapshot,
+            input_snapshot=input_snapshot,
+            workflow_contract=workflow_contract,
+        )
         context_discovery_decision = build_context_discovery_decision(
             agent_instructions=agent_instructions,
             provider_snapshot=provider_snapshot,
@@ -128,6 +133,7 @@ class WorkbenchTaskRunPreparer:
             "inputs": input_snapshot,
             "input_context": input_context,
             "workflow_contract": workflow_contract,
+            "agent_mcp_requests": agent_mcp_requests,
             "agent_instructions": agent_instructions,
             "provider_snapshot": provider_snapshot,
             "context_discovery_decision": context_discovery_decision,
@@ -189,6 +195,7 @@ class WorkbenchTaskRunPreparer:
         _write_json(artifact_dir / "task_run.json", asdict(result))
         _write_json(artifact_dir / "workflow_snapshot.json", workflow_snapshot)
         _write_json(artifact_dir / "workflow_contract.json", workflow_contract)
+        _write_json(artifact_dir / "agent_mcp_requests.json", agent_mcp_requests)
         _write_json(artifact_dir / "input_snapshot.json", input_snapshot)
         _write_json(artifact_dir / "input_context.json", input_context)
         _write_json(artifact_dir / "agent_instructions.json", agent_instructions)
@@ -402,6 +409,19 @@ def build_workflow_contract(
 ) -> dict[str, Any]:
     steps = provider_snapshot.get("steps") or {}
     providers = provider_snapshot.get("providers") or {}
+    agent_steps = [
+        _workflow_contract_agent_step(
+            step,
+            provider_payload=_workflow_contract_provider_payload(
+                step,
+                providers=providers,
+                steps=steps,
+            ),
+            step_payload=steps.get(str(step.get("id") or ""), {}) if isinstance(steps, dict) else {},
+        )
+        for step in workflow_snapshot.get("steps") or []
+        if isinstance(step, dict) and step.get("type") == "agent_task"
+    ]
     return {
         "workflow_id": str(workflow_snapshot.get("id") or ""),
         "workflow_name": str(workflow_snapshot.get("name") or ""),
@@ -411,19 +431,11 @@ def build_workflow_contract(
             for item in workflow_snapshot.get("inputs") or []
             if isinstance(item, dict)
         ],
-        "agent_steps": [
-            _workflow_contract_agent_step(
-                step,
-                provider_payload=_workflow_contract_provider_payload(
-                    step,
-                    providers=providers,
-                    steps=steps,
-                ),
-                step_payload=steps.get(str(step.get("id") or ""), {}) if isinstance(steps, dict) else {},
-            )
-            for step in workflow_snapshot.get("steps") or []
-            if isinstance(step, dict) and step.get("type") == "agent_task"
-        ],
+        "agent_mcp_inputs": _workflow_contract_agent_mcp_inputs(
+            workflow_snapshot=workflow_snapshot,
+            agent_steps=agent_steps,
+        ),
+        "agent_steps": agent_steps,
         "outputs": [
             _workflow_contract_output(item)
             for item in workflow_snapshot.get("outputs") or []
@@ -442,6 +454,90 @@ def _workflow_contract_input(item: dict[str, Any]) -> dict[str, Any]:
         "resolver": resolver,
         "agent_owned": resolver == "agent_mcp",
     }
+
+
+def _workflow_contract_agent_mcp_inputs(
+    *,
+    workflow_snapshot: dict[str, Any],
+    agent_steps: list[dict[str, Any]],
+) -> list[dict[str, Any]]:
+    mcp_steps = [
+        step for step in agent_steps
+        if bool(step.get("agent_owned_mcp"))
+    ]
+    if not mcp_steps:
+        return []
+    requests: list[dict[str, Any]] = []
+    for item in workflow_snapshot.get("inputs") or []:
+        if not isinstance(item, dict) or str(item.get("resolver") or "") != "agent_mcp":
+            continue
+        required_artifacts_by_step = {
+            str(step.get("id") or ""): [str(value) for value in step.get("required_artifacts") or []]
+            for step in mcp_steps
+            if str(step.get("id") or "")
+        }
+        requests.append({
+            "input_id": str(item.get("id") or ""),
+            "input_type": str(item.get("type") or ""),
+            "role": str(item.get("role") or ""),
+            "resolver": "agent_mcp",
+            "credential_owner": "agent_cli",
+            "codetalk_fetch_allowed": False,
+            "agent_step_ids": [str(step.get("id") or "") for step in mcp_steps if str(step.get("id") or "")],
+            "mcp_profiles": _unique_strings(
+                str(step.get("mcp_profile") or "")
+                for step in mcp_steps
+                if str(step.get("mcp_profile") or "")
+            ),
+            "required_artifacts_by_step": required_artifacts_by_step,
+            "validation_rule": (
+                "Agent CLI must fetch this input through its own MCP credentials and return "
+                "required artifacts; CodeTalk validates artifacts instead of fetching the remote resource."
+            ),
+        })
+    return requests
+
+
+def build_agent_mcp_requests(
+    *,
+    workflow_snapshot: dict[str, Any],
+    input_snapshot: dict[str, Any],
+    workflow_contract: dict[str, Any],
+) -> list[dict[str, Any]]:
+    del workflow_snapshot
+    requests: list[dict[str, Any]] = []
+    for contract in workflow_contract.get("agent_mcp_inputs") or []:
+        if not isinstance(contract, dict):
+            continue
+        input_id = str(contract.get("input_id") or "")
+        if not input_id or input_id not in input_snapshot:
+            continue
+        required_artifacts_by_step = {
+            str(step_id): [str(value) for value in values or []]
+            for step_id, values in (contract.get("required_artifacts_by_step") or {}).items()
+        }
+        required_artifacts = _unique_strings(
+            artifact
+            for values in required_artifacts_by_step.values()
+            for artifact in values
+        )
+        requests.append({
+            "input_id": input_id,
+            "input_type": str(contract.get("input_type") or ""),
+            "value": input_snapshot[input_id],
+            "resolver": "agent_mcp",
+            "credential_owner": "agent_cli",
+            "codetalk_fetch_allowed": False,
+            "agent_step_ids": [str(value) for value in contract.get("agent_step_ids") or []],
+            "mcp_profiles": [str(value) for value in contract.get("mcp_profiles") or []],
+            "required_artifacts_by_step": required_artifacts_by_step,
+            "artifact_validation": {
+                "strategy": "required_artifacts",
+                "codetalk_remote_fetch": False,
+                "required_artifacts": required_artifacts,
+            },
+        })
+    return requests
 
 
 def _workflow_contract_provider_payload(
@@ -511,6 +607,18 @@ def _workflow_contract_output(item: dict[str, Any]) -> dict[str, Any]:
         "schema_type": schema_type,
         "schema_required": schema_required,
     }
+
+
+def _unique_strings(values: Any) -> list[str]:
+    unique: list[str] = []
+    seen: set[str] = set()
+    for value in values:
+        text = str(value)
+        if not text or text in seen:
+            continue
+        seen.add(text)
+        unique.append(text)
+    return unique
 
 
 def build_agent_provider_snapshot(

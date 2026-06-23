@@ -1189,11 +1189,50 @@ def test_prepare_workbench_task_run_writes_workflow_contract_artifact(tmp_path, 
         "resolver": "agent_mcp",
         "agent_owned": True,
     }
+    assert contract["agent_mcp_inputs"] == [
+        {
+            "input_id": "mr_link",
+            "input_type": "mr_link",
+            "role": "merge request URL",
+            "resolver": "agent_mcp",
+            "credential_owner": "agent_cli",
+            "codetalk_fetch_allowed": False,
+            "agent_step_ids": ["collect_mr"],
+            "mcp_profiles": ["codehub-readonly"],
+            "required_artifacts_by_step": {
+                "collect_mr": ["mr_snapshot.json", "changed_files.json"],
+            },
+            "validation_rule": (
+                "Agent CLI must fetch this input through its own MCP credentials and return "
+                "required artifacts; CodeTalk validates artifacts instead of fetching the remote resource."
+            ),
+        }
+    ]
     assert contract["agent_steps"][0]["provider"] == "corp-agent"
     assert contract["agent_steps"][0]["mcp_profile"] == "codehub-readonly"
     assert contract["agent_steps"][0]["agent_owned_mcp"] is True
     assert contract["outputs"][0]["schema_required"] == ["mr_url", "changed_files_count"]
     assert contract["outputs"][0]["has_schema"] is True
+    assert result.task_bundle["agent_mcp_requests"] == [
+        {
+            "input_id": "mr_link",
+            "input_type": "mr_link",
+            "value": "https://codehub.local/project/merge_requests/7",
+            "resolver": "agent_mcp",
+            "credential_owner": "agent_cli",
+            "codetalk_fetch_allowed": False,
+            "agent_step_ids": ["collect_mr"],
+            "mcp_profiles": ["codehub-readonly"],
+            "required_artifacts_by_step": {
+                "collect_mr": ["mr_snapshot.json", "changed_files.json"],
+            },
+            "artifact_validation": {
+                "strategy": "required_artifacts",
+                "codetalk_remote_fetch": False,
+                "required_artifacts": ["mr_snapshot.json", "changed_files.json"],
+            },
+        }
+    ]
     persisted = json.loads(
         Path(result.artifact_dir, "workflow_contract.json").read_text(encoding="utf-8")
     )
@@ -1204,6 +1243,7 @@ def test_prepare_workbench_task_run_writes_workflow_contract_artifact(tmp_path, 
         )
     )
     assert step_bundle["workflow_contract"]["agent_steps"][0]["agent_owned_mcp"] is True
+    assert step_bundle["agent_mcp_requests"][0]["credential_owner"] == "agent_cli"
 
 
 def test_workbench_workflow_runner_infers_output_from_required_agent_artifact(

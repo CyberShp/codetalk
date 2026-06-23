@@ -501,6 +501,7 @@ const AUDIT_ARTIFACT_KIND_ORDER = [
   "agent_instructions",
   "provider_snapshot",
   "workflow_contract",
+  "agent_mcp_requests",
   "context_discovery_decision",
   "context_bundle",
   "output_schemas",
