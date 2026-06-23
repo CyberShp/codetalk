@@ -1037,6 +1037,8 @@ def build_context_artifact_payloads(
                 "source_read_status": item.get("source_read_status") or "no_source_slices",
                 "usable_as_source_evidence": bool(item.get("usable_as_source_evidence")),
                 "source_slice_count": len(item.get("source_slices") or []),
+                "reuse_reason": _memory_reuse_reason(item),
+                "source_slice_refs": _source_slice_refs(item.get("source_slices") or []),
             }
             for item in evidence
         ],
@@ -1051,6 +1053,7 @@ def build_context_artifact_payloads(
             "evidence_id": evidence_id,
             "subject_key": item.get("subject_key") or "",
             "usable_as_source_evidence": bool(item.get("usable_as_source_evidence")),
+            "reuse_reason": _memory_reuse_reason(item),
         })
         for source_slice in item.get("source_slices") or []:
             if not isinstance(source_slice, dict):
@@ -1075,6 +1078,7 @@ def build_context_artifact_payloads(
             "semantic_id": item.get("semantic_id") or "",
             "case_id": item.get("case_id") or "",
             "terms": item.get("terms") or [],
+            "reuse_reason": "query matched semantic library case; use terms to align black-box wording",
         })
     source_read_chain = {
         "query": query,
@@ -1105,6 +1109,29 @@ def build_context_artifact_payloads(
         "evidence_consumption_trajectory": evidence_consumption_trajectory,
         "degraded_retrieval": degraded_retrieval,
     }
+
+
+def _memory_reuse_reason(item: dict[str, Any]) -> str:
+    if bool(item.get("usable_as_source_evidence")):
+        return (
+            "query matched prior evidence; source slices are attached and may be used as source evidence"
+        )
+    return "query matched prior evidence; navigation only because no source slices are attached"
+
+
+def _source_slice_refs(source_slices: list[Any]) -> list[dict[str, Any]]:
+    refs: list[dict[str, Any]] = []
+    for source_slice in source_slices:
+        if not isinstance(source_slice, dict):
+            continue
+        refs.append({
+            "slice_id": source_slice.get("slice_id") or "",
+            "file_path": source_slice.get("file_path") or "",
+            "start_line": source_slice.get("start_line"),
+            "end_line": source_slice.get("end_line"),
+            "sha256": source_slice.get("sha256") or "",
+        })
+    return refs
 
 
 def _degraded_retrieval_items(

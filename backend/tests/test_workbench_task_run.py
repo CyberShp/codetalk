@@ -274,6 +274,18 @@ def test_prepare_workbench_task_run_injects_evidence_and_semantic_context(tmp_pa
     assert memory_retrieval["provider"] == "evidence-memory"
     assert memory_retrieval["retrieved_count"] == 1
     assert memory_retrieval["items"][0]["source_slice_count"] == 1
+    assert memory_retrieval["items"][0]["reuse_reason"] == (
+        "query matched prior evidence; source slices are attached and may be used as source evidence"
+    )
+    assert memory_retrieval["items"][0]["source_slice_refs"] == [
+        {
+            "slice_id": memory_retrieval["items"][0]["source_slice_refs"][0]["slice_id"],
+            "file_path": "nof/nvmf_tcp/transport/tls/tls.c",
+            "start_line": 10,
+            "end_line": 18,
+            "sha256": "abc123",
+        }
+    ]
     source_read_chain = json.loads(
         Path(result.artifact_dir, "source_read_chain.json").read_text(encoding="utf-8")
     )
@@ -283,6 +295,16 @@ def test_prepare_workbench_task_run_injects_evidence_and_semantic_context(tmp_pa
         Path(result.artifact_dir, "evidence_consumption_trajectory.json").read_text(encoding="utf-8")
     )
     assert trajectory["scoring_policy"] == "navigation_only_not_authority"
+    assert trajectory["events"][0]["reuse_reason"] == (
+        "query matched prior evidence; source slices are attached and may be used as source evidence"
+    )
+    semantic_event = next(
+        item for item in trajectory["events"]
+        if item["event"] == "semantic_case_retrieved"
+    )
+    assert semantic_event["reuse_reason"] == (
+        "query matched semantic library case; use terms to align black-box wording"
+    )
     assert [event["event"] for event in trajectory["events"]] == [
         "memory_retrieved",
         "source_slice_attached",
