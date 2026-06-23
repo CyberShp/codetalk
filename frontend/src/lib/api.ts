@@ -521,12 +521,19 @@ export const api = {
         "/api/workbench/core-workflow-readiness",
       ),
 
-    deploymentProbe: (repoPath?: string, providers?: string[]) =>
+    deploymentProbe: (
+      repoPath?: string,
+      providers?: string[],
+      taskContractProbe = false,
+      timeoutSec = 30,
+    ) =>
       request<WorkbenchDeploymentProbeResult>("/api/workbench/deployment-probe", {
         method: "POST",
         body: JSON.stringify({
           repo_path: repoPath ?? "",
           providers: providers ?? [],
+          task_contract_probe: taskContractProbe,
+          timeout_sec: timeoutSec,
         }),
       }),
 

@@ -1294,6 +1294,43 @@ export default function AgentWorkbenchPage() {
       );
     });
 
+  const runAllAgentProviderTaskProbes = () =>
+    runAction("provider-task-probe-all-agents", async () => {
+      const providers = (providerMatrix?.providers ?? []).filter(
+        (provider) => provider.agent_owned && provider.command.length > 0,
+      );
+      const result = await api.workbench.deploymentProbe(
+        repoPath.trim() || undefined,
+        providers.map((provider) => provider.provider),
+        true,
+        30,
+      );
+      setDeploymentProbeResult(result);
+      setProviderProbeResults((current) => {
+        const next = { ...current };
+        for (const item of result.providers) {
+          const provider = item.provider || item.tool || "";
+          if (provider) {
+            next[provider] = item;
+          }
+        }
+        return next;
+      });
+      setProviderTaskProbeResults((current) => {
+        const next = { ...current };
+        for (const item of result.providers) {
+          const provider = item.provider || item.tool || "";
+          if (provider && item.task_probe) {
+            next[provider] = item.task_probe;
+          }
+        }
+        return next;
+      });
+      const ready = result.summary.task_ready_count ?? 0;
+      const total = result.summary.provider_count;
+      setMessage(`Task probe deployment ${result.status}: ${ready}/${total} ready`);
+    });
+
   const runSmokeE2E = () =>
     runAction("smoke-e2e", async () => {
       const result = await api.workbench.smokeE2E(repoPath.trim() || undefined, 30);
@@ -1777,6 +1814,23 @@ export default function AgentWorkbenchPage() {
             Probe all Agent CLIs
           </button>
           <button
+            onClick={() => runAllAgentProviderTaskProbes()}
+            disabled={
+              busyAction === "provider-task-probe-all-agents" ||
+              !(providerMatrix?.providers ?? []).some(
+                (provider) => provider.agent_owned && provider.command.length > 0,
+              )
+            }
+            className="inline-flex items-center gap-2 rounded-lg bg-primary px-2.5 py-1.5 text-xs font-medium text-on-primary transition-opacity hover:opacity-90 disabled:opacity-50"
+          >
+            {busyAction === "provider-task-probe-all-agents" ? (
+              <Loader2 size={13} className="animate-spin" />
+            ) : (
+              <PlayCircle size={13} />
+            )}
+            Task probe all
+          </button>
+          <button
             onClick={runSmokeE2E}
             disabled={busyAction === "smoke-e2e"}
             className="inline-flex items-center gap-2 rounded-lg bg-primary px-2.5 py-1.5 text-xs font-medium text-on-primary transition-opacity hover:opacity-90 disabled:opacity-50"
@@ -1837,6 +1891,12 @@ export default function AgentWorkbenchPage() {
               <span className="font-data">
                 failed:{deploymentProbeResult.summary.failed_count}
               </span>
+              {deploymentProbeResult.summary.task_contract_probe && (
+                <span className="font-data">
+                  task-ready:{deploymentProbeResult.summary.task_ready_count ?? 0}/
+                  {deploymentProbeResult.summary.provider_count}
+                </span>
+              )}
               <span className="font-data">
                 probe:{deploymentProbeResult.probe_id}
               </span>

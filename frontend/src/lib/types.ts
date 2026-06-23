@@ -340,6 +340,7 @@ export interface ExternalAgentStartupProbeResult {
   diagnostics?: {
     repo_index?: GitNexusRepoIndexDiagnostic;
   };
+  task_probe?: WorkbenchProviderTaskProbeResult;
 }
 
 export interface WorkbenchDeploymentProbeResult {
@@ -353,6 +354,9 @@ export interface WorkbenchDeploymentProbeResult {
     provider_count: number;
     healthy_count: number;
     failed_count: number;
+    task_contract_probe?: boolean;
+    task_ready_count?: number;
+    task_failed_count?: number;
   };
   providers: ExternalAgentStartupProbeResult[];
   artifact: {

@@ -128,6 +128,8 @@ class PrepareTaskRunRequest(BaseModel):
 class DeploymentProbeRequest(BaseModel):
     repo_path: str = ""
     providers: list[str] = Field(default_factory=list)
+    task_contract_probe: bool = False
+    timeout_sec: int = Field(default=30, ge=1, le=300)
 
 
 class SmokeE2ERequest(BaseModel):
@@ -401,11 +403,47 @@ async def run_workbench_deployment_probe(payload: DeploymentProbeRequest) -> dic
         _run_deployment_probe_provider(provider, payload.repo_path)
         for provider in provider_ids
     ])
+    if payload.task_contract_probe:
+        task_probe_results = await asyncio.gather(*[
+            _run_deployment_task_probe_provider(
+                provider,
+                repo_path=payload.repo_path,
+                timeout_sec=payload.timeout_sec,
+            )
+            for provider in provider_ids
+        ])
+        task_probe_by_provider = {
+            str(item.get("provider") or ""): item
+            for item in task_probe_results
+            if isinstance(item, dict)
+        }
+        results = [
+            {
+                **item,
+                "task_probe": task_probe_by_provider.get(str(item.get("provider") or "")),
+            }
+            for item in results
+        ]
     completed_at = datetime.now(timezone.utc)
     healthy = [item for item in results if item.get("healthy")]
     failed = [item for item in results if not item.get("healthy")]
+    task_probe_items = [
+        item.get("task_probe")
+        for item in results
+        if isinstance(item.get("task_probe"), dict)
+    ]
+    task_probe_ready = [
+        item for item in task_probe_items
+        if isinstance(item, dict) and item.get("status") == "ready"
+    ]
+    task_probe_failed = [
+        item for item in task_probe_items
+        if isinstance(item, dict) and item.get("status") != "ready"
+    ]
     probe_id = f"deploy_probe_{uuid.uuid4().hex}"
     status = "healthy" if results and not failed else "degraded"
+    if payload.task_contract_probe and task_probe_failed:
+        status = "degraded"
     if not results:
         status = "unavailable"
     artifact_dir = _deployment_probes_dir()
@@ -421,6 +459,9 @@ async def run_workbench_deployment_probe(payload: DeploymentProbeRequest) -> dic
             "provider_count": len(results),
             "healthy_count": len(healthy),
             "failed_count": len(failed),
+            "task_contract_probe": payload.task_contract_probe,
+            "task_ready_count": len(task_probe_ready),
+            "task_failed_count": len(task_probe_failed),
         },
         "providers": results,
         "artifact": {
@@ -443,84 +484,14 @@ async def run_workbench_provider_task_probe(payload: ProviderTaskProbeRequest) -
     provider = str(payload.provider or "").strip()
     if not provider:
         raise HTTPException(status_code=422, detail="provider is required")
-    spec = external_agent_provider_spec(provider)
-    if spec is None:
-        raise HTTPException(status_code=422, detail=f"Unknown provider: {provider}")
-    if not str(spec.command or "").strip():
-        raise HTTPException(status_code=422, detail=f"Provider has no configured command: {provider}")
-    repo_path = str(payload.repo_path or "").strip() or str(_workbench_dir())
-    repo = Path(repo_path).expanduser().resolve()
-    if not repo.exists() or not repo.is_dir():
-        raise HTTPException(status_code=422, detail=f"repo_path does not exist: {repo}")
-
-    workflow = _provider_task_probe_workflow(provider)
-    _workflow_store().save_workflow(workflow)
-    task_run = WorkbenchTaskRunPreparer(
-        artifact_root=_task_runs_dir(),
-        workflow_store=_workflow_store(),
-        evidence_memory=_memory_store(),
-        semantic_library=_semantic_store(),
-    ).prepare(
-        workflow_id=workflow["id"],
-        workspace_id="codetalk-provider-probe",
-        repo_path=str(repo),
-        inputs={
-            "analysis_object": "codetalk provider task probe",
-            "provider": provider,
-        },
-    )
-    execution = WorkbenchWorkflowRunner(_task_runs_dir()).execute_task_run(
-        task_run.task_run_id,
-        timeout_sec=payload.timeout_sec,
-        stop_on_error=True,
-    )
-    refreshed = WorkbenchTaskRunStore(_task_runs_dir()).load(task_run.task_run_id)
-    acceptance = _build_task_acceptance_audit(refreshed)
-    task_dir = Path(refreshed.artifact_dir)
-    _write_json(task_dir / "task_acceptance_audit.json", acceptance)
-    required_artifacts = ["agent_task_probe.json"]
-    step_result = _first_step_result(execution.step_results, step_id="agent_task_probe")
-    validation = (
-        step_result.get("validation")
-        if isinstance(step_result.get("validation"), dict)
-        else {}
-    )
-    contract_status = "ok" if validation.get("status") == "ok" else "failed"
-    status = (
-        "ready"
-        if execution.status == "completed" and acceptance.get("status") == "ready"
-        else "degraded"
-    )
-    result = {
-        "status": status,
-        "provider": provider,
-        "workflow_id": workflow["id"],
-        "task_run_id": refreshed.task_run_id,
-        "task_run": asdict(refreshed),
-        "execution": asdict(execution),
-        "acceptance_audit": acceptance,
-        "contract": {
-            "step_id": "agent_task_probe",
-            "required_artifacts": required_artifacts,
-            "validation": validation,
-        },
-        "summary": {
-            "execution_status": execution.status,
-            "step_status": str(step_result.get("status") or ""),
-            "task_contract_status": contract_status,
-            "missing_required": acceptance.get("summary", {}).get("missing_required", 0),
-            "missing_artifacts": validation.get("missing") or [],
-        },
-    }
-    artifact_path = task_dir / "provider_task_probe_result.json"
-    result["artifact"] = {"path": str(artifact_path)}
-    _write_json(artifact_path, result)
-    write_task_artifact_manifest(task_dir, task_run_id=refreshed.task_run_id)
-    result["artifact"]["sha256"] = hashlib.sha256(artifact_path.read_bytes()).hexdigest()
-    result["artifact"]["size_bytes"] = artifact_path.stat().st_size
-    _write_json(artifact_path, result)
-    write_task_artifact_manifest(task_dir, task_run_id=refreshed.task_run_id)
-    return result
+    try:
+        return _run_provider_task_probe_core(
+            provider=provider,
+            repo_path=payload.repo_path,
+            timeout_sec=payload.timeout_sec,
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc))
 
 
 @router.post("/semantic-cases", status_code=201)
@@ -1479,6 +1450,117 @@ async def _run_deployment_probe_provider(provider: str, repo_path: str) -> dict[
     item["completed_at"] = completed_at.isoformat()
     item["duration_ms"] = int((completed_at - started_at).total_seconds() * 1000)
     return item
+
+
+async def _run_deployment_task_probe_provider(
+    provider: str,
+    *,
+    repo_path: str,
+    timeout_sec: int,
+) -> dict[str, Any]:
+    try:
+        return _run_provider_task_probe_core(
+            provider=provider,
+            repo_path=repo_path,
+            timeout_sec=timeout_sec,
+        )
+    except Exception as exc:
+        return {
+            "provider": provider,
+            "status": "error",
+            "message": str(exc),
+            "summary": {
+                "execution_status": "not_started",
+                "task_contract_status": "error",
+                "missing_artifacts": ["agent_task_probe.json"],
+            },
+        }
+
+
+def _run_provider_task_probe_core(
+    *,
+    provider: str,
+    repo_path: str,
+    timeout_sec: int,
+) -> dict[str, Any]:
+    spec = external_agent_provider_spec(provider)
+    if spec is None:
+        raise ValueError(f"Unknown provider: {provider}")
+    if not str(spec.command or "").strip():
+        raise ValueError(f"Provider has no configured command: {provider}")
+    resolved_repo_path = str(repo_path or "").strip() or str(_workbench_dir())
+    repo = Path(resolved_repo_path).expanduser().resolve()
+    if not repo.exists() or not repo.is_dir():
+        raise ValueError(f"repo_path does not exist: {repo}")
+
+    workflow = _provider_task_probe_workflow(provider)
+    _workflow_store().save_workflow(workflow)
+    task_run = WorkbenchTaskRunPreparer(
+        artifact_root=_task_runs_dir(),
+        workflow_store=_workflow_store(),
+        evidence_memory=_memory_store(),
+        semantic_library=_semantic_store(),
+    ).prepare(
+        workflow_id=workflow["id"],
+        workspace_id="codetalk-provider-probe",
+        repo_path=str(repo),
+        inputs={
+            "analysis_object": "codetalk provider task probe",
+            "provider": provider,
+        },
+    )
+    execution = WorkbenchWorkflowRunner(_task_runs_dir()).execute_task_run(
+        task_run.task_run_id,
+        timeout_sec=timeout_sec,
+        stop_on_error=True,
+    )
+    refreshed = WorkbenchTaskRunStore(_task_runs_dir()).load(task_run.task_run_id)
+    acceptance = _build_task_acceptance_audit(refreshed)
+    task_dir = Path(refreshed.artifact_dir)
+    _write_json(task_dir / "task_acceptance_audit.json", acceptance)
+    required_artifacts = ["agent_task_probe.json"]
+    step_result = _first_step_result(execution.step_results, step_id="agent_task_probe")
+    validation = (
+        step_result.get("validation")
+        if isinstance(step_result.get("validation"), dict)
+        else {}
+    )
+    contract_status = "ok" if validation.get("status") == "ok" else "failed"
+    status = (
+        "ready"
+        if execution.status == "completed" and acceptance.get("status") == "ready"
+        else "degraded"
+    )
+    result = {
+        "status": status,
+        "provider": provider,
+        "workflow_id": workflow["id"],
+        "task_run_id": refreshed.task_run_id,
+        "task_run": asdict(refreshed),
+        "execution": asdict(execution),
+        "acceptance_audit": acceptance,
+        "contract": {
+            "step_id": "agent_task_probe",
+            "required_artifacts": required_artifacts,
+            "validation": validation,
+        },
+        "summary": {
+            "execution_status": execution.status,
+            "step_status": str(step_result.get("status") or ""),
+            "task_contract_status": contract_status,
+            "missing_required": acceptance.get("summary", {}).get("missing_required", 0),
+            "missing_artifacts": validation.get("missing") or [],
+        },
+    }
+    artifact_path = task_dir / "provider_task_probe_result.json"
+    result["artifact"] = {"path": str(artifact_path)}
+    _write_json(artifact_path, result)
+    write_task_artifact_manifest(task_dir, task_run_id=refreshed.task_run_id)
+    result["artifact"]["sha256"] = hashlib.sha256(artifact_path.read_bytes()).hexdigest()
+    result["artifact"]["size_bytes"] = artifact_path.stat().st_size
+    _write_json(artifact_path, result)
+    write_task_artifact_manifest(task_dir, task_run_id=refreshed.task_run_id)
+    return result
 
 
 def _ensure_smoke_agent_script() -> Path:
