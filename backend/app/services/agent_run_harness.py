@@ -1002,6 +1002,16 @@ def _launch_command_from_provider_health(
     if not isinstance(argv, list) or not argv:
         return list(configured_command), {"source": "configured_command", "reason": "health_argv_missing"}
     launch_kind = str(health.get("launch_kind") or "")
+    health_attempts = [
+        attempt for attempt in health.get("attempts") or []
+        if isinstance(attempt, dict)
+    ]
+    active_attempt = health_attempts[-1] if health_attempts else {}
+    active_resolution = (
+        active_attempt.get("resolution")
+        if isinstance(active_attempt.get("resolution"), dict)
+        else {}
+    )
     should_use_health_argv = (
         bool(provider_diagnostics.get("provider_snapshot_present"))
         or bool(health.get("used_fallback", False))
@@ -1012,6 +1022,8 @@ def _launch_command_from_provider_health(
             "source": "configured_command",
             "health_status": "available",
             "reason": "ad_hoc_command_preserved",
+            "health_attempt_count": len(health_attempts),
+            "active_attempt_resolution": active_resolution,
         }
     launch_command = [str(part) for part in argv]
     return launch_command, {
@@ -1020,6 +1032,8 @@ def _launch_command_from_provider_health(
         "launch_kind": launch_kind,
         "configured_command": str(health.get("configured_command") or ""),
         "path": str(health.get("path") or ""),
+        "health_attempt_count": len(health_attempts),
+        "active_attempt_resolution": active_resolution,
     }
 
 

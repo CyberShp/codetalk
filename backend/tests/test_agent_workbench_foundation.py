@@ -786,4 +786,12 @@ def test_agent_run_harness_executes_provider_health_fallback_command(
     assert execution_input["command"] == ["missing-codetalk-agent-command"]
     assert execution_input["command_resolution"]["source"] == "provider_health"
     assert execution_input["command_resolution"]["used_fallback"] is True
+    assert execution_input["command_resolution"]["health_attempt_count"] == 2
+    assert (
+        execution_input["command_resolution"]["active_attempt_resolution"]["method"]
+        == "configured_path"
+    )
+    assert execution_input["command_resolution"]["active_attempt_resolution"]["command"] == (
+        fallback_command
+    )
     assert execution_input["launch_command"][1:] == ["-c", script, str(output_file)]

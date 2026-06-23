@@ -1455,6 +1455,24 @@ def _command_resolution_summary(value: Any) -> dict[str, Any]:
         summary["command_resolution_used_fallback"] = bool(value.get("used_fallback", False))
     if "launch_kind" in value:
         summary["command_resolution_launch_kind"] = str(value.get("launch_kind") or "")
+    active_resolution = value.get("active_attempt_resolution")
+    if isinstance(active_resolution, dict):
+        detail: dict[str, Any] = {}
+        for key in (
+            "method",
+            "path",
+            "which",
+            "where_exe",
+            "where_returncode",
+            "common_dir_path",
+            "powershell_get_command",
+            "powershell_path",
+        ):
+            item = active_resolution.get(key)
+            if item not in {"", None}:
+                detail[key] = item
+        if detail:
+            summary["command_resolution_active_attempt"] = detail
     return {key: item for key, item in summary.items() if item not in {"", None}}
 
 
