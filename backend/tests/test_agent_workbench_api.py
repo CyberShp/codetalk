@@ -1734,6 +1734,8 @@ async def test_workbench_task_run_artifacts_api_labels_failure_recovery(
     history = history_response.json()
     assert history["task_run_id"] == task_run_id
     assert history["count"] == 1
+    assert history["records"][0]["rerun_id"].startswith(f"{task_run_id}_rerun_")
+    assert history["records"][0]["sequence"] == 1
     assert history["records"][0]["status"] == "executed"
     assert history["records"][0]["execution"]["status"] == "invalid"
 

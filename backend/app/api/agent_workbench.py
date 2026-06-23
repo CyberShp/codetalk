@@ -1958,21 +1958,25 @@ def _write_task_rerun_execution_artifacts(
     task_dir: Path,
     result: dict[str, Any],
 ) -> None:
-    payload = {
-        **result,
-        "recorded_at": datetime.now(timezone.utc).isoformat(),
-    }
-    _write_json(task_dir / "task_rerun_execution.json", payload)
     history_path = task_dir / "task_rerun_history.json"
     history = _read_json(history_path)
     records = history.get("records") if isinstance(history, dict) else []
     if not isinstance(records, list):
         records = []
+    sequence = len(records) + 1
+    task_run_id = str(result.get("execution", {}).get("task_run_id") or "")
+    payload = {
+        **result,
+        "rerun_id": f"{task_run_id}_rerun_{sequence}",
+        "sequence": sequence,
+        "recorded_at": datetime.now(timezone.utc).isoformat(),
+    }
+    _write_json(task_dir / "task_rerun_execution.json", payload)
     records.append(payload)
     _write_json(
         history_path,
         {
-            "task_run_id": str(result.get("execution", {}).get("task_run_id") or ""),
+            "task_run_id": task_run_id,
             "count": len(records),
             "records": records,
         },
