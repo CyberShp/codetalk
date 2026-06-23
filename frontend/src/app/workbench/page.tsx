@@ -664,6 +664,14 @@ type AcceptanceWorkflowOutputIssue = {
   schemaErrorCount: number;
 };
 
+type AcceptanceInstructionPolicyIssue = {
+  id: string;
+  label: string;
+  reason: string;
+  relativePath: string;
+  expectedFiles: string[];
+};
+
 function acceptanceProviderIssues(
   audit: WorkbenchAcceptanceAudit | null,
 ): AcceptanceProviderIssue[] {
@@ -697,6 +705,42 @@ function acceptanceWorkflowOutputIssues(
       schemaErrorCount: Array.isArray(item.schema_errors) ? item.schema_errors.length : 0,
     }))
     .filter((item) => item.outputId);
+}
+
+function acceptanceInstructionPolicyIssues(
+  audit: WorkbenchAcceptanceAudit | null,
+): AcceptanceInstructionPolicyIssue[] {
+  if (!audit) return [];
+  return audit.missing_required
+    .filter((item) => {
+      const id = String(item.id ?? "");
+      return (
+        id.startsWith("agent_instruction_policy:") ||
+        id.startsWith("agent_turn_instruction_policy:")
+      );
+    })
+    .map((item) => {
+      const id = String(item.id ?? "");
+      const parts = id.split(":");
+      const expectedFiles = Array.isArray(item.expected_files)
+        ? item.expected_files
+            .filter((file): file is Record<string, unknown> =>
+              Boolean(file && typeof file === "object" && !Array.isArray(file)),
+            )
+            .map((file) => String(file.relative_path ?? ""))
+            .filter(Boolean)
+        : [];
+      const label = id.startsWith("agent_turn_instruction_policy:")
+        ? `${parts[1] ?? "step"} ${parts[2] ?? "turn"} ${parts[3] ?? "artifact"}`
+        : `${parts[1] ?? "step"} ${parts[2] ?? "artifact"}`;
+      return {
+        id,
+        label,
+        reason: String(item.reason ?? ""),
+        relativePath: String(item.relative_path ?? ""),
+        expectedFiles,
+      };
+    });
 }
 
 function evidenceValidationSummary(
@@ -3124,6 +3168,30 @@ export default function AgentWorkbenchPage() {
                                   {issue.schemaErrorCount > 0
                                     ? ` schema-errors:${issue.schemaErrorCount}`
                                     : ""}
+                                </div>
+                              ))}
+                            </div>
+                          </div>
+                        );
+                      })()}
+                      {(() => {
+                        const policyIssues =
+                          acceptanceInstructionPolicyIssues(taskAcceptanceAudit);
+                        if (policyIssues.length === 0) return null;
+                        return (
+                          <div className="mt-1 rounded border border-warning/30 bg-surface px-2 py-1.5">
+                            <p className="text-[11px] font-medium text-warning">
+                              Agent instruction policy
+                            </p>
+                            <div className="mt-1 space-y-0.5 font-data text-[10px] text-warning">
+                              {policyIssues.slice(0, 4).map((issue) => (
+                                <div key={issue.id} className="break-words">
+                                  {issue.label}
+                                  {issue.reason ? ` reason:${issue.reason}` : ""}
+                                  {issue.expectedFiles.length > 0
+                                    ? ` expected:${issue.expectedFiles.slice(0, 3).join(",")}`
+                                    : ""}
+                                  {issue.relativePath ? ` artifact:${issue.relativePath}` : ""}
                                 </div>
                               ))}
                             </div>

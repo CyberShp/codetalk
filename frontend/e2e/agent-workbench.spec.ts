@@ -713,6 +713,45 @@ test("agent workbench previews task run artifact content", async ({ page }) => {
       });
     },
   );
+  await page.route(
+    "**/api/workbench/task-runs/task_run_preview/acceptance-audit",
+    async (route) => {
+      await route.fulfill({
+        headers: corsHeaders(route.request().headers().origin),
+        json: {
+          task_run_id: "task_run_preview",
+          workflow_id: "custom_mr_blackbox",
+          workspace_id: "ws-preview",
+          status: "incomplete",
+          summary: {
+            artifact_count: 6,
+            required_checks: 12,
+            missing_required: 1,
+            recommended_checks: 2,
+            missing_recommended: 0,
+          },
+          checks: [],
+          missing_required: [
+            {
+              id: "agent_turn_instruction_policy:discover:turn_1:execution_input",
+              status: "missing",
+              severity: "required",
+              relative_path: "agent_runs/discover/turns/turn_1/execution_input.json",
+              kind: "agent_turn_execution_input",
+              reason: "agent_instruction_policy_missing",
+              expected_files: [
+                {
+                  relative_path: "AGENTS.md",
+                  sha256: "agentinstructions1234567890",
+                },
+              ],
+            },
+          ],
+          missing_recommended: [],
+        },
+      });
+    },
+  );
 
   await page.goto("/workbench", { waitUntil: "domcontentloaded" });
   await expect(page.getByText("ccr code", { exact: true }).first()).toBeVisible();
@@ -780,4 +819,10 @@ test("agent workbench previews task run artifact content", async ({ page }) => {
   await expect(page.getByText("readonly:true")).toBeVisible();
   await expect(page.getByText("hashes:3")).toBeVisible();
   await expect(page.getByText("task_bundle sha:taskhash1234")).toBeVisible();
+
+  await page.getByRole("button", { name: "Acceptance audit" }).click();
+  await expect(page.getByText("Agent instruction policy")).toBeVisible();
+  await expect(page.getByText("discover turn_1 execution_input")).toBeVisible();
+  await expect(page.getByText("reason:agent_instruction_policy_missing")).toBeVisible();
+  await expect(page.getByText("expected:AGENTS.md")).toBeVisible();
 });
