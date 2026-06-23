@@ -1386,6 +1386,9 @@ class TestCoverageTestDesign:
         assert gap["evidence_memory"][0]["source_slices"][0]["file_path"] == "src/session.c"
         assert gap["evidence_memory"][0]["source_slices"][0]["sha256"] == "slicehash"
         assert gap["black_box_cases"][0]["evidence_source_slices"][0]["file_path"] == "src/session.c"
+        assert gap["black_box_generation_policy"]["evidence_memory_refs"] == ["ev_tls_cleanup"]
+        assert gap["black_box_generation_policy"]["evidence_memory_source_slice_count"] == 1
+        assert "entry_verification" in gap["black_box_generation_policy"]["must_not_use_evidence_memory_as"]
         assert design["test_context"]["evidence_source_counts"]["evidence_memory"] == 1
         policy = design["black_box_generation_policy"]
         assert policy["evidence_memory_ref_count"] == 1

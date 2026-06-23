@@ -11960,14 +11960,16 @@ def _apply_coverage_workbench_context(gaps: list[dict], context: dict) -> None:
         evidence_memory = matches.get("evidence_memory") or []
         if semantic_cases:
             gap["semantic_cases"] = semantic_cases[:5]
-            gap["black_box_generation_policy"] = _coverage_black_box_generation_policy(
-                semantic_cases[:5],
-                query=_coverage_workbench_gap_key(gap),
-            )
             _apply_semantic_cases_to_black_box_cases(gap, semantic_cases[:3])
         if evidence_memory:
             gap["evidence_memory"] = evidence_memory[:5]
             _apply_evidence_memory_to_black_box_cases(gap, evidence_memory[:3])
+        if semantic_cases or evidence_memory:
+            gap["black_box_generation_policy"] = _coverage_black_box_generation_policy(
+                semantic_cases[:5],
+                query=_coverage_workbench_gap_key(gap),
+                evidence_memory=evidence_memory[:5],
+            )
 
 
 def _apply_semantic_cases_to_black_box_cases(gap: dict, semantic_cases: list[dict]) -> None:
