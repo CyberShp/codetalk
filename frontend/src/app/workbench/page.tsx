@@ -645,6 +645,16 @@ type ReplayPlanSummary = {
   contractSha: string;
 };
 
+type BlackBoxGenerationPolicySummary = {
+  termCount: number;
+  caseCount: number;
+  firstCaseId: string;
+  firstTerms: string[];
+  allowedUses: string[];
+  mustNotUse: string[];
+  authorityRule: string;
+};
+
 type AcceptanceProviderIssue = {
   provider: string;
   status: string;
@@ -889,6 +899,49 @@ function replayPlanSummary(
     contractSha: String(
       hashes["agent_output_contract.json"] ?? hashes.agent_output_contract_sha256 ?? "",
     ),
+  };
+}
+
+function blackBoxGenerationPolicySummary(
+  artifact: WorkbenchTaskArtifactContent,
+): BlackBoxGenerationPolicySummary | null {
+  if (!artifact.is_text || !artifact.content.trim()) return null;
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(artifact.content);
+  } catch {
+    return null;
+  }
+  if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) return null;
+  const payload = parsed as Record<string, unknown>;
+  if (
+    artifact.kind !== "black_box_generation_policy" &&
+    !("semantic_terms" in payload)
+  ) {
+    return null;
+  }
+  const semanticTerms = Array.isArray(payload.semantic_terms)
+    ? payload.semantic_terms.filter(
+        (item): item is Record<string, unknown> =>
+          Boolean(item && typeof item === "object" && !Array.isArray(item)),
+      )
+    : [];
+  const firstTerm = semanticTerms[0] ?? {};
+  const firstTerms = Array.isArray(firstTerm.terms)
+    ? firstTerm.terms.map((item) => String(item)).filter(Boolean)
+    : [];
+  return {
+    termCount: Number(payload.semantic_term_count ?? 0) || firstTerms.length,
+    caseCount: Number(payload.semantic_case_count ?? 0) || semanticTerms.length,
+    firstCaseId: String(firstTerm.case_id ?? ""),
+    firstTerms,
+    allowedUses: Array.isArray(payload.allowed_uses)
+      ? payload.allowed_uses.map((item) => String(item)).filter(Boolean)
+      : [],
+    mustNotUse: Array.isArray(payload.must_not_use_semantics_as)
+      ? payload.must_not_use_semantics_as.map((item) => String(item)).filter(Boolean)
+      : [],
+    authorityRule: String(payload.authority_rule ?? ""),
   };
 }
 
@@ -3549,6 +3602,39 @@ export default function AgentWorkbenchPage() {
                               {summary.workflowOutputsSha && (
                                 <div className="mt-1 font-data text-[10px]">
                                   workflow_outputs sha:{summary.workflowOutputsSha.slice(0, 12)}
+                                </div>
+                              )}
+                            </div>
+                          );
+                        })()}
+                        {(() => {
+                          const summary = blackBoxGenerationPolicySummary(artifactContent);
+                          if (!summary) return null;
+                          return (
+                            <div className="mt-2 rounded bg-surface-container px-2 py-1.5 text-[11px] text-on-surface-variant">
+                              <div className="flex flex-wrap gap-2">
+                                <span>Black-box terms: {summary.termCount}</span>
+                                <span>cases:{summary.caseCount}</span>
+                                {summary.firstCaseId && <span>{summary.firstCaseId}</span>}
+                              </div>
+                              <div className="mt-1 flex flex-wrap gap-2 font-data text-[10px]">
+                                {summary.firstTerms.slice(0, 4).map((term) => (
+                                  <span key={term}>term:{term}</span>
+                                ))}
+                              </div>
+                              <div className="mt-1 flex flex-wrap gap-2 font-data text-[10px]">
+                                {summary.allowedUses.slice(0, 3).map((use) => (
+                                  <span key={use}>allowed:{use}</span>
+                                ))}
+                              </div>
+                              <div className="mt-1 flex flex-wrap gap-2 font-data text-[10px] text-warning">
+                                {summary.mustNotUse.slice(0, 3).map((use) => (
+                                  <span key={use}>must-not:{use}</span>
+                                ))}
+                              </div>
+                              {summary.authorityRule && (
+                                <div className="mt-1 break-words text-[10px]">
+                                  {summary.authorityRule}
                                 </div>
                               )}
                             </div>

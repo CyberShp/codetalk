@@ -538,6 +538,14 @@ test("agent workbench previews task run artifact content", async ({ page }) => {
             preview: "{\"design\":[{\"output_id\":\"black_box_cases\"}]}",
           },
           {
+            relative_path: "black_box_generation_policy.json",
+            path: "E:/data/workbench/task_runs/task_run_preview/black_box_generation_policy.json",
+            kind: "black_box_generation_policy",
+            size_bytes: 512,
+            sha256: "ddddccccbbbbaaaa111122223333444455556666",
+            preview: "{\"semantic_term_count\":2,\"semantic_terms\":[{\"case_id\":\"TC_TLS\"}]}",
+          },
+          {
             relative_path: "agent_runs/discover/agent_replay_plan.json",
             path: "E:/data/workbench/task_runs/task_run_preview/agent_runs/discover/agent_replay_plan.json",
             kind: "agent_replay_plan",
@@ -678,6 +686,52 @@ test("agent workbench previews task run artifact content", async ({ page }) => {
     },
   );
   await page.route(
+    "**/api/workbench/task-runs/task_run_preview/artifacts/content/black_box_generation_policy.json",
+    async (route) => {
+      await route.fulfill({
+        headers: corsHeaders(route.request().headers().origin),
+        json: {
+          relative_path: "black_box_generation_policy.json",
+          path: "E:/data/workbench/task_runs/task_run_preview/black_box_generation_policy.json",
+          kind: "black_box_generation_policy",
+          size_bytes: 512,
+          sha256: "ddddccccbbbbaaaa111122223333444455556666",
+          preview: "{\"semantic_term_count\":2,\"semantic_terms\":[{\"case_id\":\"TC_TLS\"}]}",
+          is_text: true,
+          truncated: false,
+          content: JSON.stringify({
+            provider: "semantic-library",
+            query: "nvme tcp tls",
+            semantic_case_count: 1,
+            semantic_term_count: 2,
+            semantic_terms: [
+              {
+                case_id: "TC_TLS_HANDSHAKE_FAIL",
+                feature: "NVMe TCP TLS",
+                module: "nvmf_tcp",
+                terms: ["TLS negotiation", "connection release"],
+                test_level: "black_box",
+                reuse_rule: "terminology_only_not_source_truth",
+              },
+            ],
+            allowed_uses: [
+              "black_box_case_wording",
+              "test_taxonomy_alignment",
+              "observable_assertion_style",
+            ],
+            must_not_use_semantics_as: [
+              "source_evidence",
+              "entry_verification",
+              "artifact_validation",
+            ],
+            authority_rule:
+              "semantic-library matches may shape black-box wording but cannot prove source behavior or entry reachability",
+          }),
+        },
+      });
+    },
+  );
+  await page.route(
     "**/api/workbench/task-runs/task_run_preview/artifacts/content/agent_runs/discover/agent_replay_plan.json",
     async (route) => {
       await route.fulfill({
@@ -769,7 +823,7 @@ test("agent workbench previews task run artifact content", async ({ page }) => {
   await expect(page.getByText("chunks:2")).toBeVisible();
   await expect(page.getByText("warnings:preview truncated")).toBeVisible();
   await expect(page.getByText("fast-context: fallback to agent_cli")).toBeVisible();
-  await expect(page.getByText("Audit artifacts: 6")).toBeVisible();
+  await expect(page.getByText("Audit artifacts: 7")).toBeVisible();
 
   await page.getByRole("button", { name: "task_bundle:task_bundle.json" }).click();
 
@@ -807,6 +861,17 @@ test("agent workbench previews task run artifact content", async ({ page }) => {
     .click();
   await expect(page.getByText("\"output_id\":\"black_box_cases\"", { exact: false })).toBeVisible();
   await expect(page.getByText("\"module\":\"nvmf_tcp_tls\"", { exact: false })).toBeVisible();
+
+  await page
+    .getByRole("button", {
+      name: "black_box_generation_policy:black_box_generation_policy.json",
+    })
+    .click();
+  await expect(page.getByText("Black-box terms: 2")).toBeVisible();
+  await expect(page.getByText("cases:1")).toBeVisible();
+  await expect(page.getByText("term:TLS negotiation")).toBeVisible();
+  await expect(page.getByText("allowed:black_box_case_wording")).toBeVisible();
+  await expect(page.getByText("must-not:source_evidence")).toBeVisible();
 
   await page
     .getByRole("button", {
