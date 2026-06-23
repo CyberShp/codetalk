@@ -1125,7 +1125,18 @@ def test_workbench_workflow_runner_records_agent_failure_recovery(tmp_path, monk
     assert step["status"] == "invalid"
     assert step["execution"]["status"] == "error"
     assert step["execution"]["exit_code"] == 7
-    assert step["failure_recovery"] == {
+    assert {
+        key: step["failure_recovery"][key]
+        for key in (
+            "failure_kind",
+            "retryable",
+            "raw_output_artifact",
+            "execution_result_artifact",
+            "validation_status",
+            "missing_artifacts",
+            "suggested_actions",
+        )
+    } == {
         "failure_kind": "agent_error",
         "retryable": True,
         "raw_output_artifact": "raw_output.txt",
@@ -1138,6 +1149,8 @@ def test_workbench_workflow_runner_records_agent_failure_recovery(tmp_path, monk
             "do not materialize outputs until required artifacts validate",
         ],
     }
+    assert step["failure_recovery"]["provider_diagnostics"]["provider"] == "local-python"
+    assert step["failure_recovery"]["provider_diagnostics"]["health_status"] == "available"
     lifecycle = step["lifecycle"]
     assert lifecycle["status"] == "invalid"
     assert lifecycle["failure_kind"] == "agent_error"
@@ -1165,6 +1178,87 @@ def test_workbench_workflow_runner_records_agent_failure_recovery(tmp_path, monk
         "agent_run_lifecycle.json",
     ]
     assert rerun_plan["steps"][0]["missing_artifacts"] == ["source_scope.json"]
+
+
+def test_workbench_failure_recovery_embeds_unavailable_provider_diagnostics(
+    tmp_path,
+    monkeypatch,
+):
+    from app.config import settings
+    from app.services.workbench_task_run import WorkbenchTaskRunPreparer
+    from app.services.workbench_workflow_runner import WorkbenchWorkflowRunner
+    from app.services.workflow_dsl import WorkflowStore
+
+    monkeypatch.setattr(settings, "external_agent_custom_providers", [
+        {
+            "id": "innernet-agent",
+            "command": "definitely-missing-innernet-agent --api-key sk-innernet-secret --json",
+            "fallback_commands": ["also-missing-innernet-agent --token innernet-token"],
+        }
+    ])
+    workflow_store = WorkflowStore(tmp_path / "workflows.db")
+    workflow_store.save_workflow({
+        "id": "unavailable_provider_recovery",
+        "name": "Unavailable provider recovery",
+        "version": 1,
+        "inputs": [{"id": "module", "type": "free_text"}],
+        "steps": [
+            {
+                "id": "discover",
+                "type": "agent_task",
+                "provider": "innernet-agent",
+                "required_artifacts": ["source_scope.json"],
+            }
+        ],
+        "outputs": [{"id": "scope", "type": "json", "from": "discover", "artifact": "source_scope.json"}],
+    })
+    task_run = WorkbenchTaskRunPreparer(
+        artifact_root=tmp_path / "task_runs",
+        workflow_store=workflow_store,
+    ).prepare(
+        workflow_id="unavailable_provider_recovery",
+        workspace_id="ws-unavailable-provider",
+        repo_path=str(tmp_path),
+        inputs={"module": "nvme tcp tls"},
+    )
+
+    result = WorkbenchWorkflowRunner(tmp_path / "task_runs").execute_task_run(
+        task_run.task_run_id,
+        timeout_sec=5,
+    )
+
+    recovery_path = (
+        Path(task_run.artifact_dir)
+        / "agent_runs"
+        / "discover"
+        / "failure_recovery.json"
+    )
+    recovery = json.loads(recovery_path.read_text(encoding="utf-8"))
+    assert result.step_results[0]["status"] == "invalid"
+    assert recovery["failure_kind"] == "agent_error"
+    assert recovery["provider_diagnostics"]["provider"] == "innernet-agent"
+    assert recovery["provider_diagnostics"]["health_status"] == "unavailable"
+    assert recovery["provider_diagnostics"]["command_resolution_source"] == "configured_command"
+    assert recovery["provider_diagnostics"]["configured_command_text"] == (
+        "definitely-missing-innernet-agent --api-key <redacted> --json"
+    )
+    assert recovery["provider_diagnostics"]["fallback_command_texts"] == [
+        "also-missing-innernet-agent --token <redacted>"
+    ]
+    assert recovery["provider_diagnostics"]["attempts"][0]["status"] == "unavailable"
+    assert recovery["provider_diagnostics"]["attempts"][0]["executable"] == (
+        "definitely-missing-innernet-agent"
+    )
+    assert recovery["provider_diagnostics"]["startup_probe_endpoint"] == (
+        "/api/tools/innernet-agent/startup-probe"
+    )
+    assert any(
+        "startup probe" in action
+        for action in recovery["suggested_actions"]
+    )
+    recovery_text = recovery_path.read_text(encoding="utf-8")
+    assert "sk-innernet-secret" not in recovery_text
+    assert "innernet-token" not in recovery_text
 
 
 def test_workbench_workflow_runner_enforces_user_output_schema(

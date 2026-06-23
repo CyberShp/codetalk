@@ -819,6 +819,11 @@ def _failure_recovery_summary(
         )
     if validation_status != "ok":
         actions.append("do not materialize outputs until required artifacts validate")
+    provider_diagnostics = _provider_failure_diagnostics_summary(artifact_dir)
+    if provider_diagnostics.get("health_status") in {"unavailable", "configuration_error", "error"}:
+        endpoint = str(provider_diagnostics.get("startup_probe_endpoint") or "").strip()
+        if endpoint:
+            actions.append(f"run startup probe {endpoint} to verify backend launch context")
     return {
         "failure_kind": failure_kind,
         "retryable": failure_kind in {"agent_error", "agent_timeout", "artifact_validation_failed"},
@@ -829,7 +834,115 @@ def _failure_recovery_summary(
         "validation_status": validation_status,
         "missing_artifacts": missing_artifacts,
         "suggested_actions": actions,
+        "provider_diagnostics": provider_diagnostics,
     }
+
+
+def _provider_failure_diagnostics_summary(artifact_dir: Path) -> dict[str, Any]:
+    payload = _read_json(artifact_dir / "provider_diagnostics.json")
+    execution_input = _read_json(artifact_dir / "execution_input.json")
+    if not isinstance(payload, dict):
+        return {}
+    diagnostics = payload.get("diagnostics")
+    if not isinstance(diagnostics, dict):
+        diagnostics = {}
+    health = payload.get("health")
+    if not isinstance(health, dict):
+        health = {}
+    attempts = [
+        _provider_attempt_failure_summary(item)
+        for item in health.get("attempts") or []
+        if isinstance(item, dict)
+    ]
+    summary: dict[str, Any] = {
+        "artifact": "provider_diagnostics.json",
+        "provider": str(payload.get("provider") or ""),
+        "status": str(payload.get("status") or ""),
+        "health_status": str(health.get("status") or "unknown"),
+        "health_reason": str(health.get("reason") or ""),
+        "configured_command_text": str(diagnostics.get("configured_command_text") or ""),
+        "fallback_command_texts": [
+            str(item)
+            for item in diagnostics.get("fallback_command_texts") or []
+            if str(item).strip()
+        ],
+        "startup_probe_endpoint": str(diagnostics.get("startup_probe_endpoint") or ""),
+        "prompt_transport": str(
+            diagnostics.get("startup_probe_transport")
+            or diagnostics.get("prompt_transport")
+            or ""
+        ),
+        "mcp_credentials_owner": str(diagnostics.get("mcp_credentials_owner") or ""),
+        "attempts": attempts,
+    }
+    if isinstance(execution_input, dict):
+        summary.update(_command_resolution_summary(execution_input.get("command_resolution")))
+        process_command = execution_input.get("process_command")
+        if isinstance(process_command, list):
+            summary["process_command"] = [
+                _redact_failure_diagnostic_text(str(item))
+                for item in process_command
+            ]
+        launch_command = execution_input.get("launch_command")
+        if isinstance(launch_command, list):
+            summary["launch_command"] = [
+                _redact_failure_diagnostic_text(str(item))
+                for item in launch_command
+            ]
+    filtered = {
+        key: value
+        for key, value in summary.items()
+        if _nonempty_diagnostic_value(value)
+    }
+    return _redact_failure_diagnostics(filtered)
+
+
+def _provider_attempt_failure_summary(item: dict[str, Any]) -> dict[str, Any]:
+    keys = (
+        "command",
+        "status",
+        "reason",
+        "executable",
+        "path",
+        "launch_kind",
+        "config_hint",
+        "profile_config_path",
+        "run_status",
+        "run_message",
+        "probe_status",
+        "probe_message",
+    )
+    return {
+        key: _redact_failure_diagnostics(value)
+        for key in keys
+        if _nonempty_diagnostic_value(value := item.get(key))
+    }
+
+
+def _redact_failure_diagnostics(value: Any) -> Any:
+    if isinstance(value, dict):
+        return {
+            str(key): _redact_failure_diagnostics(item)
+            for key, item in value.items()
+        }
+    if isinstance(value, list):
+        return [_redact_failure_diagnostics(item) for item in value]
+    if isinstance(value, str):
+        return _redact_failure_diagnostic_text(value)
+    return value
+
+
+def _redact_failure_diagnostic_text(value: str) -> str:
+    try:
+        from app.services.external_agent_discovery import redact_agent_diagnostic_text
+
+        return redact_agent_diagnostic_text(value)
+    except Exception:
+        return value
+
+
+def _nonempty_diagnostic_value(value: Any) -> bool:
+    return value is not None and value != "" and value != []
 
 
 def _agent_run_lifecycle_summary(
