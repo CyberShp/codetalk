@@ -65,15 +65,37 @@ async def apply_persisted_agent_provider_settings(
     except (aiosqlite.Error, OSError):
         return {}
 
-    payload: dict[str, Any] = {}
-    for row in rows:
-        key = str(row["key"])
-        value = row["value"]
-        if key in AGENT_PROVIDER_JSON_KEYS:
-            payload[key] = _json_setting_value(value, _runtime_default_for_key(key))
-        else:
-            payload[key] = str(value or "")
+    payload = agent_provider_settings_payload_from_rows(rows)
     apply_agent_provider_settings(payload)
+    return payload
+
+
+async def read_agent_provider_settings_from_db(db: aiosqlite.Connection) -> dict[str, Any]:
+    async with db.execute(
+        "SELECT key, value FROM settings WHERE key IN ({})".format(
+            ",".join("?" * len(AGENT_PROVIDER_KEYS))
+        ),
+        AGENT_PROVIDER_KEYS,
+    ) as cur:
+        rows = await cur.fetchall()
+    payload = agent_provider_settings_payload_from_rows(rows)
+    apply_agent_provider_settings(payload)
+    return payload
+
+
+def agent_provider_settings_payload_from_rows(rows: list[Any]) -> dict[str, Any]:
+    stored = {str(row["key"]): row["value"] for row in rows}
+    defaults = runtime_agent_provider_defaults()
+    payload: dict[str, Any] = {}
+    for key in AGENT_PROVIDER_KEYS:
+        if key not in stored:
+            payload[key] = defaults[key]
+            continue
+        payload[key] = (
+            _json_setting_value(stored[key], defaults[key])
+            if key in AGENT_PROVIDER_JSON_KEYS
+            else str(stored[key] or "")
+        )
     return payload
 
 
