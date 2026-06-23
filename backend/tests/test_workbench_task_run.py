@@ -188,6 +188,10 @@ def test_prepare_workbench_task_run_injects_evidence_and_semantic_context(tmp_pa
     from app.services.workflow_dsl import WorkflowStore
     from app.services.workbench_task_run import WorkbenchTaskRunPreparer
 
+    repo = tmp_path / "repo"
+    source = repo / "nof" / "nvmf_tcp" / "transport" / "tls" / "tls.c"
+    source.parent.mkdir(parents=True)
+    source.write_text("int nvmf_tcp_tls_handshake(void) { return -EINVAL; }\n", encoding="utf-8")
     memory = EvidenceMemoryStore(tmp_path / "memory.db")
     memory.record_analysis_run(
         run_id="run-prev",
@@ -213,7 +217,7 @@ def test_prepare_workbench_task_run_injects_evidence_and_semantic_context(tmp_pa
         file_path="nof/nvmf_tcp/transport/tls/tls.c",
         start_line=10,
         end_line=18,
-        sha256="abc123",
+        sha256=hashlib.sha256(source.read_bytes()).hexdigest(),
         excerpt="int nvmf_tcp_tls_handshake(void) { return -EINVAL; }",
     )
     semantics = TestSemanticLibraryStore(tmp_path / "semantics.db")
@@ -244,7 +248,7 @@ def test_prepare_workbench_task_run_injects_evidence_and_semantic_context(tmp_pa
     ).prepare(
         workflow_id="mr_blackbox_test",
         workspace_id="ws1",
-        repo_path="E:/repo",
+        repo_path=str(repo),
         inputs={"module": "nvme tcp tls"},
     )
 
@@ -267,7 +271,12 @@ def test_prepare_workbench_task_run_injects_evidence_and_semantic_context(tmp_pa
         "TLS negotiation",
         "connection release",
     ]
-    assert step_bundle["context_bundle"]["evidence"][0]["source_slices"][0]["sha256"] == "abc123"
+    assert step_bundle["context_bundle"]["evidence"][0]["source_slices"][0]["sha256"] == (
+        hashlib.sha256(source.read_bytes()).hexdigest()
+    )
+    assert step_bundle["context_bundle"]["evidence"][0]["source_slices"][0]["integrity_status"] == (
+        "verified_current"
+    )
     memory_retrieval = json.loads(
         Path(result.artifact_dir, "memory_retrieval.json").read_text(encoding="utf-8")
     )
@@ -283,14 +292,14 @@ def test_prepare_workbench_task_run_injects_evidence_and_semantic_context(tmp_pa
             "file_path": "nof/nvmf_tcp/transport/tls/tls.c",
             "start_line": 10,
             "end_line": 18,
-            "sha256": "abc123",
+            "sha256": hashlib.sha256(source.read_bytes()).hexdigest(),
         }
     ]
     source_read_chain = json.loads(
         Path(result.artifact_dir, "source_read_chain.json").read_text(encoding="utf-8")
     )
     assert source_read_chain["reads"][0]["file_path"] == "nof/nvmf_tcp/transport/tls/tls.c"
-    assert source_read_chain["reads"][0]["sha256"] == "abc123"
+    assert source_read_chain["reads"][0]["sha256"] == hashlib.sha256(source.read_bytes()).hexdigest()
     trajectory = json.loads(
         Path(result.artifact_dir, "evidence_consumption_trajectory.json").read_text(encoding="utf-8")
     )
@@ -310,6 +319,76 @@ def test_prepare_workbench_task_run_injects_evidence_and_semantic_context(tmp_pa
         "source_slice_attached",
         "semantic_case_retrieved",
     ]
+
+
+def test_prepare_workbench_task_run_marks_stale_memory_source_slices_navigation_only(tmp_path):
+    from app.services.evidence_memory import EvidenceMemoryStore
+    from app.services.workflow_dsl import WorkflowStore
+    from app.services.workbench_task_run import WorkbenchTaskRunPreparer
+
+    repo = tmp_path / "repo"
+    source = repo / "src" / "tls.c"
+    source.parent.mkdir(parents=True)
+    source.write_text("int tls_current(void) { return 0; }\n", encoding="utf-8")
+    memory = EvidenceMemoryStore(tmp_path / "memory.db")
+    memory.record_analysis_run(
+        run_id="run-prev",
+        workspace_id="ws-stale",
+        repo_path=str(repo),
+        object_text="nvme tcp tls",
+        workflow_id="module_analysis",
+        status="completed",
+    )
+    evidence_id = memory.upsert_evidence_item(
+        run_id="run-prev",
+        workspace_id="ws-stale",
+        kind="source_file",
+        subject_key="src/tls.c",
+        status="verified_local",
+        source="claude-code",
+        path="src/tls.c",
+        reason="previously validated TLS source",
+        text="nvme tcp tls stale slice",
+    )
+    memory.add_source_slice(
+        evidence_id=evidence_id,
+        file_path="src/tls.c",
+        start_line=1,
+        end_line=1,
+        sha256="oldhash",
+        excerpt="int tls_old(void) { return -1; }",
+    )
+    workflow_store = WorkflowStore(tmp_path / "workflows.db")
+    workflow_store.save_workflow({
+        "id": "stale_memory",
+        "name": "Stale memory",
+        "version": 1,
+        "inputs": [{"id": "module", "type": "free_text"}],
+        "steps": [{"id": "discover", "type": "agent_task"}],
+        "outputs": [{"id": "scope", "type": "json"}],
+    })
+
+    result = WorkbenchTaskRunPreparer(
+        artifact_root=tmp_path / "task_runs",
+        workflow_store=workflow_store,
+        evidence_memory=memory,
+    ).prepare(
+        workflow_id="stale_memory",
+        workspace_id="ws-stale",
+        repo_path=str(repo),
+        inputs={"module": "nvme tcp tls"},
+    )
+
+    item = result.task_bundle["context_bundle"]["evidence"][0]
+    assert item["source_read_status"] == "source_slices_stale"
+    assert item["usable_as_source_evidence"] is False
+    assert item["source_slices"][0]["integrity_status"] == "hash_mismatch"
+    memory_retrieval = json.loads(
+        Path(result.artifact_dir, "memory_retrieval.json").read_text(encoding="utf-8")
+    )
+    assert memory_retrieval["items"][0]["reuse_reason"] == (
+        "query matched prior evidence; navigation only because source slices are stale or unverified"
+    )
 
 
 def test_prepare_workbench_task_run_records_degraded_retrieval_artifact(tmp_path, monkeypatch):

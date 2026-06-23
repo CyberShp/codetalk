@@ -93,6 +93,7 @@ class WorkbenchTaskRunPreparer:
         )
         context_bundle = build_workbench_context_bundle(
             workspace_id=workspace_id,
+            repo_path=repo_path,
             input_snapshot=input_snapshot,
             evidence_memory=self.evidence_memory,
             semantic_library=self.semantic_library,
@@ -255,6 +256,7 @@ class WorkbenchTaskRunStore:
 def build_workbench_context_bundle(
     *,
     workspace_id: str,
+    repo_path: str = "",
     input_snapshot: dict[str, Any],
     evidence_memory: EvidenceMemoryStore | None = None,
     semantic_library: TestSemanticLibraryStore | None = None,
@@ -268,6 +270,7 @@ def build_workbench_context_bundle(
             _evidence_item_payload(
                 item,
                 source_slices=evidence_memory.list_source_slices(item.evidence_id),
+                repo_path=repo_path,
             )
             for item in evidence_memory.search_analysis_memory(
                 query,
@@ -1166,15 +1169,18 @@ def build_context_artifact_payloads(
         for source_slice in item.get("source_slices") or []:
             if not isinstance(source_slice, dict):
                 continue
+            verified = source_slice.get("integrity_status") == "verified_current"
             read = {
-                "event": "source_slice_attached",
+                "event": "source_slice_attached" if verified else "source_slice_stale",
                 "evidence_id": evidence_id,
                 "slice_id": source_slice.get("slice_id") or "",
                 "file_path": source_slice.get("file_path") or "",
                 "start_line": source_slice.get("start_line"),
                 "end_line": source_slice.get("end_line"),
                 "sha256": source_slice.get("sha256") or "",
-                "status": "validated_source_slice",
+                "current_sha256": source_slice.get("current_sha256") or "",
+                "status": "validated_source_slice" if verified else "stale_source_slice",
+                "validation_error": source_slice.get("validation_error") or "",
                 "excerpt_chars": len(str(source_slice.get("excerpt") or "")),
             }
             reads.append(read)
@@ -1224,6 +1230,8 @@ def _memory_reuse_reason(item: dict[str, Any]) -> str:
         return (
             "query matched prior evidence; source slices are attached and may be used as source evidence"
         )
+    if item.get("source_slices"):
+        return "query matched prior evidence; navigation only because source slices are stale or unverified"
     return "query matched prior evidence; navigation only because no source slices are attached"
 
 
@@ -1493,10 +1501,19 @@ def _read_text_prefix(path: Path, *, max_chars: int) -> str:
         return ""
 
 
-def _evidence_item_payload(item: Any, *, source_slices: list[Any] | None = None) -> dict[str, Any]:
+def _evidence_item_payload(
+    item: Any,
+    *,
+    source_slices: list[Any] | None = None,
+    repo_path: str = "",
+) -> dict[str, Any]:
     source_slice_payloads = [
-        _source_slice_payload(source_slice)
+        _source_slice_payload(source_slice, repo_path=repo_path)
         for source_slice in (source_slices or [])
+    ]
+    verified_source_slices = [
+        source_slice for source_slice in source_slice_payloads
+        if source_slice.get("integrity_status") == "verified_current"
     ]
     payload = {
         "evidence_id": item.evidence_id,
@@ -1511,18 +1528,20 @@ def _evidence_item_payload(item: Any, *, source_slices: list[Any] | None = None)
         "confidence": item.confidence,
         "text": item.text,
         "provenance": item.provenance or {},
-        "source_read_status": (
-            "source_slices_attached"
-            if source_slice_payloads else "no_source_slices"
-        ),
-        "usable_as_source_evidence": bool(source_slice_payloads),
+        "source_read_status": _source_read_status(source_slice_payloads),
+        "usable_as_source_evidence": bool(verified_source_slices),
     }
     if source_slice_payloads:
         payload["source_slices"] = source_slice_payloads
     return payload
 
 
-def _source_slice_payload(item: Any) -> dict[str, Any]:
+def _source_slice_payload(item: Any, *, repo_path: str = "") -> dict[str, Any]:
+    integrity = _source_slice_integrity(
+        repo_path=repo_path,
+        file_path=str(item.file_path),
+        expected_sha256=str(item.sha256),
+    )
     return {
         "slice_id": item.slice_id,
         "evidence_id": item.evidence_id,
@@ -1530,8 +1549,88 @@ def _source_slice_payload(item: Any) -> dict[str, Any]:
         "start_line": item.start_line,
         "end_line": item.end_line,
         "sha256": item.sha256,
+        "integrity_status": integrity["status"],
+        "current_sha256": integrity["current_sha256"],
+        "validation_error": integrity["validation_error"],
         "excerpt": item.excerpt,
         "created_at": item.created_at,
+    }
+
+
+def _source_read_status(source_slices: list[dict[str, Any]]) -> str:
+    if not source_slices:
+        return "no_source_slices"
+    if any(item.get("integrity_status") == "verified_current" for item in source_slices):
+        return "source_slices_attached"
+    return "source_slices_stale"
+
+
+def _source_slice_integrity(
+    *,
+    repo_path: str,
+    file_path: str,
+    expected_sha256: str,
+) -> dict[str, str]:
+    if not repo_path:
+        return {
+            "status": "repo_path_missing",
+            "current_sha256": "",
+            "validation_error": "repo_path_missing",
+        }
+    repo = Path(repo_path)
+    try:
+        repo_resolved = repo.resolve()
+    except OSError:
+        return {
+            "status": "repo_unavailable",
+            "current_sha256": "",
+            "validation_error": "repo_unavailable",
+        }
+    candidate = Path(str(file_path or "").replace("\\", "/"))
+    if candidate.is_absolute():
+        path = candidate
+    else:
+        path = repo_resolved / candidate
+    try:
+        resolved = path.resolve()
+    except OSError:
+        return {
+            "status": "file_missing",
+            "current_sha256": "",
+            "validation_error": "file_missing",
+        }
+    try:
+        resolved.relative_to(repo_resolved)
+    except ValueError:
+        return {
+            "status": "outside_repo",
+            "current_sha256": "",
+            "validation_error": "outside_repo",
+        }
+    if not resolved.exists() or not resolved.is_file():
+        return {
+            "status": "file_missing",
+            "current_sha256": "",
+            "validation_error": "file_missing",
+        }
+    try:
+        current_sha = hashlib.sha256(resolved.read_bytes()).hexdigest()
+    except OSError:
+        return {
+            "status": "read_failed",
+            "current_sha256": "",
+            "validation_error": "read_failed",
+        }
+    if expected_sha256 and current_sha == expected_sha256:
+        return {
+            "status": "verified_current",
+            "current_sha256": current_sha,
+            "validation_error": "",
+        }
+    return {
+        "status": "hash_mismatch",
+        "current_sha256": current_sha,
+        "validation_error": "hash_mismatch",
     }
 
 
