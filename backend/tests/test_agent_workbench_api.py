@@ -2401,6 +2401,10 @@ async def test_workbench_task_run_artifacts_api_labels_agent_turn_snapshots(
     assert checks["agent_turn_execution_input:discover:turn_1"]["severity"] == "required"
     assert checks["agent_turn_raw_output:discover:turn_2"]["status"] == "ok"
     assert checks["agent_turn_provider_diagnostics:discover:turn_2"]["status"] == "ok"
+    assert checks["agent_source_slice_requests:discover"]["status"] == "ok"
+    assert checks["agent_source_slices:discover"]["status"] == "ok"
+    assert checks["agent_turn_source_slice_requests:discover:turn_1"]["status"] == "ok"
+    assert checks["agent_turn_source_slices:discover:turn_2"]["status"] == "ok"
 
 
 async def test_workbench_prepare_task_run_api_injects_memory_and_semantics(workbench_client, tmp_path):

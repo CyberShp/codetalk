@@ -2117,6 +2117,28 @@ def _build_task_acceptance_audit(task_run: Any) -> dict[str, Any]:
         turn_count = _safe_int(
             lifecycle.get("turn_count") if isinstance(lifecycle, dict) else None
         )
+        source_slice_request_count = _safe_int(
+            lifecycle.get("source_slice_request_count") if isinstance(lifecycle, dict) else None
+        )
+        injected_source_slice_count = _safe_int(
+            lifecycle.get("injected_source_slice_count") if isinstance(lifecycle, dict) else None
+        )
+        if source_slice_request_count:
+            checks.append(_acceptance_file_check(
+                check_id=f"agent_source_slice_requests:{step_id}",
+                relative_path=f"{base}/source_slice_requests.json",
+                artifacts=artifacts,
+                description="Agent-requested source slice list",
+                severity="required",
+            ))
+        if source_slice_request_count or injected_source_slice_count:
+            checks.append(_acceptance_file_check(
+                check_id=f"agent_source_slices:{step_id}",
+                relative_path=f"{base}/source_slices.json",
+                artifacts=artifacts,
+                description="CodeTalk-validated source slices injected into the next turn",
+                severity="required",
+            ))
         for turn_index in range(1, turn_count + 1):
             turn_base = f"{base}/turns/turn_{turn_index}"
             for suffix, description in [
@@ -2134,6 +2156,30 @@ def _build_task_acceptance_audit(task_run: Any) -> dict[str, Any]:
                     artifacts=artifacts,
                     description=description,
                     severity="required",
+                ))
+            if source_slice_request_count and turn_index == 1:
+                checks.append(_acceptance_file_check(
+                    check_id=(
+                        f"agent_turn_source_slice_requests:{step_id}:turn_{turn_index}"
+                    ),
+                    relative_path=f"{turn_base}/source_slice_requests.json",
+                    artifacts=artifacts,
+                    description="per-turn Agent source slice request artifact",
+                    severity="required",
+                    missing_reason="not_present_for_this_turn",
+                ))
+            if (
+                (source_slice_request_count or injected_source_slice_count)
+                and turn_count > 1
+                and turn_index == turn_count
+            ):
+                checks.append(_acceptance_file_check(
+                    check_id=f"agent_turn_source_slices:{step_id}:turn_{turn_index}",
+                    relative_path=f"{turn_base}/source_slices.json",
+                    artifacts=artifacts,
+                    description="per-turn injected source slice artifact",
+                    severity="required",
+                    missing_reason="not_present_for_this_turn",
                 ))
 
     required_checks = [item for item in checks if item.get("severity") == "required"]
