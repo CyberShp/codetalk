@@ -1701,6 +1701,19 @@ export default function AgentWorkbenchPage() {
                                   transport:{diagnostics.prompt_transport}
                                 </span>
                               )}
+                              {diagnostics.command_resolution_source && (
+                                <span className="ml-1">
+                                  command:{diagnostics.command_resolution_source}
+                                </span>
+                              )}
+                              {diagnostics.command_resolution_used_fallback && (
+                                <span className="ml-1 text-warning">fallback</span>
+                              )}
+                              {diagnostics.command_resolution_reason && (
+                                <span className="ml-1">
+                                  reason:{diagnostics.command_resolution_reason}
+                                </span>
+                              )}
                               {diagnostics.startup_probe_endpoint && (
                                 <span className="ml-1 break-all">
                                   probe:{diagnostics.startup_probe_endpoint}
@@ -1818,6 +1831,19 @@ export default function AgentWorkbenchPage() {
                                 {result.provider_diagnostics.prompt_transport && (
                                   <span className="ml-1">
                                     transport:{result.provider_diagnostics.prompt_transport}
+                                  </span>
+                                )}
+                                {result.provider_diagnostics.command_resolution_source && (
+                                  <span className="ml-1">
+                                    command:{result.provider_diagnostics.command_resolution_source}
+                                  </span>
+                                )}
+                                {result.provider_diagnostics.command_resolution_used_fallback && (
+                                  <span className="ml-1 text-warning">fallback</span>
+                                )}
+                                {result.provider_diagnostics.command_resolution_reason && (
+                                  <span className="ml-1">
+                                    reason:{result.provider_diagnostics.command_resolution_reason}
                                   </span>
                                 )}
                                 {result.provider_diagnostics.startup_probe_endpoint && (

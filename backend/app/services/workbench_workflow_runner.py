@@ -709,6 +709,7 @@ def _snapshot_agent_turn_artifacts(artifact_dir: Path, *, turn_id: str) -> str:
 
 def _provider_diagnostics_summary(artifact_dir: Path) -> dict[str, Any]:
     payload = _read_json(artifact_dir / "provider_diagnostics.json")
+    execution_input = _read_json(artifact_dir / "execution_input.json")
     if not isinstance(payload, dict):
         return {
             "artifact": "provider_diagnostics.json",
@@ -721,7 +722,7 @@ def _provider_diagnostics_summary(artifact_dir: Path) -> dict[str, Any]:
     health = payload.get("health")
     if not isinstance(health, dict):
         health = {}
-    return {
+    summary = {
         "artifact": "provider_diagnostics.json",
         "provider": str(payload.get("provider") or ""),
         "status": str(payload.get("status") or ""),
@@ -739,6 +740,24 @@ def _provider_diagnostics_summary(artifact_dir: Path) -> dict[str, Any]:
         ),
         "mcp_credentials_owner": str(diagnostics.get("mcp_credentials_owner") or ""),
     }
+    if isinstance(execution_input, dict):
+        summary.update(_command_resolution_summary(execution_input.get("command_resolution")))
+    return summary
+
+
+def _command_resolution_summary(value: Any) -> dict[str, Any]:
+    if not isinstance(value, dict):
+        return {}
+    summary: dict[str, Any] = {
+        "command_resolution_source": str(value.get("source") or ""),
+    }
+    if "reason" in value:
+        summary["command_resolution_reason"] = str(value.get("reason") or "")
+    if "used_fallback" in value:
+        summary["command_resolution_used_fallback"] = bool(value.get("used_fallback", False))
+    if "launch_kind" in value:
+        summary["command_resolution_launch_kind"] = str(value.get("launch_kind") or "")
+    return {key: item for key, item in summary.items() if item not in {"", None}}
 
 
 def _positive_int(value: Any, *, default: int) -> int:

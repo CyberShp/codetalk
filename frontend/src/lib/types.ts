@@ -369,6 +369,10 @@ export interface AgentProviderDiagnosticsSummary {
   startup_probe_endpoint?: string;
   prompt_transport?: string;
   mcp_credentials_owner?: string;
+  command_resolution_source?: string;
+  command_resolution_reason?: string;
+  command_resolution_used_fallback?: boolean;
+  command_resolution_launch_kind?: string;
 }
 
 export interface MaterializeEvidenceResult {

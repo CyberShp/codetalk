@@ -363,6 +363,8 @@ async def test_workbench_agent_run_execute_api(workbench_client, tmp_path):
     assert body["provider_diagnostics"]["provider"] == "local-python"
     assert body["provider_diagnostics"]["health_status"]
     assert body["provider_diagnostics"]["artifact"] == "provider_diagnostics.json"
+    assert body["provider_diagnostics"]["command_resolution_source"] == "configured_command"
+    assert body["provider_diagnostics"]["command_resolution_reason"] == "ad_hoc_command_preserved"
     assert output_file.read_text(encoding="utf-8") == "task-execute"
     from pathlib import Path
 
@@ -411,6 +413,7 @@ async def test_workbench_task_scoped_agent_run_execute_api(workbench_client, tmp
     assert body["status"] == "completed"
     assert body["provider_diagnostics"]["provider"] == "local-python"
     assert body["provider_diagnostics"]["health_status"]
+    assert body["provider_diagnostics"]["command_resolution_source"] == "configured_command"
     assert output_file.read_text(encoding="utf-8") == f"{task_run_id}_{step_id}"
 
 
@@ -615,6 +618,10 @@ async def test_workbench_task_run_execute_workflow_api(workbench_client, tmp_pat
     assert body["step_results"][0]["validation"]["status"] == "ok"
     assert body["step_results"][0]["provider_diagnostics"]["provider"] == "local-python"
     assert body["step_results"][0]["provider_diagnostics"]["health_status"]
+    assert (
+        body["step_results"][0]["provider_diagnostics"]["command_resolution_source"]
+        == "provider_health"
+    )
     assert body["step_results"][0]["validation"]["accepted_artifact_details"][0]["artifact"] == (
         "result.json"
     )

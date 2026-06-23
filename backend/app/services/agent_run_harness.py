@@ -272,7 +272,10 @@ class AgentRunHarness:
             duration_ms=duration_ms,
             timed_out=timed_out,
             error=error,
-            provider_diagnostics=_provider_diagnostics_result_summary(provider_diagnostics),
+            provider_diagnostics={
+                **_provider_diagnostics_result_summary(provider_diagnostics),
+                **_command_resolution_result_summary(command_resolution),
+            },
         )
         self._write_json("execution_result.json", asdict(result))
         self._write_json(
@@ -671,6 +674,21 @@ def _provider_diagnostics_result_summary(payload: dict[str, Any]) -> dict[str, A
         ),
         "mcp_credentials_owner": str(diagnostics.get("mcp_credentials_owner") or ""),
     }
+
+
+def _command_resolution_result_summary(payload: dict[str, Any]) -> dict[str, Any]:
+    if not isinstance(payload, dict):
+        return {}
+    summary: dict[str, Any] = {
+        "command_resolution_source": str(payload.get("source") or ""),
+    }
+    if "reason" in payload:
+        summary["command_resolution_reason"] = str(payload.get("reason") or "")
+    if "used_fallback" in payload:
+        summary["command_resolution_used_fallback"] = bool(payload.get("used_fallback", False))
+    if "launch_kind" in payload:
+        summary["command_resolution_launch_kind"] = str(payload.get("launch_kind") or "")
+    return {key: value for key, value in summary.items() if value not in {"", None}}
 
 
 _SECRET_RE = re.compile(
