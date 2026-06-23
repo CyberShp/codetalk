@@ -782,6 +782,32 @@ export default function AgentWorkbenchPage() {
     setInputsJson((current) => updateInputsJsonValue(current, input, value));
   }
 
+  const uploadPrepareInputFile = (
+    input: Record<string, unknown>,
+    files: FileList | null,
+  ) =>
+    runAction(`upload-input-${String(input.id ?? "input")}`, async () => {
+      if (!files || files.length === 0) return;
+      const inputId = String(input.id ?? "");
+      const inputType = String(input.type ?? "");
+      const uploads = await Promise.all(
+        Array.from(files).map((file) => api.workbench.uploadInputFile(file, inputId)),
+      );
+      const paths = uploads.map((item) => item.path).filter(Boolean);
+      if (inputType === "file_set") {
+        setInputsJson((current) => {
+          const existing = inputTextValue(parseJsonObject(current || "{}"), input)
+            .split(/\r?\n/)
+            .map((line) => line.trim())
+            .filter(Boolean);
+          return updateInputsJsonValue(current, input, [...existing, ...paths].join("\n"));
+        });
+      } else if (paths[0]) {
+        updatePrepareInput(input, paths[0]);
+      }
+      setMessage(`Input file uploaded: ${uploads.map((item) => item.filename).join(", ")}`);
+    });
+
   const loadPreparedArtifacts = () =>
     runAction("load-artifacts", async () => {
       if (!preparedRun) return;
@@ -1480,30 +1506,55 @@ export default function AgentWorkbenchPage() {
                           {required ? " *" : ""}
                         </span>
                         {multiline ? (
-                          <textarea
-                            aria-label={`Workflow input ${inputId}`}
-                            value={value}
-                            onChange={(event) => updatePrepareInput(input, event.target.value)}
-                            placeholder={
-                              inputType === "file_set"
-                                ? "One local file path per line"
-                                : role || "Input text"
-                            }
-                            className="h-20 w-full resize-y rounded-lg border border-outline-variant/30 bg-surface-container p-3 font-data text-xs text-on-surface outline-none focus:border-primary"
-                            spellCheck={false}
-                          />
+                          <>
+                            <textarea
+                              aria-label={`Workflow input ${inputId}`}
+                              value={value}
+                              onChange={(event) => updatePrepareInput(input, event.target.value)}
+                              placeholder={
+                                inputType === "file_set"
+                                  ? "One local file path per line"
+                                  : role || "Input text"
+                              }
+                              className="h-20 w-full resize-y rounded-lg border border-outline-variant/30 bg-surface-container p-3 font-data text-xs text-on-surface outline-none focus:border-primary"
+                              spellCheck={false}
+                            />
+                            {inputType === "file_set" && (
+                              <input
+                                aria-label={`Upload file for ${inputId}`}
+                                type="file"
+                                multiple
+                                onChange={(event) =>
+                                  uploadPrepareInputFile(input, event.currentTarget.files)
+                                }
+                                className="mt-1 block w-full text-xs text-on-surface-variant file:mr-2 file:rounded file:border-0 file:bg-surface-container-high file:px-2 file:py-1 file:text-xs file:text-on-surface"
+                              />
+                            )}
+                          </>
                         ) : (
-                          <input
-                            aria-label={`Workflow input ${inputId}`}
-                            value={value}
-                            onChange={(event) => updatePrepareInput(input, event.target.value)}
-                            placeholder={
-                              isFileLikeWorkflowInput(inputType)
-                                ? "Local file path"
-                                : role || "Input value"
-                            }
-                            className="w-full rounded-lg border border-outline-variant/30 bg-surface-container px-3 py-2 text-sm text-on-surface outline-none focus:border-primary"
-                          />
+                          <>
+                            <input
+                              aria-label={`Workflow input ${inputId}`}
+                              value={value}
+                              onChange={(event) => updatePrepareInput(input, event.target.value)}
+                              placeholder={
+                                isFileLikeWorkflowInput(inputType)
+                                  ? "Local file path"
+                                  : role || "Input value"
+                              }
+                              className="w-full rounded-lg border border-outline-variant/30 bg-surface-container px-3 py-2 text-sm text-on-surface outline-none focus:border-primary"
+                            />
+                            {isFileLikeWorkflowInput(inputType) && (
+                              <input
+                                aria-label={`Upload file for ${inputId}`}
+                                type="file"
+                                onChange={(event) =>
+                                  uploadPrepareInputFile(input, event.currentTarget.files)
+                                }
+                                className="mt-1 block w-full text-xs text-on-surface-variant file:mr-2 file:rounded file:border-0 file:bg-surface-container-high file:px-2 file:py-1 file:text-xs file:text-on-surface"
+                              />
+                            )}
+                          </>
                         )}
                       </label>
                     );

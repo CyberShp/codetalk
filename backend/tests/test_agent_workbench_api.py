@@ -244,6 +244,25 @@ async def test_workbench_semantic_library_api(workbench_client):
     assert [item["case_id"] for item in search.json()["items"]] == ["TC_TLS_001"]
 
 
+async def test_workbench_input_file_upload_api_returns_prepare_payload(workbench_client):
+    resp = await workbench_client.post(
+        "/api/workbench/input-files/upload",
+        files={"file": ("requirements.md", b"# Requirements\nTLS must fail closed\n", "text/markdown")},
+        data={"input_id": "requirements_doc"},
+    )
+
+    assert resp.status_code == 201
+    body = resp.json()
+    assert body["kind"] == "workbench_input_upload"
+    assert body["input_id"] == "requirements_doc"
+    assert body["filename"] == "requirements.md"
+    assert body["size"] == len(b"# Requirements\nTLS must fail closed\n")
+    assert body["sha256"]
+    assert body["input_payload"] == {"path": body["path"]}
+    assert Path(body["path"]).exists()
+    assert Path(body["path"]).read_text(encoding="utf-8").startswith("# Requirements")
+
+
 async def test_workbench_semantic_library_bulk_import_api(workbench_client):
     imported = await workbench_client.post(
         "/api/workbench/semantic-cases/import",

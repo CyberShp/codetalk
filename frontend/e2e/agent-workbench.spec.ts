@@ -188,6 +188,24 @@ async function routeWorkbenchShell(page: import("@playwright/test").Page) {
       headers: corsHeaders(route.request().headers().origin),
     });
   });
+  await page.route("**/api/workbench/input-files/upload", async (route) => {
+    await route.fulfill({
+      json: {
+        kind: "workbench_input_upload",
+        upload_id: "input_patch_upload",
+        input_id: "patch_file",
+        filename: "tls.patch",
+        content_type: "text/x-patch",
+        size: 24,
+        sha256: "abc123",
+        path: "E:/data/workbench/input_uploads/input_patch_upload/tls.patch",
+        input_payload: {
+          path: "E:/data/workbench/input_uploads/input_patch_upload/tls.patch",
+        },
+      },
+      headers: corsHeaders(route.request().headers().origin),
+    });
+  });
 }
 
 test("agent workbench renders workflow and task-run controls", async ({ page }) => {
@@ -239,9 +257,15 @@ test("agent workbench renders workflow and task-run controls", async ({ page }) 
   await expect(page.getByLabel("Workflow JSON")).toHaveValue(/"render_report"/);
   await expect(page.getByText("Workflow inputs")).toBeVisible();
   await page.getByLabel("Workflow input patch_file").fill("E:/patches/tls.patch");
+  await page.getByLabel("Upload file for patch_file").setInputFiles({
+    name: "tls.patch",
+    mimeType: "text/x-patch",
+    buffer: Buffer.from("diff --git a/tls.c b/tls.c\n"),
+  });
+  await expect(page.getByText("Input file uploaded: tls.patch")).toBeVisible();
   await page.getByLabel("Workflow input design_doc").fill("E:/docs/tls-design.md");
   await page.getByLabel("Workflow input analysis_object").fill("nvme-tcp-tls");
-  await expect(page.getByLabel("Inputs JSON")).toHaveValue(/"patch_file": \{\s+"path": "E:\/patches\/tls\.patch"\s+\}/);
+  await expect(page.getByLabel("Inputs JSON")).toHaveValue(/"patch_file": \{\s+"path": "E:\/data\/workbench\/input_uploads\/input_patch_upload\/tls\.patch"\s+\}/);
   await expect(page.getByLabel("Inputs JSON")).toHaveValue(/"design_doc": \{\s+"path": "E:\/docs\/tls-design\.md"\s+\}/);
   await expect(page.getByLabel("Inputs JSON")).toHaveValue(/"analysis_object": "nvme-tcp-tls"/);
   await expect(page.getByRole("button", { name: "Prepare run" })).toBeDisabled();

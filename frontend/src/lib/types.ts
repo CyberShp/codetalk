@@ -350,6 +350,18 @@ export interface EvidenceMemoryItem {
   updated_at: string;
 }
 
+export interface WorkbenchInputUploadResult {
+  kind: "workbench_input_upload";
+  upload_id: string;
+  input_id: string;
+  filename: string;
+  content_type: string;
+  size: number;
+  sha256: string;
+  path: string;
+  input_payload: { path: string };
+}
+
 export interface AgentRunRecord {
   run_id: string;
   provider: string;

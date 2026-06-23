@@ -4,11 +4,12 @@ from __future__ import annotations
 
 import hashlib
 import json
+import uuid
 from dataclasses import asdict
 from pathlib import Path
 from typing import Any
 
-from fastapi import APIRouter, Body, HTTPException, Query
+from fastapi import APIRouter, Body, File, Form, HTTPException, Query, UploadFile
 from pydantic import BaseModel, Field
 
 from app.config import settings
@@ -132,6 +133,12 @@ def _task_runs_dir() -> Path:
     return root
 
 
+def _input_uploads_dir() -> Path:
+    root = _workbench_dir() / "input_uploads"
+    root.mkdir(parents=True, exist_ok=True)
+    return root
+
+
 def _agent_run_dir(run_id: str) -> Path:
     value = _safe_segment(run_id, "run_id")
     return _agent_runs_dir() / value
@@ -193,6 +200,42 @@ async def install_builtin_workflow_preset(preset_id: str) -> dict[str, Any]:
     except KeyError:
         raise HTTPException(status_code=404, detail=f"Unknown workflow preset: {preset_id}")
     return _workflow_response(workflow.raw)
+
+
+@router.post("/input-files/upload", status_code=201)
+async def upload_workbench_input_file(
+    file: UploadFile = File(...),
+    input_id: str = Form(""),
+) -> dict[str, Any]:
+    filename = Path(file.filename or "input").name or "input"
+    upload_id = f"input_{uuid.uuid4().hex}"
+    upload_dir = _input_uploads_dir() / upload_id
+    upload_dir.mkdir(parents=True, exist_ok=True)
+    data = await file.read()
+    max_bytes = settings.coverage_max_upload_mb * 1024 * 1024
+    if len(data) > max_bytes:
+        raise HTTPException(
+            status_code=413,
+            detail=f"input file exceeds {settings.coverage_max_upload_mb}MB limit",
+        )
+    destination = upload_dir / filename
+    destination.write_bytes(data)
+    metadata = {
+        "kind": "workbench_input_upload",
+        "upload_id": upload_id,
+        "input_id": input_id.strip(),
+        "filename": filename,
+        "content_type": file.content_type or "",
+        "size": len(data),
+        "sha256": hashlib.sha256(data).hexdigest(),
+        "path": str(destination),
+        "input_payload": {"path": str(destination)},
+    }
+    (upload_dir / "upload_metadata.json").write_text(
+        json.dumps(metadata, ensure_ascii=False, indent=2),
+        encoding="utf-8",
+    )
+    return metadata
 
 
 @router.get("/provider-capabilities")

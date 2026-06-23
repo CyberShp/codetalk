@@ -37,6 +37,7 @@ import type {
   PreparedWorkbenchTaskRun,
   WorkflowExecutionResult,
   WorkbenchProviderCapabilitiesMatrix,
+  WorkbenchInputUploadResult,
   WorkbenchTaskArtifactContent,
   WorkbenchTaskArtifactManifest,
 } from "./types";
@@ -135,6 +136,19 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
   }
 
   throw lastError ?? new Error("请求失败");
+}
+
+async function requestForm<T>(path: string, body: FormData): Promise<T> {
+  const res = await fetch(`${BASE}${path}`, {
+    method: "POST",
+    credentials: "include",
+    body,
+  });
+  if (!res.ok) {
+    const text = await res.text().catch(() => "");
+    throw new Error(friendlyErrorMessage(res.status, extractErrorMessage(text)));
+  }
+  return res.json();
 }
 
 export const api = {
@@ -484,6 +498,16 @@ export const api = {
       request<WorkbenchProviderCapabilitiesMatrix>(
         "/api/workbench/provider-capabilities",
       ),
+
+    uploadInputFile: (file: File, inputId: string) => {
+      const form = new FormData();
+      form.append("file", file);
+      form.append("input_id", inputId);
+      return requestForm<WorkbenchInputUploadResult>(
+        "/api/workbench/input-files/upload",
+        form,
+      );
+    },
 
     workflows: {
       presets: () =>
