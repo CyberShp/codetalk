@@ -102,6 +102,11 @@ class MaterializeEvidenceRequest(BaseModel):
     object_text: str = ""
 
 
+class ImportSemanticOutputsRequest(BaseModel):
+    output_ids: list[str] = Field(default_factory=list)
+    defaults: dict[str, Any] = Field(default_factory=dict)
+
+
 class PrepareTaskRunRequest(BaseModel):
     workflow_id: str
     workspace_id: str
@@ -564,6 +569,39 @@ async def materialize_task_run_outputs(task_run_id: str) -> dict[str, Any]:
         workflow_outputs=workflow_outputs,
         result=result,
     )
+    write_task_artifact_manifest(task_dir, task_run_id=task_run.task_run_id)
+    return result
+
+
+@router.post("/task-runs/{task_run_id}/semantic-cases/import-outputs", status_code=201)
+async def import_task_run_outputs_as_semantic_cases(
+    task_run_id: str,
+    payload: ImportSemanticOutputsRequest,
+) -> dict[str, Any]:
+    try:
+        task_run = WorkbenchTaskRunStore(_task_runs_dir()).load(task_run_id)
+    except KeyError:
+        raise HTTPException(status_code=404, detail=f"Unknown task run: {task_run_id}")
+    task_dir = Path(task_run.artifact_dir)
+    workflow_outputs = _read_json(task_dir / "workflow_outputs.json")
+    if not isinstance(workflow_outputs, dict):
+        raise HTTPException(
+            status_code=400,
+            detail="workflow outputs have not been generated",
+        )
+    result = _import_workflow_outputs_as_semantic_cases(
+        task_run=task_run,
+        workflow_outputs=workflow_outputs,
+        output_ids=payload.output_ids,
+        defaults=payload.defaults,
+    )
+    _write_json(task_dir / "semantic_output_import.json", {
+        "task_run_id": task_run.task_run_id,
+        "workflow_id": task_run.workflow_id,
+        "workspace_id": task_run.workspace_id,
+        "repo_path": task_run.repo_path,
+        "result": result,
+    })
     write_task_artifact_manifest(task_dir, task_run_id=task_run.task_run_id)
     return result
 
@@ -1080,6 +1118,188 @@ def _write_workflow_output_materialization_artifact(
         json.dumps(payload, ensure_ascii=False, indent=2, sort_keys=True),
         encoding="utf-8",
     )
+
+
+def _import_workflow_outputs_as_semantic_cases(
+    *,
+    task_run: Any,
+    workflow_outputs: dict[str, Any],
+    output_ids: list[str],
+    defaults: dict[str, Any],
+) -> dict[str, Any]:
+    selected_ids = {str(item).strip() for item in output_ids if str(item).strip()}
+    import_payloads: list[dict[str, Any]] = []
+    rejected: list[dict[str, Any]] = []
+    source_refs: list[str] = []
+    for output in workflow_outputs.get("outputs") or []:
+        if not isinstance(output, dict):
+            continue
+        output_id = str(output.get("id") or "").strip()
+        if selected_ids and output_id not in selected_ids:
+            continue
+        output_cases, output_rejected, source_ref = _semantic_cases_from_workflow_output(
+            task_run=task_run,
+            output=output,
+            defaults=defaults,
+        )
+        import_payloads.extend(output_cases)
+        rejected.extend(output_rejected)
+        if source_ref:
+            source_refs.append(source_ref)
+
+    imported_result = _semantic_store().import_cases({
+        "source_ref": source_refs[0] if len(source_refs) == 1 else f"task_run:{task_run.task_run_id}",
+        "cases": import_payloads,
+    })
+    rejected.extend(imported_result.get("rejected") or [])
+    result = {
+        **imported_result,
+        "rejected_count": len(rejected),
+        "rejected": rejected,
+        "source_ref": source_refs[0] if len(source_refs) == 1 else f"task_run:{task_run.task_run_id}",
+        "source_refs": source_refs,
+    }
+    return result
+
+
+def _semantic_cases_from_workflow_output(
+    *,
+    task_run: Any,
+    output: dict[str, Any],
+    defaults: dict[str, Any],
+) -> tuple[list[dict[str, Any]], list[dict[str, Any]], str]:
+    output_id = str(output.get("id") or "").strip()
+    if not _workflow_output_looks_like_test_cases(output):
+        return [], [{"output": output_id, "reason": "output_is_not_test_cases"}], ""
+    if output.get("status") != "ok":
+        return [], [_workflow_output_rejection_detail(output, reason="output_not_ok")], ""
+    path = Path(str(output.get("path") or ""))
+    if not _is_workflow_output_path_within_task_artifacts(task_run, path):
+        return [], [{
+            "output": output_id,
+            "reason": "output_path_outside_task_artifacts",
+            "path": str(path),
+        }], ""
+    if not path.exists() or not path.is_file():
+        return [], [{"output": output_id, "reason": "output_file_missing"}], ""
+    data = path.read_bytes()
+    sha256 = hashlib.sha256(data).hexdigest()
+    if output.get("sha256") and output.get("sha256") != sha256:
+        return [], [{"output": output_id, "reason": "output_sha256_mismatch"}], ""
+    try:
+        parsed = json.loads(data.decode("utf-8"))
+    except (UnicodeDecodeError, json.JSONDecodeError) as exc:
+        return [], [{"output": output_id, "reason": "invalid_json", "detail": str(exc)}], ""
+    raw_cases = parsed.get("black_box_cases") if isinstance(parsed, dict) else parsed
+    if not isinstance(raw_cases, list):
+        return [], [{"output": output_id, "reason": "test_cases_must_be_list"}], ""
+    source_ref = f"task_run:{task_run.task_run_id}:{output_id}"
+    cases: list[dict[str, Any]] = []
+    for index, item in enumerate(raw_cases, start=1):
+        if not isinstance(item, dict):
+            continue
+        semantic_case = _semantic_case_from_black_box_case(
+            task_run=task_run,
+            output=output,
+            output_id=output_id,
+            case=item,
+            index=index,
+            defaults=defaults,
+            source_ref=source_ref,
+        )
+        cases.append(semantic_case)
+    return cases, [], source_ref
+
+
+def _workflow_output_looks_like_test_cases(output: dict[str, Any]) -> bool:
+    output_id = str(output.get("id") or "").lower()
+    output_type = str(output.get("type") or "").lower()
+    artifact = Path(str(output.get("artifact") or output.get("path") or "")).name.lower()
+    return (
+        output_type == "test_cases"
+        or output_id in {"black_box_cases", "test_cases"}
+        or artifact in {"black_box_cases.json", "test_cases.json"}
+    )
+
+
+def _semantic_case_from_black_box_case(
+    *,
+    task_run: Any,
+    output: dict[str, Any],
+    output_id: str,
+    case: dict[str, Any],
+    index: int,
+    defaults: dict[str, Any],
+    source_ref: str,
+) -> dict[str, Any]:
+    title = str(case.get("title") or case.get("scenario") or f"{output_id} case {index}").strip()
+    module = str(defaults.get("module") or _object_text_from_task_run(task_run, {}))
+    steps = _semantic_string_list(case.get("steps"))
+    inputs = str(case.get("inputs") or "").strip()
+    if inputs and inputs not in steps:
+        steps = [inputs, *steps]
+    expected = _semantic_string_list(case.get("expected"))
+    expected.extend(_semantic_string_list(case.get("observable_signals")))
+    tags = _semantic_dedupe([
+        *_semantic_string_list(defaults.get("tags")),
+        "generated_from_task_output",
+        str(output.get("from") or "workflow"),
+        output_id,
+    ])
+    terms = _semantic_dedupe([
+        *_semantic_string_list(defaults.get("terms")),
+        *_semantic_terms_from_text(title),
+        *_semantic_terms_from_text(inputs),
+    ])
+    return {
+        **defaults,
+        "case_id": str(
+            case.get("case_id")
+            or f"{task_run.task_run_id}_{output_id}_{index:03d}"
+        ),
+        "feature": str(defaults.get("feature") or task_run.workflow_id),
+        "module": module,
+        "scenario": title,
+        "preconditions": _semantic_string_list(case.get("preconditions")),
+        "actions": steps or [title],
+        "expected": _semantic_dedupe(expected) or ["Expected behavior is observable from the generated black-box case."],
+        "test_level": str(defaults.get("test_level") or "black_box"),
+        "interface": str(case.get("entry_kind") or defaults.get("interface") or ""),
+        "terms": terms,
+        "assertion_style": str(defaults.get("assertion_style") or "observable signals"),
+        "tags": tags,
+        "source_ref": source_ref,
+        "status": str(defaults.get("status") or "active"),
+    }
+
+
+def _semantic_string_list(value: Any) -> list[str]:
+    if isinstance(value, str):
+        return [value] if value else []
+    if isinstance(value, (list, tuple, set)):
+        return [str(item) for item in value if str(item)]
+    return []
+
+
+def _semantic_terms_from_text(text: str) -> list[str]:
+    words = [
+        item.strip("._-:/").lower()
+        for item in str(text or "").split()
+        if len(item.strip("._-:/")) >= 3
+    ]
+    return words[:12]
+
+
+def _semantic_dedupe(values: list[str]) -> list[str]:
+    seen: set[str] = set()
+    result: list[str] = []
+    for value in values:
+        normalized = str(value or "").strip()
+        if not normalized or normalized in seen:
+            continue
+        seen.add(normalized)
+        result.append(normalized)
+    return result
 
 
 def _materialize_structured_workflow_output_evidence(

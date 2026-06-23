@@ -768,6 +768,18 @@ export const api = {
           },
         ),
 
+      importSemanticOutputs: (
+        taskRunId: string,
+        data: { output_ids?: string[]; defaults?: Record<string, unknown> } = {},
+      ) =>
+        request<SemanticCaseImportResult>(
+          `/api/workbench/task-runs/${encodeURIComponent(taskRunId)}/semantic-cases/import-outputs`,
+          {
+            method: "POST",
+            body: JSON.stringify(data),
+          },
+        ),
+
       executeAgentRun: (taskRunId: string, stepId: string, timeoutSec = 90) =>
         request<AgentRunExecutionResult>(
           `/api/workbench/task-runs/${encodeURIComponent(taskRunId)}/agent-runs/${encodeURIComponent(stepId)}/execute`,

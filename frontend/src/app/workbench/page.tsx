@@ -23,6 +23,7 @@ import type {
   MaterializeWorkflowOutputsResult,
   PreparedWorkbenchTaskRun,
   SemanticCase,
+  SemanticCaseImportResult,
   TaskRerunExecutionResult,
   TaskRerunHistory,
   TaskRerunPlan,
@@ -726,6 +727,8 @@ export default function AgentWorkbenchPage() {
   const [taskRerunHistory, setTaskRerunHistory] = useState<TaskRerunHistory | null>(null);
   const [workflowOutputMaterialize, setWorkflowOutputMaterialize] =
     useState<MaterializeWorkflowOutputsResult | null>(null);
+  const [semanticOutputImport, setSemanticOutputImport] =
+    useState<SemanticCaseImportResult | null>(null);
   const [executionResults, setExecutionResults] = useState<
     Record<string, AgentRunExecutionResult>
   >({});
@@ -743,6 +746,26 @@ export default function AgentWorkbenchPage() {
   const workflowOptions = useMemo(
     () => workflows.map((workflow) => workflow.id),
     [workflows],
+  );
+  const semanticImportOutputIds = useMemo(
+    () =>
+      (workflowExecution?.outputs ?? [])
+        .filter((output) => {
+          const outputId = String(output.id ?? "").toLowerCase();
+          const outputType = String(output.type ?? "").toLowerCase();
+          const artifact = String(output.artifact ?? output.path ?? "").toLowerCase();
+          return (
+            output.status === "ok" &&
+            (outputType === "test_cases" ||
+              outputId === "black_box_cases" ||
+              outputId === "test_cases" ||
+              artifact.endsWith("black_box_cases.json") ||
+              artifact.endsWith("test_cases.json"))
+          );
+        })
+        .map((output) => String(output.id ?? "").trim())
+        .filter(Boolean),
+    [workflowExecution],
   );
   const selectedWorkflowInputs = useMemo(() => {
     const registered = workflows.find((workflow) => workflow.id === selectedWorkflowId);
@@ -939,6 +962,7 @@ export default function AgentWorkbenchPage() {
       setTaskRerunExecution(null);
       setTaskRerunHistory(null);
       setWorkflowOutputMaterialize(null);
+      setSemanticOutputImport(null);
       setArtifactContent(null);
       await refreshArtifactManifest(result.task_run_id);
       setMessage(`Task run prepared: ${result.task_run_id}`);
@@ -1041,6 +1065,7 @@ export default function AgentWorkbenchPage() {
         true,
       );
       setWorkflowExecution(result);
+      setSemanticOutputImport(null);
       setTaskRerunPlan((result.rerun_plan as TaskRerunPlan | undefined) ?? null);
       setTaskRerunPlanValidation(
         await api.workbench.taskRuns.rerunPlanValidation(preparedRun.task_run_id),
@@ -1058,6 +1083,20 @@ export default function AgentWorkbenchPage() {
       );
       setWorkflowOutputMaterialize(result);
       setMessage(`Workflow outputs materialized: ${result.evidence_count}`);
+    });
+
+  const importPreparedSemanticOutputs = () =>
+    runAction("import-semantic-outputs", async () => {
+      if (!preparedRun) return;
+      const result = await api.workbench.taskRuns.importSemanticOutputs(
+        preparedRun.task_run_id,
+        { output_ids: semanticImportOutputIds },
+      );
+      setSemanticOutputImport(result);
+      await refreshArtifactManifest(preparedRun.task_run_id);
+      setMessage(
+        `Semantic outputs imported: ${result.imported_count}, rejected: ${result.rejected_count}`,
+      );
     });
 
   const executePreparedAgentRun = (stepId: string) =>
@@ -1909,6 +1948,22 @@ export default function AgentWorkbenchPage() {
               )}
               Materialize outputs
             </button>
+            <button
+              onClick={importPreparedSemanticOutputs}
+              disabled={
+                busyAction === "import-semantic-outputs" ||
+                !preparedRun ||
+                semanticImportOutputIds.length === 0
+              }
+              className="ml-2 inline-flex items-center gap-2 rounded-lg bg-surface px-3 py-2 text-sm font-medium text-on-surface transition-colors hover:bg-surface-container-high disabled:opacity-50"
+            >
+              {busyAction === "import-semantic-outputs" ? (
+                <Loader2 size={14} className="animate-spin" />
+              ) : (
+                <Library size={14} />
+              )}
+              Import semantics
+            </button>
             {preparedRun && (
               <div className="rounded-lg border border-outline-variant/30 bg-surface p-3 text-xs">
                 <p className="font-medium text-on-surface">{preparedRun.task_run_id}</p>
@@ -2377,6 +2432,39 @@ export default function AgentWorkbenchPage() {
                           <div>
                             +{workflowOutputMaterialize.rejected_outputs.length - 4} more
                           </div>
+                        )}
+                      </div>
+                    )}
+                  </div>
+                )}
+                {semanticOutputImport && (
+                  <div className="mt-2 rounded bg-surface-container px-2 py-1.5 text-on-surface-variant">
+                    <p>
+                      Semantic import: {semanticOutputImport.imported_count} imported
+                      {semanticOutputImport.rejected_count > 0 && (
+                        <span className="ml-2 text-warning">
+                          rejected {semanticOutputImport.rejected_count}
+                        </span>
+                      )}
+                    </p>
+                    {semanticOutputImport.source_ref && (
+                      <p className="mt-1 break-words font-data text-[10px]">
+                        source:{semanticOutputImport.source_ref}
+                      </p>
+                    )}
+                    {semanticOutputImport.rejected.length > 0 && (
+                      <div className="mt-1 space-y-0.5 font-data text-[10px] text-warning">
+                        {semanticOutputImport.rejected.slice(0, 4).map((item, index) => (
+                          <div
+                            key={`${String(item.output ?? item.case_id ?? "case")}:${index}`}
+                            className="break-words"
+                          >
+                            {String(item.output ?? item.case_id ?? "case")} rejected:
+                            {item.reason}
+                          </div>
+                        ))}
+                        {semanticOutputImport.rejected.length > 4 && (
+                          <div>+{semanticOutputImport.rejected.length - 4} more</div>
                         )}
                       </div>
                     )}

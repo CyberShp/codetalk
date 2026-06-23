@@ -333,14 +333,17 @@ export interface SemanticCase {
 export interface SemanticCaseImportResult {
   imported_count: number;
   rejected_count: number;
+  source_ref?: string;
+  source_refs?: string[];
   imported: Array<{
     index: number;
     semantic_id: string;
     case_id: string;
   }>;
   rejected: Array<{
-    index: number;
-    case_id: string;
+    index?: number;
+    case_id?: string;
+    output?: string;
     reason: string;
   }>;
 }

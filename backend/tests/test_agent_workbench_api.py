@@ -922,6 +922,104 @@ async def test_workbench_task_run_materialize_workflow_outputs_api(
     assert item["subject_key"].endswith("/cases")
 
 
+async def test_workbench_imports_black_box_workflow_output_into_semantic_library(
+    workbench_client,
+    tmp_path,
+    monkeypatch,
+):
+    from app.config import settings
+
+    script_path = tmp_path / "agent_write_black_box_cases.py"
+    script_path.write_text(
+        "import json, pathlib, os\n"
+        "root=pathlib.Path(os.environ['CODETALK_AGENT_ARTIFACT_DIR'])\n"
+        "(root/'black_box_cases.json').write_text(json.dumps([\n"
+        "  {\n"
+        "    'title': 'TLS handshake rejects expired certificate',\n"
+        "    'entry_kind': 'rpc',\n"
+        "    'preconditions': 'NVMe TCP subsystem has TLS enabled',\n"
+        "    'inputs': 'connect with an expired certificate',\n"
+        "    'steps': ['start listener', 'connect host with expired certificate'],\n"
+        "    'expected': 'connection is rejected and failure is logged',\n"
+        "    'observable_signals': ['RPC reports failure', 'TLS alert is logged']\n"
+        "  }\n"
+        "]), encoding='utf-8')\n",
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(settings, "external_agent_custom_providers", [
+        {"id": "local-python", "command": f"python {script_path}"}
+    ])
+    workflow = {
+        "id": "semantic_feedback_workflow",
+        "name": "Semantic feedback workflow",
+        "version": 1,
+        "inputs": [{"id": "module", "type": "free_text"}],
+        "steps": [
+            {
+                "id": "design",
+                "type": "agent_task",
+                "provider": "local-python",
+                "required_artifacts": ["black_box_cases.json"],
+            }
+        ],
+        "outputs": [
+            {
+                "id": "black_box_cases",
+                "type": "test_cases",
+                "from": "design",
+                "artifact": "black_box_cases.json",
+            }
+        ],
+    }
+    assert (await workbench_client.post("/api/workbench/workflows", json=workflow)).status_code == 201
+    prepared = await workbench_client.post(
+        "/api/workbench/task-runs/prepare",
+        json={
+            "workflow_id": "semantic_feedback_workflow",
+            "workspace_id": "ws-semantic-feedback",
+            "repo_path": str(tmp_path),
+            "inputs": {"module": "nvmf_tcp/transport/tls"},
+        },
+    )
+    task_run_id = prepared.json()["task_run_id"]
+    executed = await workbench_client.post(
+        f"/api/workbench/task-runs/{task_run_id}/execute",
+        json={"timeout_sec": 10},
+    )
+    assert executed.status_code == 200
+    assert executed.json()["outputs"][0]["status"] == "ok"
+
+    imported = await workbench_client.post(
+        f"/api/workbench/task-runs/{task_run_id}/semantic-cases/import-outputs",
+        json={"output_ids": ["black_box_cases"]},
+    )
+
+    assert imported.status_code == 201
+    body = imported.json()
+    assert body["imported_count"] == 1
+    assert body["rejected_count"] == 0
+    assert body["imported"][0]["case_id"].startswith(f"{task_run_id}_black_box_cases_")
+    assert body["source_ref"] == f"task_run:{task_run_id}:black_box_cases"
+    artifact = Path(prepared.json()["artifact_dir"]) / "semantic_output_import.json"
+    assert artifact.exists()
+    artifact_payload = json.loads(artifact.read_text(encoding="utf-8"))
+    assert artifact_payload["result"]["imported_count"] == 1
+
+    search = await workbench_client.get(
+        "/api/workbench/semantic-cases/search",
+        params={
+            "q": "expired certificate",
+            "module": "nvmf_tcp/transport/tls",
+            "test_level": "black_box",
+        },
+    )
+    assert search.status_code == 200
+    case = search.json()["items"][0]
+    assert case["scenario"] == "TLS handshake rejects expired certificate"
+    assert case["interface"] == "rpc"
+    assert "generated_from_task_output" in case["tags"]
+
+
 async def test_workbench_materialize_workflow_outputs_preserves_rejection_details(
     workbench_client,
     tmp_path,

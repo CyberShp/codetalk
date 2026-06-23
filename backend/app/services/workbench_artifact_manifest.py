@@ -129,6 +129,8 @@ def workbench_artifact_kind(relative_path: str) -> str:
         return "workflow_outputs"
     if name == "workflow_output_materialization.json":
         return "workflow_output_materialization"
+    if name == "semantic_output_import.json":
+        return "semantic_output_import"
     if name == "workflow_execution.json":
         return "workflow_execution"
     if name == "task_artifact_manifest.json":
