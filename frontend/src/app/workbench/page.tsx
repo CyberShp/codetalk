@@ -144,6 +144,45 @@ const DEFAULT_BUILDER_OUTPUT_SCHEMAS = {
   },
 };
 
+const DEFAULT_BUILDER_EVIDENCE_MAPPINGS = {
+  risk_findings: {
+    enabled: true,
+    kind: "resource_risk_finding",
+    subject_key_field: "finding_id",
+    path_field: "file_path",
+    symbol_field: "function",
+    status: "candidate_output",
+    text_fields: ["summary", "risk", "resource", "function"],
+  },
+  issue_candidates: {
+    enabled: true,
+    kind: "issue_candidate",
+    subject_key_field: "issue_id",
+    path_field: "file_path",
+    symbol_field: "function",
+    status: "candidate_output",
+    text_fields: ["summary", "issue_type", "trigger", "function"],
+  },
+  changed_behavior: {
+    enabled: true,
+    kind: "changed_behavior",
+    subject_key_field: "behavior_id",
+    path_field: "file_path",
+    symbol_field: "symbol",
+    status: "candidate_output",
+    text_fields: ["summary", "before", "after", "test_scope"],
+  },
+  impact_scope: {
+    enabled: true,
+    kind: "patch_impact_scope",
+    subject_key_field: "impact_id",
+    path_field: "file_path",
+    symbol_field: "symbol",
+    status: "candidate_output",
+    text_fields: ["summary", "flow_delta", "impact", "risk", "test_scope"],
+  },
+};
+
 const DEFAULT_BUILDER_INPUT_SCHEMAS = {
   patch_file: {
     type: "object",
@@ -268,6 +307,21 @@ function outputSchemaForSpec(
     return direct as Record<string, unknown>;
   }
   const wildcard = allSchemas["*"];
+  if (wildcard && typeof wildcard === "object" && !Array.isArray(wildcard)) {
+    return wildcard as Record<string, unknown>;
+  }
+  return null;
+}
+
+function outputEvidenceMappingForSpec(
+  outputId: string,
+  allMappings: Record<string, unknown>,
+): Record<string, unknown> | null {
+  const direct = allMappings[outputId];
+  if (direct && typeof direct === "object" && !Array.isArray(direct)) {
+    return direct as Record<string, unknown>;
+  }
+  const wildcard = allMappings["*"];
   if (wildcard && typeof wildcard === "object" && !Array.isArray(wildcard)) {
     return wildcard as Record<string, unknown>;
   }
@@ -1109,6 +1163,9 @@ export default function AgentWorkbenchPage() {
   const [builderOutputSchemas, setBuilderOutputSchemas] = useState(
     pretty(DEFAULT_BUILDER_OUTPUT_SCHEMAS),
   );
+  const [builderEvidenceMappings, setBuilderEvidenceMappings] = useState(
+    pretty(DEFAULT_BUILDER_EVIDENCE_MAPPINGS),
+  );
   const [builderInputSchemas, setBuilderInputSchemas] = useState(
     pretty(DEFAULT_BUILDER_INPUT_SCHEMAS),
   );
@@ -1370,6 +1427,7 @@ export default function AgentWorkbenchPage() {
     setBuilderGoal(scenario.goal);
     setBuilderArtifacts(scenario.artifacts);
     setBuilderInputSchemas(pretty(DEFAULT_BUILDER_INPUT_SCHEMAS));
+    setBuilderEvidenceMappings(pretty(DEFAULT_BUILDER_EVIDENCE_MAPPINGS));
   }
 
   function generateWorkflowFromBuilder() {
@@ -1399,17 +1457,23 @@ export default function AgentWorkbenchPage() {
     });
     const requiredArtifacts = parseCommaSeparated(builderArtifacts);
     const outputSchemas = parseJsonObject(builderOutputSchemas || "{}");
+    const evidenceMappings = parseJsonObject(builderEvidenceMappings || "{}");
     const outputs = parseWorkflowSpecList(builderOutputSpec, "json").map((output) => {
       const artifact =
         output.artifact || outputArtifactForSpec(output.id, output.type, requiredArtifacts);
       const from = artifact ? "agent_collect" : "render_report";
       const schema = output.type === "json" ? outputSchemaForSpec(output.id, outputSchemas) : null;
+      const evidenceMemory =
+        output.type === "json" || output.type === "scope_report"
+          ? outputEvidenceMappingForSpec(output.id, evidenceMappings)
+          : null;
       return {
         id: output.id,
         type: output.type,
         from,
         ...(artifact ? { artifact } : {}),
         ...(schema ? { schema } : {}),
+        ...(evidenceMemory ? { evidence_memory: evidenceMemory } : {}),
       };
     });
     const workflow = {
@@ -2790,6 +2854,18 @@ export default function AgentWorkbenchPage() {
                 onChange={(event) => setBuilderOutputSchemas(event.target.value)}
                 className="h-28 w-full resize-y rounded-lg border border-outline-variant/30 bg-surface-container p-3 font-data text-xs text-on-surface outline-none focus:border-primary"
                 aria-label="Workflow builder output schemas"
+                spellCheck={false}
+              />
+            </label>
+            <label className="mt-2 block">
+              <span className="mb-1 block text-xs text-on-surface-variant">
+                Evidence mappings JSON
+              </span>
+              <textarea
+                value={builderEvidenceMappings}
+                onChange={(event) => setBuilderEvidenceMappings(event.target.value)}
+                className="h-32 w-full resize-y rounded-lg border border-outline-variant/30 bg-surface-container p-3 font-data text-xs text-on-surface outline-none focus:border-primary"
+                aria-label="Workflow builder evidence mappings"
                 spellCheck={false}
               />
             </label>

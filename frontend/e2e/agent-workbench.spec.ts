@@ -1,4 +1,5 @@
 import { expect, test } from "@playwright/test";
+import type { Page } from "@playwright/test";
 
 function corsHeaders(origin = "http://localhost:3005") {
   return {
@@ -252,13 +253,26 @@ async function routeWorkbenchShell(page: import("@playwright/test").Page) {
   });
 }
 
+async function gotoWorkbench(page: Page) {
+  const heading = page.getByRole("heading", { name: "Agent Workbench" });
+  for (let attempt = 0; attempt < 3; attempt += 1) {
+    await page.goto("/workbench", { waitUntil: "domcontentloaded", timeout: 60_000 });
+    try {
+      await expect(heading).toBeVisible({ timeout: 10_000 });
+      return;
+    } catch (error) {
+      if (attempt === 2) throw error;
+      await page.waitForTimeout(1000);
+    }
+  }
+}
+
 test("agent workbench renders workflow and task-run controls", async ({ page }) => {
   test.setTimeout(60_000);
   await routeWorkbenchShell(page);
 
-  await page.goto("/workbench", { waitUntil: "domcontentloaded", timeout: 60_000 });
+  await gotoWorkbench(page);
 
-  await expect(page.getByRole("heading", { name: "Agent Workbench" })).toBeVisible();
   await expect(page.getByRole("heading", { name: "Provider Matrix" })).toBeVisible();
   await expect(page.getByText("ccr code", { exact: true }).first()).toBeVisible();
   await expect(
@@ -295,6 +309,9 @@ test("agent workbench renders workflow and task-run controls", async ({ page }) 
   await expect(page.getByRole("button", { name: "Apply preset" })).toBeVisible();
   await expect(page.getByRole("button", { name: "Install preset" })).toBeVisible();
   await expect(page.getByText("codehub-mcp")).toBeVisible();
+  await expect(page.getByLabel("Workflow builder evidence mappings")).toHaveValue(
+    /"patch_impact_scope"/,
+  );
   await page.getByLabel("Workflow builder scenario").selectOption("patch_impact");
   await page.getByRole("button", { name: "Generate draft" }).click();
   await expect(page.getByText("Workflow draft generated: custom_mr_blackbox")).toBeVisible();
@@ -304,6 +321,9 @@ test("agent workbench renders workflow and task-run controls", async ({ page }) 
   await expect(page.getByLabel("Workflow JSON")).toHaveValue(/"required": \[\s+"path"\s+\]/);
   await expect(page.getByLabel("Workflow JSON")).toHaveValue(/"before_after_flow"/);
   await expect(page.getByLabel("Workflow JSON")).toHaveValue(/"render_report"/);
+  await expect(page.getByLabel("Workflow JSON")).toHaveValue(/"evidence_memory"/);
+  await expect(page.getByLabel("Workflow JSON")).toHaveValue(/"kind": "patch_impact_scope"/);
+  await expect(page.getByLabel("Workflow JSON")).toHaveValue(/"path_field": "file_path"/);
   await expect(page.getByText("Workflow inputs")).toBeVisible();
   await page.getByLabel("Workflow input patch_file").fill("E:/patches/tls.patch");
   await page.getByLabel("Upload file for patch_file").setInputFiles({
@@ -403,7 +423,7 @@ test("agent workbench searches semantic cases and evidence memory", async ({ pag
       },
     });
   });
-  await page.goto("/workbench", { waitUntil: "domcontentloaded" });
+  await gotoWorkbench(page);
   await page.waitForLoadState("networkidle");
   await expect(page.getByRole("heading", { name: "Evidence Memory" })).toBeVisible();
   await page.getByLabel("Semantic feature").fill("NVMe TCP TLS");
@@ -807,7 +827,7 @@ test("agent workbench previews task run artifact content", async ({ page }) => {
     },
   );
 
-  await page.goto("/workbench", { waitUntil: "domcontentloaded" });
+  await gotoWorkbench(page);
   await expect(page.getByText("ccr code", { exact: true }).first()).toBeVisible();
   const preparePanel = page
     .locator("section")
