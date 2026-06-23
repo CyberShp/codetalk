@@ -3577,6 +3577,16 @@ def _build_task_acceptance_audit(task_run: Any) -> dict[str, Any]:
             description="accepted/rejected Evidence Memory materialization",
             severity="recommended",
         ))
+    semantic_import_expected = _workflow_declares_semantic_import(task_run.workflow_snapshot)
+    if "semantic_output_import.json" in artifacts or semantic_import_expected:
+        checks.append(_acceptance_file_check(
+            check_id="semantic_output_import",
+            relative_path="semantic_output_import.json",
+            artifacts=artifacts,
+            description="semantic library import for declared test-case outputs",
+            severity="required" if semantic_import_expected else "recommended",
+            missing_reason="semantic_import_declared_but_artifact_missing",
+        ))
 
     rerun_plan_severity = "recommended"
     if isinstance(execution_payload, dict) and execution_payload.get("status") in {
@@ -3730,6 +3740,20 @@ def _build_task_acceptance_audit(task_run: Any) -> dict[str, Any]:
         "missing_required": missing_required,
         "missing_recommended": recommended_missing,
     }
+
+
+def _workflow_declares_semantic_import(workflow_snapshot: Any) -> bool:
+    if not isinstance(workflow_snapshot, dict):
+        return False
+    for output in workflow_snapshot.get("outputs") or []:
+        if not isinstance(output, dict):
+            continue
+        semantic_import = output.get("semantic_import")
+        if semantic_import is True:
+            return True
+        if isinstance(semantic_import, dict) and semantic_import.get("enabled", True) is not False:
+            return True
+    return False
 
 
 def _acceptance_provider_readiness_checks(payload: Any) -> list[dict[str, Any]]:
