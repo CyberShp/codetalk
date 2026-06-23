@@ -961,6 +961,28 @@ def test_workbench_workflow_runner_executes_agent_steps_and_validates_artifacts(
     assert workflow_execution["audit_summary"]["agent_lifecycle_artifacts"] == [
         "agent_runs/collect_mr/agent_run_lifecycle.json"
     ]
+    artifact_manifest = json.loads(
+        (root / "task_artifact_manifest.json").read_text(encoding="utf-8")
+    )
+    manifest_paths = {
+        item["relative_path"]: item
+        for item in artifact_manifest["artifacts"]
+    }
+    assert artifact_manifest["task_run_id"] == task_run.task_run_id
+    assert artifact_manifest["artifact_count"] == len(artifact_manifest["artifacts"])
+    assert "task_artifact_manifest.json" not in manifest_paths
+    assert manifest_paths["workflow_execution.json"]["kind"] == "workflow_execution"
+    assert manifest_paths["workflow_outputs.json"]["kind"] == "workflow_outputs"
+    assert manifest_paths["task_rerun_plan.json"]["kind"] == "task_rerun_plan"
+    assert manifest_paths[
+        "agent_runs/collect_mr/agent_run_lifecycle.json"
+    ]["kind"] == "agent_run_lifecycle"
+    assert manifest_paths[
+        "agent_runs/collect_mr/turns/turn_1/task_bundle.json"
+    ]["kind"] == "agent_turn_task_bundle"
+    assert manifest_paths["workflow_execution.json"]["sha256"] == hashlib.sha256(
+        (root / "workflow_execution.json").read_bytes()
+    ).hexdigest()
     lifecycle_artifact = json.loads(
         (root / "agent_runs" / "collect_mr" / "agent_run_lifecycle.json").read_text(
             encoding="utf-8"

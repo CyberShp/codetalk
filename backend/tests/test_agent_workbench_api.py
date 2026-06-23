@@ -1838,6 +1838,13 @@ async def test_workbench_task_run_artifacts_api_labels_agent_turn_snapshots(
     assert paths["agent_runs/discover/turns/turn_1/raw_output.txt"]["kind"] == "agent_turn_raw_output"
     assert paths["agent_runs/discover/turns/turn_2/task_bundle.json"]["kind"] == "agent_turn_task_bundle"
     assert paths["agent_runs/discover/turns/turn_2/source_slices.json"]["kind"] == "agent_turn_source_slices"
+    assert paths["task_artifact_manifest.json"]["kind"] == "task_artifact_manifest"
+    manifest_content = await workbench_client.get(
+        f"/api/workbench/task-runs/{task_run_id}/artifacts/content/task_artifact_manifest.json"
+    )
+    assert manifest_content.status_code == 200
+    assert manifest_content.json()["kind"] == "task_artifact_manifest"
+    assert "agent_runs/discover/agent_run_lifecycle.json" in manifest_content.json()["content"]
     content = await workbench_client.get(
         f"/api/workbench/task-runs/{task_run_id}/artifacts/content/"
         "agent_runs/discover/turns/turn_2/task_bundle.json"
