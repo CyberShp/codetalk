@@ -986,6 +986,99 @@ async def test_workbench_materialize_workflow_outputs_preserves_rejection_detail
     assert materialization["rejected_outputs"] == body["rejected_outputs"]
 
 
+async def test_workbench_materialize_rejects_output_path_outside_task_artifacts(
+    workbench_client,
+    tmp_path,
+    monkeypatch,
+):
+    from app.config import settings
+
+    script_path = tmp_path / "agent_scope.py"
+    script_path.write_text(
+        "import json, pathlib, os\n"
+        "root=pathlib.Path(os.environ['CODETALK_AGENT_ARTIFACT_DIR'])\n"
+        "(root/'scope.json').write_text(json.dumps({'files': []}), encoding='utf-8')\n",
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(settings, "external_agent_custom_providers", [
+        {"id": "local-python", "command": f"python {script_path}"}
+    ])
+    workflow = {
+        "id": "outside_output_rejection",
+        "name": "Outside output rejection",
+        "version": 1,
+        "inputs": [{"id": "module", "type": "free_text"}],
+        "steps": [
+            {
+                "id": "discover",
+                "type": "agent_task",
+                "provider": "local-python",
+                "required_artifacts": ["scope.json"],
+            }
+        ],
+        "outputs": [
+            {
+                "id": "scope",
+                "type": "json",
+                "from": "discover",
+                "artifact": "scope.json",
+            }
+        ],
+    }
+    assert (await workbench_client.post("/api/workbench/workflows", json=workflow)).status_code == 201
+    prepared = await workbench_client.post(
+        "/api/workbench/task-runs/prepare",
+        json={
+            "workflow_id": "outside_output_rejection",
+            "workspace_id": "ws-outside-output",
+            "repo_path": str(tmp_path),
+            "inputs": {"module": "nvme-tcp-tls"},
+        },
+    )
+    assert prepared.status_code == 201
+    task_run_id = prepared.json()["task_run_id"]
+    executed = await workbench_client.post(
+        f"/api/workbench/task-runs/{task_run_id}/execute",
+        json={"timeout_sec": 10},
+    )
+    assert executed.status_code == 200
+    assert executed.json()["outputs"][0]["status"] == "ok"
+
+    outside = tmp_path / "outside_scope.json"
+    outside.write_text(json.dumps({"files": [{"path": "outside.c"}]}), encoding="utf-8")
+    outside_sha = hashlib.sha256(outside.read_bytes()).hexdigest()
+    workflow_outputs_path = Path(prepared.json()["artifact_dir"]) / "workflow_outputs.json"
+    workflow_outputs = json.loads(workflow_outputs_path.read_text(encoding="utf-8"))
+    workflow_outputs["outputs"][0]["path"] = str(outside)
+    workflow_outputs["outputs"][0]["sha256"] = outside_sha
+    workflow_outputs_path.write_text(
+        json.dumps(workflow_outputs, ensure_ascii=False, indent=2),
+        encoding="utf-8",
+    )
+
+    materialized = await workbench_client.post(
+        f"/api/workbench/task-runs/{task_run_id}/materialize-outputs"
+    )
+
+    assert materialized.status_code == 200
+    body = materialized.json()
+    assert body["status"] == "partial"
+    assert body["evidence_count"] == 0
+    assert body["rejected_outputs"] == [
+        {
+            "output": "scope",
+            "reason": "output_path_outside_task_artifacts",
+            "path": str(outside),
+        }
+    ]
+    search = await workbench_client.get(
+        "/api/workbench/memory/search",
+        params={"q": "outside.c", "workspace_id": "ws-outside-output"},
+    )
+    assert search.status_code == 200
+    assert search.json()["items"] == []
+
+
 async def test_workbench_materialize_changed_files_output_as_structured_memory(
     workbench_client,
     tmp_path,

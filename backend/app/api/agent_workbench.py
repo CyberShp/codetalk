@@ -961,6 +961,13 @@ def _materialize_workflow_output_evidence(
             rejected.append(_workflow_output_rejection_detail(output, reason="output_not_ok"))
             continue
         path = Path(str(output.get("path") or ""))
+        if not _is_workflow_output_path_within_task_artifacts(task_run, path):
+            rejected.append({
+                "output": output_id,
+                "reason": "output_path_outside_task_artifacts",
+                "path": str(path),
+            })
+            continue
         if not path.exists() or not path.is_file():
             rejected.append({"output": output_id, "reason": "output_file_missing"})
             continue
@@ -1004,6 +1011,15 @@ def _materialize_workflow_output_evidence(
         evidence_ids.extend(structured_ids)
         rejected.extend(structured_rejected)
     return evidence_ids, rejected
+
+
+def _is_workflow_output_path_within_task_artifacts(task_run: Any, path: Path) -> bool:
+    try:
+        task_root = Path(str(task_run.artifact_dir)).resolve()
+        resolved = path.resolve()
+        return resolved == task_root or task_root in resolved.parents
+    except OSError:
+        return False
 
 
 def _workflow_output_rejection_detail(output: dict[str, Any], *, reason: str) -> dict[str, Any]:
