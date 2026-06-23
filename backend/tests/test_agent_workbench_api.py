@@ -1491,8 +1491,14 @@ async def test_workbench_materialize_evidence_cards_output_as_structured_memory(
 
     assert materialized.status_code == 200
     body = materialized.json()
-    assert body["status"] == "ok"
+    assert body["status"] == "partial"
     assert body["evidence_count"] == 2
+    assert {
+        "output": "evidence_cards",
+        "reason": "evidence_card_path_not_verified",
+        "path": "src/missing.c",
+        "card_id": "card_missing",
+    } in body["rejected_outputs"]
     search = await workbench_client.get(
         "/api/workbench/memory/search",
         params={"q": "cleanup releases resources", "workspace_id": "ws-evidence-cards-memory"},

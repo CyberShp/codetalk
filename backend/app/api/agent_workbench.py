@@ -1105,18 +1105,15 @@ def _materialize_structured_workflow_output_evidence(
             sha256=sha256,
         )
     if path.name == "evidence_cards.json" or output_id == "evidence_cards":
-        return (
-            _materialize_evidence_card_output(
-                store=store,
-                task_run=task_run,
-                output=output,
-                output_id=output_id,
-                output_evidence_id=output_evidence_id,
-                path=path,
-                data=data,
-                sha256=sha256,
-            ),
-            [],
+        return _materialize_evidence_card_output(
+            store=store,
+            task_run=task_run,
+            output=output,
+            output_id=output_id,
+            output_evidence_id=output_evidence_id,
+            path=path,
+            data=data,
+            sha256=sha256,
         )
     if path.name == "uncovered_functions.json" or output_id == "uncovered_functions":
         return (
@@ -1451,15 +1448,16 @@ def _materialize_evidence_card_output(
     path: Path,
     data: bytes,
     sha256: str,
-) -> list[str]:
+) -> tuple[list[str], list[dict[str, str]]]:
     try:
         payload = json.loads(data.decode("utf-8"))
     except (UnicodeDecodeError, json.JSONDecodeError):
-        return []
+        return [], []
     cards = payload if isinstance(payload, list) else payload.get("evidence_cards") if isinstance(payload, dict) else []
     if not isinstance(cards, list):
-        return []
+        return [], []
     evidence_ids: list[str] = []
+    rejected: list[dict[str, str]] = []
     seen_cards: set[str] = set()
     for card in cards:
         if not isinstance(card, dict):
@@ -1467,6 +1465,16 @@ def _materialize_evidence_card_output(
         candidate_path = _source_scope_item_path(card)
         resolved = _validated_repo_source_path(task_run.repo_path, candidate_path)
         if resolved is None:
+            if candidate_path:
+                detail = {
+                    "output": output_id,
+                    "reason": "evidence_card_path_not_verified",
+                    "path": candidate_path,
+                }
+                card_id = str(card.get("card_id") or card.get("id") or "").strip()
+                if card_id:
+                    detail["card_id"] = card_id
+                rejected.append(detail)
             continue
         rel_path, _resolved_path = resolved
         card_id = str(card.get("card_id") or card.get("id") or f"{rel_path}:{card.get('symbol') or ''}").strip()
@@ -1505,7 +1513,7 @@ def _materialize_evidence_card_output(
             rel_path=rel_path,
             line_start=_safe_int(card.get("line_start") or card.get("start_line") or card.get("line") or 1),
         )
-    return evidence_ids
+    return evidence_ids, rejected
 
 
 def _materialize_uncovered_function_evidence(
