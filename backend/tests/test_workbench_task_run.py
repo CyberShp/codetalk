@@ -461,6 +461,17 @@ def test_prepare_workbench_task_run_injects_evidence_and_semantic_context(tmp_pa
         "TLS negotiation",
         "connection release",
     ]
+    assert step_bundle["black_box_generation_policy"]["semantic_terms"][0] == {
+        "case_id": "TC_TLS_HANDSHAKE_FAIL",
+        "feature": "NVMe TCP TLS",
+        "module": "nvmf_tcp",
+        "terms": ["TLS negotiation", "connection release"],
+        "test_level": "black_box",
+        "reuse_rule": "terminology_only_not_source_truth",
+    }
+    assert step_bundle["black_box_generation_policy"]["authority_rule"] == (
+        "semantic-library matches may shape black-box wording but cannot prove source behavior or entry reachability"
+    )
     assert step_bundle["context_bundle"]["deployment_evidence"][0]["symbol"] == "claude-code"
     assert step_bundle["context_bundle"]["evidence"][0]["source_slices"][0]["sha256"] == (
         hashlib.sha256(source.read_bytes()).hexdigest()
@@ -516,6 +527,33 @@ def test_prepare_workbench_task_run_injects_evidence_and_semantic_context(tmp_pa
         "deployment_evidence_retrieved",
         "semantic_case_retrieved",
     ]
+    output_contract = json.loads(
+        Path(
+            result.artifact_dir,
+            "agent_runs",
+            "design",
+            "agent_output_contract.json",
+        ).read_text(encoding="utf-8")
+    )
+    assert output_contract["black_box_generation_policy"]["semantic_terms"][0]["case_id"] == (
+        "TC_TLS_HANDSHAKE_FAIL"
+    )
+    assert output_contract["black_box_generation_policy"]["semantic_terms"][0]["terms"] == [
+        "TLS negotiation",
+        "connection release",
+    ]
+    assert output_contract["black_box_generation_policy"]["must_not_use_semantics_as"] == [
+        "source_evidence",
+        "entry_verification",
+        "artifact_validation",
+    ]
+    manifest = json.loads(
+        Path(result.artifact_dir, "task_artifact_manifest.json").read_text(encoding="utf-8")
+    )
+    manifest_paths = {item["relative_path"]: item for item in manifest["artifacts"]}
+    assert manifest_paths["black_box_generation_policy.json"]["kind"] == (
+        "black_box_generation_policy"
+    )
 
 
 def test_prepare_workbench_task_run_marks_stale_memory_source_slices_navigation_only(tmp_path):

@@ -56,7 +56,11 @@ def build_task_artifact_manifest(task_dir: Path) -> list[dict[str, Any]]:
             "size_bytes": len(data),
             "sha256": hashlib.sha256(data).hexdigest(),
         }
-        preview = artifact_preview(resolved, data)
+        preview = artifact_preview(
+            resolved,
+            data,
+            max_chars=3200 if relative_path.endswith("execution_input.json") else 1200,
+        )
         if preview:
             item["preview"] = preview
         artifacts.append(item)
@@ -125,6 +129,8 @@ def workbench_artifact_kind(relative_path: str) -> str:
         return "output_schemas"
     if name == "semantic_import_outputs_by_step.json":
         return "semantic_import_outputs"
+    if name == "black_box_generation_policy.json":
+        return "black_box_generation_policy"
     if name == "memory_retrieval.json":
         return "memory_retrieval"
     if name == "source_read_chain.json":

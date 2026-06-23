@@ -138,6 +138,9 @@ class WorkbenchTaskRunPreparer:
             evidence_memory_configured=self.evidence_memory is not None,
             semantic_library_configured=self.semantic_library is not None,
         )
+        black_box_generation_policy = build_black_box_generation_policy(
+            context_bundle=context_bundle,
+        )
         task_bundle = {
             "task_run_id": task_run_id,
             "workflow_id": workflow_id,
@@ -156,6 +159,7 @@ class WorkbenchTaskRunPreparer:
             "source_read_chain": context_artifacts["source_read_chain"],
             "evidence_consumption_trajectory": context_artifacts["evidence_consumption_trajectory"],
             "degraded_retrieval": context_artifacts["degraded_retrieval"],
+            "black_box_generation_policy": black_box_generation_policy,
             "required_artifacts_by_step": required_artifacts_by_step,
             "output_schemas_by_step": output_schemas_by_step,
             "semantic_import_outputs_by_step": semantic_import_outputs_by_step,
@@ -231,6 +235,7 @@ class WorkbenchTaskRunPreparer:
             context_artifacts["evidence_consumption_trajectory"],
         )
         _write_json(artifact_dir / "degraded_retrieval.json", context_artifacts["degraded_retrieval"])
+        _write_json(artifact_dir / "black_box_generation_policy.json", black_box_generation_policy)
         _write_json(artifact_dir / "task_bundle.json", task_bundle)
         write_task_artifact_manifest(artifact_dir, task_run_id=task_run_id)
         return result
@@ -1567,6 +1572,46 @@ def build_context_artifact_payloads(
         "source_read_chain": source_read_chain,
         "evidence_consumption_trajectory": evidence_consumption_trajectory,
         "degraded_retrieval": degraded_retrieval,
+    }
+
+
+def build_black_box_generation_policy(*, context_bundle: dict[str, Any]) -> dict[str, Any]:
+    semantic_cases = [
+        item for item in context_bundle.get("semantic_cases") or []
+        if isinstance(item, dict)
+    ]
+    semantic_terms: list[dict[str, Any]] = []
+    for item in semantic_cases:
+        terms = [str(term) for term in item.get("terms") or [] if str(term)]
+        if not terms:
+            continue
+        semantic_terms.append({
+            "case_id": str(item.get("case_id") or ""),
+            "feature": str(item.get("feature") or ""),
+            "module": str(item.get("module") or ""),
+            "terms": terms,
+            "test_level": str(item.get("test_level") or ""),
+            "reuse_rule": "terminology_only_not_source_truth",
+        })
+    return {
+        "provider": "semantic-library",
+        "query": str(context_bundle.get("query") or ""),
+        "semantic_terms": semantic_terms,
+        "semantic_case_count": len(semantic_cases),
+        "semantic_term_count": sum(len(item["terms"]) for item in semantic_terms),
+        "authority_rule": (
+            "semantic-library matches may shape black-box wording but cannot prove source behavior or entry reachability"
+        ),
+        "allowed_uses": [
+            "black_box_case_wording",
+            "test_taxonomy_alignment",
+            "observable_assertion_style",
+        ],
+        "must_not_use_semantics_as": [
+            "source_evidence",
+            "entry_verification",
+            "artifact_validation",
+        ],
     }
 
 
