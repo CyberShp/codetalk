@@ -1024,6 +1024,25 @@ function acceptanceProviderIssues(
     .filter((item) => item.provider);
 }
 
+function acceptanceCodetalkProviderIssues(
+  audit: WorkbenchAcceptanceAudit | null,
+): AcceptanceProviderIssue[] {
+  if (!audit) return [];
+  return audit.missing_recommended
+    .filter((item) => String(item.id ?? "").startsWith("provider_readiness_codetalk:"))
+    .map((item) => ({
+      provider: String(item.provider ?? String(item.id ?? "").split(":")[1] ?? "provider"),
+      status: String(item.provider_status ?? item.status ?? "unknown"),
+      reason: String(item.reason ?? ""),
+      startupProbeEndpoint: String(item.startup_probe_endpoint ?? item.next_check ?? ""),
+      usedFallback: false,
+      deploymentTaskProbeStatus: "",
+      deploymentProbeId: "",
+      deploymentEvidenceConflict: false,
+    }))
+    .filter((item) => item.provider);
+}
+
 function acceptanceWorkflowOutputIssues(
   audit: WorkbenchAcceptanceAudit | null,
 ): AcceptanceWorkflowOutputIssue[] {
@@ -4218,6 +4237,29 @@ export default function AgentWorkbenchPage() {
                                   {issue.reason ? ` reason:${issue.reason}` : ""}
                                   {issue.startupProbeEndpoint
                                     ? ` probe:${issue.startupProbeEndpoint}`
+                                    : ""}
+                                </div>
+                              ))}
+                            </div>
+                          </div>
+                        );
+                      })()}
+                      {(() => {
+                        const providerIssues =
+                          acceptanceCodetalkProviderIssues(taskAcceptanceAudit);
+                        if (providerIssues.length === 0) return null;
+                        return (
+                          <div className="mt-1 rounded border border-warning/30 bg-surface px-2 py-1.5">
+                            <p className="text-[11px] font-medium text-warning">
+                              CodeTalk provider readiness
+                            </p>
+                            <div className="mt-1 space-y-0.5 font-data text-[10px] text-warning">
+                              {providerIssues.slice(0, 4).map((issue) => (
+                                <div key={issue.provider} className="break-words">
+                                  {issue.provider}:{issue.status}
+                                  {issue.reason ? ` reason:${issue.reason}` : ""}
+                                  {issue.startupProbeEndpoint
+                                    ? ` check:${issue.startupProbeEndpoint}`
                                     : ""}
                                 </div>
                               ))}
