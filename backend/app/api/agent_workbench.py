@@ -29,6 +29,7 @@ from app.services.workbench_artifact_manifest import (
     artifact_preview,
     build_task_artifact_manifest,
     workbench_artifact_kind,
+    write_task_artifact_manifest,
 )
 from app.services.workbench_task_run import WorkbenchTaskRunPreparer
 from app.services.workbench_task_run import WorkbenchTaskRunStore
@@ -563,6 +564,7 @@ async def materialize_task_run_outputs(task_run_id: str) -> dict[str, Any]:
         workflow_outputs=workflow_outputs,
         result=result,
     )
+    write_task_artifact_manifest(task_dir, task_run_id=task_run.task_run_id)
     return result
 
 
@@ -689,6 +691,10 @@ async def execute_task_run_rerun_plan(
     _write_task_rerun_execution_artifacts(
         task_dir=Path(refreshed_task_run.artifact_dir),
         result=result,
+    )
+    write_task_artifact_manifest(
+        Path(refreshed_task_run.artifact_dir),
+        task_run_id=refreshed_task_run.task_run_id,
     )
     return result
 

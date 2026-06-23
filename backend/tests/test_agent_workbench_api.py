@@ -879,6 +879,18 @@ async def test_workbench_task_run_materialize_workflow_outputs_api(
         paths["workflow_output_materialization.json"]["kind"]
         == "workflow_output_materialization"
     )
+    manifest = json.loads(
+        (Path(prepared.json()["artifact_dir"]) / "task_artifact_manifest.json")
+        .read_text(encoding="utf-8")
+    )
+    manifest_paths = {item["relative_path"]: item for item in manifest["artifacts"]}
+    assert (
+        manifest_paths["workflow_output_materialization.json"]["kind"]
+        == "workflow_output_materialization"
+    )
+    assert manifest_paths["workflow_output_materialization.json"]["sha256"] == hashlib.sha256(
+        materialization_artifact.read_bytes()
+    ).hexdigest()
     search = await workbench_client.get(
         "/api/workbench/memory/search",
         params={"q": "TLS negotiation", "workspace_id": "ws-output-memory"},
@@ -1745,6 +1757,15 @@ async def test_workbench_task_run_artifacts_api_labels_failure_recovery(
     }
     assert paths_after_rerun["task_rerun_execution.json"]["kind"] == "task_rerun_execution"
     assert paths_after_rerun["task_rerun_history.json"]["kind"] == "task_rerun_history"
+    rerun_manifest = json.loads(
+        (Path(prepared.json()["artifact_dir"]) / "task_artifact_manifest.json")
+        .read_text(encoding="utf-8")
+    )
+    rerun_manifest_paths = {
+        item["relative_path"]: item for item in rerun_manifest["artifacts"]
+    }
+    assert rerun_manifest_paths["task_rerun_execution.json"]["kind"] == "task_rerun_execution"
+    assert rerun_manifest_paths["task_rerun_history.json"]["kind"] == "task_rerun_history"
     rerun_execution_content = await workbench_client.get(
         f"/api/workbench/task-runs/{task_run_id}/artifacts/content/task_rerun_execution.json"
     )

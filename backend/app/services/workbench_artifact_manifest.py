@@ -1,8 +1,30 @@
 from __future__ import annotations
 
 import hashlib
+import json
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
+
+
+def write_task_artifact_manifest(task_dir: Path, *, task_run_id: str) -> dict[str, Any]:
+    artifacts = [
+        item
+        for item in build_task_artifact_manifest(task_dir)
+        if item.get("relative_path") != "task_artifact_manifest.json"
+    ]
+    payload = {
+        "task_run_id": task_run_id,
+        "created_at": datetime.now(timezone.utc).isoformat(),
+        "artifact_count": len(artifacts),
+        "artifacts": artifacts,
+    }
+    task_dir.mkdir(parents=True, exist_ok=True)
+    (task_dir / "task_artifact_manifest.json").write_text(
+        json.dumps(payload, ensure_ascii=False, indent=2, sort_keys=True),
+        encoding="utf-8",
+    )
+    return payload
 
 
 def build_task_artifact_manifest(task_dir: Path) -> list[dict[str, Any]]:

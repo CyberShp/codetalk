@@ -14,7 +14,7 @@ from app.services.agent_run_harness import (
     AgentRunHarness,
     ArtifactValidationHarness,
 )
-from app.services.workbench_artifact_manifest import build_task_artifact_manifest
+from app.services.workbench_artifact_manifest import write_task_artifact_manifest
 from app.services.workbench_task_run import WorkbenchTaskRunStore
 
 
@@ -525,25 +525,7 @@ class WorkbenchWorkflowRunner:
             json.dumps(result.rerun_plan, ensure_ascii=False, indent=2, sort_keys=True),
             encoding="utf-8",
         )
-        artifacts = [
-            item
-            for item in build_task_artifact_manifest(task_dir)
-            if item.get("relative_path") != "task_artifact_manifest.json"
-        ]
-        (task_dir / "task_artifact_manifest.json").write_text(
-            json.dumps(
-                {
-                    "task_run_id": result.task_run_id,
-                    "created_at": _now(),
-                    "artifact_count": len(artifacts),
-                    "artifacts": artifacts,
-                },
-                ensure_ascii=False,
-                indent=2,
-                sort_keys=True,
-            ),
-            encoding="utf-8",
-        )
+        write_task_artifact_manifest(task_dir, task_run_id=result.task_run_id)
 
 
 def _validate_output_schema(
