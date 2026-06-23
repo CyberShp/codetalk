@@ -1491,6 +1491,7 @@ export default function AgentWorkbenchPage() {
         true,
       );
       setWorkflowExecution(result);
+      setWorkflowOutputMaterialize(result.evidence_materialization ?? null);
       setSemanticOutputImport(null);
       setTaskRerunPlan((result.rerun_plan as TaskRerunPlan | undefined) ?? null);
       setTaskRerunPlanValidation(
@@ -1498,7 +1499,9 @@ export default function AgentWorkbenchPage() {
       );
       setTaskAcceptanceAudit(null);
       await refreshArtifactManifest(preparedRun.task_run_id);
-      setMessage(`Workflow execution ${result.status}: ${result.task_run_id}`);
+      setMessage(
+        `Workflow execution ${result.status}: ${result.task_run_id}; evidence ${result.evidence_materialization?.status ?? "skipped"}`,
+      );
       await loadWorkflows();
     });
 
@@ -3286,6 +3289,30 @@ export default function AgentWorkbenchPage() {
                           <span className="rounded bg-surface px-1.5 py-0.5 text-warning">
                             blocked-outputs:
                             {workflowExecution.rerun_plan.blocked_outputs?.length ?? 0}
+                          </span>
+                        ) : null}
+                      </div>
+                    )}
+                    {workflowExecution.evidence_materialization && (
+                      <div className="mt-1 flex flex-wrap gap-1.5 font-data text-[10px]">
+                        <span
+                          className={`rounded bg-surface px-1.5 py-0.5 ${
+                            workflowExecution.evidence_materialization.status === "ok"
+                              ? ""
+                              : "text-warning"
+                          }`}
+                        >
+                          evidence:{workflowExecution.evidence_materialization.status}
+                        </span>
+                        <span className="rounded bg-surface px-1.5 py-0.5">
+                          evidence-items:
+                          {workflowExecution.evidence_materialization.evidence_count}
+                        </span>
+                        {workflowExecution.evidence_materialization.rejected_outputs
+                          .length > 0 ? (
+                          <span className="rounded bg-surface px-1.5 py-0.5 text-warning">
+                            rejected:
+                            {workflowExecution.evidence_materialization.rejected_outputs.length}
                           </span>
                         ) : null}
                       </div>

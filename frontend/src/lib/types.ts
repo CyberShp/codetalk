@@ -582,6 +582,7 @@ export interface WorkflowExecutionResult {
   status: string;
   started_at: string;
   completed_at: string;
+  evidence_materialization?: MaterializeWorkflowOutputsResult;
   context_discovery_decision?: Record<string, unknown>;
   audit_summary?: {
     step_count?: number;

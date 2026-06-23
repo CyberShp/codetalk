@@ -758,11 +758,48 @@ async def execute_task_run_workflow(
             timeout_sec=payload.timeout_sec,
             stop_on_error=payload.stop_on_error,
         )
+        task_run = WorkbenchTaskRunStore(_task_runs_dir()).load(task_run_id)
     except KeyError:
         raise HTTPException(status_code=404, detail=f"Unknown task run: {task_run_id}")
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc))
-    return asdict(result)
+    response = asdict(result)
+    response["evidence_materialization"] = _materialize_task_run_outputs_if_available(
+        task_run=task_run,
+    )
+    return response
+
+
+def _materialize_task_run_outputs_if_available(*, task_run: Any) -> dict[str, Any]:
+    task_dir = Path(task_run.artifact_dir)
+    workflow_outputs_path = task_dir / "workflow_outputs.json"
+    workflow_outputs = _read_json(workflow_outputs_path)
+    if not isinstance(workflow_outputs, dict):
+        return {
+            "status": "skipped",
+            "reason": "workflow_outputs_missing",
+            "evidence_count": 0,
+            "evidence_ids": [],
+            "rejected_outputs": [],
+        }
+    evidence_ids, rejected = _materialize_workflow_output_evidence(
+        task_run=task_run,
+        workflow_outputs=workflow_outputs,
+    )
+    result = {
+        "status": "ok" if not rejected else "partial",
+        "evidence_count": len(evidence_ids),
+        "evidence_ids": evidence_ids,
+        "rejected_outputs": rejected,
+    }
+    _write_workflow_output_materialization_artifact(
+        task_run=task_run,
+        workflow_outputs_path=workflow_outputs_path,
+        workflow_outputs=workflow_outputs,
+        result=result,
+    )
+    write_task_artifact_manifest(task_dir, task_run_id=task_run.task_run_id)
+    return result
 
 
 @router.post("/task-runs/{task_run_id}/materialize-outputs")
@@ -2167,11 +2204,18 @@ def _materialize_workflow_output_evidence(
             "sha256": sha256,
             "size_bytes": len(data),
         }
+        workflow_output_subject = f"{task_run.task_run_id}/{output_id}"
         output_evidence_id = store.upsert_evidence_item(
+            evidence_id=_stable_workflow_evidence_id(
+                task_run=task_run,
+                kind="workflow_output",
+                subject_key=workflow_output_subject,
+                output_id=output_id,
+            ),
             run_id=task_run.task_run_id,
             workspace_id=task_run.workspace_id,
             kind="workflow_output",
-            subject_key=f"{task_run.task_run_id}/{output_id}",
+            subject_key=workflow_output_subject,
             status="verified_output",
             source=str(output.get("from") or "workflow"),
             path=str(path),
@@ -2193,6 +2237,23 @@ def _materialize_workflow_output_evidence(
         evidence_ids.extend(structured_ids)
         rejected.extend(structured_rejected)
     return evidence_ids, rejected
+
+
+def _stable_workflow_evidence_id(
+    *,
+    task_run: Any,
+    kind: str,
+    subject_key: str,
+    output_id: str,
+) -> str:
+    seed = "\n".join([
+        str(getattr(task_run, "task_run_id", "")),
+        str(getattr(task_run, "workspace_id", "")),
+        str(kind),
+        str(output_id),
+        str(subject_key),
+    ])
+    return f"ev_{hashlib.sha256(seed.encode('utf-8')).hexdigest()}"
 
 
 def _workflow_output_definition(task_run: Any, output_id: str) -> dict[str, Any]:
@@ -2615,6 +2676,12 @@ def _materialize_changed_file_output(
             })
             continue
         evidence_ids.append(store.upsert_evidence_item(
+            evidence_id=_stable_workflow_evidence_id(
+                task_run=task_run,
+                kind="changed_file",
+                subject_key=changed_path,
+                output_id=output_id,
+            ),
             run_id=task_run.task_run_id,
             workspace_id=task_run.workspace_id,
             kind="changed_file",
@@ -2761,6 +2828,12 @@ def _materialize_source_scope_evidence(
         if rel_path not in seen_files:
             seen_files.add(rel_path)
             source_evidence_id = store.upsert_evidence_item(
+                evidence_id=_stable_workflow_evidence_id(
+                    task_run=task_run,
+                    kind="source_file",
+                    subject_key=rel_path,
+                    output_id=output_id,
+                ),
                 run_id=task_run.task_run_id,
                 workspace_id=task_run.workspace_id,
                 kind="source_file",
@@ -2801,6 +2874,12 @@ def _materialize_source_scope_evidence(
             seen_symbols.add(symbol_key)
             line_start = _safe_int(symbol_item.get("line_start") if isinstance(symbol_item, dict) else None)
             evidence_ids.append(store.upsert_evidence_item(
+                evidence_id=_stable_workflow_evidence_id(
+                    task_run=task_run,
+                    kind="symbol",
+                    subject_key=f"{rel_path}:{symbol_name}",
+                    output_id=output_id,
+                ),
                 run_id=task_run.task_run_id,
                 workspace_id=task_run.workspace_id,
                 kind="symbol",
@@ -2846,6 +2925,12 @@ def _materialize_source_scope_evidence(
         seen_symbols.add(symbol_key)
         line_start = _safe_int(symbol_item.get("line_start"))
         evidence_ids.append(store.upsert_evidence_item(
+            evidence_id=_stable_workflow_evidence_id(
+                task_run=task_run,
+                kind="symbol",
+                subject_key=f"{rel_path}:{symbol_name}",
+                output_id=output_id,
+            ),
             run_id=task_run.task_run_id,
             workspace_id=task_run.workspace_id,
             kind="symbol",
@@ -2918,6 +3003,12 @@ def _materialize_evidence_card_output(
         reason = str(card.get("reason") or card.get("title") or "Evidence card came from a locally verified workflow output.").strip()
         excerpt = str(card.get("excerpt") or card.get("text") or card.get("summary") or "").strip()
         card_evidence_id = store.upsert_evidence_item(
+            evidence_id=_stable_workflow_evidence_id(
+                task_run=task_run,
+                kind="evidence_card",
+                subject_key=card_id,
+                output_id=output_id,
+            ),
             run_id=task_run.task_run_id,
             workspace_id=task_run.workspace_id,
             kind="evidence_card",
@@ -2987,6 +3078,12 @@ def _materialize_uncovered_function_evidence(
                 "reason": "coverage_source_path_not_verified",
             })
         gap_evidence_id = store.upsert_evidence_item(
+            evidence_id=_stable_workflow_evidence_id(
+                task_run=task_run,
+                kind="coverage_gap",
+                subject_key=subject_key,
+                output_id=output_id,
+            ),
             run_id=task_run.task_run_id,
             workspace_id=task_run.workspace_id,
             kind="coverage_gap",

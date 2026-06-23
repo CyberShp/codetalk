@@ -1354,6 +1354,22 @@ async def test_workbench_task_run_materialize_workflow_outputs_api(
     )
     assert executed.status_code == 200
     assert executed.json()["outputs"][0]["status"] == "ok"
+    auto_materialized = executed.json()["evidence_materialization"]
+    assert auto_materialized["status"] == "ok"
+    assert auto_materialized["evidence_count"] == 1
+    search_after_execute = await workbench_client.get(
+        "/api/workbench/memory/search",
+        params={"q": "TLS negotiation", "workspace_id": "ws-output-memory"},
+    )
+    assert search_after_execute.status_code == 200
+    assert any(
+        item["kind"] == "workflow_output"
+        for item in search_after_execute.json()["items"]
+    )
+    auto_materialization_artifact = (
+        Path(prepared.json()["artifact_dir"]) / "workflow_output_materialization.json"
+    )
+    assert auto_materialization_artifact.exists()
 
     materialized = await workbench_client.post(
         f"/api/workbench/task-runs/{task_run_id}/materialize-outputs"
