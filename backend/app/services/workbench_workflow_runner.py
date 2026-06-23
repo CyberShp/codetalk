@@ -209,6 +209,7 @@ class WorkbenchWorkflowRunner:
         )
         if failure_recovery:
             step_payload["failure_recovery"] = failure_recovery
+            _write_json(artifact_dir / "failure_recovery.json", failure_recovery)
         return step_payload
 
     def _execute_builtin_step(

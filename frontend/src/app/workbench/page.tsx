@@ -489,6 +489,7 @@ const AUDIT_ARTIFACT_KIND_ORDER = [
   "input_artifact",
   "agent_task_bundle",
   "agent_provider_diagnostics",
+  "agent_failure_recovery",
   "agent_turn_task_bundle",
   "agent_turn_provider_diagnostics",
   "agent_turn_execution_input",
