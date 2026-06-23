@@ -217,6 +217,7 @@ export interface WorkbenchProviderCapabilitiesMatrix {
 
 export interface WorkbenchSystemAudit {
   status: string;
+  runtime_status?: string;
   created_at: string;
   summary: {
     required_checks: number;

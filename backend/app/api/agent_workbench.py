@@ -1008,6 +1008,7 @@ def _build_workbench_system_audit() -> dict[str, Any]:
             description="Task-level acceptance audit API is registered",
             details={"endpoint": "POST /api/workbench/task-runs/{task_run_id}/acceptance-audit"},
         ),
+        _agent_cli_launch_readiness_check(provider_matrix),
         _system_audit_check(
             check_id="external_agent_sandbox",
             ok=False,
@@ -1032,6 +1033,11 @@ def _build_workbench_system_audit() -> dict[str, Any]:
     ]
     return {
         "status": "ready" if not missing_required else "incomplete",
+        "runtime_status": (
+            "degraded"
+            if missing_required or _has_missing_agent_cli_launch_readiness(checks)
+            else "healthy"
+        ),
         "created_at": datetime.now(timezone.utc).isoformat(),
         "summary": {
             "required_checks": len(required_checks),
@@ -1047,6 +1053,109 @@ def _build_workbench_system_audit() -> dict[str, Any]:
             "Run provider startup probes and task-level acceptance audits before marking a deployment healthy.",
         ],
     }
+
+
+def _agent_cli_launch_readiness_check(provider_matrix: list[dict[str, Any]]) -> dict[str, Any]:
+    agent_providers = [
+        item for item in provider_matrix
+        if isinstance(item, dict) and item.get("owner") == "agent_cli"
+    ]
+    available: list[dict[str, Any]] = []
+    failed: list[dict[str, Any]] = []
+    for item in agent_providers:
+        provider_id = str(item.get("provider") or "")
+        diagnostics = item.get("diagnostics") if isinstance(item.get("diagnostics"), dict) else {}
+        resolution = (
+            diagnostics.get("command_resolution")
+            if isinstance(diagnostics, dict) and isinstance(diagnostics.get("command_resolution"), dict)
+            else {}
+        )
+        status = str(resolution.get("status") or item.get("status") or "").strip()
+        record = {
+            "provider": provider_id,
+            "display_name": str(item.get("display_name") or provider_id),
+            "status": status,
+            "command": resolution.get("command") or item.get("command") or [],
+            "reason": resolution.get("reason") or "",
+            "used_fallback": bool(resolution.get("used_fallback", False)),
+            "startup_probe_endpoint": str(diagnostics.get("startup_probe_endpoint") or ""),
+            "command_hint_env": _agent_cli_command_hint_env(item, diagnostics, resolution),
+        }
+        if status == "available":
+            available.append(record)
+        else:
+            failed.append(record)
+
+    recommended_actions = _agent_cli_launch_recommended_actions(failed)
+    return _system_audit_check(
+        check_id="agent_cli_launch_readiness",
+        ok=bool(available),
+        severity="recommended",
+        description="At least one Agent CLI provider can be resolved by the backend process",
+        details={
+            "provider_count": len(agent_providers),
+            "available_provider_count": len(available),
+            "available_provider_ids": [item["provider"] for item in available],
+            "failed_provider_ids": [item["provider"] for item in failed],
+            "available_providers": available,
+            "failed_providers": failed,
+            "recommended_actions": recommended_actions,
+            "notes": [
+                "This is a launch-resolution check, not a full prompt execution proof.",
+                "Run each startup_probe_endpoint from the Workbench tools page for execution-level evidence.",
+            ],
+        },
+    )
+
+
+def _agent_cli_command_hint_env(
+    item: dict[str, Any],
+    diagnostics: dict[str, Any],
+    resolution: dict[str, Any],
+) -> str:
+    recipe = diagnostics.get("probe_recipe") if isinstance(diagnostics.get("probe_recipe"), dict) else {}
+    diagnostic = resolution.get("diagnostic") if isinstance(resolution.get("diagnostic"), dict) else {}
+    return str(
+        item.get("command_hint_env")
+        or recipe.get("command_env")
+        or diagnostic.get("command_hint_env")
+        or ""
+    )
+
+
+def _agent_cli_launch_recommended_actions(failed: list[dict[str, Any]]) -> list[str]:
+    actions: list[str] = []
+    seen: set[str] = set()
+    for item in failed:
+        provider = str(item.get("provider") or "agent")
+        env_name = str(item.get("command_hint_env") or "").strip()
+        endpoint = str(item.get("startup_probe_endpoint") or "").strip()
+        reason = str(item.get("reason") or "command unavailable").strip()
+        if env_name:
+            action = (
+                f"Set {env_name} to the full {provider} CLI command or executable path; "
+                f"then run {endpoint or 'the startup probe'}."
+            )
+        else:
+            action = (
+                f"Configure a command for {provider}; then run "
+                f"{endpoint or 'the startup probe'}."
+            )
+        if reason:
+            action = f"{action} Last resolution failure: {reason}."
+        if action not in seen:
+            seen.add(action)
+            actions.append(action)
+    if not actions:
+        actions.append("Configure at least one Agent CLI provider and run its startup probe.")
+    return actions
+
+
+def _has_missing_agent_cli_launch_readiness(checks: list[dict[str, Any]]) -> bool:
+    for item in checks:
+        if item.get("id") == "agent_cli_launch_readiness":
+            return item.get("status") != "ok"
+    return False
 
 
 def _system_audit_check(

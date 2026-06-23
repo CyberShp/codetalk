@@ -1508,6 +1508,17 @@ export default function AgentWorkbenchPage() {
             >
               {systemAudit.status}
             </span>
+            {systemAudit.runtime_status && (
+              <span
+                className={
+                  systemAudit.runtime_status === "healthy"
+                    ? "font-data text-green-500"
+                    : "font-data text-warning"
+                }
+              >
+                runtime:{systemAudit.runtime_status}
+              </span>
+            )}
             <span className="font-data">
               required:{systemAudit.summary.required_checks}
             </span>

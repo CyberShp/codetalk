@@ -263,7 +263,69 @@ async def test_workbench_system_audit_api_reports_control_plane_readiness(workbe
     )
     assert checks["external_agent_sandbox"]["severity"] == "recommended"
     assert checks["external_agent_sandbox"]["status"] == "missing"
-    assert body["missing_recommended"][0]["id"] == "external_agent_sandbox"
+    assert "external_agent_sandbox" in {
+        item["id"] for item in body["missing_recommended"]
+    }
+
+
+async def test_workbench_system_audit_reports_degraded_when_no_agent_cli_launches(
+    workbench_client,
+    monkeypatch,
+):
+    monkeypatch.setattr(settings, "claude_code_command", "ccr code")
+    monkeypatch.setattr(settings, "opencode_command", "opencode")
+    monkeypatch.setattr(
+        settings,
+        "external_agent_custom_providers",
+        [{"id": "corp-agent", "command": "corp-agent run", "prompt_transport": "stdin"}],
+    )
+
+    def fake_health(provider, command, fallback_commands=None):
+        executable = str(command).split()[0] if command else ""
+        return {
+            "provider": provider,
+            "status": "unavailable",
+            "reason": f"command not found: {executable}",
+            "attempts": [
+                {
+                    "command": command,
+                    "status": "unavailable",
+                    "reason": f"command not found: {executable}",
+                    "executable": executable,
+                    "configured_argv": str(command).split(),
+                }
+            ],
+            "diagnostic": {
+                "summary": "cwd: E:/codetalk; PATH entries: C:/missing",
+                "command_hint_env": f"{provider.upper().replace('-', '_')}_COMMAND",
+                "command_hint": f"set {provider.upper().replace('-', '_')}_COMMAND to a full CLI path",
+            },
+        }
+
+    monkeypatch.setattr(
+        "app.services.workbench_task_run.check_provider_health",
+        fake_health,
+        raising=False,
+    )
+
+    resp = await workbench_client.get("/api/workbench/system-audit")
+
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["status"] == "ready"
+    assert body["runtime_status"] == "degraded"
+    checks = {item["id"]: item for item in body["checks"]}
+    readiness = checks["agent_cli_launch_readiness"]
+    assert readiness["status"] == "missing"
+    assert readiness["severity"] == "recommended"
+    assert readiness["details"]["available_provider_count"] == 0
+    assert set(readiness["details"]["failed_provider_ids"]) == {
+        "claude-code",
+        "opencode",
+        "corp-agent",
+    }
+    assert "CLAUDE_CODE_COMMAND" in readiness["details"]["recommended_actions"][0]
+    assert body["missing_recommended"][0]["id"] == "agent_cli_launch_readiness"
 
 
 async def test_workbench_semantic_library_api(workbench_client):
