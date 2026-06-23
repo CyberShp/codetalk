@@ -111,6 +111,14 @@ For each Agent workflow step, CodeTalk:
 7. materializes only accepted artifacts into workflow outputs and Evidence
    Memory.
 
+Every `agent_run.json` and `execution_input.json` carries `session_policy`.
+The default policy is `external_session_mode=disposable_process`,
+`resume_supported=false`, and `continuity_owner=codetalk_task_bundle`. This is
+intentional: CodeTalk does not depend on a hidden long-lived Agent session.
+Continuity comes from the task bundle, Evidence Memory, validated artifacts, and
+sha256-backed source slices. Raw Agent output is never reused as memory unless it
+has been converted into validated facts.
+
 The first supported transport is stdin. If an Agent CLI does not support stdin,
 it should be registered with a provider-specific wrapper or marked unavailable
 with a diagnostic reason. CodeTalk should not silently pretend the Agent ran.
@@ -347,6 +355,7 @@ evidence_consumption_trajectory.json
 degraded_retrieval.json
 agent_runs/<step>/execution_input.json
 agent_runs/<step>/task_bundle.json
+agent_runs/<step>/agent_run.json
 agent_runs/<step>/raw_stdout.txt
 agent_runs/<step>/raw_stderr.txt
 agent_runs/<step>/result.json

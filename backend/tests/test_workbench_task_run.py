@@ -54,6 +54,25 @@ def test_prepare_workbench_task_run_freezes_workflow_and_creates_agent_run(tmp_p
         "changed_files.json",
     ]
     assert (root / "agent_runs" / "collect_mr" / "agent_run.json").exists()
+    agent_run = json.loads(
+        (root / "agent_runs" / "collect_mr" / "agent_run.json").read_text(
+            encoding="utf-8"
+        )
+    )
+    assert agent_run["session_policy"] == {
+        "external_session_mode": "disposable_process",
+        "resume_supported": False,
+        "resume_source": "none",
+        "continuity_owner": "codetalk_task_bundle",
+        "memory_sources": [
+            "task_bundle",
+            "evidence_memory",
+            "source_slices",
+            "validated_artifacts",
+        ],
+        "raw_output_reuse": "never_without_validation",
+        "context_overflow_strategy": "source_slice_request_turn",
+    }
     manifest = json.loads((root / "task_artifact_manifest.json").read_text(encoding="utf-8"))
     manifest_paths = {item["relative_path"]: item for item in manifest["artifacts"]}
     assert manifest["task_run_id"] == result.task_run_id
@@ -786,6 +805,10 @@ def test_agent_execution_persists_provider_diagnostics_snapshot(tmp_path, monkey
     )
     assert execution_input["provider_diagnostics"]["provider"] == "corp-agent"
     assert execution_input["provider_diagnostics"]["health"]["launch_kind"] == "exec"
+    assert execution_input["session_policy"]["external_session_mode"] == "disposable_process"
+    assert execution_input["session_policy"]["continuity_owner"] == "codetalk_task_bundle"
+    assert execution_input["session_policy"]["raw_output_reuse"] == "never_without_validation"
+    assert execution_input["stdin"]["session_policy"] == execution_input["session_policy"]
     agent_seen = json.loads((artifact_dir / "result.json").read_text(encoding="utf-8"))
     assert agent_seen["diagnostics"]["startup_probe_transport"] == "stdin"
     assert agent_seen["health"]["status"] == "available"

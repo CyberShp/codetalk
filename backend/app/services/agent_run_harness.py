@@ -30,6 +30,23 @@ def _json_sha256(payload: Any) -> str:
 _MAX_ARG_PROMPT_BYTES = 24000
 
 
+def _default_agent_session_policy() -> dict[str, Any]:
+    return {
+        "external_session_mode": "disposable_process",
+        "resume_supported": False,
+        "resume_source": "none",
+        "continuity_owner": "codetalk_task_bundle",
+        "memory_sources": [
+            "task_bundle",
+            "evidence_memory",
+            "source_slices",
+            "validated_artifacts",
+        ],
+        "raw_output_reuse": "never_without_validation",
+        "context_overflow_strategy": "source_slice_request_turn",
+    }
+
+
 @dataclass(frozen=True)
 class AgentRunRecord:
     run_id: str
@@ -39,6 +56,7 @@ class AgentRunRecord:
     cwd: str
     artifact_dir: str
     mcp_profile: str = ""
+    session_policy: dict[str, Any] = field(default_factory=_default_agent_session_policy)
     status: str = "created"
     created_at: str = field(default_factory=_now)
 
@@ -141,12 +159,18 @@ class AgentRunHarness:
             run_payload=run_payload,
             task_bundle=task_bundle if isinstance(task_bundle, dict) else {},
         )
+        session_policy = (
+            run_payload.get("session_policy")
+            if isinstance(run_payload.get("session_policy"), dict)
+            else _default_agent_session_policy()
+        )
         self._write_json("provider_diagnostics.json", provider_diagnostics)
         stdin_payload_obj = {
             "run_id": run_id,
             "turn_id": turn_id,
             "provider": run_payload.get("provider") or "",
             "mcp_profile": run_payload.get("mcp_profile") or "",
+            "session_policy": session_policy,
             "workflow_snapshot": workflow_snapshot if isinstance(workflow_snapshot, dict) else {},
             "task_bundle": task_bundle if isinstance(task_bundle, dict) else {},
             "context_discovery_decision_summary": context_discovery_decision_summary,
@@ -196,6 +220,7 @@ class AgentRunHarness:
                 "cwd": cwd,
                 "timeout_sec": max(1, int(timeout_sec)),
                 "mcp_profile": run_payload.get("mcp_profile") or "",
+                "session_policy": session_policy,
                 "env_hints": env_hints,
                 "task_bundle_sha256": task_bundle_sha256,
                 "workflow_snapshot_sha256": workflow_snapshot_sha256,
