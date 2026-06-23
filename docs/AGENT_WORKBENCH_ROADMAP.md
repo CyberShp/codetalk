@@ -31,6 +31,8 @@ Rules:
 
 Current implementation note:
 
+- For deployment, intranet debugging, provider readiness checks, and acceptance
+  criteria, see `docs/AGENT_WORKBENCH_OPERATIONS.md`.
 - `fast-context` is registered as a diagnostic adapter and an optional source-discovery provider.
 - Backend scope resolution only invokes it when `fast_context_backend_bridge_enabled=true`; by default CodeTalk reports the bridge as unavailable without blocking analysis.
 - Candidate files returned by this provider are normalized through the same local source-file validation path as external Agent candidates.
