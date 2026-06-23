@@ -537,6 +537,14 @@ test("agent workbench previews task run artifact content", async ({ page }) => {
             sha256: "bbbbbaaaaacccccdddddeeeeefffff1111122222",
             preview: "{\"design\":[{\"output_id\":\"black_box_cases\"}]}",
           },
+          {
+            relative_path: "agent_runs/discover/agent_replay_plan.json",
+            path: "E:/data/workbench/task_runs/task_run_preview/agent_runs/discover/agent_replay_plan.json",
+            kind: "agent_replay_plan",
+            size_bytes: 640,
+            sha256: "ccccddddaaaabbbb111122223333444455556666",
+            preview: "{\"replay_status\":\"ready\",\"prompt_source\":\"execution_input.json:stdin\"}",
+          },
         ],
       },
     });
@@ -669,6 +677,42 @@ test("agent workbench previews task run artifact content", async ({ page }) => {
       });
     },
   );
+  await page.route(
+    "**/api/workbench/task-runs/task_run_preview/artifacts/content/agent_runs/discover/agent_replay_plan.json",
+    async (route) => {
+      await route.fulfill({
+        headers: corsHeaders(route.request().headers().origin),
+        json: {
+          relative_path: "agent_runs/discover/agent_replay_plan.json",
+          path: "E:/data/workbench/task_runs/task_run_preview/agent_runs/discover/agent_replay_plan.json",
+          kind: "agent_replay_plan",
+          size_bytes: 640,
+          sha256: "ccccddddaaaabbbb111122223333444455556666",
+          preview: "{\"replay_status\":\"ready\",\"prompt_source\":\"execution_input.json:stdin\"}",
+          is_text: true,
+          truncated: false,
+          content: JSON.stringify({
+            replay_status: "ready",
+            provider: "claude-code",
+            turn_id: "turn_1",
+            prompt_source: "execution_input.json:stdin",
+            prompt_transport: "stdin",
+            cwd: "E:/repo",
+            timeout_sec: 90,
+            artifact_hashes: {
+              "task_bundle.json": "taskhash1234567890",
+              "execution_input.json": "inputhash1234567890",
+              "agent_output_contract.json": "contracthash1234567890",
+            },
+            safety_boundary: {
+              readonly_env_required: true,
+              codetalk_validates_outputs: true,
+            },
+          }),
+        },
+      });
+    },
+  );
 
   await page.goto("/workbench", { waitUntil: "domcontentloaded" });
   await expect(page.getByText("ccr code", { exact: true }).first()).toBeVisible();
@@ -686,7 +730,7 @@ test("agent workbench previews task run artifact content", async ({ page }) => {
   await expect(page.getByText("chunks:2")).toBeVisible();
   await expect(page.getByText("warnings:preview truncated")).toBeVisible();
   await expect(page.getByText("fast-context: fallback to agent_cli")).toBeVisible();
-  await expect(page.getByText("Audit artifacts: 5")).toBeVisible();
+  await expect(page.getByText("Audit artifacts: 6")).toBeVisible();
 
   await page.getByRole("button", { name: "task_bundle:task_bundle.json" }).click();
 
@@ -724,4 +768,16 @@ test("agent workbench previews task run artifact content", async ({ page }) => {
     .click();
   await expect(page.getByText("\"output_id\":\"black_box_cases\"", { exact: false })).toBeVisible();
   await expect(page.getByText("\"module\":\"nvmf_tcp_tls\"", { exact: false })).toBeVisible();
+
+  await page
+    .getByRole("button", {
+      name: "agent_replay_plan:agent_runs/discover/agent_replay_plan.json",
+    })
+    .click();
+  await expect(page.getByText("Replay status: ready")).toBeVisible();
+  await expect(page.getByText("provider:claude-code")).toBeVisible();
+  await expect(page.getByText("prompt:execution_input.json:stdin")).toBeVisible();
+  await expect(page.getByText("readonly:true")).toBeVisible();
+  await expect(page.getByText("hashes:3")).toBeVisible();
+  await expect(page.getByText("task_bundle sha:taskhash1234")).toBeVisible();
 });

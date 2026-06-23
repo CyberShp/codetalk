@@ -629,6 +629,22 @@ type WorkflowOutputMaterializationSummary = {
   };
 };
 
+type ReplayPlanSummary = {
+  replayStatus: string;
+  provider: string;
+  turnId: string;
+  promptSource: string;
+  promptTransport: string;
+  cwd: string;
+  timeoutSec: number;
+  readonlyRequired: boolean;
+  validatesOutputs: boolean;
+  hashCount: number;
+  taskBundleSha: string;
+  executionInputSha: string;
+  contractSha: string;
+};
+
 type AcceptanceProviderIssue = {
   provider: string;
   status: string;
@@ -779,6 +795,56 @@ function workflowOutputMaterializationSummary(
           schemaErrorCount: schemaErrors.length,
         }
       : undefined,
+  };
+}
+
+function replayPlanSummary(
+  artifact: WorkbenchTaskArtifactContent,
+): ReplayPlanSummary | null {
+  if (!artifact.is_text || !artifact.content.trim()) return null;
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(artifact.content);
+  } catch {
+    return null;
+  }
+  if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) return null;
+  const payload = parsed as Record<string, unknown>;
+  if (
+    artifact.kind !== "agent_replay_plan" &&
+    artifact.kind !== "agent_turn_replay_plan" &&
+    !("replay_status" in payload)
+  ) {
+    return null;
+  }
+  const safety =
+    payload.safety_boundary &&
+    typeof payload.safety_boundary === "object" &&
+    !Array.isArray(payload.safety_boundary)
+      ? (payload.safety_boundary as Record<string, unknown>)
+      : {};
+  const hashes =
+    payload.artifact_hashes &&
+    typeof payload.artifact_hashes === "object" &&
+    !Array.isArray(payload.artifact_hashes)
+      ? (payload.artifact_hashes as Record<string, unknown>)
+      : {};
+  return {
+    replayStatus: String(payload.replay_status ?? "unknown"),
+    provider: String(payload.provider ?? ""),
+    turnId: String(payload.turn_id ?? ""),
+    promptSource: String(payload.prompt_source ?? ""),
+    promptTransport: String(payload.prompt_transport ?? ""),
+    cwd: String(payload.cwd ?? ""),
+    timeoutSec: Number(payload.timeout_sec ?? 0) || 0,
+    readonlyRequired: Boolean(safety.readonly_env_required ?? false),
+    validatesOutputs: Boolean(safety.codetalk_validates_outputs ?? false),
+    hashCount: Object.keys(hashes).length,
+    taskBundleSha: String(hashes["task_bundle.json"] ?? hashes.task_bundle_sha256 ?? ""),
+    executionInputSha: String(hashes["execution_input.json"] ?? hashes.stdin_json_sha256 ?? ""),
+    contractSha: String(
+      hashes["agent_output_contract.json"] ?? hashes.agent_output_contract_sha256 ?? "",
+    ),
   };
 }
 
@@ -3415,6 +3481,49 @@ export default function AgentWorkbenchPage() {
                               {summary.workflowOutputsSha && (
                                 <div className="mt-1 font-data text-[10px]">
                                   workflow_outputs sha:{summary.workflowOutputsSha.slice(0, 12)}
+                                </div>
+                              )}
+                            </div>
+                          );
+                        })()}
+                        {(() => {
+                          const summary = replayPlanSummary(artifactContent);
+                          if (!summary) return null;
+                          return (
+                            <div className="mt-2 rounded bg-surface-container px-2 py-1.5 text-[11px] text-on-surface-variant">
+                              <div className="flex flex-wrap gap-2">
+                                <span>Replay status: {summary.replayStatus}</span>
+                                {summary.provider && <span>provider:{summary.provider}</span>}
+                                {summary.turnId && <span>turn:{summary.turnId}</span>}
+                                {summary.promptSource && (
+                                  <span>prompt:{summary.promptSource}</span>
+                                )}
+                                {summary.promptTransport && (
+                                  <span>transport:{summary.promptTransport}</span>
+                                )}
+                                {summary.timeoutSec > 0 && (
+                                  <span>timeout:{summary.timeoutSec}s</span>
+                                )}
+                                <span>readonly:{String(summary.readonlyRequired)}</span>
+                                <span>validates:{String(summary.validatesOutputs)}</span>
+                                <span>hashes:{summary.hashCount}</span>
+                              </div>
+                              <div className="mt-1 flex flex-wrap gap-2 font-data text-[10px]">
+                                {summary.taskBundleSha && (
+                                  <span>task_bundle sha:{summary.taskBundleSha.slice(0, 12)}</span>
+                                )}
+                                {summary.executionInputSha && (
+                                  <span>
+                                    execution_input sha:{summary.executionInputSha.slice(0, 12)}
+                                  </span>
+                                )}
+                                {summary.contractSha && (
+                                  <span>contract sha:{summary.contractSha.slice(0, 12)}</span>
+                                )}
+                              </div>
+                              {summary.cwd && (
+                                <div className="mt-1 break-words font-data text-[10px]">
+                                  cwd:{summary.cwd}
                                 </div>
                               )}
                             </div>
