@@ -359,6 +359,8 @@ export interface WorkbenchDeploymentProbeResult {
     task_failed_count?: number;
   };
   providers: ExternalAgentStartupProbeResult[];
+  evidence_ids?: string[];
+  evidence_count?: number;
   artifact: {
     path: string;
     latest_path: string;

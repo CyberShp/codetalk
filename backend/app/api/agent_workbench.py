@@ -469,6 +469,9 @@ async def run_workbench_deployment_probe(payload: DeploymentProbeRequest) -> dic
             "latest_path": str(artifact_dir / "deployment_probe_latest.json"),
         },
     }
+    evidence_ids = _materialize_deployment_probe_evidence(response)
+    response["evidence_ids"] = evidence_ids
+    response["evidence_count"] = len(evidence_ids)
     _write_json(artifact_path, response)
     _write_json(artifact_dir / "deployment_probe_latest.json", response)
     response["artifact"]["sha256"] = hashlib.sha256(artifact_path.read_bytes()).hexdigest()
@@ -1562,6 +1565,109 @@ def _run_provider_task_probe_core(
     _write_json(artifact_path, result)
     write_task_artifact_manifest(task_dir, task_run_id=refreshed.task_run_id)
     return result
+
+
+def _materialize_deployment_probe_evidence(response: dict[str, Any]) -> list[str]:
+    store = _memory_store()
+    probe_id = str(response.get("probe_id") or "")
+    workspace_id = "codetalk-deployment"
+    repo_path = str(response.get("repo_path") or "")
+    run_id = store.record_analysis_run(
+        workspace_id=workspace_id,
+        repo_path=repo_path,
+        object_text=f"deployment probe {probe_id}",
+        workflow_id="workbench_deployment_probe",
+        status=str(response.get("status") or "unknown"),
+        run_id=f"deployment_probe:{probe_id}" if probe_id else None,
+    )
+    artifact = response.get("artifact") if isinstance(response.get("artifact"), dict) else {}
+    summary = response.get("summary") if isinstance(response.get("summary"), dict) else {}
+    evidence_ids = [
+        store.upsert_evidence_item(
+            run_id=run_id,
+            workspace_id=workspace_id,
+            kind="deployment_probe",
+            subject_key=probe_id or "latest",
+            status="accepted" if response.get("status") in {"healthy", "degraded"} else "rejected",
+            source="deployment_probe",
+            path=str(artifact.get("path") or ""),
+            reason=(
+                f"deployment probe {response.get('status')}; "
+                f"healthy {summary.get('healthy_count', 0)}/{summary.get('provider_count', 0)}; "
+                f"task ready {summary.get('task_ready_count', 0)}/{summary.get('provider_count', 0)}"
+            ),
+            confidence=1.0,
+            text=json.dumps(
+                {
+                    "probe_id": probe_id,
+                    "status": response.get("status"),
+                    "summary": summary,
+                    "providers": [
+                        str(item.get("provider") or item.get("tool") or "")
+                        for item in response.get("providers") or []
+                        if isinstance(item, dict)
+                    ],
+                },
+                ensure_ascii=False,
+                sort_keys=True,
+            ),
+            provenance={
+                "probe_id": probe_id,
+                "artifact_path": str(artifact.get("path") or ""),
+                "latest_artifact_path": str(artifact.get("latest_path") or ""),
+                "summary": summary,
+            },
+        )
+    ]
+    for provider in response.get("providers") or []:
+        if not isinstance(provider, dict) or not isinstance(provider.get("task_probe"), dict):
+            continue
+        task_probe = provider["task_probe"]
+        provider_id = str(provider.get("provider") or provider.get("tool") or "")
+        task_summary = (
+            task_probe.get("summary")
+            if isinstance(task_probe.get("summary"), dict)
+            else {}
+        )
+        task_artifact = (
+            task_probe.get("artifact")
+            if isinstance(task_probe.get("artifact"), dict)
+            else {}
+        )
+        evidence_ids.append(store.upsert_evidence_item(
+            run_id=run_id,
+            workspace_id=workspace_id,
+            kind="provider_task_probe",
+            subject_key=f"{provider_id}:agent_task_probe",
+            status="accepted" if task_probe.get("status") == "ready" else "rejected",
+            source="deployment_probe",
+            path=str(task_artifact.get("path") or ""),
+            symbol=provider_id,
+            reason=(
+                f"provider_task_probe {provider_id} {task_probe.get('status')}; "
+                f"contract {task_summary.get('task_contract_status', 'unknown')}"
+            ),
+            confidence=1.0 if task_probe.get("status") == "ready" else 0.2,
+            text=json.dumps(
+                {
+                    "provider_task_probe": provider_id,
+                    "status": task_probe.get("status"),
+                    "summary": task_summary,
+                    "task_run_id": task_probe.get("task_run_id"),
+                },
+                ensure_ascii=False,
+                sort_keys=True,
+            ),
+            provenance={
+                "provider": provider_id,
+                "probe_id": probe_id,
+                "task_probe_status": task_probe.get("status"),
+                "task_run_id": task_probe.get("task_run_id"),
+                "artifact_path": str(task_artifact.get("path") or ""),
+                "summary": task_summary,
+            },
+        ))
+    return evidence_ids
 
 
 def _ensure_smoke_agent_script() -> Path:

@@ -1932,6 +1932,11 @@ export default function AgentWorkbenchPage() {
                   {deploymentProbeResult.summary.provider_count}
                 </span>
               )}
+              {typeof deploymentProbeResult.evidence_count === "number" && (
+                <span className="font-data">
+                  evidence:{deploymentProbeResult.evidence_count}
+                </span>
+              )}
               <span className="font-data">
                 probe:{deploymentProbeResult.probe_id}
               </span>

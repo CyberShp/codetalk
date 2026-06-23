@@ -509,8 +509,27 @@ async def test_workbench_deployment_probe_can_run_task_contract_probe(
     assert provider["task_probe"]["status"] == "ready"
     assert provider["task_probe"]["summary"]["task_contract_status"] == "ok"
     assert Path(provider["task_probe"]["artifact"]["path"]).exists()
+    assert body["evidence_count"] == 2
+    assert len(body["evidence_ids"]) == 2
     latest = json.loads(Path(body["artifact"]["latest_path"]).read_text(encoding="utf-8"))
     assert latest["providers"][0]["task_probe"]["task_run_id"] == provider["task_probe"]["task_run_id"]
+    assert latest["evidence_ids"] == body["evidence_ids"]
+
+    memory = await workbench_client.get(
+        "/api/workbench/memory/search",
+        params={
+            "q": "provider_task_probe deployment-agent",
+            "workspace_id": "codetalk-deployment",
+        },
+    )
+    assert memory.status_code == 200
+    items = memory.json()["items"]
+    assert any(item["kind"] == "provider_task_probe" for item in items)
+    provider_evidence = next(item for item in items if item["kind"] == "provider_task_probe")
+    assert provider_evidence["status"] == "accepted"
+    assert provider_evidence["source"] == "deployment_probe"
+    assert provider_evidence["provenance"]["provider"] == "deployment-agent"
+    assert provider_evidence["provenance"]["task_probe_status"] == "ready"
 
 
 async def test_workbench_system_audit_uses_latest_deployment_task_probe(
