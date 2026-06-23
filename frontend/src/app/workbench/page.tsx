@@ -930,6 +930,13 @@ export default function AgentWorkbenchPage() {
       return {};
     }
   }, [inputsJson]);
+  const latestDeploymentTaskProbeAudit = useMemo(
+    () =>
+      systemAudit?.checks.find(
+        (item) => String(item.id ?? "") === "latest_deployment_task_probe",
+      ) ?? null,
+    [systemAudit],
+  );
 
   const loadWorkflows = useCallback(async () => {
     setLoading(true);
@@ -1690,6 +1697,34 @@ export default function AgentWorkbenchPage() {
                   {String(item.reason ?? item.description ?? "missing")}
                 </div>
               ))}
+            </div>
+          )}
+          {latestDeploymentTaskProbeAudit && (
+            <div className="mt-1 flex flex-wrap gap-2 font-data text-[10px]">
+              <span
+                className={
+                  latestDeploymentTaskProbeAudit.status === "ok"
+                    ? "text-green-500"
+                    : "text-warning"
+                }
+              >
+                task-contract:{latestDeploymentTaskProbeAudit.status}
+              </span>
+              <span>
+                ready:
+                {String(latestDeploymentTaskProbeAudit.details?.task_ready_count ?? 0)}/
+                {String(latestDeploymentTaskProbeAudit.details?.provider_count ?? 0)}
+              </span>
+              {latestDeploymentTaskProbeAudit.details?.reason ? (
+                <span className="break-words">
+                  reason:{String(latestDeploymentTaskProbeAudit.details.reason)}
+                </span>
+              ) : null}
+              {latestDeploymentTaskProbeAudit.details?.artifact_path ? (
+                <span className="break-words">
+                  artifact:{String(latestDeploymentTaskProbeAudit.details.artifact_path)}
+                </span>
+              ) : null}
             </div>
           )}
           {systemAudit.missing_recommended.length > 0 && (

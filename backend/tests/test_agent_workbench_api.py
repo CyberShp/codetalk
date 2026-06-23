@@ -513,6 +513,80 @@ async def test_workbench_deployment_probe_can_run_task_contract_probe(
     assert latest["providers"][0]["task_probe"]["task_run_id"] == provider["task_probe"]["task_run_id"]
 
 
+async def test_workbench_system_audit_uses_latest_deployment_task_probe(
+    workbench_client,
+    tmp_path,
+    monkeypatch,
+):
+    script = tmp_path / "audit_probe_agent.py"
+    script.write_text(
+        "\n".join([
+            "import json",
+            "import os",
+            "import pathlib",
+            "import sys",
+            "",
+            "payload = json.loads(sys.stdin.read() or '{}')",
+            "artifact_dir = pathlib.Path(os.environ['CODETALK_AGENT_ARTIFACT_DIR'])",
+            "(artifact_dir / 'agent_task_probe.json').write_text(json.dumps({",
+            "    'status': 'ok',",
+            "    'provider': payload.get('provider'),",
+            "}), encoding='utf-8')",
+            "print(json.dumps({'status': 'ok'}))",
+            "",
+        ]),
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(
+        settings,
+        "external_agent_custom_providers",
+        [
+            {
+                "id": "audit-agent",
+                "command": f'"{sys.executable}" "{script}"',
+                "prompt_transport": "stdin",
+            }
+        ],
+    )
+
+    async def fake_probe(provider, repo_path=None):
+        return {
+            "provider": provider,
+            "healthy": True,
+            "status": "ok",
+            "message": "startup_probe_ok",
+            "health": {"status": "available"},
+        }
+
+    monkeypatch.setattr(
+        "app.api.agent_workbench.probe_external_agent_startup",
+        fake_probe,
+        raising=False,
+    )
+
+    probe = await workbench_client.post(
+        "/api/workbench/deployment-probe",
+        json={
+            "repo_path": str(tmp_path),
+            "providers": ["audit-agent"],
+            "task_contract_probe": True,
+            "timeout_sec": 15,
+        },
+    )
+    assert probe.status_code == 200
+
+    audit = await workbench_client.get("/api/workbench/system-audit")
+
+    assert audit.status_code == 200
+    checks = {item["id"]: item for item in audit.json()["checks"]}
+    latest = checks["latest_deployment_task_probe"]
+    assert latest["status"] == "ok"
+    assert latest["details"]["probe_id"] == probe.json()["probe_id"]
+    assert latest["details"]["task_ready_count"] == 1
+    assert latest["details"]["task_failed_count"] == 0
+    assert latest["details"]["artifact_path"] == probe.json()["artifact"]["latest_path"]
+
+
 async def test_workbench_task_smoke_e2e_runs_prepare_execute_acceptance(
     workbench_client,
     tmp_path,

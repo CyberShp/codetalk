@@ -1286,6 +1286,7 @@ def _build_workbench_system_audit() -> dict[str, Any]:
             details={"endpoint": "POST /api/workbench/task-runs/{task_run_id}/acceptance-audit"},
         ),
         _agent_cli_launch_readiness_check(provider_matrix),
+        _latest_deployment_task_probe_check(),
         _system_audit_check(
             check_id="external_agent_sandbox",
             ok=False,
@@ -1829,6 +1830,64 @@ def _agent_cli_launch_recommended_actions(failed: list[dict[str, Any]]) -> list[
     if not actions:
         actions.append("Configure at least one Agent CLI provider and run its startup probe.")
     return actions
+
+
+def _latest_deployment_task_probe_check() -> dict[str, Any]:
+    latest_path = _deployment_probes_dir() / "deployment_probe_latest.json"
+    latest = _read_json(latest_path)
+    if not isinstance(latest, dict):
+        return _system_audit_check(
+            check_id="latest_deployment_task_probe",
+            ok=False,
+            severity="recommended",
+            description="Latest deployment probe includes task contract evidence",
+            details={
+                "artifact_path": str(latest_path),
+                "reason": "deployment_probe_latest.json has not been generated",
+                "recommended_action": "Run Workbench Provider Matrix -> Task probe all",
+            },
+        )
+
+    summary = latest.get("summary") if isinstance(latest.get("summary"), dict) else {}
+    task_contract_probe = bool(summary.get("task_contract_probe"))
+    task_ready_count = int(summary.get("task_ready_count") or 0)
+    task_failed_count = int(summary.get("task_failed_count") or 0)
+    provider_count = int(summary.get("provider_count") or 0)
+    providers = latest.get("providers") if isinstance(latest.get("providers"), list) else []
+    failed_providers = [
+        str(item.get("provider") or item.get("tool") or "")
+        for item in providers
+        if isinstance(item, dict)
+        and isinstance(item.get("task_probe"), dict)
+        and item["task_probe"].get("status") != "ready"
+    ]
+    ok = task_contract_probe and provider_count > 0 and task_failed_count == 0
+    reason = ""
+    if not task_contract_probe:
+        reason = "latest deployment probe did not run task_contract_probe"
+    elif task_failed_count:
+        reason = "one or more providers failed the task artifact contract"
+    elif provider_count <= 0:
+        reason = "latest deployment probe did not include providers"
+
+    return _system_audit_check(
+        check_id="latest_deployment_task_probe",
+        ok=ok,
+        severity="recommended",
+        description="Latest deployment probe includes task contract evidence",
+        details={
+            "artifact_path": str(latest_path),
+            "probe_id": str(latest.get("probe_id") or ""),
+            "status": str(latest.get("status") or ""),
+            "task_contract_probe": task_contract_probe,
+            "provider_count": provider_count,
+            "task_ready_count": task_ready_count,
+            "task_failed_count": task_failed_count,
+            "failed_providers": failed_providers,
+            "reason": reason,
+            "recommended_action": "Run Workbench Provider Matrix -> Task probe all",
+        },
+    )
 
 
 def _has_missing_agent_cli_launch_readiness(checks: list[dict[str, Any]]) -> bool:
