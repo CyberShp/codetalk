@@ -767,6 +767,10 @@ def test_prepare_workbench_task_run_embeds_agent_provider_snapshot(tmp_path, mon
             "mcp_profiles": ["codehub-readonly"],
             "supports_artifact_export": True,
             "supports_json_output": True,
+            "env_hints": {
+                "CORP_AGENT_PROFILE": "innernet",
+                "CORP_AGENT_TOKEN": "token=innernet-secret",
+            },
         }
     ])
     workflow_store = WorkflowStore(tmp_path / "workflows.db")
@@ -797,13 +801,23 @@ def test_prepare_workbench_task_run_embeds_agent_provider_snapshot(tmp_path, mon
     assert known["status"] == "configured"
     assert known["command"] == ["corp-agent", "run", "--json"]
     assert known["fallback_commands"] == [["corp-agent", "--legacy"]]
+    assert known["env_hint_keys"] == ["CORP_AGENT_PROFILE", "CORP_AGENT_TOKEN"]
+    assert known["env_hints"]["CORP_AGENT_PROFILE"] == "innernet"
+    assert known["env_hints"]["CORP_AGENT_TOKEN"] == "token=<redacted>"
     assert known["capabilities"]["supports_mcp"] is True
+    assert known["capabilities"]["env_hint_keys"] == [
+        "CORP_AGENT_PROFILE",
+        "CORP_AGENT_TOKEN",
+    ]
     assert known["agent_owned"] is True
     assert known["codetalk_callable"] is False
     assert known["diagnostics"]["health_endpoint"] == "/api/tools/corp-agent/health"
     assert known["diagnostics"]["startup_probe_endpoint"] == "/api/tools/corp-agent/startup-probe"
     assert known["diagnostics"]["configured_command_text"] == "corp-agent run --json"
     assert known["diagnostics"]["fallback_command_texts"] == ["corp-agent --legacy"]
+    assert known["diagnostics"]["env_hint_keys"] == ["CORP_AGENT_PROFILE", "CORP_AGENT_TOKEN"]
+    assert known["diagnostics"]["env_hints"]["CORP_AGENT_TOKEN"] == "token=<redacted>"
+    assert "CORP_AGENT_TOKEN" in known["diagnostics"]["probe_recipe"]["environment_checks"]
     assert known["diagnostics"]["mcp_credentials_owner"] == "agent_cli"
     assert snapshot["steps"]["known"]["provider"] == "corp-agent"
     assert snapshot["providers"]["missing-agent"]["status"] == "unknown_provider"

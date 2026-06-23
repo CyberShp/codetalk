@@ -285,6 +285,7 @@ class AgentRunHarness:
             "CODETALK_REPO_PATH": cwd,
             "CODETALK_AGENT_ARTIFACT_DIR": str(self.artifact_dir),
         }
+        env_hints.update(_agent_provider_env_hints(str(run_payload.get("provider") or "")))
         launch_command, command_resolution = _launch_command_from_provider_health(
             command,
             provider_diagnostics,
@@ -323,7 +324,7 @@ class AgentRunHarness:
                 "timeout_sec": max(1, int(timeout_sec)),
                 "mcp_profile": run_payload.get("mcp_profile") or "",
                 "session_policy": session_policy,
-                "env_hints": env_hints,
+                "env_hints": _redact_replay_payload(env_hints),
                 "task_bundle_sha256": task_bundle_sha256,
                 "workflow_snapshot_sha256": workflow_snapshot_sha256,
                 "agent_output_contract_sha256": agent_output_contract_sha256,
@@ -1082,6 +1083,21 @@ def _agent_provider_health_snapshot(
             "status": "error",
             "reason": _redact(str(exc)),
         }
+
+
+def _agent_provider_env_hints(provider: str) -> dict[str, str]:
+    if not provider:
+        return {}
+    try:
+        from app.services.external_agent_discovery import external_agent_provider_env_hints
+
+        return {
+            str(key): str(value)
+            for key, value in external_agent_provider_env_hints(provider).items()
+            if str(key)
+        }
+    except Exception:
+        return {}
 
 
 def _redact_diagnostic_payload(payload: Any, redactor: Any) -> Any:

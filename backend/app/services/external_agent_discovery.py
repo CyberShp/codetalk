@@ -164,6 +164,7 @@ class ExternalAgentProviderSpec:
     command: str
     fallback_commands: list[str] = field(default_factory=list)
     readonly_args: list[str] = field(default_factory=list)
+    env_hints: dict[str, str] = field(default_factory=dict)
     prompt_transport: ProviderPromptTransport = "auto"
     display_name: str = ""
     command_hint_env: str = ""
@@ -180,6 +181,7 @@ def external_agent_provider_specs() -> dict[str, ExternalAgentProviderSpec]:
             command=str(getattr(settings, "claude_code_command", "") or ""),
             fallback_commands=_coerce_command_list(getattr(settings, "claude_code_fallback_commands", [])),
             readonly_args=_coerce_command_list(getattr(settings, "claude_code_readonly_args", [])),
+            env_hints={},
             prompt_transport="claude_print_arg",
             display_name="Claude Code",
             command_hint_env="CLAUDE_CODE_COMMAND",
@@ -192,6 +194,7 @@ def external_agent_provider_specs() -> dict[str, ExternalAgentProviderSpec]:
             command=str(getattr(settings, "opencode_command", "") or ""),
             fallback_commands=_coerce_command_list(getattr(settings, "opencode_fallback_commands", [])),
             readonly_args=_coerce_command_list(getattr(settings, "opencode_readonly_args", [])),
+            env_hints={},
             prompt_transport="opencode_run_arg",
             display_name="OpenCode",
             command_hint_env="OPENCODE_COMMAND",
@@ -248,6 +251,7 @@ def _custom_external_agent_provider_specs() -> list[ExternalAgentProviderSpec]:
             command=command,
             fallback_commands=_coerce_command_list(item.get("fallback_commands") or item.get("fallbackCommands")),
             readonly_args=_coerce_command_list(item.get("readonly_args") or item.get("readonlyArgs")),
+            env_hints=_coerce_env_hints(item.get("env_hints") or item.get("envHints") or item.get("env")),
             prompt_transport=transport,  # type: ignore[arg-type]
             display_name=str(item.get("display_name") or item.get("displayName") or provider_id).strip(),
             command_hint_env=str(item.get("command_hint_env") or item.get("commandHintEnv") or "").strip(),
@@ -271,7 +275,15 @@ def external_agent_provider_capabilities(provider: str | None) -> dict:
         "supports_artifact_export": bool(spec.supports_artifact_export),
         "supports_json_output": bool(spec.supports_json_output),
         "prompt_transport": spec.prompt_transport,
+        "env_hint_keys": sorted(spec.env_hints),
     }
+
+
+def external_agent_provider_env_hints(provider: str | None) -> dict[str, str]:
+    spec = external_agent_provider_spec(provider)
+    if spec is None:
+        return {}
+    return dict(spec.env_hints)
 
 
 def _parse_custom_provider_shorthand(text: str) -> list[dict]:
@@ -675,6 +687,7 @@ def _agent_process_env(provider: str, repo_path: str | Path) -> dict[str, str]:
     env = os.environ.copy()
     env["CODETALK_AGENT_READONLY"] = "1"
     env["CODETALK_REPO_PATH"] = str(Path(repo_path).resolve())
+    env.update(external_agent_provider_env_hints(provider))
     if provider == "claude-code":
         configured = str(getattr(settings, "claude_code_config_path", "") or "").strip()
         if configured:
@@ -1690,6 +1703,32 @@ def _coerce_string_list(value: object) -> list[str]:
         return [str(part).strip() for part in value if str(part).strip()]
     text = str(value).strip()
     return [text] if text else []
+
+
+def _coerce_env_hints(value: object) -> dict[str, str]:
+    payload = value
+    if isinstance(value, str):
+        text = value.strip()
+        if not text:
+            return {}
+        try:
+            payload = json.loads(text)
+        except json.JSONDecodeError:
+            payload = {}
+            for part in _split_command_list_string(text):
+                if "=" not in part:
+                    continue
+                key, item_value = part.split("=", 1)
+                payload[key.strip()] = item_value.strip()
+    if not isinstance(payload, dict):
+        return {}
+    result: dict[str, str] = {}
+    for key, item_value in payload.items():
+        name = str(key or "").strip()
+        if not name or not re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]*", name):
+            continue
+        result[name] = str(item_value)
+    return result
 
 
 def _coerce_entry_chain(value: object) -> list[str]:

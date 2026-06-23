@@ -90,6 +90,11 @@ def _agent_provider_diagnostics(name: str) -> dict[str, Any]:
         "fallback_command_texts": [
             redact_agent_diagnostic_text(command) for command in spec.fallback_commands
         ],
+        "env_hint_keys": sorted(spec.env_hints),
+        "env_hints": {
+            key: redact_agent_diagnostic_text(value)
+            for key, value in sorted(spec.env_hints.items())
+        },
         "prompt_transport": spec.prompt_transport,
         "startup_probe_endpoint": f"/api/tools/{name}/startup-probe",
         "manual_probe_command": (

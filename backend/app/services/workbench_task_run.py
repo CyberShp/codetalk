@@ -763,6 +763,11 @@ def build_agent_provider_snapshot(
                 if command
             ],
             "readonly_args": list(spec.readonly_args),
+            "env_hint_keys": sorted(spec.env_hints),
+            "env_hints": {
+                key: redact_agent_diagnostic_text(value)
+                for key, value in sorted(spec.env_hints.items())
+            },
             "command_hint_env": spec.command_hint_env,
             "prompt_transport": spec.prompt_transport,
             "capabilities": external_agent_provider_capabilities(provider),
@@ -1117,6 +1122,10 @@ def build_agent_cli_provider_diagnostics(provider: str, spec: Any) -> dict[str, 
     ]
     prompt_transport = str(getattr(spec, "prompt_transport", "") or "auto").strip() or "auto"
     command_hint_env = str(getattr(spec, "command_hint_env", "") or "").strip()
+    env_hints = {
+        str(key): redact_agent_diagnostic_text(str(value))
+        for key, value in sorted((getattr(spec, "env_hints", {}) or {}).items())
+    }
     manual_probe = (
         f"POST /api/tools/{provider}/startup-probe with repo_path, then verify the "
         f"same backend shell can launch: {command_text or provider}"
@@ -1142,6 +1151,8 @@ def build_agent_cli_provider_diagnostics(provider: str, spec: Any) -> dict[str, 
         "startup_probe_endpoint": f"/api/tools/{provider}/startup-probe",
         "configured_command_text": command_text,
         "fallback_command_texts": fallback_texts,
+        "env_hint_keys": sorted(env_hints),
+        "env_hints": env_hints,
         "prompt_transport": prompt_transport,
         "startup_probe_transport": prompt_transport,
         "manual_probe_command": manual_probe,
@@ -1150,6 +1161,7 @@ def build_agent_cli_provider_diagnostics(provider: str, spec: Any) -> dict[str, 
             command_text=command_text,
             fallback_texts=fallback_texts,
             command_hint_env=command_hint_env,
+            env_hint_keys=sorted(env_hints),
         ),
         "mcp_credentials_owner": "agent_cli",
         "codetalk_validation_role": (
@@ -1170,11 +1182,15 @@ def _agent_cli_probe_recipe(
     command_text: str,
     fallback_texts: list[str],
     command_hint_env: str,
+    env_hint_keys: list[str] | None = None,
 ) -> dict[str, Any]:
     env_name = command_hint_env or f"{provider.upper().replace('-', '_')}_COMMAND"
     environment_checks = ["PATH"]
     if provider == "claude-code":
         environment_checks.extend(["CCR_CONFIG_PATH", "CLAUDE_CODE_CONFIG_PATH"])
+    for key in env_hint_keys or []:
+        if key not in environment_checks:
+            environment_checks.append(key)
     return {
         "startup_probe_http": f"POST /api/tools/{provider}/startup-probe?repo_path=<repo_path>",
         "backend_command": command_text or provider,

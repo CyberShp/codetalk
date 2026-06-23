@@ -1,6 +1,7 @@
 import asyncio
 import json
 import logging
+import re
 import uuid
 from datetime import datetime, timezone
 from pathlib import Path
@@ -88,6 +89,7 @@ class AgentProviderSettingsCustomProvider(BaseModel):
     prompt_transport: str = "stdin"
     fallback_commands: list[str] = Field(default_factory=list)
     readonly_args: list[str] = Field(default_factory=list)
+    env_hints: dict[str, str] = Field(default_factory=dict)
     supports_mcp: bool = False
     mcp_profiles: list[str] = Field(default_factory=list)
     supports_artifact_export: bool = True
@@ -109,6 +111,17 @@ class AgentProviderSettingsCustomProvider(BaseModel):
         if text not in allowed:
             raise ValueError(f"unsupported prompt_transport: {text}")
         return text
+
+    @field_validator("env_hints")
+    @classmethod
+    def _valid_env_hints(cls, value: dict[str, str]) -> dict[str, str]:
+        result: dict[str, str] = {}
+        for key, item in (value or {}).items():
+            name = str(key or "").strip()
+            if not re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]*", name):
+                raise ValueError(f"unsupported env var name: {name}")
+            result[name] = str(item)
+        return result
 
 
 class AgentProviderSettings(BaseModel):

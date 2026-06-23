@@ -580,6 +580,58 @@ def test_agent_run_harness_executes_cli_with_task_bundle_and_audit_events(tmp_pa
     assert "agent_run_completed" in events
 
 
+def test_agent_run_harness_injects_custom_provider_env_without_persisting_secret(
+    tmp_path, monkeypatch
+):
+    from app.config import settings
+    from app.services.agent_run_harness import AgentRunHarness
+
+    artifact_dir = tmp_path / "agent-run-env"
+    output_file = artifact_dir / "agent_env.json"
+    script = (
+        "import json, os, pathlib, sys; "
+        "json.load(sys.stdin); "
+        "pathlib.Path(sys.argv[1]).write_text(json.dumps({"
+        "'profile': os.environ.get('CORP_AGENT_PROFILE'), "
+        "'token': os.environ.get('CORP_AGENT_TOKEN')"
+        "}), encoding='utf-8')"
+    )
+    monkeypatch.setattr(settings, "external_agent_custom_providers", [
+        {
+            "id": "corp-agent",
+            "command": "python",
+            "prompt_transport": "stdin",
+            "env_hints": {
+                "CORP_AGENT_PROFILE": "innernet",
+                "CORP_AGENT_TOKEN": "token=raw-secret-value",
+            },
+        }
+    ])
+    harness = AgentRunHarness(artifact_dir)
+    run = harness.create_run(
+        run_id="agent_run_env",
+        provider="corp-agent",
+        command=["python", "-c", script, str(output_file)],
+        cwd=str(tmp_path),
+        workflow_snapshot={"id": "wf"},
+        task_bundle={"task_id": "task-env"},
+    )
+
+    executed = harness.execute_run(run.run_id, timeout_sec=10)
+
+    assert executed.status == "completed"
+    seen = json.loads(output_file.read_text(encoding="utf-8"))
+    assert seen == {
+        "profile": "innernet",
+        "token": "token=raw-secret-value",
+    }
+    execution_input_text = (artifact_dir / "execution_input.json").read_text(encoding="utf-8")
+    assert "raw-secret-value" not in execution_input_text
+    execution_input = json.loads(execution_input_text)
+    assert execution_input["env_hints"]["CORP_AGENT_PROFILE"] == "innernet"
+    assert execution_input["env_hints"]["CORP_AGENT_TOKEN"] == "<redacted>"
+
+
 def test_agent_run_harness_uses_provider_prompt_transport_for_argv_last(
     tmp_path, monkeypatch
 ):

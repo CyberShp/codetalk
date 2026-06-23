@@ -731,6 +731,29 @@ async def test_external_agent_startup_probe_supports_runtime_custom_provider(
     assert body["message"] == "runtime custom probe at E:/repo"
 
 
+async def test_external_agent_process_env_includes_custom_provider_env_hints(tmp_path, monkeypatch):
+    from app.config import settings
+    from app.services.external_agent_discovery import _agent_process_env
+
+    monkeypatch.setattr(settings, "external_agent_custom_providers", [
+        {
+            "id": "corp-agent",
+            "command": "corp-agent run --json",
+            "env_hints": {
+                "CORP_AGENT_PROFILE": "innernet",
+                "CORP_AGENT_TOKEN": "token=raw-secret-value",
+            },
+        }
+    ])
+
+    env = _agent_process_env("corp-agent", tmp_path)
+
+    assert env["CODETALK_AGENT_READONLY"] == "1"
+    assert env["CODETALK_REPO_PATH"] == str(tmp_path.resolve())
+    assert env["CORP_AGENT_PROFILE"] == "innernet"
+    assert env["CORP_AGENT_TOKEN"] == "token=raw-secret-value"
+
+
 async def test_gitnexus_startup_probe_reports_managed_process_diagnostics(monkeypatch):
     from app.config import settings
 

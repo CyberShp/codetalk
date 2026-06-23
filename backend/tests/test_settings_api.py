@@ -185,6 +185,10 @@ async def test_agent_provider_settings_roundtrip_updates_runtime_provider_matrix
                 "id": "corp-agent",
                 "command": "corp-agent run --json",
                 "prompt_transport": "stdin",
+                "env_hints": {
+                    "CORP_AGENT_PROFILE": "innernet",
+                    "CORP_AGENT_TOKEN": "token=secret-value",
+                },
                 "supports_mcp": True,
                 "mcp_profiles": ["codehub-mcp"],
             }
@@ -199,6 +203,10 @@ async def test_agent_provider_settings_roundtrip_updates_runtime_provider_matrix
     assert body["claude_code_config_path"] == "C:/innernet/ccr/config-router.json"
     assert body["claude_code_fallback_commands"] == ["claude"]
     assert body["external_agent_custom_providers"][0]["id"] == "corp-agent"
+    assert body["external_agent_custom_providers"][0]["env_hints"] == {
+        "CORP_AGENT_PROFILE": "innernet",
+        "CORP_AGENT_TOKEN": "token=secret-value",
+    }
 
     loaded_resp = await client.get("/api/settings/agent-providers")
     assert loaded_resp.status_code == 200
@@ -217,7 +225,13 @@ async def test_agent_provider_settings_roundtrip_updates_runtime_provider_matrix
     assert claude_spec.command == "ccr code"
     assert claude_spec.mcp_profiles == ["codehub-readonly"]
     assert split_agent_command(corp_spec.command) == ["corp-agent", "run", "--json"]
+    assert corp_spec.env_hints["CORP_AGENT_PROFILE"] == "innernet"
+    assert corp_spec.env_hints["CORP_AGENT_TOKEN"] == "token=secret-value"
     assert external_agent_provider_capabilities("corp-agent")["supports_mcp"] is True
+    assert external_agent_provider_capabilities("corp-agent")["env_hint_keys"] == [
+        "CORP_AGENT_PROFILE",
+        "CORP_AGENT_TOKEN",
+    ]
 
 
 async def test_agent_provider_settings_rejects_invalid_custom_provider_json(client):
