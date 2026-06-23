@@ -258,6 +258,16 @@ def audit_workflow_definition(payload: dict[str, Any]) -> dict[str, Any]:
                     "this output during semantic library import."
                 ),
             })
+        if "evidence_memory" in output.raw and output.type != "json":
+            warnings.append({
+                "severity": "warning",
+                "code": "evidence_memory_on_non_json_output",
+                "path": f"outputs.{output.id}.evidence_memory",
+                "message": (
+                    "evidence_memory mapping is intended for json outputs; CodeTalk can only "
+                    "materialize structured evidence from locally validated JSON artifacts."
+                ),
+            })
 
     for workflow_input in workflow.inputs:
         if workflow_input.resolver == "agent_mcp" and not mcp_steps:
@@ -336,6 +346,8 @@ def _parse_output(item: Any) -> WorkflowOutput:
         raise WorkflowValidationError(f"unsafe output artifact path: {artifact_path}")
     if "semantic_import" in item:
         _validate_semantic_import_definition(item.get("semantic_import"))
+    if "evidence_memory" in item:
+        _validate_evidence_memory_definition(item.get("evidence_memory"))
     return WorkflowOutput(
         id=_required_str(item, "id"),
         type=output_type,
@@ -421,6 +433,38 @@ def _validate_semantic_import_definition(value: Any) -> None:
     defaults = value.get("defaults")
     if defaults is not None and not isinstance(defaults, dict):
         raise WorkflowValidationError("workflow output semantic_import defaults must be an object")
+
+
+def _validate_evidence_memory_definition(value: Any) -> None:
+    if isinstance(value, bool):
+        return
+    if not isinstance(value, dict):
+        raise WorkflowValidationError("workflow output evidence_memory must be a boolean or object")
+    if "enabled" in value and not isinstance(value.get("enabled"), bool):
+        raise WorkflowValidationError("workflow output evidence_memory enabled must be a boolean")
+    for field in (
+        "kind",
+        "subject_key_field",
+        "subject_field",
+        "id_field",
+        "path_field",
+        "symbol_field",
+        "reason_field",
+        "status",
+    ):
+        item = value.get(field)
+        if item is not None and not isinstance(item, str):
+            raise WorkflowValidationError(
+                f"workflow output evidence_memory {field} must be a string"
+            )
+    text_fields = value.get("text_fields")
+    if text_fields is not None:
+        if not isinstance(text_fields, list) or not all(
+            isinstance(item, str) for item in text_fields
+        ):
+            raise WorkflowValidationError(
+                "workflow output evidence_memory text_fields must be a list of strings"
+            )
 
 
 def _validate_schema_type(schema: dict[str, Any], *, field_name: str = "$") -> None:

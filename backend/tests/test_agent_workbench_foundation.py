@@ -287,6 +287,84 @@ def test_workflow_dsl_validates_and_audits_semantic_output_import():
     )
 
 
+def test_workflow_dsl_validates_and_audits_evidence_memory_mapping():
+    import pytest
+
+    from app.services.workflow_dsl import (
+        WorkflowValidationError,
+        audit_workflow_definition,
+        validate_workflow_definition,
+    )
+
+    workflow = validate_workflow_definition({
+        "id": "evidence_memory_output_workflow",
+        "name": "Evidence memory output workflow",
+        "version": 1,
+        "steps": [{"id": "hunt", "type": "agent_task"}],
+        "outputs": [
+            {
+                "id": "risk_findings",
+                "type": "json",
+                "from": "hunt",
+                "artifact": "risk_findings.json",
+                "evidence_memory": {
+                    "enabled": True,
+                    "kind": "resource_risk_finding",
+                    "subject_key_field": "finding_id",
+                    "path_field": "file_path",
+                    "symbol_field": "function",
+                    "status": "candidate_output",
+                    "text_fields": ["summary", "function"],
+                },
+            }
+        ],
+    })
+
+    assert workflow.outputs[0].raw["evidence_memory"]["path_field"] == "file_path"
+
+    bad_text_fields = dict(workflow.raw)
+    bad_text_fields["outputs"] = [
+        {
+            "id": "risk_findings",
+            "type": "json",
+            "from": "hunt",
+            "evidence_memory": {"text_fields": ["summary", 3]},
+        }
+    ]
+    with pytest.raises(WorkflowValidationError, match="evidence_memory text_fields"):
+        validate_workflow_definition(bad_text_fields)
+
+    bad_enabled = dict(workflow.raw)
+    bad_enabled["outputs"] = [
+        {
+            "id": "risk_findings",
+            "type": "json",
+            "from": "hunt",
+            "evidence_memory": {"enabled": "yes"},
+        }
+    ]
+    with pytest.raises(WorkflowValidationError, match="evidence_memory enabled"):
+        validate_workflow_definition(bad_enabled)
+
+    report_workflow = dict(workflow.raw)
+    report_workflow["outputs"] = [
+        {
+            "id": "report",
+            "type": "markdown",
+            "from": "hunt",
+            "artifact": "report.md",
+            "evidence_memory": True,
+        }
+    ]
+    audit = audit_workflow_definition(report_workflow)
+
+    assert audit["status"] == "warning"
+    assert any(
+        item["code"] == "evidence_memory_on_non_json_output"
+        for item in audit["warnings"]
+    )
+
+
 def test_workflow_store_persists_and_freezes_custom_workflow(tmp_path):
     from app.services.workflow_dsl import WorkflowStore
 
