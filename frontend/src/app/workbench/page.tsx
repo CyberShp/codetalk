@@ -580,6 +580,7 @@ export default function AgentWorkbenchPage() {
   const [semanticFeature, setSemanticFeature] = useState("NVMe TCP TLS");
   const [semanticModule, setSemanticModule] = useState("nvmf_tcp");
   const [semanticLines, setSemanticLines] = useState(DEFAULT_SEMANTIC_LINES);
+  const [semanticFile, setSemanticFile] = useState<File | null>(null);
   const [semanticQuery, setSemanticQuery] = useState("tls cleanup");
   const [semanticResults, setSemanticResults] = useState<SemanticCase[]>([]);
   const [memoryQuery, setMemoryQuery] = useState("nvme tcp tls");
@@ -951,6 +952,22 @@ export default function AgentWorkbenchPage() {
       });
       setSemanticResults(result.items);
       setMessage(`Semantic results: ${result.items.length}`);
+    });
+
+  const importSemanticCaseFile = () =>
+    runAction("import-semantic-file", async () => {
+      if (!semanticFile) {
+        throw new Error("Select a semantic case file first");
+      }
+      const result = await api.workbench.semanticCases.importFile(semanticFile, {
+        feature: semanticFeature,
+        module: semanticModule,
+        test_level: "black_box",
+      });
+      setMessage(
+        `Semantic file imported: ${result.imported_count}, rejected: ${result.rejected_count}`,
+      );
+      setSemanticFile(null);
     });
 
   const searchMemory = () =>
@@ -2186,6 +2203,34 @@ export default function AgentWorkbenchPage() {
                 )}
                 Build semantic JSON
               </button>
+            </div>
+            <div className="rounded-lg border border-outline-variant/30 bg-surface p-3">
+              <div className="flex flex-col gap-2 sm:flex-row sm:items-center">
+                <input
+                  type="file"
+                  accept=".json,.jsonl,.ndjson,.csv,.txt,.md"
+                  aria-label="Semantic case file"
+                  onChange={(event) => setSemanticFile(event.target.files?.[0] ?? null)}
+                  className="min-w-0 flex-1 rounded-lg border border-outline-variant/30 bg-surface-container px-3 py-2 text-sm text-on-surface file:mr-3 file:rounded file:border-0 file:bg-surface-container-high file:px-2 file:py-1 file:text-xs file:text-on-surface"
+                />
+                <button
+                  onClick={importSemanticCaseFile}
+                  disabled={busyAction === "import-semantic-file" || !semanticFile}
+                  className="inline-flex items-center justify-center gap-2 rounded-lg bg-surface-container-high px-3 py-2 text-sm text-on-surface transition-colors hover:bg-surface disabled:opacity-50"
+                >
+                  {busyAction === "import-semantic-file" ? (
+                    <Loader2 size={14} className="animate-spin" />
+                  ) : (
+                    <Save size={14} />
+                  )}
+                  Import file
+                </button>
+              </div>
+              {semanticFile && (
+                <p className="mt-2 break-all font-data text-[11px] text-on-surface-variant">
+                  {semanticFile.name}
+                </p>
+              )}
             </div>
             <textarea
               value={semanticJson}

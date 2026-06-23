@@ -276,6 +276,27 @@ async def import_semantic_cases(payload: Any = Body(...)) -> dict[str, Any]:
         raise HTTPException(status_code=422, detail=str(exc))
 
 
+@router.post("/semantic-cases/import-file", status_code=201)
+async def import_semantic_case_file(
+    file: UploadFile = File(...),
+    defaults_json: str = Form("{}"),
+) -> dict[str, Any]:
+    try:
+        defaults = json.loads(defaults_json or "{}")
+    except json.JSONDecodeError as exc:
+        raise HTTPException(status_code=422, detail=f"invalid defaults_json: {exc.msg}")
+    if not isinstance(defaults, dict):
+        raise HTTPException(status_code=422, detail="defaults_json must be an object")
+    try:
+        return _semantic_store().import_case_file(
+            await file.read(),
+            filename=Path(file.filename or "semantic_cases").name,
+            defaults=defaults,
+        )
+    except (SemanticCaseValidationError, UnicodeDecodeError, json.JSONDecodeError) as exc:
+        raise HTTPException(status_code=422, detail=str(exc))
+
+
 @router.get("/semantic-cases/search")
 async def search_semantic_cases(
     q: str = Query(..., min_length=1),

@@ -124,3 +124,55 @@ def test_test_semantic_library_bulk_import_accepts_top_level_list(tmp_path):
 
     assert result["imported_count"] == 1
     assert result["rejected_count"] == 0
+
+
+def test_test_semantic_library_imports_csv_case_file(tmp_path):
+    from app.services.test_semantic_library import TestSemanticLibraryStore
+
+    store = TestSemanticLibraryStore(tmp_path / "semantic.db")
+    result = store.import_case_file(
+        b"case_id,scenario,actions,expected,terms\n"
+        b"TC_TLS_FILE,TLS file import,connect;fail,released;logged,tls;cleanup\n",
+        filename="nvmf_tls_cases.csv",
+        defaults={
+            "feature": "NVMe TCP TLS",
+            "module": "nvmf_tcp/transport/tls",
+            "test_level": "black_box",
+            "tags": ["imported_file"],
+        },
+    )
+
+    assert result["source_ref"] == "nvmf_tls_cases.csv"
+    assert result["imported_count"] == 1
+    assert result["imported"][0]["case_id"] == "TC_TLS_FILE"
+    results = store.retrieve(
+        query="cleanup",
+        module="nvmf_tcp/transport/tls",
+        test_level="black_box",
+    )
+    assert results[0].case_id == "TC_TLS_FILE"
+    assert results[0].actions == ["connect", "fail"]
+    assert results[0].expected == ["released", "logged"]
+    assert results[0].terms == ["tls", "cleanup"]
+
+
+def test_test_semantic_library_imports_text_case_file_with_defaults(tmp_path):
+    from app.services.test_semantic_library import TestSemanticLibraryStore
+
+    store = TestSemanticLibraryStore(tmp_path / "semantic.db")
+    result = store.import_case_file(
+        "TLS disabled by config -> non-TLS mode is reported\n"
+        "invalid certificate -> connection is rejected".encode("utf-8"),
+        filename="tls_cases.txt",
+        defaults={
+            "feature": "NVMe TCP TLS",
+            "module": "nvmf_tcp",
+            "test_level": "black_box",
+        },
+    )
+
+    assert result["imported_count"] == 2
+    assert [item["case_id"] for item in result["imported"]] == [
+        "nvmf_tcp_tls_disabled_by_config_1",
+        "nvmf_tcp_invalid_certificate_2",
+    ]

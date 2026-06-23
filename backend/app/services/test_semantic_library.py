@@ -2,7 +2,10 @@
 
 from __future__ import annotations
 
+import csv
+import io
 import json
+import re
 import sqlite3
 import uuid
 from dataclasses import dataclass
@@ -189,6 +192,61 @@ class TestSemanticLibraryStore:
             "rejected": rejected,
         }
 
+    def import_case_file(
+        self,
+        data: bytes,
+        *,
+        filename: str,
+        defaults: dict[str, Any] | None = None,
+    ) -> dict[str, Any]:
+        source_ref = Path(filename or "semantic_cases").name
+        defaults_payload = dict(defaults or {})
+        text = data.decode("utf-8-sig")
+        suffix = Path(source_ref).suffix.lower()
+        if suffix == ".json":
+            payload = json.loads(text)
+            if isinstance(payload, dict):
+                payload = dict(payload)
+                payload.setdefault("source_ref", source_ref)
+                if defaults_payload:
+                    merged_defaults = dict(defaults_payload)
+                    merged_defaults.update(payload.get("defaults") or {})
+                    payload["defaults"] = merged_defaults
+            else:
+                payload = {
+                    "source_ref": source_ref,
+                    "defaults": defaults_payload,
+                    "cases": payload,
+                }
+        elif suffix in {".jsonl", ".ndjson"}:
+            payload = {
+                "source_ref": source_ref,
+                "defaults": defaults_payload,
+                "cases": [
+                    json.loads(line)
+                    for line in text.splitlines()
+                    if line.strip()
+                ],
+            }
+        elif suffix == ".csv":
+            payload = {
+                "source_ref": source_ref,
+                "defaults": defaults_payload,
+                "cases": _cases_from_csv(text),
+            }
+        else:
+            payload = {
+                "source_ref": source_ref,
+                "defaults": defaults_payload,
+                "cases": _cases_from_text_lines(
+                    text,
+                    module=str(defaults_payload.get("module") or "module"),
+                ),
+            }
+        result = self.import_cases(payload)
+        result["source_ref"] = source_ref
+        return result
+
     def retrieve(
         self,
         *,
@@ -276,6 +334,60 @@ def _merge_case_defaults(item: dict[str, Any], defaults: dict[str, Any]) -> dict
                 *_string_list(item.get(list_key)),
             ])
     return merged
+
+
+def _cases_from_csv(text: str) -> list[dict[str, Any]]:
+    reader = csv.DictReader(io.StringIO(text))
+    cases: list[dict[str, Any]] = []
+    for row in reader:
+        case: dict[str, Any] = {}
+        for key, value in row.items():
+            normalized_key = str(key or "").strip()
+            if not normalized_key:
+                continue
+            normalized_value = str(value or "").strip()
+            if normalized_key in {"preconditions", "actions", "expected", "terms", "tags"}:
+                case[normalized_key] = _split_cell_list(normalized_value)
+            else:
+                case[normalized_key] = normalized_value
+        cases.append(case)
+    return cases
+
+
+def _cases_from_text_lines(text: str, *, module: str) -> list[dict[str, Any]]:
+    cases: list[dict[str, Any]] = []
+    safe_module = _case_id_segment(module or "module")
+    for index, raw_line in enumerate(text.splitlines(), start=1):
+        line = raw_line.strip()
+        if not line:
+            continue
+        scenario, expected = _split_scenario_expected(line)
+        scenario_text = scenario or line
+        cases.append({
+            "case_id": f"{safe_module}_{_case_id_segment(scenario_text)}_{index}",
+            "scenario": scenario_text,
+            "actions": [scenario_text],
+            "expected": [expected or "Expected observable behavior matches the existing feature case."],
+            "tags": ["imported_semantic_case"],
+        })
+    return cases
+
+
+def _split_cell_list(value: str) -> list[str]:
+    return [part.strip() for part in re.split(r"[;|]", value) if part.strip()]
+
+
+def _split_scenario_expected(line: str) -> tuple[str, str]:
+    parts = re.split(r"\s*(?:->|=>|:)\s*", line, maxsplit=1)
+    if len(parts) == 2:
+        return parts[0].strip(), parts[1].strip()
+    return line.strip(), ""
+
+
+def _case_id_segment(value: str) -> str:
+    segment = re.sub(r"[^a-zA-Z0-9]+", "_", value.strip().lower())
+    segment = re.sub(r"_+", "_", segment).strip("_")
+    return segment[:48] or "case"
 
 
 def _dedupe_strings(values: list[str]) -> list[str]:

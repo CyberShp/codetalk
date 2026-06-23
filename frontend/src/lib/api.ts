@@ -555,6 +555,16 @@ export const api = {
           },
         ),
 
+      importFile: (file: File, defaults?: Record<string, unknown>) => {
+        const body = new FormData();
+        body.append("file", file);
+        body.append("defaults_json", JSON.stringify(defaults ?? {}));
+        return requestForm<SemanticCaseImportResult>(
+          "/api/workbench/semantic-cases/import-file",
+          body,
+        );
+      },
+
       search: (params: {
         q: string;
         module?: string;

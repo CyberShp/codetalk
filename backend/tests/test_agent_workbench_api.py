@@ -303,6 +303,43 @@ async def test_workbench_semantic_library_bulk_import_api(workbench_client):
     assert search.json()["items"][0]["source_ref"] == "feature_cases/nvmf_tls.json"
 
 
+async def test_workbench_semantic_library_file_import_api(workbench_client):
+    imported = await workbench_client.post(
+        "/api/workbench/semantic-cases/import-file",
+        data={
+            "defaults_json": json.dumps({
+                "feature": "NVMe TCP TLS",
+                "module": "nvmf_tcp/transport/tls",
+                "test_level": "black_box",
+            }),
+        },
+        files={
+            "file": (
+                "tls_cases.csv",
+                "case_id,scenario,terms\nTC_TLS_UPLOAD,TLS upload import,tls;upload\n",
+                "text/csv",
+            )
+        },
+    )
+
+    assert imported.status_code == 201
+    body = imported.json()
+    assert body["source_ref"] == "tls_cases.csv"
+    assert body["imported_count"] == 1
+    assert body["imported"][0]["case_id"] == "TC_TLS_UPLOAD"
+
+    search = await workbench_client.get(
+        "/api/workbench/semantic-cases/search",
+        params={
+            "q": "upload",
+            "module": "nvmf_tcp/transport/tls",
+            "test_level": "black_box",
+        },
+    )
+    assert search.status_code == 200
+    assert search.json()["items"][0]["case_id"] == "TC_TLS_UPLOAD"
+
+
 async def test_workbench_memory_api(workbench_client):
     run_resp = await workbench_client.post(
         "/api/workbench/memory/runs",
