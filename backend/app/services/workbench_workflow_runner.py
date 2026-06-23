@@ -29,6 +29,7 @@ class WorkbenchWorkflowExecutionResult:
     completed_at: str
     context_discovery_decision: dict[str, Any] = field(default_factory=dict)
     audit_summary: dict[str, Any] = field(default_factory=dict)
+    rerun_plan: dict[str, Any] = field(default_factory=dict)
     step_results: list[dict[str, Any]] = field(default_factory=list)
     outputs: list[dict[str, Any]] = field(default_factory=list)
 
@@ -114,6 +115,12 @@ class WorkbenchWorkflowRunner:
             ),
             audit_summary=_workflow_execution_audit_summary(
                 step_results=step_results,
+            ),
+            rerun_plan=_workflow_rerun_plan(
+                task_run=task_run,
+                status=status,
+                step_results=step_results,
+                outputs=outputs,
             ),
             step_results=step_results,
             outputs=outputs,
@@ -511,6 +518,10 @@ class WorkbenchWorkflowRunner:
                 indent=2,
                 sort_keys=True,
             ),
+            encoding="utf-8",
+        )
+        (task_dir / "task_rerun_plan.json").write_text(
+            json.dumps(result.rerun_plan, ensure_ascii=False, indent=2, sort_keys=True),
             encoding="utf-8",
         )
 
@@ -959,6 +970,106 @@ def _workflow_execution_audit_summary(
         "failure_kinds": failure_kinds,
         "missing_artifacts": missing_artifacts,
     }
+
+
+def _workflow_rerun_plan(
+    *,
+    task_run: Any,
+    status: str,
+    step_results: list[dict[str, Any]],
+    outputs: list[dict[str, Any]],
+) -> dict[str, Any]:
+    blocked_outputs = [
+        {
+            "id": str(output.get("id") or ""),
+            "status": str(output.get("status") or ""),
+            "from": str(output.get("from") or ""),
+            "artifact": str(output.get("artifact") or ""),
+            "reason": str(output.get("reason") or ""),
+        }
+        for output in outputs
+        if isinstance(output, dict) and output.get("status") in {"missing", "invalid"}
+    ]
+    steps: list[dict[str, Any]] = []
+    for step in step_results:
+        if not isinstance(step, dict):
+            continue
+        step_status = str(step.get("status") or "")
+        validation = step.get("validation") if isinstance(step.get("validation"), dict) else {}
+        recovery = (
+            step.get("failure_recovery")
+            if isinstance(step.get("failure_recovery"), dict)
+            else {}
+        )
+        if step_status == "completed" and not recovery:
+            continue
+        step_type = str(step.get("type") or "")
+        failure_kind = str(recovery.get("failure_kind") or "")
+        if not failure_kind and validation.get("status") not in {"", "ok", None}:
+            failure_kind = "artifact_validation_failed"
+        if not failure_kind and step_status:
+            failure_kind = step_status
+        artifact_dir = Path(str(step.get("artifact_dir") or ""))
+        step_id = str(step.get("step_id") or "")
+        item: dict[str, Any] = {
+            "step_id": step_id,
+            "type": step_type,
+            "status": step_status,
+            "recommended_action": (
+                "rerun_agent_step"
+                if step_type == "agent_task"
+                else "rerun_workflow_from_step"
+            ),
+            "failure_kind": failure_kind,
+            "retryable": bool(recovery.get("retryable", step_status != "completed")),
+            "required_artifacts": [str(value) for value in step.get("required_artifacts") or []],
+            "missing_artifacts": [
+                str(value)
+                for value in (
+                    recovery.get("missing_artifacts")
+                    or validation.get("missing_artifacts")
+                    or []
+                )
+            ],
+            "overwrite_risk_artifacts": _rerun_overwrite_risk_artifacts(step_type),
+        }
+        if artifact_dir:
+            if (artifact_dir / "failure_recovery.json").exists():
+                item["failure_recovery_artifact"] = (
+                    f"agent_runs/{_safe_segment(step_id or 'step')}/failure_recovery.json"
+                    if step_type == "agent_task"
+                    else "failure_recovery.json"
+                )
+            if (artifact_dir / "agent_run_lifecycle.json").exists():
+                item["lifecycle_artifact"] = (
+                    f"agent_runs/{_safe_segment(step_id or 'step')}/agent_run_lifecycle.json"
+                    if step_type == "agent_task"
+                    else "agent_run_lifecycle.json"
+                )
+        steps.append(item)
+    return {
+        "task_run_id": str(getattr(task_run, "task_run_id", "")),
+        "workflow_id": str(getattr(task_run, "workflow_id", "")),
+        "workspace_id": str(getattr(task_run, "workspace_id", "")),
+        "repo_path": str(getattr(task_run, "repo_path", "")),
+        "status": "clean" if status == "completed" and not blocked_outputs else "needs_rerun",
+        "preserve_inputs": True,
+        "reuse_task_bundle": True,
+        "created_at": _now(),
+        "steps": steps,
+        "blocked_outputs": blocked_outputs,
+    }
+
+
+def _rerun_overwrite_risk_artifacts(step_type: str) -> list[str]:
+    if step_type == "agent_task":
+        return [
+            "raw_output.txt",
+            "execution_result.json",
+            "provider_diagnostics.json",
+            "agent_run_lifecycle.json",
+        ]
+    return []
 
 
 def _turn_id_from_artifact_path(value: str) -> str:

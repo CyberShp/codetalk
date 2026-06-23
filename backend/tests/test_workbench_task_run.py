@@ -1120,6 +1120,23 @@ def test_workbench_workflow_runner_records_agent_failure_recovery(tmp_path, monk
             encoding="utf-8"
         )
     ) == lifecycle
+    rerun_plan = json.loads(
+        (Path(task_run.artifact_dir) / "task_rerun_plan.json").read_text(encoding="utf-8")
+    )
+    assert rerun_plan["status"] == "needs_rerun"
+    assert rerun_plan["task_run_id"] == task_run.task_run_id
+    assert rerun_plan["preserve_inputs"] is True
+    assert rerun_plan["reuse_task_bundle"] is True
+    assert rerun_plan["steps"][0]["step_id"] == "discover"
+    assert rerun_plan["steps"][0]["recommended_action"] == "rerun_agent_step"
+    assert rerun_plan["steps"][0]["failure_kind"] == "agent_error"
+    assert rerun_plan["steps"][0]["overwrite_risk_artifacts"] == [
+        "raw_output.txt",
+        "execution_result.json",
+        "provider_diagnostics.json",
+        "agent_run_lifecycle.json",
+    ]
+    assert rerun_plan["steps"][0]["missing_artifacts"] == ["source_scope.json"]
 
 
 def test_workbench_workflow_runner_enforces_user_output_schema(

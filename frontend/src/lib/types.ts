@@ -455,6 +455,13 @@ export interface WorkflowExecutionResult {
     failure_kinds?: string[];
     missing_artifacts?: string[];
   };
+  rerun_plan?: {
+    status?: string;
+    preserve_inputs?: boolean;
+    reuse_task_bundle?: boolean;
+    steps?: Array<Record<string, unknown>>;
+    blocked_outputs?: Array<Record<string, unknown>>;
+  };
   step_results: Array<
     Record<string, unknown> & {
       step_id?: string;

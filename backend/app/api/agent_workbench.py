@@ -1687,6 +1687,8 @@ def _artifact_kind(relative_path: str) -> str:
         return "workflow_output_materialization"
     if name == "workflow_execution.json":
         return "workflow_execution"
+    if name == "task_rerun_plan.json":
+        return "task_rerun_plan"
     if name == "evidence_validation.json":
         return "evidence_validation"
     if name == "raw_output.txt":

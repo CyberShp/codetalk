@@ -514,6 +514,7 @@ const AUDIT_ARTIFACT_KIND_ORDER = [
   "workflow_outputs",
   "workflow_output_materialization",
   "workflow_execution",
+  "task_rerun_plan",
 ];
 
 function prioritizedAuditArtifacts(artifacts: WorkbenchTaskArtifact[]): WorkbenchTaskArtifact[] {
@@ -1913,6 +1914,22 @@ export default function AgentWorkbenchPage() {
                         {workflowExecution.audit_summary.missing_artifacts?.length ? (
                           <span className="rounded bg-surface px-1.5 py-0.5 text-warning">
                             missing:{workflowExecution.audit_summary.missing_artifacts.join(",")}
+                          </span>
+                        ) : null}
+                      </div>
+                    )}
+                    {workflowExecution.rerun_plan && (
+                      <div className="mt-1 flex flex-wrap gap-1.5 font-data text-[10px]">
+                        <span className="rounded bg-surface px-1.5 py-0.5">
+                          rerun:{workflowExecution.rerun_plan.status ?? "unknown"}
+                        </span>
+                        <span className="rounded bg-surface px-1.5 py-0.5">
+                          rerun-steps:{workflowExecution.rerun_plan.steps?.length ?? 0}
+                        </span>
+                        {(workflowExecution.rerun_plan.blocked_outputs?.length ?? 0) > 0 ? (
+                          <span className="rounded bg-surface px-1.5 py-0.5 text-warning">
+                            blocked-outputs:
+                            {workflowExecution.rerun_plan.blocked_outputs?.length ?? 0}
                           </span>
                         ) : null}
                       </div>
