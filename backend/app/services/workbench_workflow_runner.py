@@ -28,6 +28,7 @@ class WorkbenchWorkflowExecutionResult:
     started_at: str
     completed_at: str
     context_discovery_decision: dict[str, Any] = field(default_factory=dict)
+    audit_summary: dict[str, Any] = field(default_factory=dict)
     step_results: list[dict[str, Any]] = field(default_factory=list)
     outputs: list[dict[str, Any]] = field(default_factory=list)
 
@@ -110,6 +111,9 @@ class WorkbenchWorkflowRunner:
             completed_at=_now(),
             context_discovery_decision=dict(
                 task_run.task_bundle.get("context_discovery_decision") or {}
+            ),
+            audit_summary=_workflow_execution_audit_summary(
+                step_results=step_results,
             ),
             step_results=step_results,
             outputs=outputs,
@@ -916,6 +920,45 @@ def _agent_run_lifecycle_summary(
         payload["failure_kind"] = str(failure_recovery.get("failure_kind") or "")
         payload["failure_recovery_artifact"] = "failure_recovery.json"
     return payload
+
+
+def _workflow_execution_audit_summary(
+    *,
+    step_results: list[dict[str, Any]],
+) -> dict[str, Any]:
+    agent_lifecycle_artifacts: list[str] = []
+    failure_kinds: list[str] = []
+    missing_artifacts: list[str] = []
+    for step in step_results:
+        if not isinstance(step, dict):
+            continue
+        artifact_dir = Path(str(step.get("artifact_dir") or ""))
+        lifecycle = step.get("lifecycle")
+        if isinstance(lifecycle, dict) and artifact_dir:
+            lifecycle_path = artifact_dir / "agent_run_lifecycle.json"
+            if lifecycle_path.exists():
+                agent_lifecycle_artifacts.append(
+                    f"agent_runs/{_safe_segment(str(step.get('step_id') or 'step'))}/agent_run_lifecycle.json"
+                )
+        recovery = step.get("failure_recovery")
+        if isinstance(recovery, dict):
+            failure_kind = str(recovery.get("failure_kind") or "")
+            if failure_kind and failure_kind not in failure_kinds:
+                failure_kinds.append(failure_kind)
+            for artifact in recovery.get("missing_artifacts") or []:
+                text = str(artifact or "")
+                if text and text not in missing_artifacts:
+                    missing_artifacts.append(text)
+    return {
+        "step_count": len(step_results),
+        "agent_step_count": sum(1 for step in step_results if step.get("type") == "agent_task"),
+        "completed_steps": sum(1 for step in step_results if step.get("status") == "completed"),
+        "invalid_steps": sum(1 for step in step_results if step.get("status") == "invalid"),
+        "error_steps": sum(1 for step in step_results if step.get("status") == "error"),
+        "agent_lifecycle_artifacts": agent_lifecycle_artifacts,
+        "failure_kinds": failure_kinds,
+        "missing_artifacts": missing_artifacts,
+    }
 
 
 def _turn_id_from_artifact_path(value: str) -> str:

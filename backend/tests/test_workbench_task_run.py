@@ -822,6 +822,18 @@ def test_workbench_workflow_runner_executes_agent_steps_and_validates_artifacts(
     )
 
     assert result.status == "completed"
+    assert result.audit_summary == {
+        "step_count": 2,
+        "agent_step_count": 1,
+        "completed_steps": 2,
+        "invalid_steps": 0,
+        "error_steps": 0,
+        "agent_lifecycle_artifacts": [
+            "agent_runs/collect_mr/agent_run_lifecycle.json",
+        ],
+        "failure_kinds": [],
+        "missing_artifacts": [],
+    }
     assert result.task_run_id == task_run.task_run_id
     assert result.step_results[0]["step_id"] == "collect_mr"
     assert result.step_results[0]["execution"]["status"] == "completed"
@@ -866,6 +878,10 @@ def test_workbench_workflow_runner_executes_agent_steps_and_validates_artifacts(
     assert (root / "workflow_execution.json").exists()
     workflow_outputs = json.loads((root / "workflow_outputs.json").read_text(encoding="utf-8"))
     assert workflow_outputs["outputs"][0]["id"] == "report"
+    workflow_execution = json.loads((root / "workflow_execution.json").read_text(encoding="utf-8"))
+    assert workflow_execution["audit_summary"]["agent_lifecycle_artifacts"] == [
+        "agent_runs/collect_mr/agent_run_lifecycle.json"
+    ]
     lifecycle_artifact = json.loads(
         (root / "agent_runs" / "collect_mr" / "agent_run_lifecycle.json").read_text(
             encoding="utf-8"
@@ -996,6 +1012,9 @@ def test_workbench_workflow_runner_records_agent_failure_recovery(tmp_path, monk
     )
 
     step = result.step_results[0]
+    assert result.audit_summary["invalid_steps"] == 1
+    assert result.audit_summary["failure_kinds"] == ["agent_error"]
+    assert result.audit_summary["missing_artifacts"] == ["source_scope.json"]
     assert step["status"] == "invalid"
     assert step["execution"]["status"] == "error"
     assert step["execution"]["exit_code"] == 7

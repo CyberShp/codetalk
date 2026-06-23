@@ -1890,6 +1890,33 @@ export default function AgentWorkbenchPage() {
                     Workflow: {workflowExecution.status} / steps{" "}
                     {workflowExecution.step_results.length} / outputs{" "}
                     {workflowExecution.outputs?.length ?? 0}
+                    {workflowExecution.audit_summary && (
+                      <div className="mt-1 flex flex-wrap gap-1.5 font-data text-[10px]">
+                        <span className="rounded bg-surface px-1.5 py-0.5">
+                          agent:{workflowExecution.audit_summary.agent_step_count ?? 0}
+                        </span>
+                        <span className="rounded bg-surface px-1.5 py-0.5">
+                          invalid:{workflowExecution.audit_summary.invalid_steps ?? 0}
+                        </span>
+                        <span className="rounded bg-surface px-1.5 py-0.5">
+                          errors:{workflowExecution.audit_summary.error_steps ?? 0}
+                        </span>
+                        <span className="rounded bg-surface px-1.5 py-0.5">
+                          lifecycle:
+                          {workflowExecution.audit_summary.agent_lifecycle_artifacts?.length ?? 0}
+                        </span>
+                        {workflowExecution.audit_summary.failure_kinds?.length ? (
+                          <span className="rounded bg-surface px-1.5 py-0.5 text-warning">
+                            failure:{workflowExecution.audit_summary.failure_kinds.join(",")}
+                          </span>
+                        ) : null}
+                        {workflowExecution.audit_summary.missing_artifacts?.length ? (
+                          <span className="rounded bg-surface px-1.5 py-0.5 text-warning">
+                            missing:{workflowExecution.audit_summary.missing_artifacts.join(",")}
+                          </span>
+                        ) : null}
+                      </div>
+                    )}
                     {(workflowExecution.outputs?.length ?? 0) > 0 && (
                       <div className="mt-1 flex flex-wrap gap-1.5">
                         {workflowExecution.outputs?.map((output, index) => (

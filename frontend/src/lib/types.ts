@@ -445,6 +445,16 @@ export interface WorkflowExecutionResult {
   started_at: string;
   completed_at: string;
   context_discovery_decision?: Record<string, unknown>;
+  audit_summary?: {
+    step_count?: number;
+    agent_step_count?: number;
+    completed_steps?: number;
+    invalid_steps?: number;
+    error_steps?: number;
+    agent_lifecycle_artifacts?: string[];
+    failure_kinds?: string[];
+    missing_artifacts?: string[];
+  };
   step_results: Array<
     Record<string, unknown> & {
       step_id?: string;
