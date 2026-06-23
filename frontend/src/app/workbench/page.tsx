@@ -176,13 +176,22 @@ function parseCommaSeparated(value: string): string[] {
 function parseWorkflowSpecList(value: string, defaultType: string): Array<{
   id: string;
   type: string;
+  resolver?: string;
+  artifact?: string;
 }> {
   return parseCommaSeparated(value).map((item) => {
-    const [id, type] = item.split(":").map((part) => part.trim());
+    const [specPart, artifactPart] = item.split("=").map((part) => part.trim());
+    const [typedPart, resolverPart] = specPart.split("@").map((part) => part.trim());
+    const [id, type] = typedPart.split(":").map((part) => part.trim());
     if (!id) {
       throw new Error("Workflow builder entries must use id:type");
     }
-    return { id, type: type || defaultType };
+    return {
+      id,
+      type: type || defaultType,
+      ...(resolverPart ? { resolver: resolverPart } : {}),
+      ...(artifactPart ? { artifact: artifactPart } : {}),
+    };
   });
 }
 
@@ -856,16 +865,21 @@ export default function AgentWorkbenchPage() {
       id: input.id,
       type: input.type,
       required: input.type !== "file" && input.type !== "file_set",
-      resolver: input.type === "mr_link" || input.type === "external_link" ? "agent_mcp" : "manual",
+      resolver:
+        input.resolver ||
+        (input.type === "mr_link" || input.type === "external_link"
+          ? "agent_mcp"
+          : "manual"),
       role:
-        input.type === "mr_link"
+        input.resolver === "agent_mcp" || input.type === "mr_link"
           ? "remote change source resolved by Agent CLI MCP credentials"
           : "user-provided workflow input",
     }));
     const requiredArtifacts = parseCommaSeparated(builderArtifacts);
     const outputSchemas = parseJsonObject(builderOutputSchemas || "{}");
     const outputs = parseWorkflowSpecList(builderOutputSpec, "json").map((output) => {
-      const artifact = outputArtifactForSpec(output.id, output.type, requiredArtifacts);
+      const artifact =
+        output.artifact || outputArtifactForSpec(output.id, output.type, requiredArtifacts);
       const from = artifact ? "agent_collect" : "render_report";
       const schema = output.type === "json" ? outputSchemaForSpec(output.id, outputSchemas) : null;
       return {
@@ -1632,7 +1646,7 @@ export default function AgentWorkbenchPage() {
             </div>
             <label className="mt-2 block">
               <span className="mb-1 block text-xs text-on-surface-variant">
-                Inputs as id:type
+                Inputs as id:type or id:type@resolver
               </span>
               <input
                 value={builderInputSpec}
@@ -1643,7 +1657,7 @@ export default function AgentWorkbenchPage() {
             </label>
             <label className="mt-2 block">
               <span className="mb-1 block text-xs text-on-surface-variant">
-                Outputs as id:type
+                Outputs as id:type or id:type=artifact
               </span>
               <input
                 value={builderOutputSpec}
