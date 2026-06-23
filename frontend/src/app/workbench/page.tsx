@@ -1461,14 +1461,22 @@ export default function AgentWorkbenchPage() {
       );
       setTaskRerunExecution(result);
       if (result.execution) {
-        setWorkflowExecution(result.execution);
+        setWorkflowExecution({
+          ...result.execution,
+          evidence_materialization:
+            result.evidence_materialization ?? result.execution.evidence_materialization,
+          acceptance_audit: result.acceptance_audit ?? result.execution.acceptance_audit,
+        });
         setTaskRerunPlan((result.execution.rerun_plan as TaskRerunPlan | undefined) ?? null);
       }
+      setWorkflowOutputMaterialize(result.evidence_materialization ?? null);
       setTaskRerunPlanValidation(result.validation_after ?? null);
       setTaskRerunHistory(await api.workbench.taskRuns.rerunHistory(preparedRun.task_run_id));
-      setTaskAcceptanceAudit(null);
+      setTaskAcceptanceAudit(result.acceptance_audit ?? null);
       await refreshArtifactManifest(preparedRun.task_run_id);
-      setMessage(`Rerun execution ${result.execution?.status ?? result.status}: ${preparedRun.task_run_id}`);
+      setMessage(
+        `Rerun execution ${result.execution?.status ?? result.status}: ${preparedRun.task_run_id}; evidence ${result.evidence_materialization?.status ?? "skipped"}; audit ${result.acceptance_audit?.status ?? "skipped"}`,
+      );
     });
 
   const previewArtifact = (relativePath: string) =>

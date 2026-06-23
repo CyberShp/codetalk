@@ -1056,6 +1056,12 @@ async def execute_task_run_rerun_plan(
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc))
     refreshed_task_run = WorkbenchTaskRunStore(_task_runs_dir()).load(task_run_id)
+    evidence_materialization = _materialize_task_run_outputs_if_available(
+        task_run=refreshed_task_run,
+    )
+    task_dir = Path(refreshed_task_run.artifact_dir)
+    acceptance = _build_task_acceptance_audit(refreshed_task_run)
+    _write_json(task_dir / "task_acceptance_audit.json", acceptance)
     refreshed_plan = _read_json(Path(refreshed_task_run.artifact_dir) / "task_rerun_plan.json")
     validation_after = (
         _validate_task_rerun_plan(task_run=refreshed_task_run, plan=refreshed_plan)
@@ -1066,14 +1072,16 @@ async def execute_task_run_rerun_plan(
         "status": "executed",
         "validation_before": validation_before,
         "execution": asdict(execution),
+        "evidence_materialization": evidence_materialization,
+        "acceptance_audit": acceptance,
         "validation_after": validation_after,
     }
     _write_task_rerun_execution_artifacts(
-        task_dir=Path(refreshed_task_run.artifact_dir),
+        task_dir=task_dir,
         result=result,
     )
     write_task_artifact_manifest(
-        Path(refreshed_task_run.artifact_dir),
+        task_dir,
         task_run_id=refreshed_task_run.task_run_id,
     )
     return result

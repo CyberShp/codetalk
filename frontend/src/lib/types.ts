@@ -649,6 +649,8 @@ export interface TaskRerunExecutionResult {
   status: string;
   validation_before?: TaskRerunPlanValidation;
   execution?: WorkflowExecutionResult;
+  evidence_materialization?: MaterializeWorkflowOutputsResult;
+  acceptance_audit?: WorkbenchAcceptanceAudit;
   validation_after?: TaskRerunPlanValidation;
 }
 

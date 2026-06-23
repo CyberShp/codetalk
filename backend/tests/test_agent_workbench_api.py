@@ -2628,6 +2628,10 @@ async def test_workbench_task_run_artifacts_api_labels_failure_recovery(
     assert rerun["execution"]["task_run_id"] == task_run_id
     assert rerun["execution"]["status"] == "invalid"
     assert rerun["execution"]["step_results"][0]["failure_recovery"]["failure_kind"] == "agent_error"
+    assert rerun["evidence_materialization"]["status"] == "partial"
+    assert rerun["evidence_materialization"]["evidence_count"] == 0
+    assert rerun["acceptance_audit"]["status"] == "incomplete"
+    assert rerun["acceptance_audit"]["summary"]["missing_required"] > 0
     assert rerun["validation_after"]["status"] == "ready"
     artifacts_after_rerun = await workbench_client.get(
         f"/api/workbench/task-runs/{task_run_id}/artifacts"
@@ -2637,6 +2641,8 @@ async def test_workbench_task_run_artifacts_api_labels_failure_recovery(
     }
     assert paths_after_rerun["task_rerun_execution.json"]["kind"] == "task_rerun_execution"
     assert paths_after_rerun["task_rerun_history.json"]["kind"] == "task_rerun_history"
+    assert paths_after_rerun["workflow_output_materialization.json"]["kind"] == "workflow_output_materialization"
+    assert paths_after_rerun["task_acceptance_audit.json"]["kind"] == "task_acceptance_audit"
     rerun_manifest = json.loads(
         (Path(prepared.json()["artifact_dir"]) / "task_artifact_manifest.json")
         .read_text(encoding="utf-8")
@@ -2646,12 +2652,19 @@ async def test_workbench_task_run_artifacts_api_labels_failure_recovery(
     }
     assert rerun_manifest_paths["task_rerun_execution.json"]["kind"] == "task_rerun_execution"
     assert rerun_manifest_paths["task_rerun_history.json"]["kind"] == "task_rerun_history"
+    assert (
+        rerun_manifest_paths["workflow_output_materialization.json"]["kind"]
+        == "workflow_output_materialization"
+    )
+    assert rerun_manifest_paths["task_acceptance_audit.json"]["kind"] == "task_acceptance_audit"
     rerun_execution_content = await workbench_client.get(
         f"/api/workbench/task-runs/{task_run_id}/artifacts/content/task_rerun_execution.json"
     )
     assert rerun_execution_content.status_code == 200
     assert rerun_execution_content.json()["kind"] == "task_rerun_execution"
     assert "validation_before" in rerun_execution_content.json()["content"]
+    assert "evidence_materialization" in rerun_execution_content.json()["content"]
+    assert "acceptance_audit" in rerun_execution_content.json()["content"]
     assert "agent_error" in rerun_execution_content.json()["content"]
     history_response = await workbench_client.get(
         f"/api/workbench/task-runs/{task_run_id}/rerun-plan/history"
@@ -2664,6 +2677,8 @@ async def test_workbench_task_run_artifacts_api_labels_failure_recovery(
     assert history["records"][0]["sequence"] == 1
     assert history["records"][0]["status"] == "executed"
     assert history["records"][0]["execution"]["status"] == "invalid"
+    assert history["records"][0]["evidence_materialization"]["status"] == "partial"
+    assert history["records"][0]["acceptance_audit"]["status"] == "incomplete"
 
 
 async def test_workbench_task_run_acceptance_audit_api_records_required_evidence(
