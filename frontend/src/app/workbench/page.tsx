@@ -715,6 +715,19 @@ type ReplayPlanSummary = {
   contractSha: string;
 };
 
+type ExecutionInputSummary = {
+  provider: string;
+  turnId: string;
+  promptTransport: string;
+  promptTransportReason: string;
+  timeoutSec: number;
+  cwd: string;
+  stdinRedacted: boolean;
+  stdinSha: string;
+  readonlyEnv: string;
+  outputContractSha: string;
+};
+
 type BlackBoxGenerationPolicySummary = {
   termCount: number;
   caseCount: number;
@@ -985,6 +998,45 @@ function replayPlanSummary(
     contractSha: String(
       hashes["agent_output_contract.json"] ?? hashes.agent_output_contract_sha256 ?? "",
     ),
+  };
+}
+
+function executionInputSummary(
+  artifact: WorkbenchTaskArtifactContent,
+): ExecutionInputSummary | null {
+  if (!artifact.is_text || !artifact.content.trim()) return null;
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(artifact.content);
+  } catch {
+    return null;
+  }
+  if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) return null;
+  const payload = parsed as Record<string, unknown>;
+  if (
+    artifact.kind !== "agent_execution_input" &&
+    artifact.kind !== "agent_turn_execution_input" &&
+    !("stdin_redacted" in payload)
+  ) {
+    return null;
+  }
+  const envHints =
+    payload.env_hints &&
+    typeof payload.env_hints === "object" &&
+    !Array.isArray(payload.env_hints)
+      ? (payload.env_hints as Record<string, unknown>)
+      : {};
+  return {
+    provider: String(payload.provider ?? ""),
+    turnId: String(payload.turn_id ?? ""),
+    promptTransport: String(payload.prompt_transport ?? ""),
+    promptTransportReason: String(payload.prompt_transport_reason ?? ""),
+    timeoutSec: Number(payload.timeout_sec ?? 0) || 0,
+    cwd: String(payload.cwd ?? ""),
+    stdinRedacted: Boolean(payload.stdin_redacted ?? false),
+    stdinSha: String(payload.stdin_json_sha256 ?? ""),
+    readonlyEnv: String(envHints.CODETALK_AGENT_READONLY ?? ""),
+    outputContractSha: String(payload.agent_output_contract_sha256 ?? ""),
   };
 }
 
@@ -3867,6 +3919,47 @@ export default function AgentWorkbenchPage() {
                                 )}
                                 {summary.contractSha && (
                                   <span>contract sha:{summary.contractSha.slice(0, 12)}</span>
+                                )}
+                              </div>
+                              {summary.cwd && (
+                                <div className="mt-1 break-words font-data text-[10px]">
+                                  cwd:{summary.cwd}
+                                </div>
+                              )}
+                            </div>
+                          );
+                        })()}
+                        {(() => {
+                          const summary = executionInputSummary(artifactContent);
+                          if (!summary) return null;
+                          return (
+                            <div className="mt-2 rounded bg-surface-container px-2 py-1.5 text-[11px] text-on-surface-variant">
+                              <div className="flex flex-wrap gap-2">
+                                <span>Execution input</span>
+                                {summary.provider && <span>provider:{summary.provider}</span>}
+                                {summary.turnId && <span>turn:{summary.turnId}</span>}
+                                {summary.promptTransport && (
+                                  <span>transport:{summary.promptTransport}</span>
+                                )}
+                                {summary.promptTransportReason && (
+                                  <span>reason:{summary.promptTransportReason}</span>
+                                )}
+                                {summary.timeoutSec > 0 && (
+                                  <span>timeout:{summary.timeoutSec}s</span>
+                                )}
+                                <span>stdin redacted:{String(summary.stdinRedacted)}</span>
+                                {summary.readonlyEnv && (
+                                  <span>readonly env:{summary.readonlyEnv}</span>
+                                )}
+                              </div>
+                              <div className="mt-1 flex flex-wrap gap-2 font-data text-[10px]">
+                                {summary.stdinSha && (
+                                  <span>stdin sha:{summary.stdinSha.slice(0, 12)}</span>
+                                )}
+                                {summary.outputContractSha && (
+                                  <span>
+                                    contract sha:{summary.outputContractSha.slice(0, 12)}
+                                  </span>
                                 )}
                               </div>
                               {summary.cwd && (

@@ -637,6 +637,14 @@ test("agent workbench previews task run artifact content", async ({ page }) => {
             sha256: "ccccddddaaaabbbb111122223333444455556666",
             preview: "{\"replay_status\":\"ready\",\"prompt_source\":\"execution_input.json:stdin\"}",
           },
+          {
+            relative_path: "agent_runs/discover/execution_input.json",
+            path: "E:/data/workbench/task_runs/task_run_preview/agent_runs/discover/execution_input.json",
+            kind: "agent_execution_input",
+            size_bytes: 1024,
+            sha256: "inputsha1234567890",
+            preview: "{\"provider\":\"claude-code\",\"stdin_redacted\":true}",
+          },
         ],
       },
     });
@@ -869,6 +877,38 @@ test("agent workbench previews task run artifact content", async ({ page }) => {
     },
   );
   await page.route(
+    "**/api/workbench/task-runs/task_run_preview/artifacts/content/agent_runs/discover/execution_input.json",
+    async (route) => {
+      await route.fulfill({
+        headers: corsHeaders(route.request().headers().origin),
+        json: {
+          relative_path: "agent_runs/discover/execution_input.json",
+          path: "E:/data/workbench/task_runs/task_run_preview/agent_runs/discover/execution_input.json",
+          kind: "agent_execution_input",
+          size_bytes: 1024,
+          sha256: "inputsha1234567890",
+          preview: "{\"provider\":\"claude-code\",\"stdin_redacted\":true}",
+          is_text: true,
+          truncated: false,
+          content: JSON.stringify({
+            provider: "claude-code",
+            turn_id: "turn_1",
+            prompt_transport: "stdin",
+            prompt_transport_reason: "transport_fallback_from_argv",
+            cwd: "E:/repo",
+            timeout_sec: 90,
+            env_hints: {
+              CODETALK_AGENT_READONLY: "1",
+            },
+            stdin_redacted: true,
+            stdin_json_sha256: "stdinsha1234567890",
+            agent_output_contract_sha256: "contracthash1234567890",
+          }),
+        },
+      });
+    },
+  );
+  await page.route(
     "**/api/workbench/task-runs/task_run_preview/acceptance-audit",
     async (route) => {
       await route.fulfill({
@@ -942,7 +982,7 @@ test("agent workbench previews task run artifact content", async ({ page }) => {
   await expect(
     page.getByText("manual:POST /api/tools/claude-code/startup-probe", { exact: false }),
   ).toBeVisible();
-  await expect(page.getByText("Audit artifacts: 7")).toBeVisible();
+  await expect(page.getByText("Audit artifacts: 8")).toBeVisible();
 
   await page.getByRole("button", { name: "task_bundle:task_bundle.json" }).click();
 
@@ -1010,6 +1050,19 @@ test("agent workbench previews task run artifact content", async ({ page }) => {
   await expect(page.getByText("readonly:true")).toBeVisible();
   await expect(page.getByText("hashes:3")).toBeVisible();
   await expect(page.getByText("task_bundle sha:taskhash1234")).toBeVisible();
+
+  await page
+    .getByRole("button", {
+      name: "agent_execution_input:agent_runs/discover/execution_input.json",
+    })
+    .click();
+  await expect(page.getByText("Execution input")).toBeVisible();
+  await expect(page.getByText("provider:claude-code")).toBeVisible();
+  await expect(page.getByText("transport:stdin")).toBeVisible();
+  await expect(page.getByText("reason:transport_fallback_from_argv")).toBeVisible();
+  await expect(page.getByText("stdin redacted:true")).toBeVisible();
+  await expect(page.getByText("stdin sha:stdinsha1234")).toBeVisible();
+  await expect(page.getByText("contract sha:contracthash")).toBeVisible();
 
   await page.getByRole("button", { name: "Acceptance audit" }).click();
   await expect(page.getByText("Agent instruction policy")).toBeVisible();
