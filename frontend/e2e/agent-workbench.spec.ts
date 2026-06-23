@@ -534,6 +534,40 @@ test("agent workbench previews task run artifact content", async ({ page }) => {
               warnings: ["fast-context requested by AGENTS.md but backend MCP bridge is unavailable"],
             },
           },
+          provider_readiness: {
+            repo: { status: "available" },
+            codetalk_providers: {
+              "local-search": { status: "available", next_check: "repo readable" },
+              gitnexus: {
+                status: "missing_config",
+                next_check: "POST /api/tools/gitnexus/startup-probe?repo_path=<repo_path>",
+              },
+              cgc: {
+                status: "unavailable",
+                next_check: "POST /api/tools/cgc/startup-probe?repo_path=<repo_path>",
+              },
+            },
+            agent_cli_providers: {
+              "claude-code": {
+                status: "unavailable",
+                configured_command: "ccr code",
+                used_fallback: true,
+                reason: "primary command unavailable; using fallback: claude",
+                startup_probe_endpoint: "/api/tools/claude-code/startup-probe",
+                manual_probe_command:
+                  "POST /api/tools/claude-code/startup-probe with repo_path, then verify the same backend shell can launch: ccr code",
+              },
+            },
+            summary: {
+              status: "degraded",
+              blocking_reasons: [],
+              warnings: [
+                "codetalk_provider_unavailable:gitnexus",
+                "codetalk_provider_unavailable:cgc",
+                "agent_cli_unavailable:claude-code",
+              ],
+            },
+          },
         },
         agent_runs: [],
         created_at: "2026-06-23T00:00:00Z",
@@ -890,6 +924,24 @@ test("agent workbench previews task run artifact content", async ({ page }) => {
   await expect(page.getByText("chunks:2")).toBeVisible();
   await expect(page.getByText("warnings:preview truncated")).toBeVisible();
   await expect(page.getByText("fast-context: fallback to agent_cli")).toBeVisible();
+  await expect(page.getByText("Provider readiness: degraded")).toBeVisible();
+  await expect(page.getByText("gitnexus:missing_config")).toBeVisible();
+  await expect(page.getByText("cgc:unavailable")).toBeVisible();
+  await expect(page.getByText("claude-code:unavailable")).toBeVisible();
+  await expect(
+    page.getByText("claude-code command:ccr code fallback", { exact: false }),
+  ).toBeVisible();
+  await expect(
+    page.getByText("reason:primary command unavailable; using fallback: claude", {
+      exact: false,
+    }),
+  ).toBeVisible();
+  await expect(
+    page.getByText("probe:/api/tools/claude-code/startup-probe", { exact: false }),
+  ).toBeVisible();
+  await expect(
+    page.getByText("manual:POST /api/tools/claude-code/startup-probe", { exact: false }),
+  ).toBeVisible();
   await expect(page.getByText("Audit artifacts: 7")).toBeVisible();
 
   await page.getByRole("button", { name: "task_bundle:task_bundle.json" }).click();

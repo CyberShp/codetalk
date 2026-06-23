@@ -528,6 +528,10 @@ type ProviderReadinessSummary = {
     provider: string;
     status: string;
     reason: string;
+    startupProbeEndpoint: string;
+    manualProbeCommand: string;
+    configuredCommand: string;
+    usedFallback: boolean;
     deploymentTaskProbeStatus: string;
     deploymentProbeId: string;
     deploymentEvidenceConflict: boolean;
@@ -629,6 +633,10 @@ function providerReadinessSummary(
       provider,
       status: String(payload.status ?? "unknown"),
       reason: String(payload.reason ?? ""),
+      startupProbeEndpoint: String(payload.startup_probe_endpoint ?? ""),
+      manualProbeCommand: String(payload.manual_probe_command ?? ""),
+      configuredCommand: String(payload.configured_command ?? payload.command ?? ""),
+      usedFallback: Boolean(payload.used_fallback ?? false),
       deploymentTaskProbeStatus: String(deploymentEvidence.task_probe_status ?? ""),
       deploymentProbeId: String(deploymentEvidence.probe_id ?? ""),
       deploymentEvidenceConflict: Boolean(payload.deployment_evidence_conflict ?? false),
@@ -3525,6 +3533,43 @@ export default function AgentWorkbenchPage() {
                           </span>
                         )}
                       </div>
+                      {readiness.agentProviders.some(
+                        (provider) =>
+                          provider.reason ||
+                          provider.startupProbeEndpoint ||
+                          provider.manualProbeCommand ||
+                          provider.configuredCommand,
+                      ) && (
+                        <div className="mt-1 space-y-0.5 font-data text-[10px]">
+                          {readiness.agentProviders
+                            .filter(
+                              (provider) =>
+                                provider.status !== "available" ||
+                                provider.reason ||
+                                provider.deploymentEvidenceConflict,
+                            )
+                            .slice(0, 4)
+                            .map((provider) => (
+                              <div
+                                key={`${provider.provider}:readiness-detail`}
+                                className="break-words"
+                              >
+                                {provider.provider}
+                                {provider.configuredCommand
+                                  ? ` command:${provider.configuredCommand}`
+                                  : ""}
+                                {provider.usedFallback ? " fallback" : ""}
+                                {provider.reason ? ` reason:${provider.reason}` : ""}
+                                {provider.startupProbeEndpoint
+                                  ? ` probe:${provider.startupProbeEndpoint}`
+                                  : ""}
+                                {provider.manualProbeCommand
+                                  ? ` manual:${provider.manualProbeCommand}`
+                                  : ""}
+                              </div>
+                            ))}
+                        </div>
+                      )}
                     </div>
                   );
                 })()}
