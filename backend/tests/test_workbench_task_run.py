@@ -323,6 +323,31 @@ def test_prepare_workbench_task_run_injects_evidence_and_semantic_context(tmp_pa
         sha256=hashlib.sha256(source.read_bytes()).hexdigest(),
         excerpt="int nvmf_tcp_tls_handshake(void) { return -EINVAL; }",
     )
+    memory.record_analysis_run(
+        run_id="deployment_probe:probe-1",
+        workspace_id="codetalk-deployment",
+        repo_path=str(repo),
+        object_text="deployment probe probe-1",
+        workflow_id="workbench_deployment_probe",
+        status="healthy",
+    )
+    memory.upsert_evidence_item(
+        run_id="deployment_probe:probe-1",
+        workspace_id="codetalk-deployment",
+        kind="provider_task_probe",
+        subject_key="claude-code:agent_task_probe",
+        status="accepted",
+        source="deployment_probe",
+        path=str(tmp_path / "provider_task_probe_result.json"),
+        symbol="claude-code",
+        reason="provider_task_probe claude-code ready; contract ok",
+        text="provider_task_probe claude-code ready deployment_probe task contract",
+        provenance={
+            "provider": "claude-code",
+            "probe_id": "probe-1",
+            "task_probe_status": "ready",
+        },
+    )
     semantics = TestSemanticLibraryStore(tmp_path / "semantics.db")
     semantics.upsert_case({
         "case_id": "TC_TLS_HANDSHAKE_FAIL",
@@ -365,6 +390,9 @@ def test_prepare_workbench_task_run_injects_evidence_and_semantic_context(tmp_pa
     )
     assert context_bundle["evidence"][0]["source_slices"][0]["start_line"] == 10
     assert "nvmf_tcp_tls_handshake" in context_bundle["evidence"][0]["source_slices"][0]["excerpt"]
+    assert context_bundle["deployment_evidence"][0]["kind"] == "provider_task_probe"
+    assert context_bundle["deployment_evidence"][0]["subject_key"] == "claude-code:agent_task_probe"
+    assert context_bundle["deployment_evidence"][0]["provenance"]["task_probe_status"] == "ready"
     assert context_bundle["semantic_cases"][0]["case_id"] == "TC_TLS_HANDSHAKE_FAIL"
     assert Path(result.artifact_dir, "context_bundle.json").exists()
     step_bundle = json.loads(
@@ -374,6 +402,7 @@ def test_prepare_workbench_task_run_injects_evidence_and_semantic_context(tmp_pa
         "TLS negotiation",
         "connection release",
     ]
+    assert step_bundle["context_bundle"]["deployment_evidence"][0]["symbol"] == "claude-code"
     assert step_bundle["context_bundle"]["evidence"][0]["source_slices"][0]["sha256"] == (
         hashlib.sha256(source.read_bytes()).hexdigest()
     )
@@ -385,6 +414,11 @@ def test_prepare_workbench_task_run_injects_evidence_and_semantic_context(tmp_pa
     )
     assert memory_retrieval["provider"] == "evidence-memory"
     assert memory_retrieval["retrieved_count"] == 1
+    assert memory_retrieval["deployment_retrieved_count"] == 1
+    assert memory_retrieval["deployment_items"][0]["kind"] == "provider_task_probe"
+    assert memory_retrieval["deployment_items"][0]["reuse_reason"] == (
+        "deployment evidence describes Agent provider readiness; use for routing and diagnostics only"
+    )
     assert memory_retrieval["items"][0]["source_slice_count"] == 1
     assert memory_retrieval["items"][0]["reuse_reason"] == (
         "query matched prior evidence; source slices are attached and may be used as source evidence"
@@ -420,6 +454,7 @@ def test_prepare_workbench_task_run_injects_evidence_and_semantic_context(tmp_pa
     assert [event["event"] for event in trajectory["events"]] == [
         "memory_retrieved",
         "source_slice_attached",
+        "deployment_evidence_retrieved",
         "semantic_case_retrieved",
     ]
 

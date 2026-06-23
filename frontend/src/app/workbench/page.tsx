@@ -2970,6 +2970,7 @@ export default function AgentWorkbenchPage() {
                   const contextBundle = preparedRun.task_bundle.context_bundle as
                     | {
                         evidence?: unknown[];
+                        deployment_evidence?: unknown[];
                         semantic_cases?: unknown[];
                       }
                     | undefined;
@@ -2977,6 +2978,7 @@ export default function AgentWorkbenchPage() {
                   return (
                     <p className="mt-1 text-on-surface-variant">
                       Context: evidence {contextBundle.evidence?.length ?? 0} /
+                      deployment {contextBundle.deployment_evidence?.length ?? 0} /
                       semantics {contextBundle.semantic_cases?.length ?? 0}
                     </p>
                   );

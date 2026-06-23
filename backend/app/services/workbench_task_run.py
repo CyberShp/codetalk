@@ -272,6 +272,7 @@ def build_workbench_context_bundle(
 ) -> dict[str, Any]:
     query = _context_query_from_inputs(input_snapshot)
     evidence = []
+    deployment_evidence = []
     semantic_cases = []
     if query and evidence_memory is not None:
         evidence = [
@@ -286,6 +287,15 @@ def build_workbench_context_bundle(
                 limit=limit,
             )
         ]
+        deployment_evidence = [
+            _evidence_item_payload(item, source_slices=[], repo_path=repo_path)
+            for item in evidence_memory.search_analysis_memory(
+                "deployment_probe provider_task_probe",
+                workspace_id="codetalk-deployment",
+                limit=limit,
+            )
+            if item.kind in {"deployment_probe", "provider_task_probe"}
+        ]
     if query and semantic_library is not None:
         semantic_cases = [
             _semantic_case_payload(item)
@@ -297,6 +307,7 @@ def build_workbench_context_bundle(
     return {
         "query": query,
         "evidence": evidence,
+        "deployment_evidence": deployment_evidence,
         "semantic_cases": semantic_cases,
         "limits": {
             "evidence": limit,
@@ -1294,6 +1305,10 @@ def build_context_artifact_payloads(
         item for item in context_bundle.get("evidence") or []
         if isinstance(item, dict)
     ]
+    deployment_evidence = [
+        item for item in context_bundle.get("deployment_evidence") or []
+        if isinstance(item, dict)
+    ]
     semantic_cases = [
         item for item in context_bundle.get("semantic_cases") or []
         if isinstance(item, dict)
@@ -1302,6 +1317,7 @@ def build_context_artifact_payloads(
         "provider": "evidence-memory",
         "query": query,
         "retrieved_count": len(evidence),
+        "deployment_retrieved_count": len(deployment_evidence),
         "limit": (context_bundle.get("limits") or {}).get("evidence"),
         "authority_rule": (
             "retrieval is navigation only; source evidence requires validated source_slices"
@@ -1320,6 +1336,20 @@ def build_context_artifact_payloads(
                 "source_slice_refs": _source_slice_refs(item.get("source_slices") or []),
             }
             for item in evidence
+        ],
+        "deployment_items": [
+            {
+                "evidence_id": item.get("evidence_id") or "",
+                "kind": item.get("kind") or "",
+                "subject_key": item.get("subject_key") or "",
+                "status": item.get("status") or "",
+                "source": item.get("source") or "",
+                "symbol": item.get("symbol") or "",
+                "path": item.get("path") or "",
+                "reuse_reason": _deployment_memory_reuse_reason(item),
+                "provenance": item.get("provenance") or {},
+            }
+            for item in deployment_evidence
         ],
     }
     reads: list[dict[str, Any]] = []
@@ -1353,6 +1383,17 @@ def build_context_artifact_payloads(
             }
             reads.append(read)
             events.append(read)
+    for item in deployment_evidence:
+        events.append({
+            "event": "deployment_evidence_retrieved",
+            "provider": "evidence-memory",
+            "evidence_id": item.get("evidence_id") or "",
+            "kind": item.get("kind") or "",
+            "subject_key": item.get("subject_key") or "",
+            "status": item.get("status") or "",
+            "source": item.get("source") or "",
+            "reuse_reason": _deployment_memory_reuse_reason(item),
+        })
     for item in semantic_cases:
         events.append({
             "event": "semantic_case_retrieved",
@@ -1401,6 +1442,13 @@ def _memory_reuse_reason(item: dict[str, Any]) -> str:
     if item.get("source_slices"):
         return "query matched prior evidence; navigation only because source slices are stale or unverified"
     return "query matched prior evidence; navigation only because no source slices are attached"
+
+
+def _deployment_memory_reuse_reason(item: dict[str, Any]) -> str:
+    return (
+        "deployment evidence describes Agent provider readiness; "
+        "use for routing and diagnostics only"
+    )
 
 
 def _source_slice_refs(source_slices: list[Any]) -> list[dict[str, Any]]:
