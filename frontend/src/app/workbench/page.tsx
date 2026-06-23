@@ -157,6 +157,75 @@ function parseWorkflowSpecList(value: string, defaultType: string): Array<{
   });
 }
 
+function workflowInputsFromJson(value: string): Array<Record<string, unknown>> {
+  try {
+    const payload = parseJsonObject(value);
+    return Array.isArray(payload.inputs)
+      ? payload.inputs.filter(
+          (item): item is Record<string, unknown> =>
+            Boolean(item && typeof item === "object" && !Array.isArray(item)),
+        )
+      : [];
+  } catch {
+    return [];
+  }
+}
+
+function inputTextValue(inputs: Record<string, unknown>, input: Record<string, unknown>): string {
+  const inputId = String(input.id ?? "");
+  const inputType = String(input.type ?? "");
+  const value = inputs[inputId];
+  if (inputType === "file_set") {
+    if (Array.isArray(value)) {
+      return value
+        .map((item) =>
+          item && typeof item === "object" && !Array.isArray(item)
+            ? String((item as Record<string, unknown>).path ?? "")
+            : String(item ?? ""),
+        )
+        .filter(Boolean)
+        .join("\n");
+    }
+    return String(value ?? "");
+  }
+  if (isFileLikeWorkflowInput(inputType)) {
+    if (value && typeof value === "object" && !Array.isArray(value)) {
+      return String((value as Record<string, unknown>).path ?? "");
+    }
+    return String(value ?? "");
+  }
+  return typeof value === "string" ? value : value == null ? "" : JSON.stringify(value);
+}
+
+function updateInputsJsonValue(
+  inputsJson: string,
+  input: Record<string, unknown>,
+  rawValue: string,
+): string {
+  const payload = parseJsonObject(inputsJson || "{}");
+  const inputId = String(input.id ?? "");
+  const inputType = String(input.type ?? "");
+  if (!inputId) return inputsJson;
+  if (inputType === "file_set") {
+    payload[inputId] = parseCommaSeparated(rawValue.replace(/\r?\n/g, ",")).map((path) => ({
+      path,
+    }));
+  } else if (isFileLikeWorkflowInput(inputType)) {
+    payload[inputId] = rawValue.trim() ? { path: rawValue.trim() } : "";
+  } else if (inputType === "boolean") {
+    payload[inputId] = rawValue === "true";
+  } else if (inputType === "number") {
+    payload[inputId] = rawValue.trim() ? Number(rawValue) : "";
+  } else {
+    payload[inputId] = rawValue;
+  }
+  return pretty(payload);
+}
+
+function isFileLikeWorkflowInput(inputType: string): boolean {
+  return ["file", "patch", "diff", "coverage_report"].includes(inputType);
+}
+
 function isBulkSemanticImportPayload(value: unknown): boolean {
   if (Array.isArray(value)) return true;
   if (!value || typeof value !== "object") return false;
@@ -417,6 +486,18 @@ export default function AgentWorkbenchPage() {
     () => workflows.map((workflow) => workflow.id),
     [workflows],
   );
+  const selectedWorkflowInputs = useMemo(() => {
+    const registered = workflows.find((workflow) => workflow.id === selectedWorkflowId);
+    if (registered?.inputs?.length) return registered.inputs;
+    return workflowInputsFromJson(workflowJson);
+  }, [selectedWorkflowId, workflowJson, workflows]);
+  const parsedPrepareInputs = useMemo(() => {
+    try {
+      return parseJsonObject(inputsJson || "{}");
+    } catch {
+      return {};
+    }
+  }, [inputsJson]);
 
   const loadWorkflows = useCallback(async () => {
     setLoading(true);
@@ -583,6 +664,10 @@ export default function AgentWorkbenchPage() {
       await refreshArtifactManifest(result.task_run_id);
       setMessage(`Task run prepared: ${result.task_run_id}`);
     });
+
+  function updatePrepareInput(input: Record<string, unknown>, value: string) {
+    setInputsJson((current) => updateInputsJsonValue(current, input, value));
+  }
 
   const loadPreparedArtifacts = () =>
     runAction("load-artifacts", async () => {
@@ -1115,12 +1200,84 @@ export default function AgentWorkbenchPage() {
                 className="w-full rounded-lg border border-outline-variant/30 bg-surface px-3 py-2 text-sm text-on-surface outline-none focus:border-primary"
               />
             </label>
+            {selectedWorkflowInputs.length > 0 && (
+              <div className="rounded-lg border border-outline-variant/30 bg-surface p-3">
+                <p className="mb-2 text-xs font-medium text-on-surface">
+                  Workflow inputs
+                </p>
+                <div className="space-y-2">
+                  {selectedWorkflowInputs.map((input) => {
+                    const inputId = String(input.id ?? "");
+                    const inputType = String(input.type ?? "text");
+                    const required = input.required === true;
+                    const role = String(input.role ?? "");
+                    const value = inputTextValue(parsedPrepareInputs, input);
+                    if (!inputId) return null;
+                    if (inputType === "boolean") {
+                      return (
+                        <label key={inputId} className="block">
+                          <span className="mb-1 block text-xs text-on-surface-variant">
+                            {inputId}:{inputType}
+                            {required ? " *" : ""}
+                          </span>
+                          <select
+                            aria-label={`Workflow input ${inputId}`}
+                            value={value === "true" ? "true" : "false"}
+                            onChange={(event) => updatePrepareInput(input, event.target.value)}
+                            className="w-full rounded-lg border border-outline-variant/30 bg-surface-container px-3 py-2 text-sm text-on-surface outline-none focus:border-primary"
+                          >
+                            <option value="false">false</option>
+                            <option value="true">true</option>
+                          </select>
+                        </label>
+                      );
+                    }
+                    const multiline = inputType === "file_set" || inputType === "long_text";
+                    return (
+                      <label key={inputId} className="block">
+                        <span className="mb-1 block text-xs text-on-surface-variant">
+                          {inputId}:{inputType}
+                          {required ? " *" : ""}
+                        </span>
+                        {multiline ? (
+                          <textarea
+                            aria-label={`Workflow input ${inputId}`}
+                            value={value}
+                            onChange={(event) => updatePrepareInput(input, event.target.value)}
+                            placeholder={
+                              inputType === "file_set"
+                                ? "One local file path per line"
+                                : role || "Input text"
+                            }
+                            className="h-20 w-full resize-y rounded-lg border border-outline-variant/30 bg-surface-container p-3 font-data text-xs text-on-surface outline-none focus:border-primary"
+                            spellCheck={false}
+                          />
+                        ) : (
+                          <input
+                            aria-label={`Workflow input ${inputId}`}
+                            value={value}
+                            onChange={(event) => updatePrepareInput(input, event.target.value)}
+                            placeholder={
+                              isFileLikeWorkflowInput(inputType)
+                                ? "Local file path"
+                                : role || "Input value"
+                            }
+                            className="w-full rounded-lg border border-outline-variant/30 bg-surface-container px-3 py-2 text-sm text-on-surface outline-none focus:border-primary"
+                          />
+                        )}
+                      </label>
+                    );
+                  })}
+                </div>
+              </div>
+            )}
             <label className="block">
               <span className="mb-1 block text-xs text-on-surface-variant">Inputs JSON</span>
               <textarea
                 value={inputsJson}
                 onChange={(event) => setInputsJson(event.target.value)}
                 className="h-40 w-full resize-y rounded-lg border border-outline-variant/30 bg-surface p-3 font-data text-xs text-on-surface outline-none focus:border-primary"
+                aria-label="Inputs JSON"
                 spellCheck={false}
               />
             </label>

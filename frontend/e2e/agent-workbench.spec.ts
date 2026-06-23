@@ -180,6 +180,13 @@ test("agent workbench renders workflow and task-run controls", async ({ page }) 
   await expect(page.getByLabel("Workflow JSON")).toHaveValue(/"patch_file"/);
   await expect(page.getByLabel("Workflow JSON")).toHaveValue(/"before_after_flow"/);
   await expect(page.getByLabel("Workflow JSON")).toHaveValue(/"render_report"/);
+  await expect(page.getByText("Workflow inputs")).toBeVisible();
+  await page.getByLabel("Workflow input patch_file").fill("E:/patches/tls.patch");
+  await page.getByLabel("Workflow input design_doc").fill("E:/docs/tls-design.md");
+  await page.getByLabel("Workflow input analysis_object").fill("nvme-tcp-tls");
+  await expect(page.getByLabel("Inputs JSON")).toHaveValue(/"patch_file": \{\s+"path": "E:\/patches\/tls\.patch"\s+\}/);
+  await expect(page.getByLabel("Inputs JSON")).toHaveValue(/"design_doc": \{\s+"path": "E:\/docs\/tls-design\.md"\s+\}/);
+  await expect(page.getByLabel("Inputs JSON")).toHaveValue(/"analysis_object": "nvme-tcp-tls"/);
   await expect(page.getByRole("button", { name: "Prepare run" })).toBeDisabled();
   await expect(page.getByRole("button", { name: "Execute workflow" })).toBeDisabled();
   await expect(page.getByLabel("Repo path")).toBeVisible();
