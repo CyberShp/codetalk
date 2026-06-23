@@ -137,6 +137,10 @@ async function routeWorkbenchShell(page: import("@playwright/test").Page) {
             command: ["corp-agent", "run"],
             fallback_commands: [],
             readonly_args: [],
+            env_hint_keys: ["CORP_AGENT_PROFILE"],
+            env_hints: {
+              CORP_AGENT_PROFILE: "innernet",
+            },
             command_hint_env: "EXTERNAL_AGENT_CUSTOM_PROVIDERS",
             capabilities: {
               provider: "corp-agent",
@@ -145,6 +149,7 @@ async function routeWorkbenchShell(page: import("@playwright/test").Page) {
               supports_artifact_export: true,
               supports_json_output: true,
               prompt_transport: "stdin",
+              env_hint_keys: ["CORP_AGENT_PROFILE"],
             },
             credential_boundary:
               "Corp Agent owns internal credentials; CodeTalk validates returned artifacts.",
@@ -315,6 +320,7 @@ test("agent workbench renders workflow and task-run controls", async ({ page }) 
   await expect(page.getByText("Check: PATH, CCR_CONFIG_PATH, CLAUDE_CODE_CONFIG_PATH")).toBeVisible();
   await expect(page.getByText(/PowerShell profile/)).toBeVisible();
   await expect(page.getByText("Agent-owned").first()).toBeVisible();
+  await expect(page.getByText("Env: CORP_AGENT_PROFILE")).toBeVisible();
   await expect(page.getByText("CodeTalk callable").first()).toBeVisible();
   await expect(page.getByText("Local repo search")).toBeVisible();
   await expect(page.getByText("source discovery")).toBeVisible();

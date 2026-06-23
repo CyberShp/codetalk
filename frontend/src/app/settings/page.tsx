@@ -416,6 +416,12 @@ export default function SettingsPage() {
             rows={7}
             className="w-full rounded-lg border border-outline-variant/30 bg-surface px-3 py-2 font-data text-xs text-on-surface placeholder:text-on-surface-variant/50 focus:border-primary/50 focus:outline-none"
           />
+          <p className="mt-1 break-words text-[11px] text-on-surface-variant">
+            Example:{" "}
+            <code className="font-data">
+              {`[{"id":"corp-agent","command":"corp-agent run --json","prompt_transport":"stdin","env_hints":{"CORP_AGENT_PROFILE":"innernet"}}]`}
+            </code>
+          </p>
         </div>
       </div>
 

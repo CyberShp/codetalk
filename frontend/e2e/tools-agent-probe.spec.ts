@@ -21,6 +21,14 @@ test("tools page renders readable management copy", async ({ page }) => {
             supports_artifact_export: true,
             supports_json_output: true,
             prompt_transport: "stdin",
+            env_hint_keys: ["CORP_AGENT_PROFILE"],
+          },
+          agent_provider_diagnostics: {
+            configured_command_text: "ccr code",
+            env_hint_keys: ["CORP_AGENT_PROFILE"],
+            env_hints: {
+              CORP_AGENT_PROFILE: "innernet",
+            },
           },
         },
       ],
@@ -31,6 +39,8 @@ test("tools page renders readable management copy", async ({ page }) => {
 
   await expect(page.getByRole("heading", { name: "工具状态" })).toBeVisible();
   await expect(page.getByText("查看和管理分析工具进程")).toBeVisible();
+  await expect(page.getByText("env:CORP_AGENT_PROFILE")).toBeVisible();
+  await expect(page.getByText("CORP_AGENT_PROFILE=innernet")).toBeVisible();
   await expect(page.getByRole("button", { name: "刷新" })).toBeVisible();
 });
 

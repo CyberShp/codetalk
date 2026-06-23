@@ -2562,6 +2562,14 @@ export default function AgentWorkbenchPage() {
                     {provider.capabilities.supports_json_output ? "json" : "no-json"}
                   </span>
                 </p>
+                {provider.env_hint_keys?.length ? (
+                  <p className="break-words">
+                    Env:{" "}
+                    <span className="font-data text-on-surface">
+                      {provider.env_hint_keys.join(", ")}
+                    </span>
+                  </p>
+                ) : null}
               </div>
               <div className="mt-3 flex flex-wrap gap-1.5">
                 {provider.capabilities.supports_source_discovery && (

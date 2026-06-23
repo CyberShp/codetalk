@@ -201,6 +201,18 @@ function AgentProviderCapabilitiesCard({
           ))}
         </div>
       )}
+      {capabilities.env_hint_keys?.length ? (
+        <div className="mt-2 flex flex-wrap gap-1.5">
+          {capabilities.env_hint_keys.map((key) => (
+            <code
+              key={key}
+              className="rounded bg-surface-container px-1.5 py-0.5 font-data text-[11px] text-on-surface"
+            >
+              env:{key}
+            </code>
+          ))}
+        </div>
+      ) : null}
     </div>
   );
 }
@@ -273,6 +285,23 @@ function AgentProviderDiagnosticsCard({
         <p className="mt-1 break-words text-on-surface-variant">
           fallbacks: {diagnostics.fallback_command_texts.join(" | ")}
         </p>
+      ) : null}
+      {diagnostics.env_hint_keys?.length ? (
+        <p className="mt-1 break-words text-on-surface-variant">
+          env: {diagnostics.env_hint_keys.join(", ")}
+        </p>
+      ) : null}
+      {diagnostics.env_hints && Object.keys(diagnostics.env_hints).length > 0 ? (
+        <div className="mt-1 flex flex-wrap gap-1.5">
+          {Object.entries(diagnostics.env_hints).map(([key, value]) => (
+            <code
+              key={key}
+              className="rounded bg-surface-container px-1.5 py-0.5 font-data text-[11px] text-on-surface"
+            >
+              {key}={value}
+            </code>
+          ))}
+        </div>
       ) : null}
       {diagnostics.startup_probe_endpoint && (
         <p className="mt-1 break-words text-on-surface-variant">

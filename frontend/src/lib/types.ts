@@ -117,6 +117,7 @@ export interface AgentProviderSettingsCustomProvider {
   prompt_transport?: string;
   fallback_commands?: string[];
   readonly_args?: string[];
+  env_hints?: Record<string, string>;
   supports_mcp?: boolean;
   mcp_profiles?: string[];
   supports_artifact_export?: boolean;
@@ -159,6 +160,7 @@ export interface AgentProviderCapabilities {
   supports_artifact_export: boolean;
   supports_json_output: boolean;
   prompt_transport?: string;
+  env_hint_keys?: string[];
   supports_source_discovery?: boolean;
   supports_call_graph?: boolean;
   supports_source_slices?: boolean;
@@ -176,6 +178,8 @@ export interface WorkbenchProviderMatrixItem {
   command: string[];
   fallback_commands: string[][];
   readonly_args: string[];
+  env_hint_keys?: string[];
+  env_hints?: Record<string, string>;
   command_hint_env: string;
   capabilities: AgentProviderCapabilities;
   credential_boundary?: string;
@@ -187,6 +191,8 @@ export interface WorkbenchProviderMatrixItem {
     startup_probe_endpoint?: string;
     configured_command_text?: string;
     fallback_command_texts?: string[];
+    env_hint_keys?: string[];
+    env_hints?: Record<string, string>;
     prompt_transport?: string;
     startup_probe_transport?: string;
     manual_probe_command?: string;
@@ -553,6 +559,8 @@ export interface AgentProviderDiagnosticsSummary {
   mcp_credentials_owner?: string;
   configured_command_text?: string;
   fallback_command_texts?: string[];
+  env_hint_keys?: string[];
+  env_hints?: Record<string, string>;
   attempts?: AgentProviderAttemptDiagnostics[];
   process_command?: string[];
   launch_command?: string[];
