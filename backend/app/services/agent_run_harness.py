@@ -237,6 +237,9 @@ class AgentRunHarness:
         context_discovery_decision_summary = _context_discovery_decision_summary(
             task_bundle if isinstance(task_bundle, dict) else {}
         )
+        agent_instruction_policy = _agent_instruction_policy_summary(
+            task_bundle if isinstance(task_bundle, dict) else {}
+        )
         provider_diagnostics = _provider_diagnostics_snapshot(
             run_payload=run_payload,
             task_bundle=task_bundle if isinstance(task_bundle, dict) else {},
@@ -259,6 +262,7 @@ class AgentRunHarness:
                 agent_output_contract if isinstance(agent_output_contract, dict) else {}
             ),
             "context_discovery_decision_summary": context_discovery_decision_summary,
+            "agent_instruction_policy": agent_instruction_policy,
             "provider_diagnostics": provider_diagnostics,
             "artifact_dir": str(self.artifact_dir),
         }
@@ -314,6 +318,7 @@ class AgentRunHarness:
                 "workflow_snapshot_sha256": workflow_snapshot_sha256,
                 "agent_output_contract_sha256": agent_output_contract_sha256,
                 "context_discovery_decision_summary": context_discovery_decision_summary,
+                "agent_instruction_policy": agent_instruction_policy,
                 "provider_diagnostics": provider_diagnostics,
                 "agent_output_contract": (
                     agent_output_contract if isinstance(agent_output_contract, dict) else {}
@@ -337,6 +342,7 @@ class AgentRunHarness:
                 "workflow_snapshot_sha256": workflow_snapshot_sha256,
                 "agent_output_contract_sha256": agent_output_contract_sha256,
                 "context_discovery_decision_summary": context_discovery_decision_summary,
+                "agent_instruction_policy": agent_instruction_policy,
                 "provider_diagnostics_artifact": "provider_diagnostics.json",
                 "agent_output_contract_artifact": "agent_output_contract.json",
                 "created_at": started_at,
@@ -432,6 +438,7 @@ class AgentRunHarness:
                 workflow_snapshot_sha256=workflow_snapshot_sha256,
                 agent_output_contract_sha256=agent_output_contract_sha256,
                 stdin_json_sha256=hashlib.sha256(stdin_payload.encode("utf-8")).hexdigest(),
+                agent_instruction_policy=agent_instruction_policy,
             ),
         )
         self._write_json(
@@ -687,6 +694,7 @@ def _agent_replay_plan_payload(
     workflow_snapshot_sha256: str,
     agent_output_contract_sha256: str,
     stdin_json_sha256: str,
+    agent_instruction_policy: dict[str, Any],
 ) -> dict[str, Any]:
     artifact_hashes = _replay_artifact_hashes(
         artifact_dir,
@@ -728,6 +736,7 @@ def _agent_replay_plan_payload(
             if prompt_transport == "stdin"
             else "execution_input.json:process_command"
         ),
+        "agent_instruction_policy": agent_instruction_policy,
         "env_hints": env_hints,
         "artifact_hashes": artifact_hashes,
         "replay_steps": [
@@ -794,6 +803,57 @@ def _context_discovery_decision_summary(task_bundle: dict[str, Any]) -> dict[str
         if item:
             summary[provider] = item
     return summary
+
+
+def _agent_instruction_policy_summary(task_bundle: dict[str, Any]) -> dict[str, Any]:
+    instructions = task_bundle.get("agent_instructions")
+    decision = task_bundle.get("context_discovery_decision")
+    files_payload: list[dict[str, Any]] = []
+    fast_context_requested_by_files: list[str] = []
+    if isinstance(decision, dict):
+        fast_context = decision.get("fast-context")
+        if isinstance(fast_context, dict):
+            fast_context_requested_by_files = [
+                str(item)
+                for item in fast_context.get("requested_by_files") or []
+                if str(item)
+            ]
+    if isinstance(instructions, dict):
+        for item in instructions.get("files") or []:
+            if not isinstance(item, dict):
+                continue
+            relative_path = str(item.get("relative_path") or "").strip()
+            content = str(item.get("content") or "")
+            sha256 = str(item.get("sha256") or "").strip()
+            if not relative_path:
+                continue
+            lower_content = content.lower()
+            files_payload.append({
+                "relative_path": relative_path,
+                "sha256": sha256,
+                "content_chars": len(content),
+                "contains_fast_context": (
+                    "fast-context" in lower_content
+                    or "fast_context" in lower_content
+                    or "mcp__fast-context__fast_context_search" in lower_content
+                ),
+                "content_excerpt": content[:500],
+            })
+    fast_context_first = any(item.get("contains_fast_context") for item in files_payload)
+    if isinstance(decision, dict):
+        fast_context = decision.get("fast-context")
+        if isinstance(fast_context, dict):
+            fast_context_first = fast_context_first or bool(
+                fast_context.get("requested_by_agent_instructions")
+            )
+    return {
+        "files": files_payload,
+        "file_count": len(files_payload),
+        "fast_context_first": fast_context_first,
+        "fast_context_requested_by_files": fast_context_requested_by_files,
+        "raw_output_reuse": "never_without_validation",
+        "codetalk_validates_agent_claims": True,
+    }
 
 
 def _agent_process_invocation_for_harness(

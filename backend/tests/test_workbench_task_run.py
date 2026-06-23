@@ -2212,6 +2212,10 @@ def test_workbench_workflow_runner_runs_second_agent_turn_for_source_slice_reque
         "}\n",
         encoding="utf-8",
     )
+    (tmp_path / "AGENTS.md").write_text(
+        "Prefer mcp__fast-context__fast_context_search before local grep.\n",
+        encoding="utf-8",
+    )
     script_path = tmp_path / "agent_slice_turns.py"
     script_path.write_text(
         "import json, pathlib, sys\n"
@@ -2292,6 +2296,22 @@ def test_workbench_workflow_runner_runs_second_agent_turn_for_source_slice_reque
     assert json.loads((turn_2 / "execution_input.json").read_text(encoding="utf-8"))[
         "turn_id"
     ] == "turn_2"
+    turn_1_execution_input = json.loads(
+        (turn_1 / "execution_input.json").read_text(encoding="utf-8")
+    )
+    turn_2_execution_input = json.loads(
+        (turn_2 / "execution_input.json").read_text(encoding="utf-8")
+    )
+    assert turn_1_execution_input["agent_instruction_policy"]["files"][0][
+        "relative_path"
+    ] == "AGENTS.md"
+    assert turn_1_execution_input["agent_instruction_policy"]["files"][0][
+        "sha256"
+    ] == hashlib.sha256((tmp_path / "AGENTS.md").read_bytes()).hexdigest()
+    assert turn_1_execution_input["agent_instruction_policy"]["fast_context_first"] is True
+    assert turn_1_execution_input["agent_instruction_policy"] == turn_2_execution_input[
+        "agent_instruction_policy"
+    ]
     assert not json.loads((turn_1 / "task_bundle.json").read_text(encoding="utf-8")).get(
         "requested_source_slices"
     )
@@ -2308,6 +2328,8 @@ def test_workbench_workflow_runner_runs_second_agent_turn_for_source_slice_reque
     assert replay_plan["turn_id"] == "turn_2"
     assert replay_plan["prompt_source"] == "execution_input.json:stdin"
     assert replay_plan["safety_boundary"]["readonly_env_required"] is True
+    assert replay_plan["agent_instruction_policy"]["fast_context_first"] is True
+    assert replay_plan["agent_instruction_policy"]["files"][0]["relative_path"] == "AGENTS.md"
     assert replay_plan["artifact_hashes"]["task_bundle.json"]
     assert replay_plan["artifact_hashes"]["execution_input.json"]
     assert "agent_replay_plan.json" in step["lifecycle"]["replay_plan_artifact"]
