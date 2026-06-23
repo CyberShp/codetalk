@@ -388,6 +388,14 @@ test("agent workbench previews task run artifact content", async ({ page }) => {
             sha256: "fedcba9876543210",
             preview: "{\"accepted_count\":2,\"rejected_count\":1}",
           },
+          {
+            relative_path: "workflow_output_materialization.json",
+            path: "E:/data/workbench/task_runs/task_run_preview/workflow_output_materialization.json",
+            kind: "workflow_output_materialization",
+            size_bytes: 384,
+            sha256: "aaaaabbbbbcccccdddddeeeeefffff1111122222",
+            preview: "{\"evidence_count\":2,\"rejected_outputs\":[{}]}",
+          },
         ],
       },
     });
@@ -454,6 +462,33 @@ test("agent workbench previews task run artifact content", async ({ page }) => {
       });
     },
   );
+  await page.route(
+    "**/api/workbench/task-runs/task_run_preview/artifacts/content/workflow_output_materialization.json",
+    async (route) => {
+      await route.fulfill({
+        headers: corsHeaders(route.request().headers().origin),
+        json: {
+          relative_path: "workflow_output_materialization.json",
+          path: "E:/data/workbench/task_runs/task_run_preview/workflow_output_materialization.json",
+          kind: "workflow_output_materialization",
+          size_bytes: 384,
+          sha256: "aaaaabbbbbcccccdddddeeeeefffff1111122222",
+          preview: "{\"evidence_count\":2,\"rejected_outputs\":[{}]}",
+          is_text: true,
+          truncated: false,
+          content: JSON.stringify({
+            evidence_count: 2,
+            evidence_ids: ["ev1", "ev2"],
+            rejected_outputs: [{ output: "bad", reason: "output_not_ok" }],
+            workflow_outputs_artifact: {
+              output_count: 3,
+              sha256: "9999888877776666555544443333222211110000aaaabbbbccccdddd",
+            },
+          }),
+        },
+      });
+    },
+  );
 
   await page.goto("/workbench", { waitUntil: "domcontentloaded" });
   await expect(page.getByText("ccr code", { exact: true })).toBeVisible();
@@ -471,7 +506,7 @@ test("agent workbench previews task run artifact content", async ({ page }) => {
   await expect(page.getByText("chunks:2")).toBeVisible();
   await expect(page.getByText("warnings:1")).toBeVisible();
   await expect(page.getByText("fast-context: fallback to agent_cli")).toBeVisible();
-  await expect(page.getByText("Audit artifacts: 3")).toBeVisible();
+  await expect(page.getByText("Audit artifacts: 4")).toBeVisible();
 
   await page.getByRole("button", { name: "task_bundle:task_bundle.json" }).click();
 
@@ -487,4 +522,14 @@ test("agent workbench previews task run artifact content", async ({ page }) => {
   await expect(page.getByText("Accepted artifacts: 2")).toBeVisible();
   await expect(page.getByText("Rejected artifacts: 1")).toBeVisible();
   await expect(page.getByText("source_scope.json sha:111122223333")).toBeVisible();
+
+  await page
+    .getByRole("button", {
+      name: "workflow_output_materialization:workflow_output_materialization.json",
+    })
+    .click();
+  await expect(page.getByText("Materialized evidence: 2")).toBeVisible();
+  await expect(page.getByText("Rejected outputs: 1")).toBeVisible();
+  await expect(page.getByText("Declared outputs: 3")).toBeVisible();
+  await expect(page.getByText("workflow_outputs sha:999988887777")).toBeVisible();
 });

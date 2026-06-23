@@ -365,6 +365,13 @@ type EvidenceValidationSummary = {
   rejectedDetails: Array<{ artifact: string; reason: string; sourceStepId: string }>;
 };
 
+type WorkflowOutputMaterializationSummary = {
+  evidenceCount: number;
+  rejectedCount: number;
+  workflowOutputsSha: string;
+  outputCount: number;
+};
+
 function evidenceValidationSummary(
   artifact: WorkbenchTaskArtifactContent,
 ): EvidenceValidationSummary | null {
@@ -409,6 +416,41 @@ function evidenceValidationSummary(
     rejectedCount: Number(payload.rejected_count ?? rejectedDetails.length) || 0,
     acceptedDetails,
     rejectedDetails,
+  };
+}
+
+function workflowOutputMaterializationSummary(
+  artifact: WorkbenchTaskArtifactContent,
+): WorkflowOutputMaterializationSummary | null {
+  if (!artifact.is_text || !artifact.content.trim()) return null;
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(artifact.content);
+  } catch {
+    return null;
+  }
+  if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) return null;
+  const payload = parsed as Record<string, unknown>;
+  if (
+    artifact.kind !== "workflow_output_materialization" &&
+    !("workflow_outputs_artifact" in payload)
+  ) {
+    return null;
+  }
+  const workflowOutputsArtifact =
+    payload.workflow_outputs_artifact &&
+    typeof payload.workflow_outputs_artifact === "object" &&
+    !Array.isArray(payload.workflow_outputs_artifact)
+      ? (payload.workflow_outputs_artifact as Record<string, unknown>)
+      : {};
+  const rejected = Array.isArray(payload.rejected_outputs)
+    ? payload.rejected_outputs.length
+    : 0;
+  return {
+    evidenceCount: Number(payload.evidence_count ?? 0) || 0,
+    rejectedCount: rejected,
+    workflowOutputsSha: String(workflowOutputsArtifact.sha256 ?? ""),
+    outputCount: Number(workflowOutputsArtifact.output_count ?? 0) || 0,
   };
 }
 
@@ -1583,6 +1625,24 @@ export default function AgentWorkbenchPage() {
                                       {item.artifact || "artifact"} rejected:{item.reason || "unknown"}
                                     </div>
                                   ))}
+                                </div>
+                              )}
+                            </div>
+                          );
+                        })()}
+                        {(() => {
+                          const summary = workflowOutputMaterializationSummary(artifactContent);
+                          if (!summary) return null;
+                          return (
+                            <div className="mt-2 rounded bg-surface-container px-2 py-1.5 text-[11px] text-on-surface-variant">
+                              <div className="flex flex-wrap gap-2">
+                                <span>Materialized evidence: {summary.evidenceCount}</span>
+                                <span>Rejected outputs: {summary.rejectedCount}</span>
+                                <span>Declared outputs: {summary.outputCount}</span>
+                              </div>
+                              {summary.workflowOutputsSha && (
+                                <div className="mt-1 font-data text-[10px]">
+                                  workflow_outputs sha:{summary.workflowOutputsSha.slice(0, 12)}
                                 </div>
                               )}
                             </div>
