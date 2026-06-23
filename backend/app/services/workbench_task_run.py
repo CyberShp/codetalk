@@ -21,6 +21,7 @@ from app.services.external_agent_discovery import (
     split_agent_command,
 )
 from app.services.test_semantic_library import TestSemanticLibraryStore
+from app.services.workbench_artifact_manifest import write_task_artifact_manifest
 from app.services.workbench_input_ingest import ingest_workbench_inputs
 from app.services.workflow_dsl import WorkflowStore
 
@@ -212,6 +213,7 @@ class WorkbenchTaskRunPreparer:
         )
         _write_json(artifact_dir / "degraded_retrieval.json", context_artifacts["degraded_retrieval"])
         _write_json(artifact_dir / "task_bundle.json", task_bundle)
+        write_task_artifact_manifest(artifact_dir, task_run_id=task_run_id)
         return result
 
 

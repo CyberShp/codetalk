@@ -54,6 +54,12 @@ def test_prepare_workbench_task_run_freezes_workflow_and_creates_agent_run(tmp_p
         "changed_files.json",
     ]
     assert (root / "agent_runs" / "collect_mr" / "agent_run.json").exists()
+    manifest = json.loads((root / "task_artifact_manifest.json").read_text(encoding="utf-8"))
+    manifest_paths = {item["relative_path"]: item for item in manifest["artifacts"]}
+    assert manifest["task_run_id"] == result.task_run_id
+    assert "task_artifact_manifest.json" not in manifest_paths
+    assert manifest_paths["task_bundle.json"]["kind"] == "task_bundle"
+    assert manifest_paths["agent_runs/collect_mr/agent_run.json"]["kind"] == "agent_run"
 
 
 def test_prepare_workbench_task_run_ingests_file_inputs(tmp_path):

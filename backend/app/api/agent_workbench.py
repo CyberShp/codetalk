@@ -717,7 +717,7 @@ async def list_task_run_artifacts(task_run_id: str) -> dict[str, Any]:
 async def get_task_run_artifact_content(
     task_run_id: str,
     artifact_path: str,
-    max_chars: int = Query(20000, ge=1, le=200000),
+    max_chars: int = Query(50000, ge=1, le=200000),
 ) -> dict[str, Any]:
     try:
         task_run = WorkbenchTaskRunStore(_task_runs_dir()).load(task_run_id)
