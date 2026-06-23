@@ -347,9 +347,15 @@ test("agent workbench renders workflow and task-run controls", async ({ page }) 
   await expect(page.getByLabel("Workflow builder evidence mappings")).toHaveValue(
     /"patch_impact_scope"/,
   );
+  await expect(page.getByLabel("Workflow builder semantic imports")).toHaveValue(
+    /"black_box_cases"/,
+  );
   await page.getByLabel("Workflow builder scenario").selectOption("patch_impact");
   await page.getByRole("button", { name: "Generate draft" }).click();
   await expect(page.getByText("Workflow draft generated: custom_mr_blackbox")).toBeVisible();
+  await expect(page.getByText("Output contract preview")).toBeVisible();
+  await expect(page.getByText(/test_cases:test_cases/)).toBeVisible();
+  await expect(page.getByText("semantic_import", { exact: true })).toBeVisible();
   await expect(page.getByLabel("Workflow JSON")).toHaveValue(/"patch_file"/);
   await expect(page.getByLabel("Workflow JSON")).toHaveValue(/"provider": "corp-agent"/);
   await expect(page.getByLabel("Workflow builder input schemas")).toHaveValue(/"patch_file"/);
@@ -358,6 +364,7 @@ test("agent workbench renders workflow and task-run controls", async ({ page }) 
   await expect(page.getByLabel("Workflow JSON")).toHaveValue(/"before_after_flow"/);
   await expect(page.getByLabel("Workflow JSON")).toHaveValue(/"render_report"/);
   await expect(page.getByLabel("Workflow JSON")).toHaveValue(/"evidence_memory"/);
+  await expect(page.getByLabel("Workflow JSON")).toHaveValue(/"semantic_import"/);
   await expect(page.getByLabel("Workflow JSON")).toHaveValue(/"kind": "patch_impact_scope"/);
   await expect(page.getByLabel("Workflow JSON")).toHaveValue(/"path_field": "file_path"/);
   await expect(page.getByText("Workflow inputs")).toBeVisible();

@@ -183,6 +183,23 @@ const DEFAULT_BUILDER_EVIDENCE_MAPPINGS = {
   },
 };
 
+const DEFAULT_BUILDER_SEMANTIC_IMPORTS = {
+  black_box_cases: {
+    enabled: true,
+    defaults: {
+      test_level: "black_box",
+      reuse_rule: "terminology_only_not_source_truth",
+    },
+  },
+  test_cases: {
+    enabled: true,
+    defaults: {
+      test_level: "black_box",
+      reuse_rule: "terminology_only_not_source_truth",
+    },
+  },
+};
+
 const DEFAULT_BUILDER_INPUT_SCHEMAS = {
   patch_file: {
     type: "object",
@@ -320,6 +337,26 @@ function outputEvidenceMappingForSpec(
   const direct = allMappings[outputId];
   if (direct && typeof direct === "object" && !Array.isArray(direct)) {
     return direct as Record<string, unknown>;
+  }
+  const wildcard = allMappings["*"];
+  if (wildcard && typeof wildcard === "object" && !Array.isArray(wildcard)) {
+    return wildcard as Record<string, unknown>;
+  }
+  return null;
+}
+
+function outputSemanticImportForSpec(
+  outputId: string,
+  outputType: string,
+  allMappings: Record<string, unknown>,
+): Record<string, unknown> | null {
+  const direct = allMappings[outputId];
+  if (direct && typeof direct === "object" && !Array.isArray(direct)) {
+    return direct as Record<string, unknown>;
+  }
+  const byType = allMappings[`type:${outputType}`];
+  if (byType && typeof byType === "object" && !Array.isArray(byType)) {
+    return byType as Record<string, unknown>;
   }
   const wildcard = allMappings["*"];
   if (wildcard && typeof wildcard === "object" && !Array.isArray(wildcard)) {
@@ -1286,6 +1323,9 @@ export default function AgentWorkbenchPage() {
   const [builderEvidenceMappings, setBuilderEvidenceMappings] = useState(
     pretty(DEFAULT_BUILDER_EVIDENCE_MAPPINGS),
   );
+  const [builderSemanticImports, setBuilderSemanticImports] = useState(
+    pretty(DEFAULT_BUILDER_SEMANTIC_IMPORTS),
+  );
   const [builderInputSchemas, setBuilderInputSchemas] = useState(
     pretty(DEFAULT_BUILDER_INPUT_SCHEMAS),
   );
@@ -1408,6 +1448,45 @@ export default function AgentWorkbenchPage() {
       return {};
     }
   }, [inputsJson]);
+  const builderOutputPreview = useMemo(() => {
+    try {
+      const requiredArtifacts = parseCommaSeparated(builderArtifacts);
+      const outputSchemas = parseJsonObject(builderOutputSchemas || "{}");
+      const evidenceMappings = parseJsonObject(builderEvidenceMappings || "{}");
+      const semanticImports = parseJsonObject(builderSemanticImports || "{}");
+      return parseWorkflowSpecList(builderOutputSpec, "json").map((output) => {
+        const artifact =
+          output.artifact || outputArtifactForSpec(output.id, output.type, requiredArtifacts);
+        const schema =
+          output.type === "json" ? outputSchemaForSpec(output.id, outputSchemas) : null;
+        const evidenceMemory =
+          output.type === "json" || output.type === "scope_report"
+            ? outputEvidenceMappingForSpec(output.id, evidenceMappings)
+            : null;
+        const semanticImport =
+          output.type === "test_cases"
+            ? outputSemanticImportForSpec(output.id, output.type, semanticImports)
+            : null;
+        return {
+          id: output.id,
+          type: output.type,
+          artifact,
+          schema: Boolean(schema),
+          evidenceMemory: Boolean(evidenceMemory),
+          evidenceKind: evidenceMemory ? String(evidenceMemory.kind ?? "") : "",
+          semanticImport: Boolean(semanticImport),
+        };
+      });
+    } catch {
+      return [];
+    }
+  }, [
+    builderArtifacts,
+    builderEvidenceMappings,
+    builderOutputSchemas,
+    builderOutputSpec,
+    builderSemanticImports,
+  ]);
   const latestDeploymentTaskProbeAudit = useMemo(
     () =>
       systemAudit?.checks.find(
@@ -1561,6 +1640,7 @@ export default function AgentWorkbenchPage() {
     setBuilderArtifacts(scenario.artifacts);
     setBuilderInputSchemas(pretty(DEFAULT_BUILDER_INPUT_SCHEMAS));
     setBuilderEvidenceMappings(pretty(DEFAULT_BUILDER_EVIDENCE_MAPPINGS));
+    setBuilderSemanticImports(pretty(DEFAULT_BUILDER_SEMANTIC_IMPORTS));
   }
 
   function generateWorkflowFromBuilder() {
@@ -1591,6 +1671,7 @@ export default function AgentWorkbenchPage() {
     const requiredArtifacts = parseCommaSeparated(builderArtifacts);
     const outputSchemas = parseJsonObject(builderOutputSchemas || "{}");
     const evidenceMappings = parseJsonObject(builderEvidenceMappings || "{}");
+    const semanticImports = parseJsonObject(builderSemanticImports || "{}");
     const outputs = parseWorkflowSpecList(builderOutputSpec, "json").map((output) => {
       const artifact =
         output.artifact || outputArtifactForSpec(output.id, output.type, requiredArtifacts);
@@ -1600,6 +1681,10 @@ export default function AgentWorkbenchPage() {
         output.type === "json" || output.type === "scope_report"
           ? outputEvidenceMappingForSpec(output.id, evidenceMappings)
           : null;
+      const semanticImport =
+        output.type === "test_cases"
+          ? outputSemanticImportForSpec(output.id, output.type, semanticImports)
+          : null;
       return {
         id: output.id,
         type: output.type,
@@ -1607,6 +1692,7 @@ export default function AgentWorkbenchPage() {
         ...(artifact ? { artifact } : {}),
         ...(schema ? { schema } : {}),
         ...(evidenceMemory ? { evidence_memory: evidenceMemory } : {}),
+        ...(semanticImport ? { semantic_import: semanticImport } : {}),
       };
     });
     const workflow = {
@@ -3034,6 +3120,47 @@ export default function AgentWorkbenchPage() {
                 spellCheck={false}
               />
             </label>
+            <label className="mt-2 block">
+              <span className="mb-1 block text-xs text-on-surface-variant">
+                Semantic imports JSON
+              </span>
+              <textarea
+                value={builderSemanticImports}
+                onChange={(event) => setBuilderSemanticImports(event.target.value)}
+                className="h-24 w-full resize-y rounded-lg border border-outline-variant/30 bg-surface-container p-3 font-data text-xs text-on-surface outline-none focus:border-primary"
+                aria-label="Workflow builder semantic imports"
+                spellCheck={false}
+              />
+            </label>
+            {builderOutputPreview.length > 0 && (
+              <div className="mt-2 rounded-lg border border-outline-variant/30 bg-surface-container px-2 py-1.5">
+                <p className="mb-1 text-xs font-medium text-on-surface-variant">
+                  Output contract preview
+                </p>
+                <div className="space-y-1 font-data text-[10px] text-on-surface-variant">
+                  {builderOutputPreview.map((output) => (
+                    <div
+                      key={`${output.id}:${output.type}`}
+                      className="break-words rounded bg-surface px-1.5 py-1"
+                    >
+                      <span className="text-on-surface">
+                        {output.id}:{output.type}
+                      </span>
+                      {output.artifact && <span> artifact:{output.artifact}</span>}
+                      {output.schema && <span> schema</span>}
+                      {output.evidenceMemory && (
+                        <span>
+                          {" "}
+                          evidence_memory
+                          {output.evidenceKind ? `:${output.evidenceKind}` : ""}
+                        </span>
+                      )}
+                      {output.semanticImport && <span> semantic_import</span>}
+                    </div>
+                  ))}
+                </div>
+              </div>
+            )}
             <label className="mt-2 block">
               <span className="mb-1 block text-xs text-on-surface-variant">
                 Input schemas JSON
