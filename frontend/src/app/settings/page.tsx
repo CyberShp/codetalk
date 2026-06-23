@@ -21,6 +21,7 @@ import type {
   LLMConfig,
   LLMConfigCreate,
   GeneralSettings,
+  AgentProviderSettings,
   ApiType,
 } from "@/lib/types";
 
@@ -34,6 +35,17 @@ const EMPTY_LLM_FORM: LLMConfigCreate = {
   temperature: 0.3,
   is_chat_model: true,
   is_embedding_model: false,
+};
+
+const DEFAULT_AGENT_PROVIDER_SETTINGS: AgentProviderSettings = {
+  claude_code_command: "ccr code",
+  claude_code_config_path: "",
+  claude_code_fallback_commands: [],
+  claude_code_mcp_profiles: [],
+  opencode_command: "opencode",
+  opencode_fallback_commands: [],
+  opencode_mcp_profiles: [],
+  external_agent_custom_providers: [],
 };
 
 export default function SettingsPage() {
@@ -57,12 +69,17 @@ export default function SettingsPage() {
   const [showGeneral, setShowGeneral] = useState(false);
   const [editingId, setEditingId] = useState<string | null>(null);
   const [savingActiveModel, setSavingActiveModel] = useState(false);
+  const [agentProviders, setAgentProviders] = useState<AgentProviderSettings>({
+    ...DEFAULT_AGENT_PROVIDER_SETTINGS,
+  });
+  const [customProvidersJson, setCustomProvidersJson] = useState("[]");
+  const [savingAgentProviders, setSavingAgentProviders] = useState(false);
 
   const loadData = useCallback(async () => {
     setLoading(true);
     setError(null);
     try {
-      const [llmList, generalData] = await Promise.all([
+      const [llmList, generalData, agentProviderData] = await Promise.all([
         api.settings.listLLM(),
         api.settings.getGeneral().catch(
           () =>
@@ -74,9 +91,14 @@ export default function SettingsPage() {
               active_embedding_model_id: "",
             }) as GeneralSettings,
         ),
+        api.settings.getAgentProviders().catch(
+          () => ({ ...DEFAULT_AGENT_PROVIDER_SETTINGS }) as AgentProviderSettings,
+        ),
       ]);
       setConfigs(llmList);
       setGeneral(generalData);
+      setAgentProviders(agentProviderData);
+      setCustomProvidersJson(JSON.stringify(agentProviderData.external_agent_custom_providers, null, 2));
     } catch (err: unknown) {
       setError(err instanceof Error ? err.message : "加载设置失败");
     } finally {
@@ -214,6 +236,34 @@ export default function SettingsPage() {
     }
   }, [general]);
 
+  const updateAgentProviders = useCallback(
+    <K extends keyof AgentProviderSettings>(key: K, value: AgentProviderSettings[K]) => {
+      setAgentProviders((prev) => ({ ...prev, [key]: value }));
+    },
+    [],
+  );
+
+  const handleSaveAgentProviders = useCallback(async () => {
+    setSavingAgentProviders(true);
+    setError(null);
+    try {
+      const customProviders = JSON.parse(customProvidersJson || "[]");
+      if (!Array.isArray(customProviders)) {
+        throw new Error("Custom providers JSON must be an array");
+      }
+      const saved = await api.settings.updateAgentProviders({
+        ...agentProviders,
+        external_agent_custom_providers: customProviders,
+      });
+      setAgentProviders(saved);
+      setCustomProvidersJson(JSON.stringify(saved.external_agent_custom_providers, null, 2));
+    } catch (err: unknown) {
+      setError(err instanceof Error ? err.message : "Failed to save Agent provider settings");
+    } finally {
+      setSavingAgentProviders(false);
+    }
+  }, [agentProviders, customProvidersJson]);
+
   if (loading) {
     return (
       <div className="flex items-center justify-center py-24 text-on-surface-variant">
@@ -237,6 +287,137 @@ export default function SettingsPage() {
           {error}
         </div>
       )}
+
+      {/* Agent CLI settings */}
+      <div className="mb-6 bg-surface-container rounded-xl border border-outline-variant/20 p-5">
+        <div className="mb-4 flex items-center justify-between gap-3">
+          <div>
+            <h2 className="flex items-center gap-2 text-base font-medium text-on-surface">
+              <ShieldCheck size={18} />
+              Agent CLI Settings
+            </h2>
+            <p className="mt-1 text-xs text-on-surface-variant">
+              Configure Claude Code Router, OpenCode, and intranet Agent CLIs used by Workbench tasks.
+            </p>
+          </div>
+          <button
+            type="button"
+            onClick={handleSaveAgentProviders}
+            disabled={savingAgentProviders}
+            className="flex items-center gap-2 rounded-lg bg-primary px-3 py-1.5 text-sm text-on-primary transition-opacity hover:opacity-90 disabled:opacity-50"
+          >
+            {savingAgentProviders ? <Loader2 size={14} className="animate-spin" /> : <Save size={14} />}
+            Save Agent CLIs
+          </button>
+        </div>
+        <div className="grid gap-4 lg:grid-cols-2">
+          <div>
+            <label className="mb-1 block text-xs font-medium text-on-surface-variant">
+              Claude / CCR command
+            </label>
+            <input
+              type="text"
+              aria-label="Claude Code command"
+              value={agentProviders.claude_code_command}
+              onChange={(event) => updateAgentProviders("claude_code_command", event.target.value)}
+              placeholder="ccr code"
+              className="w-full rounded-lg border border-outline-variant/30 bg-surface px-3 py-2 font-data text-sm text-on-surface placeholder:text-on-surface-variant/50 focus:border-primary/50 focus:outline-none"
+            />
+          </div>
+          <div>
+            <label className="mb-1 block text-xs font-medium text-on-surface-variant">
+              CCR config path
+            </label>
+            <input
+              type="text"
+              aria-label="CCR config path"
+              value={agentProviders.claude_code_config_path}
+              onChange={(event) => updateAgentProviders("claude_code_config_path", event.target.value)}
+              placeholder="C:/innernet/ccr/config-router.json"
+              className="w-full rounded-lg border border-outline-variant/30 bg-surface px-3 py-2 font-data text-sm text-on-surface placeholder:text-on-surface-variant/50 focus:border-primary/50 focus:outline-none"
+            />
+          </div>
+          <div>
+            <label className="mb-1 block text-xs font-medium text-on-surface-variant">
+              Claude fallback commands
+            </label>
+            <input
+              type="text"
+              aria-label="Claude fallback commands"
+              value={agentProviders.claude_code_fallback_commands.join(", ")}
+              onChange={(event) =>
+                updateAgentProviders(
+                  "claude_code_fallback_commands",
+                  event.target.value.split(",").map((item) => item.trim()).filter(Boolean),
+                )
+              }
+              placeholder="claude"
+              className="w-full rounded-lg border border-outline-variant/30 bg-surface px-3 py-2 font-data text-sm text-on-surface placeholder:text-on-surface-variant/50 focus:border-primary/50 focus:outline-none"
+            />
+          </div>
+          <div>
+            <label className="mb-1 block text-xs font-medium text-on-surface-variant">
+              Claude MCP profiles
+            </label>
+            <input
+              type="text"
+              aria-label="Claude MCP profiles"
+              value={agentProviders.claude_code_mcp_profiles.join(", ")}
+              onChange={(event) =>
+                updateAgentProviders(
+                  "claude_code_mcp_profiles",
+                  event.target.value.split(",").map((item) => item.trim()).filter(Boolean),
+                )
+              }
+              placeholder="codehub-readonly"
+              className="w-full rounded-lg border border-outline-variant/30 bg-surface px-3 py-2 font-data text-sm text-on-surface placeholder:text-on-surface-variant/50 focus:border-primary/50 focus:outline-none"
+            />
+          </div>
+          <div>
+            <label className="mb-1 block text-xs font-medium text-on-surface-variant">
+              OpenCode command
+            </label>
+            <input
+              type="text"
+              aria-label="OpenCode command"
+              value={agentProviders.opencode_command}
+              onChange={(event) => updateAgentProviders("opencode_command", event.target.value)}
+              placeholder="opencode"
+              className="w-full rounded-lg border border-outline-variant/30 bg-surface px-3 py-2 font-data text-sm text-on-surface placeholder:text-on-surface-variant/50 focus:border-primary/50 focus:outline-none"
+            />
+          </div>
+          <div>
+            <label className="mb-1 block text-xs font-medium text-on-surface-variant">
+              OpenCode MCP profiles
+            </label>
+            <input
+              type="text"
+              aria-label="OpenCode MCP profiles"
+              value={agentProviders.opencode_mcp_profiles.join(", ")}
+              onChange={(event) =>
+                updateAgentProviders(
+                  "opencode_mcp_profiles",
+                  event.target.value.split(",").map((item) => item.trim()).filter(Boolean),
+                )
+              }
+              placeholder="codehub-mcp"
+              className="w-full rounded-lg border border-outline-variant/30 bg-surface px-3 py-2 font-data text-sm text-on-surface placeholder:text-on-surface-variant/50 focus:border-primary/50 focus:outline-none"
+            />
+          </div>
+        </div>
+        <div className="mt-4">
+          <label className="mb-1 block text-xs font-medium text-on-surface-variant">
+            Custom Agent providers JSON
+          </label>
+          <textarea
+            aria-label="Custom Agent providers JSON"
+            value={customProvidersJson}
+            onChange={(event) => setCustomProvidersJson(event.target.value)}
+            rows={7}
+            className="w-full rounded-lg border border-outline-variant/30 bg-surface px-3 py-2 font-data text-xs text-on-surface placeholder:text-on-surface-variant/50 focus:border-primary/50 focus:outline-none"
+          />
+        </div>
+      </div>
 
       {/* Active Model — always visible, above the LLM list */}
       <div className="mb-6 bg-surface-container rounded-xl border border-outline-variant/20 p-4 flex items-center gap-4">

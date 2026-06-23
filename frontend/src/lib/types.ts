@@ -111,6 +111,29 @@ export interface GeneralSettings {
   active_embedding_model_id: string;
 }
 
+export interface AgentProviderSettingsCustomProvider {
+  id: string;
+  command: string;
+  prompt_transport?: string;
+  fallback_commands?: string[];
+  readonly_args?: string[];
+  supports_mcp?: boolean;
+  mcp_profiles?: string[];
+  supports_artifact_export?: boolean;
+  supports_json_output?: boolean;
+}
+
+export interface AgentProviderSettings {
+  claude_code_command: string;
+  claude_code_config_path: string;
+  claude_code_fallback_commands: string[];
+  claude_code_mcp_profiles: string[];
+  opencode_command: string;
+  opencode_fallback_commands: string[];
+  opencode_mcp_profiles: string[];
+  external_agent_custom_providers: AgentProviderSettingsCustomProvider[];
+}
+
 export type ToolStatusValue = "running" | "stopped" | "error" | "unknown";
 
 export interface ToolInfo {

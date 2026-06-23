@@ -8,7 +8,7 @@ from typing import Any
 
 import aiosqlite
 from fastapi import APIRouter, Depends, HTTPException
-from pydantic import BaseModel
+from pydantic import BaseModel, Field, field_validator
 
 from app.config import settings as app_settings
 from app.database import get_db
@@ -75,6 +75,46 @@ class GeneralSettings(BaseModel):
     ssl_cert_path: str = ""
     active_chat_model_id: str = ""
     active_embedding_model_id: str = ""
+
+
+class AgentProviderSettingsCustomProvider(BaseModel):
+    id: str
+    command: str
+    prompt_transport: str = "stdin"
+    fallback_commands: list[str] = Field(default_factory=list)
+    readonly_args: list[str] = Field(default_factory=list)
+    supports_mcp: bool = False
+    mcp_profiles: list[str] = Field(default_factory=list)
+    supports_artifact_export: bool = True
+    supports_json_output: bool = True
+
+    @field_validator("id", "command")
+    @classmethod
+    def _non_empty_text(cls, value: str) -> str:
+        text = str(value or "").strip()
+        if not text:
+            raise ValueError("must not be empty")
+        return text
+
+    @field_validator("prompt_transport")
+    @classmethod
+    def _valid_prompt_transport(cls, value: str) -> str:
+        text = str(value or "auto").strip() or "auto"
+        allowed = {"auto", "stdin", "claude_print_arg", "opencode_run_arg", "argv_last"}
+        if text not in allowed:
+            raise ValueError(f"unsupported prompt_transport: {text}")
+        return text
+
+
+class AgentProviderSettings(BaseModel):
+    claude_code_command: str = "ccr code"
+    claude_code_config_path: str = ""
+    claude_code_fallback_commands: list[str] = Field(default_factory=list)
+    claude_code_mcp_profiles: list[str] = Field(default_factory=list)
+    opencode_command: str = "opencode"
+    opencode_fallback_commands: list[str] = Field(default_factory=list)
+    opencode_mcp_profiles: list[str] = Field(default_factory=list)
+    external_agent_custom_providers: list[AgentProviderSettingsCustomProvider] = Field(default_factory=list)
 
 
 # --- LLM Config endpoints ---
@@ -213,6 +253,24 @@ async def test_llm_connection(
 
 _GENERAL_KEYS = ("proxy_mode", "proxy_url", "ssl_cert_path",
                  "active_chat_model_id", "active_embedding_model_id")
+
+_AGENT_PROVIDER_KEYS = (
+    "claude_code_command",
+    "claude_code_config_path",
+    "claude_code_fallback_commands",
+    "claude_code_mcp_profiles",
+    "opencode_command",
+    "opencode_fallback_commands",
+    "opencode_mcp_profiles",
+    "external_agent_custom_providers",
+)
+_AGENT_PROVIDER_JSON_KEYS = frozenset({
+    "claude_code_fallback_commands",
+    "claude_code_mcp_profiles",
+    "opencode_fallback_commands",
+    "opencode_mcp_profiles",
+    "external_agent_custom_providers",
+})
 
 _CHAT_ENV_KEYS = frozenset({"OPENAI_BASE_URL", "OPENAI_API_KEY", "LLM_MODEL"})
 
@@ -422,3 +480,111 @@ async def update_general_settings(data: GeneralSettings, db: aiosqlite.Connectio
     if env_changed:
         _schedule_deepwiki_restart()
     return data
+
+
+@router.get("/agent-providers", response_model=AgentProviderSettings)
+async def get_agent_provider_settings(db: aiosqlite.Connection = Depends(get_db)):
+    return await _read_agent_provider_settings(db)
+
+
+@router.put("/agent-providers", response_model=AgentProviderSettings)
+async def update_agent_provider_settings(
+    data: AgentProviderSettings,
+    db: aiosqlite.Connection = Depends(get_db),
+):
+    payload = data.model_dump()
+    for key, value in payload.items():
+        stored = (
+            json.dumps(value, ensure_ascii=False, sort_keys=True)
+            if key in _AGENT_PROVIDER_JSON_KEYS
+            else str(value)
+        )
+        await db.execute(
+            "INSERT INTO settings (key, value) VALUES (?, ?) "
+            "ON CONFLICT(key) DO UPDATE SET value = excluded.value",
+            (key, stored),
+        )
+    await db.commit()
+    _apply_agent_provider_settings(payload)
+    return data
+
+
+async def _read_agent_provider_settings(db: aiosqlite.Connection) -> AgentProviderSettings:
+    async with db.execute(
+        "SELECT key, value FROM settings WHERE key IN ({})".format(
+            ",".join("?" * len(_AGENT_PROVIDER_KEYS))
+        ),
+        _AGENT_PROVIDER_KEYS,
+    ) as cur:
+        rows = await cur.fetchall()
+
+    stored = {r["key"]: r["value"] for r in rows}
+    defaults = {
+        "claude_code_command": app_settings.claude_code_command,
+        "claude_code_config_path": app_settings.claude_code_config_path,
+        "claude_code_fallback_commands": _settings_list_value(app_settings.claude_code_fallback_commands),
+        "claude_code_mcp_profiles": _settings_list_value(app_settings.claude_code_mcp_profiles),
+        "opencode_command": app_settings.opencode_command,
+        "opencode_fallback_commands": _settings_list_value(app_settings.opencode_fallback_commands),
+        "opencode_mcp_profiles": _settings_list_value(app_settings.opencode_mcp_profiles),
+        "external_agent_custom_providers": _settings_custom_provider_value(
+            app_settings.external_agent_custom_providers
+        ),
+    }
+    payload: dict[str, Any] = {}
+    for key in _AGENT_PROVIDER_KEYS:
+        if key not in stored:
+            payload[key] = defaults[key]
+            continue
+        payload[key] = (
+            _json_setting_value(stored[key], defaults[key])
+            if key in _AGENT_PROVIDER_JSON_KEYS
+            else str(stored[key])
+        )
+    settings_model = AgentProviderSettings(**payload)
+    _apply_agent_provider_settings(settings_model.model_dump())
+    return settings_model
+
+
+def _apply_agent_provider_settings(payload: dict[str, Any]) -> None:
+    for key in _AGENT_PROVIDER_KEYS:
+        if key in payload:
+            setattr(app_settings, key, payload[key])
+
+
+def _json_setting_value(value: str, default: Any) -> Any:
+    try:
+        return json.loads(value)
+    except (TypeError, json.JSONDecodeError):
+        return default
+
+
+def _settings_list_value(value: Any) -> list[str]:
+    if isinstance(value, str):
+        text = value.strip()
+        if not text:
+            return []
+        try:
+            parsed = json.loads(text)
+        except json.JSONDecodeError:
+            parsed = [part.strip() for part in text.split(",") if part.strip()]
+        value = parsed
+    if not isinstance(value, list):
+        return []
+    return [str(item).strip() for item in value if str(item).strip()]
+
+
+def _settings_custom_provider_value(value: Any) -> list[dict[str, Any]]:
+    if isinstance(value, str):
+        text = value.strip()
+        if not text:
+            return []
+        try:
+            value = json.loads(text)
+        except json.JSONDecodeError:
+            return []
+    if isinstance(value, dict):
+        value = [value]
+    if not isinstance(value, list):
+        return []
+    return [dict(item) for item in value if isinstance(item, dict)]

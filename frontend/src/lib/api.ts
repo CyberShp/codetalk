@@ -7,6 +7,7 @@ import type {
   LLMConfigCreate,
   LLMConfigUpdate,
   GeneralSettings,
+  AgentProviderSettings,
   ToolInfo,
   PromptTemplate,
   PromptTemplateCreate,
@@ -239,6 +240,15 @@ export const api = {
 
     updateGeneral: (data: GeneralSettings) =>
       request<GeneralSettings>("/api/settings/general", {
+        method: "PUT",
+        body: JSON.stringify(data),
+      }),
+
+    getAgentProviders: () =>
+      request<AgentProviderSettings>("/api/settings/agent-providers"),
+
+    updateAgentProviders: (data: AgentProviderSettings) =>
+      request<AgentProviderSettings>("/api/settings/agent-providers", {
         method: "PUT",
         body: JSON.stringify(data),
       }),

@@ -171,6 +171,69 @@ async def test_delete_llm_config_not_found(client):
     assert response.status_code == 404
 
 
+async def test_agent_provider_settings_roundtrip_updates_runtime_provider_matrix(client):
+    payload = {
+        "claude_code_command": "ccr code",
+        "claude_code_config_path": "C:/innernet/ccr/config-router.json",
+        "claude_code_fallback_commands": ["claude"],
+        "claude_code_mcp_profiles": ["codehub-readonly"],
+        "opencode_command": "",
+        "opencode_fallback_commands": [],
+        "opencode_mcp_profiles": [],
+        "external_agent_custom_providers": [
+            {
+                "id": "corp-agent",
+                "command": "corp-agent run --json",
+                "prompt_transport": "stdin",
+                "supports_mcp": True,
+                "mcp_profiles": ["codehub-mcp"],
+            }
+        ],
+    }
+
+    update_resp = await client.put("/api/settings/agent-providers", json=payload)
+
+    assert update_resp.status_code == 200
+    body = update_resp.json()
+    assert body["claude_code_command"] == "ccr code"
+    assert body["claude_code_config_path"] == "C:/innernet/ccr/config-router.json"
+    assert body["claude_code_fallback_commands"] == ["claude"]
+    assert body["external_agent_custom_providers"][0]["id"] == "corp-agent"
+
+    loaded_resp = await client.get("/api/settings/agent-providers")
+    assert loaded_resp.status_code == 200
+    assert loaded_resp.json() == body
+
+    from app.services.external_agent_discovery import (
+        external_agent_provider_capabilities,
+        external_agent_provider_spec,
+        split_agent_command,
+    )
+
+    claude_spec = external_agent_provider_spec("claude-code")
+    corp_spec = external_agent_provider_spec("corp-agent")
+    assert claude_spec is not None
+    assert corp_spec is not None
+    assert claude_spec.command == "ccr code"
+    assert claude_spec.mcp_profiles == ["codehub-readonly"]
+    assert split_agent_command(corp_spec.command) == ["corp-agent", "run", "--json"]
+    assert external_agent_provider_capabilities("corp-agent")["supports_mcp"] is True
+
+
+async def test_agent_provider_settings_rejects_invalid_custom_provider_json(client):
+    response = await client.put(
+        "/api/settings/agent-providers",
+        json={
+            "claude_code_command": "ccr code",
+            "external_agent_custom_providers": [
+                {"id": "missing-command", "prompt_transport": "stdin"}
+            ],
+        },
+    )
+
+    assert response.status_code == 422
+
+
 # ---------------------------------------------------------------------------
 # LLM test connection
 # ---------------------------------------------------------------------------
