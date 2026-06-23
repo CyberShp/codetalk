@@ -756,6 +756,38 @@ function rejectedOutputReason(item: Record<string, unknown>): string {
   return details.length > 0 ? `${reason} (${details.join(" / ")})` : reason;
 }
 
+function evidenceAuditRefs(provenance: Record<string, unknown>): Array<{
+  label: string;
+  artifact: string;
+  sha256: string;
+}> {
+  const refs: Array<{ key: string; label: string }> = [
+    { key: "agent_replay_plan", label: "Replay" },
+    { key: "agent_execution_input", label: "Input" },
+    { key: "agent_execution_result", label: "Result" },
+    { key: "workflow_outputs_artifact", label: "Output" },
+    { key: "agent_output_contract", label: "Contract" },
+  ];
+  return refs
+    .map(({ key, label }) => {
+      const value = provenance[key];
+      if (!value || typeof value !== "object" || Array.isArray(value)) {
+        return null;
+      }
+      const payload = value as Record<string, unknown>;
+      const artifact = String(payload.artifact ?? "");
+      if (!artifact) return null;
+      return {
+        label,
+        artifact,
+        sha256: String(payload.sha256 ?? ""),
+      };
+    })
+    .filter((item): item is { label: string; artifact: string; sha256: string } =>
+      Boolean(item),
+    );
+}
+
 const AUDIT_ARTIFACT_KIND_ORDER = [
   "task_bundle",
   "input_snapshot",
@@ -769,6 +801,7 @@ const AUDIT_ARTIFACT_KIND_ORDER = [
   "agent_task_bundle",
   "agent_output_contract",
   "agent_provider_diagnostics",
+  "agent_replay_plan",
   "agent_run_lifecycle",
   "agent_failure_recovery",
   "agent_turn_task_bundle",
@@ -776,6 +809,7 @@ const AUDIT_ARTIFACT_KIND_ORDER = [
   "agent_turn_provider_diagnostics",
   "agent_turn_execution_input",
   "agent_turn_execution_result",
+  "agent_turn_replay_plan",
   "agent_turn_source_slice_requests",
   "agent_turn_source_slices",
   "agent_turn_raw_output",
@@ -3969,6 +4003,26 @@ export default function AgentWorkbenchPage() {
                   {item.reason && (
                     <p className="mt-1 text-on-surface-variant">{item.reason}</p>
                   )}
+                  {(() => {
+                    const refs = evidenceAuditRefs(item.provenance ?? {});
+                    if (refs.length === 0) return null;
+                    return (
+                      <div className="mt-2 rounded bg-surface-container px-2 py-1.5">
+                        <div className="flex flex-wrap gap-1.5 font-data text-[10px] text-on-surface-variant">
+                          {refs.map((ref) => (
+                            <span
+                              key={`${ref.label}:${ref.artifact}`}
+                              className="rounded bg-surface px-1.5 py-0.5"
+                              title={ref.sha256 ? `${ref.artifact} sha:${ref.sha256}` : ref.artifact}
+                            >
+                              {ref.label}: {ref.artifact}
+                              {ref.sha256 ? ` sha:${ref.sha256.slice(0, 12)}` : ""}
+                            </span>
+                          ))}
+                        </div>
+                      </div>
+                    );
+                  })()}
                   <div className="mt-2 flex flex-wrap items-center gap-2">
                     <button
                       onClick={() => loadMemorySlices(item.evidence_id)}

@@ -317,7 +317,24 @@ test("agent workbench searches semantic cases and evidence memory", async ({ pag
             reason: "validated TLS source",
             confidence: 0.9,
             text: "nvme tcp tls handshake cleanup",
-            provenance: {},
+            provenance: {
+              workflow_outputs_artifact: {
+                artifact: "workflow_outputs.json",
+                sha256: "9999888877776666",
+              },
+              agent_execution_input: {
+                artifact: "agent_runs/discover/execution_input.json",
+                sha256: "inputhash1234567890",
+              },
+              agent_execution_result: {
+                artifact: "agent_runs/discover/execution_result.json",
+                sha256: "resulthash1234567890",
+              },
+              agent_replay_plan: {
+                artifact: "agent_runs/discover/agent_replay_plan.json",
+                sha256: "replayhash1234567890",
+              },
+            },
             source_slices: [
               {
                 slice_id: "slice_tls",
@@ -372,6 +389,11 @@ test("agent workbench searches semantic cases and evidence memory", async ({ pag
   ]);
   await expect(page.getByText("Memory results: 1")).toBeVisible();
   await expect(page.getByText("nof/nvmf_tcp/transport/tls/tls.c").first()).toBeVisible();
+  await expect(page.getByText("Replay: agent_runs/discover/agent_replay_plan.json")).toBeVisible();
+  await expect(page.getByText("Input: agent_runs/discover/execution_input.json")).toBeVisible();
+  await expect(page.getByText("Result: agent_runs/discover/execution_result.json")).toBeVisible();
+  await expect(page.getByText("Output: workflow_outputs.json")).toBeVisible();
+  await expect(page.getByText("sha:replayhash12")).toBeVisible();
   await expect(page.getByText("slicehash123")).toBeVisible();
 });
 
