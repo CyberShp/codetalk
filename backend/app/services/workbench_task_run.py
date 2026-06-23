@@ -84,6 +84,9 @@ class WorkbenchTaskRunPreparer:
             if isinstance(step, dict) and step.get("type") == "agent_task"
         }
         output_schemas_by_step = build_output_schemas_by_step(workflow_snapshot)
+        semantic_import_outputs_by_step = build_semantic_import_outputs_by_step(
+            workflow_snapshot
+        )
         input_snapshot = ingest_workbench_inputs(
             input_definitions=[
                 item for item in workflow_snapshot.get("inputs") or []
@@ -155,6 +158,7 @@ class WorkbenchTaskRunPreparer:
             "degraded_retrieval": context_artifacts["degraded_retrieval"],
             "required_artifacts_by_step": required_artifacts_by_step,
             "output_schemas_by_step": output_schemas_by_step,
+            "semantic_import_outputs_by_step": semantic_import_outputs_by_step,
             "created_at": _now(),
         }
 
@@ -172,6 +176,7 @@ class WorkbenchTaskRunPreparer:
                 "goal": step.get("goal") or "",
                 "required_artifacts": required_artifacts_by_step.get(step_id, []),
                 "expected_output_schemas": output_schemas_by_step.get(step_id, []),
+                "expected_semantic_outputs": semantic_import_outputs_by_step.get(step_id, []),
                 "mcp_profile": step.get("mcp_profile") or "",
             }
             agent_run = AgentRunHarness(artifact_dir / "agent_runs" / step_id).create_run(
@@ -215,6 +220,10 @@ class WorkbenchTaskRunPreparer:
         _write_json(artifact_dir / "context_discovery_decision.json", context_discovery_decision)
         _write_json(artifact_dir / "context_bundle.json", context_bundle)
         _write_json(artifact_dir / "output_schemas_by_step.json", output_schemas_by_step)
+        _write_json(
+            artifact_dir / "semantic_import_outputs_by_step.json",
+            semantic_import_outputs_by_step,
+        )
         _write_json(artifact_dir / "memory_retrieval.json", context_artifacts["memory_retrieval"])
         _write_json(artifact_dir / "source_read_chain.json", context_artifacts["source_read_chain"])
         _write_json(
@@ -428,6 +437,37 @@ def build_output_schemas_by_step(workflow_snapshot: dict[str, Any]) -> dict[str,
     return schemas
 
 
+def build_semantic_import_outputs_by_step(
+    workflow_snapshot: dict[str, Any],
+) -> dict[str, list[dict[str, Any]]]:
+    outputs: dict[str, list[dict[str, Any]]] = {}
+    for output in workflow_snapshot.get("outputs") or []:
+        if not isinstance(output, dict):
+            continue
+        semantic_import = output.get("semantic_import")
+        if semantic_import is True:
+            semantic_payload: dict[str, Any] = {"enabled": True}
+        elif isinstance(semantic_import, dict):
+            if semantic_import.get("enabled", True) is False:
+                continue
+            semantic_payload = {
+                "enabled": True,
+                **dict(semantic_import),
+            }
+        else:
+            continue
+        source_step = str(output.get("from") or output.get("source") or "").strip()
+        if not source_step:
+            continue
+        outputs.setdefault(source_step, []).append({
+            "output_id": str(output.get("id") or ""),
+            "artifact": str(output.get("artifact") or output.get("path") or ""),
+            "type": str(output.get("type") or ""),
+            "semantic_import": semantic_payload,
+        })
+    return outputs
+
+
 def build_workflow_contract(
     *,
     workflow_snapshot: dict[str, Any],
@@ -624,7 +664,7 @@ def _workflow_contract_output(item: dict[str, Any]) -> dict[str, Any]:
     if isinstance(schema, dict):
         schema_required = [str(value) for value in schema.get("required") or []]
         schema_type = str(schema.get("type") or "")
-    return {
+    payload = {
         "id": str(item.get("id") or ""),
         "type": str(item.get("type") or ""),
         "from": str(item.get("from") or item.get("source") or ""),
@@ -633,6 +673,12 @@ def _workflow_contract_output(item: dict[str, Any]) -> dict[str, Any]:
         "schema_type": schema_type,
         "schema_required": schema_required,
     }
+    semantic_import = item.get("semantic_import")
+    if semantic_import is True:
+        payload["semantic_import"] = {"enabled": True}
+    elif isinstance(semantic_import, dict) and semantic_import.get("enabled", True) is not False:
+        payload["semantic_import"] = {"enabled": True, **dict(semantic_import)}
+    return payload
 
 
 def _unique_strings(values: Any) -> list[str]:

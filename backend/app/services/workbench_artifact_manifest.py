@@ -121,6 +121,8 @@ def workbench_artifact_kind(relative_path: str) -> str:
         return "context_bundle"
     if name == "output_schemas_by_step.json":
         return "output_schemas"
+    if name == "semantic_import_outputs_by_step.json":
+        return "semantic_import_outputs"
     if name == "memory_retrieval.json":
         return "memory_retrieval"
     if name == "source_read_chain.json":

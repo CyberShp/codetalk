@@ -60,6 +60,10 @@ def _agent_output_contract_payload(
         item for item in task_bundle.get("expected_output_schemas") or []
         if isinstance(item, dict)
     ]
+    expected_semantic_outputs = [
+        item for item in task_bundle.get("expected_semantic_outputs") or []
+        if isinstance(item, dict)
+    ]
     return {
         "contract_version": 1,
         "run_id": run.run_id,
@@ -72,6 +76,7 @@ def _agent_output_contract_payload(
         "artifact_dir": run.artifact_dir,
         "required_artifacts": required_artifacts,
         "expected_output_schemas": expected_output_schemas,
+        "expected_semantic_outputs": expected_semantic_outputs,
         "evidence_rules": {
             "raw_output_reuse": "never_without_validation",
             "required_artifacts_are_authoritative": True,

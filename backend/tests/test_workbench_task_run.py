@@ -1545,6 +1545,96 @@ def test_prepare_workbench_task_run_includes_output_schemas_in_agent_bundle(
     ]
 
 
+def test_prepare_workbench_task_run_includes_semantic_import_contract_in_agent_bundle(
+    tmp_path,
+):
+    from app.services.workbench_task_run import WorkbenchTaskRunPreparer
+    from app.services.workflow_dsl import WorkflowStore
+
+    workflow_store = WorkflowStore(tmp_path / "workflows.db")
+    workflow_store.save_workflow({
+        "id": "semantic_contract_workflow",
+        "name": "Semantic contract workflow",
+        "version": 1,
+        "inputs": [{"id": "module", "type": "free_text"}],
+        "steps": [
+            {
+                "id": "design",
+                "type": "agent_task",
+                "provider": "local-python",
+                "required_artifacts": ["black_box_cases.json"],
+            }
+        ],
+        "outputs": [
+            {
+                "id": "black_box_cases",
+                "type": "test_cases",
+                "from": "design",
+                "artifact": "black_box_cases.json",
+                "semantic_import": {
+                    "enabled": True,
+                    "defaults": {
+                        "module": "nvmf_tcp/transport/tls",
+                        "terms": ["tls-handshake"],
+                    },
+                },
+            }
+        ],
+    })
+
+    result = WorkbenchTaskRunPreparer(
+        artifact_root=tmp_path / "task_runs",
+        workflow_store=workflow_store,
+    ).prepare(
+        workflow_id="semantic_contract_workflow",
+        workspace_id="ws-semantic-contract",
+        repo_path=str(tmp_path),
+        inputs={"module": "nvme tcp tls"},
+    )
+
+    expected = {
+        "output_id": "black_box_cases",
+        "artifact": "black_box_cases.json",
+        "type": "test_cases",
+        "semantic_import": {
+            "enabled": True,
+            "defaults": {
+                "module": "nvmf_tcp/transport/tls",
+                "terms": ["tls-handshake"],
+            },
+        },
+    }
+    assert result.task_bundle["semantic_import_outputs_by_step"]["design"] == [expected]
+    step_bundle = json.loads(
+        Path(result.artifact_dir, "agent_runs", "design", "task_bundle.json").read_text(
+            encoding="utf-8"
+        )
+    )
+    assert step_bundle["semantic_import_outputs_by_step"]["design"] == [expected]
+    assert step_bundle["expected_semantic_outputs"] == [expected]
+
+    output_contract = json.loads(
+        Path(
+            result.artifact_dir,
+            "agent_runs",
+            "design",
+            "agent_output_contract.json",
+        ).read_text(encoding="utf-8")
+    )
+    assert output_contract["expected_semantic_outputs"] == [expected]
+
+    manifest = json.loads(
+        Path(result.artifact_dir, "task_artifact_manifest.json").read_text(
+            encoding="utf-8"
+        )
+    )
+    paths = {item["relative_path"]: item for item in manifest["artifacts"]}
+    assert (
+        paths["semantic_import_outputs_by_step.json"]["kind"]
+        == "semantic_import_outputs"
+    )
+
+
 def test_prepare_workbench_task_run_writes_workflow_contract_artifact(tmp_path, monkeypatch):
     from app.config import settings
     from app.services.workbench_task_run import WorkbenchTaskRunPreparer
