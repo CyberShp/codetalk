@@ -1211,6 +1211,28 @@ export default function AgentWorkbenchPage() {
       setMessage(`Startup probe ${result.status}: ${provider}`);
     });
 
+  const runAllAgentProviderStartupProbes = () =>
+    runAction("provider-probe-all-agents", async () => {
+      const providers = (providerMatrix?.providers ?? []).filter(
+        (provider) => provider.agent_owned && provider.diagnostics?.startup_probe_endpoint,
+      );
+      const results = await Promise.all(
+        providers.map(async (provider) => ({
+          provider: provider.provider,
+          result: await api.tools.startupProbe(provider.provider, repoPath.trim() || undefined),
+        })),
+      );
+      setProviderProbeResults((current) => {
+        const next = { ...current };
+        for (const item of results) {
+          next[item.provider] = item.result;
+        }
+        return next;
+      });
+      const healthy = results.filter((item) => item.result.healthy).length;
+      setMessage(`Agent CLI startup probes: ${healthy}/${results.length} healthy`);
+    });
+
   function updatePrepareInput(input: Record<string, unknown>, value: string) {
     setInputsJson((current) => updateInputsJsonValue(current, input, value));
   }
@@ -1560,6 +1582,28 @@ export default function AgentWorkbenchPage() {
       )}
 
       <Panel title="Provider Matrix" icon={<AlertTriangle size={16} />}>
+        <div className="mb-3 flex flex-wrap items-center justify-between gap-2">
+          <p className="text-xs text-on-surface-variant">
+            Provider diagnostics use the backend process environment, including PATH and Agent-owned MCP credentials.
+          </p>
+          <button
+            onClick={() => runAllAgentProviderStartupProbes()}
+            disabled={
+              busyAction === "provider-probe-all-agents" ||
+              !(providerMatrix?.providers ?? []).some(
+                (provider) => provider.agent_owned && provider.diagnostics?.startup_probe_endpoint,
+              )
+            }
+            className="inline-flex items-center gap-2 rounded-lg bg-surface-container px-2.5 py-1.5 text-xs font-medium text-on-surface transition-colors hover:bg-surface-container-high disabled:opacity-50"
+          >
+            {busyAction === "provider-probe-all-agents" ? (
+              <Loader2 size={13} className="animate-spin" />
+            ) : (
+              <PlayCircle size={13} />
+            )}
+            Probe all Agent CLIs
+          </button>
+        </div>
         <div className="grid gap-3 lg:grid-cols-3">
           {(providerMatrix?.providers ?? []).map((provider) => (
             <div
