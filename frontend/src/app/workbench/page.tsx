@@ -1277,6 +1277,7 @@ export default function AgentWorkbenchPage() {
       ].slice(0, 10));
       setWorkflowExecution(result.execution);
       setWorkflowOutputMaterialize(result.evidence_materialization ?? null);
+      setSemanticOutputImport(result.semantic_output_import ?? null);
       setTaskAcceptanceAudit(result.acceptance_audit ?? null);
       setTaskRerunPlan((result.execution.rerun_plan as TaskRerunPlan | undefined) ?? null);
       setTaskRerunPlanValidation(
@@ -1287,12 +1288,11 @@ export default function AgentWorkbenchPage() {
       setMaterializeResults({});
       setTaskRerunExecution(null);
       setTaskRerunHistory(null);
-      setSemanticOutputImport(null);
       setArtifactContent(null);
       await refreshArtifactManifest(result.task_run_id);
       await loadWorkflows();
       setMessage(
-        `Task run ${result.status}: ${result.task_run_id}; evidence ${result.evidence_materialization?.status ?? "skipped"}; audit ${result.acceptance_audit?.status ?? "skipped"}`,
+        `Task run ${result.status}: ${result.task_run_id}; evidence ${result.evidence_materialization?.status ?? "skipped"}; semantics ${result.semantic_output_import?.status ?? "skipped"}; audit ${result.acceptance_audit?.status ?? "skipped"}`,
       );
     });
 
@@ -1505,17 +1505,20 @@ export default function AgentWorkbenchPage() {
           ...result.execution,
           evidence_materialization:
             result.evidence_materialization ?? result.execution.evidence_materialization,
+          semantic_output_import:
+            result.semantic_output_import ?? result.execution.semantic_output_import,
           acceptance_audit: result.acceptance_audit ?? result.execution.acceptance_audit,
         });
         setTaskRerunPlan((result.execution.rerun_plan as TaskRerunPlan | undefined) ?? null);
       }
       setWorkflowOutputMaterialize(result.evidence_materialization ?? null);
+      setSemanticOutputImport(result.semantic_output_import ?? null);
       setTaskRerunPlanValidation(result.validation_after ?? null);
       setTaskRerunHistory(await api.workbench.taskRuns.rerunHistory(preparedRun.task_run_id));
       setTaskAcceptanceAudit(result.acceptance_audit ?? null);
       await refreshArtifactManifest(preparedRun.task_run_id);
       setMessage(
-        `Rerun execution ${result.execution?.status ?? result.status}: ${preparedRun.task_run_id}; evidence ${result.evidence_materialization?.status ?? "skipped"}; audit ${result.acceptance_audit?.status ?? "skipped"}`,
+        `Rerun execution ${result.execution?.status ?? result.status}: ${preparedRun.task_run_id}; evidence ${result.evidence_materialization?.status ?? "skipped"}; semantics ${result.semantic_output_import?.status ?? "skipped"}; audit ${result.acceptance_audit?.status ?? "skipped"}`,
       );
     });
 
@@ -1540,7 +1543,7 @@ export default function AgentWorkbenchPage() {
       );
       setWorkflowExecution(result);
       setWorkflowOutputMaterialize(result.evidence_materialization ?? null);
-      setSemanticOutputImport(null);
+      setSemanticOutputImport(result.semantic_output_import ?? null);
       setTaskRerunPlan((result.rerun_plan as TaskRerunPlan | undefined) ?? null);
       setTaskRerunPlanValidation(
         await api.workbench.taskRuns.rerunPlanValidation(preparedRun.task_run_id),
@@ -1548,7 +1551,7 @@ export default function AgentWorkbenchPage() {
       setTaskAcceptanceAudit(result.acceptance_audit ?? null);
       await refreshArtifactManifest(preparedRun.task_run_id);
       setMessage(
-        `Workflow execution ${result.status}: ${result.task_run_id}; evidence ${result.evidence_materialization?.status ?? "skipped"}; audit ${result.acceptance_audit?.status ?? "skipped"}`,
+        `Workflow execution ${result.status}: ${result.task_run_id}; evidence ${result.evidence_materialization?.status ?? "skipped"}; semantics ${result.semantic_output_import?.status ?? "skipped"}; audit ${result.acceptance_audit?.status ?? "skipped"}`,
       );
       await loadWorkflows();
     });
@@ -3377,6 +3380,29 @@ export default function AgentWorkbenchPage() {
                         ) : null}
                       </div>
                     )}
+                    {workflowExecution.semantic_output_import && (
+                      <div className="mt-1 flex flex-wrap gap-1.5 font-data text-[10px]">
+                        <span
+                          className={`rounded bg-surface px-1.5 py-0.5 ${
+                            workflowExecution.semantic_output_import.status === "ok" ||
+                            workflowExecution.semantic_output_import.status === "skipped"
+                              ? ""
+                              : "text-warning"
+                          }`}
+                        >
+                          semantics:{workflowExecution.semantic_output_import.status ?? "unknown"}
+                        </span>
+                        <span className="rounded bg-surface px-1.5 py-0.5">
+                          semantic-cases:
+                          {workflowExecution.semantic_output_import.imported_count}
+                        </span>
+                        {workflowExecution.semantic_output_import.rejected_count > 0 ? (
+                          <span className="rounded bg-surface px-1.5 py-0.5 text-warning">
+                            rejected:{workflowExecution.semantic_output_import.rejected_count}
+                          </span>
+                        ) : null}
+                      </div>
+                    )}
                     {(workflowExecution.outputs?.length ?? 0) > 0 && (
                       <div className="mt-1 flex flex-wrap gap-1.5">
                         {workflowExecution.outputs?.map((output, index) => (
@@ -3518,7 +3544,8 @@ export default function AgentWorkbenchPage() {
                 {semanticOutputImport && (
                   <div className="mt-2 rounded bg-surface-container px-2 py-1.5 text-on-surface-variant">
                     <p>
-                      Semantic import: {semanticOutputImport.imported_count} imported
+                      Semantic import: {semanticOutputImport.status ?? "unknown"} /{" "}
+                      {semanticOutputImport.imported_count} imported
                       {semanticOutputImport.rejected_count > 0 && (
                         <span className="ml-2 text-warning">
                           rejected {semanticOutputImport.rejected_count}

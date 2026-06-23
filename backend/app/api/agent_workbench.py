@@ -784,6 +784,10 @@ def _execute_task_run_with_closure(
         task_run=task_run,
     )
     refreshed = WorkbenchTaskRunStore(_task_runs_dir()).load(task_run_id)
+    response["semantic_output_import"] = _auto_import_semantic_outputs_if_available(
+        task_run=refreshed,
+    )
+    refreshed = WorkbenchTaskRunStore(_task_runs_dir()).load(task_run_id)
     acceptance = _build_task_acceptance_audit(refreshed)
     task_dir = Path(refreshed.artifact_dir)
     _write_json(task_dir / "task_acceptance_audit.json", acceptance)
@@ -822,6 +826,132 @@ def _materialize_task_run_outputs_if_available(*, task_run: Any) -> dict[str, An
     )
     write_task_artifact_manifest(task_dir, task_run_id=task_run.task_run_id)
     return result
+
+
+def _auto_import_semantic_outputs_if_available(*, task_run: Any) -> dict[str, Any]:
+    task_dir = Path(task_run.artifact_dir)
+    workflow_outputs = _read_json(task_dir / "workflow_outputs.json")
+    if not isinstance(workflow_outputs, dict):
+        return {
+            "status": "skipped",
+            "reason": "workflow_outputs_missing",
+            "imported_count": 0,
+            "rejected_count": 0,
+            "imported": [],
+            "rejected": [],
+            "source_refs": [],
+        }
+
+    output_configs = _semantic_import_output_configs(task_run)
+    if not output_configs:
+        return {
+            "status": "skipped",
+            "reason": "no_semantic_import_outputs",
+            "imported_count": 0,
+            "rejected_count": 0,
+            "imported": [],
+            "rejected": [],
+            "source_refs": [],
+        }
+
+    combined = _empty_semantic_import_result(source_ref=f"task_run:{task_run.task_run_id}")
+    for output_id, defaults in output_configs:
+        result = _import_workflow_outputs_as_semantic_cases(
+            task_run=task_run,
+            workflow_outputs=workflow_outputs,
+            output_ids=[output_id],
+            defaults=defaults,
+        )
+        _merge_semantic_import_result(combined, result)
+
+    combined["status"] = _semantic_import_status(combined)
+    _write_semantic_output_import_artifact(
+        task_run=task_run,
+        mode="auto",
+        result=combined,
+    )
+    write_task_artifact_manifest(task_dir, task_run_id=task_run.task_run_id)
+    return combined
+
+
+def _semantic_import_output_configs(task_run: Any) -> list[tuple[str, dict[str, Any]]]:
+    configs: list[tuple[str, dict[str, Any]]] = []
+    workflow_snapshot = getattr(task_run, "workflow_snapshot", {}) or {}
+    for output in workflow_snapshot.get("outputs") or []:
+        if not isinstance(output, dict):
+            continue
+        output_id = str(output.get("id") or "").strip()
+        if not output_id:
+            continue
+        semantic_import = output.get("semantic_import")
+        if semantic_import is True:
+            configs.append((output_id, {}))
+            continue
+        if not isinstance(semantic_import, dict):
+            continue
+        enabled = semantic_import.get("enabled", True)
+        if enabled is False:
+            continue
+        defaults = semantic_import.get("defaults") or {}
+        configs.append((output_id, dict(defaults) if isinstance(defaults, dict) else {}))
+    return configs
+
+
+def _empty_semantic_import_result(*, source_ref: str) -> dict[str, Any]:
+    return {
+        "status": "skipped",
+        "imported_count": 0,
+        "rejected_count": 0,
+        "imported": [],
+        "rejected": [],
+        "source_ref": source_ref,
+        "source_refs": [],
+    }
+
+
+def _merge_semantic_import_result(target: dict[str, Any], result: dict[str, Any]) -> None:
+    imported = [item for item in result.get("imported") or [] if isinstance(item, dict)]
+    rejected = [item for item in result.get("rejected") or [] if isinstance(item, dict)]
+    source_refs = [str(item) for item in result.get("source_refs") or [] if str(item)]
+    target["imported"].extend(imported)
+    target["rejected"].extend(rejected)
+    target["source_refs"] = _semantic_dedupe([
+        *[str(item) for item in target.get("source_refs") or []],
+        *source_refs,
+    ])
+    if len(target["source_refs"]) == 1:
+        target["source_ref"] = target["source_refs"][0]
+    target["imported_count"] = len(target["imported"])
+    target["rejected_count"] = len(target["rejected"])
+
+
+def _semantic_import_status(result: dict[str, Any]) -> str:
+    imported_count = int(result.get("imported_count") or 0)
+    rejected_count = int(result.get("rejected_count") or 0)
+    if imported_count and not rejected_count:
+        return "ok"
+    if imported_count and rejected_count:
+        return "partial"
+    if rejected_count:
+        return "failed"
+    return "skipped"
+
+
+def _write_semantic_output_import_artifact(
+    *,
+    task_run: Any,
+    mode: str,
+    result: dict[str, Any],
+) -> None:
+    task_dir = Path(task_run.artifact_dir)
+    _write_json(task_dir / "semantic_output_import.json", {
+        "mode": mode,
+        "task_run_id": task_run.task_run_id,
+        "workflow_id": task_run.workflow_id,
+        "workspace_id": task_run.workspace_id,
+        "repo_path": task_run.repo_path,
+        "result": result,
+    })
 
 
 @router.post("/task-runs/{task_run_id}/materialize-outputs")
@@ -881,6 +1011,7 @@ async def import_task_run_outputs_as_semantic_cases(
         defaults=payload.defaults,
     )
     _write_json(task_dir / "semantic_output_import.json", {
+        "mode": "manual",
         "task_run_id": task_run.task_run_id,
         "workflow_id": task_run.workflow_id,
         "workspace_id": task_run.workspace_id,
@@ -1076,6 +1207,9 @@ async def execute_task_run_rerun_plan(
         task_run=refreshed_task_run,
     )
     task_dir = Path(refreshed_task_run.artifact_dir)
+    semantic_output_import = _auto_import_semantic_outputs_if_available(
+        task_run=refreshed_task_run,
+    )
     acceptance = _build_task_acceptance_audit(refreshed_task_run)
     _write_json(task_dir / "task_acceptance_audit.json", acceptance)
     refreshed_plan = _read_json(Path(refreshed_task_run.artifact_dir) / "task_rerun_plan.json")
@@ -1089,6 +1223,7 @@ async def execute_task_run_rerun_plan(
         "validation_before": validation_before,
         "execution": asdict(execution),
         "evidence_materialization": evidence_materialization,
+        "semantic_output_import": semantic_output_import,
         "acceptance_audit": acceptance,
         "validation_after": validation_after,
     }
@@ -1193,6 +1328,7 @@ async def prepare_and_execute_task_run(payload: RunTaskRunRequest) -> dict[str, 
         "task_run": asdict(prepared),
         "execution": execution,
         "evidence_materialization": execution.get("evidence_materialization") or {},
+        "semantic_output_import": execution.get("semantic_output_import") or {},
         "acceptance_audit": execution.get("acceptance_audit") or {},
         "artifact": {
             "path": str(task_dir / "task_run.json"),
@@ -2511,6 +2647,7 @@ def _import_workflow_outputs_as_semantic_cases(
         "source_ref": source_refs[0] if len(source_refs) == 1 else f"task_run:{task_run.task_run_id}",
         "source_refs": source_refs,
     }
+    result["status"] = _semantic_import_status(result)
     return result
 
 

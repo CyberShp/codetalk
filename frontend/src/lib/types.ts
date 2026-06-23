@@ -413,6 +413,7 @@ export interface SemanticCase {
 }
 
 export interface SemanticCaseImportResult {
+  status?: string;
   imported_count: number;
   rejected_count: number;
   source_ref?: string;
@@ -583,6 +584,7 @@ export interface WorkflowExecutionResult {
   started_at: string;
   completed_at: string;
   evidence_materialization?: MaterializeWorkflowOutputsResult;
+  semantic_output_import?: SemanticCaseImportResult;
   context_discovery_decision?: Record<string, unknown>;
   audit_summary?: {
     step_count?: number;
@@ -631,6 +633,7 @@ export interface WorkbenchTaskRunRunResult {
   task_run: PreparedWorkbenchTaskRun;
   execution: WorkflowExecutionResult;
   evidence_materialization: MaterializeWorkflowOutputsResult;
+  semantic_output_import?: SemanticCaseImportResult;
   acceptance_audit: WorkbenchAcceptanceAudit;
   artifact?: {
     path?: string;
@@ -665,6 +668,7 @@ export interface TaskRerunExecutionResult {
   validation_before?: TaskRerunPlanValidation;
   execution?: WorkflowExecutionResult;
   evidence_materialization?: MaterializeWorkflowOutputsResult;
+  semantic_output_import?: SemanticCaseImportResult;
   acceptance_audit?: WorkbenchAcceptanceAudit;
   validation_after?: TaskRerunPlanValidation;
 }

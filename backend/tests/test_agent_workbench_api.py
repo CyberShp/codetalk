@@ -1504,6 +1504,101 @@ async def test_workbench_task_run_run_api_prepares_executes_and_audits(
     assert any(item["kind"] == "workflow_output" for item in search.json()["items"])
 
 
+async def test_workbench_task_run_run_auto_imports_declared_semantic_outputs(
+    workbench_client,
+    tmp_path,
+    monkeypatch,
+):
+    from app.config import settings
+
+    script_path = tmp_path / "agent_write_semantic_cases.py"
+    script_path.write_text(
+        "import json, pathlib, os\n"
+        "root=pathlib.Path(os.environ['CODETALK_AGENT_ARTIFACT_DIR'])\n"
+        "(root/'black_box_cases.json').write_text(json.dumps([\n"
+        "  {\n"
+        "    'title': 'TLS handshake uses existing failure wording',\n"
+        "    'entry_kind': 'rpc',\n"
+        "    'inputs': 'connect with expired certificate',\n"
+        "    'steps': ['start TLS listener', 'connect with expired certificate'],\n"
+        "    'expected': ['handshake rejected', 'standard failure reason is reported']\n"
+        "  }\n"
+        "]), encoding='utf-8')\n",
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(settings, "external_agent_custom_providers", [
+        {"id": "local-python", "command": f"python {script_path}"}
+    ])
+    workflow = {
+        "id": "auto_semantic_output_workflow",
+        "name": "Auto semantic output workflow",
+        "version": 1,
+        "inputs": [{"id": "module", "type": "free_text"}],
+        "steps": [
+            {
+                "id": "design",
+                "type": "agent_task",
+                "provider": "local-python",
+                "required_artifacts": ["black_box_cases.json"],
+            }
+        ],
+        "outputs": [
+            {
+                "id": "black_box_cases",
+                "type": "test_cases",
+                "from": "design",
+                "artifact": "black_box_cases.json",
+                "semantic_import": {
+                    "enabled": True,
+                    "defaults": {
+                        "feature": "NVMe TCP TLS",
+                        "module": "nvmf_tcp/transport/tls",
+                        "terms": ["expired-cert"],
+                    },
+                },
+            }
+        ],
+    }
+    assert (await workbench_client.post("/api/workbench/workflows", json=workflow)).status_code == 201
+
+    response = await workbench_client.post(
+        "/api/workbench/task-runs/run",
+        json={
+            "workflow_id": "auto_semantic_output_workflow",
+            "workspace_id": "ws-auto-semantic-output",
+            "repo_path": str(tmp_path),
+            "inputs": {"module": "nvmf_tcp/transport/tls"},
+            "timeout_sec": 10,
+        },
+    )
+
+    assert response.status_code == 201
+    body = response.json()
+    assert body["semantic_output_import"]["status"] == "ok"
+    assert body["semantic_output_import"]["imported_count"] == 1
+    task_dir = Path(body["task_run"]["artifact_dir"])
+    artifact = task_dir / "semantic_output_import.json"
+    assert artifact.exists()
+    artifact_payload = json.loads(artifact.read_text(encoding="utf-8"))
+    assert artifact_payload["mode"] == "auto"
+    assert artifact_payload["result"]["source_ref"] == (
+        f"task_run:{body['task_run_id']}:black_box_cases"
+    )
+
+    search = await workbench_client.get(
+        "/api/workbench/semantic-cases/search",
+        params={
+            "q": "expired-cert failure wording",
+            "module": "nvmf_tcp/transport/tls",
+            "test_level": "black_box",
+        },
+    )
+    assert search.status_code == 200
+    assert search.json()["items"][0]["scenario"] == (
+        "TLS handshake uses existing failure wording"
+    )
+
+
 async def test_workbench_imports_black_box_workflow_output_into_semantic_library(
     workbench_client,
     tmp_path,
