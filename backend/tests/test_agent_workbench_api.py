@@ -1402,6 +1402,134 @@ async def test_workbench_materialize_evidence_cards_output_as_structured_memory(
     assert cards[0]["symbol"] == "nvmf_tcp_tls_cleanup"
 
 
+async def test_workbench_agent_cli_workflow_materializes_auditable_memory_end_to_end(
+    workbench_client,
+    tmp_path,
+    monkeypatch,
+):
+    from app.config import settings
+
+    source_file = tmp_path / "nof" / "nvmf_tcp" / "transport" / "tls" / "tls.c"
+    source_file.parent.mkdir(parents=True)
+    source_file.write_text(
+        "int nvmf_tcp_tls_handshake(void) { return 0; }\n"
+        "int nvmf_tcp_tls_cleanup(void) { return 0; }\n",
+        encoding="utf-8",
+    )
+    script_path = tmp_path / "agent_full_workflow.py"
+    script_path.write_text(
+        "import json, os, pathlib, sys\n"
+        "json.loads(sys.stdin.read())\n"
+        "root=pathlib.Path(os.environ['CODETALK_AGENT_ARTIFACT_DIR'])\n"
+        "source='nof/nvmf_tcp/transport/tls/tls.c'\n"
+        "(root/'source_scope.json').write_text(json.dumps({\n"
+        "  'files':[{'path':source,'reason':'validated TLS source scope',"
+        "  'symbols':[{'name':'nvmf_tcp_tls_handshake','line_start':1}]}]\n"
+        "}), encoding='utf-8')\n"
+        "(root/'evidence_cards.json').write_text(json.dumps([\n"
+        "  {'card_id':'tls_cleanup_card','path':source,'symbol':'nvmf_tcp_tls_cleanup',"
+        "   'reason':'cleanup evidence','excerpt':'cleanup is externally testable'}\n"
+        "]), encoding='utf-8')\n",
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(settings, "external_agent_custom_providers", [
+        {"id": "local-python", "command": f"python {script_path}", "prompt_transport": "stdin"}
+    ])
+    workflow = {
+        "id": "agent_cli_full_memory_workflow",
+        "name": "Agent CLI full memory workflow",
+        "version": 1,
+        "inputs": [{"id": "module", "type": "free_text", "required": True}],
+        "steps": [
+            {
+                "id": "discover",
+                "type": "agent_task",
+                "provider": "local-python",
+                "goal": "Discover NVMe TCP TLS source scope and evidence cards.",
+                "required_artifacts": ["source_scope.json", "evidence_cards.json"],
+            },
+            {"id": "validate_evidence", "type": "evidence_validate"},
+            {"id": "render_report", "type": "report_render"},
+        ],
+        "outputs": [
+            {
+                "id": "source_scope",
+                "type": "json",
+                "from": "discover",
+                "artifact": "source_scope.json",
+            },
+            {
+                "id": "evidence_cards",
+                "type": "json",
+                "from": "discover",
+                "artifact": "evidence_cards.json",
+            },
+            {"id": "report", "type": "markdown", "from": "render_report"},
+        ],
+    }
+    assert (await workbench_client.post("/api/workbench/workflows", json=workflow)).status_code == 201
+    prepared = await workbench_client.post(
+        "/api/workbench/task-runs/prepare",
+        json={
+            "workflow_id": "agent_cli_full_memory_workflow",
+            "workspace_id": "ws-agent-cli-full",
+            "repo_path": str(tmp_path),
+            "inputs": {"module": "nvme-tcp-tls"},
+        },
+    )
+    assert prepared.status_code == 201
+    task_run_id = prepared.json()["task_run_id"]
+
+    executed = await workbench_client.post(
+        f"/api/workbench/task-runs/{task_run_id}/execute",
+        json={"timeout_sec": 10},
+    )
+    assert executed.status_code == 200
+    execution = executed.json()
+    assert execution["status"] == "completed"
+    assert [output["status"] for output in execution["outputs"]] == ["ok", "ok", "ok"]
+    assert execution["audit_summary"]["missing_artifacts"] == []
+
+    materialized = await workbench_client.post(
+        f"/api/workbench/task-runs/{task_run_id}/materialize-outputs"
+    )
+    assert materialized.status_code == 200
+    materialized_body = materialized.json()
+    assert materialized_body["status"] == "ok"
+    assert materialized_body["evidence_count"] >= 6
+
+    artifacts = await workbench_client.get(f"/api/workbench/task-runs/{task_run_id}/artifacts")
+    assert artifacts.status_code == 200
+    artifact_paths = {item["relative_path"]: item for item in artifacts.json()["artifacts"]}
+    assert artifact_paths["task_artifact_manifest.json"]["kind"] == "task_artifact_manifest"
+    assert artifact_paths["workflow_output_materialization.json"]["kind"] == "workflow_output_materialization"
+    assert artifact_paths["agent_runs/discover/agent_run_lifecycle.json"]["kind"] == "agent_run_lifecycle"
+
+    source_search = await workbench_client.get(
+        "/api/workbench/memory/search",
+        params={"q": "validated TLS source scope", "workspace_id": "ws-agent-cli-full"},
+    )
+    assert source_search.status_code == 200
+    source_items = source_search.json()["items"]
+    source_files = [item for item in source_items if item["kind"] == "source_file"]
+    assert source_files
+    assert source_files[0]["subject_key"] == "nof/nvmf_tcp/transport/tls/tls.c"
+    slices = await workbench_client.get(
+        f"/api/workbench/memory/evidence/{source_files[0]['evidence_id']}/source-slices"
+    )
+    assert slices.status_code == 200
+    assert "nvmf_tcp_tls_handshake" in slices.json()["items"][0]["excerpt"]
+
+    card_search = await workbench_client.get(
+        "/api/workbench/memory/search",
+        params={"q": "cleanup is externally testable", "workspace_id": "ws-agent-cli-full"},
+    )
+    assert card_search.status_code == 200
+    cards = [item for item in card_search.json()["items"] if item["kind"] == "evidence_card"]
+    assert cards
+    assert cards[0]["subject_key"] == "tls_cleanup_card"
+
+
 async def test_workbench_prepare_task_run_api(workbench_client):
     workflow = {
         "id": "mr_test_design",
