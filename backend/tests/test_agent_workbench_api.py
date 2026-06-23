@@ -2224,6 +2224,7 @@ async def test_workbench_task_run_acceptance_audit_api_records_required_evidence
     assert checks["provider_readiness_agent:local-python"]["status"] == "ok"
     assert checks["agent_run:discover"]["status"] == "ok"
     assert checks["agent_required_artifact:discover:source_scope.json"]["status"] == "ok"
+    assert checks["workflow_output:scope"]["status"] == "ok"
     assert checks["workflow_execution"]["status"] == "ok"
     assert checks["task_artifact_manifest"]["status"] == "ok"
     artifact = Path(prepared.json()["artifact_dir"]) / "task_acceptance_audit.json"
@@ -2357,6 +2358,78 @@ async def test_workbench_task_run_acceptance_audit_flags_unavailable_agent_provi
     assert provider_check["severity"] == "required"
     assert provider_check["provider_status"] == "unknown_provider"
     assert provider_check["startup_probe_endpoint"] == "/api/tools/missing-agent-cli/startup-probe"
+
+
+async def test_workbench_task_run_acceptance_audit_flags_invalid_workflow_output(
+    workbench_client,
+    tmp_path,
+    monkeypatch,
+):
+    from app.config import settings
+
+    script_path = tmp_path / "agent_bad_schema.py"
+    script_path.write_text(
+        "import json, os, pathlib\n"
+        "root=pathlib.Path(os.environ['CODETALK_AGENT_ARTIFACT_DIR'])\n"
+        "(root/'source_scope.json').write_text(json.dumps({'wrong': []}), encoding='utf-8')\n",
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(settings, "external_agent_custom_providers", [
+        {"id": "local-python", "command": f"python {script_path}"}
+    ])
+    workflow = {
+        "id": "acceptance_invalid_output_workflow",
+        "name": "Acceptance invalid output workflow",
+        "version": 1,
+        "inputs": [{"id": "module", "type": "free_text"}],
+        "steps": [
+            {
+                "id": "discover",
+                "type": "agent_task",
+                "provider": "local-python",
+                "required_artifacts": ["source_scope.json"],
+            }
+        ],
+        "outputs": [
+            {
+                "id": "scope",
+                "type": "json",
+                "from": "discover",
+                "artifact": "source_scope.json",
+                "schema": {"type": "object", "required": ["files"]},
+            }
+        ],
+    }
+    assert (await workbench_client.post("/api/workbench/workflows", json=workflow)).status_code == 201
+    prepared = await workbench_client.post(
+        "/api/workbench/task-runs/prepare",
+        json={
+            "workflow_id": "acceptance_invalid_output_workflow",
+            "workspace_id": "ws-acceptance-invalid-output",
+            "repo_path": str(tmp_path),
+            "inputs": {"module": "nvme-tcp-tls"},
+        },
+    )
+    task_run_id = prepared.json()["task_run_id"]
+    executed = await workbench_client.post(
+        f"/api/workbench/task-runs/{task_run_id}/execute",
+        json={"timeout_sec": 10},
+    )
+    assert executed.status_code == 200
+
+    response = await workbench_client.post(
+        f"/api/workbench/task-runs/{task_run_id}/acceptance-audit"
+    )
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["status"] == "incomplete"
+    checks = {item["id"]: item for item in body["checks"]}
+    output_check = checks["workflow_output:scope"]
+    assert output_check["status"] == "missing"
+    assert output_check["output_status"] == "invalid"
+    assert output_check["reason"] == "schema_validation_failed"
+    assert "missing required field: files" in output_check["schema_errors"]
 
 
 async def test_workbench_task_run_artifacts_api_labels_agent_turn_snapshots(

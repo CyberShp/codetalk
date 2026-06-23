@@ -552,6 +552,14 @@ type AcceptanceProviderIssue = {
   usedFallback: boolean;
 };
 
+type AcceptanceWorkflowOutputIssue = {
+  outputId: string;
+  status: string;
+  reason: string;
+  artifact: string;
+  schemaErrorCount: number;
+};
+
 function acceptanceProviderIssues(
   audit: WorkbenchAcceptanceAudit | null,
 ): AcceptanceProviderIssue[] {
@@ -566,6 +574,22 @@ function acceptanceProviderIssues(
       usedFallback: Boolean(item.used_fallback ?? false),
     }))
     .filter((item) => item.provider);
+}
+
+function acceptanceWorkflowOutputIssues(
+  audit: WorkbenchAcceptanceAudit | null,
+): AcceptanceWorkflowOutputIssue[] {
+  if (!audit) return [];
+  return audit.missing_required
+    .filter((item) => String(item.id ?? "").startsWith("workflow_output:"))
+    .map((item) => ({
+      outputId: String(item.output_id ?? String(item.id ?? "").split(":")[1] ?? "output"),
+      status: String(item.output_status ?? item.status ?? "unknown"),
+      reason: String(item.reason ?? ""),
+      artifact: String(item.artifact ?? ""),
+      schemaErrorCount: Array.isArray(item.schema_errors) ? item.schema_errors.length : 0,
+    }))
+    .filter((item) => item.outputId);
 }
 
 function evidenceValidationSummary(
@@ -2285,6 +2309,29 @@ export default function AgentWorkbenchPage() {
                                   {issue.reason ? ` reason:${issue.reason}` : ""}
                                   {issue.startupProbeEndpoint
                                     ? ` probe:${issue.startupProbeEndpoint}`
+                                    : ""}
+                                </div>
+                              ))}
+                            </div>
+                          </div>
+                        );
+                      })()}
+                      {(() => {
+                        const outputIssues = acceptanceWorkflowOutputIssues(taskAcceptanceAudit);
+                        if (outputIssues.length === 0) return null;
+                        return (
+                          <div className="mt-1 rounded border border-warning/30 bg-surface px-2 py-1.5">
+                            <p className="text-[11px] font-medium text-warning">
+                              Workflow output readiness
+                            </p>
+                            <div className="mt-1 space-y-0.5 font-data text-[10px] text-warning">
+                              {outputIssues.slice(0, 4).map((issue) => (
+                                <div key={issue.outputId} className="break-words">
+                                  {issue.outputId}:{issue.status}
+                                  {issue.reason ? ` reason:${issue.reason}` : ""}
+                                  {issue.artifact ? ` artifact:${issue.artifact}` : ""}
+                                  {issue.schemaErrorCount > 0
+                                    ? ` schema-errors:${issue.schemaErrorCount}`
                                     : ""}
                                 </div>
                               ))}

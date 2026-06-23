@@ -2051,6 +2051,9 @@ def _build_task_acceptance_audit(task_run: Any) -> dict[str, Any]:
             description="collected workflow outputs",
             severity="required" if workflow_execution_exists else "recommended",
         ))
+        checks.extend(_acceptance_workflow_output_checks(
+            _read_json(task_dir / "workflow_outputs.json"),
+        ))
     if "workflow_output_materialization.json" in artifacts:
         checks.append(_acceptance_file_check(
             check_id="workflow_output_materialization",
@@ -2239,6 +2242,38 @@ def _acceptance_provider_readiness_checks(payload: Any) -> list[dict[str, Any]]:
             "startup_probe_endpoint": str(item.get("startup_probe_endpoint") or ""),
             "description": "Agent CLI provider readiness for this task",
             "reason": reason or ("" if ok else status),
+        })
+    return checks
+
+
+def _acceptance_workflow_output_checks(payload: Any) -> list[dict[str, Any]]:
+    if not isinstance(payload, dict):
+        return []
+    outputs = payload.get("outputs")
+    if not isinstance(outputs, list):
+        return []
+    checks: list[dict[str, Any]] = []
+    for index, item in enumerate(outputs):
+        if not isinstance(item, dict):
+            continue
+        output_id = str(item.get("id") or f"output_{index + 1}")
+        status = str(item.get("status") or "unknown")
+        ok = status == "ok"
+        schema_errors = item.get("schema_errors") if isinstance(item.get("schema_errors"), list) else []
+        checks.append({
+            "id": f"workflow_output:{output_id}",
+            "status": "ok" if ok else "missing",
+            "severity": "required",
+            "relative_path": "workflow_outputs.json",
+            "kind": "workflow_outputs",
+            "output_id": output_id,
+            "output_status": status,
+            "output_type": str(item.get("type") or ""),
+            "artifact": str(item.get("artifact") or ""),
+            "producer_step": str(item.get("from") or ""),
+            "reason": str(item.get("reason") or ("" if ok else status)),
+            "schema_errors": [str(error) for error in schema_errors],
+            "description": "declared workflow output status",
         })
     return checks
 
