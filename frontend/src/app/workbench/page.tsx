@@ -73,7 +73,19 @@ const DEFAULT_WORKFLOW = {
   ],
   outputs: [
     { id: "mr_scope", type: "scope_report", from: "validate_evidence" },
-    { id: "black_box_cases", type: "test_cases", from: "render_black_box_cases" },
+    {
+      id: "black_box_cases",
+      type: "test_cases",
+      from: "render_black_box_cases",
+      artifact: "black_box_cases.json",
+      semantic_import: {
+        enabled: true,
+        defaults: {
+          test_level: "black_box",
+          tags: ["mr_blackbox_test"],
+        },
+      },
+    },
   ],
 };
 

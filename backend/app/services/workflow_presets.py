@@ -104,7 +104,19 @@ def builtin_workflow_presets() -> list[dict[str, Any]]:
                 ],
                 "outputs": [
                     {"id": "mr_scope", "type": "json", "from": "validate_mr_evidence"},
-                    {"id": "black_box_cases", "type": "markdown", "from": "render_blackbox_cases"},
+                    {
+                        "id": "black_box_cases",
+                        "type": "test_cases",
+                        "from": "render_blackbox_cases",
+                        "artifact": "black_box_cases.json",
+                        "semantic_import": {
+                            "enabled": True,
+                            "defaults": {
+                                "test_level": "black_box",
+                                "tags": ["mr_blackbox_test"],
+                            },
+                        },
+                    },
                 ],
             },
         },

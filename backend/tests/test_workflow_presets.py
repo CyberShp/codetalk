@@ -23,6 +23,14 @@ def test_builtin_workflow_presets_are_valid_and_cover_core_scenarios():
         for item in mr_preset["definition"]["inputs"]
     )
     assert "mr_snapshot.json" in mr_preset["definition"]["steps"][0]["required_artifacts"]
+    black_box_output = next(
+        item
+        for item in mr_preset["definition"]["outputs"]
+        if item["id"] == "black_box_cases"
+    )
+    assert black_box_output["type"] == "test_cases"
+    assert black_box_output["artifact"] == "black_box_cases.json"
+    assert black_box_output["semantic_import"]["enabled"] is True
 
 
 def test_workflow_preset_can_be_installed_into_store(tmp_path):
