@@ -486,6 +486,55 @@ def test_agent_run_harness_uses_provider_prompt_transport_for_argv_last(
     assert execution_input["prompt_transport"] == "argv"
 
 
+def test_agent_run_harness_forces_stdin_for_large_prompt_payload(
+    tmp_path, monkeypatch
+):
+    from app.config import settings
+    from app.services.agent_run_harness import AgentRunHarness
+
+    monkeypatch.setattr(settings, "external_agent_custom_providers", [
+        {
+            "id": "local-large-argv-agent",
+            "command": "python",
+            "prompt_transport": "argv_last",
+        }
+    ])
+    artifact_dir = tmp_path / "agent-run-large-argv"
+    output_file = artifact_dir / "agent_seen.json"
+    script = (
+        "import json, pathlib, sys; "
+        "payload=json.load(sys.stdin); "
+        "pathlib.Path(sys.argv[1]).write_text(json.dumps({"
+        "'bundle_id': payload['task_bundle']['task_id'], "
+        "'argv_count': len(sys.argv), "
+        "'blob_len': len(payload['task_bundle']['large_context'])"
+        "}), encoding='utf-8')"
+    )
+    harness = AgentRunHarness(artifact_dir)
+    run = harness.create_run(
+        run_id="agent_run_large_argv",
+        provider="local-large-argv-agent",
+        command=["python", "-c", script, str(output_file)],
+        cwd=str(tmp_path),
+        workflow_snapshot={"id": "wf"},
+        task_bundle={"task_id": "task-large-argv", "large_context": "x" * 70000},
+    )
+
+    executed = harness.execute_run(run.run_id, timeout_sec=10)
+
+    assert executed.status == "completed"
+    seen = json.loads(output_file.read_text(encoding="utf-8"))
+    assert seen == {
+        "bundle_id": "task-large-argv",
+        "argv_count": 2,
+        "blob_len": 70000,
+    }
+    execution_input = json.loads((artifact_dir / "execution_input.json").read_text(encoding="utf-8"))
+    assert execution_input["prompt_transport"] == "stdin"
+    assert execution_input["prompt_transport_reason"] == "large_payload_forced_stdin"
+    assert execution_input["process_command"] == execution_input["command"]
+
+
 def test_agent_run_harness_executes_provider_health_fallback_command(
     tmp_path, monkeypatch
 ):

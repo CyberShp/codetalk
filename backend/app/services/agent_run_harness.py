@@ -27,6 +27,9 @@ def _json_sha256(payload: Any) -> str:
     return hashlib.sha256(data).hexdigest()
 
 
+_MAX_ARG_PROMPT_BYTES = 24000
+
+
 @dataclass(frozen=True)
 class AgentRunRecord:
     run_id: str
@@ -169,6 +172,15 @@ class AgentRunHarness:
             command=launch_command,
             prompt=stdin_payload,
         )
+        prompt_transport_reason = ""
+        if (
+            prompt_transport != "stdin"
+            and len(stdin_payload.encode("utf-8")) > _MAX_ARG_PROMPT_BYTES
+        ):
+            process_command = list(launch_command)
+            stdin_payload_bytes = stdin_payload.encode("utf-8")
+            prompt_transport = "stdin"
+            prompt_transport_reason = "large_payload_forced_stdin"
         self._write_json(
             "execution_input.json",
             {
@@ -180,6 +192,7 @@ class AgentRunHarness:
                 "command_resolution": command_resolution,
                 "process_command": process_command,
                 "prompt_transport": prompt_transport,
+                "prompt_transport_reason": prompt_transport_reason,
                 "cwd": cwd,
                 "timeout_sec": max(1, int(timeout_sec)),
                 "mcp_profile": run_payload.get("mcp_profile") or "",
@@ -222,6 +235,7 @@ class AgentRunHarness:
                 "command_resolution": command_resolution,
                 "process_command": process_command,
                 "prompt_transport": prompt_transport,
+                "prompt_transport_reason": prompt_transport_reason,
                 "created_at": started_at,
             },
             append_jsonl=True,
