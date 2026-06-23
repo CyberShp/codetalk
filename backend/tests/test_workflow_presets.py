@@ -32,6 +32,27 @@ def test_builtin_workflow_presets_are_valid_and_cover_core_scenarios():
     assert black_box_output["artifact"] == "black_box_cases.json"
     assert black_box_output["semantic_import"]["enabled"] is True
 
+    risk_preset = next(item for item in presets if item["id"] == "resource_leak_hunt")
+    risk_output = next(
+        item
+        for item in risk_preset["definition"]["outputs"]
+        if item["id"] == "risk_findings"
+    )
+    assert risk_output["artifact"] == "risk_findings.json"
+    assert risk_output["evidence_memory"]["enabled"] is True
+    assert risk_output["evidence_memory"]["kind"] == "resource_risk_finding"
+    assert risk_output["evidence_memory"]["path_field"] == "file_path"
+
+    patch_preset = next(item for item in presets if item["id"] == "patch_impact_review")
+    impact_output = next(
+        item
+        for item in patch_preset["definition"]["outputs"]
+        if item["id"] == "impact_scope"
+    )
+    assert impact_output["artifact"] == "impact_scope.json"
+    assert impact_output["evidence_memory"]["enabled"] is True
+    assert impact_output["evidence_memory"]["kind"] == "patch_impact_scope"
+
 
 def test_workflow_preset_can_be_installed_into_store(tmp_path):
     from app.services.workflow_dsl import WorkflowStore
