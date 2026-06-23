@@ -148,6 +148,64 @@ async def test_workbench_provider_capabilities_matrix_api(workbench_client, monk
     assert by_id["evidence-memory"]["capabilities"]["supports_source_slices"] is True
 
     assert by_id["semantic-library"]["owner"] == "codetalk_memory"
+
+
+async def test_workbench_provider_capabilities_include_agent_launch_resolution(
+    workbench_client,
+    monkeypatch,
+):
+    monkeypatch.setattr(settings, "claude_code_command", "ccr code")
+    monkeypatch.setattr(settings, "claude_code_fallback_commands", ["claude"])
+    monkeypatch.setattr(settings, "opencode_command", "")
+    monkeypatch.setattr(settings, "external_agent_custom_providers", [])
+
+    def fake_health(provider, command, fallback_commands=None):
+        assert provider == "claude-code"
+        assert command == "ccr code"
+        assert fallback_commands == ["claude"]
+        return {
+            "provider": provider,
+            "status": "available",
+            "configured_command": "claude",
+            "command": "C:/tools/claude.cmd -p --output-format json",
+            "path": "C:/tools/claude.cmd",
+            "launch_kind": "exec",
+            "used_fallback": True,
+            "reason": "primary command unavailable; using fallback: claude",
+            "attempts": [
+                {
+                    "command": "ccr code",
+                    "status": "unavailable",
+                    "reason": "command not found: ccr",
+                    "launch_kind": "exec",
+                },
+                {
+                    "command": "claude",
+                    "status": "available",
+                    "path": "C:/tools/claude.cmd",
+                    "launch_kind": "exec",
+                },
+            ],
+        }
+
+    monkeypatch.setattr(
+        "app.services.workbench_task_run.check_provider_health",
+        fake_health,
+        raising=False,
+    )
+
+    resp = await workbench_client.get("/api/workbench/provider-capabilities")
+
+    assert resp.status_code == 200
+    by_id = {item["provider"]: item for item in resp.json()["providers"]}
+    resolution = by_id["claude-code"]["diagnostics"]["command_resolution"]
+    assert resolution["status"] == "available"
+    assert resolution["configured_command"] == "claude"
+    assert resolution["used_fallback"] is True
+    assert resolution["launch_kind"] == "exec"
+    assert resolution["reason"] == "primary command unavailable; using fallback: claude"
+    assert resolution["attempt_count"] == 2
+    assert resolution["attempts"][0]["reason"] == "command not found: ccr"
     assert by_id["semantic-library"]["capabilities"]["supports_black_box_terms"] is True
 
 

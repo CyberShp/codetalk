@@ -1065,6 +1065,38 @@ export default function AgentWorkbenchPage() {
                       </span>
                     </p>
                   )}
+                  {provider.diagnostics.command_resolution && (
+                    <div className="rounded bg-surface-container px-2 py-1.5">
+                      <p>
+                        Resolution:{" "}
+                        <span className="font-data text-on-surface">
+                          {provider.diagnostics.command_resolution.status || "unknown"}
+                        </span>
+                        {provider.diagnostics.command_resolution.used_fallback && (
+                          <span className="ml-2 font-medium text-warning">fallback</span>
+                        )}
+                        {provider.diagnostics.command_resolution.launch_kind && (
+                          <span className="ml-2 font-data text-on-surface">
+                            launch:{provider.diagnostics.command_resolution.launch_kind}
+                          </span>
+                        )}
+                      </p>
+                      {provider.diagnostics.command_resolution.reason && (
+                        <p className="mt-1 break-words">
+                          Reason: {provider.diagnostics.command_resolution.reason}
+                        </p>
+                      )}
+                      {typeof provider.diagnostics.command_resolution.attempt_count ===
+                        "number" && (
+                        <p className="mt-1">
+                          Attempts:{" "}
+                          <span className="font-data text-on-surface">
+                            {provider.diagnostics.command_resolution.attempt_count}
+                          </span>
+                        </p>
+                      )}
+                    </div>
+                  )}
                   {provider.diagnostics.manual_probe_command && (
                     <p className="break-words">
                       Manual:{" "}

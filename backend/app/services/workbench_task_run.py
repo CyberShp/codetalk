@@ -14,8 +14,10 @@ from app.config import settings
 from app.services.agent_run_harness import AgentRunHarness
 from app.services.evidence_memory import EvidenceMemoryStore
 from app.services.external_agent_discovery import (
+    check_provider_health,
     external_agent_provider_capabilities,
     external_agent_provider_spec,
+    redact_agent_diagnostic_text,
     split_agent_command,
 )
 from app.services.test_semantic_library import TestSemanticLibraryStore
@@ -748,7 +750,7 @@ def build_agent_cli_provider_diagnostics(provider: str, spec: Any) -> dict[str, 
     ]
     if command_hint_env:
         hints.append(f"Override this provider with {command_hint_env} when backend PATH differs.")
-    return {
+    diagnostics = {
         "health_endpoint": f"/api/tools/{provider}/health",
         "startup_probe_endpoint": f"/api/tools/{provider}/startup-probe",
         "configured_command_text": command_text,
@@ -763,6 +765,75 @@ def build_agent_cli_provider_diagnostics(provider: str, spec: Any) -> dict[str, 
         ),
         "troubleshooting": hints,
     }
+    command_resolution = _agent_cli_command_resolution(provider, command_text, fallback_texts)
+    if command_resolution:
+        diagnostics["command_resolution"] = command_resolution
+    return diagnostics
+
+
+def _agent_cli_command_resolution(
+    provider: str,
+    command_text: str,
+    fallback_texts: list[str],
+) -> dict[str, Any]:
+    if not command_text:
+        return {
+            "status": "missing_command",
+            "reason": "provider command is not configured",
+            "used_fallback": False,
+            "attempt_count": 0,
+            "attempts": [],
+        }
+    try:
+        health = check_provider_health(provider, command_text, fallback_commands=fallback_texts)
+    except Exception as exc:
+        return {
+            "status": "error",
+            "reason": redact_agent_diagnostic_text(str(exc)),
+            "used_fallback": False,
+            "attempt_count": 0,
+            "attempts": [],
+        }
+    if not isinstance(health, dict):
+        return {}
+    attempts = [
+        _agent_cli_command_resolution_attempt(item)
+        for item in health.get("attempts") or []
+        if isinstance(item, dict)
+    ]
+    return {
+        "status": str(health.get("status") or ""),
+        "configured_command": redact_agent_diagnostic_text(
+            str(health.get("configured_command") or command_text)
+        ),
+        "command": redact_agent_diagnostic_text(str(health.get("command") or "")),
+        "path": redact_agent_diagnostic_text(str(health.get("path") or "")),
+        "launch_kind": str(health.get("launch_kind") or ""),
+        "used_fallback": bool(health.get("used_fallback", False)),
+        "reason": redact_agent_diagnostic_text(str(health.get("reason") or "")),
+        "attempt_count": len(attempts),
+        "attempts": attempts,
+    }
+
+
+def _agent_cli_command_resolution_attempt(item: dict[str, Any]) -> dict[str, Any]:
+    keys = (
+        "command",
+        "status",
+        "reason",
+        "path",
+        "launch_kind",
+        "config_hint",
+        "profile_config_path",
+        "shell_path",
+    )
+    result: dict[str, Any] = {}
+    for key in keys:
+        value = item.get(key)
+        if value is None:
+            continue
+        result[key] = redact_agent_diagnostic_text(str(value)) if isinstance(value, str) else value
+    return result
 
 
 def _unknown_agent_cli_provider_diagnostics(provider: str) -> dict[str, Any]:

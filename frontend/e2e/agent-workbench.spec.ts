@@ -72,6 +72,16 @@ async function routeWorkbenchShell(page: import("@playwright/test").Page) {
               manual_probe_command:
                 "POST /api/tools/claude-code/startup-probe with repo_path, then verify the same backend shell can launch: ccr code",
               mcp_credentials_owner: "agent_cli",
+              command_resolution: {
+                status: "available",
+                configured_command: "claude",
+                command: "C:/tools/claude.cmd -p --output-format json",
+                path: "C:/tools/claude.cmd",
+                launch_kind: "exec",
+                used_fallback: true,
+                reason: "primary command unavailable; using fallback: claude",
+                attempt_count: 2,
+              },
               troubleshooting: [
                 "PowerShell profile, PATH, and service account environment may differ from an interactive terminal.",
               ],
@@ -177,6 +187,12 @@ test("agent workbench renders workflow and task-run controls", async ({ page }) 
     page.getByText("/api/tools/claude-code/startup-probe", { exact: true }),
   ).toBeVisible();
   await expect(page.getByText("claude_print_arg").first()).toBeVisible();
+  await expect(page.getByText("Resolution: available")).toBeVisible();
+  await expect(page.getByText("fallback").first()).toBeVisible();
+  await expect(page.getByText("launch:exec")).toBeVisible();
+  await expect(
+    page.getByText("Reason: primary command unavailable; using fallback: claude"),
+  ).toBeVisible();
   await expect(page.getByText(/PowerShell profile/)).toBeVisible();
   await expect(page.getByText("Agent-owned").first()).toBeVisible();
   await expect(page.getByText("CodeTalk callable").first()).toBeVisible();

@@ -170,6 +170,26 @@ export interface WorkbenchProviderMatrixItem {
     codetalk_validation_role?: string;
     credential_boundary?: string;
     troubleshooting?: string[];
+    command_resolution?: {
+      status?: string;
+      configured_command?: string;
+      command?: string;
+      path?: string;
+      launch_kind?: string;
+      used_fallback?: boolean;
+      reason?: string;
+      attempt_count?: number;
+      attempts?: Array<{
+        command?: string;
+        status?: string;
+        reason?: string;
+        path?: string;
+        launch_kind?: string;
+        config_hint?: string;
+        profile_config_path?: string;
+        shell_path?: string;
+      }>;
+    };
   };
   unavailable_behavior: string;
 }
