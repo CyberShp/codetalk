@@ -284,27 +284,50 @@ function AgentProviderDiagnosticsCard({
       )}
       {attempts.length > 0 && (
         <div className="mt-2 space-y-1">
-          {attempts.slice(0, 3).map((attempt, index) => (
-            <div
-              key={`${attempt.command ?? "attempt"}-${index}`}
-              className="break-words rounded bg-surface-container px-2 py-1 text-on-surface-variant"
-            >
-              <code className="font-data text-on-surface">
-                {attempt.command ?? "command"}
-              </code>{" "}
-              =&gt; {attempt.status ?? "unknown"}
-              {attempt.launch_kind ? ` (${attempt.launch_kind})` : ""}
-              {attempt.reason || attempt.config_hint ? (
-                <span className="block text-amber-500">
-                  {attempt.reason || attempt.config_hint}
-                </span>
-              ) : null}
-            </div>
-          ))}
+          {attempts.slice(0, 3).map((attempt, index) => {
+            const remediation = agentAttemptRemediation(attempt);
+            return (
+              <div
+                key={`${attempt.command ?? "attempt"}-${index}`}
+                className="break-words rounded bg-surface-container px-2 py-1 text-on-surface-variant"
+              >
+                <code className="font-data text-on-surface">
+                  {attempt.command ?? "command"}
+                </code>{" "}
+                =&gt; {attempt.status ?? "unknown"}
+                {attempt.launch_kind ? ` (${attempt.launch_kind})` : ""}
+                {attempt.reason || attempt.config_hint ? (
+                  <span className="block text-amber-500">
+                    {attempt.reason || attempt.config_hint}
+                  </span>
+                ) : null}
+                {remediation && (
+                  <span className="block text-on-surface">{remediation}</span>
+                )}
+              </div>
+            );
+          })}
         </div>
       )}
     </div>
   );
+}
+
+function agentAttemptRemediation(attempt: { config_hint?: string; reason?: string }): string {
+  const text = `${attempt.config_hint ?? ""} ${attempt.reason ?? ""}`;
+  if (
+    text.includes("CCR_CONFIG_PATH is not set") &&
+    text.includes("default config not found")
+  ) {
+    return (
+      "Set CCR_CONFIG_PATH or CLAUDE_CODE_CONFIG_PATH to an existing " +
+      "config-router.json, then run Startup probe again."
+    );
+  }
+  if (text.includes("command not found")) {
+    return "Set the provider command env var to the full executable path, then refresh tools.";
+  }
+  return "";
 }
 
 function CommandDiagnosticBlock({
@@ -413,6 +436,11 @@ function StartupProbeResultCard({
               {attempt.probe_message && (
                 <span className="basis-full break-words text-on-surface">
                   {attempt.probe_message}
+                </span>
+              )}
+              {agentAttemptRemediation(attempt) && (
+                <span className="basis-full break-words text-on-surface">
+                  {agentAttemptRemediation(attempt)}
                 </span>
               )}
               <div className="basis-full">
