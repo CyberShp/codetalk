@@ -1712,6 +1712,21 @@ async def test_workbench_task_run_artifacts_api_labels_failure_recovery(
     assert rerun["execution"]["status"] == "invalid"
     assert rerun["execution"]["step_results"][0]["failure_recovery"]["failure_kind"] == "agent_error"
     assert rerun["validation_after"]["status"] == "ready"
+    artifacts_after_rerun = await workbench_client.get(
+        f"/api/workbench/task-runs/{task_run_id}/artifacts"
+    )
+    paths_after_rerun = {
+        item["relative_path"]: item for item in artifacts_after_rerun.json()["artifacts"]
+    }
+    assert paths_after_rerun["task_rerun_execution.json"]["kind"] == "task_rerun_execution"
+    assert paths_after_rerun["task_rerun_history.json"]["kind"] == "task_rerun_history"
+    rerun_execution_content = await workbench_client.get(
+        f"/api/workbench/task-runs/{task_run_id}/artifacts/content/task_rerun_execution.json"
+    )
+    assert rerun_execution_content.status_code == 200
+    assert rerun_execution_content.json()["kind"] == "task_rerun_execution"
+    assert "validation_before" in rerun_execution_content.json()["content"]
+    assert "agent_error" in rerun_execution_content.json()["content"]
 
 
 async def test_workbench_task_run_artifacts_api_labels_agent_turn_snapshots(

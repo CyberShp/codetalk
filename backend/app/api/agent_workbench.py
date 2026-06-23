@@ -6,6 +6,7 @@ import hashlib
 import json
 import uuid
 from dataclasses import asdict
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
@@ -653,12 +654,17 @@ async def execute_task_run_rerun_plan(
         if isinstance(refreshed_plan, dict)
         else {}
     )
-    return {
+    result = {
         "status": "executed",
         "validation_before": validation_before,
         "execution": asdict(execution),
         "validation_after": validation_after,
     }
+    _write_task_rerun_execution_artifacts(
+        task_dir=Path(refreshed_task_run.artifact_dir),
+        result=result,
+    )
+    return result
 
 
 @router.get("/task-runs/{task_run_id}/artifacts")
@@ -1769,6 +1775,10 @@ def _artifact_kind(relative_path: str) -> str:
         return "workflow_execution"
     if name == "task_rerun_plan.json":
         return "task_rerun_plan"
+    if name == "task_rerun_execution.json":
+        return "task_rerun_execution"
+    if name == "task_rerun_history.json":
+        return "task_rerun_history"
     if name == "evidence_validation.json":
         return "evidence_validation"
     if name == "raw_output.txt":
@@ -1920,6 +1930,40 @@ def _rerun_repo_check(repo_path: str) -> dict[str, Any]:
         "path": repo_path,
         "reason": "" if exists else "repo path is missing or not a directory",
     }
+
+
+def _write_task_rerun_execution_artifacts(
+    *,
+    task_dir: Path,
+    result: dict[str, Any],
+) -> None:
+    payload = {
+        **result,
+        "recorded_at": datetime.now(timezone.utc).isoformat(),
+    }
+    _write_json(task_dir / "task_rerun_execution.json", payload)
+    history_path = task_dir / "task_rerun_history.json"
+    history = _read_json(history_path)
+    records = history.get("records") if isinstance(history, dict) else []
+    if not isinstance(records, list):
+        records = []
+    records.append(payload)
+    _write_json(
+        history_path,
+        {
+            "task_run_id": str(result.get("execution", {}).get("task_run_id") or ""),
+            "count": len(records),
+            "records": records,
+        },
+    )
+
+
+def _write_json(path: Path, payload: Any) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(
+        json.dumps(payload, ensure_ascii=False, indent=2, sort_keys=True),
+        encoding="utf-8",
+    )
 
 
 def _read_json(path: Path) -> Any:

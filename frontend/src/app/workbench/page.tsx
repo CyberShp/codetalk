@@ -518,6 +518,8 @@ const AUDIT_ARTIFACT_KIND_ORDER = [
   "workflow_output_materialization",
   "workflow_execution",
   "task_rerun_plan",
+  "task_rerun_execution",
+  "task_rerun_history",
 ];
 
 function prioritizedAuditArtifacts(artifacts: WorkbenchTaskArtifact[]): WorkbenchTaskArtifact[] {
