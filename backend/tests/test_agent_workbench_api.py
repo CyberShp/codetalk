@@ -3089,6 +3089,7 @@ async def test_workbench_task_run_acceptance_audit_api_records_required_evidence
     checks = {item["id"]: item for item in body["checks"]}
     assert checks["task_bundle"]["status"] == "ok"
     assert checks["provider_readiness"]["status"] == "ok"
+    assert checks["black_box_generation_policy"]["status"] == "ok"
     assert checks["provider_readiness_agent:local-python"]["status"] == "ok"
     assert checks["agent_run:discover"]["status"] == "ok"
     assert checks["agent_agent_replay_plan:discover"]["status"] == "ok"
@@ -3109,6 +3110,76 @@ async def test_workbench_task_run_acceptance_audit_api_records_required_evidence
     assert audit_content.status_code == 200
     assert audit_content.json()["kind"] == "task_acceptance_audit"
     assert '"status": "ready"' in audit_content.json()["content"]
+
+
+async def test_workbench_task_run_acceptance_audit_reports_missing_black_box_policy(
+    workbench_client,
+    tmp_path,
+    monkeypatch,
+):
+    from app.config import settings
+
+    script_path = tmp_path / "agent_ok.py"
+    script_path.write_text(
+        "import json, os, pathlib, sys\n"
+        "json.load(sys.stdin)\n"
+        "root=pathlib.Path(os.environ['CODETALK_AGENT_ARTIFACT_DIR'])\n"
+        "(root/'source_scope.json').write_text(json.dumps({'files': []}), encoding='utf-8')\n",
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(settings, "external_agent_custom_providers", [
+        {"id": "local-python", "command": f"python {script_path}"}
+    ])
+    workflow = {
+        "id": "missing_black_box_policy_workflow",
+        "name": "Missing black-box policy workflow",
+        "version": 1,
+        "inputs": [{"id": "module", "type": "free_text"}],
+        "steps": [
+            {
+                "id": "discover",
+                "type": "agent_task",
+                "provider": "local-python",
+                "required_artifacts": ["source_scope.json"],
+            }
+        ],
+        "outputs": [
+            {
+                "id": "scope",
+                "type": "json",
+                "from": "discover",
+                "artifact": "source_scope.json",
+            }
+        ],
+    }
+    assert (await workbench_client.post("/api/workbench/workflows", json=workflow)).status_code == 201
+    prepared = await workbench_client.post(
+        "/api/workbench/task-runs/prepare",
+        json={
+            "workflow_id": "missing_black_box_policy_workflow",
+            "workspace_id": "ws-missing-policy",
+            "repo_path": str(tmp_path),
+            "inputs": {"module": "nvme-tcp-tls"},
+        },
+    )
+    task_run_id = prepared.json()["task_run_id"]
+    executed = await workbench_client.post(
+        f"/api/workbench/task-runs/{task_run_id}/execute",
+        json={"timeout_sec": 10},
+    )
+    assert executed.status_code == 200
+    (Path(prepared.json()["artifact_dir"]) / "black_box_generation_policy.json").unlink()
+
+    response = await workbench_client.post(
+        f"/api/workbench/task-runs/{task_run_id}/acceptance-audit"
+    )
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["status"] == "incomplete"
+    checks = {item["id"]: item for item in body["checks"]}
+    assert checks["black_box_generation_policy"]["status"] == "missing"
+    assert checks["black_box_generation_policy"]["reason"] == "artifact_missing"
 
 
 async def test_workbench_task_run_acceptance_audit_records_semantic_import_artifact(

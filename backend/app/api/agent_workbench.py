@@ -3621,6 +3621,11 @@ def _build_task_acceptance_audit(task_run: Any) -> dict[str, Any]:
             "retrieved/read/used trajectory",
         ),
         ("degraded_retrieval", "degraded_retrieval.json", "degraded provider decisions"),
+        (
+            "black_box_generation_policy",
+            "black_box_generation_policy.json",
+            "semantic-library usage boundary for black-box case generation",
+        ),
         ("task_artifact_manifest", "task_artifact_manifest.json", "artifact inventory"),
     ]
     for check_id, relative_path, description in required_root:
