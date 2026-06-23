@@ -3834,6 +3834,7 @@ def _build_task_acceptance_audit(task_run: Any) -> dict[str, Any]:
     required_root = [
         ("task_run", "task_run.json", "prepared task run snapshot"),
         ("input_snapshot", "input_snapshot.json", "frozen user inputs"),
+        ("input_materials", "input_materials.json", "hashed input material read contract"),
         ("workflow_snapshot", "workflow_snapshot.json", "frozen workflow definition"),
         ("workflow_contract", "workflow_contract.json", "workflow input/output contract"),
         ("task_bundle", "task_bundle.json", "CodeTalk-to-Agent handoff bundle"),
@@ -3870,6 +3871,10 @@ def _build_task_acceptance_audit(task_run: Any) -> dict[str, Any]:
             description=description,
             severity="required",
         ))
+    checks.append(_acceptance_input_materials_check(
+        task_dir=task_dir,
+        input_snapshot=task_run.input_snapshot,
+    ))
     agent_instruction_policy_expected = _expected_agent_instruction_policy(task_dir)
     provider_readiness = _read_json(task_dir / "provider_readiness.json")
     checks.extend(_acceptance_provider_readiness_checks(provider_readiness))
@@ -4244,6 +4249,94 @@ def _acceptance_workflow_output_checks(payload: Any) -> list[dict[str, Any]]:
             "description": "declared workflow output status",
         })
     return checks
+
+
+def _acceptance_input_materials_check(
+    *,
+    task_dir: Path,
+    input_snapshot: dict[str, Any],
+) -> dict[str, Any]:
+    expected_ids = _expected_input_material_ids(input_snapshot)
+    payload = _read_json(task_dir / "input_materials.json")
+    base = {
+        "id": "input_materials_contract",
+        "severity": "required",
+        "relative_path": "input_materials.json",
+        "kind": "input_materials",
+        "description": "hashed file input material contract passed to Agent runs",
+        "expected_material_count": len(expected_ids),
+        "expected_material_ids": expected_ids,
+    }
+    if not isinstance(payload, dict):
+        return {
+            **base,
+            "status": "missing",
+            "reason": "artifact_json_unreadable",
+        }
+    material_ids = [
+        str(item.get("input_id") or "")
+        for item in payload.get("materials") or []
+        if isinstance(item, dict)
+    ]
+    missing_ids = [item for item in expected_ids if item not in material_ids]
+    material_count = _safe_int(payload.get("material_count"))
+    if material_count != len(material_ids):
+        return {
+            **base,
+            "status": "missing",
+            "reason": "material_count_mismatch",
+            "material_count": material_count,
+            "actual_material_ids": material_ids,
+        }
+    if missing_ids:
+        return {
+            **base,
+            "status": "missing",
+            "reason": "material_ids_missing",
+            "material_count": material_count,
+            "actual_material_ids": material_ids,
+            "missing_material_ids": missing_ids,
+        }
+    rules = payload.get("rules") if isinstance(payload.get("rules"), dict) else {}
+    if expected_ids and rules.get("agent_must_read_materials") is not True:
+        return {
+            **base,
+            "status": "missing",
+            "reason": "agent_must_read_materials_rule_missing",
+            "material_count": material_count,
+            "actual_material_ids": material_ids,
+        }
+    if rules.get("materials_are_source_truth") is not False:
+        return {
+            **base,
+            "status": "missing",
+            "reason": "materials_source_truth_boundary_missing",
+            "material_count": material_count,
+            "actual_material_ids": material_ids,
+        }
+    return {
+        **base,
+        "status": "ok",
+        "reason": "",
+        "material_count": material_count,
+        "actual_material_ids": material_ids,
+    }
+
+
+def _expected_input_material_ids(input_snapshot: dict[str, Any]) -> list[str]:
+    material_ids: list[str] = []
+    for input_id, value in (input_snapshot or {}).items():
+        if not isinstance(value, dict):
+            continue
+        kind = str(value.get("kind") or "")
+        if kind == "file":
+            material_ids.append(str(input_id))
+        elif kind == "file_set":
+            for index, item in enumerate(value.get("files") or []):
+                if not isinstance(item, dict):
+                    continue
+                material_ids.append(str(item.get("input_id") or f"{input_id}_{index + 1}"))
+    return material_ids
 
 
 def _expected_agent_instruction_policy(task_dir: Path) -> dict[str, Any]:

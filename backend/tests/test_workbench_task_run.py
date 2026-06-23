@@ -154,6 +154,14 @@ def test_prepare_workbench_task_run_ingests_file_inputs(tmp_path):
     )
     manifest_paths = {item["relative_path"]: item for item in manifest["artifacts"]}
     assert manifest_paths["input_materials.json"]["kind"] == "input_materials"
+    from app.api.agent_workbench import _build_task_acceptance_audit
+
+    audit = _build_task_acceptance_audit(result)
+    checks = {item["id"]: item for item in audit["checks"]}
+    assert checks["input_materials"]["status"] == "ok"
+    assert checks["input_materials_contract"]["status"] == "ok"
+    assert checks["input_materials_contract"]["material_count"] == 1
+    assert checks["input_materials_contract"]["actual_material_ids"] == ["patch_plan"]
 
 
 def test_prepare_workbench_task_run_extracts_docx_file_inputs(tmp_path):
