@@ -458,6 +458,14 @@ test("agent workbench previews task run artifact content", async ({ page }) => {
             sha256: "aaaaabbbbbcccccdddddeeeeefffff1111122222",
             preview: "{\"evidence_count\":2,\"rejected_outputs\":[{}]}",
           },
+          {
+            relative_path: "semantic_import_outputs_by_step.json",
+            path: "E:/data/workbench/task_runs/task_run_preview/semantic_import_outputs_by_step.json",
+            kind: "semantic_import_outputs",
+            size_bytes: 256,
+            sha256: "bbbbbaaaaacccccdddddeeeeefffff1111122222",
+            preview: "{\"design\":[{\"output_id\":\"black_box_cases\"}]}",
+          },
         ],
       },
     });
@@ -559,6 +567,37 @@ test("agent workbench previews task run artifact content", async ({ page }) => {
       });
     },
   );
+  await page.route(
+    "**/api/workbench/task-runs/task_run_preview/artifacts/content/semantic_import_outputs_by_step.json",
+    async (route) => {
+      await route.fulfill({
+        headers: corsHeaders(route.request().headers().origin),
+        json: {
+          relative_path: "semantic_import_outputs_by_step.json",
+          path: "E:/data/workbench/task_runs/task_run_preview/semantic_import_outputs_by_step.json",
+          kind: "semantic_import_outputs",
+          size_bytes: 256,
+          sha256: "bbbbbaaaaacccccdddddeeeeefffff1111122222",
+          preview: "{\"design\":[{\"output_id\":\"black_box_cases\"}]}",
+          is_text: true,
+          truncated: false,
+          content: JSON.stringify({
+            design: [
+              {
+                output_id: "black_box_cases",
+                semantic_import: {
+                  enabled: true,
+                  defaults: {
+                    module: "nvmf_tcp_tls",
+                  },
+                },
+              },
+            ],
+          }),
+        },
+      });
+    },
+  );
 
   await page.goto("/workbench", { waitUntil: "domcontentloaded" });
   await expect(page.getByText("ccr code", { exact: true }).first()).toBeVisible();
@@ -574,9 +613,9 @@ test("agent workbench previews task run artifact content", async ({ page }) => {
   await expect(page.getByText("Input context: 1 files")).toBeVisible();
   await expect(page.getByText("tls-design.md")).toBeVisible();
   await expect(page.getByText("chunks:2")).toBeVisible();
-  await expect(page.getByText("warnings:1")).toBeVisible();
+  await expect(page.getByText("warnings:preview truncated")).toBeVisible();
   await expect(page.getByText("fast-context: fallback to agent_cli")).toBeVisible();
-  await expect(page.getByText("Audit artifacts: 4")).toBeVisible();
+  await expect(page.getByText("Audit artifacts: 5")).toBeVisible();
 
   await page.getByRole("button", { name: "task_bundle:task_bundle.json" }).click();
 
@@ -606,4 +645,12 @@ test("agent workbench previews task run artifact content", async ({ page }) => {
   await expect(page.getByText("status:invalid")).toBeVisible();
   await expect(page.getByText("schema errors:1")).toBeVisible();
   await expect(page.getByText("workflow_outputs sha:999988887777")).toBeVisible();
+
+  await page
+    .getByRole("button", {
+      name: "semantic_import_outputs:semantic_import_outputs_by_step.json",
+    })
+    .click();
+  await expect(page.getByText("\"output_id\":\"black_box_cases\"", { exact: false })).toBeVisible();
+  await expect(page.getByText("\"module\":\"nvmf_tcp_tls\"", { exact: false })).toBeVisible();
 });

@@ -794,6 +794,7 @@ const AUDIT_ARTIFACT_KIND_ORDER = [
   "degraded_retrieval",
   "evidence_validation",
   "workflow_outputs",
+  "semantic_import_outputs",
   "workflow_output_materialization",
   "workflow_execution",
   "task_acceptance_audit",
