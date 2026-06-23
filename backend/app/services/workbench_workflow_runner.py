@@ -210,6 +210,20 @@ class WorkbenchWorkflowRunner:
         if failure_recovery:
             step_payload["failure_recovery"] = failure_recovery
             _write_json(artifact_dir / "failure_recovery.json", failure_recovery)
+        lifecycle = _agent_run_lifecycle_summary(
+            step_id=step_id,
+            status=status,
+            artifact_dir=artifact_dir,
+            executions=executions,
+            turn_artifacts=turn_artifacts,
+            validation=asdict(validation),
+            required_artifacts=required_artifacts,
+            source_slice_requests=source_slice_requests,
+            injected_source_slices=injected_source_slices,
+            failure_recovery=failure_recovery,
+        )
+        step_payload["lifecycle"] = lifecycle
+        _write_json(artifact_dir / "agent_run_lifecycle.json", lifecycle)
         return step_payload
 
     def _execute_builtin_step(
@@ -799,6 +813,123 @@ def _failure_recovery_summary(
         "missing_artifacts": missing_artifacts,
         "suggested_actions": actions,
     }
+
+
+def _agent_run_lifecycle_summary(
+    *,
+    step_id: str,
+    status: str,
+    artifact_dir: Path,
+    executions: list[dict[str, Any]],
+    turn_artifacts: list[str],
+    validation: dict[str, Any],
+    required_artifacts: list[str],
+    source_slice_requests: list[dict[str, Any]],
+    injected_source_slices: list[dict[str, Any]],
+    failure_recovery: dict[str, Any],
+) -> dict[str, Any]:
+    stages: list[dict[str, Any]] = [
+        {
+            "stage": "prepared",
+            "status": "ok",
+            "artifacts": [
+                item for item in (
+                    "agent_run.json",
+                    "task_bundle.json",
+                    "workflow_snapshot.json",
+                )
+                if (artifact_dir / item).exists()
+            ],
+        }
+    ]
+    for index, execution in enumerate(executions):
+        turn_id = str(execution.get("turn_id") or f"turn_{index + 1}")
+        if not execution.get("turn_id"):
+            turn_id = _turn_id_from_artifact_path(turn_artifacts[index] if index < len(turn_artifacts) else "")
+        turn_artifact_dir = turn_artifacts[index] if index < len(turn_artifacts) else ""
+        stage = {
+            "stage": "turn",
+            "turn_id": turn_id or f"turn_{index + 1}",
+            "status": str(execution.get("status") or ""),
+            "execution_status": str(execution.get("status") or ""),
+            "exit_code": execution.get("exit_code"),
+            "timed_out": bool(execution.get("timed_out", False)),
+            "duration_ms": int(execution.get("duration_ms") or 0),
+            "artifact_dir": turn_artifact_dir,
+            "artifacts": _existing_relative_artifacts(
+                artifact_dir,
+                [
+                    f"{turn_artifact_dir}/provider_diagnostics.json",
+                    f"{turn_artifact_dir}/execution_input.json",
+                    f"{turn_artifact_dir}/execution_result.json",
+                    f"{turn_artifact_dir}/raw_output.txt",
+                ],
+            ),
+        }
+        stages.append(stage)
+    if source_slice_requests or injected_source_slices:
+        stages.append({
+            "stage": "source_slice_context",
+            "status": "ok" if injected_source_slices else "requested",
+            "requested_count": len(source_slice_requests),
+            "injected_count": len(injected_source_slices),
+            "artifacts": _existing_relative_artifacts(
+                artifact_dir,
+                ["source_slice_requests.json", "source_slices.json"],
+            ),
+        })
+    stages.append({
+        "stage": "artifact_validation",
+        "status": str(validation.get("status") or ""),
+        "validation_status": str(validation.get("status") or ""),
+        "provenance_status": str(validation.get("provenance_status") or ""),
+        "accepted_count": len(validation.get("accepted_artifacts") or []),
+        "rejected_count": len(validation.get("rejected_artifacts") or []),
+        "artifacts": [
+            str(item.get("artifact") or "")
+            for item in validation.get("accepted_artifact_details") or []
+            if isinstance(item, dict) and str(item.get("artifact") or "")
+        ],
+    })
+    if failure_recovery:
+        stages.append({
+            "stage": "failure_recovery",
+            "status": "ready" if failure_recovery.get("retryable") else "recorded",
+            "failure_kind": str(failure_recovery.get("failure_kind") or ""),
+            "artifact": "failure_recovery.json",
+        })
+    payload: dict[str, Any] = {
+        "step_id": step_id,
+        "status": status,
+        "turn_count": len(executions),
+        "required_artifacts": required_artifacts,
+        "accepted_artifacts": [str(item) for item in validation.get("accepted_artifacts") or []],
+        "rejected_artifacts": [
+            item for item in validation.get("rejected_artifacts") or []
+            if isinstance(item, dict)
+        ],
+        "source_slice_request_count": len(source_slice_requests),
+        "injected_source_slice_count": len(injected_source_slices),
+        "stages": stages,
+    }
+    if failure_recovery:
+        payload["failure_kind"] = str(failure_recovery.get("failure_kind") or "")
+        payload["failure_recovery_artifact"] = "failure_recovery.json"
+    return payload
+
+
+def _turn_id_from_artifact_path(value: str) -> str:
+    text = str(value or "").replace("\\", "/").rstrip("/")
+    return text.rsplit("/", 1)[-1] if text else ""
+
+
+def _existing_relative_artifacts(artifact_dir: Path, relative_paths: list[str]) -> list[str]:
+    existing: list[str] = []
+    for item in relative_paths:
+        rel = str(item or "").replace("\\", "/")
+        if rel and (artifact_dir / rel).exists():
+            existing.append(rel)
+    return existing
 
 
 def _command_resolution_summary(value: Any) -> dict[str, Any]:

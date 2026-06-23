@@ -1643,6 +1643,9 @@ async def test_workbench_task_run_artifacts_api_labels_failure_recovery(
     paths = {item["relative_path"]: item for item in artifacts.json()["artifacts"]}
     recovery = paths["agent_runs/discover/failure_recovery.json"]
     assert recovery["kind"] == "agent_failure_recovery"
+    lifecycle = paths["agent_runs/discover/agent_run_lifecycle.json"]
+    assert lifecycle["kind"] == "agent_run_lifecycle"
+    assert "agent_error" in lifecycle["preview"]
     assert "agent_error" in recovery["preview"]
     content = await workbench_client.get(
         f"/api/workbench/task-runs/{task_run_id}/artifacts/content/agent_runs/discover/failure_recovery.json"
@@ -1650,6 +1653,12 @@ async def test_workbench_task_run_artifacts_api_labels_failure_recovery(
     assert content.status_code == 200
     assert content.json()["kind"] == "agent_failure_recovery"
     assert "source_scope.json" in content.json()["content"]
+    lifecycle_content = await workbench_client.get(
+        f"/api/workbench/task-runs/{task_run_id}/artifacts/content/agent_runs/discover/agent_run_lifecycle.json"
+    )
+    assert lifecycle_content.status_code == 200
+    assert lifecycle_content.json()["kind"] == "agent_run_lifecycle"
+    assert "failure_recovery" in lifecycle_content.json()["content"]
 
 
 async def test_workbench_task_run_artifacts_api_labels_agent_turn_snapshots(

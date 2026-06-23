@@ -1697,6 +1697,8 @@ def _artifact_kind(relative_path: str) -> str:
         return "agent_execution_input"
     if name == "provider_diagnostics.json":
         return "agent_provider_diagnostics"
+    if name == "agent_run_lifecycle.json":
+        return "agent_run_lifecycle"
     if name == "failure_recovery.json":
         return "agent_failure_recovery"
     if name.endswith(".json"):

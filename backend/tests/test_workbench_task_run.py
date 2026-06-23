@@ -826,6 +826,27 @@ def test_workbench_workflow_runner_executes_agent_steps_and_validates_artifacts(
     assert result.step_results[0]["step_id"] == "collect_mr"
     assert result.step_results[0]["execution"]["status"] == "completed"
     assert result.step_results[0]["validation"]["status"] == "ok"
+    lifecycle = result.step_results[0]["lifecycle"]
+    assert lifecycle["status"] == "completed"
+    assert lifecycle["turn_count"] == 1
+    assert [stage["stage"] for stage in lifecycle["stages"]] == [
+        "prepared",
+        "turn",
+        "artifact_validation",
+    ]
+    assert lifecycle["stages"][0]["artifacts"] == [
+        "agent_run.json",
+        "task_bundle.json",
+        "workflow_snapshot.json",
+    ]
+    assert lifecycle["stages"][1]["turn_id"] == "turn_1"
+    assert lifecycle["stages"][1]["execution_status"] == "completed"
+    assert lifecycle["stages"][2]["validation_status"] == "ok"
+    assert lifecycle["required_artifacts"] == [
+        "mr_snapshot.json",
+        "diff.patch",
+        "changed_files.json",
+    ]
     accepted_details = result.step_results[0]["validation"]["accepted_artifact_details"]
     assert {item["artifact"] for item in accepted_details} == {
         "mr_snapshot.json",
@@ -845,6 +866,12 @@ def test_workbench_workflow_runner_executes_agent_steps_and_validates_artifacts(
     assert (root / "workflow_execution.json").exists()
     workflow_outputs = json.loads((root / "workflow_outputs.json").read_text(encoding="utf-8"))
     assert workflow_outputs["outputs"][0]["id"] == "report"
+    lifecycle_artifact = json.loads(
+        (root / "agent_runs" / "collect_mr" / "agent_run_lifecycle.json").read_text(
+            encoding="utf-8"
+        )
+    )
+    assert lifecycle_artifact == lifecycle
     assert "secret-value" not in (
         root / "agent_runs" / "collect_mr" / "raw_output.txt"
     ).read_text(encoding="utf-8")
@@ -985,6 +1012,16 @@ def test_workbench_workflow_runner_records_agent_failure_recovery(tmp_path, monk
             "do not materialize outputs until required artifacts validate",
         ],
     }
+    lifecycle = step["lifecycle"]
+    assert lifecycle["status"] == "invalid"
+    assert lifecycle["failure_kind"] == "agent_error"
+    assert lifecycle["stages"][-1]["stage"] == "failure_recovery"
+    assert lifecycle["stages"][-1]["artifact"] == "failure_recovery.json"
+    assert json.loads(
+        (Path(task_run.artifact_dir) / "agent_runs" / "discover" / "agent_run_lifecycle.json").read_text(
+            encoding="utf-8"
+        )
+    ) == lifecycle
 
 
 def test_workbench_workflow_runner_enforces_user_output_schema(
