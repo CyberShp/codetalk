@@ -3578,6 +3578,15 @@ def _build_task_acceptance_audit(task_run: Any) -> dict[str, Any]:
             severity="recommended",
         ))
     semantic_import_expected = _workflow_declares_semantic_import(task_run.workflow_snapshot)
+    if "semantic_import_outputs_by_step.json" in artifacts or semantic_import_expected:
+        checks.append(_acceptance_file_check(
+            check_id="semantic_import_outputs",
+            relative_path="semantic_import_outputs_by_step.json",
+            artifacts=artifacts,
+            description="semantic import output contract passed to Agent runs",
+            severity="required" if semantic_import_expected else "recommended",
+            missing_reason="semantic_import_declared_but_contract_artifact_missing",
+        ))
     if "semantic_output_import.json" in artifacts or semantic_import_expected:
         checks.append(_acceptance_file_check(
             check_id="semantic_output_import",

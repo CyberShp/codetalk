@@ -3098,11 +3098,17 @@ async def test_workbench_task_run_acceptance_audit_records_semantic_import_artif
     assert response.status_code == 200
     body = response.json()
     checks = {item["id"]: item for item in body["checks"]}
+    assert checks["semantic_import_outputs"]["status"] == "ok"
+    assert checks["semantic_import_outputs"]["severity"] == "required"
     assert checks["semantic_output_import"]["status"] == "ok"
     assert checks["semantic_output_import"]["severity"] == "required"
     assert body["summary"]["missing_required"] == 0
     artifacts = await workbench_client.get(f"/api/workbench/task-runs/{task_run_id}/artifacts")
     paths = {item["relative_path"]: item for item in artifacts.json()["artifacts"]}
+    assert (
+        paths["semantic_import_outputs_by_step.json"]["kind"]
+        == "semantic_import_outputs"
+    )
     assert paths["semantic_output_import.json"]["kind"] == "semantic_output_import"
 
 
