@@ -3317,6 +3317,9 @@ async def test_workbench_task_run_acceptance_audit_api_records_required_evidence
     assert checks["agent_run:discover"]["status"] == "ok"
     assert checks["agent_agent_replay_plan:discover"]["status"] == "ok"
     assert checks["agent_agent_replay_plan:discover"]["severity"] == "required"
+    assert checks["agent_stdin_redaction:discover:execution_input"]["status"] == "ok"
+    assert checks["agent_stdin_redaction:discover:execution_input"]["stdin_redacted"] is True
+    assert checks["agent_stdin_redaction:discover:execution_input"]["stdin_json_sha256"]
     assert checks["agent_required_artifact:discover:source_scope.json"]["status"] == "ok"
     assert checks["workflow_output:scope"]["status"] == "ok"
     assert checks["workflow_execution"]["status"] == "ok"
@@ -3905,6 +3908,8 @@ async def test_workbench_task_run_artifacts_api_labels_agent_turn_snapshots(
     checks = {item["id"]: item for item in acceptance.json()["checks"]}
     assert checks["agent_turn_task_bundle:discover:turn_1"]["status"] == "ok"
     assert checks["agent_turn_execution_input:discover:turn_1"]["severity"] == "required"
+    assert checks["agent_turn_stdin_redaction:discover:turn_1:execution_input"]["status"] == "ok"
+    assert checks["agent_turn_stdin_redaction:discover:turn_2:execution_input"]["status"] == "ok"
     assert checks["agent_turn_agent_replay_plan:discover:turn_1"]["status"] == "ok"
     assert checks["agent_turn_raw_output:discover:turn_2"]["status"] == "ok"
     assert checks["agent_turn_agent_replay_plan:discover:turn_2"]["status"] == "ok"
@@ -3942,6 +3947,24 @@ async def test_workbench_task_run_artifacts_api_labels_agent_turn_snapshots(
     ]
     assert missing_policy["status"] == "missing"
     assert missing_policy["reason"] == "agent_instruction_policy_missing"
+
+    execution_payload["agent_instruction_policy"] = {"files": [], "file_count": 0}
+    execution_payload.pop("stdin_redacted", None)
+    turn_1_execution_input.write_text(
+        json.dumps(execution_payload, ensure_ascii=False, indent=2),
+        encoding="utf-8",
+    )
+
+    redaction_acceptance = await workbench_client.post(
+        f"/api/workbench/task-runs/{task_run_id}/acceptance-audit"
+    )
+    assert redaction_acceptance.status_code == 200
+    redaction_checks = {item["id"]: item for item in redaction_acceptance.json()["checks"]}
+    missing_redaction = redaction_checks[
+        "agent_turn_stdin_redaction:discover:turn_1:execution_input"
+    ]
+    assert missing_redaction["status"] == "missing"
+    assert missing_redaction["reason"] == "stdin_redacted_flag_missing"
 
 
 async def test_workbench_prepare_task_run_api_injects_memory_and_semantics(workbench_client, tmp_path):

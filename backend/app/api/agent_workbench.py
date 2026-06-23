@@ -3990,6 +3990,12 @@ def _build_task_acceptance_audit(task_run: Any) -> dict[str, Any]:
                     description=f"Agent instruction policy in step {step_id} replay plan",
                 ),
             ])
+        checks.append(_acceptance_agent_stdin_redaction_check(
+            check_id=f"agent_stdin_redaction:{step_id}:execution_input",
+            relative_path=f"{base}/execution_input.json",
+            task_dir=task_dir,
+            description=f"Persisted Agent stdin is redacted for step {step_id}",
+        ))
         for artifact_name in agent_run.get("required_artifacts") or []:
             artifact = str(artifact_name)
             checks.append(_acceptance_file_check(
@@ -4074,6 +4080,18 @@ def _build_task_acceptance_audit(task_run: Any) -> dict[str, Any]:
                         ),
                     ),
                 ])
+            checks.append(_acceptance_agent_stdin_redaction_check(
+                check_id=(
+                    f"agent_turn_stdin_redaction:{step_id}:"
+                    f"turn_{turn_index}:execution_input"
+                ),
+                relative_path=f"{turn_base}/execution_input.json",
+                task_dir=task_dir,
+                description=(
+                    f"Persisted Agent stdin is redacted for step {step_id} "
+                    f"turn {turn_index}"
+                ),
+            ))
             if source_slice_request_count and turn_index == 1:
                 checks.append(_acceptance_file_check(
                     check_id=(
@@ -4311,6 +4329,50 @@ def _acceptance_agent_instruction_policy_check(
         "reason": "",
         "policy_file_count": len(policy_files),
         "fast_context_first": bool(policy.get("fast_context_first")),
+    }
+
+
+def _acceptance_agent_stdin_redaction_check(
+    *,
+    check_id: str,
+    relative_path: str,
+    task_dir: Path,
+    description: str,
+) -> dict[str, Any]:
+    payload = _read_json(task_dir / relative_path)
+    base = {
+        "id": check_id,
+        "severity": "required",
+        "relative_path": relative_path,
+        "kind": workbench_artifact_kind(relative_path),
+        "description": description,
+    }
+    if not isinstance(payload, dict):
+        return {
+            **base,
+            "status": "missing",
+            "reason": "artifact_json_unreadable",
+        }
+    stdin_sha = str(payload.get("stdin_json_sha256") or "")
+    if payload.get("stdin_redacted") is not True:
+        return {
+            **base,
+            "status": "missing",
+            "reason": "stdin_redacted_flag_missing",
+            "stdin_json_sha256": stdin_sha,
+        }
+    if not stdin_sha:
+        return {
+            **base,
+            "status": "missing",
+            "reason": "stdin_json_sha256_missing",
+        }
+    return {
+        **base,
+        "status": "ok",
+        "reason": "",
+        "stdin_redacted": True,
+        "stdin_json_sha256": stdin_sha,
     }
 
 
