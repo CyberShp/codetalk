@@ -2084,6 +2084,16 @@ def test_prepare_workbench_task_run_writes_provider_readiness_artifact(tmp_path,
         )
     )
     assert step_bundle["provider_readiness"]["summary"]["status"] == "blocked"
+    from app.api.agent_workbench import _build_task_acceptance_audit
+
+    acceptance = _build_task_acceptance_audit(result)
+    checks = {item["id"]: item for item in acceptance["checks"]}
+    assert checks["provider_readiness_codetalk:gitnexus"]["status"] == "missing"
+    assert checks["provider_readiness_codetalk:gitnexus"]["severity"] == "recommended"
+    assert checks["provider_readiness_codetalk:gitnexus"]["non_blocking"] is True
+    assert checks["provider_readiness_codetalk:cgc"]["status"] == "missing"
+    assert checks["provider_readiness_agent:corp-agent"]["status"] == "missing"
+    assert checks["provider_readiness_agent:corp-agent"]["severity"] == "required"
 
 
 def test_provider_readiness_links_deployment_probe_evidence_conflicts(tmp_path, monkeypatch):

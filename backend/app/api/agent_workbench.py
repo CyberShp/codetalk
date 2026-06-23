@@ -4497,10 +4497,34 @@ def _workflow_declares_evidence_memory(workflow_snapshot: Any) -> bool:
 def _acceptance_provider_readiness_checks(payload: Any) -> list[dict[str, Any]]:
     if not isinstance(payload, dict):
         return []
+    checks: list[dict[str, Any]] = []
+    codetalk_providers = payload.get("codetalk_providers")
+    if isinstance(codetalk_providers, dict):
+        for provider, item in sorted(codetalk_providers.items()):
+            if not isinstance(item, dict):
+                continue
+            status = str(item.get("status") or "unknown")
+            ok = status in {"available", "configured"}
+            checks.append({
+                "id": f"provider_readiness_codetalk:{provider}",
+                "status": "ok" if ok else "missing",
+                "severity": "recommended",
+                "relative_path": "provider_readiness.json",
+                "kind": "provider_readiness",
+                "provider": str(provider),
+                "owner": str(item.get("owner") or "codetalk"),
+                "provider_status": status,
+                "codetalk_callable": bool(item.get("codetalk_callable", False)),
+                "non_blocking": bool(item.get("non_blocking", True)),
+                "startup_probe_endpoint": str(item.get("startup_probe_endpoint") or ""),
+                "health_endpoint": str(item.get("health_endpoint") or ""),
+                "next_check": str(item.get("next_check") or ""),
+                "description": "CodeTalk provider readiness for this task",
+                "reason": "" if ok else str(item.get("unavailable_behavior") or status),
+            })
     agent_cli_providers = payload.get("agent_cli_providers")
     if not isinstance(agent_cli_providers, dict):
-        return []
-    checks: list[dict[str, Any]] = []
+        return checks
     for provider, item in sorted(agent_cli_providers.items()):
         if not isinstance(item, dict):
             continue
