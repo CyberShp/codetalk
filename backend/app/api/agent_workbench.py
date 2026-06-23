@@ -2113,6 +2113,28 @@ def _build_task_acceptance_audit(task_run: Any) -> dict[str, Any]:
                 description=f"required Agent artifact for step {step_id}",
                 severity="required",
             ))
+        lifecycle = _read_json(task_dir / base / "agent_run_lifecycle.json")
+        turn_count = _safe_int(
+            lifecycle.get("turn_count") if isinstance(lifecycle, dict) else None
+        )
+        for turn_index in range(1, turn_count + 1):
+            turn_base = f"{base}/turns/turn_{turn_index}"
+            for suffix, description in [
+                ("task_bundle.json", "per-turn Agent task bundle"),
+                ("execution_input.json", "per-turn Agent launch envelope"),
+                ("execution_result.json", "per-turn Agent process result"),
+                ("raw_output.txt", "per-turn redacted stdout/stderr"),
+                ("provider_diagnostics.json", "per-turn provider diagnostics"),
+            ]:
+                relative_path = f"{turn_base}/{suffix}"
+                check_name = suffix.removesuffix(".json").removesuffix(".txt")
+                checks.append(_acceptance_file_check(
+                    check_id=f"agent_turn_{check_name}:{step_id}:turn_{turn_index}",
+                    relative_path=relative_path,
+                    artifacts=artifacts,
+                    description=description,
+                    severity="required",
+                ))
 
     required_checks = [item for item in checks if item.get("severity") == "required"]
     missing_required = [

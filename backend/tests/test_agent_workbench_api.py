@@ -2392,6 +2392,15 @@ async def test_workbench_task_run_artifacts_api_labels_agent_turn_snapshots(
     assert content.status_code == 200
     assert content.json()["kind"] == "agent_turn_task_bundle"
     assert "requested_source_slices" in content.json()["content"]
+    acceptance = await workbench_client.post(
+        f"/api/workbench/task-runs/{task_run_id}/acceptance-audit"
+    )
+    assert acceptance.status_code == 200
+    checks = {item["id"]: item for item in acceptance.json()["checks"]}
+    assert checks["agent_turn_task_bundle:discover:turn_1"]["status"] == "ok"
+    assert checks["agent_turn_execution_input:discover:turn_1"]["severity"] == "required"
+    assert checks["agent_turn_raw_output:discover:turn_2"]["status"] == "ok"
+    assert checks["agent_turn_provider_diagnostics:discover:turn_2"]["status"] == "ok"
 
 
 async def test_workbench_prepare_task_run_api_injects_memory_and_semantics(workbench_client, tmp_path):
