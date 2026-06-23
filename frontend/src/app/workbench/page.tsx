@@ -2084,49 +2084,52 @@ export default function AgentWorkbenchPage() {
                         {workflowExecution.step_results.map((step, index) => {
                           const diagnostics = step.provider_diagnostics;
                           const recovery = step.failure_recovery;
-                          if (!diagnostics && !recovery) return null;
+                          const recoveryDiagnostics = recovery?.provider_diagnostics;
+                          const displayedDiagnostics = diagnostics ?? recoveryDiagnostics;
+                          const firstAttempt = recoveryDiagnostics?.attempts?.[0];
+                          if (!displayedDiagnostics && !recovery) return null;
                           return (
                             <div
                               key={`${String(step.step_id ?? "step")}-${index}`}
                               className="rounded bg-surface px-1.5 py-1 font-data text-[10px]"
                             >
-                              {diagnostics && (
+                              {displayedDiagnostics && (
                                 <>
                                   <span className="text-on-surface">
                                     {String(step.step_id ?? "step")} provider:
-                                    {diagnostics.provider || String(step.provider ?? "")}
+                                    {displayedDiagnostics.provider || String(step.provider ?? "")}
                                   </span>
                                   <span className="ml-1">
-                                    health:{diagnostics.health_status || "unknown"}
+                                    health:{displayedDiagnostics.health_status || "unknown"}
                                   </span>
                                 </>
                               )}
-                              {!diagnostics && (
+                              {!displayedDiagnostics && (
                                 <span className="text-on-surface">
                                   {String(step.step_id ?? "step")}
                                 </span>
                               )}
-                              {diagnostics?.prompt_transport && (
+                              {displayedDiagnostics?.prompt_transport && (
                                 <span className="ml-1">
-                                  transport:{diagnostics.prompt_transport}
+                                  transport:{displayedDiagnostics.prompt_transport}
                                 </span>
                               )}
-                              {diagnostics?.command_resolution_source && (
+                              {displayedDiagnostics?.command_resolution_source && (
                                 <span className="ml-1">
-                                  command:{diagnostics.command_resolution_source}
+                                  command:{displayedDiagnostics.command_resolution_source}
                                 </span>
                               )}
-                              {diagnostics?.command_resolution_used_fallback && (
+                              {displayedDiagnostics?.command_resolution_used_fallback && (
                                 <span className="ml-1 text-warning">fallback</span>
                               )}
-                              {diagnostics?.command_resolution_reason && (
+                              {displayedDiagnostics?.command_resolution_reason && (
                                 <span className="ml-1">
-                                  reason:{diagnostics.command_resolution_reason}
+                                  reason:{displayedDiagnostics.command_resolution_reason}
                                 </span>
                               )}
-                              {diagnostics?.startup_probe_endpoint && (
+                              {displayedDiagnostics?.startup_probe_endpoint && (
                                 <span className="ml-1 break-all">
-                                  probe:{diagnostics.startup_probe_endpoint}
+                                  probe:{displayedDiagnostics.startup_probe_endpoint}
                                 </span>
                               )}
                               {recovery && (
@@ -2145,6 +2148,18 @@ export default function AgentWorkbenchPage() {
                                   {recovery.suggested_actions?.[0] && (
                                     <span className="ml-1">
                                       next:{recovery.suggested_actions[0]}
+                                    </span>
+                                  )}
+                                  {recoveryDiagnostics?.configured_command_text && (
+                                    <span className="ml-1 break-all">
+                                      configured:{recoveryDiagnostics.configured_command_text}
+                                    </span>
+                                  )}
+                                  {firstAttempt && (
+                                    <span className="ml-1 break-all">
+                                      attempt:{firstAttempt.command || firstAttempt.executable || "agent"}=
+                                      {firstAttempt.status || "unknown"}
+                                      {firstAttempt.reason ? `:${firstAttempt.reason}` : ""}
                                     </span>
                                   )}
                                 </div>

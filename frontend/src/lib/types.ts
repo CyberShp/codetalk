@@ -429,15 +429,36 @@ export interface AgentProviderDiagnosticsSummary {
   agent_owned?: boolean;
   codetalk_callable?: boolean;
   health_status?: string;
+  health_reason?: string;
   launch_kind?: string;
   used_fallback?: boolean;
   startup_probe_endpoint?: string;
   prompt_transport?: string;
   mcp_credentials_owner?: string;
+  configured_command_text?: string;
+  fallback_command_texts?: string[];
+  attempts?: AgentProviderAttemptDiagnostics[];
+  process_command?: string[];
+  launch_command?: string[];
   command_resolution_source?: string;
   command_resolution_reason?: string;
   command_resolution_used_fallback?: boolean;
   command_resolution_launch_kind?: string;
+}
+
+export interface AgentProviderAttemptDiagnostics {
+  command?: string;
+  status?: string;
+  reason?: string;
+  executable?: string;
+  path?: string;
+  launch_kind?: string;
+  config_hint?: string;
+  profile_config_path?: string;
+  run_status?: string;
+  run_message?: string;
+  probe_status?: string;
+  probe_message?: string;
 }
 
 export interface MaterializeEvidenceResult {
@@ -491,6 +512,7 @@ export interface WorkflowExecutionResult {
         validation_status?: string;
         missing_artifacts?: string[];
         suggested_actions?: string[];
+        provider_diagnostics?: AgentProviderDiagnosticsSummary;
       };
     }
   >;
