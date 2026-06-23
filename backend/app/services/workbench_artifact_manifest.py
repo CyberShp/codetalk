@@ -137,6 +137,8 @@ def workbench_artifact_kind(relative_path: str) -> str:
         return "workflow_execution"
     if name == "task_artifact_manifest.json":
         return "task_artifact_manifest"
+    if name == "task_acceptance_audit.json":
+        return "task_acceptance_audit"
     if name == "task_rerun_plan.json":
         return "task_rerun_plan"
     if name == "task_rerun_execution.json":

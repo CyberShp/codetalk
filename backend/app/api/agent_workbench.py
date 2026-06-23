@@ -643,6 +643,19 @@ async def get_task_run_rerun_plan(task_run_id: str) -> dict[str, Any]:
     return payload
 
 
+@router.post("/task-runs/{task_run_id}/acceptance-audit")
+async def create_task_run_acceptance_audit(task_run_id: str) -> dict[str, Any]:
+    try:
+        task_run = WorkbenchTaskRunStore(_task_runs_dir()).load(task_run_id)
+    except KeyError:
+        raise HTTPException(status_code=404, detail=f"Unknown task run: {task_run_id}")
+    task_dir = Path(task_run.artifact_dir)
+    payload = _build_task_acceptance_audit(task_run)
+    _write_json(task_dir / "task_acceptance_audit.json", payload)
+    write_task_artifact_manifest(task_dir, task_run_id=task_run.task_run_id)
+    return payload
+
+
 @router.get("/task-runs/{task_run_id}/rerun-plan/validation")
 async def validate_task_run_rerun_plan(task_run_id: str) -> dict[str, Any]:
     try:
@@ -1973,6 +1986,192 @@ def _safe_int(value: Any) -> int:
 
 def _artifact_manifest(task_dir: Path) -> list[dict[str, Any]]:
     return build_task_artifact_manifest(task_dir)
+
+
+def _build_task_acceptance_audit(task_run: Any) -> dict[str, Any]:
+    task_dir = Path(task_run.artifact_dir)
+    artifacts = {
+        item.get("relative_path"): item
+        for item in build_task_artifact_manifest(task_dir)
+        if isinstance(item, dict)
+    }
+    checks: list[dict[str, Any]] = []
+    required_root = [
+        ("task_run", "task_run.json", "prepared task run snapshot"),
+        ("input_snapshot", "input_snapshot.json", "frozen user inputs"),
+        ("workflow_snapshot", "workflow_snapshot.json", "frozen workflow definition"),
+        ("workflow_contract", "workflow_contract.json", "workflow input/output contract"),
+        ("task_bundle", "task_bundle.json", "CodeTalk-to-Agent handoff bundle"),
+        ("agent_instructions", "agent_instructions.json", "repo-local Agent instructions"),
+        ("provider_snapshot", "provider_snapshot.json", "provider capability ownership matrix"),
+        ("provider_readiness", "provider_readiness.json", "provider readiness diagnostics"),
+        ("agent_mcp_requests", "agent_mcp_requests.json", "Agent-owned MCP boundary"),
+        (
+            "context_discovery_decision",
+            "context_discovery_decision.json",
+            "fast-context/local/index/Agent fallback decision",
+        ),
+        ("context_bundle", "context_bundle.json", "memory and semantic context bundle"),
+        ("memory_retrieval", "memory_retrieval.json", "Evidence Memory retrieval trace"),
+        ("source_read_chain", "source_read_chain.json", "source-read audit chain"),
+        (
+            "evidence_consumption_trajectory",
+            "evidence_consumption_trajectory.json",
+            "retrieved/read/used trajectory",
+        ),
+        ("degraded_retrieval", "degraded_retrieval.json", "degraded provider decisions"),
+        ("task_artifact_manifest", "task_artifact_manifest.json", "artifact inventory"),
+    ]
+    for check_id, relative_path, description in required_root:
+        checks.append(_acceptance_file_check(
+            check_id=check_id,
+            relative_path=relative_path,
+            artifacts=artifacts,
+            description=description,
+            severity="required",
+        ))
+
+    execution_payload = _read_json(task_dir / "workflow_execution.json")
+    workflow_execution_exists = "workflow_execution.json" in artifacts
+    checks.append(_acceptance_file_check(
+        check_id="workflow_execution",
+        relative_path="workflow_execution.json",
+        artifacts=artifacts,
+        description="workflow execution result and audit summary",
+        severity="required",
+        missing_reason="workflow_not_executed_or_execution_artifact_missing",
+    ))
+    if "workflow_outputs.json" in artifacts:
+        checks.append(_acceptance_file_check(
+            check_id="workflow_outputs",
+            relative_path="workflow_outputs.json",
+            artifacts=artifacts,
+            description="collected workflow outputs",
+            severity="required" if workflow_execution_exists else "recommended",
+        ))
+    if "workflow_output_materialization.json" in artifacts:
+        checks.append(_acceptance_file_check(
+            check_id="workflow_output_materialization",
+            relative_path="workflow_output_materialization.json",
+            artifacts=artifacts,
+            description="accepted/rejected Evidence Memory materialization",
+            severity="recommended",
+        ))
+
+    rerun_plan_severity = "recommended"
+    if isinstance(execution_payload, dict) and execution_payload.get("status") in {
+        "invalid",
+        "error",
+        "timeout",
+    }:
+        rerun_plan_severity = "required"
+    if "task_rerun_plan.json" in artifacts or rerun_plan_severity == "required":
+        checks.append(_acceptance_file_check(
+            check_id="task_rerun_plan",
+            relative_path="task_rerun_plan.json",
+            artifacts=artifacts,
+            description="rerun plan for incomplete or failed Agent work",
+            severity=rerun_plan_severity,
+        ))
+
+    for agent_run in task_run.agent_runs or []:
+        if not isinstance(agent_run, dict):
+            continue
+        step_id = str(agent_run.get("step_id") or "")
+        if not step_id:
+            continue
+        base = f"agent_runs/{step_id}"
+        for suffix, description in [
+            ("agent_run.json", "Agent run envelope and session policy"),
+            ("task_bundle.json", "per-step Agent task bundle"),
+            ("workflow_snapshot.json", "per-step workflow snapshot"),
+            ("execution_input.json", "actual Agent stdin and launch envelope"),
+            ("execution_result.json", "Agent process result"),
+            ("raw_output.txt", "redacted Agent stdout/stderr"),
+            ("provider_diagnostics.json", "provider launch/readiness diagnostics"),
+            ("agent_run_lifecycle.json", "Agent run lifecycle and validation summary"),
+        ]:
+            relative_path = f"{base}/{suffix}"
+            check_name = suffix.removesuffix(".json").removesuffix(".txt")
+            if check_name == "agent_run":
+                check_id = f"agent_run:{step_id}"
+            else:
+                check_id = f"agent_{check_name}:{step_id}"
+            checks.append(_acceptance_file_check(
+                check_id=check_id,
+                relative_path=relative_path,
+                artifacts=artifacts,
+                description=description,
+                severity="required",
+            ))
+        for artifact_name in agent_run.get("required_artifacts") or []:
+            artifact = str(artifact_name)
+            checks.append(_acceptance_file_check(
+                check_id=f"agent_required_artifact:{step_id}:{artifact}",
+                relative_path=f"{base}/{artifact}",
+                artifacts=artifacts,
+                description=f"required Agent artifact for step {step_id}",
+                severity="required",
+            ))
+
+    required_checks = [item for item in checks if item.get("severity") == "required"]
+    missing_required = [
+        item for item in required_checks
+        if item.get("status") not in {"ok", "accepted"}
+    ]
+    recommended_missing = [
+        item for item in checks
+        if item.get("severity") == "recommended" and item.get("status") not in {"ok", "accepted"}
+    ]
+    return {
+        "task_run_id": task_run.task_run_id,
+        "workflow_id": task_run.workflow_id,
+        "workspace_id": task_run.workspace_id,
+        "status": "ready" if not missing_required else "incomplete",
+        "created_at": datetime.now(timezone.utc).isoformat(),
+        "summary": {
+            "required_checks": len(required_checks),
+            "missing_required": len(missing_required),
+            "recommended_checks": len(checks) - len(required_checks),
+            "missing_recommended": len(recommended_missing),
+            "artifact_count": len(artifacts),
+        },
+        "checks": checks,
+        "missing_required": missing_required,
+        "missing_recommended": recommended_missing,
+    }
+
+
+def _acceptance_file_check(
+    *,
+    check_id: str,
+    relative_path: str,
+    artifacts: dict[Any, Any],
+    description: str,
+    severity: str,
+    missing_reason: str = "artifact_missing",
+) -> dict[str, Any]:
+    artifact = artifacts.get(relative_path)
+    if isinstance(artifact, dict):
+        return {
+            "id": check_id,
+            "status": "ok",
+            "severity": severity,
+            "relative_path": relative_path,
+            "kind": artifact.get("kind") or workbench_artifact_kind(relative_path),
+            "sha256": artifact.get("sha256") or "",
+            "size_bytes": artifact.get("size_bytes") or 0,
+            "description": description,
+        }
+    return {
+        "id": check_id,
+        "status": "missing",
+        "severity": severity,
+        "relative_path": relative_path,
+        "kind": workbench_artifact_kind(relative_path),
+        "description": description,
+        "reason": missing_reason,
+    }
 
 
 def _artifact_kind(relative_path: str) -> str:
