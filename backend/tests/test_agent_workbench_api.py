@@ -2231,6 +2231,12 @@ async def test_workbench_task_run_acceptance_audit_api_records_required_evidence
     artifacts = await workbench_client.get(f"/api/workbench/task-runs/{task_run_id}/artifacts")
     paths = {item["relative_path"]: item for item in artifacts.json()["artifacts"]}
     assert paths["task_acceptance_audit.json"]["kind"] == "task_acceptance_audit"
+    audit_content = await workbench_client.get(
+        f"/api/workbench/task-runs/{task_run_id}/artifacts/content/task_acceptance_audit.json"
+    )
+    assert audit_content.status_code == 200
+    assert audit_content.json()["kind"] == "task_acceptance_audit"
+    assert '"status": "ready"' in audit_content.json()["content"]
 
 
 async def test_workbench_task_run_acceptance_audit_reports_missing_agent_artifact(

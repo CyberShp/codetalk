@@ -2205,6 +2205,7 @@ export default function AgentWorkbenchPage() {
                         Acceptance:{" "}
                         <span
                           className={
+                            taskAcceptanceAudit.status === "ready" ||
                             taskAcceptanceAudit.status === "passed"
                               ? "text-on-surface"
                               : "text-warning"
