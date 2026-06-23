@@ -4014,6 +4014,18 @@ def _build_task_acceptance_audit(task_run: Any) -> dict[str, Any]:
         turn_count = _safe_int(
             lifecycle.get("turn_count") if isinstance(lifecycle, dict) else None
         )
+        failure_recovery_expected = bool(
+            isinstance(lifecycle, dict) and lifecycle.get("failure_recovery_artifact")
+        ) or f"{base}/failure_recovery.json" in artifacts
+        if failure_recovery_expected:
+            checks.append(_acceptance_file_check(
+                check_id=f"agent_failure_retry_context:{step_id}",
+                relative_path=f"{base}/failure_retry_context.json",
+                artifacts=artifacts,
+                description="structured retry context for failed Agent step",
+                severity="required",
+                missing_reason="failure_recovery_present_but_retry_context_missing",
+            ))
         source_slice_request_count = _safe_int(
             lifecycle.get("source_slice_request_count") if isinstance(lifecycle, dict) else None
         )

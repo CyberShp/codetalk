@@ -1557,6 +1557,12 @@ def test_workbench_workflow_runner_records_agent_failure_recovery(tmp_path, monk
         "agent_run_lifecycle.json",
     ]
     assert rerun_plan["steps"][0]["missing_artifacts"] == ["source_scope.json"]
+    from app.api.agent_workbench import _build_task_acceptance_audit
+
+    acceptance = _build_task_acceptance_audit(task_run)
+    acceptance_checks = {item["id"]: item for item in acceptance["checks"]}
+    assert acceptance_checks["agent_failure_retry_context:discover"]["status"] == "ok"
+    assert acceptance_checks["agent_failure_retry_context:discover"]["severity"] == "required"
 
 
 def test_workbench_failure_recovery_embeds_unavailable_provider_diagnostics(
