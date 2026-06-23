@@ -12016,6 +12016,7 @@ def _coverage_black_box_generation_policy(
     semantic_cases: list[dict],
     *,
     query: str,
+    evidence_memory: list[dict] | None = None,
 ) -> dict:
     semantic_terms: list[dict] = []
     for item in semantic_cases:
@@ -12030,24 +12031,56 @@ def _coverage_black_box_generation_policy(
             "test_level": str(item.get("test_level") or ""),
             "reuse_rule": "terminology_only_not_source_truth",
         })
+    evidence_items = [item for item in (evidence_memory or []) if isinstance(item, dict)]
+    evidence_refs = _dedupe_text_values(
+        str(item.get("evidence_id") or "")
+        for item in evidence_items
+        if str(item.get("evidence_id") or "")
+    )
+    evidence_subjects = _dedupe_text_values(
+        str(item.get("subject_key") or item.get("path") or item.get("symbol") or "")
+        for item in evidence_items
+        if str(item.get("subject_key") or item.get("path") or item.get("symbol") or "")
+    )
+    source_slice_count = sum(
+        1
+        for item in evidence_items
+        for source_slice in (item.get("source_slices") or [])
+        if isinstance(source_slice, dict)
+    )
     return {
         "provider": "semantic-library",
         "query": str(query or ""),
         "semantic_terms": semantic_terms,
         "semantic_case_count": len(semantic_cases),
         "semantic_term_count": sum(len(item["terms"]) for item in semantic_terms),
+        "evidence_memory_ref_count": len(evidence_refs),
+        "evidence_memory_refs": evidence_refs[:20],
+        "evidence_memory_subjects": evidence_subjects[:20],
+        "evidence_memory_source_slice_count": source_slice_count,
         "authority_rule": (
             "semantic-library matches may shape black-box wording but cannot prove source behavior or entry reachability"
+        ),
+        "evidence_memory_authority_rule": (
+            "Evidence Memory can provide prior validated context and source-slice references "
+            "but cannot by itself prove external reachability for a black-box case"
         ),
         "allowed_uses": [
             "black_box_case_wording",
             "test_taxonomy_alignment",
             "observable_assertion_style",
+            "source_context_hint",
+            "prior_evidence_traceability",
         ],
         "must_not_use_semantics_as": [
             "source_evidence",
             "entry_verification",
             "artifact_validation",
+        ],
+        "must_not_use_evidence_memory_as": [
+            "entry_verification",
+            "external_reachability_proof",
+            "artifact_validation_without_current_files",
         ],
     }
 
@@ -12228,6 +12261,10 @@ async def build_coverage_test_context(
         "black_box_generation_policy": _coverage_black_box_generation_policy(
             [
                 item for item in workbench_context.get("semantic_cases") or []
+                if isinstance(item, dict)
+            ],
+            evidence_memory=[
+                item for item in workbench_context.get("evidence_memory") or []
                 if isinstance(item, dict)
             ],
             query="coverage_test_context",
@@ -13606,6 +13643,10 @@ async def build_coverage_test_design(
     black_box_generation_policy = _coverage_black_box_generation_policy(
         [
             item for item in workbench_context.get("semantic_cases") or []
+            if isinstance(item, dict)
+        ],
+        evidence_memory=[
+            item for item in workbench_context.get("evidence_memory") or []
             if isinstance(item, dict)
         ],
         query="coverage_test_design",

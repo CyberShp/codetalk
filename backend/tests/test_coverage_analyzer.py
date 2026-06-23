@@ -1387,6 +1387,16 @@ class TestCoverageTestDesign:
         assert gap["evidence_memory"][0]["source_slices"][0]["sha256"] == "slicehash"
         assert gap["black_box_cases"][0]["evidence_source_slices"][0]["file_path"] == "src/session.c"
         assert design["test_context"]["evidence_source_counts"]["evidence_memory"] == 1
+        policy = design["black_box_generation_policy"]
+        assert policy["evidence_memory_ref_count"] == 1
+        assert policy["evidence_memory_refs"] == ["ev_tls_cleanup"]
+        assert policy["evidence_memory_source_slice_count"] == 1
+        assert "source_context_hint" in policy["allowed_uses"]
+        assert "entry_verification" in policy["must_not_use_evidence_memory_as"]
+        assert policy["evidence_memory_authority_rule"] == (
+            "Evidence Memory can provide prior validated context and source-slice references "
+            "but cannot by itself prove external reachability for a black-box case"
+        )
 
     async def test_agent_duplicate_entry_confirms_existing_path_without_duplicate_case(self):
         from app.services.coverage_analyzer import _build_black_box_cases, _merge_agent_entry_paths
