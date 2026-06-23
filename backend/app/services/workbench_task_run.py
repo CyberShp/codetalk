@@ -758,6 +758,12 @@ def build_agent_cli_provider_diagnostics(provider: str, spec: Any) -> dict[str, 
         "prompt_transport": prompt_transport,
         "startup_probe_transport": prompt_transport,
         "manual_probe_command": manual_probe,
+        "probe_recipe": _agent_cli_probe_recipe(
+            provider=provider,
+            command_text=command_text,
+            fallback_texts=fallback_texts,
+            command_hint_env=command_hint_env,
+        ),
         "mcp_credentials_owner": "agent_cli",
         "codetalk_validation_role": (
             "CodeTalk treats Agent output as candidate evidence until local artifact, "
@@ -769,6 +775,32 @@ def build_agent_cli_provider_diagnostics(provider: str, spec: Any) -> dict[str, 
     if command_resolution:
         diagnostics["command_resolution"] = command_resolution
     return diagnostics
+
+
+def _agent_cli_probe_recipe(
+    *,
+    provider: str,
+    command_text: str,
+    fallback_texts: list[str],
+    command_hint_env: str,
+) -> dict[str, Any]:
+    env_name = command_hint_env or f"{provider.upper().replace('-', '_')}_COMMAND"
+    environment_checks = ["PATH"]
+    if provider == "claude-code":
+        environment_checks.extend(["CCR_CONFIG_PATH", "CLAUDE_CODE_CONFIG_PATH"])
+    return {
+        "startup_probe_http": f"POST /api/tools/{provider}/startup-probe?repo_path=<repo_path>",
+        "backend_command": command_text or provider,
+        "fallback_commands": list(fallback_texts),
+        "command_env": env_name,
+        "command_env_example": f"{env_name}={command_text or provider}",
+        "environment_checks": environment_checks,
+        "notes": [
+            "Run the startup probe from the CodeTalk UI first; it uses the backend process environment.",
+            "If your terminal works but CodeTalk does not, configure the full executable path with command_env.",
+            "For Agent-owned MCP, keep credentials in the Agent CLI environment; CodeTalk only passes task bundles.",
+        ],
+    }
 
 
 def _agent_cli_command_resolution(
@@ -845,6 +877,21 @@ def _unknown_agent_cli_provider_diagnostics(provider: str) -> dict[str, Any]:
         "prompt_transport": "",
         "startup_probe_transport": "",
         "manual_probe_command": f"Configure external_agent_custom_providers for {provider}.",
+        "probe_recipe": {
+            "startup_probe_http": f"POST /api/tools/{provider}/startup-probe?repo_path=<repo_path>",
+            "backend_command": provider,
+            "fallback_commands": [],
+            "command_env": "EXTERNAL_AGENT_CUSTOM_PROVIDERS",
+            "command_env_example": (
+                f'EXTERNAL_AGENT_CUSTOM_PROVIDERS=[{{"id":"{provider}",'
+                f'"command":"{provider} run","prompt_transport":"stdin"}}]'
+            ),
+            "environment_checks": ["PATH"],
+            "notes": [
+                "Provider is referenced by a workflow but missing from CodeTalk settings.",
+                "Add command and prompt_transport before running the startup probe.",
+            ],
+        },
         "mcp_credentials_owner": "agent_cli",
         "codetalk_validation_role": "No Agent output can be trusted until the provider is configured and artifacts validate.",
         "troubleshooting": [

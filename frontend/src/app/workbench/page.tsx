@@ -1097,6 +1097,43 @@ export default function AgentWorkbenchPage() {
                       )}
                     </div>
                   )}
+                  {provider.diagnostics.probe_recipe && (
+                    <div className="rounded bg-surface-container px-2 py-1.5">
+                      <p className="font-medium text-on-surface">Probe recipe</p>
+                      {provider.diagnostics.probe_recipe.startup_probe_http && (
+                        <p className="mt-1 break-words">
+                          HTTP:{" "}
+                          <span className="font-data text-on-surface">
+                            {provider.diagnostics.probe_recipe.startup_probe_http}
+                          </span>
+                        </p>
+                      )}
+                      {provider.diagnostics.probe_recipe.backend_command && (
+                        <p className="mt-1 break-words">
+                          Backend command:{" "}
+                          <span className="font-data text-on-surface">
+                            {provider.diagnostics.probe_recipe.backend_command}
+                          </span>
+                        </p>
+                      )}
+                      {provider.diagnostics.probe_recipe.command_env && (
+                        <p className="mt-1 break-words">
+                          Override env:{" "}
+                          <span className="font-data text-on-surface">
+                            {provider.diagnostics.probe_recipe.command_env}
+                          </span>
+                        </p>
+                      )}
+                      {provider.diagnostics.probe_recipe.environment_checks?.length ? (
+                        <p className="mt-1 break-words">
+                          Check:{" "}
+                          <span className="font-data text-on-surface">
+                            {provider.diagnostics.probe_recipe.environment_checks.join(", ")}
+                          </span>
+                        </p>
+                      ) : null}
+                    </div>
+                  )}
                   {provider.diagnostics.manual_probe_command && (
                     <p className="break-words">
                       Manual:{" "}

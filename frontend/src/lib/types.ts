@@ -190,6 +190,15 @@ export interface WorkbenchProviderMatrixItem {
         shell_path?: string;
       }>;
     };
+    probe_recipe?: {
+      startup_probe_http?: string;
+      backend_command?: string;
+      fallback_commands?: string[];
+      command_env?: string;
+      command_env_example?: string;
+      environment_checks?: string[];
+      notes?: string[];
+    };
   };
   unavailable_behavior: string;
 }

@@ -115,6 +115,12 @@ async def test_workbench_provider_capabilities_matrix_api(workbench_client, monk
     assert by_id["claude-code"]["diagnostics"]["prompt_transport"] == "claude_print_arg"
     assert by_id["claude-code"]["diagnostics"]["startup_probe_transport"] == "claude_print_arg"
     assert by_id["claude-code"]["diagnostics"]["mcp_credentials_owner"] == "agent_cli"
+    recipe = by_id["claude-code"]["diagnostics"]["probe_recipe"]
+    assert recipe["startup_probe_http"] == "POST /api/tools/claude-code/startup-probe?repo_path=<repo_path>"
+    assert recipe["backend_command"] == "ccr code"
+    assert recipe["fallback_commands"] == ["claude"]
+    assert recipe["command_env"] == "CLAUDE_CODE_COMMAND"
+    assert "CCR_CONFIG_PATH" in recipe["environment_checks"]
     assert "PowerShell profile" in by_id["claude-code"]["diagnostics"]["troubleshooting"][0]
     assert "ccr code" in by_id["claude-code"]["diagnostics"]["manual_probe_command"]
 

@@ -82,6 +82,15 @@ async function routeWorkbenchShell(page: import("@playwright/test").Page) {
                 reason: "primary command unavailable; using fallback: claude",
                 attempt_count: 2,
               },
+              probe_recipe: {
+                startup_probe_http:
+                  "POST /api/tools/claude-code/startup-probe?repo_path=<repo_path>",
+                backend_command: "ccr code",
+                fallback_commands: ["claude"],
+                command_env: "CLAUDE_CODE_COMMAND",
+                command_env_example: "CLAUDE_CODE_COMMAND=ccr code",
+                environment_checks: ["PATH", "CCR_CONFIG_PATH", "CLAUDE_CODE_CONFIG_PATH"],
+              },
               troubleshooting: [
                 "PowerShell profile, PATH, and service account environment may differ from an interactive terminal.",
               ],
@@ -189,7 +198,7 @@ test("agent workbench renders workflow and task-run controls", async ({ page }) 
 
   await expect(page.getByRole("heading", { name: "Agent Workbench" })).toBeVisible();
   await expect(page.getByRole("heading", { name: "Provider Matrix" })).toBeVisible();
-  await expect(page.getByText("ccr code", { exact: true })).toBeVisible();
+  await expect(page.getByText("ccr code", { exact: true }).first()).toBeVisible();
   await expect(
     page.getByText("/api/tools/claude-code/startup-probe", { exact: true }),
   ).toBeVisible();
@@ -200,6 +209,10 @@ test("agent workbench renders workflow and task-run controls", async ({ page }) 
   await expect(
     page.getByText("Reason: primary command unavailable; using fallback: claude"),
   ).toBeVisible();
+  await expect(page.getByText("Probe recipe")).toBeVisible();
+  await expect(page.getByText("Backend command: ccr code")).toBeVisible();
+  await expect(page.getByText("Override env: CLAUDE_CODE_COMMAND")).toBeVisible();
+  await expect(page.getByText("Check: PATH, CCR_CONFIG_PATH, CLAUDE_CODE_CONFIG_PATH")).toBeVisible();
   await expect(page.getByText(/PowerShell profile/)).toBeVisible();
   await expect(page.getByText("Agent-owned").first()).toBeVisible();
   await expect(page.getByText("CodeTalk callable").first()).toBeVisible();
@@ -516,7 +529,7 @@ test("agent workbench previews task run artifact content", async ({ page }) => {
   );
 
   await page.goto("/workbench", { waitUntil: "domcontentloaded" });
-  await expect(page.getByText("ccr code", { exact: true })).toBeVisible();
+  await expect(page.getByText("ccr code", { exact: true }).first()).toBeVisible();
   const preparePanel = page
     .locator("section")
     .filter({ has: page.getByRole("heading", { name: "Prepare Task Run" }) });
