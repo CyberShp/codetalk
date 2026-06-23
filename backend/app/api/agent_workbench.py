@@ -3859,13 +3859,15 @@ def _build_task_acceptance_audit(task_run: Any) -> dict[str, Any]:
         checks.extend(_acceptance_workflow_output_checks(
             _read_json(task_dir / "workflow_outputs.json"),
         ))
-    if "workflow_output_materialization.json" in artifacts:
+    evidence_memory_expected = _workflow_declares_evidence_memory(task_run.workflow_snapshot)
+    if "workflow_output_materialization.json" in artifacts or evidence_memory_expected:
         checks.append(_acceptance_file_check(
             check_id="workflow_output_materialization",
             relative_path="workflow_output_materialization.json",
             artifacts=artifacts,
             description="accepted/rejected Evidence Memory materialization",
-            severity="recommended",
+            severity="required" if evidence_memory_expected else "recommended",
+            missing_reason="evidence_memory_declared_but_materialization_artifact_missing",
         ))
     semantic_import_expected = _workflow_declares_semantic_import(task_run.workflow_snapshot)
     if "semantic_import_outputs_by_step.json" in artifacts or semantic_import_expected:
@@ -4099,6 +4101,20 @@ def _workflow_declares_semantic_import(workflow_snapshot: Any) -> bool:
         if semantic_import is True:
             return True
         if isinstance(semantic_import, dict) and semantic_import.get("enabled", True) is not False:
+            return True
+    return False
+
+
+def _workflow_declares_evidence_memory(workflow_snapshot: Any) -> bool:
+    if not isinstance(workflow_snapshot, dict):
+        return False
+    for output in workflow_snapshot.get("outputs") or []:
+        if not isinstance(output, dict):
+            continue
+        evidence_memory = output.get("evidence_memory")
+        if evidence_memory is True:
+            return True
+        if isinstance(evidence_memory, dict) and evidence_memory.get("enabled", True) is not False:
             return True
     return False
 

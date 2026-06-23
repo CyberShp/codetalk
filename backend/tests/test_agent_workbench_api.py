@@ -3441,6 +3441,95 @@ async def test_workbench_task_run_acceptance_audit_records_semantic_import_artif
     assert paths["semantic_output_import.json"]["kind"] == "semantic_output_import"
 
 
+async def test_workbench_task_run_acceptance_audit_requires_declared_evidence_mapping(
+    workbench_client,
+    tmp_path,
+    monkeypatch,
+):
+    from app.config import settings
+
+    script_path = tmp_path / "agent_evidence_mapping_audit.py"
+    script_path.write_text(
+        "import json, os, pathlib, sys\n"
+        "json.load(sys.stdin)\n"
+        "root=pathlib.Path(os.environ['CODETALK_AGENT_ARTIFACT_DIR'])\n"
+        "(root/'risk_findings.json').write_text(json.dumps([\n"
+        "  {'finding_id':'risk_tls_cleanup','file_path':'src/tls.c',"
+        "'function':'tls_cleanup','summary':'cleanup branch risk'}\n"
+        "]), encoding='utf-8')\n",
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(settings, "external_agent_custom_providers", [
+        {"id": "local-python", "command": f"python {script_path}"}
+    ])
+    workflow = {
+        "id": "acceptance_evidence_mapping_workflow",
+        "name": "Acceptance evidence mapping workflow",
+        "version": 1,
+        "inputs": [{"id": "module", "type": "free_text"}],
+        "steps": [
+            {
+                "id": "hunt",
+                "type": "agent_task",
+                "provider": "local-python",
+                "required_artifacts": ["risk_findings.json"],
+            }
+        ],
+        "outputs": [
+            {
+                "id": "risk_findings",
+                "type": "json",
+                "from": "hunt",
+                "artifact": "risk_findings.json",
+                "evidence_memory": {
+                    "enabled": True,
+                    "kind": "resource_risk_finding",
+                    "subject_key_field": "finding_id",
+                    "path_field": "file_path",
+                    "symbol_field": "function",
+                    "status": "candidate_output",
+                    "text_fields": ["summary", "function"],
+                },
+            }
+        ],
+    }
+    assert (await workbench_client.post("/api/workbench/workflows", json=workflow)).status_code == 201
+    prepared = await workbench_client.post(
+        "/api/workbench/task-runs/prepare",
+        json={
+            "workflow_id": "acceptance_evidence_mapping_workflow",
+            "workspace_id": "ws-acceptance-evidence-map",
+            "repo_path": str(tmp_path),
+            "inputs": {"module": "nvme-tcp-tls"},
+        },
+    )
+    task_run_id = prepared.json()["task_run_id"]
+    executed = await workbench_client.post(
+        f"/api/workbench/task-runs/{task_run_id}/execute",
+        json={"timeout_sec": 10},
+    )
+    assert executed.status_code == 200
+    assert executed.json()["acceptance_audit"]["status"] == "ready"
+    materialization = Path(prepared.json()["artifact_dir"]) / "workflow_output_materialization.json"
+    assert materialization.exists()
+    materialization.unlink()
+
+    response = await workbench_client.post(
+        f"/api/workbench/task-runs/{task_run_id}/acceptance-audit"
+    )
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["status"] == "incomplete"
+    checks = {item["id"]: item for item in body["checks"]}
+    assert checks["workflow_output_materialization"]["status"] == "missing"
+    assert checks["workflow_output_materialization"]["severity"] == "required"
+    assert (
+        checks["workflow_output_materialization"]["reason"]
+        == "evidence_memory_declared_but_materialization_artifact_missing"
+    )
+
+
 async def test_workbench_task_run_acceptance_audit_reports_missing_agent_artifact(
     workbench_client,
     tmp_path,
