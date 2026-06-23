@@ -400,6 +400,116 @@ function workflowInputsFromJson(value: string): Array<Record<string, unknown>> {
   }
 }
 
+type WorkflowDraftAudit = {
+  status: "ready" | "warning" | "invalid";
+  inputCount: number;
+  stepCount: number;
+  agentStepCount: number;
+  outputCount: number;
+  evidenceMemoryOutputCount: number;
+  semanticImportOutputCount: number;
+  requiredArtifacts: string[];
+  warnings: string[];
+  blocking: string[];
+};
+
+function workflowDraftAudit(value: string): WorkflowDraftAudit {
+  const empty: WorkflowDraftAudit = {
+    status: "invalid",
+    inputCount: 0,
+    stepCount: 0,
+    agentStepCount: 0,
+    outputCount: 0,
+    evidenceMemoryOutputCount: 0,
+    semanticImportOutputCount: 0,
+    requiredArtifacts: [],
+    warnings: [],
+    blocking: [],
+  };
+  let payload: Record<string, unknown>;
+  try {
+    payload = parseJsonObject(value);
+  } catch (error) {
+    return {
+      ...empty,
+      blocking: [error instanceof Error ? error.message : "Workflow JSON is invalid"],
+    };
+  }
+  const inputs = Array.isArray(payload.inputs)
+    ? payload.inputs.filter(
+        (item): item is Record<string, unknown> =>
+          Boolean(item && typeof item === "object" && !Array.isArray(item)),
+      )
+    : [];
+  const steps = Array.isArray(payload.steps)
+    ? payload.steps.filter(
+        (item): item is Record<string, unknown> =>
+          Boolean(item && typeof item === "object" && !Array.isArray(item)),
+      )
+    : [];
+  const outputs = Array.isArray(payload.outputs)
+    ? payload.outputs.filter(
+        (item): item is Record<string, unknown> =>
+          Boolean(item && typeof item === "object" && !Array.isArray(item)),
+      )
+    : [];
+  const stepIds = new Set(steps.map((step) => String(step.id ?? "")).filter(Boolean));
+  const warnings: string[] = [];
+  const blocking: string[] = [];
+  if (!String(payload.id ?? "").trim()) blocking.push("workflow id is required");
+  if (!String(payload.name ?? "").trim()) warnings.push("workflow name is empty");
+  if (steps.length === 0) blocking.push("workflow needs at least one step");
+  if (outputs.length === 0) warnings.push("workflow has no declared outputs");
+
+  const agentSteps = steps.filter((step) => String(step.type ?? "") === "agent_task");
+  const requiredArtifacts = agentSteps.flatMap((step) =>
+    Array.isArray(step.required_artifacts)
+      ? step.required_artifacts.map((item) => String(item)).filter(Boolean)
+      : [],
+  );
+  for (const step of agentSteps) {
+    if (!String(step.provider ?? "").trim()) {
+      blocking.push(`agent step ${String(step.id ?? "agent_task")} is missing provider`);
+    }
+    if (!Array.isArray(step.required_artifacts) || step.required_artifacts.length === 0) {
+      warnings.push(`agent step ${String(step.id ?? "agent_task")} has no required_artifacts`);
+    }
+  }
+  for (const output of outputs) {
+    const outputId = String(output.id ?? "output");
+    const from = String(output.from ?? "");
+    const type = String(output.type ?? "");
+    if (from && !stepIds.has(from)) {
+      blocking.push(`output ${outputId} references unknown step ${from}`);
+    }
+    if (["json", "scope_report", "test_cases"].includes(type) && !String(output.artifact ?? "")) {
+      warnings.push(`output ${outputId} has no artifact path`);
+    }
+    const evidenceMemory = output.evidence_memory;
+    if (
+      evidenceMemory &&
+      typeof evidenceMemory === "object" &&
+      !Array.isArray(evidenceMemory) &&
+      !String((evidenceMemory as Record<string, unknown>).kind ?? "").trim()
+    ) {
+      warnings.push(`output ${outputId} evidence_memory has no kind`);
+    }
+  }
+  const status = blocking.length > 0 ? "invalid" : warnings.length > 0 ? "warning" : "ready";
+  return {
+    status,
+    inputCount: inputs.length,
+    stepCount: steps.length,
+    agentStepCount: agentSteps.length,
+    outputCount: outputs.length,
+    evidenceMemoryOutputCount: outputs.filter((output) => Boolean(output.evidence_memory)).length,
+    semanticImportOutputCount: outputs.filter((output) => Boolean(output.semantic_import)).length,
+    requiredArtifacts: Array.from(new Set(requiredArtifacts)),
+    warnings,
+    blocking,
+  };
+}
+
 function inputTextValue(inputs: Record<string, unknown>, input: Record<string, unknown>): string {
   const inputId = String(input.id ?? "");
   const inputType = String(input.type ?? "");
@@ -1761,6 +1871,10 @@ export default function AgentWorkbenchPage() {
   const selectedWorkflowAudit = useMemo(
     () => workflows.find((workflow) => workflow.id === selectedWorkflowId)?.audit,
     [selectedWorkflowId, workflows],
+  );
+  const workflowDraftAuditSummary = useMemo(
+    () => workflowDraftAudit(workflowJson),
+    [workflowJson],
   );
   const parsedPrepareInputs = useMemo(() => {
     try {
@@ -3518,6 +3632,40 @@ export default function AgentWorkbenchPage() {
                 aria-label="Workflow builder goal"
               />
             </label>
+          </div>
+          <div
+            className={`mb-2 rounded-lg border px-3 py-2 text-xs ${
+              workflowDraftAuditSummary.status === "invalid"
+                ? "border-red-400/20 bg-red-400/5 text-red-300"
+                : workflowDraftAuditSummary.status === "warning"
+                  ? "border-amber-400/20 bg-amber-400/5 text-amber-300"
+                  : "border-outline-variant/30 bg-surface-container text-on-surface-variant"
+            }`}
+          >
+            <div className="flex flex-wrap gap-2">
+              <span className="font-medium">Draft:{workflowDraftAuditSummary.status}</span>
+              <span>inputs:{workflowDraftAuditSummary.inputCount}</span>
+              <span>steps:{workflowDraftAuditSummary.stepCount}</span>
+              <span>agent:{workflowDraftAuditSummary.agentStepCount}</span>
+              <span>outputs:{workflowDraftAuditSummary.outputCount}</span>
+              <span>evidence:{workflowDraftAuditSummary.evidenceMemoryOutputCount}</span>
+              <span>semantic:{workflowDraftAuditSummary.semanticImportOutputCount}</span>
+              <span>artifacts:{workflowDraftAuditSummary.requiredArtifacts.length}</span>
+            </div>
+            {workflowDraftAuditSummary.blocking.length > 0 && (
+              <div className="mt-1 space-y-0.5 font-data text-[10px]">
+                {workflowDraftAuditSummary.blocking.slice(0, 3).map((item) => (
+                  <div key={item}>blocking:{item}</div>
+                ))}
+              </div>
+            )}
+            {workflowDraftAuditSummary.warnings.length > 0 && (
+              <div className="mt-1 space-y-0.5 font-data text-[10px]">
+                {workflowDraftAuditSummary.warnings.slice(0, 3).map((item) => (
+                  <div key={item}>warning:{item}</div>
+                ))}
+              </div>
+            )}
           </div>
           <textarea
             value={workflowJson}
