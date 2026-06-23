@@ -469,7 +469,9 @@ async def materialize_task_run_outputs(task_run_id: str) -> dict[str, Any]:
         task_run = WorkbenchTaskRunStore(_task_runs_dir()).load(task_run_id)
     except KeyError:
         raise HTTPException(status_code=404, detail=f"Unknown task run: {task_run_id}")
-    workflow_outputs = _read_json(Path(task_run.artifact_dir) / "workflow_outputs.json")
+    task_dir = Path(task_run.artifact_dir)
+    workflow_outputs_path = task_dir / "workflow_outputs.json"
+    workflow_outputs = _read_json(workflow_outputs_path)
     if not isinstance(workflow_outputs, dict):
         raise HTTPException(
             status_code=400,
@@ -479,12 +481,19 @@ async def materialize_task_run_outputs(task_run_id: str) -> dict[str, Any]:
         task_run=task_run,
         workflow_outputs=workflow_outputs,
     )
-    return {
+    result = {
         "status": "ok" if not rejected else "partial",
         "evidence_count": len(evidence_ids),
         "evidence_ids": evidence_ids,
         "rejected_outputs": rejected,
     }
+    _write_workflow_output_materialization_artifact(
+        task_run=task_run,
+        workflow_outputs_path=workflow_outputs_path,
+        workflow_outputs=workflow_outputs,
+        result=result,
+    )
+    return result
 
 
 @router.get("/task-runs")
@@ -811,6 +820,44 @@ def _materialize_workflow_output_evidence(
         evidence_ids.extend(structured_ids)
         rejected.extend(structured_rejected)
     return evidence_ids, rejected
+
+
+def _write_workflow_output_materialization_artifact(
+    *,
+    task_run: Any,
+    workflow_outputs_path: Path,
+    workflow_outputs: dict[str, Any],
+    result: dict[str, Any],
+) -> None:
+    workflow_outputs_sha = ""
+    workflow_outputs_size = 0
+    try:
+        data = workflow_outputs_path.read_bytes()
+        workflow_outputs_sha = hashlib.sha256(data).hexdigest()
+        workflow_outputs_size = len(data)
+    except OSError:
+        pass
+    payload = {
+        "task_run_id": task_run.task_run_id,
+        "workflow_id": task_run.workflow_id,
+        "workspace_id": task_run.workspace_id,
+        "repo_path": task_run.repo_path,
+        "status": result.get("status"),
+        "evidence_count": result.get("evidence_count", 0),
+        "evidence_ids": list(result.get("evidence_ids") or []),
+        "rejected_outputs": list(result.get("rejected_outputs") or []),
+        "workflow_outputs_artifact": {
+            "path": str(workflow_outputs_path),
+            "sha256": workflow_outputs_sha,
+            "size_bytes": workflow_outputs_size,
+            "output_count": len(workflow_outputs.get("outputs") or []),
+        },
+    }
+    artifact_path = Path(task_run.artifact_dir) / "workflow_output_materialization.json"
+    artifact_path.write_text(
+        json.dumps(payload, ensure_ascii=False, indent=2, sort_keys=True),
+        encoding="utf-8",
+    )
 
 
 def _materialize_structured_workflow_output_evidence(
@@ -1546,6 +1593,8 @@ def _artifact_kind(relative_path: str) -> str:
         return "degraded_retrieval"
     if name == "workflow_outputs.json":
         return "workflow_outputs"
+    if name == "workflow_output_materialization.json":
+        return "workflow_output_materialization"
     if name == "workflow_execution.json":
         return "workflow_execution"
     if name == "evidence_validation.json":
