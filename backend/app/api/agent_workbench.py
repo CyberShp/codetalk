@@ -1094,18 +1094,15 @@ def _materialize_structured_workflow_output_evidence(
     sha256: str,
 ) -> tuple[list[str], list[dict[str, str]]]:
     if path.name == "source_scope.json" or output_id in {"source_scope", "scope"}:
-        return (
-            _materialize_source_scope_evidence(
-                store=store,
-                task_run=task_run,
-                output=output,
-                output_id=output_id,
-                output_evidence_id=output_evidence_id,
-                path=path,
-                data=data,
-                sha256=sha256,
-            ),
-            [],
+        return _materialize_source_scope_evidence(
+            store=store,
+            task_run=task_run,
+            output=output,
+            output_id=output_id,
+            output_evidence_id=output_evidence_id,
+            path=path,
+            data=data,
+            sha256=sha256,
         )
     if path.name == "evidence_cards.json" or output_id == "evidence_cards":
         return (
@@ -1308,20 +1305,27 @@ def _materialize_source_scope_evidence(
     path: Path,
     data: bytes,
     sha256: str,
-) -> list[str]:
+) -> tuple[list[str], list[dict[str, str]]]:
     try:
         payload = json.loads(data.decode("utf-8"))
     except (UnicodeDecodeError, json.JSONDecodeError):
-        return []
+        return [], []
     if not isinstance(payload, dict):
-        return []
+        return [], []
     evidence_ids: list[str] = []
+    rejected: list[dict[str, str]] = []
     seen_files: set[str] = set()
     seen_symbols: set[tuple[str, str]] = set()
     for file_item in _source_scope_file_items(payload):
         candidate_path = _source_scope_item_path(file_item)
         resolved = _validated_repo_source_path(task_run.repo_path, candidate_path)
         if resolved is None:
+            if candidate_path:
+                rejected.append({
+                    "output": output_id,
+                    "reason": "source_scope_path_not_verified",
+                    "path": candidate_path,
+                })
             continue
         rel_path, resolved_path = resolved
         if rel_path not in seen_files:
@@ -1395,7 +1399,15 @@ def _materialize_source_scope_evidence(
         candidate_path = _source_scope_item_path(symbol_item)
         resolved = _validated_repo_source_path(task_run.repo_path, candidate_path)
         symbol_name = _source_scope_symbol_name(symbol_item)
-        if resolved is None or not symbol_name:
+        if resolved is None:
+            if candidate_path:
+                rejected.append({
+                    "output": output_id,
+                    "reason": "source_scope_path_not_verified",
+                    "path": candidate_path,
+                })
+            continue
+        if not symbol_name:
             continue
         rel_path, _resolved_path = resolved
         symbol_key = (rel_path, symbol_name)
@@ -1426,7 +1438,7 @@ def _materialize_source_scope_evidence(
                 "line_start": line_start,
             },
         ))
-    return evidence_ids
+    return evidence_ids, rejected
 
 
 def _materialize_evidence_card_output(

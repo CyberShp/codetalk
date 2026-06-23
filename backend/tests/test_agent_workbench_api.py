@@ -1372,8 +1372,18 @@ async def test_workbench_materialize_source_scope_output_as_structured_memory(
 
     assert materialized.status_code == 200
     body = materialized.json()
-    assert body["status"] == "ok"
+    assert body["status"] == "partial"
     assert body["evidence_count"] == 3
+    assert {
+        "output": "source_scope",
+        "reason": "source_scope_path_not_verified",
+        "path": "missing/tls.c",
+    } in body["rejected_outputs"]
+    assert {
+        "output": "source_scope",
+        "reason": "source_scope_path_not_verified",
+        "path": "README.md",
+    } in body["rejected_outputs"]
     source_search = await workbench_client.get(
         "/api/workbench/memory/search",
         params={"q": "TLS transport source", "workspace_id": "ws-source-scope-memory"},
