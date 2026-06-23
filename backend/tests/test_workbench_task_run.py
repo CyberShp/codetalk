@@ -506,6 +506,11 @@ def test_prepare_workbench_task_run_injects_evidence_and_semantic_context(tmp_pa
     assert step_bundle["black_box_generation_policy"]["authority_rule"] == (
         "semantic-library matches may shape black-box wording but cannot prove source behavior or entry reachability"
     )
+    assert step_bundle["black_box_generation_policy"]["evidence_memory_refs"] == [evidence_id]
+    assert step_bundle["black_box_generation_policy"]["evidence_memory_source_slice_count"] == 1
+    assert "entry_verification" in step_bundle["black_box_generation_policy"][
+        "must_not_use_evidence_memory_as"
+    ]
     assert step_bundle["context_bundle"]["deployment_evidence"][0]["symbol"] == "claude-code"
     assert step_bundle["context_bundle"]["evidence"][0]["source_slices"][0]["sha256"] == (
         hashlib.sha256(source.read_bytes()).hexdigest()
@@ -581,6 +586,7 @@ def test_prepare_workbench_task_run_injects_evidence_and_semantic_context(tmp_pa
         "entry_verification",
         "artifact_validation",
     ]
+    assert output_contract["black_box_generation_policy"]["evidence_memory_refs"] == [evidence_id]
     manifest = json.loads(
         Path(result.artifact_dir, "task_artifact_manifest.json").read_text(encoding="utf-8")
     )

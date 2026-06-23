@@ -1712,6 +1712,10 @@ def build_black_box_generation_policy(*, context_bundle: dict[str, Any]) -> dict
         item for item in context_bundle.get("semantic_cases") or []
         if isinstance(item, dict)
     ]
+    evidence_items = [
+        item for item in context_bundle.get("evidence") or []
+        if isinstance(item, dict)
+    ]
     semantic_terms: list[dict[str, Any]] = []
     for item in semantic_cases:
         terms = [str(term) for term in item.get("terms") or [] if str(term)]
@@ -1725,24 +1729,55 @@ def build_black_box_generation_policy(*, context_bundle: dict[str, Any]) -> dict
             "test_level": str(item.get("test_level") or ""),
             "reuse_rule": "terminology_only_not_source_truth",
         })
+    evidence_refs = _unique_strings(
+        str(item.get("evidence_id") or "")
+        for item in evidence_items
+        if str(item.get("evidence_id") or "")
+    )
+    evidence_subjects = _unique_strings(
+        str(item.get("subject_key") or item.get("path") or item.get("symbol") or "")
+        for item in evidence_items
+        if str(item.get("subject_key") or item.get("path") or item.get("symbol") or "")
+    )
+    source_slice_count = sum(
+        1
+        for item in evidence_items
+        for source_slice in (item.get("source_slices") or [])
+        if isinstance(source_slice, dict)
+    )
     return {
         "provider": "semantic-library",
         "query": str(context_bundle.get("query") or ""),
         "semantic_terms": semantic_terms,
         "semantic_case_count": len(semantic_cases),
         "semantic_term_count": sum(len(item["terms"]) for item in semantic_terms),
+        "evidence_memory_ref_count": len(evidence_refs),
+        "evidence_memory_refs": evidence_refs[:20],
+        "evidence_memory_subjects": evidence_subjects[:20],
+        "evidence_memory_source_slice_count": source_slice_count,
         "authority_rule": (
             "semantic-library matches may shape black-box wording but cannot prove source behavior or entry reachability"
+        ),
+        "evidence_memory_authority_rule": (
+            "Evidence Memory can provide prior validated context and source-slice references "
+            "but cannot by itself prove external reachability for a black-box case"
         ),
         "allowed_uses": [
             "black_box_case_wording",
             "test_taxonomy_alignment",
             "observable_assertion_style",
+            "source_context_hint",
+            "prior_evidence_traceability",
         ],
         "must_not_use_semantics_as": [
             "source_evidence",
             "entry_verification",
             "artifact_validation",
+        ],
+        "must_not_use_evidence_memory_as": [
+            "entry_verification",
+            "external_reachability_proof",
+            "artifact_validation_without_current_files",
         ],
     }
 
