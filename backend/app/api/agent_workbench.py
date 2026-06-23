@@ -2030,6 +2030,8 @@ def _build_task_acceptance_audit(task_run: Any) -> dict[str, Any]:
             description=description,
             severity="required",
         ))
+    provider_readiness = _read_json(task_dir / "provider_readiness.json")
+    checks.extend(_acceptance_provider_readiness_checks(provider_readiness))
 
     execution_payload = _read_json(task_dir / "workflow_execution.json")
     workflow_execution_exists = "workflow_execution.json" in artifacts
@@ -2208,6 +2210,37 @@ def _build_task_acceptance_audit(task_run: Any) -> dict[str, Any]:
         "missing_required": missing_required,
         "missing_recommended": recommended_missing,
     }
+
+
+def _acceptance_provider_readiness_checks(payload: Any) -> list[dict[str, Any]]:
+    if not isinstance(payload, dict):
+        return []
+    agent_cli_providers = payload.get("agent_cli_providers")
+    if not isinstance(agent_cli_providers, dict):
+        return []
+    checks: list[dict[str, Any]] = []
+    for provider, item in sorted(agent_cli_providers.items()):
+        if not isinstance(item, dict):
+            continue
+        status = str(item.get("status") or "unknown")
+        ok = status in {"available", "configured"}
+        reason = str(item.get("reason") or "")
+        checks.append({
+            "id": f"provider_readiness_agent:{provider}",
+            "status": "ok" if ok else "missing",
+            "severity": "required",
+            "relative_path": "provider_readiness.json",
+            "kind": "provider_readiness",
+            "provider": str(provider),
+            "provider_status": status,
+            "configured_command": str(item.get("configured_command") or ""),
+            "command": str(item.get("command") or ""),
+            "used_fallback": bool(item.get("used_fallback", False)),
+            "startup_probe_endpoint": str(item.get("startup_probe_endpoint") or ""),
+            "description": "Agent CLI provider readiness for this task",
+            "reason": reason or ("" if ok else status),
+        })
+    return checks
 
 
 def _acceptance_file_check(

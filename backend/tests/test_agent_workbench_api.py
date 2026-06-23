@@ -2221,6 +2221,7 @@ async def test_workbench_task_run_acceptance_audit_api_records_required_evidence
     checks = {item["id"]: item for item in body["checks"]}
     assert checks["task_bundle"]["status"] == "ok"
     assert checks["provider_readiness"]["status"] == "ok"
+    assert checks["provider_readiness_agent:local-python"]["status"] == "ok"
     assert checks["agent_run:discover"]["status"] == "ok"
     assert checks["agent_required_artifact:discover:source_scope.json"]["status"] == "ok"
     assert checks["workflow_execution"]["status"] == "ok"
@@ -2303,6 +2304,59 @@ async def test_workbench_task_run_acceptance_audit_reports_missing_agent_artifac
     assert missing["severity"] == "required"
     assert "agent_runs/discover/source_scope.json" in missing["relative_path"]
     assert checks["task_rerun_plan"]["status"] == "ok"
+
+
+async def test_workbench_task_run_acceptance_audit_flags_unavailable_agent_provider(
+    workbench_client,
+    tmp_path,
+):
+    workflow = {
+        "id": "acceptance_unknown_provider_workflow",
+        "name": "Acceptance unknown provider workflow",
+        "version": 1,
+        "inputs": [{"id": "module", "type": "free_text"}],
+        "steps": [
+            {
+                "id": "discover",
+                "type": "agent_task",
+                "provider": "missing-agent-cli",
+                "required_artifacts": ["source_scope.json"],
+            }
+        ],
+        "outputs": [
+            {
+                "id": "scope",
+                "type": "json",
+                "from": "discover",
+                "artifact": "source_scope.json",
+            }
+        ],
+    }
+    assert (await workbench_client.post("/api/workbench/workflows", json=workflow)).status_code == 201
+    prepared = await workbench_client.post(
+        "/api/workbench/task-runs/prepare",
+        json={
+            "workflow_id": "acceptance_unknown_provider_workflow",
+            "workspace_id": "ws-acceptance-provider",
+            "repo_path": str(tmp_path),
+            "inputs": {"module": "nvme-tcp-tls"},
+        },
+    )
+    task_run_id = prepared.json()["task_run_id"]
+
+    response = await workbench_client.post(
+        f"/api/workbench/task-runs/{task_run_id}/acceptance-audit"
+    )
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["status"] == "incomplete"
+    checks = {item["id"]: item for item in body["checks"]}
+    provider_check = checks["provider_readiness_agent:missing-agent-cli"]
+    assert provider_check["status"] == "missing"
+    assert provider_check["severity"] == "required"
+    assert provider_check["provider_status"] == "unknown_provider"
+    assert provider_check["startup_probe_endpoint"] == "/api/tools/missing-agent-cli/startup-probe"
 
 
 async def test_workbench_task_run_artifacts_api_labels_agent_turn_snapshots(
