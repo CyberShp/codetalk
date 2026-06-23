@@ -240,6 +240,32 @@ async def test_workbench_provider_capabilities_include_agent_launch_resolution(
     assert by_id["semantic-library"]["capabilities"]["supports_black_box_terms"] is True
 
 
+async def test_workbench_system_audit_api_reports_control_plane_readiness(workbench_client):
+    resp = await workbench_client.get("/api/workbench/system-audit")
+
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["status"] == "ready"
+    assert body["summary"]["missing_required"] == 0
+    checks = {item["id"]: item for item in body["checks"]}
+    assert checks["workbench_data_dir"]["status"] == "ok"
+    assert checks["workflow_presets"]["status"] == "ok"
+    assert {
+        "module_analysis",
+        "resource_leak_hunt",
+        "mr_blackbox_test",
+        "patch_impact_review",
+    }.issubset(set(checks["workflow_presets"]["details"]["available"]))
+    assert checks["provider_capability_matrix"]["details"]["provider_count"] >= 4
+    assert checks["agent_cli_provider_registry"]["status"] == "ok"
+    assert checks["task_acceptance_audit_api"]["details"]["endpoint"] == (
+        "POST /api/workbench/task-runs/{task_run_id}/acceptance-audit"
+    )
+    assert checks["external_agent_sandbox"]["severity"] == "recommended"
+    assert checks["external_agent_sandbox"]["status"] == "missing"
+    assert body["missing_recommended"][0]["id"] == "external_agent_sandbox"
+
+
 async def test_workbench_semantic_library_api(workbench_client):
     created = await workbench_client.post(
         "/api/workbench/semantic-cases",

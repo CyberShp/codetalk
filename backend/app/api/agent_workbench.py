@@ -271,6 +271,12 @@ async def list_provider_capabilities() -> dict[str, Any]:
     }
 
 
+@router.get("/system-audit")
+async def get_workbench_system_audit() -> dict[str, Any]:
+    """Return a machine-readable readiness audit for the Workbench control plane."""
+    return _build_workbench_system_audit()
+
+
 @router.post("/semantic-cases", status_code=201)
 async def upsert_semantic_case(payload: dict[str, Any]) -> dict[str, Any]:
     try:
@@ -903,6 +909,161 @@ def _fast_context_provider_matrix_item() -> dict[str, Any]:
 
 def _codetalk_provider_matrix_items() -> list[dict[str, Any]]:
     return list(build_codetalk_provider_snapshot().values())
+
+
+def _build_workbench_system_audit() -> dict[str, Any]:
+    workbench_dir = _workbench_dir()
+    provider_matrix = _codetalk_provider_matrix_items() + [
+        _agent_cli_provider_matrix_item(provider_id, spec)
+        for provider_id, spec in external_agent_provider_specs().items()
+    ]
+    provider_matrix.append(_fast_context_provider_matrix_item())
+    preset_ids = {str(item.get("id") or "") for item in builtin_workflow_presets()}
+    required_preset_ids = {
+        "module_analysis",
+        "resource_leak_hunt",
+        "mr_blackbox_test",
+        "patch_impact_review",
+    }
+    checks = [
+        _system_audit_check(
+            check_id="workbench_data_dir",
+            ok=workbench_dir.exists() and workbench_dir.is_dir(),
+            severity="required",
+            description="Workbench data directory exists",
+            details={"path": str(workbench_dir)},
+        ),
+        _system_audit_check(
+            check_id="workflow_store",
+            ok=True,
+            severity="required",
+            description="Workflow store can be constructed",
+            details={"path": str(_workbench_dir() / "workflows.db")},
+        ),
+        _system_audit_check(
+            check_id="evidence_memory_store",
+            ok=True,
+            severity="required",
+            description="Evidence Memory store can be constructed",
+            details={"path": str(_workbench_dir() / "evidence_memory.db")},
+        ),
+        _system_audit_check(
+            check_id="semantic_library_store",
+            ok=True,
+            severity="required",
+            description="Test Semantic Library store can be constructed",
+            details={"path": str(_workbench_dir() / "test_semantics.db")},
+        ),
+        _system_audit_check(
+            check_id="workflow_presets",
+            ok=required_preset_ids.issubset(preset_ids),
+            severity="required",
+            description="Required editable workflow presets are registered",
+            details={
+                "required": sorted(required_preset_ids),
+                "available": sorted(preset_ids),
+            },
+        ),
+        _system_audit_check(
+            check_id="provider_capability_matrix",
+            ok=bool(provider_matrix),
+            severity="required",
+            description="Provider capability matrix is available",
+            details={
+                "provider_count": len(provider_matrix),
+                "providers": [str(item.get("provider") or "") for item in provider_matrix],
+            },
+        ),
+        _system_audit_check(
+            check_id="agent_cli_provider_registry",
+            ok=any(item.get("owner") == "agent_cli" for item in provider_matrix),
+            severity="required",
+            description="Agent CLI providers are registered for harness execution",
+            details={
+                "providers": [
+                    str(item.get("provider") or "")
+                    for item in provider_matrix
+                    if item.get("owner") == "agent_cli"
+                ],
+            },
+        ),
+        _system_audit_check(
+            check_id="task_runs_dir",
+            ok=_task_runs_dir().exists(),
+            severity="required",
+            description="Task run artifact directory is available",
+            details={"path": str(_task_runs_dir())},
+        ),
+        _system_audit_check(
+            check_id="agent_runs_dir",
+            ok=_agent_runs_dir().exists(),
+            severity="required",
+            description="Standalone Agent run artifact directory is available",
+            details={"path": str(_agent_runs_dir())},
+        ),
+        _system_audit_check(
+            check_id="task_acceptance_audit_api",
+            ok=True,
+            severity="required",
+            description="Task-level acceptance audit API is registered",
+            details={"endpoint": "POST /api/workbench/task-runs/{task_run_id}/acceptance-audit"},
+        ),
+        _system_audit_check(
+            check_id="external_agent_sandbox",
+            ok=False,
+            severity="recommended",
+            description="OS-level sandbox for external Agent CLI is not implemented in this phase",
+            details={
+                "residual_risk": (
+                    "Current controls are prompt-level readonly rules, process timeouts, "
+                    "provider diagnostics, and local evidence validation."
+                )
+            },
+        ),
+    ]
+    required_checks = [item for item in checks if item["severity"] == "required"]
+    missing_required = [
+        item for item in required_checks
+        if item["status"] not in {"ok", "accepted"}
+    ]
+    missing_recommended = [
+        item for item in checks
+        if item["severity"] == "recommended" and item["status"] not in {"ok", "accepted"}
+    ]
+    return {
+        "status": "ready" if not missing_required else "incomplete",
+        "created_at": datetime.now(timezone.utc).isoformat(),
+        "summary": {
+            "required_checks": len(required_checks),
+            "missing_required": len(missing_required),
+            "recommended_checks": len(checks) - len(required_checks),
+            "missing_recommended": len(missing_recommended),
+        },
+        "checks": checks,
+        "missing_required": missing_required,
+        "missing_recommended": missing_recommended,
+        "notes": [
+            "This audits the Workbench control plane, not a real intranet Agent CLI E2E run.",
+            "Run provider startup probes and task-level acceptance audits before marking a deployment healthy.",
+        ],
+    }
+
+
+def _system_audit_check(
+    *,
+    check_id: str,
+    ok: bool,
+    severity: str,
+    description: str,
+    details: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    return {
+        "id": check_id,
+        "status": "ok" if ok else "missing",
+        "severity": severity,
+        "description": description,
+        "details": details or {},
+    }
 
 
 def _materialize_mr_artifact_evidence(

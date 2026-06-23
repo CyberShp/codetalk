@@ -215,6 +215,21 @@ export interface WorkbenchProviderCapabilitiesMatrix {
   notes: string[];
 }
 
+export interface WorkbenchSystemAudit {
+  status: string;
+  created_at: string;
+  summary: {
+    required_checks: number;
+    missing_required: number;
+    recommended_checks: number;
+    missing_recommended: number;
+  };
+  checks: Array<Record<string, unknown>>;
+  missing_required: Array<Record<string, unknown>>;
+  missing_recommended: Array<Record<string, unknown>>;
+  notes: string[];
+}
+
 export interface ExternalAgentProbeAttempt {
   command?: string;
   status?: string;

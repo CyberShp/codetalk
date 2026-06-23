@@ -33,6 +33,7 @@ import type {
   WorkflowPreset,
   WorkbenchAcceptanceAudit,
   WorkbenchProviderCapabilitiesMatrix,
+  WorkbenchSystemAudit,
   WorkbenchTaskArtifact,
   WorkbenchTaskArtifactContent,
   WorkbenchTaskArtifactManifest,
@@ -836,6 +837,7 @@ export default function AgentWorkbenchPage() {
   const [memorySlices, setMemorySlices] = useState<Record<string, EvidenceSourceSlice[]>>({});
   const [providerMatrix, setProviderMatrix] =
     useState<WorkbenchProviderCapabilitiesMatrix | null>(null);
+  const [systemAudit, setSystemAudit] = useState<WorkbenchSystemAudit | null>(null);
   const [providerProbeResults, setProviderProbeResults] = useState<
     Record<string, ExternalAgentStartupProbeResult>
   >({});
@@ -917,15 +919,17 @@ export default function AgentWorkbenchPage() {
     setLoading(true);
     setError(null);
     try {
-      const [workflowData, taskRunData, providerData] = await Promise.all([
+      const [workflowData, taskRunData, providerData, systemAuditData] = await Promise.all([
         api.workbench.workflows.list(),
         api.workbench.taskRuns.list({ limit: 10 }),
         api.workbench.providerCapabilities(),
+        api.workbench.systemAudit(),
       ]);
       const presetData = await api.workbench.workflows.presets();
       setWorkflows(workflowData);
       setWorkflowPresets(presetData.items);
       setProviderMatrix(providerData);
+      setSystemAudit(systemAuditData);
       if (!selectedPresetId && presetData.items.length > 0) {
         setSelectedPresetId(presetData.items[0].id);
       }
@@ -1488,6 +1492,59 @@ export default function AgentWorkbenchPage() {
           }`}
         >
           {error ?? message}
+        </div>
+      )}
+
+      {systemAudit && (
+        <div className="mb-5 rounded-lg border border-outline-variant/30 bg-surface-container px-4 py-3 text-xs text-on-surface-variant">
+          <div className="flex flex-wrap items-center gap-2">
+            <span className="font-medium text-on-surface">Workbench system audit</span>
+            <span
+              className={
+                systemAudit.status === "ready"
+                  ? "font-data text-green-500"
+                  : "font-data text-warning"
+              }
+            >
+              {systemAudit.status}
+            </span>
+            <span className="font-data">
+              required:{systemAudit.summary.required_checks}
+            </span>
+            <span
+              className={`font-data ${
+                systemAudit.summary.missing_required > 0 ? "text-warning" : ""
+              }`}
+            >
+              missing-required:{systemAudit.summary.missing_required}
+            </span>
+            <span
+              className={`font-data ${
+                systemAudit.summary.missing_recommended > 0 ? "text-warning" : ""
+              }`}
+            >
+              missing-recommended:{systemAudit.summary.missing_recommended}
+            </span>
+          </div>
+          {systemAudit.missing_required.length > 0 && (
+            <div className="mt-1 space-y-0.5 font-data text-[10px] text-warning">
+              {systemAudit.missing_required.slice(0, 3).map((item, index) => (
+                <div key={`${String(item.id ?? index)}:${index}`}>
+                  {String(item.id ?? "check")}:
+                  {String(item.reason ?? item.description ?? "missing")}
+                </div>
+              ))}
+            </div>
+          )}
+          {systemAudit.missing_recommended.length > 0 && (
+            <div className="mt-1 break-words font-data text-[10px] text-warning">
+              recommended:
+              {systemAudit.missing_recommended
+                .slice(0, 3)
+                .map((item) => String(item.id ?? "check"))
+                .join(",")}
+            </div>
+          )}
         </div>
       )}
 
