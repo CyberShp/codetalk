@@ -913,6 +913,67 @@ export default function AgentWorkbenchPage() {
     setArtifactManifest(manifest);
   }
 
+  async function restoreTaskRun(taskRunId: string) {
+    const run = await api.workbench.taskRuns.get(taskRunId);
+    const manifest = await api.workbench.taskRuns.artifacts(taskRunId);
+    setPreparedRun(run);
+    setArtifactManifest(manifest);
+    setTaskRuns((current) => [
+      run,
+      ...current.filter((item) => item.task_run_id !== run.task_run_id),
+    ].slice(0, 10));
+    setExecutionResults({});
+    setValidationResults({});
+    setMaterializeResults({});
+    setArtifactContent(null);
+    setWorkflowOutputMaterialize(null);
+    setSemanticOutputImport(null);
+    setWorkflowExecution(null);
+    setTaskRerunPlan(null);
+    setTaskRerunPlanValidation(null);
+    setTaskRerunExecution(null);
+    setTaskRerunHistory(null);
+
+    const artifactPaths = new Set(manifest.artifacts.map((item) => item.relative_path));
+    if (artifactPaths.has("workflow_execution.json")) {
+      const content = await api.workbench.taskRuns.artifactContent(
+        taskRunId,
+        "workflow_execution.json",
+      );
+      const parsed = JSON.parse(content.content || "{}") as WorkflowExecutionResult;
+      setWorkflowExecution(parsed);
+      setTaskRerunPlan((parsed.rerun_plan as TaskRerunPlan | undefined) ?? null);
+    }
+    if (artifactPaths.has("workflow_output_materialization.json")) {
+      const content = await api.workbench.taskRuns.artifactContent(
+        taskRunId,
+        "workflow_output_materialization.json",
+      );
+      const parsed = JSON.parse(content.content || "{}") as MaterializeWorkflowOutputsResult;
+      setWorkflowOutputMaterialize(parsed);
+    }
+    if (artifactPaths.has("semantic_output_import.json")) {
+      const content = await api.workbench.taskRuns.artifactContent(
+        taskRunId,
+        "semantic_output_import.json",
+      );
+      const parsed = JSON.parse(content.content || "{}") as {
+        result?: SemanticCaseImportResult;
+      };
+      setSemanticOutputImport(parsed.result ?? null);
+    }
+    if (artifactPaths.has("task_rerun_plan.json")) {
+      const [plan, validation, history] = await Promise.all([
+        api.workbench.taskRuns.rerunPlan(taskRunId),
+        api.workbench.taskRuns.rerunPlanValidation(taskRunId),
+        api.workbench.taskRuns.rerunHistory(taskRunId),
+      ]);
+      setTaskRerunPlan(plan);
+      setTaskRerunPlanValidation(validation);
+      setTaskRerunHistory(history);
+    }
+  }
+
   function applyBuilderScenario(scenarioId: keyof typeof WORKFLOW_BUILDER_SCENARIOS) {
     const scenario = WORKFLOW_BUILDER_SCENARIOS[scenarioId];
     setBuilderScenario(scenarioId);
@@ -1069,6 +1130,12 @@ export default function AgentWorkbenchPage() {
       setArtifactContent(null);
       await refreshArtifactManifest(result.task_run_id);
       setMessage(`Task run prepared: ${result.task_run_id}`);
+    });
+
+  const restoreExistingTaskRun = (taskRunId: string) =>
+    runAction(`restore-task-run-${taskRunId}`, async () => {
+      await restoreTaskRun(taskRunId);
+      setMessage(`Task run restored: ${taskRunId}`);
     });
 
   const runProviderStartupProbe = (provider: string) =>
@@ -2820,20 +2887,21 @@ export default function AgentWorkbenchPage() {
                   {taskRuns.map((run) => (
                     <button
                       key={run.task_run_id}
-                      onClick={() => {
-                        setPreparedRun(run);
-                        setExecutionResults({});
-                        setValidationResults({});
-                        setMaterializeResults({});
-                        setArtifactContent(null);
-                      }}
-                      className="block w-full rounded-md bg-surface-container px-2.5 py-2 text-left transition-colors hover:bg-surface-container-high"
+                      onClick={() => restoreExistingTaskRun(run.task_run_id)}
+                      disabled={busyAction === `restore-task-run-${run.task_run_id}`}
+                      className={`block w-full rounded-md px-2.5 py-2 text-left transition-colors hover:bg-surface-container-high disabled:opacity-50 ${
+                        preparedRun?.task_run_id === run.task_run_id
+                          ? "bg-surface-container-high"
+                          : "bg-surface-container"
+                      }`}
                     >
                       <span className="block font-medium text-on-surface">
                         {run.workflow_id}
                       </span>
                       <span className="block break-words font-data text-[11px] text-on-surface-variant">
-                        {run.task_run_id}
+                        {busyAction === `restore-task-run-${run.task_run_id}`
+                          ? "restoring..."
+                          : run.task_run_id}
                       </span>
                     </button>
                   ))}
