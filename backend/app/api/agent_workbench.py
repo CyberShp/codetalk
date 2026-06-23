@@ -250,6 +250,40 @@ async def get_workflow_capabilities() -> dict[str, Any]:
     }
 
 
+@router.get("/core-workflow-readiness")
+async def get_core_workflow_readiness() -> dict[str, Any]:
+    """Audit the four built-in workflow scenarios as executable contracts."""
+    workflows = [_core_workflow_readiness_item(item) for item in builtin_workflow_presets()]
+    required = [
+        item for item in workflows
+        if item.get("id") in {
+            "module_analysis",
+            "resource_leak_hunt",
+            "mr_blackbox_test",
+            "patch_impact_review",
+        }
+    ]
+    missing_required = [
+        item for item in required
+        if item.get("status") != "ready"
+    ]
+    return {
+        "status": "ready" if not missing_required else "incomplete",
+        "summary": {
+            "workflow_count": len(required),
+            "missing_required": len(missing_required),
+            "agent_step_count": sum(int(item.get("agent_step_count") or 0) for item in required),
+            "output_count": sum(int(item.get("output_count") or 0) for item in required),
+        },
+        "workflows": required,
+        "missing_required": missing_required,
+        "notes": [
+            "Readiness means preset structure, artifact contract, and output contract are declared.",
+            "Runtime readiness still depends on provider startup probes and task acceptance audits.",
+        ],
+    }
+
+
 @router.post("/workflow-presets/{preset_id}/install", status_code=201)
 async def install_builtin_workflow_preset(preset_id: str) -> dict[str, Any]:
     try:
@@ -1098,6 +1132,113 @@ def _build_workbench_system_audit() -> dict[str, Any]:
             "Run provider startup probes and task-level acceptance audits before marking a deployment healthy.",
         ],
     }
+
+
+def _core_workflow_readiness_item(preset: dict[str, Any]) -> dict[str, Any]:
+    definition = preset.get("definition") if isinstance(preset.get("definition"), dict) else {}
+    workflow_id = str(definition.get("id") or preset.get("id") or "")
+    inputs = [item for item in definition.get("inputs") or [] if isinstance(item, dict)]
+    steps = [item for item in definition.get("steps") or [] if isinstance(item, dict)]
+    outputs = [item for item in definition.get("outputs") or [] if isinstance(item, dict)]
+    agent_steps = [item for item in steps if item.get("type") == "agent_task"]
+    builtin_steps = [
+        str(item.get("id") or "")
+        for item in steps
+        if item.get("type") != "agent_task" and str(item.get("id") or "")
+    ]
+    required_artifacts = _unique_preserve_order(
+        str(artifact)
+        for step in agent_steps
+        for artifact in step.get("required_artifacts") or []
+        if str(artifact).strip()
+    )
+    missing: list[dict[str, str]] = []
+    if not inputs:
+        missing.append({"field": "inputs", "reason": "no inputs declared"})
+    if not agent_steps:
+        missing.append({"field": "steps", "reason": "no agent_task declared"})
+    if not outputs:
+        missing.append({"field": "outputs", "reason": "no outputs declared"})
+    for step in agent_steps:
+        step_id = str(step.get("id") or "")
+        if not str(step.get("provider") or "").strip():
+            missing.append({"field": f"steps.{step_id}.provider", "reason": "missing provider"})
+        if not step.get("required_artifacts"):
+            missing.append({
+                "field": f"steps.{step_id}.required_artifacts",
+                "reason": "missing required artifacts",
+            })
+    audit = audit_workflow_definition(definition)
+    warnings = [
+        item for item in audit.get("warnings") or []
+        if isinstance(item, dict)
+    ]
+    agent_mcp_required = any(
+        str(item.get("resolver") or "") == "agent_mcp"
+        for item in inputs
+    )
+    return {
+        "id": workflow_id,
+        "name": str(definition.get("name") or preset.get("name") or workflow_id),
+        "scenario": _core_workflow_scenario(workflow_id),
+        "status": "ready" if not missing else "incomplete",
+        "description": str(preset.get("description") or ""),
+        "input_count": len(inputs),
+        "required_inputs": [
+            str(item.get("id") or "")
+            for item in inputs
+            if bool(item.get("required", False)) and str(item.get("id") or "")
+        ],
+        "agent_step_count": len(agent_steps),
+        "agent_steps": [
+            {
+                "id": str(item.get("id") or ""),
+                "provider": str(item.get("provider") or ""),
+                "mcp_profile": str(item.get("mcp_profile") or ""),
+                "required_artifacts": [
+                    str(artifact) for artifact in item.get("required_artifacts") or []
+                ],
+            }
+            for item in agent_steps
+        ],
+        "agent_mcp_required": agent_mcp_required,
+        "builtin_steps": builtin_steps,
+        "required_artifacts": required_artifacts,
+        "output_count": len(outputs),
+        "outputs": [
+            {
+                "id": str(item.get("id") or ""),
+                "type": str(item.get("type") or ""),
+                "from": str(item.get("from") or item.get("source") or ""),
+                "artifact": str(item.get("artifact") or item.get("path") or ""),
+                "has_schema": isinstance(item.get("schema") or item.get("json_schema"), dict),
+            }
+            for item in outputs
+        ],
+        "missing_required": missing,
+        "warnings": warnings,
+    }
+
+
+def _core_workflow_scenario(workflow_id: str) -> str:
+    return {
+        "module_analysis": "module_analysis",
+        "resource_leak_hunt": "risk_hunt",
+        "mr_blackbox_test": "mr_blackbox_test",
+        "patch_impact_review": "patch_impact_review",
+    }.get(workflow_id, workflow_id or "workflow")
+
+
+def _unique_preserve_order(values: Any) -> list[str]:
+    seen: set[str] = set()
+    result: list[str] = []
+    for value in values:
+        text = str(value).strip()
+        if not text or text in seen:
+            continue
+        seen.add(text)
+        result.append(text)
+    return result
 
 
 def _agent_cli_launch_readiness_check(provider_matrix: list[dict[str, Any]]) -> dict[str, Any]:

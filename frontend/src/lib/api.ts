@@ -44,6 +44,7 @@ import type {
   WorkbenchProviderCapabilitiesMatrix,
   WorkbenchSystemAudit,
   WorkbenchWorkflowCapabilities,
+  WorkbenchCoreWorkflowReadiness,
   WorkbenchInputUploadResult,
   WorkbenchTaskArtifactContent,
   WorkbenchTaskArtifactManifest,
@@ -511,6 +512,11 @@ export const api = {
 
     workflowCapabilities: () =>
       request<WorkbenchWorkflowCapabilities>("/api/workbench/workflow-capabilities"),
+
+    coreWorkflowReadiness: () =>
+      request<WorkbenchCoreWorkflowReadiness>(
+        "/api/workbench/core-workflow-readiness",
+      ),
 
     uploadInputFile: (file: File, inputId: string) => {
       const form = new FormData();

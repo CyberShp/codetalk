@@ -243,6 +243,33 @@ export interface WorkbenchWorkflowCapabilities {
   artifact_contract: Record<string, string>;
 }
 
+export interface WorkbenchCoreWorkflowReadiness {
+  status: string;
+  summary: {
+    workflow_count: number;
+    missing_required: number;
+    agent_step_count: number;
+    output_count: number;
+  };
+  workflows: Array<{
+    id: string;
+    name: string;
+    scenario: string;
+    status: string;
+    input_count: number;
+    required_inputs: string[];
+    agent_step_count: number;
+    agent_mcp_required: boolean;
+    builtin_steps: string[];
+    required_artifacts: string[];
+    output_count: number;
+    missing_required: Array<Record<string, string>>;
+    warnings: Array<Record<string, unknown>>;
+  }>;
+  missing_required: Array<Record<string, unknown>>;
+  notes: string[];
+}
+
 export interface ExternalAgentProbeAttempt {
   command?: string;
   status?: string;

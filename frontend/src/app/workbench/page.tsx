@@ -32,6 +32,7 @@ import type {
   WorkflowExecutionResult,
   WorkflowPreset,
   WorkbenchAcceptanceAudit,
+  WorkbenchCoreWorkflowReadiness,
   WorkbenchProviderCapabilitiesMatrix,
   WorkbenchSystemAudit,
   WorkbenchWorkflowCapabilities,
@@ -841,6 +842,8 @@ export default function AgentWorkbenchPage() {
   const [systemAudit, setSystemAudit] = useState<WorkbenchSystemAudit | null>(null);
   const [workflowCapabilities, setWorkflowCapabilities] =
     useState<WorkbenchWorkflowCapabilities | null>(null);
+  const [coreWorkflowReadiness, setCoreWorkflowReadiness] =
+    useState<WorkbenchCoreWorkflowReadiness | null>(null);
   const [providerProbeResults, setProviderProbeResults] = useState<
     Record<string, ExternalAgentStartupProbeResult>
   >({});
@@ -928,12 +931,14 @@ export default function AgentWorkbenchPage() {
         providerData,
         systemAuditData,
         workflowCapabilityData,
+        coreWorkflowReadinessData,
       ] = await Promise.all([
         api.workbench.workflows.list(),
         api.workbench.taskRuns.list({ limit: 10 }),
         api.workbench.providerCapabilities(),
         api.workbench.systemAudit(),
         api.workbench.workflowCapabilities(),
+        api.workbench.coreWorkflowReadiness(),
       ]);
       const presetData = await api.workbench.workflows.presets();
       setWorkflows(workflowData);
@@ -941,6 +946,7 @@ export default function AgentWorkbenchPage() {
       setProviderMatrix(providerData);
       setSystemAudit(systemAuditData);
       setWorkflowCapabilities(workflowCapabilityData);
+      setCoreWorkflowReadiness(coreWorkflowReadinessData);
       if (!selectedPresetId && presetData.items.length > 0) {
         setSelectedPresetId(presetData.items[0].id);
       }
@@ -1630,6 +1636,51 @@ export default function AgentWorkbenchPage() {
               semantic:
               {workflowCapabilities.semantic_library_import_formats.join("/")}
             </span>
+          </div>
+        </div>
+      )}
+
+      {coreWorkflowReadiness && (
+        <div className="mb-5 rounded-lg border border-outline-variant/30 bg-surface-container px-4 py-3 text-xs text-on-surface-variant">
+          <div className="flex flex-wrap items-center gap-2">
+            <span className="font-medium text-on-surface">Core workflow readiness</span>
+            <span
+              className={
+                coreWorkflowReadiness.status === "ready"
+                  ? "font-data text-green-500"
+                  : "font-data text-warning"
+              }
+            >
+              {coreWorkflowReadiness.status}
+            </span>
+            <span className="font-data">
+              workflows:{coreWorkflowReadiness.summary.workflow_count}
+            </span>
+            <span className="font-data">
+              agent-steps:{coreWorkflowReadiness.summary.agent_step_count}
+            </span>
+            <span className="font-data">
+              outputs:{coreWorkflowReadiness.summary.output_count}
+            </span>
+            {coreWorkflowReadiness.summary.missing_required > 0 && (
+              <span className="font-data text-warning">
+                missing:{coreWorkflowReadiness.summary.missing_required}
+              </span>
+            )}
+          </div>
+          <div className="mt-1 flex flex-wrap gap-1.5 font-data text-[10px]">
+            {coreWorkflowReadiness.workflows.map((workflow) => (
+              <span
+                key={workflow.id}
+                className={`rounded bg-surface px-1.5 py-0.5 ${
+                  workflow.status === "ready" ? "" : "text-warning"
+                }`}
+                title={`${workflow.required_artifacts.join(",")} ${workflow.agent_mcp_required ? "agent-mcp" : ""}`}
+              >
+                {workflow.id}:{workflow.status}
+                {workflow.agent_mcp_required ? ":mcp" : ""}
+              </span>
+            ))}
           </div>
         </div>
       )}

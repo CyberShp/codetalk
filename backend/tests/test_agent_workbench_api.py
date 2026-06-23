@@ -96,6 +96,37 @@ async def test_workbench_workflow_capabilities_api_documents_custom_workflows(wo
     assert body["artifact_contract"]["required_artifacts"] == "validated locally before outputs are accepted"
 
 
+async def test_workbench_core_workflow_readiness_api_covers_builtin_scenarios(workbench_client):
+    resp = await workbench_client.get("/api/workbench/core-workflow-readiness")
+
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["status"] == "ready"
+    assert body["summary"]["workflow_count"] == 4
+    assert body["summary"]["missing_required"] == 0
+    by_id = {item["id"]: item for item in body["workflows"]}
+    assert set(by_id) == {
+        "module_analysis",
+        "resource_leak_hunt",
+        "mr_blackbox_test",
+        "patch_impact_review",
+    }
+    assert by_id["module_analysis"]["scenario"] == "module_analysis"
+    assert by_id["resource_leak_hunt"]["scenario"] == "risk_hunt"
+    assert by_id["mr_blackbox_test"]["agent_mcp_required"] is True
+    assert by_id["mr_blackbox_test"]["required_artifacts"] == [
+        "mr_snapshot.json",
+        "diff.patch",
+        "changed_files.json",
+    ]
+    assert by_id["patch_impact_review"]["builtin_steps"] == ["parse_patch", "validate_evidence", "render_report"]
+    for item in by_id.values():
+        assert item["status"] == "ready"
+        assert item["agent_step_count"] >= 1
+        assert item["output_count"] >= 2
+        assert not item["missing_required"]
+
+
 async def test_workbench_provider_capabilities_matrix_api(workbench_client, monkeypatch):
     monkeypatch.setattr(settings, "claude_code_command", "ccr code")
     monkeypatch.setattr(settings, "claude_code_fallback_commands", ["claude"])
