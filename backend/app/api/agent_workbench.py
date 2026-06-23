@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import hashlib
 import json
+import re
 import sys
 import uuid
 from dataclasses import asdict
@@ -2855,6 +2856,20 @@ def _materialize_structured_workflow_output_evidence(
     data: bytes,
     sha256: str,
 ) -> tuple[list[str], list[dict[str, str]]]:
+    workflow_output_definition = _workflow_output_definition(task_run, output_id)
+    evidence_mapping = workflow_output_definition.get("evidence_memory")
+    if _custom_evidence_mapping_enabled(evidence_mapping):
+        return _materialize_custom_json_output_evidence(
+            store=store,
+            task_run=task_run,
+            output=output,
+            output_definition=workflow_output_definition,
+            output_id=output_id,
+            output_evidence_id=output_evidence_id,
+            path=path,
+            data=data,
+            sha256=sha256,
+        )
     if path.name == "source_scope.json" or output_id in {"source_scope", "scope"}:
         return _materialize_source_scope_evidence(
             store=store,
@@ -2906,6 +2921,189 @@ def _materialize_structured_workflow_output_evidence(
         sha256=sha256,
         payload=payload,
     )
+
+
+def _custom_evidence_mapping_enabled(value: Any) -> bool:
+    if value is True:
+        return True
+    if not isinstance(value, dict):
+        return False
+    return bool(value.get("enabled", True))
+
+
+def _materialize_custom_json_output_evidence(
+    *,
+    store: EvidenceMemoryStore,
+    task_run: Any,
+    output: dict[str, Any],
+    output_definition: dict[str, Any],
+    output_id: str,
+    output_evidence_id: str,
+    path: Path,
+    data: bytes,
+    sha256: str,
+) -> tuple[list[str], list[dict[str, str]]]:
+    mapping = output_definition.get("evidence_memory")
+    mapping_payload = mapping if isinstance(mapping, dict) else {}
+    try:
+        payload = json.loads(data.decode("utf-8"))
+    except (UnicodeDecodeError, json.JSONDecodeError) as exc:
+        return [], [{"output": output_id, "reason": "invalid_json", "detail": str(exc)}]
+    items = _custom_evidence_items(payload, output_id=output_id)
+    evidence_ids: list[str] = []
+    rejected: list[dict[str, str]] = []
+    kind = _custom_evidence_kind(mapping_payload)
+    status = str(mapping_payload.get("status") or "verified_output").strip() or "verified_output"
+    subject_field = str(
+        mapping_payload.get("subject_key_field")
+        or mapping_payload.get("subject_field")
+        or mapping_payload.get("id_field")
+        or ""
+    ).strip()
+    path_field = str(mapping_payload.get("path_field") or "").strip()
+    symbol_field = str(mapping_payload.get("symbol_field") or "").strip()
+    reason_field = str(mapping_payload.get("reason_field") or "reason").strip()
+    text_fields = _mapping_string_list(mapping_payload.get("text_fields"))
+    for index, item in enumerate(items, start=1):
+        if not isinstance(item, dict):
+            rejected.append({
+                "output": output_id,
+                "reason": "mapped_item_not_object",
+                "index": str(index),
+            })
+            continue
+        subject_key = _mapping_value(item, subject_field) if subject_field else ""
+        if not subject_key:
+            subject_key = str(
+                item.get("id")
+                or item.get("finding_id")
+                or item.get("case_id")
+                or f"{output_id}:{index}"
+            ).strip()
+        mapped_path = _mapping_value(item, path_field) if path_field else ""
+        safe_path = _safe_mapping_path(mapped_path)
+        if mapped_path and not safe_path:
+            rejected.append({
+                "output": output_id,
+                "reason": "mapped_path_is_unsafe",
+                "path": mapped_path,
+                "index": str(index),
+            })
+            continue
+        symbol = _mapping_value(item, symbol_field) if symbol_field else ""
+        reason = (
+            _mapping_value(item, reason_field)
+            or f"Custom workflow output item came from locally verified output {output_id}."
+        )
+        text = _custom_evidence_text(item, text_fields=text_fields, fallback=reason)
+        evidence_id = store.upsert_evidence_item(
+            evidence_id=_stable_workflow_evidence_id(
+                task_run=task_run,
+                kind=kind,
+                subject_key=subject_key,
+                output_id=output_id,
+            ),
+            run_id=task_run.task_run_id,
+            workspace_id=task_run.workspace_id,
+            kind=kind,
+            subject_key=subject_key,
+            status=status,
+            source=str(output.get("from") or "workflow"),
+            path=safe_path,
+            symbol=symbol,
+            reason=reason,
+            text=text,
+            provenance={
+                **_structured_workflow_output_provenance(
+                    task_run=task_run,
+                    output=output,
+                    output_id=output_id,
+                    output_evidence_id=output_evidence_id,
+                    path=path,
+                    sha256=sha256,
+                ),
+                "item_index": index,
+                "item": item,
+                "evidence_memory_mapping": {
+                    "kind": kind,
+                    "subject_key_field": subject_field,
+                    "path_field": path_field,
+                    "symbol_field": symbol_field,
+                    "text_fields": text_fields,
+                },
+            },
+        )
+        evidence_ids.append(evidence_id)
+    return evidence_ids, rejected
+
+
+def _custom_evidence_items(payload: Any, *, output_id: str) -> list[Any]:
+    if isinstance(payload, list):
+        return payload
+    if isinstance(payload, dict):
+        for key in ("items", "findings", "evidence", output_id):
+            value = payload.get(key)
+            if isinstance(value, list):
+                return value
+        return [payload]
+    return []
+
+
+def _custom_evidence_kind(mapping: dict[str, Any]) -> str:
+    kind = str(mapping.get("kind") or "workflow_output_item").strip()
+    normalized = re.sub(r"[^A-Za-z0-9_.:-]+", "_", kind).strip("_")
+    return normalized or "workflow_output_item"
+
+
+def _mapping_string_list(value: Any) -> list[str]:
+    if isinstance(value, str):
+        return [value] if value else []
+    if isinstance(value, (list, tuple, set)):
+        return [str(item).strip() for item in value if str(item).strip()]
+    return []
+
+
+def _mapping_value(item: dict[str, Any], field_path: str) -> str:
+    if not field_path:
+        return ""
+    value: Any = item
+    for part in str(field_path).split("."):
+        if not isinstance(value, dict):
+            return ""
+        value = value.get(part)
+    if value is None:
+        return ""
+    if isinstance(value, (dict, list)):
+        return json.dumps(value, ensure_ascii=False, sort_keys=True)
+    return str(value).strip()
+
+
+def _safe_mapping_path(value: str) -> str:
+    text = str(value or "").replace("\\", "/").strip()
+    if not text:
+        return ""
+    candidate = Path(text)
+    if candidate.is_absolute() or any(part in {"", ".", ".."} for part in candidate.parts):
+        return ""
+    return text.strip("/")
+
+
+def _custom_evidence_text(
+    item: dict[str, Any],
+    *,
+    text_fields: list[str],
+    fallback: str,
+) -> str:
+    parts = [_mapping_value(item, field) for field in text_fields]
+    if not any(parts):
+        for field in ("summary", "title", "scenario", "reason", "description"):
+            value = _mapping_value(item, field)
+            if value:
+                parts.append(value)
+    text = " ".join(part for part in parts if part).strip()
+    if text:
+        return text
+    return fallback or json.dumps(item, ensure_ascii=False, sort_keys=True)[:1200]
 
 
 def _materialize_changed_file_output(

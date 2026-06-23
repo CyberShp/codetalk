@@ -2182,6 +2182,107 @@ async def test_workbench_materialize_changed_files_output_as_structured_memory(
     assert changed[0]["provenance"]["output_id"] == "changed_files"
 
 
+async def test_workbench_materialize_custom_json_output_with_evidence_mapping(
+    workbench_client,
+    tmp_path,
+    monkeypatch,
+):
+    from app.config import settings
+
+    script_path = tmp_path / "agent_findings.py"
+    script_path.write_text(
+        "import json, os, pathlib\n"
+        "root=pathlib.Path(os.environ['CODETALK_AGENT_ARTIFACT_DIR'])\n"
+        "findings=[{\n"
+        "  'finding_id':'leak_tls_cleanup',\n"
+        "  'file_path':'src/tls.c',\n"
+        "  'function':'nvmf_tcp_tls_cleanup',\n"
+        "  'resource':'bio',\n"
+        "  'summary':'missing release on error branch'\n"
+        "}]\n"
+        "(root/'resource_leaks.json').write_text(json.dumps(findings), encoding='utf-8')\n",
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(settings, "external_agent_custom_providers", [
+        {"id": "local-python", "command": f"python {script_path}"}
+    ])
+    workflow = {
+        "id": "custom_finding_memory_workflow",
+        "name": "Custom finding memory workflow",
+        "version": 1,
+        "inputs": [{"id": "module", "type": "free_text", "required": True}],
+        "steps": [
+            {
+                "id": "scan",
+                "type": "agent_task",
+                "provider": "local-python",
+                "required_artifacts": ["resource_leaks.json"],
+            }
+        ],
+        "outputs": [
+            {
+                "id": "resource_leaks",
+                "type": "json",
+                "from": "scan",
+                "artifact": "resource_leaks.json",
+                "schema": {"type": "array"},
+                "evidence_memory": {
+                    "enabled": True,
+                    "kind": "resource_leak_finding",
+                    "subject_key_field": "finding_id",
+                    "path_field": "file_path",
+                    "symbol_field": "function",
+                    "status": "candidate_output",
+                    "text_fields": ["summary", "resource", "function"],
+                },
+            }
+        ],
+    }
+    assert (await workbench_client.post("/api/workbench/workflows", json=workflow)).status_code == 201
+    prepared = await workbench_client.post(
+        "/api/workbench/task-runs/prepare",
+        json={
+            "workflow_id": "custom_finding_memory_workflow",
+            "workspace_id": "ws-custom-finding-memory",
+            "repo_path": str(tmp_path),
+            "inputs": {"module": "nvme-tcp-tls"},
+        },
+    )
+    task_run_id = prepared.json()["task_run_id"]
+    executed = await workbench_client.post(
+        f"/api/workbench/task-runs/{task_run_id}/execute",
+        json={"timeout_sec": 10},
+    )
+    assert executed.status_code == 200
+    assert executed.json()["outputs"][0]["status"] == "ok"
+
+    materialized = await workbench_client.post(
+        f"/api/workbench/task-runs/{task_run_id}/materialize-outputs"
+    )
+
+    assert materialized.status_code == 200
+    body = materialized.json()
+    assert body["status"] == "ok"
+    assert body["evidence_count"] == 2
+    search = await workbench_client.get(
+        "/api/workbench/memory/search",
+        params={"q": "missing release", "workspace_id": "ws-custom-finding-memory"},
+    )
+    assert search.status_code == 200
+    findings = [
+        item for item in search.json()["items"]
+        if item["kind"] == "resource_leak_finding"
+    ]
+    assert findings
+    assert findings[0]["subject_key"] == "leak_tls_cleanup"
+    assert findings[0]["path"] == "src/tls.c"
+    assert findings[0]["symbol"] == "nvmf_tcp_tls_cleanup"
+    assert findings[0]["status"] == "candidate_output"
+    assert findings[0]["provenance"]["output_id"] == "resource_leaks"
+    assert findings[0]["provenance"]["workflow_output_evidence_id"]
+    assert findings[0]["provenance"]["item"]["resource"] == "bio"
+
+
 async def test_workbench_materialize_rejects_changed_files_without_repo_or_patch_evidence(
     workbench_client,
     tmp_path,
