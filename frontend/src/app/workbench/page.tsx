@@ -23,6 +23,7 @@ import type {
   MaterializeWorkflowOutputsResult,
   PreparedWorkbenchTaskRun,
   SemanticCase,
+  TaskRerunPlan,
   WorkflowDefinition,
   WorkflowExecutionResult,
   WorkflowPreset,
@@ -600,6 +601,7 @@ export default function AgentWorkbenchPage() {
   const [artifactContent, setArtifactContent] =
     useState<WorkbenchTaskArtifactContent | null>(null);
   const [workflowExecution, setWorkflowExecution] = useState<WorkflowExecutionResult | null>(null);
+  const [taskRerunPlan, setTaskRerunPlan] = useState<TaskRerunPlan | null>(null);
   const [workflowOutputMaterialize, setWorkflowOutputMaterialize] =
     useState<MaterializeWorkflowOutputsResult | null>(null);
   const [executionResults, setExecutionResults] = useState<
@@ -802,6 +804,7 @@ export default function AgentWorkbenchPage() {
       setValidationResults({});
       setMaterializeResults({});
       setWorkflowExecution(null);
+      setTaskRerunPlan(null);
       setWorkflowOutputMaterialize(null);
       setArtifactContent(null);
       await refreshArtifactManifest(result.task_run_id);
@@ -852,6 +855,14 @@ export default function AgentWorkbenchPage() {
       setMessage(`Artifacts loaded: ${preparedRun.task_run_id}`);
     });
 
+  const loadTaskRerunPlan = () =>
+    runAction("load-rerun-plan", async () => {
+      if (!preparedRun) return;
+      const result = await api.workbench.taskRuns.rerunPlan(preparedRun.task_run_id);
+      setTaskRerunPlan(result);
+      setMessage(`Rerun plan ${result.status}: ${result.task_run_id}`);
+    });
+
   const previewArtifact = (relativePath: string) =>
     runAction(`preview-artifact-${relativePath}`, async () => {
       if (!preparedRun) return;
@@ -872,6 +883,7 @@ export default function AgentWorkbenchPage() {
         true,
       );
       setWorkflowExecution(result);
+      setTaskRerunPlan((result.rerun_plan as TaskRerunPlan | undefined) ?? null);
       await refreshArtifactManifest(preparedRun.task_run_id);
       setMessage(`Workflow execution ${result.status}: ${result.task_run_id}`);
       await loadWorkflows();
@@ -1681,6 +1693,18 @@ export default function AgentWorkbenchPage() {
               Audit artifacts
             </button>
             <button
+              onClick={loadTaskRerunPlan}
+              disabled={busyAction === "load-rerun-plan" || !preparedRun}
+              className="ml-2 inline-flex items-center gap-2 rounded-lg bg-surface px-3 py-2 text-sm font-medium text-on-surface transition-colors hover:bg-surface-container-high disabled:opacity-50"
+            >
+              {busyAction === "load-rerun-plan" ? (
+                <Loader2 size={14} className="animate-spin" />
+              ) : (
+                <RefreshCw size={14} />
+              )}
+              Rerun plan
+            </button>
+            <button
               onClick={materializePreparedWorkflowOutputs}
               disabled={
                 busyAction === "materialize-workflow-outputs" ||
@@ -1705,6 +1729,27 @@ export default function AgentWorkbenchPage() {
                 <p className="mt-1 text-on-surface-variant">
                   Agent runs: {preparedRun.agent_runs.length}
                 </p>
+                {taskRerunPlan && taskRerunPlan.task_run_id === preparedRun.task_run_id && (
+                  <div className="mt-2 rounded bg-surface-container px-2 py-1.5 text-on-surface-variant">
+                    <p>
+                      Rerun: {taskRerunPlan.status} / steps{" "}
+                      {taskRerunPlan.steps?.length ?? 0}
+                    </p>
+                    <div className="mt-1 flex flex-wrap gap-1.5 font-data text-[10px]">
+                      <span className="rounded bg-surface px-1.5 py-0.5">
+                        preserve-inputs:{String(taskRerunPlan.preserve_inputs ?? false)}
+                      </span>
+                      <span className="rounded bg-surface px-1.5 py-0.5">
+                        reuse-bundle:{String(taskRerunPlan.reuse_task_bundle ?? false)}
+                      </span>
+                      {(taskRerunPlan.blocked_outputs?.length ?? 0) > 0 ? (
+                        <span className="rounded bg-surface px-1.5 py-0.5 text-warning">
+                          blocked:{taskRerunPlan.blocked_outputs?.length ?? 0}
+                        </span>
+                      ) : null}
+                    </div>
+                  </div>
+                )}
                 {(() => {
                   const contextBundle = preparedRun.task_bundle.context_bundle as
                     | {

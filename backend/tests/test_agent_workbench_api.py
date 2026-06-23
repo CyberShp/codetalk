@@ -1668,6 +1668,15 @@ async def test_workbench_task_run_artifacts_api_labels_failure_recovery(
     assert rerun_content.status_code == 200
     assert rerun_content.json()["kind"] == "task_rerun_plan"
     assert "source_scope.json" in rerun_content.json()["content"]
+    rerun_plan_response = await workbench_client.get(
+        f"/api/workbench/task-runs/{task_run_id}/rerun-plan"
+    )
+    assert rerun_plan_response.status_code == 200
+    rerun_plan = rerun_plan_response.json()
+    assert rerun_plan["task_run_id"] == task_run_id
+    assert rerun_plan["status"] == "needs_rerun"
+    assert rerun_plan["steps"][0]["recommended_action"] == "rerun_agent_step"
+    assert rerun_plan["steps"][0]["missing_artifacts"] == ["source_scope.json"]
 
 
 async def test_workbench_task_run_artifacts_api_labels_agent_turn_snapshots(

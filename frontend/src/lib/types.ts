@@ -482,6 +482,19 @@ export interface WorkflowExecutionResult {
   outputs?: Array<Record<string, unknown>>;
 }
 
+export interface TaskRerunPlan {
+  task_run_id: string;
+  workflow_id?: string;
+  workspace_id?: string;
+  repo_path?: string;
+  status: string;
+  preserve_inputs?: boolean;
+  reuse_task_bundle?: boolean;
+  created_at?: string;
+  steps?: Array<Record<string, unknown>>;
+  blocked_outputs?: Array<Record<string, unknown>>;
+}
+
 export interface WorkbenchTaskArtifact {
   relative_path: string;
   path: string;

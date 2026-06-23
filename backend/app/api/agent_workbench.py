@@ -581,6 +581,22 @@ async def get_task_run(task_run_id: str) -> dict[str, Any]:
     return asdict(task_run)
 
 
+@router.get("/task-runs/{task_run_id}/rerun-plan")
+async def get_task_run_rerun_plan(task_run_id: str) -> dict[str, Any]:
+    try:
+        task_run = WorkbenchTaskRunStore(_task_runs_dir()).load(task_run_id)
+    except KeyError:
+        raise HTTPException(status_code=404, detail=f"Unknown task run: {task_run_id}")
+    path = Path(task_run.artifact_dir) / "task_rerun_plan.json"
+    payload = _read_json(path)
+    if not isinstance(payload, dict):
+        raise HTTPException(
+            status_code=404,
+            detail="task rerun plan has not been generated",
+        )
+    return payload
+
+
 @router.get("/task-runs/{task_run_id}/artifacts")
 async def list_task_run_artifacts(task_run_id: str) -> dict[str, Any]:
     try:

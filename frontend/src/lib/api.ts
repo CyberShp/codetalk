@@ -35,6 +35,7 @@ import type {
   MaterializeEvidenceResult,
   MaterializeWorkflowOutputsResult,
   PreparedWorkbenchTaskRun,
+  TaskRerunPlan,
   WorkflowExecutionResult,
   WorkbenchProviderCapabilitiesMatrix,
   WorkbenchInputUploadResult,
@@ -688,6 +689,11 @@ export const api = {
       get: (taskRunId: string) =>
         request<PreparedWorkbenchTaskRun>(
           `/api/workbench/task-runs/${encodeURIComponent(taskRunId)}`,
+        ),
+
+      rerunPlan: (taskRunId: string) =>
+        request<TaskRerunPlan>(
+          `/api/workbench/task-runs/${encodeURIComponent(taskRunId)}/rerun-plan`,
         ),
 
       artifacts: (taskRunId: string) =>
