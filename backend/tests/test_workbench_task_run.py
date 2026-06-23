@@ -920,6 +920,73 @@ def test_workbench_workflow_runner_rejects_missing_required_agent_artifact(
     ]
 
 
+def test_workbench_workflow_runner_records_agent_failure_recovery(tmp_path, monkeypatch):
+    from app.config import settings
+    from app.services.workbench_task_run import WorkbenchTaskRunPreparer
+    from app.services.workbench_workflow_runner import WorkbenchWorkflowRunner
+    from app.services.workflow_dsl import WorkflowStore
+
+    script_path = tmp_path / "agent_fail.py"
+    script_path.write_text(
+        "import sys\n"
+        "print('partial stdout before failure')\n"
+        "print('fatal diagnostic', file=sys.stderr)\n"
+        "sys.exit(7)\n",
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(settings, "external_agent_custom_providers", [
+        {"id": "local-python", "command": f"python {script_path}"}
+    ])
+    workflow_store = WorkflowStore(tmp_path / "workflows.db")
+    workflow_store.save_workflow({
+        "id": "agent_failure_recovery",
+        "name": "Agent failure recovery",
+        "version": 1,
+        "inputs": [{"id": "module", "type": "free_text"}],
+        "steps": [
+            {
+                "id": "discover",
+                "type": "agent_task",
+                "provider": "local-python",
+                "required_artifacts": ["source_scope.json"],
+            }
+        ],
+        "outputs": [{"id": "scope", "type": "json", "from": "discover", "artifact": "source_scope.json"}],
+    })
+    task_run = WorkbenchTaskRunPreparer(
+        artifact_root=tmp_path / "task_runs",
+        workflow_store=workflow_store,
+    ).prepare(
+        workflow_id="agent_failure_recovery",
+        workspace_id="ws-failure",
+        repo_path=str(tmp_path),
+        inputs={"module": "nvme tcp tls"},
+    )
+
+    result = WorkbenchWorkflowRunner(tmp_path / "task_runs").execute_task_run(
+        task_run.task_run_id,
+        timeout_sec=10,
+    )
+
+    step = result.step_results[0]
+    assert step["status"] == "invalid"
+    assert step["execution"]["status"] == "error"
+    assert step["execution"]["exit_code"] == 7
+    assert step["failure_recovery"] == {
+        "failure_kind": "agent_error",
+        "retryable": True,
+        "raw_output_artifact": "raw_output.txt",
+        "execution_result_artifact": "execution_result.json",
+        "validation_status": "invalid",
+        "missing_artifacts": ["source_scope.json"],
+        "suggested_actions": [
+            "inspect raw_output.txt and execution_result.json",
+            "rerun the step after fixing provider command, MCP credentials, or agent prompt",
+            "do not materialize outputs until required artifacts validate",
+        ],
+    }
+
+
 def test_workbench_workflow_runner_enforces_user_output_schema(
     tmp_path,
     monkeypatch,

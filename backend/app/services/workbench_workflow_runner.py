@@ -185,7 +185,7 @@ class WorkbenchWorkflowRunner:
             if validation.status != "ok"
             else execution.status
         )
-        return {
+        step_payload = {
             "step_id": step_id,
             "type": "agent_task",
             "status": status,
@@ -202,6 +202,14 @@ class WorkbenchWorkflowRunner:
             "validation": asdict(validation),
             "required_artifacts": required_artifacts,
         }
+        failure_recovery = _failure_recovery_summary(
+            artifact_dir=artifact_dir,
+            execution=asdict(execution),
+            validation=asdict(validation),
+        )
+        if failure_recovery:
+            step_payload["failure_recovery"] = failure_recovery
+        return step_payload
 
     def _execute_builtin_step(
         self,
@@ -743,6 +751,53 @@ def _provider_diagnostics_summary(artifact_dir: Path) -> dict[str, Any]:
     if isinstance(execution_input, dict):
         summary.update(_command_resolution_summary(execution_input.get("command_resolution")))
     return summary
+
+
+def _failure_recovery_summary(
+    *,
+    artifact_dir: Path,
+    execution: dict[str, Any],
+    validation: dict[str, Any],
+) -> dict[str, Any]:
+    execution_status = str(execution.get("status") or "")
+    validation_status = str(validation.get("status") or "")
+    if execution_status == "completed" and validation_status == "ok":
+        return {}
+    if execution.get("timed_out"):
+        failure_kind = "agent_timeout"
+    elif execution_status and execution_status != "completed":
+        failure_kind = "agent_error"
+    elif validation_status and validation_status != "ok":
+        failure_kind = "artifact_validation_failed"
+    else:
+        failure_kind = "unknown"
+    missing_artifacts = [
+        str(item.get("artifact") or "")
+        for item in validation.get("rejected_artifact_details") or []
+        if isinstance(item, dict)
+        and item.get("reason") == "missing_required_artifact"
+        and str(item.get("artifact") or "")
+    ]
+    actions = ["inspect raw_output.txt and execution_result.json"]
+    if failure_kind == "agent_timeout":
+        actions.append("increase timeout or narrow the Agent task scope before rerun")
+    else:
+        actions.append(
+            "rerun the step after fixing provider command, MCP credentials, or agent prompt"
+        )
+    if validation_status != "ok":
+        actions.append("do not materialize outputs until required artifacts validate")
+    return {
+        "failure_kind": failure_kind,
+        "retryable": failure_kind in {"agent_error", "agent_timeout", "artifact_validation_failed"},
+        "raw_output_artifact": "raw_output.txt" if (artifact_dir / "raw_output.txt").exists() else "",
+        "execution_result_artifact": (
+            "execution_result.json" if (artifact_dir / "execution_result.json").exists() else ""
+        ),
+        "validation_status": validation_status,
+        "missing_artifacts": missing_artifacts,
+        "suggested_actions": actions,
+    }
 
 
 def _command_resolution_summary(value: Any) -> dict[str, Any]:

@@ -442,6 +442,15 @@ export interface WorkflowExecutionResult {
       status?: string;
       provider?: string;
       provider_diagnostics?: AgentProviderDiagnosticsSummary;
+      failure_recovery?: {
+        failure_kind?: string;
+        retryable?: boolean;
+        raw_output_artifact?: string;
+        execution_result_artifact?: string;
+        validation_status?: string;
+        missing_artifacts?: string[];
+        suggested_actions?: string[];
+      };
     }
   >;
   outputs?: Array<Record<string, unknown>>;

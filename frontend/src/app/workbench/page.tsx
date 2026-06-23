@@ -1859,41 +1859,71 @@ export default function AgentWorkbenchPage() {
                       <div className="mt-1 space-y-1">
                         {workflowExecution.step_results.map((step, index) => {
                           const diagnostics = step.provider_diagnostics;
-                          if (!diagnostics) return null;
+                          const recovery = step.failure_recovery;
+                          if (!diagnostics && !recovery) return null;
                           return (
                             <div
                               key={`${String(step.step_id ?? "step")}-${index}`}
                               className="rounded bg-surface px-1.5 py-1 font-data text-[10px]"
                             >
-                              <span className="text-on-surface">
-                                {String(step.step_id ?? "step")} provider:
-                                {diagnostics.provider || String(step.provider ?? "")}
-                              </span>
-                              <span className="ml-1">
-                                health:{diagnostics.health_status || "unknown"}
-                              </span>
-                              {diagnostics.prompt_transport && (
+                              {diagnostics && (
+                                <>
+                                  <span className="text-on-surface">
+                                    {String(step.step_id ?? "step")} provider:
+                                    {diagnostics.provider || String(step.provider ?? "")}
+                                  </span>
+                                  <span className="ml-1">
+                                    health:{diagnostics.health_status || "unknown"}
+                                  </span>
+                                </>
+                              )}
+                              {!diagnostics && (
+                                <span className="text-on-surface">
+                                  {String(step.step_id ?? "step")}
+                                </span>
+                              )}
+                              {diagnostics?.prompt_transport && (
                                 <span className="ml-1">
                                   transport:{diagnostics.prompt_transport}
                                 </span>
                               )}
-                              {diagnostics.command_resolution_source && (
+                              {diagnostics?.command_resolution_source && (
                                 <span className="ml-1">
                                   command:{diagnostics.command_resolution_source}
                                 </span>
                               )}
-                              {diagnostics.command_resolution_used_fallback && (
+                              {diagnostics?.command_resolution_used_fallback && (
                                 <span className="ml-1 text-warning">fallback</span>
                               )}
-                              {diagnostics.command_resolution_reason && (
+                              {diagnostics?.command_resolution_reason && (
                                 <span className="ml-1">
                                   reason:{diagnostics.command_resolution_reason}
                                 </span>
                               )}
-                              {diagnostics.startup_probe_endpoint && (
+                              {diagnostics?.startup_probe_endpoint && (
                                 <span className="ml-1 break-all">
                                   probe:{diagnostics.startup_probe_endpoint}
                                 </span>
+                              )}
+                              {recovery && (
+                                <div className="mt-1 text-warning">
+                                  <span>recovery:{recovery.failure_kind || "unknown"}</span>
+                                  {recovery.validation_status && (
+                                    <span className="ml-1">
+                                      validation:{recovery.validation_status}
+                                    </span>
+                                  )}
+                                  {recovery.missing_artifacts?.length ? (
+                                    <span className="ml-1">
+                                      missing:{recovery.missing_artifacts.join(",")}
+                                    </span>
+                                  ) : null}
+                                  {recovery.suggested_actions?.[0] && (
+                                    <span className="ml-1">
+                                      next:{recovery.suggested_actions[0]}
+                                    </span>
+                                  )}
+                                </div>
                               )}
                             </div>
                           );
