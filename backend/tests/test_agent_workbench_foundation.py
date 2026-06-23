@@ -311,6 +311,44 @@ def test_agent_run_harness_records_run_and_validates_agent_side_mr_artifacts(tmp
     assert "secret-value" not in (artifact_dir / "raw_output.txt").read_text(encoding="utf-8")
 
 
+def test_artifact_validation_rejects_windows_absolute_required_artifacts(tmp_path):
+    from app.services.agent_run_harness import ArtifactValidationHarness
+
+    artifact_dir = tmp_path / "task-artifacts"
+    artifact_dir.mkdir()
+
+    validation = ArtifactValidationHarness(artifact_dir).validate_required_artifacts(
+        required_artifacts=["C:/outside/secret.json", "nested/../escape.json"]
+    )
+
+    assert validation.status == "invalid"
+    assert validation.accepted_artifacts == []
+    assert validation.rejected_artifacts == [
+        {"artifact": "C:/outside/secret.json", "reason": "invalid_artifact_path"},
+        {"artifact": "nested/../escape.json", "reason": "invalid_artifact_path"},
+    ]
+    assert all(item["path"] == "" for item in validation.rejected_artifact_details)
+
+
+def test_mr_artifact_validation_rejects_unsafe_required_artifacts_before_reading(tmp_path):
+    from app.services.agent_run_harness import ArtifactValidationHarness
+
+    artifact_dir = tmp_path / "task-artifacts"
+    artifact_dir.mkdir()
+
+    validation = ArtifactValidationHarness(artifact_dir).validate_mr_artifacts(
+        required_artifacts=["C:/outside/mr_snapshot.json", "../diff.patch"]
+    )
+
+    assert validation.status == "invalid"
+    assert validation.provenance_status == "unverified_agent_claim"
+    assert validation.accepted_artifacts == []
+    assert validation.rejected_artifacts == [
+        {"artifact": "C:/outside/mr_snapshot.json", "reason": "invalid_artifact_path"},
+        {"artifact": "../diff.patch", "reason": "invalid_artifact_path"},
+    ]
+
+
 def test_agent_run_harness_executes_cli_with_task_bundle_and_audit_events(tmp_path):
     from app.services.agent_run_harness import AgentRunHarness
 

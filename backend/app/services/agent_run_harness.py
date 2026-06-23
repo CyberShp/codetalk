@@ -10,7 +10,7 @@ import subprocess
 import uuid
 from dataclasses import asdict, dataclass, field
 from datetime import datetime, timezone
-from pathlib import Path
+from pathlib import Path, PurePosixPath, PureWindowsPath
 from typing import Any
 
 
@@ -325,8 +325,8 @@ class ArtifactValidationHarness:
         accepted_details: list[dict[str, Any]] = []
         rejected_details: list[dict[str, str]] = []
         for artifact in required_artifacts:
-            safe_artifact = str(artifact or "").strip().replace("\\", "/")
-            if not safe_artifact or safe_artifact.startswith("/") or ".." in Path(safe_artifact).parts:
+            safe_artifact = _safe_required_artifact(artifact)
+            if not safe_artifact:
                 item = {"artifact": artifact, "reason": "invalid_artifact_path", "path": ""}
                 rejected.append({"artifact": artifact, "reason": item["reason"]})
                 rejected_details.append(item)
@@ -368,7 +368,13 @@ class ArtifactValidationHarness:
         warnings: list[str] = []
 
         for artifact in required_artifacts:
-            path = self.artifact_dir / artifact
+            safe_artifact = _safe_required_artifact(artifact)
+            if not safe_artifact:
+                item = {"artifact": artifact, "reason": "invalid_artifact_path", "path": ""}
+                rejected.append({"artifact": artifact, "reason": item["reason"]})
+                rejected_details.append(item)
+                continue
+            path = self.artifact_dir / safe_artifact
             if not path.exists():
                 item = {
                     "artifact": artifact,
@@ -378,9 +384,9 @@ class ArtifactValidationHarness:
                 rejected.append({"artifact": artifact, "reason": item["reason"]})
                 rejected_details.append(item)
             else:
-                accepted.append(artifact)
+                accepted.append(safe_artifact)
                 if path.is_file():
-                    accepted_details.append(_artifact_detail(path, artifact=artifact))
+                    accepted_details.append(_artifact_detail(path, artifact=safe_artifact))
         if rejected:
             return ArtifactValidationResult(
                 status="invalid",
@@ -482,6 +488,19 @@ def _artifact_detail(path: Path, *, artifact: str) -> dict[str, Any]:
         "sha256": hashlib.sha256(data).hexdigest(),
         "size_bytes": len(data),
     }
+
+
+def _safe_required_artifact(artifact: Any) -> str:
+    text = str(artifact or "").strip().replace("\\", "/")
+    if not text:
+        return ""
+    posix = PurePosixPath(text)
+    windows = PureWindowsPath(text)
+    if posix.is_absolute() or windows.is_absolute() or windows.drive or windows.root:
+        return ""
+    if any(part in {"", ".", ".."} for part in posix.parts):
+        return ""
+    return posix.as_posix()
 
 
 def _context_discovery_decision_summary(task_bundle: dict[str, Any]) -> dict[str, Any]:
