@@ -1933,8 +1933,9 @@ export default function AgentWorkbenchPage() {
                                 <span className="ml-1 text-warning">truncated</span>
                               )}
                               {input.parseWarnings.length > 0 && (
-                                <span className="ml-1 text-warning">
-                                  warnings:{input.parseWarnings.length}
+                                <span className="ml-1 break-words text-warning">
+                                  warnings:{input.parseWarnings.slice(0, 2).join(",")}
+                                  {input.parseWarnings.length > 2 ? ",..." : ""}
                                 </span>
                               )}
                             </div>
