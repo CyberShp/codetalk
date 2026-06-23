@@ -260,6 +260,7 @@ export interface WorkbenchWorkflowCapabilities {
   input_resolvers: string[];
   step_types: string[];
   output_types: string[];
+  input_features?: Record<string, boolean>;
   output_features: Record<string, boolean>;
   agent_cli_features: Record<string, boolean>;
   semantic_library_import_formats: string[];

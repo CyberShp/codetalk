@@ -165,6 +165,50 @@ async function routeWorkbenchShell(page: import("@playwright/test").Page) {
       headers: corsHeaders(route.request().headers().origin),
     });
   });
+  await page.route("**/api/workbench/workflow-capabilities", async (route) => {
+    await route.fulfill({
+      json: {
+        status: "ok",
+        input_types: [
+          "coverage_report",
+          "file",
+          "file_set",
+          "free_text",
+          "mr_link",
+          "patch",
+        ],
+        input_resolvers: ["agent_mcp", "local", "manual"],
+        step_types: ["agent_task", "evidence_validate", "render_report", "semantic_retrieve"],
+        output_types: ["json", "markdown", "scope_report", "test_cases"],
+        input_features: {
+          json_schema_validation: true,
+          file_copy_and_hash: true,
+          text_extraction_chunks: true,
+          agent_owned_mcp_inputs: true,
+        },
+        output_features: {
+          json_schema_validation: true,
+          workflow_output_materialization: true,
+          semantic_case_import_from_outputs: true,
+          sha256_and_size_recorded: true,
+        },
+        agent_cli_features: {
+          agent_owned_mcp_credentials: true,
+          provider_selection: true,
+          startup_probe: true,
+          required_artifacts_validation: true,
+          source_slice_second_turn: true,
+        },
+        semantic_library_import_formats: ["json", "jsonl", "ndjson", "csv", "txt"],
+        artifact_contract: {
+          required_artifacts: "validated locally before outputs are accepted",
+          raw_output: "stored for audit but never accepted as evidence without artifacts",
+          workflow_outputs: "collected from declared outputs and checked before acceptance",
+        },
+      },
+      headers: corsHeaders(route.request().headers().origin),
+    });
+  });
   await page.route("**/api/tools/claude-code/startup-probe*", async (route) => {
     await route.fulfill({
       json: {
@@ -237,6 +281,8 @@ test("agent workbench renders workflow and task-run controls", async ({ page }) 
   await expect(page.getByText("Local repo search")).toBeVisible();
   await expect(page.getByText("source discovery")).toBeVisible();
   await expect(page.getByText("source slices")).toBeVisible();
+  await expect(page.getByText("input-schema:validated")).toBeVisible();
+  await expect(page.getByText("output-schema:validated")).toBeVisible();
   await expect(page.getByText("fast-context").first()).toBeVisible();
   await expect(page.getByText("codetalk_mcp_bridge")).toBeVisible();
   await page.getByRole("button", { name: "Startup probe" }).click();
@@ -253,6 +299,9 @@ test("agent workbench renders workflow and task-run controls", async ({ page }) 
   await page.getByRole("button", { name: "Generate draft" }).click();
   await expect(page.getByText("Workflow draft generated: custom_mr_blackbox")).toBeVisible();
   await expect(page.getByLabel("Workflow JSON")).toHaveValue(/"patch_file"/);
+  await expect(page.getByLabel("Workflow builder input schemas")).toHaveValue(/"patch_file"/);
+  await expect(page.getByLabel("Workflow JSON")).toHaveValue(/"schema": \{\s+"type": "object"/);
+  await expect(page.getByLabel("Workflow JSON")).toHaveValue(/"required": \[\s+"path"\s+\]/);
   await expect(page.getByLabel("Workflow JSON")).toHaveValue(/"before_after_flow"/);
   await expect(page.getByLabel("Workflow JSON")).toHaveValue(/"render_report"/);
   await expect(page.getByText("Workflow inputs")).toBeVisible();

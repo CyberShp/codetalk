@@ -144,6 +144,37 @@ const DEFAULT_BUILDER_OUTPUT_SCHEMAS = {
   },
 };
 
+const DEFAULT_BUILDER_INPUT_SCHEMAS = {
+  patch_file: {
+    type: "object",
+    required: ["path"],
+    properties: {
+      path: { type: "string", minLength: 1 },
+    },
+  },
+  patch_diff: {
+    type: "object",
+    required: ["path"],
+    properties: {
+      path: { type: "string", minLength: 1 },
+    },
+  },
+  design_doc: {
+    type: "object",
+    required: ["path"],
+    properties: {
+      path: { type: "string", minLength: 1 },
+    },
+  },
+  coverage_report: {
+    type: "object",
+    required: ["path"],
+    properties: {
+      path: { type: "string", minLength: 1 },
+    },
+  },
+};
+
 const DEFAULT_SEMANTIC_CASE = {
   case_id: "nvme_tcp_tls_handshake_fail",
   feature: "NVMe TCP TLS",
@@ -235,6 +266,26 @@ function outputSchemaForSpec(
   const direct = allSchemas[outputId];
   if (direct && typeof direct === "object" && !Array.isArray(direct)) {
     return direct as Record<string, unknown>;
+  }
+  const wildcard = allSchemas["*"];
+  if (wildcard && typeof wildcard === "object" && !Array.isArray(wildcard)) {
+    return wildcard as Record<string, unknown>;
+  }
+  return null;
+}
+
+function inputSchemaForSpec(
+  inputId: string,
+  inputType: string,
+  allSchemas: Record<string, unknown>,
+): Record<string, unknown> | null {
+  const direct = allSchemas[inputId];
+  if (direct && typeof direct === "object" && !Array.isArray(direct)) {
+    return direct as Record<string, unknown>;
+  }
+  const byType = allSchemas[`type:${inputType}`];
+  if (byType && typeof byType === "object" && !Array.isArray(byType)) {
+    return byType as Record<string, unknown>;
   }
   const wildcard = allSchemas["*"];
   if (wildcard && typeof wildcard === "object" && !Array.isArray(wildcard)) {
@@ -895,6 +946,9 @@ export default function AgentWorkbenchPage() {
   const [builderOutputSchemas, setBuilderOutputSchemas] = useState(
     pretty(DEFAULT_BUILDER_OUTPUT_SCHEMAS),
   );
+  const [builderInputSchemas, setBuilderInputSchemas] = useState(
+    pretty(DEFAULT_BUILDER_INPUT_SCHEMAS),
+  );
   const [selectedPresetId, setSelectedPresetId] = useState("");
   const [selectedWorkflowId, setSelectedWorkflowId] = useState(DEFAULT_WORKFLOW.id);
   const [workspaceId, setWorkspaceId] = useState("manual-workspace");
@@ -1152,6 +1206,7 @@ export default function AgentWorkbenchPage() {
     setBuilderOutputSpec(scenario.outputs);
     setBuilderGoal(scenario.goal);
     setBuilderArtifacts(scenario.artifacts);
+    setBuilderInputSchemas(pretty(DEFAULT_BUILDER_INPUT_SCHEMAS));
   }
 
   function generateWorkflowFromBuilder() {
@@ -1160,20 +1215,25 @@ export default function AgentWorkbenchPage() {
     if (!workflowId || !workflowName) {
       throw new Error("Workflow builder requires workflow id and name");
     }
-    const inputs = parseWorkflowSpecList(builderInputSpec, "free_text").map((input) => ({
-      id: input.id,
-      type: input.type,
-      required: input.type !== "file" && input.type !== "file_set",
-      resolver:
-        input.resolver ||
-        (input.type === "mr_link" || input.type === "external_link"
-          ? "agent_mcp"
-          : "manual"),
-      role:
-        input.resolver === "agent_mcp" || input.type === "mr_link"
-          ? "remote change source resolved by Agent CLI MCP credentials"
-          : "user-provided workflow input",
-    }));
+    const inputSchemas = parseJsonObject(builderInputSchemas || "{}");
+    const inputs = parseWorkflowSpecList(builderInputSpec, "free_text").map((input) => {
+      const schema = inputSchemaForSpec(input.id, input.type, inputSchemas);
+      return {
+        id: input.id,
+        type: input.type,
+        required: input.type !== "file" && input.type !== "file_set",
+        resolver:
+          input.resolver ||
+          (input.type === "mr_link" || input.type === "external_link"
+            ? "agent_mcp"
+            : "manual"),
+        role:
+          input.resolver === "agent_mcp" || input.type === "mr_link"
+            ? "remote change source resolved by Agent CLI MCP credentials"
+            : "user-provided workflow input",
+        ...(schema ? { schema } : {}),
+      };
+    });
     const requiredArtifacts = parseCommaSeparated(builderArtifacts);
     const outputSchemas = parseJsonObject(builderOutputSchemas || "{}");
     const outputs = parseWorkflowSpecList(builderOutputSpec, "json").map((output) => {
@@ -1884,8 +1944,11 @@ export default function AgentWorkbenchPage() {
             {workflowCapabilities.agent_cli_features.agent_owned_mcp_credentials && (
               <span className="font-data">agent-mcp:owned</span>
             )}
+            {workflowCapabilities.input_features?.json_schema_validation && (
+              <span className="font-data">input-schema:validated</span>
+            )}
             {workflowCapabilities.output_features.json_schema_validation && (
-              <span className="font-data">schema:validated</span>
+              <span className="font-data">output-schema:validated</span>
             )}
           </div>
           <div className="mt-1 flex flex-wrap gap-1.5 font-data text-[10px]">
@@ -2564,6 +2627,18 @@ export default function AgentWorkbenchPage() {
                 onChange={(event) => setBuilderOutputSchemas(event.target.value)}
                 className="h-28 w-full resize-y rounded-lg border border-outline-variant/30 bg-surface-container p-3 font-data text-xs text-on-surface outline-none focus:border-primary"
                 aria-label="Workflow builder output schemas"
+                spellCheck={false}
+              />
+            </label>
+            <label className="mt-2 block">
+              <span className="mb-1 block text-xs text-on-surface-variant">
+                Input schemas JSON
+              </span>
+              <textarea
+                value={builderInputSchemas}
+                onChange={(event) => setBuilderInputSchemas(event.target.value)}
+                className="h-28 w-full resize-y rounded-lg border border-outline-variant/30 bg-surface-container p-3 font-data text-xs text-on-surface outline-none focus:border-primary"
+                aria-label="Workflow builder input schemas"
                 spellCheck={false}
               />
             </label>
