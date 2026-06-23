@@ -1239,6 +1239,19 @@ export default function AgentWorkbenchPage() {
     () => workflows.map((workflow) => workflow.id),
     [workflows],
   );
+  const builderProviderOptions = useMemo(() => {
+    const providers = (providerMatrix?.providers ?? [])
+      .filter((provider) => provider.agent_owned || provider.command.length > 0)
+      .map((provider) => ({
+        id: provider.provider,
+        label: provider.display_name || provider.provider,
+        status: provider.status,
+      }));
+    if (!providers.some((provider) => provider.id === "claude-code")) {
+      providers.unshift({ id: "claude-code", label: "Claude Code", status: "configured" });
+    }
+    return providers;
+  }, [providerMatrix]);
   const semanticImportOutputIds = useMemo(
     () =>
       (workflowExecution?.outputs ?? [])
@@ -2794,7 +2807,31 @@ export default function AgentWorkbenchPage() {
                 />
               </label>
               <label className="block">
-                <span className="mb-1 block text-xs text-on-surface-variant">Provider</span>
+                <span className="mb-1 block text-xs text-on-surface-variant">Provider preset</span>
+                <select
+                  value={
+                    builderProviderOptions.some((provider) => provider.id === builderProvider)
+                      ? builderProvider
+                      : ""
+                  }
+                  onChange={(event) => {
+                    if (event.target.value) {
+                      setBuilderProvider(event.target.value);
+                    }
+                  }}
+                  className="w-full rounded-lg border border-outline-variant/30 bg-surface-container px-3 py-2 text-sm text-on-surface outline-none focus:border-primary"
+                  aria-label="Workflow builder provider preset"
+                >
+                  <option value="">Custom provider</option>
+                  {builderProviderOptions.map((provider) => (
+                    <option key={provider.id} value={provider.id}>
+                      {provider.label} ({provider.id}:{provider.status})
+                    </option>
+                  ))}
+                </select>
+              </label>
+              <label className="block">
+                <span className="mb-1 block text-xs text-on-surface-variant">Provider ID</span>
                 <input
                   value={builderProvider}
                   onChange={(event) => setBuilderProvider(event.target.value)}

@@ -127,6 +127,30 @@ async function routeWorkbenchShell(page: import("@playwright/test").Page) {
             unavailable_behavior: "Always available when the repository path is readable.",
           },
           {
+            provider: "corp-agent",
+            display_name: "Corp Agent",
+            owner: "agent_cli",
+            status: "configured",
+            non_blocking: true,
+            codetalk_callable: false,
+            agent_owned: true,
+            command: ["corp-agent", "run"],
+            fallback_commands: [],
+            readonly_args: [],
+            command_hint_env: "EXTERNAL_AGENT_CUSTOM_PROVIDERS",
+            capabilities: {
+              provider: "corp-agent",
+              supports_mcp: true,
+              mcp_profiles: ["codehub-readonly"],
+              supports_artifact_export: true,
+              supports_json_output: true,
+              prompt_transport: "stdin",
+            },
+            credential_boundary:
+              "Corp Agent owns internal credentials; CodeTalk validates returned artifacts.",
+            unavailable_behavior: "Workflow continues with diagnostics.",
+          },
+          {
             provider: "fast-context",
             display_name: "fast-context",
             owner: "codetalk_mcp_bridge",
@@ -309,6 +333,11 @@ test("agent workbench renders workflow and task-run controls", async ({ page }) 
   await expect(page.getByRole("button", { name: "Apply preset" })).toBeVisible();
   await expect(page.getByRole("button", { name: "Install preset" })).toBeVisible();
   await expect(page.getByText("codehub-mcp")).toBeVisible();
+  await expect(page.getByLabel("Workflow builder provider preset")).toBeVisible();
+  await page.getByLabel("Workflow builder provider preset").selectOption("corp-agent");
+  await expect(
+    page.getByRole("textbox", { name: "Workflow builder provider" }),
+  ).toHaveValue("corp-agent");
   await expect(page.getByLabel("Workflow builder evidence mappings")).toHaveValue(
     /"patch_impact_scope"/,
   );
@@ -316,6 +345,7 @@ test("agent workbench renders workflow and task-run controls", async ({ page }) 
   await page.getByRole("button", { name: "Generate draft" }).click();
   await expect(page.getByText("Workflow draft generated: custom_mr_blackbox")).toBeVisible();
   await expect(page.getByLabel("Workflow JSON")).toHaveValue(/"patch_file"/);
+  await expect(page.getByLabel("Workflow JSON")).toHaveValue(/"provider": "corp-agent"/);
   await expect(page.getByLabel("Workflow builder input schemas")).toHaveValue(/"patch_file"/);
   await expect(page.getByLabel("Workflow JSON")).toHaveValue(/"schema": \{\s+"type": "object"/);
   await expect(page.getByLabel("Workflow JSON")).toHaveValue(/"required": \[\s+"path"\s+\]/);
