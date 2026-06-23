@@ -1071,6 +1071,7 @@ def test_workbench_workflow_runner_executes_agent_steps_and_validates_artifacts(
         "agent_run.json",
         "task_bundle.json",
         "workflow_snapshot.json",
+        "agent_output_contract.json",
     ]
     assert lifecycle["stages"][1]["turn_id"] == "turn_1"
     assert lifecycle["stages"][1]["execution_status"] == "completed"
@@ -1120,8 +1121,14 @@ def test_workbench_workflow_runner_executes_agent_steps_and_validates_artifacts(
         "agent_runs/collect_mr/agent_run_lifecycle.json"
     ]["kind"] == "agent_run_lifecycle"
     assert manifest_paths[
+        "agent_runs/collect_mr/agent_output_contract.json"
+    ]["kind"] == "agent_output_contract"
+    assert manifest_paths[
         "agent_runs/collect_mr/turns/turn_1/task_bundle.json"
     ]["kind"] == "agent_turn_task_bundle"
+    assert manifest_paths[
+        "agent_runs/collect_mr/turns/turn_1/agent_output_contract.json"
+    ]["kind"] == "agent_turn_output_contract"
     assert manifest_paths["workflow_execution.json"]["sha256"] == hashlib.sha256(
         (root / "workflow_execution.json").read_bytes()
     ).hexdigest()
@@ -1131,6 +1138,26 @@ def test_workbench_workflow_runner_executes_agent_steps_and_validates_artifacts(
         )
     )
     assert lifecycle_artifact == lifecycle
+    output_contract = json.loads(
+        (root / "agent_runs" / "collect_mr" / "agent_output_contract.json").read_text(
+            encoding="utf-8"
+        )
+    )
+    assert output_contract["required_artifacts"] == [
+        "mr_snapshot.json",
+        "diff.patch",
+        "changed_files.json",
+    ]
+    assert output_contract["evidence_rules"]["codetalk_validates_before_evidence"] is True
+    execution_input = json.loads(
+        (root / "agent_runs" / "collect_mr" / "execution_input.json").read_text(
+            encoding="utf-8"
+        )
+    )
+    assert execution_input["agent_output_contract"]["run_id"] == output_contract["run_id"]
+    assert execution_input["agent_output_contract_sha256"] == hashlib.sha256(
+        json.dumps(output_contract, ensure_ascii=False, sort_keys=True).encode("utf-8")
+    ).hexdigest()
     assert "secret-value" not in (
         root / "agent_runs" / "collect_mr" / "raw_output.txt"
     ).read_text(encoding="utf-8")

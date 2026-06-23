@@ -3205,6 +3205,7 @@ def _build_task_acceptance_audit(task_run: Any) -> dict[str, Any]:
             ("agent_run.json", "Agent run envelope and session policy"),
             ("task_bundle.json", "per-step Agent task bundle"),
             ("workflow_snapshot.json", "per-step workflow snapshot"),
+            ("agent_output_contract.json", "per-step Agent output contract"),
             ("execution_input.json", "actual Agent stdin and launch envelope"),
             ("execution_result.json", "Agent process result"),
             ("raw_output.txt", "redacted Agent stdout/stderr"),
@@ -3263,6 +3264,7 @@ def _build_task_acceptance_audit(task_run: Any) -> dict[str, Any]:
             turn_base = f"{base}/turns/turn_{turn_index}"
             for suffix, description in [
                 ("task_bundle.json", "per-turn Agent task bundle"),
+                ("agent_output_contract.json", "per-turn Agent output contract"),
                 ("execution_input.json", "per-turn Agent launch envelope"),
                 ("execution_result.json", "per-turn Agent process result"),
                 ("raw_output.txt", "per-turn redacted stdout/stderr"),

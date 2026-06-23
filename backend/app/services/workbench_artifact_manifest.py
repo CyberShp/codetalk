@@ -77,6 +77,8 @@ def workbench_artifact_kind(relative_path: str) -> str:
             return "agent_turn_execution_result"
         if name == "provider_diagnostics.json":
             return "agent_turn_provider_diagnostics"
+        if name == "agent_output_contract.json":
+            return "agent_turn_output_contract"
         if name == "source_slice_requests.json":
             return "agent_turn_source_slice_requests"
         if name == "source_slices.json":
@@ -155,6 +157,8 @@ def workbench_artifact_kind(relative_path: str) -> str:
         return "agent_execution_input"
     if name == "provider_diagnostics.json":
         return "agent_provider_diagnostics"
+    if name == "agent_output_contract.json":
+        return "agent_output_contract"
     if name == "agent_run_lifecycle.json":
         return "agent_run_lifecycle"
     if name == "failure_recovery.json":

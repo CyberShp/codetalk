@@ -47,6 +47,74 @@ def _default_agent_session_policy() -> dict[str, Any]:
     }
 
 
+def _agent_output_contract_payload(
+    *,
+    run: "AgentRunRecord",
+    task_bundle: dict[str, Any],
+    workflow_snapshot: dict[str, Any],
+) -> dict[str, Any]:
+    required_artifacts = [
+        str(item) for item in task_bundle.get("required_artifacts") or []
+    ]
+    expected_output_schemas = [
+        item for item in task_bundle.get("expected_output_schemas") or []
+        if isinstance(item, dict)
+    ]
+    return {
+        "contract_version": 1,
+        "run_id": run.run_id,
+        "turn_id": run.turn_id,
+        "provider": run.provider,
+        "step_id": str(task_bundle.get("step_id") or ""),
+        "goal": str(task_bundle.get("goal") or ""),
+        "workflow_id": str(task_bundle.get("workflow_id") or workflow_snapshot.get("id") or ""),
+        "mcp_profile": run.mcp_profile,
+        "artifact_dir": run.artifact_dir,
+        "required_artifacts": required_artifacts,
+        "expected_output_schemas": expected_output_schemas,
+        "evidence_rules": {
+            "raw_output_reuse": "never_without_validation",
+            "required_artifacts_are_authoritative": True,
+            "codetalk_validates_before_evidence": True,
+            "unvalidated_agent_claims": "diagnostic_only",
+        },
+        "execution_rules": {
+            "readonly_env": True,
+            "readonly_env_var": "CODETALK_AGENT_READONLY",
+            "artifact_dir_env_var": "CODETALK_AGENT_ARTIFACT_DIR",
+            "repo_path_env_var": "CODETALK_REPO_PATH",
+            "network_and_mcp_credentials_owner": "agent_cli",
+            "codetalk_may_not_fetch_agent_owned_mcp_inputs": True,
+            "long_running_services_allowed": False,
+        },
+        "source_slice_protocol": {
+            "request_artifact": "source_slice_requests.json",
+            "request_schema": {
+                "need_source_slices": [
+                    {
+                        "file_path": "repo-relative source path",
+                        "start_line": 1,
+                        "end_line": 120,
+                        "symbol": "optional symbol",
+                        "reason": "why more source context is needed",
+                    }
+                ]
+            },
+            "response_in_task_bundle": "requested_source_slices",
+            "max_slices_per_turn": 24,
+        },
+        "audit_artifacts": [
+            "agent_run.json",
+            "task_bundle.json",
+            "agent_output_contract.json",
+            "execution_input.json",
+            "execution_result.json",
+            "raw_output.txt",
+            "agent_run_lifecycle.json",
+        ],
+    }
+
+
 @dataclass(frozen=True)
 class AgentRunRecord:
     run_id: str
@@ -116,6 +184,14 @@ class AgentRunHarness:
         self._write_json("agent_run.json", asdict(run))
         self._write_json("task_bundle.json", task_bundle)
         self._write_json("workflow_snapshot.json", workflow_snapshot)
+        self._write_json(
+            "agent_output_contract.json",
+            _agent_output_contract_payload(
+                run=run,
+                task_bundle=task_bundle,
+                workflow_snapshot=workflow_snapshot,
+            ),
+        )
         return run
 
     def record_raw_output(self, run_id: str, *, stdout: str, stderr: str = "") -> None:
@@ -151,6 +227,7 @@ class AgentRunHarness:
 
         task_bundle = self._read_json_file("task_bundle.json")
         workflow_snapshot = self._read_json_file("workflow_snapshot.json")
+        agent_output_contract = self._read_json_file("agent_output_contract.json")
         turn_id = str(run_payload.get("turn_id") or "turn_1")
         context_discovery_decision_summary = _context_discovery_decision_summary(
             task_bundle if isinstance(task_bundle, dict) else {}
@@ -173,6 +250,9 @@ class AgentRunHarness:
             "session_policy": session_policy,
             "workflow_snapshot": workflow_snapshot if isinstance(workflow_snapshot, dict) else {},
             "task_bundle": task_bundle if isinstance(task_bundle, dict) else {},
+            "agent_output_contract": (
+                agent_output_contract if isinstance(agent_output_contract, dict) else {}
+            ),
             "context_discovery_decision_summary": context_discovery_decision_summary,
             "provider_diagnostics": provider_diagnostics,
             "artifact_dir": str(self.artifact_dir),
@@ -181,6 +261,9 @@ class AgentRunHarness:
         task_bundle_sha256 = _json_sha256(task_bundle if isinstance(task_bundle, dict) else {})
         workflow_snapshot_sha256 = _json_sha256(
             workflow_snapshot if isinstance(workflow_snapshot, dict) else {}
+        )
+        agent_output_contract_sha256 = _json_sha256(
+            agent_output_contract if isinstance(agent_output_contract, dict) else {}
         )
         env_hints = {
             "CODETALK_AGENT_READONLY": "1",
@@ -224,8 +307,12 @@ class AgentRunHarness:
                 "env_hints": env_hints,
                 "task_bundle_sha256": task_bundle_sha256,
                 "workflow_snapshot_sha256": workflow_snapshot_sha256,
+                "agent_output_contract_sha256": agent_output_contract_sha256,
                 "context_discovery_decision_summary": context_discovery_decision_summary,
                 "provider_diagnostics": provider_diagnostics,
+                "agent_output_contract": (
+                    agent_output_contract if isinstance(agent_output_contract, dict) else {}
+                ),
                 "stdin": stdin_payload_obj,
                 "stdin_json_sha256": hashlib.sha256(
                     stdin_payload.encode("utf-8")
@@ -243,8 +330,10 @@ class AgentRunHarness:
                 "artifact": "execution_input.json",
                 "task_bundle_sha256": task_bundle_sha256,
                 "workflow_snapshot_sha256": workflow_snapshot_sha256,
+                "agent_output_contract_sha256": agent_output_contract_sha256,
                 "context_discovery_decision_summary": context_discovery_decision_summary,
                 "provider_diagnostics_artifact": "provider_diagnostics.json",
+                "agent_output_contract_artifact": "agent_output_contract.json",
                 "created_at": started_at,
             },
             append_jsonl=True,

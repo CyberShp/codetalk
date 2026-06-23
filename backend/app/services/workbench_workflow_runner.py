@@ -734,6 +734,7 @@ def _snapshot_agent_turn_artifacts(artifact_dir: Path, *, turn_id: str) -> str:
         "agent_run.json",
         "task_bundle.json",
         "workflow_snapshot.json",
+        "agent_output_contract.json",
         "provider_diagnostics.json",
         "execution_input.json",
         "execution_result.json",
@@ -967,6 +968,7 @@ def _agent_run_lifecycle_summary(
                     "agent_run.json",
                     "task_bundle.json",
                     "workflow_snapshot.json",
+                    "agent_output_contract.json",
                 )
                 if (artifact_dir / item).exists()
             ],
@@ -990,6 +992,7 @@ def _agent_run_lifecycle_summary(
                 artifact_dir,
                 [
                     f"{turn_artifact_dir}/provider_diagnostics.json",
+                    f"{turn_artifact_dir}/agent_output_contract.json",
                     f"{turn_artifact_dir}/execution_input.json",
                     f"{turn_artifact_dir}/execution_result.json",
                     f"{turn_artifact_dir}/raw_output.txt",
