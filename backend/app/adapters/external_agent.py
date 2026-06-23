@@ -161,7 +161,14 @@ def _has_configuration_error(item: object) -> bool:
 
 
 def _has_missing_ccr_config_hint(item: dict) -> bool:
-    return False
+    config_hint = str(item.get("config_hint") or "").strip()
+    if not config_hint:
+        return False
+    return (
+        "CCR_CONFIG_PATH is not set" in config_hint
+        and "default config not found" in config_hint
+        and not str(item.get("profile_config_path") or "").strip()
+    )
 
 
 def _format_runtime_diagnostic(value: object) -> str:
