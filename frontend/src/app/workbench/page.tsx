@@ -395,6 +395,15 @@ type AgentMcpRequestSummary = {
   requiredArtifacts: string[];
 };
 
+type ProviderReadinessSummary = {
+  status: string;
+  repoStatus: string;
+  blockingReasons: string[];
+  warnings: string[];
+  agentProviders: Array<{ provider: string; status: string; reason: string }>;
+  codetalkProviders: Array<{ provider: string; status: string; nextCheck: string }>;
+};
+
 function inputContextSummary(taskBundle: Record<string, unknown>): InputContextSummary | null {
   const inputContext = taskBundle.input_context;
   if (!inputContext || typeof inputContext !== "object" || Array.isArray(inputContext)) {
@@ -454,6 +463,64 @@ function agentMcpRequestSummary(taskBundle: Record<string, unknown>): AgentMcpRe
         : [],
     }];
   });
+}
+
+function providerReadinessSummary(
+  taskBundle: Record<string, unknown>,
+): ProviderReadinessSummary | null {
+  const raw = taskBundle.provider_readiness;
+  if (!raw || typeof raw !== "object" || Array.isArray(raw)) return null;
+  const readiness = raw as Record<string, unknown>;
+  const summary =
+    readiness.summary && typeof readiness.summary === "object" && !Array.isArray(readiness.summary)
+      ? (readiness.summary as Record<string, unknown>)
+      : {};
+  const repo =
+    readiness.repo && typeof readiness.repo === "object" && !Array.isArray(readiness.repo)
+      ? (readiness.repo as Record<string, unknown>)
+      : {};
+  const agentProviders = Object.entries(
+    readiness.agent_cli_providers &&
+      typeof readiness.agent_cli_providers === "object" &&
+      !Array.isArray(readiness.agent_cli_providers)
+      ? (readiness.agent_cli_providers as Record<string, unknown>)
+      : {},
+  ).flatMap(([provider, value]) => {
+    if (!value || typeof value !== "object" || Array.isArray(value)) return [];
+    const payload = value as Record<string, unknown>;
+    return [{
+      provider,
+      status: String(payload.status ?? "unknown"),
+      reason: String(payload.reason ?? ""),
+    }];
+  });
+  const codetalkProviders = Object.entries(
+    readiness.codetalk_providers &&
+      typeof readiness.codetalk_providers === "object" &&
+      !Array.isArray(readiness.codetalk_providers)
+      ? (readiness.codetalk_providers as Record<string, unknown>)
+      : {},
+  ).flatMap(([provider, value]) => {
+    if (!value || typeof value !== "object" || Array.isArray(value)) return [];
+    const payload = value as Record<string, unknown>;
+    return [{
+      provider,
+      status: String(payload.status ?? "unknown"),
+      nextCheck: String(payload.next_check ?? ""),
+    }];
+  });
+  return {
+    status: String(summary.status ?? "unknown"),
+    repoStatus: String(repo.status ?? "unknown"),
+    blockingReasons: Array.isArray(summary.blocking_reasons)
+      ? summary.blocking_reasons.map((item) => String(item)).filter(Boolean)
+      : [],
+    warnings: Array.isArray(summary.warnings)
+      ? summary.warnings.map((item) => String(item)).filter(Boolean)
+      : [],
+    agentProviders,
+    codetalkProviders,
+  };
 }
 
 type EvidenceValidationSummary = {
@@ -2039,6 +2106,67 @@ export default function AgentWorkbenchPage() {
                     )}
                   </div>
                 )}
+                {(() => {
+                  const readiness = providerReadinessSummary(preparedRun.task_bundle);
+                  if (!readiness) return null;
+                  const visibleCodetalk = readiness.codetalkProviders.filter((provider) =>
+                    ["gitnexus", "cgc", "local-search"].includes(provider.provider),
+                  );
+                  return (
+                    <div className="mt-2 rounded bg-surface-container px-2 py-1.5 text-on-surface-variant">
+                      <p>
+                        Provider readiness:{" "}
+                        <span
+                          className={
+                            readiness.status === "ready"
+                              ? "text-on-surface"
+                              : "text-warning"
+                          }
+                        >
+                          {readiness.status}
+                        </span>
+                        <span className="ml-2">repo:{readiness.repoStatus}</span>
+                      </p>
+                      <div className="mt-1 flex flex-wrap gap-1.5 font-data text-[10px]">
+                        {visibleCodetalk.map((provider) => (
+                          <span
+                            key={provider.provider}
+                            className={`rounded bg-surface px-1.5 py-0.5 ${
+                              provider.status === "available" ||
+                              provider.status === "configured"
+                                ? ""
+                                : "text-warning"
+                            }`}
+                            title={provider.nextCheck}
+                          >
+                            {provider.provider}:{provider.status}
+                          </span>
+                        ))}
+                        {readiness.agentProviders.map((provider) => (
+                          <span
+                            key={provider.provider}
+                            className={`rounded bg-surface px-1.5 py-0.5 ${
+                              provider.status === "available" ? "" : "text-warning"
+                            }`}
+                            title={provider.reason}
+                          >
+                            {provider.provider}:{provider.status}
+                          </span>
+                        ))}
+                        {readiness.blockingReasons.length > 0 && (
+                          <span className="rounded bg-surface px-1.5 py-0.5 text-warning">
+                            blocked:{readiness.blockingReasons.join(",")}
+                          </span>
+                        )}
+                        {readiness.warnings.length > 0 && (
+                          <span className="rounded bg-surface px-1.5 py-0.5 text-warning">
+                            warnings:{readiness.warnings.length}
+                          </span>
+                        )}
+                      </div>
+                    </div>
+                  );
+                })()}
                 {(() => {
                   const contextBundle = preparedRun.task_bundle.context_bundle as
                     | {
