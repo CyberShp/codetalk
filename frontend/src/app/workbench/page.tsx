@@ -106,6 +106,24 @@ const WORKFLOW_BUILDER_SCENARIOS = {
   },
 } as const;
 
+const DEFAULT_BUILDER_OUTPUT_SCHEMAS = {
+  changed_behavior: {
+    type: "object",
+    required: ["summary"],
+    properties: {
+      summary: { type: "string" },
+      affected_files: { type: "array" },
+    },
+  },
+  black_box_cases: {
+    type: "object",
+    required: ["cases"],
+    properties: {
+      cases: { type: "array" },
+    },
+  },
+};
+
 const DEFAULT_SEMANTIC_CASE = {
   case_id: "nvme_tcp_tls_handshake_fail",
   feature: "NVMe TCP TLS",
@@ -179,6 +197,21 @@ function outputArtifactForSpec(outputId: string, outputType: string, artifacts: 
     return `${outputId}.json`;
   }
   return "";
+}
+
+function outputSchemaForSpec(
+  outputId: string,
+  allSchemas: Record<string, unknown>,
+): Record<string, unknown> | null {
+  const direct = allSchemas[outputId];
+  if (direct && typeof direct === "object" && !Array.isArray(direct)) {
+    return direct as Record<string, unknown>;
+  }
+  const wildcard = allSchemas["*"];
+  if (wildcard && typeof wildcard === "object" && !Array.isArray(wildcard)) {
+    return wildcard as Record<string, unknown>;
+  }
+  return null;
 }
 
 function workflowInputsFromJson(value: string): Array<Record<string, unknown>> {
@@ -617,6 +650,9 @@ export default function AgentWorkbenchPage() {
   const [builderArtifacts, setBuilderArtifacts] = useState(
     WORKFLOW_BUILDER_SCENARIOS.mr_blackbox.artifacts,
   );
+  const [builderOutputSchemas, setBuilderOutputSchemas] = useState(
+    pretty(DEFAULT_BUILDER_OUTPUT_SCHEMAS),
+  );
   const [selectedPresetId, setSelectedPresetId] = useState("");
   const [selectedWorkflowId, setSelectedWorkflowId] = useState(DEFAULT_WORKFLOW.id);
   const [workspaceId, setWorkspaceId] = useState("manual-workspace");
@@ -767,14 +803,17 @@ export default function AgentWorkbenchPage() {
           : "user-provided workflow input",
     }));
     const requiredArtifacts = parseCommaSeparated(builderArtifacts);
+    const outputSchemas = parseJsonObject(builderOutputSchemas || "{}");
     const outputs = parseWorkflowSpecList(builderOutputSpec, "json").map((output) => {
       const artifact = outputArtifactForSpec(output.id, output.type, requiredArtifacts);
       const from = artifact ? "agent_collect" : "render_report";
+      const schema = output.type === "json" ? outputSchemaForSpec(output.id, outputSchemas) : null;
       return {
         id: output.id,
         type: output.type,
         from,
         ...(artifact ? { artifact } : {}),
+        ...(schema ? { schema } : {}),
       };
     });
     const workflow = {
@@ -1546,6 +1585,18 @@ export default function AgentWorkbenchPage() {
                 onChange={(event) => setBuilderArtifacts(event.target.value)}
                 className="w-full rounded-lg border border-outline-variant/30 bg-surface-container px-3 py-2 font-data text-xs text-on-surface outline-none focus:border-primary"
                 aria-label="Workflow builder required artifacts"
+              />
+            </label>
+            <label className="mt-2 block">
+              <span className="mb-1 block text-xs text-on-surface-variant">
+                Output schemas JSON
+              </span>
+              <textarea
+                value={builderOutputSchemas}
+                onChange={(event) => setBuilderOutputSchemas(event.target.value)}
+                className="h-28 w-full resize-y rounded-lg border border-outline-variant/30 bg-surface-container p-3 font-data text-xs text-on-surface outline-none focus:border-primary"
+                aria-label="Workflow builder output schemas"
+                spellCheck={false}
               />
             </label>
             <label className="mt-2 block">
