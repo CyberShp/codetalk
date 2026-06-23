@@ -3713,6 +3713,7 @@ def _build_task_acceptance_audit(task_run: Any) -> dict[str, Any]:
             ("agent_output_contract.json", "per-step Agent output contract"),
             ("execution_input.json", "actual Agent stdin and launch envelope"),
             ("execution_result.json", "Agent process result"),
+            ("agent_replay_plan.json", "Agent replay plan and audit hashes"),
             ("raw_output.txt", "redacted Agent stdout/stderr"),
             ("provider_diagnostics.json", "provider launch/readiness diagnostics"),
             ("agent_run_lifecycle.json", "Agent run lifecycle and validation summary"),
@@ -3772,6 +3773,7 @@ def _build_task_acceptance_audit(task_run: Any) -> dict[str, Any]:
                 ("agent_output_contract.json", "per-turn Agent output contract"),
                 ("execution_input.json", "per-turn Agent launch envelope"),
                 ("execution_result.json", "per-turn Agent process result"),
+                ("agent_replay_plan.json", "per-turn Agent replay plan and audit hashes"),
                 ("raw_output.txt", "per-turn redacted stdout/stderr"),
                 ("provider_diagnostics.json", "per-turn provider diagnostics"),
             ]:

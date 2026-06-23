@@ -3091,6 +3091,8 @@ async def test_workbench_task_run_acceptance_audit_api_records_required_evidence
     assert checks["provider_readiness"]["status"] == "ok"
     assert checks["provider_readiness_agent:local-python"]["status"] == "ok"
     assert checks["agent_run:discover"]["status"] == "ok"
+    assert checks["agent_agent_replay_plan:discover"]["status"] == "ok"
+    assert checks["agent_agent_replay_plan:discover"]["severity"] == "required"
     assert checks["agent_required_artifact:discover:source_scope.json"]["status"] == "ok"
     assert checks["workflow_output:scope"]["status"] == "ok"
     assert checks["workflow_execution"]["status"] == "ok"
@@ -3485,8 +3487,16 @@ async def test_workbench_task_run_artifacts_api_labels_agent_turn_snapshots(
         == "agent_turn_provider_diagnostics"
     )
     assert paths["agent_runs/discover/turns/turn_1/raw_output.txt"]["kind"] == "agent_turn_raw_output"
+    assert (
+        paths["agent_runs/discover/turns/turn_1/agent_replay_plan.json"]["kind"]
+        == "agent_turn_replay_plan"
+    )
     assert paths["agent_runs/discover/turns/turn_2/task_bundle.json"]["kind"] == "agent_turn_task_bundle"
     assert paths["agent_runs/discover/turns/turn_2/source_slices.json"]["kind"] == "agent_turn_source_slices"
+    assert (
+        paths["agent_runs/discover/turns/turn_2/agent_replay_plan.json"]["kind"]
+        == "agent_turn_replay_plan"
+    )
     assert paths["task_artifact_manifest.json"]["kind"] == "task_artifact_manifest"
     manifest_content = await workbench_client.get(
         f"/api/workbench/task-runs/{task_run_id}/artifacts/content/task_artifact_manifest.json"
@@ -3508,7 +3518,9 @@ async def test_workbench_task_run_artifacts_api_labels_agent_turn_snapshots(
     checks = {item["id"]: item for item in acceptance.json()["checks"]}
     assert checks["agent_turn_task_bundle:discover:turn_1"]["status"] == "ok"
     assert checks["agent_turn_execution_input:discover:turn_1"]["severity"] == "required"
+    assert checks["agent_turn_agent_replay_plan:discover:turn_1"]["status"] == "ok"
     assert checks["agent_turn_raw_output:discover:turn_2"]["status"] == "ok"
+    assert checks["agent_turn_agent_replay_plan:discover:turn_2"]["status"] == "ok"
     assert checks["agent_turn_provider_diagnostics:discover:turn_2"]["status"] == "ok"
     assert checks["agent_source_slice_requests:discover"]["status"] == "ok"
     assert checks["agent_source_slices:discover"]["status"] == "ok"
