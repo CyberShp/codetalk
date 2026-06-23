@@ -126,6 +126,7 @@ export interface ToolInfo {
   version?: string | null;
   capabilities?: string[];
   agent_provider?: AgentProviderCapabilities;
+  agent_provider_diagnostics?: AgentProviderDiagnosticsSummary;
 }
 
 export interface AgentProviderCapabilities {
@@ -444,6 +445,17 @@ export interface AgentProviderDiagnosticsSummary {
   command_resolution_reason?: string;
   command_resolution_used_fallback?: boolean;
   command_resolution_launch_kind?: string;
+  command_resolution?: {
+    status?: string;
+    configured_command?: string;
+    command?: string;
+    path?: string;
+    launch_kind?: string;
+    used_fallback?: boolean;
+    reason?: string;
+    attempt_count?: number;
+    attempts?: AgentProviderAttemptDiagnostics[];
+  };
 }
 
 export interface AgentProviderAttemptDiagnostics {

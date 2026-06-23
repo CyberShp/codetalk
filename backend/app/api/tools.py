@@ -14,6 +14,7 @@ from app.adapters.gitnexus import resolve_indexed_repo
 from app.config import settings
 from app.services import process_manager as process_manager_module
 from app.services.external_agent_discovery import (
+    check_provider_health,
     external_agent_provider_capabilities,
     external_agent_provider_spec,
     external_agent_provider_ids,
@@ -78,6 +79,77 @@ def _agent_provider_capabilities(name: str) -> dict[str, Any]:
     return external_agent_provider_capabilities(name)
 
 
+def _agent_provider_diagnostics(name: str) -> dict[str, Any]:
+    spec = external_agent_provider_spec(name)
+    if spec is None:
+        return {}
+    diagnostics: dict[str, Any] = {
+        "provider": name,
+        "configured_command_text": redact_agent_diagnostic_text(spec.command),
+        "fallback_command_texts": [
+            redact_agent_diagnostic_text(command) for command in spec.fallback_commands
+        ],
+        "prompt_transport": spec.prompt_transport,
+        "startup_probe_endpoint": f"/api/tools/{name}/startup-probe",
+        "manual_probe_command": (
+            f"POST /api/tools/{name}/startup-probe?repo_path=<repo_path>"
+        ),
+    }
+    try:
+        health = check_provider_health(name, spec.command, fallback_commands=spec.fallback_commands)
+    except Exception as exc:
+        diagnostics["command_resolution"] = {
+            "status": "error",
+            "reason": redact_agent_diagnostic_text(str(exc)),
+        }
+        return diagnostics
+    attempts = [
+        _agent_command_attempt_summary(item)
+        for item in health.get("attempts") or []
+        if isinstance(item, dict)
+    ]
+    diagnostics["command_resolution"] = {
+        "status": str(health.get("status") or ""),
+        "configured_command": redact_agent_diagnostic_text(
+            str(health.get("configured_command") or spec.command)
+        ),
+        "command": redact_agent_diagnostic_text(str(health.get("command") or "")),
+        "path": redact_agent_diagnostic_text(str(health.get("path") or "")),
+        "launch_kind": str(health.get("launch_kind") or ""),
+        "used_fallback": bool(health.get("used_fallback", False)),
+        "reason": redact_agent_diagnostic_text(str(health.get("reason") or "")),
+        "attempt_count": len(attempts),
+        "attempts": attempts,
+    }
+    return diagnostics
+
+
+def _agent_command_attempt_summary(item: dict[str, Any]) -> dict[str, Any]:
+    fields = (
+        "command",
+        "status",
+        "reason",
+        "executable",
+        "path",
+        "launch_kind",
+        "config_hint",
+        "profile_config_path",
+        "shell_path",
+    )
+    result: dict[str, Any] = {}
+    for field in fields:
+        value = item.get(field)
+        if value is None:
+            continue
+        result[field] = redact_agent_diagnostic_text(str(value))
+    configured_argv = item.get("configured_argv")
+    if isinstance(configured_argv, list):
+        result["configured_argv"] = [
+            redact_agent_diagnostic_text(str(value)) for value in configured_argv
+        ]
+    return result
+
+
 def _adapter_only_tool_names() -> set[str]:
     return {*external_agent_provider_ids(), "fast-context"}
 
@@ -115,6 +187,7 @@ async def _adapter_proc_status(adapter) -> dict[str, Any]:
             "last_check": health.last_check,
             "message": health.last_check or health.version,
             "agent_provider": _agent_provider_capabilities(adapter.name()),
+            "agent_provider_diagnostics": _agent_provider_diagnostics(adapter.name()),
         }
     except asyncio.TimeoutError:
         return {
@@ -127,6 +200,7 @@ async def _adapter_proc_status(adapter) -> dict[str, Any]:
             "last_check": "health check timed out",
             "message": "health check timed out",
             "agent_provider": _agent_provider_capabilities(adapter.name()),
+            "agent_provider_diagnostics": _agent_provider_diagnostics(adapter.name()),
         }
     except Exception as exc:
         message = redact_agent_diagnostic_text(str(exc))
@@ -140,6 +214,7 @@ async def _adapter_proc_status(adapter) -> dict[str, Any]:
             "last_check": message,
             "message": message,
             "agent_provider": _agent_provider_capabilities(adapter.name()),
+            "agent_provider_diagnostics": _agent_provider_diagnostics(adapter.name()),
         }
 
 

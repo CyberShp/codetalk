@@ -17,6 +17,7 @@ import { api } from "@/lib/api";
 import type {
   AgentCommandDiagnostic,
   AgentProviderCapabilities,
+  AgentProviderDiagnosticsSummary,
   ExternalAgentStartupProbeResult,
   GitNexusRepoIndexDiagnostic,
   ToolInfo,
@@ -197,6 +198,108 @@ function AgentProviderCapabilitiesCard({
             >
               {profile}
             </code>
+          ))}
+        </div>
+      )}
+    </div>
+  );
+}
+
+function AgentProviderDiagnosticsCard({
+  diagnostics,
+}: {
+  diagnostics?: AgentProviderDiagnosticsSummary;
+}) {
+  if (!diagnostics) return null;
+  const resolution = diagnostics.command_resolution;
+  const attempts = resolution?.attempts ?? diagnostics.attempts ?? [];
+  if (
+    !diagnostics.configured_command_text &&
+    !resolution?.status &&
+    attempts.length === 0
+  ) {
+    return null;
+  }
+  return (
+    <div className="mb-4 rounded-lg border border-outline-variant/30 bg-surface px-3 py-2 text-xs">
+      <div className="mb-2 flex flex-wrap items-center gap-2">
+        <span className="rounded-full bg-surface-container px-2 py-0.5 font-medium text-on-surface">
+          agent diagnostics
+        </span>
+        {resolution?.status && (
+          <span
+            className={`rounded px-1.5 py-0.5 ${
+              resolution.status === "available"
+                ? "bg-green-400/10 text-green-500"
+                : "bg-amber-400/10 text-amber-500"
+            }`}
+          >
+            {resolution.status}
+          </span>
+        )}
+        {diagnostics.prompt_transport && (
+          <span className="text-on-surface-variant">
+            prompt: {diagnostics.prompt_transport}
+          </span>
+        )}
+        {resolution?.used_fallback && (
+          <span className="rounded bg-amber-400/10 px-1.5 py-0.5 text-amber-500">
+            fallback
+          </span>
+        )}
+      </div>
+      {diagnostics.configured_command_text && (
+        <p className="break-words text-on-surface-variant">
+          configured:{" "}
+          <code className="font-data text-on-surface">
+            {diagnostics.configured_command_text}
+          </code>
+        </p>
+      )}
+      {resolution?.command && (
+        <p className="mt-1 break-words text-on-surface-variant">
+          launch: <code className="font-data text-on-surface">{resolution.command}</code>
+        </p>
+      )}
+      {resolution?.path && (
+        <p className="mt-1 break-words text-on-surface-variant">
+          path: <code className="font-data text-on-surface">{resolution.path}</code>
+        </p>
+      )}
+      {resolution?.reason && (
+        <p className="mt-1 break-words text-amber-500">{resolution.reason}</p>
+      )}
+      {diagnostics.fallback_command_texts?.length ? (
+        <p className="mt-1 break-words text-on-surface-variant">
+          fallbacks: {diagnostics.fallback_command_texts.join(" | ")}
+        </p>
+      ) : null}
+      {diagnostics.startup_probe_endpoint && (
+        <p className="mt-1 break-words text-on-surface-variant">
+          probe:{" "}
+          <code className="font-data text-on-surface">
+            {diagnostics.startup_probe_endpoint}
+          </code>
+        </p>
+      )}
+      {attempts.length > 0 && (
+        <div className="mt-2 space-y-1">
+          {attempts.slice(0, 3).map((attempt, index) => (
+            <div
+              key={`${attempt.command ?? "attempt"}-${index}`}
+              className="break-words rounded bg-surface-container px-2 py-1 text-on-surface-variant"
+            >
+              <code className="font-data text-on-surface">
+                {attempt.command ?? "command"}
+              </code>{" "}
+              =&gt; {attempt.status ?? "unknown"}
+              {attempt.launch_kind ? ` (${attempt.launch_kind})` : ""}
+              {attempt.reason || attempt.config_hint ? (
+                <span className="block text-amber-500">
+                  {attempt.reason || attempt.config_hint}
+                </span>
+              ) : null}
+            </div>
           ))}
         </div>
       )}
@@ -584,6 +687,9 @@ export default function ToolsPage() {
                 )}
 
                 <AgentProviderCapabilitiesCard capabilities={tool.agent_provider} />
+                <AgentProviderDiagnosticsCard
+                  diagnostics={tool.agent_provider_diagnostics}
+                />
 
                 <div className="flex items-center gap-2">
                   {!managed ? (

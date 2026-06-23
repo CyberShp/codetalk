@@ -76,6 +76,27 @@ class TestGetPmFromAppState:
 
         client, mock_pm = tools_client
         monkeypatch.setattr(tools, "get_all_adapters", lambda: [FakeAgentAdapter()])
+        monkeypatch.setattr(
+            tools,
+            "check_provider_health",
+            lambda provider, command, fallback_commands=None: {
+                "provider": provider,
+                "status": "available",
+                "configured_command": command,
+                "command": "ccr code",
+                "path": "C:/tools/ccr.cmd",
+                "launch_kind": "powershell-profile",
+                "used_fallback": False,
+                "attempts": [
+                    {
+                        "command": command,
+                        "status": "available",
+                        "path": "C:/tools/ccr.cmd",
+                        "launch_kind": "powershell-profile",
+                    }
+                ],
+            },
+        )
 
         resp = await client.get("/api/tools/procs")
 
@@ -87,6 +108,11 @@ class TestGetPmFromAppState:
         assert agent["status"] == "available"
         assert "fallback" in agent["message"]
         assert agent["last_check"] == "primary command unavailable; using fallback: claude -p"
+        diagnostics = agent["agent_provider_diagnostics"]
+        assert diagnostics["configured_command_text"] == "ccr code"
+        assert diagnostics["startup_probe_endpoint"] == "/api/tools/claude-code/startup-probe"
+        assert diagnostics["command_resolution"]["status"] == "available"
+        assert diagnostics["command_resolution"]["attempts"][0]["launch_kind"] == "powershell-profile"
 
     async def test_procs_includes_runtime_custom_external_agent_provider(
         self,
