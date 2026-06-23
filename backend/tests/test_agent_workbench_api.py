@@ -423,6 +423,11 @@ async def test_workbench_system_audit_api_reports_control_plane_readiness(workbe
         "patch_impact_review",
     }.issubset(set(checks["workflow_presets"]["details"]["available"]))
     assert checks["provider_capability_matrix"]["details"]["provider_count"] >= 4
+    assert checks["codetalk_index_provider_readiness"]["severity"] == "recommended"
+    assert set(checks["codetalk_index_provider_readiness"]["details"]["ready_provider_ids"]) >= {
+        "gitnexus",
+        "cgc",
+    }
     assert checks["agent_cli_provider_registry"]["status"] == "ok"
     assert checks["task_acceptance_audit_api"]["details"]["endpoint"] == (
         "POST /api/workbench/task-runs/{task_run_id}/acceptance-audit"
@@ -492,6 +497,29 @@ async def test_workbench_system_audit_reports_degraded_when_no_agent_cli_launche
     }
     assert "CLAUDE_CODE_COMMAND" in readiness["details"]["recommended_actions"][0]
     assert body["missing_recommended"][0]["id"] == "agent_cli_launch_readiness"
+
+
+async def test_workbench_system_audit_reports_index_provider_configuration_gaps(
+    workbench_client,
+    monkeypatch,
+):
+    monkeypatch.setattr(settings, "gitnexus_base_url", "")
+    monkeypatch.setattr(settings, "cgc_base_url", "")
+
+    resp = await workbench_client.get("/api/workbench/system-audit")
+
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["status"] == "ready"
+    assert body["runtime_status"] == "degraded"
+    checks = {item["id"]: item for item in body["checks"]}
+    index_readiness = checks["codetalk_index_provider_readiness"]
+    assert index_readiness["status"] == "missing"
+    assert index_readiness["severity"] == "recommended"
+    assert index_readiness["details"]["ready_provider_count"] == 0
+    assert set(index_readiness["details"]["failed_provider_ids"]) == {"gitnexus", "cgc"}
+    assert "startup probe" in index_readiness["details"]["notes"][1]
+    assert "fallback remains non-blocking" in index_readiness["details"]["recommended_actions"][0]
 
 
 async def test_workbench_deployment_probe_runs_agent_cli_startup_checks(

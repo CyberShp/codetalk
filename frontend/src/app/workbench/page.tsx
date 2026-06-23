@@ -960,6 +960,16 @@ function commandResolutionLines(resolution?: AgentCommandResolutionDetail): stri
   return lines.slice(0, 6);
 }
 
+function auditRecommendedActions(item: Record<string, unknown>): string[] {
+  const details =
+    item.details && typeof item.details === "object" && !Array.isArray(item.details)
+      ? (item.details as Record<string, unknown>)
+      : {};
+  const actions = details.recommended_actions;
+  if (!Array.isArray(actions)) return [];
+  return actions.map((action) => String(action)).filter(Boolean);
+}
+
 type AcceptanceProviderIssue = {
   provider: string;
   status: string;
@@ -1932,6 +1942,13 @@ export default function AgentWorkbenchPage() {
       ) ?? null,
     [systemAudit],
   );
+  const indexProviderReadinessAudit = useMemo(
+    () =>
+      systemAudit?.checks.find(
+        (item) => String(item.id ?? "") === "codetalk_index_provider_readiness",
+      ) ?? null,
+    [systemAudit],
+  );
 
   const loadWorkflows = useCallback(async () => {
     setLoading(true);
@@ -2811,6 +2828,33 @@ export default function AgentWorkbenchPage() {
               ) : null}
             </div>
           )}
+          {indexProviderReadinessAudit && (
+            <div className="mt-1 flex flex-wrap gap-2 font-data text-[10px]">
+              <span
+                className={
+                  indexProviderReadinessAudit.status === "ok"
+                    ? "text-green-500"
+                    : "text-warning"
+                }
+              >
+                index:{indexProviderReadinessAudit.status}
+              </span>
+              <span>
+                ready:
+                {String(indexProviderReadinessAudit.details?.ready_provider_count ?? 0)}/
+                {String(indexProviderReadinessAudit.details?.provider_count ?? 0)}
+              </span>
+              {Array.isArray(indexProviderReadinessAudit.details?.failed_provider_ids) &&
+                indexProviderReadinessAudit.details.failed_provider_ids.length > 0 && (
+                  <span className="break-words">
+                    failed:
+                    {indexProviderReadinessAudit.details.failed_provider_ids
+                      .map((item) => String(item))
+                      .join(",")}
+                  </span>
+                )}
+            </div>
+          )}
           {systemAudit.missing_recommended.length > 0 && (
             <div className="mt-1 break-words font-data text-[10px] text-warning">
               recommended:
@@ -2820,6 +2864,14 @@ export default function AgentWorkbenchPage() {
                 .join(",")}
             </div>
           )}
+          {systemAudit.missing_recommended
+            .flatMap((item) => auditRecommendedActions(item))
+            .slice(0, 2)
+            .map((action) => (
+              <div key={action} className="mt-1 break-words text-[10px] text-warning">
+                action:{action}
+              </div>
+            ))}
         </div>
       )}
 

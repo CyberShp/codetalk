@@ -1582,6 +1582,7 @@ def _build_workbench_system_audit() -> dict[str, Any]:
             details={"endpoint": "POST /api/workbench/task-runs/{task_run_id}/acceptance-audit"},
         ),
         _agent_cli_launch_readiness_check(provider_matrix),
+        _codetalk_index_provider_readiness_check(provider_matrix),
         _latest_deployment_task_probe_check(),
         _system_audit_check(
             check_id="external_agent_sandbox",
@@ -1609,7 +1610,7 @@ def _build_workbench_system_audit() -> dict[str, Any]:
         "status": "ready" if not missing_required else "incomplete",
         "runtime_status": (
             "degraded"
-            if missing_required or _has_missing_agent_cli_launch_readiness(checks)
+            if missing_required or _has_degraded_runtime_readiness(checks)
             else "healthy"
         ),
         "created_at": datetime.now(timezone.utc).isoformat(),
@@ -1627,6 +1628,71 @@ def _build_workbench_system_audit() -> dict[str, Any]:
             "Run provider startup probes and task-level acceptance audits before marking a deployment healthy.",
         ],
     }
+
+
+def _codetalk_index_provider_readiness_check(provider_matrix: list[dict[str, Any]]) -> dict[str, Any]:
+    index_providers = [
+        item for item in provider_matrix
+        if isinstance(item, dict) and item.get("owner") == "codetalk_index"
+    ]
+    ready_statuses = {"available", "configured"}
+    ready: list[dict[str, Any]] = []
+    failed: list[dict[str, Any]] = []
+    for item in index_providers:
+        provider_id = str(item.get("provider") or "")
+        diagnostics = item.get("diagnostics") if isinstance(item.get("diagnostics"), dict) else {}
+        status = str(item.get("status") or "unknown")
+        record = {
+            "provider": provider_id,
+            "display_name": str(item.get("display_name") or provider_id),
+            "status": status,
+            "codetalk_callable": bool(item.get("codetalk_callable", False)),
+            "non_blocking": bool(item.get("non_blocking", True)),
+            "health_endpoint": str(diagnostics.get("health_endpoint") or ""),
+            "startup_probe_endpoint": str(diagnostics.get("startup_probe_endpoint") or ""),
+            "unavailable_behavior": str(item.get("unavailable_behavior") or ""),
+            "next_check": _codetalk_index_provider_next_check(provider_id, diagnostics),
+        }
+        if status in ready_statuses:
+            ready.append(record)
+        else:
+            failed.append(record)
+
+    recommended_actions = [
+        (
+            f"Configure {item['provider']} and run {item['next_check']}; "
+            f"fallback remains non-blocking: {item['unavailable_behavior']}"
+        )
+        for item in failed
+    ]
+    return _system_audit_check(
+        check_id="codetalk_index_provider_readiness",
+        ok=bool(ready) and not failed,
+        severity="recommended",
+        description="GitNexus/CGC index providers are configured for discovery and call-graph enrichment",
+        details={
+            "provider_count": len(index_providers),
+            "ready_provider_count": len(ready),
+            "failed_provider_count": len(failed),
+            "ready_provider_ids": [item["provider"] for item in ready],
+            "failed_provider_ids": [item["provider"] for item in failed],
+            "ready_providers": ready,
+            "failed_providers": failed,
+            "recommended_actions": recommended_actions,
+            "notes": [
+                "This checks configuration visibility, not a full graph query.",
+                "Run the startup probe for each index provider with the target repo_path for live evidence.",
+                "Index provider failure is non-blocking; local search, Evidence Memory, and Agent CLI discovery continue.",
+            ],
+        },
+    )
+
+
+def _codetalk_index_provider_next_check(provider: str, diagnostics: dict[str, Any]) -> str:
+    endpoint = str(diagnostics.get("startup_probe_endpoint") or "")
+    if endpoint:
+        return f"POST {endpoint}?repo_path=<repo_path>"
+    return f"Verify {provider} base URL/configuration and rerun Workbench system audit."
 
 
 def _core_workflow_readiness_item(preset: dict[str, Any]) -> dict[str, Any]:
@@ -2340,6 +2406,18 @@ def _has_missing_agent_cli_launch_readiness(checks: list[dict[str, Any]]) -> boo
     for item in checks:
         if item.get("id") == "agent_cli_launch_readiness":
             return item.get("status") != "ok"
+    return False
+
+
+def _has_degraded_runtime_readiness(checks: list[dict[str, Any]]) -> bool:
+    runtime_check_ids = {
+        "agent_cli_launch_readiness",
+        "codetalk_index_provider_readiness",
+        "latest_deployment_task_probe",
+    }
+    for item in checks:
+        if item.get("id") in runtime_check_ids and item.get("status") != "ok":
+            return True
     return False
 
 
