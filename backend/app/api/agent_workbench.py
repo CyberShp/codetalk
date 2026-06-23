@@ -784,10 +784,9 @@ def _execute_task_run_with_closure(
         task_run=task_run,
     )
     refreshed = WorkbenchTaskRunStore(_task_runs_dir()).load(task_run_id)
-    response["semantic_output_import"] = _auto_import_semantic_outputs_if_available(
-        task_run=refreshed,
+    response["semantic_output_import"] = (
+        response["evidence_materialization"].get("semantic_output_import") or {}
     )
-    refreshed = WorkbenchTaskRunStore(_task_runs_dir()).load(task_run_id)
     acceptance = _build_task_acceptance_audit(refreshed)
     task_dir = Path(refreshed.artifact_dir)
     _write_json(task_dir / "task_acceptance_audit.json", acceptance)
@@ -823,6 +822,9 @@ def _materialize_task_run_outputs_if_available(*, task_run: Any) -> dict[str, An
         workflow_outputs_path=workflow_outputs_path,
         workflow_outputs=workflow_outputs,
         result=result,
+    )
+    result["semantic_output_import"] = _auto_import_semantic_outputs_if_available(
+        task_run=task_run,
     )
     write_task_artifact_manifest(task_dir, task_run_id=task_run.task_run_id)
     return result
@@ -983,6 +985,9 @@ async def materialize_task_run_outputs(task_run_id: str) -> dict[str, Any]:
         workflow_outputs_path=workflow_outputs_path,
         workflow_outputs=workflow_outputs,
         result=result,
+    )
+    result["semantic_output_import"] = _auto_import_semantic_outputs_if_available(
+        task_run=task_run,
     )
     write_task_artifact_manifest(task_dir, task_run_id=task_run.task_run_id)
     return result
@@ -1207,9 +1212,7 @@ async def execute_task_run_rerun_plan(
         task_run=refreshed_task_run,
     )
     task_dir = Path(refreshed_task_run.artifact_dir)
-    semantic_output_import = _auto_import_semantic_outputs_if_available(
-        task_run=refreshed_task_run,
-    )
+    semantic_output_import = evidence_materialization.get("semantic_output_import") or {}
     acceptance = _build_task_acceptance_audit(refreshed_task_run)
     _write_json(task_dir / "task_acceptance_audit.json", acceptance)
     refreshed_plan = _read_json(Path(refreshed_task_run.artifact_dir) / "task_rerun_plan.json")

@@ -1563,7 +1563,10 @@ export default function AgentWorkbenchPage() {
         preparedRun.task_run_id,
       );
       setWorkflowOutputMaterialize(result);
-      setMessage(`Workflow outputs materialized: ${result.evidence_count}`);
+      setSemanticOutputImport(result.semantic_output_import ?? null);
+      setMessage(
+        `Workflow outputs materialized: ${result.evidence_count}; semantics ${result.semantic_output_import?.status ?? "skipped"}`,
+      );
     });
 
   const importPreparedSemanticOutputs = () =>
