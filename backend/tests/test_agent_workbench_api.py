@@ -90,6 +90,7 @@ async def test_workbench_workflow_capabilities_api_documents_custom_workflows(wo
     assert "agent_task" in body["step_types"]
     assert "semantic_retrieve" in body["step_types"]
     assert "json" in body["output_types"]
+    assert body["input_features"]["json_schema_validation"] is True
     assert body["output_features"]["json_schema_validation"] is True
     assert body["output_features"]["workflow_output_materialization"] is True
     assert body["agent_cli_features"]["agent_owned_mcp_credentials"] is True

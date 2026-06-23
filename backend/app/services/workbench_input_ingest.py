@@ -52,6 +52,17 @@ def ingest_workbench_inputs(
             )
         else:
             snapshot[input_key] = value
+        schema_errors = _validate_input_schema(
+            value=snapshot[input_key],
+            schema=definition.get("schema") or definition.get("json_schema"),
+        )
+        if schema_errors:
+            raise ValueError(
+                "input {} schema_validation_failed: {}".format(
+                    input_key,
+                    "; ".join(schema_errors),
+                )
+            )
     return snapshot
 
 
@@ -197,3 +208,62 @@ def _chunks(text: str, *, chunk_size: int = 4000) -> list[dict[str, Any]]:
 
 def _safe_name(value: str) -> str:
     return "".join(char if char.isalnum() or char in {"-", "_"} else "_" for char in value) or "input"
+
+
+def _validate_input_schema(*, value: Any, schema: Any) -> list[str]:
+    if not isinstance(schema, dict):
+        return []
+    return _validate_schema_fragment(value, schema)
+
+
+def _validate_schema_fragment(value: Any, schema: dict[str, Any], *, path: str = "$") -> list[str]:
+    errors: list[str] = []
+    expected_type = str(schema.get("type") or "").strip()
+    if expected_type and not _matches_schema_type(value, expected_type):
+        errors.append(f"{path} expected {expected_type}")
+        return errors
+
+    enum = schema.get("enum")
+    if isinstance(enum, list) and value not in enum:
+        errors.append(f"{path} must be one of: {', '.join(str(item) for item in enum)}")
+
+    if isinstance(value, str):
+        min_length = schema.get("minLength")
+        if isinstance(min_length, int) and len(value) < min_length:
+            errors.append(f"{path} length must be >= {min_length}")
+
+    if isinstance(value, dict):
+        for field in schema.get("required") or []:
+            if isinstance(field, str) and field not in value:
+                errors.append(f"missing required field: {field}")
+        properties = schema.get("properties") or {}
+        if isinstance(properties, dict):
+            for field_name, property_schema in properties.items():
+                if field_name not in value or not isinstance(property_schema, dict):
+                    continue
+                errors.extend(
+                    _validate_schema_fragment(
+                        value[field_name],
+                        property_schema,
+                        path=f"{path}.{field_name}",
+                    )
+                )
+    return errors
+
+
+def _matches_schema_type(value: Any, expected_type: str) -> bool:
+    if expected_type == "object":
+        return isinstance(value, dict)
+    if expected_type == "array":
+        return isinstance(value, list)
+    if expected_type == "string":
+        return isinstance(value, str)
+    if expected_type == "number":
+        return isinstance(value, (int, float)) and not isinstance(value, bool)
+    if expected_type == "integer":
+        return isinstance(value, int) and not isinstance(value, bool)
+    if expected_type == "boolean":
+        return isinstance(value, bool)
+    if expected_type == "null":
+        return value is None
+    return True

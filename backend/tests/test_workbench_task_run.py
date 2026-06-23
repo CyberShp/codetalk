@@ -238,6 +238,65 @@ def test_prepare_workbench_task_run_validates_required_inputs(tmp_path):
         raise AssertionError("missing required input should fail task preparation")
 
 
+def test_prepare_workbench_task_run_enforces_user_input_schema(tmp_path):
+    from app.services.workflow_dsl import WorkflowStore
+    from app.services.workbench_task_run import WorkbenchTaskRunPreparer
+
+    workflow_store = WorkflowStore(tmp_path / "workflows.db")
+    workflow_store.save_workflow({
+        "id": "input_schema_workflow",
+        "name": "Input schema workflow",
+        "version": 1,
+        "inputs": [
+            {
+                "id": "patch_metadata",
+                "type": "text",
+                "required": True,
+                "schema": {
+                    "type": "object",
+                    "required": ["mr_url", "risk"],
+                    "properties": {
+                        "mr_url": {"type": "string", "minLength": 1},
+                        "risk": {"type": "string", "enum": ["low", "medium", "high"]},
+                    },
+                },
+            }
+        ],
+        "steps": [{"id": "render", "type": "report_render"}],
+        "outputs": [{"id": "report", "type": "markdown", "from": "render"}],
+    })
+
+    try:
+        WorkbenchTaskRunPreparer(
+            artifact_root=tmp_path / "task_runs",
+            workflow_store=workflow_store,
+        ).prepare(
+            workflow_id="input_schema_workflow",
+            workspace_id="ws-input-schema",
+            repo_path=str(tmp_path),
+            inputs={"patch_metadata": {"mr_url": "https://codehub.local/mr/1"}},
+        )
+    except ValueError as exc:
+        assert "input patch_metadata schema_validation_failed" in str(exc)
+        assert "missing required field: risk" in str(exc)
+    else:
+        raise AssertionError("invalid input schema should fail task preparation")
+
+    result = WorkbenchTaskRunPreparer(
+        artifact_root=tmp_path / "task_runs",
+        workflow_store=workflow_store,
+    ).prepare(
+        workflow_id="input_schema_workflow",
+        workspace_id="ws-input-schema",
+        repo_path=str(tmp_path),
+        inputs={"patch_metadata": {"mr_url": "https://codehub.local/mr/1", "risk": "high"}},
+    )
+
+    contract_input = result.task_bundle["workflow_contract"]["inputs"][0]
+    assert contract_input["has_schema"] is True
+    assert contract_input["schema_required"] == ["mr_url", "risk"]
+
+
 def test_prepare_workbench_task_run_ingests_file_set_inputs(tmp_path):
     from app.services.workflow_dsl import WorkflowStore
     from app.services.workbench_task_run import WorkbenchTaskRunPreparer

@@ -287,6 +287,9 @@ def _parse_input(item: Any) -> WorkflowInput:
     resolver = str(item.get("resolver") or "")
     if resolver and resolver not in {"agent_mcp", "local", "manual"}:
         raise WorkflowValidationError(f"unsupported workflow input resolver: {resolver}")
+    schema = item.get("schema") or item.get("json_schema")
+    if schema is not None:
+        _validate_input_schema_definition(schema)
     return WorkflowInput(
         id=input_id,
         type=input_type,
@@ -373,23 +376,39 @@ def _is_safe_artifact_path(value: str) -> bool:
 def _validate_output_schema_definition(schema: Any) -> None:
     if not isinstance(schema, dict):
         raise WorkflowValidationError("workflow output schema must be an object")
+    _validate_schema_definition(schema, label="workflow output schema")
+
+
+def _validate_input_schema_definition(schema: Any) -> None:
+    if not isinstance(schema, dict):
+        raise WorkflowValidationError("workflow input schema must be an object")
+    _validate_schema_definition(schema, label="workflow input schema")
+
+
+def _validate_schema_definition(schema: dict[str, Any], *, label: str) -> None:
     _validate_schema_type(schema)
     required = schema.get("required")
     if required is not None:
         if not isinstance(required, list) or not all(isinstance(item, str) for item in required):
-            raise WorkflowValidationError("workflow output schema required must be a list of strings")
+            raise WorkflowValidationError(f"{label} required must be a list of strings")
     properties = schema.get("properties")
     if properties is not None:
         if not isinstance(properties, dict):
-            raise WorkflowValidationError("workflow output schema properties must be an object")
+            raise WorkflowValidationError(f"{label} properties must be an object")
         for field_name, property_schema in properties.items():
             if not isinstance(field_name, str):
-                raise WorkflowValidationError("workflow output schema property names must be strings")
+                raise WorkflowValidationError(f"{label} property names must be strings")
             if not isinstance(property_schema, dict):
                 raise WorkflowValidationError(
-                    f"workflow output schema property {field_name} must be an object"
+                    f"{label} property {field_name} must be an object"
                 )
             _validate_schema_type(property_schema, field_name=field_name)
+    enum = schema.get("enum")
+    if enum is not None and not isinstance(enum, list):
+        raise WorkflowValidationError(f"{label} enum must be a list")
+    min_length = schema.get("minLength")
+    if min_length is not None and (not isinstance(min_length, int) or min_length < 0):
+        raise WorkflowValidationError(f"{label} minLength must be a non-negative integer")
 
 
 def _validate_semantic_import_definition(value: Any) -> None:

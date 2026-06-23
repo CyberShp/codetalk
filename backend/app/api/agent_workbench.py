@@ -262,6 +262,12 @@ async def get_workflow_capabilities() -> dict[str, Any]:
             "test_cases",
             "scope_report",
         ],
+        "input_features": {
+            "json_schema_validation": True,
+            "file_copy_and_hash": True,
+            "text_extraction_chunks": True,
+            "agent_owned_mcp_inputs": True,
+        },
         "output_features": {
             "json_schema_validation": True,
             "workflow_output_materialization": True,

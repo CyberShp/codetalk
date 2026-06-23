@@ -512,7 +512,13 @@ def build_workflow_contract(
 
 def _workflow_contract_input(item: dict[str, Any]) -> dict[str, Any]:
     resolver = str(item.get("resolver") or "")
-    return {
+    schema = item.get("schema") or item.get("json_schema")
+    schema_required = []
+    schema_type = ""
+    if isinstance(schema, dict):
+        schema_required = [str(value) for value in schema.get("required") or []]
+        schema_type = str(schema.get("type") or "")
+    payload = {
         "id": str(item.get("id") or ""),
         "type": str(item.get("type") or ""),
         "required": bool(item.get("required", False)),
@@ -520,6 +526,12 @@ def _workflow_contract_input(item: dict[str, Any]) -> dict[str, Any]:
         "resolver": resolver,
         "agent_owned": resolver == "agent_mcp",
     }
+    if isinstance(schema, dict):
+        payload["has_schema"] = True
+        payload["schema_type"] = schema_type
+        payload["schema_required"] = schema_required
+        payload["schema"] = dict(schema)
+    return payload
 
 
 def _workflow_contract_agent_mcp_inputs(

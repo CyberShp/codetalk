@@ -63,6 +63,37 @@ def test_workflow_definition_rejects_unsafe_artifact_paths():
             "outputs": [],
         })
 
+
+def test_workflow_definition_validates_input_schema_definition():
+    import pytest
+
+    from app.services.workflow_dsl import WorkflowValidationError, validate_workflow_definition
+
+    workflow = validate_workflow_definition({
+        "id": "schema_input_workflow",
+        "name": "Schema input workflow",
+        "inputs": [
+            {
+                "id": "target",
+                "type": "free_text",
+                "schema": {"type": "string", "minLength": 3},
+            }
+        ],
+        "steps": [{"id": "render", "type": "report_render"}],
+        "outputs": [{"id": "report", "type": "markdown", "from": "render"}],
+    })
+
+    assert workflow.inputs[0].raw["schema"]["type"] == "string"
+
+    with pytest.raises(WorkflowValidationError, match="workflow input schema must be an object"):
+        validate_workflow_definition({
+            "id": "bad_input_schema",
+            "name": "Bad input schema",
+            "inputs": [{"id": "target", "type": "free_text", "schema": "string"}],
+            "steps": [{"id": "render", "type": "report_render"}],
+            "outputs": [],
+        })
+
     with pytest.raises(WorkflowValidationError, match="unsafe required artifact path"):
         validate_workflow_definition({
             "id": "empty_required_artifact",
