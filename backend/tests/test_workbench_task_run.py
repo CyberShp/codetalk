@@ -1032,6 +1032,49 @@ def test_agent_execution_provider_health_snapshot_redacts_secrets(tmp_path, monk
     assert "<redacted>" in text
 
 
+def test_agent_execution_input_artifact_redacts_stdin_without_changing_process_input(
+    tmp_path,
+):
+    from app.services.agent_run_harness import AgentRunHarness
+
+    artifact_dir = tmp_path / "agent"
+    seen_file = artifact_dir / "seen.txt"
+    script_path = tmp_path / "agent_reads_secret.py"
+    script_path.write_text(
+        "import pathlib, sys\n"
+        f"path=pathlib.Path({str(seen_file)!r})\n"
+        "payload=sys.stdin.read()\n"
+        "path.parent.mkdir(parents=True, exist_ok=True)\n"
+        "path.write_text('secret-present' if 'token=raw-secret-value' in payload else 'missing', encoding='utf-8')\n",
+        encoding="utf-8",
+    )
+    harness = AgentRunHarness(artifact_dir)
+    run = harness.create_run(
+        provider="local-python",
+        command=["python", str(script_path)],
+        cwd=str(tmp_path),
+        workflow_snapshot={"id": "wf"},
+        task_bundle={
+            "task_id": "secret-input",
+            "user_text": "please inspect token=raw-secret-value",
+            "nested": {"api_key": "sk-inner-secret"},
+        },
+        run_id="run_secret_input",
+    )
+
+    result = harness.execute_run(run.run_id, timeout_sec=10)
+
+    assert result.status == "completed"
+    assert seen_file.read_text(encoding="utf-8") == "secret-present"
+    execution_input_text = (artifact_dir / "execution_input.json").read_text(encoding="utf-8")
+    assert "raw-secret-value" not in execution_input_text
+    assert "sk-inner-secret" not in execution_input_text
+    assert "<redacted>" in execution_input_text
+    execution_input = json.loads(execution_input_text)
+    assert execution_input["stdin_redacted"] is True
+    assert execution_input["stdin_json_sha256"]
+
+
 def test_workbench_task_run_store_loads_and_lists_prepared_runs(tmp_path):
     from app.services.workflow_dsl import WorkflowStore
     from app.services.workbench_task_run import (

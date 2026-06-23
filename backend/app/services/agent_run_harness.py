@@ -333,7 +333,8 @@ class AgentRunHarness:
                 "agent_output_contract": (
                     agent_output_contract if isinstance(agent_output_contract, dict) else {}
                 ),
-                "stdin": stdin_payload_obj,
+                "stdin": _redact_replay_payload(stdin_payload_obj),
+                "stdin_redacted": True,
                 "stdin_json_sha256": hashlib.sha256(
                     stdin_payload.encode("utf-8")
                 ).hexdigest(),
@@ -836,12 +837,28 @@ def _redact_command_list(command: list[str]) -> list[str]:
 
 def _redact_replay_payload(payload: Any) -> Any:
     if isinstance(payload, dict):
-        return {str(key): _redact_replay_payload(value) for key, value in payload.items()}
+        result: dict[str, Any] = {}
+        for key, value in payload.items():
+            key_text = str(key)
+            if _is_sensitive_key(key_text):
+                result[key_text] = "<redacted>"
+            else:
+                result[key_text] = _redact_replay_payload(value)
+        return result
     if isinstance(payload, list):
         return [_redact_replay_payload(item) for item in payload]
     if isinstance(payload, str):
         return _redact(payload)
     return payload
+
+
+def _is_sensitive_key(key: str) -> bool:
+    return bool(
+        re.search(
+            r"(?i)(api[-_]?key|token|access[-_]?token|secret|password)",
+            key or "",
+        )
+    )
 
 
 def _context_discovery_decision_summary(task_bundle: dict[str, Any]) -> dict[str, Any]:
@@ -899,7 +916,7 @@ def _agent_instruction_policy_summary(task_bundle: dict[str, Any]) -> dict[str, 
                     or "fast_context" in lower_content
                     or "mcp__fast-context__fast_context_search" in lower_content
                 ),
-                "content_excerpt": content[:500],
+                "content_excerpt": _redact(content[:500]),
             })
     fast_context_first = any(item.get("contains_fast_context") for item in files_payload)
     if isinstance(decision, dict):
@@ -1125,11 +1142,19 @@ def _command_resolution_result_summary(payload: dict[str, Any]) -> dict[str, Any
 _SECRET_RE = re.compile(
     r"(?i)\b(api[-_]?key|token|access[-_]?token|secret|password)\s*=\s*[^\s]+"
 )
+_SECRET_COLON_RE = re.compile(
+    r"(?i)([\"']?\b(api[-_]?key|token|access[-_]?token|secret|password)\b[\"']?\s*:\s*)"
+    r"([\"'])?[^\"'\s,}\]]+([\"'])?"
+)
 _BEARER_RE = re.compile(r"(?i)(bearer\s+)[A-Za-z0-9._~+/=-]{8,}")
 
 
 def _redact(text: str) -> str:
     value = _SECRET_RE.sub(lambda m: f"{m.group(1)}=<redacted>", text or "")
+    value = _SECRET_COLON_RE.sub(
+        lambda m: f"{m.group(1)}{m.group(3) or ''}<redacted>{m.group(4) or ''}",
+        value,
+    )
     return _BEARER_RE.sub(r"\1<redacted>", value)
 
 
