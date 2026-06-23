@@ -24,6 +24,7 @@ import type {
   PreparedWorkbenchTaskRun,
   SemanticCase,
   TaskRerunExecutionResult,
+  TaskRerunHistory,
   TaskRerunPlan,
   TaskRerunPlanValidation,
   WorkflowDefinition,
@@ -610,6 +611,7 @@ export default function AgentWorkbenchPage() {
     useState<TaskRerunPlanValidation | null>(null);
   const [taskRerunExecution, setTaskRerunExecution] =
     useState<TaskRerunExecutionResult | null>(null);
+  const [taskRerunHistory, setTaskRerunHistory] = useState<TaskRerunHistory | null>(null);
   const [workflowOutputMaterialize, setWorkflowOutputMaterialize] =
     useState<MaterializeWorkflowOutputsResult | null>(null);
   const [executionResults, setExecutionResults] = useState<
@@ -815,6 +817,7 @@ export default function AgentWorkbenchPage() {
       setTaskRerunPlan(null);
       setTaskRerunPlanValidation(null);
       setTaskRerunExecution(null);
+      setTaskRerunHistory(null);
       setWorkflowOutputMaterialize(null);
       setArtifactContent(null);
       await refreshArtifactManifest(result.task_run_id);
@@ -872,8 +875,10 @@ export default function AgentWorkbenchPage() {
         api.workbench.taskRuns.rerunPlan(preparedRun.task_run_id),
         api.workbench.taskRuns.rerunPlanValidation(preparedRun.task_run_id),
       ]);
+      const history = await api.workbench.taskRuns.rerunHistory(preparedRun.task_run_id);
       setTaskRerunPlan(result);
       setTaskRerunPlanValidation(validation);
+      setTaskRerunHistory(history);
       setMessage(`Rerun plan ${result.status}: ${result.task_run_id}`);
     });
 
@@ -891,6 +896,7 @@ export default function AgentWorkbenchPage() {
         setTaskRerunPlan((result.execution.rerun_plan as TaskRerunPlan | undefined) ?? null);
       }
       setTaskRerunPlanValidation(result.validation_after ?? null);
+      setTaskRerunHistory(await api.workbench.taskRuns.rerunHistory(preparedRun.task_run_id));
       await refreshArtifactManifest(preparedRun.task_run_id);
       setMessage(`Rerun execution ${result.execution?.status ?? result.status}: ${preparedRun.task_run_id}`);
     });
@@ -1792,6 +1798,9 @@ export default function AgentWorkbenchPage() {
                       </span>
                       <span className="rounded bg-surface px-1.5 py-0.5">
                         reuse-bundle:{String(taskRerunPlan.reuse_task_bundle ?? false)}
+                      </span>
+                      <span className="rounded bg-surface px-1.5 py-0.5">
+                        history:{taskRerunHistory?.count ?? 0}
                       </span>
                       {(taskRerunPlan.blocked_outputs?.length ?? 0) > 0 ? (
                         <span className="rounded bg-surface px-1.5 py-0.5 text-warning">

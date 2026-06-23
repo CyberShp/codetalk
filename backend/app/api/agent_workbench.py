@@ -614,6 +614,27 @@ async def validate_task_run_rerun_plan(task_run_id: str) -> dict[str, Any]:
     return _validate_task_rerun_plan(task_run=task_run, plan=plan)
 
 
+@router.get("/task-runs/{task_run_id}/rerun-plan/history")
+async def get_task_run_rerun_history(task_run_id: str) -> dict[str, Any]:
+    try:
+        task_run = WorkbenchTaskRunStore(_task_runs_dir()).load(task_run_id)
+    except KeyError:
+        raise HTTPException(status_code=404, detail=f"Unknown task run: {task_run_id}")
+    history = _read_json(Path(task_run.artifact_dir) / "task_rerun_history.json")
+    if not isinstance(history, dict):
+        return {
+            "task_run_id": task_run.task_run_id,
+            "count": 0,
+            "records": [],
+        }
+    records = history.get("records") if isinstance(history.get("records"), list) else []
+    return {
+        "task_run_id": str(history.get("task_run_id") or task_run.task_run_id),
+        "count": len(records),
+        "records": records,
+    }
+
+
 @router.post("/task-runs/{task_run_id}/rerun-plan/execute")
 async def execute_task_run_rerun_plan(
     task_run_id: str,

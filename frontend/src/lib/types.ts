@@ -511,6 +511,12 @@ export interface TaskRerunExecutionResult {
   validation_after?: TaskRerunPlanValidation;
 }
 
+export interface TaskRerunHistory {
+  task_run_id: string;
+  count: number;
+  records: Array<Record<string, unknown>>;
+}
+
 export interface WorkbenchTaskArtifact {
   relative_path: string;
   path: string;

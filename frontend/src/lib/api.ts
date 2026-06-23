@@ -36,6 +36,7 @@ import type {
   MaterializeWorkflowOutputsResult,
   PreparedWorkbenchTaskRun,
   TaskRerunExecutionResult,
+  TaskRerunHistory,
   TaskRerunPlan,
   TaskRerunPlanValidation,
   WorkflowExecutionResult,
@@ -701,6 +702,11 @@ export const api = {
       rerunPlanValidation: (taskRunId: string) =>
         request<TaskRerunPlanValidation>(
           `/api/workbench/task-runs/${encodeURIComponent(taskRunId)}/rerun-plan/validation`,
+        ),
+
+      rerunHistory: (taskRunId: string) =>
+        request<TaskRerunHistory>(
+          `/api/workbench/task-runs/${encodeURIComponent(taskRunId)}/rerun-plan/history`,
         ),
 
       executeRerunPlan: (taskRunId: string, timeoutSec = 90, stopOnError = true) =>

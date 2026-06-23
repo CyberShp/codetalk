@@ -1727,6 +1727,15 @@ async def test_workbench_task_run_artifacts_api_labels_failure_recovery(
     assert rerun_execution_content.json()["kind"] == "task_rerun_execution"
     assert "validation_before" in rerun_execution_content.json()["content"]
     assert "agent_error" in rerun_execution_content.json()["content"]
+    history_response = await workbench_client.get(
+        f"/api/workbench/task-runs/{task_run_id}/rerun-plan/history"
+    )
+    assert history_response.status_code == 200
+    history = history_response.json()
+    assert history["task_run_id"] == task_run_id
+    assert history["count"] == 1
+    assert history["records"][0]["status"] == "executed"
+    assert history["records"][0]["execution"]["status"] == "invalid"
 
 
 async def test_workbench_task_run_artifacts_api_labels_agent_turn_snapshots(
