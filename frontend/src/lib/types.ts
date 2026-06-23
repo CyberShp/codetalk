@@ -620,6 +620,7 @@ export interface WorkflowExecutionResult {
     }
   >;
   outputs?: Array<Record<string, unknown>>;
+  acceptance_audit?: WorkbenchAcceptanceAudit;
 }
 
 export interface TaskRerunPlan {

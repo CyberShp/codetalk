@@ -767,6 +767,12 @@ async def execute_task_run_workflow(
     response["evidence_materialization"] = _materialize_task_run_outputs_if_available(
         task_run=task_run,
     )
+    refreshed = WorkbenchTaskRunStore(_task_runs_dir()).load(task_run_id)
+    acceptance = _build_task_acceptance_audit(refreshed)
+    task_dir = Path(refreshed.artifact_dir)
+    _write_json(task_dir / "task_acceptance_audit.json", acceptance)
+    write_task_artifact_manifest(task_dir, task_run_id=refreshed.task_run_id)
+    response["acceptance_audit"] = acceptance
     return response
 
 

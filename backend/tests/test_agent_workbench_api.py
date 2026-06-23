@@ -1354,6 +1354,8 @@ async def test_workbench_task_run_materialize_workflow_outputs_api(
     )
     assert executed.status_code == 200
     assert executed.json()["outputs"][0]["status"] == "ok"
+    assert executed.json()["acceptance_audit"]["status"] == "ready"
+    assert executed.json()["acceptance_audit"]["summary"]["missing_required"] == 0
     auto_materialized = executed.json()["evidence_materialization"]
     assert auto_materialized["status"] == "ok"
     assert auto_materialized["evidence_count"] == 1
@@ -1370,6 +1372,10 @@ async def test_workbench_task_run_materialize_workflow_outputs_api(
         Path(prepared.json()["artifact_dir"]) / "workflow_output_materialization.json"
     )
     assert auto_materialization_artifact.exists()
+    acceptance_artifact = Path(prepared.json()["artifact_dir"]) / "task_acceptance_audit.json"
+    assert acceptance_artifact.exists()
+    acceptance_payload = json.loads(acceptance_artifact.read_text(encoding="utf-8"))
+    assert acceptance_payload["task_run_id"] == task_run_id
 
     materialized = await workbench_client.post(
         f"/api/workbench/task-runs/{task_run_id}/materialize-outputs"
@@ -1403,6 +1409,10 @@ async def test_workbench_task_run_materialize_workflow_outputs_api(
     assert (
         manifest_paths["workflow_output_materialization.json"]["kind"]
         == "workflow_output_materialization"
+    )
+    assert (
+        manifest_paths["task_acceptance_audit.json"]["kind"]
+        == "task_acceptance_audit"
     )
     assert manifest_paths["workflow_output_materialization.json"]["sha256"] == hashlib.sha256(
         materialization_artifact.read_bytes()

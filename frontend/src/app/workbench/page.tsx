@@ -1497,10 +1497,10 @@ export default function AgentWorkbenchPage() {
       setTaskRerunPlanValidation(
         await api.workbench.taskRuns.rerunPlanValidation(preparedRun.task_run_id),
       );
-      setTaskAcceptanceAudit(null);
+      setTaskAcceptanceAudit(result.acceptance_audit ?? null);
       await refreshArtifactManifest(preparedRun.task_run_id);
       setMessage(
-        `Workflow execution ${result.status}: ${result.task_run_id}; evidence ${result.evidence_materialization?.status ?? "skipped"}`,
+        `Workflow execution ${result.status}: ${result.task_run_id}; evidence ${result.evidence_materialization?.status ?? "skipped"}; audit ${result.acceptance_audit?.status ?? "skipped"}`,
       );
       await loadWorkflows();
     });
