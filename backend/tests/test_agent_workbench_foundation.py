@@ -226,6 +226,67 @@ def test_workflow_dsl_validates_user_defined_output_schema():
         validate_workflow_definition(markdown_schema)
 
 
+def test_workflow_dsl_validates_and_audits_semantic_output_import():
+    from app.services.workflow_dsl import (
+        WorkflowValidationError,
+        audit_workflow_definition,
+        validate_workflow_definition,
+    )
+
+    workflow = validate_workflow_definition({
+        "id": "semantic_output_workflow",
+        "name": "Semantic output workflow",
+        "version": 1,
+        "steps": [{"id": "design", "type": "agent_task"}],
+        "outputs": [
+            {
+                "id": "black_box_cases",
+                "type": "test_cases",
+                "from": "design",
+                "artifact": "black_box_cases.json",
+                "semantic_import": {
+                    "enabled": True,
+                    "defaults": {"module": "nvmf_tcp/transport/tls"},
+                },
+            }
+        ],
+    })
+
+    assert workflow.outputs[0].raw["semantic_import"]["defaults"]["module"] == (
+        "nvmf_tcp/transport/tls"
+    )
+
+    bad_defaults = dict(workflow.raw)
+    bad_defaults["outputs"] = [
+        {
+            "id": "black_box_cases",
+            "type": "test_cases",
+            "from": "design",
+            "semantic_import": {"defaults": ["not", "an", "object"]},
+        }
+    ]
+    with pytest.raises(WorkflowValidationError, match="semantic_import defaults must be an object"):
+        validate_workflow_definition(bad_defaults)
+
+    report_workflow = dict(workflow.raw)
+    report_workflow["outputs"] = [
+        {
+            "id": "report",
+            "type": "markdown",
+            "from": "design",
+            "artifact": "report.md",
+            "semantic_import": True,
+        }
+    ]
+    audit = audit_workflow_definition(report_workflow)
+
+    assert audit["status"] == "warning"
+    assert any(
+        item["code"] == "semantic_import_on_non_test_cases_output"
+        for item in audit["warnings"]
+    )
+
+
 def test_workflow_store_persists_and_freezes_custom_workflow(tmp_path):
     from app.services.workflow_dsl import WorkflowStore
 

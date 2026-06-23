@@ -248,6 +248,16 @@ def audit_workflow_definition(payload: dict[str, Any]) -> dict[str, Any]:
                     "but structured validation will be limited."
                 ),
             })
+        if "semantic_import" in output.raw and output.type != "test_cases":
+            warnings.append({
+                "severity": "warning",
+                "code": "semantic_import_on_non_test_cases_output",
+                "path": f"outputs.{output.id}.semantic_import",
+                "message": (
+                    "semantic_import is intended for test_cases outputs; CodeTalk may reject "
+                    "this output during semantic library import."
+                ),
+            })
 
     for workflow_input in workflow.inputs:
         if workflow_input.resolver == "agent_mcp" and not mcp_steps:
@@ -321,6 +331,8 @@ def _parse_output(item: Any) -> WorkflowOutput:
     artifact_path = str(item.get("artifact") or item.get("path") or "").strip()
     if artifact_path and not _is_safe_artifact_path(artifact_path):
         raise WorkflowValidationError(f"unsafe output artifact path: {artifact_path}")
+    if "semantic_import" in item:
+        _validate_semantic_import_definition(item.get("semantic_import"))
     return WorkflowOutput(
         id=_required_str(item, "id"),
         type=output_type,
@@ -378,6 +390,18 @@ def _validate_output_schema_definition(schema: Any) -> None:
                     f"workflow output schema property {field_name} must be an object"
                 )
             _validate_schema_type(property_schema, field_name=field_name)
+
+
+def _validate_semantic_import_definition(value: Any) -> None:
+    if isinstance(value, bool):
+        return
+    if not isinstance(value, dict):
+        raise WorkflowValidationError("workflow output semantic_import must be a boolean or object")
+    if "enabled" in value and not isinstance(value.get("enabled"), bool):
+        raise WorkflowValidationError("workflow output semantic_import enabled must be a boolean")
+    defaults = value.get("defaults")
+    if defaults is not None and not isinstance(defaults, dict):
+        raise WorkflowValidationError("workflow output semantic_import defaults must be an object")
 
 
 def _validate_schema_type(schema: dict[str, Any], *, field_name: str = "$") -> None:
