@@ -682,6 +682,33 @@ export interface WorkbenchSmokeE2EResult {
   };
 }
 
+export interface WorkbenchProviderTaskProbeResult {
+  status: string;
+  provider: string;
+  workflow_id: string;
+  task_run_id: string;
+  task_run: PreparedWorkbenchTaskRun;
+  execution: WorkflowExecutionResult;
+  acceptance_audit: WorkbenchAcceptanceAudit;
+  contract: {
+    step_id: string;
+    required_artifacts: string[];
+    validation?: Record<string, unknown>;
+  };
+  summary: {
+    execution_status: string;
+    step_status: string;
+    task_contract_status: string;
+    missing_required: number;
+    missing_artifacts: string[];
+  };
+  artifact: {
+    path: string;
+    sha256?: string;
+    size_bytes?: number;
+  };
+}
+
 export interface WorkbenchTaskArtifact {
   relative_path: string;
   path: string;

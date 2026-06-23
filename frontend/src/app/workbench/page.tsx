@@ -35,6 +35,7 @@ import type {
   WorkbenchAcceptanceAudit,
   WorkbenchCoreWorkflowReadiness,
   WorkbenchProviderCapabilitiesMatrix,
+  WorkbenchProviderTaskProbeResult,
   WorkbenchSmokeE2EResult,
   WorkbenchSystemAudit,
   WorkbenchWorkflowCapabilities,
@@ -849,6 +850,9 @@ export default function AgentWorkbenchPage() {
   const [providerProbeResults, setProviderProbeResults] = useState<
     Record<string, ExternalAgentStartupProbeResult>
   >({});
+  const [providerTaskProbeResults, setProviderTaskProbeResults] = useState<
+    Record<string, WorkbenchProviderTaskProbeResult>
+  >({});
   const [deploymentProbeResult, setDeploymentProbeResult] =
     useState<WorkbenchDeploymentProbeResult | null>(null);
   const [smokeE2EResult, setSmokeE2EResult] =
@@ -1232,6 +1236,37 @@ export default function AgentWorkbenchPage() {
       const result = await api.tools.startupProbe(provider, repoPath.trim() || undefined);
       setProviderProbeResults((current) => ({ ...current, [provider]: result }));
       setMessage(`Startup probe ${result.status}: ${provider}`);
+    });
+
+  const runProviderTaskProbe = (provider: string) =>
+    runAction(`provider-task-probe-${provider}`, async () => {
+      const result = await api.workbench.providerTaskProbe(
+        provider,
+        repoPath.trim() || undefined,
+        30,
+      );
+      setProviderTaskProbeResults((current) => ({ ...current, [provider]: result }));
+      setPreparedRun(result.task_run);
+      setTaskRuns((current) => [
+        result.task_run,
+        ...current.filter((item) => item.task_run_id !== result.task_run_id),
+      ].slice(0, 10));
+      setWorkflowExecution(result.execution);
+      setTaskAcceptanceAudit(result.acceptance_audit);
+      setExecutionResults({});
+      setValidationResults({});
+      setMaterializeResults({});
+      setTaskRerunPlan(null);
+      setTaskRerunPlanValidation(null);
+      setTaskRerunExecution(null);
+      setTaskRerunHistory(null);
+      setWorkflowOutputMaterialize(null);
+      setSemanticOutputImport(null);
+      setArtifactContent(null);
+      await refreshArtifactManifest(result.task_run_id);
+      setMessage(
+        `Task probe ${result.status}: ${provider} contract ${result.summary.task_contract_status}`,
+      );
     });
 
   const runAllAgentProviderStartupProbes = () =>
@@ -2003,18 +2038,34 @@ export default function AgentWorkbenchPage() {
                     <p className="leading-5">{provider.diagnostics.troubleshooting[0]}</p>
                   )}
                   {provider.diagnostics.startup_probe_endpoint && (
-                    <button
-                      onClick={() => runProviderStartupProbe(provider.provider)}
-                      disabled={busyAction === `provider-probe-${provider.provider}`}
-                      className="mt-2 inline-flex items-center gap-2 rounded-lg bg-surface-container px-2.5 py-1.5 text-xs font-medium text-on-surface transition-colors hover:bg-surface-container-high disabled:opacity-50"
-                    >
-                      {busyAction === `provider-probe-${provider.provider}` ? (
-                        <Loader2 size={13} className="animate-spin" />
-                      ) : (
-                        <PlayCircle size={13} />
+                    <div className="mt-2 flex flex-wrap gap-2">
+                      <button
+                        onClick={() => runProviderStartupProbe(provider.provider)}
+                        disabled={busyAction === `provider-probe-${provider.provider}`}
+                        className="inline-flex items-center gap-2 rounded-lg bg-surface-container px-2.5 py-1.5 text-xs font-medium text-on-surface transition-colors hover:bg-surface-container-high disabled:opacity-50"
+                      >
+                        {busyAction === `provider-probe-${provider.provider}` ? (
+                          <Loader2 size={13} className="animate-spin" />
+                        ) : (
+                          <PlayCircle size={13} />
+                        )}
+                        Startup probe
+                      </button>
+                      {provider.agent_owned && provider.command.length > 0 && (
+                        <button
+                          onClick={() => runProviderTaskProbe(provider.provider)}
+                          disabled={busyAction === `provider-task-probe-${provider.provider}`}
+                          className="inline-flex items-center gap-2 rounded-lg bg-primary px-2.5 py-1.5 text-xs font-medium text-on-primary transition-opacity hover:opacity-90 disabled:opacity-50"
+                        >
+                          {busyAction === `provider-task-probe-${provider.provider}` ? (
+                            <Loader2 size={13} className="animate-spin" />
+                          ) : (
+                            <PlayCircle size={13} />
+                          )}
+                          Task probe
+                        </button>
                       )}
-                      Startup probe
-                    </button>
+                    </div>
                   )}
                   {providerProbeResults[provider.provider] && (
                     <div className="mt-2 rounded bg-surface-container px-2 py-1.5">
@@ -2046,6 +2097,39 @@ export default function AgentWorkbenchPage() {
                           </span>
                         </p>
                       )}
+                    </div>
+                  )}
+                  {providerTaskProbeResults[provider.provider] && (
+                    <div className="mt-2 rounded bg-surface-container px-2 py-1.5">
+                      <p>
+                        Task probe:{" "}
+                        <span className="font-data text-on-surface">
+                          {providerTaskProbeResults[provider.provider].status}
+                        </span>
+                        <span className="ml-2 font-data text-on-surface">
+                          contract:
+                          {providerTaskProbeResults[provider.provider].summary.task_contract_status}
+                        </span>
+                      </p>
+                      <p className="mt-1">
+                        Execution:{" "}
+                        <span className="font-data text-on-surface">
+                          {providerTaskProbeResults[provider.provider].summary.execution_status}
+                        </span>
+                        <span className="ml-2 font-data text-on-surface">
+                          missing:
+                          {providerTaskProbeResults[provider.provider].summary.missing_required}
+                        </span>
+                      </p>
+                      {providerTaskProbeResults[provider.provider].summary.missing_artifacts.length > 0 && (
+                        <p className="mt-1 break-words text-warning">
+                          Missing artifacts:{" "}
+                          {providerTaskProbeResults[provider.provider].summary.missing_artifacts.join(", ")}
+                        </p>
+                      )}
+                      <p className="mt-1 break-words font-data text-[10px]">
+                        artifact:{providerTaskProbeResults[provider.provider].artifact.path}
+                      </p>
                     </div>
                   )}
                 </div>

@@ -20,6 +20,7 @@ from app.services.agent_run_harness import AgentRunHarness, ArtifactValidationHa
 from app.services.evidence_memory import EvidenceMemoryStore
 from app.services.external_agent_discovery import (
     external_agent_provider_capabilities,
+    external_agent_provider_spec,
     external_agent_provider_specs,
     probe_external_agent_startup,
     split_agent_command,
@@ -130,6 +131,12 @@ class DeploymentProbeRequest(BaseModel):
 
 
 class SmokeE2ERequest(BaseModel):
+    repo_path: str = ""
+    timeout_sec: int = Field(default=30, ge=1, le=300)
+
+
+class ProviderTaskProbeRequest(BaseModel):
+    provider: str
     repo_path: str = ""
     timeout_sec: int = Field(default=30, ge=1, le=300)
 
@@ -428,6 +435,92 @@ async def run_workbench_deployment_probe(payload: DeploymentProbeRequest) -> dic
     _write_json(artifact_path, response)
     _write_json(artifact_dir / "deployment_probe_latest.json", response)
     return response
+
+
+@router.post("/provider-task-probe")
+async def run_workbench_provider_task_probe(payload: ProviderTaskProbeRequest) -> dict[str, Any]:
+    """Execute a real configured provider through the task harness artifact contract."""
+    provider = str(payload.provider or "").strip()
+    if not provider:
+        raise HTTPException(status_code=422, detail="provider is required")
+    spec = external_agent_provider_spec(provider)
+    if spec is None:
+        raise HTTPException(status_code=422, detail=f"Unknown provider: {provider}")
+    if not str(spec.command or "").strip():
+        raise HTTPException(status_code=422, detail=f"Provider has no configured command: {provider}")
+    repo_path = str(payload.repo_path or "").strip() or str(_workbench_dir())
+    repo = Path(repo_path).expanduser().resolve()
+    if not repo.exists() or not repo.is_dir():
+        raise HTTPException(status_code=422, detail=f"repo_path does not exist: {repo}")
+
+    workflow = _provider_task_probe_workflow(provider)
+    _workflow_store().save_workflow(workflow)
+    task_run = WorkbenchTaskRunPreparer(
+        artifact_root=_task_runs_dir(),
+        workflow_store=_workflow_store(),
+        evidence_memory=_memory_store(),
+        semantic_library=_semantic_store(),
+    ).prepare(
+        workflow_id=workflow["id"],
+        workspace_id="codetalk-provider-probe",
+        repo_path=str(repo),
+        inputs={
+            "analysis_object": "codetalk provider task probe",
+            "provider": provider,
+        },
+    )
+    execution = WorkbenchWorkflowRunner(_task_runs_dir()).execute_task_run(
+        task_run.task_run_id,
+        timeout_sec=payload.timeout_sec,
+        stop_on_error=True,
+    )
+    refreshed = WorkbenchTaskRunStore(_task_runs_dir()).load(task_run.task_run_id)
+    acceptance = _build_task_acceptance_audit(refreshed)
+    task_dir = Path(refreshed.artifact_dir)
+    _write_json(task_dir / "task_acceptance_audit.json", acceptance)
+    required_artifacts = ["agent_task_probe.json"]
+    step_result = _first_step_result(execution.step_results, step_id="agent_task_probe")
+    validation = (
+        step_result.get("validation")
+        if isinstance(step_result.get("validation"), dict)
+        else {}
+    )
+    contract_status = "ok" if validation.get("status") == "ok" else "failed"
+    status = (
+        "ready"
+        if execution.status == "completed" and acceptance.get("status") == "ready"
+        else "degraded"
+    )
+    result = {
+        "status": status,
+        "provider": provider,
+        "workflow_id": workflow["id"],
+        "task_run_id": refreshed.task_run_id,
+        "task_run": asdict(refreshed),
+        "execution": asdict(execution),
+        "acceptance_audit": acceptance,
+        "contract": {
+            "step_id": "agent_task_probe",
+            "required_artifacts": required_artifacts,
+            "validation": validation,
+        },
+        "summary": {
+            "execution_status": execution.status,
+            "step_status": str(step_result.get("status") or ""),
+            "task_contract_status": contract_status,
+            "missing_required": acceptance.get("summary", {}).get("missing_required", 0),
+            "missing_artifacts": validation.get("missing") or [],
+        },
+    }
+    artifact_path = task_dir / "provider_task_probe_result.json"
+    result["artifact"] = {"path": str(artifact_path)}
+    _write_json(artifact_path, result)
+    write_task_artifact_manifest(task_dir, task_run_id=refreshed.task_run_id)
+    result["artifact"]["sha256"] = hashlib.sha256(artifact_path.read_bytes()).hexdigest()
+    result["artifact"]["size_bytes"] = artifact_path.stat().st_size
+    _write_json(artifact_path, result)
+    write_task_artifact_manifest(task_dir, task_run_id=refreshed.task_run_id)
+    return result
 
 
 @router.post("/semantic-cases", status_code=201)
@@ -1459,6 +1552,47 @@ def _smoke_e2e_workflow(provider_id: str) -> dict[str, Any]:
     }
 
 
+def _provider_task_probe_workflow(provider_id: str) -> dict[str, Any]:
+    safe_provider = "".join(
+        char if char.isalnum() else "_"
+        for char in provider_id.lower()
+    ).strip("_") or "agent"
+    return {
+        "id": f"codetalk_provider_task_probe_{safe_provider}",
+        "name": f"CodeTalk Provider Task Probe: {provider_id}",
+        "version": 1,
+        "inputs": [
+            {"id": "analysis_object", "type": "free_text", "required": True},
+            {"id": "provider", "type": "free_text", "required": True},
+        ],
+        "steps": [
+            {
+                "id": "agent_task_probe",
+                "type": "agent_task",
+                "provider": provider_id,
+                "goal": (
+                    "Validate that this Agent CLI can receive the CodeTalk task bundle "
+                    "and write the required artifact named agent_task_probe.json. The "
+                    "artifact must be JSON with status, provider, and observed inputs. "
+                    "Do not modify repository files."
+                ),
+                "required_artifacts": ["agent_task_probe.json"],
+            },
+            {"id": "validate_evidence", "type": "evidence_validate"},
+            {"id": "render_report", "type": "report_render"},
+        ],
+        "outputs": [
+            {
+                "id": "agent_task_probe",
+                "type": "json",
+                "from": "agent_task_probe",
+                "artifact": "agent_task_probe.json",
+            },
+            {"id": "report", "type": "markdown", "from": "render_report"},
+        ],
+    }
+
+
 def _with_smoke_agent_provider(
     current: Any,
     *,
@@ -1489,6 +1623,13 @@ def _with_smoke_agent_provider(
         "supports_json_output": True,
     })
     return providers
+
+
+def _first_step_result(step_results: list[Any], *, step_id: str) -> dict[str, Any]:
+    for item in step_results:
+        if isinstance(item, dict) and str(item.get("step_id") or "") == step_id:
+            return item
+    return {}
 
 
 def _core_workflow_scenario(workflow_id: str) -> str:

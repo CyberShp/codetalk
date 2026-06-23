@@ -1,6 +1,7 @@
 from contextlib import asynccontextmanager
 import hashlib
 import json
+import sys
 from pathlib import Path
 
 import pytest
@@ -461,6 +462,91 @@ async def test_workbench_task_smoke_e2e_runs_prepare_execute_acceptance(
     assert (task_dir / "workflow_execution.json").exists()
     assert (task_dir / "task_acceptance_audit.json").exists()
     assert (task_dir / "agent_runs" / "discover_scope" / "source_scope.json").exists()
+
+
+async def test_workbench_provider_task_probe_executes_configured_provider_contract(
+    workbench_client,
+    tmp_path,
+    monkeypatch,
+):
+    script = tmp_path / "probe_agent.py"
+    script.write_text(
+        "\n".join([
+            "import json",
+            "import os",
+            "import pathlib",
+            "import sys",
+            "",
+            "payload = json.loads(sys.stdin.read() or '{}')",
+            "artifact_dir = pathlib.Path(os.environ['CODETALK_AGENT_ARTIFACT_DIR'])",
+            "probe = {",
+            "    'status': 'ok',",
+            "    'provider': payload.get('provider'),",
+            "    'run_id': payload.get('run_id'),",
+            "    'has_task_bundle': bool(payload.get('task_bundle')),",
+            "}",
+            "(artifact_dir / 'agent_task_probe.json').write_text(json.dumps(probe), encoding='utf-8')",
+            "print(json.dumps({'status': 'ok', 'probe': 'agent_task_contract'}))",
+            "",
+        ]),
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(
+        settings,
+        "external_agent_custom_providers",
+        [
+            {
+                "id": "probe-agent",
+                "command": f'"{sys.executable}" "{script}"',
+                "prompt_transport": "stdin",
+            }
+        ],
+    )
+
+    resp = await workbench_client.post(
+        "/api/workbench/provider-task-probe",
+        json={
+            "provider": "probe-agent",
+            "repo_path": str(tmp_path),
+            "timeout_sec": 15,
+        },
+    )
+
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["provider"] == "probe-agent"
+    assert body["status"] == "ready"
+    assert body["execution"]["status"] == "completed"
+    assert body["acceptance_audit"]["status"] == "ready"
+    assert body["contract"]["required_artifacts"] == ["agent_task_probe.json"]
+    assert body["summary"]["missing_required"] == 0
+    assert body["summary"]["execution_status"] == "completed"
+    assert body["summary"]["task_contract_status"] == "ok"
+    task_dir = Path(body["task_run"]["artifact_dir"])
+    probe_artifact = task_dir / "agent_runs" / "agent_task_probe" / "agent_task_probe.json"
+    assert probe_artifact.exists()
+    payload = json.loads(probe_artifact.read_text(encoding="utf-8"))
+    assert payload["provider"] == "probe-agent"
+    assert payload["has_task_bundle"] is True
+    assert Path(body["artifact"]["path"]).exists()
+    persisted = json.loads(Path(body["artifact"]["path"]).read_text(encoding="utf-8"))
+    assert persisted["task_run_id"] == body["task_run_id"]
+
+
+async def test_workbench_provider_task_probe_rejects_unknown_provider(
+    workbench_client,
+    tmp_path,
+    monkeypatch,
+):
+    monkeypatch.setattr(settings, "external_agent_custom_providers", [])
+
+    resp = await workbench_client.post(
+        "/api/workbench/provider-task-probe",
+        json={"provider": "missing-agent", "repo_path": str(tmp_path)},
+    )
+
+    assert resp.status_code == 422
+    assert "Unknown provider" in resp.text
 
 
 async def test_workbench_semantic_library_api(workbench_client):
