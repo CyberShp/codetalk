@@ -564,6 +564,7 @@ def _runtime_attempt_records(
         "profile_config_path",
         "launch_kind",
         "prompt_transport",
+        "transport_fallback_from",
         "run_status",
         "run_message",
         "probe_status",
@@ -1493,6 +1494,46 @@ def _agent_process_invocation(
     if _should_pass_prompt_as_last_arg(provider):
         return [*argv, prompt], b"", "argv"
     return list(argv), prompt.encode("utf-8"), "stdin"
+
+
+def _agent_process_invocation_candidates(
+    provider: str,
+    argv: list[str],
+    prompt: str,
+) -> list[tuple[list[str], bytes, str, str]]:
+    primary_argv, primary_stdin, primary_transport = _agent_process_invocation(
+        provider,
+        argv,
+        prompt,
+    )
+    candidates = [(primary_argv, primary_stdin, primary_transport, "")]
+    if primary_transport != "argv":
+        return candidates
+    stdin_argv = _strip_prompt_arg_transport_tokens(provider, argv)
+    if stdin_argv != primary_argv:
+        candidates.append((stdin_argv, prompt.encode("utf-8"), "stdin", primary_transport))
+    return candidates
+
+
+def _strip_prompt_arg_transport_tokens(provider: str | None, argv: list[str]) -> list[str]:
+    if _should_use_claude_print_arg_transport(provider, argv):
+        return _strip_claude_print_mode_tokens(argv)
+    if _should_use_opencode_run_arg_transport(provider, argv):
+        return list(argv)
+    return list(argv)
+
+
+def _strip_claude_print_mode_tokens(argv: list[str]) -> list[str]:
+    tokens = [str(token) for token in argv]
+    try:
+        separator = tokens.index("--")
+    except ValueError:
+        separator = -1
+    if separator >= 0:
+        before = tokens[:separator]
+        after = [token for token in tokens[separator + 1:] if token not in {"-p", "--print"}]
+        return before if not after else [*before, "--", *after]
+    return [token for token in tokens if token not in {"-p", "--print"}]
 
 
 def _prompt_as_cli_argument(prompt: str) -> str:
@@ -2525,111 +2566,134 @@ async def probe_external_agent_startup(
         if index > 0:
             health["reason"] = _fallback_reason(candidate_command, attempts[:-1])
         argv = [str(item) for item in health.get("argv") or []]
-        process_argv, stdin_payload, prompt_transport = _agent_process_invocation(
+        invocation_candidates = _agent_process_invocation_candidates(
             provider,
             argv,
             prompt,
         )
-        attempt["prompt_transport"] = prompt_transport
         env = _agent_process_env(provider, cwd)
-        try:
-            proc = await asyncio.create_subprocess_exec(
-                *process_argv,
-                cwd=str(cwd),
-                stdin=asyncio.subprocess.PIPE,
-                stdout=asyncio.subprocess.PIPE,
-                stderr=asyncio.subprocess.PIPE,
-                env=env,
-            )
-        except OSError as exc:
-            message = str(exc)
-            attempt["probe_status"] = "error"
-            attempt["probe_message"] = message
-            last_failure = {
-                "provider": provider,
-                "healthy": False,
-                "status": "error",
-                "message": message,
-                "health": health,
-            }
-            continue
+        for transport_index, (
+            process_argv,
+            stdin_payload,
+            prompt_transport,
+            transport_fallback_from,
+        ) in enumerate(invocation_candidates):
+            transport_attempt = attempt
+            if transport_index > 0:
+                transport_attempt = {
+                    **attempt,
+                    "transport_fallback_from": transport_fallback_from,
+                }
+                attempts.append(transport_attempt)
+                health["attempts"] = list(attempts)
+            transport_attempt["prompt_transport"] = prompt_transport
+            has_more_transport = transport_index < len(invocation_candidates) - 1
+            try:
+                proc = await asyncio.create_subprocess_exec(
+                    *process_argv,
+                    cwd=str(cwd),
+                    stdin=asyncio.subprocess.PIPE,
+                    stdout=asyncio.subprocess.PIPE,
+                    stderr=asyncio.subprocess.PIPE,
+                    env=env,
+                )
+            except OSError as exc:
+                message = str(exc)
+                transport_attempt["probe_status"] = "error"
+                transport_attempt["probe_message"] = message
+                last_failure = {
+                    "provider": provider,
+                    "healthy": False,
+                    "status": "error",
+                    "message": message,
+                    "health": health,
+                }
+                if has_more_transport:
+                    continue
+                break
 
-        try:
-            stdout, stderr = await asyncio.wait_for(
-                proc.communicate(stdin_payload),
-                timeout=max(1, settings.external_agent_startup_probe_timeout_sec),
-            )
-            await _wait_for_process_exit(proc)
-        except asyncio.CancelledError:
-            await _kill_and_wait_process(proc)
-            raise
-        except asyncio.TimeoutError:
-            await _kill_and_wait_process(proc)
-            message = "startup probe timed out"
-            attempt["probe_status"] = "timeout"
-            attempt["probe_message"] = message
-            last_failure = {
-                "provider": provider,
-                "healthy": False,
-                "status": "timeout",
-                "message": message,
-                "health": health,
-            }
-            continue
+            try:
+                stdout, stderr = await asyncio.wait_for(
+                    proc.communicate(stdin_payload),
+                    timeout=max(1, settings.external_agent_startup_probe_timeout_sec),
+                )
+                await _wait_for_process_exit(proc)
+            except asyncio.CancelledError:
+                await _kill_and_wait_process(proc)
+                raise
+            except asyncio.TimeoutError:
+                await _kill_and_wait_process(proc)
+                message = "startup probe timed out"
+                transport_attempt["probe_status"] = "timeout"
+                transport_attempt["probe_message"] = message
+                last_failure = {
+                    "provider": provider,
+                    "healthy": False,
+                    "status": "timeout",
+                    "message": message,
+                    "health": health,
+                }
+                if has_more_transport:
+                    continue
+                break
 
-        raw = stdout.decode("utf-8", errors="replace")
-        stderr_text = stderr.decode("utf-8", errors="replace")
-        if proc.returncode not in {0, None}:
-            message = _format_process_error_summary(proc.returncode, stderr_text, raw, health)
-            probe_status = (
-                "configuration_error"
-                if _is_terminal_agent_configuration_error(message) and index >= len(commands) - 1
-                else "error"
-            )
-            attempt["probe_status"] = probe_status
-            attempt["probe_message"] = message[:4000]
-            last_failure = {
-                "provider": provider,
-                "healthy": False,
-                "status": probe_status,
-                "message": message,
-                "health": health,
-                "stderr": stderr_text[:4000],
-                "stdout": raw[:4000],
-            }
-            if probe_status == "configuration_error":
-                return _redact_probe_response(last_failure)
-            continue
+            raw = stdout.decode("utf-8", errors="replace")
+            stderr_text = stderr.decode("utf-8", errors="replace")
+            if proc.returncode not in {0, None}:
+                message = _format_process_error_summary(proc.returncode, stderr_text, raw, health)
+                probe_status = (
+                    "configuration_error"
+                    if _is_terminal_agent_configuration_error(message) and index >= len(commands) - 1
+                    else "error"
+                )
+                transport_attempt["probe_status"] = probe_status
+                transport_attempt["probe_message"] = message[:4000]
+                last_failure = {
+                    "provider": provider,
+                    "healthy": False,
+                    "status": probe_status,
+                    "message": message,
+                    "health": health,
+                    "stderr": stderr_text[:4000],
+                    "stdout": raw[:4000],
+                }
+                if probe_status == "configuration_error":
+                    return _redact_probe_response(last_failure)
+                if has_more_transport:
+                    continue
+                break
 
-        result = parse_agent_output(provider, raw, cwd)
-        message = _agent_result_diagnostic(result)
-        attempt["probe_status"] = result.status
-        attempt["probe_message"] = message[:4000]
-        if result.status != "ok" and index < len(commands) - 1:
-            last_failure = {
+            result = parse_agent_output(provider, raw, cwd)
+            message = _agent_result_diagnostic(result)
+            transport_attempt["probe_status"] = result.status
+            transport_attempt["probe_message"] = message[:4000]
+            if result.status != "ok" and (has_more_transport or index < len(commands) - 1):
+                last_failure = {
+                    "provider": provider,
+                    "healthy": False,
+                    "status": result.status,
+                    "message": message[:4000],
+                    "health": health,
+                    "warnings": result.warnings,
+                    "stdout": raw[:4000],
+                    "stderr": stderr_text[:4000],
+                }
+                if has_more_transport:
+                    continue
+                break
+            health["attempts"] = list(attempts)
+            if health.get("used_fallback"):
+                health["reason"] = _fallback_reason(candidate_command, attempts[:-1])
+            return _redact_probe_response({
                 "provider": provider,
-                "healthy": False,
+                "healthy": result.status == "ok",
                 "status": result.status,
                 "message": message[:4000],
                 "health": health,
                 "warnings": result.warnings,
                 "stdout": raw[:4000],
                 "stderr": stderr_text[:4000],
-            }
-            continue
-        health["attempts"] = list(attempts)
-        if health.get("used_fallback"):
-            health["reason"] = _fallback_reason(candidate_command, attempts[:-1])
-        return _redact_probe_response({
-            "provider": provider,
-            "healthy": result.status == "ok",
-            "status": result.status,
-            "message": message[:4000],
-            "health": health,
-            "warnings": result.warnings,
-            "stdout": raw[:4000],
-            "stderr": stderr_text[:4000],
-        })
+            })
 
     health = last_unavailable_health or _unavailable_health_from_attempts(provider, commands, attempts)
     health["attempts"] = list(attempts)
@@ -2732,111 +2796,146 @@ async def _run_provider(
             prior_failures.append(summary)
             last_result = AgentDiscoveryResult(provider=provider, status="unavailable", raw_summary=summary)
             continue
-        process_argv, stdin_payload, prompt_transport = _agent_process_invocation(
+        invocation_candidates = _agent_process_invocation_candidates(
             provider,
             argv,
             prompt,
         )
-        attempt["prompt_transport"] = prompt_transport
-
         env = _agent_process_env(provider, request.repo_path)
-        try:
-            proc = await asyncio.create_subprocess_exec(
-                *process_argv,
-                cwd=request.repo_path,
-                stdin=asyncio.subprocess.PIPE,
-                stdout=asyncio.subprocess.PIPE,
-                stderr=asyncio.subprocess.PIPE,
-                env=env,
-            )
-        except OSError as exc:
-            summary = _format_spawn_error_summary(exc, health)
-            attempt["run_status"] = "error"
-            attempt["run_message"] = summary[:4000]
-            prior_failures.append(summary)
-            last_result = AgentDiscoveryResult(
-                provider=provider,
-                status="error",
-                raw_summary=summary,
-                warnings=[summary],
-            )
-            last_raw = summary
-            continue
+        result: AgentDiscoveryResult | None = None
+        raw = ""
+        should_try_next_command = False
+        for transport_index, (
+            process_argv,
+            stdin_payload,
+            prompt_transport,
+            transport_fallback_from,
+        ) in enumerate(invocation_candidates):
+            transport_attempt = attempt
+            if transport_index > 0:
+                transport_attempt = {
+                    **attempt,
+                    "transport_fallback_from": transport_fallback_from,
+                }
+                attempts.append(transport_attempt)
+            transport_attempt["prompt_transport"] = prompt_transport
+            has_more_transport = transport_index < len(invocation_candidates) - 1
 
-        try:
-            stdout, stderr = await asyncio.wait_for(
-                proc.communicate(stdin_payload),
-                timeout=max(1, settings.external_agent_timeout_sec),
-            )
-            await _wait_for_process_exit(proc)
-        except asyncio.CancelledError:
-            await _kill_and_wait_process(proc)
-            raise
-        except asyncio.TimeoutError:
-            await _kill_and_wait_process(proc)
-            summary = "timeout"
-            attempt["run_status"] = "timeout"
-            attempt["run_message"] = summary
-            prior_failures.append(summary)
-            last_result = AgentDiscoveryResult(provider=provider, status="timeout", raw_summary=summary)
-            last_raw = summary
-            continue
-
-        raw = stdout.decode("utf-8", errors="replace")
-        stderr_text = stderr.decode("utf-8", errors="replace")
-        if proc.returncode not in {0, None}:
-            cli_error = _extract_cli_error(raw) or _extract_cli_error(stderr_text)
-            summary = (
-                _append_health_diagnostics(cli_error, health)
-                if cli_error
-                else _format_process_error_summary(proc.returncode, stderr_text, raw, health)
-            )
-            failure_status: AgentStatus = (
-                "configuration_error"
-                if _is_terminal_agent_configuration_error(summary)
-                else "error"
-            )
-            attempt["run_status"] = failure_status
-            attempt["run_message"] = summary[:4000]
-            prior_failures.append(summary)
-            last_result = AgentDiscoveryResult(
-                provider=provider,
-                status=failure_status,
-                raw_summary=summary,
-                warnings=[summary],
-            )
-            last_raw = raw + stderr_text
-            if failure_status == "configuration_error" and index >= len(commands) - 1:
-                last_result.runtime_attempts = _runtime_attempt_records(
-                    provider,
-                    request.request_id,
-                    attempts,
-                    phase="discovery",
+            try:
+                proc = await asyncio.create_subprocess_exec(
+                    *process_argv,
+                    cwd=request.repo_path,
+                    stdin=asyncio.subprocess.PIPE,
+                    stdout=asyncio.subprocess.PIPE,
+                    stderr=asyncio.subprocess.PIPE,
+                    env=env,
                 )
-                _record_agent_turn(session, provider, request, prompt, last_raw, last_result)
-                return last_result
-            continue
-        if not raw.strip() and stderr:
-            summary = stderr_text[:4000]
-            attempt["run_status"] = "error"
-            attempt["run_message"] = summary
-            prior_failures.append(summary)
-            last_result = AgentDiscoveryResult(
-                provider=provider,
-                status="error",
-                raw_summary=summary,
-            )
-            last_raw = summary
-            continue
+            except OSError as exc:
+                summary = _format_spawn_error_summary(exc, health)
+                transport_attempt["run_status"] = "error"
+                transport_attempt["run_message"] = summary[:4000]
+                prior_failures.append(summary)
+                last_result = AgentDiscoveryResult(
+                    provider=provider,
+                    status="error",
+                    raw_summary=summary,
+                    warnings=[summary],
+                )
+                last_raw = summary
+                if has_more_transport:
+                    continue
+                should_try_next_command = True
+                break
 
-        result = parse_agent_output(provider, raw, request.repo_path)
-        attempt["run_status"] = result.status
-        attempt["run_message"] = _agent_result_diagnostic(result)[:4000]
-        if result.status != "ok" and index < len(commands) - 1:
-            summary = _agent_result_diagnostic(result)
-            prior_failures.append(summary)
-            last_result = result
-            last_raw = raw
+            try:
+                stdout, stderr = await asyncio.wait_for(
+                    proc.communicate(stdin_payload),
+                    timeout=max(1, settings.external_agent_timeout_sec),
+                )
+                await _wait_for_process_exit(proc)
+            except asyncio.CancelledError:
+                await _kill_and_wait_process(proc)
+                raise
+            except asyncio.TimeoutError:
+                await _kill_and_wait_process(proc)
+                summary = "timeout"
+                transport_attempt["run_status"] = "timeout"
+                transport_attempt["run_message"] = summary
+                prior_failures.append(summary)
+                last_result = AgentDiscoveryResult(provider=provider, status="timeout", raw_summary=summary)
+                last_raw = summary
+                if has_more_transport:
+                    continue
+                should_try_next_command = True
+                break
+
+            raw = stdout.decode("utf-8", errors="replace")
+            stderr_text = stderr.decode("utf-8", errors="replace")
+            if proc.returncode not in {0, None}:
+                cli_error = _extract_cli_error(raw) or _extract_cli_error(stderr_text)
+                summary = (
+                    _append_health_diagnostics(cli_error, health)
+                    if cli_error
+                    else _format_process_error_summary(proc.returncode, stderr_text, raw, health)
+                )
+                failure_status: AgentStatus = (
+                    "configuration_error"
+                    if _is_terminal_agent_configuration_error(summary)
+                    else "error"
+                )
+                transport_attempt["run_status"] = failure_status
+                transport_attempt["run_message"] = summary[:4000]
+                prior_failures.append(summary)
+                last_result = AgentDiscoveryResult(
+                    provider=provider,
+                    status=failure_status,
+                    raw_summary=summary,
+                    warnings=[summary],
+                )
+                last_raw = raw + stderr_text
+                if has_more_transport and failure_status != "configuration_error":
+                    continue
+                if failure_status == "configuration_error" and index >= len(commands) - 1:
+                    last_result.runtime_attempts = _runtime_attempt_records(
+                        provider,
+                        request.request_id,
+                        attempts,
+                        phase="discovery",
+                    )
+                    _record_agent_turn(session, provider, request, prompt, last_raw, last_result)
+                    return last_result
+                should_try_next_command = True
+                break
+            if not raw.strip() and stderr:
+                summary = stderr_text[:4000]
+                transport_attempt["run_status"] = "error"
+                transport_attempt["run_message"] = summary
+                prior_failures.append(summary)
+                last_result = AgentDiscoveryResult(
+                    provider=provider,
+                    status="error",
+                    raw_summary=summary,
+                )
+                last_raw = summary
+                if has_more_transport:
+                    continue
+                should_try_next_command = True
+                break
+
+            result = parse_agent_output(provider, raw, request.repo_path)
+            transport_attempt["run_status"] = result.status
+            transport_attempt["run_message"] = _agent_result_diagnostic(result)[:4000]
+            if result.status != "ok" and (has_more_transport or index < len(commands) - 1):
+                summary = _agent_result_diagnostic(result)
+                prior_failures.append(summary)
+                last_result = result
+                last_raw = raw
+                if has_more_transport:
+                    continue
+                should_try_next_command = True
+                break
+            break
+        if should_try_next_command or result is None:
             continue
         if health.get("used_fallback"):
             result.warnings.append(str(health.get("reason") or "used fallback agent command"))

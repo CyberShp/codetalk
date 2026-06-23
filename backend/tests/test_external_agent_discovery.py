@@ -3702,6 +3702,76 @@ def test_run_provider_bare_ccr_code_uses_print_argument_transport(tmp_path, monk
     assert results[0].runtime_attempts[0]["prompt_transport"] == "argv"
 
 
+def test_run_provider_retries_stdin_when_ccr_print_arg_is_rejected(tmp_path, monkeypatch):
+    from app.services.external_agent_discovery import AgentDiscoveryRequest, run_external_agent_discovery
+
+    config = _set_existing_ccr_config(tmp_path, monkeypatch)
+    captured: list[dict] = []
+
+    class FakeProc:
+        def __init__(self, returncode, stdout=b"", stderr=b""):
+            self.returncode = returncode
+            self._stdout = stdout
+            self._stderr = stderr
+
+        async def communicate(self, data):
+            captured[-1]["stdin"] = data.decode("utf-8") if data else ""
+            return self._stdout, self._stderr
+
+        async def wait(self):
+            return self.returncode
+
+    async def fake_create_subprocess_exec(*args, **kwargs):
+        captured.append({"argv": list(args)})
+        if "-p" in args:
+            return FakeProc(2, stderr=b"unknown option: -p\n")
+        return FakeProc(
+            0,
+            stdout=(
+                b'{"candidate_files":[],"candidate_symbols":[],"candidate_entries":[],'
+                b'"need_source_slices":[],"commands":[],"raw_summary":"stdin_ok"}'
+            ),
+        )
+
+    monkeypatch.setattr(
+        "app.services.external_agent_discovery.shutil.which",
+        lambda cmd: "C:/tools/ccr.exe" if cmd == "ccr" else None,
+    )
+    monkeypatch.setattr(
+        "app.services.external_agent_discovery.asyncio.create_subprocess_exec",
+        fake_create_subprocess_exec,
+    )
+    monkeypatch.setattr(
+        "app.services.external_agent_discovery.settings.claude_code_command",
+        "ccr code",
+    )
+    monkeypatch.setattr(
+        "app.services.external_agent_discovery.settings.claude_code_fallback_commands",
+        [],
+    )
+
+    results = asyncio.run(run_external_agent_discovery(
+        AgentDiscoveryRequest(
+            request_id="ccr-print-rejected",
+            repo_path=str(tmp_path),
+            analysis_object_text="nvme-tcp-tls",
+        ),
+        providers=["claude-code"],
+    ))
+
+    assert results[0].status == "ok"
+    assert results[0].raw_summary == "stdin_ok"
+    assert len(captured) == 2
+    assert captured[0]["argv"][0:6] == ["C:/tools/ccr.exe", "code", "--config", str(config), "--", "-p"]
+    assert "analysis_object_text" in captured[0]["argv"][6]
+    assert captured[0]["stdin"] == ""
+    assert captured[1]["argv"] == ["C:/tools/ccr.exe", "code", "--config", str(config)]
+    assert "analysis_object_text" in captured[1]["stdin"]
+    assert [item["prompt_transport"] for item in results[0].runtime_attempts] == ["argv", "stdin"]
+    assert results[0].runtime_attempts[1]["transport_fallback_from"] == "argv"
+    assert any("unknown option: -p" in item for item in results[0].warnings)
+
+
 def test_claude_print_prompt_argument_escapes_raw_newlines_for_windows_cmd():
     from app.services.external_agent_discovery import _agent_process_invocation
 
@@ -3805,6 +3875,68 @@ def test_startup_probe_redacts_secret_values_from_response(tmp_path, monkeypatch
     assert result["status"] == "ok"
     assert secret not in serialized
     assert "<redacted>" in serialized
+
+
+def test_startup_probe_retries_stdin_when_ccr_print_arg_is_rejected(tmp_path, monkeypatch):
+    from app.services.external_agent_discovery import probe_external_agent_startup
+
+    config = _set_existing_ccr_config(tmp_path, monkeypatch)
+    captured: list[dict] = []
+
+    class FakeProc:
+        def __init__(self, returncode, stdout=b"", stderr=b""):
+            self.returncode = returncode
+            self._stdout = stdout
+            self._stderr = stderr
+
+        async def communicate(self, data):
+            captured[-1]["stdin"] = data.decode("utf-8") if data else ""
+            return self._stdout, self._stderr
+
+        async def wait(self):
+            return self.returncode
+
+    async def fake_create_subprocess_exec(*args, **kwargs):
+        captured.append({"argv": list(args)})
+        if "-p" in args:
+            return FakeProc(2, stderr=b"unknown option: -p\n")
+        return FakeProc(
+            0,
+            stdout=(
+                b'{"candidate_files":[],"candidate_symbols":[],"candidate_entries":[],'
+                b'"need_source_slices":[],"commands":[],"raw_summary":"startup_probe_ok"}'
+            ),
+        )
+
+    monkeypatch.setattr(
+        "app.services.external_agent_discovery.shutil.which",
+        lambda cmd: "C:/tools/ccr.exe" if cmd == "ccr" else None,
+    )
+    monkeypatch.setattr(
+        "app.services.external_agent_discovery.asyncio.create_subprocess_exec",
+        fake_create_subprocess_exec,
+    )
+    monkeypatch.setattr(
+        "app.services.external_agent_discovery.settings.claude_code_command",
+        "ccr code",
+    )
+    monkeypatch.setattr(
+        "app.services.external_agent_discovery.settings.claude_code_fallback_commands",
+        [],
+    )
+
+    result = asyncio.run(probe_external_agent_startup("claude-code", repo_path=tmp_path))
+
+    assert result["healthy"] is True
+    assert result["status"] == "ok"
+    assert len(captured) == 2
+    assert captured[0]["argv"][0:6] == ["C:/tools/ccr.exe", "code", "--config", str(config), "--", "-p"]
+    assert captured[0]["stdin"] == ""
+    assert captured[1]["argv"] == ["C:/tools/ccr.exe", "code", "--config", str(config)]
+    assert "startup probe" in captured[1]["stdin"]
+    attempts = result["health"]["attempts"]
+    assert [item["prompt_transport"] for item in attempts] == ["argv", "stdin"]
+    assert attempts[1]["transport_fallback_from"] == "argv"
 
 
 def test_startup_probe_tries_fallback_when_primary_command_exits_nonzero(tmp_path, monkeypatch):
