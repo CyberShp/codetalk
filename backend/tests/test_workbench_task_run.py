@@ -111,6 +111,84 @@ def test_prepare_workbench_task_run_ingests_file_inputs(tmp_path):
     assert Path(result.artifact_dir, "input_context.json").exists()
 
 
+def test_prepare_workbench_task_run_extracts_docx_file_inputs(tmp_path):
+    from docx import Document
+
+    from app.services.workflow_dsl import WorkflowStore
+    from app.services.workbench_task_run import WorkbenchTaskRunPreparer
+
+    docx_path = tmp_path / "requirements.docx"
+    document = Document()
+    document.add_heading("Requirements", level=1)
+    document.add_paragraph("TLS handshake failure must release the queue pair.")
+    table = document.add_table(rows=1, cols=2)
+    table.cell(0, 0).text = "Scenario"
+    table.cell(0, 1).text = "Invalid certificate"
+    document.save(str(docx_path))
+    workflow_store = WorkflowStore(tmp_path / "workflows.db")
+    workflow_store.save_workflow({
+        "id": "docx_context_workflow",
+        "name": "Docx context workflow",
+        "version": 1,
+        "inputs": [{"id": "requirements_doc", "type": "file", "required": True}],
+        "steps": [{"id": "analyze", "type": "agent_task", "goal": "read requirements"}],
+        "outputs": [{"id": "report", "type": "markdown"}],
+    })
+
+    result = WorkbenchTaskRunPreparer(
+        artifact_root=tmp_path / "task_runs",
+        workflow_store=workflow_store,
+    ).prepare(
+        workflow_id="docx_context_workflow",
+        workspace_id="ws-docx",
+        repo_path=str(tmp_path),
+        inputs={"requirements_doc": {"path": str(docx_path)}},
+        provider_override="claude-code",
+    )
+
+    file_info = result.input_snapshot["requirements_doc"]
+    parsed_text = Path(file_info["parsed_text_path"]).read_text(encoding="utf-8")
+    assert "TLS handshake failure must release the queue pair" in parsed_text
+    assert "Invalid certificate" in parsed_text
+    assert file_info["parse_warnings"] == []
+    input_context = result.task_bundle["input_context"]["inputs"][0]
+    assert input_context["filename"] == "requirements.docx"
+    assert "TLS handshake failure" in input_context["text_preview"]
+
+
+def test_prepare_workbench_task_run_records_pdf_extraction_warning_without_pdf_dependency(tmp_path):
+    from app.services.workflow_dsl import WorkflowStore
+    from app.services.workbench_task_run import WorkbenchTaskRunPreparer
+
+    pdf_path = tmp_path / "design.pdf"
+    pdf_path.write_bytes(b"%PDF-1.4\n% minimal placeholder\n")
+    workflow_store = WorkflowStore(tmp_path / "workflows.db")
+    workflow_store.save_workflow({
+        "id": "pdf_context_workflow",
+        "name": "PDF context workflow",
+        "version": 1,
+        "inputs": [{"id": "design_doc", "type": "file", "required": True}],
+        "steps": [{"id": "analyze", "type": "agent_task", "goal": "read design"}],
+        "outputs": [{"id": "report", "type": "markdown"}],
+    })
+
+    result = WorkbenchTaskRunPreparer(
+        artifact_root=tmp_path / "task_runs",
+        workflow_store=workflow_store,
+    ).prepare(
+        workflow_id="pdf_context_workflow",
+        workspace_id="ws-pdf",
+        repo_path=str(tmp_path),
+        inputs={"design_doc": {"path": str(pdf_path)}},
+        provider_override="claude-code",
+    )
+
+    file_info = result.input_snapshot["design_doc"]
+    assert file_info["parse_warnings"]
+    assert file_info["parse_warnings"][0].startswith("pdf_extraction_")
+    assert Path(file_info["parsed_text_path"]).read_text(encoding="utf-8") == ""
+
+
 def test_prepare_workbench_task_run_validates_required_inputs(tmp_path):
     from app.services.workflow_dsl import WorkflowStore
     from app.services.workbench_task_run import WorkbenchTaskRunPreparer

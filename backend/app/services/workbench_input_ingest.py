@@ -13,6 +13,8 @@ TEXT_EXTS = frozenset({
     ".md", ".txt", ".patch", ".diff", ".json", ".xml", ".lcov", ".info",
     ".csv", ".tsv", ".yaml", ".yml", ".ini", ".cfg", ".conf", ".log",
 })
+DOCX_EXTS = frozenset({".docx"})
+PDF_EXTS = frozenset({".pdf"})
 
 
 def ingest_workbench_inputs(
@@ -106,12 +108,14 @@ def _ingest_file(*, input_id: str, value: Any, root: Path) -> dict[str, Any]:
     data = copied.read_bytes()
     sha256 = hashlib.sha256(data).hexdigest()
 
-    parsed_text = _extract_text(copied)
+    parsed_text, parse_warnings = _extract_text(copied)
     parsed_text_path = input_root / "parsed_text.txt"
     parsed_text_path.write_text(parsed_text, encoding="utf-8")
     chunks = _chunks(parsed_text)
     chunks_path = input_root / "chunks.json"
     chunks_path.write_text(json.dumps(chunks, ensure_ascii=False, indent=2), encoding="utf-8")
+    if not parse_warnings and not parsed_text:
+        parse_warnings = ["text_extraction_empty"]
     metadata = {
         "kind": "file",
         "input_id": input_id,
@@ -123,7 +127,7 @@ def _ingest_file(*, input_id: str, value: Any, root: Path) -> dict[str, Any]:
         "sha256": sha256,
         "parsed_text_path": str(parsed_text_path),
         "chunks_path": str(chunks_path),
-        "parse_warnings": [] if parsed_text else ["text_extraction_empty"],
+        "parse_warnings": parse_warnings,
     }
     metadata_path = input_root / "file_metadata.json"
     metadata_path.write_text(json.dumps(metadata, ensure_ascii=False, indent=2), encoding="utf-8")
@@ -131,10 +135,49 @@ def _ingest_file(*, input_id: str, value: Any, root: Path) -> dict[str, Any]:
     return metadata
 
 
-def _extract_text(path: Path) -> str:
-    if path.suffix.lower() not in TEXT_EXTS:
-        return ""
-    return path.read_text(encoding="utf-8", errors="replace")
+def _extract_text(path: Path) -> tuple[str, list[str]]:
+    suffix = path.suffix.lower()
+    if suffix in TEXT_EXTS:
+        return path.read_text(encoding="utf-8", errors="replace"), []
+    if suffix in DOCX_EXTS:
+        return _extract_docx_text(path)
+    if suffix in PDF_EXTS:
+        return _extract_pdf_text(path)
+    return "", ["unsupported_file_type_for_text_extraction"]
+
+
+def _extract_docx_text(path: Path) -> tuple[str, list[str]]:
+    try:
+        from docx import Document
+    except Exception as exc:  # pragma: no cover - dependency is required in backend requirements
+        return "", [f"docx_extraction_unavailable:{type(exc).__name__}"]
+    try:
+        document = Document(str(path))
+    except Exception as exc:
+        return "", [f"docx_extraction_failed:{type(exc).__name__}"]
+    paragraphs = [paragraph.text for paragraph in document.paragraphs if paragraph.text]
+    table_cells: list[str] = []
+    for table in document.tables:
+        for row in table.rows:
+            for cell in row.cells:
+                if cell.text:
+                    table_cells.append(cell.text)
+    text = "\n".join([*paragraphs, *table_cells]).strip()
+    return text, [] if text else ["text_extraction_empty"]
+
+
+def _extract_pdf_text(path: Path) -> tuple[str, list[str]]:
+    try:
+        from pypdf import PdfReader  # type: ignore[import-not-found]
+    except Exception:
+        return "", ["pdf_extraction_unavailable:pypdf_not_installed"]
+    try:
+        reader = PdfReader(str(path))
+        pages = [page.extract_text() or "" for page in reader.pages]
+    except Exception as exc:
+        return "", [f"pdf_extraction_failed:{type(exc).__name__}"]
+    text = "\n".join(page for page in pages if page).strip()
+    return text, [] if text else ["text_extraction_empty"]
 
 
 def _chunks(text: str, *, chunk_size: int = 4000) -> list[dict[str, Any]]:
