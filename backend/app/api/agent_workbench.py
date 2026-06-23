@@ -4396,7 +4396,18 @@ def _validate_task_rerun_plan(*, task_run: Any, plan: dict[str, Any]) -> dict[st
             }
             for artifact in step.get("overwrite_risk_artifacts") or []
         ]
-        status = "ready" if artifact_dir_exists else "blocked"
+        replay_artifacts = _rerun_agent_replay_artifact_checks(
+            artifact_dir=artifact_dir,
+            artifact_dir_exists=artifact_dir_exists,
+        )
+        missing_replay_artifact = any(
+            item.get("status") == "blocked" for item in replay_artifacts
+        )
+        status = (
+            "ready"
+            if artifact_dir_exists and not missing_replay_artifact
+            else "blocked"
+        )
         step_payload = {
             "step_id": step_id,
             "status": status,
@@ -4406,9 +4417,12 @@ def _validate_task_rerun_plan(*, task_run: Any, plan: dict[str, Any]) -> dict[st
             "artifact_dir_exists": artifact_dir_exists,
             "missing_artifacts": [str(item) for item in step.get("missing_artifacts") or []],
             "overwrite_risk_artifacts": overwrite_risk_artifacts,
+            "replay_artifacts": replay_artifacts,
         }
         if not artifact_dir_exists:
             step_payload["reason"] = "agent step artifact directory is missing"
+        elif missing_replay_artifact:
+            step_payload["reason"] = "agent replay artifact is missing"
         step_validations.append(step_payload)
 
     blocked = any(item.get("status") == "blocked" for item in checks + step_validations)
@@ -4430,6 +4444,31 @@ def _rerun_file_check(check_id: str, path: Path) -> dict[str, Any]:
         "path": str(path),
         "reason": "" if exists else "required task-run artifact is missing",
     }
+
+
+def _rerun_agent_replay_artifact_checks(
+    *,
+    artifact_dir: Path,
+    artifact_dir_exists: bool,
+) -> list[dict[str, Any]]:
+    required = [
+        "agent_run.json",
+        "task_bundle.json",
+        "workflow_snapshot.json",
+        "agent_output_contract.json",
+        "execution_input.json",
+        "agent_replay_plan.json",
+    ]
+    checks: list[dict[str, Any]] = []
+    for artifact in required:
+        exists = bool(artifact_dir_exists and (artifact_dir / artifact).is_file())
+        checks.append({
+            "artifact": artifact,
+            "status": "ok" if exists else "blocked",
+            "path": str(artifact_dir / artifact),
+            "reason": "" if exists else "required replay artifact is missing",
+        })
+    return checks
 
 
 def _rerun_repo_check(repo_path: str) -> dict[str, Any]:

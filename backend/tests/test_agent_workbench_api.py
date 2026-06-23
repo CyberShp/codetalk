@@ -3132,6 +3132,38 @@ async def test_workbench_task_run_artifacts_api_labels_failure_recovery(
         "artifact": "raw_output.txt",
         "exists": True,
     }
+    assert {
+        item["artifact"]: item["status"]
+        for item in validation["steps"][0]["replay_artifacts"]
+    } == {
+        "agent_run.json": "ok",
+        "task_bundle.json": "ok",
+        "workflow_snapshot.json": "ok",
+        "agent_output_contract.json": "ok",
+        "execution_input.json": "ok",
+        "agent_replay_plan.json": "ok",
+    }
+    (Path(prepared.json()["artifact_dir"]) / "agent_runs" / "discover" / "agent_replay_plan.json").unlink()
+    blocked_validation_response = await workbench_client.get(
+        f"/api/workbench/task-runs/{task_run_id}/rerun-plan/validation"
+    )
+    assert blocked_validation_response.status_code == 200
+    blocked_validation = blocked_validation_response.json()
+    assert blocked_validation["status"] == "blocked"
+    assert blocked_validation["can_rerun"] is False
+    assert blocked_validation["steps"][0]["status"] == "blocked"
+    assert blocked_validation["steps"][0]["reason"] == "agent replay artifact is missing"
+    missing_replay = {
+        item["artifact"]: item
+        for item in blocked_validation["steps"][0]["replay_artifacts"]
+    }
+    assert missing_replay["agent_replay_plan.json"]["status"] == "blocked"
+    assert missing_replay["agent_replay_plan.json"]["reason"] == "required replay artifact is missing"
+
+    await workbench_client.post(
+        f"/api/workbench/task-runs/{task_run_id}/execute",
+        json={"timeout_sec": 10},
+    )
     rerun_response = await workbench_client.post(
         f"/api/workbench/task-runs/{task_run_id}/rerun-plan/execute",
         json={"timeout_sec": 10},
