@@ -55,6 +55,20 @@ def test_workflow_definition_rejects_unsafe_artifact_paths():
             "outputs": [],
         })
 
+    with pytest.raises(WorkflowValidationError, match="unsafe required artifact path"):
+        validate_workflow_definition({
+            "id": "empty_required_artifact",
+            "name": "Empty required artifact",
+            "steps": [
+                {
+                    "id": "agent",
+                    "type": "agent_task",
+                    "required_artifacts": [""],
+                }
+            ],
+            "outputs": [],
+        })
+
     with pytest.raises(WorkflowValidationError, match="unsafe output artifact path"):
         validate_workflow_definition({
             "id": "unsafe_output_artifact",

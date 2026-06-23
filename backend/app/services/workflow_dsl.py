@@ -296,7 +296,7 @@ def _parse_step(item: Any) -> WorkflowStep:
         raise WorkflowValidationError(f"unsupported workflow step type: {step_type}")
     required_artifacts = [str(value) for value in item.get("required_artifacts") or []]
     for artifact in required_artifacts:
-        if artifact and not _is_safe_artifact_path(artifact):
+        if not _is_safe_artifact_path(artifact):
             raise WorkflowValidationError(f"unsafe required artifact path: {artifact}")
     return WorkflowStep(
         id=step_id,
