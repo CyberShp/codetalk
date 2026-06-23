@@ -668,6 +668,20 @@ export interface WorkbenchAcceptanceAudit {
   missing_recommended: Array<Record<string, unknown>>;
 }
 
+export interface WorkbenchSmokeE2EResult {
+  status: string;
+  workflow_id: string;
+  task_run_id: string;
+  task_run: PreparedWorkbenchTaskRun;
+  execution: WorkflowExecutionResult;
+  acceptance_audit: WorkbenchAcceptanceAudit;
+  artifact: {
+    path: string;
+    sha256?: string;
+    size_bytes?: number;
+  };
+}
+
 export interface WorkbenchTaskArtifact {
   relative_path: string;
   path: string;

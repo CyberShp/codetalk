@@ -435,6 +435,34 @@ async def test_workbench_deployment_probe_runs_agent_cli_startup_checks(
     assert latest["summary"]["failed_count"] == 1
 
 
+async def test_workbench_task_smoke_e2e_runs_prepare_execute_acceptance(
+    workbench_client,
+    tmp_path,
+):
+    resp = await workbench_client.post(
+        "/api/workbench/task-runs/smoke-e2e",
+        json={"repo_path": str(tmp_path)},
+    )
+
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["status"] == "ready"
+    assert body["workflow_id"] == "codetalk_smoke_e2e"
+    assert body["execution"]["status"] == "completed"
+    assert body["acceptance_audit"]["status"] == "ready"
+    assert body["acceptance_audit"]["summary"]["missing_required"] == 0
+    assert body["task_run"]["task_run_id"]
+    artifact_path = Path(body["artifact"]["path"])
+    assert artifact_path.exists()
+    payload = json.loads(artifact_path.read_text(encoding="utf-8"))
+    assert payload["task_run_id"] == body["task_run"]["task_run_id"]
+    assert payload["acceptance_audit"]["status"] == "ready"
+    task_dir = Path(body["task_run"]["artifact_dir"])
+    assert (task_dir / "workflow_execution.json").exists()
+    assert (task_dir / "task_acceptance_audit.json").exists()
+    assert (task_dir / "agent_runs" / "discover_scope" / "source_scope.json").exists()
+
+
 async def test_workbench_semantic_library_api(workbench_client):
     created = await workbench_client.post(
         "/api/workbench/semantic-cases",

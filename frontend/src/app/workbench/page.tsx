@@ -35,6 +35,7 @@ import type {
   WorkbenchAcceptanceAudit,
   WorkbenchCoreWorkflowReadiness,
   WorkbenchProviderCapabilitiesMatrix,
+  WorkbenchSmokeE2EResult,
   WorkbenchSystemAudit,
   WorkbenchWorkflowCapabilities,
   WorkbenchTaskArtifact,
@@ -850,6 +851,8 @@ export default function AgentWorkbenchPage() {
   >({});
   const [deploymentProbeResult, setDeploymentProbeResult] =
     useState<WorkbenchDeploymentProbeResult | null>(null);
+  const [smokeE2EResult, setSmokeE2EResult] =
+    useState<WorkbenchSmokeE2EResult | null>(null);
   const [taskRuns, setTaskRuns] = useState<PreparedWorkbenchTaskRun[]>([]);
   const [preparedRun, setPreparedRun] = useState<PreparedWorkbenchTaskRun | null>(null);
   const [artifactManifest, setArtifactManifest] =
@@ -1254,6 +1257,31 @@ export default function AgentWorkbenchPage() {
       setMessage(
         `Deployment probe ${result.status}: ${result.summary.healthy_count}/${result.summary.provider_count} healthy`,
       );
+    });
+
+  const runSmokeE2E = () =>
+    runAction("smoke-e2e", async () => {
+      const result = await api.workbench.smokeE2E(repoPath.trim() || undefined, 30);
+      setSmokeE2EResult(result);
+      setPreparedRun(result.task_run);
+      setTaskRuns((current) => [
+        result.task_run,
+        ...current.filter((item) => item.task_run_id !== result.task_run_id),
+      ].slice(0, 10));
+      setWorkflowExecution(result.execution);
+      setTaskAcceptanceAudit(result.acceptance_audit);
+      setExecutionResults({});
+      setValidationResults({});
+      setMaterializeResults({});
+      setTaskRerunPlan(null);
+      setTaskRerunPlanValidation(null);
+      setTaskRerunExecution(null);
+      setTaskRerunHistory(null);
+      setWorkflowOutputMaterialize(null);
+      setSemanticOutputImport(null);
+      setArtifactContent(null);
+      await refreshArtifactManifest(result.task_run_id);
+      setMessage(`Smoke E2E ${result.status}: ${result.task_run_id}`);
     });
 
   function updatePrepareInput(input: Record<string, unknown>, value: string) {
@@ -1713,7 +1741,47 @@ export default function AgentWorkbenchPage() {
             )}
             Probe all Agent CLIs
           </button>
+          <button
+            onClick={runSmokeE2E}
+            disabled={busyAction === "smoke-e2e"}
+            className="inline-flex items-center gap-2 rounded-lg bg-primary px-2.5 py-1.5 text-xs font-medium text-on-primary transition-opacity hover:opacity-90 disabled:opacity-50"
+          >
+            {busyAction === "smoke-e2e" ? (
+              <Loader2 size={13} className="animate-spin" />
+            ) : (
+              <PlayCircle size={13} />
+            )}
+            Smoke E2E
+          </button>
         </div>
+        {smokeE2EResult && (
+          <div className="mb-3 rounded-lg border border-outline-variant/30 bg-surface-container px-3 py-2 text-xs text-on-surface-variant">
+            <div className="flex flex-wrap items-center gap-2">
+              <span className="font-medium text-on-surface">Smoke E2E</span>
+              <span
+                className={
+                  smokeE2EResult.status === "ready"
+                    ? "font-data text-green-500"
+                    : "font-data text-warning"
+                }
+              >
+                {smokeE2EResult.status}
+              </span>
+              <span className="font-data">
+                task:{smokeE2EResult.task_run_id}
+              </span>
+              <span className="font-data">
+                execution:{smokeE2EResult.execution.status}
+              </span>
+              <span className="font-data">
+                missing:{smokeE2EResult.acceptance_audit.summary.missing_required}
+              </span>
+            </div>
+            <p className="mt-1 break-words font-data text-[10px]">
+              artifact:{smokeE2EResult.artifact.path}
+            </p>
+          </div>
+        )}
         {deploymentProbeResult && (
           <div className="mb-3 rounded-lg border border-outline-variant/30 bg-surface-container px-3 py-2 text-xs text-on-surface-variant">
             <div className="flex flex-wrap items-center gap-2">

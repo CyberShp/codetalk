@@ -47,6 +47,7 @@ import type {
   WorkbenchWorkflowCapabilities,
   WorkbenchCoreWorkflowReadiness,
   WorkbenchInputUploadResult,
+  WorkbenchSmokeE2EResult,
   WorkbenchTaskArtifactContent,
   WorkbenchTaskArtifactManifest,
 } from "./types";
@@ -525,6 +526,15 @@ export const api = {
         body: JSON.stringify({
           repo_path: repoPath ?? "",
           providers: providers ?? [],
+        }),
+      }),
+
+    smokeE2E: (repoPath?: string, timeoutSec = 30) =>
+      request<WorkbenchSmokeE2EResult>("/api/workbench/task-runs/smoke-e2e", {
+        method: "POST",
+        body: JSON.stringify({
+          repo_path: repoPath ?? "",
+          timeout_sec: timeoutSec,
         }),
       }),
 
