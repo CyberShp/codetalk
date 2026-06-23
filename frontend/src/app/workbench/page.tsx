@@ -122,6 +122,11 @@ const DEFAULT_SEMANTIC_CASE = {
   assertion_style: "Prefer observable status, logs, counters, and connection lifecycle checks",
 };
 
+const DEFAULT_SEMANTIC_LINES = [
+  "TLS handshake fails with invalid credentials -> connection is rejected and resources are released",
+  "TLS disabled by configuration -> connection uses the non-TLS path and reports the selected mode",
+].join("\n");
+
 function pretty(value: unknown): string {
   return JSON.stringify(value, null, 2);
 }
@@ -225,6 +230,57 @@ function updateInputsJsonValue(
 
 function isFileLikeWorkflowInput(inputType: string): boolean {
   return ["file", "patch", "diff", "coverage_report"].includes(inputType);
+}
+
+function semanticCasesFromLines({
+  feature,
+  module,
+  text,
+}: {
+  feature: string;
+  module: string;
+  text: string;
+}): Record<string, unknown> {
+  const safeFeature = feature.trim() || "Imported Feature";
+  const safeModule = module.trim() || "module";
+  const cases = text
+    .split(/\r?\n/)
+    .map((line) => line.trim())
+    .filter(Boolean)
+    .map((line, index) => {
+      const [scenarioText, expectedText] = line.split(/\s*->\s*/, 2);
+      const caseSuffix = scenarioText
+        .toLowerCase()
+        .replace(/[^a-z0-9]+/g, "_")
+        .replace(/^_+|_+$/g, "")
+        .slice(0, 48) || `case_${index + 1}`;
+      return {
+        case_id: `${safeModule}_${caseSuffix}_${index + 1}`,
+        feature: safeFeature,
+        module: safeModule,
+        test_level: "black_box",
+        scenario: scenarioText || line,
+        terms: Array.from(new Set([
+          ...safeFeature.split(/\s+/),
+          ...safeModule.split(/[/_.\-\s]+/),
+        ])).filter(Boolean),
+        tags: ["imported_semantic_case"],
+        preconditions: [],
+        actions: [scenarioText || line],
+        expected: [expectedText || "Expected observable behavior matches the existing feature case."],
+        assertion_style: "Prefer existing black-box terminology, observable status, logs, counters, and lifecycle checks.",
+        source_ref: "workbench_semantic_text_import",
+      };
+    });
+  return {
+    defaults: {
+      feature: safeFeature,
+      module: safeModule,
+      test_level: "black_box",
+    },
+    source_ref: "workbench_semantic_text_import",
+    cases,
+  };
 }
 
 function isBulkSemanticImportPayload(value: unknown): boolean {
@@ -453,6 +509,9 @@ export default function AgentWorkbenchPage() {
   const [providerOverride, setProviderOverride] = useState("");
   const [inputsJson, setInputsJson] = useState(pretty(DEFAULT_INPUTS));
   const [semanticJson, setSemanticJson] = useState(pretty(DEFAULT_SEMANTIC_CASE));
+  const [semanticFeature, setSemanticFeature] = useState("NVMe TCP TLS");
+  const [semanticModule, setSemanticModule] = useState("nvmf_tcp");
+  const [semanticLines, setSemanticLines] = useState(DEFAULT_SEMANTIC_LINES);
   const [semanticQuery, setSemanticQuery] = useState("tls cleanup");
   const [semanticResults, setSemanticResults] = useState<SemanticCase[]>([]);
   const [memoryQuery, setMemoryQuery] = useState("nvme tcp tls");
@@ -776,6 +835,18 @@ export default function AgentWorkbenchPage() {
         payload as Record<string, unknown>,
       );
       setMessage(`Semantic case stored: ${result.case_id}`);
+    });
+
+  const buildSemanticCasesFromText = () =>
+    runAction("build-semantic-cases", async () => {
+      const payload = semanticCasesFromLines({
+        feature: semanticFeature,
+        module: semanticModule,
+        text: semanticLines,
+      });
+      setSemanticJson(pretty(payload));
+      const count = Array.isArray(payload.cases) ? payload.cases.length : 0;
+      setMessage(`Semantic import draft generated: ${count} cases`);
     });
 
   const searchSemanticCases = () =>
@@ -1776,10 +1847,56 @@ export default function AgentWorkbenchPage() {
 
         <Panel title="Test Semantic Library" icon={<Library size={16} />}>
           <div className="space-y-3">
+            <div className="rounded-lg border border-outline-variant/30 bg-surface p-3">
+              <div className="grid gap-2 sm:grid-cols-2">
+                <label className="block">
+                  <span className="mb-1 block text-xs text-on-surface-variant">Feature</span>
+                  <input
+                    aria-label="Semantic feature"
+                    value={semanticFeature}
+                    onChange={(event) => setSemanticFeature(event.target.value)}
+                    className="w-full rounded-lg border border-outline-variant/30 bg-surface-container px-3 py-2 text-sm text-on-surface outline-none focus:border-primary"
+                  />
+                </label>
+                <label className="block">
+                  <span className="mb-1 block text-xs text-on-surface-variant">Module</span>
+                  <input
+                    aria-label="Semantic module"
+                    value={semanticModule}
+                    onChange={(event) => setSemanticModule(event.target.value)}
+                    className="w-full rounded-lg border border-outline-variant/30 bg-surface-container px-3 py-2 text-sm text-on-surface outline-none focus:border-primary"
+                  />
+                </label>
+              </div>
+              <label className="mt-2 block">
+                <span className="mb-1 block text-xs text-on-surface-variant">
+                  Existing cases, one per line
+                </span>
+                <textarea
+                  aria-label="Semantic case lines"
+                  value={semanticLines}
+                  onChange={(event) => setSemanticLines(event.target.value)}
+                  className="h-24 w-full resize-y rounded-lg border border-outline-variant/30 bg-surface-container p-3 text-xs text-on-surface outline-none focus:border-primary"
+                />
+              </label>
+              <button
+                onClick={buildSemanticCasesFromText}
+                disabled={busyAction === "build-semantic-cases" || !semanticLines.trim()}
+                className="mt-2 inline-flex items-center justify-center gap-2 rounded-lg bg-surface-container-high px-3 py-2 text-sm text-on-surface transition-colors hover:bg-surface disabled:opacity-50"
+              >
+                {busyAction === "build-semantic-cases" ? (
+                  <Loader2 size={14} className="animate-spin" />
+                ) : (
+                  <Library size={14} />
+                )}
+                Build semantic JSON
+              </button>
+            </div>
             <textarea
               value={semanticJson}
               onChange={(event) => setSemanticJson(event.target.value)}
               className="h-52 w-full resize-y rounded-lg border border-outline-variant/30 bg-surface p-3 font-data text-xs text-on-surface outline-none focus:border-primary"
+              aria-label="Semantic JSON"
               spellCheck={false}
             />
             <div className="flex flex-col gap-2 sm:flex-row">

@@ -278,6 +278,16 @@ test("agent workbench searches semantic cases and evidence memory", async ({ pag
   await page.goto("/workbench", { waitUntil: "domcontentloaded" });
   await page.waitForLoadState("networkidle");
   await expect(page.getByRole("heading", { name: "Evidence Memory" })).toBeVisible();
+  await page.getByLabel("Semantic feature").fill("NVMe TCP TLS");
+  await page.getByLabel("Semantic module").fill("nvmf_tcp");
+  await page
+    .getByLabel("Semantic case lines")
+    .fill("TLS key rotation fails -> old session remains connected until retry");
+  await page.getByRole("button", { name: "Build semantic JSON" }).click();
+  await expect(page.getByText("Semantic import draft generated: 1 cases")).toBeVisible();
+  await expect(page.getByLabel("Semantic JSON")).toHaveValue(/"case_id": "nvmf_tcp_tls_key_rotation_fails_1"/);
+  await expect(page.getByLabel("Semantic JSON")).toHaveValue(/"old session remains connected until retry"/);
+  await expect(page.getByLabel("Semantic JSON")).toHaveValue(/"source_ref": "workbench_semantic_text_import"/);
 
   await Promise.all([
     page.waitForResponse((response) =>
