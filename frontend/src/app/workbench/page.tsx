@@ -1002,6 +1002,27 @@ export default function AgentWorkbenchPage() {
       await loadWorkflows();
     });
 
+  const loadSelectedWorkflowDraft = () => {
+    const workflow = workflows.find((item) => item.id === selectedWorkflowId);
+    if (!workflow) return;
+    setWorkflowJson(pretty(workflow));
+    setMessage(`Workflow loaded for editing: ${workflow.id}`);
+  };
+
+  const duplicateSelectedWorkflowDraft = () => {
+    const workflow = workflows.find((item) => item.id === selectedWorkflowId);
+    if (!workflow) return;
+    const clone = {
+      ...workflow,
+      id: `${workflow.id}_copy`,
+      name: `${workflow.name} Copy`,
+      version: Number(workflow.version ?? 1) + 1,
+    };
+    setWorkflowJson(pretty(clone));
+    setSelectedWorkflowId(clone.id);
+    setMessage(`Workflow duplicated as draft: ${clone.id}`);
+  };
+
   const applyPreset = () => {
     const preset = workflowPresets.find((item) => item.id === selectedPresetId);
     if (!preset) return;
@@ -1623,6 +1644,20 @@ export default function AgentWorkbenchPage() {
                 <Save size={14} />
               )}
               Install preset
+            </button>
+            <button
+              onClick={loadSelectedWorkflowDraft}
+              disabled={!workflows.some((item) => item.id === selectedWorkflowId)}
+              className="inline-flex items-center gap-2 rounded-lg bg-surface px-3 py-2 text-sm font-medium text-on-surface transition-colors hover:bg-surface-container-high disabled:opacity-50"
+            >
+              Load selected
+            </button>
+            <button
+              onClick={duplicateSelectedWorkflowDraft}
+              disabled={!workflows.some((item) => item.id === selectedWorkflowId)}
+              className="inline-flex items-center gap-2 rounded-lg bg-surface px-3 py-2 text-sm font-medium text-on-surface transition-colors hover:bg-surface-container-high disabled:opacity-50"
+            >
+              Duplicate
             </button>
             <button
               onClick={saveWorkflow}
