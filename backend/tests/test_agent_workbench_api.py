@@ -2649,6 +2649,20 @@ async def test_workbench_materialize_evidence_cards_output_as_structured_memory(
         "path": "src/missing.c",
         "card_id": "card_missing",
     } in body["rejected_outputs"]
+    materialization = json.loads(
+        (Path(prepared.json()["artifact_dir"]) / "workflow_output_materialization.json")
+        .read_text(encoding="utf-8")
+    )
+    materialized_evidence = materialization["materialized_evidence"]
+    assert [item["kind"] for item in materialized_evidence] == [
+        "workflow_output",
+        "evidence_card",
+    ]
+    assert materialized_evidence[0]["output_id"] == "evidence_cards"
+    assert materialized_evidence[1]["subject_key"] == "card_tls_cleanup"
+    assert materialized_evidence[1]["source_step_id"] == "discover"
+    assert materialized_evidence[1]["path"] == "src/tls.c"
+    assert materialized_evidence[1]["symbol"] == "nvmf_tcp_tls_cleanup"
     search = await workbench_client.get(
         "/api/workbench/memory/search",
         params={"q": "cleanup releases resources", "workspace_id": "ws-evidence-cards-memory"},

@@ -341,6 +341,27 @@ class EvidenceMemoryStore:
             ).fetchall()
         return [_row_to_evidence(row) for row in rows]
 
+    def list_evidence_items_by_ids(
+        self,
+        evidence_ids: list[str] | tuple[str, ...],
+    ) -> list[EvidenceItem]:
+        self.initialize()
+        ids = [str(item).strip() for item in evidence_ids if str(item).strip()]
+        if not ids:
+            return []
+        with self._connect() as db:
+            rows = db.execute(
+                f"""
+                SELECT *
+                FROM evidence_items
+                WHERE evidence_id IN ({','.join('?' for _ in ids)})
+                """,
+                ids,
+            ).fetchall()
+        items = [_row_to_evidence(row) for row in rows]
+        by_id = {item.evidence_id: item for item in items}
+        return [by_id[evidence_id] for evidence_id in ids if evidence_id in by_id]
+
     def list_recent_analysis(self, *, workspace_id: str | None = None, limit: int = 20) -> list[dict[str, Any]]:
         self.initialize()
         params: list[Any] = []

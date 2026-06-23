@@ -675,6 +675,14 @@ type WorkflowOutputMaterializationSummary = {
   rejectedCount: number;
   workflowOutputsSha: string;
   outputCount: number;
+  materializedEvidence: Array<{
+    evidenceId: string;
+    kind: string;
+    subjectKey: string;
+    outputId: string;
+    sourceStepId: string;
+    mappingKind: string;
+  }>;
   firstRejected?: {
     output: string;
     reason: string;
@@ -890,11 +898,27 @@ function workflowOutputMaterializationSummary(
   const schemaErrors = Array.isArray(firstRejectedPayload?.schema_errors)
     ? firstRejectedPayload.schema_errors
     : [];
+  const materializedEvidence = Array.isArray(payload.materialized_evidence)
+    ? payload.materialized_evidence
+        .filter((item): item is Record<string, unknown> =>
+          Boolean(item && typeof item === "object" && !Array.isArray(item)),
+        )
+        .map((item) => ({
+          evidenceId: String(item.evidence_id ?? ""),
+          kind: String(item.kind ?? ""),
+          subjectKey: String(item.subject_key ?? ""),
+          outputId: String(item.output_id ?? ""),
+          sourceStepId: String(item.source_step_id ?? ""),
+          mappingKind: String(item.mapping_kind ?? ""),
+        }))
+        .filter((item) => item.evidenceId || item.kind || item.subjectKey)
+    : [];
   return {
     evidenceCount: Number(payload.evidence_count ?? 0) || 0,
     rejectedCount: rejectedOutputs.length,
     workflowOutputsSha: String(workflowOutputsArtifact.sha256 ?? ""),
     outputCount: Number(workflowOutputsArtifact.output_count ?? 0) || 0,
+    materializedEvidence,
     firstRejected: firstRejectedPayload
       ? {
           output: String(firstRejectedPayload.output ?? ""),
@@ -3715,6 +3739,18 @@ export default function AgentWorkbenchPage() {
                               {summary.workflowOutputsSha && (
                                 <div className="mt-1 font-data text-[10px]">
                                   workflow_outputs sha:{summary.workflowOutputsSha.slice(0, 12)}
+                                </div>
+                              )}
+                              {summary.materializedEvidence.length > 0 && (
+                                <div className="mt-1 space-y-0.5 font-data text-[10px]">
+                                  {summary.materializedEvidence.slice(0, 4).map((item) => (
+                                    <div key={`${item.evidenceId}:${item.kind}`}>
+                                      {item.kind}:{item.subjectKey || item.evidenceId}
+                                      {item.outputId ? ` output:${item.outputId}` : ""}
+                                      {item.mappingKind ? ` mapping:${item.mappingKind}` : ""}
+                                      {item.sourceStepId ? ` step:${item.sourceStepId}` : ""}
+                                    </div>
+                                  ))}
                                 </div>
                               )}
                             </div>

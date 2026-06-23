@@ -2647,6 +2647,9 @@ def _write_workflow_output_materialization_artifact(
         "status": result.get("status"),
         "evidence_count": result.get("evidence_count", 0),
         "evidence_ids": list(result.get("evidence_ids") or []),
+        "materialized_evidence": _workflow_output_materialized_evidence_summary(
+            result.get("evidence_ids") or [],
+        ),
         "rejected_outputs": list(result.get("rejected_outputs") or []),
         "workflow_outputs_artifact": {
             "path": str(workflow_outputs_path),
@@ -2660,6 +2663,38 @@ def _write_workflow_output_materialization_artifact(
         json.dumps(payload, ensure_ascii=False, indent=2, sort_keys=True),
         encoding="utf-8",
     )
+
+
+def _workflow_output_materialized_evidence_summary(evidence_ids: Any) -> list[dict[str, Any]]:
+    ids = (
+        [str(item).strip() for item in evidence_ids if str(item).strip()]
+        if isinstance(evidence_ids, list)
+        else []
+    )
+    if not ids:
+        return []
+    try:
+        items = _memory_store().list_evidence_items_by_ids(ids)
+    except Exception:
+        return []
+    summary: list[dict[str, Any]] = []
+    for item in items:
+        provenance = item.provenance or {}
+        mapping = provenance.get("evidence_memory_mapping")
+        mapping_payload = mapping if isinstance(mapping, dict) else {}
+        summary.append({
+            "evidence_id": item.evidence_id,
+            "kind": item.kind,
+            "subject_key": item.subject_key,
+            "status": item.status,
+            "source": item.source,
+            "path": item.path,
+            "symbol": item.symbol,
+            "output_id": str(provenance.get("output_id") or ""),
+            "source_step_id": str(provenance.get("source_step_id") or ""),
+            "mapping_kind": str(mapping_payload.get("kind") or ""),
+        })
+    return summary
 
 
 def _import_workflow_outputs_as_semantic_cases(
@@ -3186,6 +3221,7 @@ def _structured_workflow_output_provenance(
         "task_run_id": task_run.task_run_id,
         "workflow_id": task_run.workflow_id,
         "output_id": output_id,
+        "source_step_id": str(output.get("from") or ""),
         "output_evidence_id": output_evidence_id,
         "workflow_output_evidence_id": output_evidence_id,
         "artifact_path": str(path),

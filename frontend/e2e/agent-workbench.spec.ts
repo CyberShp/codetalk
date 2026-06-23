@@ -686,6 +686,23 @@ test("agent workbench previews task run artifact content", async ({ page }) => {
           content: JSON.stringify({
             evidence_count: 2,
             evidence_ids: ["ev1", "ev2"],
+            materialized_evidence: [
+              {
+                evidence_id: "ev1",
+                kind: "workflow_output",
+                subject_key: "task_run_preview/black_box_cases",
+                output_id: "black_box_cases",
+                source_step_id: "design",
+              },
+              {
+                evidence_id: "ev2",
+                kind: "changed_behavior",
+                subject_key: "tls_handshake_retry",
+                output_id: "changed_behavior",
+                source_step_id: "design",
+                mapping_kind: "changed_behavior",
+              },
+            ],
             rejected_outputs: [
               {
                 output: "bad",
@@ -903,6 +920,13 @@ test("agent workbench previews task run artifact content", async ({ page }) => {
   await expect(page.getByText("status:invalid")).toBeVisible();
   await expect(page.getByText("schema errors:1")).toBeVisible();
   await expect(page.getByText("workflow_outputs sha:999988887777")).toBeVisible();
+  await expect(
+    page.getByText("workflow_output:task_run_preview/black_box_cases", { exact: false }),
+  ).toBeVisible();
+  await expect(
+    page.getByText("changed_behavior:tls_handshake_retry", { exact: false }),
+  ).toBeVisible();
+  await expect(page.getByText("mapping:changed_behavior", { exact: false })).toBeVisible();
 
   await page
     .getByRole("button", {
