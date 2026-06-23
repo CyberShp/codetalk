@@ -1532,6 +1532,12 @@ async def test_workbench_task_run_materialize_workflow_outputs_api(
     body = materialized.json()
     assert body["status"] == "ok"
     assert body["evidence_count"] == 1
+    assert body["materialized_evidence"][0]["output_id"] == "cases"
+    assert body["materialization_audit"]["summary"]["declared_output_count"] == 1
+    assert body["materialization_audit"]["summary"]["materialized_output_count"] == 1
+    assert body["materialization_audit"]["outputs"][0]["output_id"] == "cases"
+    assert body["materialization_audit"]["outputs"][0]["materialization_status"] == "accepted"
+    assert body["materialization_audit"]["outputs"][0]["materialized_count"] == 1
     materialization_artifact = (
         Path(prepared.json()["artifact_dir"]) / "workflow_output_materialization.json"
     )
@@ -1541,6 +1547,7 @@ async def test_workbench_task_run_materialize_workflow_outputs_api(
     assert materialization["workflow_outputs_artifact"]["output_count"] == 1
     assert materialization["workflow_outputs_artifact"]["sha256"]
     assert materialization["evidence_ids"] == body["evidence_ids"]
+    assert materialization["materialization_audit"] == body["materialization_audit"]
     artifacts = await workbench_client.get(f"/api/workbench/task-runs/{task_run_id}/artifacts")
     assert artifacts.status_code == 200
     paths = {item["relative_path"]: item for item in artifacts.json()["artifacts"]}
@@ -2020,6 +2027,9 @@ async def test_workbench_materialize_workflow_outputs_preserves_rejection_detail
     body = materialized.json()
     assert body["status"] == "partial"
     assert body["evidence_count"] == 0
+    assert body["materialization_audit"]["outputs"][0]["output_id"] == "scope"
+    assert body["materialization_audit"]["outputs"][0]["materialization_status"] == "rejected"
+    assert body["materialization_audit"]["outputs"][0]["rejection_reasons"] == ["output_not_ok"]
     assert body["rejected_outputs"] == [
         {
             "output": "scope",

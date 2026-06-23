@@ -1473,7 +1473,11 @@ def _command_resolution_summary(value: Any) -> dict[str, Any]:
                 detail[key] = item
         if detail:
             summary["command_resolution_active_attempt"] = detail
-    return {key: item for key, item in summary.items() if item not in {"", None}}
+    return {
+        key: item
+        for key, item in summary.items()
+        if item is not None and item != ""
+    }
 
 
 def _positive_int(value: Any, *, default: int) -> int:

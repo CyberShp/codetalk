@@ -828,6 +828,11 @@ def _materialize_task_run_outputs_if_available(*, task_run: Any) -> dict[str, An
         "evidence_ids": evidence_ids,
         "rejected_outputs": rejected,
     }
+    _attach_workflow_output_materialization_audit(
+        task_run=task_run,
+        workflow_outputs=workflow_outputs,
+        result=result,
+    )
     _write_workflow_output_materialization_artifact(
         task_run=task_run,
         workflow_outputs_path=workflow_outputs_path,
@@ -991,6 +996,11 @@ async def materialize_task_run_outputs(task_run_id: str) -> dict[str, Any]:
         "evidence_ids": evidence_ids,
         "rejected_outputs": rejected,
     }
+    _attach_workflow_output_materialization_audit(
+        task_run=task_run,
+        workflow_outputs=workflow_outputs,
+        result=result,
+    )
     _write_workflow_output_materialization_artifact(
         task_run=task_run,
         workflow_outputs_path=workflow_outputs_path,
@@ -2643,6 +2653,16 @@ def _write_workflow_output_materialization_artifact(
         result.get("evidence_ids") or [],
     )
     rejected_outputs = list(result.get("rejected_outputs") or [])
+    materialization_audit = (
+        result.get("materialization_audit")
+        if isinstance(result.get("materialization_audit"), dict)
+        else _workflow_output_materialization_audit(
+            task_run=task_run,
+            workflow_outputs=workflow_outputs,
+            materialized_evidence=materialized_evidence,
+            rejected_outputs=rejected_outputs,
+        )
+    )
     payload = {
         "task_run_id": task_run.task_run_id,
         "workflow_id": task_run.workflow_id,
@@ -2653,12 +2673,7 @@ def _write_workflow_output_materialization_artifact(
         "evidence_ids": list(result.get("evidence_ids") or []),
         "materialized_evidence": materialized_evidence,
         "rejected_outputs": rejected_outputs,
-        "materialization_audit": _workflow_output_materialization_audit(
-            task_run=task_run,
-            workflow_outputs=workflow_outputs,
-            materialized_evidence=materialized_evidence,
-            rejected_outputs=rejected_outputs,
-        ),
+        "materialization_audit": materialization_audit,
         "workflow_outputs_artifact": {
             "path": str(workflow_outputs_path),
             "sha256": workflow_outputs_sha,
@@ -2670,6 +2685,24 @@ def _write_workflow_output_materialization_artifact(
     artifact_path.write_text(
         json.dumps(payload, ensure_ascii=False, indent=2, sort_keys=True),
         encoding="utf-8",
+    )
+
+
+def _attach_workflow_output_materialization_audit(
+    *,
+    task_run: Any,
+    workflow_outputs: dict[str, Any],
+    result: dict[str, Any],
+) -> None:
+    materialized_evidence = _workflow_output_materialized_evidence_summary(
+        result.get("evidence_ids") or [],
+    )
+    result["materialized_evidence"] = materialized_evidence
+    result["materialization_audit"] = _workflow_output_materialization_audit(
+        task_run=task_run,
+        workflow_outputs=workflow_outputs,
+        materialized_evidence=materialized_evidence,
+        rejected_outputs=list(result.get("rejected_outputs") or []),
     )
 
 
