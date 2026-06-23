@@ -352,6 +352,9 @@ export interface EvidenceSourceSlice {
   start_line: number;
   end_line: number;
   sha256: string;
+  current_sha256?: string;
+  integrity_status?: string;
+  validation_error?: string;
   excerpt: string;
   created_at: string;
 }
@@ -371,6 +374,8 @@ export interface EvidenceMemoryItem {
   text: string;
   provenance: Record<string, unknown>;
   source_slices?: EvidenceSourceSlice[];
+  source_read_status?: string;
+  usable_as_source_evidence?: boolean;
   created_at: string;
   updated_at: string;
 }

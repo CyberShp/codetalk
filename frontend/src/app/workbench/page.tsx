@@ -2734,6 +2734,22 @@ export default function AgentWorkbenchPage() {
                     </span>
                     <span className="font-medium text-on-surface">{item.subject_key}</span>
                     <span className="text-on-surface-variant">{item.status}</span>
+                    {item.source_read_status && (
+                      <span className="rounded bg-surface-container px-1.5 py-0.5 text-on-surface-variant">
+                        source:{item.source_read_status}
+                      </span>
+                    )}
+                    {item.usable_as_source_evidence !== undefined && (
+                      <span
+                        className={`rounded px-1.5 py-0.5 ${
+                          item.usable_as_source_evidence
+                            ? "bg-green-400/10 text-green-500"
+                            : "bg-amber-400/10 text-amber-500"
+                        }`}
+                      >
+                        usable:{String(item.usable_as_source_evidence)}
+                      </span>
+                    )}
                   </div>
                   {item.path && (
                     <p className="mt-1 break-words font-data text-on-surface-variant">
@@ -2772,7 +2788,26 @@ export default function AgentWorkbenchPage() {
                           <p className="break-words font-data text-[11px]">
                             {slice.file_path}:{slice.start_line}-{slice.end_line} sha:
                             {slice.sha256.slice(0, 12)}
+                            {slice.integrity_status && (
+                              <span
+                                className={`ml-1 ${
+                                  slice.integrity_status === "verified_current"
+                                    ? "text-green-500"
+                                    : "text-warning"
+                                }`}
+                              >
+                                {slice.integrity_status}
+                              </span>
+                            )}
                           </p>
+                          {(slice.current_sha256 || slice.validation_error) && (
+                            <p className="mt-1 break-words font-data text-[10px] text-warning">
+                              {slice.current_sha256
+                                ? `current:${slice.current_sha256.slice(0, 12)} `
+                                : ""}
+                              {slice.validation_error || ""}
+                            </p>
+                          )}
                           <pre className="mt-1 max-h-28 overflow-auto whitespace-pre-wrap break-words font-data text-[10px] text-on-surface">
                             {slice.excerpt}
                           </pre>
@@ -2786,6 +2821,17 @@ export default function AgentWorkbenchPage() {
                         <p key={slice.slice_id} className="break-words font-data text-[11px]">
                           slice {slice.file_path}:{slice.start_line}-{slice.end_line} sha:
                           {slice.sha256.slice(0, 12)}
+                          {slice.integrity_status && (
+                            <span
+                              className={`ml-1 ${
+                                slice.integrity_status === "verified_current"
+                                  ? "text-green-500"
+                                  : "text-warning"
+                              }`}
+                            >
+                              {slice.integrity_status}
+                            </span>
+                          )}
                         </p>
                       ))}
                     </div>
