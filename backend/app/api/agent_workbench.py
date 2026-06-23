@@ -2143,11 +2143,27 @@ def _materialize_workflow_output_evidence(
             rejected.append({"output": output_id, "reason": "output_sha256_mismatch"})
             continue
         text = _evidence_text_from_output(path, data, fallback=str(output.get("preview") or ""))
+        workflow_output_definition = _workflow_output_definition(task_run, output_id)
+        workflow_outputs_artifact = _workflow_outputs_artifact_ref(task_run)
         base_provenance = {
             "task_run_id": task_run.task_run_id,
             "workflow_id": task_run.workflow_id,
+            "output_id": output_id,
+            "output_status": str(output.get("status") or ""),
+            "output_type": str(output.get("type") or ""),
+            "source_step_id": str(output.get("from") or ""),
             "output": output,
             "artifact": "workflow_outputs.json",
+            "workflow_outputs_artifact": workflow_outputs_artifact,
+            "agent_output_contract": _agent_output_contract_ref(
+                task_run=task_run,
+                step_id=str(output.get("from") or ""),
+            ),
+            "schema_status": _workflow_output_schema_status(
+                output=output,
+                output_definition=workflow_output_definition,
+            ),
+            "schema_required": _workflow_output_schema_required(workflow_output_definition),
             "sha256": sha256,
             "size_bytes": len(data),
         }
@@ -2177,6 +2193,78 @@ def _materialize_workflow_output_evidence(
         evidence_ids.extend(structured_ids)
         rejected.extend(structured_rejected)
     return evidence_ids, rejected
+
+
+def _workflow_output_definition(task_run: Any, output_id: str) -> dict[str, Any]:
+    workflow_snapshot = getattr(task_run, "workflow_snapshot", {}) or {}
+    for item in workflow_snapshot.get("outputs") or []:
+        if isinstance(item, dict) and str(item.get("id") or "") == output_id:
+            return item
+    return {}
+
+
+def _workflow_output_schema_status(
+    *,
+    output: dict[str, Any],
+    output_definition: dict[str, Any],
+) -> str:
+    if output.get("schema_errors"):
+        return "failed"
+    schema = output_definition.get("schema") or output_definition.get("json_schema")
+    return "validated" if isinstance(schema, dict) else "not_declared"
+
+
+def _workflow_output_schema_required(output_definition: dict[str, Any]) -> list[str]:
+    schema = output_definition.get("schema") or output_definition.get("json_schema")
+    if not isinstance(schema, dict):
+        return []
+    return [str(item) for item in schema.get("required") or []]
+
+
+def _workflow_outputs_artifact_ref(task_run: Any) -> dict[str, Any]:
+    path = Path(str(task_run.artifact_dir)) / "workflow_outputs.json"
+    return _task_artifact_ref(task_run=task_run, path=path)
+
+
+def _agent_output_contract_ref(*, task_run: Any, step_id: str) -> dict[str, Any]:
+    safe_step_id = _safe_artifact_segment(step_id)
+    if not safe_step_id:
+        return {}
+    path = Path(str(task_run.artifact_dir)) / "agent_runs" / safe_step_id / "agent_output_contract.json"
+    ref = _task_artifact_ref(task_run=task_run, path=path)
+    if not ref:
+        return {}
+    ref["artifact"] = f"agent_runs/{safe_step_id}/agent_output_contract.json"
+    return ref
+
+
+def _task_artifact_ref(*, task_run: Any, path: Path) -> dict[str, Any]:
+    try:
+        task_root = Path(str(task_run.artifact_dir)).resolve()
+        resolved = path.resolve()
+    except OSError:
+        return {}
+    if resolved != task_root and task_root not in resolved.parents:
+        return {}
+    if not resolved.exists() or not resolved.is_file():
+        return {}
+    try:
+        data = resolved.read_bytes()
+    except OSError:
+        return {}
+    return {
+        "artifact": resolved.relative_to(task_root).as_posix(),
+        "path": str(resolved),
+        "sha256": hashlib.sha256(data).hexdigest(),
+        "size_bytes": len(data),
+    }
+
+
+def _safe_artifact_segment(value: str) -> str:
+    text = str(value or "").strip().replace("\\", "/")
+    if not text or "/" in text or text in {".", ".."}:
+        return ""
+    return text
 
 
 def _is_workflow_output_path_within_task_artifacts(task_run: Any, path: Path) -> bool:

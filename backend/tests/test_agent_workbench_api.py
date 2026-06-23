@@ -1399,6 +1399,16 @@ async def test_workbench_task_run_materialize_workflow_outputs_api(
     item = search.json()["items"][0]
     assert item["kind"] == "workflow_output"
     assert item["subject_key"].endswith("/cases")
+    assert item["provenance"]["output_id"] == "cases"
+    assert item["provenance"]["output_status"] == "ok"
+    assert item["provenance"]["schema_status"] == "not_declared"
+    assert item["provenance"]["agent_output_contract"]["artifact"] == (
+        "agent_runs/design/agent_output_contract.json"
+    )
+    assert item["provenance"]["agent_output_contract"]["sha256"]
+    assert item["provenance"]["workflow_outputs_artifact"]["sha256"] == (
+        materialization["workflow_outputs_artifact"]["sha256"]
+    )
 
 
 async def test_workbench_imports_black_box_workflow_output_into_semantic_library(
