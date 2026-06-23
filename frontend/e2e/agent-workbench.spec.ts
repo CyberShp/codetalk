@@ -921,7 +921,7 @@ test("agent workbench previews task run artifact content", async ({ page }) => {
           summary: {
             artifact_count: 6,
             required_checks: 12,
-            missing_required: 1,
+            missing_required: 2,
             recommended_checks: 2,
             missing_recommended: 0,
           },
@@ -940,6 +940,15 @@ test("agent workbench previews task run artifact content", async ({ page }) => {
                   sha256: "agentinstructions1234567890",
                 },
               ],
+            },
+            {
+              id: "agent_turn_stdin_redaction:discover:turn_1:execution_input",
+              status: "missing",
+              severity: "required",
+              relative_path: "agent_runs/discover/turns/turn_1/execution_input.json",
+              kind: "agent_turn_execution_input",
+              reason: "stdin_redacted_flag_missing",
+              stdin_json_sha256: "stdinsha1234567890",
             },
           ],
           missing_recommended: [],
@@ -1066,7 +1075,9 @@ test("agent workbench previews task run artifact content", async ({ page }) => {
 
   await page.getByRole("button", { name: "Acceptance audit" }).click();
   await expect(page.getByText("Agent instruction policy")).toBeVisible();
-  await expect(page.getByText("discover turn_1 execution_input")).toBeVisible();
   await expect(page.getByText("reason:agent_instruction_policy_missing")).toBeVisible();
   await expect(page.getByText("expected:AGENTS.md")).toBeVisible();
+  await expect(page.getByText("Agent input redaction")).toBeVisible();
+  await expect(page.getByText("reason:stdin_redacted_flag_missing")).toBeVisible();
+  await expect(page.getByText("stdin-sha:stdinsha1234")).toBeVisible();
 });

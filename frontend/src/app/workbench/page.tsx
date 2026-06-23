@@ -765,6 +765,14 @@ type AcceptanceInstructionPolicyIssue = {
   expectedFiles: string[];
 };
 
+type AcceptanceInputRedactionIssue = {
+  id: string;
+  label: string;
+  reason: string;
+  relativePath: string;
+  stdinSha: string;
+};
+
 function acceptanceProviderIssues(
   audit: WorkbenchAcceptanceAudit | null,
 ): AcceptanceProviderIssue[] {
@@ -832,6 +840,34 @@ function acceptanceInstructionPolicyIssues(
         reason: String(item.reason ?? ""),
         relativePath: String(item.relative_path ?? ""),
         expectedFiles,
+      };
+    });
+}
+
+function acceptanceInputRedactionIssues(
+  audit: WorkbenchAcceptanceAudit | null,
+): AcceptanceInputRedactionIssue[] {
+  if (!audit) return [];
+  return audit.missing_required
+    .filter((item) => {
+      const id = String(item.id ?? "");
+      return (
+        id.startsWith("agent_stdin_redaction:") ||
+        id.startsWith("agent_turn_stdin_redaction:")
+      );
+    })
+    .map((item) => {
+      const id = String(item.id ?? "");
+      const parts = id.split(":");
+      const label = id.startsWith("agent_turn_stdin_redaction:")
+        ? `${parts[1] ?? "step"} ${parts[2] ?? "turn"} ${parts[3] ?? "artifact"}`
+        : `${parts[1] ?? "step"} ${parts[2] ?? "artifact"}`;
+      return {
+        id,
+        label,
+        reason: String(item.reason ?? ""),
+        relativePath: String(item.relative_path ?? ""),
+        stdinSha: String(item.stdin_json_sha256 ?? ""),
       };
     });
 }
@@ -3418,6 +3454,28 @@ export default function AgentWorkbenchPage() {
                                   {issue.schemaErrorCount > 0
                                     ? ` schema-errors:${issue.schemaErrorCount}`
                                     : ""}
+                                </div>
+                              ))}
+                            </div>
+                          </div>
+                        );
+                      })()}
+                      {(() => {
+                        const redactionIssues =
+                          acceptanceInputRedactionIssues(taskAcceptanceAudit);
+                        if (redactionIssues.length === 0) return null;
+                        return (
+                          <div className="mt-1 rounded border border-warning/30 bg-surface px-2 py-1.5">
+                            <p className="text-[11px] font-medium text-warning">
+                              Agent input redaction
+                            </p>
+                            <div className="mt-1 space-y-0.5 font-data text-[10px] text-warning">
+                              {redactionIssues.slice(0, 4).map((issue) => (
+                                <div key={issue.id} className="break-words">
+                                  {issue.label}
+                                  {issue.reason ? ` reason:${issue.reason}` : ""}
+                                  {issue.stdinSha ? ` stdin-sha:${issue.stdinSha.slice(0, 12)}` : ""}
+                                  {issue.relativePath ? ` artifact:${issue.relativePath}` : ""}
                                 </div>
                               ))}
                             </div>
