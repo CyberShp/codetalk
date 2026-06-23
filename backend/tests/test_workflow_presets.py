@@ -34,3 +34,38 @@ def test_workflow_preset_can_be_installed_into_store(tmp_path):
 
     assert workflow.id == "patch_impact_review"
     assert store.get_workflow("patch_impact_review").name == "Patch Impact Review"
+
+
+def test_workflow_definition_rejects_unsafe_artifact_paths():
+    import pytest
+
+    from app.services.workflow_dsl import WorkflowValidationError, validate_workflow_definition
+
+    with pytest.raises(WorkflowValidationError, match="unsafe required artifact path"):
+        validate_workflow_definition({
+            "id": "unsafe_required_artifact",
+            "name": "Unsafe required artifact",
+            "steps": [
+                {
+                    "id": "agent",
+                    "type": "agent_task",
+                    "required_artifacts": ["../secret.json"],
+                }
+            ],
+            "outputs": [],
+        })
+
+    with pytest.raises(WorkflowValidationError, match="unsafe output artifact path"):
+        validate_workflow_definition({
+            "id": "unsafe_output_artifact",
+            "name": "Unsafe output artifact",
+            "steps": [{"id": "agent", "type": "agent_task"}],
+            "outputs": [
+                {
+                    "id": "report",
+                    "type": "markdown",
+                    "from": "agent",
+                    "artifact": "C:/outside/report.md",
+                }
+            ],
+        })

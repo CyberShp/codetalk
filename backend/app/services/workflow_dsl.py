@@ -6,7 +6,7 @@ import json
 import sqlite3
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
-from pathlib import Path
+from pathlib import Path, PurePosixPath, PureWindowsPath
 from typing import Any
 
 
@@ -294,13 +294,17 @@ def _parse_step(item: Any) -> WorkflowStep:
     step_type = _required_str(item, "type")
     if step_type not in ALLOWED_STEP_TYPES:
         raise WorkflowValidationError(f"unsupported workflow step type: {step_type}")
+    required_artifacts = [str(value) for value in item.get("required_artifacts") or []]
+    for artifact in required_artifacts:
+        if artifact and not _is_safe_artifact_path(artifact):
+            raise WorkflowValidationError(f"unsafe required artifact path: {artifact}")
     return WorkflowStep(
         id=step_id,
         type=step_type,
         goal=str(item.get("goal") or ""),
         provider=str(item.get("provider") or ""),
         mcp_profile=str(item.get("mcp_profile") or ""),
-        required_artifacts=[str(value) for value in item.get("required_artifacts") or []],
+        required_artifacts=required_artifacts,
         raw=dict(item),
     )
 
@@ -314,6 +318,9 @@ def _parse_output(item: Any) -> WorkflowOutput:
         if output_type != "json":
             raise WorkflowValidationError("workflow output schema requires json output type")
         _validate_output_schema_definition(schema)
+    artifact_path = str(item.get("artifact") or item.get("path") or "").strip()
+    if artifact_path and not _is_safe_artifact_path(artifact_path):
+        raise WorkflowValidationError(f"unsafe output artifact path: {artifact_path}")
     return WorkflowOutput(
         id=_required_str(item, "id"),
         type=output_type,
@@ -338,6 +345,17 @@ def _required_str(payload: dict[str, Any], key: str) -> str:
     if not value:
         raise WorkflowValidationError(f"workflow {key} is required")
     return value
+
+
+def _is_safe_artifact_path(value: str) -> bool:
+    text = str(value or "").strip().replace("\\", "/")
+    if not text:
+        return False
+    posix = PurePosixPath(text)
+    windows = PureWindowsPath(text)
+    if posix.is_absolute() or windows.is_absolute() or windows.drive or windows.root:
+        return False
+    return not any(part in {"", ".", ".."} for part in posix.parts)
 
 
 def _validate_output_schema_definition(schema: Any) -> None:
