@@ -23,6 +23,7 @@ import type {
   MaterializeWorkflowOutputsResult,
   PreparedWorkbenchTaskRun,
   SemanticCase,
+  TaskRerunExecutionResult,
   TaskRerunPlan,
   TaskRerunPlanValidation,
   WorkflowDefinition,
@@ -605,6 +606,8 @@ export default function AgentWorkbenchPage() {
   const [taskRerunPlan, setTaskRerunPlan] = useState<TaskRerunPlan | null>(null);
   const [taskRerunPlanValidation, setTaskRerunPlanValidation] =
     useState<TaskRerunPlanValidation | null>(null);
+  const [taskRerunExecution, setTaskRerunExecution] =
+    useState<TaskRerunExecutionResult | null>(null);
   const [workflowOutputMaterialize, setWorkflowOutputMaterialize] =
     useState<MaterializeWorkflowOutputsResult | null>(null);
   const [executionResults, setExecutionResults] = useState<
@@ -809,6 +812,7 @@ export default function AgentWorkbenchPage() {
       setWorkflowExecution(null);
       setTaskRerunPlan(null);
       setTaskRerunPlanValidation(null);
+      setTaskRerunExecution(null);
       setWorkflowOutputMaterialize(null);
       setArtifactContent(null);
       await refreshArtifactManifest(result.task_run_id);
@@ -869,6 +873,24 @@ export default function AgentWorkbenchPage() {
       setTaskRerunPlan(result);
       setTaskRerunPlanValidation(validation);
       setMessage(`Rerun plan ${result.status}: ${result.task_run_id}`);
+    });
+
+  const executeTaskRerunPlan = () =>
+    runAction("execute-rerun-plan", async () => {
+      if (!preparedRun || !taskRerunPlanValidation?.can_rerun) return;
+      const result = await api.workbench.taskRuns.executeRerunPlan(
+        preparedRun.task_run_id,
+        90,
+        true,
+      );
+      setTaskRerunExecution(result);
+      if (result.execution) {
+        setWorkflowExecution(result.execution);
+        setTaskRerunPlan((result.execution.rerun_plan as TaskRerunPlan | undefined) ?? null);
+      }
+      setTaskRerunPlanValidation(result.validation_after ?? null);
+      await refreshArtifactManifest(preparedRun.task_run_id);
+      setMessage(`Rerun execution ${result.execution?.status ?? result.status}: ${preparedRun.task_run_id}`);
     });
 
   const previewArtifact = (relativePath: string) =>
@@ -1716,6 +1738,22 @@ export default function AgentWorkbenchPage() {
               Rerun plan
             </button>
             <button
+              onClick={executeTaskRerunPlan}
+              disabled={
+                busyAction === "execute-rerun-plan" ||
+                !preparedRun ||
+                !taskRerunPlanValidation?.can_rerun
+              }
+              className="ml-2 inline-flex items-center gap-2 rounded-lg bg-surface px-3 py-2 text-sm font-medium text-on-surface transition-colors hover:bg-surface-container-high disabled:opacity-50"
+            >
+              {busyAction === "execute-rerun-plan" ? (
+                <Loader2 size={14} className="animate-spin" />
+              ) : (
+                <PlayCircle size={14} />
+              )}
+              Execute rerun
+            </button>
+            <button
               onClick={materializePreparedWorkflowOutputs}
               disabled={
                 busyAction === "materialize-workflow-outputs" ||
@@ -1780,6 +1818,12 @@ export default function AgentWorkbenchPage() {
                           </span>
                         </div>
                       )}
+                    {taskRerunExecution && (
+                      <p className="mt-1 font-data text-[10px] text-on-surface-variant">
+                        rerun-execution:{taskRerunExecution.status} workflow:
+                        {taskRerunExecution.execution?.status ?? "unknown"}
+                      </p>
+                    )}
                   </div>
                 )}
                 {(() => {

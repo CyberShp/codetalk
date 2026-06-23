@@ -1700,6 +1700,18 @@ async def test_workbench_task_run_artifacts_api_labels_failure_recovery(
         "artifact": "raw_output.txt",
         "exists": True,
     }
+    rerun_response = await workbench_client.post(
+        f"/api/workbench/task-runs/{task_run_id}/rerun-plan/execute",
+        json={"timeout_sec": 10},
+    )
+    assert rerun_response.status_code == 200
+    rerun = rerun_response.json()
+    assert rerun["status"] == "executed"
+    assert rerun["validation_before"]["status"] == "ready"
+    assert rerun["execution"]["task_run_id"] == task_run_id
+    assert rerun["execution"]["status"] == "invalid"
+    assert rerun["execution"]["step_results"][0]["failure_recovery"]["failure_kind"] == "agent_error"
+    assert rerun["validation_after"]["status"] == "ready"
 
 
 async def test_workbench_task_run_artifacts_api_labels_agent_turn_snapshots(

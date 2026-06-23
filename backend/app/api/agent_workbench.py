@@ -613,6 +613,54 @@ async def validate_task_run_rerun_plan(task_run_id: str) -> dict[str, Any]:
     return _validate_task_rerun_plan(task_run=task_run, plan=plan)
 
 
+@router.post("/task-runs/{task_run_id}/rerun-plan/execute")
+async def execute_task_run_rerun_plan(
+    task_run_id: str,
+    payload: TaskRunExecuteRequest,
+) -> dict[str, Any]:
+    try:
+        task_run = WorkbenchTaskRunStore(_task_runs_dir()).load(task_run_id)
+    except KeyError:
+        raise HTTPException(status_code=404, detail=f"Unknown task run: {task_run_id}")
+    plan_path = Path(task_run.artifact_dir) / "task_rerun_plan.json"
+    plan = _read_json(plan_path)
+    if not isinstance(plan, dict):
+        raise HTTPException(
+            status_code=404,
+            detail="task rerun plan has not been generated",
+        )
+    validation_before = _validate_task_rerun_plan(task_run=task_run, plan=plan)
+    if not validation_before.get("can_rerun"):
+        raise HTTPException(
+            status_code=409,
+            detail={
+                "message": "task rerun plan is not executable",
+                "validation": validation_before,
+            },
+        )
+    try:
+        execution = WorkbenchWorkflowRunner(_task_runs_dir()).execute_task_run(
+            task_run_id,
+            timeout_sec=payload.timeout_sec,
+            stop_on_error=payload.stop_on_error,
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+    refreshed_task_run = WorkbenchTaskRunStore(_task_runs_dir()).load(task_run_id)
+    refreshed_plan = _read_json(Path(refreshed_task_run.artifact_dir) / "task_rerun_plan.json")
+    validation_after = (
+        _validate_task_rerun_plan(task_run=refreshed_task_run, plan=refreshed_plan)
+        if isinstance(refreshed_plan, dict)
+        else {}
+    )
+    return {
+        "status": "executed",
+        "validation_before": validation_before,
+        "execution": asdict(execution),
+        "validation_after": validation_after,
+    }
+
+
 @router.get("/task-runs/{task_run_id}/artifacts")
 async def list_task_run_artifacts(task_run_id: str) -> dict[str, Any]:
     try:

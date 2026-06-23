@@ -504,6 +504,13 @@ export interface TaskRerunPlanValidation {
   steps?: Array<Record<string, unknown>>;
 }
 
+export interface TaskRerunExecutionResult {
+  status: string;
+  validation_before?: TaskRerunPlanValidation;
+  execution?: WorkflowExecutionResult;
+  validation_after?: TaskRerunPlanValidation;
+}
+
 export interface WorkbenchTaskArtifact {
   relative_path: string;
   path: string;
