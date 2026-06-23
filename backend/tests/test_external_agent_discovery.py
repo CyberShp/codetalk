@@ -1241,6 +1241,33 @@ def test_missing_cli_returns_unavailable(tmp_path, monkeypatch):
     assert "claude" in health["reason"]
 
 
+def test_missing_cli_records_command_resolution_diagnostics(tmp_path, monkeypatch):
+    from app.services.external_agent_discovery import check_provider_health
+
+    monkeypatch.setattr("app.services.external_agent_discovery.platform.system", lambda: "Windows")
+    monkeypatch.setattr("app.services.external_agent_discovery.shutil.which", lambda _cmd: None)
+    monkeypatch.setattr(
+        "app.services.external_agent_discovery._probe_windows_shell_command",
+        lambda _executable: None,
+    )
+    monkeypatch.setenv("APPDATA", str(tmp_path / "appdata"))
+    monkeypatch.setenv("USERPROFILE", str(tmp_path / "userprofile"))
+    monkeypatch.setenv("LOCALAPPDATA", str(tmp_path / "localappdata"))
+    monkeypatch.setenv("ProgramData", str(tmp_path / "programdata"))
+
+    health = check_provider_health("claude-code", "ccr code")
+
+    assert health["status"] == "unavailable"
+    assert health["diagnostic"]["command_hint_env"] == "CLAUDE_CODE_COMMAND"
+    attempt = health["attempts"][0]
+    assert attempt["command"] == "ccr code"
+    assert attempt["argv"] == ["ccr", "code"]
+    assert attempt["configured_argv"] == ["ccr", "code"]
+    assert attempt["executable"] == "ccr"
+    assert attempt["launch_kind"] == "exec"
+    assert attempt["diagnostic"]["path_entry_count"] >= 0
+
+
 def test_missing_ccr_health_includes_actionable_command_configuration_hint(tmp_path, monkeypatch):
     from app.services.external_agent_discovery import check_provider_health
 

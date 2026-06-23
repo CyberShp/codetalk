@@ -179,15 +179,20 @@ export interface WorkbenchProviderMatrixItem {
       used_fallback?: boolean;
       reason?: string;
       attempt_count?: number;
+      diagnostic?: AgentCommandDiagnostic;
       attempts?: Array<{
         command?: string;
         status?: string;
         reason?: string;
+        executable?: string;
+        argv?: string[];
+        configured_argv?: string[];
         path?: string;
         launch_kind?: string;
         config_hint?: string;
         profile_config_path?: string;
         shell_path?: string;
+        diagnostic?: AgentCommandDiagnostic;
       }>;
     };
     probe_recipe?: {
@@ -213,12 +218,27 @@ export interface ExternalAgentProbeAttempt {
   command?: string;
   status?: string;
   reason?: string;
+  executable?: string;
+  argv?: string[];
+  configured_argv?: string[];
   config_hint?: string;
   launch_kind?: string;
   path?: string;
+  shell_path?: string;
   prompt_transport?: string;
   probe_status?: string;
   probe_message?: string;
+  diagnostic?: AgentCommandDiagnostic;
+}
+
+export interface AgentCommandDiagnostic {
+  summary?: string;
+  cwd?: string;
+  path_entries?: string[];
+  path_entry_count?: number;
+  checked_common_dirs?: string[];
+  command_hint_env?: string;
+  command_hint?: string;
 }
 
 export interface GitNexusRepoIndexDiagnostic {
@@ -259,12 +279,7 @@ export interface ExternalAgentStartupProbeResult {
     launch_kind?: string;
     used_fallback?: boolean;
     attempts?: ExternalAgentProbeAttempt[];
-    diagnostic?: {
-      summary?: string;
-      cwd?: string;
-      path_entries?: string[];
-      path_entry_count?: number;
-    };
+    diagnostic?: AgentCommandDiagnostic;
   };
   diagnostics?: {
     repo_index?: GitNexusRepoIndexDiagnostic;

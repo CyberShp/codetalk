@@ -183,15 +183,36 @@ async def test_workbench_provider_capabilities_include_agent_launch_resolution(
                     "command": "ccr code",
                     "status": "unavailable",
                     "reason": "command not found: ccr",
+                    "executable": "ccr",
+                    "argv": ["ccr", "code"],
+                    "configured_argv": ["ccr", "code"],
                     "launch_kind": "exec",
+                    "diagnostic": {
+                        "summary": "cwd: E:/codetalk; PATH entries: C:/missing",
+                        "cwd": "E:/codetalk",
+                        "path_entries": ["C:/missing"],
+                        "path_entry_count": 1,
+                        "checked_common_dirs": ["C:/Users/me/AppData/Roaming/npm"],
+                    },
                 },
                 {
                     "command": "claude",
                     "status": "available",
+                    "executable": "claude",
+                    "argv": ["C:/tools/claude.cmd", "-p", "--output-format", "json"],
+                    "configured_argv": ["C:/tools/claude.cmd"],
                     "path": "C:/tools/claude.cmd",
                     "launch_kind": "exec",
                 },
             ],
+            "diagnostic": {
+                "summary": "cwd: E:/codetalk; PATH entries: C:/missing",
+                "cwd": "E:/codetalk",
+                "path_entries": ["C:/missing"],
+                "path_entry_count": 1,
+                "command_hint_env": "CLAUDE_CODE_COMMAND",
+                "command_hint": "set CLAUDE_CODE_COMMAND to C:/tools/claude.cmd",
+            },
         }
 
     monkeypatch.setattr(
@@ -212,6 +233,10 @@ async def test_workbench_provider_capabilities_include_agent_launch_resolution(
     assert resolution["reason"] == "primary command unavailable; using fallback: claude"
     assert resolution["attempt_count"] == 2
     assert resolution["attempts"][0]["reason"] == "command not found: ccr"
+    assert resolution["attempts"][0]["executable"] == "ccr"
+    assert resolution["attempts"][0]["configured_argv"] == ["ccr", "code"]
+    assert resolution["attempts"][0]["diagnostic"]["path_entries"] == ["C:/missing"]
+    assert resolution["diagnostic"]["command_hint_env"] == "CLAUDE_CODE_COMMAND"
     assert by_id["semantic-library"]["capabilities"]["supports_black_box_terms"] is True
 
 

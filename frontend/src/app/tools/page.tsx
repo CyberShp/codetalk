@@ -15,6 +15,7 @@ import {
 } from "lucide-react";
 import { api } from "@/lib/api";
 import type {
+  AgentCommandDiagnostic,
   AgentProviderCapabilities,
   ExternalAgentStartupProbeResult,
   GitNexusRepoIndexDiagnostic,
@@ -203,6 +204,49 @@ function AgentProviderCapabilitiesCard({
   );
 }
 
+function CommandDiagnosticBlock({
+  diagnostic,
+}: {
+  diagnostic?: AgentCommandDiagnostic;
+}) {
+  if (!diagnostic) return null;
+  const pathEntries = diagnostic.path_entries ?? [];
+  const checkedCommonDirs = diagnostic.checked_common_dirs ?? [];
+  if (
+    !diagnostic.summary &&
+    !diagnostic.cwd &&
+    !diagnostic.command_hint &&
+    pathEntries.length === 0 &&
+    checkedCommonDirs.length === 0
+  ) {
+    return null;
+  }
+  return (
+    <div className="mt-2 rounded border border-outline-variant/20 bg-surface-container px-2 py-1.5 text-[11px] text-on-surface-variant">
+      {diagnostic.summary && <p className="break-words">{diagnostic.summary}</p>}
+      {diagnostic.command_hint && (
+        <p className="mt-1 break-words text-amber-500">{diagnostic.command_hint}</p>
+      )}
+      {diagnostic.cwd && (
+        <p className="mt-1 break-words">
+          cwd: <code className="font-data text-on-surface">{diagnostic.cwd}</code>
+        </p>
+      )}
+      {pathEntries.length > 0 && (
+        <p className="mt-1 break-words">
+          PATH[{diagnostic.path_entry_count ?? pathEntries.length}]:{" "}
+          {pathEntries.slice(0, 6).join(" | ")}
+        </p>
+      )}
+      {checkedCommonDirs.length > 0 && (
+        <p className="mt-1 break-words">
+          checked common dirs: {checkedCommonDirs.slice(0, 6).join(" | ")}
+        </p>
+      )}
+    </div>
+  );
+}
+
 function StartupProbeResultCard({
   result,
   fallbackName,
@@ -239,8 +283,25 @@ function StartupProbeResultCard({
               </code>
               <span>{attempt.status ?? "unknown"}</span>
               {attempt.launch_kind && <span>{attempt.launch_kind}</span>}
+              {attempt.executable && <span>exe: {attempt.executable}</span>}
+              {attempt.path && (
+                <span className="break-words">path: {attempt.path}</span>
+              )}
+              {attempt.shell_path && (
+                <span className="break-words">shell: {attempt.shell_path}</span>
+              )}
               {attempt.prompt_transport && <span>{attempt.prompt_transport}</span>}
               {attempt.probe_status && <span>{attempt.probe_status}</span>}
+              {attempt.configured_argv && attempt.configured_argv.length > 0 && (
+                <span className="basis-full break-words">
+                  configured argv: {attempt.configured_argv.join(" ")}
+                </span>
+              )}
+              {attempt.argv && attempt.argv.length > 0 && (
+                <span className="basis-full break-words">
+                  launch argv: {attempt.argv.join(" ")}
+                </span>
+              )}
               {(attempt.reason || attempt.config_hint) && (
                 <span className="break-words">
                   {attempt.reason || attempt.config_hint}
@@ -251,15 +312,14 @@ function StartupProbeResultCard({
                   {attempt.probe_message}
                 </span>
               )}
+              <div className="basis-full">
+                <CommandDiagnosticBlock diagnostic={attempt.diagnostic} />
+              </div>
             </div>
           ))}
         </div>
       )}
-      {result.health?.diagnostic?.summary && (
-        <p className="mt-2 break-words text-on-surface-variant">
-          {result.health.diagnostic.summary}
-        </p>
-      )}
+      <CommandDiagnosticBlock diagnostic={result.health?.diagnostic} />
     </div>
   );
 }

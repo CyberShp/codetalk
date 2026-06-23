@@ -956,6 +956,7 @@ def _agent_cli_command_resolution(
         "reason": redact_agent_diagnostic_text(str(health.get("reason") or "")),
         "attempt_count": len(attempts),
         "attempts": attempts,
+        "diagnostic": _agent_cli_command_resolution_diagnostic(health.get("diagnostic")),
     }
 
 
@@ -964,18 +965,61 @@ def _agent_cli_command_resolution_attempt(item: dict[str, Any]) -> dict[str, Any
         "command",
         "status",
         "reason",
+        "executable",
+        "argv",
+        "configured_argv",
         "path",
         "launch_kind",
         "config_hint",
         "profile_config_path",
         "shell_path",
+        "diagnostic",
     )
     result: dict[str, Any] = {}
     for key in keys:
         value = item.get(key)
         if value is None:
             continue
+        if key in {"argv", "configured_argv"} and isinstance(value, list):
+            result[key] = [
+                redact_agent_diagnostic_text(str(part))
+                for part in value
+            ]
+            continue
+        if key == "diagnostic" and isinstance(value, dict):
+            result[key] = _agent_cli_command_resolution_diagnostic(value)
+            continue
         result[key] = redact_agent_diagnostic_text(str(value)) if isinstance(value, str) else value
+    return result
+
+
+def _agent_cli_command_resolution_diagnostic(value: Any) -> dict[str, Any]:
+    if not isinstance(value, dict):
+        return {}
+    result: dict[str, Any] = {}
+    for key in (
+        "cwd",
+        "summary",
+        "command_hint_env",
+        "command_hint",
+        "path_entry_count",
+        "path_entries",
+        "checked_common_dirs",
+    ):
+        item = value.get(key)
+        if item is None:
+            continue
+        if isinstance(item, str):
+            result[key] = redact_agent_diagnostic_text(item)
+        elif isinstance(item, list):
+            result[key] = [
+                redact_agent_diagnostic_text(str(part))
+                for part in item
+            ]
+        elif isinstance(item, (int, float, bool)):
+            result[key] = item
+        else:
+            result[key] = redact_agent_diagnostic_text(str(item))
     return result
 
 

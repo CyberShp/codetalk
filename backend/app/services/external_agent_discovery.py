@@ -480,6 +480,10 @@ def check_provider_health(
             "launch_kind": attempt.get("launch_kind") or "exec",
             "used_fallback": index > 0,
             "attempts": attempts,
+            "diagnostic": _agent_runtime_diagnostic(
+                provider=provider,
+                attempted_commands=commands,
+            ),
         }
         if index > 0:
             health["reason"] = _fallback_reason(candidate_command, attempts[:-1])
@@ -564,6 +568,7 @@ def _runtime_attempt_records(
         "run_message",
         "probe_status",
         "probe_message",
+        "diagnostic",
     )
     records: list[dict] = []
     for index, attempt in enumerate(attempts, start=1):
@@ -584,6 +589,9 @@ def _runtime_attempt_records(
                 record[key] = " ".join(
                     _redact_agent_diagnostic_text(str(item)) for item in value
                 )
+                continue
+            if key == "diagnostic" and isinstance(value, dict):
+                record[key] = _redact_agent_diagnostics(value)
                 continue
             if isinstance(value, (str, int, float, bool)):
                 record[key] = _redact_agent_diagnostic_text(str(value)) if isinstance(value, str) else value
@@ -683,8 +691,14 @@ def _resolve_provider_command_attempt(command: str, provider: str | None = None)
         return {
             "command": command,
             "argv": [],
+            "configured_argv": [],
             "status": "unavailable",
             "reason": "empty command",
+            "launch_kind": "exec",
+            "diagnostic": _agent_runtime_diagnostic(
+                provider=provider,
+                attempted_commands=[command],
+            ),
         }
     executable = argv[0]
     configured_path = _resolve_configured_executable_path(executable)
@@ -793,9 +807,15 @@ def _resolve_provider_command_attempt(command: str, provider: str | None = None)
         return {
             "command": command,
             "argv": argv,
+            "configured_argv": argv,
             "executable": executable,
             "status": "unavailable",
             "reason": f"command not found: {executable}",
+            "launch_kind": "exec",
+            "diagnostic": _agent_runtime_diagnostic(
+                provider=provider,
+                attempted_commands=[command],
+            ),
         }
     configured_argv = [resolved, *argv[1:]]
     resolved_argv = _normalize_agent_automation_argv(provider, configured_argv)
