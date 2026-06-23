@@ -88,6 +88,40 @@ class TestGetPmFromAppState:
         assert "fallback" in agent["message"]
         assert agent["last_check"] == "primary command unavailable; using fallback: claude -p"
 
+    async def test_procs_includes_runtime_custom_external_agent_provider(
+        self,
+        tools_client,
+        monkeypatch,
+    ):
+        """Providers configured after module import should still appear in tool status."""
+        from app.config import settings
+
+        monkeypatch.setattr(settings, "external_agent_custom_providers", [
+            {"id": "corp-agent", "command": "corp-agent run --json"}
+        ])
+        client, _mock_pm = tools_client
+        monkeypatch.setattr(tools, "get_all_adapters", lambda: [])
+
+        async def fake_adapter_status(adapter):
+            return {
+                "name": adapter.name(),
+                "display_name": adapter.name(),
+                "healthy": False,
+                "status": "unavailable",
+                "managed": False,
+                "message": "command not found: corp-agent",
+            }
+
+        monkeypatch.setattr(tools, "_adapter_proc_status", fake_adapter_status)
+
+        resp = await client.get("/api/tools/procs")
+
+        assert resp.status_code == 200
+        body = resp.json()
+        corp = next(item for item in body if item["name"] == "corp-agent")
+        assert corp["managed"] is False
+        assert corp["message"] == "command not found: corp-agent"
+
 
 class TestStartToolSuccess:
     async def test_start_returns_success(self, tools_client):
@@ -516,6 +550,49 @@ async def test_external_agent_startup_probe_exception_returns_diagnostics(tools_
     assert "spawn failed" in body["message"]
     assert "sk-tool-secret-123" not in body["message"]
     assert "<redacted>" in body["message"]
+
+
+async def test_external_agent_startup_probe_supports_runtime_custom_provider(
+    tools_client,
+    monkeypatch,
+):
+    """Workbench-configured Agent CLIs should be probeable without app restart."""
+    from app.config import settings
+
+    monkeypatch.setattr(settings, "external_agent_custom_providers", [
+        {"id": "corp-agent", "command": "corp-agent run --json"}
+    ])
+    client, _mock_pm = tools_client
+
+    def missing_adapter(_name):
+        raise KeyError("not registered at import time")
+
+    monkeypatch.setattr(tools, "get_adapter", missing_adapter)
+
+    async def fake_startup_probe(provider, repo_path=None):
+        assert provider == "corp-agent"
+        return {
+            "provider": provider,
+            "healthy": False,
+            "status": "unavailable",
+            "message": f"runtime custom probe at {repo_path}",
+        }
+
+    monkeypatch.setattr(
+        "app.adapters.external_agent.probe_external_agent_startup",
+        fake_startup_probe,
+    )
+
+    resp = await client.post(
+        "/api/tools/corp-agent/startup-probe",
+        params={"repo_path": "E:/repo"},
+    )
+
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["provider"] == "corp-agent"
+    assert body["status"] == "unavailable"
+    assert body["message"] == "runtime custom probe at E:/repo"
 
 
 async def test_gitnexus_startup_probe_reports_managed_process_diagnostics(monkeypatch):

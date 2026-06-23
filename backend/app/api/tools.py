@@ -9,6 +9,7 @@ from typing import Any
 from fastapi import APIRouter, HTTPException, Request
 
 from app.adapters import get_adapter, get_all_adapters
+from app.adapters.external_agent import ExternalAgentAdapter
 from app.adapters.gitnexus import resolve_indexed_repo
 from app.config import settings
 from app.services import process_manager as process_manager_module
@@ -27,7 +28,6 @@ logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/api/tools", tags=["tools"])
 
 _HEALTH_TIMEOUT = 4.0  # seconds; adapters slower than this are reported as busy
-_ADAPTER_ONLY_TOOL_NAMES = {*external_agent_provider_ids(), "fast-context"}
 _MANAGED_STARTUP_PROBE_TOOL_NAMES = {"gitnexus"}
 
 
@@ -76,6 +76,29 @@ def _display_name(name: str) -> str:
 
 def _agent_provider_capabilities(name: str) -> dict[str, Any]:
     return external_agent_provider_capabilities(name)
+
+
+def _adapter_only_tool_names() -> set[str]:
+    return {*external_agent_provider_ids(), "fast-context"}
+
+
+def _runtime_external_agent_adapters(managed_names: set[str]) -> list[ExternalAgentAdapter]:
+    existing = {adapter.name() for adapter in get_all_adapters()}
+    adapters: list[ExternalAgentAdapter] = []
+    for provider in external_agent_provider_ids():
+        if provider in existing or provider in managed_names:
+            continue
+        adapters.append(ExternalAgentAdapter(provider))
+    return adapters
+
+
+def _get_adapter_or_runtime_external_agent(tool_name: str):
+    try:
+        return get_adapter(tool_name)
+    except KeyError:
+        if external_agent_provider_spec(tool_name) is not None:
+            return ExternalAgentAdapter(tool_name)
+        raise
 
 
 async def _adapter_proc_status(adapter) -> dict[str, Any]:
@@ -188,8 +211,11 @@ async def get_tool_procs(request: Request) -> list[dict[str, Any]]:
     managed_names = {str(item.get("name")) for item in process_status if isinstance(item, dict)}
     adapter_status = await asyncio.gather(*[
         _adapter_proc_status(adapter)
-        for adapter in get_all_adapters()
-        if adapter.name() in _ADAPTER_ONLY_TOOL_NAMES and adapter.name() not in managed_names
+        for adapter in [
+            *get_all_adapters(),
+            *_runtime_external_agent_adapters(managed_names),
+        ]
+        if adapter.name() in _adapter_only_tool_names() and adapter.name() not in managed_names
     ])
     return [*process_status, *adapter_status]
 
@@ -198,7 +224,7 @@ async def get_tool_procs(request: Request) -> list[dict[str, Any]]:
 async def get_tool_health(tool_name: str) -> dict[str, Any]:
     """Return health status of a specific tool adapter."""
     try:
-        adapter = get_adapter(tool_name)
+        adapter = _get_adapter_or_runtime_external_agent(tool_name)
     except KeyError:
         raise HTTPException(status_code=404, detail=f"Unknown tool: {tool_name}")
 
@@ -244,7 +270,7 @@ async def startup_probe_tool(
 ) -> dict[str, Any]:
     """Actually start an adapter-only external agent once and report diagnostics."""
     try:
-        adapter = get_adapter(tool_name)
+        adapter = _get_adapter_or_runtime_external_agent(tool_name)
     except KeyError:
         raise HTTPException(status_code=404, detail=f"Unknown tool: {tool_name}")
 
