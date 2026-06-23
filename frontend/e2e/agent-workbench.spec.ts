@@ -643,6 +643,14 @@ test("agent workbench previews task run artifact content", async ({ page }) => {
             preview: "{\"retrieved_count\":1,\"deployment_retrieved_count\":1}",
           },
           {
+            relative_path: "input_materials.json",
+            path: "E:/data/workbench/task_runs/task_run_preview/input_materials.json",
+            kind: "input_materials",
+            size_bytes: 512,
+            sha256: "materialhash1111222233334444",
+            preview: "{\"kind\":\"input_materials\",\"material_count\":1}",
+          },
+          {
             relative_path: "black_box_generation_policy.json",
             path: "E:/data/workbench/task_runs/task_run_preview/black_box_generation_policy.json",
             kind: "black_box_generation_policy",
@@ -858,6 +866,42 @@ test("agent workbench previews task run artifact content", async ({ page }) => {
     },
   );
   await page.route(
+    "**/api/workbench/task-runs/task_run_preview/artifacts/content/input_materials.json",
+    async (route) => {
+      await route.fulfill({
+        headers: corsHeaders(route.request().headers().origin),
+        json: {
+          relative_path: "input_materials.json",
+          path: "E:/data/workbench/task_runs/task_run_preview/input_materials.json",
+          kind: "input_materials",
+          size_bytes: 512,
+          sha256: "materialhash1111222233334444",
+          preview: "{\"kind\":\"input_materials\",\"material_count\":1}",
+          is_text: true,
+          truncated: false,
+          content: JSON.stringify({
+            kind: "input_materials",
+            material_count: 1,
+            read_order: ["design_doc"],
+            rules: {
+              agent_must_read_materials: true,
+              materials_are_source_truth: false,
+            },
+            materials: [
+              {
+                input_id: "design_doc",
+                material_role: "design context",
+                filename: "tls-design.md",
+                sha256: "1234567890abcdef1234567890abcdef",
+                chunks_path: "E:/data/workbench/task_runs/task_run_preview/inputs/design_doc/chunks.json",
+              },
+            ],
+          }),
+        },
+      });
+    },
+  );
+  await page.route(
     "**/api/workbench/task-runs/task_run_preview/artifacts/content/black_box_generation_policy.json",
     async (route) => {
       await route.fulfill({
@@ -1054,7 +1098,7 @@ test("agent workbench previews task run artifact content", async ({ page }) => {
   await expect(
     page.getByText("manual:POST /api/tools/claude-code/startup-probe", { exact: false }),
   ).toBeVisible();
-  await expect(page.getByText("Audit artifacts: 9")).toBeVisible();
+  await expect(page.getByText("Audit artifacts: 10")).toBeVisible();
 
   await page.getByRole("button", { name: "task_bundle:task_bundle.json" }).click();
 
@@ -1115,6 +1159,21 @@ test("agent workbench previews task run artifact content", async ({ page }) => {
     page.getByText("first:nof/nvmf_tcp/transport/tls/tls.c"),
   ).toBeVisible();
   await expect(page.getByText("reuse:source slices attached and locally verified")).toBeVisible();
+
+  await page
+    .getByRole("button", {
+      name: "input_materials:input_materials.json",
+    })
+    .click();
+  await expect(page.getByText("Input materials")).toBeVisible();
+  await expect(page.getByText("materials:1")).toBeVisible();
+  await expect(page.getByText("must-read:true")).toBeVisible();
+  await expect(page.getByText("source-truth:false")).toBeVisible();
+  await expect(page.getByText("read-order:design_doc")).toBeVisible();
+  await expect(page.getByText("first:design_doc")).toBeVisible();
+  await expect(page.getByText("role:design context")).toBeVisible();
+  await expect(page.getByText("file:tls-design.md")).toBeVisible();
+  await expect(page.getByText("sha:1234567890ab")).toBeVisible();
 
   await page
     .getByRole("button", {

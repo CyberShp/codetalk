@@ -105,6 +105,8 @@ def workbench_artifact_kind(relative_path: str) -> str:
         return "input_snapshot"
     if name == "input_context.json":
         return "input_context"
+    if name == "input_materials.json":
+        return "input_materials"
     if parts and parts[0] == "inputs":
         if name == "file_metadata.json":
             return "input_file_metadata"

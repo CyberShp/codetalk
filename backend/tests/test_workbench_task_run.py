@@ -121,13 +121,39 @@ def test_prepare_workbench_task_run_ingests_file_inputs(tmp_path):
     assert input_context["inputs"][0]["text_preview"].startswith("# Patch plan")
     assert input_context["inputs"][0]["chunk_count"] == 1
     assert input_context["inputs"][0]["chunks_path"] == file_info["chunks_path"]
+    input_materials = result.task_bundle["input_materials"]
+    assert input_materials["material_count"] == 1
+    assert input_materials["read_order"] == ["patch_plan"]
+    assert input_materials["rules"]["agent_must_read_materials"] is True
+    assert input_materials["rules"]["materials_are_source_truth"] is False
+    assert input_materials["materials"][0]["input_id"] == "patch_plan"
+    assert input_materials["materials"][0]["material_role"] == "patch_plan"
+    assert input_materials["materials"][0]["sha256"] == file_info["sha256"]
+    assert input_materials["materials"][0]["parsed_text_path"] == file_info["parsed_text_path"]
+    assert input_materials["materials"][0]["chunks_path"] == file_info["chunks_path"]
+    assert input_materials["materials"][0]["agent_action"] == "read parsed_text_path first; use chunks_path when more context is needed"
     step_bundle = json.loads(
         Path(result.artifact_dir, "agent_runs", "analyze", "task_bundle.json").read_text(
             encoding="utf-8"
         )
     )
     assert step_bundle["input_context"]["inputs"][0]["input_id"] == "patch_plan"
+    assert step_bundle["input_materials"]["materials"][0]["sha256"] == file_info["sha256"]
+    output_contract = json.loads(
+        Path(result.artifact_dir, "agent_runs", "analyze", "agent_output_contract.json").read_text(
+            encoding="utf-8"
+        )
+    )
+    assert output_contract["input_materials"]["material_count"] == 1
+    assert output_contract["input_materials"]["read_order"] == ["patch_plan"]
+    assert output_contract["input_materials"]["rules"]["materials_are_source_truth"] is False
+    assert Path(result.artifact_dir, "input_materials.json").exists()
     assert Path(result.artifact_dir, "input_context.json").exists()
+    manifest = json.loads(
+        Path(result.artifact_dir, "task_artifact_manifest.json").read_text(encoding="utf-8")
+    )
+    manifest_paths = {item["relative_path"]: item for item in manifest["artifacts"]}
+    assert manifest_paths["input_materials.json"]["kind"] == "input_materials"
 
 
 def test_prepare_workbench_task_run_extracts_docx_file_inputs(tmp_path):

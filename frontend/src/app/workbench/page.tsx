@@ -787,6 +787,18 @@ type MemoryArtifactSummary = {
   firstDeploymentSubject: string;
 };
 
+type InputMaterialsSummary = {
+  materialCount: number;
+  readOrder: string[];
+  firstInputId: string;
+  firstRole: string;
+  firstFilename: string;
+  firstSha: string;
+  firstChunksPath: string;
+  mustRead: boolean;
+  materialsAreSourceTruth: boolean;
+};
+
 type AcceptanceProviderIssue = {
   provider: string;
   status: string;
@@ -1233,6 +1245,47 @@ function memoryArtifactSummary(
   };
 }
 
+function inputMaterialsSummary(
+  artifact: WorkbenchTaskArtifactContent,
+): InputMaterialsSummary | null {
+  if (!artifact.is_text || !artifact.content.trim()) return null;
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(artifact.content);
+  } catch {
+    return null;
+  }
+  if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) return null;
+  const payload = parsed as Record<string, unknown>;
+  if (artifact.kind !== "input_materials" && payload.kind !== "input_materials") {
+    return null;
+  }
+  const materials = Array.isArray(payload.materials)
+    ? payload.materials.filter(
+        (item): item is Record<string, unknown> =>
+          Boolean(item && typeof item === "object" && !Array.isArray(item)),
+      )
+    : [];
+  const first = materials[0] ?? {};
+  const rules =
+    payload.rules && typeof payload.rules === "object" && !Array.isArray(payload.rules)
+      ? (payload.rules as Record<string, unknown>)
+      : {};
+  return {
+    materialCount: Number(payload.material_count ?? 0) || materials.length,
+    readOrder: Array.isArray(payload.read_order)
+      ? payload.read_order.map((item) => String(item)).filter(Boolean)
+      : [],
+    firstInputId: String(first.input_id ?? ""),
+    firstRole: String(first.material_role ?? ""),
+    firstFilename: String(first.filename ?? ""),
+    firstSha: String(first.sha256 ?? ""),
+    firstChunksPath: String(first.chunks_path ?? ""),
+    mustRead: Boolean(rules.agent_must_read_materials ?? false),
+    materialsAreSourceTruth: Boolean(rules.materials_are_source_truth ?? false),
+  };
+}
+
 function rejectedOutputLabel(item: Record<string, unknown>): string {
   return String(
     item.output ??
@@ -1294,6 +1347,7 @@ const AUDIT_ARTIFACT_KIND_ORDER = [
   "task_bundle",
   "input_snapshot",
   "input_context",
+  "input_materials",
   "input_file_metadata",
   "input_file_set_manifest",
   "input_parsed_text",
@@ -4188,6 +4242,42 @@ export default function AgentWorkbenchPage() {
                               {summary.firstReuseReason && (
                                 <div className="mt-1 break-words text-[10px]">
                                   reuse:{summary.firstReuseReason}
+                                </div>
+                              )}
+                            </div>
+                          );
+                        })()}
+                        {(() => {
+                          const summary = inputMaterialsSummary(artifactContent);
+                          if (!summary) return null;
+                          return (
+                            <div className="mt-2 rounded bg-surface-container px-2 py-1.5 text-[11px] text-on-surface-variant">
+                              <div className="flex flex-wrap gap-2">
+                                <span>Input materials</span>
+                                <span>materials:{summary.materialCount}</span>
+                                <span>must-read:{String(summary.mustRead)}</span>
+                                <span>source-truth:{String(summary.materialsAreSourceTruth)}</span>
+                              </div>
+                              {summary.readOrder.length > 0 && (
+                                <div className="mt-1 break-words font-data text-[10px]">
+                                  read-order:{summary.readOrder.slice(0, 6).join(",")}
+                                </div>
+                              )}
+                              <div className="mt-1 flex flex-wrap gap-2 font-data text-[10px]">
+                                {summary.firstInputId && (
+                                  <span>first:{summary.firstInputId}</span>
+                                )}
+                                {summary.firstRole && <span>role:{summary.firstRole}</span>}
+                                {summary.firstFilename && (
+                                  <span>file:{summary.firstFilename}</span>
+                                )}
+                                {summary.firstSha && (
+                                  <span>sha:{summary.firstSha.slice(0, 12)}</span>
+                                )}
+                              </div>
+                              {summary.firstChunksPath && (
+                                <div className="mt-1 break-words font-data text-[10px]">
+                                  chunks:{summary.firstChunksPath}
                                 </div>
                               )}
                             </div>

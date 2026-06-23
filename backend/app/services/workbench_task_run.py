@@ -107,6 +107,11 @@ class WorkbenchTaskRunPreparer:
             input_snapshot=input_snapshot,
         )
         input_context = build_input_context(input_snapshot)
+        input_materials = build_input_materials(
+            workflow_snapshot=workflow_snapshot,
+            input_snapshot=input_snapshot,
+            input_context=input_context,
+        )
         provider_snapshot = build_agent_provider_snapshot(
             workflow_snapshot=workflow_snapshot,
             provider_override=provider_override,
@@ -148,6 +153,7 @@ class WorkbenchTaskRunPreparer:
             "repo_path": repo_path,
             "inputs": input_snapshot,
             "input_context": input_context,
+            "input_materials": input_materials,
             "workflow_contract": workflow_contract,
             "agent_mcp_requests": agent_mcp_requests,
             "agent_instructions": agent_instructions,
@@ -218,6 +224,7 @@ class WorkbenchTaskRunPreparer:
         _write_json(artifact_dir / "agent_mcp_requests.json", agent_mcp_requests)
         _write_json(artifact_dir / "input_snapshot.json", input_snapshot)
         _write_json(artifact_dir / "input_context.json", input_context)
+        _write_json(artifact_dir / "input_materials.json", input_materials)
         _write_json(artifact_dir / "agent_instructions.json", agent_instructions)
         _write_json(artifact_dir / "provider_snapshot.json", provider_snapshot)
         _write_json(artifact_dir / "provider_readiness.json", provider_readiness)
@@ -373,6 +380,115 @@ def build_input_context(input_snapshot: dict[str, Any], *, preview_chars: int = 
             if isinstance(item, dict)
         ),
         "preview_chars_per_file": preview_chars,
+    }
+
+
+def build_input_materials(
+    *,
+    workflow_snapshot: dict[str, Any],
+    input_snapshot: dict[str, Any],
+    input_context: dict[str, Any],
+) -> dict[str, Any]:
+    input_defs = {
+        str(item.get("id") or ""): item
+        for item in workflow_snapshot.get("inputs") or []
+        if isinstance(item, dict) and str(item.get("id") or "")
+    }
+    context_by_id = _input_context_files_by_id(input_context)
+    materials: list[dict[str, Any]] = []
+    for input_id, value in input_snapshot.items():
+        if not isinstance(value, dict):
+            continue
+        definition = input_defs.get(str(input_id), {})
+        kind = str(value.get("kind") or "")
+        if kind == "file":
+            materials.append(
+                _input_material_payload(
+                    input_id=str(input_id),
+                    payload=value,
+                    definition=definition,
+                    context=context_by_id.get(str(input_id), {}),
+                )
+            )
+        elif kind == "file_set":
+            for index, file_payload in enumerate(value.get("files") or []):
+                if not isinstance(file_payload, dict):
+                    continue
+                file_input_id = str(file_payload.get("input_id") or f"{input_id}_{index + 1}")
+                materials.append(
+                    _input_material_payload(
+                        input_id=file_input_id,
+                        payload=file_payload,
+                        definition=definition,
+                        context=context_by_id.get(file_input_id, {}),
+                        parent_input_id=str(input_id),
+                    )
+                )
+    return {
+        "kind": "input_materials",
+        "material_count": len(materials),
+        "read_order": [str(item.get("input_id") or "") for item in materials],
+        "materials": materials,
+        "rules": {
+            "agent_must_read_materials": bool(materials),
+            "materials_are_source_truth": False,
+            "source_truth_rule": (
+                "Input materials provide requirements, design, coverage, diff, or user intent; "
+                "source-code evidence still requires local source validation or accepted artifacts."
+            ),
+            "hash_verification": "sha256 identifies the copied material captured for this task run",
+            "large_context_strategy": "read parsed_text_path first, then use chunks_path selectively",
+        },
+    }
+
+
+def _input_context_files_by_id(input_context: dict[str, Any]) -> dict[str, dict[str, Any]]:
+    result: dict[str, dict[str, Any]] = {}
+    for item in input_context.get("inputs") or []:
+        if not isinstance(item, dict):
+            continue
+        if item.get("kind") == "file_set":
+            for file_item in item.get("files") or []:
+                if isinstance(file_item, dict):
+                    input_id = str(file_item.get("input_id") or "")
+                    if input_id:
+                        result[input_id] = file_item
+            continue
+        input_id = str(item.get("input_id") or "")
+        if input_id:
+            result[input_id] = item
+    return result
+
+
+def _input_material_payload(
+    *,
+    input_id: str,
+    payload: dict[str, Any],
+    definition: dict[str, Any],
+    context: dict[str, Any],
+    parent_input_id: str = "",
+) -> dict[str, Any]:
+    role = str(definition.get("role") or "").strip()
+    return {
+        "input_id": input_id,
+        "parent_input_id": parent_input_id,
+        "input_type": str(definition.get("type") or ""),
+        "material_role": role or input_id,
+        "resolver": str(definition.get("resolver") or ""),
+        "filename": str(payload.get("filename") or context.get("filename") or ""),
+        "suffix": str(payload.get("suffix") or context.get("suffix") or ""),
+        "size_bytes": int(payload.get("size_bytes") or context.get("size_bytes") or 0),
+        "sha256": str(payload.get("sha256") or context.get("sha256") or ""),
+        "original_path": str(payload.get("original_path") or ""),
+        "copied_path": str(payload.get("copied_path") or ""),
+        "parsed_text_path": str(payload.get("parsed_text_path") or ""),
+        "chunks_path": str(payload.get("chunks_path") or ""),
+        "chunk_count": int(context.get("chunk_count") or 0),
+        "metadata_path": str(payload.get("metadata_path") or ""),
+        "text_truncated": bool(context.get("text_truncated", False)),
+        "parse_warnings": [str(item) for item in payload.get("parse_warnings") or []],
+        "agent_action": "read parsed_text_path first; use chunks_path when more context is needed",
+        "evidence_boundary": "material_context_only_not_source_evidence",
     }
 
 

@@ -69,6 +69,11 @@ def _agent_output_contract_payload(
         if isinstance(task_bundle.get("black_box_generation_policy"), dict)
         else {}
     )
+    input_materials = (
+        task_bundle.get("input_materials")
+        if isinstance(task_bundle.get("input_materials"), dict)
+        else {}
+    )
     return {
         "contract_version": 1,
         "run_id": run.run_id,
@@ -82,6 +87,11 @@ def _agent_output_contract_payload(
         "required_artifacts": required_artifacts,
         "expected_output_schemas": expected_output_schemas,
         "expected_semantic_outputs": expected_semantic_outputs,
+        "input_materials": {
+            "material_count": int(input_materials.get("material_count") or 0),
+            "read_order": [str(item) for item in input_materials.get("read_order") or []],
+            "rules": input_materials.get("rules") if isinstance(input_materials.get("rules"), dict) else {},
+        },
         "black_box_generation_policy": black_box_generation_policy,
         "evidence_rules": {
             "raw_output_reuse": "never_without_validation",
