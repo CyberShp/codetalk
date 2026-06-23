@@ -778,6 +778,43 @@ error_recovery,src/service.c,40,55,false,0
         assert "entry_discovery" in prompt
         assert "公开 API 请求" in prompt
 
+    async def test_ai_prompt_includes_black_box_semantic_policy(self, tmp_path):
+        from app.services.coverage_analyzer import (
+            _coverage_ai_prompt,
+            build_coverage_test_context,
+        )
+
+        context = await build_coverage_test_context(
+            [],
+            workspace_id="ws-policy",
+            repo_path=str(tmp_path),
+            deterministic_gaps=[{
+                "kind": "function",
+                "function_name": "recover_session",
+                "file_path": "src/session.c",
+                "gray_box_required": True,
+                "entry_paths": [],
+            }],
+            workbench_context={
+                "semantic_cases": [{
+                    "case_id": "TC_TLS_NEG_FAIL",
+                    "feature": "NVMe TCP TLS",
+                    "module": "src/session.c",
+                    "terms": ["TLS negotiation", "connection release"],
+                    "test_level": "black_box",
+                }],
+                "evidence_memory": [],
+                "by_gap": {},
+            },
+        )
+
+        prompt = _coverage_ai_prompt(context)
+
+        assert "black_box_generation_policy" in prompt
+        assert "terminology_only_not_source_truth" in prompt
+        assert "source_evidence" in prompt
+        assert "entry_verification" in prompt
+
     async def test_ai_failure_marks_no_valid_recommendation_instead_of_templates(
         self, tmp_path
     ):
@@ -1271,6 +1308,23 @@ class TestCoverageTestDesign:
         assert "connection release" in case_text
         assert gap["semantic_cases"][0]["case_id"] == "TC_TLS_NEG_FAIL"
         assert design["test_context"]["evidence_source_counts"]["semantic_case"] == 1
+        assert design["black_box_generation_policy"]["semantic_terms"][0] == {
+            "case_id": "TC_TLS_NEG_FAIL",
+            "feature": "NVMe TCP TLS",
+            "module": "src/session.c",
+            "terms": ["TLS negotiation", "connection release", "recover_session"],
+            "test_level": "black_box",
+            "reuse_rule": "terminology_only_not_source_truth",
+        }
+        assert design["black_box_generation_policy"]["must_not_use_semantics_as"] == [
+            "source_evidence",
+            "entry_verification",
+            "artifact_validation",
+        ]
+        assert gap["black_box_generation_policy"]["semantic_term_count"] == 3
+        assert gap["black_box_generation_policy"]["authority_rule"] == (
+            "semantic-library matches may shape black-box wording but cannot prove source behavior or entry reachability"
+        )
 
     async def test_coverage_design_enriches_cases_from_evidence_memory(
         self,

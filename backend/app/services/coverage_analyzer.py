@@ -11960,6 +11960,10 @@ def _apply_coverage_workbench_context(gaps: list[dict], context: dict) -> None:
         evidence_memory = matches.get("evidence_memory") or []
         if semantic_cases:
             gap["semantic_cases"] = semantic_cases[:5]
+            gap["black_box_generation_policy"] = _coverage_black_box_generation_policy(
+                semantic_cases[:5],
+                query=_coverage_workbench_gap_key(gap),
+            )
             _apply_semantic_cases_to_black_box_cases(gap, semantic_cases[:3])
         if evidence_memory:
             gap["evidence_memory"] = evidence_memory[:5]
@@ -12006,6 +12010,46 @@ def _apply_semantic_cases_to_black_box_cases(gap: dict, semantic_cases: list[dic
             current = str(case.get("expected") or "")
             if suffix.strip() not in current:
                 case["expected"] = (current + suffix).strip()
+
+
+def _coverage_black_box_generation_policy(
+    semantic_cases: list[dict],
+    *,
+    query: str,
+) -> dict:
+    semantic_terms: list[dict] = []
+    for item in semantic_cases:
+        terms = [str(term) for term in item.get("terms") or [] if str(term)]
+        if not terms:
+            continue
+        semantic_terms.append({
+            "case_id": str(item.get("case_id") or item.get("semantic_id") or ""),
+            "feature": str(item.get("feature") or ""),
+            "module": str(item.get("module") or ""),
+            "terms": terms,
+            "test_level": str(item.get("test_level") or ""),
+            "reuse_rule": "terminology_only_not_source_truth",
+        })
+    return {
+        "provider": "semantic-library",
+        "query": str(query or ""),
+        "semantic_terms": semantic_terms,
+        "semantic_case_count": len(semantic_cases),
+        "semantic_term_count": sum(len(item["terms"]) for item in semantic_terms),
+        "authority_rule": (
+            "semantic-library matches may shape black-box wording but cannot prove source behavior or entry reachability"
+        ),
+        "allowed_uses": [
+            "black_box_case_wording",
+            "test_taxonomy_alignment",
+            "observable_assertion_style",
+        ],
+        "must_not_use_semantics_as": [
+            "source_evidence",
+            "entry_verification",
+            "artifact_validation",
+        ],
+    }
 
 
 def _apply_evidence_memory_to_black_box_cases(gap: dict, evidence_items: list[dict]) -> None:
@@ -12181,6 +12225,13 @@ async def build_coverage_test_context(
         "materials": materials,
         "semantic_cases": workbench_context.get("semantic_cases") or [],
         "evidence_memory": workbench_context.get("evidence_memory") or [],
+        "black_box_generation_policy": _coverage_black_box_generation_policy(
+            [
+                item for item in workbench_context.get("semantic_cases") or []
+                if isinstance(item, dict)
+            ],
+            query="coverage_test_context",
+        ),
         "external_trigger_candidates": external_trigger_candidates,
         "entry_discovery": entry_discovery,
         "deterministic_gaps": _context_safe_gaps(deterministic_gaps),
@@ -12926,6 +12977,7 @@ def _context_safe_gaps(gaps: list[dict]) -> list[dict]:
             "evidence_gaps": gap.get("evidence_gaps") or [],
             "semantic_cases": gap.get("semantic_cases") or [],
             "evidence_memory": gap.get("evidence_memory") or [],
+            "black_box_generation_policy": gap.get("black_box_generation_policy"),
         })
     return safe
 
@@ -13038,6 +13090,9 @@ def _coverage_ai_prompt(context: dict) -> str:
         "cgc": context.get("cgc"),
         "external_trigger_candidates": context.get("external_trigger_candidates"),
         "entry_discovery": context.get("entry_discovery"),
+        "semantic_cases": context.get("semantic_cases"),
+        "evidence_memory": context.get("evidence_memory"),
+        "black_box_generation_policy": context.get("black_box_generation_policy"),
         "warnings": context.get("warnings"),
     }
     return (
@@ -13548,6 +13603,13 @@ async def build_coverage_test_design(
         workspace_id=workspace_id,
     )
     _apply_coverage_workbench_context(gaps, workbench_context)
+    black_box_generation_policy = _coverage_black_box_generation_policy(
+        [
+            item for item in workbench_context.get("semantic_cases") or []
+            if isinstance(item, dict)
+        ],
+        query="coverage_test_design",
+    )
     context = await build_coverage_test_context(
         modules,
         workspace_id=workspace_id,
@@ -13668,6 +13730,7 @@ async def build_coverage_test_design(
             "evidence_source_counts": context.get("evidence_source_counts") or {},
             "warnings": context.get("warnings") or [],
         },
+        "black_box_generation_policy": black_box_generation_policy,
         "entry_discovery": entry_discovery,
         "test_scenarios": test_scenarios,
         "test_scenario_validation": {
