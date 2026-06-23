@@ -544,6 +544,30 @@ type WorkflowOutputMaterializationSummary = {
   };
 };
 
+type AcceptanceProviderIssue = {
+  provider: string;
+  status: string;
+  reason: string;
+  startupProbeEndpoint: string;
+  usedFallback: boolean;
+};
+
+function acceptanceProviderIssues(
+  audit: WorkbenchAcceptanceAudit | null,
+): AcceptanceProviderIssue[] {
+  if (!audit) return [];
+  return audit.missing_required
+    .filter((item) => String(item.id ?? "").startsWith("provider_readiness_agent:"))
+    .map((item) => ({
+      provider: String(item.provider ?? String(item.id ?? "").split(":")[1] ?? "agent"),
+      status: String(item.provider_status ?? item.status ?? "unknown"),
+      reason: String(item.reason ?? ""),
+      startupProbeEndpoint: String(item.startup_probe_endpoint ?? ""),
+      usedFallback: Boolean(item.used_fallback ?? false),
+    }))
+    .filter((item) => item.provider);
+}
+
 function evidenceValidationSummary(
   artifact: WorkbenchTaskArtifactContent,
 ): EvidenceValidationSummary | null {
@@ -2245,6 +2269,29 @@ export default function AgentWorkbenchPage() {
                           {taskAcceptanceAudit.summary.missing_recommended}
                         </span>
                       </div>
+                      {(() => {
+                        const providerIssues = acceptanceProviderIssues(taskAcceptanceAudit);
+                        if (providerIssues.length === 0) return null;
+                        return (
+                          <div className="mt-1 rounded border border-warning/30 bg-surface px-2 py-1.5">
+                            <p className="text-[11px] font-medium text-warning">
+                              Agent provider readiness
+                            </p>
+                            <div className="mt-1 space-y-0.5 font-data text-[10px] text-warning">
+                              {providerIssues.slice(0, 4).map((issue) => (
+                                <div key={issue.provider} className="break-words">
+                                  {issue.provider}:{issue.status}
+                                  {issue.usedFallback ? " fallback" : ""}
+                                  {issue.reason ? ` reason:${issue.reason}` : ""}
+                                  {issue.startupProbeEndpoint
+                                    ? ` probe:${issue.startupProbeEndpoint}`
+                                    : ""}
+                                </div>
+                              ))}
+                            </div>
+                          </div>
+                        );
+                      })()}
                       {taskAcceptanceAudit.missing_required.length > 0 && (
                         <div className="mt-1 space-y-0.5 font-data text-[10px] text-warning">
                           {taskAcceptanceAudit.missing_required.slice(0, 3).map((item, index) => (
