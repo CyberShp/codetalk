@@ -409,11 +409,14 @@ class AgentRunHarness:
             process_command = candidate_command
             stdin_payload_bytes = candidate_stdin
             prompt_transport = candidate_transport
-            prompt_transport_reason = (
-                f"transport_fallback_from_{candidate_reason}"
-                if candidate_reason
-                else ""
-            )
+            if candidate_reason == "large_payload_forced_stdin":
+                prompt_transport_reason = candidate_reason
+            else:
+                prompt_transport_reason = (
+                    f"transport_fallback_from_{candidate_reason}"
+                    if candidate_reason
+                    else ""
+                )
             attempt: dict[str, Any] = {
                 "attempt_index": candidate_index + 1,
                 "process_command": _redact_command_list(candidate_command),
