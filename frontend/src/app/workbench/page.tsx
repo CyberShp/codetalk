@@ -775,6 +775,18 @@ type BlackBoxGenerationPolicySummary = {
   authorityRule: string;
 };
 
+type MemoryArtifactSummary = {
+  kind: "memory_retrieval" | "context_bundle";
+  query: string;
+  evidenceCount: number;
+  deploymentCount: number;
+  semanticCount: number;
+  sourceSliceCount: number;
+  firstSubject: string;
+  firstReuseReason: string;
+  firstDeploymentSubject: string;
+};
+
 type AcceptanceProviderIssue = {
   provider: string;
   status: string;
@@ -1153,6 +1165,71 @@ function blackBoxGenerationPolicySummary(
       ? payload.must_not_use_semantics_as.map((item) => String(item)).filter(Boolean)
       : [],
     authorityRule: String(payload.authority_rule ?? ""),
+  };
+}
+
+function memoryArtifactSummary(
+  artifact: WorkbenchTaskArtifactContent,
+): MemoryArtifactSummary | null {
+  if (!artifact.is_text || !artifact.content.trim()) return null;
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(artifact.content);
+  } catch {
+    return null;
+  }
+  if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) return null;
+  const payload = parsed as Record<string, unknown>;
+  const isMemoryRetrieval =
+    artifact.kind === "memory_retrieval" ||
+    "retrieved_count" in payload ||
+    "deployment_retrieved_count" in payload;
+  const isContextBundle =
+    artifact.kind === "context_bundle" ||
+    ("evidence" in payload && "semantic_cases" in payload);
+  if (!isMemoryRetrieval && !isContextBundle) return null;
+  const evidenceItems = Array.isArray(payload.items)
+    ? payload.items
+    : Array.isArray(payload.evidence)
+      ? payload.evidence
+      : [];
+  const deploymentItems = Array.isArray(payload.deployment_items)
+    ? payload.deployment_items
+    : Array.isArray(payload.deployment_evidence)
+      ? payload.deployment_evidence
+      : [];
+  const semanticItems = Array.isArray(payload.semantic_cases) ? payload.semantic_cases : [];
+  const firstEvidence =
+    evidenceItems[0] && typeof evidenceItems[0] === "object" && !Array.isArray(evidenceItems[0])
+      ? (evidenceItems[0] as Record<string, unknown>)
+      : {};
+  const firstDeployment =
+    deploymentItems[0] &&
+    typeof deploymentItems[0] === "object" &&
+    !Array.isArray(deploymentItems[0])
+      ? (deploymentItems[0] as Record<string, unknown>)
+      : {};
+  const sourceSliceCount =
+    Number(payload.source_slice_count ?? 0) ||
+    evidenceItems.reduce((total, item) => {
+      if (!item || typeof item !== "object" || Array.isArray(item)) return total;
+      const record = item as Record<string, unknown>;
+      if (Array.isArray(record.source_slices)) return total + record.source_slices.length;
+      if (Array.isArray(record.source_slice_refs)) return total + record.source_slice_refs.length;
+      return total + (Number(record.source_slice_count ?? 0) || 0);
+    }, 0);
+  return {
+    kind: isMemoryRetrieval ? "memory_retrieval" : "context_bundle",
+    query: String(payload.query ?? ""),
+    evidenceCount: Number(payload.retrieved_count ?? 0) || evidenceItems.length,
+    deploymentCount: Number(payload.deployment_retrieved_count ?? 0) || deploymentItems.length,
+    semanticCount: Number(payload.semantic_retrieved_count ?? 0) || semanticItems.length,
+    sourceSliceCount,
+    firstSubject: String(firstEvidence.subject_key ?? firstEvidence.path ?? ""),
+    firstReuseReason: String(firstEvidence.reuse_reason ?? firstEvidence.reason ?? ""),
+    firstDeploymentSubject: String(
+      firstDeployment.subject_key ?? firstDeployment.provider ?? firstDeployment.symbol ?? "",
+    ),
   };
 }
 
@@ -4074,6 +4151,43 @@ export default function AgentWorkbenchPage() {
                               {summary.authorityRule && (
                                 <div className="mt-1 break-words text-[10px]">
                                   {summary.authorityRule}
+                                </div>
+                              )}
+                            </div>
+                          );
+                        })()}
+                        {(() => {
+                          const summary = memoryArtifactSummary(artifactContent);
+                          if (!summary) return null;
+                          return (
+                            <div className="mt-2 rounded bg-surface-container px-2 py-1.5 text-[11px] text-on-surface-variant">
+                              <div className="flex flex-wrap gap-2">
+                                <span>
+                                  {summary.kind === "memory_retrieval"
+                                    ? "Memory retrieval"
+                                    : "Context bundle"}
+                                </span>
+                                <span>evidence:{summary.evidenceCount}</span>
+                                <span>deployment:{summary.deploymentCount}</span>
+                                <span>semantics:{summary.semanticCount}</span>
+                                <span>slices:{summary.sourceSliceCount}</span>
+                              </div>
+                              {summary.query && (
+                                <div className="mt-1 break-words font-data text-[10px]">
+                                  query:{summary.query}
+                                </div>
+                              )}
+                              <div className="mt-1 flex flex-wrap gap-2 font-data text-[10px]">
+                                {summary.firstSubject && (
+                                  <span>first:{summary.firstSubject}</span>
+                                )}
+                                {summary.firstDeploymentSubject && (
+                                  <span>deployment:{summary.firstDeploymentSubject}</span>
+                                )}
+                              </div>
+                              {summary.firstReuseReason && (
+                                <div className="mt-1 break-words text-[10px]">
+                                  reuse:{summary.firstReuseReason}
                                 </div>
                               )}
                             </div>

@@ -635,6 +635,14 @@ test("agent workbench previews task run artifact content", async ({ page }) => {
             preview: "{\"design\":[{\"output_id\":\"black_box_cases\"}]}",
           },
           {
+            relative_path: "memory_retrieval.json",
+            path: "E:/data/workbench/task_runs/task_run_preview/memory_retrieval.json",
+            kind: "memory_retrieval",
+            size_bytes: 512,
+            sha256: "memhash1111222233334444",
+            preview: "{\"retrieved_count\":1,\"deployment_retrieved_count\":1}",
+          },
+          {
             relative_path: "black_box_generation_policy.json",
             path: "E:/data/workbench/task_runs/task_run_preview/black_box_generation_policy.json",
             kind: "black_box_generation_policy",
@@ -800,6 +808,48 @@ test("agent workbench previews task run artifact content", async ({ page }) => {
                     module: "nvmf_tcp_tls",
                   },
                 },
+              },
+            ],
+          }),
+        },
+      });
+    },
+  );
+  await page.route(
+    "**/api/workbench/task-runs/task_run_preview/artifacts/content/memory_retrieval.json",
+    async (route) => {
+      await route.fulfill({
+        headers: corsHeaders(route.request().headers().origin),
+        json: {
+          relative_path: "memory_retrieval.json",
+          path: "E:/data/workbench/task_runs/task_run_preview/memory_retrieval.json",
+          kind: "memory_retrieval",
+          size_bytes: 512,
+          sha256: "memhash1111222233334444",
+          preview: "{\"retrieved_count\":1,\"deployment_retrieved_count\":1}",
+          is_text: true,
+          truncated: false,
+          content: JSON.stringify({
+            provider: "evidence-memory",
+            query: "nvme tcp tls",
+            retrieved_count: 1,
+            deployment_retrieved_count: 1,
+            semantic_retrieved_count: 1,
+            items: [
+              {
+                subject_key: "nof/nvmf_tcp/transport/tls/tls.c",
+                reuse_reason: "source slices attached and locally verified",
+                source_slice_count: 2,
+              },
+            ],
+            deployment_items: [
+              {
+                subject_key: "claude-code:agent_task_probe",
+              },
+            ],
+            semantic_cases: [
+              {
+                case_id: "TC_TLS_HANDSHAKE_FAIL",
               },
             ],
           }),
@@ -1004,7 +1054,7 @@ test("agent workbench previews task run artifact content", async ({ page }) => {
   await expect(
     page.getByText("manual:POST /api/tools/claude-code/startup-probe", { exact: false }),
   ).toBeVisible();
-  await expect(page.getByText("Audit artifacts: 8")).toBeVisible();
+  await expect(page.getByText("Audit artifacts: 9")).toBeVisible();
 
   await page.getByRole("button", { name: "task_bundle:task_bundle.json" }).click();
 
@@ -1049,6 +1099,22 @@ test("agent workbench previews task run artifact content", async ({ page }) => {
     .click();
   await expect(page.getByText("\"output_id\":\"black_box_cases\"", { exact: false })).toBeVisible();
   await expect(page.getByText("\"module\":\"nvmf_tcp_tls\"", { exact: false })).toBeVisible();
+
+  await page
+    .getByRole("button", {
+      name: "memory_retrieval:memory_retrieval.json",
+    })
+    .click();
+  await expect(page.getByText("Memory retrieval")).toBeVisible();
+  await expect(page.getByText("evidence:1")).toBeVisible();
+  await expect(page.getByText("deployment:1").first()).toBeVisible();
+  await expect(page.getByText("semantics:1")).toBeVisible();
+  await expect(page.getByText("slices:2")).toBeVisible();
+  await expect(page.getByText("query:nvme tcp tls")).toBeVisible();
+  await expect(
+    page.getByText("first:nof/nvmf_tcp/transport/tls/tls.c"),
+  ).toBeVisible();
+  await expect(page.getByText("reuse:source slices attached and locally verified")).toBeVisible();
 
   await page
     .getByRole("button", {
