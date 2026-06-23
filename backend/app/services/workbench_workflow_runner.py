@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import hashlib
+import re
 import shutil
 from dataclasses import asdict, dataclass, field
 from datetime import datetime, timezone
@@ -624,13 +625,17 @@ def _agent_source_slice_requests(artifact_dir: Path) -> list[dict[str, Any]]:
         if not isinstance(item, dict):
             continue
         file_path = str(item.get("file_path") or item.get("path") or "").strip()
-        if not file_path:
+        symbol = str(item.get("symbol") or "").strip()
+        if not file_path and not symbol:
             continue
         requests.append({
             "file_path": file_path.replace("\\", "/"),
-            "start_line": _positive_int(item.get("start_line"), default=1),
+            "start_line": _positive_int(
+                item.get("start_line"),
+                default=1 if file_path else 0,
+            ),
             "end_line": _positive_int(item.get("end_line"), default=0),
-            "symbol": str(item.get("symbol") or ""),
+            "symbol": symbol,
             "reason": str(item.get("reason") or "agent requested source slice"),
         })
     return requests[:24]
@@ -650,9 +655,15 @@ def _materialize_requested_source_slices(
         return [], ["repo_path could not be resolved"]
     for request in requests:
         file_path = str(request.get("file_path") or "")
-        resolved = _resolve_repo_source_path(root, file_path)
+        symbol = str(request.get("symbol") or "")
+        resolved, symbol_line = _resolve_requested_source_slice_path(
+            root=root,
+            file_path=file_path,
+            symbol=symbol,
+        )
         if resolved is None:
-            warnings.append(f"{file_path}: rejected_source_path")
+            label = file_path or symbol or "source_slice"
+            warnings.append(f"{label}: rejected_source_path")
             continue
         try:
             data = resolved.read_bytes()
@@ -666,7 +677,7 @@ def _materialize_requested_source_slices(
             end_line = 1
             excerpt = ""
         else:
-            start_line = max(1, int(request.get("start_line") or 1))
+            start_line = max(1, int(request.get("start_line") or symbol_line or 1))
             requested_end = int(request.get("end_line") or 0)
             end_line = requested_end if requested_end >= start_line else start_line + 119
             end_line = min(len(lines), end_line)
@@ -675,12 +686,26 @@ def _materialize_requested_source_slices(
             "file_path": resolved.relative_to(root).as_posix(),
             "start_line": start_line,
             "end_line": end_line,
-            "symbol": str(request.get("symbol") or ""),
+            "symbol": symbol,
             "reason": str(request.get("reason") or ""),
             "sha256": hashlib.sha256(data).hexdigest(),
             "excerpt": excerpt,
+            "resolved_by": "symbol" if symbol and not file_path else "path",
         })
     return slices, warnings
+
+
+def _resolve_requested_source_slice_path(
+    *,
+    root: Path,
+    file_path: str,
+    symbol: str,
+) -> tuple[Path | None, int]:
+    if file_path:
+        return _resolve_repo_source_path(root, file_path), 0
+    if not symbol:
+        return None, 0
+    return _resolve_repo_source_path_by_symbol(root, symbol)
 
 
 def _resolve_repo_source_path(root: Path, file_path: str) -> Path | None:
@@ -700,6 +725,71 @@ def _resolve_repo_source_path(root: Path, file_path: str) -> Path | None:
     if resolved.suffix.lower() not in SOURCE_EXTENSIONS:
         return None
     return resolved
+
+
+def _resolve_repo_source_path_by_symbol(root: Path, symbol: str) -> tuple[Path | None, int]:
+    safe_symbol = str(symbol or "").strip()
+    if not safe_symbol or len(safe_symbol) > 240:
+        return None, 0
+    try:
+        pattern = re.compile(rf"\b{re.escape(safe_symbol)}\b")
+    except re.error:
+        return None, 0
+    skipped_dirs = {".git", ".hg", ".svn", "node_modules", "__pycache__", ".venv", "venv"}
+    try:
+        candidates = sorted(
+            path
+            for path in root.rglob("*")
+            if path.is_file()
+            and path.suffix.lower() in SOURCE_EXTENSIONS
+            and not any(part in skipped_dirs for part in path.relative_to(root).parts)
+        )
+    except OSError:
+        return None, 0
+    matches: list[tuple[int, Path, int]] = []
+    for candidate in candidates:
+        try:
+            text = candidate.read_text(encoding="utf-8", errors="replace")
+        except OSError:
+            continue
+        for index, line in enumerate(text.splitlines(), start=1):
+            if pattern.search(line):
+                matches.append((
+                    _symbol_match_score(
+                        root=root,
+                        path=candidate,
+                        line=line,
+                        symbol=safe_symbol,
+                    ),
+                    candidate,
+                    index,
+                ))
+    if not matches:
+        return None, 0
+    matches.sort(key=lambda item: (item[0], item[1].as_posix(), item[2]))
+    return matches[0][1], matches[0][2]
+
+
+def _symbol_match_score(*, root: Path, path: Path, line: str, symbol: str) -> int:
+    score = 0
+    suffix = path.suffix.lower()
+    if suffix in {".c", ".h", ".cc", ".cpp", ".hpp"}:
+        score -= 20
+    elif suffix in {".py", ".js", ".jsx", ".ts", ".tsx"}:
+        score += 10
+    if re.search(rf"\b{re.escape(symbol)}\s*\(", line):
+        score -= 10
+    if "'" in line or '"' in line:
+        score += 20
+    try:
+        relative = path.relative_to(root).as_posix()
+    except ValueError:
+        relative = path.as_posix()
+    if relative.startswith("agent_") or "/agent_" in relative:
+        score += 30
+    if "/tests/" in f"/{relative}" or relative.startswith("tests/"):
+        score += 10
+    return score
 
 
 def _inject_requested_source_slices(
