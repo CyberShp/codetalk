@@ -167,6 +167,20 @@ function parseWorkflowSpecList(value: string, defaultType: string): Array<{
   });
 }
 
+function outputArtifactForSpec(outputId: string, outputType: string, artifacts: string[]): string {
+  const normalizedOutput = outputId.replace(/[-_\s]/g, "").toLowerCase();
+  const matchingArtifact = artifacts.find((artifact) => {
+    const stem = artifact.replace(/^.*[\\/]/, "").replace(/\.[^.]+$/, "");
+    const normalizedStem = stem.replace(/[-_\s]/g, "").toLowerCase();
+    return normalizedStem === normalizedOutput || normalizedStem.includes(normalizedOutput);
+  });
+  if (matchingArtifact) return matchingArtifact;
+  if (["json", "scope_report", "test_cases"].includes(outputType)) {
+    return `${outputId}.json`;
+  }
+  return "";
+}
+
 function workflowInputsFromJson(value: string): Array<Record<string, unknown>> {
   try {
     const payload = parseJsonObject(value);
@@ -753,11 +767,16 @@ export default function AgentWorkbenchPage() {
           : "user-provided workflow input",
     }));
     const requiredArtifacts = parseCommaSeparated(builderArtifacts);
-    const outputs = parseWorkflowSpecList(builderOutputSpec, "json").map((output) => ({
-      id: output.id,
-      type: output.type,
-      from: "render_report",
-    }));
+    const outputs = parseWorkflowSpecList(builderOutputSpec, "json").map((output) => {
+      const artifact = outputArtifactForSpec(output.id, output.type, requiredArtifacts);
+      const from = artifact ? "agent_collect" : "render_report";
+      return {
+        id: output.id,
+        type: output.type,
+        from,
+        ...(artifact ? { artifact } : {}),
+      };
+    });
     const workflow = {
       id: workflowId,
       name: workflowName,
