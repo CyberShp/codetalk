@@ -623,6 +623,21 @@ export interface WorkflowExecutionResult {
   acceptance_audit?: WorkbenchAcceptanceAudit;
 }
 
+export interface WorkbenchTaskRunRunResult {
+  status: string;
+  task_run_id: string;
+  workflow_id: string;
+  workspace_id: string;
+  task_run: PreparedWorkbenchTaskRun;
+  execution: WorkflowExecutionResult;
+  evidence_materialization: MaterializeWorkflowOutputsResult;
+  acceptance_audit: WorkbenchAcceptanceAudit;
+  artifact?: {
+    path?: string;
+    manifest_path?: string;
+  };
+}
+
 export interface TaskRerunPlan {
   task_run_id: string;
   workflow_id?: string;

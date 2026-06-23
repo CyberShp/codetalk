@@ -1256,6 +1256,46 @@ export default function AgentWorkbenchPage() {
       setMessage(`Task run prepared: ${result.task_run_id}`);
     });
 
+  const createAndRunTaskRun = () =>
+    runAction("create-and-run-task-run", async () => {
+      const inputs = parseJsonObject(inputsJson);
+      const result = await api.workbench.taskRuns.run(
+        {
+          workflow_id: selectedWorkflowId,
+          workspace_id: workspaceId,
+          repo_path: repoPath,
+          inputs,
+          provider_override: providerOverride.trim() || null,
+        },
+        90,
+        true,
+      );
+      setPreparedRun(result.task_run);
+      setTaskRuns((current) => [
+        result.task_run,
+        ...current.filter((item) => item.task_run_id !== result.task_run_id),
+      ].slice(0, 10));
+      setWorkflowExecution(result.execution);
+      setWorkflowOutputMaterialize(result.evidence_materialization ?? null);
+      setTaskAcceptanceAudit(result.acceptance_audit ?? null);
+      setTaskRerunPlan((result.execution.rerun_plan as TaskRerunPlan | undefined) ?? null);
+      setTaskRerunPlanValidation(
+        await api.workbench.taskRuns.rerunPlanValidation(result.task_run_id),
+      );
+      setExecutionResults({});
+      setValidationResults({});
+      setMaterializeResults({});
+      setTaskRerunExecution(null);
+      setTaskRerunHistory(null);
+      setSemanticOutputImport(null);
+      setArtifactContent(null);
+      await refreshArtifactManifest(result.task_run_id);
+      await loadWorkflows();
+      setMessage(
+        `Task run ${result.status}: ${result.task_run_id}; evidence ${result.evidence_materialization?.status ?? "skipped"}; audit ${result.acceptance_audit?.status ?? "skipped"}`,
+      );
+    });
+
   const restoreExistingTaskRun = (taskRunId: string) =>
     runAction(`restore-task-run-${taskRunId}`, async () => {
       await restoreTaskRun(taskRunId);
@@ -2668,9 +2708,21 @@ export default function AgentWorkbenchPage() {
               />
             </label>
             <button
+              onClick={createAndRunTaskRun}
+              disabled={busyAction === "create-and-run-task-run" || !repoPath.trim()}
+              className="inline-flex items-center gap-2 rounded-lg bg-primary px-3 py-2 text-sm font-medium text-on-primary transition-opacity hover:opacity-90 disabled:opacity-50"
+            >
+              {busyAction === "create-and-run-task-run" ? (
+                <Loader2 size={14} className="animate-spin" />
+              ) : (
+                <PlayCircle size={14} />
+              )}
+              Create & run
+            </button>
+            <button
               onClick={prepareTaskRun}
               disabled={busyAction === "prepare-task-run" || !repoPath.trim()}
-              className="inline-flex items-center gap-2 rounded-lg bg-primary px-3 py-2 text-sm font-medium text-on-primary transition-opacity hover:opacity-90 disabled:opacity-50"
+              className="ml-2 inline-flex items-center gap-2 rounded-lg bg-surface px-3 py-2 text-sm font-medium text-on-surface transition-colors hover:bg-surface-container-high disabled:opacity-50"
             >
               {busyAction === "prepare-task-run" ? (
                 <Loader2 size={14} className="animate-spin" />

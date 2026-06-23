@@ -125,6 +125,11 @@ class PrepareTaskRunRequest(BaseModel):
     provider_override: str | None = None
 
 
+class RunTaskRunRequest(PrepareTaskRunRequest):
+    timeout_sec: int = Field(default=90, ge=1, le=3600)
+    stop_on_error: bool = True
+
+
 class DeploymentProbeRequest(BaseModel):
     repo_path: str = ""
     providers: list[str] = Field(default_factory=list)
@@ -753,6 +758,19 @@ async def execute_task_run_workflow(
     payload: TaskRunExecuteRequest,
 ) -> dict[str, Any]:
     try:
+        return _execute_task_run_with_closure(task_run_id=task_run_id, payload=payload)
+    except KeyError:
+        raise HTTPException(status_code=404, detail=f"Unknown task run: {task_run_id}")
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+
+
+def _execute_task_run_with_closure(
+    *,
+    task_run_id: str,
+    payload: TaskRunExecuteRequest,
+) -> dict[str, Any]:
+    try:
         result = WorkbenchWorkflowRunner(_task_runs_dir()).execute_task_run(
             task_run_id,
             timeout_sec=payload.timeout_sec,
@@ -760,9 +778,7 @@ async def execute_task_run_workflow(
         )
         task_run = WorkbenchTaskRunStore(_task_runs_dir()).load(task_run_id)
     except KeyError:
-        raise HTTPException(status_code=404, detail=f"Unknown task run: {task_run_id}")
-    except ValueError as exc:
-        raise HTTPException(status_code=400, detail=str(exc))
+        raise
     response = asdict(result)
     response["evidence_materialization"] = _materialize_task_run_outputs_if_available(
         task_run=task_run,
@@ -1138,6 +1154,51 @@ async def prepare_task_run(payload: PrepareTaskRunRequest) -> dict[str, Any]:
     except (FileNotFoundError, ValueError) as exc:
         raise HTTPException(status_code=422, detail=str(exc))
     return asdict(result)
+
+
+@router.post("/task-runs/run", status_code=201)
+async def prepare_and_execute_task_run(payload: RunTaskRunRequest) -> dict[str, Any]:
+    try:
+        prepared = WorkbenchTaskRunPreparer(
+            artifact_root=_task_runs_dir(),
+            workflow_store=_workflow_store(),
+            evidence_memory=_memory_store(),
+            semantic_library=_semantic_store(),
+        ).prepare(
+            workflow_id=payload.workflow_id,
+            workspace_id=payload.workspace_id,
+            repo_path=payload.repo_path,
+            inputs=payload.inputs,
+            provider_override=payload.provider_override,
+        )
+        execution = _execute_task_run_with_closure(
+            task_run_id=prepared.task_run_id,
+            payload=TaskRunExecuteRequest(
+                timeout_sec=payload.timeout_sec,
+                stop_on_error=payload.stop_on_error,
+            ),
+        )
+    except KeyError:
+        raise HTTPException(status_code=404, detail=f"Unknown workflow: {payload.workflow_id}")
+    except FileNotFoundError as exc:
+        raise HTTPException(status_code=422, detail=str(exc))
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+    task_dir = Path(prepared.artifact_dir)
+    return {
+        "status": execution.get("status") or "unknown",
+        "task_run_id": prepared.task_run_id,
+        "workflow_id": prepared.workflow_id,
+        "workspace_id": prepared.workspace_id,
+        "task_run": asdict(prepared),
+        "execution": execution,
+        "evidence_materialization": execution.get("evidence_materialization") or {},
+        "acceptance_audit": execution.get("acceptance_audit") or {},
+        "artifact": {
+            "path": str(task_dir / "task_run.json"),
+            "manifest_path": str(task_dir / "task_artifact_manifest.json"),
+        },
+    }
 
 
 def _workflow_response(payload: dict[str, Any]) -> dict[str, Any]:

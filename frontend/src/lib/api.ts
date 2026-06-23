@@ -40,6 +40,7 @@ import type {
   TaskRerunHistory,
   TaskRerunPlan,
   TaskRerunPlanValidation,
+  WorkbenchTaskRunRunResult,
   WorkflowExecutionResult,
   WorkbenchAcceptanceAudit,
   WorkbenchProviderCapabilitiesMatrix,
@@ -807,6 +808,26 @@ export const api = {
         request<PreparedWorkbenchTaskRun>("/api/workbench/task-runs/prepare", {
           method: "POST",
           body: JSON.stringify(data),
+        }),
+
+      run: (
+        data: {
+          workflow_id: string;
+          workspace_id: string;
+          repo_path: string;
+          inputs?: Record<string, unknown>;
+          provider_override?: string | null;
+        },
+        timeoutSec = 90,
+        stopOnError = true,
+      ) =>
+        request<WorkbenchTaskRunRunResult>("/api/workbench/task-runs/run", {
+          method: "POST",
+          body: JSON.stringify({
+            ...data,
+            timeout_sec: timeoutSec,
+            stop_on_error: stopOnError,
+          }),
         }),
 
       execute: (taskRunId: string, timeoutSec = 90, stopOnError = true) =>

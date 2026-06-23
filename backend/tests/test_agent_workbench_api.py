@@ -1437,6 +1437,73 @@ async def test_workbench_task_run_materialize_workflow_outputs_api(
     )
 
 
+async def test_workbench_task_run_run_api_prepares_executes_and_audits(
+    workbench_client,
+    tmp_path,
+    monkeypatch,
+):
+    from app.config import settings
+
+    script_path = tmp_path / "agent_one_click.py"
+    script_path.write_text(
+        "import pathlib, os\n"
+        "root=pathlib.Path(os.environ['CODETALK_AGENT_ARTIFACT_DIR'])\n"
+        "(root/'cases.md').write_text('TLS one-click black-box case', encoding='utf-8')\n",
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(settings, "external_agent_custom_providers", [
+        {"id": "local-python", "command": f"python {script_path}"}
+    ])
+    workflow = {
+        "id": "one_click_run_workflow",
+        "name": "One click run workflow",
+        "version": 1,
+        "inputs": [{"id": "module", "type": "free_text"}],
+        "steps": [
+            {
+                "id": "design",
+                "type": "agent_task",
+                "provider": "local-python",
+                "required_artifacts": ["cases.md"],
+            }
+        ],
+        "outputs": [{"id": "cases", "type": "markdown", "from": "design", "artifact": "cases.md"}],
+    }
+    assert (await workbench_client.post("/api/workbench/workflows", json=workflow)).status_code == 201
+
+    response = await workbench_client.post(
+        "/api/workbench/task-runs/run",
+        json={
+            "workflow_id": "one_click_run_workflow",
+            "workspace_id": "ws-one-click-run",
+            "repo_path": str(tmp_path),
+            "inputs": {"module": "nvme-tcp-tls"},
+            "timeout_sec": 10,
+        },
+    )
+
+    assert response.status_code == 201
+    body = response.json()
+    assert body["status"] == "completed"
+    assert body["task_run"]["task_run_id"] == body["task_run_id"]
+    assert body["execution"]["status"] == "completed"
+    assert body["execution"]["outputs"][0]["status"] == "ok"
+    assert body["evidence_materialization"]["status"] == "ok"
+    assert body["evidence_materialization"]["evidence_count"] == 1
+    assert body["acceptance_audit"]["status"] == "ready"
+    task_dir = Path(body["task_run"]["artifact_dir"])
+    assert (task_dir / "workflow_execution.json").exists()
+    assert (task_dir / "workflow_output_materialization.json").exists()
+    assert (task_dir / "task_acceptance_audit.json").exists()
+    assert (task_dir / "task_artifact_manifest.json").exists()
+    search = await workbench_client.get(
+        "/api/workbench/memory/search",
+        params={"q": "one-click", "workspace_id": "ws-one-click-run"},
+    )
+    assert search.status_code == 200
+    assert any(item["kind"] == "workflow_output" for item in search.json()["items"])
+
+
 async def test_workbench_imports_black_box_workflow_output_into_semantic_library(
     workbench_client,
     tmp_path,
