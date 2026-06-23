@@ -2302,6 +2302,19 @@ def test_workbench_workflow_runner_runs_second_agent_turn_for_source_slice_reque
     assert (turn_2 / "raw_output.txt").exists()
     assert (turn_1 / "execution_result.json").exists()
     assert (turn_2 / "execution_result.json").exists()
+    replay_plan = json.loads((artifact_dir / "agent_replay_plan.json").read_text(encoding="utf-8"))
+    assert replay_plan["replay_status"] == "ready"
+    assert replay_plan["run_id"] == f"{task_run.task_run_id}_discover"
+    assert replay_plan["turn_id"] == "turn_2"
+    assert replay_plan["prompt_source"] == "execution_input.json:stdin"
+    assert replay_plan["safety_boundary"]["readonly_env_required"] is True
+    assert replay_plan["artifact_hashes"]["task_bundle.json"]
+    assert replay_plan["artifact_hashes"]["execution_input.json"]
+    assert "agent_replay_plan.json" in step["lifecycle"]["replay_plan_artifact"]
+    assert "turns/turn_1/agent_replay_plan.json" in step["lifecycle"]["stages"][1]["artifacts"]
+    assert json.loads((turn_2 / "agent_replay_plan.json").read_text(encoding="utf-8"))[
+        "turn_id"
+    ] == "turn_2"
     assert step["turn_artifacts"] == [
         "turns/turn_1",
         "turns/turn_2",

@@ -412,6 +412,29 @@ class AgentRunHarness:
         )
         self._write_json("execution_result.json", asdict(result))
         self._write_json(
+            "agent_replay_plan.json",
+            _agent_replay_plan_payload(
+                run_payload=run_payload,
+                run_id=run_id,
+                turn_id=turn_id,
+                status=status,
+                cwd=cwd,
+                timeout_sec=max(1, int(timeout_sec)),
+                command=command,
+                launch_command=launch_command,
+                command_resolution=command_resolution,
+                process_command=process_command,
+                prompt_transport=prompt_transport,
+                prompt_transport_reason=prompt_transport_reason,
+                env_hints=env_hints,
+                artifact_dir=self.artifact_dir,
+                task_bundle_sha256=task_bundle_sha256,
+                workflow_snapshot_sha256=workflow_snapshot_sha256,
+                agent_output_contract_sha256=agent_output_contract_sha256,
+                stdin_json_sha256=hashlib.sha256(stdin_payload.encode("utf-8")).hexdigest(),
+            ),
+        )
+        self._write_json(
             "runtime_events.jsonl",
             {
                 "event": "agent_run_completed",
@@ -421,6 +444,7 @@ class AgentRunHarness:
                 "exit_code": exit_code,
                 "timed_out": timed_out,
                 "error": error,
+                "replay_plan_artifact": "agent_replay_plan.json",
                 "created_at": completed_at,
             },
             append_jsonl=True,
@@ -641,6 +665,112 @@ def _safe_required_artifact(artifact: Any) -> str:
     if any(part in {"", ".", ".."} for part in posix.parts):
         return ""
     return posix.as_posix()
+
+
+def _agent_replay_plan_payload(
+    *,
+    run_payload: dict[str, Any],
+    run_id: str,
+    turn_id: str,
+    status: str,
+    cwd: str,
+    timeout_sec: int,
+    command: list[str],
+    launch_command: list[str],
+    command_resolution: dict[str, Any],
+    process_command: list[str],
+    prompt_transport: str,
+    prompt_transport_reason: str,
+    env_hints: dict[str, str],
+    artifact_dir: Path,
+    task_bundle_sha256: str,
+    workflow_snapshot_sha256: str,
+    agent_output_contract_sha256: str,
+    stdin_json_sha256: str,
+) -> dict[str, Any]:
+    artifact_hashes = _replay_artifact_hashes(
+        artifact_dir,
+        [
+            "agent_run.json",
+            "task_bundle.json",
+            "workflow_snapshot.json",
+            "agent_output_contract.json",
+            "execution_input.json",
+            "execution_result.json",
+            "raw_output.txt",
+        ],
+    )
+    artifact_hashes.update({
+        "task_bundle_sha256": task_bundle_sha256,
+        "workflow_snapshot_sha256": workflow_snapshot_sha256,
+        "agent_output_contract_sha256": agent_output_contract_sha256,
+        "stdin_json_sha256": stdin_json_sha256,
+    })
+    return {
+        "version": 1,
+        "replay_status": "ready" if status in {"completed", "error", "timeout"} else "recorded",
+        "run_id": run_id,
+        "turn_id": turn_id,
+        "provider": str(run_payload.get("provider") or ""),
+        "mcp_profile": str(run_payload.get("mcp_profile") or ""),
+        "status": status,
+        "artifact_dir": str(artifact_dir),
+        "cwd": cwd,
+        "timeout_sec": timeout_sec,
+        "command": _redact_command_list(command),
+        "launch_command": _redact_command_list(launch_command),
+        "process_command": _redact_command_list(process_command),
+        "command_resolution": _redact_replay_payload(command_resolution),
+        "prompt_transport": prompt_transport,
+        "prompt_transport_reason": prompt_transport_reason,
+        "prompt_source": (
+            "execution_input.json:stdin"
+            if prompt_transport == "stdin"
+            else "execution_input.json:process_command"
+        ),
+        "env_hints": env_hints,
+        "artifact_hashes": artifact_hashes,
+        "replay_steps": [
+            "Inspect agent_replay_plan.json, execution_input.json, and agent_output_contract.json.",
+            "Restore the same cwd and readonly environment variables.",
+            "Pass execution_input.json['stdin'] through the recorded prompt transport.",
+            "Compare regenerated required artifacts with accepted artifact hashes before using them as evidence.",
+        ],
+        "safety_boundary": {
+            "readonly_env_required": True,
+            "codetalk_validates_outputs": True,
+            "raw_output_is_diagnostic_only": True,
+            "remote_mcp_credentials_owner": "agent_cli",
+            "os_sandbox": "not_enforced_by_codetalk_harness",
+        },
+    }
+
+
+def _replay_artifact_hashes(artifact_dir: Path, names: list[str]) -> dict[str, str]:
+    hashes: dict[str, str] = {}
+    for name in names:
+        path = artifact_dir / name
+        if not path.exists() or not path.is_file():
+            continue
+        try:
+            hashes[name] = hashlib.sha256(path.read_bytes()).hexdigest()
+        except OSError:
+            continue
+    return hashes
+
+
+def _redact_command_list(command: list[str]) -> list[str]:
+    return [_redact(str(part)) for part in command]
+
+
+def _redact_replay_payload(payload: Any) -> Any:
+    if isinstance(payload, dict):
+        return {str(key): _redact_replay_payload(value) for key, value in payload.items()}
+    if isinstance(payload, list):
+        return [_redact_replay_payload(item) for item in payload]
+    if isinstance(payload, str):
+        return _redact(payload)
+    return payload
 
 
 def _context_discovery_decision_summary(task_bundle: dict[str, Any]) -> dict[str, Any]:

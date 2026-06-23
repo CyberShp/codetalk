@@ -75,6 +75,8 @@ def workbench_artifact_kind(relative_path: str) -> str:
             return "agent_turn_raw_output"
         if name == "execution_result.json":
             return "agent_turn_execution_result"
+        if name == "agent_replay_plan.json":
+            return "agent_turn_replay_plan"
         if name == "provider_diagnostics.json":
             return "agent_turn_provider_diagnostics"
         if name == "agent_output_contract.json":
@@ -163,6 +165,8 @@ def workbench_artifact_kind(relative_path: str) -> str:
         return "agent_output_contract"
     if name == "agent_run_lifecycle.json":
         return "agent_run_lifecycle"
+    if name == "agent_replay_plan.json":
+        return "agent_replay_plan"
     if name == "failure_recovery.json":
         return "agent_failure_recovery"
     if name.endswith(".json"):

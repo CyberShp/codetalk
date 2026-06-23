@@ -2805,6 +2805,13 @@ async def test_workbench_task_run_artifacts_api_labels_agent_execution_input(
     execution_input = paths["agent_runs/discover/execution_input.json"]
     assert execution_input["kind"] == "agent_execution_input"
     assert "CODETALK_AGENT_READONLY" in execution_input["preview"]
+    replay_plan = paths["agent_runs/discover/agent_replay_plan.json"]
+    assert replay_plan["kind"] == "agent_replay_plan"
+    replay_plan_content = await workbench_client.get(
+        f"/api/workbench/task-runs/{task_run_id}/artifacts/content/agent_runs/discover/agent_replay_plan.json"
+    )
+    assert replay_plan_content.status_code == 200
+    assert "readonly_env_required" in replay_plan_content.json()["content"]
     provider_diagnostics = paths["agent_runs/discover/provider_diagnostics.json"]
     assert provider_diagnostics["kind"] == "agent_provider_diagnostics"
     provider_diagnostics_content = await workbench_client.get(

@@ -738,6 +738,7 @@ def _snapshot_agent_turn_artifacts(artifact_dir: Path, *, turn_id: str) -> str:
         "provider_diagnostics.json",
         "execution_input.json",
         "execution_result.json",
+        "agent_replay_plan.json",
         "raw_output.txt",
         "source_slice_requests.json",
         "source_slices.json",
@@ -995,6 +996,7 @@ def _agent_run_lifecycle_summary(
                     f"{turn_artifact_dir}/agent_output_contract.json",
                     f"{turn_artifact_dir}/execution_input.json",
                     f"{turn_artifact_dir}/execution_result.json",
+                    f"{turn_artifact_dir}/agent_replay_plan.json",
                     f"{turn_artifact_dir}/raw_output.txt",
                 ],
             ),
@@ -1043,6 +1045,11 @@ def _agent_run_lifecycle_summary(
         ],
         "source_slice_request_count": len(source_slice_requests),
         "injected_source_slice_count": len(injected_source_slices),
+        "replay_plan_artifact": (
+            "agent_replay_plan.json"
+            if (artifact_dir / "agent_replay_plan.json").exists()
+            else ""
+        ),
         "stages": stages,
     }
     if failure_recovery:
