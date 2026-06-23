@@ -289,12 +289,12 @@ class AgentRunHarness:
             command,
             provider_diagnostics,
         )
-        process_command, stdin_payload_bytes, prompt_transport = _agent_process_invocation_for_harness(
+        invocation_candidates = _agent_process_invocation_candidates_for_harness(
             provider=str(run_payload.get("provider") or ""),
             command=launch_command,
             prompt=stdin_payload,
         )
-        prompt_transport_reason = ""
+        process_command, stdin_payload_bytes, prompt_transport, prompt_transport_reason = invocation_candidates[0]
         if (
             prompt_transport != "stdin"
             and len(stdin_payload.encode("utf-8")) > _MAX_ARG_PROMPT_BYTES
@@ -303,6 +303,9 @@ class AgentRunHarness:
             stdin_payload_bytes = stdin_payload.encode("utf-8")
             prompt_transport = "stdin"
             prompt_transport_reason = "large_payload_forced_stdin"
+            invocation_candidates = [
+                (process_command, stdin_payload_bytes, prompt_transport, prompt_transport_reason)
+            ]
         self._write_json(
             "execution_input.json",
             {
@@ -315,6 +318,7 @@ class AgentRunHarness:
                 "process_command": process_command,
                 "prompt_transport": prompt_transport,
                 "prompt_transport_reason": prompt_transport_reason,
+                "transport_attempts": [],
                 "cwd": cwd,
                 "timeout_sec": max(1, int(timeout_sec)),
                 "mcp_profile": run_payload.get("mcp_profile") or "",
@@ -383,30 +387,79 @@ class AgentRunHarness:
         stderr = ""
         timed_out = False
         error = ""
-        try:
-            completed = subprocess.run(
-                process_command,
-                cwd=cwd,
-                input=stdin_payload_bytes,
-                capture_output=True,
-                timeout=max(1, int(timeout_sec)),
-                env=env,
-                check=False,
+        transport_attempts: list[dict[str, Any]] = []
+        for candidate_index, (
+            candidate_command,
+            candidate_stdin,
+            candidate_transport,
+            candidate_reason,
+        ) in enumerate(invocation_candidates):
+            process_command = candidate_command
+            stdin_payload_bytes = candidate_stdin
+            prompt_transport = candidate_transport
+            prompt_transport_reason = (
+                f"transport_fallback_from_{candidate_reason}"
+                if candidate_reason
+                else ""
             )
-            exit_code = completed.returncode
-            stdout = _decode_subprocess_text(completed.stdout)
-            stderr = _decode_subprocess_text(completed.stderr)
-        except subprocess.TimeoutExpired as exc:
-            timed_out = True
-            stdout = _decode_subprocess_text(exc.stdout)
-            stderr = _decode_subprocess_text(exc.stderr)
-            error = f"agent run timed out after {timeout_sec}s"
-        except OSError as exc:
-            error = str(exc)
+            attempt: dict[str, Any] = {
+                "attempt_index": candidate_index + 1,
+                "process_command": _redact_command_list(candidate_command),
+                "prompt_transport": candidate_transport,
+                "prompt_transport_reason": prompt_transport_reason,
+            }
+            try:
+                completed = subprocess.run(
+                    candidate_command,
+                    cwd=cwd,
+                    input=candidate_stdin,
+                    capture_output=True,
+                    timeout=max(1, int(timeout_sec)),
+                    env=env,
+                    check=False,
+                )
+                exit_code = completed.returncode
+                stdout = _decode_subprocess_text(completed.stdout)
+                stderr = _decode_subprocess_text(completed.stderr)
+                attempt["exit_code"] = exit_code
+                attempt["status"] = "completed" if exit_code == 0 else "error"
+                attempt["stderr_excerpt"] = _redact(stderr[:4000])
+                attempt["stdout_excerpt"] = _redact(stdout[:4000])
+            except subprocess.TimeoutExpired as exc:
+                timed_out = True
+                exit_code = None
+                stdout = _decode_subprocess_text(exc.stdout)
+                stderr = _decode_subprocess_text(exc.stderr)
+                error = f"agent run timed out after {timeout_sec}s"
+                attempt["status"] = "timeout"
+                attempt["error"] = error
+                attempt["stderr_excerpt"] = _redact(stderr[:4000])
+                attempt["stdout_excerpt"] = _redact(stdout[:4000])
+            except OSError as exc:
+                exit_code = None
+                stdout = ""
+                stderr = ""
+                error = str(exc)
+                attempt["status"] = "error"
+                attempt["error"] = _redact(error)
+            transport_attempts.append(attempt)
+            if exit_code == 0:
+                timed_out = False
+                error = ""
+                break
+            if candidate_index >= len(invocation_candidates) - 1:
+                break
 
         completed_at = _now()
         duration_ms = int((datetime.now(timezone.utc) - started).total_seconds() * 1000)
         status = "timeout" if timed_out else "completed" if exit_code == 0 else "error"
+        execution_input = self._read_json_file("execution_input.json")
+        if isinstance(execution_input, dict):
+            execution_input["process_command"] = process_command
+            execution_input["prompt_transport"] = prompt_transport
+            execution_input["prompt_transport_reason"] = prompt_transport_reason
+            execution_input["transport_attempts"] = transport_attempts
+            self._write_json("execution_input.json", execution_input)
         self.record_raw_output(run_id, stdout=stdout, stderr=stderr)
         result = AgentRunExecutionResult(
             run_id=run_id,
@@ -438,6 +491,7 @@ class AgentRunHarness:
                 process_command=process_command,
                 prompt_transport=prompt_transport,
                 prompt_transport_reason=prompt_transport_reason,
+                transport_attempts=transport_attempts,
                 env_hints=env_hints,
                 artifact_dir=self.artifact_dir,
                 task_bundle_sha256=task_bundle_sha256,
@@ -694,6 +748,7 @@ def _agent_replay_plan_payload(
     process_command: list[str],
     prompt_transport: str,
     prompt_transport_reason: str,
+    transport_attempts: list[dict[str, Any]],
     env_hints: dict[str, str],
     artifact_dir: Path,
     task_bundle_sha256: str,
@@ -737,6 +792,7 @@ def _agent_replay_plan_payload(
         "command_resolution": _redact_replay_payload(command_resolution),
         "prompt_transport": prompt_transport,
         "prompt_transport_reason": prompt_transport_reason,
+        "transport_attempts": transport_attempts,
         "prompt_source": (
             "execution_input.json:stdin"
             if prompt_transport == "stdin"
@@ -875,6 +931,26 @@ def _agent_process_invocation_for_harness(
         return _agent_process_invocation(provider, command, prompt)
     except Exception:
         return list(command), prompt.encode("utf-8"), "stdin"
+
+
+def _agent_process_invocation_candidates_for_harness(
+    *,
+    provider: str,
+    command: list[str],
+    prompt: str,
+) -> list[tuple[list[str], bytes, str, str]]:
+    """Reuse external-agent transport fallback rules for Workbench task runs."""
+    try:
+        from app.services.external_agent_discovery import _agent_process_invocation_candidates
+
+        return _agent_process_invocation_candidates(provider, command, prompt)
+    except Exception:
+        command_value, stdin_payload, transport = _agent_process_invocation_for_harness(
+            provider=provider,
+            command=command,
+            prompt=prompt,
+        )
+        return [(command_value, stdin_payload, transport, "")]
 
 
 def _agent_process_env_for_harness(*, provider: str, repo_path: str) -> dict[str, str]:

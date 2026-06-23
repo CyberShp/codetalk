@@ -1137,6 +1137,82 @@ async def test_workbench_task_scoped_agent_run_execute_api(workbench_client, tmp
     assert output_file.read_text(encoding="utf-8") == f"{task_run_id}_{step_id}"
 
 
+async def test_workbench_task_scoped_agent_run_retries_stdin_when_prompt_arg_fails(
+    workbench_client,
+    tmp_path,
+    monkeypatch,
+):
+    from app.services.agent_run_harness import AgentRunHarness
+
+    task_run_id = "task_run_transport_fallback"
+    step_id = "discover"
+    artifact_dir = (
+        tmp_path
+        / "data"
+        / "workbench"
+        / "task_runs"
+        / task_run_id
+        / "agent_runs"
+        / step_id
+    )
+    attempts_file = artifact_dir / "attempts.jsonl"
+    script = (
+        "import json, pathlib, sys; "
+        "path=pathlib.Path(sys.argv[1]); "
+        "payload=sys.stdin.read(); "
+        "path.parent.mkdir(parents=True, exist_ok=True); "
+        "existing=path.read_text(encoding='utf-8') if path.exists() else ''; "
+        "path.write_text(existing+json.dumps({'argv': sys.argv[2:], 'stdin_has_run_id': 'run_id' in payload})+'\\n', encoding='utf-8'); "
+        "bad='-p' in sys.argv[2:]; "
+        "print('stdin transport ok' if not bad else '', end=''); "
+        "print('unknown option: -p', file=sys.stderr) if bad else None; "
+        "raise SystemExit(2 if bad else 0)"
+    )
+    AgentRunHarness(artifact_dir).create_run(
+        run_id=f"{task_run_id}_{step_id}",
+        provider="claude-code",
+        command=["python", "-c", script, str(attempts_file), "-p"],
+        cwd=str(tmp_path),
+        workflow_snapshot={"id": "wf"},
+        task_bundle={"task_id": task_run_id},
+    )
+    monkeypatch.setattr(
+        "app.services.external_agent_discovery.settings.external_agent_custom_providers",
+        [],
+    )
+
+    executed = await workbench_client.post(
+        f"/api/workbench/task-runs/{task_run_id}/agent-runs/{step_id}/execute",
+        json={"timeout_sec": 10},
+    )
+
+    assert executed.status_code == 200
+    body = executed.json()
+    assert body["status"] == "completed"
+    attempts = [
+        json.loads(line)
+        for line in attempts_file.read_text(encoding="utf-8").splitlines()
+        if line.strip()
+    ]
+    assert len(attempts) == 2
+    assert "-p" in attempts[0]["argv"]
+    assert "-p" not in attempts[1]["argv"]
+    assert attempts[0]["stdin_has_run_id"] is False
+    assert attempts[1]["stdin_has_run_id"] is True
+    execution_input = json.loads((artifact_dir / "execution_input.json").read_text(encoding="utf-8"))
+    assert execution_input["prompt_transport"] == "stdin"
+    assert execution_input["prompt_transport_reason"] == "transport_fallback_from_argv"
+    assert execution_input["transport_attempts"][0]["prompt_transport"] == "argv"
+    assert execution_input["transport_attempts"][0]["status"] == "error"
+    assert execution_input["transport_attempts"][1]["prompt_transport"] == "stdin"
+    assert execution_input["transport_attempts"][1]["prompt_transport_reason"] == "transport_fallback_from_argv"
+    replay_plan = json.loads((artifact_dir / "agent_replay_plan.json").read_text(encoding="utf-8"))
+    assert replay_plan["prompt_transport"] == "stdin"
+    assert replay_plan["prompt_transport_reason"] == "transport_fallback_from_argv"
+    assert replay_plan["transport_attempts"][0]["status"] == "error"
+    assert replay_plan["transport_attempts"][1]["prompt_transport"] == "stdin"
+
+
 async def test_workbench_task_scoped_agent_run_validate_mr_artifacts_api(workbench_client, tmp_path):
     from app.services.agent_run_harness import AgentRunHarness
 
