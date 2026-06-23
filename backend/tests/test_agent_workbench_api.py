@@ -539,6 +539,27 @@ async def test_workbench_agent_run_execute_api(workbench_client, tmp_path):
     assert "secret-value" not in raw_output.read_text(encoding="utf-8")
 
 
+async def test_agent_mr_artifact_validation_rejects_directory(tmp_path):
+    from app.services.agent_run_harness import ArtifactValidationHarness
+
+    artifact_dir = tmp_path / "agent"
+    artifact_dir.mkdir()
+    (artifact_dir / "mr_snapshot.json").mkdir()
+    (artifact_dir / "diff.patch").write_text("", encoding="utf-8")
+    (artifact_dir / "changed_files.json").write_text("[]", encoding="utf-8")
+
+    result = ArtifactValidationHarness(artifact_dir).validate_mr_artifacts(
+        required_artifacts=["mr_snapshot.json", "diff.patch", "changed_files.json"],
+    )
+
+    assert result.status == "invalid"
+    assert {
+        "artifact": "mr_snapshot.json",
+        "reason": "artifact_is_directory",
+    } in result.rejected_artifacts
+    assert "mr_snapshot.json" not in result.accepted_artifacts
+
+
 async def test_workbench_task_scoped_agent_run_execute_api(workbench_client, tmp_path):
     from app.services.agent_run_harness import AgentRunHarness
 

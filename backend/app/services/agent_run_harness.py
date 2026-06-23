@@ -397,10 +397,17 @@ class ArtifactValidationHarness:
                 }
                 rejected.append({"artifact": artifact, "reason": item["reason"]})
                 rejected_details.append(item)
+            elif path.is_dir():
+                item = {
+                    "artifact": artifact,
+                    "reason": "artifact_is_directory",
+                    "path": str(path),
+                }
+                rejected.append({"artifact": item["artifact"], "reason": item["reason"]})
+                rejected_details.append(item)
             else:
                 accepted.append(safe_artifact)
-                if path.is_file():
-                    accepted_details.append(_artifact_detail(path, artifact=safe_artifact))
+                accepted_details.append(_artifact_detail(path, artifact=safe_artifact))
         if rejected:
             return ArtifactValidationResult(
                 status="invalid",
