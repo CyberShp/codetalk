@@ -111,6 +111,10 @@ class WorkbenchTaskRunPreparer:
         provider_readiness = build_provider_readiness_report(
             repo_path=repo_path,
             provider_snapshot=provider_snapshot,
+            deployment_evidence=[
+                item for item in context_bundle.get("deployment_evidence") or []
+                if isinstance(item, dict)
+            ],
         )
         workflow_contract = build_workflow_contract(
             workflow_snapshot=workflow_snapshot,
@@ -720,6 +724,7 @@ def build_provider_readiness_report(
     *,
     repo_path: str,
     provider_snapshot: dict[str, Any],
+    deployment_evidence: list[dict[str, Any]] | None = None,
 ) -> dict[str, Any]:
     repo = _repo_readiness(repo_path)
     codetalk_providers = {
@@ -727,8 +732,13 @@ def build_provider_readiness_report(
         for provider, payload in (provider_snapshot.get("codetalk_providers") or {}).items()
         if isinstance(payload, dict)
     }
+    deployment_by_provider = _deployment_evidence_by_provider(deployment_evidence or [])
     agent_cli_providers = {
-        provider: _agent_cli_readiness_payload(provider, payload)
+        provider: _agent_cli_readiness_payload(
+            provider,
+            payload,
+            deployment_evidence=deployment_by_provider.get(provider),
+        )
         for provider, payload in (provider_snapshot.get("providers") or {}).items()
         if isinstance(payload, dict)
     }
@@ -742,6 +752,8 @@ def build_provider_readiness_report(
     for provider, payload in agent_cli_providers.items():
         if payload.get("status") in {"unavailable", "missing_command", "unknown_provider", "error"}:
             warnings.append(f"agent_cli_unavailable:{provider}")
+        if payload.get("deployment_evidence_conflict"):
+            warnings.append(f"agent_cli_conflicts_with_deployment_probe:{provider}")
     summary_status = "blocked" if blocking_reasons else "degraded" if warnings else "ready"
     return {
         "created_at": _now(),
@@ -807,7 +819,12 @@ def _codetalk_provider_next_check(provider: str, diagnostics: dict[str, Any]) ->
     return "No startup probe is available for this provider."
 
 
-def _agent_cli_readiness_payload(provider: str, payload: dict[str, Any]) -> dict[str, Any]:
+def _agent_cli_readiness_payload(
+    provider: str,
+    payload: dict[str, Any],
+    *,
+    deployment_evidence: dict[str, Any] | None = None,
+) -> dict[str, Any]:
     diagnostics = payload.get("diagnostics") if isinstance(payload.get("diagnostics"), dict) else {}
     resolution = (
         diagnostics.get("command_resolution")
@@ -815,7 +832,7 @@ def _agent_cli_readiness_payload(provider: str, payload: dict[str, Any]) -> dict
         else {}
     )
     status = str(resolution.get("status") or payload.get("status") or "unknown")
-    return {
+    readiness = {
         "provider": provider,
         "owner": "agent_cli",
         "status": status,
@@ -830,6 +847,67 @@ def _agent_cli_readiness_payload(provider: str, payload: dict[str, Any]) -> dict
         "credential_boundary": str(payload.get("credential_boundary") or ""),
         "unavailable_behavior": str(payload.get("unavailable_behavior") or ""),
     }
+    if deployment_evidence:
+        readiness["deployment_evidence"] = deployment_evidence
+        readiness["deployment_evidence_conflict"] = _deployment_evidence_conflicts_with_status(
+            status=status,
+            deployment_evidence=deployment_evidence,
+        )
+    return readiness
+
+
+def _deployment_evidence_by_provider(
+    deployment_evidence: list[dict[str, Any]],
+) -> dict[str, dict[str, Any]]:
+    result: dict[str, dict[str, Any]] = {}
+    for item in deployment_evidence:
+        if not isinstance(item, dict):
+            continue
+        provider = _provider_from_deployment_evidence(item)
+        if not provider or provider in result:
+            continue
+        result[provider] = _deployment_evidence_summary(item)
+    return result
+
+
+def _provider_from_deployment_evidence(item: dict[str, Any]) -> str:
+    provenance = item.get("provenance") if isinstance(item.get("provenance"), dict) else {}
+    provider = str(provenance.get("provider") or item.get("symbol") or "").strip()
+    if provider:
+        return provider
+    subject_key = str(item.get("subject_key") or "").strip()
+    if ":" in subject_key:
+        return subject_key.split(":", 1)[0].strip()
+    return ""
+
+
+def _deployment_evidence_summary(item: dict[str, Any]) -> dict[str, Any]:
+    provenance = item.get("provenance") if isinstance(item.get("provenance"), dict) else {}
+    return {
+        "provider": _provider_from_deployment_evidence(item),
+        "evidence_id": str(item.get("evidence_id") or ""),
+        "kind": str(item.get("kind") or ""),
+        "subject_key": str(item.get("subject_key") or ""),
+        "evidence_status": str(item.get("status") or ""),
+        "evidence_source": str(item.get("source") or ""),
+        "probe_id": str(provenance.get("probe_id") or ""),
+        "task_probe_status": str(provenance.get("task_probe_status") or ""),
+        "path": str(item.get("path") or ""),
+        "reason": str(item.get("reason") or ""),
+    }
+
+
+def _deployment_evidence_conflicts_with_status(
+    *,
+    status: str,
+    deployment_evidence: dict[str, Any],
+) -> bool:
+    if status not in {"unavailable", "missing_command", "unknown_provider", "error"}:
+        return False
+    return (
+        deployment_evidence.get("task_probe_status") == "ready"
+        or deployment_evidence.get("evidence_status") == "accepted"
+    )
 
 
 def build_codetalk_provider_snapshot() -> dict[str, dict[str, Any]]:

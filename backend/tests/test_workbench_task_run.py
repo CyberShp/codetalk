@@ -1768,6 +1768,111 @@ def test_prepare_workbench_task_run_writes_provider_readiness_artifact(tmp_path,
     assert step_bundle["provider_readiness"]["summary"]["status"] == "blocked"
 
 
+def test_provider_readiness_links_deployment_probe_evidence_conflicts(tmp_path, monkeypatch):
+    from app.config import settings
+    from app.services.evidence_memory import EvidenceMemoryStore
+    from app.services.workbench_task_run import WorkbenchTaskRunPreparer
+    from app.services.workflow_dsl import WorkflowStore
+
+    monkeypatch.setattr(settings, "external_agent_custom_providers", [
+        {"id": "corp-agent", "command": "corp-agent run", "supports_mcp": True}
+    ])
+
+    def fake_health(provider, command, fallback_commands=None):
+        return {
+            "provider": provider,
+            "status": "unavailable",
+            "configured_command": command,
+            "command": command,
+            "reason": "command not found: corp-agent",
+            "attempts": [
+                {
+                    "command": command,
+                    "status": "unavailable",
+                    "reason": "command not found: corp-agent",
+                }
+            ],
+        }
+
+    monkeypatch.setattr(
+        "app.services.workbench_task_run.check_provider_health",
+        fake_health,
+    )
+
+    memory = EvidenceMemoryStore(tmp_path / "memory.db")
+    memory.record_analysis_run(
+        run_id="deployment_probe:probe-ready",
+        workspace_id="codetalk-deployment",
+        repo_path=str(tmp_path),
+        object_text="deployment probe probe-ready",
+        workflow_id="workbench_deployment_probe",
+        status="healthy",
+    )
+    memory.upsert_evidence_item(
+        run_id="deployment_probe:probe-ready",
+        workspace_id="codetalk-deployment",
+        kind="provider_task_probe",
+        subject_key="corp-agent:agent_task_probe",
+        status="accepted",
+        source="deployment_probe",
+        path=str(tmp_path / "provider_task_probe_result.json"),
+        symbol="corp-agent",
+        reason="provider_task_probe corp-agent ready; contract ok",
+        text="provider_task_probe corp-agent ready deployment_probe task contract",
+        provenance={
+            "provider": "corp-agent",
+            "probe_id": "probe-ready",
+            "task_probe_status": "ready",
+        },
+    )
+
+    workflow_store = WorkflowStore(tmp_path / "workflows.db")
+    workflow_store.save_workflow({
+        "id": "provider_deployment_conflict_workflow",
+        "name": "Provider deployment conflict workflow",
+        "version": 1,
+        "inputs": [{"id": "module", "type": "free_text"}],
+        "steps": [
+            {
+                "id": "discover",
+                "type": "agent_task",
+                "provider": "corp-agent",
+                "required_artifacts": ["source_scope.json"],
+            }
+        ],
+        "outputs": [{"id": "scope", "type": "json", "from": "discover"}],
+    })
+
+    result = WorkbenchTaskRunPreparer(
+        artifact_root=tmp_path / "task_runs",
+        workflow_store=workflow_store,
+        evidence_memory=memory,
+    ).prepare(
+        workflow_id="provider_deployment_conflict_workflow",
+        workspace_id="ws-readiness-conflict",
+        repo_path=str(tmp_path),
+        inputs={"module": "nvme-tcp-tls"},
+    )
+
+    readiness = result.task_bundle["provider_readiness"]
+    provider = readiness["agent_cli_providers"]["corp-agent"]
+    assert provider["status"] == "unavailable"
+    assert provider["deployment_evidence"]["task_probe_status"] == "ready"
+    assert provider["deployment_evidence"]["probe_id"] == "probe-ready"
+    assert provider["deployment_evidence"]["evidence_status"] == "accepted"
+    assert provider["deployment_evidence"]["evidence_source"] == "deployment_probe"
+    assert provider["deployment_evidence_conflict"] is True
+    assert "agent_cli_unavailable:corp-agent" in readiness["summary"]["warnings"]
+    assert (
+        "agent_cli_conflicts_with_deployment_probe:corp-agent"
+        in readiness["summary"]["warnings"]
+    )
+    persisted = json.loads(
+        Path(result.artifact_dir, "provider_readiness.json").read_text(encoding="utf-8")
+    )
+    assert persisted["agent_cli_providers"]["corp-agent"]["deployment_evidence_conflict"] is True
+
+
 def test_workbench_workflow_runner_infers_output_from_required_agent_artifact(
     tmp_path,
     monkeypatch,
