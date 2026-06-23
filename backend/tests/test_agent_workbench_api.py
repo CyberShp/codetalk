@@ -294,6 +294,20 @@ async def test_workbench_provider_capabilities_include_agent_launch_resolution(
                     "argv": ["ccr", "code"],
                     "configured_argv": ["ccr", "code"],
                     "launch_kind": "exec",
+                    "resolution": {
+                        "command": "ccr code",
+                        "executable": "ccr",
+                        "configured_argv": ["ccr", "code"],
+                        "platform": "Windows",
+                        "method": "not_found",
+                        "which": "",
+                        "where_exe": "C:/Windows/System32/where.exe",
+                        "where_returncode": 1,
+                        "where_stdout": [],
+                        "where_stderr": "INFO: Could not find files for the given pattern(s).",
+                        "common_dir_path": "",
+                        "powershell_get_command": "",
+                    },
                     "diagnostic": {
                         "summary": "cwd: E:/codetalk; PATH entries: C:/missing",
                         "cwd": "E:/codetalk",
@@ -342,6 +356,9 @@ async def test_workbench_provider_capabilities_include_agent_launch_resolution(
     assert resolution["attempts"][0]["reason"] == "command not found: ccr"
     assert resolution["attempts"][0]["executable"] == "ccr"
     assert resolution["attempts"][0]["configured_argv"] == ["ccr", "code"]
+    assert resolution["attempts"][0]["resolution"]["where_exe"] == "C:/Windows/System32/where.exe"
+    assert resolution["attempts"][0]["resolution"]["where_returncode"] == 1
+    assert resolution["attempts"][0]["resolution"]["method"] == "not_found"
     assert resolution["attempts"][0]["diagnostic"]["path_entries"] == ["C:/missing"]
     assert resolution["diagnostic"]["command_hint_env"] == "CLAUDE_CODE_COMMAND"
     assert by_id["semantic-library"]["capabilities"]["supports_black_box_terms"] is True

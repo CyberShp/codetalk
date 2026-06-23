@@ -141,11 +141,15 @@ def _agent_command_attempt_summary(item: dict[str, Any]) -> dict[str, Any]:
         "config_hint",
         "profile_config_path",
         "shell_path",
+        "resolution",
     )
     result: dict[str, Any] = {}
     for field in fields:
         value = item.get(field)
         if value is None:
+            continue
+        if field == "resolution" and isinstance(value, dict):
+            result[field] = _agent_command_attempt_resolution_summary(value)
             continue
         result[field] = redact_agent_diagnostic_text(str(value))
     configured_argv = item.get("configured_argv")
@@ -153,6 +157,27 @@ def _agent_command_attempt_summary(item: dict[str, Any]) -> dict[str, Any]:
         result["configured_argv"] = [
             redact_agent_diagnostic_text(str(value)) for value in configured_argv
         ]
+    return result
+
+
+def _agent_command_attempt_resolution_summary(value: dict[str, Any]) -> dict[str, Any]:
+    result: dict[str, Any] = {}
+    for key, item in value.items():
+        if item is None:
+            continue
+        if isinstance(item, str):
+            result[str(key)] = redact_agent_diagnostic_text(item)
+        elif isinstance(item, list):
+            result[str(key)] = [
+                redact_agent_diagnostic_text(str(part))
+                for part in item
+            ]
+        elif isinstance(item, dict):
+            result[str(key)] = _agent_command_attempt_resolution_summary(item)
+        elif isinstance(item, (int, float, bool)):
+            result[str(key)] = item
+        else:
+            result[str(key)] = redact_agent_diagnostic_text(str(item))
     return result
 
 

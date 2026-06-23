@@ -582,6 +582,7 @@ def _runtime_attempt_records(
         "probe_status",
         "probe_message",
         "diagnostic",
+        "resolution",
     )
     records: list[dict] = []
     for index, attempt in enumerate(attempts, start=1):
@@ -604,6 +605,9 @@ def _runtime_attempt_records(
                 )
                 continue
             if key == "diagnostic" and isinstance(value, dict):
+                record[key] = _redact_agent_diagnostics(value)
+                continue
+            if key == "resolution" and isinstance(value, dict):
                 record[key] = _redact_agent_diagnostics(value)
                 continue
             if isinstance(value, (str, int, float, bool)):
@@ -715,8 +719,13 @@ def _resolve_provider_command_attempt(command: str, provider: str | None = None)
             ),
         }
     executable = argv[0]
+    resolution = _command_resolution_start(command=command, executable=executable, argv=argv)
     configured_path = _resolve_configured_executable_path(executable)
     if configured_path:
+        resolution.update({
+            "method": "configured_path",
+            "path": configured_path,
+        })
         configured_argv = [configured_path, *argv[1:]]
         resolved_argv = _normalize_agent_automation_argv(provider, configured_argv)
         guarded_argv = apply_readonly_cli_guard(provider, resolved_argv)
@@ -729,6 +738,7 @@ def _resolve_provider_command_attempt(command: str, provider: str | None = None)
                 "configured_argv": guarded_argv,
                 "executable": executable,
                 "path": configured_path,
+                "resolution": resolution,
                 **config_error,
             }
         if _is_windows_powershell_script(configured_path):
@@ -740,6 +750,7 @@ def _resolve_provider_command_attempt(command: str, provider: str | None = None)
                 "executable": executable,
                 "path": configured_path,
                 "launch_kind": "powershell-script",
+                "resolution": resolution,
                 **_provider_command_configuration_hint(provider, guarded_argv),
             }
         config_hint = _provider_command_configuration_hint(provider, guarded_argv)
@@ -752,6 +763,7 @@ def _resolve_provider_command_attempt(command: str, provider: str | None = None)
                 "executable": executable,
                 "path": configured_path,
                 "launch_kind": "powershell-profile",
+                "resolution": resolution,
                 **config_hint,
             }
         return {
@@ -762,30 +774,51 @@ def _resolve_provider_command_attempt(command: str, provider: str | None = None)
             "executable": executable,
             "path": configured_path,
             "launch_kind": "exec",
+            "resolution": resolution,
             **config_hint,
         }
     if platform.system().lower().startswith("win"):
         resolved = shutil.which(executable)
+        resolution["which"] = resolved or ""
         if not resolved:
             where = shutil.which("where.exe")
+            resolution["where_exe"] = where or ""
             if where:
                 try:
                     proc = subprocess.run(
                         [where, executable], capture_output=True, text=True, timeout=3
                     )
-                    first = (proc.stdout or "").splitlines()[0].strip() if proc.stdout else ""
+                    stdout_lines = [
+                        line.strip()
+                        for line in (getattr(proc, "stdout", "") or "").splitlines()
+                        if line.strip()
+                    ]
+                    resolution["where_returncode"] = getattr(proc, "returncode", None)
+                    resolution["where_stdout"] = stdout_lines[:8]
+                    stderr = getattr(proc, "stderr", "") or ""
+                    if stderr:
+                        resolution["where_stderr"] = stderr.strip()[:1000]
+                    first = stdout_lines[0] if stdout_lines else ""
                     resolved = first or None
                 except Exception:
+                    resolution["where_error"] = "where.exe probe failed"
                     resolved = None
         if not resolved:
             resolved = _resolve_windows_common_command_path(executable)
+            resolution["common_dir_path"] = resolved or ""
         else:
             resolved = _resolve_windows_executable_shim_path(resolved)
+            resolution["resolved_shim_path"] = resolved
     else:
         resolved = shutil.which(executable)
+        resolution["which"] = resolved or ""
     if not resolved:
         shell_probe = _probe_windows_shell_command(executable)
         shell_resolution = _shell_probe_summary(shell_probe)
+        resolution["powershell_get_command"] = shell_resolution or ""
+        shell_powershell = _shell_probe_powershell(shell_probe)
+        if shell_powershell:
+            resolution["powershell_path"] = shell_powershell
         if shell_resolution:
             normalized_argv = _normalize_agent_automation_argv(provider, argv)
             guarded_argv = apply_readonly_cli_guard(provider, normalized_argv)
@@ -800,6 +833,7 @@ def _resolve_provider_command_attempt(command: str, provider: str | None = None)
                     "path": shell_resolution,
                     "shell_path": _shell_probe_powershell(shell_probe),
                     "launch_kind": "powershell",
+                    "resolution": {**resolution, "method": "powershell_get_command"},
                     **config_error,
                 }
             shell_argv = _windows_shell_agent_argv(
@@ -816,6 +850,7 @@ def _resolve_provider_command_attempt(command: str, provider: str | None = None)
                 "path": shell_resolution,
                 "shell_path": _shell_probe_powershell(shell_probe),
                 "launch_kind": "powershell",
+                "resolution": {**resolution, "method": "powershell_get_command"},
                 **_provider_command_configuration_hint(provider, guarded_argv),
             }
         return {
@@ -826,11 +861,14 @@ def _resolve_provider_command_attempt(command: str, provider: str | None = None)
             "status": "unavailable",
             "reason": f"command not found: {executable}",
             "launch_kind": "exec",
+            "resolution": {**resolution, "method": "not_found"},
             "diagnostic": _agent_runtime_diagnostic(
                 provider=provider,
                 attempted_commands=[command],
             ),
         }
+    resolution["method"] = "path"
+    resolution["path"] = resolved
     configured_argv = [resolved, *argv[1:]]
     resolved_argv = _normalize_agent_automation_argv(provider, configured_argv)
     guarded_argv = apply_readonly_cli_guard(provider, resolved_argv)
@@ -842,6 +880,7 @@ def _resolve_provider_command_attempt(command: str, provider: str | None = None)
             "argv": guarded_argv,
             "executable": executable,
             "path": resolved,
+            "resolution": resolution,
             **config_error,
         }
     if _is_windows_powershell_script(resolved):
@@ -853,6 +892,7 @@ def _resolve_provider_command_attempt(command: str, provider: str | None = None)
             "executable": executable,
             "path": resolved,
             "launch_kind": "powershell-script",
+            "resolution": resolution,
             **_provider_command_configuration_hint(provider, guarded_argv),
         }
     config_hint = _provider_command_configuration_hint(provider, guarded_argv)
@@ -865,6 +905,7 @@ def _resolve_provider_command_attempt(command: str, provider: str | None = None)
             "executable": executable,
             "path": resolved,
             "launch_kind": "powershell-profile",
+            "resolution": resolution,
             **config_hint,
         }
     return {
@@ -875,7 +916,17 @@ def _resolve_provider_command_attempt(command: str, provider: str | None = None)
         "executable": executable,
         "path": resolved,
         "launch_kind": "exec",
+        "resolution": resolution,
         **config_hint,
+    }
+
+
+def _command_resolution_start(*, command: str, executable: str, argv: list[str]) -> dict[str, object]:
+    return {
+        "command": command,
+        "executable": executable,
+        "configured_argv": list(argv),
+        "platform": platform.system(),
     }
 
 

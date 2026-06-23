@@ -93,6 +93,15 @@ class TestGetPmFromAppState:
                         "status": "available",
                         "path": "C:/tools/ccr.cmd",
                         "launch_kind": "powershell-profile",
+                        "resolution": {
+                            "command": command,
+                            "executable": "ccr",
+                            "configured_argv": ["ccr", "code"],
+                            "platform": "Windows",
+                            "method": "powershell_get_command",
+                            "powershell_get_command": "PowerShell function ccr",
+                            "powershell_path": "C:/Windows/System32/WindowsPowerShell/v1.0/powershell.exe",
+                        },
                     }
                 ],
             },
@@ -113,6 +122,9 @@ class TestGetPmFromAppState:
         assert diagnostics["startup_probe_endpoint"] == "/api/tools/claude-code/startup-probe"
         assert diagnostics["command_resolution"]["status"] == "available"
         assert diagnostics["command_resolution"]["attempts"][0]["launch_kind"] == "powershell-profile"
+        attempt_resolution = diagnostics["command_resolution"]["attempts"][0]["resolution"]
+        assert attempt_resolution["method"] == "powershell_get_command"
+        assert attempt_resolution["powershell_get_command"] == "PowerShell function ccr"
 
     async def test_procs_includes_runtime_custom_external_agent_provider(
         self,

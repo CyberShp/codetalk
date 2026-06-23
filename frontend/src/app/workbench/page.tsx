@@ -17,6 +17,7 @@ import type {
   EvidenceMemoryItem,
   EvidenceSourceSlice,
   ExternalAgentStartupProbeResult,
+  AgentCommandResolutionDetail,
   AgentRunExecutionResult,
   ArtifactValidationResult,
   MaterializeEvidenceResult,
@@ -810,6 +811,23 @@ type FailureRetryContextSummary = {
   mustProduceArtifacts: string[];
   doNotRepeat: string[];
 };
+
+function commandResolutionLines(resolution?: AgentCommandResolutionDetail): string[] {
+  if (!resolution) return [];
+  const lines = [
+    resolution.method ? `method:${resolution.method}` : "",
+    resolution.which ? `which:${resolution.which}` : "",
+    resolution.where_exe ? `where:${resolution.where_exe}` : "",
+    typeof resolution.where_returncode === "number" ? `where_exit:${resolution.where_returncode}` : "",
+    resolution.common_dir_path ? `common:${resolution.common_dir_path}` : "",
+    resolution.powershell_get_command ? `ps:${resolution.powershell_get_command}` : "",
+    resolution.path ? `path:${resolution.path}` : "",
+  ].filter(Boolean);
+  if (resolution.where_stderr && lines.length < 6) {
+    lines.push(`where_stderr:${resolution.where_stderr}`);
+  }
+  return lines.slice(0, 6);
+}
 
 type AcceptanceProviderIssue = {
   provider: string;
@@ -2931,6 +2949,21 @@ export default function AgentWorkbenchPage() {
                           </span>
                         </p>
                       )}
+                      {(() => {
+                        const attempts = provider.diagnostics.command_resolution?.attempts ?? [];
+                        const lastAttempt = attempts[attempts.length - 1];
+                        const resolutionLines = commandResolutionLines(lastAttempt?.resolution);
+                        if (resolutionLines.length === 0) return null;
+                        return (
+                          <div className="mt-2 space-y-1">
+                            {resolutionLines.map((line) => (
+                              <p key={line} className="break-words font-data text-[11px] text-on-surface">
+                                {line}
+                              </p>
+                            ))}
+                          </div>
+                        );
+                      })()}
                     </div>
                   )}
                   {provider.diagnostics.probe_recipe && (

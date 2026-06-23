@@ -1266,6 +1266,53 @@ def test_missing_cli_records_command_resolution_diagnostics(tmp_path, monkeypatc
     assert attempt["executable"] == "ccr"
     assert attempt["launch_kind"] == "exec"
     assert attempt["diagnostic"]["path_entry_count"] >= 0
+    assert attempt["resolution"]["command"] == "ccr code"
+    assert attempt["resolution"]["executable"] == "ccr"
+    assert attempt["resolution"]["configured_argv"] == ["ccr", "code"]
+    assert attempt["resolution"]["method"] == "not_found"
+    assert attempt["resolution"]["which"] == ""
+    assert attempt["resolution"]["where_exe"] == ""
+    assert attempt["resolution"]["common_dir_path"] == ""
+    assert attempt["resolution"]["powershell_get_command"] == ""
+
+
+def test_missing_cli_records_where_probe_failure_diagnostics(tmp_path, monkeypatch):
+    from app.services.external_agent_discovery import check_provider_health
+
+    class FakeCompleted:
+        returncode = 1
+        stdout = ""
+        stderr = "INFO: Could not find files for the given pattern(s)."
+
+    def fake_which(cmd):
+        if cmd == "where.exe":
+            return "C:/Windows/System32/where.exe"
+        return None
+
+    monkeypatch.setattr("app.services.external_agent_discovery.platform.system", lambda: "Windows")
+    monkeypatch.setattr("app.services.external_agent_discovery.shutil.which", fake_which)
+    monkeypatch.setattr(
+        "app.services.external_agent_discovery.subprocess.run",
+        lambda *args, **kwargs: FakeCompleted(),
+    )
+    monkeypatch.setattr(
+        "app.services.external_agent_discovery._probe_windows_shell_command",
+        lambda _executable: None,
+    )
+    monkeypatch.setenv("APPDATA", str(tmp_path / "appdata"))
+    monkeypatch.setenv("USERPROFILE", str(tmp_path / "userprofile"))
+    monkeypatch.setenv("LOCALAPPDATA", str(tmp_path / "localappdata"))
+    monkeypatch.setenv("ProgramData", str(tmp_path / "programdata"))
+
+    health = check_provider_health("claude-code", "ccr code")
+
+    resolution = health["attempts"][0]["resolution"]
+    assert health["status"] == "unavailable"
+    assert resolution["where_exe"] == "C:/Windows/System32/where.exe"
+    assert resolution["where_returncode"] == 1
+    assert resolution["where_stdout"] == []
+    assert "Could not find files" in resolution["where_stderr"]
+    assert resolution["method"] == "not_found"
 
 
 def test_missing_ccr_health_includes_actionable_command_configuration_hint(tmp_path, monkeypatch):

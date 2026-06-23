@@ -223,6 +223,7 @@ export interface WorkbenchProviderMatrixItem {
         profile_config_path?: string;
         shell_path?: string;
         diagnostic?: AgentCommandDiagnostic;
+        resolution?: AgentCommandResolutionDetail;
       }>;
     };
     probe_recipe?: {
@@ -315,6 +316,7 @@ export interface ExternalAgentProbeAttempt {
   probe_status?: string;
   probe_message?: string;
   diagnostic?: AgentCommandDiagnostic;
+  resolution?: AgentCommandResolutionDetail;
 }
 
 export interface AgentCommandDiagnostic {
@@ -325,6 +327,25 @@ export interface AgentCommandDiagnostic {
   checked_common_dirs?: string[];
   command_hint_env?: string;
   command_hint?: string;
+}
+
+export interface AgentCommandResolutionDetail {
+  command?: string;
+  executable?: string;
+  configured_argv?: string[];
+  platform?: string;
+  method?: string;
+  path?: string;
+  which?: string;
+  where_exe?: string;
+  where_returncode?: number;
+  where_stdout?: string[];
+  where_stderr?: string;
+  where_error?: string;
+  common_dir_path?: string;
+  powershell_get_command?: string;
+  powershell_path?: string;
+  resolved_shim_path?: string;
 }
 
 export interface GitNexusRepoIndexDiagnostic {

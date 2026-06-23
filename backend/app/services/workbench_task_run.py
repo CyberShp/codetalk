@@ -1382,6 +1382,7 @@ def _agent_cli_command_resolution_attempt(item: dict[str, Any]) -> dict[str, Any
         "profile_config_path",
         "shell_path",
         "diagnostic",
+        "resolution",
     )
     result: dict[str, Any] = {}
     for key in keys:
@@ -1397,7 +1398,33 @@ def _agent_cli_command_resolution_attempt(item: dict[str, Any]) -> dict[str, Any
         if key == "diagnostic" and isinstance(value, dict):
             result[key] = _agent_cli_command_resolution_diagnostic(value)
             continue
+        if key == "resolution" and isinstance(value, dict):
+            result[key] = _agent_cli_command_resolution_detail(value)
+            continue
         result[key] = redact_agent_diagnostic_text(str(value)) if isinstance(value, str) else value
+    return result
+
+
+def _agent_cli_command_resolution_detail(value: Any) -> dict[str, Any]:
+    if not isinstance(value, dict):
+        return {}
+    result: dict[str, Any] = {}
+    for key, item in value.items():
+        if item is None:
+            continue
+        if isinstance(item, str):
+            result[str(key)] = redact_agent_diagnostic_text(item)
+        elif isinstance(item, list):
+            result[str(key)] = [
+                redact_agent_diagnostic_text(str(part))
+                for part in item
+            ]
+        elif isinstance(item, dict):
+            result[str(key)] = _agent_cli_command_resolution_detail(item)
+        elif isinstance(item, (int, float, bool)):
+            result[str(key)] = item
+        else:
+            result[str(key)] = redact_agent_diagnostic_text(str(item))
     return result
 
 
