@@ -28,6 +28,7 @@ import type {
   TaskRerunHistory,
   TaskRerunPlan,
   TaskRerunPlanValidation,
+  WorkbenchDeploymentProbeResult,
   WorkflowDefinition,
   WorkflowExecutionResult,
   WorkflowPreset,
@@ -847,6 +848,8 @@ export default function AgentWorkbenchPage() {
   const [providerProbeResults, setProviderProbeResults] = useState<
     Record<string, ExternalAgentStartupProbeResult>
   >({});
+  const [deploymentProbeResult, setDeploymentProbeResult] =
+    useState<WorkbenchDeploymentProbeResult | null>(null);
   const [taskRuns, setTaskRuns] = useState<PreparedWorkbenchTaskRun[]>([]);
   const [preparedRun, setPreparedRun] = useState<PreparedWorkbenchTaskRun | null>(null);
   const [artifactManifest, setArtifactManifest] =
@@ -1233,21 +1236,24 @@ export default function AgentWorkbenchPage() {
       const providers = (providerMatrix?.providers ?? []).filter(
         (provider) => provider.agent_owned && provider.diagnostics?.startup_probe_endpoint,
       );
-      const results = await Promise.all(
-        providers.map(async (provider) => ({
-          provider: provider.provider,
-          result: await api.tools.startupProbe(provider.provider, repoPath.trim() || undefined),
-        })),
+      const result = await api.workbench.deploymentProbe(
+        repoPath.trim() || undefined,
+        providers.map((provider) => provider.provider),
       );
+      setDeploymentProbeResult(result);
       setProviderProbeResults((current) => {
         const next = { ...current };
-        for (const item of results) {
-          next[item.provider] = item.result;
+        for (const item of result.providers) {
+          const provider = item.provider || item.tool || "";
+          if (provider) {
+            next[provider] = item;
+          }
         }
         return next;
       });
-      const healthy = results.filter((item) => item.result.healthy).length;
-      setMessage(`Agent CLI startup probes: ${healthy}/${results.length} healthy`);
+      setMessage(
+        `Deployment probe ${result.status}: ${result.summary.healthy_count}/${result.summary.provider_count} healthy`,
+      );
     });
 
   function updatePrepareInput(input: Record<string, unknown>, value: string) {
@@ -1708,6 +1714,35 @@ export default function AgentWorkbenchPage() {
             Probe all Agent CLIs
           </button>
         </div>
+        {deploymentProbeResult && (
+          <div className="mb-3 rounded-lg border border-outline-variant/30 bg-surface-container px-3 py-2 text-xs text-on-surface-variant">
+            <div className="flex flex-wrap items-center gap-2">
+              <span className="font-medium text-on-surface">Deployment probe</span>
+              <span
+                className={
+                  deploymentProbeResult.status === "healthy"
+                    ? "font-data text-green-500"
+                    : "font-data text-warning"
+                }
+              >
+                {deploymentProbeResult.status}
+              </span>
+              <span className="font-data">
+                healthy:{deploymentProbeResult.summary.healthy_count}/
+                {deploymentProbeResult.summary.provider_count}
+              </span>
+              <span className="font-data">
+                failed:{deploymentProbeResult.summary.failed_count}
+              </span>
+              <span className="font-data">
+                probe:{deploymentProbeResult.probe_id}
+              </span>
+            </div>
+            <p className="mt-1 break-words font-data text-[10px]">
+              artifact:{deploymentProbeResult.artifact.latest_path || deploymentProbeResult.artifact.path}
+            </p>
+          </div>
+        )}
         <div className="grid gap-3 lg:grid-cols-3">
           {(providerMatrix?.providers ?? []).map((provider) => (
             <div

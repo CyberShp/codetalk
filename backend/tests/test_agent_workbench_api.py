@@ -380,6 +380,61 @@ async def test_workbench_system_audit_reports_degraded_when_no_agent_cli_launche
     assert body["missing_recommended"][0]["id"] == "agent_cli_launch_readiness"
 
 
+async def test_workbench_deployment_probe_runs_agent_cli_startup_checks(
+    workbench_client,
+    tmp_path,
+    monkeypatch,
+):
+    monkeypatch.setattr(settings, "claude_code_command", "ccr code")
+    monkeypatch.setattr(settings, "opencode_command", "opencode")
+    monkeypatch.setattr(settings, "external_agent_custom_providers", [])
+
+    async def fake_probe(provider, repo_path=None):
+        if provider == "claude-code":
+            return {
+                "provider": provider,
+                "healthy": True,
+                "status": "ok",
+                "message": "startup_probe_ok",
+                "health": {"status": "available", "used_fallback": False},
+            }
+        return {
+            "provider": provider,
+            "healthy": False,
+            "status": "unavailable",
+            "message": "command not found: opencode",
+            "health": {"status": "unavailable", "reason": "command not found: opencode"},
+        }
+
+    monkeypatch.setattr(
+        "app.api.agent_workbench.probe_external_agent_startup",
+        fake_probe,
+        raising=False,
+    )
+
+    resp = await workbench_client.post(
+        "/api/workbench/deployment-probe",
+        json={"repo_path": str(tmp_path)},
+    )
+
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["status"] == "degraded"
+    assert body["summary"]["provider_count"] == 2
+    assert body["summary"]["healthy_count"] == 1
+    assert body["summary"]["failed_count"] == 1
+    by_id = {item["provider"]: item for item in body["providers"]}
+    assert by_id["claude-code"]["status"] == "ok"
+    assert by_id["opencode"]["status"] == "unavailable"
+    artifact_path = Path(body["artifact"]["path"])
+    assert artifact_path.exists()
+    latest_path = artifact_path.parent / "deployment_probe_latest.json"
+    assert latest_path.exists()
+    latest = json.loads(latest_path.read_text(encoding="utf-8"))
+    assert latest["probe_id"] == body["probe_id"]
+    assert latest["summary"]["failed_count"] == 1
+
+
 async def test_workbench_semantic_library_api(workbench_client):
     created = await workbench_client.post(
         "/api/workbench/semantic-cases",

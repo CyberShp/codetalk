@@ -23,6 +23,7 @@ import type {
   AnalysisPlan,
   ScopePreview,
   ExternalAgentStartupProbeResult,
+  WorkbenchDeploymentProbeResult,
   WorkflowDefinition,
   WorkflowPreset,
   SemanticCase,
@@ -517,6 +518,15 @@ export const api = {
       request<WorkbenchCoreWorkflowReadiness>(
         "/api/workbench/core-workflow-readiness",
       ),
+
+    deploymentProbe: (repoPath?: string, providers?: string[]) =>
+      request<WorkbenchDeploymentProbeResult>("/api/workbench/deployment-probe", {
+        method: "POST",
+        body: JSON.stringify({
+          repo_path: repoPath ?? "",
+          providers: providers ?? [],
+        }),
+      }),
 
     uploadInputFile: (file: File, inputId: string) => {
       const form = new FormData();

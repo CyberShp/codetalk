@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import hashlib
 import json
 import uuid
@@ -19,6 +20,7 @@ from app.services.evidence_memory import EvidenceMemoryStore
 from app.services.external_agent_discovery import (
     external_agent_provider_capabilities,
     external_agent_provider_specs,
+    probe_external_agent_startup,
     split_agent_command,
 )
 from app.services.test_semantic_library import (
@@ -121,6 +123,11 @@ class PrepareTaskRunRequest(BaseModel):
     provider_override: str | None = None
 
 
+class DeploymentProbeRequest(BaseModel):
+    repo_path: str = ""
+    providers: list[str] = Field(default_factory=list)
+
+
 def _workbench_dir() -> Path:
     root = settings.data_path / "workbench"
     root.mkdir(parents=True, exist_ok=True)
@@ -153,6 +160,12 @@ def _task_runs_dir() -> Path:
 
 def _input_uploads_dir() -> Path:
     root = _workbench_dir() / "input_uploads"
+    root.mkdir(parents=True, exist_ok=True)
+    return root
+
+
+def _deployment_probes_dir() -> Path:
+    root = _workbench_dir() / "deployment_probes"
     root.mkdir(parents=True, exist_ok=True)
     return root
 
@@ -354,6 +367,61 @@ async def list_provider_capabilities() -> dict[str, Any]:
 async def get_workbench_system_audit() -> dict[str, Any]:
     """Return a machine-readable readiness audit for the Workbench control plane."""
     return _build_workbench_system_audit()
+
+
+@router.post("/deployment-probe")
+async def run_workbench_deployment_probe(payload: DeploymentProbeRequest) -> dict[str, Any]:
+    """Run startup probes for Agent CLI providers and persist deployment evidence."""
+    provider_specs = external_agent_provider_specs()
+    requested = [
+        str(provider).strip()
+        for provider in payload.providers
+        if str(provider).strip()
+    ]
+    provider_ids = requested or list(provider_specs)
+    provider_ids = [
+        provider for provider in provider_ids
+        if provider in provider_specs
+    ]
+    started_at = datetime.now(timezone.utc)
+    results = await asyncio.gather(*[
+        _run_deployment_probe_provider(provider, payload.repo_path)
+        for provider in provider_ids
+    ])
+    completed_at = datetime.now(timezone.utc)
+    healthy = [item for item in results if item.get("healthy")]
+    failed = [item for item in results if not item.get("healthy")]
+    probe_id = f"deploy_probe_{uuid.uuid4().hex}"
+    status = "healthy" if results and not failed else "degraded"
+    if not results:
+        status = "unavailable"
+    artifact_dir = _deployment_probes_dir()
+    artifact_path = artifact_dir / f"{probe_id}.json"
+    response = {
+        "probe_id": probe_id,
+        "status": status,
+        "repo_path": payload.repo_path,
+        "started_at": started_at.isoformat(),
+        "completed_at": completed_at.isoformat(),
+        "duration_ms": int((completed_at - started_at).total_seconds() * 1000),
+        "summary": {
+            "provider_count": len(results),
+            "healthy_count": len(healthy),
+            "failed_count": len(failed),
+        },
+        "providers": results,
+        "artifact": {
+            "path": str(artifact_path),
+            "latest_path": str(artifact_dir / "deployment_probe_latest.json"),
+        },
+    }
+    _write_json(artifact_path, response)
+    _write_json(artifact_dir / "deployment_probe_latest.json", response)
+    response["artifact"]["sha256"] = hashlib.sha256(artifact_path.read_bytes()).hexdigest()
+    response["artifact"]["size_bytes"] = artifact_path.stat().st_size
+    _write_json(artifact_path, response)
+    _write_json(artifact_dir / "deployment_probe_latest.json", response)
+    return response
 
 
 @router.post("/semantic-cases", status_code=201)
@@ -1218,6 +1286,40 @@ def _core_workflow_readiness_item(preset: dict[str, Any]) -> dict[str, Any]:
         "missing_required": missing,
         "warnings": warnings,
     }
+
+
+async def _run_deployment_probe_provider(provider: str, repo_path: str) -> dict[str, Any]:
+    started_at = datetime.now(timezone.utc)
+    try:
+        result = await probe_external_agent_startup(provider, repo_path=repo_path or None)
+    except Exception as exc:
+        completed_at = datetime.now(timezone.utc)
+        return {
+            "provider": provider,
+            "healthy": False,
+            "status": "error",
+            "message": str(exc),
+            "started_at": started_at.isoformat(),
+            "completed_at": completed_at.isoformat(),
+            "duration_ms": int((completed_at - started_at).total_seconds() * 1000),
+        }
+    completed_at = datetime.now(timezone.utc)
+    if not isinstance(result, dict):
+        result = {
+            "provider": provider,
+            "healthy": False,
+            "status": "error",
+            "message": "startup probe returned non-object result",
+        }
+    item = dict(result)
+    item.setdefault("provider", provider)
+    item["healthy"] = bool(item.get("healthy", False))
+    item["status"] = str(item.get("status") or ("ok" if item["healthy"] else "error"))
+    item["message"] = str(item.get("message") or "")
+    item["started_at"] = started_at.isoformat()
+    item["completed_at"] = completed_at.isoformat()
+    item["duration_ms"] = int((completed_at - started_at).total_seconds() * 1000)
+    return item
 
 
 def _core_workflow_scenario(workflow_id: str) -> str:

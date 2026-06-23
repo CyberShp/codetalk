@@ -342,6 +342,27 @@ export interface ExternalAgentStartupProbeResult {
   };
 }
 
+export interface WorkbenchDeploymentProbeResult {
+  probe_id: string;
+  status: string;
+  repo_path: string;
+  started_at: string;
+  completed_at: string;
+  duration_ms: number;
+  summary: {
+    provider_count: number;
+    healthy_count: number;
+    failed_count: number;
+  };
+  providers: ExternalAgentStartupProbeResult[];
+  artifact: {
+    path: string;
+    latest_path: string;
+    sha256?: string;
+    size_bytes?: number;
+  };
+}
+
 /* Agent Workbench */
 
 export interface WorkflowDefinition {
