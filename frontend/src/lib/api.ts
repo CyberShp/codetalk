@@ -40,6 +40,7 @@ import type {
   TaskRerunPlan,
   TaskRerunPlanValidation,
   WorkflowExecutionResult,
+  WorkbenchAcceptanceAudit,
   WorkbenchProviderCapabilitiesMatrix,
   WorkbenchInputUploadResult,
   WorkbenchTaskArtifactContent,
@@ -718,6 +719,14 @@ export const api = {
               timeout_sec: timeoutSec,
               stop_on_error: stopOnError,
             }),
+          },
+        ),
+
+      acceptanceAudit: (taskRunId: string) =>
+        request<WorkbenchAcceptanceAudit>(
+          `/api/workbench/task-runs/${encodeURIComponent(taskRunId)}/acceptance-audit`,
+          {
+            method: "POST",
           },
         ),
 

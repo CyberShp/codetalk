@@ -574,6 +574,24 @@ export interface TaskRerunHistory {
   records: Array<Record<string, unknown>>;
 }
 
+export interface WorkbenchAcceptanceAudit {
+  task_run_id: string;
+  workflow_id: string;
+  workspace_id: string;
+  status: string;
+  created_at: string;
+  summary: {
+    required_checks: number;
+    missing_required: number;
+    recommended_checks: number;
+    missing_recommended: number;
+    artifact_count: number;
+  };
+  checks: Array<Record<string, unknown>>;
+  missing_required: Array<Record<string, unknown>>;
+  missing_recommended: Array<Record<string, unknown>>;
+}
+
 export interface WorkbenchTaskArtifact {
   relative_path: string;
   path: string;

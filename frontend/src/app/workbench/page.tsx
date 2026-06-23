@@ -31,6 +31,7 @@ import type {
   WorkflowDefinition,
   WorkflowExecutionResult,
   WorkflowPreset,
+  WorkbenchAcceptanceAudit,
   WorkbenchProviderCapabilitiesMatrix,
   WorkbenchTaskArtifact,
   WorkbenchTaskArtifactContent,
@@ -705,6 +706,7 @@ const AUDIT_ARTIFACT_KIND_ORDER = [
   "workflow_outputs",
   "workflow_output_materialization",
   "workflow_execution",
+  "task_acceptance_audit",
   "task_rerun_plan",
   "task_rerun_execution",
   "task_rerun_history",
@@ -802,6 +804,8 @@ export default function AgentWorkbenchPage() {
   const [taskRerunExecution, setTaskRerunExecution] =
     useState<TaskRerunExecutionResult | null>(null);
   const [taskRerunHistory, setTaskRerunHistory] = useState<TaskRerunHistory | null>(null);
+  const [taskAcceptanceAudit, setTaskAcceptanceAudit] =
+    useState<WorkbenchAcceptanceAudit | null>(null);
   const [workflowOutputMaterialize, setWorkflowOutputMaterialize] =
     useState<MaterializeWorkflowOutputsResult | null>(null);
   const [semanticOutputImport, setSemanticOutputImport] =
@@ -933,6 +937,7 @@ export default function AgentWorkbenchPage() {
     setTaskRerunPlanValidation(null);
     setTaskRerunExecution(null);
     setTaskRerunHistory(null);
+    setTaskAcceptanceAudit(null);
 
     const artifactPaths = new Set(manifest.artifacts.map((item) => item.relative_path));
     if (artifactPaths.has("workflow_execution.json")) {
@@ -971,6 +976,14 @@ export default function AgentWorkbenchPage() {
       setTaskRerunPlan(plan);
       setTaskRerunPlanValidation(validation);
       setTaskRerunHistory(history);
+    }
+    if (artifactPaths.has("task_acceptance_audit.json")) {
+      const content = await api.workbench.taskRuns.artifactContent(
+        taskRunId,
+        "task_acceptance_audit.json",
+      );
+      const parsed = JSON.parse(content.content || "{}") as WorkbenchAcceptanceAudit;
+      setTaskAcceptanceAudit(parsed);
     }
   }
 
@@ -1125,6 +1138,7 @@ export default function AgentWorkbenchPage() {
       setTaskRerunPlanValidation(null);
       setTaskRerunExecution(null);
       setTaskRerunHistory(null);
+      setTaskAcceptanceAudit(null);
       setWorkflowOutputMaterialize(null);
       setSemanticOutputImport(null);
       setArtifactContent(null);
@@ -1196,6 +1210,19 @@ export default function AgentWorkbenchPage() {
       setMessage(`Rerun plan ${result.status}: ${result.task_run_id}`);
     });
 
+  const generateTaskAcceptanceAudit = () =>
+    runAction("acceptance-audit", async () => {
+      if (!preparedRun) return;
+      const result = await api.workbench.taskRuns.acceptanceAudit(
+        preparedRun.task_run_id,
+      );
+      setTaskAcceptanceAudit(result);
+      await refreshArtifactManifest(preparedRun.task_run_id);
+      setMessage(
+        `Acceptance audit ${result.status}: ${result.summary.missing_required} missing required`,
+      );
+    });
+
   const executeTaskRerunPlan = () =>
     runAction("execute-rerun-plan", async () => {
       if (!preparedRun || !taskRerunPlanValidation?.can_rerun) return;
@@ -1211,6 +1238,7 @@ export default function AgentWorkbenchPage() {
       }
       setTaskRerunPlanValidation(result.validation_after ?? null);
       setTaskRerunHistory(await api.workbench.taskRuns.rerunHistory(preparedRun.task_run_id));
+      setTaskAcceptanceAudit(null);
       await refreshArtifactManifest(preparedRun.task_run_id);
       setMessage(`Rerun execution ${result.execution?.status ?? result.status}: ${preparedRun.task_run_id}`);
     });
@@ -1240,6 +1268,7 @@ export default function AgentWorkbenchPage() {
       setTaskRerunPlanValidation(
         await api.workbench.taskRuns.rerunPlanValidation(preparedRun.task_run_id),
       );
+      setTaskAcceptanceAudit(null);
       await refreshArtifactManifest(preparedRun.task_run_id);
       setMessage(`Workflow execution ${result.status}: ${result.task_run_id}`);
       await loadWorkflows();
@@ -2101,6 +2130,18 @@ export default function AgentWorkbenchPage() {
               Rerun plan
             </button>
             <button
+              onClick={generateTaskAcceptanceAudit}
+              disabled={busyAction === "acceptance-audit" || !preparedRun}
+              className="ml-2 inline-flex items-center gap-2 rounded-lg bg-surface px-3 py-2 text-sm font-medium text-on-surface transition-colors hover:bg-surface-container-high disabled:opacity-50"
+            >
+              {busyAction === "acceptance-audit" ? (
+                <Loader2 size={14} className="animate-spin" />
+              ) : (
+                <Search size={14} />
+              )}
+              Acceptance audit
+            </button>
+            <button
               onClick={executeTaskRerunPlan}
               disabled={
                 busyAction === "execute-rerun-plan" ||
@@ -2157,6 +2198,64 @@ export default function AgentWorkbenchPage() {
                 <p className="mt-1 text-on-surface-variant">
                   Agent runs: {preparedRun.agent_runs.length}
                 </p>
+                {taskAcceptanceAudit &&
+                  taskAcceptanceAudit.task_run_id === preparedRun.task_run_id && (
+                    <div className="mt-2 rounded bg-surface-container px-2 py-1.5 text-on-surface-variant">
+                      <p>
+                        Acceptance:{" "}
+                        <span
+                          className={
+                            taskAcceptanceAudit.status === "passed"
+                              ? "text-on-surface"
+                              : "text-warning"
+                          }
+                        >
+                          {taskAcceptanceAudit.status}
+                        </span>
+                        <span className="ml-2">
+                          artifacts:{taskAcceptanceAudit.summary.artifact_count}
+                        </span>
+                      </p>
+                      <div className="mt-1 flex flex-wrap gap-1.5 font-data text-[10px]">
+                        <span className="rounded bg-surface px-1.5 py-0.5">
+                          required:{taskAcceptanceAudit.summary.required_checks}
+                        </span>
+                        <span
+                          className={`rounded bg-surface px-1.5 py-0.5 ${
+                            taskAcceptanceAudit.summary.missing_required > 0
+                              ? "text-warning"
+                              : ""
+                          }`}
+                        >
+                          missing-required:
+                          {taskAcceptanceAudit.summary.missing_required}
+                        </span>
+                        <span className="rounded bg-surface px-1.5 py-0.5">
+                          recommended:{taskAcceptanceAudit.summary.recommended_checks}
+                        </span>
+                        <span
+                          className={`rounded bg-surface px-1.5 py-0.5 ${
+                            taskAcceptanceAudit.summary.missing_recommended > 0
+                              ? "text-warning"
+                              : ""
+                          }`}
+                        >
+                          missing-recommended:
+                          {taskAcceptanceAudit.summary.missing_recommended}
+                        </span>
+                      </div>
+                      {taskAcceptanceAudit.missing_required.length > 0 && (
+                        <div className="mt-1 space-y-0.5 font-data text-[10px] text-warning">
+                          {taskAcceptanceAudit.missing_required.slice(0, 3).map((item, index) => (
+                            <div key={`${String(item.id ?? index)}:${index}`}>
+                              {String(item.id ?? "check")}:
+                              {String(item.reason ?? item.relative_path ?? "missing")}
+                            </div>
+                          ))}
+                        </div>
+                      )}
+                    </div>
+                  )}
                 {taskRerunPlan && taskRerunPlan.task_run_id === preparedRun.task_run_id && (
                   <div className="mt-2 rounded bg-surface-container px-2 py-1.5 text-on-surface-variant">
                     <p>
