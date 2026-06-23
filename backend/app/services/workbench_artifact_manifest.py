@@ -91,6 +91,8 @@ def workbench_artifact_kind(relative_path: str) -> str:
         return "agent_instructions"
     if name == "provider_snapshot.json":
         return "provider_snapshot"
+    if name == "provider_readiness.json":
+        return "provider_readiness"
     if name == "input_snapshot.json":
         return "input_snapshot"
     if name == "input_context.json":

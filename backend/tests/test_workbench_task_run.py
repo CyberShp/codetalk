@@ -1598,6 +1598,91 @@ def test_prepare_workbench_task_run_writes_workflow_contract_artifact(tmp_path, 
     assert step_bundle["agent_mcp_requests"][0]["credential_owner"] == "agent_cli"
 
 
+def test_prepare_workbench_task_run_writes_provider_readiness_artifact(tmp_path, monkeypatch):
+    from app.config import settings
+    from app.services.workbench_task_run import WorkbenchTaskRunPreparer
+    from app.services.workflow_dsl import WorkflowStore
+
+    monkeypatch.setattr(settings, "gitnexus_base_url", "")
+    monkeypatch.setattr(settings, "cgc_base_url", "")
+    monkeypatch.setattr(settings, "external_agent_custom_providers", [
+        {"id": "corp-agent", "command": "corp-agent run", "supports_mcp": True}
+    ])
+
+    def fake_health(provider, command, fallback_commands=None):
+        return {
+            "provider": provider,
+            "status": "unavailable",
+            "configured_command": command,
+            "command": command,
+            "reason": "command not found: corp-agent",
+            "attempts": [
+                {
+                    "command": command,
+                    "status": "unavailable",
+                    "reason": "command not found: corp-agent",
+                    "executable": "corp-agent",
+                    "configured_argv": ["corp-agent", "run"],
+                }
+            ],
+        }
+
+    monkeypatch.setattr(
+        "app.services.workbench_task_run.check_provider_health",
+        fake_health,
+    )
+
+    workflow_store = WorkflowStore(tmp_path / "workflows.db")
+    workflow_store.save_workflow({
+        "id": "provider_readiness_workflow",
+        "name": "Provider readiness workflow",
+        "version": 1,
+        "inputs": [{"id": "module", "type": "free_text"}],
+        "steps": [
+            {
+                "id": "discover",
+                "type": "agent_task",
+                "provider": "corp-agent",
+                "required_artifacts": ["source_scope.json"],
+            }
+        ],
+        "outputs": [{"id": "scope", "type": "json", "from": "discover"}],
+    })
+
+    missing_repo = tmp_path / "missing-repo"
+    result = WorkbenchTaskRunPreparer(
+        artifact_root=tmp_path / "task_runs",
+        workflow_store=workflow_store,
+    ).prepare(
+        workflow_id="provider_readiness_workflow",
+        workspace_id="ws-readiness",
+        repo_path=str(missing_repo),
+        inputs={"module": "nvme-tcp-tls"},
+    )
+
+    readiness = result.task_bundle["provider_readiness"]
+    assert readiness["repo"]["status"] == "missing"
+    assert readiness["codetalk_providers"]["gitnexus"]["status"] == "missing_config"
+    assert readiness["codetalk_providers"]["gitnexus"]["startup_probe_endpoint"] == (
+        "/api/tools/gitnexus/startup-probe"
+    )
+    assert readiness["codetalk_providers"]["cgc"]["status"] == "missing_config"
+    assert readiness["agent_cli_providers"]["corp-agent"]["status"] == "unavailable"
+    assert readiness["agent_cli_providers"]["corp-agent"]["reason"] == (
+        "command not found: corp-agent"
+    )
+    assert readiness["summary"]["status"] == "blocked"
+    assert "repo_path_missing" in readiness["summary"]["blocking_reasons"]
+    assert "agent_cli_unavailable:corp-agent" in readiness["summary"]["warnings"]
+    assert Path(result.artifact_dir, "provider_readiness.json").exists()
+    step_bundle = json.loads(
+        Path(result.artifact_dir, "agent_runs", "discover", "task_bundle.json").read_text(
+            encoding="utf-8"
+        )
+    )
+    assert step_bundle["provider_readiness"]["summary"]["status"] == "blocked"
+
+
 def test_workbench_workflow_runner_infers_output_from_required_agent_artifact(
     tmp_path,
     monkeypatch,

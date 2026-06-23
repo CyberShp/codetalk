@@ -1875,6 +1875,7 @@ async def test_workbench_task_run_artifacts_api_lists_audit_files(workbench_clie
     assert paths["agent_instructions.json"]["kind"] == "agent_instructions"
     assert paths["workflow_contract.json"]["kind"] == "workflow_contract"
     assert paths["agent_mcp_requests.json"]["kind"] == "agent_mcp_requests"
+    assert paths["provider_readiness.json"]["kind"] == "provider_readiness"
     assert paths["context_discovery_decision.json"]["kind"] == "context_discovery_decision"
     assert paths["output_schemas_by_step.json"]["kind"] == "output_schemas"
     assert paths["memory_retrieval.json"]["kind"] == "memory_retrieval"

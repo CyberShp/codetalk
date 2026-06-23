@@ -108,6 +108,10 @@ class WorkbenchTaskRunPreparer:
             workflow_snapshot=workflow_snapshot,
             provider_override=provider_override,
         )
+        provider_readiness = build_provider_readiness_report(
+            repo_path=repo_path,
+            provider_snapshot=provider_snapshot,
+        )
         workflow_contract = build_workflow_contract(
             workflow_snapshot=workflow_snapshot,
             provider_snapshot=provider_snapshot,
@@ -138,6 +142,7 @@ class WorkbenchTaskRunPreparer:
             "agent_mcp_requests": agent_mcp_requests,
             "agent_instructions": agent_instructions,
             "provider_snapshot": provider_snapshot,
+            "provider_readiness": provider_readiness,
             "context_discovery_decision": context_discovery_decision,
             "context_bundle": context_bundle,
             "memory_retrieval": context_artifacts["memory_retrieval"],
@@ -202,6 +207,7 @@ class WorkbenchTaskRunPreparer:
         _write_json(artifact_dir / "input_context.json", input_context)
         _write_json(artifact_dir / "agent_instructions.json", agent_instructions)
         _write_json(artifact_dir / "provider_snapshot.json", provider_snapshot)
+        _write_json(artifact_dir / "provider_readiness.json", provider_readiness)
         _write_json(artifact_dir / "context_discovery_decision.json", context_discovery_decision)
         _write_json(artifact_dir / "context_bundle.json", context_bundle)
         _write_json(artifact_dir / "output_schemas_by_step.json", output_schemas_by_step)
@@ -696,6 +702,122 @@ def build_agent_provider_snapshot(
         "codetalk_providers": build_codetalk_provider_snapshot(),
         "steps": steps,
         "warnings": warnings,
+    }
+
+
+def build_provider_readiness_report(
+    *,
+    repo_path: str,
+    provider_snapshot: dict[str, Any],
+) -> dict[str, Any]:
+    repo = _repo_readiness(repo_path)
+    codetalk_providers = {
+        provider: _codetalk_readiness_payload(provider, payload, repo_path=repo_path)
+        for provider, payload in (provider_snapshot.get("codetalk_providers") or {}).items()
+        if isinstance(payload, dict)
+    }
+    agent_cli_providers = {
+        provider: _agent_cli_readiness_payload(provider, payload)
+        for provider, payload in (provider_snapshot.get("providers") or {}).items()
+        if isinstance(payload, dict)
+    }
+    blocking_reasons: list[str] = []
+    warnings: list[str] = []
+    if repo["status"] != "available":
+        blocking_reasons.append("repo_path_missing")
+    for provider, payload in codetalk_providers.items():
+        if payload.get("status") in {"missing_config", "unavailable", "error"}:
+            warnings.append(f"codetalk_provider_unavailable:{provider}")
+    for provider, payload in agent_cli_providers.items():
+        if payload.get("status") in {"unavailable", "missing_command", "unknown_provider", "error"}:
+            warnings.append(f"agent_cli_unavailable:{provider}")
+    summary_status = "blocked" if blocking_reasons else "degraded" if warnings else "ready"
+    return {
+        "created_at": _now(),
+        "repo": repo,
+        "codetalk_providers": codetalk_providers,
+        "agent_cli_providers": agent_cli_providers,
+        "summary": {
+            "status": summary_status,
+            "blocking_reasons": blocking_reasons,
+            "warnings": warnings,
+            "non_blocking_policy": (
+                "Unavailable GitNexus, CGC, fast-context, or Agent CLI providers are recorded "
+                "as degraded; CodeTalk continues with any remaining local, memory, semantic, "
+                "and validated artifact paths."
+            ),
+        },
+    }
+
+
+def _repo_readiness(repo_path: str) -> dict[str, Any]:
+    path = Path(str(repo_path or ""))
+    exists = bool(repo_path and path.exists())
+    is_dir = exists and path.is_dir()
+    git_dir = path / ".git" if is_dir else Path()
+    return {
+        "path": str(repo_path or ""),
+        "status": "available" if is_dir else "missing",
+        "exists": exists,
+        "is_dir": is_dir,
+        "git_metadata_present": bool(is_dir and git_dir.exists()),
+        "local_search_available": is_dir,
+        "reason": "" if is_dir else "repo path does not exist or is not a directory",
+    }
+
+
+def _codetalk_readiness_payload(
+    provider: str,
+    payload: dict[str, Any],
+    *,
+    repo_path: str,
+) -> dict[str, Any]:
+    diagnostics = payload.get("diagnostics") if isinstance(payload.get("diagnostics"), dict) else {}
+    return {
+        "provider": provider,
+        "owner": str(payload.get("owner") or "codetalk"),
+        "status": str(payload.get("status") or "unknown"),
+        "codetalk_callable": bool(payload.get("codetalk_callable", False)),
+        "non_blocking": bool(payload.get("non_blocking", True)),
+        "startup_probe_endpoint": str(diagnostics.get("startup_probe_endpoint") or ""),
+        "health_endpoint": str(diagnostics.get("health_endpoint") or ""),
+        "repo_path": repo_path,
+        "unavailable_behavior": str(payload.get("unavailable_behavior") or ""),
+        "next_check": _codetalk_provider_next_check(provider, diagnostics),
+    }
+
+
+def _codetalk_provider_next_check(provider: str, diagnostics: dict[str, Any]) -> str:
+    endpoint = str(diagnostics.get("startup_probe_endpoint") or "")
+    if endpoint:
+        return f"POST {endpoint}?repo_path=<repo_path>"
+    if provider == "local-search":
+        return "Verify repo.path exists and is readable by the CodeTalk backend process."
+    return "No startup probe is available for this provider."
+
+
+def _agent_cli_readiness_payload(provider: str, payload: dict[str, Any]) -> dict[str, Any]:
+    diagnostics = payload.get("diagnostics") if isinstance(payload.get("diagnostics"), dict) else {}
+    resolution = (
+        diagnostics.get("command_resolution")
+        if isinstance(diagnostics.get("command_resolution"), dict)
+        else {}
+    )
+    status = str(resolution.get("status") or payload.get("status") or "unknown")
+    return {
+        "provider": provider,
+        "owner": "agent_cli",
+        "status": status,
+        "configured_command": str(resolution.get("configured_command") or ""),
+        "command": str(resolution.get("command") or ""),
+        "used_fallback": bool(resolution.get("used_fallback", False)),
+        "reason": str(resolution.get("reason") or ""),
+        "attempt_count": int(resolution.get("attempt_count") or 0),
+        "startup_probe_endpoint": str(diagnostics.get("startup_probe_endpoint") or ""),
+        "health_endpoint": str(diagnostics.get("health_endpoint") or ""),
+        "manual_probe_command": str(diagnostics.get("manual_probe_command") or ""),
+        "credential_boundary": str(payload.get("credential_boundary") or ""),
+        "unavailable_behavior": str(payload.get("unavailable_behavior") or ""),
     }
 
 
