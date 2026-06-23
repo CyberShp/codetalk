@@ -541,7 +541,15 @@ test("agent workbench previews task run artifact content", async ({ page }) => {
           content: JSON.stringify({
             evidence_count: 2,
             evidence_ids: ["ev1", "ev2"],
-            rejected_outputs: [{ output: "bad", reason: "output_not_ok" }],
+            rejected_outputs: [
+              {
+                output: "bad",
+                reason: "output_not_ok",
+                output_status: "invalid",
+                output_reason: "schema_validation_failed",
+                schema_errors: ["missing required field: files"],
+              },
+            ],
             workflow_outputs_artifact: {
               output_count: 3,
               sha256: "9999888877776666555544443333222211110000aaaabbbbccccdddd",
@@ -593,5 +601,9 @@ test("agent workbench previews task run artifact content", async ({ page }) => {
   await expect(page.getByText("Materialized evidence: 2")).toBeVisible();
   await expect(page.getByText("Rejected outputs: 1")).toBeVisible();
   await expect(page.getByText("Declared outputs: 3")).toBeVisible();
+  await expect(page.getByText("First rejected: bad")).toBeVisible();
+  await expect(page.getByText("reason:output_not_ok")).toBeVisible();
+  await expect(page.getByText("status:invalid")).toBeVisible();
+  await expect(page.getByText("schema errors:1")).toBeVisible();
   await expect(page.getByText("workflow_outputs sha:999988887777")).toBeVisible();
 });

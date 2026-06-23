@@ -370,6 +370,12 @@ type WorkflowOutputMaterializationSummary = {
   rejectedCount: number;
   workflowOutputsSha: string;
   outputCount: number;
+  firstRejected?: {
+    output: string;
+    reason: string;
+    status: string;
+    schemaErrorCount: number;
+  };
 };
 
 function evidenceValidationSummary(
@@ -443,14 +449,31 @@ function workflowOutputMaterializationSummary(
     !Array.isArray(payload.workflow_outputs_artifact)
       ? (payload.workflow_outputs_artifact as Record<string, unknown>)
       : {};
-  const rejected = Array.isArray(payload.rejected_outputs)
-    ? payload.rejected_outputs.length
-    : 0;
+  const rejectedOutputs = Array.isArray(payload.rejected_outputs)
+    ? payload.rejected_outputs
+    : [];
+  const firstRejectedPayload =
+    rejectedOutputs[0] &&
+    typeof rejectedOutputs[0] === "object" &&
+    !Array.isArray(rejectedOutputs[0])
+      ? (rejectedOutputs[0] as Record<string, unknown>)
+      : null;
+  const schemaErrors = Array.isArray(firstRejectedPayload?.schema_errors)
+    ? firstRejectedPayload.schema_errors
+    : [];
   return {
     evidenceCount: Number(payload.evidence_count ?? 0) || 0,
-    rejectedCount: rejected,
+    rejectedCount: rejectedOutputs.length,
     workflowOutputsSha: String(workflowOutputsArtifact.sha256 ?? ""),
     outputCount: Number(workflowOutputsArtifact.output_count ?? 0) || 0,
+    firstRejected: firstRejectedPayload
+      ? {
+          output: String(firstRejectedPayload.output ?? ""),
+          reason: String(firstRejectedPayload.reason ?? ""),
+          status: String(firstRejectedPayload.output_status ?? ""),
+          schemaErrorCount: schemaErrors.length,
+        }
+      : undefined,
   };
 }
 
@@ -1779,6 +1802,20 @@ export default function AgentWorkbenchPage() {
                                 <span>Rejected outputs: {summary.rejectedCount}</span>
                                 <span>Declared outputs: {summary.outputCount}</span>
                               </div>
+                              {summary.firstRejected && (
+                                <div className="mt-1 flex flex-wrap gap-2">
+                                  <span>First rejected: {summary.firstRejected.output}</span>
+                                  <span>reason:{summary.firstRejected.reason}</span>
+                                  {summary.firstRejected.status && (
+                                    <span>status:{summary.firstRejected.status}</span>
+                                  )}
+                                  {summary.firstRejected.schemaErrorCount > 0 && (
+                                    <span>
+                                      schema errors:{summary.firstRejected.schemaErrorCount}
+                                    </span>
+                                  )}
+                                </div>
+                              )}
                               {summary.workflowOutputsSha && (
                                 <div className="mt-1 font-data text-[10px]">
                                   workflow_outputs sha:{summary.workflowOutputsSha.slice(0, 12)}

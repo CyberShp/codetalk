@@ -817,7 +817,7 @@ def _materialize_workflow_output_evidence(
             rejected.append({"output": "", "reason": "missing_output_id"})
             continue
         if output.get("status") != "ok":
-            rejected.append({"output": output_id, "reason": "output_not_ok"})
+            rejected.append(_workflow_output_rejection_detail(output, reason="output_not_ok"))
             continue
         path = Path(str(output.get("path") or ""))
         if not path.exists() or not path.is_file():
@@ -863,6 +863,28 @@ def _materialize_workflow_output_evidence(
         evidence_ids.extend(structured_ids)
         rejected.extend(structured_rejected)
     return evidence_ids, rejected
+
+
+def _workflow_output_rejection_detail(output: dict[str, Any], *, reason: str) -> dict[str, Any]:
+    detail: dict[str, Any] = {
+        "output": str(output.get("id") or ""),
+        "reason": reason,
+    }
+    fields = {
+        "status": "output_status",
+        "reason": "output_reason",
+        "artifact": "artifact",
+        "path": "path",
+        "from": "from",
+    }
+    for source_key, target_key in fields.items():
+        value = output.get(source_key)
+        if isinstance(value, str) and value:
+            detail[target_key] = value
+    schema_errors = output.get("schema_errors")
+    if isinstance(schema_errors, list):
+        detail["schema_errors"] = [str(item) for item in schema_errors]
+    return detail
 
 
 def _write_workflow_output_materialization_artifact(
