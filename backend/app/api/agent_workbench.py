@@ -1913,6 +1913,53 @@ def _materialize_deployment_probe_evidence(response: dict[str, Any]) -> list[str
         )
     ]
     for provider in response.get("providers") or []:
+        if not isinstance(provider, dict):
+            continue
+        provider_id = str(provider.get("provider") or provider.get("tool") or "")
+        if not provider_id:
+            continue
+        health = provider.get("health") if isinstance(provider.get("health"), dict) else {}
+        attempts = health.get("attempts") if isinstance(health.get("attempts"), list) else []
+        evidence_ids.append(store.upsert_evidence_item(
+            run_id=run_id,
+            workspace_id=workspace_id,
+            kind="provider_startup_probe",
+            subject_key=f"{provider_id}:startup_probe",
+            status="accepted" if provider.get("healthy") else "rejected",
+            source="deployment_probe",
+            path=str(artifact.get("path") or ""),
+            symbol=provider_id,
+            reason=(
+                f"provider_startup_probe {provider_id} {provider.get('status')}; "
+                f"{provider.get('message') or health.get('reason') or 'no message'}"
+            ),
+            confidence=1.0 if provider.get("healthy") else 0.2,
+            text=json.dumps(
+                {
+                    "provider_startup_probe": provider_id,
+                    "healthy": provider.get("healthy"),
+                    "status": provider.get("status"),
+                    "message": provider.get("message"),
+                    "health_status": health.get("status"),
+                    "health_reason": health.get("reason"),
+                    "launch_kind": health.get("launch_kind"),
+                    "used_fallback": health.get("used_fallback"),
+                    "attempt_count": len(attempts),
+                },
+                ensure_ascii=False,
+                sort_keys=True,
+            ),
+            provenance={
+                "provider": provider_id,
+                "probe_id": probe_id,
+                "startup_probe_status": provider.get("status"),
+                "healthy": provider.get("healthy"),
+                "message": provider.get("message"),
+                "health": health,
+                "artifact_path": str(artifact.get("path") or ""),
+            },
+        ))
+    for provider in response.get("providers") or []:
         if not isinstance(provider, dict) or not isinstance(provider.get("task_probe"), dict):
             continue
         task_probe = provider["task_probe"]

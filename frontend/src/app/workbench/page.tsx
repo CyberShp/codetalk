@@ -3031,6 +3031,11 @@ export default function AgentWorkbenchPage() {
             <p className="mt-1 break-words font-data text-[10px]">
               artifact:{deploymentProbeResult.artifact.latest_path || deploymentProbeResult.artifact.path}
             </p>
+            {deploymentProbeResult.evidence_ids?.length ? (
+              <p className="mt-1 break-words font-data text-[10px]">
+                evidence_ids:{deploymentProbeResult.evidence_ids.join(", ")}
+              </p>
+            ) : null}
           </div>
         )}
         <div className="grid gap-3 lg:grid-cols-3">
@@ -3288,6 +3293,12 @@ export default function AgentWorkbenchPage() {
                       <p className="mt-1 break-words">
                         {providerProbeResults[provider.provider].message}
                       </p>
+                      {providerProbeResults[provider.provider].health?.reason && (
+                        <p className="mt-1 break-words">
+                          Health reason:{" "}
+                          {providerProbeResults[provider.provider].health?.reason}
+                        </p>
+                      )}
                       {providerProbeResults[provider.provider].health?.launch_kind && (
                         <p className="mt-1">
                           Probe launch:{" "}
@@ -3307,6 +3318,52 @@ export default function AgentWorkbenchPage() {
                           </span>
                         </p>
                       )}
+                      {(() => {
+                        const attempts =
+                          providerProbeResults[provider.provider].health?.attempts ?? [];
+                        if (attempts.length === 0) return null;
+                        return (
+                          <div className="mt-2 space-y-1">
+                            {attempts.slice(0, 3).map((attempt, index) => {
+                              const resolutionLines = commandResolutionLines(attempt.resolution);
+                              return (
+                                <div
+                                  key={`${attempt.command ?? attempt.executable ?? index}-${index}`}
+                                  className="rounded border border-outline-variant/30 px-2 py-1"
+                                >
+                                  <p className="break-words font-data text-[10px] text-on-surface">
+                                    attempt {index + 1}:{" "}
+                                    {attempt.command || attempt.executable || "unknown"}{" "}
+                                    {attempt.status || attempt.probe_status || "unknown"}
+                                  </p>
+                                  {(attempt.reason || attempt.probe_message) && (
+                                    <p className="mt-1 break-words">
+                                      {attempt.reason || attempt.probe_message}
+                                    </p>
+                                  )}
+                                  {resolutionLines.length > 0 && (
+                                    <div className="mt-1 space-y-0.5">
+                                      {resolutionLines.map((line) => (
+                                        <p
+                                          key={line}
+                                          className="break-words font-data text-[10px] text-on-surface"
+                                        >
+                                          {line}
+                                        </p>
+                                      ))}
+                                    </div>
+                                  )}
+                                </div>
+                              );
+                            })}
+                            {attempts.length > 3 && (
+                              <p className="font-data text-[10px]">
+                                +{attempts.length - 3} more attempts in artifact
+                              </p>
+                            )}
+                          </div>
+                        );
+                      })()}
                     </div>
                   )}
                   {providerTaskProbeResults[provider.provider] && (

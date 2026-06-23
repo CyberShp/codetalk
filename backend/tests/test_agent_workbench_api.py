@@ -540,6 +540,7 @@ async def test_workbench_deployment_probe_runs_agent_cli_startup_checks(
     by_id = {item["provider"]: item for item in body["providers"]}
     assert by_id["claude-code"]["status"] == "ok"
     assert by_id["opencode"]["status"] == "unavailable"
+    assert body["evidence_count"] == 3
     artifact_path = Path(body["artifact"]["path"])
     assert artifact_path.exists()
     latest_path = artifact_path.parent / "deployment_probe_latest.json"
@@ -622,8 +623,8 @@ async def test_workbench_deployment_probe_can_run_task_contract_probe(
     assert provider["task_probe"]["status"] == "ready"
     assert provider["task_probe"]["summary"]["task_contract_status"] == "ok"
     assert Path(provider["task_probe"]["artifact"]["path"]).exists()
-    assert body["evidence_count"] == 2
-    assert len(body["evidence_ids"]) == 2
+    assert body["evidence_count"] == 3
+    assert len(body["evidence_ids"]) == 3
     latest = json.loads(Path(body["artifact"]["latest_path"]).read_text(encoding="utf-8"))
     assert latest["providers"][0]["task_probe"]["task_run_id"] == provider["task_probe"]["task_run_id"]
     assert latest["evidence_ids"] == body["evidence_ids"]
@@ -643,6 +644,23 @@ async def test_workbench_deployment_probe_can_run_task_contract_probe(
     assert provider_evidence["source"] == "deployment_probe"
     assert provider_evidence["provenance"]["provider"] == "deployment-agent"
     assert provider_evidence["provenance"]["task_probe_status"] == "ready"
+
+    startup_memory = await workbench_client.get(
+        "/api/workbench/memory/search",
+        params={
+            "q": "provider_startup_probe deployment-agent",
+            "workspace_id": "codetalk-deployment",
+        },
+    )
+    assert startup_memory.status_code == 200
+    startup_items = startup_memory.json()["items"]
+    assert any(item["kind"] == "provider_startup_probe" for item in startup_items)
+    startup_evidence = next(
+        item for item in startup_items if item["kind"] == "provider_startup_probe"
+    )
+    assert startup_evidence["status"] == "accepted"
+    assert startup_evidence["source"] == "deployment_probe"
+    assert startup_evidence["provenance"]["provider"] == "deployment-agent"
 
 
 async def test_workbench_system_audit_uses_latest_deployment_task_probe(
