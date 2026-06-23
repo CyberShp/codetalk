@@ -472,7 +472,7 @@ export interface MaterializeWorkflowOutputsResult {
   status: string;
   evidence_count: number;
   evidence_ids: string[];
-  rejected_outputs: Array<Record<string, string>>;
+  rejected_outputs: Array<Record<string, unknown>>;
 }
 
 export interface WorkflowExecutionResult {

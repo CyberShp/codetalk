@@ -481,6 +481,31 @@ function workflowOutputMaterializationSummary(
   };
 }
 
+function rejectedOutputLabel(item: Record<string, unknown>): string {
+  return String(
+    item.output ??
+      item.output_type ??
+      item.path ??
+      item.file_path ??
+      item.card_id ??
+      item.function_name ??
+      "output",
+  );
+}
+
+function rejectedOutputReason(item: Record<string, unknown>): string {
+  const reason = String(item.reason ?? item.validation_error ?? "rejected");
+  const path = item.path || item.file_path ? String(item.path ?? item.file_path) : "";
+  const cardId = item.card_id ? String(item.card_id) : "";
+  const status = item.output_status ? String(item.output_status) : "";
+  const details = [
+    path ? `path:${path}` : "",
+    cardId ? `card:${cardId}` : "",
+    status ? `status:${status}` : "",
+  ].filter(Boolean);
+  return details.length > 0 ? `${reason} (${details.join(" / ")})` : reason;
+}
+
 const AUDIT_ARTIFACT_KIND_ORDER = [
   "task_bundle",
   "input_snapshot",
@@ -2173,12 +2198,34 @@ export default function AgentWorkbenchPage() {
                 )}
                 {workflowOutputMaterialize && (
                   <div className="mt-2 rounded bg-surface-container px-2 py-1.5 text-on-surface-variant">
-                    Output evidence: {workflowOutputMaterialize.status} /{" "}
-                    {workflowOutputMaterialize.evidence_count} items
+                    <p>
+                      Output evidence: {workflowOutputMaterialize.status} /{" "}
+                      {workflowOutputMaterialize.evidence_count} items
+                      {workflowOutputMaterialize.rejected_outputs.length > 0 && (
+                        <span className="ml-2 text-warning">
+                          rejected {workflowOutputMaterialize.rejected_outputs.length}
+                        </span>
+                      )}
+                    </p>
                     {workflowOutputMaterialize.rejected_outputs.length > 0 && (
-                      <span className="ml-2 text-warning">
-                        rejected {workflowOutputMaterialize.rejected_outputs.length}
-                      </span>
+                      <div className="mt-1 space-y-0.5 font-data text-[10px] text-warning">
+                        {workflowOutputMaterialize.rejected_outputs
+                          .slice(0, 4)
+                          .map((item, index) => (
+                            <div
+                              key={`${rejectedOutputLabel(item)}:${index}`}
+                              className="break-words"
+                            >
+                              {rejectedOutputLabel(item)} rejected:
+                              {rejectedOutputReason(item)}
+                            </div>
+                          ))}
+                        {workflowOutputMaterialize.rejected_outputs.length > 4 && (
+                          <div>
+                            +{workflowOutputMaterialize.rejected_outputs.length - 4} more
+                          </div>
+                        )}
+                      </div>
                     )}
                   </div>
                 )}
