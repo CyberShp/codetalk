@@ -376,6 +376,15 @@ type InputContextSummary = {
   inputs: InputContextFileSummary[];
 };
 
+type AgentMcpRequestSummary = {
+  inputId: string;
+  inputType: string;
+  credentialOwner: string;
+  codetalkFetchAllowed: boolean;
+  mcpProfiles: string[];
+  requiredArtifacts: string[];
+};
+
 function inputContextSummary(taskBundle: Record<string, unknown>): InputContextSummary | null {
   const inputContext = taskBundle.input_context;
   if (!inputContext || typeof inputContext !== "object" || Array.isArray(inputContext)) {
@@ -407,6 +416,34 @@ function inputContextSummary(taskBundle: Record<string, unknown>): InputContextS
   const fileCount = Number(payload.file_count ?? inputs.length) || inputs.length;
   if (!fileCount && inputs.length === 0) return null;
   return { fileCount, inputs };
+}
+
+function agentMcpRequestSummary(taskBundle: Record<string, unknown>): AgentMcpRequestSummary[] {
+  const rawRequests = Array.isArray(taskBundle.agent_mcp_requests)
+    ? taskBundle.agent_mcp_requests
+    : [];
+  return rawRequests.flatMap((item) => {
+    if (!item || typeof item !== "object" || Array.isArray(item)) return [];
+    const request = item as Record<string, unknown>;
+    const artifactValidation =
+      request.artifact_validation &&
+      typeof request.artifact_validation === "object" &&
+      !Array.isArray(request.artifact_validation)
+        ? (request.artifact_validation as Record<string, unknown>)
+        : {};
+    return [{
+      inputId: String(request.input_id ?? ""),
+      inputType: String(request.input_type ?? ""),
+      credentialOwner: String(request.credential_owner ?? ""),
+      codetalkFetchAllowed: request.codetalk_fetch_allowed === true,
+      mcpProfiles: Array.isArray(request.mcp_profiles)
+        ? request.mcp_profiles.map((value) => String(value)).filter(Boolean)
+        : [],
+      requiredArtifacts: Array.isArray(artifactValidation.required_artifacts)
+        ? artifactValidation.required_artifacts.map((value) => String(value)).filter(Boolean)
+        : [],
+    }];
+  });
 }
 
 type EvidenceValidationSummary = {
@@ -1998,6 +2035,51 @@ export default function AgentWorkbenchPage() {
                           )}
                         </div>
                       )}
+                    </div>
+                  );
+                })()}
+                {(() => {
+                  const requests = agentMcpRequestSummary(preparedRun.task_bundle);
+                  if (requests.length === 0) return null;
+                  return (
+                    <div className="mt-2 rounded bg-surface-container px-2 py-1.5 text-on-surface-variant">
+                      <p>Agent MCP requests: {requests.length}</p>
+                      <div className="mt-1 space-y-1">
+                        {requests.slice(0, 4).map((request, index) => (
+                          <div
+                            key={`${request.inputId}-${index}`}
+                            className="rounded bg-surface px-1.5 py-1 font-data text-[10px]"
+                          >
+                            <span className="text-on-surface">
+                              {request.inputId || "mcp_input"}
+                            </span>
+                            <span className="ml-1">{request.inputType || "input"}</span>
+                            <span className="ml-1">
+                              owner:{request.credentialOwner || "agent_cli"}
+                            </span>
+                            <span
+                              className={`ml-1 ${
+                                request.codetalkFetchAllowed ? "text-warning" : ""
+                              }`}
+                            >
+                              codetalk-fetch:{String(request.codetalkFetchAllowed)}
+                            </span>
+                            {request.mcpProfiles.length > 0 && (
+                              <span className="ml-1">
+                                profiles:{request.mcpProfiles.join(",")}
+                              </span>
+                            )}
+                            {request.requiredArtifacts.length > 0 && (
+                              <span className="ml-1 break-words">
+                                artifacts:{request.requiredArtifacts.slice(0, 4).join(",")}
+                              </span>
+                            )}
+                          </div>
+                        ))}
+                        {requests.length > 4 && (
+                          <p className="font-data text-[10px]">+{requests.length - 4} more</p>
+                        )}
+                      </div>
                     </div>
                   );
                 })()}
