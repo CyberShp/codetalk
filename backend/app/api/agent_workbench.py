@@ -2422,6 +2422,10 @@ def _materialize_workflow_output_evidence(
                 task_run=task_run,
                 step_id=str(output.get("from") or ""),
             ),
+            **_agent_run_audit_refs(
+                task_run=task_run,
+                step_id=str(output.get("from") or ""),
+            ),
             "schema_status": _workflow_output_schema_status(
                 output=output,
                 output_definition=workflow_output_definition,
@@ -2514,14 +2518,48 @@ def _workflow_outputs_artifact_ref(task_run: Any) -> dict[str, Any]:
 
 
 def _agent_output_contract_ref(*, task_run: Any, step_id: str) -> dict[str, Any]:
+    return _agent_step_artifact_ref(
+        task_run=task_run,
+        step_id=step_id,
+        filename="agent_output_contract.json",
+    )
+
+
+def _agent_run_audit_refs(*, task_run: Any, step_id: str) -> dict[str, Any]:
+    refs: dict[str, Any] = {}
+    for key, filename in (
+        ("agent_run", "agent_run.json"),
+        ("agent_execution_input", "execution_input.json"),
+        ("agent_execution_result", "execution_result.json"),
+        ("agent_replay_plan", "agent_replay_plan.json"),
+    ):
+        ref = _agent_step_artifact_ref(
+            task_run=task_run,
+            step_id=step_id,
+            filename=filename,
+        )
+        if ref:
+            refs[key] = ref
+    return refs
+
+
+def _agent_step_artifact_ref(
+    *,
+    task_run: Any,
+    step_id: str,
+    filename: str,
+) -> dict[str, Any]:
     safe_step_id = _safe_artifact_segment(step_id)
     if not safe_step_id:
         return {}
-    path = Path(str(task_run.artifact_dir)) / "agent_runs" / safe_step_id / "agent_output_contract.json"
+    safe_filename = _safe_artifact_segment(filename)
+    if not safe_filename:
+        return {}
+    path = Path(str(task_run.artifact_dir)) / "agent_runs" / safe_step_id / safe_filename
     ref = _task_artifact_ref(task_run=task_run, path=path)
     if not ref:
         return {}
-    ref["artifact"] = f"agent_runs/{safe_step_id}/agent_output_contract.json"
+    ref["artifact"] = f"agent_runs/{safe_step_id}/{safe_filename}"
     return ref
 
 
@@ -2922,17 +2960,43 @@ def _materialize_changed_file_output(
                 for key in ("path", "status", "old_path", "new_path")
             ),
             provenance={
-                "task_run_id": task_run.task_run_id,
-                "workflow_id": task_run.workflow_id,
-                "output_id": output_id,
-                "output_evidence_id": output_evidence_id,
-                "artifact_path": str(path),
-                "sha256": sha256,
+                **_structured_workflow_output_provenance(
+                    task_run=task_run,
+                    output=output,
+                    output_id=output_id,
+                    output_evidence_id=output_evidence_id,
+                    path=path,
+                    sha256=sha256,
+                ),
                 "changed_file": item,
                 "validation_source": validation_source,
             },
         ))
     return evidence_ids, rejected
+
+
+def _structured_workflow_output_provenance(
+    *,
+    task_run: Any,
+    output: dict[str, Any],
+    output_id: str,
+    output_evidence_id: str,
+    path: Path,
+    sha256: str,
+) -> dict[str, Any]:
+    return {
+        "task_run_id": task_run.task_run_id,
+        "workflow_id": task_run.workflow_id,
+        "output_id": output_id,
+        "output_evidence_id": output_evidence_id,
+        "workflow_output_evidence_id": output_evidence_id,
+        "artifact_path": str(path),
+        "sha256": sha256,
+        **_agent_run_audit_refs(
+            task_run=task_run,
+            step_id=str(output.get("from") or ""),
+        ),
+    }
 
 
 def _changed_file_validation_source(
@@ -3073,12 +3137,14 @@ def _materialize_source_scope_evidence(
                 ),
                 text=f"{rel_path} {_source_scope_item_reason(file_item)}".strip(),
                 provenance={
-                    "task_run_id": task_run.task_run_id,
-                    "workflow_id": task_run.workflow_id,
-                    "output_id": output_id,
-                    "output_evidence_id": output_evidence_id,
-                    "artifact_path": str(path),
-                    "sha256": sha256,
+                    **_structured_workflow_output_provenance(
+                        task_run=task_run,
+                        output=output,
+                        output_id=output_id,
+                        output_evidence_id=output_evidence_id,
+                        path=path,
+                        sha256=sha256,
+                    ),
                     "file_path": rel_path,
                     "resolved_path": str(resolved_path),
                 },
@@ -3118,12 +3184,14 @@ def _materialize_source_scope_evidence(
                 reason="Symbol came from a locally verified workflow source scope output.",
                 text=f"{rel_path} {symbol_name} line_start={line_start}",
                 provenance={
-                    "task_run_id": task_run.task_run_id,
-                    "workflow_id": task_run.workflow_id,
-                    "output_id": output_id,
-                    "output_evidence_id": output_evidence_id,
-                    "artifact_path": str(path),
-                    "sha256": sha256,
+                    **_structured_workflow_output_provenance(
+                        task_run=task_run,
+                        output=output,
+                        output_id=output_id,
+                        output_evidence_id=output_evidence_id,
+                        path=path,
+                        sha256=sha256,
+                    ),
                     "file_path": rel_path,
                     "symbol": symbol_name,
                     "line_start": line_start,
@@ -3169,12 +3237,14 @@ def _materialize_source_scope_evidence(
             reason="Symbol came from a locally verified workflow source scope output.",
             text=f"{rel_path} {symbol_name} line_start={line_start}",
             provenance={
-                "task_run_id": task_run.task_run_id,
-                "workflow_id": task_run.workflow_id,
-                "output_id": output_id,
-                "output_evidence_id": output_evidence_id,
-                "artifact_path": str(path),
-                "sha256": sha256,
+                **_structured_workflow_output_provenance(
+                    task_run=task_run,
+                    output=output,
+                    output_id=output_id,
+                    output_evidence_id=output_evidence_id,
+                    path=path,
+                    sha256=sha256,
+                ),
                 "file_path": rel_path,
                 "symbol": symbol_name,
                 "line_start": line_start,
@@ -3247,12 +3317,14 @@ def _materialize_evidence_card_output(
             reason=reason,
             text=" ".join(part for part in [rel_path, symbol, reason, excerpt] if part),
             provenance={
-                "task_run_id": task_run.task_run_id,
-                "workflow_id": task_run.workflow_id,
-                "output_id": output_id,
-                "output_evidence_id": output_evidence_id,
-                "artifact_path": str(path),
-                "sha256": sha256,
+                **_structured_workflow_output_provenance(
+                    task_run=task_run,
+                    output=output,
+                    output_id=output_id,
+                    output_evidence_id=output_evidence_id,
+                    path=path,
+                    sha256=sha256,
+                ),
                 "card": card,
             },
         )
@@ -3329,12 +3401,14 @@ def _materialize_uncovered_function_evidence(
                 f"hit_count={hit_count}"
             ),
             provenance={
-                "task_run_id": task_run.task_run_id,
-                "workflow_id": task_run.workflow_id,
-                "output_id": output_id,
-                "output_evidence_id": output_evidence_id,
-                "artifact_path": str(path),
-                "sha256": sha256,
+                **_structured_workflow_output_provenance(
+                    task_run=task_run,
+                    output=output,
+                    output_id=output_id,
+                    output_evidence_id=output_evidence_id,
+                    path=path,
+                    sha256=sha256,
+                ),
                 "file_path": file_path,
                 "function_name": function_name,
                 "line_start": line_start,

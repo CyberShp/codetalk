@@ -1486,6 +1486,19 @@ async def test_workbench_task_run_materialize_workflow_outputs_api(
         "agent_runs/design/agent_output_contract.json"
     )
     assert item["provenance"]["agent_output_contract"]["sha256"]
+    assert item["provenance"]["agent_run"]["artifact"] == "agent_runs/design/agent_run.json"
+    assert item["provenance"]["agent_run"]["sha256"]
+    assert item["provenance"]["agent_execution_input"]["artifact"] == (
+        "agent_runs/design/execution_input.json"
+    )
+    assert item["provenance"]["agent_execution_input"]["sha256"]
+    assert item["provenance"]["agent_execution_result"]["artifact"] == (
+        "agent_runs/design/execution_result.json"
+    )
+    assert item["provenance"]["agent_replay_plan"]["artifact"] == (
+        "agent_runs/design/agent_replay_plan.json"
+    )
+    assert item["provenance"]["agent_replay_plan"]["sha256"]
     assert item["provenance"]["workflow_outputs_artifact"]["sha256"] == (
         materialization["workflow_outputs_artifact"]["sha256"]
     )
@@ -2349,6 +2362,11 @@ async def test_workbench_materialize_source_scope_output_as_structured_memory(
     assert source_files
     assert source_files[0]["subject_key"] == "nof/nvmf_tcp/transport/tls/tls.c"
     assert source_files[0]["status"] == "verified_output"
+    assert source_files[0]["provenance"]["agent_replay_plan"]["artifact"] == (
+        "agent_runs/discover/agent_replay_plan.json"
+    )
+    assert source_files[0]["provenance"]["agent_execution_input"]["sha256"]
+    assert source_files[0]["provenance"]["workflow_output_evidence_id"]
     slices = await workbench_client.get(
         f"/api/workbench/memory/evidence/{source_files[0]['evidence_id']}/source-slices"
     )
