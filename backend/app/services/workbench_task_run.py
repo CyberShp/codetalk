@@ -293,12 +293,12 @@ def build_workbench_context_bundle(
         ]
         deployment_evidence = [
             _evidence_item_payload(item, source_slices=[], repo_path=repo_path)
-            for item in evidence_memory.search_analysis_memory(
-                "deployment_probe provider_task_probe",
+            for item in evidence_memory.list_evidence_items(
                 workspace_id="codetalk-deployment",
+                kinds=("deployment_probe", "provider_task_probe"),
+                sources=("deployment_probe",),
                 limit=limit,
             )
-            if item.kind in {"deployment_probe", "provider_task_probe"}
         ]
     if query and semantic_library is not None:
         semantic_cases = [

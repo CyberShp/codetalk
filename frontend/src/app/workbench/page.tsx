@@ -407,7 +407,14 @@ type ProviderReadinessSummary = {
   repoStatus: string;
   blockingReasons: string[];
   warnings: string[];
-  agentProviders: Array<{ provider: string; status: string; reason: string }>;
+  agentProviders: Array<{
+    provider: string;
+    status: string;
+    reason: string;
+    deploymentTaskProbeStatus: string;
+    deploymentProbeId: string;
+    deploymentEvidenceConflict: boolean;
+  }>;
   codetalkProviders: Array<{ provider: string; status: string; nextCheck: string }>;
 };
 
@@ -495,10 +502,19 @@ function providerReadinessSummary(
   ).flatMap(([provider, value]) => {
     if (!value || typeof value !== "object" || Array.isArray(value)) return [];
     const payload = value as Record<string, unknown>;
+    const deploymentEvidence =
+      payload.deployment_evidence &&
+      typeof payload.deployment_evidence === "object" &&
+      !Array.isArray(payload.deployment_evidence)
+        ? (payload.deployment_evidence as Record<string, unknown>)
+        : {};
     return [{
       provider,
       status: String(payload.status ?? "unknown"),
       reason: String(payload.reason ?? ""),
+      deploymentTaskProbeStatus: String(deploymentEvidence.task_probe_status ?? ""),
+      deploymentProbeId: String(deploymentEvidence.probe_id ?? ""),
+      deploymentEvidenceConflict: Boolean(payload.deployment_evidence_conflict ?? false),
     }];
   });
   const codetalkProviders = Object.entries(
@@ -556,6 +572,9 @@ type AcceptanceProviderIssue = {
   reason: string;
   startupProbeEndpoint: string;
   usedFallback: boolean;
+  deploymentTaskProbeStatus: string;
+  deploymentProbeId: string;
+  deploymentEvidenceConflict: boolean;
 };
 
 type AcceptanceWorkflowOutputIssue = {
@@ -578,6 +597,9 @@ function acceptanceProviderIssues(
       reason: String(item.reason ?? ""),
       startupProbeEndpoint: String(item.startup_probe_endpoint ?? ""),
       usedFallback: Boolean(item.used_fallback ?? false),
+      deploymentTaskProbeStatus: String(item.deployment_task_probe_status ?? ""),
+      deploymentProbeId: String(item.deployment_probe_id ?? ""),
+      deploymentEvidenceConflict: Boolean(item.deployment_evidence_conflict ?? false),
     }))
     .filter((item) => item.provider);
 }
@@ -2811,6 +2833,13 @@ export default function AgentWorkbenchPage() {
                                 <div key={issue.provider} className="break-words">
                                   {issue.provider}:{issue.status}
                                   {issue.usedFallback ? " fallback" : ""}
+                                  {issue.deploymentTaskProbeStatus
+                                    ? ` deployment:${issue.deploymentTaskProbeStatus}`
+                                    : ""}
+                                  {issue.deploymentEvidenceConflict ? " conflict" : ""}
+                                  {issue.deploymentProbeId
+                                    ? ` probe-id:${issue.deploymentProbeId}`
+                                    : ""}
                                   {issue.reason ? ` reason:${issue.reason}` : ""}
                                   {issue.startupProbeEndpoint
                                     ? ` probe:${issue.startupProbeEndpoint}`
@@ -2947,11 +2976,27 @@ export default function AgentWorkbenchPage() {
                           <span
                             key={provider.provider}
                             className={`rounded bg-surface px-1.5 py-0.5 ${
-                              provider.status === "available" ? "" : "text-warning"
+                              provider.status === "available" &&
+                              !provider.deploymentEvidenceConflict
+                                ? ""
+                                : "text-warning"
                             }`}
-                            title={provider.reason}
+                            title={[
+                              provider.reason,
+                              provider.deploymentProbeId
+                                ? `deployment probe:${provider.deploymentProbeId}`
+                                : "",
+                            ].filter(Boolean).join(" / ")}
                           >
                             {provider.provider}:{provider.status}
+                            {provider.deploymentTaskProbeStatus && (
+                              <span className="ml-1">
+                                probe:{provider.deploymentTaskProbeStatus}
+                              </span>
+                            )}
+                            {provider.deploymentEvidenceConflict && (
+                              <span className="ml-1">conflict</span>
+                            )}
                           </span>
                         ))}
                         {readiness.blockingReasons.length > 0 && (

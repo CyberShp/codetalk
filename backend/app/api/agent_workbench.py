@@ -3433,6 +3433,11 @@ def _acceptance_provider_readiness_checks(payload: Any) -> list[dict[str, Any]]:
         status = str(item.get("status") or "unknown")
         ok = status in {"available", "configured"}
         reason = str(item.get("reason") or "")
+        deployment_evidence = (
+            item.get("deployment_evidence")
+            if isinstance(item.get("deployment_evidence"), dict)
+            else {}
+        )
         checks.append({
             "id": f"provider_readiness_agent:{provider}",
             "status": "ok" if ok else "missing",
@@ -3445,6 +3450,11 @@ def _acceptance_provider_readiness_checks(payload: Any) -> list[dict[str, Any]]:
             "command": str(item.get("command") or ""),
             "used_fallback": bool(item.get("used_fallback", False)),
             "startup_probe_endpoint": str(item.get("startup_probe_endpoint") or ""),
+            "deployment_evidence_conflict": bool(item.get("deployment_evidence_conflict", False)),
+            "deployment_task_probe_status": str(deployment_evidence.get("task_probe_status") or ""),
+            "deployment_probe_id": str(deployment_evidence.get("probe_id") or ""),
+            "deployment_evidence_status": str(deployment_evidence.get("evidence_status") or ""),
+            "deployment_evidence_source": str(deployment_evidence.get("evidence_source") or ""),
             "description": "Agent CLI provider readiness for this task",
             "reason": reason or ("" if ok else status),
         })

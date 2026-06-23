@@ -302,6 +302,45 @@ class EvidenceMemoryStore:
             ).fetchall()
         return [_row_to_evidence(row) for row in rows]
 
+    def list_evidence_items(
+        self,
+        *,
+        workspace_id: str | None = None,
+        kinds: list[str] | tuple[str, ...] | None = None,
+        statuses: list[str] | tuple[str, ...] | None = None,
+        sources: list[str] | tuple[str, ...] | None = None,
+        limit: int = 20,
+    ) -> list[EvidenceItem]:
+        self.initialize()
+        clauses: list[str] = []
+        params: list[Any] = []
+        if workspace_id:
+            clauses.append("workspace_id = ?")
+            params.append(workspace_id)
+        if kinds:
+            clauses.append(f"kind IN ({','.join('?' for _ in kinds)})")
+            params.extend(str(item) for item in kinds)
+        if statuses:
+            clauses.append(f"status IN ({','.join('?' for _ in statuses)})")
+            params.extend(str(item) for item in statuses)
+        if sources:
+            clauses.append(f"source IN ({','.join('?' for _ in sources)})")
+            params.extend(str(item) for item in sources)
+        where = f"WHERE {' AND '.join(clauses)}" if clauses else ""
+        params.append(max(1, int(limit)))
+        with self._connect() as db:
+            rows = db.execute(
+                f"""
+                SELECT *
+                FROM evidence_items
+                {where}
+                ORDER BY updated_at DESC
+                LIMIT ?
+                """,
+                params,
+            ).fetchall()
+        return [_row_to_evidence(row) for row in rows]
+
     def list_recent_analysis(self, *, workspace_id: str | None = None, limit: int = 20) -> list[dict[str, Any]]:
         self.initialize()
         params: list[Any] = []

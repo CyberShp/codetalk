@@ -2800,6 +2800,35 @@ async def test_workbench_task_run_acceptance_audit_flags_unavailable_agent_provi
     workbench_client,
     tmp_path,
 ):
+    from app.services.evidence_memory import EvidenceMemoryStore
+
+    data_dir = Path(settings.data_dir)
+    memory = EvidenceMemoryStore(data_dir / "workbench" / "evidence_memory.db")
+    memory.record_analysis_run(
+        run_id="deployment_probe:acceptance-ready",
+        workspace_id="codetalk-deployment",
+        repo_path=str(tmp_path),
+        object_text="deployment probe acceptance-ready",
+        workflow_id="workbench_deployment_probe",
+        status="healthy",
+    )
+    memory.upsert_evidence_item(
+        run_id="deployment_probe:acceptance-ready",
+        workspace_id="codetalk-deployment",
+        kind="provider_task_probe",
+        subject_key="missing-agent-cli:agent_task_probe",
+        status="accepted",
+        source="deployment_probe",
+        symbol="missing-agent-cli",
+        reason="provider_task_probe missing-agent-cli ready; contract ok",
+        text="provider_task_probe missing-agent-cli ready deployment_probe task contract",
+        provenance={
+            "provider": "missing-agent-cli",
+            "probe_id": "acceptance-ready",
+            "task_probe_status": "ready",
+        },
+    )
+
     workflow = {
         "id": "acceptance_unknown_provider_workflow",
         "name": "Acceptance unknown provider workflow",
@@ -2847,6 +2876,9 @@ async def test_workbench_task_run_acceptance_audit_flags_unavailable_agent_provi
     assert provider_check["severity"] == "required"
     assert provider_check["provider_status"] == "unknown_provider"
     assert provider_check["startup_probe_endpoint"] == "/api/tools/missing-agent-cli/startup-probe"
+    assert provider_check["deployment_evidence_conflict"] is True
+    assert provider_check["deployment_task_probe_status"] == "ready"
+    assert provider_check["deployment_probe_id"] == "acceptance-ready"
 
 
 async def test_workbench_task_run_acceptance_audit_flags_invalid_workflow_output(
