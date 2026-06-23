@@ -2639,6 +2639,10 @@ def _write_workflow_output_materialization_artifact(
         workflow_outputs_size = len(data)
     except OSError:
         pass
+    materialized_evidence = _workflow_output_materialized_evidence_summary(
+        result.get("evidence_ids") or [],
+    )
+    rejected_outputs = list(result.get("rejected_outputs") or [])
     payload = {
         "task_run_id": task_run.task_run_id,
         "workflow_id": task_run.workflow_id,
@@ -2647,10 +2651,14 @@ def _write_workflow_output_materialization_artifact(
         "status": result.get("status"),
         "evidence_count": result.get("evidence_count", 0),
         "evidence_ids": list(result.get("evidence_ids") or []),
-        "materialized_evidence": _workflow_output_materialized_evidence_summary(
-            result.get("evidence_ids") or [],
+        "materialized_evidence": materialized_evidence,
+        "rejected_outputs": rejected_outputs,
+        "materialization_audit": _workflow_output_materialization_audit(
+            task_run=task_run,
+            workflow_outputs=workflow_outputs,
+            materialized_evidence=materialized_evidence,
+            rejected_outputs=rejected_outputs,
         ),
-        "rejected_outputs": list(result.get("rejected_outputs") or []),
         "workflow_outputs_artifact": {
             "path": str(workflow_outputs_path),
             "sha256": workflow_outputs_sha,
@@ -2663,6 +2671,125 @@ def _write_workflow_output_materialization_artifact(
         json.dumps(payload, ensure_ascii=False, indent=2, sort_keys=True),
         encoding="utf-8",
     )
+
+
+def _workflow_output_materialization_audit(
+    *,
+    task_run: Any,
+    workflow_outputs: dict[str, Any],
+    materialized_evidence: list[dict[str, Any]],
+    rejected_outputs: list[dict[str, Any]],
+) -> dict[str, Any]:
+    workflow_snapshot = getattr(task_run, "workflow_snapshot", {}) or {}
+    declared_outputs = [
+        item for item in workflow_snapshot.get("outputs") or []
+        if isinstance(item, dict) and str(item.get("id") or "").strip()
+    ]
+    produced_by_id = {
+        str(item.get("id") or "").strip(): item
+        for item in workflow_outputs.get("outputs") or []
+        if isinstance(item, dict) and str(item.get("id") or "").strip()
+    }
+    materialized_by_output: dict[str, list[dict[str, Any]]] = {}
+    for item in materialized_evidence:
+        output_id = str(item.get("output_id") or "").strip()
+        if output_id:
+            materialized_by_output.setdefault(output_id, []).append(item)
+    rejected_by_output: dict[str, list[dict[str, Any]]] = {}
+    for item in rejected_outputs:
+        output_id = str(item.get("output") or "").strip()
+        if output_id:
+            rejected_by_output.setdefault(output_id, []).append(item)
+
+    rows: list[dict[str, Any]] = []
+    for definition in declared_outputs:
+        output_id = str(definition.get("id") or "").strip()
+        produced = produced_by_id.get(output_id) or {}
+        materialized_items = materialized_by_output.get(output_id, [])
+        rejected_items = rejected_by_output.get(output_id, [])
+        evidence_memory = definition.get("evidence_memory")
+        row: dict[str, Any] = {
+            "output_id": output_id,
+            "declared_type": str(definition.get("type") or ""),
+            "from": str(definition.get("from") or ""),
+            "artifact": str(definition.get("artifact") or ""),
+            "produced_status": str(produced.get("status") or ""),
+            "evidence_memory_declared": _custom_evidence_mapping_enabled(evidence_memory),
+            "materialized_count": len(materialized_items),
+            "materialized_evidence_ids": [
+                str(item.get("evidence_id") or "")
+                for item in materialized_items
+                if str(item.get("evidence_id") or "")
+            ],
+            "rejected_count": len(rejected_items),
+            "rejection_reasons": _semantic_dedupe([
+                str(item.get("reason") or "")
+                for item in rejected_items
+                if str(item.get("reason") or "")
+            ]),
+        }
+        if isinstance(evidence_memory, dict):
+            row["evidence_memory_mapping"] = _workflow_materialization_json_safe(evidence_memory)
+        elif evidence_memory is True:
+            row["evidence_memory_mapping"] = {"enabled": True}
+        row["materialization_status"] = _workflow_output_materialization_status(
+            produced=produced,
+            materialized_count=len(materialized_items),
+            rejected_count=len(rejected_items),
+        )
+        rows.append(row)
+
+    return {
+        "summary": {
+            "declared_output_count": len(declared_outputs),
+            "produced_output_count": len(produced_by_id),
+            "evidence_memory_declared_count": sum(
+                1
+                for item in declared_outputs
+                if _custom_evidence_mapping_enabled(item.get("evidence_memory"))
+            ),
+            "materialized_output_count": sum(
+                1 for output_id in {str(item.get("output_id") or "") for item in materialized_evidence}
+                if output_id
+            ),
+            "rejected_output_count": sum(1 for output_id in rejected_by_output if output_id),
+            "materialized_evidence_count": len(materialized_evidence),
+            "rejected_item_count": len(rejected_outputs),
+        },
+        "outputs": rows,
+    }
+
+
+def _workflow_output_materialization_status(
+    *,
+    produced: dict[str, Any],
+    materialized_count: int,
+    rejected_count: int,
+) -> str:
+    if materialized_count and rejected_count:
+        return "partial"
+    if materialized_count:
+        return "accepted"
+    if rejected_count:
+        return "rejected"
+    if not produced:
+        return "not_produced"
+    status = str(produced.get("status") or "")
+    if status and status != "ok":
+        return "output_not_ok"
+    return "no_evidence"
+
+
+def _workflow_materialization_json_safe(value: Any) -> Any:
+    try:
+        json.dumps(value)
+        return value
+    except TypeError:
+        if isinstance(value, dict):
+            return {str(key): _workflow_materialization_json_safe(item) for key, item in value.items()}
+        if isinstance(value, (list, tuple, set)):
+            return [_workflow_materialization_json_safe(item) for item in value]
+        return str(value)
 
 
 def _workflow_output_materialized_evidence_summary(evidence_ids: Any) -> list[dict[str, Any]]:

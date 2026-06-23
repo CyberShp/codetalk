@@ -2264,6 +2264,43 @@ async def test_workbench_materialize_custom_json_output_with_evidence_mapping(
     body = materialized.json()
     assert body["status"] == "ok"
     assert body["evidence_count"] == 2
+    materialization = json.loads(
+        (Path(prepared.json()["artifact_dir"]) / "workflow_output_materialization.json")
+        .read_text(encoding="utf-8")
+    )
+    audit = materialization["materialization_audit"]
+    assert audit["summary"]["declared_output_count"] == 1
+    assert audit["summary"]["evidence_memory_declared_count"] == 1
+    assert audit["summary"]["materialized_output_count"] == 1
+    assert audit["summary"]["rejected_output_count"] == 0
+    assert audit["outputs"] == [
+        {
+            "artifact": "resource_leaks.json",
+            "declared_type": "json",
+            "evidence_memory_declared": True,
+            "evidence_memory_mapping": {
+                "enabled": True,
+                "kind": "resource_leak_finding",
+                "path_field": "file_path",
+                "status": "candidate_output",
+                "subject_key_field": "finding_id",
+                "symbol_field": "function",
+                "text_fields": ["summary", "resource", "function"],
+            },
+            "from": "scan",
+            "materialization_status": "accepted",
+            "materialized_count": 2,
+            "materialized_evidence_ids": [
+                item["evidence_id"]
+                for item in materialization["materialized_evidence"]
+                if item["output_id"] == "resource_leaks"
+            ],
+            "output_id": "resource_leaks",
+            "produced_status": "ok",
+            "rejected_count": 0,
+            "rejection_reasons": [],
+        }
+    ]
     search = await workbench_client.get(
         "/api/workbench/memory/search",
         params={"q": "missing release", "workspace_id": "ws-custom-finding-memory"},
