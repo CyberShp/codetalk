@@ -223,7 +223,7 @@ async def _adapter_proc_status(adapter) -> dict[str, Any]:
 async def list_tools() -> list[dict[str, Any]]:
     """Return health status of all registered tool adapters."""
     await apply_persisted_agent_provider_settings()
-    adapters = get_all_adapters()
+    adapters = [*get_all_adapters(), *_runtime_external_agent_adapters(set())]
     results = await asyncio.gather(*[_check_health(a) for a in adapters])
     return list(results)
 
@@ -236,7 +236,7 @@ async def get_tools_status() -> dict[str, dict[str, Any]]:
         {"healthy": bool, "indexed_repos": int, "last_index_error": str | None, ...}
     """
     await apply_persisted_agent_provider_settings()
-    adapters = get_all_adapters()
+    adapters = [*get_all_adapters(), *_runtime_external_agent_adapters(set())]
     results: dict[str, dict[str, Any]] = {}
     for adapter in adapters:
         try:

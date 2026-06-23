@@ -375,6 +375,62 @@ async def test_tools_status_exposes_external_agent_provider_capabilities(tools_c
     assert body["agent_provider"]["supports_json_output"] is True
 
 
+async def test_tools_status_loads_persisted_external_agent_provider_after_restart(
+    tools_client,
+    tmp_path,
+    monkeypatch,
+):
+    """The status endpoint should match /procs for persisted custom providers."""
+    import aiosqlite
+    from app.config import settings
+    from app.database import _MIGRATIONS, _SCHEMA
+    from app.adapters.base import ToolCapability, ToolHealth
+
+    db_path = tmp_path / "settings.db"
+    async with aiosqlite.connect(db_path) as db:
+        await db.executescript(_SCHEMA)
+        for stmt in _MIGRATIONS:
+            try:
+                await db.execute(stmt)
+            except aiosqlite.OperationalError as exc:
+                if "duplicate column" not in str(exc).lower():
+                    raise
+        await db.execute(
+            "INSERT INTO settings (key, value) VALUES (?, ?)",
+            (
+                "external_agent_custom_providers",
+                '[{"id":"persisted-agent","command":"persisted-agent run --json"}]',
+            ),
+        )
+        await db.commit()
+
+    class FakeAgentAdapter:
+        def __init__(self, provider: str):
+            self._provider = provider
+
+        def name(self):
+            return self._provider
+
+        def capabilities(self):
+            return [ToolCapability.CODE_SEARCH]
+
+        async def health_check(self):
+            return ToolHealth(True, "available", version="persisted", last_check="ok")
+
+    client, _mock_pm = tools_client
+    monkeypatch.setattr(settings, "sqlite_db", str(db_path))
+    monkeypatch.setattr(settings, "external_agent_custom_providers", [])
+    monkeypatch.setattr(tools, "get_all_adapters", lambda: [])
+    monkeypatch.setattr(tools, "ExternalAgentAdapter", FakeAgentAdapter)
+
+    resp = await client.get("/api/tools/status")
+
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["persisted-agent"]["healthy"] is True
+    assert body["persisted-agent"]["agent_provider"]["provider"] == "persisted-agent"
+
+
 async def test_tools_status_exposes_fast_context_diagnostics(tools_client, monkeypatch):
     from app.adapters.context_discovery import FastContextAdapter
     from app.config import settings
