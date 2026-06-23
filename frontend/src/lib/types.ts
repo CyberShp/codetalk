@@ -629,6 +629,11 @@ export interface MaterializeWorkflowOutputsResult {
   evidence_count: number;
   evidence_ids: string[];
   rejected_outputs: Array<Record<string, unknown>>;
+  materialized_evidence?: Array<Record<string, unknown>>;
+  materialization_audit?: {
+    summary?: Record<string, unknown>;
+    outputs?: Array<Record<string, unknown>>;
+  };
   semantic_output_import?: SemanticCaseImportResult;
 }
 

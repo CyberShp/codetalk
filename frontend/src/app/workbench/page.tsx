@@ -721,6 +721,26 @@ type WorkflowOutputMaterializationSummary = {
   rejectedCount: number;
   workflowOutputsSha: string;
   outputCount: number;
+  auditSummary: {
+    declaredOutputCount: number;
+    evidenceMemoryDeclaredCount: number;
+    materializedOutputCount: number;
+    rejectedOutputCount: number;
+    rejectedItemCount: number;
+  };
+  auditOutputs: Array<{
+    outputId: string;
+    declaredType: string;
+    artifact: string;
+    from: string;
+    producedStatus: string;
+    materializationStatus: string;
+    evidenceMemoryDeclared: boolean;
+    mappingKind: string;
+    materializedCount: number;
+    rejectedCount: number;
+    rejectionReasons: string[];
+  }>;
   materializedEvidence: Array<{
     evidenceId: string;
     kind: string;
@@ -1061,11 +1081,60 @@ function workflowOutputMaterializationSummary(
         }))
         .filter((item) => item.evidenceId || item.kind || item.subjectKey)
     : [];
+  const audit =
+    payload.materialization_audit &&
+    typeof payload.materialization_audit === "object" &&
+    !Array.isArray(payload.materialization_audit)
+      ? (payload.materialization_audit as Record<string, unknown>)
+      : {};
+  const auditSummary =
+    audit.summary && typeof audit.summary === "object" && !Array.isArray(audit.summary)
+      ? (audit.summary as Record<string, unknown>)
+      : {};
+  const auditOutputs = Array.isArray(audit.outputs)
+    ? audit.outputs
+        .filter((item): item is Record<string, unknown> =>
+          Boolean(item && typeof item === "object" && !Array.isArray(item)),
+        )
+        .map((item) => {
+          const mapping =
+            item.evidence_memory_mapping &&
+            typeof item.evidence_memory_mapping === "object" &&
+            !Array.isArray(item.evidence_memory_mapping)
+              ? (item.evidence_memory_mapping as Record<string, unknown>)
+              : {};
+          return {
+            outputId: String(item.output_id ?? ""),
+            declaredType: String(item.declared_type ?? ""),
+            artifact: String(item.artifact ?? ""),
+            from: String(item.from ?? ""),
+            producedStatus: String(item.produced_status ?? ""),
+            materializationStatus: String(item.materialization_status ?? ""),
+            evidenceMemoryDeclared: Boolean(item.evidence_memory_declared),
+            mappingKind: String(mapping.kind ?? ""),
+            materializedCount: Number(item.materialized_count ?? 0) || 0,
+            rejectedCount: Number(item.rejected_count ?? 0) || 0,
+            rejectionReasons: Array.isArray(item.rejection_reasons)
+              ? item.rejection_reasons.map((reason) => String(reason)).filter(Boolean)
+              : [],
+          };
+        })
+        .filter((item) => item.outputId)
+    : [];
   return {
     evidenceCount: Number(payload.evidence_count ?? 0) || 0,
     rejectedCount: rejectedOutputs.length,
     workflowOutputsSha: String(workflowOutputsArtifact.sha256 ?? ""),
     outputCount: Number(workflowOutputsArtifact.output_count ?? 0) || 0,
+    auditSummary: {
+      declaredOutputCount: Number(auditSummary.declared_output_count ?? 0) || 0,
+      evidenceMemoryDeclaredCount:
+        Number(auditSummary.evidence_memory_declared_count ?? 0) || 0,
+      materializedOutputCount: Number(auditSummary.materialized_output_count ?? 0) || 0,
+      rejectedOutputCount: Number(auditSummary.rejected_output_count ?? 0) || 0,
+      rejectedItemCount: Number(auditSummary.rejected_item_count ?? 0) || 0,
+    },
+    auditOutputs,
     materializedEvidence,
     firstRejected: firstRejectedPayload
       ? {
@@ -1076,6 +1145,41 @@ function workflowOutputMaterializationSummary(
         }
       : undefined,
   };
+}
+
+function materializationAuditOutputs(
+  result: MaterializeWorkflowOutputsResult,
+): WorkflowOutputMaterializationSummary["auditOutputs"] {
+  const outputs = result.materialization_audit?.outputs;
+  if (!Array.isArray(outputs)) return [];
+  return outputs
+    .filter((item): item is Record<string, unknown> =>
+      Boolean(item && typeof item === "object" && !Array.isArray(item)),
+    )
+    .map((item) => {
+      const mapping =
+        item.evidence_memory_mapping &&
+        typeof item.evidence_memory_mapping === "object" &&
+        !Array.isArray(item.evidence_memory_mapping)
+          ? (item.evidence_memory_mapping as Record<string, unknown>)
+          : {};
+      return {
+        outputId: String(item.output_id ?? ""),
+        declaredType: String(item.declared_type ?? ""),
+        artifact: String(item.artifact ?? ""),
+        from: String(item.from ?? ""),
+        producedStatus: String(item.produced_status ?? ""),
+        materializationStatus: String(item.materialization_status ?? ""),
+        evidenceMemoryDeclared: Boolean(item.evidence_memory_declared),
+        mappingKind: String(mapping.kind ?? ""),
+        materializedCount: Number(item.materialized_count ?? 0) || 0,
+        rejectedCount: Number(item.rejected_count ?? 0) || 0,
+        rejectionReasons: Array.isArray(item.rejection_reasons)
+          ? item.rejection_reasons.map((reason) => String(reason)).filter(Boolean)
+          : [],
+      };
+    })
+    .filter((item) => item.outputId);
 }
 
 function replayPlanSummary(
@@ -4243,7 +4347,39 @@ export default function AgentWorkbenchPage() {
                                 <span>Materialized evidence: {summary.evidenceCount}</span>
                                 <span>Rejected outputs: {summary.rejectedCount}</span>
                                 <span>Declared outputs: {summary.outputCount}</span>
+                                {summary.auditSummary.evidenceMemoryDeclaredCount > 0 && (
+                                  <span>
+                                    evidence memory:{summary.auditSummary.evidenceMemoryDeclaredCount}
+                                  </span>
+                                )}
                               </div>
+                              {summary.auditOutputs.length > 0 && (
+                                <div className="mt-1 space-y-1 font-data text-[10px]">
+                                  {summary.auditOutputs.slice(0, 4).map((item) => (
+                                    <div
+                                      key={item.outputId}
+                                      className={
+                                        item.materializationStatus === "accepted"
+                                          ? "text-on-surface"
+                                          : item.materializationStatus === "partial"
+                                            ? "text-warning"
+                                            : "text-on-surface-variant"
+                                      }
+                                    >
+                                      {item.outputId}:{item.materializationStatus || "unknown"}
+                                      {item.artifact ? ` artifact:${item.artifact}` : ""}
+                                      {item.mappingKind ? ` mapping:${item.mappingKind}` : ""}
+                                      {item.materializedCount
+                                        ? ` evidence:${item.materializedCount}`
+                                        : ""}
+                                      {item.rejectedCount ? ` rejected:${item.rejectedCount}` : ""}
+                                      {item.rejectionReasons.length > 0
+                                        ? ` reason:${item.rejectionReasons[0]}`
+                                        : ""}
+                                    </div>
+                                  ))}
+                                </div>
+                              )}
                               {summary.firstRejected && (
                                 <div className="mt-1 flex flex-wrap gap-2">
                                   <span>First rejected: {summary.firstRejected.output}</span>
@@ -4756,6 +4892,33 @@ export default function AgentWorkbenchPage() {
                         )}
                       </div>
                     )}
+                    {(() => {
+                      const outputs = materializationAuditOutputs(workflowOutputMaterialize);
+                      if (outputs.length === 0) return null;
+                      return (
+                        <div className="mt-1 space-y-0.5 font-data text-[10px]">
+                          {outputs.slice(0, 4).map((item) => (
+                            <div
+                              key={item.outputId}
+                              className={
+                                item.materializationStatus === "accepted"
+                                  ? "text-on-surface"
+                                  : item.materializationStatus === "partial"
+                                    ? "text-warning"
+                                    : "text-on-surface-variant"
+                              }
+                            >
+                              {item.outputId}:{item.materializationStatus || "unknown"}
+                              {item.artifact ? ` artifact:${item.artifact}` : ""}
+                              {item.materializedCount
+                                ? ` evidence:${item.materializedCount}`
+                                : ""}
+                              {item.rejectedCount ? ` rejected:${item.rejectedCount}` : ""}
+                            </div>
+                          ))}
+                        </div>
+                      );
+                    })()}
                   </div>
                 )}
                 {semanticOutputImport && (
