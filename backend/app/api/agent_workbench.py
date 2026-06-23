@@ -3631,6 +3631,7 @@ def _build_task_acceptance_audit(task_run: Any) -> dict[str, Any]:
             description=description,
             severity="required",
         ))
+    agent_instruction_policy_expected = _expected_agent_instruction_policy(task_dir)
     provider_readiness = _read_json(task_dir / "provider_readiness.json")
     checks.extend(_acceptance_provider_readiness_checks(provider_readiness))
 
@@ -3731,6 +3732,23 @@ def _build_task_acceptance_audit(task_run: Any) -> dict[str, Any]:
                 description=description,
                 severity="required",
             ))
+        if agent_instruction_policy_expected:
+            checks.extend([
+                _acceptance_agent_instruction_policy_check(
+                    check_id=f"agent_instruction_policy:{step_id}:execution_input",
+                    relative_path=f"{base}/execution_input.json",
+                    task_dir=task_dir,
+                    expected=agent_instruction_policy_expected,
+                    description=f"Agent instruction policy in step {step_id} execution input",
+                ),
+                _acceptance_agent_instruction_policy_check(
+                    check_id=f"agent_instruction_policy:{step_id}:agent_replay_plan",
+                    relative_path=f"{base}/agent_replay_plan.json",
+                    task_dir=task_dir,
+                    expected=agent_instruction_policy_expected,
+                    description=f"Agent instruction policy in step {step_id} replay plan",
+                ),
+            ])
         for artifact_name in agent_run.get("required_artifacts") or []:
             artifact = str(artifact_name)
             checks.append(_acceptance_file_check(
@@ -3786,6 +3804,35 @@ def _build_task_acceptance_audit(task_run: Any) -> dict[str, Any]:
                     description=description,
                     severity="required",
                 ))
+            if agent_instruction_policy_expected:
+                checks.extend([
+                    _acceptance_agent_instruction_policy_check(
+                        check_id=(
+                            f"agent_turn_instruction_policy:{step_id}:"
+                            f"turn_{turn_index}:execution_input"
+                        ),
+                        relative_path=f"{turn_base}/execution_input.json",
+                        task_dir=task_dir,
+                        expected=agent_instruction_policy_expected,
+                        description=(
+                            f"Agent instruction policy in step {step_id} "
+                            f"turn {turn_index} execution input"
+                        ),
+                    ),
+                    _acceptance_agent_instruction_policy_check(
+                        check_id=(
+                            f"agent_turn_instruction_policy:{step_id}:"
+                            f"turn_{turn_index}:agent_replay_plan"
+                        ),
+                        relative_path=f"{turn_base}/agent_replay_plan.json",
+                        task_dir=task_dir,
+                        expected=agent_instruction_policy_expected,
+                        description=(
+                            f"Agent instruction policy in step {step_id} "
+                            f"turn {turn_index} replay plan"
+                        ),
+                    ),
+                ])
             if source_slice_request_count and turn_index == 1:
                 checks.append(_acceptance_file_check(
                     check_id=(
@@ -3924,6 +3971,92 @@ def _acceptance_workflow_output_checks(payload: Any) -> list[dict[str, Any]]:
             "description": "declared workflow output status",
         })
     return checks
+
+
+def _expected_agent_instruction_policy(task_dir: Path) -> dict[str, Any]:
+    payload = _read_json(task_dir / "agent_instructions.json")
+    if not isinstance(payload, dict):
+        return {}
+    files = [
+        item for item in payload.get("files") or []
+        if isinstance(item, dict) and str(item.get("relative_path") or "").strip()
+    ]
+    if not files:
+        return {}
+    return {
+        "files": [
+            {
+                "relative_path": str(item.get("relative_path") or ""),
+                "sha256": str(item.get("sha256") or ""),
+            }
+            for item in files
+        ],
+        "file_count": len(files),
+    }
+
+
+def _acceptance_agent_instruction_policy_check(
+    *,
+    check_id: str,
+    relative_path: str,
+    task_dir: Path,
+    expected: dict[str, Any],
+    description: str,
+) -> dict[str, Any]:
+    expected_files = [
+        item for item in expected.get("files") or []
+        if isinstance(item, dict) and str(item.get("relative_path") or "")
+    ]
+    payload = _read_json(task_dir / relative_path)
+    base = {
+        "id": check_id,
+        "severity": "required",
+        "relative_path": relative_path,
+        "kind": workbench_artifact_kind(relative_path),
+        "description": description,
+        "expected_files": expected_files,
+    }
+    if not isinstance(payload, dict):
+        return {
+            **base,
+            "status": "missing",
+            "reason": "artifact_json_unreadable",
+        }
+    policy = payload.get("agent_instruction_policy")
+    if not isinstance(policy, dict):
+        return {
+            **base,
+            "status": "missing",
+            "reason": "agent_instruction_policy_missing",
+        }
+    policy_files = [
+        item for item in policy.get("files") or []
+        if isinstance(item, dict) and str(item.get("relative_path") or "")
+    ]
+    policy_by_path = {
+        str(item.get("relative_path") or ""): str(item.get("sha256") or "")
+        for item in policy_files
+    }
+    missing_files = [
+        item for item in expected_files
+        if policy_by_path.get(str(item.get("relative_path") or ""))
+        != str(item.get("sha256") or "")
+    ]
+    if missing_files:
+        return {
+            **base,
+            "status": "missing",
+            "reason": "agent_instruction_policy_incomplete",
+            "policy_file_count": len(policy_files),
+            "missing_files": missing_files,
+        }
+    return {
+        **base,
+        "status": "ok",
+        "reason": "",
+        "policy_file_count": len(policy_files),
+        "fast_context_first": bool(policy.get("fast_context_first")),
+    }
 
 
 def _acceptance_file_check(

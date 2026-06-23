@@ -3426,6 +3426,10 @@ async def test_workbench_task_run_artifacts_api_labels_agent_turn_snapshots(
     source = tmp_path / "src" / "tls.c"
     source.parent.mkdir()
     source.write_text("int nvmf_tcp_tls_handshake(void) { return 0; }\n", encoding="utf-8")
+    (tmp_path / "AGENTS.md").write_text(
+        "Prefer mcp__fast-context__fast_context_search before local grep.\n",
+        encoding="utf-8",
+    )
     script_path = tmp_path / "agent_turns.py"
     script_path.write_text(
         "import json, pathlib, sys\n"
@@ -3526,6 +3530,35 @@ async def test_workbench_task_run_artifacts_api_labels_agent_turn_snapshots(
     assert checks["agent_source_slices:discover"]["status"] == "ok"
     assert checks["agent_turn_source_slice_requests:discover:turn_1"]["status"] == "ok"
     assert checks["agent_turn_source_slices:discover:turn_2"]["status"] == "ok"
+
+    task_dir = Path(prepared.json()["artifact_dir"])
+    turn_1_execution_input = (
+        task_dir
+        / "agent_runs"
+        / "discover"
+        / "turns"
+        / "turn_1"
+        / "execution_input.json"
+    )
+    execution_payload = json.loads(turn_1_execution_input.read_text(encoding="utf-8"))
+    execution_payload.pop("agent_instruction_policy", None)
+    turn_1_execution_input.write_text(
+        json.dumps(execution_payload, ensure_ascii=False, indent=2),
+        encoding="utf-8",
+    )
+
+    corrupted_acceptance = await workbench_client.post(
+        f"/api/workbench/task-runs/{task_run_id}/acceptance-audit"
+    )
+    assert corrupted_acceptance.status_code == 200
+    corrupted_body = corrupted_acceptance.json()
+    assert corrupted_body["status"] == "incomplete"
+    corrupted_checks = {item["id"]: item for item in corrupted_body["checks"]}
+    missing_policy = corrupted_checks[
+        "agent_turn_instruction_policy:discover:turn_1:execution_input"
+    ]
+    assert missing_policy["status"] == "missing"
+    assert missing_policy["reason"] == "agent_instruction_policy_missing"
 
 
 async def test_workbench_prepare_task_run_api_injects_memory_and_semantics(workbench_client, tmp_path):
