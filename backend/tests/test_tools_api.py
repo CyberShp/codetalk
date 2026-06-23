@@ -148,6 +148,60 @@ class TestGetPmFromAppState:
         assert corp["managed"] is False
         assert corp["message"] == "command not found: corp-agent"
 
+    async def test_procs_loads_persisted_external_agent_provider_after_restart(
+        self,
+        tools_client,
+        tmp_path,
+        monkeypatch,
+    ):
+        """Tools page should see Agent providers persisted before backend restart."""
+        import aiosqlite
+        from app.config import settings
+        from app.database import _MIGRATIONS, _SCHEMA
+
+        db_path = tmp_path / "settings.db"
+        async with aiosqlite.connect(db_path) as db:
+            await db.executescript(_SCHEMA)
+            for stmt in _MIGRATIONS:
+                try:
+                    await db.execute(stmt)
+                except aiosqlite.OperationalError as exc:
+                    if "duplicate column" not in str(exc).lower():
+                        raise
+            await db.execute(
+                "INSERT INTO settings (key, value) VALUES (?, ?)",
+                (
+                    "external_agent_custom_providers",
+                    '[{"id":"persisted-agent","command":"persisted-agent run --json"}]',
+                ),
+            )
+            await db.commit()
+
+        monkeypatch.setattr(settings, "sqlite_db", str(db_path))
+        monkeypatch.setattr(settings, "external_agent_custom_providers", [])
+        client, _mock_pm = tools_client
+        monkeypatch.setattr(tools, "get_all_adapters", lambda: [])
+
+        async def fake_adapter_status(adapter):
+            return {
+                "name": adapter.name(),
+                "display_name": adapter.name(),
+                "healthy": True,
+                "status": "available",
+                "managed": False,
+                "message": "loaded",
+            }
+
+        monkeypatch.setattr(tools, "_adapter_proc_status", fake_adapter_status)
+
+        resp = await client.get("/api/tools/procs")
+
+        assert resp.status_code == 200
+        body = resp.json()
+        persisted = next(item for item in body if item["name"] == "persisted-agent")
+        assert persisted["managed"] is False
+        assert persisted["message"] == "loaded"
+
 
 class TestStartToolSuccess:
     async def test_start_returns_success(self, tools_client):

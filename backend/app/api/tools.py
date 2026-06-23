@@ -12,6 +12,7 @@ from app.adapters import get_adapter, get_all_adapters
 from app.adapters.external_agent import ExternalAgentAdapter
 from app.adapters.gitnexus import resolve_indexed_repo
 from app.config import settings
+from app.services.agent_provider_settings import apply_persisted_agent_provider_settings
 from app.services import process_manager as process_manager_module
 from app.services.external_agent_discovery import (
     check_provider_health,
@@ -221,6 +222,7 @@ async def _adapter_proc_status(adapter) -> dict[str, Any]:
 @router.get("")
 async def list_tools() -> list[dict[str, Any]]:
     """Return health status of all registered tool adapters."""
+    await apply_persisted_agent_provider_settings()
     adapters = get_all_adapters()
     results = await asyncio.gather(*[_check_health(a) for a in adapters])
     return list(results)
@@ -233,6 +235,7 @@ async def get_tools_status() -> dict[str, dict[str, Any]]:
     Response shape per tool:
         {"healthy": bool, "indexed_repos": int, "last_index_error": str | None, ...}
     """
+    await apply_persisted_agent_provider_settings()
     adapters = get_all_adapters()
     results: dict[str, dict[str, Any]] = {}
     for adapter in adapters:
@@ -281,6 +284,7 @@ async def get_tools_status() -> dict[str, dict[str, Any]]:
 @router.get("/procs")
 async def get_tool_procs(request: Request) -> list[dict[str, Any]]:
     """Return live status of all registered tool processes (process manager view)."""
+    await apply_persisted_agent_provider_settings()
     pm = _get_pm(request)
     process_status = await pm.get_all_status()
     managed_names = {str(item.get("name")) for item in process_status if isinstance(item, dict)}
@@ -298,6 +302,7 @@ async def get_tool_procs(request: Request) -> list[dict[str, Any]]:
 @router.get("/{tool_name}/health")
 async def get_tool_health(tool_name: str) -> dict[str, Any]:
     """Return health status of a specific tool adapter."""
+    await apply_persisted_agent_provider_settings()
     try:
         adapter = _get_adapter_or_runtime_external_agent(tool_name)
     except KeyError:
@@ -344,6 +349,7 @@ async def startup_probe_tool(
     repo_path: str | None = None,
 ) -> dict[str, Any]:
     """Actually start an adapter-only external agent once and report diagnostics."""
+    await apply_persisted_agent_provider_settings()
     try:
         adapter = _get_adapter_or_runtime_external_agent(tool_name)
     except KeyError:

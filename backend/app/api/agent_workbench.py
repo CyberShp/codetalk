@@ -17,6 +17,7 @@ from pydantic import BaseModel, Field
 
 from app.config import settings
 from app.services.agent_run_harness import AgentRunHarness, ArtifactValidationHarness
+from app.services.agent_provider_settings import apply_persisted_agent_provider_settings
 from app.services.evidence_memory import EvidenceMemoryStore
 from app.services.external_agent_discovery import (
     external_agent_provider_capabilities,
@@ -365,6 +366,7 @@ async def upload_workbench_input_file(
 @router.get("/provider-capabilities")
 async def list_provider_capabilities() -> dict[str, Any]:
     """Return a side-effect-free capability matrix for Workbench Agent routing."""
+    await apply_persisted_agent_provider_settings()
     providers = _codetalk_provider_matrix_items() + [
         _agent_cli_provider_matrix_item(provider_id, spec)
         for provider_id, spec in external_agent_provider_specs().items()
@@ -392,6 +394,7 @@ async def get_workbench_system_audit() -> dict[str, Any]:
 @router.post("/deployment-probe")
 async def run_workbench_deployment_probe(payload: DeploymentProbeRequest) -> dict[str, Any]:
     """Run startup probes for Agent CLI providers and persist deployment evidence."""
+    await apply_persisted_agent_provider_settings()
     provider_specs = external_agent_provider_specs()
     requested = [
         str(provider).strip()
@@ -489,6 +492,7 @@ async def run_workbench_deployment_probe(payload: DeploymentProbeRequest) -> dic
 @router.post("/provider-task-probe")
 async def run_workbench_provider_task_probe(payload: ProviderTaskProbeRequest) -> dict[str, Any]:
     """Execute a real configured provider through the task harness artifact contract."""
+    await apply_persisted_agent_provider_settings()
     provider = str(payload.provider or "").strip()
     if not provider:
         raise HTTPException(status_code=422, detail="provider is required")
@@ -1274,6 +1278,7 @@ async def get_task_run_artifact_content(
 
 @router.post("/task-runs/prepare", status_code=201)
 async def prepare_task_run(payload: PrepareTaskRunRequest) -> dict[str, Any]:
+    await apply_persisted_agent_provider_settings()
     try:
         result = WorkbenchTaskRunPreparer(
             artifact_root=_task_runs_dir(),
@@ -1296,6 +1301,7 @@ async def prepare_task_run(payload: PrepareTaskRunRequest) -> dict[str, Any]:
 
 @router.post("/task-runs/run", status_code=201)
 async def prepare_and_execute_task_run(payload: RunTaskRunRequest) -> dict[str, Any]:
+    await apply_persisted_agent_provider_settings()
     try:
         prepared = WorkbenchTaskRunPreparer(
             artifact_root=_task_runs_dir(),

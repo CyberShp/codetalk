@@ -209,6 +209,59 @@ async def test_workbench_provider_capabilities_matrix_api(workbench_client, monk
     assert by_id["semantic-library"]["owner"] == "codetalk_memory"
 
 
+async def test_workbench_provider_capabilities_loads_persisted_agent_settings(
+    workbench_client,
+    tmp_path,
+    monkeypatch,
+):
+    import aiosqlite
+    from app.database import _MIGRATIONS, _SCHEMA
+
+    db_path = tmp_path / "settings.db"
+    async with aiosqlite.connect(db_path) as db:
+        await db.executescript(_SCHEMA)
+        for stmt in _MIGRATIONS:
+            try:
+                await db.execute(stmt)
+            except aiosqlite.OperationalError as exc:
+                if "duplicate column" not in str(exc).lower():
+                    raise
+        await db.executemany(
+            "INSERT INTO settings (key, value) VALUES (?, ?)",
+            [
+                ("claude_code_command", "ccr code"),
+                ("claude_code_mcp_profiles", json.dumps(["codehub-readonly"])),
+                (
+                    "external_agent_custom_providers",
+                    json.dumps([
+                        {
+                            "id": "persisted-agent",
+                            "command": "persisted-agent run --json",
+                            "prompt_transport": "stdin",
+                            "supports_mcp": True,
+                            "mcp_profiles": ["codehub-mcp"],
+                        }
+                    ]),
+                ),
+            ],
+        )
+        await db.commit()
+
+    monkeypatch.setattr(settings, "sqlite_db", str(db_path))
+    monkeypatch.setattr(settings, "claude_code_command", "claude")
+    monkeypatch.setattr(settings, "claude_code_mcp_profiles", [])
+    monkeypatch.setattr(settings, "external_agent_custom_providers", [])
+
+    resp = await workbench_client.get("/api/workbench/provider-capabilities")
+
+    assert resp.status_code == 200
+    by_id = {item["provider"]: item for item in resp.json()["providers"]}
+    assert by_id["claude-code"]["diagnostics"]["configured_command_text"] == "ccr code"
+    assert by_id["claude-code"]["capabilities"]["mcp_profiles"] == ["codehub-readonly"]
+    assert by_id["persisted-agent"]["command"] == ["persisted-agent", "run", "--json"]
+    assert by_id["persisted-agent"]["capabilities"]["supports_mcp"] is True
+
+
 async def test_workbench_provider_capabilities_include_agent_launch_resolution(
     workbench_client,
     monkeypatch,
