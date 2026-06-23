@@ -29,7 +29,7 @@ from app.services.workbench_task_run import WorkbenchTaskRunStore
 from app.services.workbench_task_run import build_agent_cli_provider_diagnostics
 from app.services.workbench_task_run import build_codetalk_provider_snapshot
 from app.services.workbench_workflow_runner import WorkbenchWorkflowRunner
-from app.services.workflow_dsl import WorkflowStore, WorkflowValidationError
+from app.services.workflow_dsl import WorkflowStore, WorkflowValidationError, audit_workflow_definition
 from app.services.workflow_presets import (
     builtin_workflow_presets,
     install_workflow_preset,
@@ -635,7 +635,9 @@ async def prepare_task_run(payload: PrepareTaskRunRequest) -> dict[str, Any]:
 
 
 def _workflow_response(payload: dict[str, Any]) -> dict[str, Any]:
-    return dict(payload)
+    response = dict(payload)
+    response["audit"] = audit_workflow_definition(payload)
+    return response
 
 
 def _agent_cli_provider_matrix_item(provider_id: str, spec: Any) -> dict[str, Any]:

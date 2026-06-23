@@ -623,6 +623,10 @@ export default function AgentWorkbenchPage() {
     if (registered?.inputs?.length) return registered.inputs;
     return workflowInputsFromJson(workflowJson);
   }, [selectedWorkflowId, workflowJson, workflows]);
+  const selectedWorkflowAudit = useMemo(
+    () => workflows.find((workflow) => workflow.id === selectedWorkflowId)?.audit,
+    [selectedWorkflowId, workflows],
+  );
   const parsedPrepareInputs = useMemo(() => {
     try {
       return parseJsonObject(inputsJson || "{}");
@@ -750,7 +754,12 @@ export default function AgentWorkbenchPage() {
       const payload = parseJsonObject(workflowJson);
       const saved = await api.workbench.workflows.create(payload);
       setSelectedWorkflowId(saved.id);
-      setMessage(`Workflow saved: ${saved.id}`);
+      const warningCount = saved.audit?.warnings?.length ?? 0;
+      setMessage(
+        warningCount
+          ? `Workflow saved: ${saved.id} (${warningCount} audit warning(s))`
+          : `Workflow saved: ${saved.id}`,
+      );
       await loadWorkflows();
     });
 
@@ -1477,6 +1486,25 @@ export default function AgentWorkbenchPage() {
                   ))}
               </select>
             </label>
+            {selectedWorkflowAudit && selectedWorkflowAudit.warnings.length > 0 && (
+              <div className="rounded-lg border border-amber-400/20 bg-amber-400/5 px-3 py-2 text-xs text-amber-300">
+                <div className="flex items-start gap-2">
+                  <AlertTriangle size={14} className="mt-0.5 shrink-0" />
+                  <div className="min-w-0">
+                    <p className="font-medium">
+                      Workflow audit warnings: {selectedWorkflowAudit.warnings.length}
+                    </p>
+                    <div className="mt-1 space-y-1">
+                      {selectedWorkflowAudit.warnings.slice(0, 3).map((warning) => (
+                        <p key={`${warning.code}-${warning.path}`} className="break-words">
+                          {warning.code}: {warning.message}
+                        </p>
+                      ))}
+                    </div>
+                  </div>
+                </div>
+              </div>
+            )}
             <label className="block">
               <span className="mb-1 block text-xs text-on-surface-variant">Workspace ID</span>
               <input

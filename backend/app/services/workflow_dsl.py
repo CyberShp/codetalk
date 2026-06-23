@@ -218,6 +218,55 @@ def validate_workflow_definition(payload: dict[str, Any]) -> WorkflowDefinition:
     )
 
 
+def audit_workflow_definition(payload: dict[str, Any]) -> dict[str, Any]:
+    workflow = validate_workflow_definition(payload)
+    warnings: list[dict[str, Any]] = []
+    agent_steps = [step for step in workflow.steps if step.type == "agent_task"]
+    mcp_steps = [step for step in agent_steps if step.mcp_profile]
+
+    for step in agent_steps:
+        if not step.required_artifacts:
+            warnings.append({
+                "severity": "warning",
+                "code": "agent_task_missing_required_artifacts",
+                "path": f"steps.{step.id}.required_artifacts",
+                "message": (
+                    "Agent task has no required_artifacts; CodeTalk can run it, "
+                    "but artifact validation and evidence replay will be weak."
+                ),
+            })
+
+    for output in workflow.outputs:
+        schema = output.raw.get("schema") or output.raw.get("json_schema")
+        if output.type == "json" and not isinstance(schema, dict):
+            warnings.append({
+                "severity": "warning",
+                "code": "json_output_missing_schema",
+                "path": f"outputs.{output.id}.schema",
+                "message": (
+                    "JSON output has no schema; Agent output can still be captured, "
+                    "but structured validation will be limited."
+                ),
+            })
+
+    for workflow_input in workflow.inputs:
+        if workflow_input.resolver == "agent_mcp" and not mcp_steps:
+            warnings.append({
+                "severity": "warning",
+                "code": "agent_mcp_input_without_mcp_step",
+                "path": f"inputs.{workflow_input.id}.resolver",
+                "message": (
+                    "Input is marked agent_mcp, but no agent_task declares an mcp_profile; "
+                    "Agent CLI may not know which MCP credential profile to use."
+                ),
+            })
+
+    return {
+        "status": "warning" if warnings else "ok",
+        "warnings": warnings,
+    }
+
+
 def _parse_input(item: Any) -> WorkflowInput:
     if not isinstance(item, dict):
         raise WorkflowValidationError("workflow input must be an object")

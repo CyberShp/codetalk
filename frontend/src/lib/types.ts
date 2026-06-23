@@ -280,6 +280,15 @@ export interface WorkflowDefinition {
   inputs: Array<Record<string, unknown>>;
   steps: Array<Record<string, unknown>>;
   outputs: Array<Record<string, unknown>>;
+  audit?: {
+    status: string;
+    warnings: Array<{
+      severity: string;
+      code: string;
+      path: string;
+      message: string;
+    }>;
+  };
 }
 
 export interface WorkflowPreset {

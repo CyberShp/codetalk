@@ -244,6 +244,27 @@ async def test_workbench_semantic_library_api(workbench_client):
     assert [item["case_id"] for item in search.json()["items"]] == ["TC_TLS_001"]
 
 
+async def test_workbench_workflow_response_includes_soft_audit_warnings(workbench_client):
+    response = await workbench_client.post(
+        "/api/workbench/workflows",
+        json={
+            "id": "thin_custom_workflow",
+            "name": "Thin custom workflow",
+            "version": 1,
+            "inputs": [{"id": "mr_link", "type": "mr_link", "resolver": "agent_mcp"}],
+            "steps": [{"id": "ask_agent", "type": "agent_task", "provider": "claude-code"}],
+            "outputs": [{"id": "result", "type": "json", "from": "ask_agent"}],
+        },
+    )
+
+    assert response.status_code == 201
+    audit = response.json()["audit"]
+    warning_codes = {item["code"] for item in audit["warnings"]}
+    assert "agent_task_missing_required_artifacts" in warning_codes
+    assert "json_output_missing_schema" in warning_codes
+    assert "agent_mcp_input_without_mcp_step" in warning_codes
+
+
 async def test_workbench_input_file_upload_api_returns_prepare_payload(workbench_client):
     resp = await workbench_client.post(
         "/api/workbench/input-files/upload",
