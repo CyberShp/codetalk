@@ -589,6 +589,15 @@ export const api = {
 
       list: () => request<WorkflowDefinition[]>("/api/workbench/workflows"),
 
+      auditDraft: (data: WorkflowDefinition | Record<string, unknown>) =>
+        request<import("./types").WorkflowDraftServerAudit>(
+          "/api/workbench/workflows/audit-draft",
+          {
+            method: "POST",
+            body: JSON.stringify(data),
+          },
+        ),
+
       create: (data: WorkflowDefinition | Record<string, unknown>) =>
         request<WorkflowDefinition>("/api/workbench/workflows", {
           method: "POST",

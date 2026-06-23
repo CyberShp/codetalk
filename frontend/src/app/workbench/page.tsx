@@ -43,6 +43,7 @@ import type {
   WorkbenchTaskArtifact,
   WorkbenchTaskArtifactContent,
   WorkbenchTaskArtifactManifest,
+  WorkflowDraftServerAudit,
 } from "@/lib/types";
 
 const DEFAULT_WORKFLOW = {
@@ -1810,6 +1811,8 @@ export default function AgentWorkbenchPage() {
     useState<WorkbenchAcceptanceAudit | null>(null);
   const [workflowOutputMaterialize, setWorkflowOutputMaterialize] =
     useState<MaterializeWorkflowOutputsResult | null>(null);
+  const [workflowDraftServerAudit, setWorkflowDraftServerAudit] =
+    useState<WorkflowDraftServerAudit | null>(null);
   const [semanticOutputImport, setSemanticOutputImport] =
     useState<SemanticCaseImportResult | null>(null);
   const [executionResults, setExecutionResults] = useState<
@@ -2172,6 +2175,18 @@ export default function AgentWorkbenchPage() {
           : `Workflow saved: ${saved.id}`,
       );
       await loadWorkflows();
+    });
+
+  const auditWorkflowDraft = () =>
+    runAction("audit-workflow-draft", async () => {
+      const payload = parseJsonObject(workflowJson);
+      const audit = await api.workbench.workflows.auditDraft(payload);
+      setWorkflowDraftServerAudit(audit);
+      setMessage(
+        audit.valid
+          ? `Workflow draft audit: ${audit.status} (${audit.warnings.length} warning(s))`
+          : `Workflow draft audit: invalid`,
+      );
     });
 
   const loadSelectedWorkflowDraft = () => {
@@ -3413,6 +3428,18 @@ export default function AgentWorkbenchPage() {
               )}
               Save workflow
             </button>
+            <button
+              onClick={auditWorkflowDraft}
+              disabled={busyAction === "audit-workflow-draft"}
+              className="inline-flex items-center gap-2 rounded-lg bg-surface px-3 py-2 text-sm font-medium text-on-surface transition-colors hover:bg-surface-container-high disabled:opacity-50"
+            >
+              {busyAction === "audit-workflow-draft" ? (
+                <Loader2 size={14} className="animate-spin" />
+              ) : (
+                <Search size={14} />
+              )}
+              Audit draft
+            </button>
             <span className="text-xs text-on-surface-variant">
               {workflows.length} registered
             </span>
@@ -3667,6 +3694,39 @@ export default function AgentWorkbenchPage() {
               </div>
             )}
           </div>
+          {workflowDraftServerAudit && (
+            <div
+              className={`mb-2 rounded-lg border px-3 py-2 text-xs ${
+                workflowDraftServerAudit.valid
+                  ? workflowDraftServerAudit.status === "warning"
+                    ? "border-amber-400/20 bg-amber-400/5 text-amber-300"
+                    : "border-outline-variant/30 bg-surface-container text-on-surface-variant"
+                  : "border-red-400/20 bg-red-400/5 text-red-300"
+              }`}
+            >
+              <div className="flex flex-wrap gap-2">
+                <span className="font-medium">
+                  Server audit:{workflowDraftServerAudit.status}
+                </span>
+                <span>valid:{String(workflowDraftServerAudit.valid)}</span>
+                <span>warnings:{workflowDraftServerAudit.warnings.length}</span>
+              </div>
+              {workflowDraftServerAudit.error && (
+                <div className="mt-1 break-words font-data text-[10px]">
+                  error:{workflowDraftServerAudit.error}
+                </div>
+              )}
+              {workflowDraftServerAudit.warnings.length > 0 && (
+                <div className="mt-1 space-y-0.5 font-data text-[10px]">
+                  {workflowDraftServerAudit.warnings.slice(0, 4).map((warning) => (
+                    <div key={`${warning.code}:${warning.path}`} className="break-words">
+                      {warning.code}:{warning.message}
+                    </div>
+                  ))}
+                </div>
+              )}
+            </div>
+          )}
           <textarea
             value={workflowJson}
             onChange={(event) => setWorkflowJson(event.target.value)}

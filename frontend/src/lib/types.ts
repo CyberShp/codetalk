@@ -440,6 +440,18 @@ export interface WorkflowDefinition {
   };
 }
 
+export interface WorkflowDraftServerAudit {
+  status: "ok" | "warning" | "invalid" | string;
+  valid: boolean;
+  error: string;
+  warnings: Array<{
+    severity: string;
+    code: string;
+    path: string;
+    message: string;
+  }>;
+}
+
 export interface WorkflowPreset {
   id: string;
   name: string;

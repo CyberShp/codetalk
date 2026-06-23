@@ -219,6 +219,25 @@ async def save_workflow(payload: dict[str, Any]) -> dict[str, Any]:
     return _workflow_response(workflow.raw)
 
 
+@router.post("/workflows/audit-draft")
+async def audit_workflow_draft(payload: dict[str, Any]) -> dict[str, Any]:
+    try:
+        audit = audit_workflow_definition(payload)
+    except WorkflowValidationError as exc:
+        return {
+            "status": "invalid",
+            "valid": False,
+            "error": str(exc),
+            "warnings": [],
+        }
+    return {
+        "status": audit.get("status") or "ok",
+        "valid": True,
+        "error": "",
+        "warnings": list(audit.get("warnings") or []),
+    }
+
+
 @router.get("/workflows")
 async def list_workflows() -> list[dict[str, Any]]:
     return [_workflow_response(item.raw) for item in _workflow_store().list_workflows()]

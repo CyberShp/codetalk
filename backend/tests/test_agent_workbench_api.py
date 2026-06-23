@@ -59,6 +59,48 @@ async def test_workbench_workflow_crud_api(workbench_client):
     assert frozen.json()["version"] == 1
 
 
+async def test_workbench_workflow_draft_audit_api_reports_warnings_and_invalid(
+    workbench_client,
+):
+    warning_workflow = {
+        "id": "draft_warning",
+        "name": "Draft warning",
+        "version": 1,
+        "inputs": [{"id": "mr_link", "type": "mr_link", "resolver": "agent_mcp"}],
+        "steps": [{"id": "collect", "type": "agent_task", "provider": "claude-code"}],
+        "outputs": [{"id": "findings", "type": "json", "from": "collect"}],
+    }
+
+    warning_resp = await workbench_client.post(
+        "/api/workbench/workflows/audit-draft",
+        json=warning_workflow,
+    )
+
+    assert warning_resp.status_code == 200
+    warning_body = warning_resp.json()
+    assert warning_body["status"] == "warning"
+    assert warning_body["valid"] is True
+    codes = {item["code"] for item in warning_body["warnings"]}
+    assert "agent_task_missing_required_artifacts" in codes
+    assert "json_output_missing_schema" in codes
+    assert "agent_mcp_input_without_mcp_step" in codes
+
+    invalid_resp = await workbench_client.post(
+        "/api/workbench/workflows/audit-draft",
+        json={
+            "id": "bad",
+            "name": "Bad",
+            "steps": [{"id": "collect", "type": "unsupported_step"}],
+        },
+    )
+
+    assert invalid_resp.status_code == 200
+    invalid_body = invalid_resp.json()
+    assert invalid_body["status"] == "invalid"
+    assert invalid_body["valid"] is False
+    assert "unsupported workflow step type" in invalid_body["error"]
+
+
 async def test_workbench_workflow_preset_api(workbench_client):
     presets = await workbench_client.get("/api/workbench/workflow-presets")
     assert presets.status_code == 200
