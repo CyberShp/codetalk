@@ -231,6 +231,18 @@ export interface WorkbenchSystemAudit {
   notes: string[];
 }
 
+export interface WorkbenchWorkflowCapabilities {
+  status: string;
+  input_types: string[];
+  input_resolvers: string[];
+  step_types: string[];
+  output_types: string[];
+  output_features: Record<string, boolean>;
+  agent_cli_features: Record<string, boolean>;
+  semantic_library_import_formats: string[];
+  artifact_contract: Record<string, string>;
+}
+
 export interface ExternalAgentProbeAttempt {
   command?: string;
   status?: string;

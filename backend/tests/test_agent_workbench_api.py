@@ -75,6 +75,27 @@ async def test_workbench_workflow_preset_api(workbench_client):
     assert [item["id"] for item in listed.json()] == ["mr_blackbox_test"]
 
 
+async def test_workbench_workflow_capabilities_api_documents_custom_workflows(workbench_client):
+    resp = await workbench_client.get("/api/workbench/workflow-capabilities")
+
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["status"] == "ok"
+    assert "file" in body["input_types"]
+    assert "file_set" in body["input_types"]
+    assert "coverage_report" in body["input_types"]
+    assert "mr_link" in body["input_types"]
+    assert "agent_mcp" in body["input_resolvers"]
+    assert "agent_task" in body["step_types"]
+    assert "semantic_retrieve" in body["step_types"]
+    assert "json" in body["output_types"]
+    assert body["output_features"]["json_schema_validation"] is True
+    assert body["output_features"]["workflow_output_materialization"] is True
+    assert body["agent_cli_features"]["agent_owned_mcp_credentials"] is True
+    assert "jsonl" in body["semantic_library_import_formats"]
+    assert body["artifact_contract"]["required_artifacts"] == "validated locally before outputs are accepted"
+
+
 async def test_workbench_provider_capabilities_matrix_api(workbench_client, monkeypatch):
     monkeypatch.setattr(settings, "claude_code_command", "ccr code")
     monkeypatch.setattr(settings, "claude_code_fallback_commands", ["claude"])

@@ -36,7 +36,13 @@ from app.services.workbench_task_run import WorkbenchTaskRunStore
 from app.services.workbench_task_run import build_agent_cli_provider_diagnostics
 from app.services.workbench_task_run import build_codetalk_provider_snapshot
 from app.services.workbench_workflow_runner import WorkbenchWorkflowRunner
-from app.services.workflow_dsl import WorkflowStore, WorkflowValidationError, audit_workflow_definition
+from app.services.workflow_dsl import (
+    ALLOWED_INPUT_TYPES,
+    ALLOWED_STEP_TYPES,
+    WorkflowStore,
+    WorkflowValidationError,
+    audit_workflow_definition,
+)
 from app.services.workflow_presets import (
     builtin_workflow_presets,
     install_workflow_preset,
@@ -203,6 +209,45 @@ async def get_workflow_snapshot(workflow_id: str) -> dict[str, Any]:
 @router.get("/workflow-presets")
 async def list_workflow_presets() -> dict[str, Any]:
     return {"items": builtin_workflow_presets()}
+
+
+@router.get("/workflow-capabilities")
+async def get_workflow_capabilities() -> dict[str, Any]:
+    """Return the declarative workflow surface available to user-defined tasks."""
+    return {
+        "status": "ok",
+        "input_types": sorted(ALLOWED_INPUT_TYPES),
+        "input_resolvers": ["agent_mcp", "local", "manual"],
+        "step_types": sorted(ALLOWED_STEP_TYPES),
+        "output_types": [
+            "json",
+            "markdown",
+            "text",
+            "patch",
+            "diff",
+            "test_cases",
+            "scope_report",
+        ],
+        "output_features": {
+            "json_schema_validation": True,
+            "workflow_output_materialization": True,
+            "semantic_case_import_from_outputs": True,
+            "sha256_and_size_recorded": True,
+        },
+        "agent_cli_features": {
+            "agent_owned_mcp_credentials": True,
+            "provider_selection": True,
+            "startup_probe": True,
+            "required_artifacts_validation": True,
+            "source_slice_second_turn": True,
+        },
+        "semantic_library_import_formats": ["json", "jsonl", "ndjson", "csv", "txt"],
+        "artifact_contract": {
+            "required_artifacts": "validated locally before outputs are accepted",
+            "raw_output": "stored for audit but never accepted as evidence without artifacts",
+            "workflow_outputs": "collected from declared outputs and checked before acceptance",
+        },
+    }
 
 
 @router.post("/workflow-presets/{preset_id}/install", status_code=201)
