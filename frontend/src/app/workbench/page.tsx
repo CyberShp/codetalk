@@ -1133,6 +1133,25 @@ export default function AgentWorkbenchPage() {
                       <p className="mt-1 break-words">
                         {providerProbeResults[provider.provider].message}
                       </p>
+                      {providerProbeResults[provider.provider].health?.launch_kind && (
+                        <p className="mt-1">
+                          Probe launch:{" "}
+                          <span className="font-data text-on-surface">
+                            {providerProbeResults[provider.provider].health?.launch_kind}
+                          </span>
+                          {providerProbeResults[provider.provider].health?.used_fallback && (
+                            <span className="ml-2 font-medium text-warning">fallback</span>
+                          )}
+                        </p>
+                      )}
+                      {providerProbeResults[provider.provider].health?.attempts && (
+                        <p className="mt-1">
+                          Probe attempts:{" "}
+                          <span className="font-data text-on-surface">
+                            {providerProbeResults[provider.provider].health?.attempts?.length}
+                          </span>
+                        </p>
+                      )}
                     </div>
                   )}
                 </div>

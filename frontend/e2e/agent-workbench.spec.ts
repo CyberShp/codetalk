@@ -167,6 +167,13 @@ async function routeWorkbenchShell(page: import("@playwright/test").Page) {
           command: "ccr code -- -p",
           launch_kind: "powershell-profile",
           used_fallback: false,
+          attempts: [
+            {
+              command: "ccr code",
+              status: "available",
+              launch_kind: "powershell-profile",
+            },
+          ],
         },
       },
       headers: corsHeaders(route.request().headers().origin),
@@ -204,6 +211,8 @@ test("agent workbench renders workflow and task-run controls", async ({ page }) 
   await page.getByRole("button", { name: "Startup probe" }).click();
   await expect(page.getByText("Startup probe ok: claude-code")).toBeVisible();
   await expect(page.getByText("startup_probe_ok via ccr code")).toBeVisible();
+  await expect(page.getByText("Probe launch: powershell-profile")).toBeVisible();
+  await expect(page.getByText("Probe attempts: 1")).toBeVisible();
   await expect(page.getByRole("heading", { name: "Workflow Registry" })).toBeVisible();
   await expect(page.getByLabel("Workflow builder scenario")).toBeVisible();
   await expect(page.getByRole("button", { name: "Apply preset" })).toBeVisible();
