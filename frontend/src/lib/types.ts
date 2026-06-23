@@ -495,6 +495,15 @@ export interface TaskRerunPlan {
   blocked_outputs?: Array<Record<string, unknown>>;
 }
 
+export interface TaskRerunPlanValidation {
+  task_run_id: string;
+  status: string;
+  can_rerun: boolean;
+  plan_status?: string;
+  checks?: Array<Record<string, unknown>>;
+  steps?: Array<Record<string, unknown>>;
+}
+
 export interface WorkbenchTaskArtifact {
   relative_path: string;
   path: string;

@@ -24,6 +24,7 @@ import type {
   PreparedWorkbenchTaskRun,
   SemanticCase,
   TaskRerunPlan,
+  TaskRerunPlanValidation,
   WorkflowDefinition,
   WorkflowExecutionResult,
   WorkflowPreset,
@@ -602,6 +603,8 @@ export default function AgentWorkbenchPage() {
     useState<WorkbenchTaskArtifactContent | null>(null);
   const [workflowExecution, setWorkflowExecution] = useState<WorkflowExecutionResult | null>(null);
   const [taskRerunPlan, setTaskRerunPlan] = useState<TaskRerunPlan | null>(null);
+  const [taskRerunPlanValidation, setTaskRerunPlanValidation] =
+    useState<TaskRerunPlanValidation | null>(null);
   const [workflowOutputMaterialize, setWorkflowOutputMaterialize] =
     useState<MaterializeWorkflowOutputsResult | null>(null);
   const [executionResults, setExecutionResults] = useState<
@@ -805,6 +808,7 @@ export default function AgentWorkbenchPage() {
       setMaterializeResults({});
       setWorkflowExecution(null);
       setTaskRerunPlan(null);
+      setTaskRerunPlanValidation(null);
       setWorkflowOutputMaterialize(null);
       setArtifactContent(null);
       await refreshArtifactManifest(result.task_run_id);
@@ -858,8 +862,12 @@ export default function AgentWorkbenchPage() {
   const loadTaskRerunPlan = () =>
     runAction("load-rerun-plan", async () => {
       if (!preparedRun) return;
-      const result = await api.workbench.taskRuns.rerunPlan(preparedRun.task_run_id);
+      const [result, validation] = await Promise.all([
+        api.workbench.taskRuns.rerunPlan(preparedRun.task_run_id),
+        api.workbench.taskRuns.rerunPlanValidation(preparedRun.task_run_id),
+      ]);
       setTaskRerunPlan(result);
+      setTaskRerunPlanValidation(validation);
       setMessage(`Rerun plan ${result.status}: ${result.task_run_id}`);
     });
 
@@ -884,6 +892,9 @@ export default function AgentWorkbenchPage() {
       );
       setWorkflowExecution(result);
       setTaskRerunPlan((result.rerun_plan as TaskRerunPlan | undefined) ?? null);
+      setTaskRerunPlanValidation(
+        await api.workbench.taskRuns.rerunPlanValidation(preparedRun.task_run_id),
+      );
       await refreshArtifactManifest(preparedRun.task_run_id);
       setMessage(`Workflow execution ${result.status}: ${result.task_run_id}`);
       await loadWorkflows();
@@ -1748,6 +1759,27 @@ export default function AgentWorkbenchPage() {
                         </span>
                       ) : null}
                     </div>
+                    {taskRerunPlanValidation &&
+                      taskRerunPlanValidation.task_run_id === preparedRun.task_run_id && (
+                        <div className="mt-1 flex flex-wrap gap-1.5 font-data text-[10px]">
+                          <span
+                            className={`rounded bg-surface px-1.5 py-0.5 ${
+                              taskRerunPlanValidation.can_rerun ? "" : "text-warning"
+                            }`}
+                          >
+                            validation:{taskRerunPlanValidation.status}
+                          </span>
+                          <span className="rounded bg-surface px-1.5 py-0.5">
+                            can-rerun:{String(taskRerunPlanValidation.can_rerun)}
+                          </span>
+                          <span className="rounded bg-surface px-1.5 py-0.5">
+                            checks:{taskRerunPlanValidation.checks?.length ?? 0}
+                          </span>
+                          <span className="rounded bg-surface px-1.5 py-0.5">
+                            steps:{taskRerunPlanValidation.steps?.length ?? 0}
+                          </span>
+                        </div>
+                      )}
                   </div>
                 )}
                 {(() => {

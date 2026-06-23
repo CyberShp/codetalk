@@ -597,6 +597,22 @@ async def get_task_run_rerun_plan(task_run_id: str) -> dict[str, Any]:
     return payload
 
 
+@router.get("/task-runs/{task_run_id}/rerun-plan/validation")
+async def validate_task_run_rerun_plan(task_run_id: str) -> dict[str, Any]:
+    try:
+        task_run = WorkbenchTaskRunStore(_task_runs_dir()).load(task_run_id)
+    except KeyError:
+        raise HTTPException(status_code=404, detail=f"Unknown task run: {task_run_id}")
+    path = Path(task_run.artifact_dir) / "task_rerun_plan.json"
+    plan = _read_json(path)
+    if not isinstance(plan, dict):
+        raise HTTPException(
+            status_code=404,
+            detail="task rerun plan has not been generated",
+        )
+    return _validate_task_rerun_plan(task_run=task_run, plan=plan)
+
+
 @router.get("/task-runs/{task_run_id}/artifacts")
 async def list_task_run_artifacts(task_run_id: str) -> dict[str, Any]:
     try:
@@ -1769,6 +1785,92 @@ def _artifact_content_payload(task_dir: Path, path: Path, *, max_chars: int) -> 
         "is_text": is_text,
         "truncated": truncated,
         "content": content,
+    }
+
+
+def _validate_task_rerun_plan(*, task_run: Any, plan: dict[str, Any]) -> dict[str, Any]:
+    task_dir = Path(str(task_run.artifact_dir))
+    checks = [
+        _rerun_file_check("task_run", task_dir / "task_run.json"),
+        _rerun_file_check("input_snapshot", task_dir / "input_snapshot.json"),
+        _rerun_file_check("task_bundle", task_dir / "task_bundle.json"),
+        _rerun_file_check("workflow_snapshot", task_dir / "workflow_snapshot.json"),
+        _rerun_repo_check(str(task_run.repo_path or "")),
+    ]
+    plan_task_run_id = str(plan.get("task_run_id") or "")
+    if plan_task_run_id != task_run.task_run_id:
+        checks.append({
+            "id": "plan_task_run_id",
+            "status": "blocked",
+            "reason": "plan task_run_id does not match requested task run",
+            "expected": task_run.task_run_id,
+            "actual": plan_task_run_id,
+        })
+
+    agent_runs_by_step = {
+        str(item.get("step_id") or ""): item
+        for item in task_run.agent_runs
+        if isinstance(item, dict)
+    }
+    step_validations: list[dict[str, Any]] = []
+    for step in plan.get("steps") or []:
+        if not isinstance(step, dict):
+            continue
+        step_id = str(step.get("step_id") or "")
+        agent_run = agent_runs_by_step.get(step_id, {})
+        artifact_dir = Path(str(agent_run.get("artifact_dir") or ""))
+        artifact_dir_exists = bool(artifact_dir and artifact_dir.exists() and artifact_dir.is_dir())
+        overwrite_risk_artifacts = [
+            {
+                "artifact": str(artifact or ""),
+                "exists": bool(artifact_dir_exists and (artifact_dir / str(artifact or "")).exists()),
+            }
+            for artifact in step.get("overwrite_risk_artifacts") or []
+        ]
+        status = "ready" if artifact_dir_exists else "blocked"
+        step_payload = {
+            "step_id": step_id,
+            "status": status,
+            "recommended_action": str(step.get("recommended_action") or ""),
+            "failure_kind": str(step.get("failure_kind") or ""),
+            "artifact_dir": str(artifact_dir),
+            "artifact_dir_exists": artifact_dir_exists,
+            "missing_artifacts": [str(item) for item in step.get("missing_artifacts") or []],
+            "overwrite_risk_artifacts": overwrite_risk_artifacts,
+        }
+        if not artifact_dir_exists:
+            step_payload["reason"] = "agent step artifact directory is missing"
+        step_validations.append(step_payload)
+
+    blocked = any(item.get("status") == "blocked" for item in checks + step_validations)
+    return {
+        "task_run_id": task_run.task_run_id,
+        "status": "blocked" if blocked else "ready",
+        "can_rerun": not blocked,
+        "plan_status": str(plan.get("status") or ""),
+        "checks": checks,
+        "steps": step_validations,
+    }
+
+
+def _rerun_file_check(check_id: str, path: Path) -> dict[str, Any]:
+    exists = path.exists() and path.is_file()
+    return {
+        "id": check_id,
+        "status": "ok" if exists else "blocked",
+        "path": str(path),
+        "reason": "" if exists else "required task-run artifact is missing",
+    }
+
+
+def _rerun_repo_check(repo_path: str) -> dict[str, Any]:
+    path = Path(repo_path) if repo_path else Path()
+    exists = bool(repo_path and path.exists() and path.is_dir())
+    return {
+        "id": "repo_path",
+        "status": "ok" if exists else "blocked",
+        "path": repo_path,
+        "reason": "" if exists else "repo path is missing or not a directory",
     }
 
 

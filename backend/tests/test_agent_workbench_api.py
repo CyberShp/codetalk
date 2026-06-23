@@ -1677,6 +1677,29 @@ async def test_workbench_task_run_artifacts_api_labels_failure_recovery(
     assert rerun_plan["status"] == "needs_rerun"
     assert rerun_plan["steps"][0]["recommended_action"] == "rerun_agent_step"
     assert rerun_plan["steps"][0]["missing_artifacts"] == ["source_scope.json"]
+    validation_response = await workbench_client.get(
+        f"/api/workbench/task-runs/{task_run_id}/rerun-plan/validation"
+    )
+    assert validation_response.status_code == 200
+    validation = validation_response.json()
+    assert validation["task_run_id"] == task_run_id
+    assert validation["status"] == "ready"
+    assert validation["can_rerun"] is True
+    assert validation["plan_status"] == "needs_rerun"
+    assert {item["id"]: item["status"] for item in validation["checks"]} == {
+        "task_run": "ok",
+        "input_snapshot": "ok",
+        "task_bundle": "ok",
+        "workflow_snapshot": "ok",
+        "repo_path": "ok",
+    }
+    assert validation["steps"][0]["step_id"] == "discover"
+    assert validation["steps"][0]["status"] == "ready"
+    assert validation["steps"][0]["artifact_dir_exists"] is True
+    assert validation["steps"][0]["overwrite_risk_artifacts"][0] == {
+        "artifact": "raw_output.txt",
+        "exists": True,
+    }
 
 
 async def test_workbench_task_run_artifacts_api_labels_agent_turn_snapshots(
