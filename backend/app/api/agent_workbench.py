@@ -1116,18 +1116,15 @@ def _materialize_structured_workflow_output_evidence(
             sha256=sha256,
         )
     if path.name == "uncovered_functions.json" or output_id == "uncovered_functions":
-        return (
-            _materialize_uncovered_function_evidence(
-                store=store,
-                task_run=task_run,
-                output=output,
-                output_id=output_id,
-                output_evidence_id=output_evidence_id,
-                path=path,
-                data=data,
-                sha256=sha256,
-            ),
-            [],
+        return _materialize_uncovered_function_evidence(
+            store=store,
+            task_run=task_run,
+            output=output,
+            output_id=output_id,
+            output_evidence_id=output_evidence_id,
+            path=path,
+            data=data,
+            sha256=sha256,
         )
     if path.name != "changed_files.json" and output_id != "changed_files":
         return [], []
@@ -1526,14 +1523,15 @@ def _materialize_uncovered_function_evidence(
     path: Path,
     data: bytes,
     sha256: str,
-) -> list[str]:
+) -> tuple[list[str], list[dict[str, str]]]:
     try:
         payload = json.loads(data.decode("utf-8"))
     except (UnicodeDecodeError, json.JSONDecodeError):
-        return []
+        return [], []
     if not isinstance(payload, list):
-        return []
+        return [], []
     evidence_ids: list[str] = []
+    rejected: list[dict[str, str]] = []
     for item in payload:
         if not isinstance(item, dict):
             continue
@@ -1544,16 +1542,28 @@ def _materialize_uncovered_function_evidence(
         line_start = _safe_int(item.get("line_start"))
         hit_count = _safe_int(item.get("hit_count"))
         subject_key = f"{file_path}:{function_name}"
+        source_verified = _validated_repo_source_path(task_run.repo_path, file_path) is not None
+        if not source_verified:
+            rejected.append({
+                "output": output_id,
+                "path": file_path,
+                "function_name": function_name,
+                "reason": "coverage_source_path_not_verified",
+            })
         gap_evidence_id = store.upsert_evidence_item(
             run_id=task_run.task_run_id,
             workspace_id=task_run.workspace_id,
             kind="coverage_gap",
             subject_key=subject_key,
-            status="verified_output",
+            status="verified_output" if source_verified else "needs_source_validation",
             source=str(output.get("from") or "workflow"),
             path=file_path,
             symbol=function_name,
-            reason="Uncovered function came from a locally verified workflow coverage output.",
+            reason=(
+                "Uncovered function came from a locally verified workflow coverage output."
+                if source_verified
+                else "Coverage output was parsed, but its source path was not verified in the repository."
+            ),
             text=(
                 f"{file_path} {function_name} line_start={line_start} "
                 f"hit_count={hit_count}"
@@ -1569,10 +1579,11 @@ def _materialize_uncovered_function_evidence(
                 "function_name": function_name,
                 "line_start": line_start,
                 "hit_count": hit_count,
+                "source_verified": source_verified,
             },
         )
         evidence_ids.append(gap_evidence_id)
-        if _validated_repo_source_path(task_run.repo_path, file_path) is not None:
+        if source_verified:
             _add_workbench_source_slice(
                 store=store,
                 evidence_id=gap_evidence_id,
@@ -1580,7 +1591,7 @@ def _materialize_uncovered_function_evidence(
                 rel_path=file_path,
                 line_start=line_start or 1,
             )
-    return evidence_ids
+    return evidence_ids, rejected
 
 
 _SOURCE_EXTENSIONS = {".c", ".h", ".cc", ".cpp", ".hpp", ".py", ".go", ".rs", ".java", ".ts", ".tsx", ".js", ".jsx"}

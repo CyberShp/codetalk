@@ -1282,8 +1282,14 @@ async def test_workbench_materialize_uncovered_functions_output_as_structured_me
 
     assert materialized.status_code == 200
     body = materialized.json()
-    assert body["status"] == "ok"
+    assert body["status"] == "partial"
     assert body["evidence_count"] == 2
+    assert {
+        "output": "uncovered_functions",
+        "path": "nof/nvmf_tcp/transport/tls/tls.c",
+        "function_name": "nvmf_tcp_tls_handshake",
+        "reason": "coverage_source_path_not_verified",
+    } in body["rejected_outputs"]
     search = await workbench_client.get(
         "/api/workbench/memory/search",
         params={"q": "nvmf_tcp_tls_handshake", "workspace_id": "ws-coverage-gap-memory"},
@@ -1294,7 +1300,9 @@ async def test_workbench_materialize_uncovered_functions_output_as_structured_me
     assert gaps
     assert gaps[0]["subject_key"] == "nof/nvmf_tcp/transport/tls/tls.c:nvmf_tcp_tls_handshake"
     assert gaps[0]["symbol"] == "nvmf_tcp_tls_handshake"
+    assert gaps[0]["status"] == "needs_source_validation"
     assert gaps[0]["provenance"]["line_start"] == 42
+    assert gaps[0]["provenance"]["source_verified"] is False
 
 
 async def test_workbench_materialize_source_scope_output_as_structured_memory(
