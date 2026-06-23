@@ -16,6 +16,7 @@ import { api } from "@/lib/api";
 import type {
   EvidenceMemoryItem,
   EvidenceSourceSlice,
+  ExternalAgentStartupProbeResult,
   AgentRunExecutionResult,
   ArtifactValidationResult,
   MaterializeEvidenceResult,
@@ -459,6 +460,9 @@ export default function AgentWorkbenchPage() {
   const [memorySlices, setMemorySlices] = useState<Record<string, EvidenceSourceSlice[]>>({});
   const [providerMatrix, setProviderMatrix] =
     useState<WorkbenchProviderCapabilitiesMatrix | null>(null);
+  const [providerProbeResults, setProviderProbeResults] = useState<
+    Record<string, ExternalAgentStartupProbeResult>
+  >({});
   const [taskRuns, setTaskRuns] = useState<PreparedWorkbenchTaskRun[]>([]);
   const [preparedRun, setPreparedRun] = useState<PreparedWorkbenchTaskRun | null>(null);
   const [artifactManifest, setArtifactManifest] =
@@ -663,6 +667,13 @@ export default function AgentWorkbenchPage() {
       setArtifactContent(null);
       await refreshArtifactManifest(result.task_run_id);
       setMessage(`Task run prepared: ${result.task_run_id}`);
+    });
+
+  const runProviderStartupProbe = (provider: string) =>
+    runAction(`provider-probe-${provider}`, async () => {
+      const result = await api.tools.startupProbe(provider, repoPath.trim() || undefined);
+      setProviderProbeResults((current) => ({ ...current, [provider]: result }));
+      setMessage(`Startup probe ${result.status}: ${provider}`);
     });
 
   function updatePrepareInput(input: Record<string, unknown>, value: string) {
@@ -950,6 +961,33 @@ export default function AgentWorkbenchPage() {
                   )}
                   {provider.diagnostics.troubleshooting?.[0] && (
                     <p className="leading-5">{provider.diagnostics.troubleshooting[0]}</p>
+                  )}
+                  {provider.diagnostics.startup_probe_endpoint && (
+                    <button
+                      onClick={() => runProviderStartupProbe(provider.provider)}
+                      disabled={busyAction === `provider-probe-${provider.provider}`}
+                      className="mt-2 inline-flex items-center gap-2 rounded-lg bg-surface-container px-2.5 py-1.5 text-xs font-medium text-on-surface transition-colors hover:bg-surface-container-high disabled:opacity-50"
+                    >
+                      {busyAction === `provider-probe-${provider.provider}` ? (
+                        <Loader2 size={13} className="animate-spin" />
+                      ) : (
+                        <PlayCircle size={13} />
+                      )}
+                      Startup probe
+                    </button>
+                  )}
+                  {providerProbeResults[provider.provider] && (
+                    <div className="mt-2 rounded bg-surface-container px-2 py-1.5">
+                      <p>
+                        Probe result:{" "}
+                        <span className="font-data text-on-surface">
+                          {providerProbeResults[provider.provider].status}
+                        </span>
+                      </p>
+                      <p className="mt-1 break-words">
+                        {providerProbeResults[provider.provider].message}
+                      </p>
+                    </div>
                   )}
                 </div>
               )}

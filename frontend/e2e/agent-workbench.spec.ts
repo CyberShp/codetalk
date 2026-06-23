@@ -146,6 +146,22 @@ async function routeWorkbenchShell(page: import("@playwright/test").Page) {
       headers: corsHeaders(route.request().headers().origin),
     });
   });
+  await page.route("**/api/tools/claude-code/startup-probe*", async (route) => {
+    await route.fulfill({
+      json: {
+        provider: "claude-code",
+        healthy: true,
+        status: "ok",
+        message: "startup_probe_ok via ccr code",
+        health: {
+          command: "ccr code -- -p",
+          launch_kind: "powershell-profile",
+          used_fallback: false,
+        },
+      },
+      headers: corsHeaders(route.request().headers().origin),
+    });
+  });
 }
 
 test("agent workbench renders workflow and task-run controls", async ({ page }) => {
@@ -169,6 +185,9 @@ test("agent workbench renders workflow and task-run controls", async ({ page }) 
   await expect(page.getByText("source slices")).toBeVisible();
   await expect(page.getByText("fast-context").first()).toBeVisible();
   await expect(page.getByText("codetalk_mcp_bridge")).toBeVisible();
+  await page.getByRole("button", { name: "Startup probe" }).click();
+  await expect(page.getByText("Startup probe ok: claude-code")).toBeVisible();
+  await expect(page.getByText("startup_probe_ok via ccr code")).toBeVisible();
   await expect(page.getByRole("heading", { name: "Workflow Registry" })).toBeVisible();
   await expect(page.getByLabel("Workflow builder scenario")).toBeVisible();
   await expect(page.getByRole("button", { name: "Apply preset" })).toBeVisible();
