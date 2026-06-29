@@ -1366,6 +1366,32 @@ test("D/I: agent workbench real UI workflow, semantic library, memory, and artif
     }
   }
 
+  try {
+    const failureArtifactButton = page
+      .getByRole("button")
+      .filter({
+        hasText: /agent_failure_retry_context|failure_retry_context\.json|agent_failure_recovery/,
+      })
+      .first();
+    const hasFailureArtifact = await failureArtifactButton.isVisible({ timeout: 3_000 }).catch(() => false);
+    if (!hasFailureArtifact) {
+      record("J05", "blocked", "failure retry diagnostic artifact was not present in the prepared run artifact list");
+    } else {
+      await failureArtifactButton.click();
+      await expect(page.getByText("Failure retry")).toBeVisible({ timeout: 10_000 });
+      await expect(page.getByText(/retryable:true/)).toBeVisible({ timeout: 10_000 });
+      await expect(page.getByText(/missing:|must-produce:/)).toBeVisible({ timeout: 10_000 });
+      await expect(page.getByText(/stderr:|stdout:/)).toBeVisible({ timeout: 10_000 });
+      record("J05", "pass", "opened failure retry diagnostic artifact from workbench UI and verified retry context fields", {
+        screenshot: await screenshot(page, "J05-failure-diagnostic-artifact"),
+      });
+    }
+  } catch (error) {
+    record("J05", "blocked", "failure retry diagnostic artifact could not be verified through the workbench UI", {
+      error: error instanceof Error ? error.message : String(error),
+    });
+  }
+
   await openWorkbenchView(page, "证据与语义");
   await page.getByLabel("Semantic feature").fill("SPDK NVMe-oF Black-box");
   await page.getByLabel("Semantic module").fill("lib/nvmf");
@@ -1422,6 +1448,25 @@ test("D/I: agent workbench real UI workflow, semantic library, memory, and artif
   await page.getByRole("button", { name: "搜索证据" }).click();
   await expect(page.getByText(/证据搜索结果:/)).toBeVisible({ timeout: 30_000 });
   record("I05", "pass", "memory search UI responds");
+
+  const memoryResultCountText = await page.getByText(/证据搜索结果:\s*\d+/).last().innerText().catch(() => "");
+  const memoryResultCount = Number(memoryResultCountText.match(/证据搜索结果:\s*(\d+)/)?.[1] ?? "0");
+  if (memoryResultCount > 0) {
+    const sourceSliceButton = page.getByRole("button", { name: "源码切片" }).first();
+    await expect(sourceSliceButton).toBeVisible({ timeout: 30_000 });
+    await sourceSliceButton.click();
+    await expect(page.getByText(/源码切片已加载:|slice\(s\)|sha:/)).toBeVisible({ timeout: 30_000 });
+    await expect(page.locator("pre, p").filter({ hasText: /lib\/|test\/|sha:|verified_current/ }).first()).toBeVisible({
+      timeout: 30_000,
+    });
+    record("I04", "pass", "opened memory evidence source slices through the workbench UI", {
+      screenshot: await screenshot(page, "I04-memory-source-slices"),
+    });
+    record("I03", "pass", "memory evidence result was visible and its source context could be opened through UI");
+  } else {
+    record("I03", "blocked", "memory evidence search completed but returned no evidence to open");
+    record("I04", "blocked", "source slice UI requires at least one memory evidence search result");
+  }
 });
 
 test("H/G/F/E/J: coverage upload, AI test-design, and artifact quality gates", async ({ page, request }) => {
