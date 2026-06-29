@@ -21,6 +21,35 @@ from app.llm.base import (
 logger = logging.getLogger(__name__)
 
 
+def _content_text(value: object) -> str:
+    if isinstance(value, str):
+        return value
+    if isinstance(value, list):
+        parts: list[str] = []
+        for segment in value:
+            if isinstance(segment, dict):
+                text = segment.get("text") or segment.get("content")
+                if text:
+                    parts.append(str(text))
+        return "".join(parts)
+    return ""
+
+
+def _extract_choice_content(choice: dict) -> str:
+    message = choice.get("message") or {}
+    candidates = [
+        message.get("content"),
+        message.get("reasoning_content"),
+        choice.get("content"),
+        choice.get("text"),
+    ]
+    for candidate in candidates:
+        content = _content_text(candidate)
+        if content.strip():
+            return content
+    return ""
+
+
 class OpenAICompatClient(BaseLLMClient):
     """Client for any OpenAI-compatible chat completions endpoint."""
 
@@ -181,7 +210,7 @@ class OpenAICompatClient(BaseLLMClient):
         finish_reasons = [c.get("finish_reason", "unknown") for c in choices]
         logger.debug("OpenAI-compat response: %d choices, finish_reasons=%s", len(choices), finish_reasons)
 
-        content = choices[0]["message"]["content"] if choices else ""
+        content = _extract_choice_content(choices[0]) if choices else ""
 
         if not content or len(content.strip()) < 10:
             logger.warning(

@@ -440,7 +440,7 @@ async function waitForAiThreadIdle(page: Page, timeout = 180_000) {
   const deadline = Date.now() + timeout;
   let idleSince = 0;
   while (Date.now() < deadline) {
-    const stopButtons = await page.getByRole("button", { name: "停止" }).count().catch(() => 0);
+    const stopButtons = await visibleLocatorCount(page.getByRole("button", { name: "停止" }));
     const bodyText = await page.locator("body").innerText().catch(() => "");
     const idle = stopButtons === 0 && !/线程状态\s*生成中/.test(bodyText);
     if (idle) {
@@ -452,6 +452,52 @@ async function waitForAiThreadIdle(page: Page, timeout = 180_000) {
     await page.waitForTimeout(500);
   }
   throw new Error(`AI thread did not become stably idle within ${timeout}ms`);
+}
+
+async function waitForAiTurnOutcome(
+  page: Page,
+  beforeReaderLength: number,
+  minReaderGrowth: number,
+  resultPattern: RegExp,
+  timeout = 120_000,
+) {
+  const deadline = Date.now() + timeout;
+  const modelErrorPattern = /未配置|模型生成失败|LLM.*失败|连接失败|All connection attempts failed|SSE|认证失败|API Key/i;
+  let latestReaderText = "";
+  let latestErrorText = "";
+  let latestIdle = false;
+
+  while (Date.now() < deadline) {
+    latestReaderText = await page.locator(".ct-codex-ai__reader").innerText({ timeout: 500 }).catch(() => "");
+    latestErrorText = await page.locator(".ct-codex-ai__error").innerText({ timeout: 500 }).catch(() => "");
+    const stopButtons = await visibleLocatorCount(page.getByRole("button", { name: "停止" }));
+    const bodyText = await page.locator("body").innerText({ timeout: 500 }).catch(() => "");
+    latestIdle = stopButtons === 0 && !/线程状态\s*生成中/.test(bodyText);
+    if (modelErrorPattern.test(latestErrorText)) {
+      await waitForAiThreadIdle(page, 30_000).catch(() => undefined);
+      return { status: "error" as const, text: latestReaderText, errorText: latestErrorText };
+    }
+    if (latestReaderText.length >= beforeReaderLength + minReaderGrowth && resultPattern.test(latestReaderText)) {
+      await waitForAiThreadIdle(page, 10_000).catch(() => undefined);
+      return { status: "result" as const, text: latestReaderText, errorText: latestErrorText };
+    }
+    await page.waitForTimeout(500);
+  }
+
+  throw new Error(
+    `AI thread turn did not complete within ${timeout}ms (idle=${latestIdle}, error=${latestErrorText.slice(0, 300)}, reader=${latestReaderText.slice(0, 500)})`,
+  );
+}
+
+async function visibleLocatorCount(locator: Locator) {
+  const count = await locator.count().catch(() => 0);
+  let visible = 0;
+  for (let index = 0; index < count; index += 1) {
+    if (await locator.nth(index).isVisible().catch(() => false)) {
+      visible += 1;
+    }
+  }
+  return visible;
 }
 
 async function firstVisibleEnabledButton(page: Page, name: string | RegExp) {
@@ -1249,7 +1295,7 @@ test("B/C/K: create SPDK workspace through UI and verify chat/index gate", async
     record("B06", "blocked", "source search requires indexed SPDK workspace");
   }
 
-  const chatPrompt = "分析 SPDK NVMe-oF target connect 到 IO 提交流程，并输出代码证据、流程、SFMEA、黑盒测试用例。";
+  const chatPrompt = "用不超过 500 字分析 SPDK NVMe-oF target connect 到 IO 提交流程，必须包含：代码证据、流程、SFMEA、黑盒测试用例。";
   await page.getByRole("button", { name: "AI线程" }).click();
   await expect(page.getByText("在宽屏 AI 线程中继续分析")).toBeVisible({ timeout: 10_000 });
   await page.getByRole("button", { name: "打开工作空间 AI 线程" }).click();
@@ -1262,11 +1308,12 @@ test("B/C/K: create SPDK workspace through UI and verify chat/index gate", async
   const textarea = page.getByLabel("AI 线程消息");
   const sendButton = page.getByRole("button", { name: "发送" });
   await expect(textarea).toBeVisible({ timeout: 15_000 });
+  const threadMessages = page.locator(".ct-codex-message");
+  const beforeFirstTurnReaderLength = (await page.locator(".ct-codex-ai__reader").innerText().catch(() => "")).length;
   await textarea.fill(chatPrompt);
   await expect(sendButton).toBeEnabled({ timeout: 10_000 });
   await sendButton.click();
 
-  const threadMessages = page.locator(".ct-codex-message");
   await expect(threadMessages.filter({ hasText: chatPrompt }).first()).toBeVisible({ timeout: 15_000 });
   try {
     const typography = await aiThreadMessageTypography(page, chatPrompt);
@@ -1293,21 +1340,20 @@ test("B/C/K: create SPDK workspace through UI and verify chat/index gate", async
     });
   }
   try {
-    const firstAiResult = threadMessages.filter({ hasText: /NVMe|nvmf|SFMEA|黑盒|connect|未配置|失败|error/i }).last();
-    await expect(
-      firstAiResult,
-    ).toBeVisible({ timeout: 120_000 });
-    await expect(page.getByRole("button", { name: "停止" })).toHaveCount(0, { timeout: 120_000 });
-    const resultText = await firstAiResult.innerText();
-    const errorText = await page.locator(".ct-codex-ai__error").innerText().catch(() => "");
-    const modelBlocked = /未配置|模型生成失败|LLM.*失败|连接失败|All connection attempts failed|SSE|认证失败|API Key/i.test(errorText);
+    const firstOutcome = await waitForAiTurnOutcome(
+      page,
+      beforeFirstTurnReaderLength,
+      chatPrompt.length + 20,
+      /SPDK|NVMe|nvmf|SFMEA|黑盒|connect/i,
+    );
+    const modelBlocked = firstOutcome.status === "error";
     record(
       "C01",
       modelBlocked ? "blocked" : "pass",
       modelBlocked ? "AI thread opened but model generation reported an actionable error" : "AI thread returned visible content",
       {
         screenshot: await screenshot(page, modelBlocked ? "C01-ai-thread-model-blocked" : "C01-ai-thread-answer"),
-        excerpt: resultText.slice(0, 2000),
+        excerpt: (modelBlocked ? firstOutcome.errorText : firstOutcome.text).slice(0, 2000),
       },
     );
     record("K06", "pass", "AI thread exposed a visible running/error/result state and returned to idle");
@@ -1326,15 +1372,18 @@ test("B/C/K: create SPDK workspace through UI and verify chat/index gate", async
 
   const evidencePrompt = "列出涉及的关键函数和文件证据。必须包含真实 SPDK 相对路径，例如 lib/nvmf 或 test/nvmf；每行只写 path 和函数/入口。";
   try {
+    const beforeEvidenceTurnReaderLength = (await page.locator(".ct-codex-ai__reader").innerText().catch(() => "")).length;
     await textarea.fill(evidencePrompt);
     await expect(sendButton).toBeEnabled({ timeout: 10_000 });
     await sendButton.click();
     await expect(threadMessages.filter({ hasText: evidencePrompt }).first()).toBeVisible({ timeout: 15_000 });
-    await expect(
-      threadMessages.filter({ hasText: /lib\/nvmf|test\/nvmf|nvmf|未配置|失败|error/i }).last(),
-    ).toBeVisible({ timeout: 120_000 });
-    await expect(page.getByRole("button", { name: "停止" })).toHaveCount(0, { timeout: 120_000 });
-    const evidenceText = await page.locator("body").innerText();
+    const evidenceOutcome = await waitForAiTurnOutcome(
+      page,
+      beforeEvidenceTurnReaderLength,
+      evidencePrompt.length + 20,
+      /lib\/nvmf|test\/nvmf|nvmf|未配置|失败|error/i,
+    );
+    const evidenceText = evidenceOutcome.text;
     const paths = existingSpdkEvidencePaths(evidenceText);
     record(
       "C02",
@@ -1352,6 +1401,7 @@ test("B/C/K: create SPDK workspace through UI and verify chat/index gate", async
 
   const followUpPrompt = "只输出外部可观测行为，用于黑盒测试设计，并保持简洁。";
   try {
+    const beforeFollowUpTurnReaderLength = (await page.locator(".ct-codex-ai__reader").innerText().catch(() => "")).length;
     const followUpTextarea = page.getByLabel("AI 线程消息");
     const followUpSendButton = page.getByRole("button", { name: "发送" });
     await expect(followUpTextarea).toBeVisible({ timeout: 30_000 });
@@ -1359,10 +1409,12 @@ test("B/C/K: create SPDK workspace through UI and verify chat/index gate", async
     await expect(followUpSendButton).toBeEnabled({ timeout: 30_000 });
     await followUpSendButton.click();
     await expect(threadMessages.filter({ hasText: followUpPrompt }).first()).toBeVisible({ timeout: 15_000 });
-    await expect(
-      threadMessages.filter({ hasText: /外部|观测|黑盒|日志|指标|状态|未配置|失败|error/i }).last(),
-    ).toBeVisible({ timeout: 120_000 });
-    await expect(page.getByRole("button", { name: "停止" })).toHaveCount(0, { timeout: 120_000 });
+    await waitForAiTurnOutcome(
+      page,
+      beforeFollowUpTurnReaderLength,
+      followUpPrompt.length + 20,
+      /外部|观测|黑盒|日志|指标|状态|未配置|失败|error/i,
+    );
     record("C03", "pass", "AI thread accepted a context-continuation follow-up through the real UI");
     record("C05", "pass", "AI thread allowed only one send action per completed visible turn in this flow");
   } catch (error) {

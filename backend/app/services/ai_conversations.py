@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import inspect
 import json
 import logging
@@ -604,25 +605,53 @@ async def run_generation(
     await store.mark_run_running(run_id)
     prompt = _build_prompt(conversation, messages, references, user_message["content"])
     chunks: list[str] = []
+    max_tokens = min(settings.ai_conversation_max_output_tokens, settings.llm_max_output_tokens)
+    temperature = 0.5
+
+    async def append_delta(content: str) -> None:
+        chunks.append(content)
+        await store.append_event(
+            run_id=run_id,
+            conversation_id=conversation["id"],
+            event_type="delta",
+            payload={"content": content},
+        )
+
     try:
         current = await store.get_run(run_id)
         if current["status"] == "cancelled":
             return
-        async for delta in llm.stream_complete(
-            prompt,
-            max_tokens=min(2048, settings.llm_max_output_tokens),
-            temperature=0.5,
-        ):
+        if not settings.ai_conversation_streaming_enabled:
+            response = await llm.complete(prompt, max_tokens=max_tokens, temperature=temperature)
             current = await store.get_run(run_id)
             if current["status"] == "cancelled":
                 return
-            chunks.append(delta)
-            await store.append_event(
-                run_id=run_id,
-                conversation_id=conversation["id"],
-                event_type="delta",
-                payload={"content": delta},
-            )
+            await append_delta(response.content)
+        else:
+            try:
+                async with asyncio.timeout(settings.ai_conversation_stream_timeout_sec):
+                    async for delta in llm.stream_complete(
+                        prompt,
+                        max_tokens=max_tokens,
+                        temperature=temperature,
+                    ):
+                        current = await store.get_run(run_id)
+                        if current["status"] == "cancelled":
+                            return
+                        await append_delta(delta)
+            except TimeoutError:
+                current = await store.get_run(run_id)
+                if current["status"] == "cancelled":
+                    return
+                if chunks:
+                    await append_delta("\n\n[模型流式输出超时，已返回当前可用内容。]")
+                else:
+                    logger.warning(
+                        "AI conversation streaming timed out before first delta; retrying non-stream completion"
+                    )
+                    async with asyncio.timeout(settings.ai_conversation_stream_timeout_sec):
+                        response = await llm.complete(prompt, max_tokens=max_tokens, temperature=temperature)
+                    await append_delta(response.content)
         content = "".join(chunks).strip() or "本轮没有生成有效内容，请换一种问法重试。"
         model = str(getattr(llm, "_model", "") or "")
         await store.complete_run(

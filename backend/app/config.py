@@ -115,6 +115,9 @@ class Settings(BaseSettings):
     llm_max_concurrency: int = 1     # admin env var LLM_MAX_CONCURRENCY; controls report-gen parallelism
     health_check_timeout: int = 5    # seconds for tool health probes
     llm_max_output_tokens: int = 8192  # LLM_MAX_OUTPUT_TOKENS — cap per-call output; set lower for intranet models
+    ai_conversation_streaming_enabled: bool = True  # AI_CONVERSATION_STREAMING_ENABLED — disable for providers with broken SSE
+    ai_conversation_max_output_tokens: int = 1024  # AI_CONVERSATION_MAX_OUTPUT_TOKENS — cap interactive thread turns
+    ai_conversation_stream_timeout_sec: int = 120  # AI_CONVERSATION_STREAM_TIMEOUT_SEC — fallback from streaming to complete()
     gitnexus_poll_timeout: int = 600 # max seconds to wait for GitNexus indexing
     coverage_max_upload_mb: int = 100 # max single file size for coverage upload
 

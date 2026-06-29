@@ -64,6 +64,23 @@ class FakeLLM:
         yield "建议补充异常路径和边界值。"
 
 
+class HangingStreamLLM:
+    def __init__(self):
+        self.complete_called = False
+        self.stream_called = False
+
+    async def stream_complete(self, messages, max_tokens=4096, temperature=0.3):
+        self.stream_called = True
+        await asyncio.sleep(10)
+        yield "unreachable"
+
+    async def complete(self, messages, max_tokens=4096, temperature=0.3):
+        from app.llm.base import LLMResponse
+
+        self.complete_called = True
+        return LLMResponse(content="非流式 fallback 已完成。", usage={"total_tokens": 3}, model="fake")
+
+
 class TestAIConversationsAPI:
     async def test_create_and_list_project_scoped_conversations(self, sqlite_db):
         ws_a = await _seed_workspace(sqlite_db, "ws-a")
@@ -222,3 +239,88 @@ class TestAIConversationsAPI:
             )
             assert reconnect.status_code == 200
             assert "data:" not in reconnect.text
+
+    async def test_message_stream_timeout_falls_back_to_non_stream_completion(self, sqlite_db, monkeypatch):
+        ws_id = await _seed_workspace(sqlite_db)
+
+        from app.api import ai_conversations
+        from app.services import ai_conversations as ai_service
+
+        fake_llm = HangingStreamLLM()
+        monkeypatch.setattr(ai_service.settings, "ai_conversation_stream_timeout_sec", 0.01)
+        monkeypatch.setattr(
+            ai_conversations,
+            "create_llm_client_from_active",
+            lambda: fake_llm,
+        )
+
+        app = _test_app(sqlite_db)
+        async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+            created = await client.post(
+                "/api/ai/conversations",
+                json={
+                    "scope_type": "workspace",
+                    "scope_id": ws_id,
+                    "title": "fallback stream",
+                },
+            )
+            conversation = created.json()
+
+            posted = await client.post(
+                f"/api/ai/conversations/{conversation['id']}/messages",
+                json={"content": "触发流式超时"},
+            )
+            assert posted.status_code == 202
+            await asyncio.sleep(0.1)
+
+            messages = await client.get(f"/api/ai/conversations/{conversation['id']}/messages")
+            assert messages.status_code == 200
+            body = messages.json()
+            assert fake_llm.complete_called is True
+            assert [m["role"] for m in body["items"]] == ["user", "assistant"]
+            assert "fallback 已完成" in body["items"][1]["content"]
+
+    async def test_message_generation_can_disable_streaming_for_provider_compatibility(
+        self,
+        sqlite_db,
+        monkeypatch,
+    ):
+        ws_id = await _seed_workspace(sqlite_db)
+
+        from app.api import ai_conversations
+        from app.services import ai_conversations as ai_service
+
+        fake_llm = HangingStreamLLM()
+        monkeypatch.setattr(ai_service.settings, "ai_conversation_streaming_enabled", False)
+        monkeypatch.setattr(
+            ai_conversations,
+            "create_llm_client_from_active",
+            lambda: fake_llm,
+        )
+
+        app = _test_app(sqlite_db)
+        async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+            created = await client.post(
+                "/api/ai/conversations",
+                json={
+                    "scope_type": "workspace",
+                    "scope_id": ws_id,
+                    "title": "non-stream provider",
+                },
+            )
+            conversation = created.json()
+
+            posted = await client.post(
+                f"/api/ai/conversations/{conversation['id']}/messages",
+                json={"content": "禁用流式生成"},
+            )
+            assert posted.status_code == 202
+            await asyncio.sleep(0.1)
+
+            messages = await client.get(f"/api/ai/conversations/{conversation['id']}/messages")
+            assert messages.status_code == 200
+            body = messages.json()
+            assert fake_llm.stream_called is False
+            assert fake_llm.complete_called is True
+            assert [m["role"] for m in body["items"]] == ["user", "assistant"]
+            assert "fallback 已完成" in body["items"][1]["content"]

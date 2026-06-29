@@ -202,6 +202,10 @@ export default function AIThreadPage() {
             }
           }
         }
+        if (!abort.signal.aborted) {
+          setStreamingRunId(null);
+          setStreamingContent("");
+        }
         await load();
       } catch (exc) {
         if (!abort.signal.aborted) {
@@ -236,6 +240,23 @@ export default function AIThreadPage() {
     void streamRun(streamingRunId, 0);
     return () => abortRef.current?.abort();
   }, [streamingRunId, streamRun]);
+
+  useEffect(() => {
+    if (!streamingRunId) return;
+    const timer = window.setInterval(() => {
+      void api.aiConversations
+        .get(conversationId)
+        .then(async (nextConversation) => {
+          if (nextConversation.latest_run?.id !== streamingRunId) return;
+          if (nextConversation.latest_run.status === "queued" || nextConversation.latest_run.status === "running") return;
+          setStreamingRunId(null);
+          setStreamingContent("");
+          await load();
+        })
+        .catch(() => undefined);
+    }, 3000);
+    return () => window.clearInterval(timer);
+  }, [conversationId, load, streamingRunId]);
 
   useEffect(() => {
     bottomRef.current?.scrollIntoView({ behavior: "smooth", block: "end" });
