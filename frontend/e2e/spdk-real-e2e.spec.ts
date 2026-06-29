@@ -638,12 +638,16 @@ test.afterEach(async ({ page }) => {
 });
 
 test("A05: startup scripts explain occupied ports", async () => {
-  const { preflightHosts } = (await import("../scripts/port-preflight.mjs")) as {
+  const { preflightHosts, shouldSkipIpv6ProbeError } = (await import("../scripts/port-preflight.mjs")) as {
     preflightHosts: (host: string, clientHost?: string) => string[];
+    shouldSkipIpv6ProbeError: (probeHost: string, code?: string) => boolean;
   };
   expect(preflightHosts("localhost")).toEqual(expect.arrayContaining(["127.0.0.1", "::1"]));
   expect(preflightHosts("0.0.0.0", "localhost")).toEqual(expect.arrayContaining(["0.0.0.0", "::1"]));
   expect(preflightHosts("0.0.0.0", "127.0.0.1")).toEqual(["0.0.0.0"]);
+  expect(shouldSkipIpv6ProbeError("::1", "EADDRNOTAVAIL")).toBeTruthy();
+  expect(shouldSkipIpv6ProbeError("::1", "EAFNOSUPPORT")).toBeTruthy();
+  expect(shouldSkipIpv6ProbeError("127.0.0.1", "EAFNOSUPPORT")).toBeFalsy();
   const playwrightConfig = fs.readFileSync(path.join(process.cwd(), "playwright.config.ts"), "utf8");
   expect(playwrightConfig).toContain("url: `http://${browserHost}:${backendPort}/health`");
   expect(playwrightConfig).toContain("url: `http://${browserHost}:${frontendPort}`");

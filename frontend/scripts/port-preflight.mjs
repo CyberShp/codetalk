@@ -10,6 +10,10 @@ export function preflightHosts(host, clientHost = host) {
   return [host];
 }
 
+export function shouldSkipIpv6ProbeError(probeHost, code) {
+  return probeHost === "::1" && ["EADDRNOTAVAIL", "EAFNOSUPPORT"].includes(code);
+}
+
 async function probePort({ probeHost, originalHost, numericPort, envName, serviceName }) {
   const server = net.createServer();
   await new Promise((resolve, reject) => {
@@ -23,7 +27,7 @@ async function probePort({ probeHost, originalHost, numericPort, envName, servic
         }),
     )
     .catch((error) => {
-      if (error?.code === "EADDRNOTAVAIL" && probeHost === "::1") {
+      if (shouldSkipIpv6ProbeError(probeHost, error?.code)) {
         return;
       }
       if (error?.code === "EADDRINUSE") {
