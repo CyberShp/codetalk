@@ -598,15 +598,16 @@ test("B/C/K: create SPDK workspace through UI and verify chat/index gate", async
   }
 
   await sendButton.click();
+  const assistantMessages = page.locator(".justify-start .bg-surface-container");
   try {
-    const assistantMessages = page.locator(".justify-start .bg-surface-container");
     await expect(assistantMessages.filter({ hasText: /NVMe|nvmf|SFMEA|黑盒|connect/i }).first()).toBeVisible({
       timeout: 90_000,
     });
+    await expect(page.getByRole("button", { name: "停止" })).toHaveCount(0, { timeout: 120_000 });
     record("C01", "pass", "AI thread returned visible content");
     record("C02", "pass", "first answer requested code evidence");
     record("C03", "pass", "thread can continue in structured mode");
-    recordDeferredChatCases("first answer returned");
+    record("K06", "pass", "chat showed streaming progress and returned to idle state");
   } catch (error) {
     const shot = await screenshot(page, "C01-chat-timeout");
     const bodyText = await page.locator("body").innerText().catch(() => "");
@@ -618,7 +619,44 @@ test("B/C/K: create SPDK workspace through UI and verify chat/index gate", async
     record("C02", "blocked", "no model answer to validate code evidence");
     record("C03", "blocked", "no model answer to validate context continuation");
     recordDeferredChatCases("first answer did not complete");
+    return;
   }
+
+  try {
+    await page.reload({ waitUntil: "domcontentloaded" });
+    await page.getByRole("button", { name: "对话" }).click();
+    await expect(page.getByText(chatPrompt, { exact: true }).first()).toBeVisible({ timeout: 30_000 });
+    await expect(page.locator(".justify-start .bg-surface-container").filter({ hasText: /NVMe|nvmf|SFMEA|黑盒|connect/i }).first()).toBeVisible({
+      timeout: 30_000,
+    });
+    record("C04", "pass", "chat history survived refresh with user prompt and assistant answer");
+  } catch (error) {
+    const shot = await screenshot(page, "C04-chat-recovery-failed");
+    record("C04", "blocked", "chat history did not recover after refresh", {
+      screenshot: shot,
+      error: error instanceof Error ? error.message : String(error),
+    });
+  }
+
+  try {
+    const exportDownloadPromise = page.waitForEvent("download");
+    await page.getByTitle("导出对话记录（Markdown）").click();
+    const exportDownload = await exportDownloadPromise;
+    const exportFile = path.join(ARTIFACT_DIR, "C08-chat-export.md");
+    await exportDownload.saveAs(exportFile);
+    const exportedChat = fs.readFileSync(exportFile, "utf8");
+    expect(exportedChat).toMatch(/工作空间对话记录|NVMe|nvmf|用户|AI/i);
+    record("C08", "pass", exportFile);
+  } catch (error) {
+    const shot = await screenshot(page, "C08-chat-export-failed");
+    record("C08", "blocked", "chat export did not download readable Markdown", {
+      screenshot: shot,
+      error: error instanceof Error ? error.message : String(error),
+    });
+  }
+  record("C05", "blocked", "long-running concurrent input requires a focused in-flight chat run after completed-chat baseline");
+  record("C06", "blocked", "model retry requires a controlled failure/timeout run after completed-chat baseline");
+  record("C07", "blocked", "multi-thread isolation requires a focused concurrent-thread run after completed-chat baseline");
 });
 
 test("D/I: agent workbench real UI workflow, semantic library, memory, and artifacts", async ({ page }) => {
