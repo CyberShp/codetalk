@@ -3187,3 +3187,95 @@ def test_patch_impact_review_preset_executes_with_local_diff_analysis(tmp_path):
         "impact_scope": "ok",
         "report": "ok",
     }
+
+
+def test_mr_blackbox_preset_executes_with_local_patch_diff(tmp_path):
+    from app.services.workbench_task_run import WorkbenchTaskRunPreparer
+    from app.services.workbench_workflow_runner import WorkbenchWorkflowRunner
+    from app.services.workflow_dsl import WorkflowStore
+    from app.services.workflow_presets import install_workflow_preset
+
+    repo = tmp_path / "repo"
+    (repo / "lib" / "nvmf").mkdir(parents=True)
+    (repo / "lib" / "nvmf" / "ctrlr.c").write_text(
+        "int nvmf_ctrlr_connect(void) { return 0; }\n",
+        encoding="utf-8",
+    )
+    patch_diff = "\n".join([
+        "diff --git a/lib/nvmf/ctrlr.c b/lib/nvmf/ctrlr.c",
+        "index 0000000..1111111 100644",
+        "--- a/lib/nvmf/ctrlr.c",
+        "+++ b/lib/nvmf/ctrlr.c",
+        "@@ -1,1 +1,1 @@",
+        "-int nvmf_ctrlr_connect(void) { return 0; }",
+        "+int nvmf_ctrlr_connect(void) { return -1; }",
+    ])
+    workflow_store = WorkflowStore(tmp_path / "workflows.db")
+    install_workflow_preset(workflow_store, "mr_blackbox_test")
+
+    task_run = WorkbenchTaskRunPreparer(
+        artifact_root=tmp_path / "task_runs",
+        workflow_store=workflow_store,
+    ).prepare(
+        workflow_id="mr_blackbox_test",
+        workspace_id="ws-local-mr-blackbox",
+        repo_path=str(repo),
+        inputs={
+            "patch_diff": patch_diff,
+            "repo_path": str(repo),
+        },
+    )
+
+    result = WorkbenchWorkflowRunner(tmp_path / "task_runs").execute_task_run(
+        task_run.task_run_id,
+        timeout_sec=10,
+    )
+
+    assert result.status == "completed"
+    root = Path(task_run.artifact_dir)
+    black_box_cases = json.loads(
+        (root / "steps" / "collect_mr" / "black_box_cases.json").read_text(encoding="utf-8")
+    )
+    mr_snapshot = json.loads(
+        (root / "steps" / "collect_mr" / "mr_snapshot.json").read_text(encoding="utf-8")
+    )
+    assert mr_snapshot["changed_files_count"] == 1
+    assert black_box_cases[0]["case_type"] == "black_box_ready"
+    assert black_box_cases[0]["file_path"] == "lib/nvmf/ctrlr.c"
+    assert "internal function" not in " ".join(black_box_cases[0]["steps"]).lower()
+    output_status = {item["id"]: item["status"] for item in result.outputs}
+    assert output_status["mr_scope"] == "ok"
+    assert output_status["black_box_cases"] == "ok"
+
+
+def test_mr_blackbox_preset_without_patch_emits_retry_diagnostics(tmp_path):
+    from app.services.workbench_task_run import WorkbenchTaskRunPreparer
+    from app.services.workbench_workflow_runner import WorkbenchWorkflowRunner
+    from app.services.workflow_dsl import WorkflowStore
+    from app.services.workflow_presets import install_workflow_preset
+
+    workflow_store = WorkflowStore(tmp_path / "workflows.db")
+    install_workflow_preset(workflow_store, "mr_blackbox_test")
+    task_run = WorkbenchTaskRunPreparer(
+        artifact_root=tmp_path / "task_runs",
+        workflow_store=workflow_store,
+    ).prepare(
+        workflow_id="mr_blackbox_test",
+        workspace_id="ws-mr-diagnostics",
+        repo_path=str(tmp_path),
+        inputs={"mr_link": "https://codehub.invalid/project/-/merge_requests/404"},
+    )
+
+    result = WorkbenchWorkflowRunner(tmp_path / "task_runs").execute_task_run(
+        task_run.task_run_id,
+        timeout_sec=10,
+    )
+
+    assert result.status == "invalid"
+    root = Path(task_run.artifact_dir)
+    retry_context = json.loads(
+        (root / "steps" / "collect_mr" / "failure_retry_context.json").read_text(encoding="utf-8")
+    )
+    assert retry_context["kind"] == "agent_failure_retry_context"
+    assert retry_context["retryable"] is True
+    assert "black_box_cases.json" in retry_context["missing_artifacts"]

@@ -22,7 +22,10 @@ def test_builtin_workflow_presets_are_valid_and_cover_core_scenarios():
         item["type"] == "mr_link" and item.get("resolver") == "agent_mcp"
         for item in mr_preset["definition"]["inputs"]
     )
+    assert any(item["id"] == "patch_diff" and item["type"] == "patch" for item in mr_preset["definition"]["inputs"])
+    assert mr_preset["definition"]["steps"][0]["type"] == "local_mr_blackbox_test"
     assert "mr_snapshot.json" in mr_preset["definition"]["steps"][0]["required_artifacts"]
+    assert "black_box_cases.json" in mr_preset["definition"]["steps"][0]["required_artifacts"]
     black_box_output = next(
         item
         for item in mr_preset["definition"]["outputs"]

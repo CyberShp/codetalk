@@ -96,7 +96,9 @@ def builtin_workflow_presets() -> list[dict[str, Any]]:
                 "name": "MR Black-box Test Design",
                 "version": 1,
                 "inputs": [
-                    {"id": "mr_link", "type": "mr_link", "required": True, "resolver": "agent_mcp", "role": "merge request URL"},
+                    {"id": "mr_link", "type": "mr_link", "required": False, "resolver": "agent_mcp", "role": "merge request URL"},
+                    {"id": "patch_diff", "type": "patch", "required": False, "role": "local patch diff"},
+                    {"id": "repo_path", "type": "directory", "required": False, "resolver": "local"},
                     {"id": "design_doc", "type": "file", "required": False, "role": "design context"},
                     {"id": "coverage_report", "type": "coverage_report", "required": False, "role": "coverage context"},
                     {"id": "semantic_library_ref", "type": "semantic_library_ref", "required": False, "role": "test terminology"},
@@ -104,22 +106,20 @@ def builtin_workflow_presets() -> list[dict[str, Any]]:
                 "steps": [
                     {
                         "id": "collect_mr",
-                        "type": "agent_task",
-                        "provider": "claude-code",
-                        "mcp_profile": "codehub-mcp",
-                        "goal": "Fetch MR metadata and diff through Agent MCP credentials. Produce artifacts only; do not edit files.",
-                        "required_artifacts": ["mr_snapshot.json", "diff.patch", "changed_files.json"],
+                        "type": "local_mr_blackbox_test",
+                        "goal": "Collect MR or local patch context and produce black-box cases without editing files.",
+                        "required_artifacts": ["mr_snapshot.json", "diff.patch", "changed_files.json", "black_box_cases.json"],
                     },
                     {"id": "semantic_retrieve", "type": "semantic_retrieve"},
                     {"id": "validate_mr_evidence", "type": "evidence_validate"},
                     {"id": "render_blackbox_cases", "type": "report_render"},
                 ],
                 "outputs": [
-                    {"id": "mr_scope", "type": "json", "from": "validate_mr_evidence"},
+                    {"id": "mr_scope", "type": "json", "from": "collect_mr", "artifact": "mr_snapshot.json"},
                     {
                         "id": "black_box_cases",
                         "type": "test_cases",
-                        "from": "render_blackbox_cases",
+                        "from": "collect_mr",
                         "artifact": "black_box_cases.json",
                         "semantic_import": {
                             "enabled": True,

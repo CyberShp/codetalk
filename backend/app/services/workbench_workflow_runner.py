@@ -374,6 +374,32 @@ class WorkbenchWorkflowRunner:
                 "count": len(payloads.get("impact_scope.json") or []),
             }
 
+        if step_type == "local_mr_blackbox_test":
+            payloads, status = _local_mr_blackbox_payloads(
+                task_run=task_run,
+                step=step,
+            )
+            written: list[str] = []
+            for artifact_name, payload in payloads.items():
+                artifact_path = artifact_dir / artifact_name
+                if isinstance(payload, str):
+                    artifact_path.write_text(payload, encoding="utf-8")
+                else:
+                    _write_json(artifact_path, payload)
+                written.append(artifact_name)
+            return {
+                "step_id": step_id,
+                "type": step_type,
+                "status": status,
+                "artifact_dir": str(artifact_dir),
+                "artifact": "black_box_cases.json",
+                "artifacts": written,
+                "required_artifacts": [
+                    str(item) for item in step.get("required_artifacts") or []
+                ],
+                "count": len(payloads.get("black_box_cases.json") or []),
+            }
+
         if step_type == "evidence_validate":
             payload = _evidence_validation_payload(
                 task_run=task_run,
@@ -869,6 +895,176 @@ def _local_patch_impact_payloads(
         "impact_scope.json": impacts,
         "flow_delta.json": flow_delta,
         "test_recommendations.json": recommendations,
+    }
+
+
+def _local_mr_blackbox_payloads(
+    *,
+    task_run: Any,
+    step: dict[str, Any],
+) -> tuple[dict[str, Any], str]:
+    patch_inputs = _patch_input_payloads(task_run.input_snapshot)
+    diff_texts = [_read_text_from_input_payload(item) for item in patch_inputs]
+    diff_text = "\n".join(text for text in diff_texts if text.strip())
+    mr_link = str(task_run.input_snapshot.get("mr_link") or "").strip()
+    if not diff_text.strip():
+        missing = ["diff.patch", "changed_files.json", "black_box_cases.json"]
+        return {
+            "mr_snapshot.json": {
+                "kind": "mr_snapshot",
+                "source": "local-mr-blackbox",
+                "status": "input_required",
+                "mr_link": mr_link,
+                "summary": "Local black-box generation requires a patch_diff input when external MR MCP is unavailable.",
+            },
+            "failure_recovery.json": {
+                "failure_kind": "missing_local_patch_diff",
+                "retryable": True,
+                "missing_artifacts": missing,
+                "suggested_actions": [
+                    "paste a unified diff into patch_diff",
+                    "or configure an external MR provider before using mr_link-only input",
+                ],
+            },
+            "failure_retry_context.json": {
+                "kind": "agent_failure_retry_context",
+                "step_id": str(step.get("id") or "collect_mr"),
+                "failure_kind": "missing_local_patch_diff",
+                "retryable": True,
+                "created_at": _now(),
+                "artifacts": {
+                    "failure_recovery": "failure_recovery.json",
+                    "task_bundle": "task_bundle.json",
+                    "raw_output": "",
+                },
+                "previous_execution": {
+                    "status": "invalid",
+                    "error": "patch_diff input is required for local MR black-box generation",
+                },
+                "previous_output": {
+                    "stdout_excerpt": "",
+                    "stderr_excerpt": "missing patch_diff; no external MR provider was invoked",
+                    "raw_output_artifact": "",
+                },
+                "validation": {
+                    "status": "invalid",
+                    "accepted_artifacts": ["mr_snapshot.json"],
+                    "rejected_artifacts": [],
+                },
+                "missing_artifacts": missing,
+                "retry_instructions": {
+                    "recommended_action": "rerun_with_patch_diff",
+                    "must_produce_artifacts": missing,
+                    "do_not_repeat": [
+                        "do not use mr_link-only input without an external MR provider",
+                        "do not materialize outputs until black_box_cases.json exists",
+                    ],
+                    "reuse_context_from": ["task_bundle.json", "mr_snapshot.json"],
+                },
+            },
+        }, "invalid"
+
+    changed_files = _dedupe_changed_files(_changed_files_from_unified_diff(diff_text))
+    cases = [
+        _black_box_case_for_changed_file(
+            task_run=task_run,
+            changed_file=item,
+            index=index,
+        )
+        for index, item in enumerate(changed_files[:24], start=1)
+    ]
+    if not cases:
+        cases = [_fallback_black_box_case(task_run=task_run)]
+    snapshot = {
+        "kind": "mr_snapshot",
+        "source": "local-mr-blackbox",
+        "status": "local_patch",
+        "mr_link": mr_link,
+        "repo_path": str(task_run.repo_path or ""),
+        "changed_files_count": len(changed_files),
+        "changed_files": changed_files,
+        "summary": "Generated from local patch_diff input without external MR credentials.",
+    }
+    return {
+        "mr_snapshot.json": snapshot,
+        "diff.patch": diff_text,
+        "changed_files.json": changed_files,
+        "black_box_cases.json": cases,
+    }, "completed"
+
+
+def _black_box_case_for_changed_file(
+    *,
+    task_run: Any,
+    changed_file: dict[str, Any],
+    index: int,
+) -> dict[str, Any]:
+    file_path = str(changed_file.get("path") or changed_file.get("old_path") or "")
+    module = _module_label_for_path(file_path)
+    test_directory = _test_directory_for_source(file_path)
+    focus = _black_box_focus_for_path(file_path)
+    observable = _observable_change_for_path(file_path)
+    return {
+        "case_id": f"local_mr_black_box_{index:03d}",
+        "title": f"{module} changed path black-box regression",
+        "module": module,
+        "file_path": file_path,
+        "case_type": "black_box_ready",
+        "scenario": f"Validate externally observable behavior for {file_path} after the patch.",
+        "preconditions": [
+            f"SPDK is built with the affected {module} component enabled",
+            f"Existing tests or scripts under {test_directory} are available as execution harnesses",
+        ],
+        "inputs": f"public workflow for {focus}; no direct internal function invocation",
+        "steps": [
+            "start the relevant SPDK target, tool, or RPC service with normal configuration",
+            "exercise the public success path that reaches the changed behavior",
+            "repeat with invalid input, timeout/reset, and repeated invocation conditions",
+            "collect host-visible status, RPC payloads, logs, and metrics after each operation",
+        ],
+        "expected": [
+            "normal path completes with compatible external behavior",
+            "invalid or disruptive inputs fail cleanly with actionable logs",
+            "no stale device, session, queue, or configuration state remains after retry",
+        ],
+        "observable_signals": [
+            observable,
+            "SPDK log messages",
+            "process exit/RPC response status",
+            "persistent state or reconnect behavior",
+        ],
+        "diagnostics": [
+            f"compare against tests in {test_directory}",
+            "capture before/after logs and public result payloads",
+            "triage failures by changed file path, not by calling internal functions",
+        ],
+        "source": "local-mr-blackbox",
+        "trace": {
+            "task_run_id": str(task_run.task_run_id),
+            "changed_file": changed_file,
+        },
+    }
+
+
+def _fallback_black_box_case(*, task_run: Any) -> dict[str, Any]:
+    return {
+        "case_id": "local_mr_black_box_001",
+        "title": "Patch black-box smoke regression",
+        "module": "repo",
+        "case_type": "black_box_hypothesis",
+        "scenario": "Patch diff did not expose changed files; run public smoke workflows and inspect logs.",
+        "preconditions": ["SPDK build and public smoke test harness are available"],
+        "inputs": "public SPDK smoke workflow",
+        "steps": [
+            "run existing public smoke tests",
+            "exercise invalid input and repeated invocation paths",
+            "collect logs, exit status, and externally visible state",
+        ],
+        "expected": ["smoke workflow remains compatible or fails with clear diagnostics"],
+        "observable_signals": ["logs", "exit status", "RPC or tool output"],
+        "diagnostics": ["provide a unified diff with changed paths for sharper scope"],
+        "source": "local-mr-blackbox",
+        "trace": {"task_run_id": str(task_run.task_run_id)},
     }
 
 

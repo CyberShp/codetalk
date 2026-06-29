@@ -20,6 +20,7 @@ ALLOWED_STEP_TYPES = frozenset({
     "local_scope_discover",
     "local_resource_leak_hunt",
     "local_patch_impact_review",
+    "local_mr_blackbox_test",
     "evidence_validate",
     "report_render",
     "artifact_export",

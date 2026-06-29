@@ -1770,6 +1770,44 @@ test("D/I: agent workbench real UI workflow, semantic library, memory, and artif
     record("D04", "pass", "patch_impact_review completed locally and exposed impact/flow/test artifacts through the UI", {
       screenshot: await screenshot(page, "D04-patch-impact-artifact"),
     });
+
+    await openWorkbenchView(page, "工作流设计");
+    await workflowPresetSelect.selectOption("mr_blackbox_test");
+    await page.getByRole("button", { name: "安装预设" }).click();
+    await expect(page.getByText(/预设已安装:|工作流已保存:|已应用预设:/).first()).toBeVisible({
+      timeout: 30_000,
+    });
+    await openWorkbenchView(page, "运行驾驶舱");
+    await page.getByLabel("Inputs JSON").fill(JSON.stringify({
+      patch_diff: [
+        "diff --git a/lib/nvmf/ctrlr.c b/lib/nvmf/ctrlr.c",
+        "index 0000000..1111111 100644",
+        "--- a/lib/nvmf/ctrlr.c",
+        "+++ b/lib/nvmf/ctrlr.c",
+        "@@ -1,1 +1,1 @@",
+        "-int nvmf_ctrlr_connect(void) { return 0; }",
+        "+int nvmf_ctrlr_connect(void) { return -ECONNRESET; }",
+      ].join("\n"),
+      repo_path: SPDK_REPO,
+    }, null, 2));
+    await page.getByRole("button", { name: "准备运行" }).click();
+    await expect(page.getByRole("button", { name: "执行工作流" })).toBeEnabled({ timeout: 45_000 });
+    await page.getByRole("button", { name: "执行工作流" }).click();
+    await expect
+      .poll(() => page.locator("body").innerText(), { timeout: 120_000 })
+      .toMatch(/Workflow execution\s+completed/i);
+    const blackBoxArtifactButton = page
+      .getByRole("button")
+      .filter({ hasText: /black_box_cases\.json|mr_snapshot\.json|changed_files\.json/ })
+      .first();
+    await expect(blackBoxArtifactButton).toBeVisible({ timeout: 30_000 });
+    await blackBoxArtifactButton.click();
+    await expect
+      .poll(() => page.locator("body").innerText(), { timeout: 30_000 })
+      .toMatch(/local-mr-blackbox|black_box_ready|observable_signals|lib\/nvmf\/ctrlr\.c/i);
+    record("D05", "pass", "mr_blackbox_test completed locally and exposed black-box cases through the UI", {
+      screenshot: await screenshot(page, "D05-mr-blackbox-cases"),
+    });
   } catch (error) {
     const shot = await screenshot(page, "D06-workbench-prepare-blocked");
     const details = {
@@ -1797,6 +1835,9 @@ test("D/I: agent workbench real UI workflow, semantic library, memory, and artif
     }
     if (results.get("D04")?.status !== "pass") {
       record("D04", "blocked", "patch impact workflow execution unavailable after resource leak run", details);
+    }
+    if (results.get("D05")?.status !== "pass") {
+      record("D05", "blocked", "MR black-box workflow execution unavailable after patch impact run", details);
     }
   }
 
@@ -2502,7 +2543,6 @@ test("matrix accounting: every planned case has an explicit status", async () =>
       ["A04", "provider probe/system audit/tool probe are not exposed as stable UI controls"],
       ["B03", "duplicate workspace policy is product-defined; not exercised in first safe run"],
       ["B06", "source search UI is not exposed as a stable browser control in this run"],
-      ["D05", "requires provider execution for mr_blackbox_test"],
       ["D10", "requires a failed executable workflow and accepted rerun"],
     ] as const) {
       if (results.get(id)?.status === "not_run") record(id, "blocked", reason);

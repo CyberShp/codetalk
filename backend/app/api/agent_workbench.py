@@ -1709,6 +1709,7 @@ def _core_workflow_readiness_item(preset: dict[str, Any]) -> dict[str, Any]:
             "local_scope_discover",
             "local_resource_leak_hunt",
             "local_patch_impact_review",
+            "local_mr_blackbox_test",
             "evidence_validate",
             "report_render",
             "artifact_export",
@@ -1721,7 +1722,7 @@ def _core_workflow_readiness_item(preset: dict[str, Any]) -> dict[str, Any]:
     ]
     required_artifacts = _unique_preserve_order(
         str(artifact)
-        for step in agent_steps
+        for step in steps
         for artifact in step.get("required_artifacts") or []
         if str(artifact).strip()
     )
@@ -1747,7 +1748,7 @@ def _core_workflow_readiness_item(preset: dict[str, Any]) -> dict[str, Any]:
         if isinstance(item, dict)
     ]
     agent_mcp_required = any(
-        str(item.get("resolver") or "") == "agent_mcp"
+        str(item.get("resolver") or "") == "agent_mcp" and bool(item.get("required", False))
         for item in inputs
     )
     return {

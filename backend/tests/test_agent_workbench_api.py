@@ -157,11 +157,19 @@ async def test_workbench_core_workflow_readiness_api_covers_builtin_scenarios(wo
     }
     assert by_id["module_analysis"]["scenario"] == "module_analysis"
     assert by_id["resource_leak_hunt"]["scenario"] == "risk_hunt"
-    assert by_id["mr_blackbox_test"]["agent_mcp_required"] is True
+    assert by_id["mr_blackbox_test"]["agent_mcp_required"] is False
     assert by_id["mr_blackbox_test"]["required_artifacts"] == [
         "mr_snapshot.json",
         "diff.patch",
         "changed_files.json",
+        "black_box_cases.json",
+    ]
+    assert by_id["mr_blackbox_test"]["agent_step_count"] == 0
+    assert by_id["mr_blackbox_test"]["builtin_steps"] == [
+        "collect_mr",
+        "semantic_retrieve",
+        "validate_mr_evidence",
+        "render_blackbox_cases",
     ]
     assert by_id["module_analysis"]["agent_step_count"] == 0
     assert by_id["module_analysis"]["builtin_steps"] == [
