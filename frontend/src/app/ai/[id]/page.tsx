@@ -206,6 +206,8 @@ export default function AIThreadPage() {
       } catch (exc) {
         if (!abort.signal.aborted) {
           setError(exc instanceof Error ? exc.message : "订阅生成状态失败");
+          setStreamingRunId(null);
+          setStreamingContent("");
           await load().catch(() => {});
         }
       }

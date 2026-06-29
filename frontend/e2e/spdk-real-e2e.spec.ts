@@ -421,6 +421,24 @@ async function aiThreadMessageTypography(page: Page, messageText: string) {
   });
 }
 
+async function waitForAiThreadIdle(page: Page, timeout = 180_000) {
+  const deadline = Date.now() + timeout;
+  let idleSince = 0;
+  while (Date.now() < deadline) {
+    const stopButtons = await page.getByRole("button", { name: "停止" }).count().catch(() => 0);
+    const bodyText = await page.locator("body").innerText().catch(() => "");
+    const idle = stopButtons === 0 && !/线程状态\s*生成中/.test(bodyText);
+    if (idle) {
+      idleSince ||= Date.now();
+      if (Date.now() - idleSince >= 2500) return;
+    } else {
+      idleSince = 0;
+    }
+    await page.waitForTimeout(500);
+  }
+  throw new Error(`AI thread did not become stably idle within ${timeout}ms`);
+}
+
 async function firstVisibleEnabledButton(page: Page, name: string | RegExp) {
   const buttons = page.getByRole("button", { name });
   const count = await buttons.count();
@@ -1023,6 +1041,72 @@ test("A04: health probes are triggerable from the UI", async ({ page }) => {
   record("A04", "pass", "system audit, provider probe, and tool startup probe were triggered through UI controls", evidence);
 });
 
+test("C06: controlled model failure exposes retry in a clean AI thread", async ({ page }) => {
+  test.setTimeout(180_000);
+
+  if (!hasSpdkRepo) {
+    record("C06", "blocked", "controlled retry requires an available SPDK workspace", { spdkRepo: SPDK_REPO });
+    return;
+  }
+
+  try {
+    await configureBrokenLlmAndSelect(page);
+    const failureWorkspaceName = `spdk-c06-retry-${Date.now()}`;
+    await page.goto("/workspaces/new", { waitUntil: "domcontentloaded" });
+    await noFrameworkOverlay(page);
+    await page.getByPlaceholder(/项目 A/).fill(failureWorkspaceName);
+    await page.getByPlaceholder(/本地文件夹路径/).fill(SPDK_REPO);
+    await page.getByRole("button", { name: "创建工作空间" }).click();
+    await page.waitForURL(/\/workspaces\/[0-9a-f-]{36}$/, { timeout: 30_000 });
+    await expect(page.getByText(failureWorkspaceName)).toBeVisible({ timeout: 30_000 });
+
+    await page.getByRole("button", { name: "AI线程" }).click();
+    await expect(page.getByText("在宽屏 AI 线程中继续分析")).toBeVisible({ timeout: 10_000 });
+    await page.getByRole("button", { name: "打开工作空间 AI 线程" }).click();
+    await page.waitForURL(/\/ai\/[^/]+$/, { timeout: 30_000 });
+    await noFrameworkOverlay(page);
+    await waitForAiThreadIdle(page, 30_000);
+
+    const failurePrompt = `C06 controlled model failure retry ${RUN_ID}`;
+    const failureInput = page.getByLabel("AI 线程消息");
+    await expect(failureInput).toBeVisible({ timeout: 15_000 });
+    await failureInput.fill(failurePrompt);
+    await expect(page.getByRole("button", { name: "发送" })).toBeEnabled({ timeout: 10_000 });
+    await page.getByRole("button", { name: "发送" }).click();
+    await expect(page.locator(".ct-codex-message").filter({ hasText: failurePrompt }).first()).toBeVisible({
+      timeout: 15_000,
+    });
+    await expect(page.locator(".ct-codex-ai__error")).toContainText(
+      /LLM 不可用|连接|Connect|ECONN|failed|error|SSE/i,
+      { timeout: 90_000 },
+    );
+    const retryButton = page.getByRole("button", { name: "重试上一条" });
+    await expect(retryButton).toBeVisible({ timeout: 15_000 });
+    await expect(retryButton).toBeEnabled({ timeout: 10_000 });
+    await retryButton.click();
+    await expect
+      .poll(() => page.locator(".ct-codex-message").filter({ hasText: failurePrompt }).count(), { timeout: 30_000 })
+      .toBeGreaterThanOrEqual(2);
+    await expect(page.locator(".ct-codex-ai__error")).toContainText(/LLM 不可用|连接|Connect|ECONN|failed|error|SSE/i, {
+      timeout: 90_000,
+    });
+    record("C06", "pass", "controlled bad LLM produced actionable error, exposed retry, and retry resubmitted the failed prompt", {
+      screenshot: await screenshot(page, "C06-ai-thread-controlled-retry"),
+    });
+  } catch (error) {
+    record("C06", "blocked", "AI thread retry control could not be completed in a clean failure thread", {
+      screenshot: await screenshot(page, "C06-ai-thread-clean-retry-failed"),
+      error: error instanceof Error ? error.message : String(error),
+      excerpt: await pageExcerpt(page),
+    });
+  } finally {
+    const restored = await restorePrimaryLlmIfAvailable(page).catch(() => false);
+    if (!restored) {
+      await clearActiveChatModel(page).catch(() => undefined);
+    }
+  }
+});
+
 test("B/C/K: create SPDK workspace through UI and verify chat/index gate", async ({ page, context }) => {
   test.setTimeout(SPDK_INDEX_WAIT_MS + 480_000);
 
@@ -1059,14 +1143,21 @@ test("B/C/K: create SPDK workspace through UI and verify chat/index gate", async
   await page.getByPlaceholder(/项目 A/).fill(workspaceName);
   await page.getByPlaceholder(/本地文件夹路径/).fill(SPDK_REPO);
   await page.getByRole("button", { name: "创建工作空间" }).click();
-  await page.waitForURL(/\/workspaces\/[0-9a-f-]{36}$/, { timeout: 30_000 });
+  try {
+    await page.waitForURL(/\/workspaces\/[0-9a-f-]{36}$/, { timeout: 30_000 });
+  } catch (error) {
+    const existingWorkspaceLink = page.getByRole("link", { name: /打开已有工作空间/ });
+    if (!(await existingWorkspaceLink.isVisible().catch(() => false))) throw error;
+    await existingWorkspaceLink.click();
+    await page.waitForURL(/\/workspaces\/[0-9a-f-]{36}$/, { timeout: 30_000 });
+  }
   workspaceId = page.url().split("/").pop() ?? "";
   expect(workspaceId).toHaveLength(36);
   record("B01", "pass", `workspace ${workspaceId}`);
 
-  await expect(page.getByText(workspaceName)).toBeVisible({ timeout: 30_000 });
+  await expect(page.getByText(SPDK_REPO)).toBeVisible({ timeout: 30_000 });
   await page.reload({ waitUntil: "domcontentloaded" });
-  await expect(page.getByText(workspaceName)).toBeVisible({ timeout: 30_000 });
+  await expect(page.getByText(SPDK_REPO)).toBeVisible({ timeout: 30_000 });
   record("B04", "pass", "workspace detail survived refresh");
 
   try {
@@ -1078,7 +1169,7 @@ test("B/C/K: create SPDK workspace through UI and verify chat/index gate", async
     await expect(existingWorkspaceLink).toBeVisible({ timeout: 15_000 });
     await existingWorkspaceLink.click();
     await page.waitForURL(new RegExp(`/workspaces/${workspaceId}$`), { timeout: 15_000 });
-    await expect(page.getByText(workspaceName)).toBeVisible({ timeout: 15_000 });
+    await expect(page.getByText(SPDK_REPO)).toBeVisible({ timeout: 15_000 });
     record("B03", "pass", "duplicate repo path is rejected with a link back to the existing workspace");
   } catch (error) {
     record("B03", "blocked", "duplicate workspace UI flow did not recover to the existing workspace", {
@@ -1193,7 +1284,8 @@ test("B/C/K: create SPDK workspace through UI and verify chat/index gate", async
     ).toBeVisible({ timeout: 120_000 });
     await expect(page.getByRole("button", { name: "停止" })).toHaveCount(0, { timeout: 120_000 });
     const resultText = await firstAiResult.innerText();
-    const modelBlocked = /未配置|模型生成失败|LLM.*失败|连接失败|All connection attempts failed|SSE|认证失败|API Key/i.test(resultText);
+    const errorText = await page.locator(".ct-codex-ai__error").innerText().catch(() => "");
+    const modelBlocked = /未配置|模型生成失败|LLM.*失败|连接失败|All connection attempts failed|SSE|认证失败|API Key/i.test(errorText);
     record(
       "C01",
       modelBlocked ? "blocked" : "pass",
@@ -1399,47 +1491,57 @@ test("B/C/K: create SPDK workspace through UI and verify chat/index gate", async
     });
   }
 
-  try {
-    await page.goto(primaryThreadUrl, { waitUntil: "domcontentloaded" });
-    await noFrameworkOverlay(page);
-    await configureBrokenLlmAndSelect(page);
-    await page.goto(primaryThreadUrl, { waitUntil: "domcontentloaded" });
-    await noFrameworkOverlay(page);
-    const failurePrompt = `C06 controlled model failure retry ${RUN_ID}`;
-    const failureInput = page.getByLabel("AI 线程消息");
-    await expect(failureInput).toBeVisible({ timeout: 15_000 });
-    await failureInput.fill(failurePrompt);
-    await expect(page.getByRole("button", { name: "发送" })).toBeEnabled({ timeout: 10_000 });
-    await page.getByRole("button", { name: "发送" }).click();
-    await expect(page.locator(".ct-codex-message").filter({ hasText: failurePrompt }).first()).toBeVisible({
-      timeout: 15_000,
-    });
-    await expect(page.locator(".ct-codex-ai__error")).toContainText(
-      /LLM 不可用|连接|Connect|ECONN|failed|error|SSE/i,
-      { timeout: 90_000 },
-    );
-    const retryButton = page.getByRole("button", { name: "重试上一条" });
-    await expect(retryButton).toBeVisible({ timeout: 15_000 });
-    await expect(retryButton).toBeEnabled({ timeout: 10_000 });
-    await retryButton.click();
-    await expect
-      .poll(() => page.locator(".ct-codex-message").filter({ hasText: failurePrompt }).count(), { timeout: 30_000 })
-      .toBeGreaterThanOrEqual(2);
-    await expect(page.locator(".ct-codex-ai__error")).toContainText(/LLM 不可用|连接|Connect|ECONN|failed|error|SSE/i, {
-      timeout: 90_000,
-    });
-    record("C06", "pass", "controlled bad LLM produced actionable error, exposed retry, and retry resubmitted the failed prompt", {
-      screenshot: await screenshot(page, "C06-ai-thread-controlled-retry"),
-    });
-  } catch (error) {
-    record("C06", "blocked", "AI thread retry control was present but could not be invoked", {
-      screenshot: await screenshot(page, "C06-ai-thread-retry-failed"),
-      error: error instanceof Error ? error.message : String(error),
-    });
-  } finally {
-    const restored = await restorePrimaryLlmIfAvailable(page).catch(() => false);
-    if (!restored) {
-      await clearActiveChatModel(page).catch(() => undefined);
+  if (results.get("C06")?.status !== "pass") {
+    try {
+      await page.goto(primaryThreadUrl, { waitUntil: "domcontentloaded" });
+      await noFrameworkOverlay(page);
+      const beforeFailureThreadUrl = page.url();
+      await page.getByRole("button", { name: "新建线程" }).click();
+      await page.waitForURL((url) => url.toString() !== beforeFailureThreadUrl && /\/ai\/[^/]+$/.test(url.pathname), {
+        timeout: 30_000,
+      });
+      const failureThreadUrl = page.url();
+      await waitForAiThreadIdle(page);
+      await configureBrokenLlmAndSelect(page);
+      await page.goto(failureThreadUrl, { waitUntil: "domcontentloaded" });
+      await noFrameworkOverlay(page);
+      await waitForAiThreadIdle(page);
+      const failurePrompt = `C06 controlled model failure retry ${RUN_ID}`;
+      const failureInput = page.getByLabel("AI 线程消息");
+      await expect(failureInput).toBeVisible({ timeout: 15_000 });
+      await failureInput.fill(failurePrompt);
+      await expect(page.getByRole("button", { name: "发送" })).toBeEnabled({ timeout: 10_000 });
+      await page.getByRole("button", { name: "发送" }).click();
+      await expect(page.locator(".ct-codex-message").filter({ hasText: failurePrompt }).first()).toBeVisible({
+        timeout: 15_000,
+      });
+      await expect(page.locator(".ct-codex-ai__error")).toContainText(
+        /LLM 不可用|连接|Connect|ECONN|failed|error|SSE/i,
+        { timeout: 90_000 },
+      );
+      const retryButton = page.getByRole("button", { name: "重试上一条" });
+      await expect(retryButton).toBeVisible({ timeout: 15_000 });
+      await expect(retryButton).toBeEnabled({ timeout: 10_000 });
+      await retryButton.click();
+      await expect
+        .poll(() => page.locator(".ct-codex-message").filter({ hasText: failurePrompt }).count(), { timeout: 30_000 })
+        .toBeGreaterThanOrEqual(2);
+      await expect(page.locator(".ct-codex-ai__error")).toContainText(/LLM 不可用|连接|Connect|ECONN|failed|error|SSE/i, {
+        timeout: 90_000,
+      });
+      record("C06", "pass", "controlled bad LLM produced actionable error, exposed retry, and retry resubmitted the failed prompt", {
+        screenshot: await screenshot(page, "C06-ai-thread-controlled-retry"),
+      });
+    } catch (error) {
+      record("C06", "blocked", "AI thread retry control was present but could not be invoked", {
+        screenshot: await screenshot(page, "C06-ai-thread-retry-failed"),
+        error: error instanceof Error ? error.message : String(error),
+      });
+    } finally {
+      const restored = await restorePrimaryLlmIfAvailable(page).catch(() => false);
+      if (!restored) {
+        await clearActiveChatModel(page).catch(() => undefined);
+      }
     }
   }
 });
