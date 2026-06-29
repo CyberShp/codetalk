@@ -330,6 +330,7 @@ class WorkbenchWorkflowRunner:
             payloads = _local_resource_leak_hunt_payloads(
                 task_run=task_run,
                 step=step,
+                prior_step_results=prior_step_results,
             )
             written: list[str] = []
             for artifact_name, payload in payloads.items():
@@ -347,6 +348,30 @@ class WorkbenchWorkflowRunner:
                     str(item) for item in step.get("required_artifacts") or []
                 ],
                 "count": len(payloads.get("risk_findings.json") or []),
+            }
+
+        if step_type == "local_patch_impact_review":
+            payloads = _local_patch_impact_payloads(
+                task_run=task_run,
+                step=step,
+                prior_step_results=prior_step_results,
+            )
+            written: list[str] = []
+            for artifact_name, payload in payloads.items():
+                artifact_path = artifact_dir / artifact_name
+                _write_json(artifact_path, payload)
+                written.append(artifact_name)
+            return {
+                "step_id": step_id,
+                "type": step_type,
+                "status": "completed",
+                "artifact_dir": str(artifact_dir),
+                "artifact": "impact_scope.json",
+                "artifacts": written,
+                "required_artifacts": [
+                    str(item) for item in step.get("required_artifacts") or []
+                ],
+                "count": len(payloads.get("impact_scope.json") or []),
             }
 
         if step_type == "evidence_validate":
@@ -732,6 +757,7 @@ def _local_resource_leak_hunt_payloads(
     *,
     task_run: Any,
     step: dict[str, Any],
+    prior_step_results: list[dict[str, Any]] | None = None,
 ) -> dict[str, Any]:
     repo = Path(str(task_run.repo_path or ""))
     query = _local_scope_query(task_run.input_snapshot)
@@ -766,6 +792,83 @@ def _local_resource_leak_hunt_payloads(
         "risk_findings.json": findings[:24],
         "evidence_cards.json": evidence_cards[:20],
         "test_hooks.json": hooks[:24],
+    }
+
+
+def _local_patch_impact_payloads(
+    *,
+    task_run: Any,
+    step: dict[str, Any],
+    prior_step_results: list[dict[str, Any]],
+) -> dict[str, Any]:
+    repo = Path(str(task_run.repo_path or ""))
+    changed_files = _changed_files_from_prior_diff(prior_step_results)
+    if not changed_files:
+        changed_files = _diff_parse_payload(task_run.input_snapshot).get("changed_files") or []
+    impacts: list[dict[str, Any]] = []
+    flow_delta: list[dict[str, Any]] = []
+    recommendations: list[dict[str, Any]] = []
+    for index, item in enumerate(changed_files[:24], start=1):
+        file_path = str(item.get("path") or item.get("old_path") or "").strip()
+        status = str(item.get("status") or "modified")
+        source_summary = _source_summary_for_patch_path(repo=repo, file_path=file_path)
+        module = _module_label_for_path(file_path)
+        impact_id = f"local_patch_impact_{index:03d}"
+        summary = f"{status} {file_path} affects {module} behavior and should be checked through external workflows."
+        impacts.append({
+            "impact_id": impact_id,
+            "file_path": file_path,
+            "symbol": source_summary.get("primary_symbol") or "file_scope",
+            "status": status,
+            "module": module,
+            "summary": summary,
+            "impact": _impact_text_for_path(file_path),
+            "risk": _patch_risk_for_path(file_path),
+            "test_scope": _test_directory_for_source(file_path),
+            "source": "local-patch-impact",
+            "evidence": source_summary,
+        })
+        flow_delta.append({
+            "impact_id": impact_id,
+            "file_path": file_path,
+            "before": "existing behavior follows the pre-patch source path or public interface contract",
+            "after": f"patch changes {status} content in {file_path}",
+            "observable_change": _observable_change_for_path(file_path),
+            "evidence": source_summary,
+        })
+        recommendations.append({
+            "recommendation_id": f"local_patch_test_{index:03d}",
+            "impact_id": impact_id,
+            "file_path": file_path,
+            "test_directory": _test_directory_for_source(file_path),
+            "black_box_focus": _black_box_focus_for_path(file_path),
+            "preconditions": "run the affected SPDK target or tool with the changed module enabled",
+            "steps": [
+                "exercise the public command, RPC, connection, or I/O path that reaches the changed file",
+                "cover normal success, invalid input, timeout/reset, and repeated invocation cases",
+                "observe return status, logs, metrics, reconnect behavior, and persistent state",
+            ],
+            "expected_result": "externally visible behavior remains compatible or fails with a clear documented error",
+            "diagnostics": "collect SPDK logs, RPC result payloads, host-visible status, and existing test output near the suggested directory",
+        })
+    if not impacts:
+        impacts.append({
+            "impact_id": "local_patch_impact_001",
+            "file_path": "",
+            "symbol": "patch_scope",
+            "status": "unknown",
+            "module": "unknown",
+            "summary": "No changed files were parsed from patch input.",
+            "impact": "patch input must be supplied as unified diff text or a patch file",
+            "risk": "impact cannot be scoped without changed paths",
+            "test_scope": "test",
+            "source": "local-patch-impact",
+            "evidence": {"exists": False, "reason": "no_changed_files"},
+        })
+    return {
+        "impact_scope.json": impacts,
+        "flow_delta.json": flow_delta,
+        "test_recommendations.json": recommendations,
     }
 
 
@@ -2055,9 +2158,118 @@ def _diff_parse_payload(input_snapshot: dict[str, Any]) -> dict[str, Any]:
     }
 
 
+def _changed_files_from_prior_diff(prior_step_results: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    for result in prior_step_results:
+        if str(result.get("type") or "") != "diff_parse":
+            continue
+        artifact_dir = Path(str(result.get("artifact_dir") or ""))
+        payload = _read_json(artifact_dir / "changed_files.json")
+        if isinstance(payload, list):
+            return [
+                item for item in payload
+                if isinstance(item, dict) and str(item.get("path") or item.get("old_path") or "").strip()
+            ]
+    return []
+
+
+def _source_summary_for_patch_path(*, repo: Path, file_path: str) -> dict[str, Any]:
+    path = repo / file_path
+    try:
+        data = path.read_bytes()
+        text = data.decode("utf-8", errors="replace")
+    except OSError:
+        return {
+            "exists": False,
+            "file_path": file_path,
+            "primary_symbol": "",
+            "sha256": "",
+            "line_count": 0,
+        }
+    symbols = _extract_local_symbols(text)
+    return {
+        "exists": True,
+        "file_path": file_path,
+        "primary_symbol": symbols[0] if symbols else "",
+        "symbols": symbols[:12],
+        "sha256": hashlib.sha256(data).hexdigest(),
+        "line_count": len(text.splitlines()),
+    }
+
+
+def _module_label_for_path(file_path: str) -> str:
+    path = file_path.lower()
+    for token in ("nvmf", "iscsi", "bdev", "blob", "ftl", "vhost", "vfio", "thread", "event", "rpc", "nvme"):
+        if f"/{token}" in f"/{path}" or path.startswith(token):
+            return token
+    parts = file_path.split("/")
+    if len(parts) >= 2:
+        return "/".join(parts[:2])
+    return parts[0] if parts and parts[0] else "repo"
+
+
+def _impact_text_for_path(file_path: str) -> str:
+    path = file_path.lower()
+    if "nvmf" in path:
+        return "may affect NVMe-oF connection, queue, transport, authentication, or I/O behavior"
+    if "iscsi" in path:
+        return "may affect iSCSI login, session, CHAP, digest, or connection behavior"
+    if "bdev" in path:
+        return "may affect block device open, I/O submit, completion, reset, or error propagation"
+    if "rpc" in path:
+        return "may affect RPC validation, idempotency, error payloads, or config sequencing"
+    if "thread" in path or "event" in path:
+        return "may affect reactor, poller, cross-thread message, or long-running task scheduling"
+    return "may affect the public behavior that reaches the changed source path"
+
+
+def _patch_risk_for_path(file_path: str) -> str:
+    path = file_path.lower()
+    if "test/" in path:
+        return "test expectation drift or missing regression coverage for adjacent runtime behavior"
+    if any(token in path for token in ("nvmf", "iscsi", "bdev", "vhost")):
+        return "externally visible storage path regression under error, reconnect, reset, or concurrency conditions"
+    if any(token in path for token in ("rpc", "json", "config")):
+        return "invalid parameters, repeated calls, or partial failure may produce confusing external state"
+    return "compatibility or observability regression if public inputs reach the changed path"
+
+
+def _observable_change_for_path(file_path: str) -> str:
+    path = file_path.lower()
+    if "nvmf" in path:
+        return "host connect/disconnect result, namespace visibility, target logs, and I/O completion status"
+    if "iscsi" in path:
+        return "initiator login result, session state, digest/CHAP failure, and target logs"
+    if "bdev" in path:
+        return "RPC status, I/O completion, reset timing, error code, and bdev event logs"
+    if "rpc" in path:
+        return "RPC response code, JSON error body, idempotency, and config state"
+    return "public command result, logs, metrics, and persisted state"
+
+
+def _black_box_focus_for_path(file_path: str) -> str:
+    path = file_path.lower()
+    if "nvmf" in path:
+        return "NVMe-oF host connection and I/O workflows"
+    if "iscsi" in path:
+        return "iSCSI initiator login and session workflows"
+    if "bdev" in path:
+        return "bdev RPC, I/O, reset, and failover workflows"
+    if "rpc" in path:
+        return "RPC parameter validation and repeated operation workflows"
+    return "public workflow that exercises the changed file without internal function calls"
+
+
 def _patch_input_payloads(input_snapshot: dict[str, Any]) -> list[dict[str, Any]]:
     payloads: list[dict[str, Any]] = []
     for input_id, value in input_snapshot.items():
+        if isinstance(value, str) and _looks_like_unified_diff(value):
+            payloads.append({
+                "input_id": str(input_id),
+                "filename": f"{input_id}.patch",
+                "suffix": ".patch",
+                "text": value,
+            })
+            continue
         if not isinstance(value, dict):
             continue
         if value.get("kind") == "file_set":
@@ -2079,6 +2291,9 @@ def _is_patch_like_file(payload: dict[str, Any]) -> bool:
 
 
 def _read_text_from_input_payload(payload: dict[str, Any]) -> str:
+    text = str(payload.get("text") or payload.get("content") or "")
+    if text:
+        return text
     for key in ("parsed_text_path", "copied_path", "original_path"):
         path_text = str(payload.get(key) or "")
         if not path_text:
@@ -2090,6 +2305,11 @@ def _read_text_from_input_payload(payload: dict[str, Any]) -> str:
         except OSError:
             continue
     return ""
+
+
+def _looks_like_unified_diff(value: str) -> bool:
+    text = str(value or "")
+    return "diff --git " in text or ("\n--- " in text and "\n+++ " in text)
 
 
 def _changed_files_from_unified_diff(diff_text: str) -> list[dict[str, str]]:

@@ -149,9 +149,8 @@ def builtin_workflow_presets() -> list[dict[str, Any]]:
                     {"id": "parse_patch", "type": "diff_parse"},
                     {
                         "id": "analyze_impact",
-                        "type": "agent_task",
-                        "provider": "claude-code",
-                        "goal": "Explain pre/post flow changes, affected files/symbols, compatibility risks, and test scope. Do not edit files.",
+                        "type": "local_patch_impact_review",
+                        "goal": "Explain pre/post flow changes, affected files/symbols, compatibility risks, and test scope from local diff and source evidence.",
                         "required_artifacts": ["impact_scope.json", "flow_delta.json", "test_recommendations.json"],
                     },
                     {"id": "validate_evidence", "type": "evidence_validate"},

@@ -38,7 +38,14 @@ def ingest_workbench_inputs(
         input_key = str(input_id)
         definition = defs_by_id.get(input_key, {})
         input_type = str(definition.get("type") or "")
-        if input_type in {"file", "coverage_report", "diff", "patch"}:
+        if input_type in {"diff", "patch"} and _is_inline_patch_text(value):
+            snapshot[input_key] = _ingest_inline_text_file(
+                input_id=input_key,
+                value=value,
+                root=root,
+                suffix=".patch",
+            )
+        elif input_type in {"file", "coverage_report", "diff", "patch"}:
             snapshot[input_key] = _ingest_file(
                 input_id=input_key,
                 value=value,
@@ -144,6 +151,63 @@ def _ingest_file(*, input_id: str, value: Any, root: Path) -> dict[str, Any]:
     metadata_path.write_text(json.dumps(metadata, ensure_ascii=False, indent=2), encoding="utf-8")
     metadata["metadata_path"] = str(metadata_path)
     return metadata
+
+
+def _ingest_inline_text_file(
+    *,
+    input_id: str,
+    value: Any,
+    root: Path,
+    suffix: str,
+) -> dict[str, Any]:
+    text = _inline_text_value(value)
+    if not text:
+        raise ValueError(f"file input {input_id} is missing inline text")
+    input_root = root / _safe_name(input_id)
+    original_dir = input_root / "original"
+    original_dir.mkdir(parents=True, exist_ok=True)
+    filename = _safe_name(input_id) + suffix
+    copied = original_dir / filename
+    copied.write_text(text, encoding="utf-8")
+    data = copied.read_bytes()
+    sha256 = hashlib.sha256(data).hexdigest()
+    parsed_text, parse_warnings = _extract_text(copied)
+    parsed_text_path = input_root / "parsed_text.txt"
+    parsed_text_path.write_text(parsed_text, encoding="utf-8")
+    chunks = _chunks(parsed_text)
+    chunks_path = input_root / "chunks.json"
+    chunks_path.write_text(json.dumps(chunks, ensure_ascii=False, indent=2), encoding="utf-8")
+    metadata = {
+        "kind": "file",
+        "input_id": input_id,
+        "original_path": "",
+        "copied_path": str(copied),
+        "filename": filename,
+        "suffix": suffix,
+        "size_bytes": len(data),
+        "sha256": sha256,
+        "parsed_text_path": str(parsed_text_path),
+        "chunks_path": str(chunks_path),
+        "parse_warnings": parse_warnings,
+        "inline_text": True,
+    }
+    metadata_path = input_root / "file_metadata.json"
+    metadata_path.write_text(json.dumps(metadata, ensure_ascii=False, indent=2), encoding="utf-8")
+    metadata["metadata_path"] = str(metadata_path)
+    return metadata
+
+
+def _is_inline_patch_text(value: Any) -> bool:
+    text = _inline_text_value(value)
+    return "diff --git " in text or ("\n--- " in text and "\n+++ " in text)
+
+
+def _inline_text_value(value: Any) -> str:
+    if isinstance(value, str):
+        return value.strip()
+    if isinstance(value, dict):
+        return str(value.get("text") or value.get("content") or "").strip()
+    return ""
 
 
 def _extract_text(path: Path) -> tuple[str, list[str]]:

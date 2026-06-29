@@ -1732,6 +1732,44 @@ test("D/I: agent workbench real UI workflow, semantic library, memory, and artif
     record("D03", "pass", "resource_leak_hunt completed locally and exposed risk/test-hook artifacts through the UI", {
       screenshot: await screenshot(page, "D03-resource-leak-hunt-artifact"),
     });
+
+    await openWorkbenchView(page, "工作流设计");
+    await workflowPresetSelect.selectOption("patch_impact_review");
+    await page.getByRole("button", { name: "安装预设" }).click();
+    await expect(page.getByText(/预设已安装:|工作流已保存:|已应用预设:/).first()).toBeVisible({
+      timeout: 30_000,
+    });
+    await openWorkbenchView(page, "运行驾驶舱");
+    await page.getByLabel("Inputs JSON").fill(JSON.stringify({
+      patch_diff: [
+        "diff --git a/lib/bdev/bdev.c b/lib/bdev/bdev.c",
+        "index 0000000..1111111 100644",
+        "--- a/lib/bdev/bdev.c",
+        "+++ b/lib/bdev/bdev.c",
+        "@@ -1,1 +1,1 @@",
+        "-int spdk_bdev_submit_request(void) { return 0; }",
+        "+int spdk_bdev_submit_request(void) { return -EINVAL; }",
+      ].join("\n"),
+      repo_path: SPDK_REPO,
+    }, null, 2));
+    await page.getByRole("button", { name: "准备运行" }).click();
+    await expect(page.getByRole("button", { name: "执行工作流" })).toBeEnabled({ timeout: 45_000 });
+    await page.getByRole("button", { name: "执行工作流" }).click();
+    await expect
+      .poll(() => page.locator("body").innerText(), { timeout: 120_000 })
+      .toMatch(/Workflow execution\s+completed/i);
+    const impactArtifactButton = page
+      .getByRole("button")
+      .filter({ hasText: /impact_scope\.json|flow_delta\.json|test_recommendations\.json/ })
+      .first();
+    await expect(impactArtifactButton).toBeVisible({ timeout: 30_000 });
+    await impactArtifactButton.click();
+    await expect
+      .poll(() => page.locator("body").innerText(), { timeout: 30_000 })
+      .toMatch(/local-patch-impact|impact_scope|flow_delta|test_recommendations|lib\/bdev\/bdev\.c/i);
+    record("D04", "pass", "patch_impact_review completed locally and exposed impact/flow/test artifacts through the UI", {
+      screenshot: await screenshot(page, "D04-patch-impact-artifact"),
+    });
   } catch (error) {
     const shot = await screenshot(page, "D06-workbench-prepare-blocked");
     const details = {
@@ -1756,6 +1794,9 @@ test("D/I: agent workbench real UI workflow, semantic library, memory, and artif
     }
     if (results.get("D03")?.status !== "pass") {
       record("D03", "blocked", "resource leak workflow execution unavailable after module analysis run", details);
+    }
+    if (results.get("D04")?.status !== "pass") {
+      record("D04", "blocked", "patch impact workflow execution unavailable after resource leak run", details);
     }
   }
 
@@ -2461,7 +2502,6 @@ test("matrix accounting: every planned case has an explicit status", async () =>
       ["A04", "provider probe/system audit/tool probe are not exposed as stable UI controls"],
       ["B03", "duplicate workspace policy is product-defined; not exercised in first safe run"],
       ["B06", "source search UI is not exposed as a stable browser control in this run"],
-      ["D04", "requires provider execution for patch_impact_review"],
       ["D05", "requires provider execution for mr_blackbox_test"],
       ["D10", "requires a failed executable workflow and accepted rerun"],
     ] as const) {

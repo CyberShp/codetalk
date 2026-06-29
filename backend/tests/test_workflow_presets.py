@@ -50,6 +50,12 @@ def test_builtin_workflow_presets_are_valid_and_cover_core_scenarios():
     assert risk_output["evidence_memory"]["path_field"] == "file_path"
 
     patch_preset = next(item for item in presets if item["id"] == "patch_impact_review")
+    patch_step = next(
+        item
+        for item in patch_preset["definition"]["steps"]
+        if item["id"] == "analyze_impact"
+    )
+    assert patch_step["type"] == "local_patch_impact_review"
     impact_output = next(
         item
         for item in patch_preset["definition"]["outputs"]

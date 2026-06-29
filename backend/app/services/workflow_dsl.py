@@ -19,6 +19,7 @@ ALLOWED_STEP_TYPES = frozenset({
     "memory_retrieve",
     "local_scope_discover",
     "local_resource_leak_hunt",
+    "local_patch_impact_review",
     "evidence_validate",
     "report_render",
     "artifact_export",

@@ -3112,3 +3112,78 @@ def test_resource_leak_hunt_preset_executes_with_local_risk_scan(tmp_path):
         "evidence_cards": "ok",
         "report": "ok",
     }
+
+
+def test_patch_impact_review_preset_executes_with_local_diff_analysis(tmp_path):
+    from app.services.workbench_task_run import WorkbenchTaskRunPreparer
+    from app.services.workbench_workflow_runner import WorkbenchWorkflowRunner
+    from app.services.workflow_dsl import WorkflowStore
+    from app.services.workflow_presets import install_workflow_preset
+
+    repo = tmp_path / "repo"
+    (repo / "lib" / "bdev").mkdir(parents=True)
+    (repo / "lib" / "bdev" / "bdev.c").write_text(
+        "int spdk_bdev_submit_request(void) { return 0; }\n",
+        encoding="utf-8",
+    )
+    patch_diff = "\n".join([
+        "diff --git a/lib/bdev/bdev.c b/lib/bdev/bdev.c",
+        "index 0000000..1111111 100644",
+        "--- a/lib/bdev/bdev.c",
+        "+++ b/lib/bdev/bdev.c",
+        "@@ -1,1 +1,1 @@",
+        "-int spdk_bdev_submit_request(void) { return 0; }",
+        "+int spdk_bdev_submit_request(void) { return -22; }",
+    ])
+    workflow_store = WorkflowStore(tmp_path / "workflows.db")
+    install_workflow_preset(workflow_store, "patch_impact_review")
+
+    task_run = WorkbenchTaskRunPreparer(
+        artifact_root=tmp_path / "task_runs",
+        workflow_store=workflow_store,
+    ).prepare(
+        workflow_id="patch_impact_review",
+        workspace_id="ws-local-patch-impact",
+        repo_path=str(repo),
+        inputs={
+            "patch_diff": patch_diff,
+            "repo_path": str(repo),
+        },
+    )
+
+    result = WorkbenchWorkflowRunner(tmp_path / "task_runs").execute_task_run(
+        task_run.task_run_id,
+        timeout_sec=10,
+    )
+
+    assert result.status == "completed"
+    step_status = {item["step_id"]: item["status"] for item in result.step_results}
+    assert step_status == {
+        "parse_patch": "completed",
+        "analyze_impact": "completed",
+        "validate_evidence": "completed",
+        "render_report": "completed",
+    }
+    root = Path(task_run.artifact_dir)
+    changed_files = json.loads(
+        (root / "steps" / "parse_patch" / "changed_files.json").read_text(encoding="utf-8")
+    )
+    impact_scope = json.loads(
+        (root / "steps" / "analyze_impact" / "impact_scope.json").read_text(encoding="utf-8")
+    )
+    flow_delta = json.loads(
+        (root / "steps" / "analyze_impact" / "flow_delta.json").read_text(encoding="utf-8")
+    )
+    test_recommendations = json.loads(
+        (root / "steps" / "analyze_impact" / "test_recommendations.json").read_text(encoding="utf-8")
+    )
+    assert changed_files == [{"path": "lib/bdev/bdev.c", "old_path": "lib/bdev/bdev.c", "status": "modified"}]
+    assert impact_scope[0]["file_path"] == "lib/bdev/bdev.c"
+    assert impact_scope[0]["source"] == "local-patch-impact"
+    assert flow_delta[0]["observable_change"]
+    assert test_recommendations[0]["test_directory"] == "test/bdev"
+    output_status = {item["id"]: item["status"] for item in result.outputs}
+    assert output_status == {
+        "impact_scope": "ok",
+        "report": "ok",
+    }
