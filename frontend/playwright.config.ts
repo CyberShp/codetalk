@@ -20,13 +20,13 @@ const webServer = [
     : []),
   {
     command: "node scripts/start-playwright-backend.mjs",
-    port: backendPort,
+    url: `http://${browserHost}:${backendPort}/health`,
     reuseExistingServer,
     timeout: 30_000,
   },
   {
     command: "node scripts/start-playwright-frontend.mjs",
-    port: frontendPort,
+    url: `http://${browserHost}:${frontendPort}`,
     reuseExistingServer,
     timeout: 30_000,
   },

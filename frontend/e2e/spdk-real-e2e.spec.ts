@@ -642,6 +642,9 @@ test("A05: startup scripts explain occupied ports", async () => {
     preflightHosts: (host: string) => string[];
   };
   expect(preflightHosts("localhost")).toEqual(expect.arrayContaining(["127.0.0.1", "::1"]));
+  const playwrightConfig = fs.readFileSync(path.join(process.cwd(), "playwright.config.ts"), "utf8");
+  expect(playwrightConfig).toContain("url: `http://${browserHost}:${backendPort}/health`");
+  expect(playwrightConfig).toContain("url: `http://${browserHost}:${frontendPort}`");
 
   const backend = await withOccupiedPort((port) =>
     runStartupScriptWithOccupiedPort("scripts/start-playwright-backend.mjs", {
