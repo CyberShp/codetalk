@@ -3,11 +3,13 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
+import { assertPortAvailable } from "./port-preflight.mjs";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const backendDir = path.resolve(__dirname, "../../backend");
 const backendHost = process.env.CODETALK_BACKEND_BIND_HOST ?? "0.0.0.0";
 const backendPort = process.env.CODETALK_BACKEND_PORT ?? "8100";
+const browserHost = process.env.CODETALK_BROWSER_HOST ?? "localhost";
 const gitnexusPort = process.env.GITNEXUS_PORT ?? process.env.CODETALK_GITNEXUS_PORT ?? "7100";
 const gitnexusBaseUrl =
   process.env.GITNEXUS_BASE_URL ?? `http://localhost:${gitnexusPort}`;
@@ -27,6 +29,14 @@ const shouldCleanupDataDir =
 const candidates = configuredPython
   ? [configuredPython]
   : ["python3.11", "python3.10", "python3", "python"];
+
+await assertPortAvailable({
+  host: backendHost,
+  port: backendPort,
+  envName: "CODETALK_BACKEND_PORT",
+  serviceName: "CodeTalk backend",
+  clientHost: browserHost,
+});
 
 function isSupportedPython(command) {
   const result = spawnSync(

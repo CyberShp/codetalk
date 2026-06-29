@@ -1,4 +1,5 @@
 import { spawn } from "node:child_process";
+import { assertPortAvailable } from "./port-preflight.mjs";
 
 const frontendHost = process.env.CODETALK_FRONTEND_BIND_HOST ?? "0.0.0.0";
 const frontendPort = process.env.CODETALK_FRONTEND_PORT ?? "3005";
@@ -7,6 +8,14 @@ const backendPort = process.env.CODETALK_BACKEND_PORT ?? "8100";
 const nextPublicApiUrl =
   process.env.NEXT_PUBLIC_API_URL ?? `http://${browserHost}:${backendPort}`;
 const npxCommand = process.platform === "win32" ? "npx.cmd" : "npx";
+
+await assertPortAvailable({
+  host: frontendHost,
+  port: frontendPort,
+  envName: "CODETALK_FRONTEND_PORT",
+  serviceName: "CodeTalk frontend",
+  clientHost: browserHost,
+});
 
 const child = spawn(npxCommand, ["next", "dev", "-H", frontendHost, "-p", frontendPort], {
   env: {
