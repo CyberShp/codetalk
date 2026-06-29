@@ -157,6 +157,179 @@ class TestWorkspaceCRUD:
         resp = await client_v2.get("/api/workspaces")
         assert len(resp.json()) == 1
 
+    async def test_create_rejects_duplicate_resolved_repo_path(
+        self, client_v2, tmp_path, background_tasks
+    ):
+        repo = tmp_path / "dup-repo"
+        repo.mkdir()
+        first = await client_v2.post(
+            "/api/workspaces", json={"name": "first", "repo_path": str(repo)}
+        )
+        assert first.status_code == 201
+        assert len(background_tasks) == 1
+
+        duplicate = await client_v2.post(
+            "/api/workspaces",
+            json={"name": "second", "repo_path": f"{repo}/."},
+        )
+
+        assert duplicate.status_code == 409
+        detail = duplicate.json()["detail"]
+        assert detail["existing_workspace_id"] == first.json()["id"]
+        assert detail["existing_workspace_name"] == "first"
+        assert len(background_tasks) == 1
+
+    async def test_create_rejects_duplicate_historical_unnormalized_repo_path(
+        self, client_v2, sqlite_db, tmp_path, background_tasks
+    ):
+        repo = tmp_path / "historical-dup-repo"
+        repo.mkdir()
+        await _seed_ws(
+            sqlite_db,
+            "ws-historical-dup",
+            repo_path=f"{repo}/.",
+        )
+
+        duplicate = await client_v2.post(
+            "/api/workspaces",
+            json={"name": "second", "repo_path": str(repo)},
+        )
+
+        assert duplicate.status_code == 409
+        assert duplicate.json()["detail"]["existing_workspace_id"] == "ws-historical-dup"
+        assert background_tasks == []
+
+    async def test_create_duplicate_repo_path_is_serialized(
+        self, client_v2, sqlite_db, tmp_path, background_tasks
+    ):
+        repo = tmp_path / "concurrent-dup-repo"
+        repo.mkdir()
+
+        first, second = await asyncio.gather(
+            client_v2.post(
+                "/api/workspaces",
+                json={"name": "first", "repo_path": str(repo)},
+            ),
+            client_v2.post(
+                "/api/workspaces",
+                json={"name": "second", "repo_path": f"{repo}/."},
+            ),
+        )
+
+        statuses = sorted([first.status_code, second.status_code])
+        assert statuses == [201, 409]
+        async with aiosqlite.connect(sqlite_db) as db:
+            async with db.execute(
+                "SELECT COUNT(*) FROM workspaces WHERE repo_path = ?",
+                (str(repo.resolve()),),
+            ) as cur:
+                row = await cur.fetchone()
+        assert row[0] == 1
+        assert len(background_tasks) == 1
+
+
+class TestWorkspaceSourceSearch:
+    async def test_source_search_finds_path_and_source_file_opens(
+        self, client_v2, sqlite_db, tmp_path
+    ):
+        repo = tmp_path / "spdk"
+        source_dir = repo / "lib" / "nvmf"
+        source_dir.mkdir(parents=True)
+        source = source_dir / "ctrlr.c"
+        source.write_text(
+            "int spdk_nvmf_ctrlr_connect(void) {\n"
+            "    return 0;\n"
+            "}\n",
+            encoding="utf-8",
+        )
+        await _seed_ws(sqlite_db, "ws-source", indexed=1, repo_path=str(repo))
+
+        search = await client_v2.get(
+            "/api/workspaces/ws-source/source-search",
+            params={"q": "lib/nvmf"},
+        )
+        assert search.status_code == 200
+        matches = search.json()["matches"]
+        assert matches[0]["path"] == "lib/nvmf/ctrlr.c"
+        assert matches[0]["match_type"] == "path"
+
+        file_resp = await client_v2.get(
+            "/api/workspaces/ws-source/source-file",
+            params={"path": matches[0]["path"]},
+        )
+        assert file_resp.status_code == 200
+        body = file_resp.json()
+        assert body["path"] == "lib/nvmf/ctrlr.c"
+        assert "spdk_nvmf_ctrlr_connect" in body["content"]
+
+    async def test_source_search_finds_content(self, client_v2, sqlite_db, tmp_path):
+        repo = tmp_path / "spdk"
+        source_dir = repo / "lib" / "bdev"
+        source_dir.mkdir(parents=True)
+        (source_dir / "bdev.c").write_text(
+            "void spdk_bdev_submit_request(void) {}\n",
+            encoding="utf-8",
+        )
+        await _seed_ws(sqlite_db, "ws-source-content", indexed=1, repo_path=str(repo))
+
+        resp = await client_v2.get(
+            "/api/workspaces/ws-source-content/source-search",
+            params={"q": "spdk_bdev_submit_request"},
+        )
+
+        assert resp.status_code == 200
+        matches = resp.json()["matches"]
+        assert matches[0]["path"] == "lib/bdev/bdev.c"
+        assert matches[0]["line"] == 1
+        assert matches[0]["match_type"] == "content"
+
+    async def test_source_search_skips_symlinked_external_files(
+        self, client_v2, sqlite_db, tmp_path
+    ):
+        repo = tmp_path / "spdk"
+        repo.mkdir()
+        secret = tmp_path / "outside-secret.txt"
+        secret.write_text("leak-marker-token\n", encoding="utf-8")
+        (repo / "linked-secret.txt").symlink_to(secret)
+        await _seed_ws(sqlite_db, "ws-source-symlink", indexed=1, repo_path=str(repo))
+
+        resp = await client_v2.get(
+            "/api/workspaces/ws-source-symlink/source-search",
+            params={"q": "leak-marker-token"},
+        )
+
+        assert resp.status_code == 200
+        assert resp.json()["matches"] == []
+
+    async def test_source_search_rejects_whitespace_only_query(
+        self, client_v2, sqlite_db, tmp_path
+    ):
+        repo = tmp_path / "spdk"
+        repo.mkdir()
+        (repo / "README.md").write_text("hello\n", encoding="utf-8")
+        await _seed_ws(sqlite_db, "ws-source-blank", indexed=1, repo_path=str(repo))
+
+        resp = await client_v2.get(
+            "/api/workspaces/ws-source-blank/source-search",
+            params={"q": "   "},
+        )
+
+        assert resp.status_code == 422
+
+    async def test_source_file_rejects_path_traversal(
+        self, client_v2, sqlite_db, tmp_path
+    ):
+        repo = tmp_path / "spdk"
+        repo.mkdir()
+        await _seed_ws(sqlite_db, "ws-source-safe", indexed=1, repo_path=str(repo))
+
+        resp = await client_v2.get(
+            "/api/workspaces/ws-source-safe/source-file",
+            params={"path": "../secret.txt"},
+        )
+
+        assert resp.status_code == 422
+
 
 # ---------------------------------------------------------------------------
 # Index / Analyze

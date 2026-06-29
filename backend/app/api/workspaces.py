@@ -1,6 +1,7 @@
 import asyncio
 import json
 import logging
+import os
 
 import uuid
 from datetime import datetime, timezone
@@ -30,6 +31,35 @@ _MATERIALS_ROOT = settings.data_path / "workspaces"
 def _schedule_background_task(coro):
     """Schedule a fire-and-forget workspace background coroutine."""
     return asyncio.create_task(coro)
+
+
+def _canonical_repo_path(repo_path: str) -> str:
+    return str(Path(repo_path).expanduser().resolve())
+
+
+async def _find_workspace_by_canonical_repo_path(
+    db: aiosqlite.Connection, resolved_repo_path: str
+) -> aiosqlite.Row | None:
+    async with db.execute(
+        "SELECT id, name, indexed, repo_path FROM workspaces ORDER BY updated_at DESC"
+    ) as cur:
+        rows = await cur.fetchall()
+    for row in rows:
+        if _canonical_repo_path(row["repo_path"]) == resolved_repo_path:
+            return row
+    return None
+
+
+def _duplicate_workspace_error(existing: aiosqlite.Row) -> HTTPException:
+    return HTTPException(
+        status_code=409,
+        detail={
+            "message": "该代码路径已存在工作空间，请打开已有工作空间继续分析",
+            "existing_workspace_id": existing["id"],
+            "existing_workspace_name": existing["name"],
+            "indexed": existing["indexed"],
+        },
+    )
 
 
 # --- Schemas ---
@@ -79,6 +109,26 @@ class WorkspaceReportResponse(BaseModel):
     created_at: str
 
 
+class WorkspaceSourceSearchMatch(BaseModel):
+    path: str
+    line: int | None = None
+    text: str
+    match_type: str
+
+
+class WorkspaceSourceSearchResponse(BaseModel):
+    query: str
+    matches: list[WorkspaceSourceSearchMatch]
+
+
+class WorkspaceSourceFileResponse(BaseModel):
+    path: str
+    start_line: int
+    end_line: int
+    total_lines: int
+    content: str
+
+
 class WorkspaceResponse(BaseModel):
     id: str
     name: str
@@ -109,6 +159,69 @@ async def _get_workspace_or_404(ws_id: str, db: aiosqlite.Connection) -> dict:
     if not row:
         raise HTTPException(status_code=404, detail=f"工作空间不存在：{ws_id}")
     return _row_to_workspace(row)
+
+
+def _workspace_repo_root(ws: dict) -> Path:
+    root = Path(str(ws.get("repo_path") or "")).expanduser().resolve()
+    if not root.exists():
+        raise HTTPException(status_code=404, detail=f"代码路径不存在：{root}")
+    if not root.is_dir():
+        raise HTTPException(status_code=422, detail=f"代码路径不是目录：{root}")
+    return root
+
+
+def _safe_source_path(root: Path, relative_path: str) -> Path:
+    rel = relative_path.strip().lstrip("/\\")
+    if not rel:
+        raise HTTPException(status_code=422, detail="缺少源码路径")
+    candidate = (root / rel).resolve()
+    try:
+        candidate.relative_to(root)
+    except ValueError:
+        raise HTTPException(status_code=422, detail="源码路径必须位于工作空间内")
+    return candidate
+
+
+def _is_probably_text_file(path: Path, max_bytes: int = 512 * 1024) -> bool:
+    try:
+        if path.stat().st_size > max_bytes:
+            return False
+        with path.open("rb") as fh:
+            sample = fh.read(4096)
+        return b"\x00" not in sample
+    except OSError:
+        return False
+
+
+def _iter_source_files(root: Path):
+    skip_dirs = {
+        ".git",
+        ".hg",
+        ".svn",
+        "node_modules",
+        "__pycache__",
+        ".next",
+        "build",
+        "dist",
+        "target",
+    }
+    root_resolved = root.resolve()
+    for dirpath, dirnames, filenames in os.walk(root_resolved, followlinks=False):
+        current = Path(dirpath)
+        dirnames[:] = [
+            dirname
+            for dirname in dirnames
+            if dirname not in skip_dirs and not (current / dirname).is_symlink()
+        ]
+        for filename in filenames:
+            path = current / filename
+            if path.is_symlink() or not path.is_file():
+                continue
+            try:
+                path.resolve().relative_to(root_resolved)
+            except ValueError:
+                continue
+            yield path
 
 
 def _workspace_index_fallback_warning(ws: dict) -> str | None:
@@ -290,22 +403,35 @@ async def list_workspaces(db: aiosqlite.Connection = Depends(get_db)):
 async def create_workspace(
     data: WorkspaceCreate, db: aiosqlite.Connection = Depends(get_db)
 ):
-    repo = Path(data.repo_path)
+    repo = Path(data.repo_path).expanduser()
     if not repo.exists():
         raise HTTPException(status_code=422, detail=f"代码路径不存在：{data.repo_path}")
     if not repo.is_dir():
         raise HTTPException(status_code=422, detail=f"代码路径不是目录：{data.repo_path}")
+    resolved_repo_path = _canonical_repo_path(data.repo_path)
 
     ws_id = str(uuid.uuid4())
     now = datetime.now(timezone.utc).isoformat()
-    await db.execute(
-        """INSERT INTO workspaces (id, name, repo_path, indexed, created_at, updated_at)
-           VALUES (?, ?, ?, 0, ?, ?)""",
-        (ws_id, data.name, data.repo_path, now, now),
-    )
-    await db.commit()
+    try:
+        await db.execute("BEGIN IMMEDIATE")
+        existing = await _find_workspace_by_canonical_repo_path(db, resolved_repo_path)
+        if existing:
+            await db.rollback()
+            raise _duplicate_workspace_error(existing)
+        await db.execute(
+            """INSERT INTO workspaces (id, name, repo_path, indexed, created_at, updated_at)
+               VALUES (?, ?, ?, 0, ?, ?)""",
+            (ws_id, data.name, resolved_repo_path, now, now),
+        )
+        await db.commit()
+    except aiosqlite.IntegrityError:
+        await db.rollback()
+        existing = await _find_workspace_by_canonical_repo_path(db, resolved_repo_path)
+        if existing:
+            raise _duplicate_workspace_error(existing)
+        raise
 
-    _schedule_background_task(_index_workspace(ws_id, data.repo_path))
+    _schedule_background_task(_index_workspace(ws_id, resolved_repo_path))
 
     async with db.execute("SELECT * FROM workspaces WHERE id = ?", (ws_id,)) as cur:
         row = await cur.fetchone()
@@ -332,6 +458,107 @@ async def get_workspace(ws_id: str, db: aiosqlite.Connection = Depends(get_db)):
     ws["materials"] = materials
     ws["reports"] = reports
     return ws
+
+
+@router.get("/{ws_id}/source-search", response_model=WorkspaceSourceSearchResponse)
+async def source_search(
+    ws_id: str,
+    q: str = Query(..., min_length=1, max_length=240),
+    limit: int = Query(20, ge=1, le=80),
+    db: aiosqlite.Connection = Depends(get_db),
+):
+    ws = await _get_workspace_or_404(ws_id, db)
+    root = _workspace_repo_root(ws)
+    query = q.strip().replace("\\", "/")
+    if not query:
+        raise HTTPException(status_code=422, detail="搜索内容不能为空")
+    query_lower = query.lower()
+    matches: list[WorkspaceSourceSearchMatch] = []
+    seen: set[tuple[str, int | None, str]] = set()
+
+    def add(path: Path, line: int | None, text: str, match_type: str) -> None:
+        rel = path.relative_to(root).as_posix()
+        key = (rel, line, match_type)
+        if key in seen or len(matches) >= limit:
+            return
+        seen.add(key)
+        matches.append(
+            WorkspaceSourceSearchMatch(
+                path=rel,
+                line=line,
+                text=text.strip()[:500],
+                match_type=match_type,
+            )
+        )
+
+    # Path-first behavior makes directory queries like "lib/nvmf" useful and
+    # predictable for black-box source exploration.
+    for path in _iter_source_files(root):
+        rel = path.relative_to(root).as_posix()
+        if query_lower in rel.lower():
+            add(path, None, rel, "path")
+            if len(matches) >= limit:
+                break
+
+    # Content fallback covers symbol/function searches without requiring a
+    # separate grep service. Keep it bounded so a large repo stays responsive.
+    if len(matches) < limit:
+        scanned = 0
+        for path in _iter_source_files(root):
+            if len(matches) >= limit or scanned >= 5000:
+                break
+            if not _is_probably_text_file(path):
+                continue
+            scanned += 1
+            try:
+                with path.open("r", encoding="utf-8", errors="replace") as fh:
+                    for line_no, line in enumerate(fh, start=1):
+                        if query_lower in line.lower():
+                            add(path, line_no, line, "content")
+                            break
+            except OSError:
+                continue
+
+    return WorkspaceSourceSearchResponse(query=query, matches=matches)
+
+
+@router.get("/{ws_id}/source-file", response_model=WorkspaceSourceFileResponse)
+async def source_file(
+    ws_id: str,
+    path: str = Query(..., min_length=1, max_length=4096),
+    line: int | None = Query(None, ge=1),
+    context: int = Query(80, ge=1, le=400),
+    db: aiosqlite.Connection = Depends(get_db),
+):
+    ws = await _get_workspace_or_404(ws_id, db)
+    root = _workspace_repo_root(ws)
+    source_path = _safe_source_path(root, path)
+    if not source_path.exists() or not source_path.is_file():
+        raise HTTPException(status_code=404, detail=f"源码文件不存在：{path}")
+    if not _is_probably_text_file(source_path, max_bytes=2 * 1024 * 1024):
+        raise HTTPException(status_code=422, detail="该文件过大或不是文本文件，无法预览")
+
+    try:
+        lines = source_path.read_text(encoding="utf-8", errors="replace").splitlines()
+    except OSError as exc:
+        raise HTTPException(status_code=502, detail=f"读取源码失败：{exc}") from exc
+
+    total = len(lines)
+    if line is None:
+        start = 1
+    else:
+        start = max(1, line - max(0, context // 2))
+    end = min(total, start + context - 1)
+    if end - start + 1 < context:
+        start = max(1, end - context + 1)
+    content = "\n".join(lines[start - 1:end])
+    return WorkspaceSourceFileResponse(
+        path=source_path.relative_to(root).as_posix(),
+        start_line=start,
+        end_line=end,
+        total_lines=total,
+        content=content,
+    )
 
 
 # --- T6: Index status endpoints ---

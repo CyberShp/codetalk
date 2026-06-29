@@ -200,6 +200,47 @@ async function pageExcerpt(page: Page, limit = 2000) {
   return (await page.locator("body").innerText().catch(() => "")).slice(0, limit);
 }
 
+async function firstVisibleEnabledButton(page: Page, name: string | RegExp) {
+  const buttons = page.getByRole("button", { name });
+  const count = await buttons.count();
+  for (let index = 0; index < count; index += 1) {
+    const button = buttons.nth(index);
+    if ((await button.isVisible().catch(() => false)) && (await button.isEnabled().catch(() => false))) {
+      return button;
+    }
+  }
+  return null;
+}
+
+async function clickAndCaptureJsonResponse(
+  page: Page,
+  urlPart: string,
+  target: Locator,
+  timeout = 120_000,
+) {
+  const responsePromise = page.waitForResponse(
+    (response) => response.request().method() === "POST" && response.url().includes(urlPart),
+    { timeout },
+  );
+  await target.hover();
+  await target.click();
+  const response = await responsePromise;
+  const text = await response.text().catch(() => "");
+  let json: unknown = null;
+  try {
+    json = text ? JSON.parse(text) : null;
+  } catch {
+    json = null;
+  }
+  return {
+    ok: response.ok(),
+    status: response.status(),
+    url: response.url(),
+    json,
+    text: text.slice(0, 4000),
+  };
+}
+
 async function noFrameworkOverlay(page: Page) {
   await expect(
     page
@@ -585,6 +626,70 @@ test("A/K: settings, app shell, visual sanity, and secret hygiene", async ({ pag
   record("A06", "pass", "Redis-related environment and browser diagnostics do not reference forbidden port 6399");
 });
 
+test("A04: health probes are triggerable from the UI", async ({ page }) => {
+  test.setTimeout(240_000);
+
+  const evidence: Record<string, unknown> = {};
+
+  await page.goto("/workbench", { waitUntil: "domcontentloaded" });
+  await noFrameworkOverlay(page);
+  await expect(page.getByRole("heading", { name: "Agent Workbench" })).toBeVisible({ timeout: 30_000 });
+  await expect(page.getByText("Workbench system audit")).toBeVisible({ timeout: 30_000 });
+  evidence.systemAuditScreenshot = await screenshot(page, "A04-workbench-system-audit");
+
+  const providerProbeAll = await firstVisibleEnabledButton(page, "Probe all Agent CLIs");
+  const providerStartupProbe = providerProbeAll ?? (await firstVisibleEnabledButton(page, "Startup probe"));
+  if (!providerStartupProbe) {
+    record("A04", "blocked", "workbench provider probe controls are unavailable or disabled", {
+      screenshot: await screenshot(page, "A04-provider-probe-unavailable"),
+      excerpt: await pageExcerpt(page),
+    });
+    return;
+  }
+
+  const providerUrlPart = providerProbeAll ? "/api/workbench/deployment-probe" : "/startup-probe";
+  evidence.providerProbe = await clickAndCaptureJsonResponse(page, providerUrlPart, providerStartupProbe);
+  await expect
+    .poll(() => page.locator("body").innerText(), { timeout: 120_000 })
+    .toMatch(/Deployment probe|Probe result:|Startup probe\s+\w+:/i);
+  evidence.providerProbeScreenshot = await screenshot(page, "A04-provider-probe-result");
+
+  const workbenchToolProbe = await firstVisibleEnabledButton(page, "Startup probe");
+  if (workbenchToolProbe) {
+    evidence.workbenchToolProbe = await clickAndCaptureJsonResponse(page, "/startup-probe", workbenchToolProbe);
+    await expect
+      .poll(() => page.locator("body").innerText(), { timeout: 120_000 })
+      .toMatch(/Probe result:|Startup probe\s+\w+:/i);
+    evidence.workbenchToolProbeScreenshot = await screenshot(page, "A04-workbench-tool-probe-result");
+  }
+
+  await page.goto("/tools", { waitUntil: "domcontentloaded" });
+  await noFrameworkOverlay(page);
+  await expect(page.getByRole("heading", { name: "工具状态" })).toBeVisible({ timeout: 30_000 });
+  const toolStartupProbe = await firstVisibleEnabledButton(page, "Startup probe");
+  if (toolStartupProbe) {
+    evidence.toolProbe = await clickAndCaptureJsonResponse(page, "/startup-probe", toolStartupProbe);
+    await expect
+      .poll(() => page.locator("body").innerText(), { timeout: 120_000 })
+      .toMatch(/startup_probe|repo not indexed|probe timed out|available|unavailable|healthy|failed/i);
+    evidence.toolProbeScreenshot = await screenshot(page, "A04-tool-probe-result");
+  } else if (!workbenchToolProbe) {
+    record("A04", "blocked", "no enabled tool startup probe control was available in workbench or tools UI", {
+      screenshot: await screenshot(page, "A04-tool-probe-unavailable"),
+      excerpt: await pageExcerpt(page),
+    });
+    return;
+  } else {
+    evidence.toolsPageUnavailable = {
+      screenshot: await screenshot(page, "A04-tool-probe-unavailable"),
+      excerpt: await pageExcerpt(page),
+    };
+  }
+
+  writeJson("A04-health-probes-ui.json", evidence);
+  record("A04", "pass", "system audit, provider probe, and tool startup probe were triggered through UI controls", evidence);
+});
+
 test("B/C/K: create SPDK workspace through UI and verify chat/index gate", async ({ page, context }) => {
   test.setTimeout(SPDK_INDEX_WAIT_MS + 480_000);
 
@@ -631,6 +736,26 @@ test("B/C/K: create SPDK workspace through UI and verify chat/index gate", async
   await expect(page.getByText(workspaceName)).toBeVisible({ timeout: 30_000 });
   record("B04", "pass", "workspace detail survived refresh");
 
+  try {
+    await page.goto("/workspaces/new", { waitUntil: "domcontentloaded" });
+    await page.getByPlaceholder(/项目 A/).fill(`${workspaceName}-duplicate`);
+    await page.getByPlaceholder(/本地文件夹路径/).fill(`${SPDK_REPO}/.`);
+    await page.getByRole("button", { name: "创建工作空间" }).click();
+    const existingWorkspaceLink = page.getByRole("link", { name: /打开已有工作空间/ });
+    await expect(existingWorkspaceLink).toBeVisible({ timeout: 15_000 });
+    await existingWorkspaceLink.click();
+    await page.waitForURL(new RegExp(`/workspaces/${workspaceId}$`), { timeout: 15_000 });
+    await expect(page.getByText(workspaceName)).toBeVisible({ timeout: 15_000 });
+    record("B03", "pass", "duplicate repo path is rejected with a link back to the existing workspace");
+  } catch (error) {
+    record("B03", "blocked", "duplicate workspace UI flow did not recover to the existing workspace", {
+      error: error instanceof Error ? error.message : String(error),
+      screenshot: await screenshot(page, "B03-duplicate-workspace-failed"),
+      excerpt: await pageExcerpt(page),
+    });
+    await page.goto(`/workspaces/${workspaceId}`, { waitUntil: "domcontentloaded" });
+  }
+
   const start = Date.now();
   let finalStatus = "";
   const indexDeadline = start + SPDK_INDEX_WAIT_MS;
@@ -650,6 +775,40 @@ test("B/C/K: create SPDK workspace through UI and verify chat/index gate", async
   record("B05", finalStatus === "indexed" ? "pass" : "blocked", finalStatus || "index timeout", {
     elapsedMs,
   });
+
+  if (finalStatus === "indexed") {
+    try {
+      await page.getByRole("button", { name: "源码搜索" }).click();
+      const sourceSearch = page.getByLabel("源码搜索");
+      const sourceQueries = ["lib/nvmf", "lib/iscsi", "lib/bdev", "test/nvmf"];
+      const openedPaths: string[] = [];
+      for (const query of sourceQueries) {
+        await sourceSearch.fill(query);
+        await page.getByRole("button", { name: "搜索源码" }).click();
+        const result = page
+          .locator("button")
+          .filter({ hasText: query })
+          .first();
+        await expect(result).toBeVisible({ timeout: 20_000 });
+        await result.hover();
+        await result.click();
+        await expect(page.getByText(new RegExp(query.replace("/", "\\/"))).first()).toBeVisible({ timeout: 10_000 });
+        openedPaths.push(query);
+      }
+      record("B06", "pass", "searched and opened SPDK source paths through the workspace UI", {
+        openedPaths,
+        screenshot: await screenshot(page, "B06-source-search"),
+      });
+    } catch (error) {
+      record("B06", "blocked", "workspace source search did not complete through the UI", {
+        error: error instanceof Error ? error.message : String(error),
+        screenshot: await screenshot(page, "B06-source-search-failed"),
+        excerpt: await pageExcerpt(page),
+      });
+    }
+  } else {
+    record("B06", "blocked", "source search requires indexed SPDK workspace");
+  }
 
   const chatPrompt = "分析 SPDK NVMe-oF target connect 到 IO 提交流程，并输出代码证据、流程、SFMEA、黑盒测试用例。";
   await page.getByRole("button", { name: "对话" }).click();
@@ -1206,14 +1365,18 @@ test("matrix accounting: every planned case has an explicit status", async () =>
   }
 
   if (auditMode) {
-    record("A04", "blocked", "provider probe/system audit/tool probe are not exposed as stable UI controls");
-    record("A05", "blocked", "port-conflict scenario requires a separate destructive startup attempt");
-    record("B03", "blocked", "duplicate workspace policy is product-defined; not exercised in first safe run");
-    record("B06", "blocked", "source search UI is not exposed as a stable browser control in this run");
-    record("D03", "blocked", "requires provider execution for resource_leak_hunt");
-    record("D04", "blocked", "requires provider execution for patch_impact_review");
-    record("D05", "blocked", "requires provider execution for mr_blackbox_test");
-    record("D10", "blocked", "requires a failed executable workflow and accepted rerun");
+    for (const [id, reason] of [
+      ["A04", "provider probe/system audit/tool probe are not exposed as stable UI controls"],
+      ["A05", "port-conflict scenario requires a separate destructive startup attempt"],
+      ["B03", "duplicate workspace policy is product-defined; not exercised in first safe run"],
+      ["B06", "source search UI is not exposed as a stable browser control in this run"],
+      ["D03", "requires provider execution for resource_leak_hunt"],
+      ["D04", "requires provider execution for patch_impact_review"],
+      ["D05", "requires provider execution for mr_blackbox_test"],
+      ["D10", "requires a failed executable workflow and accepted rerun"],
+    ] as const) {
+      if (results.get(id)?.status === "not_run") record(id, "blocked", reason);
+    }
     for (const id of ["E01", "E02", "E03", "E04", "E05", "E06", "E07", "E08", "E09", "E10"]) {
       if (results.get(id)?.status === "not_run") record(id, "blocked", "requires live model/provider chain");
     }

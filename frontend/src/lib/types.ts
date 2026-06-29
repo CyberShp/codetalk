@@ -942,6 +942,26 @@ export interface WorkspaceModule {
   name: string;
 }
 
+export interface WorkspaceSourceSearchMatch {
+  path: string;
+  line: number | null;
+  text: string;
+  match_type: string;
+}
+
+export interface WorkspaceSourceSearchResponse {
+  query: string;
+  matches: WorkspaceSourceSearchMatch[];
+}
+
+export interface WorkspaceSourceFile {
+  path: string;
+  start_line: number;
+  end_line: number;
+  total_lines: number;
+  content: string;
+}
+
 /* ── Analysis plan / scope preview (workspace analysis modal) ── */
 
 export type AnalysisObjectKind =

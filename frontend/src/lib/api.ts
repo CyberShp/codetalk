@@ -53,6 +53,8 @@ import type {
   WorkbenchSmokeE2EResult,
   WorkbenchTaskArtifactContent,
   WorkbenchTaskArtifactManifest,
+  WorkspaceSourceFile,
+  WorkspaceSourceSearchResponse,
 } from "./types";
 
 const CONFIGURED_API_BASE = process.env.NEXT_PUBLIC_API_URL?.replace(/\/$/, "");
@@ -62,6 +64,18 @@ export const BASE =
   (typeof window !== "undefined"
     ? `${window.location.protocol}//${window.location.hostname}:8100`
     : "http://localhost:8100");
+
+export class DuplicateWorkspaceError extends Error {
+  existingWorkspaceId: string;
+  existingWorkspaceName?: string;
+
+  constructor(message: string, existingWorkspaceId: string, existingWorkspaceName?: string) {
+    super(message);
+    this.name = "DuplicateWorkspaceError";
+    this.existingWorkspaceId = existingWorkspaceId;
+    this.existingWorkspaceName = existingWorkspaceName;
+  }
+}
 
 function extractErrorMessage(body: string): string {
   const text = body.trim();
@@ -359,13 +373,60 @@ export const api = {
   workspaces: {
     list: () => request<Workspace[]>("/api/workspaces"),
 
-    create: (data: WorkspaceCreate) =>
-      request<Workspace>("/api/workspaces", {
+    create: async (data: WorkspaceCreate): Promise<Workspace> => {
+      const res = await fetch(`${BASE}/api/workspaces`, {
         method: "POST",
+        credentials: "include",
+        headers: { "Content-Type": "application/json" },
         body: JSON.stringify(data),
-      }),
+      });
+      if (res.ok) return res.json();
+      const body = await res.text().catch(() => "");
+      try {
+        const parsed = JSON.parse(body) as {
+          detail?: {
+            message?: string;
+            existing_workspace_id?: string;
+            existing_workspace_name?: string;
+          } | string;
+        };
+        if (
+          res.status === 409 &&
+          parsed.detail &&
+          typeof parsed.detail === "object" &&
+          typeof parsed.detail.existing_workspace_id === "string"
+        ) {
+          throw new DuplicateWorkspaceError(
+            parsed.detail.message ?? "该代码路径已存在工作空间",
+            parsed.detail.existing_workspace_id,
+            parsed.detail.existing_workspace_name,
+          );
+        }
+      } catch (err) {
+        if (err instanceof DuplicateWorkspaceError) throw err;
+      }
+      throw new Error(friendlyErrorMessage(res.status, extractErrorMessage(body)));
+    },
 
     get: (id: string) => request<Workspace>(`/api/workspaces/${id}`),
+
+    sourceSearch: (wsId: string, q: string, limit = 20) => {
+      const query = new URLSearchParams({ q, limit: String(limit) });
+      return request<WorkspaceSourceSearchResponse>(
+        `/api/workspaces/${wsId}/source-search?${query.toString()}`,
+      );
+    },
+
+    sourceFile: (wsId: string, path: string, line?: number, context = 80) => {
+      const query = new URLSearchParams({
+        path,
+        context: String(context),
+        ...(line ? { line: String(line) } : {}),
+      });
+      return request<WorkspaceSourceFile>(
+        `/api/workspaces/${wsId}/source-file?${query.toString()}`,
+      );
+    },
 
     uploadMaterial: async (wsId: string, filePath: string): Promise<Workspace["materials"][number]> => {
       const res = await fetch(`${BASE}/api/workspaces/${wsId}/materials`, {

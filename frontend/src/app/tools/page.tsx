@@ -147,6 +147,7 @@ function AgentProviderCapabilitiesCard({
   capabilities?: AgentProviderCapabilities;
 }) {
   if (!capabilities) return null;
+  const mcpProfiles = capabilities.mcp_profiles ?? [];
   return (
     <div className="mb-4 rounded-lg border border-outline-variant/30 bg-surface px-3 py-2 text-xs">
       <div className="mb-2 flex flex-wrap items-center gap-2">
@@ -189,9 +190,9 @@ function AgentProviderCapabilitiesCard({
           JSON {capabilities.supports_json_output ? "expected" : "unknown"}
         </span>
       </div>
-      {capabilities.mcp_profiles.length > 0 && (
+      {mcpProfiles.length > 0 && (
         <div className="mt-2 flex flex-wrap gap-1.5">
-          {capabilities.mcp_profiles.map((profile) => (
+          {mcpProfiles.map((profile) => (
             <code
               key={profile}
               className="rounded bg-surface-container px-1.5 py-0.5 font-data text-[11px] text-on-surface"
