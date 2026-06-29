@@ -141,6 +141,36 @@ function writeJson(name: string, payload: unknown) {
   fs.writeFileSync(path.join(ARTIFACT_DIR, name), JSON.stringify(payload, null, 2));
 }
 
+function textArtifactSecretLeaks(secret: string) {
+  const leaks: string[] = [];
+  const textExtensions = new Set([".json", ".md", ".txt", ".log", ".csv"]);
+  const visit = (dir: string) => {
+    if (!fs.existsSync(dir)) return;
+    for (const entry of fs.readdirSync(dir, { withFileTypes: true })) {
+      const fullPath = path.join(dir, entry.name);
+      if (entry.isDirectory()) {
+        visit(fullPath);
+        continue;
+      }
+      if (!entry.isFile() || !textExtensions.has(path.extname(entry.name))) continue;
+      const stat = fs.statSync(fullPath);
+      if (stat.size > 2_000_000) continue;
+      if (fs.readFileSync(fullPath, "utf8").includes(secret)) {
+        leaks.push(fullPath);
+      }
+    }
+  };
+  visit(ARTIFACT_DIR);
+  return leaks;
+}
+
+function expectNoSecretLeak(serialized = "") {
+  const secret = process.env.CODETALK_E2E_LLM_API_KEY;
+  if (!secret) return;
+  expect(serialized).not.toContain(secret);
+  expect(textArtifactSecretLeaks(secret)).toEqual([]);
+}
+
 async function screenshot(page: Page, name: string) {
   ensureArtifactDir();
   const file = path.join(ARTIFACT_DIR, `${name}.png`);
@@ -675,6 +705,7 @@ test("H/G/F/E/J: coverage upload, AI test-design, and artifact quality gates", a
     record("G03", "blocked", "test-case structure cannot be judged without analysis artifact", blockedDetails);
     record("F01", "blocked", "SFMEA cannot be judged without analysis artifact", blockedDetails);
     record("J04", "blocked", "analysis JSON artifact unavailable", blockedDetails);
+    expectNoSecretLeak();
     record("J06", "pass", "uploaded coverage artifact and screenshots do not include local secrets");
     return;
   }
@@ -696,6 +727,7 @@ test("H/G/F/E/J: coverage upload, AI test-design, and artifact quality gates", a
   record("G03", "pass", "recommendation payload includes scenario/test-design structure");
   record("F01", serialized.includes("sfmea") ? "pass" : "blocked", "SFMEA presence checked in coverage artifact");
   record("J04", "pass", "coverage JSON artifact persisted for schema inspection");
+  expectNoSecretLeak(serialized);
   record("J06", "pass", "artifact written by test excludes local secrets");
 });
 

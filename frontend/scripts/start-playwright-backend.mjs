@@ -62,7 +62,8 @@ process.on("SIGINT", () => shutdown("SIGINT"));
 
 child.on("exit", (code, signal) => {
   if (signal) {
-    process.kill(process.pid, signal);
+    const signalExitCodes = { SIGINT: 130, SIGTERM: 143, SIGKILL: 137 };
+    process.exit(signalExitCodes[signal] ?? 1);
     return;
   }
   process.exit(code ?? 0);
