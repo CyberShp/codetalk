@@ -175,6 +175,18 @@ function expectNoSecretLeak(serialized = "") {
   expect(textArtifactSecretLeaks(secret)).toEqual([]);
 }
 
+function redis6399EnvOffenders() {
+  return Object.entries(process.env)
+    .filter(([key, value]) => /REDIS/i.test(key) || /redis/i.test(value ?? ""))
+    .filter(([key, value]) => key.includes("6399") || (value ?? "").includes("6399"))
+    .map(([key, value]) => `${key}=${value}`);
+}
+
+function diagnostics6399Mentions(page: Page) {
+  const diagnostics = diagnosticsByPage.get(page) ?? { consoleLines: [], failedResponses: [] };
+  return [...diagnostics.consoleLines, ...diagnostics.failedResponses].filter((line) => line.includes("6399"));
+}
+
 async function screenshot(page: Page, name: string) {
   ensureArtifactDir();
   const file = path.join(ARTIFACT_DIR, `${name}.png`);
@@ -354,15 +366,15 @@ test.afterAll(async () => {
       if (!e2eLlmConfigId) {
         cleanup.status = "not_found";
         writeJson("llm-config-cleanup.json", cleanup);
-        return;
-      }
-      const response = await fetch(`${BACKEND_BASE}/api/settings/llm/${e2eLlmConfigId}`, {
-        method: "DELETE",
-      });
-      cleanup.httpStatus = response.status;
-      cleanup.status = response.ok || response.status === 404 ? "deleted" : "failed";
-      if (!response.ok && response.status !== 404) {
-        cleanup.error = await response.text().catch(() => "");
+      } else {
+        const response = await fetch(`${BACKEND_BASE}/api/settings/llm/${e2eLlmConfigId}`, {
+          method: "DELETE",
+        });
+        cleanup.httpStatus = response.status;
+        cleanup.status = response.ok || response.status === 404 ? "deleted" : "failed";
+        if (!response.ok && response.status !== 404) {
+          cleanup.error = await response.text().catch(() => "");
+        }
       }
     } catch (error) {
       cleanup.status = "failed";
@@ -422,12 +434,12 @@ test("A/K: settings, app shell, visual sanity, and secret hygiene", async ({ pag
 
   const health = await request.get(`${BACKEND_BASE}/health`);
   expect(health.ok()).toBeTruthy();
-  record("A01", "pass", "backend /health ok and frontend loaded below");
 
   await page.setViewportSize({ width: 1440, height: 900 });
   await page.goto("/", { waitUntil: "domcontentloaded" });
   await noFrameworkOverlay(page);
   await expect(page.locator("body")).toContainText(/CODETALK|CodeTalk|工作空间|任务|设置/);
+  record("A01", "pass", "backend /health ok and frontend shell rendered without global error");
   const bg = await bodyBackgroundIsNotPureBlack(page);
   await assertNoObviousOverlap(page, "aside a, aside button, header a, header button, nav a, nav button");
   const desktopShot = await screenshot(page, "K01-desktop-home");
@@ -449,7 +461,15 @@ test("A/K: settings, app shell, visual sanity, and secret hygiene", async ({ pag
   const keyboardShot = await screenshot(page, "K09-settings-keyboard");
   record("K09", "pass", keyboardShot);
   await configureLlmIfAvailable(page);
-  record("A06", "pass", "no Redis connection is required by this browser E2E harness");
+  const redisOffenders = redis6399EnvOffenders();
+  const runtimeMentions = diagnostics6399Mentions(page);
+  writeJson("redis-6399-check.json", {
+    redisEnvOffenders: redisOffenders,
+    browserDiagnosticMentions: runtimeMentions,
+  });
+  expect(redisOffenders).toEqual([]);
+  expect(runtimeMentions).toEqual([]);
+  record("A06", "pass", "Redis-related environment and browser diagnostics do not reference forbidden port 6399");
 });
 
 test("B/C/K: create SPDK workspace through UI and verify chat/index gate", async ({ page }) => {
