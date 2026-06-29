@@ -12,6 +12,7 @@ const ARTIFACT_DIR =
   path.join(os.tmpdir(), "codetalk-e2e-spdk", RUN_ID);
 const hasSpdkRepo = fs.existsSync(SPDK_REPO);
 const requireSpdkRepo = process.env.CODETALK_E2E_REQUIRE_SPDK === "1";
+const auditMode = process.env.CODETALK_E2E_AUDIT_MODE === "1";
 const SPDK_INDEX_WAIT_MS = Number(process.env.CODETALK_E2E_SPDK_INDEX_TIMEOUT_MS ?? "600000");
 
 type CaseStatus = "pass" | "fail" | "blocked" | "not_run";
@@ -382,6 +383,7 @@ test.afterAll(async () => {
     frontend_port: process.env.CODETALK_FRONTEND_PORT ?? "3003",
     backend_port: process.env.CODETALK_BACKEND_PORT ?? "3004",
     spdk_repo: SPDK_REPO,
+    audit_mode: auditMode,
     summary,
     cases: Array.from(results.values()),
   });
@@ -872,5 +874,11 @@ test("matrix accounting: every planned case has an explicit status", async () =>
   }
 
   const unresolved = Array.from(results.values()).filter((item) => item.status === "not_run");
+  const failed = Array.from(results.values()).filter((item) => item.status === "fail");
+  const blocked = Array.from(results.values()).filter((item) => item.status === "blocked");
   expect(unresolved).toEqual([]);
+  expect(failed).toEqual([]);
+  if (requireSpdkRepo && !auditMode) {
+    expect(blocked).toEqual([]);
+  }
 });
