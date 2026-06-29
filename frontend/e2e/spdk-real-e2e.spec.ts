@@ -2334,6 +2334,52 @@ test("H/G/F/E/J: coverage upload, AI test-design, and artifact quality gates", a
     });
   }
 
+  const rejudgeDownloadPromise = page.waitForEvent("download");
+  await page.getByRole("button", { name: "导出复判报告" }).click();
+  const rejudgeDownload = await rejudgeDownloadPromise;
+  const rejudgeFile = path.join(ARTIFACT_DIR, "F06-coverage-rejudge.json");
+  await rejudgeDownload.saveAs(rejudgeFile);
+  const rejudgePayload = JSON.parse(fs.readFileSync(rejudgeFile, "utf8")) as {
+    version?: string;
+    rubric?: Record<string, number>;
+    summary?: {
+      high_rpn_count?: number;
+      average_score?: number;
+      failed_count?: number;
+      pass?: boolean;
+    };
+    high_rpn_rejudgements?: Array<{
+      evidence_real_path?: boolean;
+      hallucination_flags?: string[];
+      boundary_issues?: string[];
+      score?: number;
+      status?: string;
+    }>;
+    gap_report?: Record<string, unknown>;
+  };
+  expect(rejudgePayload.version).toBe("codetalk-coverage-rejudge-v1");
+  expect(rejudgePayload.rubric).toMatchObject({
+    evidence_truthfulness: 25,
+    flow_completeness: 20,
+    sfmea_quality: 20,
+    black_box_quality: 20,
+    hallucination_control: 10,
+    usability: 5,
+  });
+  expect(rejudgePayload.summary?.high_rpn_count ?? 0).toBeGreaterThanOrEqual(20);
+  expect(rejudgePayload.summary?.average_score ?? 0).toBeGreaterThanOrEqual(80);
+  expect(rejudgePayload.summary?.pass).toBe(true);
+  expect(rejudgePayload.high_rpn_rejudgements?.every((item) => item.evidence_real_path)).toBeTruthy();
+  expect(rejudgePayload.high_rpn_rejudgements?.every((item) => (item.boundary_issues ?? []).length === 0)).toBeTruthy();
+  expect(rejudgePayload.high_rpn_rejudgements?.every((item) => (item.hallucination_flags ?? []).length === 0)).toBeTruthy();
+  expect(rejudgePayload.gap_report).toBeTruthy();
+  record("F06", "pass", "downloaded high-RPN rejudge rubric artifact through the real UI", {
+    file: rejudgeFile,
+    suggestedFilename: rejudgeDownload.suggestedFilename(),
+    highRpnCount: rejudgePayload.summary?.high_rpn_count ?? 0,
+    averageScore: rejudgePayload.summary?.average_score ?? 0,
+  });
+
   const rerunSfmeaDownloadPromise = page.waitForEvent("download");
   const rerunSfmeaStartedAt = Date.now();
   await page.getByRole("button", { name: "导出 SFMEA" }).click();

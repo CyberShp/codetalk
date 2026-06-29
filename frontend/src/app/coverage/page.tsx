@@ -498,6 +498,93 @@ function buildCoverageFourPieceJson(name: string, results: CoverageModuleResult[
   );
 }
 
+function buildCoverageRejudgeJson(name: string, results: CoverageModuleResult[]) {
+  const highRpnRows = results.flatMap((mr) => {
+    const scores = coverageRiskScores(mr);
+    return BLACK_BOX_EXPORT_DIMENSIONS
+      .map((dimension) => {
+        const evidence = coverageEvidenceLabel(mr);
+        const sourceCase = (mr.black_box_cases ?? [])[0];
+        const steps = [
+          "Prepare the system through documented public configuration, CLI, RPC, or client workflow.",
+          dimension.trigger,
+          "Observe externally visible response, logs, counters, service state, and recovery behavior.",
+        ];
+        const serializedSteps = steps.join("\n");
+        const whiteBoxBoundaryIssue = /\b(call|invoke)\s+spdk_|直接调用内部函数|修改源码/i.test(serializedSteps);
+        const evidenceLooksReal = Boolean(mr.file_path || mr.module_path) && /^(lib|test)\//.test(String(mr.file_path ?? mr.module_path));
+        const mappedTestDir = spdkTestDirectory(mr);
+        const score =
+          (evidenceLooksReal ? 25 : 8) +
+          (mr.scenario || mr.expected_behavior ? 18 : 8) +
+          (sourceCase || mr.black_box_cases?.length ? 18 : 12) +
+          (!whiteBoxBoundaryIssue ? 20 : 6) +
+          (mappedTestDir !== "test" ? 9 : 3) +
+          (scores.rpn >= 100 ? 10 : 6);
+        return {
+          id: `${safeExportName(mr.function_name ?? mr.module_path)}-${dimension.key}`,
+          target: mr.function_name ?? mr.module_path,
+          dimension: dimension.key,
+          rpn: scores.rpn,
+          severity: scores.severity,
+          occurrence: scores.occurrence,
+          detection_score: scores.detection,
+          evidence,
+          evidence_real_path: evidenceLooksReal,
+          mapped_test_dir: mappedTestDir,
+          hallucination_flags: evidenceLooksReal ? [] : ["evidence path is missing or not repository-relative"],
+          boundary_issues: whiteBoxBoundaryIssue ? ["black-box steps require internal calls or source modification"] : [],
+          omissions: [
+            ...(mr.entry_paths?.length ? [] : ["external entry path still needs confirmation"]),
+            ...(mr.observable_signals?.length ? [] : ["observable signals are generic and should be sharpened"]),
+          ],
+          recommendation:
+            sourceCase?.title ??
+            `Tighten ${dimension.label} case around ${mappedTestDir} with externally observable inputs, logs, metrics, and state checks.`,
+          score,
+          status: score >= 80 && evidenceLooksReal && !whiteBoxBoundaryIssue ? "pass" : "needs_revision",
+        };
+      })
+      .filter((item) => item.rpn >= 100);
+  });
+
+  const averageScore = highRpnRows.length
+    ? highRpnRows.reduce((sum, row) => sum + row.score, 0) / highRpnRows.length
+    : 0;
+  const failedRows = highRpnRows.filter((row) => row.status !== "pass");
+  return JSON.stringify(
+    {
+      version: "codetalk-coverage-rejudge-v1",
+      name,
+      generated_at: new Date().toISOString(),
+      rubric: {
+        evidence_truthfulness: 25,
+        flow_completeness: 20,
+        sfmea_quality: 20,
+        black_box_quality: 20,
+        hallucination_control: 10,
+        usability: 5,
+      },
+      summary: {
+        high_rpn_count: highRpnRows.length,
+        average_score: Number(averageScore.toFixed(1)),
+        failed_count: failedRows.length,
+        pass: highRpnRows.length > 0 && failedRows.length === 0 && averageScore >= 80,
+      },
+      high_rpn_rejudgements: highRpnRows,
+      gap_report: {
+        prompt_gaps: failedRows.filter((row) => row.omissions.length > 0).map((row) => row.id),
+        retrieval_gaps: failedRows.filter((row) => !row.evidence_real_path).map((row) => row.id),
+        workflow_gaps: failedRows.filter((row) => row.mapped_test_dir === "test").map((row) => row.id),
+        ui_gaps: [],
+        model_capability_gaps: [],
+      },
+    },
+    null,
+    2,
+  );
+}
+
 const CASE_TYPE_LABEL: Record<string, string> = {
   black_box_ready: "黑盒可执行",
   black_box_hypothesis: "黑盒假设",
@@ -1398,6 +1485,21 @@ export default function CoveragePage() {
                     >
                       <Download size={14} />
                       导出四件套
+                    </button>
+                    <button
+                      type="button"
+                      disabled={moduleResults.length === 0}
+                      onClick={() =>
+                        downloadTextFile(
+                          `${safeExportName(a.name)}-rejudge.json`,
+                          buildCoverageRejudgeJson(a.name, moduleResults),
+                          "application/json;charset=utf-8",
+                        )
+                      }
+                      className="inline-flex items-center gap-1.5 rounded-lg bg-surface-container px-3 py-1.5 text-sm text-on-surface-variant transition-colors hover:bg-surface-container-high disabled:opacity-50"
+                    >
+                      <Download size={14} />
+                      导出复判报告
                     </button>
                   </div>
                   {/* Overall rates */}
