@@ -115,6 +115,7 @@ const acceptanceCases = [
 const results = new Map<string, CaseResult>(
   acceptanceCases.map(([id, title]) => [id, { id, title, status: "not_run" }]),
 );
+const diagnosticsByPage = new WeakMap<Page, { consoleLines: string[]; failedResponses: string[] }>();
 
 let workspaceId = "";
 let workspaceName = "";
@@ -269,6 +270,7 @@ test.afterAll(() => {
 test.beforeEach(async ({ page }) => {
   const consoleLines: string[] = [];
   const failedResponses: string[] = [];
+  diagnosticsByPage.set(page, { consoleLines, failedResponses });
   page.on("console", (msg) => {
     if (["error", "warning"].includes(msg.type())) {
       consoleLines.push(`${msg.type()}: ${msg.text()}`);
@@ -283,8 +285,12 @@ test.beforeEach(async ({ page }) => {
     body: ARTIFACT_DIR,
     contentType: "text/plain",
   });
+});
+
+test.afterEach(async ({ page }) => {
+  const diagnostics = diagnosticsByPage.get(page) ?? { consoleLines: [], failedResponses: [] };
   test.info().attach("console-and-network-note", {
-    body: JSON.stringify({ consoleLines, failedResponses }, null, 2),
+    body: JSON.stringify(diagnostics, null, 2),
     contentType: "application/json",
   });
 });
