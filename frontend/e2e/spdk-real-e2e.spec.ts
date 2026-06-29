@@ -425,6 +425,15 @@ async function sendIsolatedWorkspacePrompt(
   }
 }
 
+function existingSpdkEvidencePaths(text: string) {
+  const candidates = new Set(
+    Array.from(text.matchAll(/\b(?:lib|test|include|module|app|scripts|examples)\/[A-Za-z0-9._/-]+/g)).map((match) =>
+      match[0].replace(/[),.;:，。]+$/g, ""),
+    ),
+  );
+  return Array.from(candidates).filter((relativePath) => fs.existsSync(path.join(SPDK_REPO, relativePath)));
+}
+
 function recordDeferredChatCases(evidence: string) {
   record("C04", "blocked", `thread recovery requires a focused completed-chat refresh run: ${evidence}`);
   record("C05", "blocked", `long-running concurrent input requires a focused completed-chat run: ${evidence}`);
@@ -577,7 +586,7 @@ test("A/K: settings, app shell, visual sanity, and secret hygiene", async ({ pag
 });
 
 test("B/C/K: create SPDK workspace through UI and verify chat/index gate", async ({ page, context }) => {
-  test.setTimeout(SPDK_INDEX_WAIT_MS + 180_000);
+  test.setTimeout(SPDK_INDEX_WAIT_MS + 480_000);
 
   if (!e2eLlmConfigId && process.env.CODETALK_E2E_LLM_API_KEY) {
     await configureLlmIfAvailable(page);
@@ -695,7 +704,6 @@ test("B/C/K: create SPDK workspace through UI and verify chat/index gate", async
     });
     await expect(page.getByRole("button", { name: "停止" })).toHaveCount(0, { timeout: 120_000 });
     record("C01", "pass", "AI thread returned visible content");
-    record("C02", "pass", "first answer requested code evidence");
     record("K06", "pass", "chat showed streaming progress and returned to idle state");
   } catch (error) {
     const shot = await screenshot(page, "C01-chat-timeout");
@@ -709,6 +717,31 @@ test("B/C/K: create SPDK workspace through UI and verify chat/index gate", async
     record("C03", "blocked", "no model answer to validate context continuation");
     recordDeferredChatCases("first answer did not complete");
     return;
+  }
+
+  const evidencePrompt = "列出涉及的关键函数和文件证据。必须包含真实 SPDK 相对路径，例如 lib/nvmf 或 test/nvmf；每行只写 path 和函数/入口。";
+  try {
+    await textarea.fill(evidencePrompt, { timeout: 10_000 });
+    await expect(sendButton).toBeEnabled({ timeout: 10_000 });
+    await sendButton.click();
+    await expect(page.getByRole("button", { name: "停止" })).toBeVisible({ timeout: 10_000 });
+    const evidenceAnswer = assistantMessages.last();
+    await expect(evidenceAnswer).toBeVisible({ timeout: 90_000 });
+    await expect(page.getByRole("button", { name: "停止" })).toHaveCount(0, { timeout: 120_000 });
+    const evidenceText = await evidenceAnswer.innerText();
+    const paths = existingSpdkEvidencePaths(evidenceText);
+    record(
+      "C02",
+      paths.length > 0 ? "pass" : "blocked",
+      paths.length > 0 ? "follow-up cited real SPDK evidence paths" : "follow-up did not cite verifiable SPDK paths",
+      { paths, excerpt: evidenceText.slice(0, 2000) },
+    );
+  } catch (error) {
+    const shot = await screenshot(page, "C02-evidence-follow-up-failed");
+    record("C02", "blocked", "evidence follow-up did not complete or could not be verified", {
+      screenshot: shot,
+      error: error instanceof Error ? error.message : String(error),
+    });
   }
 
   const followUpPrompt = "只输出外部可观测行为，用于黑盒测试设计，并保持简洁。";
@@ -765,31 +798,34 @@ test("B/C/K: create SPDK workspace through UI and verify chat/index gate", async
     await page.getByRole("button", { name: "对话" }).click();
     const retryTextarea = page.locator("textarea").last();
     const retrySendButton = page.getByRole("button", { name: "发送" });
-    const failurePrompt = "触发一次模型失败，用于验证错误提示和重试。";
+    const retryToken = `RETRY_SURFACE_${RUN_ID.slice(-6).replace(/-/g, "_")}`;
+    const failurePrompt = `请只回复：${retryToken}`;
     await retryTextarea.fill(failurePrompt);
     await expect(retrySendButton).toBeEnabled({ timeout: 10_000 });
     await retrySendButton.click();
-    await expect(page.locator(".justify-start .bg-surface-container").filter({ hasText: /发送失败|生成失败|LLM 不可用|重试|Connect|ECONN/i }).last()).toBeVisible({
+    await expect(page.locator(".justify-start .bg-surface-container").filter({ hasText: /发送失败|生成失败|LLM 不可用|Connect|ECONN/i }).last()).toBeVisible({
       timeout: 45_000,
     });
     await expect(page.getByRole("button", { name: "停止" })).toHaveCount(0, { timeout: 60_000 });
-    const restored = await selectPrimaryLlm(page);
-    if (!restored) {
-      throw new Error("primary LLM config could not be restored");
+    const settingsTab = await context.newPage();
+    try {
+      const restored = await selectPrimaryLlm(settingsTab);
+      if (!restored) {
+        throw new Error("primary LLM config could not be restored");
+      }
+    } finally {
+      await settingsTab.close().catch(() => undefined);
     }
-    await page.goto(`/workspaces/${workspaceId}`, { waitUntil: "domcontentloaded" });
-    await page.getByRole("button", { name: "对话" }).click();
-    const restoredTextarea = page.locator("textarea").last();
-    const restoredSendButton = page.getByRole("button", { name: "发送" });
-    const retryPrompt = "请只回复：retry-ok NVMe";
-    await restoredTextarea.fill(retryPrompt);
-    await expect(restoredSendButton).toBeEnabled({ timeout: 10_000 });
-    await restoredSendButton.click();
-    await expect(page.locator(".justify-start .bg-surface-container").filter({ hasText: /retry-ok|NVMe/i }).last()).toBeVisible({
+    const retryAction = page.getByRole("button", { name: "重试" }).last();
+    await expect(retryAction).toBeVisible({ timeout: 15_000 });
+    await expect(retryAction).toBeEnabled({ timeout: 10_000 });
+    await retryAction.click();
+    await expect(page.getByRole("button", { name: "停止" })).toBeVisible({ timeout: 10_000 });
+    await expect(page.locator(".justify-start .bg-surface-container").filter({ hasText: retryToken }).last()).toBeVisible({
       timeout: 90_000,
     });
     await expect(page.getByRole("button", { name: "停止" })).toHaveCount(0, { timeout: 120_000 });
-    record("C06", "pass", "invalid active model produced actionable chat error, then UI-selected primary model retried successfully");
+    record("C06", "pass", "invalid active model produced actionable chat error, then the failed chat turn retried successfully from the UI");
   } catch (error) {
     const shot = await screenshot(page, "C06-model-failure-retry-failed");
     const bodyText = await page.locator("body").innerText().catch(() => "");
@@ -899,8 +935,6 @@ test("D/I: agent workbench real UI workflow, semantic library, memory, and artif
     analysis_object:
       "SPDK NVMe-oF target connect to IO path. Produce code evidence, code flow, SFMEA, and black-box test cases.",
     repo_path: SPDK_REPO,
-    requirements_doc: "",
-    design_doc: "",
   };
   await page.getByLabel("Inputs JSON").fill(JSON.stringify(moduleInputs, null, 2));
   await page.getByRole("button", { name: "Prepare run" }).click();
@@ -913,7 +947,16 @@ test("D/I: agent workbench real UI workflow, semantic library, memory, and artif
     await auditButton.click();
     await expect(page.getByText(/Acceptance:/)).toBeVisible({ timeout: 30_000 });
     record("D08", "pass", "acceptance audit visible");
-    record("D09", "pass", "prepared run exposes audit artifacts section");
+    await page.getByRole("button", { name: "Audit artifacts" }).click();
+    await expect(page.getByText(/Audit artifacts:/)).toBeVisible({ timeout: 30_000 });
+    const artifactButton = page.locator("button").filter({ hasText: /task_bundle|evidence|workflow|input|artifact/i }).last();
+    await expect(artifactButton).toBeVisible({ timeout: 15_000 });
+    await artifactButton.click();
+    await expect(page.getByText(/sha:/)).toBeVisible({ timeout: 30_000 });
+    await expect(page.locator("pre, code").filter({ hasText: /task|workflow|artifact|input|evidence/i }).first()).toBeVisible({
+      timeout: 30_000,
+    });
+    record("D09", "pass", "opened an audit artifact preview and validated visible content");
 
     await expect(rerunButton).toBeEnabled({ timeout: 15_000 });
     await rerunButton.click();
@@ -945,10 +988,18 @@ test("D/I: agent workbench real UI workflow, semantic library, memory, and artif
     if (results.get("D06")?.status !== "pass") {
       record("D06", "blocked", "prepare run did not enable acceptance/rerun/execute actions", details);
     }
-    record("D08", "blocked", "acceptance audit unavailable after prepare run", details);
-    record("D09", "blocked", "artifact audit unavailable after prepare run", details);
-    record("D07", "blocked", "rerun plan unavailable after prepare run", details);
-    record("D02", "blocked", "workflow execution unavailable after prepare run", details);
+    if (results.get("D08")?.status !== "pass") {
+      record("D08", "blocked", "acceptance audit unavailable after prepare run", details);
+    }
+    if (results.get("D09")?.status !== "pass") {
+      record("D09", "blocked", "artifact audit unavailable after prepare run", details);
+    }
+    if (results.get("D07")?.status !== "pass") {
+      record("D07", "blocked", "rerun plan unavailable after prepare run", details);
+    }
+    if (results.get("D02")?.status !== "pass") {
+      record("D02", "blocked", "workflow execution unavailable after prepare run", details);
+    }
   }
 
   await page.getByLabel("Semantic feature").fill("SPDK NVMe-oF Black-box");
@@ -966,6 +1017,31 @@ test("D/I: agent workbench real UI workflow, semantic library, memory, and artif
   });
   record("I01", "pass", "semantic case created/imported through UI");
 
+  const semanticFile = path.join(ARTIFACT_DIR, "semantic-case-import.json");
+  fs.writeFileSync(
+    semanticFile,
+    JSON.stringify(
+      [
+        {
+          case_id: `spdk_file_import_${RUN_ID.replace(/[^a-zA-Z0-9]/g, "_")}`,
+          feature: "SPDK file import",
+          module: "lib/nvmf",
+          scenario: "Imported semantic file covers NVMe-oF reconnect recovery",
+          expected_behavior: "Host observes reconnect recovery without stale queue state",
+          source_ref: "spdk-real-e2e-file-import",
+          tags: ["spdk", "nvmf", "reconnect"],
+        },
+      ],
+      null,
+      2,
+    ),
+    "utf-8",
+  );
+  await page.getByLabel("Semantic case file").setInputFiles(semanticFile);
+  await page.getByRole("button", { name: "Import file" }).click();
+  await expect(page.getByText(/Semantic file imported:/)).toBeVisible({ timeout: 30_000 });
+  record("I02", "pass", "semantic case file imported through UI with complete fields");
+
   await page.getByRole("button", { name: "Import case(s)" }).locator("xpath=following::input[1]").fill(
     "NVMe TCP connect timeout",
   );
@@ -973,7 +1049,7 @@ test("D/I: agent workbench real UI workflow, semantic library, memory, and artif
   await expect(page.getByText(/NVMe TCP|Queue reset|connect timeout/i).first()).toBeVisible({
     timeout: 30_000,
   });
-  record("I02", "pass", "semantic search returns imported case");
+  record("I01", "pass", "semantic search returns imported case");
 
   await page.getByRole("button", { name: "Search memory" }).locator("xpath=preceding::input[1]").fill(
     "NVMe TCP connect timeout",
