@@ -4,6 +4,9 @@ export function preflightHosts(host) {
   if (host.toLowerCase() === "localhost") {
     return ["127.0.0.1", "::1"];
   }
+  if (host === "0.0.0.0") {
+    return ["0.0.0.0", "::1"];
+  }
   return [host];
 }
 
