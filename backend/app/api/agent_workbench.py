@@ -41,6 +41,7 @@ from app.services.workbench_task_run import WorkbenchTaskRunPreparer
 from app.services.workbench_task_run import WorkbenchTaskRunStore
 from app.services.workbench_task_run import build_agent_cli_provider_diagnostics
 from app.services.workbench_task_run import build_codetalk_provider_snapshot
+from app.services.workbench_workflow_runner import build_workflow_rerun_plan
 from app.services.workbench_workflow_runner import WorkbenchWorkflowRunner
 from app.services.workflow_dsl import (
     ALLOWED_INPUT_TYPES,
@@ -1154,14 +1155,7 @@ async def get_task_run_rerun_plan(task_run_id: str) -> dict[str, Any]:
         task_run = WorkbenchTaskRunStore(_task_runs_dir()).load(task_run_id)
     except KeyError:
         raise HTTPException(status_code=404, detail=f"Unknown task run: {task_run_id}")
-    path = Path(task_run.artifact_dir) / "task_rerun_plan.json"
-    payload = _read_json(path)
-    if not isinstance(payload, dict):
-        raise HTTPException(
-            status_code=404,
-            detail="task rerun plan has not been generated",
-        )
-    return payload
+    return _ensure_task_rerun_plan(task_run)
 
 
 @router.post("/task-runs/{task_run_id}/acceptance-audit")
@@ -1183,13 +1177,7 @@ async def validate_task_run_rerun_plan(task_run_id: str) -> dict[str, Any]:
         task_run = WorkbenchTaskRunStore(_task_runs_dir()).load(task_run_id)
     except KeyError:
         raise HTTPException(status_code=404, detail=f"Unknown task run: {task_run_id}")
-    path = Path(task_run.artifact_dir) / "task_rerun_plan.json"
-    plan = _read_json(path)
-    if not isinstance(plan, dict):
-        raise HTTPException(
-            status_code=404,
-            detail="task rerun plan has not been generated",
-        )
+    plan = _ensure_task_rerun_plan(task_run)
     return _validate_task_rerun_plan(task_run=task_run, plan=plan)
 
 
@@ -1223,13 +1211,7 @@ async def execute_task_run_rerun_plan(
         task_run = WorkbenchTaskRunStore(_task_runs_dir()).load(task_run_id)
     except KeyError:
         raise HTTPException(status_code=404, detail=f"Unknown task run: {task_run_id}")
-    plan_path = Path(task_run.artifact_dir) / "task_rerun_plan.json"
-    plan = _read_json(plan_path)
-    if not isinstance(plan, dict):
-        raise HTTPException(
-            status_code=404,
-            detail="task rerun plan has not been generated",
-        )
+    plan = _ensure_task_rerun_plan(task_run)
     validation_before = _validate_task_rerun_plan(task_run=task_run, plan=plan)
     if not validation_before.get("can_rerun"):
         raise HTTPException(
@@ -4888,6 +4870,24 @@ def _artifact_content_payload(task_dir: Path, path: Path, *, max_chars: int) -> 
     }
 
 
+def _ensure_task_rerun_plan(task_run: Any) -> dict[str, Any]:
+    task_dir = Path(str(task_run.artifact_dir))
+    path = task_dir / "task_rerun_plan.json"
+    payload = _read_json(path)
+    if isinstance(payload, dict):
+        return payload
+
+    payload = build_workflow_rerun_plan(
+        task_run=task_run,
+        status="prepared",
+        step_results=[],
+        outputs=[],
+    )
+    _write_json(path, payload)
+    write_task_artifact_manifest(task_dir, task_run_id=task_run.task_run_id)
+    return payload
+
+
 def _validate_task_rerun_plan(*, task_run: Any, plan: dict[str, Any]) -> dict[str, Any]:
     task_dir = Path(str(task_run.artifact_dir))
     checks = [
@@ -5025,12 +5025,19 @@ def _write_task_rerun_execution_artifacts(
         records = []
     sequence = len(records) + 1
     task_run_id = str(result.get("execution", {}).get("task_run_id") or "")
+    rerun_id = f"{task_run_id}_rerun_{sequence}"
+    relative_artifact_path = f"task_reruns/{rerun_id}/task_rerun_execution.json"
     payload = {
         **result,
-        "rerun_id": f"{task_run_id}_rerun_{sequence}",
+        "rerun_id": rerun_id,
         "sequence": sequence,
         "recorded_at": datetime.now(timezone.utc).isoformat(),
+        "artifact": {
+            "path": relative_artifact_path,
+            "latest_alias": "task_rerun_execution.json",
+        },
     }
+    _write_json(task_dir / relative_artifact_path, payload)
     _write_json(task_dir / "task_rerun_execution.json", payload)
     records.append(payload)
     _write_json(

@@ -4418,10 +4418,46 @@ export default function AgentWorkbenchPage() {
                         </div>
                       )}
                     {taskRerunExecution && (
-                      <p className="mt-1 font-data text-[10px] text-on-surface-variant">
-                        rerun-execution:{taskRerunExecution.status} workflow:
-                        {taskRerunExecution.execution?.status ?? "unknown"}
-                      </p>
+                      <div className="mt-1 space-y-0.5 font-data text-[10px] text-on-surface-variant">
+                        <p>
+                          rerun-execution:{taskRerunExecution.status} workflow:
+                          {taskRerunExecution.execution?.status ?? "unknown"}
+                        </p>
+                        {(() => {
+                          const latest = taskRerunHistory?.records?.at(-1);
+                          if (!latest) return null;
+                          const execution =
+                            latest.execution && typeof latest.execution === "object"
+                              ? (latest.execution as Record<string, unknown>)
+                              : {};
+                          const executionArtifactRecord =
+                            execution.artifact && typeof execution.artifact === "object"
+                              ? (execution.artifact as Record<string, unknown>)
+                              : {};
+                          const latestArtifactRecord =
+                            latest.artifact && typeof latest.artifact === "object"
+                              ? (latest.artifact as Record<string, unknown>)
+                              : {};
+                          const rerunId = String(latest.rerun_id ?? "");
+                          const sequence = String(latest.sequence ?? "");
+                          const executionArtifact = String(
+                            latestArtifactRecord.path ??
+                              latestArtifactRecord.manifest_path ??
+                              executionArtifactRecord.path ??
+                              executionArtifactRecord.manifest_path ??
+                              "task_rerun_execution.json",
+                          );
+                          return (
+                            <div className="rounded bg-surface px-1.5 py-1">
+                              <p>rerun-id:{rerunId || "unknown"}</p>
+                              <p>sequence:{sequence || "unknown"}</p>
+                              <p className="break-words">
+                                history-latest:{executionArtifact}
+                              </p>
+                            </div>
+                          );
+                        })()}
+                      </div>
                     )}
                   </div>
                 )}

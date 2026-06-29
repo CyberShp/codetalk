@@ -2992,6 +2992,53 @@ async def test_workbench_prepare_task_run_api(workbench_client):
     assert body["agent_runs"][0]["step_id"] == "collect_mr"
 
 
+async def test_workbench_prepare_task_run_api_lazily_materializes_rerun_plan(
+    workbench_client,
+    tmp_path,
+):
+    workflow = {
+        "id": "prepare_only_rerun_plan",
+        "name": "Prepare-only rerun plan",
+        "version": 1,
+        "inputs": [{"id": "module", "type": "free_text", "required": True}],
+        "steps": [{"id": "render", "type": "report_render"}],
+        "outputs": [{"id": "report", "type": "markdown"}],
+    }
+    assert (await workbench_client.post("/api/workbench/workflows", json=workflow)).status_code == 201
+    prepared = await workbench_client.post(
+        "/api/workbench/task-runs/prepare",
+        json={
+            "workflow_id": "prepare_only_rerun_plan",
+            "workspace_id": "ws-prepare-rerun",
+            "repo_path": str(tmp_path),
+            "inputs": {"module": "lib/nvmf"},
+        },
+    )
+    assert prepared.status_code == 201
+    task_run_id = prepared.json()["task_run_id"]
+    task_dir = Path(prepared.json()["artifact_dir"])
+    rerun_plan_path = task_dir / "task_rerun_plan.json"
+    assert not rerun_plan_path.exists()
+
+    rerun_plan_response = await workbench_client.get(
+        f"/api/workbench/task-runs/{task_run_id}/rerun-plan"
+    )
+
+    assert rerun_plan_response.status_code == 200
+    rerun_plan = rerun_plan_response.json()
+    assert rerun_plan["task_run_id"] == task_run_id
+    assert rerun_plan["status"] == "needs_rerun"
+    assert rerun_plan["preserve_inputs"] is True
+    assert rerun_plan["reuse_task_bundle"] is True
+    assert rerun_plan["steps"] == []
+    assert rerun_plan_path.exists()
+    validation = await workbench_client.get(
+        f"/api/workbench/task-runs/{task_run_id}/rerun-plan/validation"
+    )
+    assert validation.status_code == 200
+    assert validation.json()["can_rerun"] is True
+
+
 async def test_workbench_prepare_task_run_api_rejects_missing_required_input(workbench_client, tmp_path):
     workflow = {
         "id": "required_api_workflow",
@@ -3389,9 +3436,32 @@ async def test_workbench_task_run_artifacts_api_labels_failure_recovery(
     assert history["records"][0]["rerun_id"].startswith(f"{task_run_id}_rerun_")
     assert history["records"][0]["sequence"] == 1
     assert history["records"][0]["status"] == "executed"
+    assert history["records"][0]["artifact"]["path"] == (
+        f"task_reruns/{task_run_id}_rerun_1/task_rerun_execution.json"
+    )
     assert history["records"][0]["execution"]["status"] == "invalid"
     assert history["records"][0]["evidence_materialization"]["status"] == "partial"
     assert history["records"][0]["acceptance_audit"]["status"] == "incomplete"
+    first_rerun_artifact = Path(prepared.json()["artifact_dir"]) / history["records"][0]["artifact"]["path"]
+    assert first_rerun_artifact.exists()
+
+    second_rerun_response = await workbench_client.post(
+        f"/api/workbench/task-runs/{task_run_id}/rerun-plan/execute",
+        json={"timeout_sec": 10},
+    )
+    assert second_rerun_response.status_code == 200
+    second_history_response = await workbench_client.get(
+        f"/api/workbench/task-runs/{task_run_id}/rerun-plan/history"
+    )
+    second_history = second_history_response.json()
+    assert second_history["count"] == 2
+    assert second_history["records"][1]["sequence"] == 2
+    assert second_history["records"][1]["artifact"]["path"] == (
+        f"task_reruns/{task_run_id}_rerun_2/task_rerun_execution.json"
+    )
+    assert second_history["records"][1]["artifact"]["path"] != history["records"][0]["artifact"]["path"]
+    second_rerun_artifact = Path(prepared.json()["artifact_dir"]) / second_history["records"][1]["artifact"]["path"]
+    assert second_rerun_artifact.exists()
 
 
 async def test_workbench_task_run_acceptance_audit_api_records_required_evidence(
