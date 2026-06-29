@@ -1,4 +1,5 @@
 import { expect, test } from "@playwright/test";
+import fs from "node:fs";
 
 function jsonHeaders(origin = "http://localhost:3003") {
   return {
@@ -10,7 +11,7 @@ function jsonHeaders(origin = "http://localhost:3003") {
   };
 }
 
-test("AI conversation page is a wide persistent reading surface", async ({ page }) => {
+test("AI conversation page is a wide persistent reading surface", async ({ page }, testInfo) => {
   await page.route("**/api/workspaces", async (route) => {
     await route.fulfill({
       headers: jsonHeaders(route.request().headers().origin),
@@ -147,9 +148,22 @@ test("AI conversation page is a wide persistent reading surface", async ({ page 
   const reader = page.locator(".ct-codex-ai__reader");
   const readerBox = await reader.boundingBox();
   expect(readerBox?.width ?? 0).toBeGreaterThan(560);
+
+  const downloadPromise = page.waitForEvent("download");
+  await page.getByRole("button", { name: "导出" }).click();
+  const download = await downloadPromise;
+  expect(download.suggestedFilename()).toMatch(/登录模块-AI-调查线程-conv-1\.md$/);
+  const exportPath = testInfo.outputPath("ai-thread-export.md");
+  await download.saveAs(exportPath);
+  const exported = fs.readFileSync(exportPath, "utf8");
+  expect(exported).toContain("# 登录模块 AI 调查线程");
+  expect(exported).toContain("这个测试设计还缺什么？");
+  expect(exported).toContain("建议补充登录失败、权限失效、弱网重试和审计日志验证。");
+  expect(exported).toContain("测试设计报告 (workspace_report:report-1)");
 });
 
 test("AI conversation shows latest failed run reason instead of going silent", async ({ page }) => {
+  let retryPosted = false;
   await page.route("**/api/workspaces", async (route) => {
     await route.fulfill({
       headers: jsonHeaders(route.request().headers().origin),
@@ -211,6 +225,39 @@ test("AI conversation shows latest failed run reason instead of going silent", a
   });
 
   await page.route("**/api/ai/conversations/conv-error/messages", async (route) => {
+    if (route.request().method() === "POST") {
+      const body = route.request().postDataJSON() as { content?: string };
+      retryPosted = body.content === "为什么没有回复？";
+      await route.fulfill({
+        headers: jsonHeaders(route.request().headers().origin),
+        json: {
+          message: {
+            id: "msg-retry",
+            conversation_id: "conv-error",
+            run_id: "run-retry",
+            role: "user",
+            content: body.content,
+            references: [],
+            actions: [],
+            created_at: "2026-06-28T00:00:03Z",
+          },
+          run: {
+            id: "run-retry",
+            conversation_id: "conv-error",
+            status: "running",
+            cursor: 0,
+            error: null,
+            model: "test",
+            token_usage: {},
+            created_at: "2026-06-28T00:00:03Z",
+            started_at: "2026-06-28T00:00:03Z",
+            completed_at: null,
+          },
+          references: [],
+        },
+      });
+      return;
+    }
     if (route.request().method() !== "GET") return route.fallback();
     await route.fulfill({
       headers: jsonHeaders(route.request().headers().origin),
@@ -226,13 +273,44 @@ test("AI conversation shows latest failed run reason instead of going silent", a
             actions: [],
             created_at: "2026-06-28T00:00:01Z",
           },
+          ...(retryPosted
+            ? [
+                {
+                  id: "msg-assistant-retry",
+                  conversation_id: "conv-error",
+                  run_id: "run-retry",
+                  role: "assistant",
+                  content: "重试已启动。",
+                  references: [],
+                  actions: [],
+                  created_at: "2026-06-28T00:00:05Z",
+                },
+              ]
+            : []),
         ],
       },
+    });
+  });
+  await page.route("**/api/ai/conversations/conv-error/stream?cursor=0", async (route) => {
+    await route.fulfill({
+      headers: {
+        ...jsonHeaders(route.request().headers().origin),
+        "Content-Type": "text/event-stream",
+      },
+      body: [
+        'data: {"event_id":2,"run_id":"run-retry","conversation_id":"conv-error","event_type":"delta","payload":{"content":"重试已启动。"},"created_at":"2026-06-28T00:00:04Z"}',
+        "",
+        'data: {"event_id":3,"run_id":"run-retry","conversation_id":"conv-error","event_type":"done","payload":{},"created_at":"2026-06-28T00:00:05Z"}',
+        "",
+      ].join("\n"),
     });
   });
 
   await page.goto("/ai/conv-error");
 
   await expect(page.locator(".ct-codex-ai__error")).toContainText("未配置活跃的聊天模型");
+  await page.getByRole("button", { name: "重试上一条" }).click();
+  await expect.poll(() => retryPosted).toBe(true);
+  await expect(page.getByText("重试已启动。")).toBeVisible();
   await expect(page.getByRole("link", { name: "去设置执行器" })).toHaveAttribute("href", "/settings");
 });

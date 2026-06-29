@@ -9,6 +9,7 @@ import {
   ChevronLeft,
   ChevronRight,
   Database,
+  Download,
   FilePlus2,
   FileText,
   FolderOpen,
@@ -18,6 +19,7 @@ import {
   PanelRightClose,
   PanelRightOpen,
   PlayCircle,
+  RotateCcw,
   Send,
   Sparkles,
   Square,
@@ -62,6 +64,45 @@ function uniqueReferences(messages: AIMessage[]): AIContextReference[] {
   return Array.from(map.values()).slice(0, 12);
 }
 
+function safeFilename(value: string): string {
+  const trimmed = value
+    .replace(/[\\/:*?"<>|]+/g, "-")
+    .replace(/\s+/g, "-")
+    .replace(/^-+|-+$/g, "")
+    .slice(0, 80);
+  return trimmed || "ai-thread";
+}
+
+function buildThreadMarkdown(conversation: AIConversation | null, messages: AIMessage[]): string {
+  const title = conversation?.title ?? "AI 调查线程";
+  const lines = [
+    `# ${title}`,
+    "",
+    `- 线程 ID: ${conversation?.id ?? "unknown"}`,
+    `- 范围: ${conversation?.scope_type ?? "unknown"} / ${conversation?.scope_id ?? "unknown"}`,
+    `- 记忆命名空间: ${conversation?.memory_namespace ?? "global"}`,
+    `- 导出时间: ${new Date().toISOString()}`,
+    "",
+  ];
+
+  for (const message of messages) {
+    lines.push(`## ${message.role === "user" ? "用户" : message.role === "assistant" ? "AI" : "系统"}`);
+    lines.push("");
+    lines.push(message.content || "_空消息_");
+    if (message.references?.length) {
+      lines.push("");
+      lines.push("### 证据引用");
+      for (const ref of message.references) {
+        lines.push(`- ${ref.title} (${ref.source_type}:${ref.source_id})`);
+        if (ref.excerpt) lines.push(`  - ${ref.excerpt}`);
+      }
+    }
+    lines.push("");
+  }
+
+  return lines.join("\n");
+}
+
 export default function AIThreadPage() {
   const router = useRouter();
   const params = useParams<{ id: string }>();
@@ -98,6 +139,11 @@ export default function AIThreadPage() {
       ? conversation.latest_run.error
       : "";
   const visibleError = error || latestRunError;
+  const lastUserMessage = useMemo(
+    () => [...messages].reverse().find((message) => message.role === "user") ?? null,
+    [messages],
+  );
+  const canRetryLatestFailure = Boolean(latestRunError && lastUserMessage && !sending && !streamingRunId);
 
   const load = useCallback(async () => {
     setError(null);
@@ -196,6 +242,10 @@ export default function AIThreadPage() {
   const send = async () => {
     const text = input.trim();
     if (!text || sending || streamingRunId) return;
+    await sendText(text);
+  };
+
+  const sendText = async (text: string) => {
     setSending(true);
     setError(null);
     setInput("");
@@ -211,6 +261,25 @@ export default function AIThreadPage() {
     } finally {
       setSending(false);
     }
+  };
+
+  const retryLatestFailure = async () => {
+    const text = lastUserMessage?.content.trim();
+    if (!text || !canRetryLatestFailure) return;
+    await sendText(text);
+  };
+
+  const exportThreadMarkdown = () => {
+    const markdown = buildThreadMarkdown(conversation, messages);
+    const blob = new Blob([markdown], { type: "text/markdown;charset=utf-8" });
+    const url = URL.createObjectURL(blob);
+    const anchor = document.createElement("a");
+    anchor.href = url;
+    anchor.download = `${safeFilename(conversation?.title ?? "ai-thread")}-${conversationId}.md`;
+    document.body.appendChild(anchor);
+    anchor.click();
+    anchor.remove();
+    URL.revokeObjectURL(url);
   };
 
   const cancel = async () => {
@@ -339,12 +408,22 @@ export default function AIThreadPage() {
             {contextOpen ? <PanelRightClose size={17} /> : <PanelRightOpen size={17} />}
             环境
           </button>
+          <button type="button" onClick={exportThreadMarkdown} disabled={messages.length === 0} title="导出 AI 线程为 Markdown">
+            <Download size={17} />
+            导出
+          </button>
         </header>
 
         {visibleError && (
           <div className="ct-codex-ai__error" role="alert">
             <AlertCircle size={16} />
             <span>{visibleError}</span>
+            {canRetryLatestFailure && (
+              <button type="button" onClick={() => void retryLatestFailure()}>
+                <RotateCcw size={14} />
+                重试上一条
+              </button>
+            )}
             {visibleError.includes("未配置活跃的聊天模型") && (
               <Link href="/settings">去设置执行器</Link>
             )}

@@ -971,9 +971,47 @@ test("B/C/K: create SPDK workspace through UI and verify chat/index gate", async
     });
   }
 
-  record("C06", "blocked", "new AI thread UI does not yet expose a failed-turn retry button in this E2E flow");
+  try {
+    const exportDownloadPromise = page.waitForEvent("download");
+    await page.getByRole("button", { name: "导出" }).click();
+    const exportDownload = await exportDownloadPromise;
+    const exportFile = path.join(ARTIFACT_DIR, "C08-ai-thread-export.md");
+    await exportDownload.saveAs(exportFile);
+    const exportedChat = fs.readFileSync(exportFile, "utf8");
+    expect(exportedChat).toContain(chatPrompt);
+    expect(exportedChat).toContain(followUpPrompt);
+    expect(exportedChat).toMatch(/AI 调查线程|用户|AI|线程 ID/i);
+    record("C08", "pass", "AI thread Markdown export downloaded through the real UI", {
+      file: exportFile,
+      suggestedFilename: exportDownload.suggestedFilename(),
+    });
+  } catch (error) {
+    const shot = await screenshot(page, "C08-ai-thread-export-failed");
+    record("C08", "blocked", "AI thread export did not download readable Markdown", {
+      screenshot: shot,
+      error: error instanceof Error ? error.message : String(error),
+    });
+  }
+
+  try {
+    const retryButton = page.getByRole("button", { name: "重试上一条" });
+    if ((await retryButton.count()) === 0) {
+      record("C06", "blocked", "failed-turn retry control requires a controlled failed model run; current run did not expose a failure");
+    } else {
+      await retryButton.first().click();
+      await expect(page.getByRole("button", { name: /发送|停止/ }).first()).toBeVisible({ timeout: 15_000 });
+      record("C06", "pass", "failed AI thread exposed a retry control and accepted a real click", {
+        screenshot: await screenshot(page, "C06-ai-thread-retry-clicked"),
+      });
+    }
+  } catch (error) {
+    record("C06", "blocked", "AI thread retry control was present but could not be invoked", {
+      screenshot: await screenshot(page, "C06-ai-thread-retry-failed"),
+      error: error instanceof Error ? error.message : String(error),
+    });
+  }
+
   record("C07", "blocked", "concurrent AI thread isolation needs a dedicated /ai thread multi-page test after workspace chat migration");
-  record("C08", "blocked", "AI thread export is not yet exposed in the new /ai thread UI");
 });
 
 test("D/I: agent workbench real UI workflow, semantic library, memory, and artifacts", async ({ page }) => {
