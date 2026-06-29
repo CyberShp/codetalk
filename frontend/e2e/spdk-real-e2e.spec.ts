@@ -504,6 +504,10 @@ test("A/K: settings, app shell, visual sanity, and secret hygiene", async ({ pag
 test("B/C/K: create SPDK workspace through UI and verify chat/index gate", async ({ page }) => {
   test.setTimeout(SPDK_INDEX_WAIT_MS + 180_000);
 
+  if (!e2eLlmConfigId && process.env.CODETALK_E2E_LLM_API_KEY) {
+    await configureLlmIfAvailable(page);
+  }
+
   workspaceName = `spdk-real-e2e-${Date.now()}`;
   await page.goto("/workspaces/new", { waitUntil: "domcontentloaded" });
   await noFrameworkOverlay(page);
@@ -617,7 +621,6 @@ test("B/C/K: create SPDK workspace through UI and verify chat/index gate", async
     await expect(page.getByRole("button", { name: "停止" })).toHaveCount(0, { timeout: 120_000 });
     record("C01", "pass", "AI thread returned visible content");
     record("C02", "pass", "first answer requested code evidence");
-    record("C03", "pass", "thread can continue in structured mode");
     record("K06", "pass", "chat showed streaming progress and returned to idle state");
   } catch (error) {
     const shot = await screenshot(page, "C01-chat-timeout");
@@ -633,10 +636,39 @@ test("B/C/K: create SPDK workspace through UI and verify chat/index gate", async
     return;
   }
 
+  const followUpPrompt = "只输出外部可观测行为，用于黑盒测试设计，并保持简洁。";
+  try {
+    await textarea.fill(followUpPrompt, { timeout: 10_000 });
+    await expect(sendButton).toBeEnabled({ timeout: 10_000 });
+    await sendButton.click();
+    await expect(page.getByRole("button", { name: "停止" })).toBeVisible({ timeout: 10_000 });
+    await expect(textarea).toBeDisabled();
+    await expect(page.getByRole("button", { name: "发送" })).toHaveCount(0);
+    await expect(assistantMessages.filter({ hasText: /外部|观测|黑盒|日志|指标|状态/i }).last()).toBeVisible({
+      timeout: 90_000,
+    });
+    await expect(page.getByRole("button", { name: "停止" })).toHaveCount(0, { timeout: 120_000 });
+    record("C03", "pass", "thread context continued through a real follow-up turn");
+    record("C05", "pass", "in-flight follow-up disabled duplicate input and returned to idle after streaming");
+  } catch (error) {
+    const shot = await screenshot(page, "C03-C05-follow-up-failed");
+    const bodyText = await page.locator("body").innerText().catch(() => "");
+    record("C03", "blocked", "follow-up turn did not complete with recovered context", {
+      screenshot: shot,
+      excerpt: bodyText.slice(0, 2000),
+      error: error instanceof Error ? error.message : String(error),
+    });
+    record("C05", "blocked", "in-flight duplicate-input guard was not verifiable during follow-up", {
+      screenshot: shot,
+      error: error instanceof Error ? error.message : String(error),
+    });
+  }
+
   try {
     await page.reload({ waitUntil: "domcontentloaded" });
     await page.getByRole("button", { name: "对话" }).click();
     await expect(page.getByText(chatPrompt, { exact: true }).first()).toBeVisible({ timeout: 30_000 });
+    await expect(page.getByText(followUpPrompt, { exact: true }).first()).toBeVisible({ timeout: 30_000 });
     await expect(page.locator(".justify-start .bg-surface-container").filter({ hasText: /NVMe|nvmf|SFMEA|黑盒|connect/i }).first()).toBeVisible({
       timeout: 30_000,
     });
@@ -665,7 +697,6 @@ test("B/C/K: create SPDK workspace through UI and verify chat/index gate", async
       error: error instanceof Error ? error.message : String(error),
     });
   }
-  record("C05", "blocked", "long-running concurrent input requires a focused in-flight chat run after completed-chat baseline");
   record("C06", "blocked", "model retry requires a controlled failure/timeout run after completed-chat baseline");
   record("C07", "blocked", "multi-thread isolation requires a focused concurrent-thread run after completed-chat baseline");
 });
