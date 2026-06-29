@@ -11,6 +11,7 @@ const ARTIFACT_DIR =
   process.env.CODETALK_E2E_ARTIFACT_DIR ??
   path.join(os.tmpdir(), "codetalk-e2e-spdk", RUN_ID);
 const hasSpdkRepo = fs.existsSync(SPDK_REPO);
+const requireSpdkRepo = process.env.CODETALK_E2E_REQUIRE_SPDK === "1";
 
 type CaseStatus = "pass" | "fail" | "blocked" | "not_run";
 
@@ -239,9 +240,10 @@ function recordDeferredChatCases(evidence: string) {
 }
 
 test.describe.configure({ mode: "serial" });
+test.skip(!hasSpdkRepo && !requireSpdkRepo, "SPDK E2E requires CODETALK_E2E_REPO");
 
 test.beforeAll(() => {
-  if (!process.env.CODETALK_E2E_REPO) {
+  if (!hasSpdkRepo && requireSpdkRepo) {
     throw new Error("CODETALK_E2E_REPO must point to a real SPDK checkout for test:e2e:spdk");
   }
   ensureArtifactDir();
