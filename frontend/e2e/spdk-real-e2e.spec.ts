@@ -3,7 +3,7 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 
-const SPDK_REPO = process.env.CODETALK_E2E_REPO ?? "/Volumes/Media/dpdk/spdk";
+const SPDK_REPO = process.env.CODETALK_E2E_REPO ?? "";
 const BAD_SPDK_REPO = "/Volums/Media/dpdk/spdk";
 const BACKEND_BASE = `http://localhost:${process.env.CODETALK_BACKEND_PORT ?? "3004"}`;
 const RUN_ID = new Date().toISOString().replace(/[:.]/g, "-");
@@ -408,7 +408,8 @@ test("B/C/K: create SPDK workspace through UI and verify chat/index gate", async
   await textarea.fill("分析 SPDK NVMe-oF target connect 到 IO 提交流程，并输出代码证据、流程、SFMEA、黑盒测试用例。");
   await sendButton.click();
   try {
-    await expect(page.getByText(/NVMe|nvmf|SFMEA|黑盒|connect/i)).toBeVisible({
+    const assistantMessages = page.locator(".justify-start .bg-surface-container");
+    await expect(assistantMessages.filter({ hasText: /NVMe|nvmf|SFMEA|黑盒|connect/i }).first()).toBeVisible({
       timeout: 90_000,
     });
     record("C01", "pass", "AI thread returned visible content");
@@ -490,11 +491,11 @@ test("D/I: agent workbench real UI workflow, semantic library, memory, and artif
       timeout: 120_000,
     });
     const workbenchText = await page.locator("body").innerText();
-    const executed = /Workflow execution\s+\w+/.test(workbenchText);
+    const executed = /Workflow execution\s+completed\b/i.test(workbenchText);
     record(
       "D02",
       executed ? "pass" : "blocked",
-      executed ? "workflow execution returned" : "provider execution blocked",
+      executed ? "workflow execution completed" : "provider execution did not complete",
       {
         excerpt: workbenchText.slice(0, 2000),
       },
