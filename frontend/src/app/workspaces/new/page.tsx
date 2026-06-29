@@ -4,7 +4,7 @@ import { useState, useCallback } from "react";
 import { useRouter } from "next/navigation";
 import { ArrowLeft, FolderSearch, Loader2 } from "lucide-react";
 import Link from "next/link";
-import { api } from "@/lib/api";
+import { api, DuplicateWorkspaceError } from "@/lib/api";
 
 export default function NewWorkspacePage() {
   const router = useRouter();
@@ -12,6 +12,10 @@ export default function NewWorkspacePage() {
   const [repoPath, setRepoPath] = useState("");
   const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [existingWorkspace, setExistingWorkspace] = useState<{
+    id: string;
+    name?: string;
+  } | null>(null);
 
   const handleSubmit = useCallback(
     async (e: React.FormEvent) => {
@@ -21,6 +25,7 @@ export default function NewWorkspacePage() {
 
       setSubmitting(true);
       setError(null);
+      setExistingWorkspace(null);
       try {
         const ws = await api.workspaces.create({
           name: name.trim(),
@@ -28,6 +33,12 @@ export default function NewWorkspacePage() {
         });
         router.push(`/workspaces/${ws.id}`);
       } catch (err: unknown) {
+        if (err instanceof DuplicateWorkspaceError) {
+          setExistingWorkspace({
+            id: err.existingWorkspaceId,
+            name: err.existingWorkspaceName,
+          });
+        }
         setError(err instanceof Error ? err.message : "创建工作空间失败");
       } finally {
         setSubmitting(false);
@@ -57,7 +68,15 @@ export default function NewWorkspacePage() {
 
       {error && (
         <div className="mb-5 px-4 py-3 bg-red-500/10 border border-red-500/20 rounded-lg text-sm text-red-400">
-          {error}
+          <div>{error}</div>
+          {existingWorkspace && (
+            <Link
+              href={`/workspaces/${existingWorkspace.id}`}
+              className="mt-2 inline-flex items-center rounded-md border border-red-500/30 px-2.5 py-1 text-xs text-red-300 hover:bg-red-500/10 hover:text-red-200 transition-colors"
+            >
+              打开已有工作空间{existingWorkspace.name ? `：${existingWorkspace.name}` : ""}
+            </Link>
+          )}
         </div>
       )}
 

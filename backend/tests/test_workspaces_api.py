@@ -157,6 +157,28 @@ class TestWorkspaceCRUD:
         resp = await client_v2.get("/api/workspaces")
         assert len(resp.json()) == 1
 
+    async def test_create_rejects_duplicate_resolved_repo_path(
+        self, client_v2, tmp_path, background_tasks
+    ):
+        repo = tmp_path / "dup-repo"
+        repo.mkdir()
+        first = await client_v2.post(
+            "/api/workspaces", json={"name": "first", "repo_path": str(repo)}
+        )
+        assert first.status_code == 201
+        assert len(background_tasks) == 1
+
+        duplicate = await client_v2.post(
+            "/api/workspaces",
+            json={"name": "second", "repo_path": f"{repo}/."},
+        )
+
+        assert duplicate.status_code == 409
+        detail = duplicate.json()["detail"]
+        assert detail["existing_workspace_id"] == first.json()["id"]
+        assert detail["existing_workspace_name"] == "first"
+        assert len(background_tasks) == 1
+
 
 class TestWorkspaceSourceSearch:
     async def test_source_search_finds_path_and_source_file_opens(
@@ -212,6 +234,24 @@ class TestWorkspaceSourceSearch:
         assert matches[0]["path"] == "lib/bdev/bdev.c"
         assert matches[0]["line"] == 1
         assert matches[0]["match_type"] == "content"
+
+    async def test_source_search_skips_symlinked_external_files(
+        self, client_v2, sqlite_db, tmp_path
+    ):
+        repo = tmp_path / "spdk"
+        repo.mkdir()
+        secret = tmp_path / "outside-secret.txt"
+        secret.write_text("leak-marker-token\n", encoding="utf-8")
+        (repo / "linked-secret.txt").symlink_to(secret)
+        await _seed_ws(sqlite_db, "ws-source-symlink", indexed=1, repo_path=str(repo))
+
+        resp = await client_v2.get(
+            "/api/workspaces/ws-source-symlink/source-search",
+            params={"q": "leak-marker-token"},
+        )
+
+        assert resp.status_code == 200
+        assert resp.json()["matches"] == []
 
     async def test_source_file_rejects_path_traversal(
         self, client_v2, sqlite_db, tmp_path

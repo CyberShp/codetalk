@@ -1,6 +1,7 @@
 import asyncio
 import json
 import logging
+import os
 
 import uuid
 from datetime import datetime, timezone
@@ -175,10 +176,22 @@ def _iter_source_files(root: Path):
         "dist",
         "target",
     }
-    for path in root.rglob("*"):
-        if any(part in skip_dirs for part in path.relative_to(root).parts):
-            continue
-        if path.is_file():
+    root_resolved = root.resolve()
+    for dirpath, dirnames, filenames in os.walk(root_resolved, followlinks=False):
+        current = Path(dirpath)
+        dirnames[:] = [
+            dirname
+            for dirname in dirnames
+            if dirname not in skip_dirs and not (current / dirname).is_symlink()
+        ]
+        for filename in filenames:
+            path = current / filename
+            if path.is_symlink() or not path.is_file():
+                continue
+            try:
+                path.resolve().relative_to(root_resolved)
+            except ValueError:
+                continue
             yield path
 
 
@@ -361,22 +374,39 @@ async def list_workspaces(db: aiosqlite.Connection = Depends(get_db)):
 async def create_workspace(
     data: WorkspaceCreate, db: aiosqlite.Connection = Depends(get_db)
 ):
-    repo = Path(data.repo_path)
+    repo = Path(data.repo_path).expanduser()
     if not repo.exists():
         raise HTTPException(status_code=422, detail=f"代码路径不存在：{data.repo_path}")
     if not repo.is_dir():
         raise HTTPException(status_code=422, detail=f"代码路径不是目录：{data.repo_path}")
+    resolved_repo_path = str(repo.resolve())
+
+    async with db.execute(
+        "SELECT id, name, indexed FROM workspaces WHERE repo_path = ? ORDER BY updated_at DESC LIMIT 1",
+        (resolved_repo_path,),
+    ) as cur:
+        existing = await cur.fetchone()
+    if existing:
+        raise HTTPException(
+            status_code=409,
+            detail={
+                "message": "该代码路径已存在工作空间，请打开已有工作空间继续分析",
+                "existing_workspace_id": existing["id"],
+                "existing_workspace_name": existing["name"],
+                "indexed": existing["indexed"],
+            },
+        )
 
     ws_id = str(uuid.uuid4())
     now = datetime.now(timezone.utc).isoformat()
     await db.execute(
         """INSERT INTO workspaces (id, name, repo_path, indexed, created_at, updated_at)
            VALUES (?, ?, ?, 0, ?, ?)""",
-        (ws_id, data.name, data.repo_path, now, now),
+        (ws_id, data.name, resolved_repo_path, now, now),
     )
     await db.commit()
 
-    _schedule_background_task(_index_workspace(ws_id, data.repo_path))
+    _schedule_background_task(_index_workspace(ws_id, resolved_repo_path))
 
     async with db.execute("SELECT * FROM workspaces WHERE id = ?", (ws_id,)) as cur:
         row = await cur.fetchone()

@@ -631,6 +631,26 @@ test("B/C/K: create SPDK workspace through UI and verify chat/index gate", async
   await expect(page.getByText(workspaceName)).toBeVisible({ timeout: 30_000 });
   record("B04", "pass", "workspace detail survived refresh");
 
+  try {
+    await page.goto("/workspaces/new", { waitUntil: "domcontentloaded" });
+    await page.getByPlaceholder(/项目 A/).fill(`${workspaceName}-duplicate`);
+    await page.getByPlaceholder(/本地文件夹路径/).fill(`${SPDK_REPO}/.`);
+    await page.getByRole("button", { name: "创建工作空间" }).click();
+    const existingWorkspaceLink = page.getByRole("link", { name: /打开已有工作空间/ });
+    await expect(existingWorkspaceLink).toBeVisible({ timeout: 15_000 });
+    await existingWorkspaceLink.click();
+    await page.waitForURL(new RegExp(`/workspaces/${workspaceId}$`), { timeout: 15_000 });
+    await expect(page.getByText(workspaceName)).toBeVisible({ timeout: 15_000 });
+    record("B03", "pass", "duplicate repo path is rejected with a link back to the existing workspace");
+  } catch (error) {
+    record("B03", "blocked", "duplicate workspace UI flow did not recover to the existing workspace", {
+      error: error instanceof Error ? error.message : String(error),
+      screenshot: await screenshot(page, "B03-duplicate-workspace-failed"),
+      excerpt: await pageExcerpt(page),
+    });
+    await page.goto(`/workspaces/${workspaceId}`, { waitUntil: "domcontentloaded" });
+  }
+
   const start = Date.now();
   let finalStatus = "";
   const indexDeadline = start + SPDK_INDEX_WAIT_MS;
