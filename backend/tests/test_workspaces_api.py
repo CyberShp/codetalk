@@ -179,6 +179,54 @@ class TestWorkspaceCRUD:
         assert detail["existing_workspace_name"] == "first"
         assert len(background_tasks) == 1
 
+    async def test_create_rejects_duplicate_historical_unnormalized_repo_path(
+        self, client_v2, sqlite_db, tmp_path, background_tasks
+    ):
+        repo = tmp_path / "historical-dup-repo"
+        repo.mkdir()
+        await _seed_ws(
+            sqlite_db,
+            "ws-historical-dup",
+            repo_path=f"{repo}/.",
+        )
+
+        duplicate = await client_v2.post(
+            "/api/workspaces",
+            json={"name": "second", "repo_path": str(repo)},
+        )
+
+        assert duplicate.status_code == 409
+        assert duplicate.json()["detail"]["existing_workspace_id"] == "ws-historical-dup"
+        assert background_tasks == []
+
+    async def test_create_duplicate_repo_path_is_serialized(
+        self, client_v2, sqlite_db, tmp_path, background_tasks
+    ):
+        repo = tmp_path / "concurrent-dup-repo"
+        repo.mkdir()
+
+        first, second = await asyncio.gather(
+            client_v2.post(
+                "/api/workspaces",
+                json={"name": "first", "repo_path": str(repo)},
+            ),
+            client_v2.post(
+                "/api/workspaces",
+                json={"name": "second", "repo_path": f"{repo}/."},
+            ),
+        )
+
+        statuses = sorted([first.status_code, second.status_code])
+        assert statuses == [201, 409]
+        async with aiosqlite.connect(sqlite_db) as db:
+            async with db.execute(
+                "SELECT COUNT(*) FROM workspaces WHERE repo_path = ?",
+                (str(repo.resolve()),),
+            ) as cur:
+                row = await cur.fetchone()
+        assert row[0] == 1
+        assert len(background_tasks) == 1
+
 
 class TestWorkspaceSourceSearch:
     async def test_source_search_finds_path_and_source_file_opens(
@@ -252,6 +300,21 @@ class TestWorkspaceSourceSearch:
 
         assert resp.status_code == 200
         assert resp.json()["matches"] == []
+
+    async def test_source_search_rejects_whitespace_only_query(
+        self, client_v2, sqlite_db, tmp_path
+    ):
+        repo = tmp_path / "spdk"
+        repo.mkdir()
+        (repo / "README.md").write_text("hello\n", encoding="utf-8")
+        await _seed_ws(sqlite_db, "ws-source-blank", indexed=1, repo_path=str(repo))
+
+        resp = await client_v2.get(
+            "/api/workspaces/ws-source-blank/source-search",
+            params={"q": "   "},
+        )
+
+        assert resp.status_code == 422
 
     async def test_source_file_rejects_path_traversal(
         self, client_v2, sqlite_db, tmp_path

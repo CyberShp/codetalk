@@ -33,6 +33,35 @@ def _schedule_background_task(coro):
     return asyncio.create_task(coro)
 
 
+def _canonical_repo_path(repo_path: str) -> str:
+    return str(Path(repo_path).expanduser().resolve())
+
+
+async def _find_workspace_by_canonical_repo_path(
+    db: aiosqlite.Connection, resolved_repo_path: str
+) -> aiosqlite.Row | None:
+    async with db.execute(
+        "SELECT id, name, indexed, repo_path FROM workspaces ORDER BY updated_at DESC"
+    ) as cur:
+        rows = await cur.fetchall()
+    for row in rows:
+        if _canonical_repo_path(row["repo_path"]) == resolved_repo_path:
+            return row
+    return None
+
+
+def _duplicate_workspace_error(existing: aiosqlite.Row) -> HTTPException:
+    return HTTPException(
+        status_code=409,
+        detail={
+            "message": "该代码路径已存在工作空间，请打开已有工作空间继续分析",
+            "existing_workspace_id": existing["id"],
+            "existing_workspace_name": existing["name"],
+            "indexed": existing["indexed"],
+        },
+    )
+
+
 # --- Schemas ---
 
 class WorkspaceCreate(BaseModel):
@@ -379,32 +408,28 @@ async def create_workspace(
         raise HTTPException(status_code=422, detail=f"代码路径不存在：{data.repo_path}")
     if not repo.is_dir():
         raise HTTPException(status_code=422, detail=f"代码路径不是目录：{data.repo_path}")
-    resolved_repo_path = str(repo.resolve())
-
-    async with db.execute(
-        "SELECT id, name, indexed FROM workspaces WHERE repo_path = ? ORDER BY updated_at DESC LIMIT 1",
-        (resolved_repo_path,),
-    ) as cur:
-        existing = await cur.fetchone()
-    if existing:
-        raise HTTPException(
-            status_code=409,
-            detail={
-                "message": "该代码路径已存在工作空间，请打开已有工作空间继续分析",
-                "existing_workspace_id": existing["id"],
-                "existing_workspace_name": existing["name"],
-                "indexed": existing["indexed"],
-            },
-        )
+    resolved_repo_path = _canonical_repo_path(data.repo_path)
 
     ws_id = str(uuid.uuid4())
     now = datetime.now(timezone.utc).isoformat()
-    await db.execute(
-        """INSERT INTO workspaces (id, name, repo_path, indexed, created_at, updated_at)
-           VALUES (?, ?, ?, 0, ?, ?)""",
-        (ws_id, data.name, resolved_repo_path, now, now),
-    )
-    await db.commit()
+    try:
+        await db.execute("BEGIN IMMEDIATE")
+        existing = await _find_workspace_by_canonical_repo_path(db, resolved_repo_path)
+        if existing:
+            await db.rollback()
+            raise _duplicate_workspace_error(existing)
+        await db.execute(
+            """INSERT INTO workspaces (id, name, repo_path, indexed, created_at, updated_at)
+               VALUES (?, ?, ?, 0, ?, ?)""",
+            (ws_id, data.name, resolved_repo_path, now, now),
+        )
+        await db.commit()
+    except aiosqlite.IntegrityError:
+        await db.rollback()
+        existing = await _find_workspace_by_canonical_repo_path(db, resolved_repo_path)
+        if existing:
+            raise _duplicate_workspace_error(existing)
+        raise
 
     _schedule_background_task(_index_workspace(ws_id, resolved_repo_path))
 
@@ -445,6 +470,8 @@ async def source_search(
     ws = await _get_workspace_or_404(ws_id, db)
     root = _workspace_repo_root(ws)
     query = q.strip().replace("\\", "/")
+    if not query:
+        raise HTTPException(status_code=422, detail="搜索内容不能为空")
     query_lower = query.lower()
     matches: list[WorkspaceSourceSearchMatch] = []
     seen: set[tuple[str, int | None, str]] = set()
