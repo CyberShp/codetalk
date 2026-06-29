@@ -200,6 +200,47 @@ async function pageExcerpt(page: Page, limit = 2000) {
   return (await page.locator("body").innerText().catch(() => "")).slice(0, limit);
 }
 
+async function firstVisibleEnabledButton(page: Page, name: string | RegExp) {
+  const buttons = page.getByRole("button", { name });
+  const count = await buttons.count();
+  for (let index = 0; index < count; index += 1) {
+    const button = buttons.nth(index);
+    if ((await button.isVisible().catch(() => false)) && (await button.isEnabled().catch(() => false))) {
+      return button;
+    }
+  }
+  return null;
+}
+
+async function clickAndCaptureJsonResponse(
+  page: Page,
+  urlPart: string,
+  target: Locator,
+  timeout = 120_000,
+) {
+  const responsePromise = page.waitForResponse(
+    (response) => response.request().method() === "POST" && response.url().includes(urlPart),
+    { timeout },
+  );
+  await target.hover();
+  await target.click();
+  const response = await responsePromise;
+  const text = await response.text().catch(() => "");
+  let json: unknown = null;
+  try {
+    json = text ? JSON.parse(text) : null;
+  } catch {
+    json = null;
+  }
+  return {
+    ok: response.ok(),
+    status: response.status(),
+    url: response.url(),
+    json,
+    text: text.slice(0, 4000),
+  };
+}
+
 async function noFrameworkOverlay(page: Page) {
   await expect(
     page
@@ -583,6 +624,70 @@ test("A/K: settings, app shell, visual sanity, and secret hygiene", async ({ pag
   expect(redisOffenders).toEqual([]);
   expect(runtimeMentions).toEqual([]);
   record("A06", "pass", "Redis-related environment and browser diagnostics do not reference forbidden port 6399");
+});
+
+test("A04: health probes are triggerable from the UI", async ({ page }) => {
+  test.setTimeout(240_000);
+
+  const evidence: Record<string, unknown> = {};
+
+  await page.goto("/workbench", { waitUntil: "domcontentloaded" });
+  await noFrameworkOverlay(page);
+  await expect(page.getByRole("heading", { name: "Agent Workbench" })).toBeVisible({ timeout: 30_000 });
+  await expect(page.getByText("Workbench system audit")).toBeVisible({ timeout: 30_000 });
+  evidence.systemAuditScreenshot = await screenshot(page, "A04-workbench-system-audit");
+
+  const providerProbeAll = await firstVisibleEnabledButton(page, "Probe all Agent CLIs");
+  const providerStartupProbe = providerProbeAll ?? (await firstVisibleEnabledButton(page, "Startup probe"));
+  if (!providerStartupProbe) {
+    record("A04", "blocked", "workbench provider probe controls are unavailable or disabled", {
+      screenshot: await screenshot(page, "A04-provider-probe-unavailable"),
+      excerpt: await pageExcerpt(page),
+    });
+    return;
+  }
+
+  const providerUrlPart = providerProbeAll ? "/api/workbench/deployment-probe" : "/startup-probe";
+  evidence.providerProbe = await clickAndCaptureJsonResponse(page, providerUrlPart, providerStartupProbe);
+  await expect
+    .poll(() => page.locator("body").innerText(), { timeout: 120_000 })
+    .toMatch(/Deployment probe|Probe result:|Startup probe\s+\w+:/i);
+  evidence.providerProbeScreenshot = await screenshot(page, "A04-provider-probe-result");
+
+  const workbenchToolProbe = await firstVisibleEnabledButton(page, "Startup probe");
+  if (workbenchToolProbe) {
+    evidence.workbenchToolProbe = await clickAndCaptureJsonResponse(page, "/startup-probe", workbenchToolProbe);
+    await expect
+      .poll(() => page.locator("body").innerText(), { timeout: 120_000 })
+      .toMatch(/Probe result:|Startup probe\s+\w+:/i);
+    evidence.workbenchToolProbeScreenshot = await screenshot(page, "A04-workbench-tool-probe-result");
+  }
+
+  await page.goto("/tools", { waitUntil: "domcontentloaded" });
+  await noFrameworkOverlay(page);
+  await expect(page.getByRole("heading", { name: "工具状态" })).toBeVisible({ timeout: 30_000 });
+  const toolStartupProbe = await firstVisibleEnabledButton(page, "Startup probe");
+  if (toolStartupProbe) {
+    evidence.toolProbe = await clickAndCaptureJsonResponse(page, "/startup-probe", toolStartupProbe);
+    await expect
+      .poll(() => page.locator("body").innerText(), { timeout: 120_000 })
+      .toMatch(/startup_probe|repo not indexed|probe timed out|available|unavailable|healthy|failed/i);
+    evidence.toolProbeScreenshot = await screenshot(page, "A04-tool-probe-result");
+  } else if (!workbenchToolProbe) {
+    record("A04", "blocked", "no enabled tool startup probe control was available in workbench or tools UI", {
+      screenshot: await screenshot(page, "A04-tool-probe-unavailable"),
+      excerpt: await pageExcerpt(page),
+    });
+    return;
+  } else {
+    evidence.toolsPageUnavailable = {
+      screenshot: await screenshot(page, "A04-tool-probe-unavailable"),
+      excerpt: await pageExcerpt(page),
+    };
+  }
+
+  writeJson("A04-health-probes-ui.json", evidence);
+  record("A04", "pass", "system audit, provider probe, and tool startup probe were triggered through UI controls", evidence);
 });
 
 test("B/C/K: create SPDK workspace through UI and verify chat/index gate", async ({ page, context }) => {
