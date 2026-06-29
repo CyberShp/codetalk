@@ -5,7 +5,7 @@ import path from "node:path";
 
 const SPDK_REPO = process.env.CODETALK_E2E_REPO ?? "";
 const BAD_SPDK_REPO = "/Volums/Media/dpdk/spdk";
-const BACKEND_BASE = `http://localhost:${process.env.CODETALK_BACKEND_PORT ?? "3004"}`;
+const BACKEND_BASE = `http://localhost:${process.env.CODETALK_BACKEND_PORT ?? "8100"}`;
 const RUN_ID = new Date().toISOString().replace(/[:.]/g, "-");
 const ARTIFACT_DIR =
   process.env.CODETALK_E2E_ARTIFACT_DIR ??
@@ -240,6 +240,9 @@ function recordDeferredChatCases(evidence: string) {
 test.describe.configure({ mode: "serial" });
 
 test.beforeAll(() => {
+  if (!process.env.CODETALK_E2E_REPO) {
+    throw new Error("CODETALK_E2E_REPO must point to a real SPDK checkout for test:e2e:spdk");
+  }
   ensureArtifactDir();
   writeJson("acceptance_matrix.initial.json", Array.from(results.values()));
 });
@@ -686,6 +689,9 @@ test("matrix accounting: every planned case has an explicit status", async () =>
   }
   for (const id of ["H05", "I03", "I04", "I06", "J01", "J02", "J03", "J05"]) {
     if (results.get(id)?.status === "not_run") record(id, "blocked", "deferred to follow-up focused artifact/export run");
+  }
+  for (const id of ["C04", "C05", "C06", "C07", "C08"]) {
+    if (results.get(id)?.status === "not_run") record(id, "blocked", "deferred to focused completed-chat workflow run");
   }
   for (const id of ["K04", "K06", "K09", "L01", "L02", "L03", "L04", "L05", "L06", "L07"]) {
     if (results.get(id)?.status === "not_run") record(id, "blocked", "requires long-running reliability/performance soak");
