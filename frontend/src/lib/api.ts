@@ -833,7 +833,7 @@ export const api = {
         }),
 
       createEvidence: (data: Record<string, unknown>) =>
-        request<{ evidence_id: string }>("/api/workbench/memory/evidence", {
+        request<{ evidence_id: string; source_slice_count?: number }>("/api/workbench/memory/evidence", {
           method: "POST",
           body: JSON.stringify(data),
         }),

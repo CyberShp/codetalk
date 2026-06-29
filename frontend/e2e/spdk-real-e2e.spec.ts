@@ -1505,8 +1505,17 @@ test("D/I: agent workbench real UI workflow, semantic library, memory, and artif
   });
   record("I01", "pass", "semantic search returns imported case");
 
+  const validEvidenceSubject = `nvmf_tgt_accept evidence ${RUN_ID}`;
+  await page.getByLabel("Evidence subject").fill(validEvidenceSubject);
+  await page.getByLabel("Evidence path").fill("lib/nvmf/nvmf.c");
+  await page.getByLabel("Evidence text").fill(
+    "SPDK NVMe-oF target accept path evidence for connect-flow black-box validation.",
+  );
+  await page.getByRole("button", { name: "保存证据" }).click();
+  await expect(page.getByText(/证据已保存:.*source slices 1/i)).toBeVisible({ timeout: 30_000 });
+
   await page.getByRole("button", { name: "搜索证据" }).locator("xpath=preceding::input[1]").fill(
-    "NVMe TCP connect timeout",
+    validEvidenceSubject,
   );
   await page.getByRole("button", { name: "搜索证据" }).click();
   await expect(page.getByText(/证据搜索结果:/)).toBeVisible({ timeout: 30_000 });
@@ -1518,18 +1527,39 @@ test("D/I: agent workbench real UI workflow, semantic library, memory, and artif
     const sourceSliceButton = page.getByRole("button", { name: "源码切片" }).first();
     await expect(sourceSliceButton).toBeVisible({ timeout: 30_000 });
     await sourceSliceButton.click();
-    await expect(page.getByText(/源码切片已加载:|slice\(s\)|sha:/)).toBeVisible({ timeout: 30_000 });
+    await expect(page.getByText(/源码切片已加载:|slice\(s\)|sha:/).first()).toBeVisible({ timeout: 30_000 });
     await expect(page.locator("pre, p").filter({ hasText: /lib\/|test\/|sha:|verified_current/ }).first()).toBeVisible({
       timeout: 30_000,
     });
     record("I04", "pass", "opened memory evidence source slices through the workbench UI", {
       screenshot: await screenshot(page, "I04-memory-source-slices"),
     });
-    record("I03", "pass", "memory evidence result was visible and its source context could be opened through UI");
+    record("I03", "pass", "memory evidence result was created, searched, and opened through the workbench UI");
   } else {
     record("I03", "blocked", "memory evidence search completed but returned no evidence to open");
     record("I04", "blocked", "source slice UI requires at least one memory evidence search result");
   }
+
+  const missingEvidenceSubject = `missing-source evidence ${RUN_ID}`;
+  await page.getByLabel("Evidence subject").fill(missingEvidenceSubject);
+  await page.getByLabel("Evidence path").fill("lib/nvmf/does-not-exist.c");
+  await page.getByLabel("Evidence text").fill(
+    "Evidence with a stale or deleted source path should stay searchable and degrade to no source slices.",
+  );
+  await page.getByRole("button", { name: "保存证据" }).click();
+  await expect(page.getByText(/证据已保存:.*source slices 0/i)).toBeVisible({ timeout: 30_000 });
+  await page.getByRole("button", { name: "搜索证据" }).locator("xpath=preceding::input[1]").fill(
+    missingEvidenceSubject,
+  );
+  await page.getByRole("button", { name: "搜索证据" }).click();
+  await expect(page.getByText(/证据搜索结果:\s*[1-9]/)).toBeVisible({ timeout: 30_000 });
+  const missingSliceButton = page.getByRole("button", { name: "源码切片" }).first();
+  await expect(missingSliceButton).toBeVisible({ timeout: 30_000 });
+  await missingSliceButton.click();
+  await expect(page.getByText(/源码切片已加载:\s*0|0 slice\(s\)/i).first()).toBeVisible({ timeout: 30_000 });
+  record("I06", "pass", "missing source evidence remains searchable and source-slice UI degrades to zero slices", {
+    screenshot: await screenshot(page, "I06-missing-source-evidence-degraded"),
+  });
 });
 
 test("H/G/F/E/J: coverage upload, AI test-design, and artifact quality gates", async ({ page, request }) => {
@@ -1701,7 +1731,7 @@ test("matrix accounting: every planned case has an explicit status", async () =>
     for (const id of ["F02", "F03", "F04", "F05", "F06", "G02", "G04", "G05", "G06"]) {
       if (results.get(id)?.status === "not_run") record(id, "blocked", "requires complete model-generated SFMEA/test-case artifact");
     }
-    for (const id of ["I03", "I04", "I06", "J01", "J02", "J03", "J05"]) {
+    for (const id of ["I03", "I04", "J01", "J02", "J03", "J05"]) {
       if (results.get(id)?.status === "not_run") record(id, "blocked", "deferred to follow-up focused artifact/export run");
     }
     for (const id of ["C04", "C05", "C06", "C07", "C08"]) {

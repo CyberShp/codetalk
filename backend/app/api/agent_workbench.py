@@ -595,8 +595,21 @@ async def create_memory_run(payload: AnalysisRunCreate) -> dict[str, Any]:
 
 @router.post("/memory/evidence", status_code=201)
 async def create_memory_evidence(payload: EvidenceItemCreate) -> dict[str, Any]:
-    evidence_id = _memory_store().upsert_evidence_item(**payload.model_dump())
-    return {"evidence_id": evidence_id}
+    store = _memory_store()
+    evidence_id = store.upsert_evidence_item(**payload.model_dump())
+    source_slice_count = 0
+    repo_path = str(payload.provenance.get("repo_path") or "")
+    line_start = _safe_int(payload.provenance.get("line_start")) or 1
+    if repo_path and payload.path:
+        source_slice_id = _add_workbench_source_slice(
+            store=store,
+            evidence_id=evidence_id,
+            repo_path=repo_path,
+            rel_path=payload.path,
+            line_start=line_start,
+        )
+        source_slice_count = 1 if source_slice_id else 0
+    return {"evidence_id": evidence_id, "source_slice_count": source_slice_count}
 
 
 @router.get("/memory/search")

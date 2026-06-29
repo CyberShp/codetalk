@@ -1870,6 +1870,11 @@ export default function AgentWorkbenchPage() {
   const [semanticQuery, setSemanticQuery] = useState("tls cleanup");
   const [semanticResults, setSemanticResults] = useState<SemanticCase[]>([]);
   const [memoryQuery, setMemoryQuery] = useState("nvme tcp tls");
+  const [manualEvidenceSubject, setManualEvidenceSubject] = useState("nvmf_tgt_accept");
+  const [manualEvidencePath, setManualEvidencePath] = useState("lib/nvmf/nvmf.c");
+  const [manualEvidenceText, setManualEvidenceText] = useState(
+    "SPDK NVMe-oF target accept path evidence for connect-flow black-box validation.",
+  );
   const [memoryResults, setMemoryResults] = useState<EvidenceMemoryItem[]>([]);
   const [memorySlices, setMemorySlices] = useState<Record<string, EvidenceSourceSlice[]>>({});
   const [providerMatrix, setProviderMatrix] =
@@ -2805,6 +2810,42 @@ export default function AgentWorkbenchPage() {
         `语义文件已导入: ${result.imported_count}, rejected: ${result.rejected_count}`,
       );
       setSemanticFile(null);
+    });
+
+  const saveManualEvidence = () =>
+    runAction("save-manual-evidence", async () => {
+      const subject = manualEvidenceSubject.trim();
+      if (!subject) {
+        throw new Error("Evidence subject is required");
+      }
+      const run = await api.workbench.memory.createRun({
+        workspace_id: workspaceId,
+        repo_path: repoPath,
+        object_text: subject,
+        workflow_id: "manual_evidence_entry",
+        status: "completed",
+      });
+      const result = await api.workbench.memory.createEvidence({
+        run_id: run.run_id,
+        workspace_id: workspaceId,
+        kind: "manual_source_evidence",
+        subject_key: subject,
+        status: "accepted",
+        source: "workbench_manual_entry",
+        path: manualEvidencePath.trim(),
+        reason: manualEvidenceText.trim(),
+        text: manualEvidenceText.trim(),
+        confidence: 1,
+        provenance: {
+          repo_path: repoPath,
+          line_start: 1,
+          entry_method: "workbench_manual_evidence_form",
+        },
+      });
+      setMemoryQuery(subject);
+      setMessage(
+        `证据已保存: ${result.evidence_id}; source slices ${result.source_slice_count ?? 0}`,
+      );
     });
 
   const searchMemory = () =>
@@ -5686,6 +5727,54 @@ export default function AgentWorkbenchPage() {
 
         <Panel title="证据库" icon={<Database size={16} />}>
           <div className="space-y-3">
+            <div className="rounded-lg border border-outline-variant/30 bg-surface p-3">
+              <div className="grid gap-2 sm:grid-cols-2">
+                <label className="block">
+                  <span className="mb-1 block text-xs text-on-surface-variant">证据主题</span>
+                  <input
+                    aria-label="Evidence subject"
+                    value={manualEvidenceSubject}
+                    onChange={(event) => setManualEvidenceSubject(event.target.value)}
+                    className="w-full rounded-lg border border-outline-variant/30 bg-surface-container px-3 py-2 text-sm text-on-surface outline-none focus:border-primary"
+                  />
+                </label>
+                <label className="block">
+                  <span className="mb-1 block text-xs text-on-surface-variant">源码路径</span>
+                  <input
+                    aria-label="Evidence path"
+                    value={manualEvidencePath}
+                    onChange={(event) => setManualEvidencePath(event.target.value)}
+                    className="w-full rounded-lg border border-outline-variant/30 bg-surface-container px-3 py-2 font-data text-sm text-on-surface outline-none focus:border-primary"
+                  />
+                </label>
+              </div>
+              <label className="mt-2 block">
+                <span className="mb-1 block text-xs text-on-surface-variant">证据说明</span>
+                <textarea
+                  aria-label="Evidence text"
+                  value={manualEvidenceText}
+                  onChange={(event) => setManualEvidenceText(event.target.value)}
+                  className="h-20 w-full resize-y rounded-lg border border-outline-variant/30 bg-surface-container p-3 text-xs text-on-surface outline-none focus:border-primary"
+                />
+              </label>
+              <button
+                onClick={saveManualEvidence}
+                disabled={
+                  busyAction === "save-manual-evidence" ||
+                  !manualEvidenceSubject.trim() ||
+                  !workspaceId.trim() ||
+                  !repoPath.trim()
+                }
+                className="mt-2 inline-flex items-center justify-center gap-2 rounded-lg bg-surface-container-high px-3 py-2 text-sm text-on-surface transition-colors hover:bg-surface disabled:opacity-50"
+              >
+                {busyAction === "save-manual-evidence" ? (
+                  <Loader2 size={14} className="animate-spin" />
+                ) : (
+                  <Save size={14} />
+                )}
+                保存证据
+              </button>
+            </div>
             <div className="flex flex-col gap-2 sm:flex-row">
               <input
                 value={memoryQuery}
