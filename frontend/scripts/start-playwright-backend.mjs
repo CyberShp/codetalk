@@ -1,4 +1,6 @@
 import { spawn, spawnSync } from "node:child_process";
+import fs from "node:fs";
+import os from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 
@@ -7,6 +9,11 @@ const backendDir = path.resolve(__dirname, "../../backend");
 const backendHost = process.env.CODETALK_BACKEND_BIND_HOST ?? "0.0.0.0";
 const backendPort = process.env.CODETALK_BACKEND_PORT ?? "8100";
 const configuredPython = process.env.CODETALK_BACKEND_PYTHON;
+const isolatedDataDir =
+  process.env.CODETALK_PLAYWRIGHT_DATA_DIR ??
+  path.join(os.tmpdir(), "codetalk-playwright", `backend-${backendPort}`);
+const isolatedSqliteDb =
+  process.env.CODETALK_PLAYWRIGHT_SQLITE_DB ?? path.join(isolatedDataDir, "codetalk.db");
 const candidates = configuredPython
   ? [configuredPython]
   : ["python3.11", "python3.10", "python3", "python"];
@@ -35,12 +42,19 @@ if (!python) {
   process.exit(1);
 }
 
+fs.mkdirSync(isolatedDataDir, { recursive: true });
+fs.mkdirSync(path.dirname(isolatedSqliteDb), { recursive: true });
+
 const child = spawn(
   python,
   ["-m", "uvicorn", "app.main:app", "--host", backendHost, "--port", backendPort],
   {
     cwd: backendDir,
-    env: process.env,
+    env: {
+      ...process.env,
+      DATA_DIR: isolatedDataDir,
+      SQLITE_DB: isolatedSqliteDb,
+    },
     stdio: "inherit",
   },
 );
