@@ -552,9 +552,12 @@ test("B/C/K: create SPDK workspace through UI and verify chat/index gate", async
     elapsedMs,
   });
 
+  const chatPrompt = "分析 SPDK NVMe-oF target connect 到 IO 提交流程，并输出代码证据、流程、SFMEA、黑盒测试用例。";
+  await page.getByRole("button", { name: "对话" }).click();
+  await expect(page.locator("textarea").last()).toBeVisible({ timeout: 10_000 });
   const textarea = page.locator("textarea").last();
   const sendButton = page.getByRole("button", { name: "发送" });
-  const chatPrompt = "分析 SPDK NVMe-oF target connect 到 IO 提交流程，并输出代码证据、流程、SFMEA、黑盒测试用例。";
+  await page.getByRole("button", { name: "结构化分析" }).hover({ timeout: 5000 }).catch(() => undefined);
   await page.getByRole("button", { name: "结构化分析" }).click({ timeout: 5000 }).catch(() => undefined);
   try {
     await textarea.fill(chatPrompt, { timeout: 10_000 });
