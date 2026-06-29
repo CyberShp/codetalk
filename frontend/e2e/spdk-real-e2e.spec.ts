@@ -1102,77 +1102,13 @@ test("A04: health probes are triggerable from the UI", async ({ page }) => {
   record("A04", "pass", "system audit, provider probe, and tool startup probe were triggered through UI controls", evidence);
 });
 
-test("C06: controlled model failure exposes retry in a clean AI thread", async ({ page }) => {
-  test.setTimeout(180_000);
-
-  if (!hasSpdkRepo) {
-    record("C06", "blocked", "controlled retry requires an available SPDK workspace", { spdkRepo: SPDK_REPO });
-    return;
-  }
-
-  try {
-    await configureBrokenLlmAndSelect(page);
-    const failureWorkspaceName = `spdk-c06-retry-${Date.now()}`;
-    await page.goto("/workspaces/new", { waitUntil: "domcontentloaded" });
-    await noFrameworkOverlay(page);
-    await page.getByPlaceholder(/项目 A/).fill(failureWorkspaceName);
-    await page.getByPlaceholder(/本地文件夹路径/).fill(SPDK_REPO);
-    await page.getByRole("button", { name: "创建工作空间" }).click();
-    await page.waitForURL(/\/workspaces\/[0-9a-f-]{36}$/, { timeout: 30_000 });
-    await expect(page.getByText(failureWorkspaceName)).toBeVisible({ timeout: 30_000 });
-
-    await page.getByRole("button", { name: "AI线程" }).click();
-    await expect(page.getByText("在宽屏 AI 线程中继续分析")).toBeVisible({ timeout: 10_000 });
-    await page.getByRole("button", { name: "打开工作空间 AI 线程" }).click();
-    await page.waitForURL(/\/ai\/[^/]+$/, { timeout: 30_000 });
-    await noFrameworkOverlay(page);
-    await waitForAiThreadIdle(page, 30_000);
-
-    const failurePrompt = `C06 controlled model failure retry ${RUN_ID}`;
-    const failureInput = page.getByLabel("AI 线程消息");
-    await expect(failureInput).toBeVisible({ timeout: 15_000 });
-    await failureInput.fill(failurePrompt);
-    await expect(page.getByRole("button", { name: "发送" })).toBeEnabled({ timeout: 10_000 });
-    await page.getByRole("button", { name: "发送" }).click();
-    await expect(page.locator(".ct-codex-message").filter({ hasText: failurePrompt }).first()).toBeVisible({
-      timeout: 15_000,
-    });
-    await expect(page.locator(".ct-codex-ai__error")).toContainText(
-      /LLM 不可用|连接|Connect|ECONN|failed|error|SSE/i,
-      { timeout: 90_000 },
-    );
-    const retryButton = page.getByRole("button", { name: "重试上一条" });
-    await expect(retryButton).toBeVisible({ timeout: 15_000 });
-    await expect(retryButton).toBeEnabled({ timeout: 10_000 });
-    await retryButton.click();
-    await expect
-      .poll(() => page.locator(".ct-codex-message").filter({ hasText: failurePrompt }).count(), { timeout: 30_000 })
-      .toBeGreaterThanOrEqual(2);
-    await expect(page.locator(".ct-codex-ai__error")).toContainText(/LLM 不可用|连接|Connect|ECONN|failed|error|SSE/i, {
-      timeout: 90_000,
-    });
-    record("C06", "pass", "controlled bad LLM produced actionable error, exposed retry, and retry resubmitted the failed prompt", {
-      screenshot: await screenshot(page, "C06-ai-thread-controlled-retry"),
-    });
-  } catch (error) {
-    record("C06", "blocked", "AI thread retry control could not be completed in a clean failure thread", {
-      screenshot: await screenshot(page, "C06-ai-thread-clean-retry-failed"),
-      error: error instanceof Error ? error.message : String(error),
-      excerpt: await pageExcerpt(page),
-    });
-  } finally {
-    const restored = await restorePrimaryLlmIfAvailable(page).catch(() => false);
-    if (!restored) {
-      await clearActiveChatModel(page).catch(() => undefined);
-    }
-  }
-});
-
 test("B/C/K: create SPDK workspace through UI and verify chat/index gate", async ({ page, context }) => {
   test.setTimeout(SPDK_INDEX_WAIT_MS + 480_000);
 
   if (!e2eLlmConfigId && process.env.CODETALK_E2E_LLM_API_KEY) {
     await configureLlmIfAvailable(page);
+  } else if (e2eLlmConfigId) {
+    await restorePrimaryLlmIfAvailable(page);
   }
 
   workspaceName = `spdk-real-e2e-${Date.now()}`;
@@ -1593,6 +1529,7 @@ test("B/C/K: create SPDK workspace through UI and verify chat/index gate", async
       await expect
         .poll(() => page.locator(".ct-codex-message").filter({ hasText: failurePrompt }).count(), { timeout: 30_000 })
         .toBeGreaterThanOrEqual(2);
+      await waitForAiThreadIdle(page, 120_000);
       await expect(page.locator(".ct-codex-ai__error")).toContainText(/LLM 不可用|连接|Connect|ECONN|failed|error|SSE/i, {
         timeout: 90_000,
       });
