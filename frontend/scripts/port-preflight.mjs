@@ -1,10 +1,10 @@
 import net from "node:net";
 
-export function preflightHosts(host) {
+export function preflightHosts(host, clientHost = host) {
   if (host.toLowerCase() === "localhost") {
     return ["127.0.0.1", "::1"];
   }
-  if (host === "0.0.0.0") {
+  if (host === "0.0.0.0" && clientHost.toLowerCase() === "localhost") {
     return ["0.0.0.0", "::1"];
   }
   return [host];
@@ -39,7 +39,7 @@ async function probePort({ probeHost, originalHost, numericPort, envName, servic
     });
 }
 
-export async function assertPortAvailable({ host, port, envName, serviceName }) {
+export async function assertPortAvailable({ host, port, envName, serviceName, clientHost = host }) {
   const numericPort = Number(port);
   if (!Number.isInteger(numericPort) || numericPort <= 0 || numericPort > 65535) {
     console.error(
@@ -48,7 +48,7 @@ export async function assertPortAvailable({ host, port, envName, serviceName }) 
     process.exit(1);
   }
 
-  for (const probeHost of preflightHosts(host)) {
+  for (const probeHost of preflightHosts(host, clientHost)) {
     await probePort({ probeHost, originalHost: host, numericPort, envName, serviceName });
   }
 }

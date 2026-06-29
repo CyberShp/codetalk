@@ -639,10 +639,11 @@ test.afterEach(async ({ page }) => {
 
 test("A05: startup scripts explain occupied ports", async () => {
   const { preflightHosts } = (await import("../scripts/port-preflight.mjs")) as {
-    preflightHosts: (host: string) => string[];
+    preflightHosts: (host: string, clientHost?: string) => string[];
   };
   expect(preflightHosts("localhost")).toEqual(expect.arrayContaining(["127.0.0.1", "::1"]));
-  expect(preflightHosts("0.0.0.0")).toEqual(expect.arrayContaining(["0.0.0.0", "::1"]));
+  expect(preflightHosts("0.0.0.0", "localhost")).toEqual(expect.arrayContaining(["0.0.0.0", "::1"]));
+  expect(preflightHosts("0.0.0.0", "127.0.0.1")).toEqual(["0.0.0.0"]);
   const playwrightConfig = fs.readFileSync(path.join(process.cwd(), "playwright.config.ts"), "utf8");
   expect(playwrightConfig).toContain("url: `http://${browserHost}:${backendPort}/health`");
   expect(playwrightConfig).toContain("url: `http://${browserHost}:${frontendPort}`");

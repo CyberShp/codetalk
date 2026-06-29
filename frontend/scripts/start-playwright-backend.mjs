@@ -9,6 +9,7 @@ const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const backendDir = path.resolve(__dirname, "../../backend");
 const backendHost = process.env.CODETALK_BACKEND_BIND_HOST ?? "0.0.0.0";
 const backendPort = process.env.CODETALK_BACKEND_PORT ?? "8100";
+const browserHost = process.env.CODETALK_BROWSER_HOST ?? "localhost";
 const gitnexusPort = process.env.GITNEXUS_PORT ?? process.env.CODETALK_GITNEXUS_PORT ?? "7100";
 const gitnexusBaseUrl =
   process.env.GITNEXUS_BASE_URL ?? `http://localhost:${gitnexusPort}`;
@@ -34,6 +35,7 @@ await assertPortAvailable({
   port: backendPort,
   envName: "CODETALK_BACKEND_PORT",
   serviceName: "CodeTalk backend",
+  clientHost: browserHost,
 });
 
 function isSupportedPython(command) {

@@ -14,6 +14,7 @@ await assertPortAvailable({
   port: frontendPort,
   envName: "CODETALK_FRONTEND_PORT",
   serviceName: "CodeTalk frontend",
+  clientHost: browserHost,
 });
 
 const child = spawn(npxCommand, ["next", "dev", "-H", frontendHost, "-p", frontendPort], {
