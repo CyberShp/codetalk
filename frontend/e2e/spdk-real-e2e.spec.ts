@@ -17,6 +17,9 @@ const requireSpdkRepo = process.env.CODETALK_E2E_REQUIRE_SPDK === "1";
 const auditMode = process.env.CODETALK_E2E_AUDIT_MODE === "1";
 const SPDK_INDEX_WAIT_MS = Number(process.env.CODETALK_E2E_SPDK_INDEX_TIMEOUT_MS ?? "600000");
 const API_BASE_OVERRIDE_STORAGE_KEY = "codetalk.apiBaseOverride";
+const L01_SOAK_MIN_MS = 30 * 60 * 1000;
+const L01_SOAK_MS = Number(process.env.CODETALK_E2E_LONG_SOAK_MS ?? String(L01_SOAK_MIN_MS));
+const L01_SOAK_ENABLED = process.env.CODETALK_E2E_LONG_SOAK === "1";
 
 type CaseStatus = "pass" | "fail" | "blocked" | "not_run";
 
@@ -2022,6 +2025,123 @@ test("H/G/F/E/J: coverage upload, AI test-design, and artifact quality gates", a
 
   expectNoSecretLeak(serialized);
   record("J06", "pass", "artifact written by test excludes local secrets");
+});
+
+test("L01: 30-minute real UI reliability soak keeps coverage task usable", async ({ page, request }) => {
+  const configuredSoakMs = Number.isFinite(L01_SOAK_MS) ? L01_SOAK_MS : L01_SOAK_MIN_MS;
+  test.setTimeout(Math.max(configuredSoakMs + 360_000, 420_000));
+
+  if (!L01_SOAK_ENABLED) {
+    record("L01", "blocked", "30-minute reliability soak requires CODETALK_E2E_LONG_SOAK=1", {
+      requiredMs: L01_SOAK_MIN_MS,
+      configuredMs: configuredSoakMs,
+    });
+    return;
+  }
+  if (configuredSoakMs < L01_SOAK_MIN_MS) {
+    record("L01", "blocked", "configured soak duration is below the 30-minute acceptance threshold", {
+      requiredMs: L01_SOAK_MIN_MS,
+      configuredMs: configuredSoakMs,
+    });
+    return;
+  }
+
+  await page.goto("/coverage", { waitUntil: "domcontentloaded" });
+  await noFrameworkOverlay(page);
+
+  const analysisName = `spdk-l01-soak-${Date.now()}`;
+  await page.getByPlaceholder(/分析名称/).fill(analysisName);
+  const csv = buildLargeSpdkCoverageCsv();
+  await page.locator('input[type="file"]').setInputFiles({
+    name: "spdk-l01-soak-function-hits.csv",
+    mimeType: "text/csv",
+    buffer: Buffer.from(csv),
+  });
+  await page.getByRole("button", { name: "上传并解析" }).hover();
+  await page.getByRole("button", { name: "上传并解析" }).click();
+  await expect(page.getByText(analysisName)).toBeVisible({ timeout: 30_000 });
+
+  const card = page.locator(".bg-surface-container-low").filter({ hasText: analysisName }).first();
+  await card.hover();
+  await card.getByRole("button", { name: /AI 分析|重新分析/ }).click();
+  await expect(page.getByText(/分析中|正在分析|AI 分析结果|nvmf|bdev|iscsi/i).first()).toBeVisible({
+    timeout: 30_000,
+  });
+
+  const listCreated = async () => {
+    const listResp = await request.get(`${BACKEND_BASE}/api/coverage/list`);
+    expect(listResp.ok()).toBeTruthy();
+    const analyses = (await listResp.json()) as Array<{ id: string; name: string; status: string }>;
+    const created = analyses.find((item) => item.name === analysisName);
+    expect(created).toBeTruthy();
+    return created!;
+  };
+
+  const created = await listCreated();
+  const samples: Array<{
+    elapsedMs: number;
+    status: string;
+    bodyChars: number;
+    clickProbeMs: number;
+    detailOk: boolean;
+  }> = [];
+  const startedAt = Date.now();
+  let lastStatus = created.status;
+
+  while (Date.now() - startedAt < configuredSoakMs) {
+    const sampleStartedAt = Date.now();
+    await card.hover({ timeout: 10_000 });
+    await page.getByText(analysisName).first().click({ timeout: 10_000 });
+    const detailResp = await request.get(`${BACKEND_BASE}/api/coverage/${created.id}`);
+    const detailOk = detailResp.ok();
+    const detail = detailOk ? ((await detailResp.json()) as { status?: string }) : {};
+    lastStatus = String(detail.status || lastStatus || "unknown");
+    const bodyText = await page.locator("body").innerText({ timeout: 10_000 });
+    samples.push({
+      elapsedMs: Date.now() - startedAt,
+      status: lastStatus,
+      bodyChars: bodyText.length,
+      clickProbeMs: Date.now() - sampleStartedAt,
+      detailOk,
+    });
+    await expect(page.getByText(analysisName).first()).toBeVisible({ timeout: 10_000 });
+    await expect(page.getByRole("button", { name: /AI 分析|重新分析|删除/ }).first()).toBeVisible({
+      timeout: 10_000,
+    });
+    await page.waitForTimeout(30_000);
+  }
+
+  const finalDetailResp = await request.get(`${BACKEND_BASE}/api/coverage/${created.id}`);
+  const finalDetail = finalDetailResp.ok()
+    ? ((await finalDetailResp.json()) as { status?: string; analysis_results_json?: string })
+    : {};
+  await page.reload({ waitUntil: "domcontentloaded" });
+  await noFrameworkOverlay(page);
+  await expect(page.getByText(analysisName)).toBeVisible({ timeout: 30_000 });
+  await page.getByText(analysisName).first().click();
+  await expect(page.getByRole("button", { name: /导出分析报告|AI 分析|重新分析/ }).first()).toBeVisible({
+    timeout: 30_000,
+  });
+
+  const metrics = {
+    analysisName,
+    analysisId: created.id,
+    configuredSoakMs,
+    actualSoakMs: Date.now() - startedAt,
+    sampleCount: samples.length,
+    lastStatus,
+    finalStatus: finalDetail.status ?? lastStatus,
+    finalHasArtifact: Boolean(finalDetail.analysis_results_json),
+    maxClickProbeMs: Math.max(...samples.map((sample) => sample.clickProbeMs)),
+    screenshot: await screenshot(page, "L01-30min-soak-final"),
+    samples,
+  };
+  writeJson("L01-30min-soak-metrics.json", metrics);
+  expect(samples.length).toBeGreaterThanOrEqual(Math.floor(configuredSoakMs / 30_000) - 1);
+  expect(samples.every((sample) => sample.detailOk)).toBeTruthy();
+  expect(samples.every((sample) => sample.bodyChars > 0)).toBeTruthy();
+  expect(metrics.maxClickProbeMs).toBeLessThan(10_000);
+  record("L01", "pass", "30-minute real browser soak kept the coverage task visible, clickable, and backend status queryable", metrics);
 });
 
 test("L04: isolated backend restart preserves workspace and workbench artifacts", async ({ page }) => {
