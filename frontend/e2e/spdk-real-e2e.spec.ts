@@ -1232,6 +1232,24 @@ test("B/C/K: create SPDK workspace through UI and verify chat/index gate", async
         ...threadDetails,
         threadCount: threadUrls.length,
       });
+      await threadPages[0].close();
+      const reopenedThreadPage = await context.newPage();
+      try {
+        await reopenedThreadPage.goto(threadUrls[0], { waitUntil: "domcontentloaded" });
+        await noFrameworkOverlay(reopenedThreadPage);
+        const reopenedMessages = reopenedThreadPage.locator(".ct-codex-message");
+        await expect(reopenedMessages.filter({ hasText: threadTokens[0] }).first()).toBeVisible({ timeout: 30_000 });
+        for (const otherToken of threadTokens.slice(1)) {
+          await expect(reopenedMessages.filter({ hasText: otherToken })).toHaveCount(0);
+        }
+        record("L03", "pass", "closed a browser tab and reopened the same AI thread URL with isolated history restored", {
+          threadUrl: threadUrls[0],
+          token: threadTokens[0],
+          screenshot: await screenshot(reopenedThreadPage, "L03-reopened-ai-thread"),
+        });
+      } finally {
+        await reopenedThreadPage.close().catch(() => undefined);
+      }
     } finally {
       await Promise.all(threadPages.map((tab) => tab.close().catch(() => undefined)));
     }
@@ -1243,6 +1261,11 @@ test("B/C/K: create SPDK workspace through UI and verify chat/index gate", async
     });
     record("L02", "blocked", "three-thread AI isolation did not complete through the UI", {
       screenshot: await screenshot(page, "L02-ai-thread-isolation-failed"),
+      error: error instanceof Error ? error.message : String(error),
+      excerpt: await pageExcerpt(page),
+    });
+    record("L03", "blocked", "AI thread browser interruption/reopen recovery did not complete through the UI", {
+      screenshot: await screenshot(page, "L03-ai-thread-reopen-failed"),
       error: error instanceof Error ? error.message : String(error),
       excerpt: await pageExcerpt(page),
     });
