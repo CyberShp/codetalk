@@ -121,6 +121,7 @@ export default function SettingsPage() {
     async (e: React.FormEvent) => {
       e.preventDefault();
       if (!form.name.trim() || !form.base_url.trim() || !form.model.trim()) {
+        setShowApiKey(false);
         setError("请填写名称、接口地址和模型名称");
         return;
       }
@@ -154,6 +155,7 @@ export default function SettingsPage() {
         setShowApiKey(false);
         await loadData();
       } catch (err: unknown) {
+        setShowApiKey(false);
         setError(err instanceof Error ? err.message : "保存配置失败");
       } finally {
         setSaving(false);

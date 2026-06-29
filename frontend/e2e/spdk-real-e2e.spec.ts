@@ -284,6 +284,11 @@ async function verifySettingsKeyboardUsability(page: Page) {
   await apiKeyInput.fill("sk-keyboard-e2e-redacted");
   await page.getByRole("button", { name: "显示 API 密钥" }).click();
   await expect(apiKeyInput).toHaveAttribute("type", "text");
+  await page.getByRole("button", { name: "保存配置" }).click();
+  await expect(page.getByText("请填写名称、接口地址和模型名称")).toBeVisible();
+  await expect(apiKeyInput).toHaveAttribute("type", "password");
+  await page.getByRole("button", { name: "显示 API 密钥" }).click();
+  await expect(apiKeyInput).toHaveAttribute("type", "text");
   await page.keyboard.press("Escape");
   await expect(page.getByText("新增 LLM 配置")).toHaveCount(0);
   await page.getByRole("button", { name: /新增/ }).click();
