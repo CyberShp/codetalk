@@ -8,6 +8,9 @@ const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const backendDir = path.resolve(__dirname, "../../backend");
 const backendHost = process.env.CODETALK_BACKEND_BIND_HOST ?? "0.0.0.0";
 const backendPort = process.env.CODETALK_BACKEND_PORT ?? "8100";
+const gitnexusPort = process.env.GITNEXUS_PORT ?? process.env.CODETALK_GITNEXUS_PORT ?? "7100";
+const gitnexusBaseUrl =
+  process.env.GITNEXUS_BASE_URL ?? `http://localhost:${gitnexusPort}`;
 const configuredPython = process.env.CODETALK_BACKEND_PYTHON;
 const runId =
   process.env.CODETALK_PLAYWRIGHT_RUN_ID ??
@@ -43,6 +46,8 @@ function isSupportedPython(command) {
         ...process.env,
         DATA_DIR: isolatedDataDir,
         SQLITE_DB: isolatedSqliteDb,
+        GITNEXUS_BASE_URL: gitnexusBaseUrl,
+        GITNEXUS_PORT: gitnexusPort,
       },
       stdio: "ignore",
     },
@@ -81,6 +86,8 @@ const child = spawn(
       ...process.env,
       DATA_DIR: isolatedDataDir,
       SQLITE_DB: isolatedSqliteDb,
+      GITNEXUS_BASE_URL: gitnexusBaseUrl,
+      GITNEXUS_PORT: gitnexusPort,
     },
     stdio: "inherit",
   },
