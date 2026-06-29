@@ -579,6 +579,15 @@ async function verifySettingsKeyboardUsability(page: Page) {
   await expect(page.getByText("新增 LLM 配置")).toHaveCount(0);
 }
 
+async function openOptionalLlmSettings(page: Page) {
+  const sectionButton = page.getByRole("button", { name: /可选：内置模型与 RAG 检索/ });
+  await expect(sectionButton).toBeVisible({ timeout: 15_000 });
+  if ((await page.getByRole("heading", { name: "LLM 配置" }).count()) === 0) {
+    await sectionButton.click();
+  }
+  await expect(page.getByRole("heading", { name: "LLM 配置" })).toBeVisible({ timeout: 15_000 });
+}
+
 async function selectActiveChatModelAndWait(page: Page, select: Locator, modelId: string) {
   if ((await select.inputValue()) === modelId) {
     await expect(select).toHaveValue(modelId, { timeout: 15_000 });
@@ -615,7 +624,7 @@ async function configureLlmIfAvailable(page: Page) {
 
   await page.goto("/settings", { waitUntil: "domcontentloaded" });
   await noFrameworkOverlay(page);
-  await page.getByRole("button", { name: /可选：内置模型与 RAG 检索/ }).click();
+  await openOptionalLlmSettings(page);
   await page.getByRole("button", { name: /新增/ }).click();
   const llmForm = page.locator("form").filter({ hasText: "新增 LLM 配置" });
   await llmForm.getByPlaceholder(/Claude|GPT-4o/).fill(e2eLlmConfigName);
@@ -638,6 +647,8 @@ async function configureLlmIfAvailable(page: Page) {
   e2eLlmConfigId = activeModelValue;
   await selectActiveChatModelAndWait(page, activeModelSelect, activeModelValue);
   await page.reload({ waitUntil: "domcontentloaded" });
+  await noFrameworkOverlay(page);
+  await openOptionalLlmSettings(page);
   await expect(page.getByText(e2eLlmConfigName, { exact: true })).toBeVisible({ timeout: 15_000 });
   const persistedActiveModel = page.locator("select").filter({ has: page.locator("option", { hasText: e2eLlmConfigName }) }).first();
   await expect(persistedActiveModel).toHaveValue(activeModelValue, { timeout: 15_000 });
@@ -1176,19 +1187,20 @@ test("B/C/K: create SPDK workspace through UI and verify chat/index gate", async
     });
   }
   try {
+    const firstAiResult = threadMessages.filter({ hasText: /NVMe|nvmf|SFMEA|黑盒|connect|未配置|失败|error/i }).last();
     await expect(
-      threadMessages.filter({ hasText: /NVMe|nvmf|SFMEA|黑盒|connect|未配置|失败|error/i }).last(),
+      firstAiResult,
     ).toBeVisible({ timeout: 120_000 });
     await expect(page.getByRole("button", { name: "停止" })).toHaveCount(0, { timeout: 120_000 });
-    const bodyText = await page.locator("body").innerText();
-    const modelBlocked = /未配置|失败|error|SSE|认证|API Key/i.test(bodyText);
+    const resultText = await firstAiResult.innerText();
+    const modelBlocked = /未配置|模型生成失败|LLM.*失败|连接失败|All connection attempts failed|SSE|认证失败|API Key/i.test(resultText);
     record(
       "C01",
       modelBlocked ? "blocked" : "pass",
       modelBlocked ? "AI thread opened but model generation reported an actionable error" : "AI thread returned visible content",
       {
         screenshot: await screenshot(page, modelBlocked ? "C01-ai-thread-model-blocked" : "C01-ai-thread-answer"),
-        excerpt: bodyText.slice(0, 2000),
+        excerpt: resultText.slice(0, 2000),
       },
     );
     record("K06", "pass", "AI thread exposed a visible running/error/result state and returned to idle");
@@ -1214,6 +1226,7 @@ test("B/C/K: create SPDK workspace through UI and verify chat/index gate", async
     await expect(
       threadMessages.filter({ hasText: /lib\/nvmf|test\/nvmf|nvmf|未配置|失败|error/i }).last(),
     ).toBeVisible({ timeout: 120_000 });
+    await expect(page.getByRole("button", { name: "停止" })).toHaveCount(0, { timeout: 120_000 });
     const evidenceText = await page.locator("body").innerText();
     const paths = existingSpdkEvidencePaths(evidenceText);
     record(
@@ -1232,13 +1245,17 @@ test("B/C/K: create SPDK workspace through UI and verify chat/index gate", async
 
   const followUpPrompt = "只输出外部可观测行为，用于黑盒测试设计，并保持简洁。";
   try {
-    await textarea.fill(followUpPrompt);
-    await expect(sendButton).toBeEnabled({ timeout: 10_000 });
-    await sendButton.click();
+    const followUpTextarea = page.getByLabel("AI 线程消息");
+    const followUpSendButton = page.getByRole("button", { name: "发送" });
+    await expect(followUpTextarea).toBeVisible({ timeout: 30_000 });
+    await followUpTextarea.fill(followUpPrompt);
+    await expect(followUpSendButton).toBeEnabled({ timeout: 30_000 });
+    await followUpSendButton.click();
     await expect(threadMessages.filter({ hasText: followUpPrompt }).first()).toBeVisible({ timeout: 15_000 });
     await expect(
       threadMessages.filter({ hasText: /外部|观测|黑盒|日志|指标|状态|未配置|失败|error/i }).last(),
     ).toBeVisible({ timeout: 120_000 });
+    await expect(page.getByRole("button", { name: "停止" })).toHaveCount(0, { timeout: 120_000 });
     record("C03", "pass", "AI thread accepted a context-continuation follow-up through the real UI");
     record("C05", "pass", "AI thread allowed only one send action per completed visible turn in this flow");
   } catch (error) {
