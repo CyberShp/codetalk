@@ -12,6 +12,7 @@ const ARTIFACT_DIR =
   path.join(os.tmpdir(), "codetalk-e2e-spdk", RUN_ID);
 const hasSpdkRepo = fs.existsSync(SPDK_REPO);
 const requireSpdkRepo = process.env.CODETALK_E2E_REQUIRE_SPDK === "1";
+const SPDK_INDEX_WAIT_MS = Number(process.env.CODETALK_E2E_SPDK_INDEX_TIMEOUT_MS ?? "600000");
 
 type CaseStatus = "pass" | "fail" | "blocked" | "not_run";
 
@@ -252,8 +253,19 @@ async function configureLlmIfAvailable(page: Page) {
   expect(keyType).toBe("password");
   await page.getByRole("button", { name: "保存配置" }).click();
   await expect(page.getByText(/DeepSeek E2E/)).toBeVisible({ timeout: 15_000 });
+  const activeModelSelect = page.locator("select").filter({ has: page.locator("option", { hasText: `DeepSeek E2E ${RUN_ID}` }) }).first();
+  await expect(activeModelSelect).toBeVisible({ timeout: 15_000 });
+  const activeModelValue = await activeModelSelect.locator("option").evaluateAll(
+    (options, label) =>
+      options.find((option) => (option.textContent ?? "").includes(String(label)))?.getAttribute("value") ?? "",
+    `DeepSeek E2E ${RUN_ID}`,
+  );
+  expect(activeModelValue).toBeTruthy();
+  await activeModelSelect.selectOption(activeModelValue);
   await page.reload({ waitUntil: "domcontentloaded" });
   await expect(page.getByText(/DeepSeek E2E/)).toBeVisible({ timeout: 15_000 });
+  const persistedActiveModel = page.locator("select").filter({ has: page.locator("option", { hasText: `DeepSeek E2E ${RUN_ID}` }) }).first();
+  await expect(persistedActiveModel).toHaveValue(activeModelValue, { timeout: 15_000 });
 
   const bodyText = await page.locator("body").innerText();
   expect(bodyText).not.toContain(apiKey);
@@ -403,7 +415,8 @@ test("B/C/K: create SPDK workspace through UI and verify chat/index gate", async
 
   const start = Date.now();
   let finalStatus = "";
-  for (let i = 0; i < 40; i += 1) {
+  const indexDeadline = start + SPDK_INDEX_WAIT_MS;
+  while (Date.now() < indexDeadline) {
     const statusText = await page.locator("body").innerText();
     if (/已索引/.test(statusText)) {
       finalStatus = "indexed";
@@ -621,6 +634,16 @@ test("H/G/F/E/J: coverage upload, AI test-design, and artifact quality gates", a
   await page.getByPlaceholder(/分析名称/).fill(analysisName);
   if (workspaceName) {
     const workspaceSelect = page.locator("select").first();
+    await expect
+      .poll(
+        async () =>
+          workspaceSelect.locator("option").evaluateAll((options, name) =>
+            options.some((option) => (option.textContent ?? "").includes(String(name))),
+          workspaceName),
+        { timeout: 30_000 },
+      )
+      .toBe(true)
+      .catch(() => undefined);
     const workspaceOption = await workspaceSelect.locator("option").evaluateAll(
       (options, name) =>
         options.find((option) => (option.textContent ?? "").includes(String(name)))?.getAttribute("value") ?? "",
