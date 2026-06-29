@@ -1704,6 +1704,60 @@ test("H/G/F/E/J: coverage upload, AI test-design, and artifact quality gates", a
   record("G03", "pass", "recommendation payload includes scenario/test-design structure");
   record("F01", serialized.includes("sfmea") ? "pass" : "blocked", "SFMEA presence checked in coverage artifact");
   record("J04", "pass", "coverage JSON artifact persisted for schema inspection");
+
+  const reportDownloadPromise = page.waitForEvent("download");
+  await page.getByRole("button", { name: "导出分析报告" }).click();
+  const reportDownload = await reportDownloadPromise;
+  const reportFile = path.join(ARTIFACT_DIR, "J01-coverage-analysis-report.md");
+  await reportDownload.saveAs(reportFile);
+  const reportText = fs.readFileSync(reportFile, "utf8");
+  expect(reportText).toContain("CodeTalk Coverage Analysis Report");
+  expect(reportText).toMatch(/Evidence And Flow|Black-box Cases|coverage_gap/i);
+  record("J01", "pass", "downloaded coverage analysis report Markdown through the real UI", {
+    file: reportFile,
+    suggestedFilename: reportDownload.suggestedFilename(),
+  });
+
+  const sfmeaDownloadPromise = page.waitForEvent("download");
+  await page.getByRole("button", { name: "导出 SFMEA" }).click();
+  const sfmeaDownload = await sfmeaDownloadPromise;
+  const sfmeaFile = path.join(ARTIFACT_DIR, "J02-coverage-sfmea.csv");
+  await sfmeaDownload.saveAs(sfmeaFile);
+  const sfmeaText = fs.readFileSync(sfmeaFile, "utf8");
+  for (const field of [
+    "failure_mode",
+    "cause",
+    "effect",
+    "detection",
+    "severity",
+    "occurrence",
+    "detection_score",
+    "rpn",
+    "mitigation",
+  ]) {
+    expect(sfmeaText).toContain(field);
+  }
+  record("F01", "pass", "exported SFMEA CSV contains the required risk fields");
+  record("J02", "pass", "downloaded SFMEA CSV through the real UI", {
+    file: sfmeaFile,
+    suggestedFilename: sfmeaDownload.suggestedFilename(),
+  });
+
+  const blackBoxDownloadPromise = page.waitForEvent("download");
+  await page.getByRole("button", { name: "导出黑盒用例" }).click();
+  const blackBoxDownload = await blackBoxDownloadPromise;
+  const blackBoxFile = path.join(ARTIFACT_DIR, "J03-coverage-black-box-cases.json");
+  await blackBoxDownload.saveAs(blackBoxFile);
+  const blackBoxPayload = JSON.parse(fs.readFileSync(blackBoxFile, "utf8")) as {
+    cases?: Array<Record<string, unknown>>;
+  };
+  expect(blackBoxPayload.cases?.length ?? 0).toBeGreaterThan(0);
+  expect(JSON.stringify(blackBoxPayload)).toMatch(/preconditions|observable_signals|expected|diagnostics/);
+  record("J03", "pass", "downloaded black-box test cases JSON through the real UI", {
+    file: blackBoxFile,
+    suggestedFilename: blackBoxDownload.suggestedFilename(),
+  });
+
   expectNoSecretLeak(serialized);
   record("J06", "pass", "artifact written by test excludes local secrets");
 });
@@ -1731,7 +1785,7 @@ test("matrix accounting: every planned case has an explicit status", async () =>
     for (const id of ["F02", "F03", "F04", "F05", "F06", "G02", "G04", "G05", "G06"]) {
       if (results.get(id)?.status === "not_run") record(id, "blocked", "requires complete model-generated SFMEA/test-case artifact");
     }
-    for (const id of ["I03", "I04", "J01", "J02", "J03", "J05"]) {
+    for (const id of ["I03", "I04", "J05"]) {
       if (results.get(id)?.status === "not_run") record(id, "blocked", "deferred to follow-up focused artifact/export run");
     }
     for (const id of ["C04", "C05", "C06", "C07", "C08"]) {

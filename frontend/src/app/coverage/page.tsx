@@ -9,6 +9,7 @@ import {
   ChevronDown,
   ChevronUp,
   FileText,
+  Download,
   AlertTriangle,
   CheckCircle2,
   BarChart3,
@@ -113,6 +114,152 @@ const ENTRY_TRACE_STATUS_LABEL: Record<string, string> = {
 function entryTraceStatusLabel(status?: string): string {
   if (!status) return "入口发现状态未知";
   return ENTRY_TRACE_STATUS_LABEL[status] ?? status;
+}
+
+function safeExportName(value: string) {
+  return value
+    .trim()
+    .replace(/[^a-zA-Z0-9._-]+/g, "-")
+    .replace(/^-+|-+$/g, "")
+    .slice(0, 80) || "coverage-analysis";
+}
+
+function csvCell(value: unknown) {
+  const text = Array.isArray(value) ? value.join("; ") : String(value ?? "");
+  return `"${text.replace(/"/g, '""')}"`;
+}
+
+function downloadTextFile(filename: string, content: string, type: string) {
+  const blob = new Blob([content], { type });
+  const url = URL.createObjectURL(blob);
+  const link = document.createElement("a");
+  link.href = url;
+  link.download = filename;
+  document.body.appendChild(link);
+  link.click();
+  link.remove();
+  URL.revokeObjectURL(url);
+}
+
+function coverageEvidenceLabel(mr: CoverageModuleResult) {
+  const target = mr.function_name ?? mr.condition ?? mr.module_path;
+  const path = mr.file_path ?? mr.module_path;
+  const line = mr.line_start ? `:${mr.line_start}` : "";
+  return `${target} @ ${path}${line}`;
+}
+
+function coverageRiskScores(mr: CoverageModuleResult) {
+  const severity = mr.risk_level === "high" ? 9 : mr.risk_level === "low" ? 4 : 6;
+  const occurrence = (mr.hit_count ?? 0) === 0 ? 7 : 3;
+  const detection = mr.entry_paths?.length ? 4 : 7;
+  return { severity, occurrence, detection, rpn: severity * occurrence * detection };
+}
+
+function buildCoverageReportMarkdown(name: string, results: CoverageModuleResult[]) {
+  const lines = [
+    `# CodeTalk Coverage Analysis Report: ${name}`,
+    "",
+    "## Summary",
+    `- analyzed gaps: ${results.length}`,
+    `- black-box cases: ${results.reduce((sum, item) => sum + (item.black_box_cases?.length ?? 0), 0)}`,
+    `- generated_at: ${new Date().toISOString()}`,
+    "",
+    "## Evidence And Flow",
+  ];
+  for (const mr of results) {
+    const branchFactCard = mr as CoverageModuleResult & {
+      branch_fact_card?: { source_evidence?: string[] };
+    };
+    lines.push(
+      "",
+      `### ${coverageEvidenceLabel(mr)}`,
+      `- coverage_gap: ${mr.file_path ?? mr.module_path}${mr.line_start ? `:${mr.line_start}` : ""}`,
+      `- risk: ${mr.risk_level ?? "medium"}`,
+      `- scenario: ${mr.scenario ?? "补充未覆盖行为的可观测测试流程。"}`,
+      `- expected_behavior: ${mr.expected_behavior ?? "返回文档化结果或受控错误。"}`,
+      `- entry_status: ${entryTraceStatusLabel(mr.entry_trace_status)}`,
+      `- evidence: ${(branchFactCard.branch_fact_card?.source_evidence ?? [coverageEvidenceLabel(mr)]).join("; ")}`,
+      "",
+      "#### Black-box Cases",
+    );
+    for (const testCase of mr.black_box_cases ?? []) {
+      lines.push(
+        `- ${testCase.title}`,
+        `  - preconditions: ${testCase.preconditions ?? ""}`,
+        `  - inputs: ${testCase.inputs ?? ""}`,
+        `  - expected: ${testCase.expected ?? ""}`,
+        `  - observability: ${(testCase.observable_signals ?? []).join(", ")}`,
+      );
+    }
+  }
+  return `${lines.join("\n")}\n`;
+}
+
+function buildCoverageSfmeaCsv(results: CoverageModuleResult[]) {
+  const rows = [[
+    "target",
+    "failure_mode",
+    "cause",
+    "effect",
+    "detection",
+    "severity",
+    "occurrence",
+    "detection_score",
+    "rpn",
+    "mitigation",
+    "evidence",
+  ]];
+  for (const mr of results) {
+    const scores = coverageRiskScores(mr);
+    rows.push([
+      mr.function_name ?? mr.module_path,
+      `Untested or regressed externally observable behavior for ${mr.function_name ?? mr.module_path}`,
+      `Coverage gap at ${mr.file_path ?? mr.module_path}${mr.line_start ? `:${mr.line_start}` : ""}`,
+      mr.expected_behavior ?? "User-visible flow may return an undocumented result, hang, crash, or leave inconsistent state.",
+      (mr.observable_signals ?? ["response/status", "logs", "state"]).join("; "),
+      String(scores.severity),
+      String(scores.occurrence),
+      String(scores.detection),
+      String(scores.rpn),
+      (mr.black_box_cases?.[0]?.title ?? "Add an externally triggered black-box regression test"),
+      coverageEvidenceLabel(mr),
+    ]);
+  }
+  return `${rows.map((row) => row.map(csvCell).join(",")).join("\n")}\n`;
+}
+
+function buildCoverageBlackBoxJson(name: string, results: CoverageModuleResult[]) {
+  return JSON.stringify(
+    {
+      version: "codetalk-coverage-black-box-export-v1",
+      name,
+      generated_at: new Date().toISOString(),
+      cases: results.flatMap((mr) =>
+        (mr.black_box_cases ?? []).map((testCase, index) => ({
+          id: `${safeExportName(mr.function_name ?? mr.module_path)}-${index + 1}`,
+          module_path: mr.module_path,
+          function_name: mr.function_name ?? null,
+          file_path: mr.file_path ?? null,
+          case_type:
+            (testCase as typeof testCase & { case_type?: string }).case_type ??
+            "black_box_hypothesis",
+          title: testCase.title,
+          preconditions: testCase.preconditions ?? "",
+          inputs: testCase.inputs ?? "",
+          steps: testCase.steps ?? [],
+          expected: testCase.expected ?? "",
+          observable_signals: testCase.observable_signals ?? [],
+          diagnostics: {
+            evidence: testCase.evidence ?? coverageEvidenceLabel(mr),
+            entry_trace_status: mr.entry_trace_status ?? "",
+            evidence_gaps: mr.evidence_gaps ?? [],
+          },
+        })),
+      ),
+    },
+    null,
+    2,
+  );
 }
 
 const CASE_TYPE_LABEL: Record<string, string> = {
@@ -955,6 +1102,53 @@ export default function CoveragePage() {
               {/* Expanded detail */}
               {expandedId === a.id && detail && (
                 <div className="border-t border-outline-variant/15 p-4 space-y-4">
+                  <div className="flex flex-wrap items-center gap-2">
+                    <button
+                      type="button"
+                      disabled={moduleResults.length === 0}
+                      onClick={() =>
+                        downloadTextFile(
+                          `${safeExportName(a.name)}-analysis-report.md`,
+                          buildCoverageReportMarkdown(a.name, moduleResults),
+                          "text/markdown;charset=utf-8",
+                        )
+                      }
+                      className="inline-flex items-center gap-1.5 rounded-lg bg-surface-container px-3 py-1.5 text-sm text-on-surface-variant transition-colors hover:bg-surface-container-high disabled:opacity-50"
+                    >
+                      <Download size={14} />
+                      导出分析报告
+                    </button>
+                    <button
+                      type="button"
+                      disabled={moduleResults.length === 0}
+                      onClick={() =>
+                        downloadTextFile(
+                          `${safeExportName(a.name)}-sfmea.csv`,
+                          buildCoverageSfmeaCsv(moduleResults),
+                          "text/csv;charset=utf-8",
+                        )
+                      }
+                      className="inline-flex items-center gap-1.5 rounded-lg bg-surface-container px-3 py-1.5 text-sm text-on-surface-variant transition-colors hover:bg-surface-container-high disabled:opacity-50"
+                    >
+                      <Download size={14} />
+                      导出 SFMEA
+                    </button>
+                    <button
+                      type="button"
+                      disabled={moduleResults.length === 0}
+                      onClick={() =>
+                        downloadTextFile(
+                          `${safeExportName(a.name)}-black-box-cases.json`,
+                          buildCoverageBlackBoxJson(a.name, moduleResults),
+                          "application/json;charset=utf-8",
+                        )
+                      }
+                      className="inline-flex items-center gap-1.5 rounded-lg bg-surface-container px-3 py-1.5 text-sm text-on-surface-variant transition-colors hover:bg-surface-container-high disabled:opacity-50"
+                    >
+                      <Download size={14} />
+                      导出黑盒用例
+                    </button>
+                  </div>
                   {/* Overall rates */}
                   <div className="space-y-2">
                     <RateBar
