@@ -890,28 +890,31 @@ test("matrix accounting: every planned case has an explicit status", async () =>
   for (const [id] of acceptanceCases) {
     expect(results.has(id)).toBeTruthy();
   }
-  record("A04", "blocked", "provider probe/system audit/tool probe are not exposed as stable UI controls");
-  record("A05", "blocked", "port-conflict scenario requires a separate destructive startup attempt");
-  record("B03", "blocked", "duplicate workspace policy is product-defined; not exercised in first safe run");
-  record("B06", "blocked", "source search UI is not exposed as a stable browser control in this run");
-  record("D03", "blocked", "requires provider execution for resource_leak_hunt");
-  record("D04", "blocked", "requires provider execution for patch_impact_review");
-  record("D05", "blocked", "requires provider execution for mr_blackbox_test");
-  record("D10", "blocked", "requires a failed executable workflow and accepted rerun");
-  for (const id of ["E01", "E02", "E03", "E04", "E05", "E06", "E07", "E08", "E09", "E10"]) {
-    if (results.get(id)?.status === "not_run") record(id, "blocked", "requires live model/provider chain");
-  }
-  for (const id of ["F02", "F03", "F04", "F05", "F06", "G02", "G04", "G05", "G06"]) {
-    if (results.get(id)?.status === "not_run") record(id, "blocked", "requires complete model-generated SFMEA/test-case artifact");
-  }
-  for (const id of ["I03", "I04", "I06", "J01", "J02", "J03", "J05"]) {
-    if (results.get(id)?.status === "not_run") record(id, "blocked", "deferred to follow-up focused artifact/export run");
-  }
-  for (const id of ["C04", "C05", "C06", "C07", "C08"]) {
-    if (results.get(id)?.status === "not_run") record(id, "blocked", "deferred to focused completed-chat workflow run");
-  }
-  for (const id of ["K04", "K06", "L01", "L02", "L03", "L04", "L05", "L06", "L07"]) {
-    if (results.get(id)?.status === "not_run") record(id, "blocked", "requires long-running reliability/performance soak");
+
+  if (auditMode) {
+    record("A04", "blocked", "provider probe/system audit/tool probe are not exposed as stable UI controls");
+    record("A05", "blocked", "port-conflict scenario requires a separate destructive startup attempt");
+    record("B03", "blocked", "duplicate workspace policy is product-defined; not exercised in first safe run");
+    record("B06", "blocked", "source search UI is not exposed as a stable browser control in this run");
+    record("D03", "blocked", "requires provider execution for resource_leak_hunt");
+    record("D04", "blocked", "requires provider execution for patch_impact_review");
+    record("D05", "blocked", "requires provider execution for mr_blackbox_test");
+    record("D10", "blocked", "requires a failed executable workflow and accepted rerun");
+    for (const id of ["E01", "E02", "E03", "E04", "E05", "E06", "E07", "E08", "E09", "E10"]) {
+      if (results.get(id)?.status === "not_run") record(id, "blocked", "requires live model/provider chain");
+    }
+    for (const id of ["F02", "F03", "F04", "F05", "F06", "G02", "G04", "G05", "G06"]) {
+      if (results.get(id)?.status === "not_run") record(id, "blocked", "requires complete model-generated SFMEA/test-case artifact");
+    }
+    for (const id of ["I03", "I04", "I06", "J01", "J02", "J03", "J05"]) {
+      if (results.get(id)?.status === "not_run") record(id, "blocked", "deferred to follow-up focused artifact/export run");
+    }
+    for (const id of ["C04", "C05", "C06", "C07", "C08"]) {
+      if (results.get(id)?.status === "not_run") record(id, "blocked", "deferred to focused completed-chat workflow run");
+    }
+    for (const id of ["K04", "K06", "L01", "L02", "L03", "L04", "L05", "L06", "L07"]) {
+      if (results.get(id)?.status === "not_run") record(id, "blocked", "requires long-running reliability/performance soak");
+    }
   }
 
   const unresolved = Array.from(results.values()).filter((item) => item.status === "not_run");
