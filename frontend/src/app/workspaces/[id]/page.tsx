@@ -368,7 +368,7 @@ function ChatPanel({
                 .find((candidate) => candidate.role === "user");
               const content = msg.content.trim();
               const failedAssistantMessage =
-                content.startsWith("⚠️ 发送失败") || content.startsWith("⚠️ 生成失败");
+                content.includes("⚠️ 发送失败") || content.includes("⚠️ 生成失败");
               const canRetryMessage =
                 msg.role === "assistant" && failedAssistantMessage && previousUser !== undefined;
               return (
