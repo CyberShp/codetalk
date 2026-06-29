@@ -8,7 +8,7 @@
     "start": "node scripts/next-with-port.mjs start",
     "lint": "eslint",
     "test:e2e": "npx playwright test e2e/smoke-health.spec.ts e2e/smoke-workspace.spec.ts",
-    "test:e2e:source-preview": "CODETALK_PLAYWRIGHT_GITNEXUS=1 npx playwright test e2e/source-preview-real.spec.ts",
+    "test:e2e:source-preview": "CODETALK_REUSE_EXISTING_SERVER=0 CODETALK_PLAYWRIGHT_GITNEXUS=1 npx playwright test e2e/source-preview-real.spec.ts",
     "test:e2e:spdk": "sh -c 'export CODETALK_FRONTEND_PORT=${CODETALK_FRONTEND_PORT:-3003}; export CODETALK_BACKEND_PORT=${CODETALK_BACKEND_PORT:-3004}; export CODETALK_REUSE_EXISTING_SERVER=0; export CODETALK_E2E_REQUIRE_SPDK=1; export CODETALK_E2E_AUDIT_MODE=${CODETALK_E2E_AUDIT_MODE:-1}; export CODETALK_E2E_REPO=${CODETALK_E2E_REPO:-/Volumes/Media/dpdk/spdk}; export NEXT_PUBLIC_API_URL=http://localhost:${CODETALK_BACKEND_PORT}; exec npx playwright test e2e/spdk-real-e2e.spec.ts --project=chromium \"$@\"' --",
     "test:e2e:spdk:strict": "CODETALK_E2E_AUDIT_MODE=0 npm run test:e2e:spdk --",
     "test:e2e:release": "npx playwright test --config=playwright.release.config.ts",
