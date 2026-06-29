@@ -459,6 +459,14 @@ test("D/I: agent workbench real UI workflow, semantic library, memory, and artif
     timeout: 30_000,
   });
 
+  await page.getByLabel("Inputs JSON").fill(JSON.stringify({ repo_path: SPDK_REPO }, null, 2));
+  await page.getByRole("button", { name: "Prepare run" }).click();
+  await expect(page.getByText(/analysis_object|missing|required|请求失败|422/i).first()).toBeVisible({
+    timeout: 30_000,
+  });
+  await expect(page.getByRole("button", { name: "Acceptance audit" })).toBeDisabled();
+  record("D06", "pass", "missing required workflow input blocks audit/execute controls");
+
   const moduleInputs = {
     analysis_object:
       "SPDK NVMe-oF target connect to IO path. Produce code evidence, code flow, SFMEA, and black-box test cases.",
@@ -473,7 +481,6 @@ test("D/I: agent workbench real UI workflow, semantic library, memory, and artif
   const executeButton = page.getByRole("button", { name: "Execute workflow" });
   try {
     await expect(auditButton).toBeEnabled({ timeout: 45_000 });
-    record("D06", "pass", "prepare run validates required inputs and enables audit actions");
 
     await auditButton.click();
     await expect(page.getByText(/Acceptance:/)).toBeVisible({ timeout: 30_000 });
@@ -507,7 +514,9 @@ test("D/I: agent workbench real UI workflow, semantic library, memory, and artif
       excerpt: await pageExcerpt(page),
       error: error instanceof Error ? error.message : String(error),
     };
-    record("D06", "blocked", "prepare run did not enable acceptance/rerun/execute actions", details);
+    if (results.get("D06")?.status !== "pass") {
+      record("D06", "blocked", "prepare run did not enable acceptance/rerun/execute actions", details);
+    }
     record("D08", "blocked", "acceptance audit unavailable after prepare run", details);
     record("D09", "blocked", "artifact audit unavailable after prepare run", details);
     record("D07", "blocked", "rerun plan unavailable after prepare run", details);
