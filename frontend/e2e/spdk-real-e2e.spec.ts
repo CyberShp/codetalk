@@ -126,8 +126,8 @@ let workspaceId = "";
 let workspaceName = "";
 let e2eLlmConfigId = "";
 let e2eLlmConfigName = "";
-const brokenLlmConfigId = "";
-const brokenLlmConfigName = "";
+let brokenLlmConfigId = "";
+let brokenLlmConfigName = "";
 
 function ensureArtifactDir() {
   fs.mkdirSync(ARTIFACT_DIR, { recursive: true });
@@ -475,6 +475,48 @@ async function configureLlmIfAvailable(page: Page) {
   expect(bodyText).not.toContain(apiKey);
   record("A02", "pass", "settings page saved and reloaded active-compatible model");
   record("A03", "pass", "API key input remained password and page text did not expose the key");
+}
+
+async function configureBrokenLlmAndSelect(page: Page) {
+  brokenLlmConfigName = `Broken E2E ${RUN_ID}`;
+  await page.goto("/settings", { waitUntil: "domcontentloaded" });
+  await noFrameworkOverlay(page);
+  await page.getByRole("button", { name: /可选：内置模型与 RAG 检索/ }).click();
+  await page.getByRole("button", { name: /新增/ }).click();
+  const llmForm = page.locator("form").filter({ hasText: "新增 LLM 配置" });
+  await llmForm.getByPlaceholder(/Claude|GPT-4o/).fill(brokenLlmConfigName);
+  await llmForm.getByPlaceholder("https://api.openai.com/v1").fill("http://127.0.0.1:9/v1");
+  await llmForm.getByPlaceholder(/sk-|Ollama/).fill("sk-broken-e2e-redacted");
+  await llmForm.getByPlaceholder(/gpt-4o|text-embedding/).fill("broken-chat-model");
+  await page.getByRole("button", { name: "保存配置" }).click();
+  await expect(page.getByText(brokenLlmConfigName, { exact: true })).toBeVisible({ timeout: 15_000 });
+  const activeModelSelect = page
+    .locator("select")
+    .filter({ has: page.locator("option", { hasText: brokenLlmConfigName }) })
+    .first();
+  await expect(activeModelSelect).toBeVisible({ timeout: 15_000 });
+  const brokenModelValue = await activeModelSelect.locator("option").evaluateAll(
+    (options, label) =>
+      options.find((option) => (option.textContent ?? "").includes(String(label)))?.getAttribute("value") ?? "",
+    brokenLlmConfigName,
+  );
+  expect(brokenModelValue).toBeTruthy();
+  brokenLlmConfigId = brokenModelValue;
+  await selectActiveChatModelAndWait(page, activeModelSelect, brokenModelValue);
+}
+
+async function restorePrimaryLlmIfAvailable(page: Page) {
+  if (!e2eLlmConfigId || !e2eLlmConfigName) return false;
+  await page.goto("/settings", { waitUntil: "domcontentloaded" });
+  await noFrameworkOverlay(page);
+  await page.getByRole("button", { name: /可选：内置模型与 RAG 检索/ }).click();
+  const activeModelSelect = page
+    .locator("select")
+    .filter({ has: page.locator("option", { hasText: e2eLlmConfigName }) })
+    .first();
+  await expect(activeModelSelect).toBeVisible({ timeout: 15_000 });
+  await selectActiveChatModelAndWait(page, activeModelSelect, e2eLlmConfigId);
+  return true;
 }
 
 function existingSpdkEvidencePaths(text: string) {
@@ -1056,21 +1098,42 @@ test("B/C/K: create SPDK workspace through UI and verify chat/index gate", async
   try {
     await page.goto(primaryThreadUrl, { waitUntil: "domcontentloaded" });
     await noFrameworkOverlay(page);
+    await configureBrokenLlmAndSelect(page);
+    await page.goto(primaryThreadUrl, { waitUntil: "domcontentloaded" });
+    await noFrameworkOverlay(page);
+    const failurePrompt = `C06 controlled model failure retry ${RUN_ID}`;
+    const failureInput = page.getByLabel("AI 线程消息");
+    await expect(failureInput).toBeVisible({ timeout: 15_000 });
+    await failureInput.fill(failurePrompt);
+    await expect(page.getByRole("button", { name: "发送" })).toBeEnabled({ timeout: 10_000 });
+    await page.getByRole("button", { name: "发送" }).click();
+    await expect(page.locator(".ct-codex-message").filter({ hasText: failurePrompt }).first()).toBeVisible({
+      timeout: 15_000,
+    });
+    await expect(page.locator(".ct-codex-ai__error")).toContainText(
+      /LLM 不可用|连接|Connect|ECONN|failed|error|SSE/i,
+      { timeout: 90_000 },
+    );
     const retryButton = page.getByRole("button", { name: "重试上一条" });
-    if ((await retryButton.count()) === 0) {
-      record("C06", "blocked", "failed-turn retry control requires a controlled failed model run; current run did not expose a failure");
-    } else {
-      await retryButton.first().click();
-      await expect(page.getByRole("button", { name: /发送|停止/ }).first()).toBeVisible({ timeout: 15_000 });
-      record("C06", "pass", "failed AI thread exposed a retry control and accepted a real click", {
-        screenshot: await screenshot(page, "C06-ai-thread-retry-clicked"),
-      });
-    }
+    await expect(retryButton).toBeVisible({ timeout: 15_000 });
+    await expect(retryButton).toBeEnabled({ timeout: 10_000 });
+    await retryButton.click();
+    await expect
+      .poll(() => page.locator(".ct-codex-message").filter({ hasText: failurePrompt }).count(), { timeout: 30_000 })
+      .toBeGreaterThanOrEqual(2);
+    await expect(page.locator(".ct-codex-ai__error")).toContainText(/LLM 不可用|连接|Connect|ECONN|failed|error|SSE/i, {
+      timeout: 90_000,
+    });
+    record("C06", "pass", "controlled bad LLM produced actionable error, exposed retry, and retry resubmitted the failed prompt", {
+      screenshot: await screenshot(page, "C06-ai-thread-controlled-retry"),
+    });
   } catch (error) {
     record("C06", "blocked", "AI thread retry control was present but could not be invoked", {
       screenshot: await screenshot(page, "C06-ai-thread-retry-failed"),
       error: error instanceof Error ? error.message : String(error),
     });
+  } finally {
+    await restorePrimaryLlmIfAvailable(page).catch(() => undefined);
   }
 });
 
