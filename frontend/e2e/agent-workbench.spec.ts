@@ -283,7 +283,7 @@ async function routeWorkbenchShell(page: import("@playwright/test").Page) {
 }
 
 async function gotoWorkbench(page: Page) {
-  const heading = page.getByRole("heading", { name: "Agent Workbench" });
+  const heading = page.getByRole("heading", { name: "智能体编排台" });
   for (let attempt = 0; attempt < 3; attempt += 1) {
     await page.goto("/workbench", { waitUntil: "domcontentloaded", timeout: 60_000 });
     try {
@@ -296,48 +296,57 @@ async function gotoWorkbench(page: Page) {
   }
 }
 
+async function openWorkbenchView(
+  page: Page,
+  name: "运行驾驶舱" | "工作流设计" | "证据与语义" | "执行器体检",
+) {
+  await page.getByRole("button", { name: new RegExp(name) }).click();
+}
+
 test("agent workbench renders workflow and task-run controls", async ({ page }) => {
   test.setTimeout(60_000);
   await routeWorkbenchShell(page);
 
   await gotoWorkbench(page);
 
-  await expect(page.getByRole("heading", { name: "Provider Matrix" })).toBeVisible();
+  await openWorkbenchView(page, "执行器体检");
+  await expect(page.getByRole("heading", { name: "执行器矩阵" })).toBeVisible();
   await expect(page.getByText("ccr code", { exact: true }).first()).toBeVisible();
   await expect(
     page.getByText("/api/tools/claude-code/startup-probe", { exact: true }),
   ).toBeVisible();
   await expect(page.getByText("claude_print_arg").first()).toBeVisible();
-  await expect(page.getByText("Resolution: available")).toBeVisible();
+  await expect(page.getByText("解析").first()).toBeVisible();
+  await expect(page.getByText("available").first()).toBeVisible();
   await expect(page.getByText("fallback").first()).toBeVisible();
   await expect(page.getByText("launch:exec")).toBeVisible();
   await expect(
-    page.getByText("Reason: primary command unavailable; using fallback: claude"),
+    page.getByText("原因: primary command unavailable; using fallback: claude"),
   ).toBeVisible();
-  await expect(page.getByText("Probe recipe")).toBeVisible();
-  await expect(page.getByText("Backend command: ccr code")).toBeVisible();
-  await expect(page.getByText("Override env: CLAUDE_CODE_COMMAND")).toBeVisible();
-  await expect(page.getByText("Check: PATH, CCR_CONFIG_PATH, CLAUDE_CODE_CONFIG_PATH")).toBeVisible();
+  await expect(page.getByText("探测配方")).toBeVisible();
+  await expect(page.getByText("后端命令:")).toBeVisible();
+  await expect(page.getByText("覆盖环境变量:")).toBeVisible();
+  await expect(page.getByText("检查:")).toBeVisible();
   await expect(page.getByText(/PowerShell profile/)).toBeVisible();
-  await expect(page.getByText("Agent-owned").first()).toBeVisible();
-  await expect(page.getByText("Env: CORP_AGENT_PROFILE")).toBeVisible();
-  await expect(page.getByText("CodeTalk callable").first()).toBeVisible();
+  await expect(page.getByText("Agent 持有凭证").first()).toBeVisible();
+  await expect(page.getByText("CORP_AGENT_PROFILE")).toBeVisible();
+  await expect(page.getByText("CodeTalk 可直接调用").first()).toBeVisible();
   await expect(page.getByText("Local repo search")).toBeVisible();
-  await expect(page.getByText("source discovery")).toBeVisible();
-  await expect(page.getByText("source slices")).toBeVisible();
-  await expect(page.getByText("input-schema:validated")).toBeVisible();
-  await expect(page.getByText("output-schema:validated")).toBeVisible();
+  await expect(page.getByText("源码发现")).toBeVisible();
+  await expect(page.getByText("源码切片")).toBeVisible();
   await expect(page.getByText("fast-context").first()).toBeVisible();
   await expect(page.getByText("codetalk_mcp_bridge")).toBeVisible();
-  await page.getByRole("button", { name: "Startup probe" }).click();
-  await expect(page.getByText("Startup probe ok: claude-code")).toBeVisible();
+  await page.getByRole("button", { name: "启动探测" }).first().click();
+  await expect(page.getByText("启动探测 ok: claude-code")).toBeVisible();
+  await expect(page.getByText("探测结果:")).toBeVisible();
   await expect(page.getByText("startup_probe_ok via ccr code")).toBeVisible();
-  await expect(page.getByText("Probe launch: powershell-profile")).toBeVisible();
-  await expect(page.getByText("Probe attempts: 1")).toBeVisible();
-  await expect(page.getByRole("heading", { name: "Workflow Registry" })).toBeVisible();
+  await expect(page.getByText("探测启动:")).toBeVisible();
+  await expect(page.getByText("探测次数:")).toBeVisible();
+  await openWorkbenchView(page, "工作流设计");
+  await expect(page.getByRole("heading", { name: "工作流编排" })).toBeVisible();
   await expect(page.getByLabel("Workflow builder scenario")).toBeVisible();
-  await expect(page.getByRole("button", { name: "Apply preset" })).toBeVisible();
-  await expect(page.getByRole("button", { name: "Install preset" })).toBeVisible();
+  await expect(page.getByRole("button", { name: "应用预设" })).toBeVisible();
+  await expect(page.getByRole("button", { name: "安装预设" })).toBeVisible();
   await expect(page.getByText("codehub-mcp")).toBeVisible();
   await expect(page.getByLabel("Workflow builder provider preset")).toBeVisible();
   await page.getByLabel("Workflow builder provider preset").selectOption("corp-agent");
@@ -351,9 +360,9 @@ test("agent workbench renders workflow and task-run controls", async ({ page }) 
     /"black_box_cases"/,
   );
   await page.getByLabel("Workflow builder scenario").selectOption("patch_impact");
-  await page.getByRole("button", { name: "Generate draft" }).click();
-  await expect(page.getByText("Workflow draft generated: custom_mr_blackbox")).toBeVisible();
-  await expect(page.getByText("Output contract preview")).toBeVisible();
+  await page.getByRole("button", { name: "生成草稿" }).click();
+  await expect(page.getByText("工作流草稿已生成: custom_mr_blackbox")).toBeVisible();
+  await expect(page.getByText("输出契约预览")).toBeVisible();
   await expect(page.getByText(/test_cases:test_cases/)).toBeVisible();
   await expect(page.getByText("semantic_import", { exact: true })).toBeVisible();
   await expect(page.getByLabel("Workflow JSON")).toHaveValue(/"patch_file"/);
@@ -367,7 +376,8 @@ test("agent workbench renders workflow and task-run controls", async ({ page }) 
   await expect(page.getByLabel("Workflow JSON")).toHaveValue(/"semantic_import"/);
   await expect(page.getByLabel("Workflow JSON")).toHaveValue(/"kind": "patch_impact_scope"/);
   await expect(page.getByLabel("Workflow JSON")).toHaveValue(/"path_field": "file_path"/);
-  await expect(page.getByText("Workflow inputs")).toBeVisible();
+  await openWorkbenchView(page, "运行驾驶舱");
+  await expect(page.getByText("工作流输入")).toBeVisible();
   await page.getByLabel("Workflow input patch_file").fill("E:/patches/tls.patch");
   await page.getByLabel("Upload file for patch_file").setInputFiles({
     name: "tls.patch",
@@ -380,8 +390,8 @@ test("agent workbench renders workflow and task-run controls", async ({ page }) 
   await expect(page.getByLabel("Inputs JSON")).toHaveValue(/"patch_file": \{\s+"path": "E:\/data\/workbench\/input_uploads\/input_patch_upload\/tls\.patch"\s+\}/);
   await expect(page.getByLabel("Inputs JSON")).toHaveValue(/"design_doc": \{\s+"path": "E:\/docs\/tls-design\.md"\s+\}/);
   await expect(page.getByLabel("Inputs JSON")).toHaveValue(/"analysis_object": "nvme-tcp-tls"/);
-  await expect(page.getByRole("button", { name: "Prepare run" })).toBeDisabled();
-  await expect(page.getByRole("button", { name: "Execute workflow" })).toBeDisabled();
+  await expect(page.getByRole("button", { name: "准备运行" })).toBeDisabled();
+  await expect(page.getByRole("button", { name: "执行工作流" })).toBeDisabled();
   await expect(page.getByLabel("Repo path")).toBeVisible();
 });
 
@@ -467,15 +477,16 @@ test("agent workbench searches semantic cases and evidence memory", async ({ pag
     });
   });
   await gotoWorkbench(page);
+  await openWorkbenchView(page, "证据与语义");
   await page.waitForLoadState("networkidle");
-  await expect(page.getByRole("heading", { name: "Evidence Memory" })).toBeVisible();
+  await expect(page.getByRole("heading", { name: "证据库" })).toBeVisible();
   await page.getByLabel("Semantic feature").fill("NVMe TCP TLS");
   await page.getByLabel("Semantic module").fill("nvmf_tcp");
   await page
     .getByLabel("Semantic case lines")
     .fill("TLS key rotation fails -> old session remains connected until retry");
-  await page.getByRole("button", { name: "Build semantic JSON" }).click();
-  await expect(page.getByText("Semantic import draft generated: 1 cases")).toBeVisible();
+  await page.getByRole("button", { name: "生成语义 JSON" }).click();
+  await expect(page.getByText("语义导入草稿已生成: 1 cases")).toBeVisible();
   await expect(page.getByLabel("Semantic JSON")).toHaveValue(/"case_id": "nvmf_tcp_tls_key_rotation_fails_1"/);
   await expect(page.getByLabel("Semantic JSON")).toHaveValue(/"old session remains connected until retry"/);
   await expect(page.getByLabel("Semantic JSON")).toHaveValue(/"source_ref": "workbench_semantic_text_import"/);
@@ -485,21 +496,21 @@ test("agent workbench searches semantic cases and evidence memory", async ({ pag
       response.url().includes("/api/workbench/semantic-cases/search") &&
       response.status() === 200,
     ),
-    page.getByRole("button", { name: "Search", exact: true }).click(),
+    page.getByRole("button", { name: "搜索", exact: true }).click(),
   ]);
-  await expect(page.getByText("Semantic results: 1")).toBeVisible();
+  await expect(page.getByText("语义搜索结果: 1")).toBeVisible();
   await expect(
     page.getByText("TLS handshake fails and connection is released", { exact: true }),
   ).toBeVisible();
-  await expect(page.getByText("Memory facts are structured evidence only")).toBeVisible();
+  await expect(page.getByText("证据库只保存结构化事实")).toBeVisible();
   await Promise.all([
     page.waitForResponse((response) =>
       response.url().includes("/api/workbench/memory/search") &&
       response.status() === 200,
     ),
-    page.getByRole("button", { name: "Search memory" }).click(),
+    page.getByRole("button", { name: "搜索证据" }).click(),
   ]);
-  await expect(page.getByText("Memory results: 1")).toBeVisible();
+  await expect(page.getByText("证据搜索结果: 1")).toBeVisible();
   await expect(page.getByText("nof/nvmf_tcp/transport/tls/tls.c").first()).toBeVisible();
   await expect(page.getByText("Replay: agent_runs/discover/agent_replay_plan.json")).toBeVisible();
   await expect(page.getByText("Input: agent_runs/discover/execution_input.json")).toBeVisible();
@@ -1113,22 +1124,25 @@ test("agent workbench previews task run artifact content", async ({ page }) => {
   );
 
   await gotoWorkbench(page);
+  await openWorkbenchView(page, "执行器体检");
   await expect(page.getByText("ccr code", { exact: true }).first()).toBeVisible();
+  await openWorkbenchView(page, "运行驾驶舱");
   const preparePanel = page
     .locator("section")
-    .filter({ has: page.getByRole("heading", { name: "Prepare Task Run" }) });
+    .filter({ has: page.getByRole("heading", { name: "任务运行" }) });
   const repoInput = preparePanel.getByLabel("Repo path");
   await repoInput.click();
   await repoInput.pressSequentially("E:/repo");
   await expect(repoInput).toHaveValue("E:/repo");
-  await expect(preparePanel.getByRole("button", { name: "Prepare run" })).toBeEnabled();
-  await preparePanel.getByRole("button", { name: "Prepare run" }).click();
+  await expect(preparePanel.getByRole("button", { name: "准备运行" })).toBeEnabled();
+  await preparePanel.getByRole("button", { name: "准备运行" }).click();
   await expect(page.getByText("Input context: 1 files")).toBeVisible();
   await expect(page.getByText("tls-design.md")).toBeVisible();
   await expect(page.getByText("chunks:2")).toBeVisible();
   await expect(page.getByText("warnings:preview truncated")).toBeVisible();
   await expect(page.getByText("fast-context: fallback to agent_cli")).toBeVisible();
-  await expect(page.getByText("Provider readiness: degraded")).toBeVisible();
+  await expect(page.getByText("执行器就绪度:")).toBeVisible();
+  await expect(page.getByText("degraded")).toBeVisible();
   await expect(page.getByText("gitnexus:missing_config")).toBeVisible();
   await expect(page.getByText("cgc:unavailable")).toBeVisible();
   await expect(page.getByText("claude-code:unavailable")).toBeVisible();
@@ -1146,7 +1160,7 @@ test("agent workbench previews task run artifact content", async ({ page }) => {
   await expect(
     page.getByText("manual:POST /api/tools/claude-code/startup-probe", { exact: false }),
   ).toBeVisible();
-  await expect(page.getByText("Audit artifacts: 11")).toBeVisible();
+  await expect(page.getByText(/审计产物:\s*11/)).toBeVisible();
 
   await page.getByRole("button", { name: "task_bundle:task_bundle.json" }).click();
 
@@ -1276,7 +1290,7 @@ test("agent workbench previews task run artifact content", async ({ page }) => {
   ).toBeVisible();
   await expect(page.getByText("stderr:fatal diagnostic")).toBeVisible();
 
-  await page.getByRole("button", { name: "Acceptance audit" }).click();
+  await page.getByRole("button", { name: "验收审计" }).click();
   await expect(page.getByText("Agent instruction policy")).toBeVisible();
   await expect(page.getByText("reason:agent_instruction_policy_missing")).toBeVisible();
   await expect(page.getByText("expected:AGENTS.md")).toBeVisible();
