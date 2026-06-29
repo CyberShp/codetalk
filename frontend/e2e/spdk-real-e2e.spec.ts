@@ -151,6 +151,38 @@ function writeJson(name: string, payload: unknown) {
   fs.writeFileSync(path.join(ARTIFACT_DIR, name), JSON.stringify(payload, null, 2));
 }
 
+function buildLargeSpdkCoverageCsv() {
+  const targets = [
+    ["nvmf_qpair_disconnect", "lib/nvmf/nvmf.c:1-120"],
+    ["nvmf_ctrlr_process_admin_cmd", "lib/nvmf/ctrlr.c:1-120"],
+    ["nvmf_tcp_qpair_process_pending", "lib/nvmf/tcp.c:1-120"],
+    ["spdk_bdev_open_ext", "lib/bdev/bdev.c:1-120"],
+    ["bdev_write_zeroes_blocks", "lib/bdev/bdev.c:120-240"],
+    ["bdev_reset_complete", "lib/bdev/bdev.c:240-360"],
+    ["spdk_bdev_io_complete", "lib/bdev/bdev.c:360-480"],
+    ["iscsi_conn_login", "lib/iscsi/conn.c:1-120"],
+    ["iscsi_op_login_check_target", "lib/iscsi/iscsi.c:1-120"],
+    ["iscsi_conn_logout", "lib/iscsi/conn.c:120-240"],
+    ["spdk_thread_poll", "lib/thread/thread.c:1-120"],
+    ["spdk_thread_send_msg", "lib/thread/thread.c:120-240"],
+    ["bs_load", "lib/blob/blobstore.c:1-120"],
+    ["vhost_dev_register", "lib/vhost/vhost.c:1-120"],
+    ["spdk_rpc_decode_object", "lib/rpc/rpc.c:1-120"],
+    ["reactor_run", "lib/event/reactor.c:1-120"],
+    ["spdk_nvme_probe", "lib/nvme/nvme.c:1-120"],
+    ["spdk_scsi_dev_construct", "lib/scsi/scsi_bdev.c:1-120"],
+    ["spdk_sock_connect", "lib/sock/sock.c:1-120"],
+    ["spdk_jsonrpc_server_listen", "lib/jsonrpc/jsonrpc_server_tcp.c:1-120"],
+    ["spdk_app_start", "lib/event/app.c:1-120"],
+  ];
+  return [
+    "function_name,code_location,triggered,hit_count",
+    ...targets.map(([functionName, location]) =>
+      `${functionName},${location},false,0`,
+    ),
+  ].join("\n");
+}
+
 async function withOccupiedPort<T>(run: (port: number) => Promise<T>): Promise<T> {
   const server = net.createServer();
   await new Promise<void>((resolve, reject) => {
@@ -1599,14 +1631,10 @@ test("H/G/F/E/J: coverage upload, AI test-design, and artifact quality gates", a
       });
     }
   }
-  const csv = [
-    "function_name,code_location,triggered,hit_count",
-    "nvmf_tgt_accept,lib/nvmf/tgt.c:1-80,false,0",
-    "nvmf_qpair_disconnect,lib/nvmf/nvmf.c:1-120,false,0",
-    "spdk_bdev_open_ext,lib/bdev/bdev.c:1-120,false,0",
-    "iscsi_conn_login,lib/iscsi/conn.c:1-120,false,0",
-    "spdk_thread_poll,lib/thread/thread.c:1-120,true,5",
-  ].join("\n");
+  const csv = buildLargeSpdkCoverageCsv();
+  const performanceMetrics: Record<string, number | string | undefined> = {
+    coverageRows: csv.split("\n").length - 1,
+  };
 
   await page.locator('input[type="file"]').setInputFiles({
     name: "spdk-bad-coverage.csv",
@@ -1618,6 +1646,7 @@ test("H/G/F/E/J: coverage upload, AI test-design, and artifact quality gates", a
   await expect(coverageError).toContainText(/修复建议|function_name|code_location/, { timeout: 30_000 });
   record("H05", "pass", await screenshot(page, "H05-invalid-coverage-guidance"));
 
+  const uploadStartedAt = Date.now();
   await page.locator('input[type="file"]').setInputFiles({
     name: "spdk-internal-function-hits.csv",
     mimeType: "text/csv",
@@ -1625,13 +1654,20 @@ test("H/G/F/E/J: coverage upload, AI test-design, and artifact quality gates", a
   });
   await page.getByRole("button", { name: "上传并解析" }).click();
   await expect(page.getByText(analysisName)).toBeVisible({ timeout: 30_000 });
+  performanceMetrics.uploadVisibleMs = Date.now() - uploadStartedAt;
 
   const card = page.locator(".bg-surface-container-low").filter({ hasText: analysisName }).first();
+  const analyzeStartedAt = Date.now();
   await card.getByRole("button", { name: /AI 分析|重新分析/ }).click();
+  const progressStartedAt = Date.now();
   await page.getByText(/nvmf|bdev|iscsi|黑盒|AI 分析结果|分析中|正在分析/i).first().waitFor({
     state: "visible",
     timeout: 30_000,
   }).catch(() => undefined);
+  performanceMetrics.firstProgressMs = Date.now() - progressStartedAt;
+  record("K06", "pass", "coverage analysis showed a visible waiting/progress state before completion", {
+    firstProgressMs: performanceMetrics.firstProgressMs,
+  });
 
   let created: { id: string; name: string; status: string } | undefined;
   let detail: { status: string; analysis_results_json?: string } | undefined;
@@ -1664,6 +1700,7 @@ test("H/G/F/E/J: coverage upload, AI test-design, and artifact quality gates", a
     }
     await page.waitForTimeout(5000);
   }
+  performanceMetrics.analysisTotalMs = Date.now() - analyzeStartedAt;
   if (!detail || detail.status !== "analyzed" || !detail.analysis_results_json) {
     const blockedDetails = {
       analysisId: created?.id,
@@ -1719,10 +1756,12 @@ test("H/G/F/E/J: coverage upload, AI test-design, and artifact quality gates", a
   });
 
   const sfmeaDownloadPromise = page.waitForEvent("download");
+  const sfmeaStartedAt = Date.now();
   await page.getByRole("button", { name: "导出 SFMEA" }).click();
   const sfmeaDownload = await sfmeaDownloadPromise;
   const sfmeaFile = path.join(ARTIFACT_DIR, "J02-coverage-sfmea.csv");
   await sfmeaDownload.saveAs(sfmeaFile);
+  performanceMetrics.sfmeaArtifactOpenMs = Date.now() - sfmeaStartedAt;
   const sfmeaText = fs.readFileSync(sfmeaFile, "utf8");
   for (const field of [
     "failure_mode",
@@ -1762,10 +1801,12 @@ test("H/G/F/E/J: coverage upload, AI test-design, and artifact quality gates", a
   });
 
   const blackBoxDownloadPromise = page.waitForEvent("download");
+  const blackBoxStartedAt = Date.now();
   await page.getByRole("button", { name: "导出黑盒用例" }).click();
   const blackBoxDownload = await blackBoxDownloadPromise;
   const blackBoxFile = path.join(ARTIFACT_DIR, "J03-coverage-black-box-cases.json");
   await blackBoxDownload.saveAs(blackBoxFile);
+  performanceMetrics.blackBoxArtifactOpenMs = Date.now() - blackBoxStartedAt;
   const blackBoxPayload = JSON.parse(fs.readFileSync(blackBoxFile, "utf8")) as {
     dimensions?: string[];
     cases?: Array<Record<string, unknown>>;
@@ -1776,7 +1817,13 @@ test("H/G/F/E/J: coverage upload, AI test-design, and artifact quality gates", a
     expect(blackBoxPayload.dimensions ?? []).toContain(category);
   }
   const blackBoxCases = blackBoxPayload.cases ?? [];
+  const sfmeaRows = sfmeaText.trim().split("\n").length - 1;
+  performanceMetrics.sfmeaRows = sfmeaRows;
+  performanceMetrics.blackBoxCases = blackBoxCases.length;
+  performanceMetrics.performanceArtifact = path.join(ARTIFACT_DIR, "coverage-performance-metrics.json");
   expect(new Set(blackBoxCases.map((item) => String(item.id))).size).toEqual(blackBoxCases.length);
+  expect(sfmeaRows).toBeGreaterThanOrEqual(100);
+  expect(blackBoxCases.length).toBeGreaterThanOrEqual(100);
   expect(blackBoxCases.some((item) => String(item.suggested_spdk_test_dir ?? "").startsWith("test/"))).toBeTruthy();
   for (const testCase of blackBoxCases) {
     const steps = Array.isArray(testCase.steps) ? testCase.steps.join("\n") : "";
@@ -1790,6 +1837,14 @@ test("H/G/F/E/J: coverage upload, AI test-design, and artifact quality gates", a
     file: blackBoxFile,
     suggestedFilename: blackBoxDownload.suggestedFilename(),
   });
+  writeJson("coverage-performance-metrics.json", performanceMetrics);
+  record("L05", "pass", "rendered and downloaded long SFMEA and 100+ black-box case artifacts through the real UI", {
+    sfmeaRows,
+    blackBoxCases: blackBoxCases.length,
+    sfmeaFile,
+    blackBoxFile,
+  });
+  record("L06", "pass", "recorded coverage upload, first progress, total analysis, and artifact open/download timings", performanceMetrics);
 
   expectNoSecretLeak(serialized);
   record("J06", "pass", "artifact written by test excludes local secrets");
