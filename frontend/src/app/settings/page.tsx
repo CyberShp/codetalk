@@ -151,7 +151,7 @@ export default function SettingsPage() {
         setForm({ ...EMPTY_LLM_FORM });
         setEditingId(null);
         setShowForm(false);
-        setEditingId(null);
+        setShowApiKey(false);
         await loadData();
       } catch (err: unknown) {
         setError(err instanceof Error ? err.message : "保存配置失败");
@@ -176,6 +176,7 @@ export default function SettingsPage() {
         is_embedding_model: cfg.is_embedding_model,
       });
       setEditingId(cfg.id);
+      setShowApiKey(false);
       setShowForm(true);
       setTestResult(null);
     },
@@ -186,6 +187,7 @@ export default function SettingsPage() {
     setShowForm(false);
     setEditingId(null);
     setForm({ ...EMPTY_LLM_FORM });
+    setShowApiKey(false);
     setTestResult(null);
   }, []);
 
@@ -477,6 +479,7 @@ export default function SettingsPage() {
               } else {
                 setEditingId(null);
                 setForm({ ...EMPTY_LLM_FORM });
+                setShowApiKey(false);
                 setTestResult(null);
                 setShowForm(true);
               }

@@ -280,6 +280,17 @@ async function verifySettingsKeyboardUsability(page: Page) {
   await page.keyboard.press("Enter");
   await expect(page.getByText("新增 LLM 配置")).toBeVisible({ timeout: 10_000 });
   await page.getByPlaceholder(/Claude|GPT-4o/).fill(`Keyboard E2E ${RUN_ID}`);
+  const apiKeyInput = page.getByPlaceholder(/sk-|Ollama/);
+  await apiKeyInput.fill("sk-keyboard-e2e-redacted");
+  await page.getByRole("button", { name: "显示 API 密钥" }).click();
+  await expect(apiKeyInput).toHaveAttribute("type", "text");
+  await page.keyboard.press("Escape");
+  await expect(page.getByText("新增 LLM 配置")).toHaveCount(0);
+  await page.getByRole("button", { name: /新增/ }).click();
+  await expect(page.getByText("新增 LLM 配置")).toBeVisible({ timeout: 10_000 });
+  const reopenedApiKeyInput = page.getByPlaceholder(/sk-|Ollama/);
+  await expect(reopenedApiKeyInput).toHaveAttribute("type", "password");
+  await reopenedApiKeyInput.focus();
   await page.keyboard.press("Escape");
   await expect(page.getByText("新增 LLM 配置")).toHaveCount(0);
 }
