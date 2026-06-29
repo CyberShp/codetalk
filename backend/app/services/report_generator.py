@@ -244,7 +244,7 @@ class ReportGenerator:
         evidence_cards: list,
         module_summaries: list[dict],
         gitnexus_data: dict,
-        deepwiki_data: dict,
+        context_data: dict | None = None,
         requirements_doc: str | None = None,
         design_doc: str | None = None,
         on_report_done: Callable[[str, str, int], Awaitable[None]] | None = None,
@@ -1545,7 +1545,7 @@ class ReportGenerator:
         self,
         module_summaries: list[dict],
         gitnexus_data: dict,
-        deepwiki_data: dict,
+        context_data: dict | None = None,
         requirements_doc: str | None = None,
         design_doc: str | None = None,
         analysis_focus: str = "",
@@ -1570,6 +1570,7 @@ class ReportGenerator:
             return self._generated_files
 
         summaries_text = self._format_summaries(module_summaries)
+        context_data = context_data or {}
 
         content_prefix = _DATA_QUALITY_PREFIX.get(data_quality, "")
 
@@ -1595,7 +1596,7 @@ class ReportGenerator:
                 self._generate_report(
                     report_type="module_map",
                     prompt=content_prefix + MODULE_MAP_PROMPT.format(
-                        project_overview=self._build_project_overview(gitnexus_data, deepwiki_data),
+                        project_overview=self._build_project_overview(gitnexus_data),
                         module_summaries=summaries_text,
                         inter_module_deps=self._build_inter_module_deps(gitnexus_data),
                     ),
@@ -1610,8 +1611,8 @@ class ReportGenerator:
                     report_type="business_flow",
                     prompt=content_prefix + BUSINESS_FLOW_PROMPT.format(
                         module_summaries=summaries_text,
-                        process_data=self._build_process_data(gitnexus_data, deepwiki_data),
-                        cross_module_calls=self._build_cross_module_calls(gitnexus_data, deepwiki_data),
+                        process_data=self._build_process_data(gitnexus_data),
+                        cross_module_calls=self._build_cross_module_calls(gitnexus_data),
                         source_code=source_code,
                     ),
                     on_report_done=on_report_done,
@@ -1625,8 +1626,8 @@ class ReportGenerator:
                     report_type="source_reading",
                     prompt=content_prefix + SOURCE_READING_PROMPT.format(
                         module_summaries=summaries_text,
-                        key_files=self._build_key_files(gitnexus_data, deepwiki_data),
-                        call_graph=self._build_call_graph(gitnexus_data, deepwiki_data),
+                        key_files=self._build_key_files(gitnexus_data),
+                        call_graph=self._build_call_graph(gitnexus_data),
                         source_code=source_code,
                     ),
                     on_report_done=on_report_done,
@@ -1640,8 +1641,8 @@ class ReportGenerator:
                     report_type="test_design",
                     prompt=content_prefix + TEST_DESIGN_PROMPT.format(
                         module_summaries=summaries_text,
-                        business_flows=self._build_process_data(gitnexus_data, deepwiki_data),
-                        api_interfaces=self._build_api_interfaces(gitnexus_data, deepwiki_data),
+                        business_flows=self._build_process_data(gitnexus_data),
+                        api_interfaces=self._build_api_interfaces(gitnexus_data),
                     ),
                     on_report_done=on_report_done,
 
@@ -1676,7 +1677,7 @@ class ReportGenerator:
                         requirements_items=self._truncate(requirements_doc, 3000),
                         design_modules=self._truncate(design_doc, 3000),
                         module_summaries=summaries_text,
-                        call_relations=self._build_call_graph(gitnexus_data, deepwiki_data),
+                        call_relations=self._build_call_graph(gitnexus_data),
                     ),
                     on_report_done=on_report_done,
 
@@ -1839,7 +1840,7 @@ class ReportGenerator:
         return "\n\n".join(parts) if parts else "(no module summary data)"
 
     @staticmethod
-    def _build_project_overview(gitnexus_data: dict, deepwiki_data: dict) -> str:
+    def _build_project_overview(gitnexus_data: dict) -> str:
         """Build a brief project overview from available data."""
         parts: list[str] = []
 
@@ -1848,11 +1849,6 @@ class ReportGenerator:
             file_count = sum(1 for n in nodes if n.get("label") == "File")
             func_count = sum(1 for n in nodes if n.get("label") == "Function")
             parts.append(f"Code graph: {file_count} files, {func_count} functions")
-
-        doc = deepwiki_data.get("documentation", "")
-        if doc:
-            preview = doc[:500]
-            parts.append(f"Wiki 概要: {preview}")
 
         return "\n".join(parts) if parts else "(no project overview data)"
 
@@ -1878,27 +1874,8 @@ class ReportGenerator:
         return "\n".join(unique_deps[:50]) if unique_deps else "（无跨模块依赖数据）"
 
     @staticmethod
-    def _extract_wiki_section(deepwiki_data: dict, keywords: list[str], max_chars: int = 2000) -> str:
-        """Extract relevant sections from DeepWiki documentation by keyword matching."""
-        doc = deepwiki_data.get("documentation", "")
-        if not doc:
-            return ""
-
-        paragraphs = doc.split("\n\n")
-        matched: list[str] = []
-        for para in paragraphs:
-            lower = para.lower()
-            if any(kw.lower() in lower for kw in keywords):
-                matched.append(para)
-
-        combined = "\n\n".join(matched)
-        if len(combined) > max_chars:
-            combined = combined[:max_chars] + "\n...(truncated)"
-        return combined
-
-    @staticmethod
-    def _build_process_data(gitnexus_data: dict, deepwiki_data: dict) -> str:
-        """Extract process/flow data from GitNexus, supplemented by DeepWiki."""
+    def _build_process_data(gitnexus_data: dict) -> str:
+        """Extract process/flow data from GitNexus."""
         nodes = gitnexus_data.get("nodes", [])
         processes = [n for n in nodes if n.get("label") == "Process"]
 
@@ -1910,19 +1887,11 @@ class ReportGenerator:
                 ptype = props.get("processType", "unknown")
                 steps = props.get("stepCount", 0)
                 parts.append(f"- {name} (类型: {ptype}, 步骤数: {steps})")
-        else:
-            wiki_section = ReportGenerator._extract_wiki_section(
-                deepwiki_data,
-                keywords=["flow", "process", "workflow", "流程", "步骤", "pipeline"],
-            )
-            if wiki_section:
-                parts.append(f"[Wiki 流程信息]\n{wiki_section}")
-
         return "\n".join(parts) if parts else "(no process data)"
 
     @staticmethod
-    def _build_cross_module_calls(gitnexus_data: dict, deepwiki_data: dict) -> str:
-        """Extract cross-module call relationships, supplemented by DeepWiki."""
+    def _build_cross_module_calls(gitnexus_data: dict) -> str:
+        """Extract cross-module call relationships."""
         relationships = gitnexus_data.get("relationships", [])
 
         member_to_community: dict[str, str] = {}
@@ -1942,17 +1911,10 @@ class ReportGenerator:
 
         parts = cross_calls[:50]
 
-        wiki_section = ReportGenerator._extract_wiki_section(
-            deepwiki_data,
-            keywords=["module", "interaction", "integration", "模块", "集成", "交互"],
-        )
-        if wiki_section:
-            parts.append(f"\n[Wiki 模块交互信息]\n{wiki_section}")
-
         return "\n".join(parts) if parts else "（无跨模块调用数据）"
 
     @staticmethod
-    def _build_key_files(gitnexus_data: dict, deepwiki_data: dict) -> str:
+    def _build_key_files(gitnexus_data: dict) -> str:
         """Identify key files by edge count, enriched with DEFINES detail."""
         nodes = gitnexus_data.get("nodes", [])
         relationships = gitnexus_data.get("relationships", [])
@@ -1987,13 +1949,10 @@ class ReportGenerator:
             detail = f", 定义: {', '.join(defines[:5])}" if defines else ""
             parts.append(f"- {name} (连接数: {count}{detail})")
 
-        if len(file_nodes) < 5 and deepwiki_data.get("documentation"):
-            parts.append("\n[注意: GitNexus 文件节点较少，DeepWiki 文档可供深入阅读参考]")
-
         return "\n".join(parts) if parts else "(no key file data)"
 
     @staticmethod
-    def _build_call_graph(gitnexus_data: dict, deepwiki_data: dict) -> str:
+    def _build_call_graph(gitnexus_data: dict) -> str:
         """Format call graph edges as text, falling back to DEFINES when CALLS are absent."""
         relationships = gitnexus_data.get("relationships", [])
         call_edges = [
@@ -2018,14 +1977,11 @@ class ReportGenerator:
                     tgt_label = tgt_node.get("label", "")
                     parts.append(f"{src_name} -[{edge['type']}]-> {tgt_label}:{tgt_name}")
 
-        if len(call_edges) < 5 and deepwiki_data.get("documentation"):
-            parts.append("\n[注意: 调用图数据较少，DeepWiki 文档可供深入阅读参考]")
-
         return "\n".join(parts) if parts else "（无调用图数据）"
 
     @staticmethod
-    def _build_api_interfaces(gitnexus_data: dict, deepwiki_data: dict) -> str:
-        """Extract API endpoints from GitNexus, supplemented by DeepWiki API sections."""
+    def _build_api_interfaces(gitnexus_data: dict) -> str:
+        """Extract API endpoints from GitNexus."""
         nodes = gitnexus_data.get("nodes", [])
 
         api_nodes: list[str] = []
@@ -2040,13 +1996,6 @@ class ReportGenerator:
                 api_nodes.append(f"- {name} ({label})")
 
         parts = api_nodes[:20]
-
-        wiki_section = ReportGenerator._extract_wiki_section(
-            deepwiki_data,
-            keywords=["api", "endpoint", "interface", "接口", "路由", "route"],
-        )
-        if wiki_section:
-            parts.append(f"\n[Wiki API 淇℃伅]\n{wiki_section}")
 
         return (
             "\n".join(parts)

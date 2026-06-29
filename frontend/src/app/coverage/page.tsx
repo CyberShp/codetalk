@@ -50,7 +50,7 @@ function RateBar({ rate, label }: { rate: number; label: string }) {
       </span>
       <div className="flex-1 h-2 bg-surface-container rounded-full overflow-hidden">
         <div
-          className={`h-full rounded-full transition-all ${rateBg(rate)}`}
+          className={`ct-progress-fill h-full rounded-full transition-all ${rateBg(rate)}`}
           style={{ width: `${Math.min(rate * 100, 100)}%` }}
         />
       </div>
@@ -139,7 +139,7 @@ function caseTypeLabel(type?: string): string {
 
 function TestScenarioCard({ scenario }: { scenario: CoverageTestScenario }) {
   return (
-    <div className="rounded-lg bg-surface-container-high/70 p-3 space-y-2">
+    <div className="ct-interactive-card rounded-lg bg-surface-container-high/70 p-3 space-y-2">
       <div className="flex flex-wrap items-center gap-2">
         <span className="text-xs px-2 py-0.5 rounded-full bg-primary/15 text-primary">
           {caseTypeLabel(scenario.case_type)}
@@ -722,7 +722,7 @@ export default function CoveragePage() {
   return (
     <div className="w-full px-4 xl:px-6 space-y-6">
       {/* Header */}
-      <div>
+      <div className="ct-reveal ct-liquid-glass rounded-[26px] p-5">
         <h1 className="text-2xl font-display font-bold text-on-surface">
           精准测试覆盖率分析
         </h1>
@@ -732,7 +732,7 @@ export default function CoveragePage() {
       </div>
 
       {/* Upload section */}
-      <div className="bg-surface-container-low rounded-xl p-5 border border-outline-variant/20">
+      <div className="ct-reveal ct-reveal-delay-1 ct-liquid-glass rounded-[26px] p-5">
         <h2 className="text-sm font-medium text-on-surface mb-3 flex items-center gap-2">
           <Upload size={16} />
           上传覆盖率报告
@@ -771,7 +771,7 @@ export default function CoveragePage() {
               type="button"
               onClick={() => fileInputRef.current?.click()}
               disabled={uploading}
-              className="inline-flex items-center justify-center gap-2 px-4 py-2 rounded-lg bg-surface-container text-on-surface-variant text-sm hover:bg-surface-container-high disabled:opacity-50"
+              className="ct-interactive-card inline-flex items-center justify-center gap-2 px-4 py-2 rounded-lg bg-surface-container text-on-surface-variant text-sm hover:bg-surface-container-high disabled:opacity-50"
             >
               <Upload size={14} />
               选择文件
@@ -785,7 +785,7 @@ export default function CoveragePage() {
               type="button"
               onClick={handleUpload}
               disabled={uploading || selectedFiles.length === 0}
-              className="inline-flex items-center justify-center gap-2 px-4 py-2 rounded-lg bg-primary/10 text-primary text-sm hover:bg-primary/20 disabled:opacity-50"
+              className="ct-liquid-button inline-flex items-center justify-center gap-2 px-4 py-2 rounded-lg bg-primary text-on-primary text-sm disabled:opacity-50"
             >
               {uploading ? <Loader2 size={14} className="animate-spin" /> : <Upload size={14} />}
               上传并解析
@@ -827,10 +827,11 @@ export default function CoveragePage() {
         </div>
       ) : (
         <div className="space-y-3">
-          {analyses.map((a) => (
+          {analyses.map((a, index) => (
             <div
               key={a.id}
-              className="bg-surface-container-low rounded-xl border border-outline-variant/20 overflow-hidden"
+              className="ct-interactive-card bg-surface-container-low rounded-xl border border-outline-variant/20 overflow-hidden"
+              style={{ animationDelay: `${80 + index * 45}ms` }}
             >
               {/* Summary row */}
               <div className="p-4 flex flex-col gap-4 lg:flex-row lg:items-center">

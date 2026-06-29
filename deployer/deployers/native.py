@@ -27,97 +27,7 @@ except ImportError:  # safety net — shouldn't happen in normal deployment
     _cgc = None  # type: ignore[assignment]
     _CGC_DEFAULT_PORT = 7072
 
-DEEPWIKI_REPO = "https://github.com/AsyncFuncAI/deepwiki-open.git"
-_CL100K_BPE = "9b5ad71b2ce5302211f9c61530b329a4922fc6a4"
-
 TOTAL_STEPS = 7
-
-# Tiktoken BPE cache candidate paths, in priority order.
-# IMPORTANT: keep this list in sync with the same list inside
-# deployer/deepwiki_launcher.py. Both files do the lookup independently.
-#
-# The CL100K BPE was historically committed under docker/deepwiki/tiktoken/
-# and/or deployer/vendor/tiktoken_cache/, but the file actually shipped with
-# this repo lives at data/tiktoken_cache/ (matches backend/app/config.py's
-# `tiktoken_cache_path` candidate list). Before adding `data/` here, the
-# deployer's lookup never matched anything and TIKTOKEN_CACHE_DIR was never
-# set, so deepwiki silently fell back to HTTPS and died on intranet.
-_TIKTOKEN_CACHE_CANDIDATES = (
-    PROJECT_ROOT / "data" / "tiktoken_cache",
-    PROJECT_ROOT / "docker" / "deepwiki" / "tiktoken",
-    VENDOR_DIR / "tiktoken_cache",
-)
-
-
-def _best_tiktoken_cache() -> Optional[Path]:
-    """Return the tiktoken cache dir with the most BPE files, or None.
-
-    Considers every candidate in _TIKTOKEN_CACHE_CANDIDATES that exists AND
-    contains at least one regular file. Picks the one with the most files
-    (i.e. the most complete cache).
-    """
-    valid: list[tuple[Path, int]] = []
-    for cand in _TIKTOKEN_CACHE_CANDIDATES:
-        if not cand.is_dir():
-            continue
-        try:
-            files = [p for p in cand.iterdir() if p.is_file() and not p.name.startswith('.')]
-        except OSError:
-            continue
-        if files:
-            valid.append((cand, len(files)))
-    if not valid:
-        return None
-    # Most files wins; ties broken by candidate order (earlier = higher priority).
-    valid.sort(key=lambda x: -x[1])
-    return valid[0][0]
-
-
-def _stage_tiktoken_into_deepwiki(cache_dir: Path, deepwiki_dir: Path) -> int:
-    """Copy every BPE file from cache_dir into {deepwiki_dir}/tiktoken/.
-
-    Belt-and-suspenders: some deepwiki forks have a .env that sets
-    TIKTOKEN_CACHE_DIR=./tiktoken (relative to deepwiki's cwd). If that .env
-    is loaded AFTER our process env is set, it could override our absolute
-    path with the relative one and miss the cache. By also staging the
-    files into deepwiki's own dir, BOTH the absolute and relative path
-    resolve to a valid cache.
-
-    Mirrors backend/app/services/process_manager.py:_ensure_deepwiki_tiktoken.
-
-    Returns: number of files copied (or already present and skipped).
-    """
-    target = deepwiki_dir / "tiktoken"
-    target.mkdir(exist_ok=True)
-    staged = 0
-    for src in cache_dir.iterdir():
-        if not src.is_file() or src.name.startswith('.'):
-            continue
-        dst = target / src.name
-        if dst.exists() and dst.stat().st_size == src.stat().st_size:
-            staged += 1
-            continue
-        shutil.copy2(src, dst)
-        staged += 1
-    return staged
-
-def _copy_standalone_statics(next_dir: Path, dw_dir: Path) -> None:
-    """Copy .next/static and public/ into .next/standalone/ for a standalone Next.js build.
-
-    next build with output:'standalone' does not auto-copy these directories.
-    Skipping them causes 404s for every CSS/JS asset served via server.js.
-    Idempotent: dirs_exist_ok=True makes repeated calls safe.
-    """
-    standalone = next_dir / "standalone"
-    if not standalone.exists():
-        return
-    static_src = next_dir / "static"
-    if static_src.exists():
-        shutil.copytree(static_src, standalone / ".next" / "static", dirs_exist_ok=True)
-    public_src = dw_dir / "public"
-    if public_src.exists():
-        shutil.copytree(public_src, standalone / "public", dirs_exist_ok=True)
-
 
 SERVICE_DEFAULTS = [
     ("backend", "backend_port", 8100, "http", "/health"),
@@ -150,12 +60,6 @@ class NativeDeployer:
                 await self._step_install_gitnexus()
                 if self._stopped:
                     return
-            if self._config.get("install_deepwiki", False):
-                await self.supplement_deepwiki(self._config.get("deepwiki_path", ""))
-                if self._stopped:
-                    return
-            else:
-                self._config.pop("deepwiki_path", None)
             await self._step_generate_config()
             if self._stopped:
                 return
@@ -196,315 +100,9 @@ class NativeDeployer:
                 except Exception as exc:
                     results.append({"name": "cgc", "healthy": False, "message": str(exc)})
 
-            if self._config.get("install_deepwiki", False) or bool(self._config.get("deepwiki_path", "")):
-                port = self._config.get("deepwiki_api_port", 8091)
-                try:
-                    resp = await client.get(f"http://localhost:{port}/health")
-                    healthy = 200 <= resp.status_code < 400
-                    results.append({"name": "deepwiki", "healthy": healthy, "message": f"HTTP {resp.status_code}"})
-                except Exception as exc:
-                    results.append({"name": "deepwiki", "healthy": False, "message": str(exc)})
-
-                # Also probe the DeepWiki UI port. Without this, a UI process
-                # that crashed or never bound looks "healthy" because the
-                # panel only ever showed the API. Liveness check is GET / on
-                # the Next.js server — a stuck-loading page (wrong baked-in
-                # API URL) still 200s here, but a dead UI process won't.
-                ui_port = self._config_port("deepwiki_ui_port", 3001)
-                try:
-                    resp = await client.get(f"http://localhost:{ui_port}/")
-                    healthy = 200 <= resp.status_code < 400
-                    results.append({"name": "deepwiki-ui", "healthy": healthy, "message": f"HTTP {resp.status_code}"})
-                except Exception as exc:
-                    results.append({"name": "deepwiki-ui", "healthy": False, "message": str(exc)})
 
         return results
 
-    # ------------------------------------------------------------------
-    # Supplementary: DeepWiki install
-    # ------------------------------------------------------------------
-
-    async def supplement_deepwiki(self, deepwiki_path: str) -> None:
-        if not deepwiki_path:
-            deepwiki_path = str(PROJECT_ROOT.parent / "codetalk_data" / "deepwiki-open")
-        dw_dir = Path(deepwiki_path)
-        total = 6
-
-        # Fail-fast before any install work: DeepWiki's tokenizer requires the
-        # tiktoken BPE files to be present locally (intranet boxes can't download
-        # them). Surface a clear, actionable error rather than letting the deploy
-        # appear to succeed and then crashing at deepwiki startup.
-        #
-        # Accept either the standard candidate paths OR the deepwiki-local
-        # tiktoken/ dir that _start_deepwiki_processes() stages into — the
-        # launcher runs with cwd=dw_dir and loads tiktoken relative to that,
-        # so an existing working DeepWiki install already has BPE files there.
-        _tiktoken_staged = dw_dir / "tiktoken"
-        _has_tiktoken = _best_tiktoken_cache() is not None or (
-            _tiktoken_staged.is_dir()
-            and any(
-                p for p in _tiktoken_staged.iterdir()
-                if p.is_file() and not p.name.startswith(".")
-            )
-        )
-        if not _has_tiktoken:
-            msg = (
-                "缺少 tiktoken BPE 缓存文件（cl100k / o200k）——"
-                "DeepWiki 在无外网环境下启动时将因无法加载 tokenizer 而崩溃。"
-                "请先在有外网的机器上运行 deployer\\scripts\\package-vendor.bat，"
-                "再将生成的 deployer\\vendor\\tiktoken_cache\\ 目录复制到本机后重试。"
-            )
-            await self._emit_sup("deepwiki_validate", "error", msg, 1, total)
-            self._stopped = True
-            raise RuntimeError("tiktoken BPE cache missing — run package-vendor.bat first")
-
-        await self._emit_sup("deepwiki_validate", "running", "验证 DeepWiki-Open 路径...", 1, total)
-        if not dw_dir.exists():
-            await self._emit_sup("deepwiki_validate", "running", f"目录不存在，正在克隆 DeepWiki-Open 到 {deepwiki_path}...", 1, total)
-            dw_dir.parent.mkdir(parents=True, exist_ok=True)
-            rc = await self._run_stream(
-                "deepwiki_validate", 1,
-                "git", "clone", "--depth", "1", DEEPWIKI_REPO, str(dw_dir),
-            )
-            if rc != 0:
-                await self._emit_sup("deepwiki_validate", "error", "DeepWiki-Open 克隆失败，请检查网络或手动指定已克隆的目录", 1, total)
-                raise RuntimeError("git clone deepwiki-open failed")
-            await self._emit_sup("deepwiki_validate", "done", "DeepWiki-Open 克隆完成", 1, total)
-
-        has_requirements = (dw_dir / "requirements.txt").exists()
-        has_pyproject = (dw_dir / "api" / "pyproject.toml").exists()
-        has_python_api = has_requirements or has_pyproject
-        has_package_json = (dw_dir / "package.json").exists()
-        if not has_python_api and not has_package_json:
-            await self._emit_sup("deepwiki_validate", "error", "无效的 DeepWiki-Open 目录（缺少 requirements.txt/pyproject.toml 或 package.json）", 1, total)
-            raise RuntimeError("Not a valid DeepWiki-Open directory")
-        await self._emit_sup("deepwiki_validate", "done", "路径验证通过", 1, total)
-
-        if has_python_api:
-            await self._emit_sup("deepwiki_python", "running", "安装 Python 依赖...", 2, total)
-            venv_dir = dw_dir / ".venv"
-            if sys.platform == "win32":
-                venv_python = venv_dir / "Scripts" / "python.exe"
-                venv_pip = venv_dir / "Scripts" / "pip.exe"
-            else:
-                venv_python = venv_dir / "bin" / "python"
-                venv_pip = venv_dir / "bin" / "pip"
-
-            if not venv_python.exists():
-                await self._emit_sup("deepwiki_python", "running", "创建虚拟环境...", 2, total)
-                rc = await self._run_stream("deepwiki_python", 2, "python", "-m", "venv", str(venv_dir))
-                if rc != 0:
-                    await self._emit_sup("deepwiki_python", "error", "虚拟环境创建失败", 2, total)
-                    raise RuntimeError("DeepWiki venv creation failed")
-
-            if has_requirements:
-                rc = await self._run_stream("deepwiki_python", 2, str(venv_pip), "install", "-r", str(dw_dir / "requirements.txt"))
-                if rc != 0:
-                    await self._emit_sup("deepwiki_python", "error", "pip install 失败", 2, total)
-                    raise RuntimeError("DeepWiki pip install failed")
-            else:
-                import tomllib
-                with open(dw_dir / "api" / "pyproject.toml", "rb") as _f:
-                    _pyproject = tomllib.load(_f)
-                _deps = _pyproject.get("tool", {}).get("poetry", {}).get("dependencies", {})
-                _lines: list[str] = []
-                for _name, _spec in _deps.items():
-                    if _name == "python":
-                        continue
-                    if isinstance(_spec, str):
-                        _lines.append(f"{_name}{_spec}")
-                    elif isinstance(_spec, dict):
-                        _extras = _spec.get("extras", [])
-                        _version = _spec.get("version", "")
-                        _extra_str = "[" + ",".join(_extras) + "]" if _extras else ""
-                        _lines.append(f"{_name}{_extra_str}{_version}")
-                _req_file = dw_dir / "api" / ".requirements.txt"
-                _req_file.write_text("\n".join(_lines), encoding="utf-8")
-                rc = await self._run_stream("deepwiki_python", 2, str(venv_pip), "install", "-r", str(_req_file))
-                if rc != 0:
-                    await self._emit_sup("deepwiki_python", "error", "pip install 失败", 2, total)
-                    raise RuntimeError("DeepWiki pip install failed")
-            compat_file = dw_dir / "api" / "api.py"
-            if compat_file.exists():
-                _content = compat_file.read_text(encoding="utf-8")
-                if "add_websocket_route" in _content and "add_api_websocket_route" not in _content:
-                    compat_file.write_text(
-                        _content.replace("add_websocket_route", "add_api_websocket_route"),
-                        encoding="utf-8",
-                    )
-                    await self._emit_sup("deepwiki_python", "running", "已修补 FastAPI 兼容性（add_websocket_route → add_api_websocket_route）", 2, total)
-            await self._emit_sup("deepwiki_python", "done", "Python 依赖安装完成", 2, total)
-        else:
-            await self._emit_sup("deepwiki_python", "done", "无需 Python 依赖", 2, total)
-
-        if has_package_json and not (dw_dir / "node_modules").exists():
-            await self._emit_sup("deepwiki_node", "running", "安装 Node 依赖...", 3, total)
-            npm_cmd = "npm.cmd" if sys.platform == "win32" else "npm"
-            rc = await self._run_stream("deepwiki_node", 3, npm_cmd, "install", cwd=str(dw_dir))
-            if rc != 0:
-                await self._emit_sup("deepwiki_node", "error", "npm install 失败", 3, total)
-                raise RuntimeError("DeepWiki npm install failed")
-            await self._emit_sup("deepwiki_node", "done", "Node 依赖安装完成", 3, total)
-        else:
-            await self._emit_sup("deepwiki_node", "done", "Node 依赖已存在，跳过", 3, total)
-
-        # next build bakes process.env.NEXT_PUBLIC_* into the client bundle at
-        # build time. If we don't pass the user's chosen DeepWiki API port
-        # here, the browser bundle uses upstream's default (e.g. 8001) and
-        # the UI hangs on "loading" forever because XHRs go to nothing.
-        # See "DeepWiki UI loading forever" bug investigation.
-        api_port_for_build = self._config_port("deepwiki_api_port", 8091)
-        ui_build_env = {
-            # DeepWiki-Open's server-side code reads SERVER_BASE_URL; the
-            # client-side bundle reads NEXT_PUBLIC_SERVER_BASE_URL. We set
-            # both so whichever the fork uses is correct.
-            "SERVER_BASE_URL": f"http://localhost:{api_port_for_build}",
-            "NEXT_PUBLIC_SERVER_BASE_URL": f"http://localhost:{api_port_for_build}",
-        }
-        # Detect stale builds: if .next/ was built with a different API port,
-        # the baked-in URL is wrong and we MUST rebuild. We record the port
-        # used into a marker file at the end of every successful build.
-        next_dir = dw_dir / ".next"
-        marker = next_dir / ".codetalk-api-port"
-        next_exists = next_dir.exists()
-        if next_exists:
-            try:
-                prev_port = marker.read_text(encoding="utf-8").strip() if marker.exists() else ""
-            except OSError:
-                prev_port = ""
-            if prev_port != str(api_port_for_build):
-                await self._emit_sup(
-                    "deepwiki_build", "running",
-                    f"检测到旧构建对应 API 端口 {prev_port or '未知'}，与当前 {api_port_for_build} 不一致，清理并重新构建...",
-                    4, total,
-                )
-                shutil.rmtree(next_dir, ignore_errors=True)
-                next_exists = False
-
-        if has_package_json and not next_exists:
-            await self._emit_sup("deepwiki_build", "running",
-                                 f"构建 DeepWiki 前端（next build，烘焙 API={api_port_for_build}）...", 4, total)
-            npm_cmd = "npm.cmd" if sys.platform == "win32" else "npm"
-            rc = await self._run_stream(
-                "deepwiki_build", 4, npm_cmd, "run", "build",
-                cwd=str(dw_dir), env_extra=ui_build_env,
-            )
-            if rc != 0:
-                await self._emit_sup("deepwiki_build", "error", "next build 失败", 4, total)
-                raise RuntimeError("DeepWiki next build failed")
-            try:
-                marker.parent.mkdir(parents=True, exist_ok=True)
-                marker.write_text(str(api_port_for_build), encoding="utf-8")
-            except OSError as exc:
-                # Marker is best-effort; failure just means next deploy will rebuild.
-                await self._emit_sup("deepwiki_build", "running",
-                                     f"（警告）写入构建端口标记失败：{exc}", 4, total)
-            _copy_standalone_statics(next_dir, dw_dir)
-            await self._emit_sup("deepwiki_build", "done", "前端构建完成", 4, total)
-        else:
-            await self._emit_sup("deepwiki_build", "done",
-                                 f"前端已构建（API={api_port_for_build}），跳过", 4, total)
-
-        await self._emit_sup("deepwiki_start", "running", "启动 DeepWiki 服务...", 5, total)
-        api_port = self._config_port("deepwiki_api_port", 8091)
-        ui_port = self._config_port("deepwiki_ui_port", 3001)
-
-        embedder_type = self._config.get("deepwiki_embedder_type", "openai")
-        llm_env: dict[str, str] = {"DEEPWIKI_EMBEDDER_TYPE": embedder_type}
-        if embedder_type == "google":
-            gkey = (self._config.get("deepwiki_google_api_key", "")
-                    or self._config.get("google_api_key", ""))
-            if gkey:
-                llm_env["GOOGLE_API_KEY"] = gkey
-        elif embedder_type == "ollama":
-            ohost = (self._config.get("deepwiki_ollama_host", "")
-                     or self._config.get("ollama_base_url", "http://localhost:11434"))
-            if ohost:
-                llm_env["OLLAMA_HOST"] = ohost
-        llm_base_url = self._config.get("llm_base_url", "")
-        if llm_base_url:
-            llm_env.update({
-                "OPENAI_BASE_URL": llm_base_url,
-                "OPENAI_API_KEY": self._config.get("llm_api_key", ""),
-                "LLM_MODEL": self._config.get("llm_model", ""),
-                "FORCE_DIRECT": "true",
-                "TRUST_ENV": "false",
-            })
-
-        for _proc_name in ("deepwiki-api", "deepwiki-ui"):
-            _old = self._processes.get(_proc_name)
-            if _old is not None and _old.returncode is None:
-                _old.terminate()
-        # Force takeover on DeepWiki's dedicated ports — see comment at the
-        # matching call in _step_start_services for the rationale.
-        await self._release_ports([api_port, ui_port], 5, force_takeover=True)
-        await asyncio.sleep(2)
-
-        await self._start_deepwiki_processes(dw_dir, api_port, ui_port, llm_env, "deepwiki_start", 5)
-
-        await self._emit_sup("deepwiki_start", "done", "DeepWiki 服务已启动", 5, total)
-
-        self._config["deepwiki_path"] = deepwiki_path
-        self._config["deepwiki_api_port"] = api_port
-        self._config["deepwiki_ui_port"] = ui_port
-        await self._step_generate_config()
-
-        # Restart backend so it reloads .env with the new DeepWiki port settings.
-        backend_proc = self._processes.get("backend")
-        if backend_proc is not None and backend_proc.returncode is None:
-            await self._emit_sup("deepwiki_start", "running", "重启后端以加载新 DeepWiki 配置...", 5, total)
-            try:
-                backend_proc.terminate()
-                await asyncio.wait_for(backend_proc.wait(), timeout=10)
-            except asyncio.TimeoutError:
-                backend_proc.kill()
-            backend_dir = PROJECT_ROOT / "backend"
-            backend_port = self._config.get("backend_port", 8100)
-            venv_python = (
-                backend_dir / ".venv311" / "Scripts" / "python.exe"
-                if sys.platform == "win32"
-                else backend_dir / ".venv311" / "bin" / "python"
-            )
-            await self._start_process(
-                "backend",
-                [str(venv_python), "-m", "uvicorn", "app.main:app",
-                 "--host", "0.0.0.0", "--port", str(backend_port)],
-                cwd=str(backend_dir),
-                step_name="deepwiki_start",
-                step_index=5,
-            )
-            await asyncio.sleep(5)
-            await self._emit_sup("deepwiki_start", "running", "后端已重启并加载新配置", 5, total)
-
-        await self._emit_sup("deepwiki_health", "running", "检查 DeepWiki 健康状态...", 6, total)
-        await asyncio.sleep(5)
-
-        import httpx
-        try:
-            async with httpx.AsyncClient(timeout=5, trust_env=False) as client:
-                resp = await client.get(f"http://localhost:{api_port}/health")
-                if 200 <= resp.status_code < 400:
-                    await self._emit_sup("deepwiki_health", "done", f"DeepWiki 健康运行（API:{api_port} UI:{ui_port}）", 6, total)
-                else:
-                    await self._emit_sup("deepwiki_health", "error", f"DeepWiki API 健康检查失败（HTTP {resp.status_code}）", 6, total)
-                    raise RuntimeError(f"DeepWiki API unhealthy: HTTP {resp.status_code}")
-        except RuntimeError:
-            raise
-        except Exception:
-            await self._emit_sup("deepwiki_health", "error", f"DeepWiki API 未响应（端口 {api_port}），请检查日志", 6, total)
-            raise RuntimeError(f"DeepWiki API health check failed: no response on port {api_port}")
-
-    async def _emit_sup(self, step: str, status: str, message: str, current: int, total: int) -> None:
-        await self._queue.put({
-            "step": step,
-            "status": status,
-            "message": message,
-            "progress": {"current": current, "total": total},
-        })
-
-    # ------------------------------------------------------------------
-    # Step 1: Check environment
-    # ------------------------------------------------------------------
 
     async def _step_check_env(self) -> None:
         step = 1
@@ -787,9 +385,6 @@ class NativeDeployer:
         backend_port = cfg.get("backend_port", 8100)
         frontend_port = cfg.get("frontend_port", 3005)
         gitnexus_port = cfg.get("gitnexus_port", 7100)
-        deepwiki_api_port = cfg.get("deepwiki_api_port", 8091)
-        deepwiki_ui_port = cfg.get("deepwiki_ui_port", 3001)
-        deepwiki_path = cfg.get("deepwiki_path", "")
 
         cgc_port = self._config_port("cgc_port", _CGC_DEFAULT_PORT)
         env_lines = [
@@ -804,28 +399,6 @@ class NativeDeployer:
             f"CORS_ORIGINS=http://localhost:{frontend_port},http://127.0.0.1:{frontend_port}",
             "TOOL_HEALTH_INTERVAL=30",
         ]
-        if deepwiki_path:
-            env_lines.extend([
-                f"DEEPWIKI_API_URL=http://localhost:{deepwiki_api_port}",
-                f"DEEPWIKI_UI_URL=http://localhost:{deepwiki_ui_port}",
-                f"DEEPWIKI_API_PORT={deepwiki_api_port}",
-                f"DEEPWIKI_UI_PORT={deepwiki_ui_port}",
-                f"DEEPWIKI_PATH={deepwiki_path}",
-            ])
-
-        tiktoken_cache = _best_tiktoken_cache()
-        if tiktoken_cache is not None:
-            env_lines.append(f"TIKTOKEN_CACHE_DIR={tiktoken_cache.resolve()}")
-        elif deepwiki_path:
-            # Emit a visible warning — silent skip caused the bug where deployer
-            # said "配置完成" but deepwiki crashed immediately on startup.
-            await self._emit(
-                "generate_config", "running",
-                "⚠️ 未找到 tiktoken BPE 缓存，TIKTOKEN_CACHE_DIR 未写入。"
-                "DeepWiki 在无外网环境下将因无法加载 tokenizer 而崩溃。"
-                "请运行 deployer\\scripts\\package-vendor.bat 补充缓存后重新部署。",
-                step,
-            )
 
         backend_env = PROJECT_ROOT / "backend" / ".env"
         known_keys = {ln.split("=", 1)[0] for ln in env_lines if "=" in ln}
@@ -840,19 +413,6 @@ class NativeDeployer:
             encoding="utf-8",
         )
         await self._emit("generate_config", "running", f"已写入 {frontend_env}", step)
-
-        if deepwiki_path and tiktoken_cache is not None:
-            dw_dir = Path(deepwiki_path)
-            if not dw_dir.is_dir():
-                await self._emit("generate_config", "running",
-                                 f"deepwiki_path 不存在，跳过写入 TIKTOKEN_CACHE_DIR：{deepwiki_path}", step)
-            else:
-                dw_env = dw_dir / ".env"
-                existing = dw_env.read_text(encoding="utf-8").splitlines() if dw_env.exists() else []
-                kept = [ln for ln in existing if not ln.startswith("TIKTOKEN_CACHE_DIR=")]
-                kept.append(f"TIKTOKEN_CACHE_DIR={tiktoken_cache.resolve()}")
-                dw_env.write_text("\n".join(kept) + "\n", encoding="utf-8")
-                await self._emit("generate_config", "running", f"已写入 {dw_env}", step)
 
         await self._emit("generate_config", "done", "配置文件生成完成", step)
 
@@ -1070,26 +630,6 @@ class NativeDeployer:
         ports_to_clear = [backend_port, frontend_port]
         if cfg.get("install_gitnexus", True):
             ports_to_clear.append(gitnexus_port)
-        # Pre-clear DeepWiki's dedicated ports too, so stale UI/API processes
-        # left over from a previous failed quickstart can't squat on them.
-        #
-        # EXCEPTION: if supplement_deepwiki just started these processes in
-        # the same deploy() call, do NOT pre-clear — _release_ports here would
-        # kill them, and the skip-restart logic below would then leave the
-        # killed-but-not-restarted side dead until timeout. (Concretely, the
-        # UI we just launched would get evicted, the API would be "unknown
-        # PID" / skipped, and then the deepwiki restart block sees api alive
-        # and never relaunches the UI. The new deepwiki-ui health check
-        # then blocks deploy completion until timeout.)
-        if cfg.get("install_deepwiki", False) or cfg.get("deepwiki_path", ""):
-            _existing_api = self._processes.get("deepwiki-api")
-            _existing_ui = self._processes.get("deepwiki-ui")
-            api_alive = _existing_api is not None and _existing_api.returncode is None
-            ui_alive = _existing_ui is not None and _existing_ui.returncode is None
-            if not (api_alive and ui_alive):
-                dw_api_port_clear = self._config_port("deepwiki_api_port", 8091)
-                dw_ui_port_clear = self._config_port("deepwiki_ui_port", 3001)
-                ports_to_clear.extend([dw_api_port_clear, dw_ui_port_clear])
         await self._emit("start_services", "running", f"清理占用端口 {ports_to_clear}...", step)
         force_takeover = bool(cfg.get("force_takeover", False))
         await self._release_ports(ports_to_clear, step, force_takeover=force_takeover)
@@ -1181,133 +721,8 @@ class NativeDeployer:
 
         await asyncio.sleep(3)
 
-        deepwiki_path = self._config.get("deepwiki_path", "")
-        if self._config.get("install_deepwiki", False) or deepwiki_path:
-            dw_dir = Path(deepwiki_path) if deepwiki_path else None
-            # Skip restart only if BOTH api AND ui are still alive. Previously
-            # this checked api only — but the pre-clear above could kill the
-            # ui (when api PID looked "unknown" and was skipped), leaving us
-            # with api alive / ui dead but the restart skipped.
-            _existing_api = self._processes.get("deepwiki-api")
-            _existing_ui = self._processes.get("deepwiki-ui")
-            api_alive = _existing_api is not None and _existing_api.returncode is None
-            ui_alive = _existing_ui is not None and _existing_ui.returncode is None
-            if api_alive and ui_alive:
-                await self._emit("start_services", "running", "DeepWiki 已在运行，跳过重复启动", step)
-            elif dw_dir and dw_dir.exists():
-                dw_api_port = self._config_port("deepwiki_api_port", 8091)
-                dw_ui_port = self._config_port("deepwiki_ui_port", 3001)
-                embedder_type = self._config.get("deepwiki_embedder_type", "openai")
-                llm_env: dict[str, str] = {"DEEPWIKI_EMBEDDER_TYPE": embedder_type}
-                if embedder_type == "google":
-                    gkey = (self._config.get("deepwiki_google_api_key", "")
-                            or self._config.get("google_api_key", ""))
-                    if gkey:
-                        llm_env["GOOGLE_API_KEY"] = gkey
-                elif embedder_type == "ollama":
-                    ohost = (self._config.get("deepwiki_ollama_host", "")
-                             or self._config.get("ollama_base_url", "http://localhost:11434"))
-                    if ohost:
-                        llm_env["OLLAMA_HOST"] = ohost
-                llm_base_url = self._config.get("llm_base_url", "")
-                if llm_base_url:
-                    llm_env.update({
-                        "OPENAI_BASE_URL": llm_base_url,
-                        "OPENAI_API_KEY": self._config.get("llm_api_key", ""),
-                        "LLM_MODEL": self._config.get("llm_model", ""),
-                        "FORCE_DIRECT": "true",
-                        "TRUST_ENV": "false",
-                    })
-                # DeepWiki ports are dedicated to DeepWiki per the user's
-                # config — force_takeover so any orphaned process (e.g. from
-                # a previous failed run that left deepwiki-ui hanging on 3001)
-                # is reliably evicted instead of triggering EADDRINUSE later.
-                await self._release_ports([dw_api_port, dw_ui_port], step, force_takeover=True)
-                # Give the OS a moment to actually free the sockets before we
-                # try to bind again — without this, taskkill returns but the
-                # listening socket can linger long enough to fail a fresh bind.
-                await asyncio.sleep(2)
-                await self._start_deepwiki_processes(dw_dir, dw_api_port, dw_ui_port, llm_env, "start_services", step)
-            elif dw_dir:
-                await self._emit("start_services", "error", f"DeepWiki 路径无效：{dw_dir} 不存在", step)
-                raise RuntimeError(f"DeepWiki path does not exist: {dw_dir}")
 
         await self._emit("start_services", "done", "所有核心服务已启动", step)
-
-    async def _start_deepwiki_processes(
-        self,
-        dw_dir: "Path",
-        api_port: int,
-        ui_port: int,
-        llm_env: dict,
-        step_name: str,
-        step_index: int,
-    ) -> None:
-        tiktoken_cache = _best_tiktoken_cache()
-        if tiktoken_cache is not None:
-            cache_abs = tiktoken_cache.resolve()
-            llm_env["TIKTOKEN_CACHE_DIR"] = str(cache_abs)
-            # Belt-and-suspenders: also copy files into {dw_dir}/tiktoken/.
-            # See _stage_tiktoken_into_deepwiki docstring for the rationale.
-            try:
-                copied = _stage_tiktoken_into_deepwiki(cache_abs, dw_dir)
-                await self._emit(
-                    step_name, "running",
-                    f"tiktoken: cache={cache_abs}, staged {copied} BPE file(s) into {dw_dir}/tiktoken/",
-                    step_index,
-                )
-            except OSError as exc:
-                await self._emit(
-                    step_name, "running",
-                    f"tiktoken: cache={cache_abs} (staging to deepwiki/tiktoken/ failed: {exc})",
-                    step_index,
-                )
-        else:
-            await self._emit(
-                step_name, "running",
-                f"tiktoken: NO local cache found in any of {[str(p) for p in _TIKTOKEN_CACHE_CANDIDATES]} — "
-                f"deepwiki will try HTTPS for BPE files and fail on intranet",
-                step_index,
-            )
-        has_python_api = (dw_dir / "api" / "pyproject.toml").exists() or (dw_dir / "requirements.txt").exists()
-        has_package_json = (dw_dir / "package.json").exists()
-
-        if has_python_api:
-            venv_dir = dw_dir / ".venv"
-            venv_python = (venv_dir / "Scripts" / "python.exe") if sys.platform == "win32" else (venv_dir / "bin" / "python")
-            launcher = str(DEPLOYER_DIR / "deepwiki_launcher.py")
-            launch_env = {**(llm_env or {}), "DEEPWIKI_API_PORT": str(api_port)}
-            await self._start_process(
-                "deepwiki-api",
-                [str(venv_python), launcher],
-                cwd=str(dw_dir),
-                step_name=step_name,
-                step_index=step_index,
-                env_extra=launch_env,
-            )
-
-        if has_package_json:
-            standalone_server = dw_dir / ".next" / "standalone" / "server.js"
-            if standalone_server.exists():
-                _copy_standalone_statics(dw_dir / ".next", dw_dir)
-                ui_cmd = ["node", str(standalone_server)]
-            else:
-                npm_cmd = "npm.cmd" if sys.platform == "win32" else "npm"
-                ui_cmd = [npm_cmd, "run", "start"]
-            # Last-mile check: between releasing the port and starting
-            # deepwiki-api, something else may have grabbed 3001 (e.g. another
-            # leftover process, or the OS hasn't finished tearing down the
-            # previous socket). Force-evict any squatter just before we bind.
-            await self._release_ports([ui_port], step_index, force_takeover=True)
-            await asyncio.sleep(1)
-            await self._start_process(
-                "deepwiki-ui",
-                ui_cmd,
-                cwd=str(dw_dir),
-                step_name=step_name,
-                step_index=step_index,
-                env_extra={"PORT": str(ui_port), "SERVER_BASE_URL": f"http://localhost:{api_port}", **llm_env},
-            )
 
     async def _start_process(
         self,
@@ -1382,59 +797,9 @@ class NativeDeployer:
             except ProcessLookupError:
                 pass
 
-    def _build_deepwiki_env(self) -> dict[str, str]:
-        """Build the LLM + tiktoken env dict for deepwiki processes.
-
-        Reads from self._config first, then merges KEY=VALUE lines from
-        <deepwiki_path>/.env (if it exists). Uses manual line parsing —
-        no python-dotenv dependency required.
-        """
-        embedder_type = self._config.get("deepwiki_embedder_type", "openai")
-        env: dict[str, str] = {"DEEPWIKI_EMBEDDER_TYPE": embedder_type}
-        if embedder_type == "google":
-            gkey = (self._config.get("deepwiki_google_api_key", "")
-                    or self._config.get("google_api_key", ""))
-            if gkey:
-                env["GOOGLE_API_KEY"] = gkey
-        elif embedder_type == "ollama":
-            ohost = (self._config.get("deepwiki_ollama_host", "")
-                     or self._config.get("ollama_base_url", "http://localhost:11434"))
-            if ohost:
-                env["OLLAMA_HOST"] = ohost
-        llm_base_url = self._config.get("llm_base_url", "")
-        if llm_base_url:
-            env.update({
-                "OPENAI_BASE_URL": llm_base_url,
-                "OPENAI_API_KEY": self._config.get("llm_api_key", ""),
-                "LLM_MODEL": self._config.get("llm_model", ""),
-                "FORCE_DIRECT": "true",
-                "TRUST_ENV": "false",
-            })
-        tiktoken_cache = _best_tiktoken_cache()
-        if tiktoken_cache is not None:
-            env["TIKTOKEN_CACHE_DIR"] = str(tiktoken_cache.resolve())
-        deepwiki_path = self._config.get("deepwiki_path", "")
-        if deepwiki_path:
-            dot_env = Path(deepwiki_path) / ".env"
-            if dot_env.exists():
-                try:
-                    for line in dot_env.read_text(encoding="utf-8").splitlines():
-                        line = line.strip()
-                        if not line or line.startswith("#"):
-                            continue
-                        if "=" in line:
-                            k, _, v = line.partition("=")
-                            k = k.strip()
-                            v = v.strip().strip('"').strip("'")
-                            if k:
-                                env.setdefault(k, v)
-                except OSError:
-                    pass
-        return env
-
     async def restart_service(self, name: str) -> dict:
-        """Restart a named service (or deepwiki pair) using stored startup args."""
-        targets = ["deepwiki-api", "deepwiki-ui"] if name == "deepwiki" else [name]
+        """Restart a named service using stored startup args."""
+        targets = [name]
         for t in targets:
             if t not in self._start_args:
                 defaults = self._default_start_args(t)
@@ -1447,13 +812,6 @@ class NativeDeployer:
         for target in targets:
             await self._terminate_process(target)
 
-        if name == "deepwiki":
-            # Re-read config and deepwiki/.env so LLM params are current.
-            fresh_env = self._build_deepwiki_env()
-            for target in targets:
-                args = self._start_args[target]
-                merged = {**(args.get("env_extra") or {}), **fresh_env}
-                self._start_args[target] = {**args, "env_extra": merged}
 
         for target in targets:
             args = self._start_args[target]
@@ -1462,8 +820,8 @@ class NativeDeployer:
         return {"ok": True, "service": name}
 
     async def stop_service(self, name: str) -> dict:
-        """Stop a named service (or deepwiki pair)."""
-        targets = ["deepwiki-api", "deepwiki-ui"] if name == "deepwiki" else [name]
+        """Stop a named service."""
+        targets = [name]
         missing = [t for t in targets if t not in self._start_args]
         if missing:
             raise KeyError(f"Service not started by this deployer: {', '.join(missing)}")
@@ -1501,7 +859,7 @@ class NativeDeployer:
         if name == "cgc":
             cgc_cmd = self._resolve_cgc_cmd()
             if cgc_cmd:
-                # PATCH: same CGC_ALLOWED_ROOTS injection as in the quickstart path.
+                # Match CGC_ALLOWED_ROOTS injection from the quickstart path.
                 _cgc_allowed_roots = ";".join([
                     str(PROJECT_ROOT.parent),
                     os.path.expanduser("~"),
@@ -1511,40 +869,12 @@ class NativeDeployer:
                     "cwd": self._cgc_cwd(),
                     "env_extra": {"CGC_ALLOWED_ROOTS": _cgc_allowed_roots},
                 }
-        deepwiki_path = cfg.get("deepwiki_path", "")
-        if deepwiki_path and name in ("deepwiki-api", "deepwiki-ui"):
-            dw_dir = Path(deepwiki_path)
-            has_python_api = (dw_dir / "api" / "pyproject.toml").exists() or (dw_dir / "requirements.txt").exists()
-            has_package_json = (dw_dir / "package.json").exists()
-            llm_env = self._build_deepwiki_env()
-            api_port = self._config_port("deepwiki_api_port", 8091)
-            ui_port = self._config_port("deepwiki_ui_port", 3001)
-            if name == "deepwiki-api" and has_python_api:
-                venv_dir = dw_dir / ".venv"
-                venv_python = (venv_dir / "Scripts" / "python.exe") if sys.platform == "win32" else (venv_dir / "bin" / "python")
-                launcher = str(DEPLOYER_DIR / "deepwiki_launcher.py")
-                return {
-                    "cmd": [str(venv_python), launcher],
-                    "cwd": str(dw_dir),
-                    "env_extra": {**llm_env, "DEEPWIKI_API_PORT": str(api_port)},
-                }
-            if name == "deepwiki-ui" and has_package_json:
-                standalone_server = dw_dir / ".next" / "standalone" / "server.js"
-                if standalone_server.exists():
-                    ui_cmd = ["node", str(standalone_server)]
-                else:
-                    npm_cmd = "npm.cmd" if sys.platform == "win32" else "npm"
-                    ui_cmd = [npm_cmd, "run", "start"]
-                return {
-                    "cmd": ui_cmd,
-                    "cwd": str(dw_dir),
-                    "env_extra": {**llm_env, "PORT": str(ui_port), "SERVER_BASE_URL": f"http://localhost:{api_port}"},
-                }
+
         return None
 
     async def start_service(self, name: str) -> dict:
         """Start a previously-stopped service using stored startup args."""
-        targets = ["deepwiki-api", "deepwiki-ui"] if name == "deepwiki" else [name]
+        targets = [name]
         for t in targets:
             if t not in self._start_args:
                 defaults = self._default_start_args(t)
@@ -1576,9 +906,8 @@ class NativeDeployer:
         # from this subprocess reaches the deploy panel (including the
         # actual error message we wanted to see).
         #
-        # Concretely seen with backend's wiki-generation logger emitting a
-        # very large single-line payload; the deepwiki failure that came
-        # right after was completely silent in the UI.
+        # Large single-line payloads from backend logging used to make failures
+        # silent in the UI.
         #
         # Recover by falling back to a raw chunk read and continuing.
         # We also wrap the whole loop in try/except so a totally unexpected
@@ -1648,26 +977,6 @@ class NativeDeployer:
                 except Exception:
                     all_ok = False
 
-            if self._config.get("install_deepwiki", False) or bool(self._config.get("deepwiki_path", "")):
-                dw_port = self._config_port("deepwiki_api_port", 8091)
-                try:
-                    async with httpx.AsyncClient(timeout=3, trust_env=False) as client:
-                        resp = await client.get(f"http://localhost:{dw_port}/health")
-                        if not (200 <= resp.status_code < 400):
-                            all_ok = False
-                except Exception:
-                    all_ok = False
-
-                # UI liveness check — closes the blind spot where the Next.js
-                # process crashes on startup but only the API was being probed.
-                dw_ui_port = self._config_port("deepwiki_ui_port", 3001)
-                try:
-                    async with httpx.AsyncClient(timeout=3, trust_env=False) as client:
-                        resp = await client.get(f"http://localhost:{dw_ui_port}/")
-                        if not (200 <= resp.status_code < 400):
-                            all_ok = False
-                except Exception:
-                    all_ok = False
 
             if all_ok:
                 await self._emit("health_check", "done", "所有服务健康运行！", step)

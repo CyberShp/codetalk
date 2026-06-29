@@ -40,7 +40,6 @@ def _register_defaults() -> None:
     from app.adapters.cgc import CGCAdapter
     from app.adapters.codecompass import CodeCompassAdapter
     from app.adapters.context_discovery import FastContextAdapter
-    from app.adapters.deepwiki import DeepwikiAdapter
     from app.adapters.external_agent import ExternalAgentAdapter
     from app.adapters.gitnexus import GitNexusAdapter
     from app.adapters.joern import JoernAdapter
@@ -48,9 +47,6 @@ def _register_defaults() -> None:
 
     def cgc_factory() -> CGCAdapter:
         return CGCAdapter(base_url=settings.cgc_base_url)
-
-    def deepwiki_factory() -> DeepwikiAdapter:
-        return DeepwikiAdapter(base_url=settings.deepwiki_api_url)
 
     def gitnexus_factory() -> GitNexusAdapter:
         return GitNexusAdapter(base_url=settings.gitnexus_base_url)
@@ -71,7 +67,6 @@ def _register_defaults() -> None:
         return ExternalAgentAdapter("opencode", "opencode_command")
 
     register_adapter(cgc_factory(), factory=cgc_factory)
-    register_adapter(deepwiki_factory(), factory=deepwiki_factory)
     register_adapter(gitnexus_factory(), factory=gitnexus_factory)
     register_adapter(joern_factory(), factory=joern_factory)
     register_adapter(codecompass_factory(), factory=codecompass_factory)

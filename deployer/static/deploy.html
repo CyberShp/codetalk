@@ -176,7 +176,7 @@
             <!-- 部署工作目录 -->
             <fieldset class="form-section">
               <legend class="form-section-title">部署工作目录</legend>
-              <p class="form-section-desc">所有组件（GitNexus、DeepWiki）和克隆的代码仓库的统一存放位置</p>
+              <p class="form-section-desc">GitNexus、CGC 和克隆代码仓库的统一存放位置</p>
               <div class="form-group">
                 <label class="form-label" for="workspace-path">工作目录路径</label>
                 <input type="text" id="workspace-path" name="workspacePath" class="form-input font-mono"
@@ -190,31 +190,6 @@
               <legend class="form-section-title">安装组件</legend>
               <p class="form-section-desc">选择需要安装的可选组件</p>
               <div class="component-list">
-                <label class="component-item">
-                  <input type="checkbox" id="install-deepwiki" name="installDeepwiki" />
-                  <div class="component-info">
-                    <span class="component-name">DeepWiki-Open</span>
-                    <span class="component-desc">代码知识库 &mdash; AI 驱动的代码文档生成</span>
-                  </div>
-                  <div class="component-ports" id="deepwiki-ports" style="display:none">
-                    <span class="port-label">API 端口</span>
-                    <input type="number" id="port-deepwiki-api" name="portDeepwikiApi" class="form-input form-input-sm font-mono" value="8091" min="1024" max="65535" />
-                    <span class="port-label">UI 端口</span>
-                    <input type="number" id="port-deepwiki-ui" name="portDeepwikiUi" class="form-input form-input-sm font-mono" value="3001" min="1024" max="65535" />
-                    <span class="port-label" style="grid-column: 1">安装路径</span>
-                    <input type="text" id="deepwiki-path" name="deepwikiPath" class="form-input font-mono" placeholder="留空自动使用默认路径（../codetalk_data/deepwiki-open）" style="grid-column: 2 / -1" />
-                    <span class="port-label" style="grid-column: 1">Embedder</span>
-                    <select id="deepwiki-embedder-type" name="deepwikiEmbedderType" class="form-input" style="grid-column: 2 / -1">
-                      <option value="openai">OpenAI（默认）</option>
-                      <option value="google">Google Gemini</option>
-                      <option value="ollama">Ollama（本地）</option>
-                    </select>
-                    <span class="port-label" id="dw-google-key-label" style="grid-column: 1; display: none">Google Key</span>
-                    <input type="password" id="deepwiki-google-api-key" name="deepwikiGoogleApiKey" class="form-input" placeholder="Google API Key（Gemini embedder 专用）" style="grid-column: 2 / -1; display: none" autocomplete="new-password" />
-                    <span class="port-label" id="dw-ollama-host-label" style="grid-column: 1; display: none">Ollama Host</span>
-                    <input type="text" id="deepwiki-ollama-host" name="deepwikiOllamaHost" class="form-input font-mono" placeholder="http://localhost:11434" style="grid-column: 2 / -1; display: none" />
-                  </div>
-                </label>
                 <label class="component-item">
                   <input type="checkbox" id="install-gitnexus" name="installGitnexus" checked />
                   <div class="component-info">
@@ -349,9 +324,6 @@
             <div class="service-pill pill-pending" data-service="redis" data-modes="compose k8s" role="listitem">
               <span class="pill-dot"></span><span class="pill-name">Redis</span>
             </div>
-            <div class="service-pill pill-pending" data-service="deepwiki" data-modes="compose k8s" id="pill-deepwiki" role="listitem">
-              <span class="pill-dot"></span><span class="pill-name">DeepWiki</span>
-            </div>
             <div class="service-pill pill-pending" data-service="gitnexus" data-modes="native compose k8s" id="pill-gitnexus" role="listitem">
               <span class="pill-dot"></span><span class="pill-name">GitNexus</span>
             </div>
@@ -419,19 +391,6 @@
               <div class="url-card-body">
                 <span class="url-card-name">后端 API</span>
                 <span class="url-card-url">localhost:8100</span>
-              </div>
-              <button class="restart-btn" title="重启此服务" aria-label="重启" onclick="event.preventDefault();event.stopPropagation();restartService(this)">
-                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" aria-hidden="true"><path d="M1 4v6h6"/><path d="M23 20v-6h-6"/><path d="M20.49 9A9 9 0 0 0 5.64 5.64L1 10m22 4l-4.64 4.36A9 9 0 0 1 3.51 15"/></svg>
-              </button>
-              <svg class="url-card-arrow" viewBox="0 0 20 20" fill="currentColor" aria-hidden="true"><path d="M11 3a1 1 0 100 2h2.586l-6.293 6.293a1 1 0 101.414 1.414L15 6.414V9a1 1 0 102 0V4a1 1 0 00-1-1h-5z"/><path d="M5 5a2 2 0 00-2 2v8a2 2 0 002 2h8a2 2 0 002-2v-3a1 1 0 10-2 0v3H5V7h3a1 1 0 000-2H5z"/></svg>
-            </a>
-            <a class="service-url-card" href="http://localhost:3001" target="_blank" rel="noopener noreferrer" data-service="deepwiki">
-              <div class="url-card-icon">
-                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><path d="M12 2L2 7l10 5 10-5-10-5zM2 17l10 5 10-5M2 12l10 5 10-5"/></svg>
-              </div>
-              <div class="url-card-body">
-                <span class="url-card-name">DeepWiki</span>
-                <span class="url-card-url">localhost:3001</span>
               </div>
               <button class="restart-btn" title="重启此服务" aria-label="重启" onclick="event.preventDefault();event.stopPropagation();restartService(this)">
                 <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" aria-hidden="true"><path d="M1 4v6h6"/><path d="M23 20v-6h-6"/><path d="M20.49 9A9 9 0 0 0 5.64 5.64L1 10m22 4l-4.64 4.36A9 9 0 0 1 3.51 15"/></svg>

@@ -32,7 +32,6 @@ CREATE TABLE IF NOT EXISTS tasks (
     design_doc TEXT,
     analysis_focus TEXT,
     prompt_content TEXT,
-    deepwiki_depth TEXT DEFAULT 'balanced',
     progress INTEGER DEFAULT 0,
     error_message TEXT,
     created_at TEXT,
@@ -65,6 +64,23 @@ CREATE TABLE IF NOT EXISTS prompt_templates (
 CREATE TABLE IF NOT EXISTS settings (
     key TEXT PRIMARY KEY,
     value TEXT NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS agent_runtimes (
+    id TEXT PRIMARY KEY,
+    name TEXT NOT NULL,
+    command TEXT NOT NULL,
+    args_json TEXT DEFAULT '[]',
+    prompt_transport TEXT NOT NULL DEFAULT 'stdin',
+    output_mode TEXT NOT NULL DEFAULT 'plain',
+    working_dir_mode TEXT NOT NULL DEFAULT 'project',
+    fixed_working_dir TEXT DEFAULT '',
+    env_json TEXT DEFAULT '{}',
+    health_command TEXT DEFAULT '',
+    timeout_seconds INTEGER DEFAULT 120,
+    enabled INTEGER DEFAULT 1,
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL
 );
 
 CREATE TABLE IF NOT EXISTS coverage_analyses (
@@ -150,30 +166,71 @@ CREATE TABLE IF NOT EXISTS material_chunks (
     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
 );
 
+CREATE TABLE IF NOT EXISTS ai_conversations (
+    id TEXT PRIMARY KEY,
+    scope_type TEXT NOT NULL,
+    scope_id TEXT NOT NULL,
+    workspace_id TEXT NOT NULL DEFAULT 'global',
+    memory_namespace TEXT NOT NULL DEFAULT 'global',
+    runtime_type TEXT NOT NULL DEFAULT 'builtin_llm',
+    agent_runtime_id TEXT,
+    title TEXT NOT NULL,
+    status TEXT NOT NULL DEFAULT 'idle',
+    initial_context_json TEXT DEFAULT '{}',
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS ai_messages (
+    id TEXT PRIMARY KEY,
+    conversation_id TEXT NOT NULL REFERENCES ai_conversations(id) ON DELETE CASCADE,
+    run_id TEXT,
+    role TEXT NOT NULL,
+    content TEXT NOT NULL,
+    references_json TEXT DEFAULT '[]',
+    actions_json TEXT DEFAULT '[]',
+    created_at TEXT NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS ai_conversation_runs (
+    id TEXT PRIMARY KEY,
+    conversation_id TEXT NOT NULL REFERENCES ai_conversations(id) ON DELETE CASCADE,
+    status TEXT NOT NULL DEFAULT 'queued',
+    cursor INTEGER DEFAULT 0,
+    error TEXT,
+    model TEXT,
+    token_usage_json TEXT DEFAULT '{}',
+    created_at TEXT NOT NULL,
+    started_at TEXT,
+    completed_at TEXT
+);
+
+CREATE TABLE IF NOT EXISTS ai_run_events (
+    event_id INTEGER PRIMARY KEY AUTOINCREMENT,
+    run_id TEXT NOT NULL REFERENCES ai_conversation_runs(id) ON DELETE CASCADE,
+    conversation_id TEXT NOT NULL REFERENCES ai_conversations(id) ON DELETE CASCADE,
+    event_type TEXT NOT NULL,
+    payload_json TEXT DEFAULT '{}',
+    created_at TEXT NOT NULL
+);
+
 CREATE INDEX IF NOT EXISTS idx_workspace_materials_ws ON workspace_materials(workspace_id);
 CREATE INDEX IF NOT EXISTS idx_workspace_reports_ws ON workspace_reports(workspace_id);
 CREATE INDEX IF NOT EXISTS idx_workspace_chats_ws ON workspace_chats(workspace_id);
 CREATE INDEX IF NOT EXISTS idx_material_chunks_ws ON material_chunks(workspace_id);
 CREATE INDEX IF NOT EXISTS idx_material_chunks_mat ON material_chunks(material_id);
+CREATE INDEX IF NOT EXISTS idx_agent_runtimes_enabled ON agent_runtimes(enabled, updated_at);
+CREATE INDEX IF NOT EXISTS idx_ai_conversations_scope ON ai_conversations(scope_type, scope_id, updated_at);
+CREATE INDEX IF NOT EXISTS idx_ai_messages_conversation ON ai_messages(conversation_id, created_at);
+CREATE INDEX IF NOT EXISTS idx_ai_runs_conversation ON ai_conversation_runs(conversation_id, created_at);
+CREATE INDEX IF NOT EXISTS idx_ai_run_events_stream ON ai_run_events(conversation_id, event_id);
 
-CREATE TABLE IF NOT EXISTS deepwiki_repos (
-    id TEXT PRIMARY KEY,
-    repo_path TEXT NOT NULL UNIQUE,
-    name TEXT NOT NULL,
-    page_count INTEGER DEFAULT 0,
-    status TEXT DEFAULT 'pending',
-    progress INTEGER DEFAULT 0,
-    wiki_data TEXT,
-    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-);
 """
 
 _MIGRATIONS = [
     "ALTER TABLE tasks ADD COLUMN analysis_focus TEXT",
     "ALTER TABLE tasks ADD COLUMN prompt_content TEXT",
     "ALTER TABLE tasks ADD COLUMN current_step TEXT",
-    "ALTER TABLE tasks ADD COLUMN deepwiki_depth TEXT DEFAULT 'balanced'",
     "ALTER TABLE tasks ADD COLUMN material_ids TEXT",
     "ALTER TABLE workspaces ADD COLUMN analyze_status TEXT",
     "ALTER TABLE workspaces ADD COLUMN analyze_progress INTEGER DEFAULT 0",
@@ -197,6 +254,17 @@ _MIGRATIONS = [
     "ALTER TABLE coverage_analyses ADD COLUMN workspace_id TEXT",
     "ALTER TABLE coverage_analyses ADD COLUMN repo_path TEXT",
     "CREATE INDEX IF NOT EXISTS idx_coverage_workspace_id ON coverage_analyses(workspace_id)",
+    "ALTER TABLE ai_conversations ADD COLUMN workspace_id TEXT NOT NULL DEFAULT 'global'",
+    "ALTER TABLE ai_conversations ADD COLUMN memory_namespace TEXT NOT NULL DEFAULT 'global'",
+    "ALTER TABLE ai_conversations ADD COLUMN runtime_type TEXT NOT NULL DEFAULT 'builtin_llm'",
+    "ALTER TABLE ai_conversations ADD COLUMN agent_runtime_id TEXT",
+    "UPDATE ai_conversations SET workspace_id = scope_id WHERE workspace_id = 'global' AND scope_type = 'workspace'",
+    "UPDATE ai_conversations SET workspace_id = substr(scope_id, 1, instr(scope_id, ':') - 1) WHERE workspace_id = 'global' AND scope_type = 'module' AND instr(scope_id, ':') > 1",
+    "UPDATE ai_conversations SET workspace_id = COALESCE(json_extract(initial_context_json, '$.workspace_id'), workspace_id) WHERE workspace_id = 'global' AND json_valid(initial_context_json)",
+    "UPDATE ai_conversations SET memory_namespace = 'workspace:' || workspace_id WHERE workspace_id != 'global' AND memory_namespace = 'global'",
+    "CREATE INDEX IF NOT EXISTS idx_ai_conversations_workspace ON ai_conversations(workspace_id, updated_at)",
+    "CREATE INDEX IF NOT EXISTS idx_ai_conversations_memory_namespace ON ai_conversations(memory_namespace, updated_at)",
+    "CREATE INDEX IF NOT EXISTS idx_agent_runtimes_enabled ON agent_runtimes(enabled, updated_at)",
 ]
 
 
@@ -210,12 +278,6 @@ async def init_db() -> None:
             except aiosqlite.OperationalError as exc:
                 if "duplicate column" not in str(exc).lower():
                     raise
-
-        # Reset any deepwiki_repos rows stuck in 'running' from a prior crash
-        await db.execute(
-            "UPDATE deepwiki_repos SET status = 'failed', updated_at = CURRENT_TIMESTAMP"
-            " WHERE status = 'running'"
-        )
 
         # Reset workspaces stuck in background tasks from a prior crash
         await db.execute(

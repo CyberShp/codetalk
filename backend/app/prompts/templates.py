@@ -1,7 +1,7 @@
 """Chinese prompt templates for CodeTalk report generation.
 
 Each template is a format-string that accepts structured context (code graph data,
-wiki content, module info) and instructs the LLM to generate a specific report section.
+local context, module info) and instructs the LLM to generate a specific report section.
 
 Gray-box style principle (铲屎官定义):
   业务场景为主 → 代码定位为辅（模块/函数名，不暴露行号签名）→ 测试关注点结尾
@@ -83,8 +83,8 @@ MODULE_SUMMARY_PROMPT = """\
 ## 模块内调用关系
 {call_relations}
 
-## 模块 Wiki 文档
-{wiki_content}
+## 外部文档上下文
+{context_content}
 
 {source_code_section}
 

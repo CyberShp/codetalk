@@ -12,7 +12,6 @@ export interface Task {
   design_doc: string | null;
   analysis_focus: string | null;
   prompt_content: string | null;
-  deepwiki_depth?: "fast" | "balanced" | "deep";
   material_ids: string[];
   progress: number;
   error_message: string | null;
@@ -40,7 +39,6 @@ export interface TaskCreate {
   design_doc?: string;
   analysis_focus?: string;
   prompt_content?: string;
-  deepwiki_depth?: "fast" | "balanced" | "deep";
 }
 
 export interface PromptTemplate {
@@ -110,6 +108,29 @@ export interface GeneralSettings {
   active_chat_model_id: string;
   active_embedding_model_id: string;
 }
+
+export type AgentRuntimePromptTransport = "stdin" | "argv_last";
+export type AgentRuntimeOutputMode = "plain" | "ndjson" | "stream_json" | "auto";
+export type AgentRuntimeWorkingDirMode = "project" | "fixed" | "none";
+
+export interface AgentRuntime {
+  id: string;
+  name: string;
+  command: string;
+  args: string[];
+  prompt_transport: AgentRuntimePromptTransport;
+  output_mode: AgentRuntimeOutputMode;
+  working_dir_mode: AgentRuntimeWorkingDirMode;
+  fixed_working_dir: string;
+  env: Record<string, string>;
+  health_command: string;
+  timeout_seconds: number;
+  enabled: boolean;
+  created_at: string;
+  updated_at: string;
+}
+
+export type AgentRuntimeCreate = Omit<AgentRuntime, "id" | "created_at" | "updated_at">;
 
 export interface AgentProviderSettingsCustomProvider {
   id: string;
@@ -942,6 +963,73 @@ export interface WorkspaceModule {
   name: string;
 }
 
+export type AIThreadScope =
+  | "workspace"
+  | "workbench_task_run"
+  | "workflow"
+  | "report"
+  | "module"
+  | "requirement_doc"
+  | "test_case_set"
+  | "freeform";
+
+export interface AIContextReference {
+  source_type: string;
+  source_id: string;
+  title: string;
+  excerpt: string;
+  metadata: Record<string, unknown>;
+}
+
+export interface AIConversation {
+  id: string;
+  scope_type: AIThreadScope;
+  scope_id: string;
+  workspace_id: string;
+  memory_namespace: string;
+  runtime_type: "builtin_llm" | "agent_runtime" | string;
+  agent_runtime_id: string | null;
+  title: string;
+  status: "idle" | "running" | "error" | string;
+  initial_context: Record<string, unknown>;
+  created_at: string;
+  updated_at: string;
+  latest_run?: AIConversationRun | null;
+}
+
+export interface AIMessage {
+  id: string;
+  conversation_id: string;
+  run_id: string | null;
+  role: "user" | "assistant" | "system";
+  content: string;
+  references: AIContextReference[];
+  actions: Array<{ id: string; label: string } | Record<string, unknown>>;
+  created_at: string;
+}
+
+export interface AIConversationRun {
+  id: string;
+  conversation_id: string;
+  status: "queued" | "running" | "completed" | "failed" | "cancelled" | string;
+  cursor: number;
+  error: string | null;
+  model: string | null;
+  token_usage: Record<string, unknown>;
+  created_at: string;
+  started_at: string | null;
+  completed_at: string | null;
+}
+
+export interface AIRunEvent {
+  event_id: number;
+  run_id: string;
+  conversation_id: string;
+  event_type: "status" | "delta" | "done" | "error" | string;
+  payload: Record<string, unknown>;
+  created_at: string;
+}
+
 /* ── Analysis plan / scope preview (workspace analysis modal) ── */
 
 export type AnalysisObjectKind =
@@ -1067,35 +1155,6 @@ export interface EmbeddingStatus {
   embedded_materials: number;
   total_chunks: number;
   rag_ready: boolean;
-}
-
-/* ── DeepWiki types (V2) ── */
-
-export type DeepWikiStatus = "pending" | "running" | "completed" | "failed";
-
-export interface DeepWikiPage {
-  id: string;
-  title: string;
-  content: string;
-  filePaths?: string[];
-  importance?: string;
-  relatedPages?: string[];
-}
-
-export interface DeepWikiRepo {
-  id: string;
-  repo_path: string;
-  name: string;
-  page_count: number;
-  status: DeepWikiStatus;
-  progress: number;
-  created_at: string;
-  updated_at: string;
-}
-
-export interface DeepWikiRepoCreate {
-  name: string;
-  repo_path: string;
 }
 
 /* ── Coverage analysis types ── */

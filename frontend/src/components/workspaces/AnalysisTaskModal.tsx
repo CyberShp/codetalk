@@ -170,8 +170,8 @@ export default function AnalysisTaskModal({
   if (!open) return null;
 
   return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40">
-      <div className="w-[920px] max-w-[95vw] max-h-[92vh] rounded-2xl bg-surface border border-outline-variant/30 shadow-xl flex flex-col overflow-hidden">
+    <div className="ct-modal-backdrop fixed inset-0 z-50 flex items-center justify-center bg-black/40">
+      <div className="ct-modal-panel w-[920px] max-w-[95vw] max-h-[92vh] rounded-2xl bg-surface border border-outline-variant/30 shadow-xl flex flex-col overflow-hidden">
         <header className="flex items-center justify-between px-5 py-3 border-b border-outline-variant/20">
           <div>
             <h2 className="text-base font-semibold text-on-surface">
@@ -203,21 +203,27 @@ export default function AnalysisTaskModal({
             </div>
           ) : (
             <>
-              <AnalysisObjectEditor
-                objects={objects}
-                onChange={setObjects}
-              />
-              <div className="grid grid-cols-1 lg:grid-cols-2 gap-5">
-                <FocusOptionsEditor
-                  value={plan.focus}
-                  onChange={handleFocusChange}
-                />
-                <ReportPlanEditor
-                  reports={plan.reports}
-                  onChange={handleReportsChange}
+              <div className="ct-reveal">
+                <AnalysisObjectEditor
+                  objects={objects}
+                  onChange={setObjects}
                 />
               </div>
-              <div className="space-y-2">
+              <div className="grid grid-cols-1 lg:grid-cols-2 gap-5">
+                <div className="ct-reveal ct-reveal-delay-1">
+                  <FocusOptionsEditor
+                    value={plan.focus}
+                    onChange={handleFocusChange}
+                  />
+                </div>
+                <div className="ct-reveal ct-reveal-delay-2">
+                  <ReportPlanEditor
+                    reports={plan.reports}
+                    onChange={handleReportsChange}
+                  />
+                </div>
+              </div>
+              <div className="ct-reveal ct-reveal-delay-3 space-y-2">
                 <label className="text-sm font-medium text-on-surface">
                   附加说明（可选）
                 </label>
@@ -230,7 +236,7 @@ export default function AnalysisTaskModal({
                 />
               </div>
               {/* Coverage gap test design */}
-              <div className="rounded-xl border border-outline-variant/30 bg-surface-container-low p-3 space-y-2">
+              <div className="ct-interactive-card ct-reveal-delay-4 rounded-xl border border-outline-variant/30 bg-surface-container-low p-3 space-y-2">
                 <label className="flex items-center gap-2 text-sm font-medium text-on-surface cursor-pointer">
                   <input
                     type="checkbox"
@@ -266,7 +272,9 @@ export default function AnalysisTaskModal({
                 )}
               </div>
 
-              <ScopePreviewPanel preview={preview} loading={previewLoading} />
+              <div className="ct-reveal ct-reveal-delay-4">
+                <ScopePreviewPanel preview={preview} loading={previewLoading} />
+              </div>
               {previewError && (
                 <div className="rounded-md bg-error/10 border border-error/30 px-3 py-2 text-xs text-error">
                   {previewError}

@@ -7,6 +7,8 @@ import type {
   LLMConfigCreate,
   LLMConfigUpdate,
   GeneralSettings,
+  AgentRuntime,
+  AgentRuntimeCreate,
   AgentProviderSettings,
   ToolInfo,
   PromptTemplate,
@@ -19,8 +21,6 @@ import type {
   WorkspaceCreate,
   WorkspaceMaterial,
   EmbeddingStatus,
-  DeepWikiRepo,
-  DeepWikiRepoCreate,
   AnalysisPlan,
   ScopePreview,
   ExternalAgentStartupProbeResult,
@@ -53,6 +53,11 @@ import type {
   WorkbenchSmokeE2EResult,
   WorkbenchTaskArtifactContent,
   WorkbenchTaskArtifactManifest,
+  AIConversation,
+  AIConversationRun,
+  AIMessage,
+  AIThreadScope,
+  AIContextReference,
 } from "./types";
 
 const CONFIGURED_API_BASE = process.env.NEXT_PUBLIC_API_URL?.replace(/\/$/, "");
@@ -60,8 +65,8 @@ const CONFIGURED_API_BASE = process.env.NEXT_PUBLIC_API_URL?.replace(/\/$/, "");
 export const BASE =
   CONFIGURED_API_BASE ??
   (typeof window !== "undefined"
-    ? `${window.location.protocol}//${window.location.hostname}:8100`
-    : "http://localhost:8100");
+    ? `${window.location.protocol}//${window.location.hostname}:3004`
+    : "http://localhost:3004");
 
 function extractErrorMessage(body: string): string {
   const text = body.trim();
@@ -252,6 +257,37 @@ export const api = {
         method: "PUT",
         body: JSON.stringify(data),
       }),
+
+    listAgentRuntimes: (params?: { enabled?: boolean }) => {
+      const query = new URLSearchParams({
+        ...(params?.enabled !== undefined ? { enabled: String(params.enabled) } : {}),
+      });
+      const suffix = query.toString() ? `?${query.toString()}` : "";
+      return request<{ items: AgentRuntime[] }>(`/api/settings/agent-runtimes${suffix}`);
+    },
+
+    createAgentRuntime: (data: AgentRuntimeCreate) =>
+      request<AgentRuntime>("/api/settings/agent-runtimes", {
+        method: "POST",
+        body: JSON.stringify(data),
+      }),
+
+    updateAgentRuntime: (id: string, data: Partial<AgentRuntimeCreate>) =>
+      request<AgentRuntime>(`/api/settings/agent-runtimes/${encodeURIComponent(id)}`, {
+        method: "PUT",
+        body: JSON.stringify(data),
+      }),
+
+    deleteAgentRuntime: (id: string) =>
+      request<void>(`/api/settings/agent-runtimes/${encodeURIComponent(id)}`, {
+        method: "DELETE",
+      }),
+
+    probeAgentRuntime: (id: string) =>
+      request<{ success: boolean; message: string }>(
+        `/api/settings/agent-runtimes/${encodeURIComponent(id)}/probe`,
+        { method: "POST" },
+      ),
   },
 
   // ── 提示词模板 ──
@@ -276,7 +312,7 @@ export const api = {
       request<void>(`/api/prompts/${id}`, { method: "DELETE" }),
   },
 
-  // ── 工具状态 ──
+  // ── 工具进程 API（Workbench 探测使用） ──
   tools: {
     status: () => request<ToolInfo[]>("/api/tools/procs"),
 
@@ -484,35 +520,96 @@ export const api = {
       `${BASE}/api/workspaces/${wsId}/chat/export`,
   },
 
-  // ── DeepWiki (V2) ──
-  deepwiki: {
-    list: () =>
-      request<DeepWikiRepo[]>("/api/deepwiki/repos"),
+  aiConversations: {
+    list: (params?: {
+      scope_type?: AIThreadScope;
+      scope_id?: string;
+      workspace_id?: string;
+      memory_namespace?: string;
+      status?: string;
+      limit?: number;
+    }) => {
+      const query = new URLSearchParams({
+        ...(params?.scope_type ? { scope_type: params.scope_type } : {}),
+        ...(params?.scope_id ? { scope_id: params.scope_id } : {}),
+        ...(params?.workspace_id ? { workspace_id: params.workspace_id } : {}),
+        ...(params?.memory_namespace ? { memory_namespace: params.memory_namespace } : {}),
+        ...(params?.status ? { status: params.status } : {}),
+        ...(params?.limit ? { limit: String(params.limit) } : {}),
+      });
+      const suffix = query.toString() ? `?${query.toString()}` : "";
+      return request<{ items: AIConversation[] }>(`/api/ai/conversations${suffix}`);
+    },
 
-    create: (data: DeepWikiRepoCreate) =>
-      request<DeepWikiRepo>("/api/deepwiki/repos", {
+    create: (data: {
+      scope_type: AIThreadScope;
+      scope_id: string;
+      workspace_id?: string;
+      memory_namespace?: string;
+      runtime_type?: "builtin_llm" | "agent_runtime";
+      agent_runtime_id?: string | null;
+      title: string;
+      initial_context?: Record<string, unknown>;
+    }) =>
+      request<AIConversation>("/api/ai/conversations", {
         method: "POST",
         body: JSON.stringify(data),
       }),
 
-    get: (id: string) => request<DeepWikiRepo>(`/api/deepwiki/repos/${id}`),
+    createForScope: async (data: {
+      scope_type: AIThreadScope;
+      scope_id: string;
+      workspace_id?: string;
+      memory_namespace?: string;
+      runtime_type?: "builtin_llm" | "agent_runtime";
+      agent_runtime_id?: string | null;
+      title: string;
+      initial_context?: Record<string, unknown>;
+    }) => {
+      const existing = await api.aiConversations.list({
+        scope_type: data.scope_type,
+        scope_id: data.scope_id,
+        limit: 1,
+      });
+      return existing.items[0] ?? api.aiConversations.create(data);
+    },
 
-    generate: (id: string) =>
-      request<{ status: string; message: string }>(
-        `/api/deepwiki/repos/${id}/generate`,
+    update: (id: string, data: { runtime_type: "builtin_llm" | "agent_runtime"; agent_runtime_id?: string | null }) =>
+      request<AIConversation>(`/api/ai/conversations/${encodeURIComponent(id)}`, {
+        method: "PATCH",
+        body: JSON.stringify(data),
+      }),
+
+    get: (id: string) =>
+      request<AIConversation>(`/api/ai/conversations/${encodeURIComponent(id)}`),
+
+    messages: (id: string) =>
+      request<{ items: AIMessage[] }>(
+        `/api/ai/conversations/${encodeURIComponent(id)}/messages`,
+        { cache: "no-store" },
+      ),
+
+    send: (id: string, content: string) =>
+      request<{
+        message: AIMessage;
+        run: AIConversationRun;
+        references: AIContextReference[];
+      }>(`/api/ai/conversations/${encodeURIComponent(id)}/messages`, {
+        method: "POST",
+        body: JSON.stringify({ content }),
+      }),
+
+    stream: (id: string, cursor = 0, signal?: AbortSignal): Promise<Response> =>
+      fetch(`${BASE}/api/ai/conversations/${encodeURIComponent(id)}/stream?cursor=${cursor}`, {
+        credentials: "include",
+        signal,
+      }),
+
+    cancel: (id: string) =>
+      request<{ run: AIConversationRun | null }>(
+        `/api/ai/conversations/${encodeURIComponent(id)}/cancel`,
         { method: "POST" },
       ),
-
-    status: (id: string) =>
-      request<{ running: boolean; progress: number; error: string | null }>(
-        `/api/deepwiki/repos/${id}/status`,
-      ),
-
-    pages: (id: string) =>
-      request<{ id: string; title: string }[]>(`/api/deepwiki/repos/${id}/pages`),
-
-    page: (id: string, index: number) =>
-      request<import("./types").DeepWikiPage>(`/api/deepwiki/repos/${id}/pages/${index}`),
   },
 
   workbench: {

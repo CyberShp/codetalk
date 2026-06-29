@@ -1,7 +1,7 @@
 "use client";
 
 import React, { useEffect, useRef, useState, useCallback } from "react";
-import { useParams } from "next/navigation";
+import { useParams, useRouter } from "next/navigation";
 import Link from "next/link";
 import {
   ArrowLeft,
@@ -124,7 +124,15 @@ function AnalyzeBadge({
   return null;
 }
 
-function ReportCard({ report, wsId }: { report: WorkspaceReportMeta; wsId: string }) {
+function ReportCard({
+  report,
+  wsId,
+  onContinue,
+}: {
+  report: WorkspaceReportMeta;
+  wsId: string;
+  onContinue: (report: WorkspaceReportMeta) => void;
+}) {
   const [expanded, setExpanded] = useState(false);
   const [content, setContent] = useState<string | null>(null);
   const [loadingContent, setLoadingContent] = useState(false);
@@ -164,7 +172,7 @@ function ReportCard({ report, wsId }: { report: WorkspaceReportMeta; wsId: strin
   };
 
   return (
-    <div className="rounded-lg border border-outline-variant/30 bg-surface-container-low overflow-hidden">
+    <div className="ct-interactive-card rounded-lg border border-outline-variant/30 bg-surface-container-low overflow-hidden">
       <button
         onClick={handleToggle}
         className="w-full flex items-center justify-between px-4 py-3 hover:bg-surface-container transition-colors text-left"
@@ -182,7 +190,7 @@ function ReportCard({ report, wsId }: { report: WorkspaceReportMeta; wsId: strin
         )}
       </button>
       {expanded && (
-        <div className="px-4 pb-4 border-t border-outline-variant/20">
+        <div className="ct-reveal px-4 pb-4 border-t border-outline-variant/20">
           {loadingContent ? (
             <div className="flex justify-center mt-3">
               <Loader2 size={16} className="animate-spin text-primary" />
@@ -202,7 +210,7 @@ function ReportCard({ report, wsId }: { report: WorkspaceReportMeta; wsId: strin
               {`该报告无正文内容（状态：${report.status}）。可能因截断或证据不足被标记为 partial/failed。`}
             </div>
           ) : (
-            <div className="mt-3 max-h-[560px] overflow-auto rounded-lg border border-[#d7e5f3] bg-[#f6f9fc] p-4 shadow-sm">
+            <div className="ct-reveal mt-3 max-h-[560px] overflow-auto rounded-lg border border-[#d7e5f3] bg-[#f6f9fc] p-4 shadow-sm">
               <MarkdownRenderer
                 content={content ?? "（暂无内容）"}
                 enableNumericCitations={false}
@@ -210,12 +218,21 @@ function ReportCard({ report, wsId }: { report: WorkspaceReportMeta; wsId: strin
               />
             </div>
           )}
+          <button
+            type="button"
+            onClick={() => onContinue(report)}
+            className="mt-3 inline-flex items-center gap-2 rounded-lg bg-primary px-3 py-2 text-xs font-semibold text-on-primary shadow-sm transition-opacity hover:opacity-90"
+          >
+            <MessageSquare size={13} />
+            围绕此报告继续追问
+          </button>
         </div>
       )}
     </div>
   );
 }
 
+// eslint-disable-next-line @typescript-eslint/no-unused-vars -- legacy workspace chat retained for compatibility while AI threads are the primary UI.
 function ChatPanel({
   wsId,
   indexed,
@@ -497,8 +514,51 @@ function ChatPanel({
   );
 }
 
+function AIThreadBridge({
+  workspace,
+  opening,
+  onOpenWorkspace,
+}: {
+  workspace: Workspace;
+  opening: boolean;
+  onOpenWorkspace: () => void;
+}) {
+  const completedReports = workspace.reports.filter((report) => report.status === "completed").length;
+  const activeMaterials = workspace.materials.filter((material) => material.is_active).length;
+
+  return (
+    <div className="ct-workspace-ai-bridge">
+      <div>
+        <div className="mb-3 inline-flex items-center gap-2 rounded-full border border-outline-variant/70 bg-white/80 px-3 py-1 text-xs font-semibold text-on-surface-variant shadow-sm">
+          <Sparkles size={14} />
+          持续 AI 调查
+        </div>
+        <h2>在宽屏 AI 线程中继续分析</h2>
+        <p>
+          工作空间继续负责材料、索引和报告生成；追问开发修改、测试思路、需求文档和报告结论时，统一进入可恢复的 AI 调查线程。
+        </p>
+      </div>
+      <div className="ct-workspace-ai-bridge__stats">
+        <span>{completedReports} 份完成报告</span>
+        <span>{activeMaterials} 个活跃材料</span>
+        <span>{workspace.indexed === 1 ? "索引就绪" : "等待索引"}</span>
+      </div>
+      <button
+        type="button"
+        onClick={onOpenWorkspace}
+        disabled={opening}
+        className="inline-flex w-fit items-center gap-2 rounded-xl bg-primary px-4 py-2.5 text-sm font-semibold text-on-primary shadow-[0_18px_36px_rgba(15,23,42,0.18)] transition-all hover:-translate-y-0.5 hover:shadow-[0_24px_48px_rgba(15,23,42,0.22)] disabled:translate-y-0 disabled:opacity-50"
+      >
+        {opening ? <Loader2 size={16} className="animate-spin" /> : <MessageSquare size={16} />}
+        打开工作空间 AI 线程
+      </button>
+    </div>
+  );
+}
+
 export default function WorkspaceDetailPage() {
   const params = useParams<{ id: string }>();
+  const router = useRouter();
   const wsId = params.id;
 
   const [workspace, setWorkspace] = useState<Workspace | null>(null);
@@ -518,6 +578,7 @@ export default function WorkspaceDetailPage() {
   const [logSteps, setLogSteps] = useState<TaskStep[]>([]);
   const [logElapsedSecs, setLogElapsedSecs] = useState(0);
   const [currentAnalysisTaskId, setCurrentAnalysisTaskId] = useState<string | null>(null);
+  const [openingConversation, setOpeningConversation] = useState(false);
 
   const pollIndexRef = useRef<ReturnType<typeof setInterval> | null>(null);
   const pollAnalyzeRef = useRef<ReturnType<typeof setInterval> | null>(null);
@@ -779,6 +840,39 @@ export default function WorkspaceDetailPage() {
     }
   };
 
+  const openConversation = async ({
+    scopeType,
+    scopeId,
+    title,
+    initialContext,
+  }: {
+    scopeType: "workspace" | "report";
+    scopeId: string;
+    title: string;
+    initialContext?: Record<string, unknown>;
+  }) => {
+    setOpeningConversation(true);
+    try {
+      const conversation = await api.aiConversations.createForScope({
+        scope_type: scopeType,
+        scope_id: scopeId,
+        workspace_id: wsId,
+        memory_namespace: `workspace:${wsId}`,
+        title,
+        initial_context: {
+          ...(initialContext ?? {}),
+          workspace_id: wsId,
+          memory_namespace: `workspace:${wsId}`,
+        },
+      });
+      router.push(`/ai/${conversation.id}`);
+    } catch (e: unknown) {
+      alert(e instanceof Error ? e.message : "创建 AI 线程失败");
+    } finally {
+      setOpeningConversation(false);
+    }
+  };
+
   if (loading) {
     return (
       <div className="flex justify-center py-16">
@@ -827,7 +921,7 @@ export default function WorkspaceDetailPage() {
       </Link>
 
       {/* Header */}
-      <div className="flex items-start justify-between mb-6">
+      <div className="ct-reveal flex items-start justify-between mb-6">
         <div className="flex items-center gap-3">
           <FolderOpen size={28} className="text-primary shrink-0" />
           <div>
@@ -910,7 +1004,7 @@ export default function WorkspaceDetailPage() {
           </div>
           <div className="h-1.5 bg-surface-container rounded-full overflow-hidden">
             <div
-              className="h-full bg-primary rounded-full transition-all duration-500"
+              className="ct-progress-fill h-full rounded-full transition-all duration-500"
               style={{ width: `${analyzeProgress}%` }}
             />
           </div>
@@ -918,12 +1012,12 @@ export default function WorkspaceDetailPage() {
       )}
 
       {/* Tabs */}
-      <div className="flex gap-1 mb-6 border-b border-outline-variant/20">
+      <div className="ct-reveal ct-reveal-delay-1 flex gap-1 mb-6 border-b border-outline-variant/20">
         {(["reports", "materials", "chat", "logs"] as Tab[]).map((t) => (
           <button
             key={t}
             onClick={() => setTab(t)}
-            className={`flex items-center gap-1.5 px-4 py-2 text-sm font-medium border-b-2 transition-colors ${
+            className={`relative flex items-center gap-1.5 px-4 py-2 text-sm font-medium border-b-2 transition-colors ${
               tab === t
                 ? "border-primary text-primary"
                 : "border-transparent text-on-surface-variant hover:text-on-surface"
@@ -943,8 +1037,11 @@ export default function WorkspaceDetailPage() {
               : t === "materials"
                 ? `材料 (${workspace.materials.length})`
                 : t === "chat"
-                  ? "对话"
+                  ? "AI线程"
                   : "执行日志"}
+            {tab === t && (
+              <span className="absolute inset-x-3 -bottom-0.5 h-0.5 rounded-full bg-primary shadow-[0_0_10px_rgba(15,125,184,0.55)]" />
+            )}
           </button>
         ))}
       </div>
@@ -1018,6 +1115,18 @@ export default function WorkspaceDetailPage() {
                   key={`${report.task_id ?? "legacy"}:${report.id ?? report.report_type}`}
                   report={report}
                   wsId={wsId}
+                  onContinue={(item) =>
+                    void openConversation({
+                      scopeType: "report",
+                      scopeId: item.id,
+                      title: `${item.title?.trim() || item.report_type} · AI 追问`,
+                      initialContext: {
+                        workspace_id: wsId,
+                        report_type: item.report_type,
+                        task_id: item.task_id,
+                      },
+                    })
+                  }
                 />
               ))}
             </div>
@@ -1036,7 +1145,7 @@ export default function WorkspaceDetailPage() {
           ) : (
             <div className="space-y-1.5">
               {logSteps.map((s, i) => (
-                <div key={`${s.timestamp}-${i}`} className="flex items-start gap-2">
+                <div key={`${s.timestamp}-${i}`} className="ct-log-line flex items-start gap-2 px-1.5 py-0.5">
                   <span className="text-on-surface-variant/40 shrink-0 tabular-nums">
                     {new Date(s.timestamp).toLocaleTimeString()}
                   </span>
@@ -1170,11 +1279,20 @@ export default function WorkspaceDetailPage() {
 
       {/* Chat tab */}
       {tab === "chat" && (
-        <ChatPanel
-          wsId={wsId}
-          indexed={workspace.indexed}
-          lastIndexError={workspace.last_index_error}
-          reports={workspace.reports}
+        <AIThreadBridge
+          workspace={workspace}
+          opening={openingConversation}
+          onOpenWorkspace={() =>
+            void openConversation({
+              scopeType: "workspace",
+              scopeId: wsId,
+              title: `${workspace.name} · AI 调查线程`,
+              initialContext: {
+                repo_path: workspace.repo_path,
+                completed_reports: workspace.reports.filter((report) => report.status === "completed").length,
+              },
+            })
+          }
         />
       )}
 

@@ -6,6 +6,7 @@ const frontendBindHost =
   process.env.CODETALK_FRONTEND_BIND_HOST ?? "0.0.0.0";
 const backendBindHost = process.env.CODETALK_BACKEND_BIND_HOST ?? "0.0.0.0";
 const browserHost = process.env.CODETALK_BROWSER_HOST ?? "localhost";
+const chromiumExecutablePath = process.env.PLAYWRIGHT_CHROMIUM_EXECUTABLE_PATH;
 
 export default defineConfig({
   testDir: "./e2e",
@@ -18,6 +19,9 @@ export default defineConfig({
     baseURL: `http://${browserHost}:${frontendPort}`,
     trace: "on-first-retry",
     screenshot: "only-on-failure",
+    launchOptions: chromiumExecutablePath
+      ? { executablePath: chromiumExecutablePath }
+      : undefined,
   },
   projects: [
     {

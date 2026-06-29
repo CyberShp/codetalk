@@ -57,19 +57,6 @@ async def test_deploy_missing_mode_uses_native(client):
     assert resp.status_code != 400
 
 
-async def test_supplement_deepwiki_without_path_uses_default(client):
-    resp = await client.post("/api/deploy/supplement/deepwiki", json={})
-    # Empty path now uses the default path instead of rejecting.
-    assert resp.status_code == 200
-    assert "job_id" in resp.json()
-
-
-async def test_supplement_deepwiki_empty_path_uses_default(client):
-    resp = await client.post("/api/deploy/supplement/deepwiki", json={"deepwikiPath": "   "})
-    assert resp.status_code == 200
-    assert "job_id" in resp.json()
-
-
 async def test_supplement_gitnexus_returns_job_id(client):
     resp = await client.post("/api/deploy/supplement/gitnexus")
     assert resp.status_code == 200

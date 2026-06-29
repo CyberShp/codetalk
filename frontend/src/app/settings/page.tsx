@@ -15,12 +15,15 @@ import {
   Globe,
   ShieldCheck,
   Bot,
+  Terminal,
 } from "lucide-react";
 import { api } from "@/lib/api";
 import type {
   LLMConfig,
   LLMConfigCreate,
   GeneralSettings,
+  AgentRuntime,
+  AgentRuntimeCreate,
   AgentProviderSettings,
   ApiType,
 } from "@/lib/types";
@@ -48,6 +51,85 @@ const DEFAULT_AGENT_PROVIDER_SETTINGS: AgentProviderSettings = {
   external_agent_custom_providers: [],
 };
 
+const EMPTY_AGENT_RUNTIME_FORM: AgentRuntimeCreate = {
+  name: "",
+  command: "",
+  args: [],
+  prompt_transport: "stdin",
+  output_mode: "plain",
+  working_dir_mode: "project",
+  fixed_working_dir: "",
+  env: {},
+  health_command: "",
+  timeout_seconds: 120,
+  enabled: true,
+};
+
+const AGENT_RUNTIME_PRESETS = [
+  {
+    id: "claude-code-router",
+    label: "Claude Code Router",
+    description: "你平时输入 ccr code 打开 Claude Code，就选这个。",
+    commandPreview: "ccr code",
+    form: {
+      ...EMPTY_AGENT_RUNTIME_FORM,
+      name: "Claude Code",
+      command: "ccr",
+      args: ["code"],
+      prompt_transport: "stdin",
+      output_mode: "plain",
+    },
+  },
+  {
+    id: "opencode",
+    label: "OpenCode",
+    description: "你平时输入 opencode run 执行任务，就选这个。",
+    commandPreview: "opencode run",
+    form: {
+      ...EMPTY_AGENT_RUNTIME_FORM,
+      name: "OpenCode",
+      command: "opencode",
+      args: ["run"],
+      prompt_transport: "argv_last",
+      output_mode: "auto",
+    },
+  },
+  {
+    id: "nga",
+    label: "NGA / CodeAgent",
+    description: "你平时输入 nga 打开内部 CodeAgent，就选这个。",
+    commandPreview: "nga",
+    form: {
+      ...EMPTY_AGENT_RUNTIME_FORM,
+      name: "NGA CodeAgent",
+      command: "nga",
+      args: [],
+      prompt_transport: "stdin",
+      output_mode: "plain",
+    },
+  },
+  {
+    id: "custom",
+    label: "自定义命令",
+    description: "公司内还有别的 Agent 命令时，从这里开始填。",
+    commandPreview: "your-agent run",
+    form: {
+      ...EMPTY_AGENT_RUNTIME_FORM,
+      name: "自定义 Agent",
+      command: "",
+      args: [],
+      prompt_transport: "stdin",
+      output_mode: "plain",
+    },
+  },
+] satisfies Array<{
+  id: string;
+  label: string;
+  description: string;
+  commandPreview: string;
+  form: AgentRuntimeCreate;
+}>;
+
 export default function SettingsPage() {
   const [configs, setConfigs] = useState<LLMConfig[]>([]);
   const [general, setGeneral] = useState<GeneralSettings>({
@@ -72,6 +154,17 @@ export default function SettingsPage() {
   const [agentProviders, setAgentProviders] = useState<AgentProviderSettings>({
     ...DEFAULT_AGENT_PROVIDER_SETTINGS,
   });
+  const [agentRuntimes, setAgentRuntimes] = useState<AgentRuntime[]>([]);
+  const [agentRuntimeForm, setAgentRuntimeForm] = useState<AgentRuntimeCreate>({
+    ...EMPTY_AGENT_RUNTIME_FORM,
+  });
+  const [agentRuntimeArgsText, setAgentRuntimeArgsText] = useState("");
+  const [agentRuntimeEnvJson, setAgentRuntimeEnvJson] = useState("{}");
+  const [savingAgentRuntime, setSavingAgentRuntime] = useState(false);
+  const [agentRuntimeProbe, setAgentRuntimeProbe] = useState<Record<string, string>>({});
+  const [showAgentAdvanced, setShowAgentAdvanced] = useState(false);
+  const [showWorkbenchCliSettings, setShowWorkbenchCliSettings] = useState(false);
+  const [showLlmSettings, setShowLlmSettings] = useState(false);
   const [customProvidersJson, setCustomProvidersJson] = useState("[]");
   const [savingAgentProviders, setSavingAgentProviders] = useState(false);
 
@@ -79,7 +172,7 @@ export default function SettingsPage() {
     setLoading(true);
     setError(null);
     try {
-      const [llmList, generalData, agentProviderData] = await Promise.all([
+      const [llmList, generalData, agentProviderData, runtimeData] = await Promise.all([
         api.settings.listLLM(),
         api.settings.getGeneral().catch(
           () =>
@@ -94,10 +187,12 @@ export default function SettingsPage() {
         api.settings.getAgentProviders().catch(
           () => ({ ...DEFAULT_AGENT_PROVIDER_SETTINGS }) as AgentProviderSettings,
         ),
+        api.settings.listAgentRuntimes().catch(() => ({ items: [] as AgentRuntime[] })),
       ]);
       setConfigs(llmList);
       setGeneral(generalData);
       setAgentProviders(agentProviderData);
+      setAgentRuntimes(runtimeData.items);
       setCustomProvidersJson(JSON.stringify(agentProviderData.external_agent_custom_providers, null, 2));
     } catch (err: unknown) {
       setError(err instanceof Error ? err.message : "加载设置失败");
@@ -258,11 +353,82 @@ export default function SettingsPage() {
       setAgentProviders(saved);
       setCustomProvidersJson(JSON.stringify(saved.external_agent_custom_providers, null, 2));
     } catch (err: unknown) {
-      setError(err instanceof Error ? err.message : "Failed to save Agent provider settings");
+      setError(err instanceof Error ? err.message : "保存 Workbench CLI 设置失败");
     } finally {
       setSavingAgentProviders(false);
     }
   }, [agentProviders, customProvidersJson]);
+
+  const updateAgentRuntimeForm = useCallback(
+    <K extends keyof AgentRuntimeCreate>(key: K, value: AgentRuntimeCreate[K]) => {
+      setAgentRuntimeForm((prev) => ({ ...prev, [key]: value }));
+    },
+    [],
+  );
+
+  const applyAgentRuntimePreset = useCallback((preset: (typeof AGENT_RUNTIME_PRESETS)[number]) => {
+    setAgentRuntimeForm({ ...preset.form });
+    setAgentRuntimeArgsText(preset.form.args.join(" "));
+    setAgentRuntimeEnvJson(JSON.stringify(preset.form.env ?? {}, null, 2));
+    setShowAgentAdvanced(false);
+  }, []);
+
+  const handleCreateAgentRuntime = useCallback(async () => {
+    if (!agentRuntimeForm.name.trim() || !agentRuntimeForm.command.trim()) {
+      setError("请填写执行器名称和命令");
+      return;
+    }
+    setSavingAgentRuntime(true);
+    setError(null);
+    try {
+      const env = JSON.parse(agentRuntimeEnvJson || "{}");
+      if (!env || typeof env !== "object" || Array.isArray(env)) {
+        throw new Error("环境变量 JSON 必须是对象");
+      }
+      await api.settings.createAgentRuntime({
+        ...agentRuntimeForm,
+        args: agentRuntimeArgsText.split(/\s+/).map((item) => item.trim()).filter(Boolean),
+        env,
+      });
+      setAgentRuntimeForm({ ...EMPTY_AGENT_RUNTIME_FORM });
+      setAgentRuntimeArgsText("");
+      setAgentRuntimeEnvJson("{}");
+      await loadData();
+    } catch (err: unknown) {
+      setError(err instanceof Error ? err.message : "保存 Agent 执行器失败");
+    } finally {
+      setSavingAgentRuntime(false);
+    }
+  }, [agentRuntimeArgsText, agentRuntimeEnvJson, agentRuntimeForm, loadData]);
+
+  const handleDeleteAgentRuntime = useCallback(
+    async (id: string) => {
+      if (!confirm("确定要删除这个 AI 线程执行器吗？")) return;
+      try {
+        await api.settings.deleteAgentRuntime(id);
+        await loadData();
+      } catch (err: unknown) {
+        setError(err instanceof Error ? err.message : "删除 Agent 执行器失败");
+      }
+    },
+    [loadData],
+  );
+
+  const handleProbeAgentRuntime = useCallback(async (runtime: AgentRuntime) => {
+    setAgentRuntimeProbe((prev) => ({ ...prev, [runtime.id]: "探测中..." }));
+    try {
+      const result = await api.settings.probeAgentRuntime(runtime.id);
+      setAgentRuntimeProbe((prev) => ({
+        ...prev,
+        [runtime.id]: `${result.success ? "可用" : "不可用"}：${result.message}`,
+      }));
+    } catch (err: unknown) {
+      setAgentRuntimeProbe((prev) => ({
+        ...prev,
+        [runtime.id]: err instanceof Error ? err.message : "探测失败",
+      }));
+    }
+  }, []);
 
   if (loading) {
     return (
@@ -279,7 +445,7 @@ export default function SettingsPage() {
         设置
       </h1>
       <p className="text-sm text-on-surface-variant mb-6">
-        管理 LLM 配置与通用设置
+        先配置本机 Agent。LLM、Workbench 探测和代理属于可选高级配置。
       </p>
 
       {error && (
@@ -288,32 +454,286 @@ export default function SettingsPage() {
         </div>
       )}
 
-      {/* Agent CLI settings */}
-      <div className="mb-6 bg-surface-container rounded-xl border border-outline-variant/20 p-5">
-        <div className="mb-4 flex items-center justify-between gap-3">
-          <div>
-            <h2 className="flex items-center gap-2 text-base font-medium text-on-surface">
-              <ShieldCheck size={18} />
-              Agent CLI Settings
-            </h2>
-            <p className="mt-1 text-xs text-on-surface-variant">
-              Configure Claude Code Router, OpenCode, and intranet Agent CLIs used by Workbench tasks.
-            </p>
+      {/* AI thread runtime settings */}
+      <div className="mb-6 overflow-hidden rounded-2xl border border-outline-variant/20 bg-surface-container shadow-[0_18px_60px_rgba(15,23,42,0.08)]">
+        <div className="border-b border-outline-variant/15 bg-[linear-gradient(135deg,rgba(255,255,255,0.92),rgba(248,250,252,0.74))] p-5">
+          <div className="flex flex-wrap items-start justify-between gap-3">
+            <div>
+              <h2 className="flex items-center gap-2 text-base font-semibold text-on-surface">
+                <Terminal size={18} />
+                先配置你平时用的 Agent
+              </h2>
+              <p className="mt-1 max-w-2xl text-sm text-on-surface-variant">
+                选择你在终端里常用的启动方式。AI 线程会直接调用这些本机 Agent；只有选择“内置模型”时，才需要下面的 LLM 配置。
+              </p>
+            </div>
+            <span className="rounded-full border border-outline-variant/20 bg-surface px-3 py-1 text-xs font-medium text-on-surface-variant">
+              推荐先完成这一步
+            </span>
           </div>
-          <button
-            type="button"
-            onClick={handleSaveAgentProviders}
-            disabled={savingAgentProviders}
-            className="flex items-center gap-2 rounded-lg bg-primary px-3 py-1.5 text-sm text-on-primary transition-opacity hover:opacity-90 disabled:opacity-50"
-          >
-            {savingAgentProviders ? <Loader2 size={14} className="animate-spin" /> : <Save size={14} />}
-            Save Agent CLIs
-          </button>
+
+          <div className="mt-4 grid gap-3 md:grid-cols-2 xl:grid-cols-4">
+            {AGENT_RUNTIME_PRESETS.map((preset) => {
+              const selected =
+                agentRuntimeForm.name === preset.form.name &&
+                agentRuntimeForm.command === preset.form.command &&
+                agentRuntimeArgsText === preset.form.args.join(" ");
+              return (
+                <button
+                  key={preset.id}
+                  type="button"
+                  onClick={() => applyAgentRuntimePreset(preset)}
+                  className={`group rounded-xl border p-4 text-left transition-[transform,box-shadow,border-color,background] duration-200 hover:-translate-y-0.5 hover:shadow-[0_16px_36px_rgba(15,23,42,0.10)] ${
+                    selected
+                      ? "border-primary/45 bg-primary/10 shadow-[0_14px_34px_rgba(15,23,42,0.10)]"
+                      : "border-outline-variant/20 bg-surface/86 hover:border-outline-variant/45"
+                  }`}
+                >
+                  <div className="flex items-center justify-between gap-2">
+                    <strong className="text-sm font-semibold text-on-surface">{preset.label}</strong>
+                    <span className="h-2 w-2 rounded-full bg-primary opacity-0 transition-opacity group-hover:opacity-100" />
+                  </div>
+                  <p className="mt-2 min-h-10 text-xs leading-5 text-on-surface-variant">
+                    {preset.description}
+                  </p>
+                  <code className="mt-3 block truncate rounded-lg bg-surface-container-high px-2 py-1.5 font-data text-[11px] text-on-surface">
+                    {preset.commandPreview}
+                  </code>
+                </button>
+              );
+            })}
+          </div>
         </div>
+
+        <div className="p-5">
+          <div className="rounded-xl border border-outline-variant/18 bg-surface/80 p-4">
+            <div className="grid gap-3 lg:grid-cols-[1fr_1fr_1.25fr_auto]">
+              <div>
+                <label className="mb-1 block text-xs font-medium text-on-surface-variant">
+                  显示名称
+                </label>
+                <input
+                  value={agentRuntimeForm.name}
+                  onChange={(event) => updateAgentRuntimeForm("name", event.target.value)}
+                  placeholder="例如 Claude Code"
+                  className="w-full rounded-lg border border-outline-variant/30 bg-surface px-3 py-2 text-sm text-on-surface placeholder:text-on-surface-variant/50 focus:border-primary/50 focus:outline-none"
+                />
+              </div>
+              <div>
+                <label className="mb-1 block text-xs font-medium text-on-surface-variant">
+                  启动命令
+                </label>
+                <input
+                  value={agentRuntimeForm.command}
+                  onChange={(event) => updateAgentRuntimeForm("command", event.target.value)}
+                  placeholder="ccr / opencode / nga"
+                  className="w-full rounded-lg border border-outline-variant/30 bg-surface px-3 py-2 font-data text-sm text-on-surface placeholder:text-on-surface-variant/50 focus:border-primary/50 focus:outline-none"
+                />
+              </div>
+              <div>
+                <label className="mb-1 block text-xs font-medium text-on-surface-variant">
+                  启动参数
+                </label>
+                <input
+                  value={agentRuntimeArgsText}
+                  onChange={(event) => setAgentRuntimeArgsText(event.target.value)}
+                  placeholder="code 或 run"
+                  className="w-full rounded-lg border border-outline-variant/30 bg-surface px-3 py-2 font-data text-sm text-on-surface placeholder:text-on-surface-variant/50 focus:border-primary/50 focus:outline-none"
+                />
+              </div>
+              <button
+                type="button"
+                onClick={handleCreateAgentRuntime}
+                disabled={savingAgentRuntime}
+                className="mt-5 flex min-w-28 items-center justify-center gap-2 rounded-lg bg-primary px-4 py-2 text-sm font-medium text-on-primary transition-opacity hover:opacity-90 disabled:opacity-50 lg:mt-6"
+              >
+                {savingAgentRuntime ? <Loader2 size={14} className="animate-spin" /> : <Save size={14} />}
+                保存
+              </button>
+            </div>
+
+            <button
+              type="button"
+              onClick={() => setShowAgentAdvanced((value) => !value)}
+              className="mt-3 flex items-center gap-2 rounded-lg px-1 py-1 text-xs font-medium text-on-surface-variant hover:text-on-surface"
+            >
+              {showAgentAdvanced ? <ChevronUp size={14} /> : <ChevronDown size={14} />}
+              高级选项
+            </button>
+
+            {showAgentAdvanced && (
+              <div className="mt-3 grid gap-3 rounded-xl border border-outline-variant/15 bg-surface-container/60 p-3 lg:grid-cols-4">
+                <div>
+                  <label className="mb-1 block text-xs font-medium text-on-surface-variant">
+                    问题发送方式
+                  </label>
+                  <select
+                    value={agentRuntimeForm.prompt_transport}
+                    onChange={(event) => updateAgentRuntimeForm("prompt_transport", event.target.value as AgentRuntimeCreate["prompt_transport"])}
+                    className="w-full rounded-lg border border-outline-variant/30 bg-surface px-3 py-2 text-sm text-on-surface focus:border-primary/50 focus:outline-none"
+                  >
+                    <option value="stdin">通过 stdin 发送</option>
+                    <option value="argv_last">作为最后一个参数</option>
+                  </select>
+                </div>
+                <div>
+                  <label className="mb-1 block text-xs font-medium text-on-surface-variant">
+                    输出解析
+                  </label>
+                  <select
+                    value={agentRuntimeForm.output_mode}
+                    onChange={(event) => updateAgentRuntimeForm("output_mode", event.target.value as AgentRuntimeCreate["output_mode"])}
+                    className="w-full rounded-lg border border-outline-variant/30 bg-surface px-3 py-2 text-sm text-on-surface focus:border-primary/50 focus:outline-none"
+                  >
+                    <option value="plain">普通文本</option>
+                    <option value="auto">自动识别</option>
+                    <option value="ndjson">NDJSON</option>
+                    <option value="stream_json">stream-json</option>
+                  </select>
+                </div>
+                <div>
+                  <label className="mb-1 block text-xs font-medium text-on-surface-variant">
+                    工作目录
+                  </label>
+                  <select
+                    value={agentRuntimeForm.working_dir_mode}
+                    onChange={(event) => updateAgentRuntimeForm("working_dir_mode", event.target.value as AgentRuntimeCreate["working_dir_mode"])}
+                    className="w-full rounded-lg border border-outline-variant/30 bg-surface px-3 py-2 text-sm text-on-surface focus:border-primary/50 focus:outline-none"
+                  >
+                    <option value="project">当前项目目录</option>
+                    <option value="fixed">固定目录</option>
+                    <option value="none">不设置</option>
+                  </select>
+                </div>
+                <div>
+                  <label className="mb-1 block text-xs font-medium text-on-surface-variant">
+                    超时秒数
+                  </label>
+                  <input
+                    type="number"
+                    min={1}
+                    max={3600}
+                    value={agentRuntimeForm.timeout_seconds}
+                    onChange={(event) => updateAgentRuntimeForm("timeout_seconds", Number(event.target.value) || 120)}
+                    className="w-full rounded-lg border border-outline-variant/30 bg-surface px-3 py-2 font-data text-sm text-on-surface focus:border-primary/50 focus:outline-none"
+                  />
+                </div>
+                {agentRuntimeForm.working_dir_mode === "fixed" && (
+                  <div className="lg:col-span-4">
+                    <label className="mb-1 block text-xs font-medium text-on-surface-variant">
+                      固定工作目录
+                    </label>
+                    <input
+                      value={agentRuntimeForm.fixed_working_dir}
+                      onChange={(event) => updateAgentRuntimeForm("fixed_working_dir", event.target.value)}
+                      placeholder="例如 D:\\repo\\project"
+                      className="w-full rounded-lg border border-outline-variant/30 bg-surface px-3 py-2 font-data text-sm text-on-surface placeholder:text-on-surface-variant/50 focus:border-primary/50 focus:outline-none"
+                    />
+                  </div>
+                )}
+                <div className="lg:col-span-4">
+                  <label className="mb-1 block text-xs font-medium text-on-surface-variant">
+                    环境变量 JSON
+                  </label>
+                  <textarea
+                    value={agentRuntimeEnvJson}
+                    onChange={(event) => setAgentRuntimeEnvJson(event.target.value)}
+                    rows={3}
+                    placeholder='例如 {"HTTPS_PROXY":"http://127.0.0.1:7890"}'
+                    className="w-full rounded-lg border border-outline-variant/30 bg-surface px-3 py-2 font-data text-xs text-on-surface placeholder:text-on-surface-variant/50 focus:border-primary/50 focus:outline-none"
+                  />
+                </div>
+              </div>
+            )}
+          </div>
+
+          <div className="mt-4 grid gap-3">
+            <div className="flex items-center justify-between gap-3">
+              <h3 className="text-sm font-semibold text-on-surface">已配置执行器</h3>
+              <span className="rounded-full bg-surface-container-high px-2 py-1 text-xs text-on-surface-variant">
+                {agentRuntimes.length} 个
+              </span>
+            </div>
+            {agentRuntimes.length === 0 ? (
+              <div className="rounded-xl border border-dashed border-outline-variant/40 bg-surface/60 px-4 py-5 text-sm text-on-surface-variant">
+                还没有执行器。先点上面的 Claude Code Router、OpenCode 或 NGA，再点保存。
+              </div>
+            ) : (
+              agentRuntimes.map((runtime) => (
+                <div key={runtime.id} className="flex flex-wrap items-center gap-3 rounded-xl border border-outline-variant/20 bg-surface px-4 py-3">
+                  <div className="min-w-0 flex-1">
+                    <div className="flex flex-wrap items-center gap-2">
+                      <strong className="text-sm text-on-surface">{runtime.name}</strong>
+                      <span className="rounded-full bg-surface-container-high px-2 py-0.5 text-[11px] text-on-surface-variant">
+                        {runtime.prompt_transport === "stdin" ? "stdin 发送" : "参数发送"}
+                      </span>
+                      <span className="rounded-full bg-surface-container-high px-2 py-0.5 text-[11px] text-on-surface-variant">
+                        {runtime.output_mode}
+                      </span>
+                    </div>
+                    <p className="mt-1 break-all font-data text-xs text-on-surface-variant">
+                      {runtime.command} {runtime.args.join(" ")}
+                    </p>
+                    {agentRuntimeProbe[runtime.id] && (
+                      <p className="mt-1 text-xs text-on-surface-variant">{agentRuntimeProbe[runtime.id]}</p>
+                    )}
+                  </div>
+                  <button
+                    type="button"
+                    onClick={() => handleProbeAgentRuntime(runtime)}
+                    className="rounded-lg border border-outline-variant/30 px-3 py-1.5 text-sm text-on-surface transition-colors hover:bg-surface-container-high"
+                  >
+                    测试
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => handleDeleteAgentRuntime(runtime.id)}
+                    className="rounded-lg border border-red-500/20 px-3 py-1.5 text-sm text-red-500 transition-colors hover:bg-red-500/10"
+                  >
+                    删除
+                  </button>
+                </div>
+              ))
+            )}
+          </div>
+        </div>
+      </div>
+
+      {/* Agent CLI settings */}
+      <div className="mb-6 rounded-xl border border-outline-variant/20 bg-surface-container p-4">
+        <button
+          type="button"
+          onClick={() => setShowWorkbenchCliSettings((value) => !value)}
+          className="flex w-full items-center justify-between gap-3 text-left"
+        >
+          <span>
+            <span className="flex items-center gap-2 text-sm font-semibold text-on-surface">
+              <ShieldCheck size={17} />
+              高级：Workbench 探测配置
+            </span>
+            <span className="mt-1 block text-xs text-on-surface-variant">
+              只有需要调整智能体编排的健康探测、备用命令或 MCP 配置时才打开。
+            </span>
+          </span>
+          {showWorkbenchCliSettings ? <ChevronUp size={16} /> : <ChevronDown size={16} />}
+        </button>
+        {showWorkbenchCliSettings && (
+          <div className="mt-4 border-t border-outline-variant/15 pt-4">
+            <div className="mb-4 flex justify-end">
+              <button
+                type="button"
+                onClick={handleSaveAgentProviders}
+                disabled={savingAgentProviders}
+                className="flex items-center gap-2 rounded-lg bg-primary px-3 py-1.5 text-sm text-on-primary transition-opacity hover:opacity-90 disabled:opacity-50"
+              >
+                {savingAgentProviders ? <Loader2 size={14} className="animate-spin" /> : <Save size={14} />}
+                保存探测配置
+              </button>
+            </div>
         <div className="grid gap-4 lg:grid-cols-2">
           <div>
             <label className="mb-1 block text-xs font-medium text-on-surface-variant">
-              Claude / CCR command
+              Claude / CCR 命令
             </label>
             <input
               type="text"
@@ -326,7 +746,7 @@ export default function SettingsPage() {
           </div>
           <div>
             <label className="mb-1 block text-xs font-medium text-on-surface-variant">
-              CCR config path
+              CCR 配置路径
             </label>
             <input
               type="text"
@@ -339,7 +759,7 @@ export default function SettingsPage() {
           </div>
           <div>
             <label className="mb-1 block text-xs font-medium text-on-surface-variant">
-              Claude fallback commands
+              Claude 备用命令
             </label>
             <input
               type="text"
@@ -357,7 +777,7 @@ export default function SettingsPage() {
           </div>
           <div>
             <label className="mb-1 block text-xs font-medium text-on-surface-variant">
-              Claude MCP profiles
+              Claude MCP 配置
             </label>
             <input
               type="text"
@@ -375,7 +795,7 @@ export default function SettingsPage() {
           </div>
           <div>
             <label className="mb-1 block text-xs font-medium text-on-surface-variant">
-              OpenCode command
+              OpenCode 命令
             </label>
             <input
               type="text"
@@ -388,7 +808,7 @@ export default function SettingsPage() {
           </div>
           <div>
             <label className="mb-1 block text-xs font-medium text-on-surface-variant">
-              OpenCode MCP profiles
+              OpenCode MCP 配置
             </label>
             <input
               type="text"
@@ -407,7 +827,7 @@ export default function SettingsPage() {
         </div>
         <div className="mt-4">
           <label className="mb-1 block text-xs font-medium text-on-surface-variant">
-            Custom Agent providers JSON
+            自定义 Agent Provider JSON
           </label>
           <textarea
             aria-label="Custom Agent providers JSON"
@@ -423,10 +843,32 @@ export default function SettingsPage() {
             </code>
           </p>
         </div>
+          </div>
+        )}
       </div>
 
-      {/* Active Model — always visible, above the LLM list */}
-      <div className="mb-6 bg-surface-container rounded-xl border border-outline-variant/20 p-4 flex items-center gap-4">
+      <div className="mb-6 rounded-xl border border-outline-variant/20 bg-surface-container p-4">
+        <button
+          type="button"
+          onClick={() => setShowLlmSettings((value) => !value)}
+          className="flex w-full items-center justify-between gap-3 text-left"
+        >
+          <span>
+            <span className="flex items-center gap-2 text-sm font-semibold text-on-surface">
+              <Bot size={17} />
+              可选：内置模型与 RAG 检索
+            </span>
+            <span className="mt-1 block text-xs text-on-surface-variant">
+              只有不通过本机 Agent，或需要材料检索嵌入时才需要配置。
+            </span>
+          </span>
+          {showLlmSettings ? <ChevronUp size={16} /> : <ChevronDown size={16} />}
+        </button>
+
+        {showLlmSettings && (
+          <div className="mt-4 border-t border-outline-variant/15 pt-4">
+      {/* Active Model — visible inside optional LLM settings */}
+      <div className="mb-6 bg-surface rounded-xl border border-outline-variant/20 p-4 flex items-center gap-4">
         <Bot size={16} className="text-primary shrink-0" />
         <div className="flex-1 min-w-0">
           <p className="text-xs font-medium text-on-surface-variant mb-1.5">
@@ -726,41 +1168,6 @@ export default function SettingsPage() {
         )}
       </div>
 
-      {/* Active model selectors — always visible */}
-      {configs.filter((c) => c.is_chat_model).length > 0 && (
-        <div className="mb-4 bg-surface-container rounded-xl border border-outline-variant/20 px-5 py-4">
-          <label className="block text-xs font-medium text-on-surface-variant mb-2">
-            活跃聊天模型
-          </label>
-          <div className="flex items-center gap-3">
-            <select
-              value={general.active_chat_model_id}
-              onChange={async (e) => {
-                const prev = general;
-                const updated = { ...general, active_chat_model_id: e.target.value };
-                setGeneral(updated);
-                try {
-                  await api.settings.updateGeneral(updated);
-                } catch {
-                  setGeneral(prev);
-                  setError("保存活跃模型失败");
-                }
-              }}
-              className="flex-1 px-3 py-2 bg-surface border border-outline-variant/30 rounded-lg text-sm text-on-surface focus:outline-none focus:border-primary/50 transition-colors"
-            >
-              <option value="">请选择活跃的聊天模型</option>
-              {configs
-                .filter((c) => c.is_chat_model)
-                .map((c) => (
-                  <option key={c.id} value={c.id}>
-                    {c.name} ({c.model})
-                  </option>
-                ))}
-            </select>
-          </div>
-        </div>
-      )}
-
       {configs.filter((c) => c.is_embedding_model).length > 0 && (
         <div className="mb-8 bg-surface-container rounded-xl border border-outline-variant/20 px-5 py-4">
           <label className="block text-xs font-medium text-on-surface-variant mb-2">
@@ -797,6 +1204,9 @@ export default function SettingsPage() {
           </p>
         </div>
       )}
+          </div>
+        )}
+      </div>
 
       <div>
         <button

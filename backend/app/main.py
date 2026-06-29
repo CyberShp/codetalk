@@ -53,13 +53,14 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-from app.api import agent_workbench, tasks, settings as settings_router, tools, export, prompts, coverage, ws, repo_wiki  # noqa: E402
+from app.api import agent_runtimes, agent_workbench, ai_conversations, tasks, settings as settings_router, tools, export, prompts, coverage, ws  # noqa: E402
 from app.api.repo_analysis import router as repo_analysis_router  # noqa: E402
 from app.api.workspaces import router as workspaces_router  # noqa: E402
-from app.api.deepwiki_pages import router as deepwiki_router  # noqa: E402
 
 app.include_router(tasks.router)
 app.include_router(agent_workbench.router)
+app.include_router(ai_conversations.router)
+app.include_router(agent_runtimes.router)
 app.include_router(settings_router.router)
 app.include_router(tools.router)
 app.include_router(export.router)
@@ -67,8 +68,6 @@ app.include_router(prompts.router)
 app.include_router(coverage.router)
 app.include_router(ws.router)
 app.include_router(workspaces_router)
-app.include_router(deepwiki_router)
-app.include_router(repo_wiki.router)
 app.include_router(repo_analysis_router)
 
 

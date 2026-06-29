@@ -1,14 +1,4 @@
 (function (global) {
-  function getDeepWikiApiPort(mode, cfg) {
-    const fallback = mode === 'native' ? '8091' : '8001';
-    return String((cfg && cfg.portDeepwiki) || fallback);
-  }
-
-  function getDeepWikiUiPort(mode, cfg) {
-    const fallback = mode === 'native' ? '3001' : '3000';
-    return String((cfg && cfg.deepwikiUiPort) || fallback);
-  }
-
   function normalizeHealthServices(services) {
     if (Array.isArray(services)) {
       return services.map((info, index) => [
@@ -23,8 +13,6 @@
   }
 
   const api = {
-    getDeepWikiApiPort,
-    getDeepWikiUiPort,
     normalizeHealthServices,
   };
 

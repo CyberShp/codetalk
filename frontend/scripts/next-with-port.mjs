@@ -7,7 +7,7 @@ if (!["dev", "start"].includes(mode)) {
   process.exit(1);
 }
 
-const port = process.env.CODETALK_FRONTEND_PORT ?? process.env.PORT ?? "3005";
+const port = process.env.CODETALK_FRONTEND_PORT ?? process.env.PORT ?? "3003";
 const host = process.env.CODETALK_FRONTEND_BIND_HOST ?? "0.0.0.0";
 const require = createRequire(import.meta.url);
 const nextBin = require.resolve("next/dist/bin/next");

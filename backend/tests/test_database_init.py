@@ -61,6 +61,10 @@ class TestSchemaIdempotency:
             "workspace_reports",
             "workspace_chats",
             "material_chunks",
+            "ai_conversations",
+            "ai_messages",
+            "ai_conversation_runs",
+            "ai_run_events",
         }
         async with aiosqlite.connect(seeded_db) as db:
             async with db.execute(
@@ -77,6 +81,10 @@ class TestSchemaIdempotency:
             "idx_workspace_chats_ws",
             "idx_material_chunks_ws",
             "idx_material_chunks_mat",
+            "idx_ai_conversations_scope",
+            "idx_ai_messages_conversation",
+            "idx_ai_runs_conversation",
+            "idx_ai_run_events_stream",
         }
         async with aiosqlite.connect(seeded_db) as db:
             async with db.execute(
@@ -177,27 +185,6 @@ class TestLegacyUpgrade:
 
 class TestCrashRecovery:
     @pytest.mark.asyncio
-    async def test_deepwiki_running_reset_to_failed(self, fresh_db):
-        async with aiosqlite.connect(fresh_db) as db:
-            await db.executescript(_SCHEMA)
-            await db.execute(
-                "INSERT INTO deepwiki_repos (id, repo_path, name, status) "
-                "VALUES ('dw1', '/repo', 'test', 'running')"
-            )
-            await db.commit()
-
-        with patch("app.config.settings.sqlite_db", fresh_db), \
-             patch("app.api.prompts.seed_default_template", return_value=None):
-            await init_db()
-
-        async with aiosqlite.connect(fresh_db) as db:
-            async with db.execute(
-                "SELECT status FROM deepwiki_repos WHERE id = 'dw1'"
-            ) as cur:
-                row = await cur.fetchone()
-        assert row[0] == "failed"
-
-    @pytest.mark.asyncio
     async def test_workspace_indexed_zero_reset_to_negative_one(self, fresh_db):
         async with aiosqlite.connect(fresh_db) as db:
             await db.executescript(_SCHEMA)
@@ -238,27 +225,6 @@ class TestCrashRecovery:
             ) as cur:
                 row = await cur.fetchone()
         assert row[0] == "failed"
-
-    @pytest.mark.asyncio
-    async def test_completed_deepwiki_not_touched(self, fresh_db):
-        async with aiosqlite.connect(fresh_db) as db:
-            await db.executescript(_SCHEMA)
-            await db.execute(
-                "INSERT INTO deepwiki_repos (id, repo_path, name, status) "
-                "VALUES ('dw2', '/repo2', 'done', 'completed')"
-            )
-            await db.commit()
-
-        with patch("app.config.settings.sqlite_db", fresh_db), \
-             patch("app.api.prompts.seed_default_template", return_value=None):
-            await init_db()
-
-        async with aiosqlite.connect(fresh_db) as db:
-            async with db.execute(
-                "SELECT status FROM deepwiki_repos WHERE id = 'dw2'"
-            ) as cur:
-                row = await cur.fetchone()
-        assert row[0] == "completed"
 
     @pytest.mark.asyncio
     async def test_indexed_workspace_not_touched(self, fresh_db):

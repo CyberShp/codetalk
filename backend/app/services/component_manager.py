@@ -38,70 +38,6 @@ COMPOSE_PROJECT = "codetalk"
 # ── Config contracts: what each component accepts ──────────────────
 
 CONTRACTS: dict[str, ComponentContract] = {
-    "deepwiki": ComponentContract(
-        component="deepwiki",
-        label="DeepWiki (文档引擎)",
-        domains=[
-            ConfigDomain(
-                domain="chat",
-                label="Chat 模型",
-                env_map={
-                    "base_url": "OPENAI_BASE_URL",
-                    "api_key": "OPENAI_API_KEY",
-                },
-                fields=[
-                    ConfigField(
-                        name="base_url",
-                        label="Base URL",
-                        field_type="url",
-                        placeholder="https://api.openai.com/v1",
-                    ),
-                    ConfigField(
-                        name="api_key",
-                        label="API Key",
-                        field_type="secret",
-                        placeholder="sk-...",
-                    ),
-                ],
-            ),
-            ConfigDomain(
-                domain="embedding",
-                label="Embedding 模型",
-                env_map={
-                    "base_url": "DEEPWIKI_EMBEDDING_BASE_URL",
-                    "api_key": "DEEPWIKI_EMBEDDING_API_KEY",
-                    "embedder_type": "DEEPWIKI_EMBEDDER_TYPE",
-                    "model": "DEEPWIKI_EMBEDDING_MODEL",
-                },
-                fields=[
-                    ConfigField(
-                        name="embedder_type",
-                        label="Embedder 类型",
-                        field_type="select",
-                        options=["openai", "ollama", "google", "bedrock"],
-                    ),
-                    ConfigField(
-                        name="model",
-                        label="Embedding Model",
-                        field_type="text",
-                        placeholder="nomic-embed-text / text-embedding-3-small",
-                    ),
-                    ConfigField(
-                        name="base_url",
-                        label="Base URL",
-                        field_type="url",
-                        placeholder="https://api.openai.com/v1",
-                    ),
-                    ConfigField(
-                        name="api_key",
-                        label="API Key",
-                        field_type="secret",
-                        placeholder="sk-...",
-                    ),
-                ],
-            ),
-        ],
-    ),
     "gitnexus": ComponentContract(
         component="gitnexus",
         label="GitNexus (代码图谱)",
@@ -342,72 +278,7 @@ def _resolve_env_vars(
             value = decrypt_key(value)
         env_vars[env_name] = value
 
-    # Deepwiki's embedder clients read provider-specific env vars that
-    # differ from our generic DEEPWIKI_EMBEDDING_* names.  Bridge the gap.
-    if cfg.component == "deepwiki" and cfg.domain == "embedding":
-        etype = cfg.config.get("embedder_type", "")
-        emb_key = env_vars.get("DEEPWIKI_EMBEDDING_API_KEY", "")
-        emb_url = env_vars.get("DEEPWIKI_EMBEDDING_BASE_URL", "")
-        if etype == "google" and emb_key:
-            env_vars["GOOGLE_API_KEY"] = emb_key
-        elif etype == "ollama" and emb_url:
-            env_vars["OLLAMA_BASE_URL"] = emb_url
-            env_vars["OLLAMA_HOST"] = emb_url
-
     return env_vars
-
-
-def _bridge_deepwiki_embedding_creds(
-    services: dict[str, dict[str, str]],
-    preview: dict[str, dict[str, str]],
-) -> None:
-    """Propagate OpenAI chat credentials to embedding when not explicitly set.
-
-    Users typically configure the chat domain (OPENAI_API_KEY / OPENAI_BASE_URL)
-    but leave the embedding domain api_key blank, expecting shared credentials.
-    Without this bridge, DEEPWIKI_EMBEDDING_API_KEY stays empty in the container
-    and the OpenAI embedder fails to authenticate (500 on chat/completions/stream).
-    """
-    svc = services.get("deepwiki")
-    if not svc or svc.get("DEEPWIKI_EMBEDDER_TYPE") != "openai":
-        return
-    pv = preview.setdefault("deepwiki", {})
-    if not svc.get("DEEPWIKI_EMBEDDING_API_KEY") and svc.get("OPENAI_API_KEY"):
-        key = svc["OPENAI_API_KEY"]
-        svc["DEEPWIKI_EMBEDDING_API_KEY"] = key
-        pv["DEEPWIKI_EMBEDDING_API_KEY"] = (key[:4] + "••••") if len(key) > 4 else "••••"
-    if not svc.get("DEEPWIKI_EMBEDDING_BASE_URL") and svc.get("OPENAI_BASE_URL"):
-        url = svc["OPENAI_BASE_URL"]
-        svc["DEEPWIKI_EMBEDDING_BASE_URL"] = url
-        pv["DEEPWIKI_EMBEDDING_BASE_URL"] = url
-
-
-_EMBEDDER_JSON_PATH = PROJECT_DIR / "docker" / "deepwiki" / "embedder.json"
-_EMBEDDER_SECTION_KEY = {
-    "openai": "embedder",
-    "ollama": "embedder_ollama",
-    "google": "embedder_google",
-    "bedrock": "embedder_bedrock",
-}
-
-
-def _update_deepwiki_embedder_model(embedder_type: str, model: str) -> None:
-    """Update model in embedder.json for the selected provider."""
-    if not model or not embedder_type:
-        return
-    section = _EMBEDDER_SECTION_KEY.get(embedder_type)
-    if not section:
-        return
-    try:
-        config = json.loads(_EMBEDDER_JSON_PATH.read_text(encoding="utf-8"))
-    except (OSError, json.JSONDecodeError):
-        return
-    if section not in config:
-        return
-    config[section].setdefault("model_kwargs", {})["model"] = model
-    _EMBEDDER_JSON_PATH.write_text(
-        json.dumps(config, indent=2, ensure_ascii=False) + "\n", encoding="utf-8"
-    )
 
 
 def generate_override(
@@ -439,8 +310,6 @@ def generate_override(
                 pv[k] = v[:4] + "••••" if len(v) > 4 else "••••"
             else:
                 pv[k] = v
-
-    _bridge_deepwiki_embedding_creds(services, preview)
 
     if not services:
         return "", {}
@@ -486,16 +355,6 @@ async def apply_config(
             container_configs.append(cfg)
 
     yaml_content, preview = generate_override(container_configs)
-
-    # Update embedder.json when deepwiki embedding model is configured
-    if component == "deepwiki":
-        for cfg in container_configs:
-            if cfg.component == "deepwiki" and cfg.domain == "embedding":
-                _update_deepwiki_embedder_model(
-                    cfg.config.get("embedder_type", ""),
-                    cfg.config.get("model", ""),
-                )
-                break
 
     # Write override file only when there are container configs
     if yaml_content:

@@ -1,0 +1,211 @@
+"""User-configured local agent runtimes."""
+
+from __future__ import annotations
+
+import json
+import uuid
+from contextlib import asynccontextmanager
+from datetime import datetime, timezone
+from pathlib import Path
+from typing import Any
+
+import aiosqlite
+
+from app.config import settings
+
+PROMPT_TRANSPORTS = {"stdin", "argv_last"}
+OUTPUT_MODES = {"plain", "ndjson", "stream_json", "auto"}
+WORKING_DIR_MODES = {"project", "fixed", "none"}
+
+
+def _now() -> str:
+    return datetime.now(timezone.utc).isoformat()
+
+
+def _json_dumps(value: Any) -> str:
+    return json.dumps(value, ensure_ascii=False, sort_keys=True)
+
+
+def _json_loads(value: str | None, fallback: Any) -> Any:
+    if not value:
+        return fallback
+    try:
+        return json.loads(value)
+    except json.JSONDecodeError:
+        return fallback
+
+
+def _clean_args(args: list[str] | None) -> list[str]:
+    return [str(item) for item in (args or [])]
+
+
+def _clean_env(env: dict[str, str] | None) -> dict[str, str]:
+    return {str(key): str(value) for key, value in (env or {}).items() if str(key).strip()}
+
+
+class AgentRuntimeStore:
+    def __init__(self, db_path: str | Path | None = None) -> None:
+        self.db_path = str(db_path or settings.sqlite_db)
+
+    async def create_runtime(self, data: dict[str, Any]) -> dict[str, Any]:
+        rid = f"agent_{uuid.uuid4().hex}"
+        now = _now()
+        payload = self._normalize_payload(data, partial=False)
+        async with self._connect() as db:
+            await db.execute(
+                """
+                INSERT INTO agent_runtimes
+                    (id, name, command, args_json, prompt_transport, output_mode,
+                     working_dir_mode, fixed_working_dir, env_json, health_command,
+                     timeout_seconds, enabled, created_at, updated_at)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    rid,
+                    payload["name"],
+                    payload["command"],
+                    _json_dumps(payload["args"]),
+                    payload["prompt_transport"],
+                    payload["output_mode"],
+                    payload["working_dir_mode"],
+                    payload["fixed_working_dir"],
+                    _json_dumps(payload["env"]),
+                    payload["health_command"],
+                    payload["timeout_seconds"],
+                    int(payload["enabled"]),
+                    now,
+                    now,
+                ),
+            )
+            await db.commit()
+        return await self.get_runtime(rid)
+
+    async def list_runtimes(self, *, enabled: bool | None = None) -> list[dict[str, Any]]:
+        clauses: list[str] = []
+        params: list[Any] = []
+        if enabled is not None:
+            clauses.append("enabled = ?")
+            params.append(1 if enabled else 0)
+        where = f"WHERE {' AND '.join(clauses)}" if clauses else ""
+        async with self._connect() as db:
+            async with db.execute(
+                f"SELECT * FROM agent_runtimes {where} ORDER BY updated_at DESC",
+                params,
+            ) as cur:
+                return [_runtime_from_row(row) for row in await cur.fetchall()]
+
+    async def get_runtime(self, runtime_id: str) -> dict[str, Any]:
+        async with self._connect() as db:
+            async with db.execute("SELECT * FROM agent_runtimes WHERE id = ?", (runtime_id,)) as cur:
+                row = await cur.fetchone()
+        if row is None:
+            raise KeyError(runtime_id)
+        return _runtime_from_row(row)
+
+    async def update_runtime(self, runtime_id: str, data: dict[str, Any]) -> dict[str, Any]:
+        await self.get_runtime(runtime_id)
+        payload = self._normalize_payload(data, partial=True)
+        if not payload:
+            return await self.get_runtime(runtime_id)
+        payload["updated_at"] = _now()
+        stored: dict[str, Any] = {}
+        for key, value in payload.items():
+            if key == "args":
+                stored["args_json"] = _json_dumps(value)
+            elif key == "env":
+                stored["env_json"] = _json_dumps(value)
+            elif key == "enabled":
+                stored[key] = int(bool(value))
+            else:
+                stored[key] = value
+        set_clause = ", ".join(f"{key} = ?" for key in stored)
+        async with self._connect() as db:
+            await db.execute(
+                f"UPDATE agent_runtimes SET {set_clause} WHERE id = ?",
+                (*stored.values(), runtime_id),
+            )
+            await db.commit()
+        return await self.get_runtime(runtime_id)
+
+    async def delete_runtime(self, runtime_id: str) -> None:
+        async with self._connect() as db:
+            cur = await db.execute("DELETE FROM agent_runtimes WHERE id = ?", (runtime_id,))
+            await db.commit()
+        if cur.rowcount == 0:
+            raise KeyError(runtime_id)
+
+    def _normalize_payload(self, data: dict[str, Any], *, partial: bool) -> dict[str, Any]:
+        result: dict[str, Any] = {}
+        for key in (
+            "name",
+            "command",
+            "args",
+            "prompt_transport",
+            "output_mode",
+            "working_dir_mode",
+            "fixed_working_dir",
+            "env",
+            "health_command",
+            "timeout_seconds",
+            "enabled",
+        ):
+            if key in data:
+                result[key] = data[key]
+
+        if not partial or "name" in result:
+            name = str(result.get("name", "")).strip()
+            if not name:
+                raise ValueError("执行器名称不能为空")
+            result["name"] = name
+        if not partial or "command" in result:
+            command = str(result.get("command", "")).strip()
+            if not command:
+                raise ValueError("执行器命令不能为空")
+            result["command"] = command
+
+        result["args"] = _clean_args(result.get("args")) if "args" in result else ([] if not partial else result.get("args"))
+        result["env"] = _clean_env(result.get("env")) if "env" in result else ({} if not partial else result.get("env"))
+
+        if not partial or "prompt_transport" in result:
+            value = str(result.get("prompt_transport") or "stdin").strip()
+            if value not in PROMPT_TRANSPORTS:
+                raise ValueError(f"不支持的 prompt_transport: {value}")
+            result["prompt_transport"] = value
+        if not partial or "output_mode" in result:
+            value = str(result.get("output_mode") or "plain").strip()
+            if value not in OUTPUT_MODES:
+                raise ValueError(f"不支持的 output_mode: {value}")
+            result["output_mode"] = value
+        if not partial or "working_dir_mode" in result:
+            value = str(result.get("working_dir_mode") or "project").strip()
+            if value not in WORKING_DIR_MODES:
+                raise ValueError(f"不支持的 working_dir_mode: {value}")
+            result["working_dir_mode"] = value
+        if not partial or "fixed_working_dir" in result:
+            result["fixed_working_dir"] = str(result.get("fixed_working_dir") or "").strip()
+        if not partial or "health_command" in result:
+            result["health_command"] = str(result.get("health_command") or "").strip()
+        if not partial or "timeout_seconds" in result:
+            seconds = int(result.get("timeout_seconds") or 120)
+            result["timeout_seconds"] = max(1, min(seconds, 3600))
+        if not partial or "enabled" in result:
+            result["enabled"] = bool(result.get("enabled", True))
+
+        return {key: value for key, value in result.items() if value is not None}
+
+    @asynccontextmanager
+    async def _connect(self):
+        db = await aiosqlite.connect(self.db_path)
+        db.row_factory = aiosqlite.Row
+        try:
+            yield db
+        finally:
+            await db.close()
+
+
+def _runtime_from_row(row: aiosqlite.Row) -> dict[str, Any]:
+    data = dict(row)
+    data["args"] = _json_loads(data.pop("args_json", "[]"), [])
+    data["env"] = _json_loads(data.pop("env_json", "{}"), {})
+    data["enabled"] = bool(data.get("enabled", 1))
+    return data

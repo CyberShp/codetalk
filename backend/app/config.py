@@ -42,16 +42,11 @@ class Settings(BaseSettings):
     gitnexus_base_url: str = "http://localhost:7100"
     cgc_base_url: str = "http://localhost:7072"
     cgc_index_timeout: int = 600     # max seconds to wait for CGC Gateway indexing before CLI fallback
-    deepwiki_api_url: str = "http://localhost:8091"
-    deepwiki_ui_url: str = "http://localhost:3001"
     joern_base_url: str = "http://localhost:8090"
     codecompass_base_url: str = "http://localhost:16251"
 
     # Tool process management
     gitnexus_port: int = 7100
-    deepwiki_api_port: int = 8091
-    deepwiki_ui_port: int = 3001
-    deepwiki_path: str = ""          # path to deepwiki-open installation
     gitnexus_bin: str = "gitnexus"   # path to gitnexus binary
     gitnexus_source_reader: str = "cli_first"  # cli_first | http_only
     gitnexus_cli_timeout: int = 20    # seconds for short GitNexus CLI source reads
@@ -118,16 +113,13 @@ class Settings(BaseSettings):
     # Analysis tuning
     analysis_concurrency: int = 10   # max parallel module analyses
     llm_max_concurrency: int = 1     # admin env var LLM_MAX_CONCURRENCY; controls report-gen parallelism
-    deepwiki_timeout: int = 1800     # wiki generation timeout in seconds
-    deepwiki_default_depth: str = "balanced"
-    deepwiki_provider: str = "openai"    # LLM provider for DeepWiki RAG (google, openai, ollama, etc.)
     health_check_timeout: int = 5    # seconds for tool health probes
     llm_max_output_tokens: int = 8192  # LLM_MAX_OUTPUT_TOKENS — cap per-call output; set lower for intranet models
     gitnexus_poll_timeout: int = 600 # max seconds to wait for GitNexus indexing
     coverage_max_upload_mb: int = 100 # max single file size for coverage upload
 
     # CORS — comma-separated origins allowed to call the API
-    cors_origins: str = "http://localhost:3005,http://127.0.0.1:3005"
+    cors_origins: str = "http://localhost:3003,http://127.0.0.1:3003"
 
     @model_validator(mode="after")
     def _resolve_repos_paths(self) -> "Settings":
@@ -142,8 +134,8 @@ class Settings(BaseSettings):
     def cors_origins_list(self) -> list[str]:
         origins = [o.strip() for o in self.cors_origins.split(",") if o.strip()]
         dev_origins = [
-            "http://localhost:3005",
-            "http://127.0.0.1:3005",
+            "http://localhost:3003",
+            "http://127.0.0.1:3003",
             "http://localhost:3205",
             "http://127.0.0.1:3205",
             "http://localhost:3218",
@@ -165,16 +157,10 @@ class Settings(BaseSettings):
         return self.data_path / "outputs"
 
     @property
-    def deepwiki_base_url(self) -> str:
-        """Backward-compatible alias for older DeepWiki routes."""
-        return self.deepwiki_api_url
-
-    @property
     def tiktoken_cache_path(self) -> Path:
         candidates = []
         if self.tiktoken_cache_dir:
             candidates.append(Path(self.tiktoken_cache_dir))
-        candidates.append(Path(__file__).parent.parent.parent / "docker" / "deepwiki" / "tiktoken")
         candidates.append(self.data_path / "tiktoken_cache")
         for p in candidates:
             p = p.resolve()

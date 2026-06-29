@@ -6,12 +6,10 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 import aiosqlite
-import httpx
 from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, Field
 
-from app.config import settings
 from app.database import get_db
 
 router = APIRouter(prefix="/api/tasks", tags=["任务管理"])
@@ -26,12 +24,11 @@ _cancel_events: dict[str, asyncio.Event] = {}
 class TaskCreate(BaseModel):
     name: str = Field(min_length=1, max_length=200)
     repo_path: str = Field(min_length=1, max_length=1000)
-    tools: list[str] = Field(default=["gitnexus", "deepwiki"], max_length=10)
+    tools: list[str] = Field(default=["gitnexus"], max_length=10)
     requirements_doc: str | None = None
     design_doc: str | None = None
     analysis_focus: str = Field(min_length=1, max_length=4_000)
     prompt_content: str = Field(min_length=1, max_length=32_000)
-    deepwiki_depth: str = Field(default="balanced", pattern="^(fast|balanced|deep)$")
 
 
 class TaskResponse(BaseModel):
@@ -44,7 +41,6 @@ class TaskResponse(BaseModel):
     design_doc: str | None
     analysis_focus: str | None
     prompt_content: str | None
-    deepwiki_depth: str | None
     material_ids: list[str]
     progress: int
     error_message: str | None
@@ -88,12 +84,12 @@ async def create_task(data: TaskCreate, db: aiosqlite.Connection = Depends(get_d
     task_id = str(uuid.uuid4())
     await db.execute(
         """INSERT INTO tasks (id, name, repo_path, status, tools, requirements_doc, design_doc,
-           analysis_focus, prompt_content, deepwiki_depth,
+           analysis_focus, prompt_content,
            progress, error_message, created_at, updated_at)
-           VALUES (?, ?, ?, 'pending', ?, ?, ?, ?, ?, ?, 0, NULL, ?, ?)""",
+           VALUES (?, ?, ?, 'pending', ?, ?, ?, ?, ?, 0, NULL, ?, ?)""",
         (task_id, data.name, data.repo_path, json.dumps(data.tools),
          data.requirements_doc, data.design_doc,
-         data.analysis_focus, data.prompt_content, data.deepwiki_depth, now, now),
+         data.analysis_focus, data.prompt_content, now, now),
     )
     await db.commit()
     logger.info("Task created: id=%s, name=%s", task_id, data.name)
@@ -149,33 +145,6 @@ async def run_task(
     if task["status"] == "running":
         raise HTTPException(status_code=409, detail="任务正在运行中")
 
-    # Best-effort health checks: the pipeline has its own fallback modes, so a
-    # tool outage must not prevent local/LLM-based analysis from starting.
-    tools = json.loads(task.get("tools") or "[]")
-    degradation_warnings: list[str] = []
-    if "gitnexus" in tools:
-        try:
-            async with httpx.AsyncClient(timeout=httpx.Timeout(settings.health_check_timeout), trust_env=False) as hc_client:
-                hc_resp = await hc_client.get(f"{settings.gitnexus_base_url}/api/info")
-                if hc_resp.status_code >= 500:  # pragma: no cover
-                    hc_resp.raise_for_status()
-        except Exception as exc:
-            logger.warning("GitNexus health check failed: %s", exc)
-            degradation_warnings.append(
-                f"GitNexus service is not available; pipeline will use fallback mode: {exc}"
-            )
-
-    if "deepwiki" in tools:
-        try:
-            async with httpx.AsyncClient(timeout=httpx.Timeout(settings.health_check_timeout), trust_env=False) as hc_client:
-                hc_resp = await hc_client.get(f"{settings.deepwiki_api_url}/health")
-                hc_resp.raise_for_status()  # pragma: no cover
-        except Exception as exc:
-            logger.warning("DeepWiki health check failed: %s", exc)
-            degradation_warnings.append(
-                f"DeepWiki service is not available; pipeline will continue without wiki context: {exc}"
-            )
-
     # Reset status
     now = datetime.now(timezone.utc).isoformat()
     await db.execute(
@@ -204,7 +173,7 @@ async def run_task(
         "task_id": task_id,
         "status": "running",
         "message": "分析管道已启动",
-        "warnings": degradation_warnings,
+        "warnings": [],
     }
 
 

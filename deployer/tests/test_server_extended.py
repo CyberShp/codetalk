@@ -20,40 +20,12 @@ async def test_deploy_409_when_already_running(client):
     assert "already" in detail.lower() or "running" in detail.lower()
 
 
-async def test_supplement_deepwiki_409_when_running(client):
-    """POST /api/deploy/supplement/deepwiki returns 409 during active deployment."""
-    import server
-    server._state.running = True
-    resp = await client.post(
-        "/api/deploy/supplement/deepwiki",
-        json={"deepwikiPath": "/some/valid/path"},
-    )
-    assert resp.status_code == 409
-
-
 async def test_supplement_gitnexus_409_when_running(client):
     """POST /api/deploy/supplement/gitnexus returns 409 during active deployment."""
     import server
     server._state.running = True
     resp = await client.post("/api/deploy/supplement/gitnexus")
     assert resp.status_code == 409
-
-
-# ------------------------------------------------------------------
-# Supplement with valid input (covers lines 234-248 in server.py)
-# ------------------------------------------------------------------
-
-async def test_supplement_deepwiki_with_valid_path_returns_job_id(client):
-    """Supplying a non-empty deepwikiPath starts a background job."""
-    resp = await client.post(
-        "/api/deploy/supplement/deepwiki",
-        json={"deepwikiPath": "/fake/deepwiki-open"},
-    )
-    # The HTTP layer must accept the request even if the job later fails.
-    assert resp.status_code == 200
-    body = resp.json()
-    assert "job_id" in body
-    assert body["job_id"]
 
 
 # ------------------------------------------------------------------

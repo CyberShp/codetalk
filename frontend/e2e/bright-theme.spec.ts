@@ -17,24 +17,6 @@ test("global app shell uses a bright professional testing theme", async ({ page 
   await page.route("http://localhost:8100/api/deepwiki/repos", async (route) => {
     await route.fulfill({ json: [] });
   });
-  await page.route("http://localhost:8100/api/tasks", async (route) => {
-    await route.fulfill({ json: [] });
-  });
-  await page.route("http://localhost:8100/api/tools/status", async (route) => {
-    await route.fulfill({
-      json: [
-        {
-          name: "gitnexus",
-          display_name: "GitNexus",
-          healthy: true,
-          status: "running",
-          pid: 1234,
-          health_url: "http://localhost:7100/health",
-          last_check: "2026-06-05T00:00:00Z",
-        },
-      ],
-    });
-  });
 
   await page.goto("/");
   await expect(page.getByRole("heading", { name: "CODETALK", exact: true })).toBeVisible();

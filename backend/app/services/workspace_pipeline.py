@@ -124,19 +124,18 @@ class WorkspacePipeline:
                     ws_id, len(material_ids),
                 )
 
-            # GitNexus is always the primary tool now; DeepWiki is optional and
-            # never required (see §16 AC-P3).
+            # GitNexus is the primary code-graph tool for workspace analysis.
             tools = ["gitnexus"]
 
             await db.execute(
                 """INSERT OR REPLACE INTO tasks
                        (id, name, repo_path, status, tools,
-                        analysis_focus, prompt_content, deepwiki_depth,
+                        analysis_focus, prompt_content,
                         requirements_doc, design_doc, material_ids,
                         analysis_plan_json, scope_preview_json, report_plan_json,
                         workspace_id,
                         progress, error_message, created_at, updated_at)
-                   VALUES (?, ?, ?, 'pending', ?, ?, ?, 'balanced', ?, ?, ?, ?, ?, ?, ?, 0, NULL, ?, ?)""",
+                   VALUES (?, ?, ?, 'pending', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, NULL, ?, ?)""",
                 (
                     task_id,
                     f"__ws_{ws_id}",

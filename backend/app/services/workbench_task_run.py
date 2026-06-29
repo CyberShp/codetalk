@@ -888,8 +888,7 @@ def build_agent_provider_snapshot(
             "prompt_transport": spec.prompt_transport,
             "capabilities": external_agent_provider_capabilities(provider),
             "credential_boundary": (
-                "Agent CLI owns its own MCP credentials and remote access; CodeTalk only "
-                "passes task bundles and validates returned artifacts."
+                "Agent CLI 自己持有 MCP 凭证和远端访问权限；CodeTalk 只下发任务包并校验返回产物。"
             ),
             "diagnostics": build_agent_cli_provider_diagnostics(provider, spec),
         }
@@ -1317,7 +1316,7 @@ def _agent_cli_probe_recipe(
         "notes": [
             "Run the startup probe from the CodeTalk UI first; it uses the backend process environment.",
             "If your terminal works but CodeTalk does not, configure the full executable path with command_env.",
-            "For Agent-owned MCP, keep credentials in the Agent CLI environment; CodeTalk only passes task bundles.",
+            "对于 Agent 持有的 MCP，请把凭证保留在 Agent CLI 环境里；CodeTalk 只下发任务包。",
         ],
     }
 
