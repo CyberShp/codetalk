@@ -1,5 +1,6 @@
 import { spawn } from "node:child_process";
 import { createRequire } from "node:module";
+import { assertPortAvailable } from "./port-preflight.mjs";
 
 const mode = process.argv[2];
 if (!["dev", "start"].includes(mode)) {
@@ -11,6 +12,13 @@ const port = process.env.CODETALK_FRONTEND_PORT ?? process.env.PORT ?? "3005";
 const host = process.env.CODETALK_FRONTEND_BIND_HOST ?? "0.0.0.0";
 const require = createRequire(import.meta.url);
 const nextBin = require.resolve("next/dist/bin/next");
+
+await assertPortAvailable({
+  host,
+  port,
+  envName: "CODETALK_FRONTEND_PORT",
+  serviceName: "CodeTalk frontend",
+});
 
 const child = spawn(process.execPath, [nextBin, mode, "-H", host, "-p", port], {
   stdio: "inherit",

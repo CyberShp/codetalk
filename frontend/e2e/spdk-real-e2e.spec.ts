@@ -1,5 +1,7 @@
 import { expect, test, type BrowserContext, type Locator, type Page } from "@playwright/test";
+import { spawn } from "node:child_process";
 import fs from "node:fs";
+import net from "node:net";
 import os from "node:os";
 import path from "node:path";
 
@@ -145,6 +147,58 @@ function record(id: string, status: CaseStatus, evidence?: string, details?: unk
 function writeJson(name: string, payload: unknown) {
   ensureArtifactDir();
   fs.writeFileSync(path.join(ARTIFACT_DIR, name), JSON.stringify(payload, null, 2));
+}
+
+async function withOccupiedPort<T>(run: (port: number) => Promise<T>): Promise<T> {
+  const server = net.createServer();
+  await new Promise<void>((resolve, reject) => {
+    server.once("error", reject);
+    server.listen(0, "127.0.0.1", () => resolve());
+  });
+
+  const address = server.address();
+  if (!address || typeof address === "string") {
+    server.close();
+    throw new Error("failed to reserve a local TCP port");
+  }
+
+  try {
+    return await run(address.port);
+  } finally {
+    await new Promise<void>((resolve) => server.close(() => resolve()));
+  }
+}
+
+async function runStartupScriptWithOccupiedPort(
+  script: string,
+  env: Record<string, string>,
+): Promise<{ code: number | null; signal: NodeJS.Signals | null; output: string }> {
+  const child = spawn(process.execPath, [script], {
+    cwd: process.cwd(),
+    env: {
+      ...process.env,
+      ...env,
+    },
+    stdio: ["ignore", "pipe", "pipe"],
+  });
+  let output = "";
+  child.stdout.on("data", (chunk) => {
+    output += chunk.toString();
+  });
+  child.stderr.on("data", (chunk) => {
+    output += chunk.toString();
+  });
+
+  const timeout = setTimeout(() => {
+    child.kill("SIGTERM");
+  }, 10_000);
+
+  return await new Promise((resolve) => {
+    child.once("exit", (code, signal) => {
+      clearTimeout(timeout);
+      resolve({ code, signal, output });
+    });
+  });
 }
 
 function textArtifactSecretLeaks(secret: string) {
@@ -580,6 +634,38 @@ test.afterEach(async ({ page }) => {
   test.info().attach("console-and-network-note", {
     body: JSON.stringify(diagnostics, null, 2),
     contentType: "application/json",
+  });
+});
+
+test("A05: startup scripts explain occupied ports", async () => {
+  const backend = await withOccupiedPort((port) =>
+    runStartupScriptWithOccupiedPort("scripts/start-playwright-backend.mjs", {
+      CODETALK_BACKEND_BIND_HOST: "127.0.0.1",
+      CODETALK_BACKEND_PORT: String(port),
+    }),
+  );
+  const frontend = await withOccupiedPort((port) =>
+    runStartupScriptWithOccupiedPort("scripts/start-playwright-frontend.mjs", {
+      CODETALK_FRONTEND_BIND_HOST: "127.0.0.1",
+      CODETALK_FRONTEND_PORT: String(port),
+      CODETALK_BACKEND_PORT: process.env.CODETALK_BACKEND_PORT ?? "3004",
+    }),
+  );
+
+  writeJson("A05-port-conflict.json", { backend, frontend });
+  for (const [label, result, envName] of [
+    ["backend", backend, "CODETALK_BACKEND_PORT"],
+    ["frontend", frontend, "CODETALK_FRONTEND_PORT"],
+  ] as const) {
+    expect(result.signal, `${label} startup should fail fast instead of hanging`).toBeNull();
+    expect(result.code, `${label} startup should exit non-zero`).not.toBe(0);
+    expect(result.output, `${label} startup should name the occupied port`).toMatch(/already in use/i);
+    expect(result.output, `${label} startup should name the override env var`).toContain(envName);
+  }
+
+  record("A05", "pass", "startup scripts fail fast with occupied-port guidance", {
+    backend: backend.output,
+    frontend: frontend.output,
   });
 });
 
@@ -1367,7 +1453,6 @@ test("matrix accounting: every planned case has an explicit status", async () =>
   if (auditMode) {
     for (const [id, reason] of [
       ["A04", "provider probe/system audit/tool probe are not exposed as stable UI controls"],
-      ["A05", "port-conflict scenario requires a separate destructive startup attempt"],
       ["B03", "duplicate workspace policy is product-defined; not exercised in first safe run"],
       ["B06", "source search UI is not exposed as a stable browser control in this run"],
       ["D03", "requires provider execution for resource_leak_hunt"],

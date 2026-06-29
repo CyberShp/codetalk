@@ -3,6 +3,7 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
+import { assertPortAvailable } from "./port-preflight.mjs";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const backendDir = path.resolve(__dirname, "../../backend");
@@ -27,6 +28,13 @@ const shouldCleanupDataDir =
 const candidates = configuredPython
   ? [configuredPython]
   : ["python3.11", "python3.10", "python3", "python"];
+
+await assertPortAvailable({
+  host: backendHost,
+  port: backendPort,
+  envName: "CODETALK_BACKEND_PORT",
+  serviceName: "CodeTalk backend",
+});
 
 function isSupportedPython(command) {
   const result = spawnSync(
