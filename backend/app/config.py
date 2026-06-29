@@ -127,7 +127,7 @@ class Settings(BaseSettings):
     coverage_max_upload_mb: int = 100 # max single file size for coverage upload
 
     # CORS — comma-separated origins allowed to call the API
-    cors_origins: str = "http://localhost:3005,http://127.0.0.1:3005"
+    cors_origins: str = "http://localhost:3003,http://127.0.0.1:3003,http://localhost:3005,http://127.0.0.1:3005"
 
     @model_validator(mode="after")
     def _resolve_repos_paths(self) -> "Settings":
@@ -142,6 +142,8 @@ class Settings(BaseSettings):
     def cors_origins_list(self) -> list[str]:
         origins = [o.strip() for o in self.cors_origins.split(",") if o.strip()]
         dev_origins = [
+            "http://localhost:3003",
+            "http://127.0.0.1:3003",
             "http://localhost:3005",
             "http://127.0.0.1:3005",
             "http://localhost:3205",

@@ -2,10 +2,8 @@ import { defineConfig, devices } from "@playwright/test";
 
 const frontendPort = Number(process.env.CODETALK_FRONTEND_PORT ?? "3005");
 const backendPort = Number(process.env.CODETALK_BACKEND_PORT ?? "8100");
-const frontendBindHost =
-  process.env.CODETALK_FRONTEND_BIND_HOST ?? "0.0.0.0";
-const backendBindHost = process.env.CODETALK_BACKEND_BIND_HOST ?? "0.0.0.0";
 const browserHost = process.env.CODETALK_BROWSER_HOST ?? "localhost";
+const reuseExistingServer = process.env.CODETALK_REUSE_EXISTING_SERVER !== "0";
 
 export default defineConfig({
   testDir: "./e2e",
@@ -27,16 +25,15 @@ export default defineConfig({
   ],
   webServer: [
     {
-      command:
-        `cd ../backend && python -m uvicorn app.main:app --host ${backendBindHost} --port ${backendPort}`,
+      command: "node scripts/start-playwright-backend.mjs",
       port: backendPort,
-      reuseExistingServer: true,
+      reuseExistingServer,
       timeout: 30_000,
     },
     {
-      command: `npx next dev -H ${frontendBindHost} -p ${frontendPort}`,
+      command: "node scripts/start-playwright-frontend.mjs",
       port: frontendPort,
-      reuseExistingServer: true,
+      reuseExistingServer,
       timeout: 30_000,
     },
   ],

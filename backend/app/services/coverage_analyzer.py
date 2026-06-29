@@ -959,7 +959,12 @@ class CoverageAnalyzer:
             source_format = report.source_format
 
         if not merged_modules:
-            raise ValueError("未能从上传文件中解析到任何覆盖率数据")
+            raise ValueError(
+                "未能从上传文件中解析到任何覆盖率数据。"
+                "修复建议：请上传 Cobertura/JaCoCo XML、HTML 覆盖率报告，"
+                "或包含 function_name, code_location, triggered, hit_count 表头的 CSV/TSV/TXT/XLSX 函数命中表。"
+                "示例：function_name,code_location,triggered,hit_count"
+            )
 
         total_line, total_branch, total_func = _coverage_totals(
             merged_modules, source_format

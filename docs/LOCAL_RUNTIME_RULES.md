@@ -16,14 +16,17 @@ As of 2026-04-17, the observed listeners are:
 
 | Service | Browser/Host Port | Notes |
 |---|---:|---|
-| Frontend (Next.js) | `3005` | User explicitly requested `3005` instead of `3003` |
-| Backend (FastAPI) | `8000` | Host-run Python process |
+| Frontend (Next.js) | `3005` | General CodeTalk host-run default |
+| Backend (FastAPI) | `8100` | General CodeTalk host-run API default |
 | PostgreSQL | `5433` | Docker `5432` exposed to host `5433` |
 | deepwiki-open | `8001` | Dockerized |
 | GitNexus | `7100` | Dockerized |
 | Joern | `8080` | Dockerized (CPG server, 8G memory limit) |
 
-Ports `3003/3004` are occupied by the Cat Cafe runtime on this shared machine and must not be used as CodeTalks host-run defaults.
+Ports `3003/3004` are reserved for the SPDK validation run and other shared
+runtime scenarios that explicitly opt in via `CODETALK_FRONTEND_PORT` /
+`CODETALK_BACKEND_PORT`. Do not make unrelated CodeTalk host-run defaults bind
+those ports implicitly.
 
 ## Root Cause Summary For "unable to fetch"
 
@@ -73,7 +76,7 @@ Compose mode:
 Host mode:
 
 - browser reaches frontend on `3005`
-- browser reaches backend on `8000`
+- browser reaches backend on `8100`
 - backend must use host-reachable dependency endpoints
 - database must use host port `5433`
 
@@ -101,7 +104,7 @@ export REPOS_BASE_PATH="$(pwd)/.repos"
 
 Valid examples:
 
-- `http://localhost:8000` when browsing locally on the same machine
+- `http://localhost:8100` when browsing locally on the same machine
 
 Invalid examples:
 
@@ -115,7 +118,7 @@ Invalid examples:
 Authoritative check:
 
 ```bash
-lsof -nP -iTCP -sTCP:LISTEN | rg ':(3005|8000|5433|7100|8001|8080)\b'
+lsof -nP -iTCP -sTCP:LISTEN | rg ':(3005|8100|5433|7100|8001|8080)\b'
 ```
 
 This is the source of truth for "what is actually up".
@@ -133,7 +136,7 @@ This is the source of truth for "what is actually up".
 1. Decide runtime mode first: host-run or Compose.
 2. If host-run, export host-safe env vars before starting.
 3. Start from `backend/`.
-4. Confirm Python is listening on `8000`.
+4. Confirm Python is listening on `8100`.
 5. Do not assume repo-root `.env` was loaded.
 
 ### Database and tools

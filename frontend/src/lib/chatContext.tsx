@@ -119,6 +119,7 @@ export function ChatProvider({ children }: { children: React.ReactNode }) {
       const decoder = new TextDecoder();
       let buf = "";
       let accumulated = "";
+      let streamError = "";
       while (!abort.signal.aborted) {
         const { done, value } = await reader.read();
         if (done) break;
@@ -134,7 +135,8 @@ export function ChatProvider({ children }: { children: React.ReactNode }) {
               error?: string;
             };
             if (evt.error) {
-              accumulated += `\n\n⚠️ ${evt.error}`;
+              streamError = evt.error;
+              accumulated += `\n\n⚠️ 发送失败：${evt.error}`;
               dispatch({ type: "patch", key: wsId, patch: { streamingContent: accumulated } });
               break;
             }
@@ -147,6 +149,30 @@ export function ChatProvider({ children }: { children: React.ReactNode }) {
             // ignore malformed SSE lines
           }
         }
+        if (streamError) break;
+      }
+      if (streamError && !abort.signal.aborted) {
+        const failedContent = accumulated.trim() || `⚠️ 发送失败：${streamError}`;
+        dispatch({
+          type: "patch",
+          key: wsId,
+          patch: {
+            messages: [
+              ...messagesWithUserBubble,
+              {
+                id: `err-${Date.now()}`,
+                workspace_id: wsId,
+                mode,
+                role: "assistant" as const,
+                content: failedContent,
+                created_at: new Date().toISOString(),
+              },
+            ],
+            streaming: false,
+            streamingContent: "",
+          },
+        });
+        return;
       }
       if (abort.signal.aborted) {
         await new Promise((resolve) => setTimeout(resolve, 500));

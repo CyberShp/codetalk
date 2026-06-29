@@ -362,7 +362,16 @@ function ChatPanel({
           </div>
         ) : (
           <>
-            {messages.map((msg) => (
+            {messages.map((msg, index) => {
+              const previousUser = [...messages.slice(0, index)]
+                .reverse()
+                .find((candidate) => candidate.role === "user");
+              const content = msg.content.trim();
+              const failedAssistantMessage =
+                content.includes("⚠️ 发送失败") || content.includes("⚠️ 生成失败");
+              const canRetryMessage =
+                msg.role === "assistant" && failedAssistantMessage && previousUser !== undefined;
+              return (
               <React.Fragment key={msg.id}>
                 <div
                   className={`flex gap-2.5 ${msg.role === "user" ? "justify-end" : "justify-start"}`}
@@ -393,6 +402,20 @@ function ChatPanel({
                     </div>
                   )}
                 </div>
+                {canRetryMessage && (
+                  <div className="flex justify-start mt-1 pl-8">
+                    <button
+                      onClick={() => {
+                        if (previousUser) void send(previousUser.content, previousUser.mode, selectedModule ?? undefined);
+                      }}
+                      disabled={streaming || !canChat}
+                      className="inline-flex items-center gap-1 rounded-md border border-outline-variant/30 bg-surface px-2 py-1 text-[11px] text-on-surface-variant transition-colors hover:bg-surface-container hover:text-on-surface disabled:opacity-50"
+                    >
+                      <RefreshCw size={11} />
+                      重试
+                    </button>
+                  </div>
+                )}
                 {msg.role === "user" && (
                   <div className="flex justify-end mt-0.5 pr-8">
                     <span className="inline-flex items-center gap-0.5 text-[10px] text-on-surface-variant/40">
@@ -408,7 +431,8 @@ function ChatPanel({
                   </div>
                 )}
               </React.Fragment>
-            ))}
+              );
+            })}
 
             {streamingContent && (
               <div className="flex gap-2.5 justify-start">

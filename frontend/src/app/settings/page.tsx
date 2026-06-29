@@ -121,6 +121,7 @@ export default function SettingsPage() {
     async (e: React.FormEvent) => {
       e.preventDefault();
       if (!form.name.trim() || !form.base_url.trim() || !form.model.trim()) {
+        setShowApiKey(false);
         setError("请填写名称、接口地址和模型名称");
         return;
       }
@@ -151,9 +152,10 @@ export default function SettingsPage() {
         setForm({ ...EMPTY_LLM_FORM });
         setEditingId(null);
         setShowForm(false);
-        setEditingId(null);
+        setShowApiKey(false);
         await loadData();
       } catch (err: unknown) {
+        setShowApiKey(false);
         setError(err instanceof Error ? err.message : "保存配置失败");
       } finally {
         setSaving(false);
@@ -176,11 +178,20 @@ export default function SettingsPage() {
         is_embedding_model: cfg.is_embedding_model,
       });
       setEditingId(cfg.id);
+      setShowApiKey(false);
       setShowForm(true);
       setTestResult(null);
     },
     [],
   );
+
+  const closeLLMForm = useCallback(() => {
+    setShowForm(false);
+    setEditingId(null);
+    setForm({ ...EMPTY_LLM_FORM });
+    setShowApiKey(false);
+    setTestResult(null);
+  }, []);
 
   const handleSaveActiveModel = useCallback(
     async (modelId: string) => {
@@ -466,12 +477,12 @@ export default function SettingsPage() {
           <button
             onClick={() => {
               if (showForm) {
-                setShowForm(false);
-                setEditingId(null);
-                setForm({ ...EMPTY_LLM_FORM });
+                closeLLMForm();
               } else {
                 setEditingId(null);
                 setForm({ ...EMPTY_LLM_FORM });
+                setShowApiKey(false);
+                setTestResult(null);
                 setShowForm(true);
               }
             }}
@@ -485,6 +496,12 @@ export default function SettingsPage() {
         {showForm && (
           <form
             onSubmit={handleSaveLLM}
+            onKeyDown={(event) => {
+              if (event.key === "Escape") {
+                event.preventDefault();
+                closeLLMForm();
+              }
+            }}
             aria-describedby={error ? "settings-error" : undefined}
             className="bg-surface-container rounded-xl border border-outline-variant/20 p-5 mb-4 space-y-4"
           >
