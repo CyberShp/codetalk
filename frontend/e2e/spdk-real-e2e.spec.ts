@@ -1837,6 +1837,31 @@ test("H/G/F/E/J: coverage upload, AI test-design, and artifact quality gates", a
     file: blackBoxFile,
     suggestedFilename: blackBoxDownload.suggestedFilename(),
   });
+  const rerunSfmeaDownloadPromise = page.waitForEvent("download");
+  const rerunSfmeaStartedAt = Date.now();
+  await page.getByRole("button", { name: "导出 SFMEA" }).click();
+  const rerunSfmeaDownload = await rerunSfmeaDownloadPromise;
+  await rerunSfmeaDownload.saveAs(path.join(ARTIFACT_DIR, "L07-rerun-coverage-sfmea.csv"));
+  performanceMetrics.rerunSfmeaArtifactOpenMs = Date.now() - rerunSfmeaStartedAt;
+
+  const rerunBlackBoxDownloadPromise = page.waitForEvent("download");
+  const rerunBlackBoxStartedAt = Date.now();
+  await page.getByRole("button", { name: "导出黑盒用例" }).click();
+  const rerunBlackBoxDownload = await rerunBlackBoxDownloadPromise;
+  await rerunBlackBoxDownload.saveAs(path.join(ARTIFACT_DIR, "L07-rerun-coverage-black-box-cases.json"));
+  performanceMetrics.rerunBlackBoxArtifactOpenMs = Date.now() - rerunBlackBoxStartedAt;
+
+  const baselineArtifactOpenMs =
+    Number(performanceMetrics.sfmeaArtifactOpenMs ?? 0) + Number(performanceMetrics.blackBoxArtifactOpenMs ?? 0);
+  const rerunArtifactOpenMs =
+    Number(performanceMetrics.rerunSfmeaArtifactOpenMs ?? 0) +
+    Number(performanceMetrics.rerunBlackBoxArtifactOpenMs ?? 0);
+  const allowedArtifactOpenMs = Math.max(baselineArtifactOpenMs * 1.3, baselineArtifactOpenMs + 1000);
+  performanceMetrics.baselineArtifactOpenMs = baselineArtifactOpenMs;
+  performanceMetrics.rerunArtifactOpenMs = rerunArtifactOpenMs;
+  performanceMetrics.allowedArtifactOpenMs = allowedArtifactOpenMs;
+  expect(rerunArtifactOpenMs).toBeLessThanOrEqual(allowedArtifactOpenMs);
+
   writeJson("coverage-performance-metrics.json", performanceMetrics);
   record("L05", "pass", "rendered and downloaded long SFMEA and 100+ black-box case artifacts through the real UI", {
     sfmeaRows,
@@ -1845,6 +1870,11 @@ test("H/G/F/E/J: coverage upload, AI test-design, and artifact quality gates", a
     blackBoxFile,
   });
   record("L06", "pass", "recorded coverage upload, first progress, total analysis, and artifact open/download timings", performanceMetrics);
+  record("L07", "pass", "same coverage artifact export rerun stayed within the 30% regression threshold plus browser jitter allowance", {
+    baselineArtifactOpenMs,
+    rerunArtifactOpenMs,
+    allowedArtifactOpenMs,
+  });
 
   expectNoSecretLeak(serialized);
   record("J06", "pass", "artifact written by test excludes local secrets");
