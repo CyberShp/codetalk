@@ -2,8 +2,35 @@ import { defineConfig, devices } from "@playwright/test";
 
 const frontendPort = Number(process.env.CODETALK_FRONTEND_PORT ?? "3005");
 const backendPort = Number(process.env.CODETALK_BACKEND_PORT ?? "8100");
+const gitnexusPort = Number(process.env.GITNEXUS_PORT ?? process.env.CODETALK_GITNEXUS_PORT ?? "7100");
 const browserHost = process.env.CODETALK_BROWSER_HOST ?? "localhost";
 const reuseExistingServer = process.env.CODETALK_REUSE_EXISTING_SERVER !== "0";
+const startGitNexus = process.env.CODETALK_PLAYWRIGHT_GITNEXUS === "1";
+
+const webServer = [
+  ...(startGitNexus
+    ? [
+        {
+          command: "node scripts/start-playwright-gitnexus.mjs",
+          port: gitnexusPort,
+          reuseExistingServer,
+          timeout: 30_000,
+        },
+      ]
+    : []),
+  {
+    command: "node scripts/start-playwright-backend.mjs",
+    port: backendPort,
+    reuseExistingServer,
+    timeout: 30_000,
+  },
+  {
+    command: "node scripts/start-playwright-frontend.mjs",
+    port: frontendPort,
+    reuseExistingServer,
+    timeout: 30_000,
+  },
+];
 
 export default defineConfig({
   testDir: "./e2e",
@@ -23,18 +50,5 @@ export default defineConfig({
       use: { ...devices["Desktop Chrome"] },
     },
   ],
-  webServer: [
-    {
-      command: "node scripts/start-playwright-backend.mjs",
-      port: backendPort,
-      reuseExistingServer,
-      timeout: 30_000,
-    },
-    {
-      command: "node scripts/start-playwright-frontend.mjs",
-      port: frontendPort,
-      reuseExistingServer,
-      timeout: 30_000,
-    },
-  ],
+  webServer,
 });
