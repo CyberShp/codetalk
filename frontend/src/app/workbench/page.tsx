@@ -469,28 +469,6 @@ type WorkflowDraftAudit = {
   blocking: string[];
 };
 
-type WorkbenchAuditCheck = Record<string, unknown> & {
-  id?: string;
-  status?: string;
-  details?: Record<string, unknown>;
-};
-
-function auditCheckById(
-  audit: WorkbenchSystemAudit | null,
-  id: string,
-): WorkbenchAuditCheck | null {
-  const found = audit?.checks.find((item) => String(item.id ?? "") === id);
-  if (!found) return null;
-  const details = found.details;
-  return {
-    ...found,
-    details:
-      details && typeof details === "object" && !Array.isArray(details)
-        ? (details as Record<string, unknown>)
-        : {},
-  };
-}
-
 function workflowDraftAudit(value: string): WorkflowDraftAudit {
   const empty: WorkflowDraftAudit = {
     status: "invalid",
@@ -2063,15 +2041,6 @@ export default function AgentWorkbenchPage() {
     builderOutputSpec,
     builderSemanticImports,
   ]);
-  const latestDeploymentTaskProbeAudit = useMemo(
-    () => auditCheckById(systemAudit, "latest_deployment_task_probe"),
-    [systemAudit],
-  );
-  const indexProviderReadinessAudit = useMemo(
-    () => auditCheckById(systemAudit, "codetalk_index_provider_readiness"),
-    [systemAudit],
-  );
-
   const loadWorkflows = useCallback(async () => {
     setLoading(true);
     setError(null);
