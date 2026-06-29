@@ -547,6 +547,9 @@ test("D/I: agent workbench real UI workflow, semantic library, memory, and artif
   });
   record("I01", "pass", "semantic case created/imported through UI");
 
+  await page.getByRole("button", { name: "Import case(s)" }).locator("xpath=following::input[1]").fill(
+    "NVMe TCP connect timeout",
+  );
   await page.getByRole("button", { name: "Search" }).last().click();
   await expect(page.getByText(/NVMe TCP|Queue reset|connect timeout/i).first()).toBeVisible({
     timeout: 30_000,
@@ -597,7 +600,6 @@ test("H/G/F/E/J: coverage upload, AI test-design, and artifact quality gates", a
   });
   await page.getByRole("button", { name: "上传并解析" }).click();
   await expect(page.getByText(analysisName)).toBeVisible({ timeout: 30_000 });
-  record("H01", "pass", "coverage CSV uploaded through UI");
 
   const card = page.locator(".bg-surface-container-low").filter({ hasText: analysisName }).first();
   await card.getByRole("button", { name: /AI 分析|重新分析/ }).click();
@@ -644,6 +646,7 @@ test("H/G/F/E/J: coverage upload, AI test-design, and artifact quality gates", a
       excerpt: await pageExcerpt(page),
     };
     writeJson("coverage-detail.blocked.json", detail ?? blockedDetails);
+    record("H01", "blocked", "coverage upload completed but AI analysis did not finish", blockedDetails);
     record("H02", "blocked", "coverage AI analysis did not reach analyzed status", blockedDetails);
     record("H03", "blocked", "black-box readiness requires completed coverage AI analysis", blockedDetails);
     record("H04", "blocked", "supplemental test suggestions require completed coverage AI analysis", blockedDetails);
@@ -658,6 +661,7 @@ test("H/G/F/E/J: coverage upload, AI test-design, and artifact quality gates", a
 
   const serialized = detail.analysis_results_json ?? "";
   writeJson("coverage-detail.json", detail);
+  record("H01", "pass", "coverage CSV uploaded and AI analysis completed through UI");
   for (const term of ["black_box", "source_window", "entry", "scenario"]) {
     expect(serialized.toLowerCase()).toContain(term);
   }
