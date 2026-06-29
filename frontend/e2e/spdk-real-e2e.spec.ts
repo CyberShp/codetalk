@@ -256,6 +256,28 @@ async function pageExcerpt(page: Page, limit = 2000) {
   return (await page.locator("body").innerText().catch(() => "")).slice(0, limit);
 }
 
+async function aiThreadMessageTypography(page: Page, messageText: string) {
+  const message = page.locator(".ct-codex-message").filter({ hasText: messageText }).first();
+  await expect(message).toBeVisible({ timeout: 15_000 });
+  return message.locator(".ct-codex-message__content > div").first().evaluate((element) => {
+    const target = element.querySelector("p, li, td, th, div") ?? element;
+    const style = window.getComputedStyle(target);
+    const containerStyle = window.getComputedStyle(element);
+    const fontSizePx = Number.parseFloat(style.fontSize);
+    const lineHeightPx =
+      style.lineHeight === "normal" ? fontSizePx * 1.2 : Number.parseFloat(style.lineHeight);
+    return {
+      fontSizePx,
+      lineHeightPx,
+      containerFontSizePx: Number.parseFloat(containerStyle.fontSize),
+      containerWidthPx: element.getBoundingClientRect().width,
+      scrollWidthPx: element.scrollWidth,
+      clientWidthPx: element.clientWidth,
+      overflowing: element.scrollWidth > element.clientWidth + 1,
+    };
+  });
+}
+
 async function firstVisibleEnabledButton(page: Page, name: string | RegExp) {
   const buttons = page.getByRole("button", { name });
   const count = await buttons.count();
@@ -987,6 +1009,30 @@ test("B/C/K: create SPDK workspace through UI and verify chat/index gate", async
   const threadMessages = page.locator(".ct-codex-message");
   await expect(threadMessages.filter({ hasText: chatPrompt }).first()).toBeVisible({ timeout: 15_000 });
   try {
+    const typography = await aiThreadMessageTypography(page, chatPrompt);
+    const compactBody =
+      typography.fontSizePx >= 14 &&
+      typography.fontSizePx <= 16 &&
+      typography.lineHeightPx <= 24 &&
+      !typography.overflowing;
+    record(
+      "K04",
+      compactBody ? "pass" : "fail",
+      compactBody
+        ? "AI thread message body is compact, readable, and contained after real input"
+        : "AI thread message body typography or overflow is outside the compact readability budget",
+      {
+        ...typography,
+        screenshot: await screenshot(page, compactBody ? "K04-ai-thread-typography" : "K04-ai-thread-typography-failed"),
+      },
+    );
+  } catch (error) {
+    record("K04", "blocked", "AI thread message body typography could not be measured after real input", {
+      error: error instanceof Error ? error.message : String(error),
+      screenshot: await screenshot(page, "K04-ai-thread-typography-blocked"),
+    });
+  }
+  try {
     await expect(
       threadMessages.filter({ hasText: /NVMe|nvmf|SFMEA|黑盒|connect|未配置|失败|error/i }).last(),
     ).toBeVisible({ timeout: 120_000 });
@@ -1661,7 +1707,7 @@ test("matrix accounting: every planned case has an explicit status", async () =>
     for (const id of ["C04", "C05", "C06", "C07", "C08"]) {
       if (results.get(id)?.status === "not_run") record(id, "blocked", "deferred to focused completed-chat workflow run");
     }
-    for (const id of ["K04", "K06", "L01", "L02", "L03", "L04", "L05", "L06", "L07"]) {
+    for (const id of ["K06", "L01", "L02", "L03", "L04", "L05", "L06", "L07"]) {
       if (results.get(id)?.status === "not_run") record(id, "blocked", "requires long-running reliability/performance soak");
     }
   }
