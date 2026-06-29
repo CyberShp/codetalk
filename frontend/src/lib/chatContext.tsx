@@ -149,8 +149,10 @@ export function ChatProvider({ children }: { children: React.ReactNode }) {
             // ignore malformed SSE lines
           }
         }
+        if (streamError) break;
       }
       if (streamError && !abort.signal.aborted) {
+        const failedContent = accumulated.trim() || `⚠️ 发送失败：${streamError}`;
         dispatch({
           type: "patch",
           key: wsId,
@@ -162,7 +164,7 @@ export function ChatProvider({ children }: { children: React.ReactNode }) {
                 workspace_id: wsId,
                 mode,
                 role: "assistant" as const,
-                content: `⚠️ 发送失败：${streamError}`,
+                content: failedContent,
                 created_at: new Date().toISOString(),
               },
             ],
