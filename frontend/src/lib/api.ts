@@ -63,9 +63,20 @@ import type {
 } from "./types";
 
 const CONFIGURED_API_BASE = process.env.NEXT_PUBLIC_API_URL?.replace(/\/$/, "");
+const API_BASE_OVERRIDE_STORAGE_KEY = "codetalk.apiBaseOverride";
+
+function browserApiBaseOverride() {
+  if (typeof window === "undefined") return "";
+  try {
+    return window.localStorage.getItem(API_BASE_OVERRIDE_STORAGE_KEY)?.replace(/\/$/, "") ?? "";
+  } catch {
+    return "";
+  }
+}
 
 export const BASE =
-  CONFIGURED_API_BASE ??
+  browserApiBaseOverride() ||
+  CONFIGURED_API_BASE ||
   (typeof window !== "undefined"
     ? `${window.location.protocol}//${window.location.hostname}:3004`
     : "http://localhost:3004");

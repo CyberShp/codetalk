@@ -1,5 +1,5 @@
 import { expect, test, type Locator, type Page } from "@playwright/test";
-import { spawn } from "node:child_process";
+import { spawn, spawnSync, type ChildProcess } from "node:child_process";
 import fs from "node:fs";
 import net from "node:net";
 import os from "node:os";
@@ -16,6 +16,7 @@ const hasSpdkRepo = fs.existsSync(SPDK_REPO);
 const requireSpdkRepo = process.env.CODETALK_E2E_REQUIRE_SPDK === "1";
 const auditMode = process.env.CODETALK_E2E_AUDIT_MODE === "1";
 const SPDK_INDEX_WAIT_MS = Number(process.env.CODETALK_E2E_SPDK_INDEX_TIMEOUT_MS ?? "600000");
+const API_BASE_OVERRIDE_STORAGE_KEY = "codetalk.apiBaseOverride";
 
 type CaseStatus = "pass" | "fail" | "blocked" | "not_run";
 
@@ -201,6 +202,113 @@ async function withOccupiedPort<T>(run: (port: number) => Promise<T>): Promise<T
   } finally {
     await new Promise<void>((resolve) => server.close(() => resolve()));
   }
+}
+
+async function reserveFreePort() {
+  const server = net.createServer();
+  await new Promise<void>((resolve, reject) => {
+    server.once("error", reject);
+    server.listen(0, "127.0.0.1", () => resolve());
+  });
+  const address = server.address();
+  if (!address || typeof address === "string") {
+    server.close();
+    throw new Error("failed to reserve a local TCP port");
+  }
+  const port = address.port;
+  await new Promise<void>((resolve) => server.close(() => resolve()));
+  return port;
+}
+
+async function waitForHttpOk(url: string, timeoutMs = 30_000) {
+  const deadline = Date.now() + timeoutMs;
+  let lastError = "";
+  while (Date.now() < deadline) {
+    try {
+      const response = await fetch(url);
+      if (response.ok) return;
+      lastError = `HTTP ${response.status}`;
+    } catch (error) {
+      lastError = error instanceof Error ? error.message : String(error);
+    }
+    await new Promise((resolve) => setTimeout(resolve, 500));
+  }
+  throw new Error(`timed out waiting for ${url}: ${lastError}`);
+}
+
+async function stopChildProcess(child: ChildProcess) {
+  if (child.exitCode !== null || child.signalCode !== null) return;
+  child.kill("SIGTERM");
+  await new Promise<void>((resolve) => {
+    const force = setTimeout(() => {
+      if (child.exitCode === null && child.signalCode === null) child.kill("SIGKILL");
+    }, 5000);
+    child.once("exit", () => {
+      clearTimeout(force);
+      resolve();
+    });
+  });
+}
+
+async function startIsolatedBackend(port: number, dataDir: string) {
+  const backendDir = path.resolve(process.cwd(), "../backend");
+  const pythonCandidates = process.env.CODETALK_BACKEND_PYTHON
+    ? [process.env.CODETALK_BACKEND_PYTHON]
+    : ["python3.11", "python3.10", "python3", "python"];
+  const python = pythonCandidates.find((candidate) => {
+    const result = spawnSync(
+      candidate,
+      [
+        "-c",
+        [
+          "import sys",
+          "assert sys.version_info >= (3, 10)",
+          "import uvicorn",
+          "import app.main",
+        ].join("; "),
+      ],
+      {
+        cwd: backendDir,
+        env: {
+          ...process.env,
+          DATA_DIR: dataDir,
+          SQLITE_DB: path.join(dataDir, "codetalk.db"),
+        },
+        stdio: "ignore",
+      },
+    );
+    return result.status === 0;
+  });
+  if (!python) {
+    throw new Error("No Python >=3.10 interpreter with CodeTalk backend dependencies found for L04 restart test");
+  }
+  const stdout: string[] = [];
+  const child = spawn(python, ["-m", "uvicorn", "app.main:app", "--host", "127.0.0.1", "--port", String(port)], {
+    cwd: backendDir,
+    env: {
+      ...process.env,
+      DATA_DIR: dataDir,
+      SQLITE_DB: path.join(dataDir, "codetalk.db"),
+      CORS_ORIGINS: [
+        "http://localhost:3003",
+        "http://127.0.0.1:3003",
+        "http://localhost:3004",
+        "http://127.0.0.1:3004",
+      ].join(","),
+      GITNEXUS_BASE_URL: process.env.GITNEXUS_BASE_URL ?? "http://localhost:7100",
+      GITNEXUS_PORT: process.env.GITNEXUS_PORT ?? process.env.CODETALK_GITNEXUS_PORT ?? "7100",
+    },
+    stdio: ["ignore", "pipe", "pipe"],
+  });
+  child.stdout?.on("data", (chunk) => stdout.push(chunk.toString()));
+  child.stderr?.on("data", (chunk) => stdout.push(chunk.toString()));
+  try {
+    await waitForHttpOk(`http://127.0.0.1:${port}/health`, 30_000);
+  } catch (error) {
+    await stopChildProcess(child).catch(() => undefined);
+    throw new Error(`${error instanceof Error ? error.message : String(error)}\n${stdout.join("").slice(-4000)}`);
+  }
+  return { child, stdout };
 }
 
 async function runStartupScriptWithOccupiedPort(
@@ -1914,6 +2022,132 @@ test("H/G/F/E/J: coverage upload, AI test-design, and artifact quality gates", a
 
   expectNoSecretLeak(serialized);
   record("J06", "pass", "artifact written by test excludes local secrets");
+});
+
+test("L04: isolated backend restart preserves workspace and workbench artifacts", async ({ page }) => {
+  test.setTimeout(240_000);
+
+  if (!hasSpdkRepo) {
+    record("L04", "blocked", "backend restart persistence requires an available SPDK checkout", { spdkRepo: SPDK_REPO });
+    return;
+  }
+
+  const isolatedBackendPort = await reserveFreePort();
+  const isolatedDataDir = path.join(os.tmpdir(), "codetalk-e2e-spdk-l04", RUN_ID);
+  fs.rmSync(isolatedDataDir, { recursive: true, force: true });
+  fs.mkdirSync(isolatedDataDir, { recursive: true });
+  const isolatedBackendBase = `http://127.0.0.1:${isolatedBackendPort}`;
+  let backend = await startIsolatedBackend(isolatedBackendPort, isolatedDataDir);
+  const restartLog: unknown[] = [];
+
+  await page.addInitScript(
+    ([key, value]) => window.localStorage.setItem(String(key), String(value)),
+    [API_BASE_OVERRIDE_STORAGE_KEY, isolatedBackendBase],
+  );
+
+  try {
+    const l04WorkspaceName = `l04-restart-${Date.now()}`;
+    await page.goto("/workspaces/new", { waitUntil: "domcontentloaded" });
+    await noFrameworkOverlay(page);
+    await page.getByPlaceholder(/项目 A/).fill(l04WorkspaceName);
+    await page.getByPlaceholder(/本地文件夹路径/).fill(SPDK_REPO);
+    await page.getByRole("button", { name: "创建工作空间" }).click();
+    await page.waitForURL(/\/workspaces\/[0-9a-f-]{36}$/, { timeout: 30_000 });
+    const l04WorkspaceId = page.url().split("/").pop() ?? "";
+    await expect(page.getByText(l04WorkspaceName)).toBeVisible({ timeout: 30_000 });
+
+    await page.goto("/workbench", { waitUntil: "domcontentloaded" });
+    await noFrameworkOverlay(page);
+    await page.getByLabel("Repo path").fill(SPDK_REPO);
+    await page.getByLabel("Workspace ID").fill(l04WorkspaceId);
+    await openWorkbenchView(page, "工作流设计");
+    const workflowPresetSelect = page.getByLabel("工作流预设");
+    await expect(workflowPresetSelect).toBeVisible({ timeout: 30_000 });
+    await workflowPresetSelect.selectOption("module_analysis");
+    await page.getByRole("button", { name: "安装预设" }).click();
+    await expect(page.getByText(/预设已安装:|工作流已保存:|已应用预设:/).first()).toBeVisible({
+      timeout: 30_000,
+    });
+
+    await openWorkbenchView(page, "运行驾驶舱");
+    await page.getByLabel("Repo path").fill(SPDK_REPO);
+    await page.getByLabel("Workspace ID").fill(l04WorkspaceId);
+    await page.getByLabel("Inputs JSON").fill(JSON.stringify({
+      analysis_object: "L04 backend restart persistence smoke: preserve workspace and artifact manifest.",
+      repo_path: SPDK_REPO,
+    }, null, 2));
+    const prepareRunButton = page.getByRole("button", { name: /^准备运行$/ });
+    await prepareRunButton.scrollIntoViewIfNeeded({ timeout: 15_000 });
+    await prepareRunButton.hover({ timeout: 15_000 });
+    await expect(prepareRunButton).toBeEnabled({ timeout: 15_000 });
+    await prepareRunButton.click({ timeout: 15_000 });
+    await expect
+      .poll(
+        async () => {
+          const body = await page.locator("body").innerText();
+          return body.match(/Task run prepared:\s*(task_run_[a-f0-9]+)/)?.[1] ?? "";
+        },
+        { timeout: 45_000 },
+      )
+      .not.toEqual("");
+    const preparedBody = await page.locator("body").innerText();
+    const l04TaskRunId = preparedBody.match(/Task run prepared:\s*(task_run_[a-f0-9]+)/)?.[1] ?? "";
+    expect(l04TaskRunId).not.toEqual("");
+    await page.getByRole("button", { name: "审计产物" }).click();
+    await expect(page.getByText(/审计产物:/)).toBeVisible({ timeout: 30_000 });
+    await expect(page.locator("button").filter({ hasText: /task_bundle|input|artifact/i }).first()).toBeVisible({
+      timeout: 15_000,
+    });
+    const beforeRestartScreenshot = await screenshot(page, "L04-before-backend-restart-artifact");
+
+    await stopChildProcess(backend.child);
+    restartLog.push({ phase: "stopped", port: isolatedBackendPort });
+    backend = await startIsolatedBackend(isolatedBackendPort, isolatedDataDir);
+    restartLog.push({ phase: "restarted", port: isolatedBackendPort });
+
+    await page.goto(`/workspaces/${l04WorkspaceId}`, { waitUntil: "domcontentloaded" });
+    await noFrameworkOverlay(page);
+    await expect(page.getByText(l04WorkspaceName)).toBeVisible({ timeout: 30_000 });
+
+    await page.goto("/workbench", { waitUntil: "domcontentloaded" });
+    await noFrameworkOverlay(page);
+    await openWorkbenchView(page, "运行驾驶舱");
+    const restoredTaskRunButton = page.locator("button").filter({ hasText: String(l04TaskRunId) }).first();
+    await expect(restoredTaskRunButton).toBeVisible({ timeout: 30_000 });
+    await restoredTaskRunButton.click();
+    await expect(page.getByText(new RegExp(`Task run restored: ${l04TaskRunId}`))).toBeVisible({ timeout: 30_000 });
+    await page.getByRole("button", { name: "审计产物" }).click();
+    await expect(page.getByText(/审计产物:/)).toBeVisible({ timeout: 30_000 });
+    const restoredArtifactButton = page.locator("button").filter({ hasText: /task_bundle|input|artifact/i }).first();
+    await expect(restoredArtifactButton).toBeVisible({ timeout: 30_000 });
+    await restoredArtifactButton.click();
+    await expect(page.locator("pre, code").filter({ hasText: /task|workflow|artifact|input|evidence/i }).first()).toBeVisible({
+      timeout: 30_000,
+    });
+
+    record("L04", "pass", "isolated backend restarted with the same data dir and preserved workspace plus workbench artifacts", {
+      isolatedBackendPort,
+      isolatedDataDir,
+      workspaceId: l04WorkspaceId,
+      workspaceName: l04WorkspaceName,
+      taskRunId: l04TaskRunId,
+      beforeRestartScreenshot,
+      afterRestartScreenshot: await screenshot(page, "L04-after-backend-restart-artifact"),
+      restartLog,
+    });
+  } catch (error) {
+    record("L04", "blocked", "isolated backend restart persistence flow did not complete through the UI", {
+      isolatedBackendPort,
+      isolatedDataDir,
+      restartLog,
+      screenshot: await screenshot(page, "L04-backend-restart-failed"),
+      error: error instanceof Error ? error.message : String(error),
+      excerpt: await pageExcerpt(page),
+      backendTail: backend.stdout.join("").slice(-4000),
+    });
+  } finally {
+    await stopChildProcess(backend.child).catch(() => undefined);
+  }
 });
 
 test("matrix accounting: every planned case has an explicit status", async () => {
