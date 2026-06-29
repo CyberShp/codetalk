@@ -1,11 +1,13 @@
 import { defineConfig, devices } from "@playwright/test";
 
-const frontendPort = Number(process.env.CODETALK_FRONTEND_PORT ?? "3005");
-const backendPort = Number(process.env.CODETALK_BACKEND_PORT ?? "8100");
+const frontendPort = Number(process.env.CODETALK_FRONTEND_PORT ?? "3003");
+const backendPort = Number(process.env.CODETALK_BACKEND_PORT ?? "3004");
 const frontendBindHost =
   process.env.CODETALK_FRONTEND_BIND_HOST ?? "0.0.0.0";
 const backendBindHost = process.env.CODETALK_BACKEND_BIND_HOST ?? "0.0.0.0";
 const browserHost = process.env.CODETALK_BROWSER_HOST ?? "localhost";
+const reuseExistingServer = process.env.CODETALK_REUSE_EXISTING_SERVER !== "0";
+const backendPython = process.env.CODETALK_BACKEND_PYTHON ?? "python3.11";
 
 export default defineConfig({
   testDir: "./e2e",
@@ -28,15 +30,15 @@ export default defineConfig({
   webServer: [
     {
       command:
-        `cd ../backend && python -m uvicorn app.main:app --host ${backendBindHost} --port ${backendPort}`,
+        `cd ../backend && ${backendPython} -m uvicorn app.main:app --host ${backendBindHost} --port ${backendPort}`,
       port: backendPort,
-      reuseExistingServer: true,
+      reuseExistingServer,
       timeout: 30_000,
     },
     {
-      command: `npx next dev -H ${frontendBindHost} -p ${frontendPort}`,
+      command: `NEXT_PUBLIC_API_URL=http://${browserHost}:${backendPort} npx next dev -H ${frontendBindHost} -p ${frontendPort}`,
       port: frontendPort,
-      reuseExistingServer: true,
+      reuseExistingServer,
       timeout: 30_000,
     },
   ],
