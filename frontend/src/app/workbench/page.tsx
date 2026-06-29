@@ -1,6 +1,7 @@
 "use client";
 
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useRouter } from "next/navigation";
 import {
   AlertTriangle,
   ClipboardList,
@@ -11,7 +12,11 @@ import {
   RefreshCw,
   Save,
   Search,
+  MessageSquareText,
 } from "lucide-react";
+import { AnimatePresence, motion } from "framer-motion";
+import gsap from "gsap";
+import { useGSAP } from "@gsap/react";
 import { api } from "@/lib/api";
 import type {
   EvidenceMemoryItem,
@@ -34,21 +39,21 @@ import type {
   WorkflowExecutionResult,
   WorkflowPreset,
   WorkbenchAcceptanceAudit,
-  WorkbenchCoreWorkflowReadiness,
   WorkbenchProviderCapabilitiesMatrix,
   WorkbenchProviderTaskProbeResult,
   WorkbenchSmokeE2EResult,
   WorkbenchSystemAudit,
-  WorkbenchWorkflowCapabilities,
   WorkbenchTaskArtifact,
   WorkbenchTaskArtifactContent,
   WorkbenchTaskArtifactManifest,
   WorkflowDraftServerAudit,
 } from "@/lib/types";
 
+gsap.registerPlugin(useGSAP);
+
 const DEFAULT_WORKFLOW = {
   id: "mr-blackbox-workflow",
-  name: "MR Black-box Test Workflow",
+  name: "MR 黑盒测试工作流",
   version: 1,
   inputs: [
     {
@@ -56,9 +61,9 @@ const DEFAULT_WORKFLOW = {
       type: "mr_link",
       required: true,
       resolver: "agent_mcp",
-      role: "MR source resolved by the Agent CLI MCP credentials",
+      role: "由智能体执行器通过 MCP 凭证读取 MR",
     },
-    { id: "design_doc", type: "file", required: false, role: "design context" },
+    { id: "design_doc", type: "file", required: false, role: "设计文档" },
     { id: "coverage_report", type: "coverage_report", required: false },
   ],
   steps: [
@@ -67,7 +72,7 @@ const DEFAULT_WORKFLOW = {
       type: "agent_task",
       provider: "claude-code",
       mcp_profile: "codehub-mcp",
-      goal: "Collect MR diff and produce verifiable artifacts. Do not edit files.",
+      goal: "读取 MR 差异并产出可校验产物；禁止修改代码。",
       required_artifacts: ["mr_snapshot.json", "diff.patch", "changed_files.json"],
     },
     { id: "validate_evidence", type: "evidence_validate" },
@@ -97,33 +102,83 @@ const DEFAULT_INPUTS = {
   coverage_report: "",
 };
 
+type WorkbenchView = "run" | "workflow" | "knowledge" | "diagnostics";
+
+const WORKBENCH_VIEWS: Array<{
+  id: WorkbenchView;
+  label: string;
+  description: string;
+}> = [
+  {
+    id: "run",
+    label: "运行驾驶舱",
+    description: "准备、执行、验收与复跑",
+  },
+  {
+    id: "workflow",
+    label: "工作流设计",
+    description: "编排输入、步骤、输出契约",
+  },
+  {
+    id: "knowledge",
+    label: "证据与语义",
+    description: "沉淀事实、复用测试语义",
+  },
+  {
+    id: "diagnostics",
+    label: "执行器体检",
+    description: "智能体 CLI、MCP 与部署探测",
+  },
+];
+
+const WORKFLOW_NAME_ZH: Record<string, string> = {
+  "MR Black-box Test Workflow": "MR 黑盒测试工作流",
+  "MR Blackbox Test Workflow": "MR 黑盒测试工作流",
+  "Module Analysis": "模块分析工作流",
+  "Resource Leak Hunt": "资源/异常路径排查工作流",
+  "Patch Impact Review": "补丁影响面评审工作流",
+  "custom_mr_blackbox": "自定义 MR 黑盒测试工作流",
+  "mr-blackbox-workflow": "MR 黑盒测试工作流",
+  module_analysis: "模块分析工作流",
+  resource_leak_hunt: "资源/异常路径排查工作流",
+  patch_impact: "补丁影响面计划工作流",
+};
+
+function workflowDisplayName(workflow: Pick<WorkflowDefinition, "id" | "name"> | string): string {
+  const id = typeof workflow === "string" ? workflow : workflow.id;
+  const name = typeof workflow === "string" ? "" : String(workflow.name ?? "").trim();
+  const normalizedName = WORKFLOW_NAME_ZH[name] ?? name;
+  if (normalizedName && !/[A-Za-z]{4,}/.test(normalizedName)) return normalizedName;
+  return WORKFLOW_NAME_ZH[id] ?? normalizedName ?? id;
+}
+
 const WORKFLOW_BUILDER_SCENARIOS = {
   module_analysis: {
-    name: "Module Analysis",
+    name: "模块分析",
     inputs: "analysis_object:free_text, design_doc:file, coverage_report:coverage_report",
     outputs: "source_scope:scope_report, risk_findings:json, test_cases:test_cases",
-    goal: "Analyze the requested module, validate source scope, identify risk paths, and produce black-box oriented test cases.",
+    goal: "分析指定模块，校验源码范围，识别风险路径，并生成面向黑盒验证的测试用例。",
     artifacts: "source_scope.json, risk_findings.json, black_box_cases.json",
   },
   issue_hunt: {
-    name: "Resource / Exception Hunt",
+    name: "资源/异常路径排查",
     inputs: "analysis_object:free_text, issue_type:free_text, design_doc:file",
     outputs: "issue_candidates:json, repro_paths:json, test_cases:test_cases",
-    goal: "Find resource leaks or exception-branch defects matching the requested issue type, with verifiable source evidence and observable tests.",
+    goal: "围绕指定问题类型排查资源泄漏或异常分支缺陷，产出可核验源码证据和可观察测试。",
     artifacts: "issue_candidates.json, repro_paths.json, black_box_cases.json",
   },
   mr_blackbox: {
-    name: "MR Black-box Tests",
+    name: "MR 黑盒测试",
     inputs: "mr_link:mr_link, design_doc:file, coverage_report:coverage_report",
     outputs: "mr_scope:scope_report, changed_behavior:json, black_box_cases:test_cases",
-    goal: "Use Agent-owned MCP credentials to read the MR, identify changed behavior and affected scope, then produce black-box test cases.",
+    goal: "使用智能体自持 MCP 凭证读取 MR，识别变更行为和影响范围，并生成黑盒测试用例。",
     artifacts: "mr_snapshot.json, diff.patch, changed_files.json, black_box_cases.json",
   },
   patch_impact: {
-    name: "Patch Impact Plan",
+    name: "补丁影响面计划",
     inputs: "patch_file:patch, design_doc:file, analysis_object:free_text",
     outputs: "before_after_flow:markdown, impact_scope:scope_report, test_cases:test_cases",
-    goal: "Read the patch proposal, compare before/after flow, validate impact scope, and produce implementation and test recommendations.",
+    goal: "读取补丁方案，对比变更前后流程，校验影响范围，并生成实现与测试建议。",
     artifacts: "patch_summary.json, before_after_flow.md, impact_scope.json, black_box_cases.json",
   },
 } as const;
@@ -597,7 +652,7 @@ function semanticCasesFromLines({
   module: string;
   text: string;
 }): Record<string, unknown> {
-  const safeFeature = feature.trim() || "Imported Feature";
+  const safeFeature = feature.trim() || "Imported feature";
   const safeModule = module.trim() || "module";
   const cases = text
     .split(/\r?\n/)
@@ -980,16 +1035,6 @@ function commandResolutionLines(resolution?: AgentCommandResolutionDetail): stri
     lines.push(`where_stderr:${resolution.where_stderr}`);
   }
   return lines.slice(0, 6);
-}
-
-function auditRecommendedActions(item: Record<string, unknown>): string[] {
-  const details =
-    item.details && typeof item.details === "object" && !Array.isArray(item.details)
-      ? (item.details as Record<string, unknown>)
-      : {};
-  const actions = details.recommended_actions;
-  if (!Array.isArray(actions)) return [];
-  return actions.map((action) => String(action)).filter(Boolean);
 }
 
 type AcceptanceProviderIssue = {
@@ -1768,8 +1813,8 @@ function Panel({
   children: React.ReactNode;
 }) {
   return (
-    <section className="rounded-xl border border-outline-variant/20 bg-surface-container p-5">
-      <h2 className="mb-4 flex items-center gap-2 text-sm font-semibold text-on-surface">
+    <section className="ct-workbench-panel ct-reveal ct-liquid-glass min-w-0 rounded-[24px] p-5">
+      <h2 className="ct-workbench-panel-title mb-4 flex items-center gap-2 text-base font-semibold text-on-surface">
         {icon}
         {title}
       </h2>
@@ -1778,14 +1823,35 @@ function Panel({
   );
 }
 
+function ProviderFactRow({
+  label,
+  value,
+}: {
+  label: string;
+  value: React.ReactNode;
+}) {
+  return (
+    <div className="ct-provider-kv-row">
+      <span className="ct-provider-kv-label">{label}</span>
+      <span className="ct-provider-kv-value">{value}</span>
+    </div>
+  );
+}
+
+function ProviderSectionTitle({ children }: { children: React.ReactNode }) {
+  return <p className="ct-provider-section-title">{children}</p>;
+}
+
 export default function AgentWorkbenchPage() {
+  const router = useRouter();
+  const workbenchRootRef = useRef<HTMLDivElement | null>(null);
   const [workflows, setWorkflows] = useState<WorkflowDefinition[]>([]);
   const [workflowPresets, setWorkflowPresets] = useState<WorkflowPreset[]>([]);
   const [workflowJson, setWorkflowJson] = useState(pretty(DEFAULT_WORKFLOW));
   const [builderScenario, setBuilderScenario] =
     useState<keyof typeof WORKFLOW_BUILDER_SCENARIOS>("mr_blackbox");
   const [builderWorkflowId, setBuilderWorkflowId] = useState("custom_mr_blackbox");
-  const [builderWorkflowName, setBuilderWorkflowName] = useState("Custom MR black-box workflow");
+  const [builderWorkflowName, setBuilderWorkflowName] = useState("自定义 MR 黑盒测试工作流");
   const [builderInputSpec, setBuilderInputSpec] = useState<string>(
     WORKFLOW_BUILDER_SCENARIOS.mr_blackbox.inputs,
   );
@@ -1831,10 +1897,6 @@ export default function AgentWorkbenchPage() {
   const [providerMatrix, setProviderMatrix] =
     useState<WorkbenchProviderCapabilitiesMatrix | null>(null);
   const [systemAudit, setSystemAudit] = useState<WorkbenchSystemAudit | null>(null);
-  const [workflowCapabilities, setWorkflowCapabilities] =
-    useState<WorkbenchWorkflowCapabilities | null>(null);
-  const [coreWorkflowReadiness, setCoreWorkflowReadiness] =
-    useState<WorkbenchCoreWorkflowReadiness | null>(null);
   const [providerProbeResults, setProviderProbeResults] = useState<
     Record<string, ExternalAgentStartupProbeResult>
   >({});
@@ -1875,13 +1937,38 @@ export default function AgentWorkbenchPage() {
   const [materializeResults, setMaterializeResults] = useState<
     Record<string, MaterializeEvidenceResult>
   >({});
+  const [activeWorkbenchView, setActiveWorkbenchView] = useState<WorkbenchView>("run");
   const [loading, setLoading] = useState(false);
   const [busyAction, setBusyAction] = useState<string | null>(null);
   const [message, setMessage] = useState<string | null>(null);
+  const [openingConversation, setOpeningConversation] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
+  useGSAP(
+    () => {
+      const root = workbenchRootRef.current;
+      if (!root || window.matchMedia("(prefers-reduced-motion: reduce)").matches) return;
+
+      const handlePointerMove = (event: PointerEvent) => {
+        const bounds = root.getBoundingClientRect();
+        gsap.set(root, {
+          "--ct-wb-x": `${event.clientX - bounds.left}px`,
+          "--ct-wb-y": `${event.clientY - bounds.top}px`,
+        });
+      };
+
+      root.addEventListener("pointermove", handlePointerMove, { passive: true });
+
+      return () => root.removeEventListener("pointermove", handlePointerMove);
+    },
+    { scope: workbenchRootRef },
+  );
+
   const workflowOptions = useMemo(
-    () => workflows.map((workflow) => workflow.id),
+    () => workflows.map((workflow) => ({
+      id: workflow.id,
+      label: workflowDisplayName(workflow),
+    })),
     [workflows],
   );
   const builderProviderOptions = useMemo(() => {
@@ -1994,23 +2081,17 @@ export default function AgentWorkbenchPage() {
         taskRunData,
         providerData,
         systemAuditData,
-        workflowCapabilityData,
-        coreWorkflowReadinessData,
       ] = await Promise.all([
         api.workbench.workflows.list(),
         api.workbench.taskRuns.list({ limit: 10 }),
         api.workbench.providerCapabilities(),
         api.workbench.systemAudit(),
-        api.workbench.workflowCapabilities(),
-        api.workbench.coreWorkflowReadiness(),
       ]);
       const presetData = await api.workbench.workflows.presets();
       setWorkflows(workflowData);
       setWorkflowPresets(presetData.items);
       setProviderMatrix(providerData);
       setSystemAudit(systemAuditData);
-      setWorkflowCapabilities(workflowCapabilityData);
-      setCoreWorkflowReadiness(coreWorkflowReadinessData);
       if (!selectedPresetId && presetData.items.length > 0) {
         setSelectedPresetId(presetData.items[0].id);
       }
@@ -2123,7 +2204,7 @@ export default function AgentWorkbenchPage() {
   function applyBuilderScenario(scenarioId: keyof typeof WORKFLOW_BUILDER_SCENARIOS) {
     const scenario = WORKFLOW_BUILDER_SCENARIOS[scenarioId];
     setBuilderScenario(scenarioId);
-    setBuilderWorkflowName(`Custom ${scenario.name}`);
+    setBuilderWorkflowName(`自定义 ${scenario.name}`);
     setBuilderInputSpec(scenario.inputs);
     setBuilderOutputSpec(scenario.outputs);
     setBuilderGoal(scenario.goal);
@@ -2153,8 +2234,8 @@ export default function AgentWorkbenchPage() {
             : "manual"),
         role:
           input.resolver === "agent_mcp" || input.type === "mr_link"
-            ? "remote change source resolved by Agent CLI MCP credentials"
-            : "user-provided workflow input",
+            ? "由智能体 CLI 通过 MCP 凭证解析远端变更源"
+            : "用户提供的工作流输入",
         ...(schema ? { schema } : {}),
       };
     });
@@ -2207,7 +2288,7 @@ export default function AgentWorkbenchPage() {
     };
     setWorkflowJson(pretty(workflow));
     setSelectedWorkflowId(workflow.id);
-    setMessage(`Workflow draft generated: ${workflow.id}`);
+    setMessage(`工作流草稿已生成: ${workflow.id}`);
   }
 
   const generateWorkflowDraft = () =>
@@ -2223,8 +2304,8 @@ export default function AgentWorkbenchPage() {
       const warningCount = saved.audit?.warnings?.length ?? 0;
       setMessage(
         warningCount
-          ? `Workflow saved: ${saved.id} (${warningCount} audit warning(s))`
-          : `Workflow saved: ${saved.id}`,
+          ? `工作流已保存: ${saved.id} (${warningCount} audit warning(s))`
+          : `工作流已保存: ${saved.id}`,
       );
       await loadWorkflows();
     });
@@ -2236,8 +2317,8 @@ export default function AgentWorkbenchPage() {
       setWorkflowDraftServerAudit(audit);
       setMessage(
         audit.valid
-          ? `Workflow draft audit: ${audit.status} (${audit.warnings.length} warning(s))`
-          : `Workflow draft audit: invalid`,
+          ? `工作流草稿审计: ${audit.status} (${audit.warnings.length} warning(s))`
+          : `工作流草稿审计: invalid`,
       );
     });
 
@@ -2245,7 +2326,7 @@ export default function AgentWorkbenchPage() {
     const workflow = workflows.find((item) => item.id === selectedWorkflowId);
     if (!workflow) return;
     setWorkflowJson(pretty(workflow));
-    setMessage(`Workflow loaded for editing: ${workflow.id}`);
+    setMessage(`已载入工作流: ${workflow.id}`);
   };
 
   const duplicateSelectedWorkflowDraft = () => {
@@ -2254,12 +2335,12 @@ export default function AgentWorkbenchPage() {
     const clone = {
       ...workflow,
       id: `${workflow.id}_copy`,
-      name: `${workflow.name} Copy`,
+      name: `${workflowDisplayName(workflow)} 副本`,
       version: Number(workflow.version ?? 1) + 1,
     };
     setWorkflowJson(pretty(clone));
     setSelectedWorkflowId(clone.id);
-    setMessage(`Workflow duplicated as draft: ${clone.id}`);
+    setMessage(`已复制为草稿: ${clone.id}`);
   };
 
   const applyPreset = () => {
@@ -2267,7 +2348,7 @@ export default function AgentWorkbenchPage() {
     if (!preset) return;
     setWorkflowJson(pretty(preset.definition));
     setSelectedWorkflowId(preset.definition.id);
-    setMessage(`Preset applied: ${preset.name}`);
+    setMessage(`已应用预设: ${workflowDisplayName(preset.definition)}`);
   };
 
   const installPreset = () =>
@@ -2276,7 +2357,7 @@ export default function AgentWorkbenchPage() {
       const workflow = await api.workbench.workflows.installPreset(selectedPresetId);
       setWorkflowJson(pretty(workflow));
       setSelectedWorkflowId(workflow.id);
-      setMessage(`Preset installed: ${workflow.id}`);
+      setMessage(`预设已安装: ${workflowDisplayName(workflow)}`);
       await loadWorkflows();
     });
 
@@ -2361,7 +2442,7 @@ export default function AgentWorkbenchPage() {
     runAction(`provider-probe-${provider}`, async () => {
       const result = await api.tools.startupProbe(provider, repoPath.trim() || undefined);
       setProviderProbeResults((current) => ({ ...current, [provider]: result }));
-      setMessage(`Startup probe ${result.status}: ${provider}`);
+      setMessage(`启动探测 ${result.status}: ${provider}`);
     });
 
   const runProviderTaskProbe = (provider: string) =>
@@ -2391,7 +2472,7 @@ export default function AgentWorkbenchPage() {
       setArtifactContent(null);
       await refreshArtifactManifest(result.task_run_id);
       setMessage(
-        `Task probe ${result.status}: ${provider} contract ${result.summary.task_contract_status}`,
+        `任务探测 ${result.status}: ${provider} contract ${result.summary.task_contract_status}`,
       );
     });
 
@@ -2416,7 +2497,7 @@ export default function AgentWorkbenchPage() {
         return next;
       });
       setMessage(
-        `Deployment probe ${result.status}: ${result.summary.healthy_count}/${result.summary.provider_count} healthy`,
+        `部署探测 ${result.status}: ${result.summary.healthy_count}/${result.summary.provider_count} healthy`,
       );
     });
 
@@ -2454,7 +2535,7 @@ export default function AgentWorkbenchPage() {
       });
       const ready = result.summary.task_ready_count ?? 0;
       const total = result.summary.provider_count;
-      setMessage(`Task probe deployment ${result.status}: ${ready}/${total} ready`);
+      setMessage(`任务探测 deployment ${result.status}: ${ready}/${total} ready`);
     });
 
   const runSmokeE2E = () =>
@@ -2479,7 +2560,7 @@ export default function AgentWorkbenchPage() {
       setSemanticOutputImport(null);
       setArtifactContent(null);
       await refreshArtifactManifest(result.task_run_id);
-      setMessage(`Smoke E2E ${result.status}: ${result.task_run_id}`);
+      setMessage(`全链路烟测 ${result.status}: ${result.task_run_id}`);
     });
 
   function updatePrepareInput(input: Record<string, unknown>, value: string) {
@@ -2512,11 +2593,36 @@ export default function AgentWorkbenchPage() {
       setMessage(`Input file uploaded: ${uploads.map((item) => item.filename).join(", ")}`);
     });
 
+  const openPreparedConversation = async () => {
+    if (!preparedRun) return;
+    setOpeningConversation(true);
+    try {
+      const conversation = await api.aiConversations.createForScope({
+        scope_type: "workbench_task_run",
+        scope_id: preparedRun.task_run_id,
+        workspace_id: preparedRun.workspace_id,
+        memory_namespace: `workspace:${preparedRun.workspace_id}`,
+        title: `${workflowDisplayName(preparedRun.workflow_id)} · AI 复盘`,
+        initial_context: {
+          workflow_id: preparedRun.workflow_id,
+          workspace_id: preparedRun.workspace_id,
+          memory_namespace: `workspace:${preparedRun.workspace_id}`,
+          repo_path: preparedRun.repo_path,
+        },
+      });
+      router.push(`/ai/${conversation.id}`);
+    } catch (exc) {
+      setError(exc instanceof Error ? exc.message : "创建 AI 线程失败");
+    } finally {
+      setOpeningConversation(false);
+    }
+  };
+
   const loadPreparedArtifacts = () =>
     runAction("load-artifacts", async () => {
       if (!preparedRun) return;
       await refreshArtifactManifest(preparedRun.task_run_id);
-      setMessage(`Artifacts loaded: ${preparedRun.task_run_id}`);
+      setMessage(`产物已加载: ${preparedRun.task_run_id}`);
     });
 
   const loadTaskRerunPlan = () =>
@@ -2672,7 +2778,7 @@ export default function AgentWorkbenchPage() {
         `${preparedRun.workflow_id} ${preparedRun.task_run_id}`,
       );
       setMaterializeResults((current) => ({ ...current, [stepId]: result }));
-      setMessage(`Evidence materialized: ${result.evidence_count}`);
+      setMessage(`证据已固化: ${result.evidence_count}`);
     });
 
   const importSemanticCase = () =>
@@ -2681,7 +2787,7 @@ export default function AgentWorkbenchPage() {
       if (isBulkSemanticImportPayload(payload)) {
         const result = await api.workbench.semanticCases.importMany(payload);
         setMessage(
-          `Semantic cases imported: ${result.imported_count}, rejected: ${result.rejected_count}`,
+          `语义用例已导入: ${result.imported_count}, rejected: ${result.rejected_count}`,
         );
         return;
       }
@@ -2691,7 +2797,7 @@ export default function AgentWorkbenchPage() {
       const result = await api.workbench.semanticCases.create(
         payload as Record<string, unknown>,
       );
-      setMessage(`Semantic case stored: ${result.case_id}`);
+      setMessage(`语义用例已保存: ${result.case_id}`);
     });
 
   const buildSemanticCasesFromText = () =>
@@ -2703,7 +2809,7 @@ export default function AgentWorkbenchPage() {
       });
       setSemanticJson(pretty(payload));
       const count = Array.isArray(payload.cases) ? payload.cases.length : 0;
-      setMessage(`Semantic import draft generated: ${count} cases`);
+      setMessage(`语义导入草稿已生成: ${count} cases`);
     });
 
   const searchSemanticCases = () =>
@@ -2713,7 +2819,7 @@ export default function AgentWorkbenchPage() {
         limit: 10,
       });
       setSemanticResults(result.items);
-      setMessage(`Semantic results: ${result.items.length}`);
+      setMessage(`语义搜索结果: ${result.items.length}`);
     });
 
   const importSemanticCaseFile = () =>
@@ -2727,7 +2833,7 @@ export default function AgentWorkbenchPage() {
         test_level: "black_box",
       });
       setMessage(
-        `Semantic file imported: ${result.imported_count}, rejected: ${result.rejected_count}`,
+        `语义文件已导入: ${result.imported_count}, rejected: ${result.rejected_count}`,
       );
       setSemanticFile(null);
     });
@@ -2740,35 +2846,68 @@ export default function AgentWorkbenchPage() {
       });
       setMemoryResults(result.items);
       setMemorySlices({});
-      setMessage(`Memory results: ${result.items.length}`);
+      setMessage(`证据搜索结果: ${result.items.length}`);
     });
 
   const loadMemorySlices = (evidenceId: string) =>
     runAction(`memory-slices-${evidenceId}`, async () => {
       const result = await api.workbench.memory.sourceSlices(evidenceId);
       setMemorySlices((current) => ({ ...current, [evidenceId]: result.items }));
-      setMessage(`Source slices loaded: ${result.items.length}`);
+      setMessage(`源码切片已加载: ${result.items.length}`);
     });
 
   return (
-    <div className="w-full px-4 xl:px-6">
-      <div className="mb-6 flex flex-col gap-4 sm:flex-row sm:items-center sm:justify-between">
-        <div>
-          <h1 className="font-display text-2xl font-bold text-on-surface">
-            Agent Workbench
-          </h1>
-          <p className="mt-1 text-sm text-on-surface-variant">
-            Configure workflows, prepare Agent CLI runs, and audit evidence memory.
-          </p>
+    <div ref={workbenchRootRef} className="ct-workbench-shell w-full px-4 xl:px-6">
+      <div className="ct-workbench-hero ct-liquid-glass mb-6 overflow-hidden rounded-[28px] p-5 sm:p-6">
+        <div className="flex flex-col gap-5 xl:flex-row xl:items-end xl:justify-between">
+          <div className="max-w-4xl">
+            <p className="mb-2 font-data text-xs uppercase tracking-[0.16em] text-primary">
+              外部智能体编排控制台
+            </p>
+            <h1 className="font-display text-3xl font-bold text-on-surface">
+              智能体编排台
+            </h1>
+            <p className="mt-3 max-w-3xl text-sm leading-6 text-on-surface-variant">
+              它不是一个普通页面，而是给黑盒测试人员用的外部智能体编排台：把 Claude Code、OpenCode
+              或自定义 CLI 当成只读执行器，读取 MR、补丁、设计文档和覆盖率报告，产出可审计证据、黑盒用例和可复跑产物。
+            </p>
+          </div>
+          <button
+            onClick={() => void loadWorkflows()}
+            disabled={loading}
+            className="ct-liquid-button inline-flex items-center justify-center gap-2 whitespace-nowrap rounded-lg bg-primary px-4 py-2 text-sm font-medium text-on-primary disabled:opacity-50"
+          >
+            {loading ? <Loader2 size={14} className="animate-spin" /> : <RefreshCw size={14} />}
+            刷新状态
+          </button>
         </div>
-        <button
-          onClick={() => void loadWorkflows()}
-          disabled={loading}
-          className="inline-flex items-center justify-center gap-2 rounded-lg bg-surface-container px-3 py-2 text-sm text-on-surface-variant transition-colors hover:text-on-surface disabled:opacity-50"
-        >
-          {loading ? <Loader2 size={14} className="animate-spin" /> : <RefreshCw size={14} />}
-          Refresh
-        </button>
+
+        <div className="mt-5 grid gap-3 md:grid-cols-2 xl:grid-cols-4">
+          <div className="ct-workbench-stat rounded-xl border border-outline-variant/25 bg-surface-container/75 p-4">
+            <p className="text-xs text-on-surface-variant">系统门禁</p>
+            <p className="mt-2 font-display text-2xl font-semibold text-on-surface">
+              {systemAudit?.status ?? "待检查"}
+            </p>
+          </div>
+          <div className="ct-workbench-stat rounded-xl border border-outline-variant/25 bg-surface-container/75 p-4">
+            <p className="text-xs text-on-surface-variant">工作流</p>
+            <p className="mt-2 font-display text-2xl font-semibold text-on-surface">
+              {workflows.length}
+            </p>
+          </div>
+          <div className="ct-workbench-stat rounded-xl border border-outline-variant/25 bg-surface-container/75 p-4">
+            <p className="text-xs text-on-surface-variant">外部智能体</p>
+            <p className="mt-2 font-display text-2xl font-semibold text-on-surface">
+              {providerMatrix?.providers.length ?? 0}
+            </p>
+          </div>
+          <div className="ct-workbench-stat rounded-xl border border-outline-variant/25 bg-surface-container/75 p-4">
+            <p className="text-xs text-on-surface-variant">最近任务</p>
+            <p className="mt-2 font-display text-2xl font-semibold text-on-surface">
+              {taskRuns.length}
+            </p>
+          </div>
+        </div>
       </div>
 
       {(error || message) && (
@@ -2783,237 +2922,80 @@ export default function AgentWorkbenchPage() {
         </div>
       )}
 
-      {systemAudit && (
-        <div className="mb-5 rounded-lg border border-outline-variant/30 bg-surface-container px-4 py-3 text-xs text-on-surface-variant">
-          <div className="flex flex-wrap items-center gap-2">
-            <span className="font-medium text-on-surface">Workbench system audit</span>
-            <span
-              className={
-                systemAudit.status === "ready"
-                  ? "font-data text-green-500"
-                  : "font-data text-warning"
-              }
-            >
-              {systemAudit.status}
-            </span>
-            {systemAudit.runtime_status && (
-              <span
-                className={
-                  systemAudit.runtime_status === "healthy"
-                    ? "font-data text-green-500"
-                    : "font-data text-warning"
-                }
-              >
-                runtime:{systemAudit.runtime_status}
-              </span>
-            )}
-            <span className="font-data">
-              required:{systemAudit.summary.required_checks}
-            </span>
-            <span
-              className={`font-data ${
-                systemAudit.summary.missing_required > 0 ? "text-warning" : ""
+      <div className="ct-workbench-switcher mb-5 grid gap-2 lg:grid-cols-4">
+        {WORKBENCH_VIEWS.map((view) => {
+          const selected = activeWorkbenchView === view.id;
+          const badge =
+            view.id === "run"
+              ? preparedRun
+                ? "已准备"
+                : `${taskRuns.length} 任务`
+              : view.id === "workflow"
+                ? `${workflows.length} 工作流`
+                : view.id === "knowledge"
+                  ? `${semanticResults.length + memoryResults.length} 结果`
+                  : `${providerMatrix?.providers.length ?? 0} 执行器`;
+          return (
+            <button
+              key={view.id}
+              type="button"
+              onClick={() => setActiveWorkbenchView(view.id)}
+              className={`ct-workbench-tab min-w-0 rounded-2xl border px-4 py-3 text-left transition-all ${
+                selected
+                  ? "is-active border-primary/35 bg-primary text-on-primary"
+                  : "border-outline-variant/40 bg-surface-container/82 text-on-surface hover:border-primary/25 hover:bg-surface-container-high"
               }`}
+              aria-pressed={selected}
             >
-              missing-required:{systemAudit.summary.missing_required}
-            </span>
-            <span
-              className={`font-data ${
-                systemAudit.summary.missing_recommended > 0 ? "text-warning" : ""
-              }`}
-            >
-              missing-recommended:{systemAudit.summary.missing_recommended}
-            </span>
-          </div>
-          {systemAudit.missing_required.length > 0 && (
-            <div className="mt-1 space-y-0.5 font-data text-[10px] text-warning">
-              {systemAudit.missing_required.slice(0, 3).map((item, index) => (
-                <div key={`${String(item.id ?? index)}:${index}`}>
-                  {String(item.id ?? "check")}:
-                  {String(item.reason ?? item.description ?? "missing")}
-                </div>
-              ))}
-            </div>
-          )}
-          {latestDeploymentTaskProbeAudit && (
-            <div className="mt-1 flex flex-wrap gap-2 font-data text-[10px]">
-              <span
-                className={
-                  latestDeploymentTaskProbeAudit.status === "ok"
-                    ? "text-green-500"
-                    : "text-warning"
-                }
-              >
-                task-contract:{latestDeploymentTaskProbeAudit.status}
-              </span>
-              <span>
-                ready:
-                {String(latestDeploymentTaskProbeAudit.details?.task_ready_count ?? 0)}/
-                {String(latestDeploymentTaskProbeAudit.details?.provider_count ?? 0)}
-              </span>
-              {latestDeploymentTaskProbeAudit.details?.reason ? (
-                <span className="break-words">
-                  reason:{String(latestDeploymentTaskProbeAudit.details.reason)}
+              <span className="flex items-center justify-between gap-3">
+                <span className="flex min-w-0 items-center gap-2">
+                  {view.id === "run" ? (
+                    <PlayCircle size={16} />
+                  ) : view.id === "workflow" ? (
+                    <ClipboardList size={16} />
+                  ) : view.id === "knowledge" ? (
+                    <Library size={16} />
+                  ) : (
+                    <AlertTriangle size={16} />
+                  )}
+                  <span className="truncate text-sm font-semibold">{view.label}</span>
                 </span>
-              ) : null}
-              {latestDeploymentTaskProbeAudit.details?.artifact_path ? (
-                <span className="break-words">
-                  artifact:{String(latestDeploymentTaskProbeAudit.details.artifact_path)}
+                <span
+                  className={`shrink-0 rounded-full px-2 py-0.5 font-data text-[10px] ${
+                    selected ? "bg-white/18 text-on-primary" : "bg-surface text-on-surface-variant"
+                  }`}
+                >
+                  {badge}
                 </span>
-              ) : null}
-            </div>
-          )}
-          {indexProviderReadinessAudit && (
-            <div className="mt-1 flex flex-wrap gap-2 font-data text-[10px]">
-              <span
-                className={
-                  indexProviderReadinessAudit.status === "ok"
-                    ? "text-green-500"
-                    : "text-warning"
-                }
-              >
-                index:{indexProviderReadinessAudit.status}
               </span>
-              <span>
-                ready:
-                {String(indexProviderReadinessAudit.details?.ready_provider_count ?? 0)}/
-                {String(indexProviderReadinessAudit.details?.provider_count ?? 0)}
-              </span>
-              {Array.isArray(indexProviderReadinessAudit.details?.failed_provider_ids) &&
-                indexProviderReadinessAudit.details.failed_provider_ids.length > 0 && (
-                  <span className="break-words">
-                    failed:
-                    {indexProviderReadinessAudit.details.failed_provider_ids
-                      .map((item) => String(item))
-                      .join(",")}
-                  </span>
-                )}
-            </div>
-          )}
-          {systemAudit.missing_recommended.length > 0 && (
-            <div className="mt-1 break-words font-data text-[10px] text-warning">
-              recommended:
-              {systemAudit.missing_recommended
-                .slice(0, 3)
-                .map((item) => String(item.id ?? "check"))
-                .join(",")}
-            </div>
-          )}
-          {systemAudit.missing_recommended
-            .flatMap((item) => auditRecommendedActions(item))
-            .slice(0, 2)
-            .map((action) => (
-              <div key={action} className="mt-1 break-words text-[10px] text-warning">
-                action:{action}
-              </div>
-            ))}
-        </div>
-      )}
-
-      {workflowCapabilities && (
-        <div className="mb-5 rounded-lg border border-outline-variant/30 bg-surface-container px-4 py-3 text-xs text-on-surface-variant">
-          <div className="flex flex-wrap items-center gap-2">
-            <span className="font-medium text-on-surface">Workflow capabilities</span>
-            <span className="font-data text-green-500">{workflowCapabilities.status}</span>
-            <span className="font-data">
-              inputs:{workflowCapabilities.input_types.length}
-            </span>
-            <span className="font-data">
-              steps:{workflowCapabilities.step_types.length}
-            </span>
-            <span className="font-data">
-              outputs:{workflowCapabilities.output_types.length}
-            </span>
-            {workflowCapabilities.agent_cli_features.agent_owned_mcp_credentials && (
-              <span className="font-data">agent-mcp:owned</span>
-            )}
-            {workflowCapabilities.input_features?.json_schema_validation && (
-              <span className="font-data">input-schema:validated</span>
-            )}
-            {workflowCapabilities.output_features.json_schema_validation && (
-              <span className="font-data">output-schema:validated</span>
-            )}
-          </div>
-          <div className="mt-1 flex flex-wrap gap-1.5 font-data text-[10px]">
-            {[
-              "file",
-              "file_set",
-              "patch",
-              "diff",
-              "coverage_report",
-              "mr_link",
-              "external_link",
-              "directory",
-              "semantic_library_ref",
-            ].map((inputType) => (
               <span
-                key={inputType}
-                className={`rounded bg-surface px-1.5 py-0.5 ${
-                  workflowCapabilities.input_types.includes(inputType)
-                    ? ""
-                    : "text-warning"
+                className={`mt-1 block truncate text-xs ${
+                  selected ? "text-white/78" : "text-on-surface-variant"
                 }`}
               >
-                {inputType}
+                {view.description}
               </span>
-            ))}
-            <span className="rounded bg-surface px-1.5 py-0.5">
-              semantic:
-              {workflowCapabilities.semantic_library_import_formats.join("/")}
-            </span>
-          </div>
-        </div>
-      )}
+            </button>
+          );
+        })}
+      </div>
 
-      {coreWorkflowReadiness && (
-        <div className="mb-5 rounded-lg border border-outline-variant/30 bg-surface-container px-4 py-3 text-xs text-on-surface-variant">
-          <div className="flex flex-wrap items-center gap-2">
-            <span className="font-medium text-on-surface">Core workflow readiness</span>
-            <span
-              className={
-                coreWorkflowReadiness.status === "ready"
-                  ? "font-data text-green-500"
-                  : "font-data text-warning"
-              }
-            >
-              {coreWorkflowReadiness.status}
-            </span>
-            <span className="font-data">
-              workflows:{coreWorkflowReadiness.summary.workflow_count}
-            </span>
-            <span className="font-data">
-              agent-steps:{coreWorkflowReadiness.summary.agent_step_count}
-            </span>
-            <span className="font-data">
-              outputs:{coreWorkflowReadiness.summary.output_count}
-            </span>
-            {coreWorkflowReadiness.summary.missing_required > 0 && (
-              <span className="font-data text-warning">
-                missing:{coreWorkflowReadiness.summary.missing_required}
-              </span>
-            )}
-          </div>
-          <div className="mt-1 flex flex-wrap gap-1.5 font-data text-[10px]">
-            {coreWorkflowReadiness.workflows.map((workflow) => (
-              <span
-                key={workflow.id}
-                className={`rounded bg-surface px-1.5 py-0.5 ${
-                  workflow.status === "ready" ? "" : "text-warning"
-                }`}
-                title={`${workflow.required_artifacts.join(",")} ${workflow.agent_mcp_required ? "agent-mcp" : ""}`}
-              >
-                {workflow.id}:{workflow.status}
-                {workflow.agent_mcp_required ? ":mcp" : ""}
-              </span>
-            ))}
-          </div>
-        </div>
-      )}
-
-      <Panel title="Provider Matrix" icon={<AlertTriangle size={16} />}>
+      <AnimatePresence mode="wait">
+        <motion.div
+          key={activeWorkbenchView}
+          initial={{ opacity: 0, y: 18, scale: 0.985 }}
+          animate={{ opacity: 1, y: 0, scale: 1 }}
+          exit={{ opacity: 0, y: -10, scale: 0.99 }}
+          transition={{ duration: 0.36, ease: [0.22, 1, 0.36, 1] }}
+          className={`ct-workbench-stage grid grid-cols-1 gap-5 ${
+            activeWorkbenchView === "knowledge" ? "2xl:grid-cols-2" : ""
+          }`}
+        >
+      {activeWorkbenchView === "diagnostics" && (
+      <Panel title="执行器矩阵" icon={<AlertTriangle size={16} />}>
         <div className="mb-3 flex flex-wrap items-center justify-between gap-2">
           <p className="text-xs text-on-surface-variant">
-            Provider diagnostics use the backend process environment, including PATH and Agent-owned MCP credentials.
+            这里检查本机后端能否调用外部智能体 CLI，以及这些执行器是否具备 MCP 凭证、产物导出和任务探测能力。
           </p>
           <button
             onClick={() => runAllAgentProviderStartupProbes()}
@@ -3030,7 +3012,7 @@ export default function AgentWorkbenchPage() {
             ) : (
               <PlayCircle size={13} />
             )}
-            Probe all Agent CLIs
+            探测全部 Agent
           </button>
           <button
             onClick={() => runAllAgentProviderTaskProbes()}
@@ -3047,7 +3029,7 @@ export default function AgentWorkbenchPage() {
             ) : (
               <PlayCircle size={13} />
             )}
-            Task probe all
+            任务探测
           </button>
           <button
             onClick={runSmokeE2E}
@@ -3059,13 +3041,13 @@ export default function AgentWorkbenchPage() {
             ) : (
               <PlayCircle size={13} />
             )}
-            Smoke E2E
+            全链路烟测
           </button>
         </div>
         {smokeE2EResult && (
           <div className="mb-3 rounded-lg border border-outline-variant/30 bg-surface-container px-3 py-2 text-xs text-on-surface-variant">
             <div className="flex flex-wrap items-center gap-2">
-              <span className="font-medium text-on-surface">Smoke E2E</span>
+              <span className="font-medium text-on-surface">全链路烟测</span>
               <span
                 className={
                   smokeE2EResult.status === "ready"
@@ -3093,7 +3075,7 @@ export default function AgentWorkbenchPage() {
         {deploymentProbeResult && (
           <div className="mb-3 rounded-lg border border-outline-variant/30 bg-surface-container px-3 py-2 text-xs text-on-surface-variant">
             <div className="flex flex-wrap items-center gap-2">
-              <span className="font-medium text-on-surface">Deployment probe</span>
+              <span className="font-medium text-on-surface">部署探测</span>
               <span
                 className={
                   deploymentProbeResult.status === "healthy"
@@ -3135,150 +3117,165 @@ export default function AgentWorkbenchPage() {
             ) : null}
           </div>
         )}
-        <div className="grid gap-3 lg:grid-cols-3">
+        <div className="grid gap-4 [grid-template-columns:repeat(auto-fit,minmax(min(100%,420px),1fr))]">
           {(providerMatrix?.providers ?? []).map((provider) => (
             <div
               key={provider.provider}
-              className="rounded-lg border border-outline-variant/30 bg-surface p-3 text-xs"
+              className="ct-provider-card min-w-0 rounded-xl border border-outline-variant/30 bg-surface/80 p-4 text-xs"
             >
-              <div className="flex items-start justify-between gap-2">
-                <div className="min-w-0">
-                  <p className="truncate text-sm font-semibold text-on-surface">
+              <div className="ct-provider-card-header flex items-start justify-between gap-3">
+                <div className="min-w-0 space-y-1">
+                  <p className="ct-provider-name truncate text-sm font-semibold text-on-surface">
                     {provider.display_name || provider.provider}
                   </p>
-                  <p className="font-data text-[11px] text-on-surface-variant">
+                  <p className="ct-provider-slug font-data text-[11px] text-on-surface-variant">
                     {provider.provider}
                   </p>
                 </div>
-                <span className="shrink-0 rounded bg-surface-container px-2 py-0.5 font-data text-[10px] text-on-surface-variant">
+                <span className="ct-provider-status-badge shrink-0 rounded bg-surface-container px-2 py-0.5 font-data text-[10px] text-on-surface-variant">
                   {provider.status}
                 </span>
               </div>
               <div className="mt-3 flex flex-wrap gap-1.5">
                 {provider.codetalk_callable && (
-                  <span className="rounded bg-green-400/10 px-2 py-0.5 text-[11px] font-medium text-green-500">
-                    CodeTalk callable
+                  <span className="ct-provider-pill ct-provider-pill--green rounded bg-green-400/10 px-2 py-0.5 text-[11px] font-medium text-green-500">
+                    CodeTalk 可直接调用
                   </span>
                 )}
                 {provider.agent_owned && (
-                  <span className="rounded bg-primary/10 px-2 py-0.5 text-[11px] font-medium text-primary">
-                    Agent-owned
+                  <span className="ct-provider-pill ct-provider-pill--dark rounded bg-primary/10 px-2 py-0.5 text-[11px] font-medium text-primary">
+                    Agent 持有凭证
                   </span>
                 )}
                 {!provider.codetalk_callable && !provider.agent_owned && (
-                  <span className="rounded bg-amber-400/10 px-2 py-0.5 text-[11px] font-medium text-amber-500">
-                    delegated or unavailable
+                  <span className="ct-provider-pill ct-provider-pill--amber rounded bg-amber-400/10 px-2 py-0.5 text-[11px] font-medium text-amber-500">
+                    委托或不可用
                   </span>
                 )}
               </div>
-              <div className="mt-3 space-y-1 text-on-surface-variant">
-                <p>
-                  Owner:{" "}
-                  <span className="font-data text-on-surface">{provider.owner}</span>
-                </p>
-                <p className="break-words">
-                  Command:{" "}
-                  <span className="font-data text-on-surface">
-                    {provider.command.length > 0 ? provider.command.join(" ") : "n/a"}
-                  </span>
-                </p>
-                <p>
-                  MCP:{" "}
-                  <span className="font-data text-on-surface">
-                    {provider.capabilities.supports_mcp
-                      ? provider.capabilities.mcp_profiles.length > 0
-                        ? provider.capabilities.mcp_profiles.join(", ")
-                        : "yes"
-                      : "no"}
-                  </span>
-                </p>
-                <p>
-                  Artifacts/json:{" "}
-                  <span className="font-data text-on-surface">
-                    {provider.capabilities.supports_artifact_export ? "artifact" : "no-artifact"}
-                    {" / "}
-                    {provider.capabilities.supports_json_output ? "json" : "no-json"}
-                  </span>
-                </p>
-                {provider.env_hint_keys?.length ? (
-                  <p className="break-words">
-                    Env:{" "}
-                    <span className="font-data text-on-surface">
-                      {provider.env_hint_keys.join(", ")}
+              <div className="ct-provider-facts mt-3">
+                <ProviderFactRow
+                  label="归属"
+                  value={<span className="font-data">{provider.owner}</span>}
+                />
+                <ProviderFactRow
+                  label="命令"
+                  value={
+                    <span className="font-data">
+                      {provider.command.length > 0 ? provider.command.join(" ") : "n/a"}
                     </span>
-                  </p>
+                  }
+                />
+                <ProviderFactRow
+                  label="MCP"
+                  value={
+                    <span className="font-data">
+                      {provider.capabilities.supports_mcp
+                        ? provider.capabilities.mcp_profiles.length > 0
+                          ? provider.capabilities.mcp_profiles.join(", ")
+                          : "yes"
+                        : "no"}
+                    </span>
+                  }
+                />
+                <ProviderFactRow
+                  label="产物"
+                  value={
+                    <span className="font-data">
+                      {provider.capabilities.supports_artifact_export ? "artifact" : "no-artifact"}
+                    </span>
+                  }
+                />
+                <ProviderFactRow
+                  label="JSON"
+                  value={
+                    <span className="font-data">
+                      {provider.capabilities.supports_json_output ? "json" : "no-json"}
+                    </span>
+                  }
+                />
+                {provider.env_hint_keys?.length ? (
+                  <ProviderFactRow
+                    label="环境变量"
+                    value={<span className="font-data">{provider.env_hint_keys.join(", ")}</span>}
+                  />
                 ) : null}
               </div>
               <div className="mt-3 flex flex-wrap gap-1.5">
                 {provider.capabilities.supports_source_discovery && (
-                  <span className="rounded bg-surface-container px-2 py-0.5 text-[11px] text-on-surface">
-                    source discovery
+                  <span className="ct-provider-feature rounded bg-surface-container px-2 py-0.5 text-[11px] text-on-surface">
+                    源码发现
                   </span>
                 )}
                 {provider.capabilities.supports_call_graph && (
-                  <span className="rounded bg-surface-container px-2 py-0.5 text-[11px] text-on-surface">
-                    call graph
+                  <span className="ct-provider-feature rounded bg-surface-container px-2 py-0.5 text-[11px] text-on-surface">
+                    调用图
                   </span>
                 )}
                 {provider.capabilities.supports_source_slices && (
-                  <span className="rounded bg-surface-container px-2 py-0.5 text-[11px] text-on-surface">
-                    source slices
+                  <span className="ct-provider-feature rounded bg-surface-container px-2 py-0.5 text-[11px] text-on-surface">
+                    源码切片
                   </span>
                 )}
                 {provider.capabilities.supports_black_box_terms && (
-                  <span className="rounded bg-surface-container px-2 py-0.5 text-[11px] text-on-surface">
-                    black-box terms
+                  <span className="ct-provider-feature rounded bg-surface-container px-2 py-0.5 text-[11px] text-on-surface">
+                    黑盒术语
                   </span>
                 )}
               </div>
               {provider.credential_boundary && (
-                <p className="mt-3 text-xs leading-5 text-on-surface-variant">
+                <p className="ct-provider-note mt-3 text-xs leading-5 text-on-surface-variant">
                   {provider.credential_boundary}
                 </p>
               )}
               {provider.diagnostics && (
-                <div className="mt-3 space-y-1 border-t border-outline-variant/30 pt-3 text-on-surface-variant">
+                <div className="ct-provider-diagnostics mt-3 space-y-2 border-t border-outline-variant/30 pt-3 text-on-surface-variant">
+                  <ProviderSectionTitle>启动探测</ProviderSectionTitle>
                   {provider.diagnostics.startup_probe_endpoint && (
-                    <p className="break-words">
-                      Probe:{" "}
-                      <span className="font-data text-on-surface">
-                        {provider.diagnostics.startup_probe_endpoint}
-                      </span>
-                    </p>
+                    <ProviderFactRow
+                      label="Probe"
+                      value={
+                        <span className="font-data">
+                          {provider.diagnostics.startup_probe_endpoint}
+                        </span>
+                      }
+                    />
                   )}
                   {provider.diagnostics.startup_probe_transport && (
-                    <p>
-                      Transport:{" "}
-                      <span className="font-data text-on-surface">
-                        {provider.diagnostics.startup_probe_transport}
-                      </span>
-                    </p>
+                    <ProviderFactRow
+                      label="传输"
+                      value={
+                        <span className="font-data">
+                          {provider.diagnostics.startup_probe_transport}
+                        </span>
+                      }
+                    />
                   )}
                   {provider.diagnostics.command_resolution && (
-                    <div className="rounded bg-surface-container px-2 py-1.5">
-                      <p>
-                        Resolution:{" "}
-                        <span className="font-data text-on-surface">
+                    <div className="ct-provider-diag-box rounded bg-surface-container px-2 py-1.5">
+                      <p className="ct-provider-diag-head">
+                        <span>解析</span>
+                        <span className="font-data">
                           {provider.diagnostics.command_resolution.status || "unknown"}
                         </span>
                         {provider.diagnostics.command_resolution.used_fallback && (
-                          <span className="ml-2 font-medium text-warning">fallback</span>
+                          <span className="ct-provider-mini-badge font-medium text-warning">fallback</span>
                         )}
                         {provider.diagnostics.command_resolution.launch_kind && (
-                          <span className="ml-2 font-data text-on-surface">
+                          <span className="ct-provider-mini-badge font-data text-on-surface">
                             launch:{provider.diagnostics.command_resolution.launch_kind}
                           </span>
                         )}
                       </p>
                       {provider.diagnostics.command_resolution.reason && (
                         <p className="mt-1 break-words">
-                          Reason: {provider.diagnostics.command_resolution.reason}
+                          原因: {provider.diagnostics.command_resolution.reason}
                         </p>
                       )}
                       {typeof provider.diagnostics.command_resolution.attempt_count ===
                         "number" && (
                         <p className="mt-1">
-                          Attempts:{" "}
+                          尝试次数:{" "}
                           <span className="font-data text-on-surface">
                             {provider.diagnostics.command_resolution.attempt_count}
                           </span>
@@ -3303,7 +3300,7 @@ export default function AgentWorkbenchPage() {
                   )}
                   {provider.diagnostics.probe_recipe && (
                     <div className="rounded bg-surface-container px-2 py-1.5">
-                      <p className="font-medium text-on-surface">Probe recipe</p>
+                      <p className="font-medium text-on-surface">探测配方</p>
                       {provider.diagnostics.probe_recipe.startup_probe_http && (
                         <p className="mt-1 break-words">
                           HTTP:{" "}
@@ -3314,7 +3311,7 @@ export default function AgentWorkbenchPage() {
                       )}
                       {provider.diagnostics.probe_recipe.backend_command && (
                         <p className="mt-1 break-words">
-                          Backend command:{" "}
+                          后端命令:{" "}
                           <span className="font-data text-on-surface">
                             {provider.diagnostics.probe_recipe.backend_command}
                           </span>
@@ -3322,7 +3319,7 @@ export default function AgentWorkbenchPage() {
                       )}
                       {provider.diagnostics.probe_recipe.command_env && (
                         <p className="mt-1 break-words">
-                          Override env:{" "}
+                          覆盖环境变量:{" "}
                           <span className="font-data text-on-surface">
                             {provider.diagnostics.probe_recipe.command_env}
                           </span>
@@ -3330,7 +3327,7 @@ export default function AgentWorkbenchPage() {
                       )}
                       {provider.diagnostics.probe_recipe.environment_checks?.length ? (
                         <p className="mt-1 break-words">
-                          Check:{" "}
+                          检查:{" "}
                           <span className="font-data text-on-surface">
                             {provider.diagnostics.probe_recipe.environment_checks.join(", ")}
                           </span>
@@ -3340,7 +3337,7 @@ export default function AgentWorkbenchPage() {
                   )}
                   {provider.diagnostics.manual_probe_command && (
                     <p className="break-words">
-                      Manual:{" "}
+                      手工:{" "}
                       <span className="font-data text-on-surface">
                         {provider.diagnostics.manual_probe_command}
                       </span>
@@ -3361,7 +3358,7 @@ export default function AgentWorkbenchPage() {
                         ) : (
                           <PlayCircle size={13} />
                         )}
-                        Startup probe
+                        启动探测
                       </button>
                       {provider.agent_owned && provider.command.length > 0 && (
                         <button
@@ -3374,7 +3371,7 @@ export default function AgentWorkbenchPage() {
                           ) : (
                             <PlayCircle size={13} />
                           )}
-                          Task probe
+                          任务探测
                         </button>
                       )}
                     </div>
@@ -3382,7 +3379,7 @@ export default function AgentWorkbenchPage() {
                   {providerProbeResults[provider.provider] && (
                     <div className="mt-2 rounded bg-surface-container px-2 py-1.5">
                       <p>
-                        Probe result:{" "}
+                        探测结果:{" "}
                         <span className="font-data text-on-surface">
                           {providerProbeResults[provider.provider].status}
                         </span>
@@ -3392,13 +3389,13 @@ export default function AgentWorkbenchPage() {
                       </p>
                       {providerProbeResults[provider.provider].health?.reason && (
                         <p className="mt-1 break-words">
-                          Health reason:{" "}
+                          健康原因:{" "}
                           {providerProbeResults[provider.provider].health?.reason}
                         </p>
                       )}
                       {providerProbeResults[provider.provider].health?.launch_kind && (
                         <p className="mt-1">
-                          Probe launch:{" "}
+                          探测启动:{" "}
                           <span className="font-data text-on-surface">
                             {providerProbeResults[provider.provider].health?.launch_kind}
                           </span>
@@ -3409,7 +3406,7 @@ export default function AgentWorkbenchPage() {
                       )}
                       {providerProbeResults[provider.provider].health?.attempts && (
                         <p className="mt-1">
-                          Probe attempts:{" "}
+                          探测次数:{" "}
                           <span className="font-data text-on-surface">
                             {providerProbeResults[provider.provider].health?.attempts?.length}
                           </span>
@@ -3466,7 +3463,7 @@ export default function AgentWorkbenchPage() {
                   {providerTaskProbeResults[provider.provider] && (
                     <div className="mt-2 rounded bg-surface-container px-2 py-1.5">
                       <p>
-                        Task probe:{" "}
+                        任务探测:{" "}
                         <span className="font-data text-on-surface">
                           {providerTaskProbeResults[provider.provider].status}
                         </span>
@@ -3487,7 +3484,7 @@ export default function AgentWorkbenchPage() {
                       </p>
                       {providerTaskProbeResults[provider.provider].summary.missing_artifacts.length > 0 && (
                         <p className="mt-1 break-words text-warning">
-                          Missing artifacts:{" "}
+                          缺失产物:{" "}
                           {providerTaskProbeResults[provider.provider].summary.missing_artifacts.join(", ")}
                         </p>
                       )}
@@ -3502,7 +3499,7 @@ export default function AgentWorkbenchPage() {
           ))}
           {!providerMatrix && (
             <p className="text-sm text-on-surface-variant">
-              Provider diagnostics load with Workbench data.
+              执行器诊断会随工作台数据一起加载。
             </p>
           )}
         </div>
@@ -3519,16 +3516,17 @@ export default function AgentWorkbenchPage() {
           </div>
         ) : null}
       </Panel>
+      )}
 
-      <div className="grid grid-cols-1 gap-5 xl:grid-cols-2">
-        <Panel title="Workflow Registry" icon={<ClipboardList size={16} />}>
+      {activeWorkbenchView === "workflow" && (
+        <Panel title="工作流编排" icon={<ClipboardList size={16} />}>
           <div className="mb-3 flex flex-wrap items-center gap-2">
             {workflowPresets.length > 0 && (
               <select
                 value={selectedPresetId}
                 onChange={(event) => setSelectedPresetId(event.target.value)}
                 className="min-w-0 rounded-lg border border-outline-variant/30 bg-surface px-3 py-2 text-sm text-on-surface outline-none focus:border-primary"
-                aria-label="Workflow preset"
+                aria-label="工作流预设"
               >
                 {workflowPresets.map((preset) => (
                   <option key={preset.id} value={preset.id}>
@@ -3542,7 +3540,7 @@ export default function AgentWorkbenchPage() {
               disabled={!selectedPresetId}
               className="inline-flex items-center gap-2 rounded-lg bg-surface px-3 py-2 text-sm font-medium text-on-surface transition-colors hover:bg-surface-container-high disabled:opacity-50"
             >
-              Apply preset
+              应用预设
             </button>
             <button
               onClick={installPreset}
@@ -3554,21 +3552,21 @@ export default function AgentWorkbenchPage() {
               ) : (
                 <Save size={14} />
               )}
-              Install preset
+              安装预设
             </button>
             <button
               onClick={loadSelectedWorkflowDraft}
               disabled={!workflows.some((item) => item.id === selectedWorkflowId)}
               className="inline-flex items-center gap-2 rounded-lg bg-surface px-3 py-2 text-sm font-medium text-on-surface transition-colors hover:bg-surface-container-high disabled:opacity-50"
             >
-              Load selected
+              载入所选
             </button>
             <button
               onClick={duplicateSelectedWorkflowDraft}
               disabled={!workflows.some((item) => item.id === selectedWorkflowId)}
               className="inline-flex items-center gap-2 rounded-lg bg-surface px-3 py-2 text-sm font-medium text-on-surface transition-colors hover:bg-surface-container-high disabled:opacity-50"
             >
-              Duplicate
+              复制
             </button>
             <button
               onClick={saveWorkflow}
@@ -3580,7 +3578,7 @@ export default function AgentWorkbenchPage() {
               ) : (
                 <Save size={14} />
               )}
-              Save workflow
+              保存工作流
             </button>
             <button
               onClick={auditWorkflowDraft}
@@ -3592,16 +3590,16 @@ export default function AgentWorkbenchPage() {
               ) : (
                 <Search size={14} />
               )}
-              Audit draft
+              审计草稿
             </button>
             <span className="text-xs text-on-surface-variant">
-              {workflows.length} registered
+              {workflows.length} 个已注册
             </span>
           </div>
           <div className="mb-3 rounded-lg border border-outline-variant/30 bg-surface p-3">
             <div className="mb-3 flex flex-wrap items-end gap-2">
               <label className="min-w-48 flex-1">
-                <span className="mb-1 block text-xs text-on-surface-variant">Scenario</span>
+                <span className="mb-1 block text-xs text-on-surface-variant">场景</span>
                 <select
                   value={builderScenario}
                   onChange={(event) =>
@@ -3629,12 +3627,12 @@ export default function AgentWorkbenchPage() {
                 ) : (
                   <ClipboardList size={14} />
                 )}
-                Generate draft
+                生成草稿
               </button>
             </div>
             <div className="grid gap-2 md:grid-cols-2">
               <label className="block">
-                <span className="mb-1 block text-xs text-on-surface-variant">Workflow ID</span>
+                <span className="mb-1 block text-xs text-on-surface-variant">工作流 ID</span>
                 <input
                   value={builderWorkflowId}
                   onChange={(event) => setBuilderWorkflowId(event.target.value)}
@@ -3643,7 +3641,7 @@ export default function AgentWorkbenchPage() {
                 />
               </label>
               <label className="block">
-                <span className="mb-1 block text-xs text-on-surface-variant">Workflow name</span>
+                <span className="mb-1 block text-xs text-on-surface-variant">工作流名称</span>
                 <input
                   value={builderWorkflowName}
                   onChange={(event) => setBuilderWorkflowName(event.target.value)}
@@ -3652,7 +3650,7 @@ export default function AgentWorkbenchPage() {
                 />
               </label>
               <label className="block">
-                <span className="mb-1 block text-xs text-on-surface-variant">Provider preset</span>
+                <span className="mb-1 block text-xs text-on-surface-variant">执行器预设</span>
                 <select
                   value={
                     builderProviderOptions.some((provider) => provider.id === builderProvider)
@@ -3667,7 +3665,7 @@ export default function AgentWorkbenchPage() {
                   className="w-full rounded-lg border border-outline-variant/30 bg-surface-container px-3 py-2 text-sm text-on-surface outline-none focus:border-primary"
                   aria-label="Workflow builder provider preset"
                 >
-                  <option value="">Custom provider</option>
+                  <option value="">自定义执行器</option>
                   {builderProviderOptions.map((provider) => (
                     <option key={provider.id} value={provider.id}>
                       {provider.label} ({provider.id}:{provider.status})
@@ -3676,7 +3674,7 @@ export default function AgentWorkbenchPage() {
                 </select>
               </label>
               <label className="block">
-                <span className="mb-1 block text-xs text-on-surface-variant">Provider ID</span>
+                <span className="mb-1 block text-xs text-on-surface-variant">执行器 ID</span>
                 <input
                   value={builderProvider}
                   onChange={(event) => setBuilderProvider(event.target.value)}
@@ -3685,18 +3683,18 @@ export default function AgentWorkbenchPage() {
                 />
               </label>
               <label className="block">
-                <span className="mb-1 block text-xs text-on-surface-variant">MCP profile</span>
+                <span className="mb-1 block text-xs text-on-surface-variant">MCP 配置</span>
                 <input
                   value={builderMcpProfile}
                   onChange={(event) => setBuilderMcpProfile(event.target.value)}
                   className="w-full rounded-lg border border-outline-variant/30 bg-surface-container px-3 py-2 text-sm text-on-surface outline-none focus:border-primary"
-                  aria-label="Workflow builder MCP profile"
+                  aria-label="Workflow builder MCP 配置"
                 />
               </label>
             </div>
             <label className="mt-2 block">
               <span className="mb-1 block text-xs text-on-surface-variant">
-                Inputs as id:type or id:type@resolver
+                输入项，格式 id:type 或 id:type@resolver
               </span>
               <input
                 value={builderInputSpec}
@@ -3707,7 +3705,7 @@ export default function AgentWorkbenchPage() {
             </label>
             <label className="mt-2 block">
               <span className="mb-1 block text-xs text-on-surface-variant">
-                Outputs as id:type or id:type=artifact
+                输出项，格式 id:type 或 id:type=artifact
               </span>
               <input
                 value={builderOutputSpec}
@@ -3718,7 +3716,7 @@ export default function AgentWorkbenchPage() {
             </label>
             <label className="mt-2 block">
               <span className="mb-1 block text-xs text-on-surface-variant">
-                Required artifacts
+                必需产物
               </span>
               <input
                 value={builderArtifacts}
@@ -3729,7 +3727,7 @@ export default function AgentWorkbenchPage() {
             </label>
             <label className="mt-2 block">
               <span className="mb-1 block text-xs text-on-surface-variant">
-                Output schemas JSON
+                输出 Schema JSON
               </span>
               <textarea
                 value={builderOutputSchemas}
@@ -3741,7 +3739,7 @@ export default function AgentWorkbenchPage() {
             </label>
             <label className="mt-2 block">
               <span className="mb-1 block text-xs text-on-surface-variant">
-                Evidence mappings JSON
+                证据映射 JSON
               </span>
               <textarea
                 value={builderEvidenceMappings}
@@ -3753,7 +3751,7 @@ export default function AgentWorkbenchPage() {
             </label>
             <label className="mt-2 block">
               <span className="mb-1 block text-xs text-on-surface-variant">
-                Semantic imports JSON
+                语义导入 JSON
               </span>
               <textarea
                 value={builderSemanticImports}
@@ -3766,7 +3764,7 @@ export default function AgentWorkbenchPage() {
             {builderOutputPreview.length > 0 && (
               <div className="mt-2 rounded-lg border border-outline-variant/30 bg-surface-container px-2 py-1.5">
                 <p className="mb-1 text-xs font-medium text-on-surface-variant">
-                  Output contract preview
+                  输出契约预览
                 </p>
                 <div className="space-y-1 font-data text-[10px] text-on-surface-variant">
                   {builderOutputPreview.map((output) => (
@@ -3794,7 +3792,7 @@ export default function AgentWorkbenchPage() {
             )}
             <label className="mt-2 block">
               <span className="mb-1 block text-xs text-on-surface-variant">
-                Input schemas JSON
+                输入 Schema JSON
               </span>
               <textarea
                 value={builderInputSchemas}
@@ -3805,7 +3803,7 @@ export default function AgentWorkbenchPage() {
               />
             </label>
             <label className="mt-2 block">
-              <span className="mb-1 block text-xs text-on-surface-variant">Agent goal</span>
+              <span className="mb-1 block text-xs text-on-surface-variant">智能体目标</span>
               <textarea
                 value={builderGoal}
                 onChange={(event) => setBuilderGoal(event.target.value)}
@@ -3884,26 +3882,36 @@ export default function AgentWorkbenchPage() {
           <textarea
             value={workflowJson}
             onChange={(event) => setWorkflowJson(event.target.value)}
-            className="h-80 w-full resize-y rounded-lg border border-outline-variant/30 bg-surface p-3 font-data text-xs text-on-surface outline-none focus:border-primary"
+            className="h-72 max-h-[54vh] w-full resize-y rounded-lg border border-outline-variant/30 bg-surface p-3 font-data text-xs text-on-surface outline-none focus:border-primary"
             aria-label="Workflow JSON"
             spellCheck={false}
           />
         </Panel>
+      )}
 
-        <Panel title="Prepare Task Run" icon={<PlayCircle size={16} />}>
+      {activeWorkbenchView === "run" && (
+        <Panel title="任务运行" icon={<PlayCircle size={16} />}>
           <div className="space-y-3">
             <label className="block">
-              <span className="mb-1 block text-xs text-on-surface-variant">Workflow</span>
+              <span className="mb-1 block text-xs text-on-surface-variant">工作流</span>
               <select
                 value={selectedWorkflowId}
                 onChange={(event) => setSelectedWorkflowId(event.target.value)}
                 className="w-full rounded-lg border border-outline-variant/30 bg-surface px-3 py-2 text-sm text-on-surface outline-none focus:border-primary"
               >
                 {[selectedWorkflowId, ...workflowOptions]
-                  .filter((value, index, values) => value && values.indexOf(value) === index)
-                  .map((id) => (
-                    <option key={id} value={id}>
-                      {id}
+                  .map((item) =>
+                    typeof item === "string"
+                      ? { id: item, label: workflowDisplayName(item) }
+                      : item,
+                  )
+                  .filter(
+                    (option, index, options) =>
+                      option.id && options.findIndex((item) => item.id === option.id) === index,
+                  )
+                  .map((option) => (
+                    <option key={option.id} value={option.id}>
+                      {option.label}
                     </option>
                   ))}
               </select>
@@ -3914,7 +3922,7 @@ export default function AgentWorkbenchPage() {
                   <AlertTriangle size={14} className="mt-0.5 shrink-0" />
                   <div className="min-w-0">
                     <p className="font-medium">
-                      Workflow audit warnings: {selectedWorkflowAudit.warnings.length}
+                      工作流审计警告: {selectedWorkflowAudit.warnings.length}
                     </p>
                     <div className="mt-1 space-y-1">
                       {selectedWorkflowAudit.warnings.slice(0, 3).map((warning) => (
@@ -3928,7 +3936,7 @@ export default function AgentWorkbenchPage() {
               </div>
             )}
             <label className="block">
-              <span className="mb-1 block text-xs text-on-surface-variant">Workspace ID</span>
+              <span className="mb-1 block text-xs text-on-surface-variant">工作区 ID</span>
               <input
                 aria-label="Workspace ID"
                 value={workspaceId}
@@ -3937,7 +3945,7 @@ export default function AgentWorkbenchPage() {
               />
             </label>
             <label className="block">
-              <span className="mb-1 block text-xs text-on-surface-variant">Repo path</span>
+              <span className="mb-1 block text-xs text-on-surface-variant">仓库路径</span>
               <input
                 aria-label="Repo path"
                 value={repoPath}
@@ -3948,10 +3956,10 @@ export default function AgentWorkbenchPage() {
             </label>
             <label className="block">
               <span className="mb-1 block text-xs text-on-surface-variant">
-                Provider override
+                执行器覆盖
               </span>
               <input
-                aria-label="Provider override"
+                aria-label="执行器覆盖"
                 value={providerOverride}
                 onChange={(event) => setProviderOverride(event.target.value)}
                 placeholder="claude-code / opencode / internal-agent"
@@ -3961,7 +3969,7 @@ export default function AgentWorkbenchPage() {
             {selectedWorkflowInputs.length > 0 && (
               <div className="rounded-lg border border-outline-variant/30 bg-surface p-3">
                 <p className="mb-2 text-xs font-medium text-on-surface">
-                  Workflow inputs
+                  工作流输入
                 </p>
                 <div className="space-y-2">
                   {selectedWorkflowInputs.map((input) => {
@@ -4005,8 +4013,8 @@ export default function AgentWorkbenchPage() {
                               onChange={(event) => updatePrepareInput(input, event.target.value)}
                               placeholder={
                                 inputType === "file_set"
-                                  ? "One local file path per line"
-                                  : role || "Input text"
+                                  ? "每行一个本地文件路径"
+                                  : role || "输入文本"
                               }
                               className="h-20 w-full resize-y rounded-lg border border-outline-variant/30 bg-surface-container p-3 font-data text-xs text-on-surface outline-none focus:border-primary"
                               spellCheck={false}
@@ -4031,8 +4039,8 @@ export default function AgentWorkbenchPage() {
                               onChange={(event) => updatePrepareInput(input, event.target.value)}
                               placeholder={
                                 isFileLikeWorkflowInput(inputType)
-                                  ? "Local file path"
-                                  : role || "Input value"
+                                  ? "本地文件路径"
+                                  : role || "输入值"
                               }
                               className="w-full rounded-lg border border-outline-variant/30 bg-surface-container px-3 py-2 text-sm text-on-surface outline-none focus:border-primary"
                             />
@@ -4055,7 +4063,7 @@ export default function AgentWorkbenchPage() {
               </div>
             )}
             <label className="block">
-              <span className="mb-1 block text-xs text-on-surface-variant">Inputs JSON</span>
+              <span className="mb-1 block text-xs text-on-surface-variant">输入 JSON</span>
               <textarea
                 value={inputsJson}
                 onChange={(event) => setInputsJson(event.target.value)}
@@ -4074,7 +4082,7 @@ export default function AgentWorkbenchPage() {
               ) : (
                 <PlayCircle size={14} />
               )}
-              Create & run
+              创建并运行
             </button>
             <button
               onClick={prepareTaskRun}
@@ -4086,7 +4094,7 @@ export default function AgentWorkbenchPage() {
               ) : (
                 <PlayCircle size={14} />
               )}
-              Prepare run
+              准备运行
             </button>
             <button
               onClick={executePreparedWorkflow}
@@ -4098,7 +4106,7 @@ export default function AgentWorkbenchPage() {
               ) : (
                 <PlayCircle size={14} />
               )}
-              Execute workflow
+              执行工作流
             </button>
             <button
               onClick={loadPreparedArtifacts}
@@ -4110,7 +4118,7 @@ export default function AgentWorkbenchPage() {
               ) : (
                 <ClipboardList size={14} />
               )}
-              Audit artifacts
+              审计产物
             </button>
             <button
               onClick={loadTaskRerunPlan}
@@ -4122,7 +4130,7 @@ export default function AgentWorkbenchPage() {
               ) : (
                 <RefreshCw size={14} />
               )}
-              Rerun plan
+              复跑计划
             </button>
             <button
               onClick={generateTaskAcceptanceAudit}
@@ -4134,7 +4142,7 @@ export default function AgentWorkbenchPage() {
               ) : (
                 <Search size={14} />
               )}
-              Acceptance audit
+              验收审计
             </button>
             <button
               onClick={executeTaskRerunPlan}
@@ -4150,7 +4158,7 @@ export default function AgentWorkbenchPage() {
               ) : (
                 <PlayCircle size={14} />
               )}
-              Execute rerun
+              执行复跑
             </button>
             <button
               onClick={materializePreparedWorkflowOutputs}
@@ -4166,7 +4174,7 @@ export default function AgentWorkbenchPage() {
               ) : (
                 <Database size={14} />
               )}
-              Materialize outputs
+              固化输出
             </button>
             <button
               onClick={importPreparedSemanticOutputs}
@@ -4182,10 +4190,10 @@ export default function AgentWorkbenchPage() {
               ) : (
                 <Library size={14} />
               )}
-              Import semantics
+              导入语义
             </button>
             {preparedRun && (
-              <div className="rounded-lg border border-outline-variant/30 bg-surface p-3 text-xs">
+              <div className="min-w-0 rounded-xl border border-outline-variant/30 bg-surface/80 p-4 text-xs">
                 <p className="font-medium text-on-surface">{preparedRun.task_run_id}</p>
                 <p className="mt-1 break-words font-data text-on-surface-variant">
                   {preparedRun.artifact_dir}
@@ -4193,6 +4201,19 @@ export default function AgentWorkbenchPage() {
                 <p className="mt-1 text-on-surface-variant">
                   Agent runs: {preparedRun.agent_runs.length}
                 </p>
+                <button
+                  type="button"
+                  onClick={openPreparedConversation}
+                  disabled={openingConversation}
+                  className="mt-3 inline-flex items-center gap-2 rounded-lg bg-primary px-3 py-2 text-xs font-semibold text-on-primary shadow-sm transition-all hover:-translate-y-0.5 hover:shadow-md disabled:translate-y-0 disabled:opacity-50"
+                >
+                  {openingConversation ? (
+                    <Loader2 size={13} className="animate-spin" />
+                  ) : (
+                    <MessageSquareText size={13} />
+                  )}
+                  围绕本次运行继续追问
+                </button>
                 {taskAcceptanceAudit &&
                   taskAcceptanceAudit.task_run_id === preparedRun.task_run_id && (
                     <div className="mt-2 rounded bg-surface-container px-2 py-1.5 text-on-surface-variant">
@@ -4299,7 +4320,7 @@ export default function AgentWorkbenchPage() {
                         return (
                           <div className="mt-1 rounded border border-warning/30 bg-surface px-2 py-1.5">
                             <p className="text-[11px] font-medium text-warning">
-                              Workflow output readiness
+                              工作流输出就绪度
                             </p>
                             <div className="mt-1 space-y-0.5 font-data text-[10px] text-warning">
                               {outputIssues.slice(0, 4).map((issue) => (
@@ -4434,7 +4455,7 @@ export default function AgentWorkbenchPage() {
                   return (
                     <div className="mt-2 rounded bg-surface-container px-2 py-1.5 text-on-surface-variant">
                       <p>
-                        Provider readiness:{" "}
+                        执行器就绪度:{" "}
                         <span
                           className={
                             readiness.status === "ready"
@@ -4666,7 +4687,7 @@ export default function AgentWorkbenchPage() {
                 })()}
                 {artifactManifest && artifactManifest.task_run_id === preparedRun.task_run_id && (
                   <div className="mt-2 rounded bg-surface-container px-2 py-1.5 text-on-surface-variant">
-                    Audit artifacts: {artifactManifest.artifacts.length}
+                    审计产物: {artifactManifest.artifacts.length}
                     <div className="mt-1 flex flex-wrap gap-1.5">
                       {prioritizedAuditArtifacts(artifactManifest.artifacts).slice(0, 12).map((artifact) => (
                         <button
@@ -5048,7 +5069,7 @@ export default function AgentWorkbenchPage() {
                 )}
                 {workflowExecution && (
                   <div className="mt-2 rounded bg-surface-container px-2 py-1.5 text-on-surface-variant">
-                    Workflow: {workflowExecution.status} / steps{" "}
+                    工作流: {workflowExecution.status} / steps{" "}
                     {workflowExecution.step_results.length} / outputs{" "}
                     {workflowExecution.outputs?.length ?? 0}
                     {workflowExecution.audit_summary && (
@@ -5405,7 +5426,7 @@ export default function AgentWorkbenchPage() {
                         </div>
                         {requiredArtifacts.length > 0 && (
                             <p className="mt-1 text-on-surface-variant">
-                              Required artifacts: {requiredArtifacts.join(", ")}
+                              必需产物: {requiredArtifacts.join(", ")}
                             </p>
                         )}
                         {result && (
@@ -5506,8 +5527,8 @@ export default function AgentWorkbenchPage() {
               </div>
             )}
             {taskRuns.length > 0 && (
-              <div className="rounded-lg border border-outline-variant/30 bg-surface p-3 text-xs">
-                <p className="mb-2 font-medium text-on-surface">Recent task runs</p>
+              <div className="min-w-0 rounded-xl border border-outline-variant/30 bg-surface/80 p-4 text-xs">
+                <p className="mb-2 font-medium text-on-surface">最近任务运行</p>
                 <div className="space-y-2">
                   {taskRuns.map((run) => (
                     <button
@@ -5535,13 +5556,16 @@ export default function AgentWorkbenchPage() {
             )}
           </div>
         </Panel>
+      )}
 
-        <Panel title="Test Semantic Library" icon={<Library size={16} />}>
+      {activeWorkbenchView === "knowledge" && (
+        <>
+        <Panel title="测试语义库" icon={<Library size={16} />}>
           <div className="space-y-3">
             <div className="rounded-lg border border-outline-variant/30 bg-surface p-3">
               <div className="grid gap-2 sm:grid-cols-2">
                 <label className="block">
-                  <span className="mb-1 block text-xs text-on-surface-variant">Feature</span>
+                  <span className="mb-1 block text-xs text-on-surface-variant">特性</span>
                   <input
                     aria-label="Semantic feature"
                     value={semanticFeature}
@@ -5550,7 +5574,7 @@ export default function AgentWorkbenchPage() {
                   />
                 </label>
                 <label className="block">
-                  <span className="mb-1 block text-xs text-on-surface-variant">Module</span>
+                  <span className="mb-1 block text-xs text-on-surface-variant">模块</span>
                   <input
                     aria-label="Semantic module"
                     value={semanticModule}
@@ -5561,7 +5585,7 @@ export default function AgentWorkbenchPage() {
               </div>
               <label className="mt-2 block">
                 <span className="mb-1 block text-xs text-on-surface-variant">
-                  Existing cases, one per line
+                  已有用例，每行一个
                 </span>
                 <textarea
                   aria-label="Semantic case lines"
@@ -5580,7 +5604,7 @@ export default function AgentWorkbenchPage() {
                 ) : (
                   <Library size={14} />
                 )}
-                Build semantic JSON
+                生成语义 JSON
               </button>
             </div>
             <div className="rounded-lg border border-outline-variant/30 bg-surface p-3">
@@ -5602,7 +5626,7 @@ export default function AgentWorkbenchPage() {
                   ) : (
                     <Save size={14} />
                   )}
-                  Import file
+                  导入文件
                 </button>
               </div>
               {semanticFile && (
@@ -5614,7 +5638,7 @@ export default function AgentWorkbenchPage() {
             <textarea
               value={semanticJson}
               onChange={(event) => setSemanticJson(event.target.value)}
-              className="h-52 w-full resize-y rounded-lg border border-outline-variant/30 bg-surface p-3 font-data text-xs text-on-surface outline-none focus:border-primary"
+              className="h-44 max-h-[46vh] w-full resize-y rounded-lg border border-outline-variant/30 bg-surface p-3 font-data text-xs text-on-surface outline-none focus:border-primary"
               aria-label="Semantic JSON"
               spellCheck={false}
             />
@@ -5625,7 +5649,7 @@ export default function AgentWorkbenchPage() {
                 className="inline-flex items-center justify-center gap-2 rounded-lg bg-primary px-3 py-2 text-sm font-medium text-on-primary transition-opacity hover:opacity-90 disabled:opacity-50"
               >
                 <Save size={14} />
-                Import case(s)
+                导入用例
               </button>
               <input
                 value={semanticQuery}
@@ -5638,7 +5662,7 @@ export default function AgentWorkbenchPage() {
                 className="inline-flex items-center justify-center gap-2 rounded-lg bg-surface-container-high px-3 py-2 text-sm text-on-surface transition-colors hover:bg-surface disabled:opacity-50"
               >
                 <Search size={14} />
-                Search
+                搜索
               </button>
             </div>
             <div className="space-y-2">
@@ -5655,7 +5679,7 @@ export default function AgentWorkbenchPage() {
           </div>
         </Panel>
 
-        <Panel title="Evidence Memory" icon={<Database size={16} />}>
+        <Panel title="证据库" icon={<Database size={16} />}>
           <div className="space-y-3">
             <div className="flex flex-col gap-2 sm:flex-row">
               <input
@@ -5669,15 +5693,14 @@ export default function AgentWorkbenchPage() {
                 className="inline-flex items-center justify-center gap-2 rounded-lg bg-primary px-3 py-2 text-sm font-medium text-on-primary transition-opacity hover:opacity-90 disabled:opacity-50"
               >
                 <Search size={14} />
-                Search memory
+                搜索证据
               </button>
             </div>
             <div className="rounded-lg border border-amber-400/20 bg-amber-400/5 px-3 py-2 text-xs text-amber-400">
               <div className="flex items-start gap-2">
                 <AlertTriangle size={14} className="mt-0.5 shrink-0" />
                 <span>
-                  Memory facts are structured evidence only. Raw Agent output is stored as
-                  artifact context, not reused as truth.
+                  证据库只保存结构化事实；Agent 原始输出会作为产物上下文保存，不会直接当作事实复用。
                 </span>
               </div>
             </div>
@@ -5749,7 +5772,7 @@ export default function AgentWorkbenchPage() {
                       ) : (
                         <ClipboardList size={12} />
                       )}
-                      Source slices
+                      源码切片
                     </button>
                     {memorySlices[item.evidence_id] && (
                       <span className="font-data text-[11px] text-on-surface-variant">
@@ -5820,7 +5843,10 @@ export default function AgentWorkbenchPage() {
             </div>
           </div>
         </Panel>
+        </>
+      )}
+        </motion.div>
+      </AnimatePresence>
       </div>
-    </div>
   );
 }

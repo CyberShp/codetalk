@@ -3,7 +3,7 @@ and report generation in a MapReduce pattern.
 
 Phases:
   0. Preparation  -- validate repo, git init, GitNexus index
-  1. Data Collection (no AI) -- GitNexus graph, DeepWiki wiki
+  1. Data Collection (no AI) -- GitNexus graph and local context
   2. Per-module Analysis (MapReduce) -- LLM summarizes each module
   3. Report Generation -- LLM generates each report from summaries
   4. Cross-enhancement (optional) -- enrich data across tools
@@ -123,7 +123,6 @@ class AnalysisPipeline:
 
     def __init__(self) -> None:
         self._gitnexus_data: dict = {}
-        self._deepwiki_data: dict = {}
         self._module_summaries: list[dict] = []
         self._analysis_focus: str = ""
         self._prompt_content: str = ""
@@ -132,7 +131,6 @@ class AnalysisPipeline:
         self._repo_path: str = ""
         self._output_dir: Path | None = None
         self._llm_client: BaseLLMClient | None = None
-        self._deepwiki_depth: str = ""
         # F-WORKSPACE-GITNEXUS-ANALYSIS-TASK-REDESIGN
         self._analysis_plan: AnalysisPlan | None = None
         self._scope_preview: ScopePreview | None = None
@@ -173,7 +171,6 @@ class AnalysisPipeline:
             self._tools = tools
             self._analysis_focus = task.get("analysis_focus") or ""
             self._prompt_content = task.get("prompt_content") or ""
-            self._deepwiki_depth = task.get("deepwiki_depth") or ""
 
             # Plan-driven path (F-WORKSPACE-GITNEXUS-ANALYSIS-TASK-REDESIGN).
             plan_raw = task.get("analysis_plan_json")
@@ -206,10 +203,8 @@ class AnalysisPipeline:
             await self._phase_collect(repo_path, tools)
             await self._update_progress(task_id, 40, "running", None, "数据采集完成，开始 AI 模块分析…")
 
-            # Task 5: Save DeepWiki documentation as independent output
             output_dir = settings.outputs_path / task_id
             output_dir.mkdir(parents=True, exist_ok=True)
-            await self._save_deepwiki_output(output_dir, task_id)
 
             # Phase 2: Per-module Analysis (MapReduce)
             llm_client = await self._try_create_llm_client()
@@ -275,7 +270,7 @@ class AnalysisPipeline:
                         evidence_cards=self._evidence_cards,
                         module_summaries=self._module_summaries,
                         gitnexus_data=self._gitnexus_data,
-                        deepwiki_data=self._deepwiki_data,
+                        context_data={},
                         requirements_doc=task.get("requirements_doc"),
                         design_doc=task.get("design_doc"),
                         on_report_done=_on_report_done,
@@ -303,7 +298,7 @@ class AnalysisPipeline:
                     await generator.generate_all(
                         module_summaries=self._module_summaries,
                         gitnexus_data=self._gitnexus_data,
-                        deepwiki_data=self._deepwiki_data,
+                        context_data={},
                         requirements_doc=task.get("requirements_doc"),
                         design_doc=task.get("design_doc"),
                         analysis_focus=self._analysis_focus,
@@ -594,13 +589,11 @@ class AnalysisPipeline:
     # ------------------------------------------------------------------
 
     async def _phase_collect(self, repo_path: str, tools: list[str]) -> None:
-        """Collect data from GitNexus and DeepWiki in parallel."""
+        """Collect data from available code graph tools in parallel."""
         coros = []
 
         if "gitnexus" in tools and self._pipeline_mode not in ("cgc_only", "llm_direct"):
             coros.append(self._collect_gitnexus(repo_path))
-        if "deepwiki" in tools:
-            coros.append(self._collect_deepwiki(repo_path))
 
         if coros:
             results = await asyncio.gather(*coros, return_exceptions=True)
@@ -611,32 +604,18 @@ class AnalysisPipeline:
         # Validate data quality — only report failures for tools that were selected.
         # An unselected tool naturally produces no data; that is expected, not a failure.
         want_gitnexus = "gitnexus" in tools
-        want_deepwiki = "deepwiki" in tools
         has_gitnexus = bool(self._gitnexus_data and self._gitnexus_data.get("nodes"))
-        has_deepwiki = bool(self._deepwiki_data and self._deepwiki_data.get("documentation"))
 
         gitnexus_failed = want_gitnexus and not has_gitnexus
-        deepwiki_failed = want_deepwiki and not has_deepwiki
 
-        if gitnexus_failed and deepwiki_failed:
-            self._data_quality = "poor"
-            logger.warning("Data quality: poor -- GitNexus and DeepWiki both selected but data missing")
-            await self._update_progress(
-                self._task_id, 35, "running",
-                "WARNING: GitNexus and DeepWiki data missing; analysis will be limited",
-                "⚠️ 数据采集不完整（GitNexus + DeepWiki 均失败），分析将受限",
-            )
-        elif gitnexus_failed:
+        if gitnexus_failed:
             self._data_quality = "degraded"
-            logger.warning("Data quality: degraded -- GitNexus data missing, continuing with DeepWiki only")
+            logger.warning("Data quality: degraded -- GitNexus data missing")
             await self._update_progress(
                 self._task_id, 35, "running",
                 "WARNING: GitNexus data unavailable; continuing in degraded mode",
-                "⚠️ GitNexus 数据不可用，仅使用 DeepWiki 数据继续",
+                "⚠️ GitNexus 数据不可用，将使用本地源码和 LLM 继续分析",
             )
-        elif deepwiki_failed:
-            self._data_quality = "degraded"
-            logger.warning("Data quality: degraded -- DeepWiki data missing, continuing with GitNexus only")
         else:
             self._data_quality = "good"
 
@@ -947,91 +926,6 @@ class AnalysisPipeline:
         if cache_key:
             await self._save_gitnexus_cache(cache_key, self._gitnexus_data)
 
-    async def _collect_deepwiki(self, repo_path: str) -> None:
-        """Call DeepWiki to generate wiki content."""
-        base_url = settings.deepwiki_api_url
-        async with httpx.AsyncClient(
-            base_url=base_url,
-            timeout=httpx.Timeout(1800, connect=10),
-            trust_env=False,
-        ) as client:
-            depth = self._deepwiki_depth or settings.deepwiki_default_depth
-
-            if depth == "fast":
-                deepwiki_message = (
-                    "快速分析仓库核心架构，生成精简的中文技术文档。"
-                    "仅覆盖：核心入口、主要模块概述。控制篇幅在2000字以内。"
-                )
-            elif depth == "deep":
-                deepwiki_message = (
-                    "深度分析整个仓库，生成详尽的中文技术文档。"
-                    "包含：架构概览、核心组件、数据流、API接口、"
-                    "配置管理、错误处理、安全机制、部署架构。不限篇幅。"
-                )
-            else:  # balanced (default)
-                deepwiki_message = (
-                    "分析整个仓库，生成全面的中文技术文档。"
-                    "包含：架构概览、核心组件、数据流。"
-                )
-
-            if self._analysis_focus:
-                deepwiki_message = (
-                    f"针对以下分析目标，生成中文技术文档：\n"
-                    f"{self._analysis_focus}\n\n"
-                    + deepwiki_message
-                )
-
-            payload = {
-                "repo_url": repo_path,
-                "type": "local",
-                "provider": settings.deepwiki_provider,
-                "messages": [
-                    {"role": "user", "content": deepwiki_message}
-                ],
-                "excluded_dirs": "\n".join([
-                    "node_modules", ".git", "dist", "build", "__pycache__",
-                    ".next", "vendor", "coverage", ".venv", "venv",
-                ]),
-            }
-
-            full_content = ""
-            async with client.stream(
-                "POST", "/chat/completions/stream", json=payload, timeout=1800,
-            ) as response:
-                response.raise_for_status()
-                async for chunk in response.aiter_text():
-                    full_content += chunk
-
-            self._deepwiki_data = {"documentation": full_content}
-            logger.info("DeepWiki data collected: %d chars", len(full_content))
-
-    # ------------------------------------------------------------------
-    # Task 5: DeepWiki independent output
-    # ------------------------------------------------------------------
-
-    async def _save_deepwiki_output(self, output_dir: Path, task_id: str) -> None:
-        """Save DeepWiki documentation as a standalone markdown file with YAML frontmatter."""
-        doc = self._deepwiki_data.get("documentation", "")
-        if not doc:
-            return
-
-        ts = datetime.now(timezone.utc).isoformat()
-        frontmatter = (
-            f"---\n"
-            f"source: deepwiki\n"
-            f"task_id: {task_id}\n"
-            f"generated_at: {ts}\n"
-            f"---\n\n"
-        )
-        content = frontmatter + doc
-
-        def _write() -> None:
-            out_path = output_dir / "00-知识库文档.md"
-            out_path.write_text(content, encoding="utf-8")
-
-        await asyncio.to_thread(_write)
-        logger.info("DeepWiki knowledge base saved: %d chars", len(doc))
-
     # ------------------------------------------------------------------
     # Phase 2: Per-module Analysis (MapReduce)
     # ------------------------------------------------------------------
@@ -1076,8 +970,6 @@ class AnalysisPipeline:
 
         # Task 6: module discovery with fallback chain
         communities = self._extract_communities()  # GitNexus first
-        if not communities and self._deepwiki_data:
-            communities = self._extract_modules_from_wiki()  # DeepWiki fallback
         if not communities:
             communities = self._extract_modules_from_dirs(repo_path)  # Directory fallback
         if not communities:
@@ -1087,8 +979,8 @@ class AnalysisPipeline:
         data_quality_note = ""
         if self._data_quality == "poor":
             data_quality_note = (
-                "\n\n> **Note**: Data quality is poor -- both GitNexus and DeepWiki "
-                "data were unavailable.  Analysis is based on limited information.\n"
+                "\n\n> **Note**: Data quality is poor -- code graph data was unavailable. "
+                "Analysis is based on limited information.\n"
             )
         elif self._data_quality == "degraded":
             data_quality_note = (
@@ -1705,31 +1597,6 @@ class AnalysisPipeline:
 
         return list(communities.values())
 
-    def _extract_modules_from_wiki(self) -> list[dict]:
-        """Task 6 fallback: derive modules from DeepWiki markdown headers (## or ###)."""
-        doc = self._deepwiki_data.get("documentation", "")
-        if not doc:
-            return []
-
-        header_pattern = re.compile(r"^#{2,3}\s+(.+)", re.MULTILINE)
-        matches = header_pattern.findall(doc)
-
-        modules: list[dict] = []
-        seen: set[str] = set()
-        for header in matches:
-            name = header.strip()
-            if name and name not in seen:
-                seen.add(name)
-                modules.append({
-                    "id": f"wiki_{len(modules)}",
-                    "name": name,
-                    "files": [],
-                    "calls": [],
-                })
-
-        logger.info("DeepWiki fallback: discovered %d modules from headers", len(modules))
-        return modules
-
     def _extract_modules_from_dirs(self, repo_path: str) -> list[dict]:
         """Task 6 fallback: derive modules from top-level directories containing source files."""
         path = Path(repo_path)
@@ -1912,8 +1779,6 @@ class AnalysisPipeline:
         file_list = "\n".join(f"- {f}" for f in files)
         call_relations = "\n".join(community.get("calls", [])[:20])
 
-        wiki_content = self._extract_module_wiki(community["name"])
-
         structural_info = self._build_structural_info(files)
 
         source_code_section = ""
@@ -1955,7 +1820,7 @@ class AnalysisPipeline:
             file_list=file_list or "（无文件信息）",
             structural_info=structural_info,
             call_relations=call_relations or "（无调用关系信息）",
-            wiki_content=wiki_content or "（无 Wiki 文档）",
+            context_content="（无外部文档上下文）",
             source_code_section=combined_source,
         )
 
@@ -2000,59 +1865,15 @@ class AnalysisPipeline:
         )
         return content
 
-    def _extract_module_wiki(self, module_name: str) -> str:
-        """Extract relevant wiki content for a module (word-boundary match)."""
-        doc = self._deepwiki_data.get("documentation", "")
-        if not doc:
-            return ""
-
-        # Use word-boundary regex to avoid false positives for short names
-        pattern = re.compile(r"\b" + re.escape(module_name) + r"\b", re.IGNORECASE)
-
-        lines = doc.split("\n")
-        relevant: list[str] = []
-        capturing = False
-        for line in lines:
-            if pattern.search(line):
-                capturing = True
-            if capturing:
-                relevant.append(line)
-                if len(relevant) > 30:
-                    break
-            elif relevant and line.strip() == "":
-                capturing = False
-
-        result = "\n".join(relevant)
-        max_chars = 3000
-        if len(result) > max_chars:
-            # Preserve sentence boundary: find last period or newline before limit
-            truncated = result[:max_chars]
-            last_period = truncated.rfind(".")
-            last_newline = truncated.rfind("\n")
-            cut_at = max(last_period, last_newline)
-            if cut_at > max_chars // 2:
-                result = result[: cut_at + 1]
-            else:
-                result = truncated
-            logger.info(
-                "Wiki content for module %s truncated from %d to %d chars",
-                module_name,
-                len("\n".join(relevant)),
-                len(result),
-            )
-            result += "\n...（已截断）"
-        return result
-
     # ------------------------------------------------------------------
     # Phase 4: Cross-enhancement (optional)
     # ------------------------------------------------------------------
 
     async def _phase_cross_enhance(self) -> None:
-        """Best-effort cross-enhancement: synthesise GitNexus + DeepWiki insights via LLM."""
+        """Best-effort cross-enhancement using collected code graph insights."""
         has_gitnexus = bool(self._gitnexus_data and self._gitnexus_data.get("nodes"))
-        has_deepwiki = bool(self._deepwiki_data and self._deepwiki_data.get("documentation"))
 
-        if not (has_gitnexus and has_deepwiki):
+        if not has_gitnexus:
             logger.info("Cross-enhancement phase: skipping — single source")
             return
 
@@ -2097,25 +1918,18 @@ class AnalysisPipeline:
                 f"跨模块依赖（Top 10）:\n{cross_deps_text or '（无跨模块依赖）'}"
             )
 
-            # Build DeepWiki documentation highlights (first 2000 chars)
-            deepwiki_doc = self._deepwiki_data.get("documentation", "")
-            deepwiki_highlights = deepwiki_doc[:2000]
-
             prompt = (
                 "## 任务：交叉增强分析\n\n"
-                "你是一位资深软件架构师。请综合以下三个来源的信息，生成一份交叉增强分析报告。\n"
-                "报告应重点揭示：代码结构与文档描述之间的差异或一致性、潜在的架构风险、"
-                "以及可从多源数据交叉印证的关键洞察。\n\n"
+                "你是一位资深软件架构师。请综合模块摘要和代码图谱信息，生成一份结构增强分析报告。\n"
+                "报告应重点揭示：潜在的架构风险、关键依赖关系以及可从结构数据印证的关键洞察。\n\n"
                 "### 模块摘要亮点\n"
                 f"{summary_highlights}\n\n"
                 "### GitNexus 结构洞察\n"
                 f"{gitnexus_insights}\n\n"
-                "### DeepWiki 文档亮点\n"
-                f"{deepwiki_highlights}\n\n"
                 "请输出一份结构化的交叉增强分析，包含：\n"
-                "1. 代码结构与文档的一致性评估\n"
-                "2. 发现的主要矛盾或盲点\n"
-                "3. 跨工具综合洞察（架构风险、优化方向）\n"
+                "1. 代码结构一致性评估\n"
+                "2. 发现的主要风险或盲点\n"
+                "3. 结构综合洞察（架构风险、优化方向）\n"
             )
 
             messages = [{"role": "user", "content": prompt}]
@@ -2203,7 +2017,6 @@ class AnalysisPipeline:
             _PIPELINE_VERSION,
             self._analysis_focus or "",
             self._prompt_content or "",
-            self._deepwiki_depth or "",
             json.dumps(sorted(self._tools)) if hasattr(self, "_tools") else "",
             self._data_quality or "good",
         ]
@@ -2363,12 +2176,6 @@ class AnalysisPipeline:
             raw_path = output_dir / "00-gitnexus-raw.json"
             raw_path.write_text(
                 json.dumps(self._gitnexus_data, ensure_ascii=False, indent=2),
-                encoding="utf-8",
-            )
-        if self._deepwiki_data:
-            raw_path = output_dir / "00-deepwiki-raw.md"
-            raw_path.write_text(
-                self._deepwiki_data.get("documentation", ""),
                 encoding="utf-8",
             )
 

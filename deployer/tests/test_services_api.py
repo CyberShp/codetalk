@@ -63,11 +63,6 @@ async def test_frontend_service_restart_without_deployer_returns_400(client):
     assert resp.status_code == 400
 
 
-async def test_deepwiki_service_restart_without_deployer_returns_400(client):
-    resp = await client.post("/api/services/deepwiki/restart")
-    assert resp.status_code == 400
-
-
 async def test_gitnexus_service_restart_without_deployer_returns_400(client):
     resp = await client.post("/api/services/gitnexus/restart")
     assert resp.status_code == 400

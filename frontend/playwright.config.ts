@@ -6,6 +6,7 @@ const gitnexusPort = Number(process.env.GITNEXUS_PORT ?? process.env.CODETALK_GI
 const browserHost = process.env.CODETALK_BROWSER_HOST ?? "localhost";
 const reuseExistingServer = process.env.CODETALK_REUSE_EXISTING_SERVER !== "0";
 const startGitNexus = process.env.CODETALK_PLAYWRIGHT_GITNEXUS === "1";
+const chromiumExecutablePath = process.env.PLAYWRIGHT_CHROMIUM_EXECUTABLE_PATH;
 
 const webServer = [
   ...(startGitNexus
@@ -43,6 +44,9 @@ export default defineConfig({
     baseURL: `http://${browserHost}:${frontendPort}`,
     trace: "on-first-retry",
     screenshot: "only-on-failure",
+    launchOptions: chromiumExecutablePath
+      ? { executablePath: chromiumExecutablePath }
+      : undefined,
   },
   projects: [
     {

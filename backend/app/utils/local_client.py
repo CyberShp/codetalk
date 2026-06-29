@@ -1,6 +1,6 @@
 """Factory for httpx.AsyncClient configured for localhost-bound tool services.
 
-Local services (GitNexus, DeepWiki, Joern, CodeCompass) all run on
+Local services (GitNexus, Joern, CodeCompass) all run on
 localhost.  They must not be routed through system proxies — trust_env=False
 is enforced here and cannot be overridden by callers.
 

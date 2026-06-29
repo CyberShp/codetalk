@@ -33,7 +33,7 @@
   var forceTakeover = false;
 
   // Services we track — must match data-svc attrs in HTML
-  var SERVICES = ['backend', 'frontend', 'gitnexus', 'deepwiki', 'cgc'];
+  var SERVICES = ['backend', 'frontend', 'gitnexus', 'cgc'];
 
   var STATUS_LABELS = {
     running:  '运行中',
@@ -63,21 +63,17 @@
     var backendPort  = cfg.portBackend     || 8100;
     var frontendPort = cfg.portFrontend    || 3005;
     var gitnexusPort = cfg.portGitnexus    || 7100;
-    var deepwikiApi  = cfg.portDeepwiki    || cfg.portDeepwikiApi || 8091;
-    var deepwikiUi   = cfg.deepwikiUiPort  || cfg.portDeepwikiUi || 3001;
     var cgcPort      = cfg.portCgc         || 7072;
 
     // Update port labels on service cards
     var portBackend  = document.getElementById('port-backend');
     var portFrontend = document.getElementById('port-frontend');
     var portGitnexus = document.getElementById('port-gitnexus');
-    var portDeepwiki = document.getElementById('port-deepwiki');
     var portCgc      = document.getElementById('port-cgc');
 
     if (portBackend)  portBackend.textContent  = ':' + backendPort;
     if (portFrontend) portFrontend.textContent = ':' + frontendPort;
     if (portGitnexus) portGitnexus.textContent = ':' + gitnexusPort;
-    if (portDeepwiki) portDeepwiki.textContent = 'API :' + deepwikiApi + ' / UI :' + deepwikiUi;
     if (portCgc)      portCgc.textContent      = ':' + cgcPort;
 
     // Update "Open CodeTalk" links
@@ -95,7 +91,6 @@
     setInfoLink('cfg-frontend-url', 'http://localhost:' + frontendPort);
     setInfoLink('cfg-backend-url', 'http://localhost:' + backendPort);
     setInfoLink('cfg-gitnexus-url', 'http://localhost:' + gitnexusPort);
-    setInfoLink('cfg-deepwiki-url', 'http://localhost:' + deepwikiApi + '  (UI ' + deepwikiUi + ')');
     setInfoLink('cfg-cgc-url', 'http://localhost:' + cgcPort);
 
   }

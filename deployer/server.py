@@ -228,63 +228,6 @@ async def api_deploy_stop():
     return {"ok": True, "message": "Deployment stopped"}
 
 
-@app.post("/api/deploy/supplement/deepwiki")
-async def api_supplement_deepwiki(body: dict):
-    """Install DeepWiki-Open as a supplementary service after native deployment."""
-    if _state.running:
-        raise HTTPException(status_code=409, detail="A deployment is already running")
-
-    deepwiki_path = body.get("deepwikiPath", "").strip()
-    if not deepwiki_path:
-        deepwiki_path = config_store.DEFAULT_DEEPWIKI_PATH
-
-    cfg = config_store.load_config()
-    cfg["deepwiki_path"] = deepwiki_path
-
-    event_queue: asyncio.Queue = asyncio.Queue()
-    deployer = NativeDeployer(cfg, event_queue)
-    old_deployer = _state.deployer
-    if old_deployer is not None and hasattr(old_deployer, "_processes"):
-        deployer._processes.update(old_deployer._processes)
-    if old_deployer is not None and hasattr(old_deployer, "_start_args"):
-        deployer._start_args.update(old_deployer._start_args)
-
-    _state.deployer = deployer
-    _state.event_queue = event_queue
-    job_id = _launch_job(_run_supplement(deployer, deepwiki_path, cfg))
-    return {"job_id": job_id}
-
-
-async def _run_supplement(deployer: NativeDeployer, deepwiki_path: str, cfg: dict) -> None:
-    cancelled = False
-    error_msg = ""
-    try:
-        await deployer.supplement_deepwiki(deepwiki_path)
-        cfg["deepwiki_path"] = deepwiki_path
-        config_store.save_config(cfg)
-    except asyncio.CancelledError:
-        cancelled = True
-        q = _state.event_queue
-        if q is not None:
-            await q.put({"step": "deepwiki_install", "status": "cancelled", "message": "Cancelled"})
-    except Exception as exc:
-        error_msg = str(exc)
-        q = _state.event_queue
-        if q is not None:
-            await q.put({"step": "deepwiki_install", "status": "error", "message": error_msg, "progress": {"current": 0, "total": 5}})
-    finally:
-        _state.running = False
-        q = _state.event_queue
-        if q is not None:
-            if cancelled:
-                await q.put({"step": "done", "status": "cancelled", "message": "DeepWiki install cancelled"})
-            elif error_msg:
-                await q.put({"step": "done", "status": "error", "message": "DeepWiki install failed"})
-            else:
-                await q.put({"step": "done", "status": "done", "message": "DeepWiki installed"})
-            await q.put(None)
-
-
 @app.post("/api/deploy/supplement/gitnexus")
 async def api_supplement_gitnexus():
     """Install GitNexus as a supplementary service after native deployment."""
@@ -493,15 +436,6 @@ async def api_services_status():
             processes[name] = {
                 "pid": proc.pid if proc.returncode is None else None,
                 "running": proc.returncode is None,
-            }
-        # Aggregate deepwiki-api + deepwiki-ui into a single "deepwiki" key so the
-        # deployer frontend (which queries processes['deepwiki']) gets accurate state.
-        dw_parts = {k: v for k, v in processes.items() if k.startswith("deepwiki-")}
-        if dw_parts:
-            running_part = next((v for v in dw_parts.values() if v["running"]), None)
-            processes["deepwiki"] = {
-                "pid": running_part["pid"] if running_part else None,
-                "running": any(v["running"] for v in dw_parts.values()),
             }
     return {"running": running, "processes": processes}
 

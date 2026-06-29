@@ -22,7 +22,6 @@ from app.adapters.joern import JoernAdapter
 from app.config import settings
 from app.database import get_db
 from app.models.analysis_snapshot import AnalysisSnapshot
-from app.models.llm_config import LLMConfig
 from app.models.repository import Repository
 from app.models.task import AnalysisTask
 from app.services import task_engine
@@ -858,22 +857,10 @@ async def generate_test_points(
     Core pipeline:
     1. Joern: extract control flow, exception paths, boundary values + cross-function context
     2. GitNexus: resolve call chains and process flows
-    3. LLM (DeepWiki): translate to black-box test descriptions
+    3. LLM: translate to black-box test descriptions
     """
     repo = await _get_repo_or_404(repo_id, db)
     tool_path = _tool_path(repo)
-
-    # Read user's LLM config for DeepWiki
-    result = await db.execute(
-        select(LLMConfig).where(LLMConfig.is_default.is_(True)).limit(1)
-    )
-    llm_cfg = result.scalar_one_or_none()
-    llm_config = None
-    if llm_cfg:
-        provider = llm_cfg.provider
-        if provider == "custom":
-            provider = "openai"
-        llm_config = {"provider": provider, "model": llm_cfg.model_name}
 
     from app.services.test_point_generator import generate_test_points as gen
 
@@ -882,7 +869,6 @@ async def generate_test_points(
             repo_path=tool_path,
             target=body.target,
             perspective=body.perspective,
-            llm_config=llm_config,
         )
         return {
             "status": "completed",

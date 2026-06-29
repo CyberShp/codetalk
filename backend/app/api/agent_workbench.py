@@ -1410,8 +1410,7 @@ def _agent_cli_provider_matrix_item(provider_id: str, spec: Any) -> dict[str, An
         "command_hint_env": spec.command_hint_env,
         "capabilities": external_agent_provider_capabilities(provider_id),
         "credential_boundary": (
-            "Agent CLI owns its own MCP credentials and remote access; CodeTalk only "
-            "passes task bundles and validates returned artifacts."
+            "Agent CLI 自己持有 MCP 凭证和远端访问权限；CodeTalk 只下发任务包并校验返回产物。"
         ),
         "diagnostics": build_agent_cli_provider_diagnostics(provider_id, spec),
         "unavailable_behavior": (
@@ -1470,7 +1469,7 @@ def _fast_context_provider_matrix_item() -> dict[str, Any]:
             ),
             "troubleshooting": [
                 "If AGENTS.md requires fast-context but this bridge is disabled, CodeTalk records the gap and uses local search plus Agent CLI discovery.",
-                "When an Agent CLI owns fast-context credentials, expose that requirement in the workflow task bundle instead of expecting CodeTalk to call it.",
+                "当 Agent CLI 持有 fast-context 凭证时，请把这个要求写进工作流任务包，不要让 CodeTalk 直接调用。",
             ],
         },
         "unavailable_behavior": (

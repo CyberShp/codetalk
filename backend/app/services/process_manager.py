@@ -1,8 +1,4 @@
-"""Process manager for spawning, monitoring, and restarting local tool processes.
-
-Singleton that manages GitNexus, DeepWiki-API, and DeepWiki-UI as subprocesses.
-Health is checked periodically; crashed processes are auto-restarted.
-"""
+"""Process manager for spawning, monitoring, and restarting local tool processes."""
 
 import asyncio
 import logging
@@ -19,9 +15,6 @@ import httpx
 
 from app.config import settings
 
-# Must match config._CL100K_BPE
-_CL100K_BPE = "9b5ad71b2ce5302211f9c61530b329a4922fc6a4"
-
 logger = logging.getLogger(__name__)
 _REPO_ROOT = Path(__file__).resolve().parents[3]
 
@@ -29,58 +22,6 @@ _REPO_ROOT = Path(__file__).resolve().parents[3]
 # ---------------------------------------------------------------------------
 # Tool registry -- static definitions for each managed tool
 # ---------------------------------------------------------------------------
-
-async def _ensure_deepwiki_tiktoken(deepwiki_path: str) -> None:
-    """Copy the tiktoken BPE file into {deepwiki_path}/tiktoken/ before deepwiki starts.
-
-    Mirrors the colleague's approach of setting TIKTOKEN_CACHE_DIR=./tiktoken in deepwiki's
-    own .env.  By physically placing the file there we avoid internet downloads even when
-    deepwiki's .env overrides the env var we inject.
-    """
-    src = settings.tiktoken_cache_path / _CL100K_BPE
-    if not src.exists():
-        logger.warning(
-            "ProcessManager: tiktoken BPE file not found at %s; deepwiki may fail to start", src
-        )
-        return
-
-    dest_dir = Path(deepwiki_path) / "tiktoken"
-    dest = dest_dir / _CL100K_BPE
-    if dest.exists():
-        return
-
-    def _copy() -> None:
-        dest_dir.mkdir(parents=True, exist_ok=True)
-        shutil.copy2(src, dest)
-
-    await asyncio.to_thread(_copy)
-    logger.info("ProcessManager: tiktoken BPE file staged at %s", dest)
-
-
-def _deepwiki_venv_python(deepwiki_path: str) -> str:
-    venv_dir = Path(deepwiki_path) / ".venv"
-    python_name = "python.exe" if sys.platform == "win32" else "python"
-    scripts_dir = "Scripts" if sys.platform == "win32" else "bin"
-    candidate = venv_dir / scripts_dir / python_name
-    return str(candidate) if candidate.exists() else "python"
-
-
-def _deepwiki_api_command(deepwiki_path: str) -> list[str]:
-    python_exe = _deepwiki_venv_python(deepwiki_path)
-    launcher = _REPO_ROOT / "deployer" / "deepwiki_launcher.py"
-    if launcher.exists():
-        return [python_exe, str(launcher)]
-    return [python_exe, "-m", "api.main"]
-
-
-def _deepwiki_ui_command(deepwiki_path: str) -> list[str]:
-    deepwiki_dir = Path(deepwiki_path)
-    standalone = deepwiki_dir / ".next" / "standalone" / "server.js"
-    if standalone.exists():
-        return ["node", str(standalone)]
-    npm_cmd = "npm.cmd" if sys.platform == "win32" else "npm"
-    return [npm_cmd, "run", "start"]
-
 
 def _resolve_spawn_command(command: list[str]) -> list[str]:
     """Resolve Windows command shims before passing them to CreateProcess."""
@@ -217,18 +158,6 @@ def _windows_common_command_dirs() -> list[Path]:
     return deduped
 
 
-def _deepwiki_api_env() -> dict[str, str]:
-    return {
-        "TIKTOKEN_CACHE_DIR": (
-            str(Path(settings.deepwiki_path) / "tiktoken")
-            if settings.deepwiki_path
-            else str(settings.tiktoken_cache_path)
-        ),
-        "DEEPWIKI_API_PORT": str(settings.deepwiki_api_port),
-        "PORT": str(settings.deepwiki_api_port),
-    }
-
-
 def _parse_simple_dotenv_line(line: str) -> tuple[str, str] | None:
     stripped = line.strip()
     if not stripped or stripped.startswith("#"):
@@ -268,8 +197,6 @@ def _read_dotenv_env(cwd: str | None) -> dict[str, str]:
 
 def _build_process_env(name: str, cfg: dict[str, Any], cwd: str | None) -> dict[str, str]:
     env = {**os.environ}
-    if name == "deepwiki-api":
-        env.update(_read_dotenv_env(cwd))
     env.update(cfg.get("env", {}))
     return env
 
@@ -280,13 +207,6 @@ def _open_process_log_streams(name: str) -> tuple[BufferedWriter, BufferedWriter
     stdout = open(log_dir / f"{name}.out.log", "ab", buffering=0)
     stderr = open(log_dir / f"{name}.err.log", "ab", buffering=0)
     return stdout, stderr
-
-
-def _deepwiki_ui_env() -> dict[str, str]:
-    return {
-        "PORT": str(settings.deepwiki_ui_port),
-        "SERVER_BASE_URL": f"http://localhost:{settings.deepwiki_api_port}",
-    }
 
 
 def _build_registry() -> dict[str, dict[str, Any]]:
@@ -308,31 +228,6 @@ def _build_registry() -> dict[str, dict[str, Any]]:
             "health_fallback_url": f"http://localhost:{settings.gitnexus_port}/api/analyze",
             "cwd": None,
             "env": {},
-        },
-        "deepwiki-api": {
-            "display_name": "DeepWiki API",
-            "command": (
-                _deepwiki_api_command(settings.deepwiki_path)
-                if settings.deepwiki_path
-                else ["python", "-m", "api.main"]
-            ),
-            "health_url": f"http://localhost:{settings.deepwiki_api_port}/health",
-            "cwd": settings.deepwiki_path or None,
-            "env": _deepwiki_api_env(),
-            # DeepWiki generation can occupy the API long enough for /health to
-            # timeout.  Restart only on process exit or an explicit user action.
-            "restart_on_health_failure": False,
-        },
-        "deepwiki-ui": {
-            "display_name": "DeepWiki UI",
-            "command": (
-                _deepwiki_ui_command(settings.deepwiki_path)
-                if settings.deepwiki_path
-                else ["npm", "run", "start"]
-            ),
-            "health_url": f"http://localhost:{settings.deepwiki_ui_port}",
-            "cwd": settings.deepwiki_path or None,
-            "env": _deepwiki_ui_env(),
         },
     }
 
@@ -472,27 +367,12 @@ class ProcessManager:
         cmd: list[str] = _resolve_spawn_command(cfg["command"])
         cwd: str | None = cfg.get("cwd") or None
 
-        # deepwiki-api requires a configured installation path to run
-        if name == "deepwiki-api" and cwd is None:
-            mp.status = "error"
-            mp.last_error = "DEEPWIKI_PATH not set; cannot start deepwiki-api"
-            logger.error(
-                "ProcessManager: cannot start 'deepwiki-api' — set DEEPWIKI_PATH in backend/.env "
-                "to the directory where DeepWiki is installed"
-            )
-            return False
-
         # Validate working directory when required
         if cwd is not None and not os.path.isdir(cwd):
             mp.status = "error"
             mp.last_error = f"Working directory does not exist: {cwd}"
             logger.error("ProcessManager: cannot start '%s' -- %s", name, mp.last_error)
             return False
-
-        # Pre-start: ensure tiktoken BPE file is in {deepwiki_path}/tiktoken/ so that deepwiki
-        # can start without downloading from the internet (mirrors the colleague's .env approach).
-        if name == "deepwiki-api" and cwd:
-            await _ensure_deepwiki_tiktoken(cwd)
 
         env = _build_process_env(name, cfg, cwd)
         mp.status = "starting"

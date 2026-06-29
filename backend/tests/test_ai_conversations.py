@@ -1,0 +1,224 @@
+import asyncio
+import json
+from contextlib import asynccontextmanager
+from datetime import datetime, timezone
+
+import aiosqlite
+import pytest
+from fastapi import FastAPI
+from httpx import ASGITransport, AsyncClient
+
+from app.database import get_db
+
+pytestmark = [pytest.mark.asyncio, pytest.mark.integration]
+
+
+async def _seed_workspace(db_path: str, ws_id: str = "ws-ai") -> str:
+    now = datetime.now(timezone.utc).isoformat()
+    async with aiosqlite.connect(db_path) as db:
+        await db.execute(
+            "INSERT INTO workspaces (id, name, repo_path, indexed, created_at, updated_at) "
+            "VALUES (?, 'AI 工作区', '/repo/project', 1, ?, ?)",
+            (ws_id, now, now),
+        )
+        await db.execute(
+            "INSERT INTO workspace_reports "
+            "(id, workspace_id, report_type, title, content, status, created_at) "
+            "VALUES (?, ?, 'test_design', '测试设计报告', '这里是报告正文：登录失败边界条件', 'completed', ?)",
+            (f"report-{ws_id}", ws_id, now),
+        )
+        await db.commit()
+    return ws_id
+
+
+@asynccontextmanager
+async def _lifespan(app: FastAPI):
+    yield
+
+
+def _test_app(sqlite_db: str) -> FastAPI:
+    from app.api import ai_conversations
+
+    app = FastAPI(lifespan=_lifespan)
+    app.include_router(ai_conversations.router)
+
+    async def _override_get_db():
+        conn = await aiosqlite.connect(sqlite_db)
+        conn.row_factory = aiosqlite.Row
+        try:
+            yield conn
+        finally:
+            await conn.close()
+
+    app.dependency_overrides[get_db] = _override_get_db
+    return app
+
+
+class FakeLLM:
+    async def stream_complete(self, messages, max_tokens=4096, temperature=0.3):
+        joined = "\n".join(str(m.get("content", "")) for m in messages)
+        assert "测试设计报告" in joined
+        assert "登录失败边界条件" in joined
+        yield "可以继续追问。"
+        await asyncio.sleep(0)
+        yield "建议补充异常路径和边界值。"
+
+
+class TestAIConversationsAPI:
+    async def test_create_and_list_project_scoped_conversations(self, sqlite_db):
+        ws_a = await _seed_workspace(sqlite_db, "ws-a")
+        ws_b = await _seed_workspace(sqlite_db, "ws-b")
+
+        app = _test_app(sqlite_db)
+        async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+            created_a = await client.post(
+                "/api/ai/conversations",
+                json={
+                    "scope_type": "workspace",
+                    "scope_id": ws_a,
+                    "workspace_id": ws_a,
+                    "memory_namespace": f"workspace:{ws_a}",
+                    "title": "项目 A 线程",
+                },
+            )
+            assert created_a.status_code == 201
+            body_a = created_a.json()
+            assert body_a["workspace_id"] == ws_a
+            assert body_a["memory_namespace"] == f"workspace:{ws_a}"
+
+            created_b = await client.post(
+                "/api/ai/conversations",
+                json={
+                    "scope_type": "workspace",
+                    "scope_id": ws_b,
+                    "workspace_id": ws_b,
+                    "memory_namespace": f"workspace:{ws_b}",
+                    "title": "项目 B 线程",
+                },
+            )
+            assert created_b.status_code == 201
+
+            listed = await client.get("/api/ai/conversations", params={"workspace_id": ws_a})
+            assert listed.status_code == 200
+            items = listed.json()["items"]
+            assert [item["id"] for item in items] == [body_a["id"]]
+
+    async def test_legacy_conversation_backfills_workspace_namespace(self, sqlite_db):
+        ws_id = await _seed_workspace(sqlite_db, "legacy-ws")
+        now = datetime.now(timezone.utc).isoformat()
+        async with aiosqlite.connect(sqlite_db) as db:
+            await db.execute(
+                """
+                INSERT INTO ai_conversations
+                    (id, scope_type, scope_id, title, status, initial_context_json, created_at, updated_at)
+                VALUES (?, 'workspace', ?, '旧线程', 'idle', ?, ?, ?)
+                """,
+                (
+                    "conv-legacy",
+                    ws_id,
+                    json.dumps({"workspace_id": ws_id}),
+                    now,
+                    now,
+                ),
+            )
+            await db.commit()
+
+        app = _test_app(sqlite_db)
+        async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+            fetched = await client.get("/api/ai/conversations/conv-legacy")
+            assert fetched.status_code == 200
+            body = fetched.json()
+            assert body["workspace_id"] == ws_id
+            assert body["memory_namespace"] == f"workspace:{ws_id}"
+
+    async def test_context_recall_filters_evidence_memory_by_workspace(self, sqlite_db, monkeypatch):
+        ws_id = await _seed_workspace(sqlite_db)
+        calls: list[str | None] = []
+
+        from app.services import evidence_memory
+        from app.services.ai_conversations import build_context_references
+
+        def fake_search(self, query, *, workspace_id=None, limit=3):
+            calls.append(workspace_id)
+            return []
+
+        monkeypatch.setattr(evidence_memory.EvidenceMemoryStore, "search_analysis_memory", fake_search)
+
+        refs = await build_context_references(
+            conversation={
+                "id": "conv-test",
+                "scope_type": "workspace",
+                "scope_id": ws_id,
+                "workspace_id": ws_id,
+                "memory_namespace": f"workspace:{ws_id}",
+                "initial_context": {},
+            },
+            user_message="登录失败边界",
+            db_path=sqlite_db,
+        )
+        assert refs
+        assert calls == [ws_id]
+
+    async def test_create_message_stream_reconnect_and_context_refs(self, sqlite_db, monkeypatch):
+        ws_id = await _seed_workspace(sqlite_db)
+
+        from app.api import ai_conversations
+
+        monkeypatch.setattr(
+            ai_conversations,
+            "create_llm_client_from_active",
+            lambda: FakeLLM(),
+        )
+
+        app = _test_app(sqlite_db)
+        async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+            created = await client.post(
+                "/api/ai/conversations",
+                json={
+                    "scope_type": "workspace",
+                    "scope_id": ws_id,
+                    "title": "登录问题分析",
+                    "initial_context": {"source": "test"},
+                },
+            )
+            assert created.status_code == 201
+            conversation = created.json()
+            assert conversation["scope_type"] == "workspace"
+            assert conversation["status"] == "idle"
+
+            posted = await client.post(
+                f"/api/ai/conversations/{conversation['id']}/messages",
+                json={"content": "这个报告里的测试设计还缺什么？"},
+            )
+            assert posted.status_code == 202
+            payload = posted.json()
+            assert payload["run"]["status"] in {"queued", "running"}
+            assert payload["references"][0]["source_type"] == "workspace_report"
+
+            await asyncio.sleep(0.2)
+
+            messages = await client.get(f"/api/ai/conversations/{conversation['id']}/messages")
+            assert messages.status_code == 200
+            body = messages.json()
+            assert [m["role"] for m in body["items"]] == ["user", "assistant"]
+            assert "异常路径" in body["items"][1]["content"]
+
+            stream = await client.get(
+                f"/api/ai/conversations/{conversation['id']}/stream",
+                params={"cursor": 0},
+            )
+            assert stream.status_code == 200
+            events = [
+                json.loads(line.removeprefix("data: "))
+                for line in stream.text.splitlines()
+                if line.startswith("data: ")
+            ]
+            assert any(evt["event_type"] == "delta" for evt in events)
+            last_id = max(evt["event_id"] for evt in events)
+
+            reconnect = await client.get(
+                f"/api/ai/conversations/{conversation['id']}/stream",
+                params={"cursor": last_id},
+            )
+            assert reconnect.status_code == 200
+            assert "data:" not in reconnect.text

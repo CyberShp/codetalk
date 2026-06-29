@@ -34,17 +34,6 @@ def test_normalize_unknown_keys_pass_through():
     assert result["anotherKey"] == "x"
 
 
-def test_normalize_deepwiki_port_alias(isolated_config):
-    result = config_store.normalize_to_snake({"deepwiki_port": 8091})
-    assert result.get("deepwiki_api_port") == 8091
-    assert "deepwiki_port" not in result
-
-
-def test_normalize_deepwiki_port_not_overwrite_existing():
-    result = config_store.normalize_to_snake({"deepwiki_port": 8091, "deepwiki_api_port": 9000})
-    assert result["deepwiki_api_port"] == 9000
-
-
 def test_normalize_frontend_key_map():
     result = config_store.normalize_to_snake({"portFrontend": 3005, "portBackend": 8100})
     assert result["frontend_port"] == 3005

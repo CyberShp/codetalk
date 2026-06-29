@@ -14,7 +14,6 @@ from app.config import settings
 from app.database import get_db
 from app.models.repository import Repository
 from app.models.task import AnalysisTask
-from app.models.wiki_cache_meta import WikiCacheMeta
 from app.services import source_manager
 
 router = APIRouter(prefix="/api/repos", tags=["repositories"])
@@ -61,16 +60,10 @@ async def cancel_sync(repo_id: uuid.UUID):
 
 @router.get("/{repo_id}")
 async def get_repo_detail(repo_id: uuid.UUID, db: AsyncSession = Depends(get_db)):
-    """Get repository with wiki and graph status summary."""
+    """Get repository with graph status summary."""
     repo = await db.get(Repository, repo_id)
     if not repo:
         raise HTTPException(404, "Repository not found")
-
-    # Wiki metadata
-    wiki_result = await db.execute(
-        select(WikiCacheMeta).where(WikiCacheMeta.repository_id == repo.id)
-    )
-    wiki_meta = wiki_result.scalar_one_or_none()
 
     # Graph status — check latest completed task with a gitnexus run
     task_result = await db.execute(
@@ -105,13 +98,6 @@ async def get_repo_detail(repo_id: uuid.UUID, db: AsyncSession = Depends(get_db)
             )
             break
 
-    # Staleness check reused from wiki.py helpers
-    from app.api.wiki import _check_staleness
-
-    wiki_stale = False
-    if wiki_meta:
-        wiki_stale = _check_staleness(wiki_meta, repo)
-
     return {
         "repo": {
             "id": str(repo.id),
@@ -123,13 +109,6 @@ async def get_repo_detail(repo_id: uuid.UUID, db: AsyncSession = Depends(get_db)
             "last_indexed_at": (
                 repo.last_indexed_at.isoformat() if repo.last_indexed_at else None
             ),
-        },
-        "wiki": {
-            "status": "ready" if wiki_meta else "not_generated",
-            "generated_at": (
-                wiki_meta.generated_at.isoformat() if wiki_meta else None
-            ),
-            "stale": wiki_stale,
         },
         "graph": {
             "status": "ready" if graph_ready else "not_analyzed",

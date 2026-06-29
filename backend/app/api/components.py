@@ -80,7 +80,7 @@ async def list_components(db: AsyncSession = Depends(get_db)):
             comp_health = health_result
 
         # Config domains — only include domains that still exist in the contract.
-        # Stale DB rows for deleted domains (e.g. removed deepwiki connection) are skipped.
+        # Stale DB rows for deleted component domains are skipped.
         valid_domains = {d.domain for d in contract.domains}
         domains = []
         for cfg in all_configs:

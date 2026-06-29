@@ -15,11 +15,6 @@ test.describe("Workspace smoke tests", () => {
     expect(Array.isArray(body)).toBeTruthy();
   });
 
-  test("tasks page loads", async ({ page }) => {
-    await page.goto("/tasks", { waitUntil: "domcontentloaded" });
-    await expect(page.locator("body")).toBeVisible();
-  });
-
   test("settings API returns LLM configs", async ({ request }) => {
     const resp = await request.get(`${backendBase}/api/settings/llm`);
     expect(resp.ok()).toBeTruthy();

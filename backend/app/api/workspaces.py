@@ -708,10 +708,10 @@ async def analyze_workspace(
     await db.execute(
         """INSERT INTO tasks
                (id, name, repo_path, status, tools,
-                analysis_focus, prompt_content, deepwiki_depth,
+                analysis_focus, prompt_content,
                 analysis_plan_json, report_plan_json, workspace_id,
                 progress, error_message, created_at, updated_at)
-           VALUES (?, ?, ?, 'pending', ?, ?, ?, 'balanced', ?, ?, ?, 0, NULL, ?, ?)""",
+           VALUES (?, ?, ?, 'pending', ?, ?, ?, ?, ?, ?, 0, NULL, ?, ?)""",
         (
             task_id,
             f"__ws_{ws_id}",

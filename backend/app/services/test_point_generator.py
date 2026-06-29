@@ -1,6 +1,6 @@
 """Test point generation pipeline.
 
-Orchestrates: Joern (CPG) + GitNexus (graph) + DeepWiki (LLM)
+Orchestrates Joern (CPG), GitNexus (graph), and the configured LLM
 to produce black-box test point descriptions.
 
 IRON LAW: This service is pure orchestration. Each tool call goes through
@@ -12,15 +12,12 @@ import json
 import logging
 from typing import Any
 
-import httpx
-
-from app.utils.local_client import local_http_client
-
 from app.adapters import create_adapter
 from app.adapters.base import AnalysisRequest
 from app.adapters.gitnexus import GitNexusAdapter
 from app.adapters.joern import JoernAdapter
 from app.config import settings
+from app.llm.factory import create_llm_client_from_active
 
 logger = logging.getLogger(__name__)
 
@@ -68,14 +65,13 @@ async def generate_test_points(
     repo_path: str,
     target: str | None = None,
     perspective: str = "black_box",
-    llm_config: dict | None = None,
 ) -> list[dict]:
     """
     Pipeline:
     1. Joern: Get branches, errors, boundaries + cross-function context for target
     2. GitNexus: Get call chain and process context
     3. Assemble structured analysis data
-    4. Send to DeepWiki Chat with specialized prompt
+    4. Send to the configured LLM with specialized prompt
     5. Parse LLM output into structured test points
     """
     joern: JoernAdapter = create_adapter("joern")  # type: ignore[assignment]
@@ -134,8 +130,8 @@ async def generate_test_points(
         process_flow=gitnexus_context.get("process", "N/A"),
     )
 
-    # Step 4: Call DeepWiki LLM
-    test_points_raw = await _call_deepwiki_chat(prompt, repo_path, llm_config)
+    # Step 4: Call configured LLM
+    test_points_raw = await _call_llm(prompt)
 
     # Step 5: Parse into structured format and normalize field names
     return _parse_test_points(test_points_raw, target)
@@ -190,38 +186,15 @@ async def _get_gitnexus_context(
     return {"call_chain": "N/A", "process": "N/A"}
 
 
-async def _call_deepwiki_chat(
-    prompt: str,
-    repo_path: str,
-    llm_config: dict | None = None,
-) -> str:
-    """Send assembled prompt to DeepWiki for LLM synthesis.
-
-    Uses /chat/completions/stream (DeepWiki's only chat endpoint)
-    and collects the full streamed response.
-    """
-    payload: dict[str, Any] = {
-        "repo_url": repo_path,
-        "type": "local",
-        "messages": [{"role": "user", "content": prompt}],
-        "language": "zh",
-        "provider": settings.deepwiki_provider,
-    }
-    if llm_config:
-        payload.update(llm_config)
-
-    content = ""
-    async with local_http_client(settings.deepwiki_base_url, 300, 10) as client:
-        async with client.stream(
-            "POST",
-            "/chat/completions/stream",
-            json=payload,
-            timeout=300,
-        ) as response:
-            response.raise_for_status()
-            async for chunk in response.aiter_text():
-                content += chunk
-    return content
+async def _call_llm(prompt: str) -> str:
+    """Send assembled prompt to the active CodeTalk LLM client."""
+    llm = await create_llm_client_from_active()
+    response = await llm.complete(
+        messages=[{"role": "user", "content": prompt}],
+        max_tokens=min(4096, settings.llm_max_output_tokens),
+        temperature=0.2,
+    )
+    return response.content
 
 
 def _format_for_prompt(data: Any, max_items: int = 20) -> str:

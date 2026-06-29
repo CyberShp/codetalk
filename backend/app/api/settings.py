@@ -1,17 +1,14 @@
-import asyncio
 import json
 import logging
 import re
 import uuid
 from datetime import datetime, timezone
-from pathlib import Path
 from typing import Any
 
 import aiosqlite
 from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel, Field, field_validator
 
-from app.config import settings as app_settings
 from app.database import get_db
 from app.services.agent_provider_settings import (
     AGENT_PROVIDER_JSON_KEYS,
@@ -190,13 +187,6 @@ async def update_llm_config(
         )
         await db.commit()
 
-        # Re-sync deepwiki if the updated config is currently active.
-        active_chat_id, active_embed_id = await _read_active_ids(db)
-        if cfg_id in (active_chat_id, active_embed_id):
-            env_changed = await _sync_deepwiki_env(db, active_chat_id, active_embed_id)
-            if env_changed:
-                _schedule_deepwiki_restart()
-
     async with db.execute("SELECT * FROM llm_configs WHERE id = ?", (cfg_id,)) as cur:
         row = await cur.fetchone()
     return _row_to_llm(row)
@@ -208,10 +198,6 @@ async def delete_llm_config(cfg_id: str, db: aiosqlite.Connection = Depends(get_
         if not await cur.fetchone():
             raise HTTPException(status_code=404, detail="LLM 配置不存在")
 
-    # Capture active IDs before deletion so we know whether to sync deepwiki.
-    active_chat_id, active_embed_id = await _read_active_ids(db)
-    was_active = cfg_id in (active_chat_id, active_embed_id)
-
     await db.execute("DELETE FROM llm_configs WHERE id = ?", (cfg_id,))
     # Clear any active model reference that pointed at the deleted config.
     await db.execute(
@@ -221,13 +207,6 @@ async def delete_llm_config(cfg_id: str, db: aiosqlite.Connection = Depends(get_
         (cfg_id,),
     )
     await db.commit()
-
-    if was_active:
-        # Re-read now-cleared active IDs and strip the dead keys from deepwiki .env.
-        new_chat_id, new_embed_id = await _read_active_ids(db)
-        env_changed = await _sync_deepwiki_env(db, new_chat_id, new_embed_id)
-        if env_changed:
-            _schedule_deepwiki_restart()
 
 
 @router.post("/llm/test")
@@ -272,9 +251,6 @@ async def test_llm_connection(
 _GENERAL_KEYS = ("proxy_mode", "proxy_url", "ssl_cert_path",
                  "active_chat_model_id", "active_embedding_model_id")
 
-_CHAT_ENV_KEYS = frozenset({"OPENAI_BASE_URL", "OPENAI_API_KEY", "LLM_MODEL"})
-
-
 async def _read_active_ids(db: aiosqlite.Connection) -> tuple[str, str]:
     """Return (active_chat_model_id, active_embedding_model_id) from settings table."""
     async with db.execute(
@@ -284,172 +260,6 @@ async def _read_active_ids(db: aiosqlite.Connection) -> tuple[str, str]:
         rows = await cur.fetchall()
     stored = {r["key"]: r["value"] for r in rows}
     return stored.get("active_chat_model_id", ""), stored.get("active_embedding_model_id", "")
-_EMBED_ENV_KEYS = frozenset({
-    "DEEPWIKI_EMBEDDING_BASE_URL",
-    "DEEPWIKI_EMBEDDING_API_KEY",
-    "DEEPWIKI_EMBEDDING_MODEL",
-    "DEEPWIKI_EMBEDDER_TYPE",
-    "OPENAI_EMBEDDING_MODEL",
-})
-
-
-def _as_openai_sdk_base_url(base_url: str) -> str:
-    """Normalize CodeTalk's root URL into the base URL expected by OpenAI SDK clients."""
-    value = (base_url or "").rstrip("/")
-    if not value:
-        return ""
-    if value.endswith("/v1"):
-        return value
-    return f"{value}/v1"
-
-
-def _sync_deepwiki_embedder_json(deepwiki_path: str, model: str) -> bool:
-    """Make deepwiki-open's OpenAI embedder consume the active embedding config.
-
-    DeepWiki's OpenAIClient reads initialize_kwargs from api/config/embedder.json.
-    Keeping credentials as env placeholders avoids writing secrets into JSON while
-    still letting the active embedding base URL/key/model differ from chat config.
-    """
-    if not deepwiki_path or not model:
-        return False
-
-    config_path = Path(deepwiki_path) / "api" / "config" / "embedder.json"
-    if not config_path.exists():
-        return False
-
-    try:
-        config = json.loads(config_path.read_text(encoding="utf-8"))
-    except (OSError, json.JSONDecodeError) as exc:
-        logger.warning("settings: failed to read deepwiki embedder.json: %s", exc)
-        return False
-
-    embedder = config.setdefault("embedder", {})
-    before = json.dumps(embedder, sort_keys=True, ensure_ascii=False)
-    embedder["client_class"] = "OpenAIClient"
-    embedder["initialize_kwargs"] = {
-        "api_key": "${DEEPWIKI_EMBEDDING_API_KEY}",
-        "base_url": "${DEEPWIKI_EMBEDDING_BASE_URL}",
-    }
-    # Keep batches modest for intranet/OpenAI-compatible providers; large
-    # batches were a common source of opaque 500s in DeepWiki's RAG setup.
-    embedder["batch_size"] = 10
-    embedder["model_kwargs"] = {"model": model}
-
-    after = json.dumps(embedder, sort_keys=True, ensure_ascii=False)
-    if before == after:
-        return False
-
-    try:
-        config_path.write_text(
-            json.dumps(config, indent=2, ensure_ascii=False) + "\n",
-            encoding="utf-8",
-        )
-        logger.info("settings: synced deepwiki embedder.json model=%s", model)
-        return True
-    except OSError as exc:
-        logger.warning("settings: failed to write deepwiki embedder.json: %s", exc)
-        return False
-
-
-async def _sync_deepwiki_env(
-    db: aiosqlite.Connection,
-    active_chat_id: str,
-    active_embedding_id: str,
-) -> bool:
-    """Write active LLM model config into deepwiki's .env for runtime use.
-
-    Returns True if the .env file was written; False if skipped.
-    Runs silently: errors are logged but never propagate to the caller so
-    a missing deepwiki path or DB row never breaks the settings save.
-    """
-    deepwiki_path = app_settings.deepwiki_path
-    if not deepwiki_path:
-        return False
-
-    env_updates: dict[str, str] = {}
-    env_removals: set[str] = set()
-
-    if active_chat_id:
-        async with db.execute(
-            "SELECT base_url, api_key, model FROM llm_configs WHERE id = ?",
-            (active_chat_id,),
-        ) as cur:
-            row = await cur.fetchone()
-        if row:
-            if row["base_url"]:
-                env_updates["OPENAI_BASE_URL"] = _as_openai_sdk_base_url(row["base_url"])
-            if row["api_key"]:
-                env_updates["OPENAI_API_KEY"] = row["api_key"]
-            if row["model"]:
-                env_updates["LLM_MODEL"] = row["model"]
-    else:
-        env_removals.update(_CHAT_ENV_KEYS)
-
-    if active_embedding_id:
-        async with db.execute(
-            "SELECT base_url, api_key, model FROM llm_configs WHERE id = ?",
-            (active_embedding_id,),
-        ) as cur:
-            row = await cur.fetchone()
-        if row:
-            if row["base_url"]:
-                env_updates["DEEPWIKI_EMBEDDING_BASE_URL"] = _as_openai_sdk_base_url(row["base_url"])
-            if row["api_key"]:
-                env_updates["DEEPWIKI_EMBEDDING_API_KEY"] = row["api_key"]
-            if row["model"]:
-                env_updates["DEEPWIKI_EMBEDDING_MODEL"] = row["model"]
-                env_updates["OPENAI_EMBEDDING_MODEL"] = row["model"]
-            env_updates["DEEPWIKI_EMBEDDER_TYPE"] = "openai"
-    else:
-        env_removals.update(_EMBED_ENV_KEYS)
-
-    if not env_updates and not env_removals:
-        return False
-
-    dot_env = Path(deepwiki_path) / ".env"
-    # Nothing to remove from a file that doesn't exist yet.
-    if not env_updates and not dot_env.exists():
-        return False
-
-    managed_keys = env_removals | set(env_updates.keys())
-    try:
-        existing: list[str] = (
-            dot_env.read_text(encoding="utf-8").splitlines()
-            if dot_env.exists()
-            else []
-        )
-        kept = [
-            ln for ln in existing
-            if not ln.strip()
-            or ln.startswith("#")
-            or ln.split("=", 1)[0].strip() not in managed_keys
-        ]
-        new_lines = [f"{k}={v}" for k, v in env_updates.items()]
-        dot_env.write_text("\n".join(kept + new_lines) + "\n", encoding="utf-8")
-        if "DEEPWIKI_EMBEDDING_MODEL" in env_updates:
-            _sync_deepwiki_embedder_json(
-                deepwiki_path,
-                env_updates["DEEPWIKI_EMBEDDING_MODEL"],
-            )
-        logger.info(
-            "settings: synced deepwiki .env (updated=%s removed=%s)",
-            list(env_updates.keys()),
-            list(env_removals - set(env_updates.keys())),
-        )
-        return True
-    except OSError as exc:
-        logger.warning("settings: failed to sync deepwiki .env: %s", exc)
-        return False
-
-
-def _schedule_deepwiki_restart() -> None:
-    """Schedule a background restart of deepwiki-api to apply updated .env values."""
-    from app.services.process_manager import ProcessManager
-    pm = ProcessManager.get_instance()
-    mp = pm._processes.get("deepwiki-api")
-    if mp is not None and mp.status == "running":
-        asyncio.create_task(pm.restart("deepwiki-api"))
-        logger.info("settings: scheduled deepwiki-api restart to apply new .env")
 
 
 @router.get("/general", response_model=GeneralSettings)
@@ -476,9 +286,6 @@ async def update_general_settings(data: GeneralSettings, db: aiosqlite.Connectio
             (key, str(value)),
         )
     await db.commit()
-    env_changed = await _sync_deepwiki_env(db, data.active_chat_model_id, data.active_embedding_model_id)
-    if env_changed:
-        _schedule_deepwiki_restart()
     return data
 
 

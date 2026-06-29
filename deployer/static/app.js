@@ -33,7 +33,6 @@ const SERVICE_STEP_MAP = {
   backend:     ['backend', 'api'],
   postgres:    ['postgres', 'database', 'db'],
   redis:       ['redis', 'cache'],
-  deepwiki:    ['deepwiki', 'wiki'],
   gitnexus:    ['gitnexus', 'git'],
   codecompass: ['codecompass', 'compass'],
 };
@@ -201,37 +200,19 @@ function renderChecks(checks) {
 // ---------------------------------------------------------------------------
 
 function initConfigForm() {
-  // Workspace path auto-derives repos-path and deepwiki-path
+  // Workspace path auto-derives repos-path
   const workspaceInput = $('#workspace-path');
   const reposPathInput = $('#repos-path');
-  const deepwikiPathInput = $('#deepwiki-path');
   if (workspaceInput) {
     workspaceInput.addEventListener('input', () => {
       const ws = workspaceInput.value.replace(/[/\\]+$/, '');
       if (reposPathInput) reposPathInput.value = ws + '/repos';
-      if (deepwikiPathInput && !deepwikiPathInput.dataset.userEdited) deepwikiPathInput.value = ws + '/deepwiki-open';
     });
-  }
-  if (deepwikiPathInput) {
-    deepwikiPathInput.addEventListener('input', () => { deepwikiPathInput.dataset.userEdited = '1'; });
   }
 
   // Show/hide component port panels based on checkbox state
-  const installDeepwikiCb = $('#install-deepwiki');
   const installGitnexusCb = $('#install-gitnexus');
   const installCgcCb = $('#install-cgc');
-  if (installDeepwikiCb) {
-    const syncDeepwikiPorts = () => {
-      const ports = $('#deepwiki-ports');
-      if (ports) ports.style.display = installDeepwikiCb.checked ? '' : 'none';
-    };
-    installDeepwikiCb.addEventListener('change', syncDeepwikiPorts);
-    syncDeepwikiPorts();
-  }
-  const embedderSel = $('#deepwiki-embedder-type');
-  if (embedderSel) {
-    embedderSel.addEventListener('change', () => updateEmbedderFields(embedderSel.value));
-  }
   if (installGitnexusCb) {
     installGitnexusCb.addEventListener('change', () => {
       const ports = $('#gitnexus-ports');
@@ -256,21 +237,7 @@ function initConfigForm() {
         ($('#workspace-path') || {}).value = cfg.workspacePath;
         if ($('#repos-path')) $('#repos-path').value = cfg.workspacePath.replace(/[/\\]+$/, '') + '/repos';
       }
-      if (installDeepwikiCb && cfg.installDeepwiki !== undefined) {
-        installDeepwikiCb.checked = !!cfg.installDeepwiki;
-        const ports = $('#deepwiki-ports');
-        if (ports) ports.style.display = installDeepwikiCb.checked ? '' : 'none';
-      }
       if (cfg.installGitnexus === false && installGitnexusCb) installGitnexusCb.checked = false;
-      if (cfg.portDeepwikiApi)       ($('#port-deepwiki-api')       || {}).value = cfg.portDeepwikiApi;
-      if (cfg.portDeepwikiUi)        ($('#port-deepwiki-ui')        || {}).value = cfg.portDeepwikiUi;
-      if (cfg.deepwikiPath)          ($('#deepwiki-path')           || {}).value = cfg.deepwikiPath;
-      if (cfg.deepwikiEmbedderType) {
-        const sel = $('#deepwiki-embedder-type');
-        if (sel) { sel.value = cfg.deepwikiEmbedderType; updateEmbedderFields(cfg.deepwikiEmbedderType); }
-      }
-      if (cfg.deepwikiGoogleApiKey) ($('#deepwiki-google-api-key') || {}).value = cfg.deepwikiGoogleApiKey;
-      if (cfg.deepwikiOllamaHost)   ($('#deepwiki-ollama-host')    || {}).value = cfg.deepwikiOllamaHost;
       if (cfg.portGitnexus)    ($('#port-gitnexus')     || {}).value  = cfg.portGitnexus;
       if (installCgcCb && cfg.installCgc !== undefined) installCgcCb.checked = !!cfg.installCgc;
       if (cfg.portCgc)         ($('#port-cgc')          || {}).value  = cfg.portCgc;
@@ -284,19 +251,6 @@ function initConfigForm() {
       if (cfg.corsOrigins)     ($('#cors-origins')       || {}).value  = cfg.corsOrigins;
     })
     .catch(() => {});
-}
-
-function updateEmbedderFields(type) {
-  const googleLabel = $('#dw-google-key-label');
-  const googleInput = $('#deepwiki-google-api-key');
-  const ollamaLabel = $('#dw-ollama-host-label');
-  const ollamaInput = $('#deepwiki-ollama-host');
-  const showGoogle = type === 'google';
-  const showOllama = type === 'ollama';
-  if (googleLabel) googleLabel.style.display = showGoogle ? '' : 'none';
-  if (googleInput) googleInput.style.display = showGoogle ? '' : 'none';
-  if (ollamaLabel) ollamaLabel.style.display = showOllama ? '' : 'none';
-  if (ollamaInput) ollamaInput.style.display = showOllama ? '' : 'none';
 }
 
 function updatePortsVisibility() {
@@ -320,21 +274,13 @@ function updatePortsVisibility() {
 }
 
 function collectConfig() {
-  const installDeepwikiCb = $('#install-deepwiki');
   const installGitnexusCb = $('#install-gitnexus');
   const installCgcCb      = $('#install-cgc');
   const cfg = {
     mode:            state.selectedMode,
     workspacePath:   (($('#workspace-path') || {}).value || './workspace').trim(),
-    installDeepwiki: installDeepwikiCb ? installDeepwikiCb.checked : true,
     installGitnexus: installGitnexusCb ? installGitnexusCb.checked : true,
     installCgc:      installCgcCb ? installCgcCb.checked : true,
-    portDeepwikiApi:       (($('#port-deepwiki-api')       || {}).value || '8091').trim(),
-    portDeepwikiUi:        (($('#port-deepwiki-ui')        || {}).value || '3001').trim(),
-    deepwikiPath:          (($('#deepwiki-path')           || {}).value || '').trim(),
-    deepwikiEmbedderType:   (($('#deepwiki-embedder-type')   || {}).value || 'openai').trim(),
-    deepwikiGoogleApiKey:   (($('#deepwiki-google-api-key') || {}).value || '').trim(),
-    deepwikiOllamaHost:     (($('#deepwiki-ollama-host')    || {}).value || '').trim(),
     portGitnexus:    (($('#port-gitnexus')     || {}).value || '7100').trim(),
     portCgc:         (($('#port-cgc')          || {}).value || '7072').trim(),
     reposPath:       (($('#repos-path')        || {}).value || './.repos'),
@@ -383,9 +329,6 @@ function renderReview() {
   ];
 
   const components = [];
-  if (cfg.installDeepwiki !== false) {
-    components.push(`DeepWiki-Open（API :${cfg.portDeepwikiApi || '8091'}，UI :${cfg.portDeepwikiUi || '3001'}）`);
-  }
   if (cfg.installGitnexus !== false) {
     components.push(`GitNexus（:${cfg.portGitnexus || '7100'}）`);
   }
@@ -443,7 +386,6 @@ function resetDeployUI() {
   $('#terminal-log').innerHTML = '';
   hide($('#deploy-error-banner'));
 
-  const installDeepwiki = state.config.installDeepwiki !== false;
   const installGitnexus = state.config.installGitnexus !== false;
 
   $$('.service-pill').forEach(p => {
@@ -451,7 +393,6 @@ function resetDeployUI() {
     const modes = p.dataset.modes || '';
     const svc   = p.dataset.service;
     let visible = modes.includes(state.selectedMode);
-    if (svc === 'deepwiki' && !installDeepwiki) visible = false;
     if (svc === 'gitnexus' && !installGitnexus) visible = false;
     p.style.display = visible ? '' : 'none';
   });
@@ -567,7 +508,6 @@ const STEP_NAMES = {
   install_backend:  '安装后端',
   install_frontend: '安装前端',
   install_gitnexus: '安装 GitNexus',
-  install_deepwiki: '安装 DeepWiki',
   generate_config:  '生成配置文件',
   start_services:   '启动服务',
   health_check:     '健康检查',
@@ -628,16 +568,13 @@ function showDeployError(msg) {
 function updateServiceUrls() {
   const cfg = state.config;
   const mode = state.selectedMode;
-  const installDeepwiki = cfg.installDeepwiki !== false;
   const installGitnexus = cfg.installGitnexus !== false;
 
-  const deepwikiUiPort = cfg.portDeepwikiUi || '3001';
   const gitnexusPort   = cfg.portGitnexus   || '7100';
 
   const NATIVE_URLS = {
     frontend:    'http://localhost:' + (cfg.portFrontend  || '3005'),
     backend:     'http://localhost:' + (cfg.portBackend   || '8100'),
-    deepwiki:    installDeepwiki ? 'http://localhost:' + deepwikiUiPort : null,
     gitnexus:    installGitnexus ? 'http://localhost:' + gitnexusPort   : null,
     codecompass: null,
     joern:       null,
@@ -646,7 +583,6 @@ function updateServiceUrls() {
   const COMPOSE_URLS = {
     frontend:    'http://localhost:' + (cfg.portFrontend || '3005'),
     backend:     'http://localhost:' + (cfg.portBackend  || '8100'),
-    deepwiki:    installDeepwiki ? 'http://localhost:' + deepwikiUiPort : null,
     gitnexus:    installGitnexus ? 'http://localhost:' + gitnexusPort   : null,
     codecompass: 'http://localhost:16251',
     joern:       'http://localhost:8080',
@@ -655,7 +591,6 @@ function updateServiceUrls() {
   const K8S_URLS = {
     frontend:    'http://localhost/',
     backend:     'http://localhost/api',
-    deepwiki:    null,
     gitnexus:    null,
     codecompass: null,
     joern:       null,
@@ -772,14 +707,6 @@ function escHtml(str) {
 function attachNavHandlers() {
   $('#btn-next').addEventListener('click', async () => {
     if (state.currentStep === 3) {
-      const dwCb = $('#install-deepwiki');
-      const dwPath = $('#deepwiki-path');
-      if (dwCb && dwCb.checked && dwPath && !dwPath.value.trim()) {
-        dwPath.setCustomValidity('请填写 DeepWiki-Open 源码路径');
-        dwPath.reportValidity();
-        return;
-      }
-      if (dwPath) dwPath.setCustomValidity('');
       await saveConfig();
     }
     if (state.currentStep === 6) {

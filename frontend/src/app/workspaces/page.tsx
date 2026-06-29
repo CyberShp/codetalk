@@ -23,7 +23,7 @@ export default function WorkspacesPage() {
 
   return (
     <div className="w-full px-4 xl:px-6">
-      <div className="flex flex-col gap-4 mb-8 sm:flex-row sm:items-center sm:justify-between">
+      <div className="ct-reveal ct-liquid-glass flex flex-col gap-4 mb-8 rounded-[26px] p-5 sm:flex-row sm:items-center sm:justify-between">
         <div>
           <h1 className="text-2xl font-bold text-on-surface">工作空间</h1>
           <p className="text-sm text-on-surface-variant mt-1">
@@ -32,7 +32,7 @@ export default function WorkspacesPage() {
         </div>
         <Link
           href="/workspaces/new"
-          className="flex w-full items-center justify-center gap-2 whitespace-nowrap px-4 py-2 bg-primary text-on-primary rounded-lg text-sm font-medium hover:opacity-90 transition-opacity sm:w-auto"
+          className="ct-liquid-button flex w-full items-center justify-center gap-2 whitespace-nowrap px-4 py-2 bg-primary text-on-primary rounded-lg text-sm font-medium sm:w-auto"
         >
           <Plus size={16} />
           新建工作空间
@@ -52,7 +52,7 @@ export default function WorkspacesPage() {
       )}
 
       {!loading && !error && workspaces.length === 0 && (
-        <div className="flex flex-col items-center justify-center h-64 rounded-xl border border-outline-variant/30 bg-surface-container-low gap-3">
+        <div className="ct-premium-empty flex flex-col items-center justify-center h-64 rounded-[28px] gap-3">
           <FolderOpen size={40} className="text-on-surface-variant/40" />
           <p className="text-on-surface-variant text-sm">
             还没有工作空间，点击右上角新建
@@ -62,11 +62,12 @@ export default function WorkspacesPage() {
 
       {!loading && workspaces.length > 0 && (
         <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-4">
-          {workspaces.map((ws) => (
+          {workspaces.map((ws, index) => (
             <Link
               key={ws.id}
               href={`/workspaces/${ws.id}`}
-              className="block p-5 rounded-xl border border-outline-variant/30 bg-surface-container-low hover:bg-surface-container transition-colors"
+              className="ct-interactive-card block p-5 rounded-xl border border-outline-variant/30 bg-surface-container-low hover:bg-surface-container transition-colors"
+              style={{ animationDelay: `${80 + index * 55}ms` }}
             >
               <div className="flex items-start gap-3">
                 <FolderOpen size={20} className="text-primary shrink-0 mt-0.5" />
