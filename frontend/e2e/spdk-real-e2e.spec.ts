@@ -124,6 +124,8 @@ let workspaceId = "";
 let workspaceName = "";
 let e2eLlmConfigId = "";
 let e2eLlmConfigName = "";
+let brokenLlmConfigId = "";
+let brokenLlmConfigName = "";
 
 function ensureArtifactDir() {
   fs.mkdirSync(ARTIFACT_DIR, { recursive: true });
@@ -363,6 +365,38 @@ async function configureLlmIfAvailable(page: Page) {
   record("A03", "pass", "API key input remained password and page text did not expose the key");
 }
 
+async function configureBrokenLlmAndSelect(page: Page) {
+  brokenLlmConfigName = `Broken E2E ${RUN_ID}`;
+  await page.goto("/settings", { waitUntil: "domcontentloaded" });
+  await noFrameworkOverlay(page);
+  await page.getByRole("button", { name: /新增/ }).click();
+  await page.getByPlaceholder(/Claude|GPT-4o/).fill(brokenLlmConfigName);
+  await page.getByPlaceholder("https://api.openai.com/v1").fill("http://127.0.0.1:9/v1");
+  await page.getByPlaceholder(/sk-|Ollama/).fill("sk-broken-e2e-redacted");
+  await page.getByPlaceholder(/gpt-4o|text-embedding/).fill("broken-chat-model");
+  await page.getByRole("button", { name: "保存配置" }).click();
+  await expect(page.getByText(brokenLlmConfigName, { exact: true })).toBeVisible({ timeout: 15_000 });
+  const activeModelSelect = page.locator("select").filter({ has: page.locator("option", { hasText: brokenLlmConfigName }) }).first();
+  const brokenModelValue = await activeModelSelect.locator("option").evaluateAll(
+    (options, label) =>
+      options.find((option) => (option.textContent ?? "").includes(String(label)))?.getAttribute("value") ?? "",
+    brokenLlmConfigName,
+  );
+  expect(brokenModelValue).toBeTruthy();
+  brokenLlmConfigId = brokenModelValue;
+  await selectActiveChatModelAndWait(page, activeModelSelect, brokenModelValue);
+}
+
+async function selectPrimaryLlm(page: Page) {
+  if (!e2eLlmConfigId) return false;
+  await page.goto("/settings", { waitUntil: "domcontentloaded" });
+  await noFrameworkOverlay(page);
+  const activeModelSelect = page.locator("select").filter({ has: page.locator("option", { hasText: e2eLlmConfigName }) }).first();
+  await expect(activeModelSelect).toBeVisible({ timeout: 15_000 });
+  await selectActiveChatModelAndWait(page, activeModelSelect, e2eLlmConfigId);
+  return true;
+}
+
 function recordDeferredChatCases(evidence: string) {
   record("C04", "blocked", `thread recovery requires a focused completed-chat refresh run: ${evidence}`);
   record("C05", "blocked", `long-running concurrent input requires a focused completed-chat run: ${evidence}`);
@@ -383,25 +417,30 @@ test.beforeAll(() => {
 });
 
 test.afterAll(async () => {
-  if (e2eLlmConfigId || e2eLlmConfigName) {
-    const cleanup: { id: string; status: string; httpStatus?: number; error?: string } = {
-      id: e2eLlmConfigId,
+  const cleanupTargets = [
+    { id: e2eLlmConfigId, name: e2eLlmConfigName, label: "primary" },
+    { id: brokenLlmConfigId, name: brokenLlmConfigName, label: "broken" },
+  ].filter((target) => target.id || target.name);
+  const cleanups: Array<{ label: string; id: string; name: string; status: string; httpStatus?: number; error?: string }> = [];
+  for (const target of cleanupTargets) {
+    const cleanup: { label: string; id: string; name: string; status: string; httpStatus?: number; error?: string } = {
+      label: target.label,
+      id: target.id,
+      name: target.name,
       status: "pending",
     };
     try {
-      if (!e2eLlmConfigId && e2eLlmConfigName) {
+      if (!cleanup.id && target.name) {
         const listResponse = await fetch(`${BACKEND_BASE}/api/settings/llm`);
         if (listResponse.ok) {
           const configs = (await listResponse.json()) as Array<{ id: string; name: string }>;
-          e2eLlmConfigId = configs.find((config) => config.name === e2eLlmConfigName)?.id ?? "";
-          cleanup.id = e2eLlmConfigId;
+          cleanup.id = configs.find((config) => config.name === target.name)?.id ?? "";
         }
       }
-      if (!e2eLlmConfigId) {
+      if (!cleanup.id) {
         cleanup.status = "not_found";
-        writeJson("llm-config-cleanup.json", cleanup);
       } else {
-        const response = await fetch(`${BACKEND_BASE}/api/settings/llm/${e2eLlmConfigId}`, {
+        const response = await fetch(`${BACKEND_BASE}/api/settings/llm/${cleanup.id}`, {
           method: "DELETE",
         });
         cleanup.httpStatus = response.status;
@@ -414,7 +453,10 @@ test.afterAll(async () => {
       cleanup.status = "failed";
       cleanup.error = error instanceof Error ? error.message : String(error);
     }
-    writeJson("llm-config-cleanup.json", cleanup);
+    cleanups.push(cleanup);
+  }
+  if (cleanups.length) {
+    writeJson("llm-config-cleanup.json", cleanups);
   }
   const summary = Array.from(results.values()).reduce<Record<CaseStatus, number>>(
     (acc, item) => {
@@ -687,7 +729,56 @@ test("B/C/K: create SPDK workspace through UI and verify chat/index gate", async
   }
 
   try {
+    if (!e2eLlmConfigId) {
+      throw new Error("primary LLM config is not available for retry restoration");
+    }
+    await configureBrokenLlmAndSelect(page);
+    await page.goto(`/workspaces/${workspaceId}`, { waitUntil: "domcontentloaded" });
+    await page.getByRole("button", { name: "对话" }).click();
+    const retryTextarea = page.locator("textarea").last();
+    const retrySendButton = page.getByRole("button", { name: "发送" });
+    const failurePrompt = "触发一次模型失败，用于验证错误提示和重试。";
+    await retryTextarea.fill(failurePrompt);
+    await expect(retrySendButton).toBeEnabled({ timeout: 10_000 });
+    await retrySendButton.click();
+    await expect(page.locator(".justify-start .bg-surface-container").filter({ hasText: /发送失败|生成失败|LLM 不可用|重试|Connect|ECONN/i }).last()).toBeVisible({
+      timeout: 45_000,
+    });
+    await expect(page.getByRole("button", { name: "停止" })).toHaveCount(0, { timeout: 60_000 });
+    const restored = await selectPrimaryLlm(page);
+    if (!restored) {
+      throw new Error("primary LLM config could not be restored");
+    }
+    await page.goto(`/workspaces/${workspaceId}`, { waitUntil: "domcontentloaded" });
+    await page.getByRole("button", { name: "对话" }).click();
+    const restoredTextarea = page.locator("textarea").last();
+    const restoredSendButton = page.getByRole("button", { name: "发送" });
+    const retryPrompt = "请只回复：retry-ok NVMe";
+    await restoredTextarea.fill(retryPrompt);
+    await expect(restoredSendButton).toBeEnabled({ timeout: 10_000 });
+    await restoredSendButton.click();
+    await expect(page.locator(".justify-start .bg-surface-container").filter({ hasText: /retry-ok|NVMe/i }).last()).toBeVisible({
+      timeout: 90_000,
+    });
+    await expect(page.getByRole("button", { name: "停止" })).toHaveCount(0, { timeout: 120_000 });
+    record("C06", "pass", "invalid active model produced actionable chat error, then UI-selected primary model retried successfully");
+  } catch (error) {
+    const shot = await screenshot(page, "C06-model-failure-retry-failed");
+    const bodyText = await page.locator("body").innerText().catch(() => "");
+    record("C06", "blocked", "controlled model failure/retry flow did not complete", {
+      screenshot: shot,
+      excerpt: bodyText.slice(0, 2000),
+      error: error instanceof Error ? error.message : String(error),
+    });
+    if (e2eLlmConfigId) {
+      await selectPrimaryLlm(page).catch(() => undefined);
+    }
+  }
+
+  try {
     const exportDownloadPromise = page.waitForEvent("download");
+    await page.goto(`/workspaces/${workspaceId}`, { waitUntil: "domcontentloaded" });
+    await page.getByRole("button", { name: "对话" }).click();
     await page.getByTitle("导出对话记录（Markdown）").click();
     const exportDownload = await exportDownloadPromise;
     const exportFile = path.join(ARTIFACT_DIR, "C08-chat-export.md");
@@ -702,7 +793,6 @@ test("B/C/K: create SPDK workspace through UI and verify chat/index gate", async
       error: error instanceof Error ? error.message : String(error),
     });
   }
-  record("C06", "blocked", "model retry requires a controlled failure/timeout run after completed-chat baseline");
   record("C07", "blocked", "multi-thread isolation requires a focused concurrent-thread run after completed-chat baseline");
 });
 
