@@ -36,6 +36,21 @@ const child = spawn(
   },
 );
 
+function shutdown(signal) {
+  if (child.exitCode !== null || child.signalCode !== null) return;
+  child.kill(signal);
+  const forceKill = setTimeout(() => {
+    if (child.exitCode === null && child.signalCode === null) {
+      child.kill("SIGKILL");
+    }
+  }, 5000);
+  forceKill.unref();
+  child.once("exit", () => clearTimeout(forceKill));
+}
+
+process.on("SIGTERM", () => shutdown("SIGTERM"));
+process.on("SIGINT", () => shutdown("SIGINT"));
+
 child.on("exit", (code, signal) => {
   if (signal) {
     process.kill(process.pid, signal);
