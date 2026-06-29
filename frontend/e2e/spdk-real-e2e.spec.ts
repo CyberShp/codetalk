@@ -1170,9 +1170,20 @@ test("D/I: agent workbench real UI workflow, semantic library, memory, and artif
   await expect(page.getByRole("heading", { name: "Agent Workbench" })).toBeVisible();
   await page.getByLabel("Repo path").fill(SPDK_REPO);
   await page.getByLabel("Workspace ID").fill(workspaceId || "spdk-ui-workspace");
+  const workflowPresetSelect = page.getByLabel("Workflow preset");
+  await expect
+    .poll(
+      async () =>
+        workflowPresetSelect
+          .locator("option")
+          .evaluateAll((options) =>
+            options.map((option) => (option as HTMLOptionElement).value),
+          ),
+      { timeout: 30_000 },
+    )
+    .toContain("module_analysis");
 
-  const presetValues = await page
-    .getByLabel("Workflow preset")
+  const presetValues = await workflowPresetSelect
     .locator("option")
     .evaluateAll((options) => options.map((option) => (option as HTMLOptionElement).value));
   for (const presetId of [
@@ -1185,7 +1196,7 @@ test("D/I: agent workbench real UI workflow, semantic library, memory, and artif
   }
   record("D01", "pass", "workflow presets are visible");
 
-  await page.getByLabel("Workflow preset").selectOption("module_analysis");
+  await workflowPresetSelect.selectOption("module_analysis");
   await page.getByRole("button", { name: "Install preset" }).click();
   await expect(page.getByText(/Preset installed:/).first()).toBeVisible({
     timeout: 30_000,
@@ -1208,7 +1219,18 @@ test("D/I: agent workbench real UI workflow, semantic library, memory, and artif
   await page.getByRole("button", { name: "Prepare run" }).click();
   const auditButton = page.getByRole("button", { name: "Acceptance audit" });
   const rerunButton = page.getByRole("button", { name: "Rerun plan" });
+  const executeRerunButton = page.getByRole("button", { name: "Execute rerun" });
   const executeButton = page.getByRole("button", { name: "Execute workflow" });
+  const readLatestRerunIdentity = async () => {
+    const body = await page.locator("body").innerText();
+    const rerunId = body.match(/rerun-id:([^\n]+)/i)?.[1]?.trim() ?? "";
+    const sequence = body.match(/sequence:([^\n]+)/i)?.[1]?.trim() ?? "";
+    const artifact = body.match(/history-latest:([^\n]+)/i)?.[1]?.trim() ?? "";
+    expect(rerunId).not.toEqual("");
+    expect(sequence).not.toEqual("");
+    expect(artifact).not.toEqual("");
+    return { rerunId, sequence, artifact };
+  };
   try {
     await expect(auditButton).toBeEnabled({ timeout: 45_000 });
 
@@ -1230,6 +1252,53 @@ test("D/I: agent workbench real UI workflow, semantic library, memory, and artif
     await rerunButton.click();
     await expect(page.getByText(/Rerun:/)).toBeVisible({ timeout: 30_000 });
     record("D07", "pass", "rerun plan visible after prepared run");
+
+    await expect(executeRerunButton).toBeEnabled({ timeout: 15_000 });
+    await executeRerunButton.click();
+    await expect(page.getByText(/Rerun execution/i)).toBeVisible({ timeout: 120_000 });
+    await expect(page.getByText(/rerun-id:/i)).toBeVisible({ timeout: 30_000 });
+    await expect(page.getByText(/sequence:/i)).toBeVisible({ timeout: 30_000 });
+    await expect(page.getByText(/history-latest:/i)).toBeVisible({ timeout: 30_000 });
+    const firstRerun = await readLatestRerunIdentity();
+    const firstTaskRunId = firstRerun.rerunId.match(/^(task_run_[a-f0-9]+)/)?.[1] ?? "";
+    expect(firstTaskRunId).not.toEqual("");
+
+    const rerunMarker = `rerun-marker-${RUN_ID}`;
+    await page.getByLabel("Inputs JSON").fill(JSON.stringify({
+      ...moduleInputs,
+      analysis_object: `${moduleInputs.analysis_object}\nD10 changed input: ${rerunMarker}`,
+    }, null, 2));
+    await page.getByRole("button", { name: "Prepare run" }).click();
+    const secondTaskRunId = await expect
+      .poll(
+        async () => {
+          const body = await page.locator("body").innerText();
+          return body.match(/Task run prepared:\s*(task_run_[a-f0-9]+)/)?.[1] ?? "";
+        },
+        { timeout: 45_000 },
+      )
+      .not.toEqual(firstTaskRunId);
+    expect(secondTaskRunId).not.toEqual("");
+    await expect(auditButton).toBeEnabled({ timeout: 45_000 });
+    await expect(rerunButton).toBeEnabled({ timeout: 15_000 });
+    await rerunButton.click();
+    await expect(page.getByText(/Rerun:/)).toBeVisible({ timeout: 30_000 });
+    await expect(executeRerunButton).toBeEnabled({ timeout: 15_000 });
+    await executeRerunButton.click();
+    await expect(page.getByText(/Rerun execution/i)).toBeVisible({ timeout: 120_000 });
+    await expect(page.getByText(/history-latest:task_reruns\//i)).toBeVisible({
+      timeout: 30_000,
+    });
+    const secondRerun = await readLatestRerunIdentity();
+    expect(secondRerun.rerunId).not.toEqual(firstRerun.rerunId);
+    expect(secondRerun.artifact).not.toEqual(firstRerun.artifact);
+    expect(secondRerun.artifact).toMatch(/task_reruns\/.+\/task_rerun_execution\.json/);
+    record(
+      "D10",
+      "pass",
+      "changed Inputs JSON, reran from the UI, and compared distinct rerun ids and artifact paths",
+      { firstRerun, secondRerun },
+    );
 
     await expect(executeButton).toBeEnabled({ timeout: 15_000 });
     await executeButton.click();

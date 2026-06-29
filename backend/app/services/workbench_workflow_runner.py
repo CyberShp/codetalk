@@ -1418,6 +1418,21 @@ def _workflow_rerun_plan(
     }
 
 
+def build_workflow_rerun_plan(
+    *,
+    task_run: Any,
+    status: str,
+    step_results: list[dict[str, Any]],
+    outputs: list[dict[str, Any]],
+) -> dict[str, Any]:
+    return _workflow_rerun_plan(
+        task_run=task_run,
+        status=status,
+        step_results=step_results,
+        outputs=outputs,
+    )
+
+
 def _rerun_overwrite_risk_artifacts(step_type: str) -> list[str]:
     if step_type == "agent_task":
         return [

@@ -9,6 +9,7 @@ const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const backendDir = path.resolve(__dirname, "../../backend");
 const backendHost = process.env.CODETALK_BACKEND_BIND_HOST ?? "0.0.0.0";
 const backendPort = process.env.CODETALK_BACKEND_PORT ?? "8100";
+const frontendPort = process.env.CODETALK_FRONTEND_PORT ?? "3005";
 const browserHost = process.env.CODETALK_BROWSER_HOST ?? "localhost";
 const gitnexusPort = process.env.GITNEXUS_PORT ?? process.env.CODETALK_GITNEXUS_PORT ?? "7100";
 const gitnexusBaseUrl =
@@ -29,6 +30,13 @@ const shouldCleanupDataDir =
 const candidates = configuredPython
   ? [configuredPython]
   : ["python3.11", "python3.10", "python3", "python"];
+const corsOrigins =
+  process.env.CORS_ORIGINS ??
+  [
+    `http://${browserHost}:${frontendPort}`,
+    `http://localhost:${frontendPort}`,
+    `http://127.0.0.1:${frontendPort}`,
+  ].join(",");
 
 await assertPortAvailable({
   host: backendHost,
@@ -56,6 +64,7 @@ function isSupportedPython(command) {
         ...process.env,
         DATA_DIR: isolatedDataDir,
         SQLITE_DB: isolatedSqliteDb,
+        CORS_ORIGINS: corsOrigins,
         GITNEXUS_BASE_URL: gitnexusBaseUrl,
         GITNEXUS_PORT: gitnexusPort,
       },
@@ -96,6 +105,7 @@ const child = spawn(
       ...process.env,
       DATA_DIR: isolatedDataDir,
       SQLITE_DB: isolatedSqliteDb,
+      CORS_ORIGINS: corsOrigins,
       GITNEXUS_BASE_URL: gitnexusBaseUrl,
       GITNEXUS_PORT: gitnexusPort,
     },
