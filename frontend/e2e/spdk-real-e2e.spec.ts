@@ -807,6 +807,7 @@ test("B/C/K: create SPDK workspace through UI and verify chat/index gate", async
       timeout: 45_000,
     });
     await expect(page.getByRole("button", { name: "停止" })).toHaveCount(0, { timeout: 60_000 });
+    await expect(page.getByRole("button", { name: "重试" }).last()).toBeVisible({ timeout: 15_000 });
     const settingsTab = await context.newPage();
     try {
       const restored = await selectPrimaryLlm(settingsTab);

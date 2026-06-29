@@ -366,8 +366,11 @@ function ChatPanel({
               const previousUser = [...messages.slice(0, index)]
                 .reverse()
                 .find((candidate) => candidate.role === "user");
+              const content = msg.content.trim();
+              const failedAssistantMessage =
+                content.startsWith("⚠️ 发送失败") || content.startsWith("⚠️ 生成失败");
               const canRetryMessage =
-                msg.role === "assistant" && msg.content.trim().startsWith("⚠️ 发送失败") && previousUser !== undefined;
+                msg.role === "assistant" && failedAssistantMessage && previousUser !== undefined;
               return (
               <React.Fragment key={msg.id}>
                 <div
