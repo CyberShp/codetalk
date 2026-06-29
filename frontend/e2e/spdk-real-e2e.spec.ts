@@ -160,17 +160,32 @@ function buildLargeSpdkCoverageCsv() {
     ["nvmf_qpair_disconnect", "lib/nvmf/nvmf.c:1-120"],
     ["nvmf_ctrlr_process_admin_cmd", "lib/nvmf/ctrlr.c:1-120"],
     ["nvmf_tcp_qpair_process_pending", "lib/nvmf/tcp.c:1-120"],
+    ["spdk_nvmf_qpair_disconnect", "lib/nvmf/nvmf.c:1628-1668"],
+    ["nvmf_tcp_qpair_handle_timeout", "lib/nvmf/tcp.c:1821-1845"],
+    ["nvmf_ctrlr_cc_timeout", "lib/nvmf/ctrlr.c:1162-1192"],
     ["spdk_bdev_open_ext", "lib/bdev/bdev.c:1-120"],
     ["bdev_write_zeroes_blocks", "lib/bdev/bdev.c:120-240"],
     ["bdev_reset_complete", "lib/bdev/bdev.c:240-360"],
+    ["bdev_reset_poll_for_outstanding_io", "lib/bdev/bdev.c:7046-7070"],
+    ["bdev_start_reset", "lib/bdev/bdev.c:7106-7190"],
+    ["spdk_bdev_reset", "lib/bdev/bdev.c:7166-7190"],
     ["spdk_bdev_io_complete", "lib/bdev/bdev.c:360-480"],
     ["iscsi_conn_login", "lib/iscsi/conn.c:1-120"],
     ["iscsi_op_login_check_target", "lib/iscsi/iscsi.c:1-120"],
     ["iscsi_conn_logout", "lib/iscsi/conn.c:120-240"],
+    ["iscsi_reject", "lib/iscsi/iscsi.c:176-260"],
+    ["iscsi_tgt_node_redirect", "lib/iscsi/tgt_node.c:897-930"],
+    ["iscsi_op_login_session_discovery_chap", "lib/iscsi/iscsi.c:1552-1600"],
     ["spdk_thread_poll", "lib/thread/thread.c:1-120"],
     ["spdk_thread_send_msg", "lib/thread/thread.c:120-240"],
-    ["bs_load", "lib/blob/blobstore.c:1-120"],
+    ["spdk_bs_load", "lib/blob/blobstore.c:5081-5141"],
+    ["bs_recover", "lib/blob/blobstore.c:4931-5030"],
+    ["ftl_md_restore", "lib/ftl/utils/ftl_md.c:1016-1095"],
+    ["ftl_mngt_recover", "lib/ftl/mngt/ftl_mngt_recovery.c:1098-1125"],
     ["vhost_dev_register", "lib/vhost/vhost.c:1-120"],
+    ["vhost_blk_start", "lib/vhost/vhost_blk.c:1335-1435"],
+    ["vhost_user_dev_unregister", "lib/vhost/rte_vhost_user.c:1872-1920"],
+    ["_vfio_user_qpair_disconnect", "lib/nvmf/vfio_user.c:4198-4235"],
     ["spdk_rpc_decode_object", "lib/rpc/rpc.c:1-120"],
     ["reactor_run", "lib/event/reactor.c:1-120"],
     ["spdk_nvme_probe", "lib/nvme/nvme.c:1-120"],
@@ -2265,64 +2280,51 @@ test("H/G/F/E/J: coverage upload, AI test-design, and artifact quality gates", a
     }>;
   };
   expect(fourPiecePayload.version).toBe("codetalk-coverage-four-piece-v1");
-  const e01Bundle = fourPiecePayload.bundles?.find((bundle) => bundle.id === "E01");
-  expect(e01Bundle?.status).toBe("generated");
-  expect(e01Bundle?.code_evidence?.length ?? 0).toBeGreaterThanOrEqual(2);
-  expect(e01Bundle?.flow_steps?.length ?? 0).toBeGreaterThanOrEqual(2);
-  expect(e01Bundle?.sfmea?.length ?? 0).toBeGreaterThanOrEqual(expectedRiskCategories.length);
-  expect(e01Bundle?.black_box_cases?.length ?? 0).toBeGreaterThanOrEqual(expectedRiskCategories.length);
-  for (const evidence of e01Bundle?.code_evidence ?? []) {
-    expect(String(evidence.file_path ?? "")).toContain("lib/nvmf");
-    expect(fs.existsSync(path.join(SPDK_REPO, String(evidence.file_path ?? "")))).toBeTruthy();
-  }
-  for (const row of e01Bundle?.sfmea ?? []) {
-    for (const field of [
-      "failure_mode",
-      "cause",
-      "effect",
-      "detection",
-      "severity",
-      "occurrence",
-      "detection_score",
-      "rpn",
-      "mitigation",
-      "evidence",
-    ]) {
-      expect(row).toHaveProperty(field);
-    }
-  }
-  for (const testCase of e01Bundle?.black_box_cases ?? []) {
-    expect(testCase.diagnostics?.suggested_spdk_test_dir).toBe("test/nvmf");
-    expect((testCase.steps ?? []).join("\n")).not.toMatch(/\b(call|invoke)\s+spdk_|直接调用内部函数|修改源码/i);
-  }
-  record("E01", "pass", "downloaded and verified NVMe-oF connect four-piece artifact through the real UI", {
-    file: fourPieceFile,
-    suggestedFilename: fourPieceDownload.suggestedFilename(),
-    evidenceCount: e01Bundle?.code_evidence?.length ?? 0,
-    flowStepCount: e01Bundle?.flow_steps?.length ?? 0,
-    sfmeaRows: e01Bundle?.sfmea?.length ?? 0,
-    blackBoxCases: e01Bundle?.black_box_cases?.length ?? 0,
-  });
 
   for (const scenario of [
-    { id: "E03", pathFragment: "lib/iscsi", testDir: "test/iscsi_tgt" },
-    { id: "E05", pathFragment: "lib/bdev", testDir: "test/bdev" },
+    { id: "E01", pathFragments: ["lib/nvmf"], testDirs: ["test/nvmf"], minEvidence: 2 },
+    { id: "E02", pathFragments: ["lib/nvmf"], testDirs: ["test/nvmf"], minEvidence: 2 },
+    { id: "E03", pathFragments: ["lib/iscsi"], testDirs: ["test/iscsi_tgt"], minEvidence: 1 },
+    { id: "E04", pathFragments: ["lib/iscsi"], testDirs: ["test/iscsi_tgt"], minEvidence: 2 },
+    { id: "E05", pathFragments: ["lib/bdev"], testDirs: ["test/bdev"], minEvidence: 1 },
+    { id: "E06", pathFragments: ["lib/bdev"], testDirs: ["test/bdev"], minEvidence: 2 },
+    { id: "E07", pathFragments: ["lib/blob", "lib/ftl"], testDirs: ["test/blobstore", "test/ftl"], minEvidence: 2 },
+    { id: "E08", pathFragments: ["lib/vhost", "lib/nvmf/vfio_user.c"], testDirs: ["test/vhost", "test/nvmf"], minEvidence: 2 },
+    { id: "E09", pathFragments: ["lib/thread", "lib/event/reactor.c"], testDirs: ["test/unit/lib/thread", "test/event"], minEvidence: 2 },
+    { id: "E10", pathFragments: ["lib/rpc", "lib/jsonrpc"], testDirs: ["test/json_config"], minEvidence: 1 },
   ]) {
     const bundle = fourPiecePayload.bundles?.find((item) => item.id === scenario.id);
     expect(bundle?.status).toBe("generated");
-    expect(bundle?.code_evidence?.length ?? 0).toBeGreaterThanOrEqual(1);
+    expect(bundle?.code_evidence?.length ?? 0).toBeGreaterThanOrEqual(scenario.minEvidence);
     expect(bundle?.flow_steps?.length ?? 0).toBeGreaterThanOrEqual(1);
     expect(bundle?.sfmea?.length ?? 0).toBeGreaterThanOrEqual(expectedRiskCategories.length);
     expect(bundle?.black_box_cases?.length ?? 0).toBeGreaterThanOrEqual(expectedRiskCategories.length);
     for (const evidence of bundle?.code_evidence ?? []) {
-      expect(String(evidence.file_path ?? "")).toContain(scenario.pathFragment);
-      expect(fs.existsSync(path.join(SPDK_REPO, String(evidence.file_path ?? "")))).toBeTruthy();
+      const evidencePath = String(evidence.file_path ?? "");
+      expect(scenario.pathFragments.some((fragment) => evidencePath.includes(fragment))).toBeTruthy();
+      expect(fs.existsSync(path.join(SPDK_REPO, evidencePath))).toBeTruthy();
+    }
+    for (const row of bundle?.sfmea ?? []) {
+      for (const field of [
+        "failure_mode",
+        "cause",
+        "effect",
+        "detection",
+        "severity",
+        "occurrence",
+        "detection_score",
+        "rpn",
+        "mitigation",
+        "evidence",
+      ]) {
+        expect(row).toHaveProperty(field);
+      }
     }
     for (const testCase of bundle?.black_box_cases ?? []) {
-      expect(testCase.diagnostics?.suggested_spdk_test_dir).toBe(scenario.testDir);
+      expect(scenario.testDirs).toContain(testCase.diagnostics?.suggested_spdk_test_dir);
       expect((testCase.steps ?? []).join("\n")).not.toMatch(/\b(call|invoke)\s+spdk_|直接调用内部函数|修改源码/i);
     }
-    record(scenario.id, "pass", `downloaded and verified ${scenario.pathFragment} four-piece artifact through the real UI`, {
+    record(scenario.id, "pass", `downloaded and verified ${scenario.id} four-piece artifact through the real UI`, {
       file: fourPieceFile,
       suggestedFilename: fourPieceDownload.suggestedFilename(),
       evidenceCount: bundle?.code_evidence?.length ?? 0,

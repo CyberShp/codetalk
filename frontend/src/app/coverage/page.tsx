@@ -202,8 +202,13 @@ function spdkTestDirectory(mr: CoverageModuleResult) {
   const text = `${mr.module_path} ${mr.file_path ?? ""}`.toLowerCase();
   if (text.includes("iscsi")) return "test/iscsi_tgt";
   if (text.includes("bdev")) return "test/bdev";
+  if (text.includes("blob")) return "test/blobstore";
+  if (text.includes("ftl")) return "test/ftl";
+  if (text.includes("vhost")) return "test/vhost";
   if (text.includes("nvmf")) return "test/nvmf";
   if (text.includes("thread")) return "test/unit/lib/thread";
+  if (text.includes("event") || text.includes("reactor")) return "test/event";
+  if (text.includes("rpc") || text.includes("jsonrpc")) return "test/json_config";
   return "test";
 }
 
@@ -336,6 +341,10 @@ function buildCoverageBlackBoxJson(name: string, results: CoverageModuleResult[]
 }
 
 function buildCoverageFourPieceJson(name: string, results: CoverageModuleResult[]) {
+  const matchText = (mr: CoverageModuleResult) =>
+    `${mr.module_path} ${mr.file_path ?? ""} ${mr.function_name ?? ""}`.toLowerCase();
+  const filePathText = (mr: CoverageModuleResult) => String(mr.file_path ?? mr.module_path ?? "").toLowerCase();
+  const functionNameText = (mr: CoverageModuleResult) => String(mr.function_name ?? "").toLowerCase();
   const buildBundle = (id: string, title: string, matcher: (mr: CoverageModuleResult) => boolean) => {
     const matched = results.filter(matcher);
     const evidence = matched.map((mr) => ({
@@ -416,7 +425,7 @@ function buildCoverageFourPieceJson(name: string, results: CoverageModuleResult[
 
   const bundles = [
     buildBundle("E01", "NVMe-oF connect 主链路", (mr) => {
-      const text = `${mr.module_path} ${mr.file_path ?? ""} ${mr.function_name ?? ""}`.toLowerCase();
+      const text = matchText(mr);
       return text.includes("nvmf") && (
         text.includes("qpair") ||
         text.includes("ctrlr") ||
@@ -424,14 +433,56 @@ function buildCoverageFourPieceJson(name: string, results: CoverageModuleResult[
         text.includes("connect")
       );
     }),
+    buildBundle("E02", "NVMe-oF 异常链路", (mr) => {
+      const text = matchText(mr);
+      return text.includes("nvmf") && (
+        text.includes("disconnect") ||
+        text.includes("timeout") ||
+        text.includes("reset")
+      );
+    }),
     buildBundle("E03", "iSCSI login 主链路", (mr) => {
-      const text = `${mr.module_path} ${mr.file_path ?? ""} ${mr.function_name ?? ""}`.toLowerCase();
+      const text = matchText(mr);
       return text.includes("iscsi") && text.includes("login");
     }),
+    buildBundle("E04", "iSCSI 异常链路", (mr) => {
+      const text = matchText(mr);
+      return text.includes("iscsi") && (
+        text.includes("reject") ||
+        text.includes("logout") ||
+        text.includes("redirect") ||
+        text.includes("chap")
+      );
+    }),
     buildBundle("E05", "bdev IO 主链路", (mr) => {
-      const filePath = String(mr.file_path ?? mr.module_path ?? "").toLowerCase();
-      const functionName = String(mr.function_name ?? "").toLowerCase();
+      const filePath = filePathText(mr);
+      const functionName = functionNameText(mr);
       return filePath.startsWith("lib/bdev/") || functionName.startsWith("spdk_bdev_") || functionName.startsWith("bdev_");
+    }),
+    buildBundle("E06", "bdev reset/failover", (mr) => {
+      const filePath = filePathText(mr);
+      const functionName = functionNameText(mr);
+      return filePath.startsWith("lib/bdev/") && (
+        functionName.includes("reset") ||
+        functionName.includes("complete") ||
+        functionName.includes("poll_for_outstanding")
+      );
+    }),
+    buildBundle("E07", "blobstore/FTL 恢复和空间不足", (mr) => {
+      const text = matchText(mr);
+      return text.includes("lib/blob/") || text.includes("lib/ftl/");
+    }),
+    buildBundle("E08", "vhost/vfio-user lifecycle", (mr) => {
+      const text = matchText(mr);
+      return text.includes("lib/vhost/") || text.includes("vfio_user");
+    }),
+    buildBundle("E09", "reactor/thread/poller 调度", (mr) => {
+      const text = matchText(mr);
+      return text.includes("lib/thread/") || text.includes("lib/event/reactor");
+    }),
+    buildBundle("E10", "RPC/config 非法参数和幂等", (mr) => {
+      const text = matchText(mr);
+      return text.includes("lib/rpc/") || text.includes("lib/jsonrpc/") || text.includes("_rpc") || text.includes("jsonrpc");
     }),
   ];
 
