@@ -1186,17 +1186,18 @@ test("B/C/K: create SPDK workspace through UI and verify chat/index gate", async
       await expect(page.getByLabel("AI 线程消息")).toBeVisible({ timeout: 15_000 });
       return page.url();
     };
-    const threadOneUrl = await createSiblingThread();
-    const threadTwoUrl = await createSiblingThread();
-    const tokenOne = `THREAD_NVMF_${RUN_ID.slice(-6).replace(/-/g, "_")}`;
-    const tokenTwo = `THREAD_ISCSI_${RUN_ID.slice(-6).replace(/-/g, "_")}`;
-    const threadOnePage = await context.newPage();
-    const threadTwoPage = await context.newPage();
+    const threadUrls = [await createSiblingThread(), await createSiblingThread(), await createSiblingThread()];
+    const threadTokens = [
+      `THREAD_NVMF_${RUN_ID.slice(-6).replace(/-/g, "_")}`,
+      `THREAD_ISCSI_${RUN_ID.slice(-6).replace(/-/g, "_")}`,
+      `THREAD_BDEV_${RUN_ID.slice(-6).replace(/-/g, "_")}`,
+    ];
+    const threadPages = await Promise.all(threadUrls.map(() => context.newPage()));
     const sendThreadPrompt = async (
       tab: Page,
       url: string,
       token: string,
-      otherToken: string,
+      otherTokens: string[],
     ) => {
       await tab.goto(url, { waitUntil: "domcontentloaded" });
       await noFrameworkOverlay(tab);
@@ -1209,27 +1210,39 @@ test("B/C/K: create SPDK workspace through UI and verify chat/index gate", async
       await expect(messages.filter({ hasText: token }).first()).toBeVisible({ timeout: 15_000 });
       await tab.reload({ waitUntil: "domcontentloaded" });
       await expect(messages.filter({ hasText: token }).first()).toBeVisible({ timeout: 30_000 });
-      await expect(messages.filter({ hasText: otherToken })).toHaveCount(0);
+      for (const otherToken of otherTokens) {
+        await expect(messages.filter({ hasText: otherToken })).toHaveCount(0);
+      }
       return await screenshot(tab, `C07-${token}`);
     };
     try {
-      const [threadOneShot, threadTwoShot] = await Promise.all([
-        sendThreadPrompt(threadOnePage, threadOneUrl, tokenOne, tokenTwo),
-        sendThreadPrompt(threadTwoPage, threadTwoUrl, tokenTwo, tokenOne),
-      ]);
-      record("C07", "pass", "same-workspace AI threads preserved isolated message histories after concurrent sends and reloads", {
-        threadOneUrl,
-        threadTwoUrl,
-        threadOneShot,
-        threadTwoShot,
+      const threadShots = await Promise.all(
+        threadPages.map((tab, index) =>
+          sendThreadPrompt(
+            tab,
+            threadUrls[index],
+            threadTokens[index],
+            threadTokens.filter((_, tokenIndex) => tokenIndex !== index),
+          ),
+        ),
+      );
+      const threadDetails = { threadUrls, threadTokens, threadShots };
+      record("C07", "pass", "same-workspace AI threads preserved isolated message histories after concurrent sends and reloads", threadDetails);
+      record("L02", "pass", "three same-workspace AI threads accepted concurrent sends and kept results isolated after reload", {
+        ...threadDetails,
+        threadCount: threadUrls.length,
       });
     } finally {
-      await threadOnePage.close().catch(() => undefined);
-      await threadTwoPage.close().catch(() => undefined);
+      await Promise.all(threadPages.map((tab) => tab.close().catch(() => undefined)));
     }
   } catch (error) {
     record("C07", "blocked", "same-workspace concurrent AI thread isolation did not complete through the UI", {
       screenshot: await screenshot(page, "C07-ai-thread-isolation-failed"),
+      error: error instanceof Error ? error.message : String(error),
+      excerpt: await pageExcerpt(page),
+    });
+    record("L02", "blocked", "three-thread AI isolation did not complete through the UI", {
+      screenshot: await screenshot(page, "L02-ai-thread-isolation-failed"),
       error: error instanceof Error ? error.message : String(error),
       excerpt: await pageExcerpt(page),
     });
