@@ -1,4 +1,4 @@
-import { expect, test, type Locator, type Page } from "@playwright/test";
+import { expect, test, type BrowserContext, type Locator, type Page } from "@playwright/test";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
@@ -397,6 +397,34 @@ async function selectPrimaryLlm(page: Page) {
   return true;
 }
 
+async function sendIsolatedWorkspacePrompt(
+  browserContext: BrowserContext,
+  wsId: string,
+  prompt: string,
+  expectedToken: string,
+) {
+  const tab = await browserContext.newPage();
+  try {
+    await tab.goto(`/workspaces/${wsId}`, { waitUntil: "domcontentloaded" });
+    await noFrameworkOverlay(tab);
+    await tab.getByRole("button", { name: "对话" }).click();
+    const isolatedTextarea = tab.locator("textarea").last();
+    const isolatedSendButton = tab.getByRole("button", { name: "发送" });
+    await expect(isolatedTextarea).toBeVisible({ timeout: 10_000 });
+    await isolatedTextarea.fill(prompt);
+    await expect(isolatedSendButton).toBeEnabled({ timeout: 10_000 });
+    await isolatedSendButton.click();
+    await expect(tab.getByRole("button", { name: "停止" })).toBeVisible({ timeout: 10_000 });
+    await expect(tab.locator(".justify-start .bg-surface-container").filter({ hasText: expectedToken }).last()).toBeVisible({
+      timeout: 90_000,
+    });
+    await expect(tab.getByRole("button", { name: "停止" })).toHaveCount(0, { timeout: 120_000 });
+    return await screenshot(tab, `C07-${expectedToken}`);
+  } finally {
+    await tab.close().catch(() => undefined);
+  }
+}
+
 function recordDeferredChatCases(evidence: string) {
   record("C04", "blocked", `thread recovery requires a focused completed-chat refresh run: ${evidence}`);
   record("C05", "blocked", `long-running concurrent input requires a focused completed-chat run: ${evidence}`);
@@ -548,7 +576,7 @@ test("A/K: settings, app shell, visual sanity, and secret hygiene", async ({ pag
   record("A06", "pass", "Redis-related environment and browser diagnostics do not reference forbidden port 6399");
 });
 
-test("B/C/K: create SPDK workspace through UI and verify chat/index gate", async ({ page }) => {
+test("B/C/K: create SPDK workspace through UI and verify chat/index gate", async ({ page, context }) => {
   test.setTimeout(SPDK_INDEX_WAIT_MS + 180_000);
 
   if (!e2eLlmConfigId && process.env.CODETALK_E2E_LLM_API_KEY) {
@@ -776,6 +804,41 @@ test("B/C/K: create SPDK workspace through UI and verify chat/index gate", async
   }
 
   try {
+    const nvmfToken = `THREAD_NVMF_${RUN_ID.slice(-6).replace(/-/g, "_")}`;
+    const iscsiToken = `THREAD_ISCSI_${RUN_ID.slice(-6).replace(/-/g, "_")}`;
+    const [nvmfShot, iscsiShot] = await Promise.all([
+      sendIsolatedWorkspacePrompt(
+        context,
+        workspaceId,
+        `只回复这个标记，不要解释：${nvmfToken}`,
+        nvmfToken,
+      ),
+      sendIsolatedWorkspacePrompt(
+        context,
+        workspaceId,
+        `只回复这个标记，不要解释：${iscsiToken}`,
+        iscsiToken,
+      ),
+    ]);
+    await page.goto(`/workspaces/${workspaceId}`, { waitUntil: "domcontentloaded" });
+    await page.getByRole("button", { name: "对话" }).click();
+    await expect(page.getByText(nvmfToken).first()).toBeVisible({ timeout: 30_000 });
+    await expect(page.getByText(iscsiToken).first()).toBeVisible({ timeout: 30_000 });
+    record("C07", "pass", "two concurrent browser chat tabs in the same workspace completed distinct token replies", {
+      nvmfShot,
+      iscsiShot,
+    });
+  } catch (error) {
+    const shot = await screenshot(page, "C07-concurrent-chat-isolation-failed");
+    const bodyText = await page.locator("body").innerText().catch(() => "");
+    record("C07", "blocked", "concurrent same-workspace browser chat isolation did not complete", {
+      screenshot: shot,
+      excerpt: bodyText.slice(0, 2000),
+      error: error instanceof Error ? error.message : String(error),
+    });
+  }
+
+  try {
     const exportDownloadPromise = page.waitForEvent("download");
     await page.goto(`/workspaces/${workspaceId}`, { waitUntil: "domcontentloaded" });
     await page.getByRole("button", { name: "对话" }).click();
@@ -793,7 +856,6 @@ test("B/C/K: create SPDK workspace through UI and verify chat/index gate", async
       error: error instanceof Error ? error.message : String(error),
     });
   }
-  record("C07", "blocked", "multi-thread isolation requires a focused concurrent-thread run after completed-chat baseline");
 });
 
 test("D/I: agent workbench real UI workflow, semantic library, memory, and artifacts", async ({ page }) => {
