@@ -638,9 +638,20 @@ test.afterEach(async ({ page }) => {
 });
 
 test("A05: startup scripts explain occupied ports", async () => {
+  const { preflightHosts } = (await import("../scripts/port-preflight.mjs")) as {
+    preflightHosts: (host: string) => string[];
+  };
+  expect(preflightHosts("localhost")).toEqual(expect.arrayContaining(["127.0.0.1", "::1"]));
+
   const backend = await withOccupiedPort((port) =>
     runStartupScriptWithOccupiedPort("scripts/start-playwright-backend.mjs", {
       CODETALK_BACKEND_BIND_HOST: "127.0.0.1",
+      CODETALK_BACKEND_PORT: String(port),
+    }),
+  );
+  const localhostBackend = await withOccupiedPort((port) =>
+    runStartupScriptWithOccupiedPort("scripts/start-playwright-backend.mjs", {
+      CODETALK_BACKEND_BIND_HOST: "localhost",
       CODETALK_BACKEND_PORT: String(port),
     }),
   );
@@ -652,9 +663,10 @@ test("A05: startup scripts explain occupied ports", async () => {
     }),
   );
 
-  writeJson("A05-port-conflict.json", { backend, frontend });
+  writeJson("A05-port-conflict.json", { backend, localhostBackend, frontend });
   for (const [label, result, envName] of [
     ["backend", backend, "CODETALK_BACKEND_PORT"],
+    ["localhost backend", localhostBackend, "CODETALK_BACKEND_PORT"],
     ["frontend", frontend, "CODETALK_FRONTEND_PORT"],
   ] as const) {
     expect(result.signal, `${label} startup should fail fast instead of hanging`).toBeNull();
@@ -665,6 +677,7 @@ test("A05: startup scripts explain occupied ports", async () => {
 
   record("A05", "pass", "startup scripts fail fast with occupied-port guidance", {
     backend: backend.output,
+    localhostBackend: localhostBackend.output,
     frontend: frontend.output,
   });
 });

@@ -1,5 +1,41 @@
 import net from "node:net";
 
+export function preflightHosts(host) {
+  if (host.toLowerCase() === "localhost") {
+    return ["127.0.0.1", "::1"];
+  }
+  return [host];
+}
+
+async function probePort({ probeHost, originalHost, numericPort, envName, serviceName }) {
+  const server = net.createServer();
+  await new Promise((resolve, reject) => {
+    server.once("error", reject);
+    server.listen(numericPort, probeHost, () => resolve());
+  })
+    .then(
+      () =>
+        new Promise((resolve) => {
+          server.close(() => resolve());
+        }),
+    )
+    .catch((error) => {
+      if (error?.code === "EADDRNOTAVAIL" && probeHost === "::1") {
+        return;
+      }
+      if (error?.code === "EADDRINUSE") {
+        console.error(
+          `${serviceName} port ${originalHost}:${numericPort} is already in use. Stop the process using it or set ${envName} to another port.`,
+        );
+        process.exit(1);
+      }
+      console.error(
+        `${serviceName} port ${originalHost}:${numericPort} is not available (${error?.code ?? error?.message ?? error}). Set ${envName} to another port or host.`,
+      );
+      process.exit(1);
+    });
+}
+
 export async function assertPortAvailable({ host, port, envName, serviceName }) {
   const numericPort = Number(port);
   if (!Number.isInteger(numericPort) || numericPort <= 0 || numericPort > 65535) {
@@ -9,27 +45,7 @@ export async function assertPortAvailable({ host, port, envName, serviceName }) 
     process.exit(1);
   }
 
-  const server = net.createServer();
-  await new Promise((resolve, reject) => {
-    server.once("error", reject);
-    server.listen(numericPort, host, () => resolve());
-  })
-    .then(
-      () =>
-        new Promise((resolve) => {
-          server.close(() => resolve());
-        }),
-    )
-    .catch((error) => {
-      if (error?.code === "EADDRINUSE") {
-        console.error(
-          `${serviceName} port ${host}:${numericPort} is already in use. Stop the process using it or set ${envName} to another port.`,
-        );
-        process.exit(1);
-      }
-      console.error(
-        `${serviceName} port ${host}:${numericPort} is not available (${error?.code ?? error?.message ?? error}). Set ${envName} to another port or host.`,
-      );
-      process.exit(1);
-    });
+  for (const probeHost of preflightHosts(host)) {
+    await probePort({ probeHost, originalHost: host, numericPort, envName, serviceName });
+  }
 }
