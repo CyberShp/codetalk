@@ -14,7 +14,14 @@ const candidates = configuredPython
 function isSupportedPython(command) {
   const result = spawnSync(
     command,
-    ["-c", "import sys; raise SystemExit(0 if sys.version_info >= (3, 10) else 1)"],
+    [
+      "-c",
+      [
+        "import sys",
+        "import uvicorn, fastapi, pydantic_settings",
+        "raise SystemExit(0 if sys.version_info >= (3, 10) else 1)",
+      ].join("; "),
+    ],
     { stdio: "ignore" },
   );
   return result.status === 0;
@@ -22,7 +29,9 @@ function isSupportedPython(command) {
 
 const python = candidates.find(isSupportedPython);
 if (!python) {
-  console.error("No Python >=3.10 interpreter found for CodeTalk backend. Set CODETALK_BACKEND_PYTHON.");
+  console.error(
+    "No Python >=3.10 interpreter with CodeTalk backend dependencies found. Set CODETALK_BACKEND_PYTHON.",
+  );
   process.exit(1);
 }
 
