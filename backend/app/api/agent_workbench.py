@@ -1707,6 +1707,7 @@ def _core_workflow_readiness_item(preset: dict[str, Any]) -> dict[str, Any]:
             "semantic_retrieve",
             "memory_retrieve",
             "local_scope_discover",
+            "local_resource_leak_hunt",
             "evidence_validate",
             "report_render",
             "artifact_export",

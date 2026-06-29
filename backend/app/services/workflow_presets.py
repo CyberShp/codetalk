@@ -59,9 +59,8 @@ def builtin_workflow_presets() -> list[dict[str, Any]]:
                 "steps": [
                     {
                         "id": "hunt_risks",
-                        "type": "agent_task",
-                        "provider": "claude-code",
-                        "goal": "Find resource acquisition/release pairs, abnormal exits, missing cleanup, and evidence-backed test hooks.",
+                        "type": "local_resource_leak_hunt",
+                        "goal": "Find resource acquisition/release pairs, abnormal exits, missing cleanup, and evidence-backed test hooks from the local repository.",
                         "required_artifacts": ["risk_findings.json", "evidence_cards.json", "test_hooks.json"],
                     },
                     {"id": "validate_evidence", "type": "evidence_validate"},

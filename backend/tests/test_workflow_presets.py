@@ -33,6 +33,12 @@ def test_builtin_workflow_presets_are_valid_and_cover_core_scenarios():
     assert black_box_output["semantic_import"]["enabled"] is True
 
     risk_preset = next(item for item in presets if item["id"] == "resource_leak_hunt")
+    risk_step = next(
+        item
+        for item in risk_preset["definition"]["steps"]
+        if item["id"] == "hunt_risks"
+    )
+    assert risk_step["type"] == "local_resource_leak_hunt"
     risk_output = next(
         item
         for item in risk_preset["definition"]["outputs"]

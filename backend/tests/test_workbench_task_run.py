@@ -3040,3 +3040,75 @@ def test_module_analysis_preset_executes_with_local_scope_discovery(tmp_path):
         "evidence_cards": "ok",
         "report": "ok",
     }
+
+
+def test_resource_leak_hunt_preset_executes_with_local_risk_scan(tmp_path):
+    from app.services.workbench_task_run import WorkbenchTaskRunPreparer
+    from app.services.workbench_workflow_runner import WorkbenchWorkflowRunner
+    from app.services.workflow_dsl import WorkflowStore
+    from app.services.workflow_presets import install_workflow_preset
+
+    repo = tmp_path / "repo"
+    (repo / "lib" / "bdev").mkdir(parents=True)
+    (repo / "test" / "bdev").mkdir(parents=True)
+    (repo / "lib" / "bdev" / "cleanup.c").write_text(
+        "void *bdev_create(void) {\n"
+        "    void *buf = malloc(128);\n"
+        "    if (!buf) { return NULL; }\n"
+        "    if (spdk_bdev_open_ext(\"Malloc0\", true, NULL, NULL, NULL) != 0) { goto err; }\n"
+        "    free(buf);\n"
+        "    return buf;\n"
+        "err:\n"
+        "    return NULL;\n"
+        "}\n",
+        encoding="utf-8",
+    )
+    workflow_store = WorkflowStore(tmp_path / "workflows.db")
+    install_workflow_preset(workflow_store, "resource_leak_hunt")
+
+    task_run = WorkbenchTaskRunPreparer(
+        artifact_root=tmp_path / "task_runs",
+        workflow_store=workflow_store,
+    ).prepare(
+        workflow_id="resource_leak_hunt",
+        workspace_id="ws-local-resource-hunt",
+        repo_path=str(repo),
+        inputs={
+            "target_scope": "lib/bdev cleanup",
+            "risk_pattern": "cleanup",
+            "repo_path": str(repo),
+        },
+    )
+
+    result = WorkbenchWorkflowRunner(tmp_path / "task_runs").execute_task_run(
+        task_run.task_run_id,
+        timeout_sec=10,
+    )
+
+    assert result.status == "completed"
+    step_status = {item["step_id"]: item["status"] for item in result.step_results}
+    assert step_status == {
+        "hunt_risks": "completed",
+        "validate_evidence": "completed",
+        "render_report": "completed",
+    }
+    root = Path(task_run.artifact_dir)
+    risk_findings = json.loads(
+        (root / "steps" / "hunt_risks" / "risk_findings.json").read_text(encoding="utf-8")
+    )
+    evidence_cards = json.loads(
+        (root / "steps" / "hunt_risks" / "evidence_cards.json").read_text(encoding="utf-8")
+    )
+    test_hooks = json.loads(
+        (root / "steps" / "hunt_risks" / "test_hooks.json").read_text(encoding="utf-8")
+    )
+    assert risk_findings[0]["file_path"] == "lib/bdev/cleanup.c"
+    assert risk_findings[0]["resource"] in {"memory", "bdev_descriptor"}
+    assert evidence_cards[0]["source"] == "local-resource-scan"
+    assert test_hooks[0]["suggested_test_directory"] == "test/bdev"
+    output_status = {item["id"]: item["status"] for item in result.outputs}
+    assert output_status == {
+        "risk_findings": "ok",
+        "evidence_cards": "ok",
+        "report": "ok",
+    }

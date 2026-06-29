@@ -18,6 +18,7 @@ ALLOWED_STEP_TYPES = frozenset({
     "semantic_retrieve",
     "memory_retrieve",
     "local_scope_discover",
+    "local_resource_leak_hunt",
     "evidence_validate",
     "report_render",
     "artifact_export",

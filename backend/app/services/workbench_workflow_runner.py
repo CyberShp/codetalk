@@ -326,6 +326,29 @@ class WorkbenchWorkflowRunner:
                 "count": len(payloads.get("evidence_cards.json") or []),
             }
 
+        if step_type == "local_resource_leak_hunt":
+            payloads = _local_resource_leak_hunt_payloads(
+                task_run=task_run,
+                step=step,
+            )
+            written: list[str] = []
+            for artifact_name, payload in payloads.items():
+                artifact_path = artifact_dir / artifact_name
+                _write_json(artifact_path, payload)
+                written.append(artifact_name)
+            return {
+                "step_id": step_id,
+                "type": step_type,
+                "status": "completed",
+                "artifact_dir": str(artifact_dir),
+                "artifact": "risk_findings.json",
+                "artifacts": written,
+                "required_artifacts": [
+                    str(item) for item in step.get("required_artifacts") or []
+                ],
+                "count": len(payloads.get("risk_findings.json") or []),
+            }
+
         if step_type == "evidence_validate":
             payload = _evidence_validation_payload(
                 task_run=task_run,
@@ -705,6 +728,47 @@ def _local_scope_query(input_snapshot: dict[str, Any]) -> str:
     return " ".join(parts)[:2000]
 
 
+def _local_resource_leak_hunt_payloads(
+    *,
+    task_run: Any,
+    step: dict[str, Any],
+) -> dict[str, Any]:
+    repo = Path(str(task_run.repo_path or ""))
+    query = _local_scope_query(task_run.input_snapshot)
+    risk_pattern = str(task_run.input_snapshot.get("risk_pattern") or "cleanup").strip() or "cleanup"
+    files = _discover_local_source_files(repo, query, limit=20)
+    evidence_cards: list[dict[str, Any]] = []
+    findings: list[dict[str, Any]] = []
+    hooks: list[dict[str, Any]] = []
+    for index, file_path in enumerate(files, start=1):
+        card = _local_evidence_card(repo=repo, file_path=file_path, query=query, index=index)
+        card["source"] = "local-resource-scan"
+        evidence_cards.append(card)
+        file_findings = _local_resource_findings_for_file(
+            repo=repo,
+            file_path=file_path,
+            symbols=card.get("symbols") or [],
+            risk_pattern=risk_pattern,
+            start_index=len(findings) + 1,
+        )
+        findings.extend(file_findings)
+        for finding in file_findings:
+            hooks.append(_local_test_hook_for_finding(finding, len(hooks) + 1))
+    if not findings and files:
+        fallback = _local_fallback_resource_finding(
+            file_path=files[0],
+            symbols=evidence_cards[0].get("symbols") or [],
+            risk_pattern=risk_pattern,
+        )
+        findings.append(fallback)
+        hooks.append(_local_test_hook_for_finding(fallback, 1))
+    return {
+        "risk_findings.json": findings[:24],
+        "evidence_cards.json": evidence_cards[:20],
+        "test_hooks.json": hooks[:24],
+    }
+
+
 def _discover_local_source_files(repo: Path, query: str, *, limit: int = 16) -> list[str]:
     try:
         root = repo.resolve()
@@ -729,6 +793,169 @@ def _discover_local_source_files(repo: Path, query: str, *, limit: int = 16) -> 
         ),
     )
     return [path.relative_to(root).as_posix() for path in ranked[:limit]]
+
+
+RESOURCE_ACQUIRE_RE = re.compile(
+    r"\b("
+    r"malloc|calloc|realloc|strdup|"
+    r"spdk_zmalloc|spdk_dma_zmalloc|spdk_dma_malloc|spdk_bit_array_create|"
+    r"spdk_poller_register|spdk_get_io_channel|spdk_bdev_open_ext|"
+    r"spdk_thread_create|TAILQ_INSERT|STAILQ_INSERT"
+    r")\b"
+)
+RESOURCE_RELEASE_RE = re.compile(
+    r"\b("
+    r"free|spdk_free|spdk_dma_free|spdk_bit_array_free|"
+    r"spdk_poller_unregister|spdk_put_io_channel|spdk_bdev_close|"
+    r"spdk_thread_exit|TAILQ_REMOVE|STAILQ_REMOVE"
+    r")\b"
+)
+ERROR_BRANCH_RE = re.compile(r"\b(goto\s+(err|error|fail|cleanup)|return\s+(-[A-Za-z0-9_]+|-?\d+|NULL))\b")
+
+
+def _local_resource_findings_for_file(
+    *,
+    repo: Path,
+    file_path: str,
+    symbols: list[str],
+    risk_pattern: str,
+    start_index: int,
+) -> list[dict[str, Any]]:
+    path = repo / file_path
+    try:
+        lines = path.read_text(encoding="utf-8", errors="replace").splitlines()
+    except OSError:
+        return []
+    acquire_lines = _matching_lines(lines, RESOURCE_ACQUIRE_RE)
+    release_lines = _matching_lines(lines, RESOURCE_RELEASE_RE)
+    error_lines = _matching_lines(lines, ERROR_BRANCH_RE)
+    if not acquire_lines and not error_lines:
+        return []
+    function = symbols[0] if symbols else _symbol_near_line("\n".join(lines), acquire_lines[:1] or error_lines[:1])
+    resource = _resource_label(acquire_lines[:1] or error_lines[:1])
+    missing_release = bool(acquire_lines and not release_lines)
+    abnormal_branch_count = len(error_lines)
+    severity = "high" if missing_release and abnormal_branch_count else "medium"
+    risk = (
+        "resource acquisition is visible but no matching release primitive was found in the scanned file"
+        if missing_release
+        else "error branches should be checked against cleanup and ownership handoff behavior"
+    )
+    return [{
+        "finding_id": f"local_resource_risk_{start_index:03d}",
+        "file_path": file_path,
+        "function": function,
+        "resource": resource,
+        "risk_pattern": risk_pattern,
+        "risk": risk,
+        "summary": f"{file_path} has {len(acquire_lines)} acquisition signal(s), {len(release_lines)} release signal(s), and {len(error_lines)} abnormal branch signal(s).",
+        "evidence_lines": (acquire_lines[:4] + release_lines[:4] + error_lines[:4])[:10],
+        "detection": "local static scan for acquisition, release, and abnormal branch tokens",
+        "severity": severity,
+        "confidence": "medium",
+        "test_hook_id": f"local_test_hook_{start_index:03d}",
+        "source": "local-resource-scan",
+    }]
+
+
+def _matching_lines(lines: list[str], pattern: re.Pattern[str], *, limit: int = 12) -> list[dict[str, Any]]:
+    matches: list[dict[str, Any]] = []
+    for line_number, line in enumerate(lines, start=1):
+        match = pattern.search(line)
+        if not match:
+            continue
+        matches.append({
+            "line": line_number,
+            "text": line.strip()[:240],
+            "match": match.group(1),
+        })
+        if len(matches) >= limit:
+            break
+    return matches
+
+
+def _symbol_near_line(text: str, signals: list[dict[str, Any]]) -> str:
+    symbols = _extract_local_symbols(text)
+    if symbols:
+        return symbols[0]
+    if signals:
+        return f"line_{signals[0].get('line')}"
+    return "file_scope"
+
+
+def _resource_label(signals: list[dict[str, Any]]) -> str:
+    if not signals:
+        return "ownership_or_cleanup"
+    match = str(signals[0].get("match") or "resource")
+    if "poller" in match:
+        return "poller"
+    if "io_channel" in match:
+        return "io_channel"
+    if "bdev" in match:
+        return "bdev_descriptor"
+    if "thread" in match:
+        return "thread"
+    if "malloc" in match or "free" in match or "zmalloc" in match:
+        return "memory"
+    return match
+
+
+def _local_test_hook_for_finding(finding: dict[str, Any], index: int) -> dict[str, Any]:
+    file_path = str(finding.get("file_path") or "")
+    module = _test_directory_for_source(file_path)
+    return {
+        "hook_id": f"local_test_hook_{index:03d}",
+        "finding_id": finding.get("finding_id") or "",
+        "file_path": file_path,
+        "function": finding.get("function") or "",
+        "suggested_test_directory": module,
+        "observable_trigger": "force invalid input, allocation failure, disconnect, timeout, or reset near the scanned ownership path",
+        "expected_signal": "operation fails cleanly, resources are released, no stale session/device state remains, and logs expose cleanup outcome",
+        "diagnostic_hint": "compare before/after resource counters, target logs, reconnect behavior, and existing SPDK test scripts in the suggested directory",
+    }
+
+
+def _local_fallback_resource_finding(
+    *,
+    file_path: str,
+    symbols: list[str],
+    risk_pattern: str,
+) -> dict[str, Any]:
+    function = symbols[0] if symbols else "file_scope"
+    return {
+        "finding_id": "local_resource_risk_001",
+        "file_path": file_path,
+        "function": function,
+        "resource": "ownership_or_cleanup",
+        "risk_pattern": risk_pattern,
+        "risk": "no direct allocation token was found; review module lifecycle and abnormal branch cleanup around this scope",
+        "summary": f"{file_path} was selected as the closest local scope for resource and cleanup review.",
+        "evidence_lines": [],
+        "detection": "local source scope fallback",
+        "severity": "medium",
+        "confidence": "low",
+        "test_hook_id": "local_test_hook_001",
+        "source": "local-resource-scan",
+    }
+
+
+def _test_directory_for_source(file_path: str) -> str:
+    mappings = [
+        ("lib/nvmf", "test/nvmf"),
+        ("lib/iscsi", "test/iscsi_tgt"),
+        ("lib/bdev", "test/bdev"),
+        ("module/bdev", "test/bdev"),
+        ("lib/blob", "test/blobstore"),
+        ("lib/ftl", "test/ftl"),
+        ("lib/vhost", "test/vhost"),
+        ("lib/vfio_user", "test/vfio_user"),
+        ("lib/thread", "test/thread"),
+        ("lib/event", "test/event"),
+    ]
+    for prefix, directory in mappings:
+        if file_path.startswith(prefix):
+            return directory
+    return "test"
 
 
 def _preferred_source_roots(query_lower: str) -> list[str]:

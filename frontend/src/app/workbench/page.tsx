@@ -1770,6 +1770,11 @@ const AUDIT_ARTIFACT_KIND_ORDER = [
 
 function prioritizedAuditArtifacts(artifacts: WorkbenchTaskArtifact[]): WorkbenchTaskArtifact[] {
   return [...artifacts].sort((left, right) => {
+    const leftOutputRank = workflowOutputArtifactRank(left.relative_path);
+    const rightOutputRank = workflowOutputArtifactRank(right.relative_path);
+    if (leftOutputRank !== rightOutputRank) {
+      return leftOutputRank - rightOutputRank;
+    }
     const leftRank = AUDIT_ARTIFACT_KIND_ORDER.indexOf(left.kind);
     const rightRank = AUDIT_ARTIFACT_KIND_ORDER.indexOf(right.kind);
     const normalizedLeftRank = leftRank === -1 ? AUDIT_ARTIFACT_KIND_ORDER.length : leftRank;
@@ -1779,6 +1784,23 @@ function prioritizedAuditArtifacts(artifacts: WorkbenchTaskArtifact[]): Workbenc
     }
     return left.relative_path.localeCompare(right.relative_path);
   });
+}
+
+function workflowOutputArtifactRank(relativePath: string): number {
+  const name = relativePath.split("/").pop() ?? relativePath;
+  const order = [
+    "risk_findings.json",
+    "test_hooks.json",
+    "source_scope.json",
+    "evidence_cards.json",
+    "black_box_cases.json",
+    "impact_scope.json",
+    "flow_delta.json",
+    "test_recommendations.json",
+    "report.md",
+  ];
+  const rank = order.indexOf(name);
+  return rank === -1 ? order.length : rank;
 }
 
 function Panel({
