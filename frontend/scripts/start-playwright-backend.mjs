@@ -9,11 +9,18 @@ const backendDir = path.resolve(__dirname, "../../backend");
 const backendHost = process.env.CODETALK_BACKEND_BIND_HOST ?? "0.0.0.0";
 const backendPort = process.env.CODETALK_BACKEND_PORT ?? "8100";
 const configuredPython = process.env.CODETALK_BACKEND_PYTHON;
+const runId =
+  process.env.CODETALK_PLAYWRIGHT_RUN_ID ??
+  `${new Date().toISOString().replace(/[:.]/g, "-")}-${process.pid}`;
 const isolatedDataDir =
   process.env.CODETALK_PLAYWRIGHT_DATA_DIR ??
-  path.join(os.tmpdir(), "codetalk-playwright", `backend-${backendPort}`);
+  path.join(os.tmpdir(), "codetalk-playwright", `backend-${backendPort}`, runId);
 const isolatedSqliteDb =
   process.env.CODETALK_PLAYWRIGHT_SQLITE_DB ?? path.join(isolatedDataDir, "codetalk.db");
+const shouldCleanupDataDir =
+  process.env.CODETALK_PLAYWRIGHT_KEEP_DATA !== "1" &&
+  !process.env.CODETALK_PLAYWRIGHT_DATA_DIR &&
+  !process.env.CODETALK_PLAYWRIGHT_SQLITE_DB;
 const candidates = configuredPython
   ? [configuredPython]
   : ["python3.11", "python3.10", "python3", "python"];
@@ -25,11 +32,20 @@ function isSupportedPython(command) {
       "-c",
       [
         "import sys",
-        "import uvicorn, fastapi, pydantic_settings",
-        "raise SystemExit(0 if sys.version_info >= (3, 10) else 1)",
+        "assert sys.version_info >= (3, 10)",
+        "import uvicorn",
+        "import app.main",
       ].join("; "),
     ],
-    { stdio: "ignore" },
+    {
+      cwd: backendDir,
+      env: {
+        ...process.env,
+        DATA_DIR: isolatedDataDir,
+        SQLITE_DB: isolatedSqliteDb,
+      },
+      stdio: "ignore",
+    },
   );
   return result.status === 0;
 }
@@ -44,6 +60,17 @@ if (!python) {
 
 fs.mkdirSync(isolatedDataDir, { recursive: true });
 fs.mkdirSync(path.dirname(isolatedSqliteDb), { recursive: true });
+
+let cleanedDataDir = false;
+function cleanupDataDir() {
+  if (!shouldCleanupDataDir || cleanedDataDir) return;
+  cleanedDataDir = true;
+  try {
+    fs.rmSync(isolatedDataDir, { recursive: true, force: true });
+  } catch {
+    // Best-effort cleanup; per-run isolation still prevents reuse of secrets.
+  }
+}
 
 const child = spawn(
   python,
@@ -62,6 +89,7 @@ const child = spawn(
 function shutdown(signal) {
   if (child.exitCode !== null || child.signalCode !== null) return;
   child.kill(signal);
+  cleanupDataDir();
   const forceKill = setTimeout(() => {
     if (child.exitCode === null && child.signalCode === null) {
       child.kill("SIGKILL");
@@ -73,8 +101,10 @@ function shutdown(signal) {
 
 process.on("SIGTERM", () => shutdown("SIGTERM"));
 process.on("SIGINT", () => shutdown("SIGINT"));
+process.on("exit", cleanupDataDir);
 
 child.on("exit", (code, signal) => {
+  cleanupDataDir();
   if (signal) {
     const signalExitCodes = { SIGINT: 130, SIGTERM: 143, SIGKILL: 137 };
     process.exit(signalExitCodes[signal] ?? 1);
