@@ -12,6 +12,8 @@ const backendArgs = `-m uvicorn app.main:app --host ${backendBindHost} --port ${
 const backendCommand = backendPython
   ? `cd ../backend && ${backendPython} ${backendArgs}`
   : `cd ../backend && for py in python3.11 python3.10 python3 python; do if command -v "$py" >/dev/null 2>&1 && "$py" -c 'import sys; raise SystemExit(0 if sys.version_info >= (3, 10) else 1)'; then exec "$py" ${backendArgs}; fi; done; echo "No Python >=3.10 interpreter found for CodeTalk backend. Set CODETALK_BACKEND_PYTHON."; exit 1`;
+const nextPublicApiUrl =
+  process.env.NEXT_PUBLIC_API_URL ?? `http://${browserHost}:${backendPort}`;
 
 export default defineConfig({
   testDir: "./e2e",
@@ -39,7 +41,7 @@ export default defineConfig({
       timeout: 30_000,
     },
     {
-      command: `NEXT_PUBLIC_API_URL=http://${browserHost}:${backendPort} npx next dev -H ${frontendBindHost} -p ${frontendPort}`,
+      command: `NEXT_PUBLIC_API_URL=${nextPublicApiUrl} npx next dev -H ${frontendBindHost} -p ${frontendPort}`,
       port: frontendPort,
       reuseExistingServer,
       timeout: 30_000,
