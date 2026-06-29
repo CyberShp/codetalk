@@ -228,6 +228,14 @@ async function configureLlmIfAvailable(page: Page) {
   record("A03", "pass", "API key input remained password and page text did not expose the key");
 }
 
+function recordDeferredChatCases(evidence: string) {
+  record("C04", "blocked", `thread recovery requires a focused completed-chat refresh run: ${evidence}`);
+  record("C05", "blocked", `long-running concurrent input requires a focused completed-chat run: ${evidence}`);
+  record("C06", "blocked", `model retry requires a controlled failure/timeout run: ${evidence}`);
+  record("C07", "blocked", `multi-thread isolation requires a focused concurrent-thread run: ${evidence}`);
+  record("C08", "blocked", `chat export requires a focused completed-chat export run: ${evidence}`);
+}
+
 test.describe.configure({ mode: "serial" });
 
 test.beforeAll(() => {
@@ -392,6 +400,7 @@ test("B/C/K: create SPDK workspace through UI and verify chat/index gate", async
     record("C01", "pass", "AI thread returned visible content");
     record("C02", "pass", "first answer requested code evidence");
     record("C03", "pass", "thread can continue in structured mode");
+    recordDeferredChatCases("first answer returned");
   } catch (error) {
     const shot = await screenshot(page, "C01-chat-timeout");
     const bodyText = await page.locator("body").innerText().catch(() => "");
@@ -402,6 +411,7 @@ test("B/C/K: create SPDK workspace through UI and verify chat/index gate", async
     });
     record("C02", "blocked", "no model answer to validate code evidence");
     record("C03", "blocked", "no model answer to validate context continuation");
+    recordDeferredChatCases("first answer did not complete");
   }
 });
 
