@@ -7,7 +7,13 @@ from app.adapters import (
     get_adapter,
     get_all_adapters,
 )
-from app.adapters.base import AnalysisRequest, BaseToolAdapter
+from app.adapters.base import (
+    AnalysisRequest,
+    BaseToolAdapter,
+    ToolCapability,
+    ToolHealth,
+    UnifiedResult,
+)
 from app.utils.local_client import local_http_client
 
 
@@ -18,7 +24,7 @@ class TestAdapterRegistry:
         assert isinstance(adapters, list)
         names = {a.name() for a in adapters}
         assert "gitnexus" in names
-        assert "deepwiki" in names
+        assert "deepwiki" not in names
 
     def test_get_adapter_unknown_raises_key_error(self):
         """Lines 23-25: get_adapter raises KeyError for unknown name."""
@@ -32,16 +38,40 @@ class TestAdapterRegistry:
 
     def test_create_adapter_known_returns_instance(self):
         """Line 32: create_adapter returns a fresh instance from the factory."""
-        adapter = create_adapter("deepwiki")
+        adapter = create_adapter("gitnexus")
         assert adapter is not None
-        assert adapter.name() == "deepwiki"
+        assert adapter.name() == "gitnexus"
 
 
 class TestBaseAdapterCleanup:
     async def test_cleanup_is_no_op(self):
-        """base.py line 81: default cleanup() is a no-op (does not raise).
-        DeepwikiAdapter does not override cleanup(), so this hits the base class pass."""
-        adapter = get_adapter("deepwiki")
+        """base.py line 81: default cleanup() is a no-op (does not raise)."""
+
+        class MinimalAdapter(BaseToolAdapter):
+            def name(self) -> str:
+                return "minimal"
+
+            def capabilities(self) -> list[ToolCapability]:
+                return []
+
+            async def health_check(self) -> ToolHealth:
+                return ToolHealth(True, "ok")
+
+            async def prepare(self, request: AnalysisRequest) -> None:
+                return None
+
+            async def analyze(self, request: AnalysisRequest) -> UnifiedResult:
+                return UnifiedResult(
+                    tool_name=self.name(),
+                    capability=ToolCapability.CODE_SEARCH,
+                    data={},
+                )
+
+            async def stream_logs(self, run_id: str):
+                if False:
+                    yield run_id
+
+        adapter = MinimalAdapter()
         req = AnalysisRequest(repo_local_path="/tmp/repo")
         await adapter.cleanup(req)
 

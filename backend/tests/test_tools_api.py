@@ -923,59 +923,38 @@ async def test_startup_probe_rejects_tools_without_probe_support(tools_client, m
     assert "does not support startup probe" in resp.json()["detail"]
 
 
-async def test_deepwiki_registry_uses_venv_launcher_and_declared_ports(tmp_path, monkeypatch):
-    """DeepWiki native process config should start the real venv launcher on configured ports."""
-    from app.config import settings
+async def test_process_registry_contains_only_current_managed_tools():
+    """The current product does not register removed DeepWiki processes."""
     from app.services import process_manager
-
-    deepwiki_dir = tmp_path / "deepwiki-open"
-    scripts_dir = "Scripts" if process_manager.sys.platform == "win32" else "bin"
-    python_name = "python.exe" if process_manager.sys.platform == "win32" else "python"
-    venv_python = deepwiki_dir / ".venv" / scripts_dir / python_name
-    venv_python.parent.mkdir(parents=True)
-    venv_python.write_text("", encoding="utf-8")
-    (deepwiki_dir / "package.json").write_text("{}", encoding="utf-8")
-
-    monkeypatch.setattr(settings, "deepwiki_path", str(deepwiki_dir))
-    monkeypatch.setattr(settings, "deepwiki_api_port", 8091)
-    monkeypatch.setattr(settings, "deepwiki_ui_port", 3001)
 
     registry = process_manager._build_registry()
 
-    api = registry["deepwiki-api"]
-    assert api["command"][0] == str(venv_python)
-    assert api["command"][1].endswith("deepwiki_launcher.py")
-    assert api["env"]["DEEPWIKI_API_PORT"] == "8091"
-    assert api["env"]["PORT"] == "8091"
-    assert api["restart_on_health_failure"] is False
-
-    ui = registry["deepwiki-ui"]
-    assert ui["env"]["PORT"] == "3001"
-    assert ui["env"]["SERVER_BASE_URL"] == "http://localhost:8091"
+    assert set(registry) == {"gitnexus"}
+    assert "deepwiki-api" not in registry
+    assert "deepwiki-ui" not in registry
+    assert registry["gitnexus"]["display_name"] == "GitNexus"
 
 
-async def test_deepwiki_process_env_loads_synced_dotenv(tmp_path, monkeypatch):
-    """ProcessManager should pass DeepWiki's synced .env to the subprocess."""
+async def test_process_env_prefers_explicit_config_over_unrelated_dotenv(tmp_path, monkeypatch):
+    """Managed tool env comes from the OS plus registry config, not removed DeepWiki sync."""
     from app.services import process_manager
 
     (tmp_path / ".env").write_text(
-        "OPENAI_BASE_URL=http://internal.ai/v1\n"
-        "OPENAI_API_KEY=fresh-key\n"
-        "LLM_MODEL=qwen-test\n",
+        "OPENAI_API_KEY=dotenv-key\n"
+        "GITNEXUS_PORT=9999\n",
         encoding="utf-8",
     )
     monkeypatch.setenv("OPENAI_API_KEY", "stale-system-key")
 
     env = process_manager._build_process_env(
-        "deepwiki-api",
-        {"env": {"PORT": "8091"}},
+        "gitnexus",
+        {"env": {"PORT": "7100", "GITNEXUS_PORT": "7100"}},
         str(tmp_path),
     )
 
-    assert env["OPENAI_API_KEY"] == "fresh-key"
-    assert env["OPENAI_BASE_URL"] == "http://internal.ai/v1"
-    assert env["LLM_MODEL"] == "qwen-test"
-    assert env["PORT"] == "8091"
+    assert env["OPENAI_API_KEY"] == "stale-system-key"
+    assert env["GITNEXUS_PORT"] == "7100"
+    assert env["PORT"] == "7100"
 
 
 async def test_process_manager_resolves_windows_npm_shim_before_spawn(monkeypatch):

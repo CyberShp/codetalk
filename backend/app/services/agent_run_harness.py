@@ -6,7 +6,9 @@ import hashlib
 import json
 import os
 import re
+import shutil
 import subprocess
+import sys
 import uuid
 from dataclasses import asdict, dataclass, field
 from datetime import datetime, timezone
@@ -239,9 +241,10 @@ class AgentRunHarness:
         run_payload = self._read_json_file("agent_run.json")
         if not isinstance(run_payload, dict) or run_payload.get("run_id") != run_id:
             raise ValueError(f"unknown agent run: {run_id}")
-        command = [str(part) for part in run_payload.get("command") or []]
-        if not command:
+        configured_command = [str(part) for part in run_payload.get("command") or []]
+        if not configured_command:
             raise ValueError("agent run command is empty")
+        command = _resolve_local_process_command(configured_command)
         cwd = str(run_payload.get("cwd") or "")
         if not cwd:
             raise ValueError("agent run cwd is empty")
@@ -300,6 +303,20 @@ class AgentRunHarness:
             command,
             provider_diagnostics,
         )
+        unresolved_launch_command = list(launch_command)
+        launch_command = _resolve_local_process_command(launch_command)
+        if launch_command != unresolved_launch_command and "reason" not in command_resolution:
+            command_resolution = {
+                **command_resolution,
+                "reason": "ad_hoc_command_preserved",
+                "local_executable_resolution": "python_to_current_interpreter",
+            }
+        if configured_command != command and "reason" not in command_resolution:
+            command_resolution = {
+                **command_resolution,
+                "reason": "ad_hoc_command_preserved",
+                "local_executable_resolution": "python_to_current_interpreter",
+            }
         invocation_candidates = _agent_process_invocation_candidates_for_harness(
             provider=str(run_payload.get("provider") or ""),
             command=launch_command,
@@ -323,7 +340,7 @@ class AgentRunHarness:
                 "run_id": run_id,
                 "turn_id": turn_id,
                 "provider": run_payload.get("provider") or "",
-                "command": command,
+                "command": configured_command,
                 "launch_command": launch_command,
                 "command_resolution": command_resolution,
                 "process_command": process_command,
@@ -377,7 +394,7 @@ class AgentRunHarness:
                 "event": "agent_run_started",
                 "run_id": run_id,
                 "turn_id": turn_id,
-                "command": command,
+                "command": configured_command,
                 "launch_command": launch_command,
                 "command_resolution": command_resolution,
                 "process_command": process_command,
@@ -406,7 +423,7 @@ class AgentRunHarness:
             candidate_transport,
             candidate_reason,
         ) in enumerate(invocation_candidates):
-            process_command = candidate_command
+            process_command = _resolve_local_process_command(candidate_command)
             stdin_payload_bytes = candidate_stdin
             prompt_transport = candidate_transport
             if candidate_reason == "large_payload_forced_stdin":
@@ -419,13 +436,13 @@ class AgentRunHarness:
                 )
             attempt: dict[str, Any] = {
                 "attempt_index": candidate_index + 1,
-                "process_command": _redact_command_list(candidate_command),
+                "process_command": _redact_command_list(process_command),
                 "prompt_transport": candidate_transport,
                 "prompt_transport_reason": prompt_transport_reason,
             }
             try:
                 completed = subprocess.run(
-                    candidate_command,
+                    process_command,
                     cwd=cwd,
                     input=candidate_stdin,
                     capture_output=True,
@@ -500,7 +517,7 @@ class AgentRunHarness:
                 status=status,
                 cwd=cwd,
                 timeout_sec=max(1, int(timeout_sec)),
-                command=command,
+                command=configured_command,
                 launch_command=launch_command,
                 command_resolution=command_resolution,
                 process_command=process_command,
@@ -847,6 +864,18 @@ def _replay_artifact_hashes(artifact_dir: Path, names: list[str]) -> dict[str, s
 
 def _redact_command_list(command: list[str]) -> list[str]:
     return [_redact(str(part)) for part in command]
+
+
+def _resolve_local_process_command(command: list[str]) -> list[str]:
+    if not command:
+        return []
+    resolved = [str(part) for part in command]
+    executable = resolved[0]
+    if executable != "python" or shutil.which(executable):
+        return resolved
+    if sys.executable:
+        resolved[0] = sys.executable
+    return resolved
 
 
 def _redact_replay_payload(payload: Any) -> Any:

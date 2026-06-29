@@ -723,7 +723,8 @@ def test_agent_run_harness_forces_stdin_for_large_prompt_payload(
     execution_input = json.loads((artifact_dir / "execution_input.json").read_text(encoding="utf-8"))
     assert execution_input["prompt_transport"] == "stdin"
     assert execution_input["prompt_transport_reason"] == "large_payload_forced_stdin"
-    assert execution_input["process_command"] == execution_input["command"]
+    assert execution_input["command"] == ["python", "-c", script, str(output_file)]
+    assert execution_input["process_command"][1:] == execution_input["command"][1:]
 
 
 def test_agent_run_harness_executes_provider_health_fallback_command(

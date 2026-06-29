@@ -1,6 +1,5 @@
 """Tests for /api/settings/llm and /api/settings/general endpoints."""
 
-import json
 from unittest.mock import AsyncMock, patch
 
 
@@ -397,7 +396,7 @@ async def test_update_general_settings_all_proxy_modes(client):
 
 
 # ---------------------------------------------------------------------------
-# DeepWiki env sync
+# Active model settings
 # ---------------------------------------------------------------------------
 
 _EMBED_LLM = {
@@ -421,15 +420,11 @@ _CHAT_LLM = {
 }
 
 
-async def test_update_general_settings_syncs_deepwiki_embedding_env(client, tmp_path, monkeypatch):
-    """Saving active_embedding_model_id writes OPENAI_EMBEDDING_MODEL to deepwiki .env."""
-    from app.config import settings as app_settings
-    monkeypatch.setattr(app_settings, "deepwiki_path", str(tmp_path))
-
+async def test_update_general_settings_persists_active_embedding_model(client):
     embed_resp = await client.post("/api/settings/llm", json=_EMBED_LLM)
     embed_id = embed_resp.json()["id"]
 
-    await client.put(
+    response = await client.put(
         "/api/settings/general",
         json={
             "proxy_mode": "none",
@@ -440,21 +435,17 @@ async def test_update_general_settings_syncs_deepwiki_embedding_env(client, tmp_
         },
     )
 
-    dot_env = tmp_path / ".env"
-    assert dot_env.exists()
-    content = dot_env.read_text(encoding="utf-8")
-    assert "OPENAI_EMBEDDING_MODEL=qwen-embed-v3" in content
+    assert response.status_code == 200
+    assert response.json()["active_embedding_model_id"] == embed_id
+    persisted = await client.get("/api/settings/general")
+    assert persisted.json()["active_embedding_model_id"] == embed_id
 
 
-async def test_update_general_settings_syncs_deepwiki_chat_env(client, tmp_path, monkeypatch):
-    """Saving active_chat_model_id writes OPENAI_BASE_URL/API_KEY/LLM_MODEL to deepwiki .env."""
-    from app.config import settings as app_settings
-    monkeypatch.setattr(app_settings, "deepwiki_path", str(tmp_path))
-
+async def test_update_general_settings_persists_active_chat_model(client):
     chat_resp = await client.post("/api/settings/llm", json=_CHAT_LLM)
     chat_id = chat_resp.json()["id"]
 
-    await client.put(
+    response = await client.put(
         "/api/settings/general",
         json={
             "proxy_mode": "none",
@@ -465,16 +456,13 @@ async def test_update_general_settings_syncs_deepwiki_chat_env(client, tmp_path,
         },
     )
 
-    content = (tmp_path / ".env").read_text(encoding="utf-8")
-    assert "OPENAI_BASE_URL=http://internal.ai/v1" in content
-    assert "LLM_MODEL=qw2.5" in content
+    assert response.status_code == 200
+    assert response.json()["active_chat_model_id"] == chat_id
+    persisted = await client.get("/api/settings/general")
+    assert persisted.json()["active_chat_model_id"] == chat_id
 
 
-async def test_update_general_settings_no_deepwiki_path_does_not_fail(client, monkeypatch):
-    """When deepwiki_path is empty, env sync is silently skipped."""
-    from app.config import settings as app_settings
-    monkeypatch.setattr(app_settings, "deepwiki_path", "")
-
+async def test_update_general_settings_allows_missing_active_model_reference(client):
     resp = await client.put(
         "/api/settings/general",
         json={
@@ -486,6 +474,7 @@ async def test_update_general_settings_no_deepwiki_path_does_not_fail(client, mo
         },
     )
     assert resp.status_code == 200
+    assert resp.json()["active_chat_model_id"] == "nonexistent-id"
 
 
 _EMBED_LLM_SEPARATE = {
@@ -499,17 +488,11 @@ _EMBED_LLM_SEPARATE = {
 }
 
 
-async def test_update_general_settings_syncs_deepwiki_embedding_full_config(
-    client, tmp_path, monkeypatch
-):
-    """Saving active_embedding_model_id writes base_url, api_key, and model to deepwiki .env."""
-    from app.config import settings as app_settings
-    monkeypatch.setattr(app_settings, "deepwiki_path", str(tmp_path))
-
+async def test_update_general_settings_persists_separate_embedding_model(client):
     embed_resp = await client.post("/api/settings/llm", json=_EMBED_LLM_SEPARATE)
     embed_id = embed_resp.json()["id"]
 
-    await client.put(
+    response = await client.put(
         "/api/settings/general",
         json={
             "proxy_mode": "none",
@@ -520,39 +503,11 @@ async def test_update_general_settings_syncs_deepwiki_embedding_full_config(
         },
     )
 
-    content = (tmp_path / ".env").read_text(encoding="utf-8")
-    assert "DEEPWIKI_EMBEDDING_BASE_URL=http://embed.internal/v1" in content
-    assert "DEEPWIKI_EMBEDDING_API_KEY=sk-embed-key" in content
-    assert "DEEPWIKI_EMBEDDING_MODEL=bge-large-v3" in content
-    assert "DEEPWIKI_EMBEDDER_TYPE=openai" in content
-    assert "OPENAI_EMBEDDING_MODEL=bge-large-v3" in content
+    assert response.status_code == 200
+    assert response.json()["active_embedding_model_id"] == embed_id
 
 
-async def test_update_general_settings_syncs_deepwiki_embedder_json(
-    client, tmp_path, monkeypatch
-):
-    """Saving active_embedding_model_id makes deepwiki embedder.json use active embedding."""
-    from app.config import settings as app_settings
-    monkeypatch.setattr(app_settings, "deepwiki_path", str(tmp_path))
-
-    config_dir = tmp_path / "api" / "config"
-    config_dir.mkdir(parents=True)
-    (config_dir / "embedder.json").write_text(
-        json.dumps({
-            "embedder": {
-                "client_class": "OpenAIClient",
-                "batch_size": 500,
-                "model_kwargs": {
-                    "model": "text-embedding-3-small",
-                    "dimensions": 256,
-                    "encoding_format": "float",
-                },
-            },
-            "embedder_ollama": {"model_kwargs": {"model": "nomic-embed-text"}},
-        }),
-        encoding="utf-8",
-    )
-
+async def test_update_general_settings_keeps_embedding_config_data_isolated(client):
     payload = {
         **_EMBED_LLM_SEPARATE,
         "base_url": "http://embed.internal",
@@ -572,61 +527,15 @@ async def test_update_general_settings_syncs_deepwiki_embedder_json(
         },
     )
 
-    env_content = (tmp_path / ".env").read_text(encoding="utf-8")
-    assert "DEEPWIKI_EMBEDDING_BASE_URL=http://embed.internal/v1" in env_content
-
-    config = json.loads((config_dir / "embedder.json").read_text(encoding="utf-8"))
-    embedder = config["embedder"]
-    assert embedder["client_class"] == "OpenAIClient"
-    assert embedder["initialize_kwargs"] == {
-        "api_key": "${DEEPWIKI_EMBEDDING_API_KEY}",
-        "base_url": "${DEEPWIKI_EMBEDDING_BASE_URL}",
-    }
-    assert embedder["batch_size"] == 10
-    assert embedder["model_kwargs"] == {"model": "bge-m3"}
-    assert config["embedder_ollama"]["model_kwargs"]["model"] == "nomic-embed-text"
+    configs = await client.get("/api/settings/llm")
+    [stored] = configs.json()
+    assert stored["id"] == embed_id
+    assert stored["base_url"] == "http://embed.internal"
+    assert stored["model"] == "bge-m3"
+    assert "api_key" not in stored
 
 
-async def test_deepwiki_generation_uses_active_chat_model(db):
-    """DeepWiki repo generation should not fall back to gpt-4o when a chat model is active."""
-    from app.api.deepwiki_pages import _resolve_active_deepwiki_model
-
-    await db.execute(
-        """INSERT INTO llm_configs
-           (id, name, api_type, base_url, api_key, model, max_tokens, temperature,
-            config_json, is_chat_model, is_embedding_model, created_at)
-           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
-        (
-            "chat-id",
-            "deepseek",
-            "openai_compat",
-            "https://api.deepseek.com",
-            "sk-test",
-            "deepseek-chat",
-            4096,
-            0.3,
-            None,
-            1,
-            0,
-            "now",
-        ),
-    )
-    await db.execute(
-        "INSERT INTO settings (key, value) VALUES (?, ?)",
-        ("active_chat_model_id", "chat-id"),
-    )
-    await db.commit()
-
-    provider, model = await _resolve_active_deepwiki_model(db)
-    assert provider == "openai"
-    assert model == "deepseek-chat"
-
-
-async def test_update_general_settings_clears_deepwiki_chat_env(client, tmp_path, monkeypatch):
-    """Setting active_chat_model_id to empty removes chat env keys from deepwiki .env."""
-    from app.config import settings as app_settings
-    monkeypatch.setattr(app_settings, "deepwiki_path", str(tmp_path))
-
+async def test_update_general_settings_clears_active_chat_model(client):
     chat_resp = await client.post("/api/settings/llm", json=_CHAT_LLM)
     chat_id = chat_resp.json()["id"]
 
@@ -635,25 +544,18 @@ async def test_update_general_settings_clears_deepwiki_chat_env(client, tmp_path
         json={"proxy_mode": "none", "proxy_url": "", "ssl_cert_path": "",
               "active_chat_model_id": chat_id, "active_embedding_model_id": ""},
     )
-    content = (tmp_path / ".env").read_text(encoding="utf-8")
-    assert "OPENAI_BASE_URL=" in content  # precondition: was written
+    assert (await client.get("/api/settings/general")).json()["active_chat_model_id"] == chat_id
 
-    await client.put(
+    response = await client.put(
         "/api/settings/general",
         json={"proxy_mode": "none", "proxy_url": "", "ssl_cert_path": "",
               "active_chat_model_id": "", "active_embedding_model_id": ""},
     )
-    content = (tmp_path / ".env").read_text(encoding="utf-8")
-    assert "OPENAI_BASE_URL=" not in content
-    assert "OPENAI_API_KEY=" not in content
-    assert "LLM_MODEL=" not in content
+    assert response.status_code == 200
+    assert response.json()["active_chat_model_id"] == ""
 
 
-async def test_update_general_settings_clears_deepwiki_embedding_env(client, tmp_path, monkeypatch):
-    """Setting active_embedding_model_id to empty removes embedding env keys from deepwiki .env."""
-    from app.config import settings as app_settings
-    monkeypatch.setattr(app_settings, "deepwiki_path", str(tmp_path))
-
+async def test_update_general_settings_clears_active_embedding_model(client):
     embed_resp = await client.post("/api/settings/llm", json=_EMBED_LLM_SEPARATE)
     embed_id = embed_resp.json()["id"]
 
@@ -662,29 +564,31 @@ async def test_update_general_settings_clears_deepwiki_embedding_env(client, tmp
         json={"proxy_mode": "none", "proxy_url": "", "ssl_cert_path": "",
               "active_chat_model_id": "", "active_embedding_model_id": embed_id},
     )
-    content = (tmp_path / ".env").read_text(encoding="utf-8")
-    assert "OPENAI_EMBEDDING_MODEL=" in content  # precondition: was written
+    assert (await client.get("/api/settings/general")).json()["active_embedding_model_id"] == embed_id
 
-    await client.put(
+    response = await client.put(
         "/api/settings/general",
         json={"proxy_mode": "none", "proxy_url": "", "ssl_cert_path": "",
               "active_chat_model_id": "", "active_embedding_model_id": ""},
     )
-    content = (tmp_path / ".env").read_text(encoding="utf-8")
-    assert "DEEPWIKI_EMBEDDING_BASE_URL=" not in content
-    assert "DEEPWIKI_EMBEDDING_API_KEY=" not in content
-    assert "OPENAI_EMBEDDING_MODEL=" not in content
+    assert response.status_code == 200
+    assert response.json()["active_embedding_model_id"] == ""
 
 
-async def test_update_general_settings_triggers_deepwiki_restart(client, tmp_path, monkeypatch):
-    """_schedule_deepwiki_restart is called when deepwiki .env is successfully updated."""
+async def test_settings_config_has_no_deepwiki_runtime_side_effects():
     from app.config import settings as app_settings
-    monkeypatch.setattr(app_settings, "deepwiki_path", str(tmp_path))
 
-    import app.api.settings as settings_mod
-    calls: list[bool] = []
-    monkeypatch.setattr(settings_mod, "_schedule_deepwiki_restart", lambda: calls.append(True))
+    assert not hasattr(app_settings, "deepwiki_path")
+    assert not hasattr(app_settings, "deepwiki_api_port")
+    assert not hasattr(app_settings, "deepwiki_ui_port")
 
+
+# ---------------------------------------------------------------------------
+# Active model references on LLM config mutation
+# ---------------------------------------------------------------------------
+
+
+async def test_update_active_chat_config_keeps_active_reference(client):
     chat_resp = await client.post("/api/settings/llm", json=_CHAT_LLM)
     chat_id = chat_resp.json()["id"]
 
@@ -694,43 +598,15 @@ async def test_update_general_settings_triggers_deepwiki_restart(client, tmp_pat
               "active_chat_model_id": chat_id, "active_embedding_model_id": ""},
     )
 
-    assert calls == [True]
+    update_resp = await client.put(f"/api/settings/llm/{chat_id}", json={"model": "qw3-turbo"})
+    assert update_resp.status_code == 200
+    assert update_resp.json()["model"] == "qw3-turbo"
+
+    general = await client.get("/api/settings/general")
+    assert general.json()["active_chat_model_id"] == chat_id
 
 
-# ---------------------------------------------------------------------------
-# DeepWiki env sync on LLM config mutation (update / delete active config)
-# ---------------------------------------------------------------------------
-
-
-async def test_update_active_chat_config_syncs_deepwiki_env(client, tmp_path, monkeypatch):
-    """Updating an active chat config re-syncs deepwiki .env with new values."""
-    from app.config import settings as app_settings
-    monkeypatch.setattr(app_settings, "deepwiki_path", str(tmp_path))
-
-    chat_resp = await client.post("/api/settings/llm", json=_CHAT_LLM)
-    chat_id = chat_resp.json()["id"]
-
-    await client.put(
-        "/api/settings/general",
-        json={"proxy_mode": "none", "proxy_url": "", "ssl_cert_path": "",
-              "active_chat_model_id": chat_id, "active_embedding_model_id": ""},
-    )
-    content = (tmp_path / ".env").read_text(encoding="utf-8")
-    assert "LLM_MODEL=qw2.5" in content  # precondition
-
-    # Update the active config with a new model name
-    await client.put(f"/api/settings/llm/{chat_id}", json={"model": "qw3-turbo"})
-
-    content = (tmp_path / ".env").read_text(encoding="utf-8")
-    assert "LLM_MODEL=qw3-turbo" in content
-    assert "LLM_MODEL=qw2.5" not in content
-
-
-async def test_update_active_embedding_config_syncs_deepwiki_env(client, tmp_path, monkeypatch):
-    """Updating an active embedding config re-syncs deepwiki .env with new values."""
-    from app.config import settings as app_settings
-    monkeypatch.setattr(app_settings, "deepwiki_path", str(tmp_path))
-
+async def test_update_active_embedding_config_keeps_active_reference(client):
     embed_resp = await client.post("/api/settings/llm", json=_EMBED_LLM_SEPARATE)
     embed_id = embed_resp.json()["id"]
 
@@ -739,26 +615,16 @@ async def test_update_active_embedding_config_syncs_deepwiki_env(client, tmp_pat
         json={"proxy_mode": "none", "proxy_url": "", "ssl_cert_path": "",
               "active_chat_model_id": "", "active_embedding_model_id": embed_id},
     )
-    content = (tmp_path / ".env").read_text(encoding="utf-8")
-    assert "OPENAI_EMBEDDING_MODEL=bge-large-v3" in content  # precondition
 
-    # Update to a new embedding model
-    await client.put(f"/api/settings/llm/{embed_id}", json={"model": "bge-m3"})
+    update_resp = await client.put(f"/api/settings/llm/{embed_id}", json={"model": "bge-m3"})
+    assert update_resp.status_code == 200
+    assert update_resp.json()["model"] == "bge-m3"
 
-    content = (tmp_path / ".env").read_text(encoding="utf-8")
-    assert "OPENAI_EMBEDDING_MODEL=bge-m3" in content
-    assert "OPENAI_EMBEDDING_MODEL=bge-large-v3" not in content
+    general = await client.get("/api/settings/general")
+    assert general.json()["active_embedding_model_id"] == embed_id
 
 
-async def test_delete_active_config_clears_deepwiki_env(client, tmp_path, monkeypatch):
-    """Deleting an active config removes its env keys from deepwiki .env."""
-    from app.config import settings as app_settings
-    monkeypatch.setattr(app_settings, "deepwiki_path", str(tmp_path))
-
-    import app.api.settings as settings_mod
-    restart_calls: list[bool] = []
-    monkeypatch.setattr(settings_mod, "_schedule_deepwiki_restart", lambda: restart_calls.append(True))
-
+async def test_delete_active_config_clears_active_model_reference(client):
     chat_resp = await client.post("/api/settings/llm", json=_CHAT_LLM)
     chat_id = chat_resp.json()["id"]
 
@@ -767,15 +633,10 @@ async def test_delete_active_config_clears_deepwiki_env(client, tmp_path, monkey
         json={"proxy_mode": "none", "proxy_url": "", "ssl_cert_path": "",
               "active_chat_model_id": chat_id, "active_embedding_model_id": ""},
     )
-    content = (tmp_path / ".env").read_text(encoding="utf-8")
-    assert "OPENAI_BASE_URL=" in content  # precondition
+    assert (await client.get("/api/settings/general")).json()["active_chat_model_id"] == chat_id
 
-    restart_calls.clear()  # reset after PUT /general already fired one
     delete_resp = await client.delete(f"/api/settings/llm/{chat_id}")
     assert delete_resp.status_code == 204
 
-    content = (tmp_path / ".env").read_text(encoding="utf-8")
-    assert "OPENAI_BASE_URL=" not in content
-    assert "OPENAI_API_KEY=" not in content
-    assert "LLM_MODEL=" not in content
-    assert restart_calls == [True]
+    general = await client.get("/api/settings/general")
+    assert general.json()["active_chat_model_id"] == ""

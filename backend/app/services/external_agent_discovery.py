@@ -14,6 +14,7 @@ import re
 import shlex
 import shutil
 import subprocess
+import sys
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
 from typing import Literal
@@ -811,6 +812,9 @@ def _resolve_provider_command_attempt(command: str, provider: str | None = None)
             resolution["resolved_shim_path"] = resolved
     else:
         resolved = shutil.which(executable)
+        if not resolved and executable == "python" and sys.executable:
+            resolved = sys.executable
+            resolution["current_python"] = resolved
         resolution["which"] = resolved or ""
     if not resolved:
         shell_probe = _probe_windows_shell_command(executable)
