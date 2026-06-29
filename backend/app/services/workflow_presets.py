@@ -29,9 +29,8 @@ def builtin_workflow_presets() -> list[dict[str, Any]]:
                 "steps": [
                     {
                         "id": "discover_scope",
-                        "type": "agent_task",
-                        "provider": "claude-code",
-                        "goal": "Discover source files, symbols, entry points, and evidence for the requested module. Do not edit files.",
+                        "type": "local_scope_discover",
+                        "goal": "Discover source files, symbols, entry points, and evidence for the requested module from the local repository.",
                         "required_artifacts": ["source_scope.json", "evidence_cards.json"],
                     },
                     {"id": "validate_evidence", "type": "evidence_validate"},

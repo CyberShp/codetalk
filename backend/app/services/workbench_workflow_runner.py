@@ -303,6 +303,29 @@ class WorkbenchWorkflowRunner:
                 payload["count"],
             )
 
+        if step_type == "local_scope_discover":
+            payloads = _local_scope_discovery_payloads(
+                task_run=task_run,
+                step=step,
+            )
+            written: list[str] = []
+            for artifact_name, payload in payloads.items():
+                artifact_path = artifact_dir / artifact_name
+                _write_json(artifact_path, payload)
+                written.append(artifact_name)
+            return {
+                "step_id": step_id,
+                "type": step_type,
+                "status": "completed",
+                "artifact_dir": str(artifact_dir),
+                "artifact": "source_scope.json",
+                "artifacts": written,
+                "required_artifacts": [
+                    str(item) for item in step.get("required_artifacts") or []
+                ],
+                "count": len(payloads.get("evidence_cards.json") or []),
+            }
+
         if step_type == "evidence_validate":
             payload = _evidence_validation_payload(
                 task_run=task_run,
@@ -618,6 +641,228 @@ SOURCE_EXTENSIONS = frozenset({
     ".c", ".h", ".cc", ".cpp", ".hpp", ".py", ".go", ".rs", ".java",
     ".ts", ".tsx", ".js", ".jsx",
 })
+
+
+def _local_scope_discovery_payloads(
+    *,
+    task_run: Any,
+    step: dict[str, Any],
+) -> dict[str, Any]:
+    repo = Path(str(task_run.repo_path or ""))
+    query = _local_scope_query(task_run.input_snapshot)
+    files = _discover_local_source_files(repo, query)
+    evidence_cards = [
+        _local_evidence_card(repo=repo, file_path=file_path, query=query, index=index)
+        for index, file_path in enumerate(files, start=1)
+    ]
+    scope_payload = {
+        "scope_id": str(step.get("id") or "local_scope_discover"),
+        "query": query,
+        "repo_path": str(repo),
+        "discovery": {
+            "provider": "local-search",
+            "method": "filesystem_source_scan",
+            "file_count": len(files),
+        },
+        "files": files,
+        "entry_points": [
+            {
+                "file_path": card["file_path"],
+                "symbol": symbol,
+                "reason": card["reason"],
+            }
+            for card in evidence_cards
+            for symbol in card.get("symbols", [])[:2]
+        ][:24],
+    }
+    return {
+        "source_scope.json": scope_payload,
+        "evidence_cards.json": evidence_cards,
+    }
+
+
+def _local_scope_query(input_snapshot: dict[str, Any]) -> str:
+    preferred_keys = (
+        "analysis_object",
+        "target_scope",
+        "module",
+        "repo_path",
+        "patch_diff",
+        "patch_plan",
+        "mr_link",
+    )
+    parts = [
+        str(input_snapshot.get(key) or "").strip()
+        for key in preferred_keys
+        if str(input_snapshot.get(key) or "").strip()
+    ]
+    if not parts:
+        parts = [
+            str(value).strip()
+            for value in input_snapshot.values()
+            if isinstance(value, str) and str(value).strip()
+        ]
+    return " ".join(parts)[:2000]
+
+
+def _discover_local_source_files(repo: Path, query: str, *, limit: int = 16) -> list[str]:
+    try:
+        root = repo.resolve()
+    except OSError:
+        return []
+    if not root.exists() or not root.is_dir():
+        return []
+    query_lower = query.lower()
+    preferred_roots = _preferred_source_roots(query_lower)
+    candidates: list[Path] = []
+    for relative_root in preferred_roots:
+        base = root / relative_root
+        if base.exists() and base.is_dir():
+            candidates.extend(_iter_source_files(base, root=root, limit=limit * 4))
+    if len(candidates) < limit:
+        candidates.extend(_iter_source_files(root, root=root, limit=limit * 8))
+    ranked = sorted(
+        _dedupe_paths(candidates),
+        key=lambda path: (
+            -_source_file_score(path, root=root, query_lower=query_lower),
+            path.relative_to(root).as_posix(),
+        ),
+    )
+    return [path.relative_to(root).as_posix() for path in ranked[:limit]]
+
+
+def _preferred_source_roots(query_lower: str) -> list[str]:
+    roots: list[str] = []
+    keyword_roots = [
+        ("nvmf", ["lib/nvmf", "module/event/subsystems/nvmf", "test/nvmf"]),
+        ("nvme-of", ["lib/nvmf", "module/event/subsystems/nvmf", "test/nvmf"]),
+        ("nvme", ["lib/nvme", "test/nvme", "lib/nvmf", "test/nvmf"]),
+        ("iscsi", ["lib/iscsi", "test/iscsi_tgt"]),
+        ("bdev", ["lib/bdev", "module/bdev", "test/bdev"]),
+        ("blob", ["lib/blob", "test/blobstore"]),
+        ("ftl", ["lib/ftl", "module/bdev/ftl", "test/ftl"]),
+        ("vhost", ["lib/vhost", "test/vhost"]),
+        ("vfio", ["lib/vfio_user", "test/vfio_user"]),
+        ("reactor", ["lib/event", "lib/thread", "test/event"]),
+        ("thread", ["lib/thread", "test/thread"]),
+        ("rpc", ["lib/rpc", "module/event", "test/json_config"]),
+    ]
+    for keyword, values in keyword_roots:
+        if keyword in query_lower:
+            roots.extend(values)
+    return _dedupe_strings(roots)
+
+
+def _iter_source_files(base: Path, *, root: Path, limit: int) -> list[Path]:
+    skipped_dirs = {".git", ".hg", ".svn", "node_modules", "__pycache__", ".venv", "venv", "build"}
+    files: list[Path] = []
+    try:
+        iterator = base.rglob("*")
+        for path in iterator:
+            if len(files) >= limit:
+                break
+            if not path.is_file() or path.suffix.lower() not in SOURCE_EXTENSIONS:
+                continue
+            try:
+                relative_parts = path.relative_to(root).parts
+            except ValueError:
+                continue
+            if any(part in skipped_dirs for part in relative_parts):
+                continue
+            files.append(path)
+    except OSError:
+        return files
+    return files
+
+
+def _dedupe_paths(paths: list[Path]) -> list[Path]:
+    seen: set[str] = set()
+    result: list[Path] = []
+    for path in paths:
+        key = path.as_posix()
+        if key in seen:
+            continue
+        seen.add(key)
+        result.append(path)
+    return result
+
+
+def _source_file_score(path: Path, *, root: Path, query_lower: str) -> int:
+    try:
+        relative = path.relative_to(root).as_posix().lower()
+    except ValueError:
+        relative = path.as_posix().lower()
+    score = 0
+    tokens = [
+        token
+        for token in re.split(r"[^a-z0-9_/-]+", query_lower)
+        if len(token) >= 3
+    ]
+    for token in tokens:
+        if token in relative:
+            score += 10
+    if "/test/" in f"/{relative}" or relative.startswith("test/"):
+        score -= 1
+    if path.suffix.lower() in {".c", ".h"}:
+        score += 3
+    try:
+        text = path.read_text(encoding="utf-8", errors="replace")[:12000].lower()
+    except OSError:
+        return score
+    for token in tokens[:12]:
+        if token in text:
+            score += 2
+    return score
+
+
+def _local_evidence_card(
+    *,
+    repo: Path,
+    file_path: str,
+    query: str,
+    index: int,
+) -> dict[str, Any]:
+    path = repo / file_path
+    try:
+        data = path.read_bytes()
+        text = data.decode("utf-8", errors="replace")
+    except OSError:
+        data = b""
+        text = ""
+    symbols = _extract_local_symbols(text)
+    return {
+        "evidence_id": f"local_evidence_{index:03d}",
+        "kind": "source_file",
+        "file_path": file_path,
+        "symbols": symbols[:12],
+        "reason": _local_evidence_reason(file_path=file_path, query=query, symbols=symbols),
+        "sha256": hashlib.sha256(data).hexdigest() if data else "",
+        "line_count": len(text.splitlines()) if text else 0,
+        "source": "local-search",
+    }
+
+
+def _extract_local_symbols(text: str, *, limit: int = 24) -> list[str]:
+    symbols: list[str] = []
+    patterns = [
+        re.compile(r"^\s*(?:static\s+)?(?:inline\s+)?[A-Za-z_][\w\s\*]*\s+([A-Za-z_]\w*)\s*\([^;]*\)\s*\{", re.MULTILINE),
+        re.compile(r"^\s*(?:int|void|bool|static)\s+([A-Za-z_]\w*)\s*\(", re.MULTILINE),
+    ]
+    for pattern in patterns:
+        for match in pattern.finditer(text):
+            symbol = match.group(1)
+            if symbol not in symbols:
+                symbols.append(symbol)
+            if len(symbols) >= limit:
+                return symbols
+    return symbols
+
+
+def _local_evidence_reason(*, file_path: str, query: str, symbols: list[str]) -> str:
+    symbol_text = ", ".join(symbols[:3])
+    if symbol_text:
+        return f"Matched local source scope for '{query[:120]}' with symbols {symbol_text}."
+    return f"Matched local source scope for '{query[:120]}' by file path and source extension."
 
 
 def _agent_source_slice_requests(artifact_dir: Path) -> list[dict[str, Any]]:
@@ -2110,6 +2355,9 @@ def _render_report_content(
         lines.append(
             f"- `{result.get('step_id')}` {result.get('type')}: {result.get('status')}"
         )
+        for artifact in result.get("artifacts") or []:
+            if str(artifact).strip():
+                lines.append(f"  - artifact `{artifact}`")
     evidence = context_bundle.get("evidence") or []
     semantics = context_bundle.get("semantic_cases") or []
     if evidence:

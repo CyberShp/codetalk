@@ -2974,3 +2974,69 @@ def test_workbench_workflow_runner_executes_builtin_context_and_report_steps(tmp
     execution = json.loads((root / "workflow_execution.json").read_text(encoding="utf-8"))
     assert execution["context_discovery_decision"]["fast-context"]["requested_by_agent_instructions"] is True
     assert execution["context_discovery_decision"]["fast-context"]["fallback_path"][-1] == "agent_cli"
+
+
+def test_module_analysis_preset_executes_with_local_scope_discovery(tmp_path):
+    from app.services.workbench_task_run import WorkbenchTaskRunPreparer
+    from app.services.workbench_workflow_runner import WorkbenchWorkflowRunner
+    from app.services.workflow_dsl import WorkflowStore
+    from app.services.workflow_presets import install_workflow_preset
+
+    repo = tmp_path / "repo"
+    (repo / "lib" / "nvmf").mkdir(parents=True)
+    (repo / "test" / "nvmf").mkdir(parents=True)
+    (repo / "lib" / "nvmf" / "tcp.c").write_text(
+        "int nvmf_tcp_accept(void) { return 0; }\n"
+        "int nvmf_tcp_poll_group_poll(void) { return nvmf_tcp_accept(); }\n",
+        encoding="utf-8",
+    )
+    (repo / "test" / "nvmf" / "target.c").write_text(
+        "void test_nvmf_tcp_connect(void) {}\n",
+        encoding="utf-8",
+    )
+    workflow_store = WorkflowStore(tmp_path / "workflows.db")
+    install_workflow_preset(workflow_store, "module_analysis")
+
+    task_run = WorkbenchTaskRunPreparer(
+        artifact_root=tmp_path / "task_runs",
+        workflow_store=workflow_store,
+    ).prepare(
+        workflow_id="module_analysis",
+        workspace_id="ws-local-module-analysis",
+        repo_path=str(repo),
+        inputs={
+            "analysis_object": "SPDK NVMe-oF target connect to IO path",
+            "repo_path": str(repo),
+        },
+    )
+
+    result = WorkbenchWorkflowRunner(tmp_path / "task_runs").execute_task_run(
+        task_run.task_run_id,
+        timeout_sec=10,
+    )
+
+    assert result.status == "completed"
+    step_status = {item["step_id"]: item["status"] for item in result.step_results}
+    assert step_status == {
+        "discover_scope": "completed",
+        "validate_evidence": "completed",
+        "render_report": "completed",
+    }
+    root = Path(task_run.artifact_dir)
+    source_scope = json.loads(
+        (root / "steps" / "discover_scope" / "source_scope.json").read_text(encoding="utf-8")
+    )
+    evidence_cards = json.loads(
+        (root / "steps" / "discover_scope" / "evidence_cards.json").read_text(encoding="utf-8")
+    )
+    report = (root / "steps" / "render_report" / "report.md").read_text(encoding="utf-8")
+    assert "lib/nvmf/tcp.c" in source_scope["files"]
+    assert evidence_cards[0]["source"] == "local-search"
+    assert evidence_cards[0]["sha256"]
+    assert "source_scope.json" in report
+    output_status = {item["id"]: item["status"] for item in result.outputs}
+    assert output_status == {
+        "scope": "ok",
+        "evidence_cards": "ok",
+        "report": "ok",
+    }

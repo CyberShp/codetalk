@@ -1688,9 +1688,9 @@ test("D/I: agent workbench real UI workflow, semantic library, memory, and artif
 
     await expect(executeButton).toBeEnabled({ timeout: 15_000 });
     await executeButton.click();
-    await expect(page.getByText(/Workflow execution|Action failed|error|provider|missing/i)).toBeVisible({
-      timeout: 120_000,
-    });
+    await expect
+      .poll(() => page.locator("body").innerText(), { timeout: 120_000 })
+      .toMatch(/Workflow execution|Action failed/i);
     const workbenchText = await page.locator("body").innerText();
     const executed = /Workflow execution\s+completed\b/i.test(workbenchText);
     record(
@@ -1726,15 +1726,42 @@ test("D/I: agent workbench real UI workflow, semantic library, memory, and artif
   }
 
   try {
-    const failureArtifactButton = page
+    let failureArtifactButton = page
       .getByRole("button")
       .filter({
         hasText: /agent_failure_retry_context|failure_retry_context\.json|agent_failure_recovery/,
       })
       .first();
-    const hasFailureArtifact = await failureArtifactButton.isVisible({ timeout: 3_000 }).catch(() => false);
+    let hasFailureArtifact = await failureArtifactButton.isVisible({ timeout: 3_000 }).catch(() => false);
     if (!hasFailureArtifact) {
-      record("J05", "blocked", "failure retry diagnostic artifact was not present in the prepared run artifact list");
+      await openWorkbenchView(page, "工作流设计");
+      await workflowPresetSelect.selectOption("resource_leak_hunt");
+      await page.getByRole("button", { name: "安装预设" }).click();
+      await expect(page.getByText(/预设已安装:|工作流已保存:|已应用预设:/).first()).toBeVisible({
+        timeout: 30_000,
+      });
+      await openWorkbenchView(page, "运行驾驶舱");
+      await page.getByLabel("Inputs JSON").fill(JSON.stringify({
+        target_scope: "lib/bdev",
+        risk_pattern: "cleanup",
+        repo_path: SPDK_REPO,
+      }, null, 2));
+      await page.getByRole("button", { name: "准备运行" }).click();
+      await expect(page.getByRole("button", { name: "执行工作流" })).toBeEnabled({ timeout: 45_000 });
+      await page.getByRole("button", { name: "执行工作流" }).click();
+      await expect
+        .poll(() => page.locator("body").innerText(), { timeout: 120_000 })
+        .toMatch(/Action failed|Workflow execution/i);
+      failureArtifactButton = page
+        .getByRole("button")
+        .filter({
+          hasText: /agent_failure_retry_context|failure_retry_context\.json|agent_failure_recovery/,
+        })
+        .first();
+      hasFailureArtifact = await failureArtifactButton.isVisible({ timeout: 10_000 }).catch(() => false);
+    }
+    if (!hasFailureArtifact) {
+      record("J05", "blocked", "failure retry diagnostic artifact was not present after a real failing workflow run");
     } else {
       await failureArtifactButton.click();
       await expect

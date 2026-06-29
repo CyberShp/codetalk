@@ -163,10 +163,15 @@ async def test_workbench_core_workflow_readiness_api_covers_builtin_scenarios(wo
         "diff.patch",
         "changed_files.json",
     ]
+    assert by_id["module_analysis"]["agent_step_count"] == 0
+    assert by_id["module_analysis"]["builtin_steps"] == [
+        "discover_scope",
+        "validate_evidence",
+        "render_report",
+    ]
     assert by_id["patch_impact_review"]["builtin_steps"] == ["parse_patch", "validate_evidence", "render_report"]
     for item in by_id.values():
         assert item["status"] == "ready"
-        assert item["agent_step_count"] >= 1
         assert item["output_count"] >= 2
         assert not item["missing_required"]
 

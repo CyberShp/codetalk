@@ -1696,6 +1696,22 @@ def _core_workflow_readiness_item(preset: dict[str, Any]) -> dict[str, Any]:
     steps = [item for item in definition.get("steps") or [] if isinstance(item, dict)]
     outputs = [item for item in definition.get("outputs") or [] if isinstance(item, dict)]
     agent_steps = [item for item in steps if item.get("type") == "agent_task"]
+    executable_steps = [
+        item
+        for item in steps
+        if item.get("type") in {
+            "agent_task",
+            "file_ingest",
+            "diff_parse",
+            "coverage_parse",
+            "semantic_retrieve",
+            "memory_retrieve",
+            "local_scope_discover",
+            "evidence_validate",
+            "report_render",
+            "artifact_export",
+        }
+    ]
     builtin_steps = [
         str(item.get("id") or "")
         for item in steps
@@ -1710,8 +1726,8 @@ def _core_workflow_readiness_item(preset: dict[str, Any]) -> dict[str, Any]:
     missing: list[dict[str, str]] = []
     if not inputs:
         missing.append({"field": "inputs", "reason": "no inputs declared"})
-    if not agent_steps:
-        missing.append({"field": "steps", "reason": "no agent_task declared"})
+    if not executable_steps:
+        missing.append({"field": "steps", "reason": "no executable step declared"})
     if not outputs:
         missing.append({"field": "outputs", "reason": "no outputs declared"})
     for step in agent_steps:
