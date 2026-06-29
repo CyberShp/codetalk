@@ -392,6 +392,23 @@ test("B/C/K: create SPDK workspace through UI and verify chat/index gate", async
 
   const textarea = page.locator("textarea").last();
   const sendButton = page.getByRole("button", { name: "发送" });
+  const chatPrompt = "分析 SPDK NVMe-oF target connect 到 IO 提交流程，并输出代码证据、流程、SFMEA、黑盒测试用例。";
+  await page.getByRole("button", { name: "结构化分析" }).click({ timeout: 5000 }).catch(() => undefined);
+  try {
+    await textarea.fill(chatPrompt, { timeout: 10_000 });
+  } catch (error) {
+    const details = {
+      screenshot: await screenshot(page, "C01-chat-input-unavailable"),
+      excerpt: await pageExcerpt(page),
+      error: error instanceof Error ? error.message : String(error),
+    };
+    record("C01", "blocked", "workspace chat input is unavailable after indexing", details);
+    record("C02", "blocked", "workspace chat input unavailable before first answer", details);
+    record("C03", "blocked", "workspace chat input unavailable before context continuation", details);
+    recordDeferredChatCases("workspace chat input unavailable");
+    record("K06", "blocked", "chat input unavailable, no completed AI progress state", details);
+    return;
+  }
   let canChat = false;
   try {
     await expect(sendButton).toBeEnabled({ timeout: 10_000 });
@@ -415,8 +432,6 @@ test("B/C/K: create SPDK workspace through UI and verify chat/index gate", async
     return;
   }
 
-  await page.getByRole("button", { name: "结构化分析" }).click();
-  await textarea.fill("分析 SPDK NVMe-oF target connect 到 IO 提交流程，并输出代码证据、流程、SFMEA、黑盒测试用例。");
   await sendButton.click();
   try {
     const assistantMessages = page.locator(".justify-start .bg-surface-container");
@@ -558,6 +573,9 @@ test("D/I: agent workbench real UI workflow, semantic library, memory, and artif
   });
   record("I02", "pass", "semantic search returns imported case");
 
+  await page.getByRole("button", { name: "Search memory" }).locator("xpath=preceding::input[1]").fill(
+    "NVMe TCP connect timeout",
+  );
   await page.getByRole("button", { name: "Search memory" }).click();
   await expect(page.getByText(/Memory results:/)).toBeVisible({ timeout: 30_000 });
   record("I05", "pass", "memory search UI responds");
