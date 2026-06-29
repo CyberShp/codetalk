@@ -451,7 +451,7 @@ test("A/K: settings, app shell, visual sanity, and secret hygiene", async ({ pag
 });
 
 test("B/C/K: create SPDK workspace through UI and verify chat/index gate", async ({ page }) => {
-  test.setTimeout(240_000);
+  test.setTimeout(SPDK_INDEX_WAIT_MS + 180_000);
 
   workspaceName = `spdk-real-e2e-${Date.now()}`;
   await page.goto("/workspaces/new", { waitUntil: "domcontentloaded" });
@@ -689,7 +689,7 @@ test("D/I: agent workbench real UI workflow, semantic library, memory, and artif
   await page.getByRole("button", { name: "Import case(s)" }).locator("xpath=following::input[1]").fill(
     "NVMe TCP connect timeout",
   );
-  await page.getByRole("button", { name: "Search" }).last().click();
+  await page.getByRole("button", { name: "Search", exact: true }).click();
   await expect(page.getByText(/NVMe TCP|Queue reset|connect timeout/i).first()).toBeVisible({
     timeout: 30_000,
   });
