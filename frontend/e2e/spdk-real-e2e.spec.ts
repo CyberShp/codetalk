@@ -742,7 +742,7 @@ test("A04: health probes are triggerable from the UI", async ({ page }) => {
   record("A04", "pass", "system audit, provider probe, and tool startup probe were triggered through UI controls", evidence);
 });
 
-test("B/C/K: create SPDK workspace through UI and verify chat/index gate", async ({ page }) => {
+test("B/C/K: create SPDK workspace through UI and verify chat/index gate", async ({ page, context }) => {
   test.setTimeout(SPDK_INDEX_WAIT_MS + 480_000);
 
   if (!e2eLlmConfigId && process.env.CODETALK_E2E_LLM_API_KEY) {
@@ -870,6 +870,7 @@ test("B/C/K: create SPDK workspace through UI and verify chat/index gate", async
   await expect(page.getByRole("heading", { name: /AI 调查线程|AI 调查|spdk/i })).toBeVisible({
     timeout: 30_000,
   });
+  const primaryThreadUrl = page.url();
 
   const textarea = page.getByLabel("AI 线程消息");
   const sendButton = page.getByRole("button", { name: "发送" });
@@ -994,6 +995,67 @@ test("B/C/K: create SPDK workspace through UI and verify chat/index gate", async
   }
 
   try {
+    const createSiblingThread = async () => {
+      const previousUrl = page.url();
+      await page.getByRole("button", { name: "新建线程" }).click();
+      await page.waitForURL((url) => url.toString() !== previousUrl && /\/ai\/[^/]+$/.test(url.pathname), {
+        timeout: 30_000,
+      });
+      await expect(page.getByLabel("AI 线程消息")).toBeVisible({ timeout: 15_000 });
+      return page.url();
+    };
+    const threadOneUrl = await createSiblingThread();
+    const threadTwoUrl = await createSiblingThread();
+    const tokenOne = `THREAD_NVMF_${RUN_ID.slice(-6).replace(/-/g, "_")}`;
+    const tokenTwo = `THREAD_ISCSI_${RUN_ID.slice(-6).replace(/-/g, "_")}`;
+    const threadOnePage = await context.newPage();
+    const threadTwoPage = await context.newPage();
+    const sendThreadPrompt = async (
+      tab: Page,
+      url: string,
+      token: string,
+      otherToken: string,
+    ) => {
+      await tab.goto(url, { waitUntil: "domcontentloaded" });
+      await noFrameworkOverlay(tab);
+      const threadInput = tab.getByLabel("AI 线程消息");
+      await expect(threadInput).toBeVisible({ timeout: 15_000 });
+      await threadInput.fill(`只回复这个并发隔离标记，不要解释：${token}`);
+      await expect(tab.getByRole("button", { name: "发送" })).toBeEnabled({ timeout: 10_000 });
+      await tab.getByRole("button", { name: "发送" }).click();
+      const messages = tab.locator(".ct-codex-message");
+      await expect(messages.filter({ hasText: token }).first()).toBeVisible({ timeout: 15_000 });
+      await tab.reload({ waitUntil: "domcontentloaded" });
+      await expect(messages.filter({ hasText: token }).first()).toBeVisible({ timeout: 30_000 });
+      await expect(messages.filter({ hasText: otherToken })).toHaveCount(0);
+      return await screenshot(tab, `C07-${token}`);
+    };
+    try {
+      const [threadOneShot, threadTwoShot] = await Promise.all([
+        sendThreadPrompt(threadOnePage, threadOneUrl, tokenOne, tokenTwo),
+        sendThreadPrompt(threadTwoPage, threadTwoUrl, tokenTwo, tokenOne),
+      ]);
+      record("C07", "pass", "same-workspace AI threads preserved isolated message histories after concurrent sends and reloads", {
+        threadOneUrl,
+        threadTwoUrl,
+        threadOneShot,
+        threadTwoShot,
+      });
+    } finally {
+      await threadOnePage.close().catch(() => undefined);
+      await threadTwoPage.close().catch(() => undefined);
+    }
+  } catch (error) {
+    record("C07", "blocked", "same-workspace concurrent AI thread isolation did not complete through the UI", {
+      screenshot: await screenshot(page, "C07-ai-thread-isolation-failed"),
+      error: error instanceof Error ? error.message : String(error),
+      excerpt: await pageExcerpt(page),
+    });
+  }
+
+  try {
+    await page.goto(primaryThreadUrl, { waitUntil: "domcontentloaded" });
+    await noFrameworkOverlay(page);
     const retryButton = page.getByRole("button", { name: "重试上一条" });
     if ((await retryButton.count()) === 0) {
       record("C06", "blocked", "failed-turn retry control requires a controlled failed model run; current run did not expose a failure");
@@ -1010,8 +1072,6 @@ test("B/C/K: create SPDK workspace through UI and verify chat/index gate", async
       error: error instanceof Error ? error.message : String(error),
     });
   }
-
-  record("C07", "blocked", "concurrent AI thread isolation needs a dedicated /ai thread multi-page test after workspace chat migration");
 });
 
 test("D/I: agent workbench real UI workflow, semantic library, memory, and artifacts", async ({ page }) => {
