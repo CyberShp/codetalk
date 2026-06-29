@@ -1,4 +1,4 @@
-import { expect, test, type Page } from "@playwright/test";
+import { expect, test, type Locator, type Page } from "@playwright/test";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
@@ -284,6 +284,24 @@ async function verifySettingsKeyboardUsability(page: Page) {
   await expect(page.getByText("新增 LLM 配置")).toHaveCount(0);
 }
 
+async function selectActiveChatModelAndWait(page: Page, select: Locator, modelId: string) {
+  if ((await select.inputValue()) === modelId) {
+    await expect(select).toHaveValue(modelId, { timeout: 15_000 });
+    return;
+  }
+
+  const saveResponsePromise = page.waitForResponse((response) => {
+    const request = response.request();
+    return request.method() === "PUT" && response.url().includes("/api/settings/general");
+  });
+  await Promise.all([saveResponsePromise, select.selectOption(modelId)]);
+  const response = await saveResponsePromise;
+  expect(response.ok()).toBeTruthy();
+  const saved = (await response.json()) as { active_chat_model_id?: string };
+  expect(saved.active_chat_model_id).toBe(modelId);
+  await expect(select).toHaveValue(modelId, { timeout: 15_000 });
+}
+
 async function configureLlmIfAvailable(page: Page) {
   const apiKey = process.env.CODETALK_E2E_LLM_API_KEY;
   if (!apiKey) {
@@ -317,7 +335,7 @@ async function configureLlmIfAvailable(page: Page) {
   );
   expect(activeModelValue).toBeTruthy();
   e2eLlmConfigId = activeModelValue;
-  await activeModelSelect.selectOption(activeModelValue);
+  await selectActiveChatModelAndWait(page, activeModelSelect, activeModelValue);
   await page.reload({ waitUntil: "domcontentloaded" });
   await expect(page.getByText(e2eLlmConfigName, { exact: true })).toBeVisible({ timeout: 15_000 });
   const persistedActiveModel = page.locator("select").filter({ has: page.locator("option", { hasText: e2eLlmConfigName }) }).first();
