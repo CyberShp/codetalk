@@ -544,12 +544,16 @@ async def source_file(
         raise HTTPException(status_code=502, detail=f"读取源码失败：{exc}") from exc
 
     total = len(lines)
-    if line is None:
+    if total == 0:
         start = 1
+        end = 1
+    elif line is None:
+        start = 1
+        end = min(total, start + context - 1)
     else:
         start = max(1, line - max(0, context // 2))
-    end = min(total, start + context - 1)
-    if end - start + 1 < context:
+        end = min(total, start + context - 1)
+    if total > 0 and end - start + 1 < context:
         start = max(1, end - context + 1)
     content = "\n".join(lines[start - 1:end])
     return WorkspaceSourceFileResponse(
