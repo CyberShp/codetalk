@@ -230,6 +230,45 @@ async function assertNoObviousOverlap(page: Page, selector: string) {
   expect(overlaps).toEqual([]);
 }
 
+async function focusedElementLabel(page: Page) {
+  return page.evaluate(() => {
+    const active = document.activeElement as HTMLElement | null;
+    if (!active) return "";
+    return [
+      active.innerText,
+      active.getAttribute("aria-label"),
+      active.getAttribute("placeholder"),
+      active.getAttribute("title"),
+      active.tagName,
+    ]
+      .filter(Boolean)
+      .join(" ");
+  });
+}
+
+async function tabUntilFocused(page: Page, target: RegExp, maxTabs = 80) {
+  for (let i = 0; i < maxTabs; i += 1) {
+    await page.keyboard.press("Tab");
+    const label = await focusedElementLabel(page);
+    if (target.test(label)) return label;
+  }
+  throw new Error(`Could not reach focus target ${target} after ${maxTabs} Tab presses`);
+}
+
+async function verifySettingsKeyboardUsability(page: Page) {
+  await page.goto("/settings", { waitUntil: "domcontentloaded" });
+  await noFrameworkOverlay(page);
+  await page.locator("body").click({ position: { x: 8, y: 8 } });
+  const firstFocus = await tabUntilFocused(page, /Save Agent CLIs|Claude|CCR|OpenCode|新增/i, 10);
+  expect(firstFocus.length).toBeGreaterThan(0);
+  await tabUntilFocused(page, /新增/i);
+  await page.keyboard.press("Enter");
+  await expect(page.getByText("新增 LLM 配置")).toBeVisible({ timeout: 10_000 });
+  await page.getByPlaceholder(/Claude|GPT-4o/).fill(`Keyboard E2E ${RUN_ID}`);
+  await page.keyboard.press("Escape");
+  await expect(page.getByText("新增 LLM 配置")).toHaveCount(0);
+}
+
 async function configureLlmIfAvailable(page: Page) {
   const apiKey = process.env.CODETALK_E2E_LLM_API_KEY;
   if (!apiKey) {
@@ -367,6 +406,9 @@ test("A/K: settings, app shell, visual sanity, and secret hygiene", async ({ pag
   record("K10", "pass", `desktop=${desktopShot}; mobile=${mobileShot}`);
 
   await page.setViewportSize({ width: 1440, height: 900 });
+  await verifySettingsKeyboardUsability(page);
+  const keyboardShot = await screenshot(page, "K09-settings-keyboard");
+  record("K09", "pass", keyboardShot);
   await configureLlmIfAvailable(page);
   record("A06", "pass", "no Redis connection is required by this browser E2E harness");
 });
@@ -778,7 +820,7 @@ test("matrix accounting: every planned case has an explicit status", async () =>
   for (const id of ["C04", "C05", "C06", "C07", "C08"]) {
     if (results.get(id)?.status === "not_run") record(id, "blocked", "deferred to focused completed-chat workflow run");
   }
-  for (const id of ["K04", "K06", "K09", "L01", "L02", "L03", "L04", "L05", "L06", "L07"]) {
+  for (const id of ["K04", "K06", "L01", "L02", "L03", "L04", "L05", "L06", "L07"]) {
     if (results.get(id)?.status === "not_run") record(id, "blocked", "requires long-running reliability/performance soak");
   }
 

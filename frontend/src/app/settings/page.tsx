@@ -182,6 +182,13 @@ export default function SettingsPage() {
     [],
   );
 
+  const closeLLMForm = useCallback(() => {
+    setShowForm(false);
+    setEditingId(null);
+    setForm({ ...EMPTY_LLM_FORM });
+    setTestResult(null);
+  }, []);
+
   const handleSaveActiveModel = useCallback(
     async (modelId: string) => {
       setSavingActiveModel(true);
@@ -466,12 +473,11 @@ export default function SettingsPage() {
           <button
             onClick={() => {
               if (showForm) {
-                setShowForm(false);
-                setEditingId(null);
-                setForm({ ...EMPTY_LLM_FORM });
+                closeLLMForm();
               } else {
                 setEditingId(null);
                 setForm({ ...EMPTY_LLM_FORM });
+                setTestResult(null);
                 setShowForm(true);
               }
             }}
@@ -485,6 +491,12 @@ export default function SettingsPage() {
         {showForm && (
           <form
             onSubmit={handleSaveLLM}
+            onKeyDown={(event) => {
+              if (event.key === "Escape") {
+                event.preventDefault();
+                closeLLMForm();
+              }
+            }}
             aria-describedby={error ? "settings-error" : undefined}
             className="bg-surface-container rounded-xl border border-outline-variant/20 p-5 mb-4 space-y-4"
           >
