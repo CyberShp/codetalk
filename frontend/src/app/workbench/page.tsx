@@ -414,6 +414,28 @@ type WorkflowDraftAudit = {
   blocking: string[];
 };
 
+type WorkbenchAuditCheck = Record<string, unknown> & {
+  id?: string;
+  status?: string;
+  details?: Record<string, unknown>;
+};
+
+function auditCheckById(
+  audit: WorkbenchSystemAudit | null,
+  id: string,
+): WorkbenchAuditCheck | null {
+  const found = audit?.checks.find((item) => String(item.id ?? "") === id);
+  if (!found) return null;
+  const details = found.details;
+  return {
+    ...found,
+    details:
+      details && typeof details === "object" && !Array.isArray(details)
+        ? (details as Record<string, unknown>)
+        : {},
+  };
+}
+
 function workflowDraftAudit(value: string): WorkflowDraftAudit {
   const empty: WorkflowDraftAudit = {
     status: "invalid",
@@ -1764,18 +1786,18 @@ export default function AgentWorkbenchPage() {
     useState<keyof typeof WORKFLOW_BUILDER_SCENARIOS>("mr_blackbox");
   const [builderWorkflowId, setBuilderWorkflowId] = useState("custom_mr_blackbox");
   const [builderWorkflowName, setBuilderWorkflowName] = useState("Custom MR black-box workflow");
-  const [builderInputSpec, setBuilderInputSpec] = useState(
+  const [builderInputSpec, setBuilderInputSpec] = useState<string>(
     WORKFLOW_BUILDER_SCENARIOS.mr_blackbox.inputs,
   );
-  const [builderOutputSpec, setBuilderOutputSpec] = useState(
+  const [builderOutputSpec, setBuilderOutputSpec] = useState<string>(
     WORKFLOW_BUILDER_SCENARIOS.mr_blackbox.outputs,
   );
   const [builderProvider, setBuilderProvider] = useState("claude-code");
   const [builderMcpProfile, setBuilderMcpProfile] = useState("codehub-mcp");
-  const [builderGoal, setBuilderGoal] = useState(
+  const [builderGoal, setBuilderGoal] = useState<string>(
     WORKFLOW_BUILDER_SCENARIOS.mr_blackbox.goal,
   );
-  const [builderArtifacts, setBuilderArtifacts] = useState(
+  const [builderArtifacts, setBuilderArtifacts] = useState<string>(
     WORKFLOW_BUILDER_SCENARIOS.mr_blackbox.artifacts,
   );
   const [builderOutputSchemas, setBuilderOutputSchemas] = useState(
@@ -1955,17 +1977,11 @@ export default function AgentWorkbenchPage() {
     builderSemanticImports,
   ]);
   const latestDeploymentTaskProbeAudit = useMemo(
-    () =>
-      systemAudit?.checks.find(
-        (item) => String(item.id ?? "") === "latest_deployment_task_probe",
-      ) ?? null,
+    () => auditCheckById(systemAudit, "latest_deployment_task_probe"),
     [systemAudit],
   );
   const indexProviderReadinessAudit = useMemo(
-    () =>
-      systemAudit?.checks.find(
-        (item) => String(item.id ?? "") === "codetalk_index_provider_readiness",
-      ) ?? null,
+    () => auditCheckById(systemAudit, "codetalk_index_provider_readiness"),
     [systemAudit],
   );
 

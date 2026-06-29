@@ -330,6 +330,26 @@ class TestWorkspaceSourceSearch:
 
         assert resp.status_code == 422
 
+    async def test_source_file_empty_file_returns_valid_range(
+        self, client_v2, sqlite_db, tmp_path
+    ):
+        repo = tmp_path / "spdk"
+        repo.mkdir()
+        (repo / "empty.c").write_text("", encoding="utf-8")
+        await _seed_ws(sqlite_db, "ws-source-empty", indexed=1, repo_path=str(repo))
+
+        resp = await client_v2.get(
+            "/api/workspaces/ws-source-empty/source-file",
+            params={"path": "empty.c"},
+        )
+
+        assert resp.status_code == 200
+        body = resp.json()
+        assert body["start_line"] == 1
+        assert body["end_line"] == 1
+        assert body["total_lines"] == 0
+        assert body["content"] == ""
+
 
 # ---------------------------------------------------------------------------
 # Index / Analyze
