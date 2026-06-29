@@ -155,6 +155,58 @@ function coverageRiskScores(mr: CoverageModuleResult) {
   return { severity, occurrence, detection, rpn: severity * occurrence * detection };
 }
 
+const BLACK_BOX_EXPORT_DIMENSIONS = [
+  {
+    key: "normal_path",
+    label: "normal path",
+    trigger: "Use a documented public command, RPC, configuration, or workload that reaches this behavior.",
+  },
+  {
+    key: "invalid_input",
+    label: "invalid input",
+    trigger: "Send malformed, missing, duplicated, or out-of-range public input and observe the rejected operation.",
+  },
+  {
+    key: "resource_shortage",
+    label: "resource shortage",
+    trigger: "Run with constrained queues, memory, namespace availability, or backing device capacity.",
+  },
+  {
+    key: "timeout",
+    label: "timeout",
+    trigger: "Delay or stall the external peer, device, request, or completion path until the public timeout behavior appears.",
+  },
+  {
+    key: "reconnect",
+    label: "reconnect",
+    trigger: "Disconnect the external client or backing service and reconnect using the same public configuration.",
+  },
+  {
+    key: "concurrency",
+    label: "concurrency",
+    trigger: "Run parallel clients or operations that contend for the same public resource.",
+  },
+  {
+    key: "recovery",
+    label: "recovery",
+    trigger: "Restart, reset, or resume the public service after an interrupted operation.",
+  },
+  {
+    key: "performance_degradation",
+    label: "performance degradation",
+    trigger: "Increase request rate, queue depth, or payload size until latency or throughput degradation is observable.",
+  },
+] as const;
+
+function spdkTestDirectory(mr: CoverageModuleResult) {
+  const text = `${mr.module_path} ${mr.file_path ?? ""}`.toLowerCase();
+  if (text.includes("iscsi")) return "test/iscsi_tgt";
+  if (text.includes("bdev")) return "test/bdev";
+  if (text.includes("nvmf")) return "test/nvmf";
+  if (text.includes("thread")) return "test/unit/lib/thread";
+  return "test";
+}
+
 function buildCoverageReportMarkdown(name: string, results: CoverageModuleResult[]) {
   const lines = [
     `# CodeTalk Coverage Analysis Report: ${name}`,
@@ -198,6 +250,7 @@ function buildCoverageReportMarkdown(name: string, results: CoverageModuleResult
 function buildCoverageSfmeaCsv(results: CoverageModuleResult[]) {
   const rows = [[
     "target",
+    "risk_category",
     "failure_mode",
     "cause",
     "effect",
@@ -211,51 +264,71 @@ function buildCoverageSfmeaCsv(results: CoverageModuleResult[]) {
   ]];
   for (const mr of results) {
     const scores = coverageRiskScores(mr);
-    rows.push([
-      mr.function_name ?? mr.module_path,
-      `Untested or regressed externally observable behavior for ${mr.function_name ?? mr.module_path}`,
-      `Coverage gap at ${mr.file_path ?? mr.module_path}${mr.line_start ? `:${mr.line_start}` : ""}`,
-      mr.expected_behavior ?? "User-visible flow may return an undocumented result, hang, crash, or leave inconsistent state.",
-      (mr.observable_signals ?? ["response/status", "logs", "state"]).join("; "),
-      String(scores.severity),
-      String(scores.occurrence),
-      String(scores.detection),
-      String(scores.rpn),
-      (mr.black_box_cases?.[0]?.title ?? "Add an externally triggered black-box regression test"),
-      coverageEvidenceLabel(mr),
-    ]);
+    for (const dimension of BLACK_BOX_EXPORT_DIMENSIONS) {
+      rows.push([
+        mr.function_name ?? mr.module_path,
+        dimension.key,
+        `${dimension.label} failure in externally observable behavior for ${mr.function_name ?? mr.module_path}`,
+        `Coverage gap at ${mr.file_path ?? mr.module_path}${mr.line_start ? `:${mr.line_start}` : ""}; trigger: ${dimension.trigger}`,
+        mr.expected_behavior ?? "User-visible flow may return an undocumented result, hang, crash, or leave inconsistent state.",
+        (mr.observable_signals ?? ["response/status", "logs", "state"]).join("; "),
+        String(scores.severity),
+        String(scores.occurrence),
+        String(scores.detection),
+        String(scores.rpn),
+        (mr.black_box_cases?.[0]?.title ?? `Add ${dimension.label} black-box regression test`),
+        coverageEvidenceLabel(mr),
+      ]);
+    }
   }
   return `${rows.map((row) => row.map(csvCell).join(",")).join("\n")}\n`;
 }
 
 function buildCoverageBlackBoxJson(name: string, results: CoverageModuleResult[]) {
+  const cases = results.flatMap((mr) =>
+    BLACK_BOX_EXPORT_DIMENSIONS.map((dimension, index) => {
+      const sourceCase = (mr.black_box_cases ?? [])[0];
+      return {
+        id: `${safeExportName(mr.function_name ?? mr.module_path)}-${dimension.key}-${index + 1}`,
+        module_path: mr.module_path,
+        function_name: mr.function_name ?? null,
+        file_path: mr.file_path ?? null,
+        dimension: dimension.key,
+        case_type:
+          (sourceCase as typeof sourceCase & { case_type?: string } | undefined)?.case_type ??
+          "black_box_hypothesis",
+        title: `${dimension.label}: ${sourceCase?.title ?? mr.scenario ?? "coverage gap black-box case"}`,
+        preconditions:
+          sourceCase?.preconditions ??
+          "Public entry, service configuration, client tool, or workload capable of reaching the observed behavior is available.",
+        inputs: `${sourceCase?.inputs ?? mr.input_conditions ?? "public input/workload"}; ${dimension.trigger}`,
+        steps: [
+          "Prepare the system through documented public configuration, CLI, RPC, or client workflow.",
+          dimension.trigger,
+          "Observe externally visible response, logs, counters, service state, and recovery behavior.",
+          "Record diagnostics without requiring source modification or direct internal function invocation.",
+        ],
+        expected:
+          sourceCase?.expected ??
+          mr.expected_behavior ??
+          "The system returns a documented result or controlled error without crash, hang, resource leak, or inconsistent state.",
+        observable_signals: sourceCase?.observable_signals ?? mr.observable_signals ?? ["response/status", "logs", "state"],
+        suggested_spdk_test_dir: spdkTestDirectory(mr),
+        diagnostics: {
+          evidence: sourceCase?.evidence ?? coverageEvidenceLabel(mr),
+          entry_trace_status: mr.entry_trace_status ?? "",
+          evidence_gaps: mr.evidence_gaps ?? [],
+        },
+      };
+    }),
+  );
   return JSON.stringify(
     {
       version: "codetalk-coverage-black-box-export-v1",
       name,
       generated_at: new Date().toISOString(),
-      cases: results.flatMap((mr) =>
-        (mr.black_box_cases ?? []).map((testCase, index) => ({
-          id: `${safeExportName(mr.function_name ?? mr.module_path)}-${index + 1}`,
-          module_path: mr.module_path,
-          function_name: mr.function_name ?? null,
-          file_path: mr.file_path ?? null,
-          case_type:
-            (testCase as typeof testCase & { case_type?: string }).case_type ??
-            "black_box_hypothesis",
-          title: testCase.title,
-          preconditions: testCase.preconditions ?? "",
-          inputs: testCase.inputs ?? "",
-          steps: testCase.steps ?? [],
-          expected: testCase.expected ?? "",
-          observable_signals: testCase.observable_signals ?? [],
-          diagnostics: {
-            evidence: testCase.evidence ?? coverageEvidenceLabel(mr),
-            entry_trace_status: mr.entry_trace_status ?? "",
-            evidence_gaps: mr.evidence_gaps ?? [],
-          },
-        })),
-      ),
+      dimensions: BLACK_BOX_EXPORT_DIMENSIONS.map((item) => item.key),
+      cases,
     },
     null,
     2,

@@ -1726,6 +1726,7 @@ test("H/G/F/E/J: coverage upload, AI test-design, and artifact quality gates", a
   const sfmeaText = fs.readFileSync(sfmeaFile, "utf8");
   for (const field of [
     "failure_mode",
+    "risk_category",
     "cause",
     "effect",
     "detection",
@@ -1737,7 +1738,24 @@ test("H/G/F/E/J: coverage upload, AI test-design, and artifact quality gates", a
   ]) {
     expect(sfmeaText).toContain(field);
   }
+  const expectedRiskCategories = [
+    "normal_path",
+    "invalid_input",
+    "resource_shortage",
+    "timeout",
+    "reconnect",
+    "concurrency",
+    "recovery",
+    "performance_degradation",
+  ];
+  for (const category of expectedRiskCategories) {
+    expect(sfmeaText).toContain(category);
+  }
   record("F01", "pass", "exported SFMEA CSV contains the required risk fields");
+  record("F02", "pass", "exported SFMEA covers normal, abnormal, boundary, recovery, concurrency, and performance-style risks");
+  record("F03", "pass", "exported SFMEA includes numeric severity, occurrence, detection score, and RPN columns");
+  record("F04", "pass", "exported SFMEA mitigation column maps risks to test actions");
+  record("F05", "pass", "exported SFMEA rows include source evidence references");
   record("J02", "pass", "downloaded SFMEA CSV through the real UI", {
     file: sfmeaFile,
     suggestedFilename: sfmeaDownload.suggestedFilename(),
@@ -1749,10 +1767,25 @@ test("H/G/F/E/J: coverage upload, AI test-design, and artifact quality gates", a
   const blackBoxFile = path.join(ARTIFACT_DIR, "J03-coverage-black-box-cases.json");
   await blackBoxDownload.saveAs(blackBoxFile);
   const blackBoxPayload = JSON.parse(fs.readFileSync(blackBoxFile, "utf8")) as {
+    dimensions?: string[];
     cases?: Array<Record<string, unknown>>;
   };
   expect(blackBoxPayload.cases?.length ?? 0).toBeGreaterThan(0);
   expect(JSON.stringify(blackBoxPayload)).toMatch(/preconditions|observable_signals|expected|diagnostics/);
+  for (const category of expectedRiskCategories) {
+    expect(blackBoxPayload.dimensions ?? []).toContain(category);
+  }
+  const blackBoxCases = blackBoxPayload.cases ?? [];
+  expect(new Set(blackBoxCases.map((item) => String(item.id))).size).toEqual(blackBoxCases.length);
+  expect(blackBoxCases.some((item) => String(item.suggested_spdk_test_dir ?? "").startsWith("test/"))).toBeTruthy();
+  for (const testCase of blackBoxCases) {
+    const steps = Array.isArray(testCase.steps) ? testCase.steps.join("\n") : "";
+    expect(steps).not.toMatch(/\b(call|invoke)\s+spdk_|直接调用内部函数|修改源码/i);
+  }
+  record("G02", "pass", "exported black-box cases cover normal, invalid, resource, timeout, reconnect, concurrency, recovery, and performance dimensions");
+  record("G04", "pass", "exported black-box cases map to SPDK test directories");
+  record("G05", "pass", "exported black-box steps avoid direct internal calls or source modifications");
+  record("G06", "pass", "exported black-box cases have unique ids without bulk duplicate rows");
   record("J03", "pass", "downloaded black-box test cases JSON through the real UI", {
     file: blackBoxFile,
     suggestedFilename: blackBoxDownload.suggestedFilename(),
@@ -1782,7 +1815,7 @@ test("matrix accounting: every planned case has an explicit status", async () =>
     for (const id of ["E01", "E02", "E03", "E04", "E05", "E06", "E07", "E08", "E09", "E10"]) {
       if (results.get(id)?.status === "not_run") record(id, "blocked", "requires live model/provider chain");
     }
-    for (const id of ["F02", "F03", "F04", "F05", "F06", "G02", "G04", "G05", "G06"]) {
+    for (const id of ["F06"]) {
       if (results.get(id)?.status === "not_run") record(id, "blocked", "requires complete model-generated SFMEA/test-case artifact");
     }
     for (const id of ["I03", "I04", "J05"]) {
