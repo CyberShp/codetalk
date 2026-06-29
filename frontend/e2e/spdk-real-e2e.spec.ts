@@ -709,6 +709,16 @@ test("H/G/F/E/J: coverage upload, AI test-design, and artifact quality gates", a
   ].join("\n");
 
   await page.locator('input[type="file"]').setInputFiles({
+    name: "spdk-bad-coverage.csv",
+    mimeType: "text/csv",
+    buffer: Buffer.from("not_a_coverage_header\nthis file has no parseable coverage rows\n"),
+  });
+  await page.getByRole("button", { name: "上传并解析" }).click();
+  const coverageError = page.getByRole("alert").filter({ hasText: /未能从上传文件|修复建议/ });
+  await expect(coverageError).toContainText(/修复建议|function_name|code_location/, { timeout: 30_000 });
+  record("H05", "pass", await screenshot(page, "H05-invalid-coverage-guidance"));
+
+  await page.locator('input[type="file"]').setInputFiles({
     name: "spdk-internal-function-hits.csv",
     mimeType: "text/csv",
     buffer: Buffer.from(csv),
@@ -814,7 +824,7 @@ test("matrix accounting: every planned case has an explicit status", async () =>
   for (const id of ["F02", "F03", "F04", "F05", "F06", "G02", "G04", "G05", "G06"]) {
     if (results.get(id)?.status === "not_run") record(id, "blocked", "requires complete model-generated SFMEA/test-case artifact");
   }
-  for (const id of ["H05", "I03", "I04", "I06", "J01", "J02", "J03", "J05"]) {
+  for (const id of ["I03", "I04", "I06", "J01", "J02", "J03", "J05"]) {
     if (results.get(id)?.status === "not_run") record(id, "blocked", "deferred to follow-up focused artifact/export run");
   }
   for (const id of ["C04", "C05", "C06", "C07", "C08"]) {

@@ -809,7 +809,10 @@ export default function CoveragePage() {
 
       {/* Error */}
       {error && (
-        <div className="bg-error-container/20 text-error rounded-lg px-4 py-3 text-sm">
+        <div
+          role="alert"
+          className="whitespace-pre-line bg-error-container/20 text-error rounded-lg px-4 py-3 text-sm"
+        >
           {error}
         </div>
       )}
