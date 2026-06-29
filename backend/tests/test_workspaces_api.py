@@ -756,6 +756,56 @@ class TestBackgroundTasks:
         assert row["indexed"] == 1
         assert row["last_index_error"] is None
 
+    async def test_index_workspace_waits_for_gitnexus_autostart_readiness(
+        self, sqlite_db, monkeypatch
+    ):
+        """_index_workspace should not fail just because GitNexus is still booting."""
+        ws_id = "ws-bg-autostart-wait"
+        await _seed_ws(sqlite_db, ws_id, indexed=0)
+
+        down_health = MagicMock()
+        down_health.is_healthy = False
+        down_health.last_check = "connection refused"
+        down_health.container_status = "error"
+        booting_health = MagicMock()
+        booting_health.is_healthy = False
+        booting_health.last_check = "All connection attempts failed"
+        booting_health.container_status = "starting"
+        up_health = MagicMock()
+        up_health.is_healthy = True
+
+        mock_adapter = MagicMock()
+        mock_adapter.health_check = AsyncMock(
+            side_effect=[down_health, booting_health, booting_health, up_health]
+        )
+        mock_adapter.prepare = AsyncMock()
+
+        mock_pm = MagicMock()
+        mock_pm.start = AsyncMock(return_value=True)
+
+        sleep = AsyncMock()
+        monkeypatch.setattr("app.api.workspaces.asyncio.sleep", sleep)
+
+        with (
+            patch("app.adapters.gitnexus.GitNexusAdapter", return_value=mock_adapter),
+            patch("app.api.workspaces.ProcessManager.get_instance", return_value=mock_pm),
+        ):
+            from app.api.workspaces import _index_workspace
+            await _index_workspace(ws_id, "/repo")
+
+        mock_pm.start.assert_awaited_once_with("gitnexus")
+        assert mock_adapter.health_check.await_count == 4
+        assert sleep.await_count == 2
+        mock_adapter.prepare.assert_awaited_once()
+        async with aiosqlite.connect(sqlite_db) as db:
+            db.row_factory = aiosqlite.Row
+            async with db.execute(
+                "SELECT indexed, last_index_error FROM workspaces WHERE id = ?", (ws_id,)
+            ) as cur:
+                row = await cur.fetchone()
+        assert row["indexed"] == 1
+        assert row["last_index_error"] is None
+
     async def test_index_workspace_exception(self, sqlite_db):
         """_index_workspace: exception from adapter → indexed=-1 via _classify_index_error."""
         ws_id = "ws-bg-exc"

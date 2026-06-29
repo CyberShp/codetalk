@@ -155,6 +155,10 @@ def _classify_index_error(exc: Exception, base_url: str) -> str:
     return msg
 
 
+_GITNEXUS_AUTOSTART_READY_ATTEMPTS = 10
+_GITNEXUS_AUTOSTART_READY_INTERVAL = 1.0
+
+
 async def _try_start_gitnexus_and_recheck(adapter, initial_health):
     """Start managed GitNexus once when the service exists but is not running."""
     try:
@@ -164,11 +168,18 @@ async def _try_start_gitnexus_and_recheck(adapter, initial_health):
         return initial_health
     if not started:
         return initial_health
+    health = initial_health
     try:
-        return await adapter.health_check()
+        for attempt in range(_GITNEXUS_AUTOSTART_READY_ATTEMPTS):
+            health = await adapter.health_check()
+            if health.is_healthy:
+                return health
+            if attempt < _GITNEXUS_AUTOSTART_READY_ATTEMPTS - 1:
+                await asyncio.sleep(_GITNEXUS_AUTOSTART_READY_INTERVAL)
+        return health
     except Exception as exc:
         logger.warning("GitNexus health recheck failed after auto-start: %s", exc)
-        return initial_health
+        return health
 
 
 async def _index_workspace(ws_id: str, repo_path: str) -> None:
