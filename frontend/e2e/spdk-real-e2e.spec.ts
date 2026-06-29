@@ -2247,6 +2247,91 @@ test("H/G/F/E/J: coverage upload, AI test-design, and artifact quality gates", a
     file: blackBoxFile,
     suggestedFilename: blackBoxDownload.suggestedFilename(),
   });
+
+  const fourPieceDownloadPromise = page.waitForEvent("download");
+  await page.getByRole("button", { name: "导出四件套" }).click();
+  const fourPieceDownload = await fourPieceDownloadPromise;
+  const fourPieceFile = path.join(ARTIFACT_DIR, "E01-coverage-four-piece.json");
+  await fourPieceDownload.saveAs(fourPieceFile);
+  const fourPiecePayload = JSON.parse(fs.readFileSync(fourPieceFile, "utf8")) as {
+    version?: string;
+    bundles?: Array<{
+      id?: string;
+      status?: string;
+      code_evidence?: Array<{ file_path?: string; evidence_label?: string }>;
+      flow_steps?: Array<{ step?: string; evidence?: string }>;
+      sfmea?: Array<Record<string, unknown>>;
+      black_box_cases?: Array<{ steps?: string[]; diagnostics?: { suggested_spdk_test_dir?: string } }>;
+    }>;
+  };
+  expect(fourPiecePayload.version).toBe("codetalk-coverage-four-piece-v1");
+  const e01Bundle = fourPiecePayload.bundles?.find((bundle) => bundle.id === "E01");
+  expect(e01Bundle?.status).toBe("generated");
+  expect(e01Bundle?.code_evidence?.length ?? 0).toBeGreaterThanOrEqual(2);
+  expect(e01Bundle?.flow_steps?.length ?? 0).toBeGreaterThanOrEqual(2);
+  expect(e01Bundle?.sfmea?.length ?? 0).toBeGreaterThanOrEqual(expectedRiskCategories.length);
+  expect(e01Bundle?.black_box_cases?.length ?? 0).toBeGreaterThanOrEqual(expectedRiskCategories.length);
+  for (const evidence of e01Bundle?.code_evidence ?? []) {
+    expect(String(evidence.file_path ?? "")).toContain("lib/nvmf");
+    expect(fs.existsSync(path.join(SPDK_REPO, String(evidence.file_path ?? "")))).toBeTruthy();
+  }
+  for (const row of e01Bundle?.sfmea ?? []) {
+    for (const field of [
+      "failure_mode",
+      "cause",
+      "effect",
+      "detection",
+      "severity",
+      "occurrence",
+      "detection_score",
+      "rpn",
+      "mitigation",
+      "evidence",
+    ]) {
+      expect(row).toHaveProperty(field);
+    }
+  }
+  for (const testCase of e01Bundle?.black_box_cases ?? []) {
+    expect(testCase.diagnostics?.suggested_spdk_test_dir).toBe("test/nvmf");
+    expect((testCase.steps ?? []).join("\n")).not.toMatch(/\b(call|invoke)\s+spdk_|直接调用内部函数|修改源码/i);
+  }
+  record("E01", "pass", "downloaded and verified NVMe-oF connect four-piece artifact through the real UI", {
+    file: fourPieceFile,
+    suggestedFilename: fourPieceDownload.suggestedFilename(),
+    evidenceCount: e01Bundle?.code_evidence?.length ?? 0,
+    flowStepCount: e01Bundle?.flow_steps?.length ?? 0,
+    sfmeaRows: e01Bundle?.sfmea?.length ?? 0,
+    blackBoxCases: e01Bundle?.black_box_cases?.length ?? 0,
+  });
+
+  for (const scenario of [
+    { id: "E03", pathFragment: "lib/iscsi", testDir: "test/iscsi_tgt" },
+    { id: "E05", pathFragment: "lib/bdev", testDir: "test/bdev" },
+  ]) {
+    const bundle = fourPiecePayload.bundles?.find((item) => item.id === scenario.id);
+    expect(bundle?.status).toBe("generated");
+    expect(bundle?.code_evidence?.length ?? 0).toBeGreaterThanOrEqual(1);
+    expect(bundle?.flow_steps?.length ?? 0).toBeGreaterThanOrEqual(1);
+    expect(bundle?.sfmea?.length ?? 0).toBeGreaterThanOrEqual(expectedRiskCategories.length);
+    expect(bundle?.black_box_cases?.length ?? 0).toBeGreaterThanOrEqual(expectedRiskCategories.length);
+    for (const evidence of bundle?.code_evidence ?? []) {
+      expect(String(evidence.file_path ?? "")).toContain(scenario.pathFragment);
+      expect(fs.existsSync(path.join(SPDK_REPO, String(evidence.file_path ?? "")))).toBeTruthy();
+    }
+    for (const testCase of bundle?.black_box_cases ?? []) {
+      expect(testCase.diagnostics?.suggested_spdk_test_dir).toBe(scenario.testDir);
+      expect((testCase.steps ?? []).join("\n")).not.toMatch(/\b(call|invoke)\s+spdk_|直接调用内部函数|修改源码/i);
+    }
+    record(scenario.id, "pass", `downloaded and verified ${scenario.pathFragment} four-piece artifact through the real UI`, {
+      file: fourPieceFile,
+      suggestedFilename: fourPieceDownload.suggestedFilename(),
+      evidenceCount: bundle?.code_evidence?.length ?? 0,
+      flowStepCount: bundle?.flow_steps?.length ?? 0,
+      sfmeaRows: bundle?.sfmea?.length ?? 0,
+      blackBoxCases: bundle?.black_box_cases?.length ?? 0,
+    });
+  }
+
   const rerunSfmeaDownloadPromise = page.waitForEvent("download");
   const rerunSfmeaStartedAt = Date.now();
   await page.getByRole("button", { name: "导出 SFMEA" }).click();

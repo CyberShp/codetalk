@@ -335,6 +335,118 @@ function buildCoverageBlackBoxJson(name: string, results: CoverageModuleResult[]
   );
 }
 
+function buildCoverageFourPieceJson(name: string, results: CoverageModuleResult[]) {
+  const buildBundle = (id: string, title: string, matcher: (mr: CoverageModuleResult) => boolean) => {
+    const matched = results.filter(matcher);
+    const evidence = matched.map((mr) => ({
+      target: mr.function_name ?? mr.module_path,
+      file_path: mr.file_path ?? mr.module_path,
+      line_start: mr.line_start ?? null,
+      entry_status: mr.entry_trace_status ?? "unknown",
+      evidence_label: coverageEvidenceLabel(mr),
+      source_window: mr.source_window ?? null,
+      source_evidence: (mr as CoverageModuleResult & { branch_fact_card?: { source_evidence?: string[] } })
+        .branch_fact_card?.source_evidence ?? [coverageEvidenceLabel(mr)],
+    }));
+    const flowSteps = matched.map((mr, index) => ({
+      order: index + 1,
+      target: mr.function_name ?? mr.module_path,
+      step: mr.scenario ?? `Exercise externally observable behavior for ${mr.function_name ?? mr.module_path}.`,
+      expected_behavior: mr.expected_behavior ?? "The public flow returns a documented result or controlled error.",
+      evidence: coverageEvidenceLabel(mr),
+    }));
+    const sfmea = matched.flatMap((mr) => {
+      const scores = coverageRiskScores(mr);
+      return BLACK_BOX_EXPORT_DIMENSIONS.map((dimension) => ({
+        target: mr.function_name ?? mr.module_path,
+        risk_category: dimension.key,
+        failure_mode: `${dimension.label} failure in externally observable behavior for ${mr.function_name ?? mr.module_path}`,
+        cause: `Coverage gap at ${mr.file_path ?? mr.module_path}${mr.line_start ? `:${mr.line_start}` : ""}; trigger: ${dimension.trigger}`,
+        effect: mr.expected_behavior ?? "User-visible flow may return an undocumented result, hang, crash, or leave inconsistent state.",
+        detection: (mr.observable_signals ?? ["response/status", "logs", "state"]).join("; "),
+        severity: scores.severity,
+        occurrence: scores.occurrence,
+        detection_score: scores.detection,
+        rpn: scores.rpn,
+        mitigation: (mr.black_box_cases?.[0]?.title ?? `Add ${dimension.label} black-box regression test`),
+        evidence: coverageEvidenceLabel(mr),
+      }));
+    });
+    const blackBoxCases = matched.flatMap((mr) =>
+      BLACK_BOX_EXPORT_DIMENSIONS.map((dimension, index) => {
+        const sourceCase = (mr.black_box_cases ?? [])[0];
+        return {
+          id: `${id}-${safeExportName(mr.function_name ?? mr.module_path)}-${dimension.key}-${index + 1}`,
+          dimension: dimension.key,
+          module_path: mr.module_path,
+          function_name: mr.function_name ?? null,
+          file_path: mr.file_path ?? null,
+          preconditions:
+            sourceCase?.preconditions ??
+            "Public SPDK target/client configuration and workload tools are available.",
+          steps: [
+            "Prepare the system through documented public configuration, CLI, RPC, or client workflow.",
+            dimension.trigger,
+            "Observe externally visible response, logs, counters, service state, and recovery behavior.",
+            "Record diagnostics without requiring source modification or direct internal function invocation.",
+          ],
+          expected:
+            sourceCase?.expected ??
+            mr.expected_behavior ??
+            "The system returns a documented result or controlled error without crash, hang, resource leak, or inconsistent state.",
+          observable_signals: sourceCase?.observable_signals ?? mr.observable_signals ?? ["response/status", "logs", "state"],
+          diagnostics: {
+            evidence: sourceCase?.evidence ?? coverageEvidenceLabel(mr),
+            suggested_spdk_test_dir: spdkTestDirectory(mr),
+            evidence_gaps: mr.evidence_gaps ?? [],
+          },
+        };
+      }),
+    );
+    return {
+      id,
+      title,
+      status: matched.length ? "generated" : "missing_evidence",
+      code_evidence: evidence,
+      flow_steps: flowSteps,
+      sfmea,
+      black_box_cases: blackBoxCases,
+    };
+  };
+
+  const bundles = [
+    buildBundle("E01", "NVMe-oF connect 主链路", (mr) => {
+      const text = `${mr.module_path} ${mr.file_path ?? ""} ${mr.function_name ?? ""}`.toLowerCase();
+      return text.includes("nvmf") && (
+        text.includes("qpair") ||
+        text.includes("ctrlr") ||
+        text.includes("tcp") ||
+        text.includes("connect")
+      );
+    }),
+    buildBundle("E03", "iSCSI login 主链路", (mr) => {
+      const text = `${mr.module_path} ${mr.file_path ?? ""} ${mr.function_name ?? ""}`.toLowerCase();
+      return text.includes("iscsi") && text.includes("login");
+    }),
+    buildBundle("E05", "bdev IO 主链路", (mr) => {
+      const filePath = String(mr.file_path ?? mr.module_path ?? "").toLowerCase();
+      const functionName = String(mr.function_name ?? "").toLowerCase();
+      return filePath.startsWith("lib/bdev/") || functionName.startsWith("spdk_bdev_") || functionName.startsWith("bdev_");
+    }),
+  ];
+
+  return JSON.stringify(
+    {
+      version: "codetalk-coverage-four-piece-v1",
+      name,
+      generated_at: new Date().toISOString(),
+      bundles,
+    },
+    null,
+    2,
+  );
+}
+
 const CASE_TYPE_LABEL: Record<string, string> = {
   black_box_ready: "黑盒可执行",
   black_box_hypothesis: "黑盒假设",
@@ -1220,6 +1332,21 @@ export default function CoveragePage() {
                     >
                       <Download size={14} />
                       导出黑盒用例
+                    </button>
+                    <button
+                      type="button"
+                      disabled={moduleResults.length === 0}
+                      onClick={() =>
+                        downloadTextFile(
+                          `${safeExportName(a.name)}-four-piece.json`,
+                          buildCoverageFourPieceJson(a.name, moduleResults),
+                          "application/json;charset=utf-8",
+                        )
+                      }
+                      className="inline-flex items-center gap-1.5 rounded-lg bg-surface-container px-3 py-1.5 text-sm text-on-surface-variant transition-colors hover:bg-surface-container-high disabled:opacity-50"
+                    >
+                      <Download size={14} />
+                      导出四件套
                     </button>
                   </div>
                   {/* Overall rates */}
