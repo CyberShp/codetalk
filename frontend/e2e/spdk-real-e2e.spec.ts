@@ -121,6 +121,8 @@ const diagnosticsByPage = new WeakMap<Page, { consoleLines: string[]; failedResp
 
 let workspaceId = "";
 let workspaceName = "";
+let e2eLlmConfigId = "";
+let e2eLlmConfigName = "";
 
 function ensureArtifactDir() {
   fs.mkdirSync(ARTIFACT_DIR, { recursive: true });
@@ -279,11 +281,12 @@ async function configureLlmIfAvailable(page: Page) {
 
   const baseUrl = process.env.CODETALK_E2E_LLM_BASE_URL ?? "https://api.deepseek.com";
   const model = process.env.CODETALK_E2E_LLM_MODEL ?? "deepseek-chat";
+  e2eLlmConfigName = `DeepSeek E2E ${RUN_ID}`;
 
   await page.goto("/settings", { waitUntil: "domcontentloaded" });
   await noFrameworkOverlay(page);
   await page.getByRole("button", { name: /新增/ }).click();
-  await page.getByPlaceholder(/Claude|GPT-4o/).fill(`DeepSeek E2E ${RUN_ID}`);
+  await page.getByPlaceholder(/Claude|GPT-4o/).fill(e2eLlmConfigName);
   await page.getByPlaceholder("https://api.openai.com/v1").fill(baseUrl);
   await page.getByPlaceholder(/sk-|Ollama/).fill(apiKey);
   await page.getByPlaceholder(/gpt-4o|text-embedding/).fill(model);
@@ -291,19 +294,20 @@ async function configureLlmIfAvailable(page: Page) {
   const keyType = await page.getByPlaceholder(/sk-|Ollama/).getAttribute("type");
   expect(keyType).toBe("password");
   await page.getByRole("button", { name: "保存配置" }).click();
-  await expect(page.getByText(/DeepSeek E2E/)).toBeVisible({ timeout: 15_000 });
-  const activeModelSelect = page.locator("select").filter({ has: page.locator("option", { hasText: `DeepSeek E2E ${RUN_ID}` }) }).first();
+  await expect(page.getByText(e2eLlmConfigName, { exact: true })).toBeVisible({ timeout: 15_000 });
+  const activeModelSelect = page.locator("select").filter({ has: page.locator("option", { hasText: e2eLlmConfigName }) }).first();
   await expect(activeModelSelect).toBeVisible({ timeout: 15_000 });
   const activeModelValue = await activeModelSelect.locator("option").evaluateAll(
     (options, label) =>
       options.find((option) => (option.textContent ?? "").includes(String(label)))?.getAttribute("value") ?? "",
-    `DeepSeek E2E ${RUN_ID}`,
+    e2eLlmConfigName,
   );
   expect(activeModelValue).toBeTruthy();
+  e2eLlmConfigId = activeModelValue;
   await activeModelSelect.selectOption(activeModelValue);
   await page.reload({ waitUntil: "domcontentloaded" });
-  await expect(page.getByText(/DeepSeek E2E/)).toBeVisible({ timeout: 15_000 });
-  const persistedActiveModel = page.locator("select").filter({ has: page.locator("option", { hasText: `DeepSeek E2E ${RUN_ID}` }) }).first();
+  await expect(page.getByText(e2eLlmConfigName, { exact: true })).toBeVisible({ timeout: 15_000 });
+  const persistedActiveModel = page.locator("select").filter({ has: page.locator("option", { hasText: e2eLlmConfigName }) }).first();
   await expect(persistedActiveModel).toHaveValue(activeModelValue, { timeout: 15_000 });
 
   const bodyText = await page.locator("body").innerText();
@@ -331,7 +335,40 @@ test.beforeAll(() => {
   writeJson("acceptance_matrix.initial.json", Array.from(results.values()));
 });
 
-test.afterAll(() => {
+test.afterAll(async () => {
+  if (e2eLlmConfigId || e2eLlmConfigName) {
+    const cleanup: { id: string; status: string; httpStatus?: number; error?: string } = {
+      id: e2eLlmConfigId,
+      status: "pending",
+    };
+    try {
+      if (!e2eLlmConfigId && e2eLlmConfigName) {
+        const listResponse = await fetch(`${BACKEND_BASE}/api/settings/llm`);
+        if (listResponse.ok) {
+          const configs = (await listResponse.json()) as Array<{ id: string; name: string }>;
+          e2eLlmConfigId = configs.find((config) => config.name === e2eLlmConfigName)?.id ?? "";
+          cleanup.id = e2eLlmConfigId;
+        }
+      }
+      if (!e2eLlmConfigId) {
+        cleanup.status = "not_found";
+        writeJson("llm-config-cleanup.json", cleanup);
+        return;
+      }
+      const response = await fetch(`${BACKEND_BASE}/api/settings/llm/${e2eLlmConfigId}`, {
+        method: "DELETE",
+      });
+      cleanup.httpStatus = response.status;
+      cleanup.status = response.ok || response.status === 404 ? "deleted" : "failed";
+      if (!response.ok && response.status !== 404) {
+        cleanup.error = await response.text().catch(() => "");
+      }
+    } catch (error) {
+      cleanup.status = "failed";
+      cleanup.error = error instanceof Error ? error.message : String(error);
+    }
+    writeJson("llm-config-cleanup.json", cleanup);
+  }
   const summary = Array.from(results.values()).reduce<Record<CaseStatus, number>>(
     (acc, item) => {
       acc[item.status] += 1;
