@@ -44,6 +44,8 @@ from app.services.agent_discovery_session import (
 
 logger = logging.getLogger(__name__)
 WORKSPACE_SCOPE_ENRICHMENT_TIMEOUT_SECONDS = 25.0
+COVERAGE_EXTERNAL_AGENT_ENRICHMENT_TIMEOUT_SECONDS = 8.0
+COVERAGE_TEST_DESIGN_TIMEOUT_SECONDS = 45.0
 
 # Coverage gap test-design constants (coverage-test-design-v1).
 COVERAGE_TEST_DESIGN_VERSION = "coverage-test-design-v1"
@@ -1049,14 +1051,37 @@ class CoverageAnalyzer:
         modules = [_dict_to_module(d) for d in modules_data]
 
         if record.get("source_format") == "internal_function_hits":
-            design = await build_coverage_test_design(
-                modules,
-                workspace_id=record.get("workspace_id"),
-                repo_path=record.get("repo_path"),
-                use_ai=True,
-                artifact_dir=settings.outputs_path / "coverage" / analysis_id,
-                analysis_id=analysis_id,
-            )
+            artifact_dir = settings.outputs_path / "coverage" / analysis_id
+            try:
+                design = await asyncio.wait_for(
+                    build_coverage_test_design(
+                        modules,
+                        workspace_id=record.get("workspace_id"),
+                        repo_path=record.get("repo_path"),
+                        use_ai=True,
+                        artifact_dir=artifact_dir,
+                        analysis_id=analysis_id,
+                    ),
+                    timeout=COVERAGE_TEST_DESIGN_TIMEOUT_SECONDS,
+                )
+            except asyncio.TimeoutError:
+                logger.info(
+                    "Coverage test-design timed out after %.1fs; falling back to deterministic parse-level design",
+                    COVERAGE_TEST_DESIGN_TIMEOUT_SECONDS,
+                )
+                design = await build_coverage_test_design(
+                    modules,
+                    workspace_id=None,
+                    repo_path=None,
+                    use_ai=False,
+                    artifact_dir=artifact_dir,
+                    analysis_id=analysis_id,
+                )
+                warnings = design.setdefault("warnings", [])
+                if isinstance(warnings, list):
+                    warnings.append(
+                        "workspace-bound coverage enrichment exceeded budget; deterministic parse-level fallback was used"
+                    )
             results = design.get("gaps") or []
             now = datetime.now(timezone.utc).isoformat()
             async with aiosqlite.connect(settings.sqlite_db) as db:
@@ -2078,9 +2103,37 @@ async def _resolve_external_agent_entries_for_hits(
                 "warnings": [str(exc)],
             }
 
-    pairs = await asyncio.gather(*[
-        _one_safe(module, hit) for module, hit in uncovered[:MAX_TRACED_FUNCTION_GAPS]
-    ])
+    traced = uncovered[:MAX_TRACED_FUNCTION_GAPS]
+    try:
+        pairs = await asyncio.wait_for(
+            asyncio.gather(*[_one_safe(module, hit) for module, hit in traced]),
+            timeout=COVERAGE_EXTERNAL_AGENT_ENRICHMENT_TIMEOUT_SECONDS,
+        )
+    except asyncio.TimeoutError:
+        logger.info(
+            "Coverage external-agent enrichment timed out after %.1fs; falling back to deterministic entry design",
+            COVERAGE_EXTERNAL_AGENT_ENRICHMENT_TIMEOUT_SECONDS,
+        )
+        pairs = [
+            (
+                _hit_key(hit),
+                {
+                    "status": "timeout",
+                    "provider_status": {"external_agent": "timeout"},
+                    "validated_entries": [],
+                    "unverified_entries": [],
+                    "raw_results": [
+                        {
+                            "provider": "external_agent",
+                            "status": "timeout",
+                            "message": "coverage external-agent enrichment exceeded budget",
+                        }
+                    ],
+                    "warnings": ["coverage external-agent enrichment exceeded budget"],
+                },
+            )
+            for _module, hit in traced
+        ]
     return {key: value for key, value in pairs}
 
 
