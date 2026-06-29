@@ -1,7 +1,7 @@
 import { defineConfig, devices } from "@playwright/test";
 
-const frontendPort = Number(process.env.CODETALK_FRONTEND_PORT ?? "3003");
-const backendPort = Number(process.env.CODETALK_BACKEND_PORT ?? "3004");
+const frontendPort = Number(process.env.CODETALK_FRONTEND_PORT ?? "3005");
+const backendPort = Number(process.env.CODETALK_BACKEND_PORT ?? "8100");
 const frontendBindHost =
   process.env.CODETALK_FRONTEND_BIND_HOST ?? "0.0.0.0";
 const backendBindHost = process.env.CODETALK_BACKEND_BIND_HOST ?? "0.0.0.0";

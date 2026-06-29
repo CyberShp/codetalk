@@ -1,6 +1,6 @@
 import { test, expect } from "@playwright/test";
 
-const backendBase = `http://localhost:${process.env.CODETALK_BACKEND_PORT ?? "3004"}`;
+const backendBase = `http://localhost:${process.env.CODETALK_BACKEND_PORT ?? "8100"}`;
 
 test.describe("Health smoke tests", () => {
   test("homepage loads and shows navigation", async ({ page }) => {

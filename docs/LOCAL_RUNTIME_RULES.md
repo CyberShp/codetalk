@@ -16,16 +16,17 @@ As of 2026-04-17, the observed listeners are:
 
 | Service | Browser/Host Port | Notes |
 |---|---:|---|
-| Frontend (Next.js) | `3003` | Public local default for the current CodeTalk runtime |
-| Backend (FastAPI) | `3004` | Public local API default for the current CodeTalk runtime |
+| Frontend (Next.js) | `3005` | General CodeTalk host-run default |
+| Backend (FastAPI) | `8100` | General CodeTalk host-run API default |
 | PostgreSQL | `5433` | Docker `5432` exposed to host `5433` |
 | deepwiki-open | `8001` | Dockerized |
 | GitNexus | `7100` | Dockerized |
 | Joern | `8080` | Dockerized (CPG server, 8G memory limit) |
 
-Ports `3003/3004` are the current CodeTalk public local defaults. If another
-runtime is already bound to those ports, stop that runtime or override
-`CODETALK_FRONTEND_PORT` / `CODETALK_BACKEND_PORT` explicitly for the test run.
+Ports `3003/3004` are reserved for the SPDK validation run and other shared
+runtime scenarios that explicitly opt in via `CODETALK_FRONTEND_PORT` /
+`CODETALK_BACKEND_PORT`. Do not make unrelated CodeTalk host-run defaults bind
+those ports implicitly.
 
 ## Root Cause Summary For "unable to fetch"
 
@@ -74,8 +75,8 @@ Compose mode:
 
 Host mode:
 
-- browser reaches frontend on `3003`
-- browser reaches backend on `3004`
+- browser reaches frontend on `3005`
+- browser reaches backend on `8100`
 - backend must use host-reachable dependency endpoints
 - database must use host port `5433`
 
@@ -103,7 +104,7 @@ export REPOS_BASE_PATH="$(pwd)/.repos"
 
 Valid examples:
 
-- `http://localhost:3004` when browsing locally on the same machine
+- `http://localhost:8100` when browsing locally on the same machine
 
 Invalid examples:
 
@@ -117,7 +118,7 @@ Invalid examples:
 Authoritative check:
 
 ```bash
-lsof -nP -iTCP -sTCP:LISTEN | rg ':(3003|3004|5433|7100|8001|8080)\b'
+lsof -nP -iTCP -sTCP:LISTEN | rg ':(3005|8100|5433|7100|8001|8080)\b'
 ```
 
 This is the source of truth for "what is actually up".
@@ -126,16 +127,16 @@ This is the source of truth for "what is actually up".
 
 ### Frontend
 
-1. Confirm the old listener is gone from `3003`.
+1. Confirm the old listener is gone from `3005`.
 2. Start the frontend from `frontend/`.
-3. Confirm `node` is listening on `3003`.
+3. Confirm `node` is listening on `3005`.
 
 ### Backend
 
 1. Decide runtime mode first: host-run or Compose.
 2. If host-run, export host-safe env vars before starting.
 3. Start from `backend/`.
-4. Confirm Python is listening on `3004`.
+4. Confirm Python is listening on `8100`.
 5. Do not assume repo-root `.env` was loaded.
 
 ### Database and tools

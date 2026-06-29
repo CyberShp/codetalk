@@ -10,6 +10,7 @@ const RUN_ID = new Date().toISOString().replace(/[:.]/g, "-");
 const ARTIFACT_DIR =
   process.env.CODETALK_E2E_ARTIFACT_DIR ??
   path.join(os.tmpdir(), "codetalk-e2e-spdk", RUN_ID);
+const hasSpdkRepo = fs.existsSync(SPDK_REPO);
 
 type CaseStatus = "pass" | "fail" | "blocked" | "not_run";
 
@@ -332,6 +333,19 @@ test("B/C/K: create SPDK workspace through UI and verify chat/index gate", async
   await expect(page.getByText(/代码路径不存在|请求参数有误/)).toBeVisible({ timeout: 15_000 });
   record("B02", "pass", "bad repo path rejected through UI");
   record("K08", "pass", "bad path error is visible and recoverable");
+
+  if (!hasSpdkRepo) {
+    const details = { spdkRepo: SPDK_REPO, override: "CODETALK_E2E_REPO" };
+    record("B01", "blocked", "SPDK repo path is not available on this machine", details);
+    record("B04", "blocked", "workspace recovery requires a created SPDK workspace", details);
+    record("B05", "blocked", "large repository indexing requires an available SPDK checkout", details);
+    record("C01", "blocked", "AI thread requires an available indexed SPDK workspace", details);
+    record("C02", "blocked", "AI evidence follow-up requires an available indexed SPDK workspace", details);
+    record("C03", "blocked", "AI context continuation requires an available indexed SPDK workspace", details);
+    recordDeferredChatCases("SPDK repo path unavailable");
+    record("K06", "blocked", "loading state requires an available SPDK workspace run", details);
+    return;
+  }
 
   await page.getByPlaceholder(/项目 A/).fill(workspaceName);
   await page.getByPlaceholder(/本地文件夹路径/).fill(SPDK_REPO);
