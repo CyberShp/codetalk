@@ -651,6 +651,40 @@ test("B/C/K: create SPDK workspace through UI and verify chat/index gate", async
     elapsedMs,
   });
 
+  if (finalStatus === "indexed") {
+    try {
+      await page.getByRole("button", { name: "源码搜索" }).click();
+      const sourceSearch = page.getByLabel("源码搜索");
+      const sourceQueries = ["lib/nvmf", "lib/iscsi", "lib/bdev", "test/nvmf"];
+      const openedPaths: string[] = [];
+      for (const query of sourceQueries) {
+        await sourceSearch.fill(query);
+        await page.getByRole("button", { name: "搜索源码" }).click();
+        const result = page
+          .locator("button")
+          .filter({ hasText: query })
+          .first();
+        await expect(result).toBeVisible({ timeout: 20_000 });
+        await result.hover();
+        await result.click();
+        await expect(page.getByText(new RegExp(query.replace("/", "\\/"))).first()).toBeVisible({ timeout: 10_000 });
+        openedPaths.push(query);
+      }
+      record("B06", "pass", "searched and opened SPDK source paths through the workspace UI", {
+        openedPaths,
+        screenshot: await screenshot(page, "B06-source-search"),
+      });
+    } catch (error) {
+      record("B06", "blocked", "workspace source search did not complete through the UI", {
+        error: error instanceof Error ? error.message : String(error),
+        screenshot: await screenshot(page, "B06-source-search-failed"),
+        excerpt: await pageExcerpt(page),
+      });
+    }
+  } else {
+    record("B06", "blocked", "source search requires indexed SPDK workspace");
+  }
+
   const chatPrompt = "分析 SPDK NVMe-oF target connect 到 IO 提交流程，并输出代码证据、流程、SFMEA、黑盒测试用例。";
   await page.getByRole("button", { name: "对话" }).click();
   await expect(page.locator("textarea").last()).toBeVisible({ timeout: 10_000 });
@@ -1206,14 +1240,18 @@ test("matrix accounting: every planned case has an explicit status", async () =>
   }
 
   if (auditMode) {
-    record("A04", "blocked", "provider probe/system audit/tool probe are not exposed as stable UI controls");
-    record("A05", "blocked", "port-conflict scenario requires a separate destructive startup attempt");
-    record("B03", "blocked", "duplicate workspace policy is product-defined; not exercised in first safe run");
-    record("B06", "blocked", "source search UI is not exposed as a stable browser control in this run");
-    record("D03", "blocked", "requires provider execution for resource_leak_hunt");
-    record("D04", "blocked", "requires provider execution for patch_impact_review");
-    record("D05", "blocked", "requires provider execution for mr_blackbox_test");
-    record("D10", "blocked", "requires a failed executable workflow and accepted rerun");
+    for (const [id, reason] of [
+      ["A04", "provider probe/system audit/tool probe are not exposed as stable UI controls"],
+      ["A05", "port-conflict scenario requires a separate destructive startup attempt"],
+      ["B03", "duplicate workspace policy is product-defined; not exercised in first safe run"],
+      ["B06", "source search UI is not exposed as a stable browser control in this run"],
+      ["D03", "requires provider execution for resource_leak_hunt"],
+      ["D04", "requires provider execution for patch_impact_review"],
+      ["D05", "requires provider execution for mr_blackbox_test"],
+      ["D10", "requires a failed executable workflow and accepted rerun"],
+    ] as const) {
+      if (results.get(id)?.status === "not_run") record(id, "blocked", reason);
+    }
     for (const id of ["E01", "E02", "E03", "E04", "E05", "E06", "E07", "E08", "E09", "E10"]) {
       if (results.get(id)?.status === "not_run") record(id, "blocked", "requires live model/provider chain");
     }

@@ -53,6 +53,8 @@ import type {
   WorkbenchSmokeE2EResult,
   WorkbenchTaskArtifactContent,
   WorkbenchTaskArtifactManifest,
+  WorkspaceSourceFile,
+  WorkspaceSourceSearchResponse,
 } from "./types";
 
 const CONFIGURED_API_BASE = process.env.NEXT_PUBLIC_API_URL?.replace(/\/$/, "");
@@ -366,6 +368,24 @@ export const api = {
       }),
 
     get: (id: string) => request<Workspace>(`/api/workspaces/${id}`),
+
+    sourceSearch: (wsId: string, q: string, limit = 20) => {
+      const query = new URLSearchParams({ q, limit: String(limit) });
+      return request<WorkspaceSourceSearchResponse>(
+        `/api/workspaces/${wsId}/source-search?${query.toString()}`,
+      );
+    },
+
+    sourceFile: (wsId: string, path: string, line?: number, context = 80) => {
+      const query = new URLSearchParams({
+        path,
+        context: String(context),
+        ...(line ? { line: String(line) } : {}),
+      });
+      return request<WorkspaceSourceFile>(
+        `/api/workspaces/${wsId}/source-file?${query.toString()}`,
+      );
+    },
 
     uploadMaterial: async (wsId: string, filePath: string): Promise<Workspace["materials"][number]> => {
       const res = await fetch(`${BASE}/api/workspaces/${wsId}/materials`, {

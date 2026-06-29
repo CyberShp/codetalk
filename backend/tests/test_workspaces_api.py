@@ -158,6 +158,76 @@ class TestWorkspaceCRUD:
         assert len(resp.json()) == 1
 
 
+class TestWorkspaceSourceSearch:
+    async def test_source_search_finds_path_and_source_file_opens(
+        self, client_v2, sqlite_db, tmp_path
+    ):
+        repo = tmp_path / "spdk"
+        source_dir = repo / "lib" / "nvmf"
+        source_dir.mkdir(parents=True)
+        source = source_dir / "ctrlr.c"
+        source.write_text(
+            "int spdk_nvmf_ctrlr_connect(void) {\n"
+            "    return 0;\n"
+            "}\n",
+            encoding="utf-8",
+        )
+        await _seed_ws(sqlite_db, "ws-source", indexed=1, repo_path=str(repo))
+
+        search = await client_v2.get(
+            "/api/workspaces/ws-source/source-search",
+            params={"q": "lib/nvmf"},
+        )
+        assert search.status_code == 200
+        matches = search.json()["matches"]
+        assert matches[0]["path"] == "lib/nvmf/ctrlr.c"
+        assert matches[0]["match_type"] == "path"
+
+        file_resp = await client_v2.get(
+            "/api/workspaces/ws-source/source-file",
+            params={"path": matches[0]["path"]},
+        )
+        assert file_resp.status_code == 200
+        body = file_resp.json()
+        assert body["path"] == "lib/nvmf/ctrlr.c"
+        assert "spdk_nvmf_ctrlr_connect" in body["content"]
+
+    async def test_source_search_finds_content(self, client_v2, sqlite_db, tmp_path):
+        repo = tmp_path / "spdk"
+        source_dir = repo / "lib" / "bdev"
+        source_dir.mkdir(parents=True)
+        (source_dir / "bdev.c").write_text(
+            "void spdk_bdev_submit_request(void) {}\n",
+            encoding="utf-8",
+        )
+        await _seed_ws(sqlite_db, "ws-source-content", indexed=1, repo_path=str(repo))
+
+        resp = await client_v2.get(
+            "/api/workspaces/ws-source-content/source-search",
+            params={"q": "spdk_bdev_submit_request"},
+        )
+
+        assert resp.status_code == 200
+        matches = resp.json()["matches"]
+        assert matches[0]["path"] == "lib/bdev/bdev.c"
+        assert matches[0]["line"] == 1
+        assert matches[0]["match_type"] == "content"
+
+    async def test_source_file_rejects_path_traversal(
+        self, client_v2, sqlite_db, tmp_path
+    ):
+        repo = tmp_path / "spdk"
+        repo.mkdir()
+        await _seed_ws(sqlite_db, "ws-source-safe", indexed=1, repo_path=str(repo))
+
+        resp = await client_v2.get(
+            "/api/workspaces/ws-source-safe/source-file",
+            params={"path": "../secret.txt"},
+        )
+
+        assert resp.status_code == 422
+
+
 # ---------------------------------------------------------------------------
 # Index / Analyze
 # ---------------------------------------------------------------------------

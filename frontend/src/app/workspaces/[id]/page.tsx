@@ -27,14 +27,25 @@ import {
   FileSearch,
   Download,
   Terminal,
+  Search,
 } from "lucide-react";
 import { api } from "@/lib/api";
-import type { Workspace, WorkspaceReportMeta, WorkspaceVersion, TaskStep, ChatMode, EmbeddingStatus, WorkspaceModule } from "@/lib/types";
+import type {
+  Workspace,
+  WorkspaceReportMeta,
+  WorkspaceVersion,
+  TaskStep,
+  ChatMode,
+  EmbeddingStatus,
+  WorkspaceModule,
+  WorkspaceSourceFile,
+  WorkspaceSourceSearchMatch,
+} from "@/lib/types";
 import { useWsChat } from "@/lib/chatContext";
 import MarkdownRenderer from "@/components/ui/MarkdownRenderer";
 import AnalysisTaskModal from "@/components/workspaces/AnalysisTaskModal";
 
-type Tab = "reports" | "materials" | "chat" | "logs";
+type Tab = "reports" | "materials" | "chat" | "source" | "logs";
 
 function IndexBadge({
   indexed,
@@ -212,6 +223,162 @@ function ReportCard({ report, wsId }: { report: WorkspaceReportMeta; wsId: strin
           )}
         </div>
       )}
+    </div>
+  );
+}
+
+function SourceSearchPanel({ wsId, indexed }: { wsId: string; indexed: number }) {
+  const [query, setQuery] = useState("");
+  const [results, setResults] = useState<WorkspaceSourceSearchMatch[]>([]);
+  const [selected, setSelected] = useState<WorkspaceSourceSearchMatch | null>(null);
+  const [file, setFile] = useState<WorkspaceSourceFile | null>(null);
+  const [searching, setSearching] = useState(false);
+  const [loadingFile, setLoadingFile] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const canSearch = indexed === 1;
+
+  const runSearch = async () => {
+    const q = query.trim();
+    if (!q || !canSearch || searching) return;
+    setSearching(true);
+    setError(null);
+    setSelected(null);
+    setFile(null);
+    try {
+      const response = await api.workspaces.sourceSearch(wsId, q, 30);
+      setResults(response.matches);
+      if (response.matches.length === 0) {
+        setError("未找到匹配的源码文件或内容");
+      }
+    } catch (e) {
+      setResults([]);
+      setError(e instanceof Error ? e.message : String(e));
+    } finally {
+      setSearching(false);
+    }
+  };
+
+  const openMatch = async (match: WorkspaceSourceSearchMatch) => {
+    setSelected(match);
+    setLoadingFile(true);
+    setError(null);
+    try {
+      const content = await api.workspaces.sourceFile(wsId, match.path, match.line ?? undefined, 120);
+      setFile(content);
+    } catch (e) {
+      setFile(null);
+      setError(e instanceof Error ? e.message : String(e));
+    } finally {
+      setLoadingFile(false);
+    }
+  };
+
+  return (
+    <div className="space-y-4">
+      <div className="flex flex-col gap-2 sm:flex-row">
+        <label className="flex-1 flex items-center gap-2 px-3 py-2 rounded-lg border border-outline-variant/40 bg-surface-container-low focus-within:border-primary/50 transition-colors">
+          <Search size={14} className="text-on-surface-variant/50 shrink-0" />
+          <input
+            aria-label="源码搜索"
+            type="search"
+            value={query}
+            onChange={(e) => setQuery(e.target.value)}
+            onKeyDown={(e) => {
+              if (e.key === "Enter") void runSearch();
+            }}
+            placeholder={canSearch ? "搜索路径或内容，例如 lib/nvmf、test/nvmf、spdk_nvmf_connect" : "索引完成后可搜索源码"}
+            disabled={!canSearch || searching}
+            className="flex-1 bg-transparent text-sm text-on-surface outline-none placeholder:text-on-surface-variant/40 disabled:opacity-50"
+          />
+        </label>
+        <button
+          type="button"
+          onClick={runSearch}
+          disabled={!query.trim() || !canSearch || searching}
+          className="inline-flex items-center justify-center gap-1.5 px-4 py-2 rounded-lg bg-primary text-on-primary text-sm font-medium hover:opacity-90 disabled:opacity-40 disabled:cursor-not-allowed transition-opacity"
+        >
+          {searching ? <Loader2 size={14} className="animate-spin" /> : <Search size={14} />}
+          搜索源码
+        </button>
+      </div>
+
+      {!canSearch && (
+        <div className="rounded-lg border border-amber-400/20 bg-amber-400/10 px-4 py-3 text-xs text-amber-500">
+          工作空间索引完成后可搜索源码文件。
+        </div>
+      )}
+
+      {error && (
+        <div className="rounded-lg border border-error/20 bg-error/10 px-4 py-3 text-xs text-error whitespace-pre-wrap">
+          {error}
+        </div>
+      )}
+
+      <div className="grid gap-4 lg:grid-cols-[minmax(280px,380px)_1fr]">
+        <div className="rounded-xl border border-outline-variant/20 bg-surface-container-low overflow-hidden">
+          <div className="px-4 py-3 border-b border-outline-variant/20 text-xs text-on-surface-variant">
+            搜索结果 ({results.length})
+          </div>
+          {results.length === 0 ? (
+            <div className="flex flex-col items-center justify-center h-48 gap-3 text-on-surface-variant/50">
+              <FileSearch size={32} />
+              <p className="text-sm">输入路径或符号后搜索</p>
+            </div>
+          ) : (
+            <div className="max-h-[560px] overflow-auto divide-y divide-outline-variant/10">
+              {results.map((match, index) => (
+                <button
+                  key={`${match.path}:${match.line ?? "path"}:${index}`}
+                  type="button"
+                  onClick={() => void openMatch(match)}
+                  className={`w-full px-4 py-3 text-left transition-colors hover:bg-surface-container ${
+                    selected?.path === match.path && selected?.line === match.line ? "bg-primary/10" : ""
+                  }`}
+                >
+                  <div className="flex items-center gap-2">
+                    <FileText size={14} className="text-primary shrink-0" />
+                    <span className="min-w-0 flex-1 truncate font-data text-xs text-on-surface">
+                      {match.path}
+                    </span>
+                    <span className="shrink-0 rounded-full border border-outline-variant/30 px-1.5 py-0.5 text-[10px] text-on-surface-variant">
+                      {match.match_type === "path" ? "路径" : `L${match.line}`}
+                    </span>
+                  </div>
+                  <p className="mt-1 max-h-8 overflow-hidden text-xs text-on-surface-variant">
+                    {match.text || match.path}
+                  </p>
+                </button>
+              ))}
+            </div>
+          )}
+        </div>
+
+        <div className="rounded-xl border border-outline-variant/20 bg-surface-container-low overflow-hidden">
+          <div className="flex items-center justify-between gap-3 px-4 py-3 border-b border-outline-variant/20">
+            <div className="min-w-0">
+              <div className="truncate font-data text-xs text-on-surface">
+                {file?.path ?? selected?.path ?? "未打开文件"}
+              </div>
+              {file && (
+                <div className="text-[11px] text-on-surface-variant">
+                  {file.start_line}-{file.end_line} / {file.total_lines} 行
+                </div>
+              )}
+            </div>
+            {loadingFile && <Loader2 size={14} className="animate-spin text-primary shrink-0" />}
+          </div>
+          {file ? (
+            <pre className="max-h-[560px] overflow-auto p-4 text-xs leading-relaxed text-on-surface bg-[#f6f9fc] font-data whitespace-pre-wrap">
+              {file.content}
+            </pre>
+          ) : (
+            <div className="flex flex-col items-center justify-center h-64 gap-3 text-on-surface-variant/50">
+              <FileText size={32} />
+              <p className="text-sm">点击搜索结果打开源码片段</p>
+            </div>
+          )}
+        </div>
+      </div>
     </div>
   );
 }
@@ -943,7 +1110,7 @@ export default function WorkspaceDetailPage() {
 
       {/* Tabs */}
       <div className="flex gap-1 mb-6 border-b border-outline-variant/20">
-        {(["reports", "materials", "chat", "logs"] as Tab[]).map((t) => (
+        {(["reports", "materials", "chat", "source", "logs"] as Tab[]).map((t) => (
           <button
             key={t}
             onClick={() => setTab(t)}
@@ -959,6 +1126,8 @@ export default function WorkspaceDetailPage() {
               <Paperclip size={14} />
             ) : t === "chat" ? (
               <MessageSquare size={14} />
+            ) : t === "source" ? (
+              <FileSearch size={14} />
             ) : (
               <Terminal size={14} />
             )}
@@ -968,7 +1137,9 @@ export default function WorkspaceDetailPage() {
                 ? `材料 (${workspace.materials.length})`
                 : t === "chat"
                   ? "对话"
-                  : "执行日志"}
+                  : t === "source"
+                    ? "源码搜索"
+                    : "执行日志"}
           </button>
         ))}
       </div>
@@ -1199,6 +1370,13 @@ export default function WorkspaceDetailPage() {
           indexed={workspace.indexed}
           lastIndexError={workspace.last_index_error}
           reports={workspace.reports}
+        />
+      )}
+
+      {tab === "source" && (
+        <SourceSearchPanel
+          wsId={wsId}
+          indexed={workspace.indexed}
         />
       )}
 
