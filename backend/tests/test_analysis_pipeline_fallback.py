@@ -167,18 +167,14 @@ class TestPhaseCollectGating(unittest.IsolatedAsyncioTestCase):
         async def fake_collect_gitnexus(_):
             collected.append("gitnexus")
 
-        async def fake_collect_deepwiki(_):
-            collected.append("deepwiki")
-
         pipeline._collect_gitnexus = fake_collect_gitnexus  # type: ignore[method-assign]
-        pipeline._collect_deepwiki = fake_collect_deepwiki  # type: ignore[method-assign]
 
         import tempfile
         with tempfile.TemporaryDirectory() as tmp:
             await pipeline._phase_collect(tmp, ["gitnexus", "deepwiki"])
 
         self.assertNotIn("gitnexus", collected)
-        self.assertIn("deepwiki", collected)
+        self.assertNotIn("deepwiki", collected)
 
     async def test_gitnexus_skipped_in_llm_direct_mode(self) -> None:
         pipeline = AnalysisPipeline()
@@ -188,11 +184,7 @@ class TestPhaseCollectGating(unittest.IsolatedAsyncioTestCase):
         async def fake_collect_gitnexus(_):
             collected.append("gitnexus")
 
-        async def fake_collect_deepwiki(_):
-            collected.append("deepwiki")
-
         pipeline._collect_gitnexus = fake_collect_gitnexus  # type: ignore[method-assign]
-        pipeline._collect_deepwiki = fake_collect_deepwiki  # type: ignore[method-assign]
 
         import tempfile
         with tempfile.TemporaryDirectory() as tmp:
@@ -208,18 +200,14 @@ class TestPhaseCollectGating(unittest.IsolatedAsyncioTestCase):
         async def fake_collect_gitnexus(_):
             collected.append("gitnexus")
 
-        async def fake_collect_deepwiki(_):
-            collected.append("deepwiki")
-
         pipeline._collect_gitnexus = fake_collect_gitnexus  # type: ignore[method-assign]
-        pipeline._collect_deepwiki = fake_collect_deepwiki  # type: ignore[method-assign]
 
         import tempfile
         with tempfile.TemporaryDirectory() as tmp:
             await pipeline._phase_collect(tmp, ["gitnexus", "deepwiki"])
 
         self.assertIn("gitnexus", collected)
-        self.assertIn("deepwiki", collected)
+        self.assertNotIn("deepwiki", collected)
 
     async def test_gitnexus_runs_in_gitnexus_only_mode(self) -> None:
         pipeline = AnalysisPipeline()

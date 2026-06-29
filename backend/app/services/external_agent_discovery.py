@@ -1100,7 +1100,8 @@ def _agent_runtime_diagnostic(
     except OSError:
         cwd = "<unavailable>"
     path_env = os.environ.get("PATH") or ""
-    all_entries = [part for part in path_env.split(os.pathsep) if part]
+    separator = ";" if ";" in path_env else os.pathsep
+    all_entries = [part for part in path_env.split(separator) if part]
     visible_entries = all_entries[:max(0, max_path_entries)]
     path_summary = " | ".join(visible_entries) if visible_entries else "<empty>"
     if len(all_entries) > len(visible_entries):

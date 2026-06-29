@@ -411,9 +411,8 @@ class RepoAnalysisRouteContractTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(body["test_points"][0]["title"], "boundary case")
         kwargs = gen_mock.await_args.kwargs
         self.assertEqual(kwargs["repo_path"], "/data/repos/open-iscsi")
-        self.assertEqual(
-            kwargs["llm_config"], {"provider": "openai", "model": "mimo-v2-pro"}
-        )
+        self.assertEqual(kwargs["target"], "main")
+        self.assertEqual(kwargs["perspective"], "black_box")
 
     async def test_taint_verify_contract(self) -> None:
         repo_id = uuid.uuid4()

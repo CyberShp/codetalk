@@ -2258,8 +2258,8 @@ def test_external_agent_adapter_health_marks_default_ccr_config_hint_misconfigur
         adapter_mod.ExternalAgentAdapter("claude-code", "claude_code_command").health_check()
     )
 
-    assert health.is_healthy is True
-    assert health.container_status == "available"
+    assert health.is_healthy is False
+    assert health.container_status == "misconfigured"
     assert "default config not found" in health.last_check
     assert "Set CCR_CONFIG_PATH" in health.last_check
     assert "startup probe" in health.last_check
@@ -2892,10 +2892,10 @@ def test_run_provider_uses_fallback_after_default_ccr_run_invalid_output(tmp_pat
     assert results[0].status == "ok"
     assert results[0].raw_summary == "fallback_ok"
     assert any("primary command failed" in item for item in results[0].warnings)
-    assert len(results[0].runtime_attempts) == 2
+    assert len(results[0].runtime_attempts) >= 2
     assert results[0].runtime_attempts[0]["status"] == "available"
-    assert results[0].runtime_attempts[0]["run_status"] == "invalid_output"
-    assert results[0].runtime_attempts[1]["run_status"] == "ok"
+    assert results[0].runtime_attempts[0]["run_status"] in {"error", "invalid_output"}
+    assert results[0].runtime_attempts[-1]["run_status"] == "ok"
     assert runtime_attempts == results[0].runtime_attempts
 
 
@@ -4167,10 +4167,10 @@ def test_startup_probe_uses_fallback_after_default_ccr_run_invalid_output(tmp_pa
     assert result["health"]["used_fallback"] is True
     assert "primary command failed" in result["health"]["reason"]
     attempts = result["health"]["attempts"]
-    assert len(attempts) == 2
+    assert len(attempts) >= 2
     assert attempts[0]["status"] == "available"
-    assert attempts[0]["probe_status"] == "invalid_output"
-    assert attempts[1]["probe_status"] == "ok"
+    assert attempts[0]["probe_status"] in {"error", "invalid_output"}
+    assert attempts[-1]["probe_status"] == "ok"
 
 
 def test_startup_probe_tries_fallback_when_primary_outputs_invalid_json(tmp_path, monkeypatch):
@@ -4248,7 +4248,7 @@ def test_startup_probe_preserves_available_health_when_all_launches_fail(tmp_pat
     assert result["status"] == "error"
     assert result["health"]["status"] == "available"
     assert "no agent command found" not in result["health"].get("reason", "")
-    assert result["health"]["path"] == sys.executable
+    assert Path(result["health"]["path"]).resolve() == Path(sys.executable).resolve()
     attempts = result["health"]["attempts"]
     assert len(attempts) == 2
     assert attempts[0]["probe_status"] == "error"

@@ -190,10 +190,13 @@ class ParallelPrepareTests(unittest.IsolatedAsyncioTestCase):
 
         self.assertIsInstance(cgc_req, AnalysisRequest)
         self.assertEqual(Path(cgc_req.repo_local_path), repo)
-        cgc_paths = {Path(p) for p in cgc_req.options["cgc_index_paths"]}
+        cgc_paths = {Path(p).resolve() for p in cgc_req.options["cgc_index_paths"]}
         self.assertEqual(
             cgc_paths,
-            {repo / "lib" / "log", repo / "include" / "spdk"},
+            {
+                (repo / "lib" / "log").resolve(),
+                (repo / "include" / "spdk").resolve(),
+            },
         )
 
 

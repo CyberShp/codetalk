@@ -2541,7 +2541,13 @@ def _input_hint_is_internal_context(value: str) -> bool:
         text,
     )
     if prefix_match and prefix_match.group(1).lower() in _INTERNAL_CONTEXT_HINT_PREFIXES:
-        return True
+        parts = [
+            part.lower()
+            for part in re.findall(r"[A-Za-z_][A-Za-z0-9_]*", text)
+        ]
+        if len(parts) <= 2 and parts[-1] in _INTERNAL_CONTEXT_CONTAINER_FIELDS:
+            return True
+        return False
     if normalized.endswith(("_ctx", "_context")):
         return True
     return False
