@@ -47,6 +47,15 @@ const $$ = (sel, ctx = document) => [...ctx.querySelectorAll(sel)];
 function show(el) { if (el) el.style.display = ''; }
 function hide(el) { if (el) el.style.display = 'none'; }
 
+function errorDetailMessage(detail, fallback) {
+  if (typeof detail === 'string') return detail;
+  if (detail && typeof detail === 'object') {
+    if (detail.message) return String(detail.message);
+    if (detail.error) return String(detail.error);
+  }
+  return fallback;
+}
+
 // ---------------------------------------------------------------------------
 // Step navigation
 // ---------------------------------------------------------------------------
@@ -638,16 +647,27 @@ async function restartService(btn) {
     btn.classList.remove('spinning');
     if (resp.ok) {
       btn.classList.add('success');
+      showServiceActionMessage('success', `${service} 重启请求已发送`);
     } else {
+      const err = await resp.json().catch(() => ({}));
       btn.classList.add('error');
+      showServiceActionMessage('error', `${service} 重启失败：${errorDetailMessage(err.detail, `HTTP ${resp.status}`)}`);
     }
-  } catch (_) {
+  } catch (err) {
     btn.classList.remove('spinning');
     btn.classList.add('error');
+    showServiceActionMessage('error', `${service} 重启失败：${err.message || '网络请求失败'}`);
   } finally {
     btn.disabled = false;
     setTimeout(() => btn.classList.remove('success', 'error'), 2500);
   }
+}
+
+function showServiceActionMessage(type, message) {
+  const box = $('#service-action-message');
+  if (!box) return;
+  box.className = `service-action-message visible ${type}`;
+  box.textContent = message;
 }
 
 async function runHealthCheck() {
