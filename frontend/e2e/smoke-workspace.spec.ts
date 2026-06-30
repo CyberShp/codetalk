@@ -29,6 +29,45 @@ test.describe("Workspace smoke tests", () => {
     await expect(page).toHaveURL(/\/workspaces\/new$/);
   });
 
+  test("prevents duplicate workspace creation from a real double click", async ({
+    page,
+    request,
+  }) => {
+    const repo = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), "codetalk-double-workspace-")));
+    fs.writeFileSync(path.join(repo, "README.md"), "double workspace creation e2e\n", "utf8");
+    const workspaceName = `double-workspace-${Date.now()}`;
+
+    await page.goto("/workspaces/new", { waitUntil: "domcontentloaded" });
+    await page.getByPlaceholder(/项目 A/).fill(workspaceName);
+    await page.getByPlaceholder(/本地文件夹路径/).fill(repo);
+
+    const createRequests: string[] = [];
+    page.on("request", (req) => {
+      if (req.method() === "POST" && new URL(req.url()).pathname === "/api/workspaces") {
+        createRequests.push(req.url());
+      }
+    });
+    const firstCreate = page.waitForRequest(
+      (req) => req.method() === "POST" && new URL(req.url()).pathname === "/api/workspaces",
+    );
+
+    const createButton = page.getByRole("button", { name: "创建工作空间" });
+    await createButton.hover();
+    await createButton.dblclick();
+    await firstCreate;
+
+    await page.waitForURL(/\/workspaces\/[0-9a-f-]{36}$/, { timeout: 30_000 });
+    await expect(page.getByText(workspaceName)).toBeVisible({ timeout: 30_000 });
+    await expect.poll(() => createRequests.length).toBe(1);
+
+    const listResp = await request.get(`${backendBase}/api/workspaces`);
+    expect(listResp.ok()).toBeTruthy();
+    const workspaces = (await listResp.json()) as Array<{ name: string; repo_path: string }>;
+    const created = workspaces.filter((item) => item.name === workspaceName);
+    expect(created).toHaveLength(1);
+    expect(created[0].repo_path).toBe(repo);
+  });
+
   test("duplicate workspace creation offers a link to the existing workspace", async ({
     page,
     request,

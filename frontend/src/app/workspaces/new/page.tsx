@@ -1,6 +1,6 @@
 "use client";
 
-import { useState, useCallback } from "react";
+import { useState, useCallback, useRef } from "react";
 import { useRouter } from "next/navigation";
 import { ArrowLeft, FolderSearch, Loader2 } from "lucide-react";
 import Link from "next/link";
@@ -30,13 +30,16 @@ export default function NewWorkspacePage() {
     id: string;
     name?: string;
   } | null>(null);
+  const submittingRef = useRef(false);
 
   const handleSubmit = useCallback(
     async (e: React.FormEvent) => {
       e.preventDefault();
+      if (submittingRef.current) return;
       if (!name.trim()) { setError("请输入工作空间名称"); return; }
       if (!repoPath.trim()) { setError("请输入代码仓库路径"); return; }
 
+      submittingRef.current = true;
       setSubmitting(true);
       setError(null);
       setExistingWorkspace(null);
@@ -55,6 +58,7 @@ export default function NewWorkspacePage() {
         }
         setError(workspaceCreateErrorMessage(err));
       } finally {
+        submittingRef.current = false;
         setSubmitting(false);
       }
     },
