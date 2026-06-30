@@ -88,3 +88,61 @@ test("home desktop hero and topbar keep the optimized light layout", async ({ pa
   expect(layout.heroWidth).toBeGreaterThan(900);
   expect(layout.overlaps).toEqual([]);
 });
+
+test("home mobile hero keeps primary paths tappable without horizontal overflow", async ({ page }) => {
+  await mockEmptyWorkspaceList(page);
+  await page.setViewportSize({ width: 390, height: 844 });
+  await page.goto("/", { waitUntil: "domcontentloaded" });
+
+  await expect(page.getByRole("heading", { name: /把代码理解\s*变成测试行动/ })).toBeVisible();
+  await expect(page.getByRole("link", { name: "打开 AI 线程" })).toBeVisible();
+  await expect(page.getByRole("link", { name: "进入智能体编排" })).toBeVisible();
+
+  const mobileLayout = await page.evaluate(() => {
+    const viewportWidth = window.innerWidth;
+    const nodes = Array.from(
+      document.querySelectorAll(
+        ".ct-home-topbar, .ct-home-hero, .ct-home-title, .ct-home-copy, .ct-home-primary-action, .ct-home-secondary-action, .ct-home-metric, .ct-home-product-stage, .ct-home-system-node",
+      ),
+    ) as HTMLElement[];
+    const overflows = nodes
+      .map((node) => {
+        const rect = node.getBoundingClientRect();
+        return {
+          text: (node.innerText || node.getAttribute("aria-label") || node.className).toString().trim(),
+          left: rect.left,
+          right: rect.right,
+          width: rect.width,
+        };
+      })
+      .filter((box) => box.width > 4 && (box.left < -1 || box.right > viewportWidth + 1))
+      .map((box) => `${box.text || "node"}:${Math.round(box.left)}-${Math.round(box.right)}`);
+    const primary = document.querySelector(".ct-home-primary-action")!.getBoundingClientRect();
+    const secondary = document.querySelector(".ct-home-secondary-action")!.getBoundingClientRect();
+    const hero = document.querySelector(".ct-home-hero")!.getBoundingClientRect();
+    return {
+      overflows,
+      primaryHeight: primary.height,
+      secondaryHeight: secondary.height,
+      heroWidth: hero.width,
+      documentWidth: document.documentElement.scrollWidth,
+      viewportWidth,
+    };
+  });
+
+  expect(mobileLayout.overflows).toEqual([]);
+  expect(mobileLayout.documentWidth).toBeLessThanOrEqual(mobileLayout.viewportWidth + 1);
+  expect(mobileLayout.heroWidth).toBeGreaterThan(320);
+  expect(mobileLayout.primaryHeight).toBeGreaterThanOrEqual(40);
+  expect(mobileLayout.secondaryHeight).toBeGreaterThanOrEqual(40);
+
+  await page.getByRole("link", { name: "进入智能体编排" }).click();
+  await expect(page).toHaveURL(/\/workbench$/);
+  await expect(page.getByRole("heading", { name: "智能体编排台" })).toBeVisible();
+
+  await page.goto("/", { waitUntil: "domcontentloaded" });
+  await page.getByRole("link", { name: "打开 AI 线程" }).click();
+  await expect(page).toHaveURL(/\/ai$/);
+  await expect(page.getByRole("heading", { name: "按项目管理持续对话" })).toBeVisible();
+  await expect(page.getByText("这个项目还没有 AI 调查线程")).toBeVisible();
+});
