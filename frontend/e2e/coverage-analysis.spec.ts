@@ -49,9 +49,9 @@ test.describe("Coverage analysis", () => {
 
     const csv = [
       "function_name,code_location,triggered,hit_count",
-      "recover_session,backend/app/main.py:1-20,false,0",
-      "parse_config,backend/app/config.py:1-30,true,3",
-      "cleanup_temp,backend/app/main.py:22,0,0",
+      "recover_session,lib/nvmf/ctrlr.c:1-20,false,0",
+      "parse_config,lib/bdev/bdev.c:1-30,true,3",
+      "cleanup_temp,lib/bdev/bdev.c:22,0,0",
     ].join("\n");
 
     await page.locator('input[type="file"]').setInputFiles({
@@ -150,5 +150,103 @@ test.describe("Coverage analysis", () => {
       expect(testCase.observable_signals.length).toBeGreaterThan(0);
       expect(testCase.suggested_spdk_test_dir).toBeTruthy();
     }
+
+    const sfmeaDownloadPromise = page.waitForEvent("download");
+    await page.getByRole("button", { name: "导出 SFMEA" }).hover();
+    await page.getByRole("button", { name: "导出 SFMEA" }).click();
+    const sfmeaDownload = await sfmeaDownloadPromise;
+    expect(sfmeaDownload.suggestedFilename()).toBe(`${analysisName}-sfmea.csv`);
+    const sfmeaPath = test.info().outputPath("sfmea.csv");
+    await sfmeaDownload.saveAs(sfmeaPath);
+    const sfmeaText = fs.readFileSync(sfmeaPath, "utf8");
+    for (const field of [
+      "failure_mode",
+      "cause",
+      "effect",
+      "detection",
+      "severity",
+      "occurrence",
+      "detection_score",
+      "rpn",
+      "mitigation",
+    ]) {
+      expect(sfmeaText).toContain(field);
+    }
+    for (const dimension of exported.dimensions) {
+      expect(sfmeaText).toContain(dimension);
+    }
+    expect(sfmeaText).toContain("lib/nvmf/ctrlr.c");
+    expect(sfmeaText).toContain("lib/bdev/bdev.c");
+
+    const fourPieceDownloadPromise = page.waitForEvent("download");
+    await page.getByRole("button", { name: "导出四件套" }).hover();
+    await page.getByRole("button", { name: "导出四件套" }).click();
+    const fourPieceDownload = await fourPieceDownloadPromise;
+    expect(fourPieceDownload.suggestedFilename()).toBe(`${analysisName}-four-piece.json`);
+    const fourPiecePath = test.info().outputPath("four-piece.json");
+    await fourPieceDownload.saveAs(fourPiecePath);
+    const fourPiece = JSON.parse(fs.readFileSync(fourPiecePath, "utf8")) as {
+      version: string;
+      bundles: Array<{
+        id: string;
+        status: string;
+        code_evidence: Array<{ file_path: string }>;
+        flow_steps: Array<Record<string, unknown>>;
+        sfmea: Array<Record<string, unknown>>;
+        black_box_cases: Array<{ steps: string[]; diagnostics: { suggested_spdk_test_dir: string } }>;
+      }>;
+    };
+    expect(fourPiece.version).toBe("codetalk-coverage-four-piece-v1");
+    const e01 = fourPiece.bundles.find((bundle) => bundle.id === "E01");
+    expect(e01?.status).toBe("generated");
+    expect(e01?.code_evidence.some((item) => item.file_path === "lib/nvmf/ctrlr.c")).toBeTruthy();
+    expect(e01?.flow_steps.length ?? 0).toBeGreaterThan(0);
+    expect(e01?.sfmea.length ?? 0).toBe(exported.dimensions.length);
+    expect(e01?.black_box_cases.length ?? 0).toBe(exported.dimensions.length);
+    expect(
+      e01?.black_box_cases.every((item) => item.diagnostics.suggested_spdk_test_dir === "test/nvmf"),
+    ).toBeTruthy();
+    const e05 = fourPiece.bundles.find((bundle) => bundle.id === "E05");
+    expect(e05?.status).toBe("generated");
+    expect(e05?.code_evidence.some((item) => item.file_path === "lib/bdev/bdev.c")).toBeTruthy();
+    for (const testCase of [...(e01?.black_box_cases ?? []), ...(e05?.black_box_cases ?? [])]) {
+      expect(testCase.steps.join("\n")).not.toMatch(/\b(call|invoke)\s+spdk_|直接调用内部函数|修改源码/i);
+    }
+
+    const rejudgeDownloadPromise = page.waitForEvent("download");
+    await page.getByRole("button", { name: "导出复判报告" }).hover();
+    await page.getByRole("button", { name: "导出复判报告" }).click();
+    const rejudgeDownload = await rejudgeDownloadPromise;
+    expect(rejudgeDownload.suggestedFilename()).toBe(`${analysisName}-rejudge.json`);
+    const rejudgePath = test.info().outputPath("rejudge.json");
+    await rejudgeDownload.saveAs(rejudgePath);
+    const rejudge = JSON.parse(fs.readFileSync(rejudgePath, "utf8")) as {
+      version: string;
+      rubric: Record<string, number>;
+      summary: { high_rpn_count: number; average_score: number; pass: boolean };
+      high_rpn_rejudgements: Array<{
+        evidence_real_path: boolean;
+        hallucination_flags: string[];
+        boundary_issues: string[];
+        score: number;
+      }>;
+      gap_report: Record<string, unknown>;
+    };
+    expect(rejudge.version).toBe("codetalk-coverage-rejudge-v1");
+    expect(rejudge.rubric).toMatchObject({
+      evidence_truthfulness: 25,
+      flow_completeness: 20,
+      sfmea_quality: 20,
+      black_box_quality: 20,
+      hallucination_control: 10,
+      usability: 5,
+    });
+    expect(rejudge.summary.high_rpn_count).toBeGreaterThan(0);
+    expect(rejudge.summary.average_score).toBeGreaterThanOrEqual(80);
+    expect(rejudge.summary.pass).toBe(true);
+    expect(rejudge.high_rpn_rejudgements.every((item) => item.evidence_real_path)).toBeTruthy();
+    expect(rejudge.high_rpn_rejudgements.every((item) => item.hallucination_flags.length === 0)).toBeTruthy();
+    expect(rejudge.high_rpn_rejudgements.every((item) => item.boundary_issues.length === 0)).toBeTruthy();
+    expect(rejudge.gap_report).toBeTruthy();
   });
 });
