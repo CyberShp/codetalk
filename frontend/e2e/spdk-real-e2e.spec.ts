@@ -138,6 +138,30 @@ let settingsLlmConfigName = "";
 let brokenLlmConfigId = "";
 let brokenLlmConfigName = "";
 
+function runMetadata() {
+  const git = (args: string[]) =>
+    spawnSync("git", args, {
+      cwd: path.resolve(process.cwd(), ".."),
+      encoding: "utf8",
+    }).stdout.trim();
+  return {
+    run_id: RUN_ID,
+    generated_at: new Date().toISOString(),
+    cwd: process.cwd(),
+    artifact_dir: ARTIFACT_DIR,
+    frontend_port: FRONTEND_PORT,
+    backend_port: BACKEND_PORT,
+    spdk_repo: SPDK_REPO,
+    audit_mode: auditMode,
+    node_version: process.version,
+    platform: process.platform,
+    arch: process.arch,
+    git_commit: git(["rev-parse", "HEAD"]),
+    git_branch: git(["branch", "--show-current"]),
+    git_remote: git(["remote", "get-url", "origin"]),
+  };
+}
+
 function ensureArtifactDir() {
   fs.mkdirSync(ARTIFACT_DIR, { recursive: true });
 }
@@ -200,9 +224,7 @@ function collectArtifactFiles(dir = ARTIFACT_DIR, root = ARTIFACT_DIR): Array<{
 function writeArtifactManifest() {
   const files = collectArtifactFiles().sort((a, b) => a.path.localeCompare(b.path));
   const manifest = {
-    run_id: RUN_ID,
-    artifact_dir: ARTIFACT_DIR,
-    generated_at: new Date().toISOString(),
+    metadata: runMetadata(),
     file_count: files.length,
     total_size_bytes: files.reduce((sum, file) => sum + file.size_bytes, 0),
     files,
@@ -287,12 +309,7 @@ function buildAcceptanceReport() {
   const problemCases = cases.filter((item) => item.status === "fail" || item.status === "blocked" || item.status === "not_run");
   const sanitizedProblemCases = problemCases.map(sanitizeCaseForReport);
   return {
-    run_id: RUN_ID,
-    artifact_dir: ARTIFACT_DIR,
-    frontend_port: process.env.CODETALK_FRONTEND_PORT ?? "3003",
-    backend_port: process.env.CODETALK_BACKEND_PORT ?? "3004",
-    spdk_repo: SPDK_REPO,
-    audit_mode: auditMode,
+    ...runMetadata(),
     productized: problemCases.length === 0,
     summary,
     cases: sanitizedCases,
@@ -2940,11 +2957,18 @@ test("matrix accounting: every planned case has an explicit status", async () =>
   const failureReportMarkdown = fs.readFileSync(failureReportMarkdownPath, "utf8");
   const artifactManifestJsonText = fs.readFileSync(artifactManifestPath, "utf8");
   const artifactManifest = JSON.parse(fs.readFileSync(artifactManifestPath, "utf8")) as {
+    metadata: ReturnType<typeof runMetadata>;
     file_count: number;
     total_size_bytes: number;
     files: Array<{ path: string; kind: string; size_bytes: number; sha256: string }>;
   };
   verifyStreamingSecretScanner();
+  expect(report.git_commit).toMatch(/^[a-f0-9]{40}$/);
+  expect(report.git_branch).not.toEqual("");
+  expect(report.node_version).toMatch(/^v\d+\./);
+  expect(artifactManifest.metadata.git_commit).toBe(report.git_commit);
+  expect(artifactManifest.metadata.git_branch).toBe(report.git_branch);
+  expect(artifactManifest.metadata.node_version).toBe(report.node_version);
   expect(textArtifactPatternLeaks()).toEqual([]);
   expect(report.failure_report.total_problem_cases).toBe(failed.length + blocked.length + unresolved.length);
   expect(failureReport.total_problem_cases).toBe(report.failure_report.total_problem_cases);
