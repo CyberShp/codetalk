@@ -974,6 +974,15 @@ def _collect_source_refs_sync(repo: Path, workspace_id: str, query: str) -> list
     seen: set[str] = set()
     for path_hint in _path_hints(query):
         candidate = (repo_root / path_hint).resolve()
+        if _safe_source_dir(repo_root, candidate):
+            for source_path in _directory_source_candidates(repo_root, candidate):
+                ref = _source_file_ref(repo_root, workspace_id, source_path, line=1)
+                if ref and ref.source_id not in seen:
+                    refs.append(ref)
+                    seen.add(ref.source_id)
+                if len(refs) >= 4:
+                    return refs
+            continue
         if _safe_source_file(repo_root, candidate):
             ref = _source_file_ref(repo_root, workspace_id, candidate, line=1)
             if ref and ref.source_id not in seen:
@@ -1111,6 +1120,32 @@ def _safe_source_file(repo_root: Path, path: Path) -> bool:
     except ValueError:
         return False
     return path.exists() and path.is_file() and path.suffix.lower() in _SOURCE_SUFFIXES
+
+
+def _safe_source_dir(repo_root: Path, path: Path) -> bool:
+    try:
+        path.relative_to(repo_root)
+    except ValueError:
+        return False
+    return path.exists() and path.is_dir()
+
+
+def _directory_source_candidates(repo_root: Path, directory: Path) -> list[Path]:
+    ignored_parts = {".git", "build", "node_modules", ".next", ".venv", "__pycache__"}
+    candidates: list[Path] = []
+    try:
+        paths = sorted(directory.rglob("*"))
+    except Exception:
+        return []
+    for path in paths:
+        if len(candidates) >= 4:
+            break
+        if any(part in ignored_parts for part in path.parts):
+            continue
+        resolved = path.resolve()
+        if _safe_source_file(repo_root, resolved):
+            candidates.append(resolved)
+    return candidates
 
 
 def _source_file_ref(

@@ -242,6 +242,59 @@ class TestAIConversationsAPI:
             ]
             assert any("工作区源码" in message and "输入材料" in message for message in status_messages)
 
+    async def test_workspace_source_refs_follow_directory_path_hint(
+        self,
+        sqlite_db,
+        tmp_path: Path,
+    ):
+        repo = tmp_path / "repo"
+        nvmf_dir = repo / "lib" / "nvmf"
+        iscsi_dir = repo / "lib" / "iscsi"
+        nvmf_dir.mkdir(parents=True)
+        iscsi_dir.mkdir(parents=True)
+        (repo / "README.md").write_text("top level overview should not win a directory-targeted query\n", encoding="utf-8")
+        (nvmf_dir / "ctrlr.c").write_text(
+            "\n".join(
+                [
+                    "int nvmf_dir_target(void) {",
+                    "    return 1;",
+                    "}",
+                ]
+            ),
+            encoding="utf-8",
+        )
+        (iscsi_dir / "conn.c").write_text("int iscsi_unrelated(void) { return 0; }\n", encoding="utf-8")
+        ws_id = "ws-dir-hint"
+        now = datetime.now(timezone.utc).isoformat()
+        async with aiosqlite.connect(sqlite_db) as db:
+            await db.execute(
+                "INSERT INTO workspaces (id, name, repo_path, indexed, created_at, updated_at) "
+                "VALUES (?, 'Directory Hint WS', ?, 1, ?, ?)",
+                (ws_id, str(repo), now, now),
+            )
+            await db.commit()
+
+        from app.services.ai_conversations import build_context_references
+
+        refs = await build_context_references(
+            conversation={
+                "id": "conv-dir-hint",
+                "scope_type": "workspace",
+                "scope_id": ws_id,
+                "workspace_id": ws_id,
+                "memory_namespace": f"workspace:{ws_id}",
+                "initial_context": {},
+            },
+            user_message="请分析 lib/nvmf 模块",
+            db_path=sqlite_db,
+        )
+        source_refs = [ref for ref in refs if ref.source_type == "workspace_source"]
+
+        assert source_refs
+        assert source_refs[0].metadata["path"].startswith("lib/nvmf/")
+        assert "nvmf_dir_target" in source_refs[0].excerpt
+        assert all(not ref.metadata["path"].startswith("lib/iscsi/") for ref in source_refs[:2])
+
     async def test_legacy_conversation_backfills_workspace_namespace(self, sqlite_db):
         ws_id = await _seed_workspace(sqlite_db, "legacy-ws")
         now = datetime.now(timezone.utc).isoformat()
