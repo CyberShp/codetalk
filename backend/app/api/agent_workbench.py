@@ -5056,7 +5056,9 @@ def _risk_finding_quality_reasons(finding: dict[str, Any], *, repo_path: str) ->
         if rpn != severity_score * occurrence_score * detection_score:
             reasons.append("rpn_mismatch")
     file_path = str(finding.get("file_path") or finding.get("path") or "").strip()
-    if file_path and _validated_repo_source_path(repo_path, file_path) is None:
+    if not file_path:
+        reasons.append("source_file_required")
+    elif _validated_repo_source_path(repo_path, file_path) is None:
         reasons.append("source_file_missing")
     return _semantic_dedupe(reasons)
 
