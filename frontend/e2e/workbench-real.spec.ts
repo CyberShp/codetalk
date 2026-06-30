@@ -33,6 +33,42 @@ test("lists and installs every required workflow preset through the real workben
   }
 });
 
+test("prevents duplicate workflow preset install requests from a real double click", async ({
+  page,
+}) => {
+  await page.goto("/workbench", { waitUntil: "domcontentloaded" });
+  await page.getByRole("button", { name: "工作流设计" }).hover();
+  await page.getByRole("button", { name: "工作流设计" }).click();
+
+  const presetSelect = page.getByLabel("工作流预设");
+  await expect(presetSelect).toBeVisible({ timeout: 15_000 });
+  await presetSelect.selectOption("module_analysis");
+
+  const installRequests: string[] = [];
+  page.on("request", (request) => {
+    if (
+      request.method() === "POST" &&
+      request.url().includes("/api/workbench/workflow-presets/module_analysis/install")
+    ) {
+      installRequests.push(request.url());
+    }
+  });
+  const installRequest = page.waitForRequest(
+    (request) =>
+      request.method() === "POST" &&
+      request.url().includes("/api/workbench/workflow-presets/module_analysis/install"),
+  );
+
+  await page.getByRole("button", { name: "安装预设" }).hover();
+  await page.getByRole("button", { name: "安装预设" }).dblclick();
+  await installRequest;
+  await expect(page.getByRole("button", { name: "安装预设" })).toBeDisabled();
+  await expect(page.getByText("预设已安装: 模块分析工作流")).toBeVisible({
+    timeout: 15_000,
+  });
+  await expect.poll(() => installRequests.length).toBe(1);
+});
+
 test("installs a workflow preset and validates required inputs through the real workbench UI", async ({
   page,
 }) => {
