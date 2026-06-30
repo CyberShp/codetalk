@@ -305,6 +305,54 @@ test("prevents duplicate create-and-run task runs from a real double click", asy
   await expect.poll(() => runRequests.length).toBe(1);
 });
 
+test("prevents duplicate workbench smoke E2E probes from a real double click", async ({
+  page,
+}) => {
+  const repo = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), "codetalk-smoke-probe-")));
+  fs.mkdirSync(path.join(repo, "lib", "nvmf"), { recursive: true });
+  fs.writeFileSync(
+    path.join(repo, "lib", "nvmf", "smoke_probe.c"),
+    "int nvmf_smoke_probe(void) { return 0; }\n",
+    "utf8",
+  );
+
+  await page.goto("/workbench", { waitUntil: "domcontentloaded" });
+  await page.getByRole("button", { name: "运行驾驶舱" }).hover();
+  await page.getByRole("button", { name: "运行驾驶舱" }).click();
+  await page.getByLabel("Repo path").fill(repo);
+  await page.getByRole("button", { name: "执行器体检" }).hover();
+  await page.getByRole("button", { name: "执行器体检" }).click();
+  await expect(page.getByRole("heading", { name: "执行器矩阵" })).toBeVisible({
+    timeout: 15_000,
+  });
+
+  const smokeRequests: string[] = [];
+  page.on("request", (req) => {
+    if (
+      req.method() === "POST" &&
+      new URL(req.url()).pathname === "/api/workbench/task-runs/smoke-e2e"
+    ) {
+      smokeRequests.push(req.url());
+    }
+  });
+  const smokeRequest = page.waitForRequest(
+    (req) =>
+      req.method() === "POST" &&
+      new URL(req.url()).pathname === "/api/workbench/task-runs/smoke-e2e",
+  );
+
+  await page.getByRole("button", { name: "全链路烟测" }).hover();
+  await page.getByRole("button", { name: "全链路烟测" }).dblclick();
+  await smokeRequest;
+  await expect(page.getByRole("button", { name: "全链路烟测" })).toBeDisabled();
+  await expect(page.getByText(/全链路烟测/).last()).toBeVisible({ timeout: 30_000 });
+  await expect(page.getByText(/task:task_run_/)).toBeVisible({ timeout: 30_000 });
+  await expect(page.getByText(/execution:completed|execution:failed|execution:cancelled/)).toBeVisible({
+    timeout: 30_000,
+  });
+  await expect.poll(() => smokeRequests.length).toBe(1);
+});
+
 test("locks artifact previews while a prepared workflow is executing", async ({
   page,
 }) => {
