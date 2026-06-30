@@ -163,6 +163,9 @@ def _parse_event_text(text: str, output_mode: str) -> str | None:
         return _clean_agent_text(event)
     if not isinstance(event, dict):
         return None
+    diagnostic = _diagnostic_event_text(event)
+    if diagnostic is not None:
+        return diagnostic
     unwrapped = _event_text(event)
     if unwrapped is not None:
         return _clean_agent_text(unwrapped)
@@ -239,6 +242,17 @@ def _looks_like_protocol_noise(event: dict[str, Any]) -> bool:
         return True
     event_type = str(event.get("type") or event.get("event") or "")
     return event_type in {"message_start", "message_stop", "content_block_start", "content_block_stop", "done"}
+
+
+def _diagnostic_event_text(event: dict[str, Any]) -> str | None:
+    event_type = str(event.get("type") or event.get("event") or event.get("kind") or "").strip().lower()
+    if event_type not in {"status", "diagnostic", "thinking", "reasoning", "trace"}:
+        return None
+    text = _event_text(event)
+    if not text:
+        return ""
+    prefix = "THINKING" if event_type == "reasoning" else event_type.upper()
+    return f"{prefix}: {_clean_agent_text(text)}"
 
 
 def _probe_args(runtime: dict[str, Any], args: list[str]) -> list[str]:
