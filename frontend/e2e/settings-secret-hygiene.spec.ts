@@ -235,6 +235,39 @@ test("settings agent runtime env values are not rendered after save", async ({ p
   await expectBrowserStorageNotToContain(page, secret);
 });
 
+test("settings blocks malformed agent runtime env JSON with repair guidance", async ({
+  page,
+}) => {
+  const runtimeName = `ui-agent-bad-env-${Date.now()}`;
+  const createRequests: string[] = [];
+
+  page.on("request", (req) => {
+    if (
+      req.method() === "POST" &&
+      new URL(req.url()).pathname === "/api/settings/agent-runtimes"
+    ) {
+      createRequests.push(req.url());
+    }
+  });
+
+  await page.goto("/settings", { waitUntil: "domcontentloaded" });
+  await page.getByPlaceholder("例如 Claude Code").fill(runtimeName);
+  await page.getByPlaceholder("ccr / opencode / nga").fill("python3");
+  await page.getByPlaceholder("code 或 run").fill("--version");
+  await page.getByRole("button", { name: "高级选项" }).hover();
+  await page.getByRole("button", { name: "高级选项" }).click();
+  await page.getByPlaceholder(/HTTPS_PROXY/).fill("{BROKEN_JSON");
+  await page.getByRole("button", { name: "保存" }).hover();
+  await page.getByRole("button", { name: "保存" }).click();
+
+  const alert = page.locator('div[role="alert"]').filter({ hasText: "环境变量 JSON 格式错误" });
+  await expect(alert).toBeVisible();
+  await expect(alert).toContainText("请填写 JSON 对象");
+  await expect(alert).toContainText("HTTPS_PROXY");
+  await expect(page.getByText(runtimeName)).toHaveCount(0);
+  await expect.poll(() => createRequests.length).toBe(0);
+});
+
 test("settings prevents duplicate agent runtime deletion from a real double click", async ({
   page,
   request,

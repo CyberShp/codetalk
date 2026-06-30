@@ -394,10 +394,18 @@ export default function SettingsPage() {
     setSavingAgentRuntime(true);
     setError(null);
     try {
-      const env = JSON.parse(agentRuntimeEnvJson || "{}");
-      if (!env || typeof env !== "object" || Array.isArray(env)) {
+      let parsedEnv: unknown;
+      try {
+        parsedEnv = JSON.parse(agentRuntimeEnvJson || "{}");
+      } catch {
+        throw new Error('环境变量 JSON 格式错误：请填写 JSON 对象，例如 {"HTTPS_PROXY":"http://127.0.0.1:7890"}');
+      }
+      if (!parsedEnv || typeof parsedEnv !== "object" || Array.isArray(parsedEnv)) {
         throw new Error("环境变量 JSON 必须是对象");
       }
+      const env = Object.fromEntries(
+        Object.entries(parsedEnv).map(([key, value]) => [key, String(value)]),
+      );
       await api.settings.createAgentRuntime({
         ...agentRuntimeForm,
         args: agentRuntimeArgsText.split(/\s+/).map((item) => item.trim()).filter(Boolean),
