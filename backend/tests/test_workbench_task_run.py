@@ -3104,8 +3104,31 @@ def test_resource_leak_hunt_preset_executes_with_local_risk_scan(tmp_path):
     )
     assert risk_findings[0]["file_path"] == "lib/bdev/cleanup.c"
     assert risk_findings[0]["resource"] in {"memory", "bdev_descriptor"}
+    for field in (
+        "failure_mode",
+        "cause",
+        "effect",
+        "detection",
+        "severity",
+        "severity_score",
+        "occurrence_score",
+        "detection_score",
+        "rpn",
+        "mitigation",
+        "score_explanation",
+    ):
+        assert risk_findings[0][field]
+    assert risk_findings[0]["rpn"] == (
+        risk_findings[0]["severity_score"]
+        * risk_findings[0]["occurrence_score"]
+        * risk_findings[0]["detection_score"]
+    )
+    assert "test/bdev" in risk_findings[0]["mitigation"]
+    assert "observable" in risk_findings[0]["score_explanation"].lower()
     assert evidence_cards[0]["source"] == "local-resource-scan"
     assert test_hooks[0]["suggested_test_directory"] == "test/bdev"
+    assert test_hooks[0]["finding_id"] == risk_findings[0]["finding_id"]
+    assert risk_findings[0]["test_hook_id"] == test_hooks[0]["hook_id"]
     output_status = {item["id"]: item["status"] for item in result.outputs}
     assert output_status == {
         "risk_findings": "ok",

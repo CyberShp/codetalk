@@ -1140,6 +1140,18 @@ def _local_resource_findings_for_file(
         if missing_release
         else "error branches should be checked against cleanup and ownership handoff behavior"
     )
+    test_directory = _test_directory_for_source(file_path)
+    sfmea = _resource_sfmea_payload(
+        file_path=file_path,
+        function=function,
+        resource=resource,
+        risk=risk,
+        severity=severity,
+        missing_release=missing_release,
+        abnormal_branch_count=abnormal_branch_count,
+        evidence_line_count=len(acquire_lines) + len(release_lines) + len(error_lines),
+        test_directory=test_directory,
+    )
     return [{
         "finding_id": f"local_resource_risk_{start_index:03d}",
         "file_path": file_path,
@@ -1154,6 +1166,7 @@ def _local_resource_findings_for_file(
         "confidence": "medium",
         "test_hook_id": f"local_test_hook_{start_index:03d}",
         "source": "local-resource-scan",
+        **sfmea,
     }]
 
 
@@ -1199,6 +1212,57 @@ def _resource_label(signals: list[dict[str, Any]]) -> str:
     return match
 
 
+def _resource_sfmea_payload(
+    *,
+    file_path: str,
+    function: str,
+    resource: str,
+    risk: str,
+    severity: str,
+    missing_release: bool,
+    abnormal_branch_count: int,
+    evidence_line_count: int,
+    test_directory: str,
+) -> dict[str, Any]:
+    severity_score = 9 if severity == "high" else 6
+    occurrence_score = min(10, 3 + abnormal_branch_count + (2 if missing_release else 0))
+    detection_score = 7 if missing_release else 5
+    rpn = severity_score * occurrence_score * detection_score
+    failure_mode = (
+        f"{resource} cleanup or ownership handoff can be skipped in {function}"
+    )
+    cause = (
+        "acquisition signal lacks a matching release in the scanned file"
+        if missing_release
+        else "abnormal branch reaches cleanup-sensitive code and needs lifecycle verification"
+    )
+    effect = (
+        "external workflows may leave stale device, session, memory, or channel state after failure"
+    )
+    return {
+        "failure_mode": failure_mode,
+        "cause": cause,
+        "effect": effect,
+        "severity_score": severity_score,
+        "occurrence_score": occurrence_score,
+        "detection_score": detection_score,
+        "rpn": rpn,
+        "mitigation": (
+            f"Add or extend black-box/error-path coverage in {test_directory}; trigger invalid input, "
+            "allocation failure, timeout, disconnect, reset, and repeated operation paths while checking "
+            "logs, public status, reconnect behavior, and resource counters."
+        ),
+        "score_explanation": (
+            f"severity={severity_score} because {risk}; occurrence={occurrence_score} from "
+            f"{abnormal_branch_count} abnormal branch signal(s); detection={detection_score} because "
+            f"{evidence_line_count} local evidence line(s) are available but externally observable "
+            "cleanup still requires runtime validation."
+        ),
+        "sfmea_source": "local_static_scan",
+        "sfmea_scope": file_path,
+    }
+
+
 def _local_test_hook_for_finding(finding: dict[str, Any], index: int) -> dict[str, Any]:
     file_path = str(finding.get("file_path") or "")
     module = _test_directory_for_source(file_path)
@@ -1221,6 +1285,17 @@ def _local_fallback_resource_finding(
     risk_pattern: str,
 ) -> dict[str, Any]:
     function = symbols[0] if symbols else "file_scope"
+    sfmea = _resource_sfmea_payload(
+        file_path=file_path,
+        function=function,
+        resource="ownership_or_cleanup",
+        risk="no direct allocation token was found; review module lifecycle and abnormal branch cleanup around this scope",
+        severity="medium",
+        missing_release=False,
+        abnormal_branch_count=0,
+        evidence_line_count=0,
+        test_directory=_test_directory_for_source(file_path),
+    )
     return {
         "finding_id": "local_resource_risk_001",
         "file_path": file_path,
@@ -1235,6 +1310,7 @@ def _local_fallback_resource_finding(
         "confidence": "low",
         "test_hook_id": "local_test_hook_001",
         "source": "local-resource-scan",
+        **sfmea,
     }
 
 
