@@ -14,17 +14,24 @@ export default function MermaidRenderer({ chart }: { chart: string }) {
         const mermaid = (await import("mermaid")).default;
         mermaid.initialize({
           startOnLoad: false,
-          theme: "dark",
+          theme: "base",
           suppressErrorRendering: true,
           themeVariables: {
-            darkMode: true,
-            background: "#10141A",
-            primaryColor: "#00687F",
-            primaryTextColor: "#DFE2EB",
-            primaryBorderColor: "#44474E",
-            lineColor: "#BFC5D0",
-            secondaryColor: "#262A31",
-            tertiaryColor: "#1C2026",
+            background: "#FFFFFF",
+            mainBkg: "#FFFFFF",
+            primaryColor: "#E7F6FA",
+            primaryTextColor: "#172026",
+            primaryBorderColor: "#77AFC0",
+            lineColor: "#52636D",
+            secondaryColor: "#F3F8FA",
+            tertiaryColor: "#F7FAFC",
+            clusterBkg: "#F8FBFC",
+            clusterBorder: "#C8D8DE",
+            edgeLabelBackground: "#FFFFFF",
+            textColor: "#172026",
+            noteBkgColor: "#FFF8E8",
+            noteTextColor: "#172026",
+            noteBorderColor: "#E5C56F",
           },
         });
         const parsed = await mermaid.parse(chart, { suppressErrors: true });
