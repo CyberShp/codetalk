@@ -56,11 +56,35 @@ def _open_browser_after_delay(delay: float) -> None:
     webbrowser.open(URL)
 
 
+def _format_command(command: object) -> str:
+    if isinstance(command, (list, tuple)):
+        return " ".join(str(part) for part in command)
+    return str(command)
+
+
+def _exit_on_subprocess_error(stage: str, exc: subprocess.CalledProcessError) -> None:
+    command = _format_command(exc.cmd)
+    code = exc.returncode or 1
+    print(
+        f"\nError: {stage}（退出码 {code}）。\n"
+        f"Command: {command}\n"
+        "请检查上方完整日志；常见原因包括 Python/pip 无法联网、依赖源不可达、端口被占用或当前目录权限不足。",
+        file=sys.stderr,
+    )
+    sys.exit(code)
+
+
 def main() -> None:
     """Entry point: bootstrap the venv and launch uvicorn."""
     _check_python_version()
-    _create_venv()
-    _install_dependencies()
+    try:
+        _create_venv()
+    except subprocess.CalledProcessError as exc:
+        _exit_on_subprocess_error("创建部署器虚拟环境失败", exc)
+    try:
+        _install_dependencies()
+    except subprocess.CalledProcessError as exc:
+        _exit_on_subprocess_error("安装部署器依赖失败", exc)
 
     print(f"Starting CodeTalk Deployer at {URL}")
 
@@ -83,6 +107,8 @@ def main() -> None:
             check=True,
             cwd=str(DEPLOYER_DIR),
         )
+    except subprocess.CalledProcessError as exc:
+        _exit_on_subprocess_error("启动部署器服务失败", exc)
     except KeyboardInterrupt:
         print("\nDeployer stopped.")
 

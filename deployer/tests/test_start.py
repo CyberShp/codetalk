@@ -2,6 +2,7 @@
 and other pure functions that do not spawn subprocesses."""
 
 import sys
+import subprocess
 from unittest.mock import MagicMock, patch
 
 import pytest
@@ -66,6 +67,23 @@ def test_open_browser_after_delay_opens_url(monkeypatch):
     monkeypatch.setattr("time.sleep", lambda _: None)
     start._open_browser_after_delay(0)
     assert start.URL in opened
+
+
+def test_exit_on_subprocess_error_reports_actionable_stage(capsys):
+    exc = subprocess.CalledProcessError(
+        returncode=17,
+        cmd=["python", "-m", "pip", "install", "-r", "requirements.txt"],
+    )
+
+    with pytest.raises(SystemExit) as exc_info:
+        start._exit_on_subprocess_error("安装部署器依赖失败", exc)
+
+    assert exc_info.value.code == 17
+    err = capsys.readouterr().err
+    assert "安装部署器依赖失败" in err
+    assert "退出码 17" in err
+    assert "python -m pip install -r requirements.txt" in err
+    assert "依赖源不可达" in err
 
 
 def test_deployer_url_uses_configured_host_port(monkeypatch):

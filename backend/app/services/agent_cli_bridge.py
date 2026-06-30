@@ -43,10 +43,11 @@ async def probe_agent_runtime(runtime: dict[str, Any]) -> dict[str, Any]:
         return {"success": False, "message": redact_agent_diagnostic_text(f"找不到命令：{command}")}
     except Exception as exc:
         return {"success": False, "message": f"启动失败：{redact_agent_diagnostic_text(str(exc))}"}
-    output = _decode(stdout or stderr).strip()
+    stdout_text = _decode(stdout).strip() if stdout else ""
+    stderr_text = _decode(stderr).strip() if stderr else ""
     if proc.returncode == 0:
-        return {"success": True, "message": output or "执行器可启动"}
-    message = output or f"命令退出码：{proc.returncode}"
+        return {"success": True, "message": stdout_text or stderr_text or "执行器可启动"}
+    message = stderr_text or stdout_text or f"命令退出码：{proc.returncode}"
     return {"success": False, "message": redact_agent_diagnostic_text(message)}
 
 

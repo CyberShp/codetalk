@@ -153,6 +153,40 @@ class TestAgentRuntimes:
             assert secret not in body["message"]
             assert "<redacted>" in body["message"]
 
+    async def test_agent_runtime_probe_prefers_stderr_when_stdout_has_banner(self, sqlite_db):
+        app = _test_app(sqlite_db)
+        secret = "agent-probe-banner-secret"
+        probe_code = (
+            "import sys; "
+            "print('agent runtime startup banner: ok'); "
+            f"print('fatal diagnostic: missing token {secret}', file=sys.stderr); "
+            "raise SystemExit(7)"
+        )
+
+        async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+            runtime = await client.post(
+                "/api/settings/agent-runtimes",
+                json={
+                    "name": "Banner Then Failing Agent",
+                    "command": sys.executable,
+                    "args": ["-c", probe_code],
+                    "prompt_transport": "stdin",
+                    "output_mode": "plain",
+                    "working_dir_mode": "project",
+                },
+            )
+            assert runtime.status_code == 201
+
+            probed = await client.post(f"/api/settings/agent-runtimes/{runtime.json()['id']}/probe")
+
+            assert probed.status_code == 200
+            body = probed.json()
+            assert body["success"] is False
+            assert "fatal diagnostic" in body["message"]
+            assert "startup banner" not in body["message"]
+            assert secret not in body["message"]
+            assert "<redacted>" in body["message"]
+
     async def test_ai_thread_uses_agent_runtime_without_active_llm(self, sqlite_db, monkeypatch):
         ws_id = await _seed_workspace(sqlite_db)
         app = _test_app(sqlite_db)
