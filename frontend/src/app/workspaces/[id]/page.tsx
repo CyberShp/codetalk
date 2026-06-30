@@ -1447,6 +1447,7 @@ export default function WorkspaceDetailPage() {
                   <button
                     type="button"
                     onClick={async () => {
+                      if (!window.confirm(`确定删除材料「${mat.filename}」吗？`)) return;
                       try {
                         await api.workspaces.deleteMaterial(wsId, mat.id);
                         setWorkspace((prev) =>

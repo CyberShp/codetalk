@@ -116,6 +116,19 @@ test.describe("Workspace smoke tests", () => {
 
     const materialRow = page.locator("div").filter({ hasText: "requirements.md" }).filter({ hasText: "requirements" }).first();
     await materialRow.hover();
+    page.once("dialog", async (dialog) => {
+      expect(dialog.message()).toContain("requirements.md");
+      await dialog.dismiss();
+    });
+    await page.getByTitle("删除材料").click();
+    await expect(page.getByText("requirements.md")).toBeVisible();
+    expect(fs.existsSync(materialPath)).toBe(true);
+
+    await materialRow.hover();
+    page.once("dialog", async (dialog) => {
+      expect(dialog.message()).toContain("requirements.md");
+      await dialog.accept();
+    });
     await page.getByTitle("删除材料").click();
     await expect(page.getByText("尚未上传任何材料")).toBeVisible({ timeout: 15_000 });
     await expect(page.getByRole("button", { name: /材料 \(0\)/ })).toBeVisible();
