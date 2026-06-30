@@ -102,7 +102,7 @@ async def export_workspace_reports(
     for row in rows:
         title = row["title"] or "report"
         name = title if title.endswith(".md") else f"{title}.md"
-        docs.append(_ReportDoc(name=name, content=row["content"] or ""))
+        docs.append(_ReportDoc(name=name, content=redact_agent_diagnostic_text(row["content"] or "")))
     if legacy_only:
         suffix = "legacy"
     elif resolved_task_id:

@@ -1,4 +1,5 @@
 import { test, expect } from "@playwright/test";
+import { execFileSync } from "node:child_process";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
@@ -188,6 +189,88 @@ test.describe("Workspace smoke tests", () => {
     expect(thread.memory_namespace).toBe(`workspace:${workspaceId}`);
     expect(thread.initial_context.repo_path).toBe(repo);
     expect(thread.initial_context.completed_reports).toBe(0);
+  });
+
+  test("workspace report export download redacts completed report secrets through the UI", async ({
+    page,
+  }, testInfo) => {
+    test.setTimeout(60_000);
+    test.skip(!process.env.CODETALK_PLAYWRIGHT_SQLITE_DB, "requires explicit Playwright sqlite path");
+    const sqliteDb = process.env.CODETALK_PLAYWRIGHT_SQLITE_DB!;
+    const repo = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), "codetalk-report-export-")));
+    fs.writeFileSync(path.join(repo, "README.md"), "workspace report export redaction e2e\n", "utf8");
+    const workspaceName = `report-export-redact-${Date.now()}`;
+    const reportSecret = ["sk", "workspaceUiReportLeakValue1234567890"].join("-");
+    const tokenSecret = "workspaceUiReportTokenLeakValue1234567890";
+    const bearerSecret = "workspaceUiReportBearerLeakValue1234567890";
+
+    await page.goto("/workspaces/new", { waitUntil: "domcontentloaded" });
+    await page.getByPlaceholder(/项目 A/).fill(workspaceName);
+    await page.getByPlaceholder(/本地文件夹路径/).fill(repo);
+    await page.getByRole("button", { name: "创建工作空间" }).hover();
+    await page.getByRole("button", { name: "创建工作空间" }).click();
+    await page.waitForURL(/\/workspaces\/[0-9a-f-]{36}$/, { timeout: 30_000 });
+    const workspaceId = page.url().split("/").pop() ?? "";
+    await expect(page.getByText(workspaceName)).toBeVisible({ timeout: 30_000 });
+
+    execFileSync(
+      "python3",
+      [
+        "-c",
+        [
+          "import sqlite3, sys, uuid",
+          "db, ws, report_secret, token_secret, bearer_secret = sys.argv[1:]",
+          "conn = sqlite3.connect(db)",
+          "conn.execute(",
+          "  'INSERT INTO workspace_reports (id, workspace_id, report_type, title, content, status, created_at) VALUES (?, ?, ?, ?, ?, ?, ?)',",
+          "  (str(uuid.uuid4()), ws, 'analysis', 'redacted-report.md', '\\n'.join(['# Report', 'workspace report export complete', f'model key: {report_secret}', 'runtime ' + 'tok' + f'en={token_secret}', 'Authorization:' + f' Bearer {bearer_secret}']), 'completed', '2025-06-01T10:00:00')",
+          ")",
+          "conn.commit()",
+          "conn.close()",
+        ].join("\n"),
+        sqliteDb,
+        workspaceId,
+        reportSecret,
+        tokenSecret,
+        bearerSecret,
+      ],
+      { stdio: "pipe" },
+    );
+
+    await page.reload({ waitUntil: "domcontentloaded" });
+    await expect(page.getByRole("button", { name: /报告 \(1\)/ })).toBeVisible({ timeout: 15_000 });
+    await expect(page.getByText("redacted-report.md")).toBeVisible();
+
+    const downloadPromise = page.waitForEvent("download");
+    const mdExportButton = page.getByRole("button", { name: /^md$/i });
+    await mdExportButton.hover();
+    await mdExportButton.click();
+    const download = await downloadPromise;
+    expect(download.suggestedFilename()).toMatch(/^workspace-.*\.zip$/);
+    const zipPath = testInfo.outputPath("workspace-report-redacted-export.zip");
+    await download.saveAs(zipPath);
+    const exported = execFileSync(
+      "python3",
+      [
+        "-c",
+        [
+          "import sys, zipfile",
+          "with zipfile.ZipFile(sys.argv[1]) as zf:",
+          "    print(zf.read('redacted-report.md').decode('utf-8'))",
+        ].join("\n"),
+        zipPath,
+      ],
+      { encoding: "utf8" },
+    );
+
+    expect(exported).toContain("workspace report export complete");
+    expect(exported).toContain("<redacted>");
+    expect(exported).not.toContain(reportSecret);
+    expect(exported).not.toContain(tokenSecret);
+    expect(exported).not.toContain(bearerSecret);
+    expect(exported).not.toMatch(/sk-[A-Za-z0-9_-]{12,}/);
+    expect(exported).not.toMatch(/Authorization:\s*Bearer\s+(?!<redacted>)[^\s"']+/i);
+    expect(exported).not.toMatch(/(?:api[-_]?key|token|secret|password)=['"]?(?!<redacted>)[^\s"']+/i);
   });
 
   test("workspace can be reindexed through the UI and remains searchable", async ({ page }) => {

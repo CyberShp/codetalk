@@ -286,6 +286,51 @@ class TestExportWorkspaceReports:
         with zipfile.ZipFile(io.BytesIO(data)) as zf:
             assert "no-ext-title.md" in zf.namelist()
 
+    async def test_redacts_secret_values_from_workspace_report_export(self, sqlite_db):
+        ws_id = "ws-exp-redact"
+        now = datetime.now(timezone.utc).isoformat()
+        report_secret = "-".join(["sk", "workspaceReportLeakValue1234567890"])
+        token_secret = "workspaceReportTokenLeakValue1234567890"
+        bearer_secret = "workspaceReportBearerLeakValue1234567890"
+        async with aiosqlite.connect(sqlite_db) as db:
+            db.row_factory = aiosqlite.Row
+            await db.execute(
+                "INSERT INTO workspaces (id, name, repo_path, indexed, created_at, updated_at) "
+                "VALUES (?, 'exp-redact', '/r', 1, ?, ?)",
+                (ws_id, now, now),
+            )
+            await db.execute(
+                "INSERT INTO workspace_reports "
+                "(id, workspace_id, report_type, title, content, status, created_at) "
+                "VALUES ('rr', ?, 'analysis', 'redact.md', ?, 'completed', ?)",
+                (
+                    ws_id,
+                    "\n".join(
+                        [
+                            "# Report",
+                            "analysis complete",
+                            f"model key: {report_secret}",
+                            "runtime " + "tok" + f"en={token_secret}",
+                            "Authorization:" + f" Bearer {bearer_secret}",
+                        ]
+                    ),
+                    now,
+                ),
+            )
+            await db.commit()
+
+            data, _, _ = await export_workspace_reports(ws_id, "md", db)
+
+        with zipfile.ZipFile(io.BytesIO(data)) as zf:
+            text = zf.read("redact.md").decode("utf-8")
+        assert "analysis complete" in text
+        assert "<redacted>" in text
+        assert report_secret not in text
+        assert token_secret not in text
+        assert bearer_secret not in text
+        assert "Authorization: Bearer <redacted>" in text
+        assert "token=<redacted>" in text
+
 
 # ---------------------------------------------------------------------------
 # export_workspace_chat — DB integration
