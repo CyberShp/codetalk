@@ -5,6 +5,7 @@ No Docker required. Targets Windows intranet environments for black-box testers.
 
 import asyncio
 import os
+import signal
 import shutil
 import sys
 from pathlib import Path
@@ -53,6 +54,9 @@ class NativeDeployer:
             await self._step_install_backend()
             if self._stopped:
                 return
+            await self._step_generate_config()
+            if self._stopped:
+                return
             await self._step_install_frontend()
             if self._stopped:
                 return
@@ -60,9 +64,6 @@ class NativeDeployer:
                 await self._step_install_gitnexus()
                 if self._stopped:
                     return
-            await self._step_generate_config()
-            if self._stopped:
-                return
             await self._step_start_services()
             if self._stopped:
                 return
@@ -108,9 +109,11 @@ class NativeDeployer:
         step = 1
         await self._emit("check_env", "running", "检查运行环境...", step)
 
-        py_ok = await self._check_command("python", ["--version"], "3.10")
-        if not py_ok:
-            py_ok = await self._check_command("python3", ["--version"], "3.10")
+        py_ok = await self._check_command(sys.executable, ["--version"], "3.10")
+        for candidate in ("python", "python3", "python3.12", "python3.11", "python3.10"):
+            if py_ok:
+                break
+            py_ok = await self._check_command(candidate, ["--version"], "3.10")
         if not py_ok:
             await self._emit("check_env", "error", "PATH 中未找到 Python 3.10+", step)
             raise RuntimeError("Python 3.10+ required")
@@ -174,7 +177,7 @@ class NativeDeployer:
 
         if not venv_python.exists():
             await self._emit("install_backend", "running", "创建虚拟环境...", step)
-            rc = await self._run_stream("install_backend", step, "python", "-m", "venv", str(venv_dir))
+            rc = await self._run_stream("install_backend", step, sys.executable, "-m", "venv", str(venv_dir))
             if rc != 0:
                 await self._emit("install_backend", "error", "虚拟环境创建失败", step)
                 raise RuntimeError("venv creation failed")
@@ -217,26 +220,21 @@ class NativeDeployer:
 
         next_build_dir = frontend_dir / ".next"
         if next_build_dir.exists():
-            current_hash = await self._get_git_hash(PROJECT_ROOT)
+            build_key = await self._frontend_build_key(frontend_dir)
             marker = next_build_dir / ".codetalk-git-hash"
             try:
-                prev_hash = marker.read_text(encoding="utf-8").strip() if marker.exists() else ""
+                prev_key = marker.read_text(encoding="utf-8").strip() if marker.exists() else ""
             except OSError:
-                prev_hash = ""
+                prev_key = ""
 
-            if not current_hash:
-                # Can't verify git state; preserve existing skip behavior.
-                await self._emit("install_frontend", "done", "前端依赖已安装，构建产物存在，跳过构建", step)
-                return
-
-            if prev_hash == current_hash:
+            if prev_key == build_key:
                 await self._emit("install_frontend", "done",
-                                 f"前端依赖已安装，构建产物与当前 commit 一致（{current_hash[:8]}），跳过构建", step)
+                                 "前端依赖已安装，构建产物与当前代码和端口配置一致，跳过构建", step)
                 return
 
             await self._emit(
                 "install_frontend", "running",
-                f"检测到 git commit 已变更（{prev_hash[:8] or '未知'} → {current_hash[:8]}），清理旧构建...",
+                "检测到代码或前端端口配置已变更，清理旧构建...",
                 step,
             )
             shutil.rmtree(next_build_dir, ignore_errors=True)
@@ -247,18 +245,28 @@ class NativeDeployer:
             await self._emit("install_frontend", "error", "npm run build 失败", step)
             raise RuntimeError("Frontend build failed")
 
-        hash_for_marker = await self._get_git_hash(PROJECT_ROOT)
-        if hash_for_marker:
-            try:
-                (next_build_dir / ".codetalk-git-hash").write_text(hash_for_marker, encoding="utf-8")
-            except OSError as exc:
-                await self._emit("install_frontend", "running", f"（警告）写入 git hash 标记失败：{exc}", step)
+        try:
+            (next_build_dir / ".codetalk-git-hash").write_text(
+                await self._frontend_build_key(frontend_dir),
+                encoding="utf-8",
+            )
+        except OSError as exc:
+            await self._emit("install_frontend", "running", f"（警告）写入前端构建标记失败：{exc}", step)
 
         await self._emit("install_frontend", "done", "前端依赖安装并构建完成", step)
 
     # ------------------------------------------------------------------
     # Step 4: Install GitNexus
     # ------------------------------------------------------------------
+
+    async def _frontend_build_key(self, frontend_dir: Path) -> str:
+        git_hash = await self._get_git_hash(PROJECT_ROOT) or "nogit"
+        env_file = frontend_dir / ".env.local"
+        try:
+            env_text = env_file.read_text(encoding="utf-8")
+        except OSError:
+            env_text = ""
+        return f"{git_hash}\n{env_text.strip()}"
 
     def _resolve_cgc_cmd(self) -> list[str] | None:
         """Resolve the cgc startup command, or None if no usable venv is found."""
@@ -749,12 +757,16 @@ class NativeDeployer:
         if env_extra:
             env.update(env_extra)
         try:
+            create_kwargs = {}
+            if sys.platform != "win32":
+                create_kwargs["start_new_session"] = True
             proc = await asyncio.create_subprocess_exec(
                 *cmd,
                 stdout=asyncio.subprocess.PIPE,
                 stderr=asyncio.subprocess.STDOUT,
                 cwd=cwd,
                 env=env,
+                **create_kwargs,
             )
         except FileNotFoundError as exc:
             await self._emit(step_name, "error", f"命令未找到：{cmd[0]}", step_index)
@@ -789,11 +801,17 @@ class NativeDeployer:
             except (ProcessLookupError, asyncio.TimeoutError, FileNotFoundError):
                 pass
         try:
-            proc.terminate()
+            if sys.platform != "win32" and proc.pid is not None:
+                os.killpg(proc.pid, signal.SIGTERM)
+            else:
+                proc.terminate()
             await asyncio.wait_for(proc.wait(), timeout=timeout)
         except (ProcessLookupError, asyncio.TimeoutError):
             try:
-                proc.kill()
+                if sys.platform != "win32" and proc.pid is not None:
+                    os.killpg(proc.pid, signal.SIGKILL)
+                else:
+                    proc.kill()
             except ProcessLookupError:
                 pass
 

@@ -24,8 +24,17 @@ CodeTalk 适合这些场景：
 
 ```powershell
 cd deployer
-.\.venv\Scripts\python.exe -m uvicorn server:app --host 127.0.0.1 --port 9000
+.\start.bat
 ```
+
+macOS/Linux:
+
+```bash
+cd deployer
+./start.sh
+```
+
+也可以直接运行 `python start.py`。启动脚本会自动创建部署器 `.venv` 并安装依赖，避免因为缺少 `psutil`、`uvicorn` 等包导致部署系统起不来。
 
 浏览器打开：
 

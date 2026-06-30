@@ -40,6 +40,19 @@ def test_normalize_frontend_key_map():
     assert result["backend_port"] == 3004
 
 
+def test_normalize_drops_removed_deepwiki_keys():
+    result = config_store.normalize_to_snake(
+        {
+            "installDeepwiki": True,
+            "deepwikiPath": "/tmp/deepwiki",
+            "deepwikiApiPort": 8091,
+            "deepwikiUiPort": 3001,
+            "portFrontend": 3003,
+        }
+    )
+    assert result == {"frontend_port": 3003}
+
+
 # ---------------------------------------------------------------------------
 # load_config
 # ---------------------------------------------------------------------------
@@ -52,9 +65,25 @@ def test_load_config_returns_native_default_when_no_file(isolated_config):
 
 
 def test_load_config_reads_existing_file(isolated_config):
-    isolated_config.write_text(json.dumps({"mode": "native", "backend_port": 9999}), encoding="utf-8")
+    isolated_config.write_text(
+        json.dumps(
+            {
+                "mode": "native",
+                "backend_port": 9999,
+                "install_deepwiki": True,
+                "deepwiki_path": "/tmp/deepwiki",
+                "deepwiki_api_port": 8091,
+                "deepwiki_ui_port": 3001,
+            }
+        ),
+        encoding="utf-8",
+    )
     cfg = config_store.load_config()
     assert cfg["backend_port"] == 9999
+    assert "install_deepwiki" not in cfg
+    assert "deepwiki_path" not in cfg
+    assert "deepwiki_api_port" not in cfg
+    assert "deepwiki_ui_port" not in cfg
 
 
 def test_load_config_fallback_on_corrupt_json(isolated_config):
@@ -75,11 +104,17 @@ def test_save_config_persists_to_file(isolated_config):
 
 
 def test_save_config_merges_with_existing(isolated_config):
-    isolated_config.write_text(json.dumps({"mode": "native", "frontend_port": 3003}), encoding="utf-8")
+    isolated_config.write_text(
+        json.dumps({"mode": "native", "frontend_port": 3003, "install_deepwiki": True}),
+        encoding="utf-8",
+    )
     config_store.save_config({"portBackend": 9999})
     cfg = config_store.load_config()
     assert cfg["frontend_port"] == 3003
     assert cfg["backend_port"] == 9999
+    assert "install_deepwiki" not in cfg
+    raw = json.loads(isolated_config.read_text(encoding="utf-8"))
+    assert "install_deepwiki" not in raw
 
 
 # ---------------------------------------------------------------------------

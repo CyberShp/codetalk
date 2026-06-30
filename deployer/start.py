@@ -5,14 +5,17 @@ import sys
 import threading
 import time
 import webbrowser
+import os
 from pathlib import Path
 
 
 DEPLOYER_DIR = Path(__file__).parent
 VENV_DIR = DEPLOYER_DIR / ".venv"
 REQUIREMENTS = DEPLOYER_DIR / "requirements.txt"
-PORT = 9000
-URL = f"http://localhost:{PORT}"
+HOST = os.environ.get("CODETALK_DEPLOYER_HOST", "0.0.0.0")
+PORT = int(os.environ.get("CODETALK_DEPLOYER_PORT", "9000"))
+DISPLAY_HOST = "localhost" if HOST in {"0.0.0.0", "::"} else HOST
+URL = f"http://{DISPLAY_HOST}:{PORT}"
 
 
 def _venv_python() -> Path:
@@ -62,7 +65,8 @@ def main() -> None:
     print(f"Starting CodeTalk Deployer at {URL}")
 
     # Open the browser a couple of seconds after uvicorn starts binding.
-    threading.Thread(target=_open_browser_after_delay, args=(2.0,), daemon=True).start()
+    if os.environ.get("CODETALK_DEPLOYER_NO_BROWSER") != "1":
+        threading.Thread(target=_open_browser_after_delay, args=(2.0,), daemon=True).start()
 
     try:
         subprocess.run(
@@ -72,7 +76,7 @@ def main() -> None:
                 "uvicorn",
                 "server:app",
                 "--host",
-                "0.0.0.0",
+                HOST,
                 "--port",
                 str(PORT),
             ],

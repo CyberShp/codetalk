@@ -70,12 +70,8 @@ test.describe.serial("internal release click-through", () => {
         {
           mode: "native",
           workspace_path: "./workspace",
-          install_deepwiki: false,
           install_gitnexus: false,
           install_cgc: false,
-          deepwiki_path: "",
-          deepwiki_api_port: 8091,
-          deepwiki_ui_port: 3001,
           gitnexus_port: 8210,
           cgc_port: 8200,
           repos_path: "./workspace/repos",
@@ -123,7 +119,8 @@ test.describe.serial("internal release click-through", () => {
     await expect(page.locator("#btn-next")).toBeEnabled({ timeout: 30_000 });
     await page.locator("#btn-next").click();
 
-    await uncheckIfChecked("#install-deepwiki", page);
+    await expect(page.locator("#install-deepwiki")).toHaveCount(0);
+    await expect(page.getByText("DeepWiki")).toHaveCount(0);
     await uncheckIfChecked("#install-gitnexus", page);
     await uncheckIfChecked("#install-cgc", page);
 

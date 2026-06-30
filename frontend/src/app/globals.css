@@ -1751,7 +1751,9 @@ body {
   display: grid;
   grid-template-columns: minmax(232px, 260px) minmax(0, 1fr) 0;
   gap: 12px;
+  height: calc(100vh - 48px);
   min-height: calc(100vh - 48px);
+  overflow: hidden;
   padding: 0;
   transition: grid-template-columns var(--motion-medium) var(--motion-ease);
 }
@@ -1949,7 +1951,9 @@ body {
 }
 
 .ct-codex-ai__main {
+  position: relative;
   display: flex;
+  height: calc(100vh - 24px);
   min-height: calc(100vh - 24px);
   flex-direction: column;
   border-color: rgba(226, 232, 240, 0.74);
@@ -2040,8 +2044,10 @@ body {
 
 .ct-codex-ai__reader {
   flex: 1 1 auto;
+  min-height: 0;
   overflow: auto;
   padding: clamp(14px, 2.4vw, 28px);
+  scroll-behavior: smooth;
 }
 
 .ct-codex-ai__empty {
@@ -2174,6 +2180,21 @@ body {
   color: #0f172a !important;
 }
 
+.ct-codex-ai__jump {
+  position: absolute;
+  right: clamp(18px, 3vw, 34px);
+  bottom: 142px;
+  z-index: 3;
+  border: 1px solid rgba(15, 23, 42, 0.14);
+  border-radius: 999px;
+  background: #0f172a;
+  padding: 8px 12px;
+  color: #ffffff;
+  font-size: 12px;
+  font-weight: 760;
+  box-shadow: 0 14px 34px rgba(15, 23, 42, 0.18);
+}
+
 .ct-codex-ai__context {
   position: sticky;
   top: 12px;
@@ -2250,6 +2271,86 @@ body {
   font-size: 21px;
   font-weight: 760;
   line-height: 1;
+}
+
+.ct-ai-disclosure {
+  border: 1px solid rgba(216, 227, 239, 0.82);
+  border-radius: 15px;
+  background: #ffffff;
+  color: #334155;
+  font-size: 12px;
+  line-height: 1.55;
+  box-shadow: 0 10px 24px rgba(15, 23, 42, 0.045);
+}
+
+.ct-ai-disclosure + .ct-ai-disclosure {
+  margin-top: 9px;
+}
+
+.ct-ai-disclosure summary {
+  cursor: pointer;
+  list-style: none;
+  padding: 10px 12px;
+  color: #172033;
+  font-weight: 760;
+}
+
+.ct-ai-disclosure summary::-webkit-details-marker {
+  display: none;
+}
+
+.ct-ai-disclosure summary::after {
+  content: "+";
+  float: right;
+  color: #64748b;
+  font-weight: 820;
+}
+
+.ct-ai-disclosure[open] summary {
+  border-bottom: 1px solid rgba(226, 232, 240, 0.88);
+}
+
+.ct-ai-disclosure[open] summary::after {
+  content: "-";
+}
+
+.ct-ai-audit-list,
+.ct-ai-diagnostic {
+  display: grid;
+  gap: 8px;
+  padding: 10px 12px 12px;
+}
+
+.ct-ai-audit-list > div {
+  display: grid;
+  gap: 3px;
+}
+
+.ct-ai-audit-list span {
+  color: #64748b;
+  font-size: 10px;
+  font-weight: 760;
+}
+
+.ct-ai-audit-list strong,
+.ct-ai-audit-list code {
+  min-width: 0;
+  overflow: hidden;
+  color: #0f172a;
+  font-family: var(--font-ui);
+  font-size: 12px;
+  font-weight: 760;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.ct-ai-audit-list code {
+  font-family: var(--font-data);
+  font-size: 11px;
+}
+
+.ct-ai-diagnostic p {
+  color: #475569;
 }
 
 .ct-ai-side-actions {
@@ -2400,7 +2501,9 @@ body {
   .ct-codex-ai,
   .ct-codex-ai.is-context-open {
     grid-template-columns: 1fr;
+    height: auto;
     padding: 0 10px 10px;
+    overflow: visible;
   }
 
   .ct-codex-ai__rail,

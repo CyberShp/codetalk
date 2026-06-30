@@ -136,11 +136,14 @@ export default function AIThreadPage() {
   const [streamingRunId, setStreamingRunId] = useState<string | null>(null);
   const [streamingContent, setStreamingContent] = useState("");
   const [contextOpen, setContextOpen] = useState(true);
+  const [showJumpToLatest, setShowJumpToLatest] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const abortRef = useRef<AbortController | null>(null);
   const cancellingRef = useRef(false);
   const creatingSiblingThreadRef = useRef(false);
+  const readerRef = useRef<HTMLElement>(null);
   const bottomRef = useRef<HTMLDivElement>(null);
+  const autoScrollRef = useRef(true);
 
   const references = useMemo(() => uniqueReferences(messages), [messages]);
   const workspaceId = threadWorkspaceId(conversation);
@@ -153,9 +156,10 @@ export default function AIThreadPage() {
   );
   const materialCount = workspace?.materials?.length ?? 0;
   const reportCount = workspace?.reports?.length ?? 0;
+  const latestRun = conversation?.latest_run ?? null;
   const latestRunError =
-    conversation?.latest_run?.status === "failed" && conversation.latest_run.error
-      ? redactDiagnosticText(conversation.latest_run.error)
+    latestRun?.status === "failed" && latestRun.error
+      ? redactDiagnosticText(latestRun.error)
       : "";
   const visibleError = error || latestRunError;
   const composerDisabled = sending || Boolean(streamingRunId);
@@ -167,6 +171,21 @@ export default function AIThreadPage() {
   );
   const canRetryLatestFailure = Boolean(latestRunError && lastUserMessage && !sending && !streamingRunId);
   const canExportThread = messages.length > 0 && !streamingRunId;
+  const latestReferences = references.slice(0, 4);
+  const hiddenReferenceCount = Math.max(0, references.length - latestReferences.length);
+  const runStatusLabel = streamingRunId
+    ? "生成中"
+    : latestRun?.status === "failed"
+      ? "失败"
+      : latestRun?.status === "completed"
+        ? "已完成"
+        : conversation?.status ?? "ready";
+  const auditSummary = [
+    `状态 ${runStatusLabel}`,
+    `证据 ${references.length}`,
+    `材料 ${materialCount}`,
+    `报告 ${reportCount}`,
+  ].join(" · ");
 
   const load = useCallback(async () => {
     setError(null);
@@ -281,9 +300,28 @@ export default function AIThreadPage() {
     return () => window.clearInterval(timer);
   }, [conversationId, load, streamingRunId]);
 
+  const updateReaderStickiness = useCallback(() => {
+    const reader = readerRef.current;
+    if (!reader) return;
+    const distanceFromBottom = reader.scrollHeight - reader.scrollTop - reader.clientHeight;
+    const nearBottom = distanceFromBottom < 96;
+    autoScrollRef.current = nearBottom;
+    setShowJumpToLatest(!nearBottom && Boolean(streamingRunId || streamingContent));
+  }, [streamingContent, streamingRunId]);
+
+  const jumpToLatest = useCallback((behavior: ScrollBehavior = "smooth") => {
+    autoScrollRef.current = true;
+    setShowJumpToLatest(false);
+    bottomRef.current?.scrollIntoView({ behavior, block: "end" });
+  }, []);
+
   useEffect(() => {
-    bottomRef.current?.scrollIntoView({ behavior: "smooth", block: "end" });
-  }, [messages, streamingContent]);
+    if (autoScrollRef.current) {
+      jumpToLatest("smooth");
+    } else if (streamingRunId || streamingContent) {
+      setShowJumpToLatest(true);
+    }
+  }, [jumpToLatest, messages, streamingContent, streamingRunId]);
 
   const send = async () => {
     const text = input.trim();
@@ -296,6 +334,8 @@ export default function AIThreadPage() {
     setError(null);
     setInput("");
     setStreamingContent("");
+    autoScrollRef.current = true;
+    setShowJumpToLatest(false);
     try {
       const result = await api.aiConversations.send(conversationId, text);
       setMessages((prev) => [...prev, result.message]);
@@ -530,7 +570,12 @@ export default function AIThreadPage() {
           </div>
         )}
 
-        <section className="ct-codex-ai__reader">
+        <section
+          ref={readerRef}
+          className="ct-codex-ai__reader"
+          onScroll={updateReaderStickiness}
+          aria-label="AI 线程对话内容"
+        >
           {messages.length === 0 && !streamingContent ? (
             <div className="ct-codex-ai__empty">
               <Sparkles size={32} />
@@ -573,6 +618,11 @@ export default function AIThreadPage() {
           )}
           <div ref={bottomRef} />
         </section>
+        {showJumpToLatest && (
+          <button type="button" className="ct-codex-ai__jump" onClick={() => jumpToLatest()}>
+            跳到最新回复
+          </button>
+        )}
 
         <div className="ct-codex-composer">
           <textarea
@@ -705,13 +755,13 @@ export default function AIThreadPage() {
         <section>
           <h2>
             <FileText size={16} />
-            本轮引用
+            证据链
           </h2>
           {references.length === 0 ? (
             <p className="ct-ai-side-empty">还没有引用。发送问题后，系统会按当前项目召回报告、记忆和语义用例。</p>
           ) : (
             <div className="grid gap-3">
-              {references.map((ref) => (
+              {latestReferences.map((ref) => (
                 <div key={`${ref.source_type}:${ref.source_id}`} className="ct-ai-ref">
                   <div className="flex items-center justify-between gap-2">
                     <span>{ref.title}</span>
@@ -720,8 +770,63 @@ export default function AIThreadPage() {
                   <p>{ref.excerpt}</p>
                 </div>
               ))}
+              {hiddenReferenceCount > 0 && (
+                <details className="ct-ai-disclosure">
+                  <summary>展开其余 {hiddenReferenceCount} 条证据</summary>
+                  <div className="grid gap-3 pt-3">
+                    {references.slice(latestReferences.length).map((ref) => (
+                      <div key={`${ref.source_type}:${ref.source_id}`} className="ct-ai-ref">
+                        <div className="flex items-center justify-between gap-2">
+                          <span>{ref.title}</span>
+                          <code>{ref.source_type}</code>
+                        </div>
+                        <p>{ref.excerpt}</p>
+                      </div>
+                    ))}
+                  </div>
+                </details>
+              )}
             </div>
           )}
+        </section>
+        <section>
+          <h2>
+            <Database size={16} />
+            执行轨迹
+          </h2>
+          <details className="ct-ai-disclosure">
+            <summary>{auditSummary}</summary>
+            <div className="ct-ai-audit-list">
+              <div>
+                <span>回答正文</span>
+                <strong>{messages.filter((message) => message.role === "assistant").length} 条</strong>
+              </div>
+              <div>
+                <span>当前执行器</span>
+                <strong>{activeRuntime?.name ?? (conversation?.runtime_type === "agent_runtime" ? "未找到执行器" : "内置模型")}</strong>
+              </div>
+              <div>
+                <span>源码/材料优先</span>
+                <strong>{workspace ? "已绑定工作区" : "未绑定工作区"}</strong>
+              </div>
+              {latestRun?.id && (
+                <div>
+                  <span>最近运行</span>
+                  <code>{latestRun.id}</code>
+                </div>
+              )}
+            </div>
+          </details>
+          <details className="ct-ai-disclosure">
+            <summary>{visibleError ? "诊断详情：有错误，可展开查看" : "诊断详情：默认折叠"}</summary>
+            <div className="ct-ai-diagnostic">
+              {visibleError ? (
+                <p>{visibleError}</p>
+              ) : (
+                <p>没有需要展开的错误日志。原始 agent 事件仅用于诊断，不混入正文。</p>
+              )}
+            </div>
+          </details>
         </section>
         <section>
           <h2>

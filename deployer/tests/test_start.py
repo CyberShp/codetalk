@@ -47,7 +47,7 @@ def test_check_python_version_exits_on_old_python():
 def test_create_venv_skips_if_python_exists(tmp_path, monkeypatch):
     """_create_venv() is a no-op when the venv Python already exists."""
     monkeypatch.setattr(start, "VENV_DIR", tmp_path / ".venv")
-    fake_python = tmp_path / ".venv" / "Scripts" / "python.exe"
+    fake_python = start._venv_python()
     fake_python.parent.mkdir(parents=True)
     fake_python.touch()
 
@@ -66,3 +66,14 @@ def test_open_browser_after_delay_opens_url(monkeypatch):
     monkeypatch.setattr("time.sleep", lambda _: None)
     start._open_browser_after_delay(0)
     assert start.URL in opened
+
+
+def test_deployer_url_uses_configured_host_port(monkeypatch):
+    monkeypatch.setenv("CODETALK_DEPLOYER_HOST", "127.0.0.1")
+    monkeypatch.setenv("CODETALK_DEPLOYER_PORT", "9041")
+    import importlib
+
+    reloaded = importlib.reload(start)
+    assert reloaded.HOST == "127.0.0.1"
+    assert reloaded.PORT == 9041
+    assert reloaded.URL == "http://127.0.0.1:9041"

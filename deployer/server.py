@@ -281,7 +281,7 @@ async def _run_supplement_gitnexus(deployer: NativeDeployer, cfg: dict) -> None:
 
 @app.post("/api/quickstart")
 async def api_quickstart(request: Request):
-    """Quick-start services using saved config (no install/check steps)."""
+    """Quick-start services using saved config, bootstrapping missing core deps."""
     try:
         body = await request.json()
         if not isinstance(body, dict):
@@ -336,11 +336,15 @@ async def api_quickstart(request: Request):
 
 
 async def _run_quickstart(deployer: NativeDeployer) -> None:
-    """Start services only -- skip install/check steps."""
+    """Ensure core runtime exists, then start services."""
     error_msg = ""
     cancelled = False
     try:
+        await deployer._step_install_backend()
         await deployer._step_generate_config()
+        await deployer._step_install_frontend()
+        if deployer._config.get("install_gitnexus", True):
+            await deployer._step_install_gitnexus()
         await deployer._step_start_services()
         await deployer._step_health_check()
     except asyncio.CancelledError:

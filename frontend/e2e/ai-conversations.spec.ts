@@ -14,7 +14,53 @@ function jsonHeaders(origin = frontendOrigin) {
   };
 }
 
-async function mockReadableConversation(page: Page) {
+async function mockReadableConversation(
+  page: Page,
+  options: {
+    assistantContent?: string;
+    extraMessages?: Array<Record<string, unknown>>;
+  } = {},
+) {
+  const assistantContent =
+    options.assistantContent ?? "建议补充登录失败、权限失效、弱网重试和审计日志验证。";
+  const references = [
+    {
+      source_type: "workspace_report",
+      source_id: "report-1",
+      title: "测试设计报告",
+      excerpt: "报告指出登录流程需要覆盖失败边界和异常路径。",
+      metadata: { workspace_id: "ws-1" },
+    },
+    {
+      source_type: "workspace_source",
+      source_id: "src-1",
+      title: "lib/login/session.ts:42",
+      excerpt: "会话过期时返回 401 并记录审计日志。",
+      metadata: { workspace_id: "ws-1" },
+    },
+    {
+      source_type: "workspace_material",
+      source_id: "mat-1",
+      title: "登录验收标准.md",
+      excerpt: "弱网、重试、权限失效均为验收范围。",
+      metadata: { workspace_id: "ws-1" },
+    },
+    {
+      source_type: "semantic_case",
+      source_id: "case-1",
+      title: "历史弱网案例",
+      excerpt: "历史案例要求观察重试次数和最终错误提示。",
+      metadata: { workspace_id: "ws-1" },
+    },
+    {
+      source_type: "workspace_report",
+      source_id: "report-2",
+      title: "审计日志报告",
+      excerpt: "审计日志应包含登录失败原因。",
+      metadata: { workspace_id: "ws-1" },
+    },
+  ];
+
   await page.route("**/api/workspaces", async (route) => {
     await route.fulfill({
       headers: jsonHeaders(route.request().headers().origin),
@@ -122,19 +168,12 @@ async function mockReadableConversation(page: Page) {
             conversation_id: "conv-1",
             run_id: "run-1",
             role: "assistant",
-            content: "建议补充登录失败、权限失效、弱网重试和审计日志验证。",
-            references: [
-              {
-                source_type: "workspace_report",
-                source_id: "report-1",
-                title: "测试设计报告",
-                excerpt: "报告指出登录流程需要覆盖失败边界和异常路径。",
-                metadata: { workspace_id: "ws-1" },
-              },
-            ],
+            content: assistantContent,
+            references,
             actions: [{ id: "save_memory", label: "沉淀到记忆" }],
             created_at: "2026-06-28T00:00:01Z",
           },
+          ...(options.extraMessages ?? []),
         ],
       },
     });
@@ -149,6 +188,11 @@ test("AI conversation page is a wide persistent reading surface", async ({ page 
   await expect(page.getByRole("heading", { name: "登录模块 AI 调查线程" })).toBeVisible();
   await expect(page.getByText("建议补充登录失败")).toBeVisible();
   await expect(page.getByText("测试设计报告")).toBeVisible();
+  await expect(page.getByText("证据链")).toBeVisible();
+  await expect(page.getByText("执行轨迹")).toBeVisible();
+  await expect(page.getByText("展开其余 1 条证据")).toBeVisible();
+  await expect(page.getByText("审计日志应包含登录失败原因。")).toBeHidden();
+  await expect(page.getByText("诊断详情：默认折叠")).toBeVisible();
   await expect(page.getByPlaceholder(/像 Codex 一样继续追问/)).toBeVisible();
 
   const reader = page.locator(".ct-codex-ai__reader");
@@ -221,6 +265,42 @@ test("AI conversation page is a wide persistent reading surface", async ({ page 
   expect(exported).toContain("这个测试设计还缺什么？");
   expect(exported).toContain("建议补充登录失败、权限失效、弱网重试和审计日志验证。");
   expect(exported).toContain("测试设计报告 (workspace_report:report-1)");
+});
+
+test("AI conversation keeps long threads inside the reader and does not force document scrolling", async ({ page }) => {
+  const longBlock = Array.from({ length: 14 }, (_, index) =>
+    `第 ${index + 1} 段：补充登录失败、权限失效、弱网重试、审计日志验证和恢复路径。`,
+  ).join("\n\n");
+  const extraMessages = Array.from({ length: 5 }, (_, index) => ({
+    id: `msg-extra-${index}`,
+    conversation_id: "conv-1",
+    run_id: "run-1",
+    role: index % 2 === 0 ? "user" : "assistant",
+    content: `${index % 2 === 0 ? "继续追问" : longBlock}\n${index}`,
+    references: [],
+    actions: [],
+    created_at: `2026-06-28T00:00:${10 + index}Z`,
+  }));
+  await mockReadableConversation(page, { assistantContent: longBlock, extraMessages });
+  await page.setViewportSize({ width: 1440, height: 760 });
+  await page.goto("/ai/conv-1", { waitUntil: "domcontentloaded" });
+
+  const metrics = await page.getByLabel("AI 线程对话内容").evaluate((element) => ({
+    readerClientHeight: element.clientHeight,
+    readerScrollHeight: element.scrollHeight,
+    documentScrollHeight: document.documentElement.scrollHeight,
+    viewportHeight: window.innerHeight,
+  }));
+  expect(metrics.readerScrollHeight).toBeGreaterThan(metrics.readerClientHeight + 300);
+  expect(metrics.documentScrollHeight).toBeLessThanOrEqual(metrics.viewportHeight + 24);
+
+  const readerBox = await page.getByLabel("AI 线程对话内容").boundingBox();
+  expect(readerBox).not.toBeNull();
+  await page.mouse.move(readerBox!.x + readerBox!.width / 2, readerBox!.y + readerBox!.height / 2);
+  await page.mouse.wheel(0, 800);
+  await expect
+    .poll(() => page.getByLabel("AI 线程对话内容").evaluate((element) => element.scrollTop))
+    .toBeGreaterThan(100);
 });
 
 test("AI conversation remains usable on a narrow mobile viewport", async ({ page }) => {
