@@ -86,3 +86,61 @@ test("task export download redacts completed markdown report secrets through the
   expect(exported).not.toMatch(/Authorization:\s*Bearer\s+(?!<redacted>)[^\s"']+/i);
   expect(exported).not.toMatch(/(?:api[-_]?key|token|secret|password)=['"]?(?!<redacted>)[^\s"']+/i);
 });
+
+test("task report page redacts persisted markdown report secrets through the UI", async ({
+  page,
+  request,
+}) => {
+  test.setTimeout(60_000);
+  test.skip(!process.env.CODETALK_PLAYWRIGHT_DATA_DIR, "requires explicit Playwright data dir");
+  const dataDir = process.env.CODETALK_PLAYWRIGHT_DATA_DIR!;
+  const repo = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), "codetalk-report-page-")));
+  fs.writeFileSync(path.join(repo, "README.md"), "task report page redaction e2e\n", "utf8");
+  const reportSecret = ["sk", "taskUiPageLeakValue1234567890"].join("-");
+  const tokenSecret = "taskUiPageTokenLeakValue1234567890";
+  const bearerSecret = "taskUiPageBearerLeakValue1234567890";
+
+  const createResp = await request.post(`${backendBase}/api/tasks`, {
+    data: {
+      name: `report-page-redact-${Date.now()}`,
+      repo_path: repo,
+      tools: [],
+      analysis_focus: "Task report page redaction",
+      prompt_content: "Prepare a task report whose browser view must be safe.",
+    },
+  });
+  expect(createResp.status()).toBe(201);
+  const task = (await createResp.json()) as { id: string };
+
+  execFileSync(
+    "python3",
+    [
+      "-c",
+      [
+        "import pathlib, sys",
+        "data_dir, task_id, report_secret, token_secret, bearer_secret = sys.argv[1:]",
+        "output_dir = pathlib.Path(data_dir) / 'outputs' / task_id",
+        "output_dir.mkdir(parents=True, exist_ok=True)",
+        "content = '\\n'.join(['# Browser Report', 'task ui report page complete', f'model key: {report_secret}', 'runtime ' + 'tok' + f'en={token_secret}', 'Authorization:' + f' Bearer {bearer_secret}'])",
+        "(output_dir / 'report-page-redacted-report.md').write_text(content, encoding='utf-8')",
+      ].join("\n"),
+      dataDir,
+      task.id,
+      reportSecret,
+      tokenSecret,
+      bearerSecret,
+    ],
+    { stdio: "pipe" },
+  );
+
+  await page.goto(`/tasks/${task.id}/report`, { waitUntil: "domcontentloaded" });
+  await expect(page.getByRole("heading", { name: "分析报告" })).toBeVisible();
+  await expect(page.getByText("task ui report page complete")).toBeVisible();
+  await expect(page.locator("body")).toContainText("<redacted>");
+  await expect(page.locator("body")).not.toContainText(reportSecret);
+  await expect(page.locator("body")).not.toContainText(tokenSecret);
+  await expect(page.locator("body")).not.toContainText(bearerSecret);
+  await expect(page.locator("body")).not.toContainText(/sk-[A-Za-z0-9_-]{12,}/);
+  await expect(page.locator("body")).not.toContainText(/Authorization:\s*Bearer\s+(?!<redacted>)[^\s"']+/i);
+  await expect(page.locator("body")).not.toContainText(/(?:api[-_]?key|token|secret|password)=['"]?(?!<redacted>)[^\s"']+/i);
+});

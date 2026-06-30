@@ -12,6 +12,7 @@ from pydantic import BaseModel, ConfigDict, Field
 
 from app.config import settings
 from app.database import get_db
+from app.services.external_agent_discovery import redact_agent_diagnostic_text
 
 router = APIRouter(prefix="/api/tasks", tags=["任务管理"])
 logger = logging.getLogger(__name__)
@@ -317,7 +318,7 @@ async def read_output_file(
     if not filepath.exists():
         raise HTTPException(status_code=404, detail=f"文件不存在: {filename}")
 
-    content = await asyncio.to_thread(filepath.read_text, "utf-8")
+    content = redact_agent_diagnostic_text(await asyncio.to_thread(filepath.read_text, "utf-8"))
     return {"filename": filename, "content": content}
 
 

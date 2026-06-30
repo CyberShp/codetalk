@@ -349,6 +349,10 @@ export default function MarkdownRenderer({
     () => [rehypeRaw, ...rehypePlugins],
     [rehypePlugins]
   );
+  const renderedContent = useMemo(
+    () => content.replaceAll("<redacted>", "&lt;redacted&gt;"),
+    [content],
+  );
 
   return (
     <div
@@ -361,7 +365,7 @@ export default function MarkdownRenderer({
         rehypePlugins={appliedRehypePlugins}
         components={components}
       >
-        {content}
+        {renderedContent}
       </ReactMarkdown>
     </div>
   );
