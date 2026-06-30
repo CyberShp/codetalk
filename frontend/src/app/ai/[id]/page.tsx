@@ -131,12 +131,14 @@ export default function AIThreadPage() {
   const [input, setInput] = useState("");
   const [loading, setLoading] = useState(true);
   const [sending, setSending] = useState(false);
+  const [cancelling, setCancelling] = useState(false);
   const [creatingSiblingThread, setCreatingSiblingThread] = useState(false);
   const [streamingRunId, setStreamingRunId] = useState<string | null>(null);
   const [streamingContent, setStreamingContent] = useState("");
   const [contextOpen, setContextOpen] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const abortRef = useRef<AbortController | null>(null);
+  const cancellingRef = useRef(false);
   const creatingSiblingThreadRef = useRef(false);
   const bottomRef = useRef<HTMLDivElement>(null);
 
@@ -157,7 +159,8 @@ export default function AIThreadPage() {
       : "";
   const visibleError = error || latestRunError;
   const composerDisabled = sending || Boolean(streamingRunId);
-  const threadNavigationBusy = savingRuntime || creatingSiblingThread || Boolean(streamingRunId);
+  const threadNavigationBusy =
+    savingRuntime || cancelling || creatingSiblingThread || Boolean(streamingRunId);
   const lastUserMessage = useMemo(
     () => [...messages].reverse().find((message) => message.role === "user") ?? null,
     [messages],
@@ -327,11 +330,19 @@ export default function AIThreadPage() {
   };
 
   const cancel = async () => {
-    abortRef.current?.abort();
-    await api.aiConversations.cancel(conversationId).catch(() => {});
-    setStreamingRunId(null);
-    setStreamingContent("");
-    await load().catch(() => {});
+    if (cancellingRef.current) return;
+    cancellingRef.current = true;
+    setCancelling(true);
+    try {
+      abortRef.current?.abort();
+      await api.aiConversations.cancel(conversationId).catch(() => {});
+      setStreamingRunId(null);
+      setStreamingContent("");
+      await load().catch(() => {});
+    } finally {
+      cancellingRef.current = false;
+      setCancelling(false);
+    }
   };
 
   const changeRuntime = async (value: string) => {
@@ -594,8 +605,8 @@ export default function AIThreadPage() {
               ))}
             </div>
             {streamingRunId ? (
-              <button className="ct-codex-send is-secondary" type="button" onClick={cancel}>
-                <Square size={15} />
+              <button className="ct-codex-send is-secondary" type="button" onClick={cancel} disabled={cancelling}>
+                {cancelling ? <Loader2 size={15} className="animate-spin" /> : <Square size={15} />}
                 停止
               </button>
             ) : (

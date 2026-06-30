@@ -302,10 +302,26 @@ test("cancels a running agent-runtime AI thread through the real UI", async ({
     await expect(page.getByRole("button", { name: "加入测试设计" })).toBeDisabled();
     await expect(page.getByRole("button", { name: "生成复跑建议" })).toBeDisabled();
 
+    const cancelRequests: string[] = [];
+    page.on("request", (request) => {
+      if (
+        request.method() === "POST" &&
+        request.url().includes(`/api/ai/conversations/${encodeURIComponent(threadId)}/cancel`)
+      ) {
+        cancelRequests.push(request.url());
+      }
+    });
+    const cancelRequest = page.waitForRequest(
+      (request) =>
+        request.method() === "POST" &&
+        request.url().includes(`/api/ai/conversations/${encodeURIComponent(threadId)}/cancel`),
+    );
     await page.getByRole("button", { name: "停止" }).hover();
-    await page.getByRole("button", { name: "停止" }).click();
+    await page.getByRole("button", { name: "停止" }).dblclick();
+    await cancelRequest;
     await expect(page.getByRole("button", { name: "停止" })).toHaveCount(0, { timeout: 15_000 });
     await expect(page.getByText("agent-runtime-after-cancel")).toHaveCount(0);
+    await expect.poll(() => cancelRequests.length).toBe(1);
 
     const conversationResp = await request.get(
       `${backendBase}/api/ai/conversations/${encodeURIComponent(threadId)}`,
