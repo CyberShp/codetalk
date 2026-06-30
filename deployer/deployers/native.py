@@ -29,8 +29,8 @@ except ImportError:  # safety net — shouldn't happen in normal deployment
     _CGC_DEFAULT_PORT = 7072
 
 TOTAL_STEPS = 7
-REMOVED_ENV_PREFIXES = ("DEEPWIKI_",)
-REMOVED_ENV_KEYS = {
+REMOVED_LEGACY_ENV_PREFIXES = ("DEEPWIKI_",)
+REMOVED_LEGACY_ENV_KEYS = {
     "DEEPWIKI_PATH",
     "DEEPWIKI_API_PORT",
     "DEEPWIKI_UI_PORT",
@@ -1187,8 +1187,8 @@ def _keep_existing_backend_env_line(line: str, managed_keys: set[str]) -> bool:
     key = line.split("=", 1)[0].strip()
     if key in managed_keys:
         return False
-    if key in REMOVED_ENV_KEYS:
+    if key in REMOVED_LEGACY_ENV_KEYS:
         return False
-    if any(key.startswith(prefix) for prefix in REMOVED_ENV_PREFIXES):
+    if any(key.startswith(prefix) for prefix in REMOVED_LEGACY_ENV_PREFIXES):
         return False
     return "deepwiki" not in key.lower()

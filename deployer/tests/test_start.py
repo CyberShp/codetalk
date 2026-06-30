@@ -3,6 +3,7 @@ and other pure functions that do not spawn subprocesses."""
 
 import sys
 import subprocess
+import socket
 from unittest.mock import MagicMock, patch
 
 import pytest
@@ -84,6 +85,24 @@ def test_exit_on_subprocess_error_reports_actionable_stage(capsys):
     assert "退出码 17" in err
     assert "python -m pip install -r requirements.txt" in err
     assert "依赖源不可达" in err
+
+
+def test_deployer_port_preflight_reports_occupied_port(monkeypatch, capsys):
+    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as listener:
+        listener.bind(("127.0.0.1", 0))
+        listener.listen(1)
+        occupied_port = listener.getsockname()[1]
+
+        monkeypatch.setattr(start, "HOST", "127.0.0.1")
+        monkeypatch.setattr(start, "PORT", occupied_port)
+
+        with pytest.raises(SystemExit) as exc_info:
+            start._assert_deployer_port_available()
+
+    assert exc_info.value.code == 1
+    err = capsys.readouterr().err
+    assert f"部署器端口 {occupied_port} 无法绑定" in err
+    assert "CODETALK_DEPLOYER_PORT" in err
 
 
 def test_deployer_url_uses_configured_host_port(monkeypatch):

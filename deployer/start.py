@@ -6,6 +6,7 @@ import threading
 import time
 import webbrowser
 import os
+import socket
 from pathlib import Path
 
 
@@ -74,6 +75,52 @@ def _exit_on_subprocess_error(stage: str, exc: subprocess.CalledProcessError) ->
     sys.exit(code)
 
 
+def _port_listener_summary(port: int) -> str:
+    """Return a best-effort description of processes listening on *port*."""
+    try:
+        import psutil
+    except ImportError:
+        return "unknown process"
+
+    listeners: list[str] = []
+    try:
+        for conn in psutil.net_connections(kind="inet"):
+            if conn.status != "LISTEN" or not conn.laddr or conn.laddr.port != port:
+                continue
+            pid = conn.pid
+            if pid is None:
+                listeners.append("unknown PID")
+                continue
+            try:
+                proc = psutil.Process(pid)
+                name = proc.name() or "unknown"
+            except (psutil.NoSuchProcess, psutil.AccessDenied):
+                name = "unknown"
+            listeners.append(f"{name}(PID {pid})")
+    except (psutil.AccessDenied, OSError):
+        return "unknown process"
+    return ", ".join(sorted(set(listeners))) or "unknown process"
+
+
+def _assert_deployer_port_available() -> None:
+    """Fail early with an actionable message when the deployer port is occupied."""
+    bind_host = HOST if HOST not in {"::"} else "::"
+    family = socket.AF_INET6 if ":" in bind_host and bind_host != "0.0.0.0" else socket.AF_INET
+    with socket.socket(family, socket.SOCK_STREAM) as sock:
+        try:
+            sock.bind((bind_host, PORT))
+        except OSError as exc:
+            listener = _port_listener_summary(PORT)
+            print(
+                f"\nError: 部署器端口 {PORT} 无法绑定：{exc}\n"
+                f"当前监听进程：{listener}\n"
+                f"处理方式：关闭占用端口的进程，或设置 CODETALK_DEPLOYER_PORT 为其他端口后重试。\n"
+                f"例如：CODETALK_DEPLOYER_PORT=9060 python start.py",
+                file=sys.stderr,
+            )
+            sys.exit(1)
+
+
 def main() -> None:
     """Entry point: bootstrap the venv and launch uvicorn."""
     _check_python_version()
@@ -86,6 +133,7 @@ def main() -> None:
     except subprocess.CalledProcessError as exc:
         _exit_on_subprocess_error("安装部署器依赖失败", exc)
 
+    _assert_deployer_port_available()
     print(f"Starting CodeTalk Deployer at {URL}")
 
     # Open the browser a couple of seconds after uvicorn starts binding.

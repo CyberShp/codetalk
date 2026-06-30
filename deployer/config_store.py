@@ -33,7 +33,7 @@ _KEY_MAP = {
 }
 _KEY_MAP_REV = {v: k for k, v in _KEY_MAP.items()}
 
-_REMOVED_DEEPWIKI_KEYS = {
+_REMOVED_LEGACY_TOOL_KEYS = {
     "installDeepwiki",
     "install_deepwiki",
     "deepwikiPath",
@@ -45,22 +45,22 @@ _REMOVED_DEEPWIKI_KEYS = {
 }
 
 
-def _drop_removed_deepwiki_keys(cfg: dict) -> dict:
-    """Remove legacy DeepWiki deployment fields from persisted/runtime config."""
-    return {k: v for k, v in cfg.items() if k not in _REMOVED_DEEPWIKI_KEYS}
+def _drop_removed_legacy_tool_keys(cfg: dict) -> dict:
+    """Remove deployment fields that belonged to removed optional tools."""
+    return {k: v for k, v in cfg.items() if k not in _REMOVED_LEGACY_TOOL_KEYS}
 
 
 def normalize_to_snake(cfg: dict) -> dict:
     """Convert any camelCase frontend keys to snake_case backend keys."""
     out = {}
-    for k, v in _drop_removed_deepwiki_keys(cfg).items():
+    for k, v in _drop_removed_legacy_tool_keys(cfg).items():
         out[_KEY_MAP.get(k, k)] = v
     return out
 
 
 def _normalize_to_camel(cfg: dict) -> dict:
     """Convert snake_case backend keys to camelCase for frontend consumption."""
-    cfg = _drop_removed_deepwiki_keys(dict(cfg))
+    cfg = _drop_removed_legacy_tool_keys(dict(cfg))
     out = {}
     for k, v in cfg.items():
         out[_KEY_MAP_REV.get(k, k)] = v
@@ -72,7 +72,7 @@ def load_config() -> dict:
     if CONFIG_PATH.exists():
         try:
             with open(CONFIG_PATH, "r", encoding="utf-8") as f:
-                return _drop_removed_deepwiki_keys(normalize_to_snake(json.load(f)))
+                return _drop_removed_legacy_tool_keys(normalize_to_snake(json.load(f)))
         except (json.JSONDecodeError, OSError):
             pass
     return get_default_config("native")
@@ -149,7 +149,7 @@ def save_config(config: dict) -> None:
         except (json.JSONDecodeError, OSError):
             pass
     existing.update(normalized)
-    existing = _drop_removed_deepwiki_keys(existing)
+    existing = _drop_removed_legacy_tool_keys(existing)
     _validate_ports(existing)
     with open(CONFIG_PATH, "w", encoding="utf-8") as f:
         json.dump(existing, f, indent=2)
