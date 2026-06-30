@@ -611,21 +611,31 @@ async def build_context_references(
     scope_id = str(conversation["scope_id"])
     workspace_id = _conversation_workspace_id(conversation)
     refs: list[ContextReference] = []
+    seen: set[tuple[str, str]] = set()
+
+    def append_refs(items: list[ContextReference]) -> None:
+        for item in items:
+            key = (item.source_type, item.source_id)
+            if key in seen:
+                continue
+            refs.append(item)
+            seen.add(key)
+
     async with aiosqlite.connect(db_file) as db:
         db.row_factory = aiosqlite.Row
-        if scope_type == "workspace":
-            refs.extend(await _workspace_material_refs(db, scope_id))
-            refs.extend(await _workspace_source_refs(db, scope_id, user_message))
-            refs.extend(await _workspace_refs(db, scope_id))
-            refs.extend(await _workspace_chat_refs(db, scope_id))
-        elif scope_type == "report":
-            refs.extend(await _report_refs(db, scope_id))
+        if workspace_id != "global":
+            append_refs(await _workspace_material_refs(db, workspace_id))
+            append_refs(await _workspace_source_refs(db, workspace_id, user_message))
+            append_refs(await _workspace_refs(db, workspace_id))
+            append_refs(await _workspace_chat_refs(db, workspace_id))
+        if scope_type == "report":
+            append_refs(await _report_refs(db, scope_id))
         elif scope_type == "module":
-            refs.extend(await _module_refs(db, scope_id))
-    refs.extend(await _workbench_task_refs(scope_type, scope_id))
+            append_refs(await _module_refs(db, scope_id))
+    append_refs(await _workbench_task_refs(scope_type, scope_id))
     if workspace_id != "global":
-        refs.extend(await _evidence_memory_refs(workspace_id, user_message))
-        refs.extend(await _semantic_case_refs(scope_id, user_message))
+        append_refs(await _evidence_memory_refs(workspace_id, user_message))
+        append_refs(await _semantic_case_refs(scope_id, user_message))
     return refs[:_MAX_CONTEXT_REFERENCES]
 
 

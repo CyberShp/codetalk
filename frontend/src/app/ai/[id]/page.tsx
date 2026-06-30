@@ -192,6 +192,8 @@ export default function AIThreadPage() {
   const bottomRef = useRef<HTMLDivElement>(null);
   const autoScrollRef = useRef(true);
   const detachedScrollTopRef = useRef(0);
+  const programmaticScrollRef = useRef(false);
+  const streamingActiveRef = useRef(false);
 
   const references = useMemo(() => uniqueReferences(messages), [messages]);
   const workspaceId = threadWorkspaceId(conversation);
@@ -359,11 +361,20 @@ export default function AIThreadPage() {
     return () => window.clearInterval(timer);
   }, [conversationId, load, streamingRunId]);
 
+  useEffect(() => {
+    streamingActiveRef.current = Boolean(streamingRunId || streamingContent);
+  }, [streamingContent, streamingRunId]);
+
   const updateReaderStickiness = useCallback(() => {
     const reader = readerRef.current;
     if (!reader) return;
     const distanceFromBottom = reader.scrollHeight - reader.scrollTop - reader.clientHeight;
     const nearBottom = distanceFromBottom < 96;
+    if (programmaticScrollRef.current) {
+      autoScrollRef.current = true;
+      setShowJumpToLatest(false);
+      return;
+    }
     autoScrollRef.current = nearBottom;
     if (!nearBottom) {
       detachedScrollTopRef.current = reader.scrollTop;
@@ -380,21 +391,24 @@ export default function AIThreadPage() {
     if (streamingRunId || streamingContent) setShowJumpToLatest(true);
   }, [streamingContent, streamingRunId]);
 
-  const handleReaderWheel = useCallback(
-    (event: React.WheelEvent<HTMLElement>) => {
-      if (event.deltaY < 0) {
-        const reader = readerRef.current;
-        if (reader) {
-          detachedScrollTopRef.current = Math.max(0, reader.scrollTop + event.deltaY);
-        }
-        autoScrollRef.current = false;
-        if (streamingRunId || streamingContent) setShowJumpToLatest(true);
-      }
-    },
-    [streamingContent, streamingRunId],
-  );
+  useEffect(() => {
+    const reader = readerRef.current;
+    if (!reader) return undefined;
+    const handleNativeWheel = (event: WheelEvent) => {
+      if (event.deltaY >= 0) return;
+      const nextScrollTop = Math.max(0, reader.scrollTop + event.deltaY);
+      event.preventDefault();
+      reader.scrollTop = nextScrollTop;
+      detachedScrollTopRef.current = nextScrollTop;
+      autoScrollRef.current = false;
+      if (streamingActiveRef.current) setShowJumpToLatest(true);
+    };
+    reader.addEventListener("wheel", handleNativeWheel, { passive: false, capture: true });
+    return () => reader.removeEventListener("wheel", handleNativeWheel, { capture: true });
+  }, [loading]);
 
-  const jumpToLatest = useCallback((behavior: ScrollBehavior = "smooth") => {
+  const jumpToLatest = useCallback((behavior: ScrollBehavior = "smooth", protectScrollHandler = false) => {
+    programmaticScrollRef.current = protectScrollHandler;
     autoScrollRef.current = true;
     setShowJumpToLatest(false);
     const reader = readerRef.current;
@@ -403,6 +417,13 @@ export default function AIThreadPage() {
     } else {
       bottomRef.current?.scrollIntoView({ behavior, block: "end" });
     }
+    window.requestAnimationFrame(() => {
+      const nextReader = readerRef.current;
+      if (nextReader && (protectScrollHandler || autoScrollRef.current)) {
+        nextReader.scrollTop = nextReader.scrollHeight;
+      }
+      programmaticScrollRef.current = false;
+    });
   }, []);
 
   useLayoutEffect(() => {
@@ -676,7 +697,6 @@ export default function AIThreadPage() {
           ref={readerRef}
           className="ct-codex-ai__reader"
           onScroll={updateReaderStickiness}
-          onWheel={handleReaderWheel}
           onTouchMove={detachAutoScroll}
           aria-label="AI 线程对话内容"
         >
@@ -723,7 +743,7 @@ export default function AIThreadPage() {
           <div ref={bottomRef} />
         </section>
         {showJumpToLatest && (
-          <button type="button" className="ct-codex-ai__jump" onClick={() => jumpToLatest()}>
+          <button type="button" className="ct-codex-ai__jump" onClick={() => jumpToLatest("auto", true)}>
             跳到最新回复
           </button>
         )}

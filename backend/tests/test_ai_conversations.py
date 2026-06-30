@@ -82,6 +82,18 @@ class SourceMaterialAssertingLLM:
         yield "已基于源码和材料回答。"
 
 
+class WorkspaceBoundSourceAssertingLLM:
+    def __init__(self) -> None:
+        self.joined = ""
+
+    async def stream_complete(self, messages, max_tokens=4096, temperature=0.3):
+        self.joined = "\n".join(str(m.get("content", "")) for m in messages)
+        assert "workspace_source" in self.joined
+        assert "lib/nvmf/connect.c" in self.joined
+        assert "spdk_nvmf_workflow_scope_probe" in self.joined
+        yield "已读取绑定工作区源码。"
+
+
 class HangingStreamLLM:
     def __init__(self):
         self.complete_called = False
@@ -241,6 +253,78 @@ class TestAIConversationsAPI:
                 if event["event_type"] == "status"
             ]
             assert any("工作区源码" in message and "输入材料" in message for message in status_messages)
+
+    async def test_workspace_bound_non_workspace_thread_reads_workspace_source(
+        self,
+        sqlite_db,
+        tmp_path: Path,
+        monkeypatch,
+    ):
+        repo = tmp_path / "repo"
+        source = repo / "lib" / "nvmf" / "connect.c"
+        source.parent.mkdir(parents=True)
+        source.write_text(
+            "\n".join(
+                [
+                    "int spdk_nvmf_workflow_scope_probe(void) {",
+                    "    return 42;",
+                    "}",
+                ]
+            ),
+            encoding="utf-8",
+        )
+        ws_id = "ws-workflow-source"
+        now = datetime.now(timezone.utc).isoformat()
+        async with aiosqlite.connect(sqlite_db) as db:
+            await db.execute(
+                "INSERT INTO workspaces (id, name, repo_path, indexed, created_at, updated_at) "
+                "VALUES (?, 'Workflow Source WS', ?, 1, ?, ?)",
+                (ws_id, str(repo), now, now),
+            )
+            await db.commit()
+
+        from app.api import ai_conversations
+
+        fake_llm = WorkspaceBoundSourceAssertingLLM()
+        monkeypatch.setattr(ai_conversations, "create_llm_client_from_active", lambda: fake_llm)
+        app = _test_app(sqlite_db)
+        async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+            created = await client.post(
+                "/api/ai/conversations",
+                json={
+                    "scope_type": "workflow",
+                    "scope_id": "module_analysis",
+                    "workspace_id": ws_id,
+                    "memory_namespace": f"workspace:{ws_id}",
+                    "title": "工作流范围源码优先",
+                },
+            )
+            assert created.status_code == 201
+            conversation = created.json()
+            assert conversation["workspace_id"] == ws_id
+
+            posted = await client.post(
+                f"/api/ai/conversations/{conversation['id']}/messages",
+                json={"content": "请读取 lib/nvmf/connect.c 并分析 connect 流程"},
+            )
+            assert posted.status_code == 202
+            refs = posted.json()["references"]
+            source_refs = [ref for ref in refs if ref["source_type"] == "workspace_source"]
+            assert source_refs
+            assert source_refs[0]["metadata"]["workspace_id"] == ws_id
+            assert source_refs[0]["metadata"]["path"] == "lib/nvmf/connect.c"
+
+            for _ in range(30):
+                messages = await client.get(f"/api/ai/conversations/{conversation['id']}/messages")
+                items = messages.json()["items"]
+                if len(items) == 2:
+                    break
+                await asyncio.sleep(0.1)
+
+            messages = await client.get(f"/api/ai/conversations/{conversation['id']}/messages")
+            body = messages.json()
+            assert [item["role"] for item in body["items"]] == ["user", "assistant"]
+            assert "已读取绑定工作区源码" in body["items"][1]["content"]
 
     async def test_workspace_source_refs_follow_directory_path_hint(
         self,

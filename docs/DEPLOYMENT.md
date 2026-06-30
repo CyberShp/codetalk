@@ -1,6 +1,6 @@
 # CodeTalk Lightweight — 部署文档
 
-> 版本: 2.1 | 分支: feat | Sprint 4
+> 版本: 2.1 | 分支: main | Sprint 4
 
 ## 1. 系统要求
 
@@ -30,26 +30,27 @@ cd deployer
 # Windows
 start.bat
 # Linux/macOS
-python start.py
+python3 start.py
 ```
 
-浏览器打开 http://localhost:9000，向导将自动完成 7 步流程：
+浏览器打开 http://localhost:9000，向导将自动完成当前本机部署流程：
 
 | 步骤 | 内容 |
 |------|------|
 | 1 | 运行环境检查（Python 3.11+、Node.js 18+、Git） |
 | 2 | 后端依赖安装（创建 .venv311 虚拟环境） |
 | 3 | 前端依赖安装（npm install） |
-| 4 | GitNexus 安装（可选） |
+| 4 | GitNexus 安装（可选，可关闭） |
 | 5 | 配置文件生成（自动写入 backend/.env） |
-| 6 | 服务启动（backend、frontend、gitnexus） |
+| 6 | 服务启动（backend、frontend，可选 GitNexus / CGC） |
 | 7 | 健康检查（等待所有服务就绪） |
 
 部署向导支持自定义：
 - **端口配置**：前端、后端、GitNexus 端口
 - **工作目录**：代码仓库存储路径
-- **LLM 配置**：API 地址、密钥、模型名称
-- **组件选择**：是否安装 GitNexus 等增强组件
+- **组件选择**：是否安装 GitNexus / CGC 等增强组件
+
+当前产品不再部署或管理旧 Wiki 组件；如果历史配置文件里仍有旧 Wiki 路径、端口或环境变量，部署器会在生成配置时清理。
 
 部署完成后，页面自动跳转至「启动管理页」，可查看服务状态并管理服务生命周期。
 
@@ -60,7 +61,7 @@ python start.py
 ```bash
 git clone https://github.com/CyberShp/codetalk.git
 cd codetalk
-git checkout feat
+git checkout main
 ```
 
 ### 3.2 后端部署

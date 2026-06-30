@@ -34,7 +34,7 @@ cd deployer
 ./start.sh
 ```
 
-也可以直接运行 `python start.py`。启动脚本会自动创建部署器 `.venv` 并安装依赖，避免因为缺少 `psutil`、`uvicorn` 等包导致部署系统起不来。
+也可以直接运行启动器脚本：Windows 使用 `py -3 start.py` 或 `python start.py`，macOS/Linux 使用 `python3 start.py`。启动脚本会自动创建部署器 `.venv` 并安装依赖，避免因为缺少 `psutil`、`uvicorn` 等包导致部署系统起不来。
 
 浏览器打开：
 
@@ -56,7 +56,7 @@ http://127.0.0.1:9000
 | 端口配置 | 默认可用即可；端口冲突时在高级设置里改端口 |
 | 配置确认 | 检查前端、后端、CORS 和工作目录配置 |
 
-当前核心功能只要求 backend + frontend 可用。GitNexus / CGC / 本机 Agent 是增强组件，不影响你先使用基础工作空间能力。
+当前核心功能只要求 backend + frontend 可用。GitNexus / CGC / 本机 Agent 是增强组件，不影响你先使用基础工作空间能力。当前部署器不再安装或启动旧 Wiki 组件。
 
 ### 3. 启动 CodeTalk
 
