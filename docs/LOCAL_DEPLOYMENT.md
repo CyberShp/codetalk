@@ -5,7 +5,7 @@ current runtime.
 
 ## Current Runtime
 
-CodeTalk no longer deploys or manages DeepWiki. Local folder analysis is handled
+CodeTalk no longer deploys or manages the legacy Wiki component. Local folder analysis is handled
 by the CodeTalk backend, GitNexus, AI threads, and Workbench workflows.
 
 Default local ports:

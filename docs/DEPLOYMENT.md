@@ -158,7 +158,7 @@ gitnexus --version
 GITNEXUS_BIN=/usr/local/bin/gitnexus
 ```
 
-GitNexus 由后端 ProcessManager 自动管理。当前产品已移除 DeepWiki 页面、路由和进程管理；不要再为新部署配置 DeepWiki 端口或路径。
+GitNexus 由后端 ProcessManager 自动管理。当前产品已移除旧 Wiki 页面、路由和进程管理；不要再为新部署配置旧 Wiki 端口或路径。
 
 ### 5.2 tiktoken 离线缓存
 
@@ -310,7 +310,7 @@ pip list | findstr fastapi
 ### 工具进程启动失败
 - 检查 GitNexus 二进制是否在 PATH 中
 - 检查后端 `.env` 中的 GitNexus/CGC 路径和端口是否与部署器配置一致
-- 当前产品不再部署或管理 DeepWiki；不要配置 DeepWiki 路径或端口
+- 当前产品不再部署或管理旧 Wiki 组件；不要配置旧 Wiki 路径或端口
 - 查看后端日志中的错误信息
 
 ### AI 分析报错

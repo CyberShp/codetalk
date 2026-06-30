@@ -27,7 +27,7 @@ Current workspace analysis has these observed failures:
 2. The final generated reports contained 0 token / empty content.
 3. The report phase reported missing Mermaid-style diagrams, but the real issue was that the LLM output was empty or invalid.
 4. Users cannot define the real analysis object. The system implicitly follows GitNexus communities.
-5. DeepWiki absence must not block GitNexus-only analysis, but the current user experience makes failures difficult to understand.
+5. Absence of the removed Wiki dependency must not block GitNexus-only analysis, but the current user experience makes failures difficult to understand.
 6. Internal AI constraints are tight: context is about 192K, output limit is about 8K, and Chinese reports around 2000 tokens may already truncate in practice.
 
 The redesign must optimize for:
@@ -35,7 +35,7 @@ The redesign must optimize for:
 - focused analysis;
 - deterministic task fan-out;
 - report usefulness for test design and SFMEA;
-- graceful operation without DeepWiki;
+- graceful operation without the removed Wiki dependency;
 - robust behavior when the LLM returns empty, truncated, or structurally invalid output.
 
 ## 2. Finish Line
@@ -49,7 +49,7 @@ For a repository with 1000 GitNexus modules, if the user defines 8 analysis obje
 Do not build these in this feature:
 
 - Do not show the raw GitNexus module/community list as a primary selection UI.
-- Do not require DeepWiki for workspace report generation.
+- Do not require the removed Wiki dependency for workspace report generation.
 - Do not generate security-risk-heavy reports by default.
 - Do not allow a user prompt to remove mandatory report quality rules.
 - Do not keep the current "one GitNexus community equals one LLM module analysis" behavior.
@@ -490,7 +490,7 @@ It must:
 
 - persist the plan into the shadow task;
 - preserve workspace materials as context;
-- use GitNexus-only mode successfully when DeepWiki is unavailable;
+- use GitNexus-only mode successfully when the removed Wiki dependency is unavailable;
 - pass plan/scope data into `AnalysisPipeline`.
 
 ### 12.2 Analysis Pipeline
@@ -772,7 +772,7 @@ Target:
 
 ### AC-P3: GitNexus-Only Operation
 
-If DeepWiki is offline or not installed, GitNexus-only workspace analysis must still produce selected reports when GitNexus and source files are available.
+If the removed Wiki dependency is offline or not installed, GitNexus-only workspace analysis must still produce selected reports when GitNexus and source files are available.
 
 ### AC-P4: Small Output Strategy
 
@@ -863,7 +863,7 @@ Ensure shadow task stores plan/scope and passes them into `AnalysisPipeline`.
 Tests:
 
 - workspace materials still included;
-- DeepWiki absent does not fail when tools are GitNexus-only;
+- removed Wiki dependency absent does not fail when tools are GitNexus-only;
 - plan is visible to analysis pipeline.
 
 ### Task 6: Replace Community Fan-Out
@@ -981,7 +981,7 @@ Backend tests:
 - workspace pipeline plan persistence;
 - analysis pipeline bounded fan-out;
 - report generator empty-output handling;
-- DeepWiki absent with GitNexus present.
+- removed Wiki dependency absent with GitNexus present.
 
 Frontend tests:
 
@@ -1038,7 +1038,7 @@ This feature is done only when:
 2. The user can define analysis objects without seeing a raw GitNexus module list.
 3. The backend can preview bounded scope.
 4. The analysis pipeline uses plan/scope instead of all GitNexus communities.
-5. GitNexus-only report generation works without DeepWiki.
+5. GitNexus-only report generation works without the removed Wiki dependency.
 6. Empty LLM output cannot silently become a successful report.
 7. A fake 1000-community GitNexus graph with 8 analysis objects does not produce 1000 LLM calls.
 8. Reports are assembled into readable Markdown with concrete evidence and "待验证" markers.

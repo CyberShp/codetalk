@@ -83,7 +83,7 @@ powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\release-gate.ps1 -
 
 ## 可选组件策略
 
-DeepWiki / GitNexus / CGC 当前属于 optional enhancement。
+GitNexus / CGC / 本机 Agent 当前属于 optional enhancement。旧 Wiki 组件已从当前产品和部署系统中移除，不进入内部发布范围。
 
 Internal Release 不要求全部强制可用，但必须保证：
 
@@ -108,4 +108,3 @@ Internal Release 不要求全部强制可用，但必须保证：
 3. 是否影响 Stop All 后端口释放
 4. 是否改变可选组件的 release 状态
 5. 是否需要更新根目录 `README.md`
-

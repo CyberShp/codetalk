@@ -1,7 +1,8 @@
 # CodeTalks 产品架构 v2 — 工具分工与信息架构
 
 > 作者: 布偶猫/宪宪 | 审阅: 缅因猫(GPT-5.4) | 日期: 2026-04-15
-> 触发: 铲屎官反馈 — GitNexus AI 能力被低估、deepwiki 单页不够、AI 对话窗口产品形态没到位
+> 触发: 铲屎官反馈 — GitNexus AI 能力被低估、旧 Wiki 单页不够、AI 对话窗口产品形态没到位
+> 状态: legacy research note。当前产品已迁移到 Workspace、AI Thread 和 Workbench 编排，不再部署旧 Wiki 组件。
 
 ## 1. 核心发现
 
@@ -21,7 +22,7 @@
 
 **重要纠正 2**: `/api/query`、`/api/context`、`/api/impact`、`/api/process` 这四个端点来源于 Phase 3C spec 的推测，**尚未在当前 bridge 版本中实测确认**。在验证前不能作为产品规划的确定输入。
 
-### 1.2 deepwiki-open — 我们只用了 MVP 模式
+### 1.2 旧 Wiki 组件 — 我们只用了 MVP 模式
 
 | 端点 | 能力 | 当前状态 |
 |------|------|----------|
@@ -33,7 +34,7 @@
 | `GET /api/processed_projects` | 已处理项目列表 | ❌ 未接入 |
 | `GET /models/config` | LLM 模型配置 | ❌ 未接入 |
 
-**关键发现**: 多页 Wiki 生成不是一个 API 调用——是 deepwiki 的 Next.js 前端**编排多次** `/chat/completions/stream` 调用来实现的。每个 WikiPage 是一次独立的流式调用。
+**关键发现**: 多页 Wiki 生成不是一个 API 调用，而是外部 Wiki 前端**编排多次** `/chat/completions/stream` 调用来实现的。每个 WikiPage 是一次独立的流式调用。
 
 ## 2. 产品分工（三层模型）
 
@@ -44,7 +45,7 @@
 │  决定把哪种上下文喂给哪种模型                                │
 │                                                          │
 │  ┌─────────────────────┐  ┌─────────────────────────┐   │
-│  │  deepwiki-open      │  │  GitNexus               │   │
+│  │  Workspace/Thread   │  │  GitNexus               │   │
 │  │  ═══════════════    │  │  ═════════              │   │
 │  │  叙事型文档引擎      │  │  结构型代码智能引擎      │   │
 │  │                     │  │                         │   │
@@ -64,9 +65,9 @@
 
 ### 边界规则
 
-1. **deepwiki 不做代码结构分析** — 它只读文件内容做 RAG
+1. **旧 Wiki 组件不做代码结构分析** — 它只读文件内容做 RAG
 2. **GitNexus 不做 AI 推理** — 它只返回结构化数据（图、路径、搜索结果）
-3. **Chat 当前先走 deepwiki，长期由 CodeTalks 统一编排** — 当前实现复用 deepwiki 的 RAG chat 通道；长期目标是 CodeTalks 自己做 chat orchestration，deepwiki 和 GitNexus 都只是上下文提供者。这样避免 deepwiki 运行时瓶颈（如 embedding 阻塞）连锁影响其他能力
+3. **Chat 由 CodeTalks 统一编排** — 当前产品优先读取工作区源码、上传材料、任务产物和 GitNexus 结构证据，避免外部 Wiki 运行时瓶颈连锁影响其他能力
 4. **CodeTalks 是编排层** — 组合两个工具的输出，不自己做分析；但 chat/workspace 的路由和上下文组装是 CodeTalks 的职责
 
 ## 3. 信息架构方案
@@ -107,7 +108,7 @@
 
 | Tab | 数据源 | 内容 |
 |-----|--------|------|
-| **文档** | deepwiki wiki_cache | 多页 Wiki + TOC 侧栏 + Mermaid 图 |
+| **文档** | Workspace report artifacts | 多页报告 + TOC 侧栏 + Mermaid 图 |
 | **图谱** | GitNexus /api/graph | 知识图谱 + 代码面板（搜索/上下文/影响面待 bridge 验证后评估） |
 | **发现** | GitNexus intelligence | 社区聚类 + 流程路径 + 跨社区分析 |
 | **摘要** | LLM (via task_engine) | AI 摘要（综合所有工具结果） |
@@ -132,12 +133,12 @@
 
 ## 4. 实施优先级
 
-### Phase A: deepwiki 多章节 Wiki（高优先）
+### Phase A: Workspace 多章节报告（高优先）
 
 **目标**: 文档从"一页长文"升级为"多页导航 Wiki"
 
 **后端改动**:
-1. 新增 Wiki 编排服务 — 参考 deepwiki 前端逻辑，多次调用 `/chat/completions/stream` 生成各页
+1. 新增报告编排服务，多次调用模型生成各页，并强制引用工作区源码证据
 2. 每页生成后通过 `POST /api/wiki_cache` 存储
 3. 后续访问从 `GET /api/wiki_cache` 读取缓存
 4. `POST /export/wiki` 支持导出
@@ -153,7 +154,7 @@
 | 方案 | 描述 | 优劣 |
 |------|------|------|
 | A. 自编排 | 后端多次调 /chat/completions/stream，自建页面结构 | 控制力强，但要理解 prompt 策略 |
-| B. 复用缓存 | 通过 deepwiki 前端(3001)触发生成，后端从 wiki_cache 读 | 简单，但依赖外部前端 |
+| B. 复用缓存 | 通过外部 Wiki 前端触发生成，后端从 wiki_cache 读 | 简单，但依赖外部前端；当前产品不采用 |
 | C. 混合 | 先用 B 快速上线，逐步迁移到 A | 渐进式，推荐 |
 
 **推荐: 方案 C**
@@ -185,15 +186,15 @@
 
 ## 5. 开放问题
 
-1. **Wiki 编排 prompt 策略** — deepwiki 前端用什么 prompt 来决定页面结构？需要研究其 Next.js 源码 (`/app/[owner]/[repo]/page.tsx`)
+1. **报告编排 prompt 策略** — 如何决定页面结构、证据粒度和导出格式？
 2. **wiki_cache 的 owner/repo 参数** — 我们的仓库是本地路径，不是 GitHub URL。需要确认 cache key 的映射方式
 3. **GitNexus bridge 端点验证** — `/api/query`、`/api/context`、`/api/impact` 在当前 bridge 版本中是否存在？Phase C 启动前必须实测确认（Phase 3C spec 也标注了"需研究确认"）
 4. **Chat 上下文窗口大小** — 当前 wiki page 内容如果很长，注入到 chat 上下文会不会超 token 限制？
-5. **Chat orchestration 演进路径** — 当前 chat 走 deepwiki proxy，何时以及如何迁移到 CodeTalks 自有编排？需要定义 deepwiki 作为"RAG 检索器"和"LLM 通道"两个角色的解耦点
+5. **Chat orchestration 演进路径** — 如何继续强化 CodeTalks 自有编排，使工作区源码、材料、记忆和工具证据稳定进入上下文？
 
 ## 6. 不做的事情
 
 - ❌ 不在 CodeTalks 后端实现任何 AST 分析、图谱构建、RAG 检索
-- ❌ 不 iframe 嵌入 deepwiki 前端（失去 UI 一致性）
+- ❌ 不 iframe 嵌入外部 Wiki 前端（失去 UI 一致性）
 - ❌ 不做实时协同编辑 Wiki（只读展示 + AI 生成）
 - ❌ 不把未验证的 GitNexus 端点写入实施计划（先验证再规划）
