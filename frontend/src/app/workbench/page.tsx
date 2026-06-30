@@ -5624,7 +5624,7 @@ export default function AgentWorkbenchPage() {
                     <button
                       key={run.task_run_id}
                       onClick={() => restoreExistingTaskRun(run.task_run_id)}
-                      disabled={busyAction === `restore-task-run-${run.task_run_id}`}
+                      disabled={taskRunActionBusy || busyAction === `restore-task-run-${run.task_run_id}`}
                       className={`block w-full rounded-md px-2.5 py-2 text-left transition-colors hover:bg-surface-container-high disabled:opacity-50 ${
                         preparedRun?.task_run_id === run.task_run_id
                           ? "bg-surface-container-high"

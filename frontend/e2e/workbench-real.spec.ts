@@ -502,6 +502,9 @@ test("executes resource leak hunt and previews materialized artifacts through th
   await page.getByRole("button", { name: "执行工作流" }).click();
   await executeRequest;
   await expect(page.getByRole("button", { name: "围绕本次运行继续追问" })).toBeDisabled();
+  await expect(
+    page.getByRole("button", { name: /resource_leak_hunt[\s\S]*task_run_/ }).first(),
+  ).toBeDisabled();
   await expect(page.getByText(/Workflow execution completed:/)).toBeVisible({
     timeout: 30_000,
   });
