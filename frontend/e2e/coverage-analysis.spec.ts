@@ -1,4 +1,3 @@
-import path from "node:path";
 import { test, expect } from "@playwright/test";
 
 const backendBase = `http://localhost:${process.env.CODETALK_BACKEND_PORT ?? "3004"}`;
@@ -6,28 +5,46 @@ const backendBase = `http://localhost:${process.env.CODETALK_BACKEND_PORT ?? "30
 test.describe("Coverage analysis", () => {
   test.setTimeout(60_000);
 
+  test("shows actionable repair guidance when an uploaded coverage file is malformed", async ({
+    page,
+  }) => {
+    const analysisName = `bad-coverage-${Date.now()}`;
+
+    await page.goto("/coverage", { waitUntil: "domcontentloaded" });
+
+    await page.locator('input[type="text"]').first().fill(analysisName);
+    await page.getByRole("button", { name: "选择文件" }).hover();
+    await page.getByRole("button", { name: "选择文件" }).click();
+    await page.locator('input[type="file"]').setInputFiles({
+      name: "broken-coverage.xml",
+      mimeType: "text/xml",
+      buffer: Buffer.from("<?xml version='1.0'?><coverage><unclosed_tag>", "utf8"),
+    });
+
+    await expect(page.getByText("broken-coverage.xml")).toBeVisible();
+    await page.getByRole("button", { name: "上传并解析" }).hover();
+    await page.getByRole("button", { name: "上传并解析" }).click();
+
+    const alert = page.locator('div[role="alert"]').filter({ hasText: "修复建议" });
+    await expect(alert).toContainText("请求参数有误，请检查输入");
+    await expect(alert).toContainText("修复建议");
+    await expect(alert).toContainText("Cobertura XML");
+    await expect(alert).toContainText("JaCoCo XML");
+    await expect(alert).toContainText("function_name + code_location + triggered/hit_count");
+    await expect(alert).toContainText("特性名称、模块名称、代码路径、函数名称、是否覆盖、覆盖次数");
+    await expect(page.getByText(analysisName)).toHaveCount(0);
+  });
+
   test("uploads an internal function hit table and renders black-box recommendations", async ({
     page,
     request,
   }) => {
     const suffix = Date.now();
-    const workspaceName = `coverage-e2e-${suffix}`;
     const analysisName = `internal-hit-table-${suffix}`;
-    const repoPath = path.resolve(process.cwd(), "..");
-
-    const wsResp = await request.post(`${backendBase}/api/workspaces`, {
-      data: { name: workspaceName, repo_path: repoPath },
-    });
-    expect(wsResp.status()).toBe(201);
-    const workspace = (await wsResp.json()) as { id: string };
 
     await page.goto("/coverage", { waitUntil: "domcontentloaded" });
-    await expect(page.locator("select")).toContainText(workspaceName, {
-      timeout: 15_000,
-    });
 
     await page.locator('input[type="text"]').first().fill(analysisName);
-    await page.locator("select").selectOption(workspace.id);
 
     const csv = [
       "function_name,code_location,triggered,hit_count",
@@ -41,6 +58,8 @@ test.describe("Coverage analysis", () => {
       mimeType: "text/csv",
       buffer: Buffer.from(csv, "utf8"),
     });
+    await page.getByRole("button", { name: "上传并解析" }).hover();
+    await page.getByRole("button", { name: "上传并解析" }).click();
 
     await expect(page.getByText(analysisName)).toBeVisible({
       timeout: 15_000,
@@ -58,7 +77,7 @@ test.describe("Coverage analysis", () => {
     });
     await expect(page.getByText("cleanup_temp")).toBeVisible();
     await expect(page.getByText("parse_config")).toHaveCount(0);
-    await expect(card).toContainText(/risk high|risk medium/);
+    await expect(card).toContainText(/风险：高|风险：中/);
 
     const listResp = await request.get(`${backendBase}/api/coverage/list`);
     expect(listResp.ok()).toBeTruthy();
@@ -71,7 +90,7 @@ test.describe("Coverage analysis", () => {
     const created = analyses.find((item) => item.name === analysisName);
     expect(created).toMatchObject({
       status: "analyzed",
-      workspace_id: workspace.id,
+      workspace_id: null,
       source_format: "internal_function_hits",
     });
   });

@@ -141,6 +141,15 @@ function downloadTextFile(filename: string, content: string, type: string) {
   URL.revokeObjectURL(url);
 }
 
+function coverageUploadErrorMessage(error: unknown): string {
+  const base = error instanceof Error ? error.message : "上传失败";
+  return [
+    base,
+    "修复建议：请上传 Cobertura XML、JaCoCo XML、HTML 覆盖率报告，或内部函数命中表 CSV/TSV/TXT/XLSX。",
+    "内部函数命中表至少需要 function_name + code_location + triggered/hit_count，或中文列：特性名称、模块名称、代码路径、函数名称、是否覆盖、覆盖次数。",
+  ].join("\n");
+}
+
 function coverageEvidenceLabel(mr: CoverageModuleResult) {
   const target = mr.function_name ?? mr.condition ?? mr.module_path;
   const path = mr.file_path ?? mr.module_path;
@@ -1127,7 +1136,7 @@ export default function CoveragePage() {
       if (fileInputRef.current) fileInputRef.current.value = "";
       await loadList();
     } catch (e) {
-      setError(e instanceof Error ? e.message : "上传失败");
+      setError(coverageUploadErrorMessage(e));
     } finally {
       setUploading(false);
     }
