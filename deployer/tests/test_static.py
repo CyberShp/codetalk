@@ -30,11 +30,16 @@ async def test_style_css_served(client):
 
 
 async def test_static_background_avoids_heavy_infinite_orb_animation(client):
-    resp = await client.get("/style.css")
-    assert resp.status_code == 200
-    css = resp.text
+    css_resp = await client.get("/style.css")
+    deploy_resp = await client.get("/deploy.html")
+    assert css_resp.status_code == 200
+    assert deploy_resp.status_code == 200
+    css = css_resp.text
     assert "animation: orb-float" not in css
     assert "@keyframes orb-float" not in css
+    assert "nebula-orb" not in css
+    assert "nebula-orb" not in deploy_resp.text
+    assert "filter: blur(36px)" not in css
     assert "blur(80px)" not in css
 
 
