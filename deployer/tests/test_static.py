@@ -29,6 +29,15 @@ async def test_style_css_served(client):
     assert "css" in resp.headers.get("content-type", "")
 
 
+async def test_static_background_avoids_heavy_infinite_orb_animation(client):
+    resp = await client.get("/style.css")
+    assert resp.status_code == 200
+    css = resp.text
+    assert "animation: orb-float" not in css
+    assert "@keyframes orb-float" not in css
+    assert "blur(80px)" not in css
+
+
 async def test_app_js_served(client):
     resp = await client.get("/app.js")
     assert resp.status_code == 200
