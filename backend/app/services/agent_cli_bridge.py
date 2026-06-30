@@ -144,11 +144,18 @@ async def _read_stdout(proc: asyncio.subprocess.Process, output_mode: str) -> As
             elif parsed:
                 yield parsed
     else:
+        pending = bytearray()
         while True:
             raw = await proc.stdout.read(4096)
             if not raw:
                 break
-            yield _decode(raw)
+            pending.extend(raw)
+            text = _decode_strict_if_complete(bytes(pending))
+            if text is not None:
+                yield text
+                pending.clear()
+        if pending:
+            yield _decode(bytes(pending))
 
 
 def _parse_event_text(text: str, output_mode: str) -> str | None:
@@ -289,12 +296,19 @@ def _build_env(runtime: dict[str, Any]) -> dict[str, str]:
 
 
 def _decode(value: bytes) -> str:
+    text = _decode_strict_if_complete(value)
+    if text is not None:
+        return text
+    return _clean_agent_text(value.decode("utf-8", "replace"))
+
+
+def _decode_strict_if_complete(value: bytes) -> str | None:
     for encoding in _candidate_decodings():
         try:
             return _clean_agent_text(value.decode(encoding, "strict"))
         except UnicodeDecodeError:
             continue
-    return _clean_agent_text(value.decode("utf-8", "replace"))
+    return None
 
 
 def _candidate_decodings() -> list[str]:
