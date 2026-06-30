@@ -157,6 +157,48 @@ function writeJson(name: string, payload: unknown) {
   fs.writeFileSync(path.join(ARTIFACT_DIR, name), JSON.stringify(payload, null, 2));
 }
 
+function acceptanceSummary() {
+  return Array.from(results.values()).reduce<Record<CaseStatus, number>>(
+    (acc, item) => {
+      acc[item.status] += 1;
+      return acc;
+    },
+    { pass: 0, fail: 0, blocked: 0, not_run: 0 },
+  );
+}
+
+function buildAcceptanceReport() {
+  const cases = Array.from(results.values());
+  const summary = acceptanceSummary();
+  const problemCases = cases.filter((item) => item.status === "fail" || item.status === "blocked" || item.status === "not_run");
+  return {
+    run_id: RUN_ID,
+    artifact_dir: ARTIFACT_DIR,
+    frontend_port: process.env.CODETALK_FRONTEND_PORT ?? "3003",
+    backend_port: process.env.CODETALK_BACKEND_PORT ?? "3004",
+    spdk_repo: SPDK_REPO,
+    audit_mode: auditMode,
+    productized: problemCases.length === 0,
+    summary,
+    cases,
+    failure_report: {
+      generated_at: new Date().toISOString(),
+      total_problem_cases: problemCases.length,
+      fail_count: summary.fail,
+      blocked_count: summary.blocked,
+      not_run_count: summary.not_run,
+      cases: problemCases,
+    },
+  };
+}
+
+function writeAcceptanceReports() {
+  const report = buildAcceptanceReport();
+  writeJson("acceptance_matrix.final.json", report);
+  writeJson("failure_report.json", report.failure_report);
+  return report;
+}
+
 function buildLargeSpdkCoverageCsv() {
   const targets = [
     ["nvmf_qpair_disconnect", "lib/nvmf/nvmf.c:1-120"],
@@ -908,23 +950,7 @@ test.afterAll(async () => {
   if (cleanups.length) {
     writeJson("llm-config-cleanup.json", cleanups);
   }
-  const summary = Array.from(results.values()).reduce<Record<CaseStatus, number>>(
-    (acc, item) => {
-      acc[item.status] += 1;
-      return acc;
-    },
-    { pass: 0, fail: 0, blocked: 0, not_run: 0 },
-  );
-  writeJson("acceptance_matrix.final.json", {
-    run_id: RUN_ID,
-    artifact_dir: ARTIFACT_DIR,
-    frontend_port: process.env.CODETALK_FRONTEND_PORT ?? "3003",
-    backend_port: process.env.CODETALK_BACKEND_PORT ?? "3004",
-    spdk_repo: SPDK_REPO,
-    audit_mode: auditMode,
-    summary,
-    cases: Array.from(results.values()),
-  });
+  writeAcceptanceReports();
 });
 
 test.beforeEach(async ({ page }) => {
@@ -2691,6 +2717,34 @@ test("matrix accounting: every planned case has an explicit status", async () =>
   const unresolved = Array.from(results.values()).filter((item) => item.status === "not_run");
   const failed = Array.from(results.values()).filter((item) => item.status === "fail");
   const blocked = Array.from(results.values()).filter((item) => item.status === "blocked");
+  const report = writeAcceptanceReports();
+  const failureReportPath = path.join(ARTIFACT_DIR, "failure_report.json");
+  const failureReport = JSON.parse(fs.readFileSync(failureReportPath, "utf8")) as {
+    total_problem_cases: number;
+    fail_count: number;
+    blocked_count: number;
+    not_run_count: number;
+    cases: CaseResult[];
+  };
+  expect(report.failure_report.total_problem_cases).toBe(failed.length + blocked.length + unresolved.length);
+  expect(failureReport.total_problem_cases).toBe(report.failure_report.total_problem_cases);
+  expect(failureReport.fail_count).toBe(failed.length);
+  expect(failureReport.blocked_count).toBe(blocked.length);
+  expect(failureReport.not_run_count).toBe(unresolved.length);
+  expect(failureReport.cases).toEqual(
+    expect.arrayContaining(
+      [...failed, ...blocked, ...unresolved].map((item) =>
+        expect.objectContaining({
+          id: item.id,
+          title: item.title,
+          status: item.status,
+        }),
+      ),
+    ),
+  );
+  if (failureReport.total_problem_cases > 0) {
+    expect(report.productized).toBe(false);
+  }
   expect(unresolved).toEqual([]);
   expect(failed).toEqual([]);
   if (requireSpdkRepo && !auditMode) {
