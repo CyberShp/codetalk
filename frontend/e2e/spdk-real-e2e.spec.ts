@@ -187,12 +187,12 @@ function collectArtifactFiles(dir = ARTIFACT_DIR, root = ARTIFACT_DIR): Array<{
     if (!entry.isFile()) return [];
     const relativePath = path.relative(root, fullPath).split(path.sep).join("/");
     if (relativePath === "artifact_manifest.json") return [];
-    const content = fs.readFileSync(fullPath);
+    const stat = fs.statSync(fullPath);
     return [{
       path: relativePath,
       kind: artifactKind(relativePath),
-      size_bytes: content.byteLength,
-      sha256: crypto.createHash("sha256").update(content).digest("hex"),
+      size_bytes: stat.size,
+      sha256: fileSha256(fullPath),
     }];
   });
 }
@@ -212,7 +212,19 @@ function writeArtifactManifest() {
 }
 
 function fileSha256(file: string) {
-  return crypto.createHash("sha256").update(fs.readFileSync(file)).digest("hex");
+  const hash = crypto.createHash("sha256");
+  const fd = fs.openSync(file, "r");
+  const buffer = Buffer.allocUnsafe(1024 * 1024);
+  try {
+    let bytesRead = 0;
+    do {
+      bytesRead = fs.readSync(fd, buffer, 0, buffer.length, null);
+      if (bytesRead > 0) hash.update(buffer.subarray(0, bytesRead));
+    } while (bytesRead > 0);
+  } finally {
+    fs.closeSync(fd);
+  }
+  return hash.digest("hex");
 }
 
 function redactReportText(value: string) {

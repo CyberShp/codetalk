@@ -11,6 +11,7 @@ test("SPDK real E2E writes a dedicated failure report artifact", () => {
   expect(spec).toContain('"artifact_manifest.json"');
   expect(spec).toContain("function writeArtifactManifest");
   expect(spec).toContain("function fileSha256");
+  expect(spec).toContain("fs.readSync");
   expect(spec).toContain("function redactReportText");
   expect(spec).toContain("function sanitizeCaseForReport");
   expect(spec).toContain("total_problem_cases");
