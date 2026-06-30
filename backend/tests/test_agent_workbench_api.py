@@ -3251,11 +3251,21 @@ async def test_workbench_task_run_artifact_content_api_is_safe(workbench_client,
     )
     task_run_id = prepared.json()["task_run_id"]
     task_dir = Path(prepared.json()["artifact_dir"])
-    secret = "artifact-secret-value"
+    secret = "sk-artifact-secret-value"
     (task_dir / "diagnostics.log").write_text(
         f"provider failed --api-key {secret}; token={secret}; Authorization: Bearer {secret}",
         encoding="utf-8",
     )
+    text_diagnostics = {
+        "diagnostics.yaml": f"token: {secret}\nstatus: failed\n",
+        "diagnostics.html": f"<pre>Authorization: Bearer {secret}</pre>",
+        "diagnostics.jsonl": f'{{"api_key":"{secret}","status":"failed"}}\n',
+        "diagnostics.ndjson": f'{{"access_token":"{secret}","status":"failed"}}\n',
+        "diagnostics.xml": f"<diagnostic password=\"{secret}\" />",
+        "diagnostics.csv": f"name,secret\nagent,{secret}\n",
+    }
+    for filename, payload in text_diagnostics.items():
+        (task_dir / filename).write_text(payload, encoding="utf-8")
 
     content = await workbench_client.get(
         f"/api/workbench/task-runs/{task_run_id}/artifacts/content/task_bundle.json"
@@ -3292,6 +3302,27 @@ async def test_workbench_task_run_artifact_content_api_is_safe(workbench_client,
     assert "<redacted>" in diagnostic_body["content"]
     assert diagnostic_body["content_redacted"] is True
     assert (task_dir / "diagnostics.log").read_text(encoding="utf-8").count(secret) == 3
+
+    artifacts_by_path = {
+        item["relative_path"]: item for item in (await workbench_client.get(
+            f"/api/workbench/task-runs/{task_run_id}/artifacts"
+        )).json()["artifacts"]
+    }
+    for relative_path in text_diagnostics:
+        manifest_item = artifacts_by_path[relative_path]
+        assert secret not in manifest_item["preview"]
+        assert "<redacted>" in manifest_item["preview"]
+        assert manifest_item["preview_redacted"] is True
+
+        content_response = await workbench_client.get(
+            f"/api/workbench/task-runs/{task_run_id}/artifacts/content/{relative_path}"
+        )
+        assert content_response.status_code == 200
+        content_body = content_response.json()
+        assert content_body["is_text"] is True
+        assert content_body["content_redacted"] is True
+        assert secret not in content_body["content"]
+        assert "<redacted>" in content_body["content"]
 
 
 async def test_workbench_task_run_artifacts_api_labels_agent_execution_input(

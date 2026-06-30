@@ -33,6 +33,7 @@ from app.services.test_semantic_library import (
     TestSemanticLibraryStore,
 )
 from app.services.workbench_artifact_manifest import (
+    TEXT_ARTIFACT_SUFFIXES,
     artifact_preview,
     build_task_artifact_manifest,
     workbench_artifact_kind,
@@ -4883,7 +4884,7 @@ def _resolve_task_artifact_path(task_dir: Path, artifact_path: str) -> Path:
 def _artifact_content_payload(task_dir: Path, path: Path, *, max_chars: int) -> dict[str, Any]:
     data = path.read_bytes()
     relative_path = path.resolve().relative_to(task_dir.resolve()).as_posix()
-    is_text = path.suffix.lower() in {".json", ".md", ".txt", ".patch", ".diff", ".log"}
+    is_text = path.suffix.lower() in TEXT_ARTIFACT_SUFFIXES
     content = ""
     truncated = False
     content_redacted = False

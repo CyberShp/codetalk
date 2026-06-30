@@ -8,6 +8,23 @@ from typing import Any
 
 from app.services.external_agent_discovery import redact_agent_diagnostic_text
 
+TEXT_ARTIFACT_SUFFIXES = {
+    ".csv",
+    ".diff",
+    ".htm",
+    ".html",
+    ".json",
+    ".jsonl",
+    ".log",
+    ".md",
+    ".ndjson",
+    ".patch",
+    ".txt",
+    ".xml",
+    ".yaml",
+    ".yml",
+}
+
 
 def write_task_artifact_manifest(task_dir: Path, *, task_run_id: str) -> dict[str, Any]:
     artifacts = [
@@ -194,7 +211,7 @@ def artifact_preview(path: Path, data: bytes, *, max_chars: int = 1200) -> str:
 
 
 def artifact_preview_with_redaction_status(path: Path, data: bytes, *, max_chars: int = 1200) -> tuple[str, bool]:
-    if path.suffix.lower() not in {".json", ".md", ".txt", ".patch", ".diff", ".log"}:
+    if path.suffix.lower() not in TEXT_ARTIFACT_SUFFIXES:
         return "", False
     text = data[: max_chars * 4].decode("utf-8", errors="replace")
     preview = text[:max_chars]
