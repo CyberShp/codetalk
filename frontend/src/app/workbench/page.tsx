@@ -1,6 +1,7 @@
 "use client";
 
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { flushSync } from "react-dom";
 import { useRouter } from "next/navigation";
 import {
   AlertTriangle,
@@ -47,6 +48,8 @@ import type {
   WorkbenchTaskArtifactManifest,
   WorkflowDraftServerAudit,
 } from "@/lib/types";
+
+const MIN_VISIBLE_BUSY_ACTION_MS = 600;
 
 const DEFAULT_WORKFLOW = {
   id: "mr-blackbox-workflow",
@@ -2115,8 +2118,11 @@ export default function AgentWorkbenchPage() {
 
   async function runAction(name: string, action: () => Promise<void>) {
     if (busyActionRef.current) return;
+    const startedAt = performance.now();
     busyActionRef.current = name;
-    setBusyAction(name);
+    flushSync(() => {
+      setBusyAction(name);
+    });
     setError(null);
     setMessage(null);
     try {
@@ -2124,6 +2130,10 @@ export default function AgentWorkbenchPage() {
     } catch (err: unknown) {
       setError(err instanceof Error ? err.message : "Action failed");
     } finally {
+      const remainingBusyMs = MIN_VISIBLE_BUSY_ACTION_MS - (performance.now() - startedAt);
+      if (remainingBusyMs > 0) {
+        await new Promise((resolve) => window.setTimeout(resolve, remainingBusyMs));
+      }
       if (busyActionRef.current === name) {
         busyActionRef.current = null;
         setBusyAction(null);
@@ -5710,7 +5720,7 @@ export default function AgentWorkbenchPage() {
               </label>
               <button
                 onClick={buildSemanticCasesFromText}
-                disabled={busyAction === "build-semantic-cases" || !semanticLines.trim()}
+                disabled={taskRunActionBusy || !semanticLines.trim()}
                 className="mt-2 inline-flex items-center justify-center gap-2 rounded-lg bg-surface-container-high px-3 py-2 text-sm text-on-surface transition-colors hover:bg-surface disabled:opacity-50"
               >
                 {busyAction === "build-semantic-cases" ? (
@@ -5732,7 +5742,7 @@ export default function AgentWorkbenchPage() {
                 />
                 <button
                   onClick={importSemanticCaseFile}
-                  disabled={busyAction === "import-semantic-file" || !semanticFile}
+                  disabled={taskRunActionBusy || !semanticFile}
                   className="inline-flex items-center justify-center gap-2 rounded-lg bg-surface-container-high px-3 py-2 text-sm text-on-surface transition-colors hover:bg-surface disabled:opacity-50"
                 >
                   {busyAction === "import-semantic-file" ? (
@@ -5759,7 +5769,7 @@ export default function AgentWorkbenchPage() {
             <div className="flex flex-col gap-2 sm:flex-row">
               <button
                 onClick={importSemanticCase}
-                disabled={busyAction === "import-semantic-case"}
+                disabled={taskRunActionBusy}
                 className="inline-flex items-center justify-center gap-2 rounded-lg bg-primary px-3 py-2 text-sm font-medium text-on-primary transition-opacity hover:opacity-90 disabled:opacity-50"
               >
                 <Save size={14} />
@@ -5773,7 +5783,7 @@ export default function AgentWorkbenchPage() {
               />
               <button
                 onClick={searchSemanticCases}
-                disabled={busyAction === "search-semantic-cases" || !semanticQuery.trim()}
+                disabled={taskRunActionBusy || !semanticQuery.trim()}
                 className="inline-flex items-center justify-center gap-2 rounded-lg bg-surface-container-high px-3 py-2 text-sm text-on-surface transition-colors hover:bg-surface disabled:opacity-50"
               >
                 <Search size={14} />
@@ -5829,7 +5839,7 @@ export default function AgentWorkbenchPage() {
               <button
                 onClick={saveManualEvidence}
                 disabled={
-                  busyAction === "save-manual-evidence" ||
+                  taskRunActionBusy ||
                   !manualEvidenceSubject.trim() ||
                   !workspaceId.trim() ||
                   !repoPath.trim()
@@ -5853,7 +5863,7 @@ export default function AgentWorkbenchPage() {
               />
               <button
                 onClick={searchMemory}
-                disabled={busyAction === "search-memory" || !memoryQuery.trim()}
+                disabled={taskRunActionBusy || !memoryQuery.trim()}
                 className="inline-flex items-center justify-center gap-2 rounded-lg bg-primary px-3 py-2 text-sm font-medium text-on-primary transition-opacity hover:opacity-90 disabled:opacity-50"
               >
                 <Search size={14} />
@@ -5928,7 +5938,7 @@ export default function AgentWorkbenchPage() {
                   <div className="mt-2 flex flex-wrap items-center gap-2">
                     <button
                       onClick={() => loadMemorySlices(item.evidence_id)}
-                      disabled={busyAction === `memory-slices-${item.evidence_id}`}
+                      disabled={taskRunActionBusy}
                       className="inline-flex items-center gap-1 rounded bg-surface-container px-2 py-1 text-[11px] text-on-surface-variant transition-colors hover:bg-surface-container-high disabled:opacity-50"
                     >
                       {busyAction === `memory-slices-${item.evidence_id}` ? (
