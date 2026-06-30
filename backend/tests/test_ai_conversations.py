@@ -295,6 +295,67 @@ class TestAIConversationsAPI:
         assert "nvmf_dir_target" in source_refs[0].excerpt
         assert all(not ref.metadata["path"].startswith("lib/iscsi/") for ref in source_refs[:2])
 
+    async def test_workspace_source_refs_fallback_prefers_implementation_source(
+        self,
+        sqlite_db,
+        tmp_path: Path,
+    ):
+        repo = tmp_path / "repo"
+        (repo / "docs").mkdir(parents=True)
+        (repo / "lib" / "nvmf").mkdir(parents=True)
+        (repo / "README.md").write_text(
+            "overview document should not be the primary source snippet\n",
+            encoding="utf-8",
+        )
+        (repo / "docs" / "guide.md").write_text(
+            "documentation should not displace implementation source\n",
+            encoding="utf-8",
+        )
+        (repo / "lib" / "nvmf" / "connect.c").write_text(
+            "\n".join(
+                [
+                    "int nvmf_connect_primary_flow(void) {",
+                    "    return 7;",
+                    "}",
+                ]
+            ),
+            encoding="utf-8",
+        )
+        (repo / "lib" / "nvmf" / "transport.c").write_text(
+            "int nvmf_transport_secondary_flow(void) { return 8; }\n",
+            encoding="utf-8",
+        )
+        ws_id = "ws-generic-source"
+        now = datetime.now(timezone.utc).isoformat()
+        async with aiosqlite.connect(sqlite_db) as db:
+            await db.execute(
+                "INSERT INTO workspaces (id, name, repo_path, indexed, created_at, updated_at) "
+                "VALUES (?, 'Generic Source WS', ?, 1, ?, ?)",
+                (ws_id, str(repo), now, now),
+            )
+            await db.commit()
+
+        from app.services.ai_conversations import build_context_references
+
+        refs = await build_context_references(
+            conversation={
+                "id": "conv-generic-source",
+                "scope_type": "workspace",
+                "scope_id": ws_id,
+                "workspace_id": ws_id,
+                "memory_namespace": f"workspace:{ws_id}",
+                "initial_context": {},
+            },
+            user_message="请先读取工作区源码，再分析主要连接流程",
+            db_path=sqlite_db,
+        )
+        source_refs = [ref for ref in refs if ref.source_type == "workspace_source"]
+
+        assert source_refs
+        assert source_refs[0].metadata["path"] == "lib/nvmf/connect.c"
+        assert "nvmf_connect_primary_flow" in source_refs[0].excerpt
+        assert all(not ref.metadata["path"].endswith(".md") for ref in source_refs[:2])
+
     async def test_legacy_conversation_backfills_workspace_namespace(self, sqlite_db):
         ws_id = await _seed_workspace(sqlite_db, "legacy-ws")
         now = datetime.now(timezone.utc).isoformat()

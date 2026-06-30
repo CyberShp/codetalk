@@ -1101,17 +1101,29 @@ def _repo_file_candidates(repo_root: Path) -> list[str]:
         )
     except Exception:
         return []
-    preferred: list[str] = []
+    implementation: list[str] = []
+    headers: list[str] = []
+    scripts: list[str] = []
+    docs: list[str] = []
     rest: list[str] = []
     for rel in result.stdout.splitlines()[:400]:
         suffix = Path(rel).suffix.lower()
         if suffix not in _SOURCE_SUFFIXES:
             continue
-        if Path(rel).name.lower() in {"readme.md", "agents.md", "claude.md"}:
-            preferred.append(rel)
+        if suffix in {
+            ".c", ".cc", ".cpp", ".cxx", ".rs", ".go", ".java",
+            ".py", ".js", ".jsx", ".ts", ".tsx",
+        }:
+            implementation.append(rel)
+        elif suffix in {".h", ".hh", ".hpp"}:
+            headers.append(rel)
+        elif suffix == ".sh":
+            scripts.append(rel)
+        elif suffix in {".md", ".rst", ".txt"}:
+            docs.append(rel)
         else:
             rest.append(rel)
-    return [*preferred, *rest]
+    return [*implementation, *headers, *scripts, *rest, *docs]
 
 
 def _safe_source_file(repo_root: Path, path: Path) -> bool:
