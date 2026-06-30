@@ -4368,6 +4368,13 @@ def _build_task_acceptance_audit(task_run: Any) -> dict[str, Any]:
                     task_dir=task_dir,
                     description=f"black-box case content quality for step {step_id}",
                 ))
+            if Path(artifact).name in {"risk_findings.json", "sfmea.json"}:
+                checks.append(_acceptance_risk_finding_quality_check(
+                    check_id=f"risk_finding_quality:{step_id}:{Path(artifact).name}",
+                    relative_path=f"{base}/{artifact}",
+                    task_dir=task_dir,
+                    description=f"SFMEA risk finding content quality for step {step_id}",
+                ))
         lifecycle = _read_json(task_dir / base / "agent_run_lifecycle.json")
         turn_count = _safe_int(
             lifecycle.get("turn_count") if isinstance(lifecycle, dict) else None
@@ -4951,6 +4958,101 @@ def _black_box_case_quality_reasons(case: dict[str, Any]) -> list[str]:
     ])
     if _BLACK_BOX_WHITE_BOX_RE.search(boundary_text):
         reasons.append("white_box_boundary")
+    return _semantic_dedupe(reasons)
+
+
+def _acceptance_risk_finding_quality_check(
+    *,
+    check_id: str,
+    relative_path: str,
+    task_dir: Path,
+    description: str,
+) -> dict[str, Any]:
+    payload = _read_json(task_dir / relative_path)
+    base = {
+        "id": check_id,
+        "severity": "required",
+        "relative_path": relative_path,
+        "kind": workbench_artifact_kind(relative_path),
+        "description": description,
+    }
+    raw_findings = payload.get("risk_findings") if isinstance(payload, dict) else payload
+    if not isinstance(raw_findings, list):
+        return {
+            **base,
+            "status": "invalid",
+            "reason": "risk_findings_must_be_list",
+            "finding_count": 0,
+            "invalid_count": 0,
+            "invalid_findings": [],
+        }
+    invalid_findings: list[dict[str, Any]] = []
+    for index, finding in enumerate(raw_findings, start=1):
+        if not isinstance(finding, dict):
+            invalid_findings.append({
+                "index": index,
+                "finding_id": "",
+                "summary": "",
+                "reasons": ["finding_must_be_object"],
+            })
+            continue
+        reasons = _risk_finding_quality_reasons(finding)
+        if reasons:
+            invalid_findings.append({
+                "index": index,
+                "finding_id": str(finding.get("finding_id") or ""),
+                "summary": str(finding.get("summary") or finding.get("failure_mode") or ""),
+                "reasons": reasons,
+            })
+    if invalid_findings:
+        return {
+            **base,
+            "status": "invalid",
+            "reason": "risk_finding_quality_failed",
+            "finding_count": len(raw_findings),
+            "invalid_count": len(invalid_findings),
+            "invalid_findings": invalid_findings,
+        }
+    return {
+        **base,
+        "status": "ok",
+        "reason": "",
+        "finding_count": len(raw_findings),
+        "invalid_count": 0,
+        "invalid_findings": [],
+    }
+
+
+_SFMEA_TEXT_FIELDS = (
+    "failure_mode",
+    "cause",
+    "effect",
+    "detection",
+    "severity",
+    "mitigation",
+)
+_SFMEA_SCORE_FIELDS = ("severity_score", "occurrence_score", "detection_score", "rpn")
+
+
+def _risk_finding_quality_reasons(finding: dict[str, Any]) -> list[str]:
+    reasons: list[str] = []
+    missing_text = [
+        field for field in _SFMEA_TEXT_FIELDS
+        if not str(finding.get(field) or "").strip()
+    ]
+    missing_scores = [
+        field for field in _SFMEA_SCORE_FIELDS
+        if _safe_int(finding.get(field)) <= 0
+    ]
+    if missing_text or missing_scores:
+        reasons.append("missing_sfmea_fields")
+    severity_score = _safe_int(finding.get("severity_score"))
+    occurrence_score = _safe_int(finding.get("occurrence_score"))
+    detection_score = _safe_int(finding.get("detection_score"))
+    rpn = _safe_int(finding.get("rpn"))
+    if severity_score and occurrence_score and detection_score and rpn:
+        if rpn != severity_score * occurrence_score * detection_score:
+            reasons.append("rpn_mismatch")
     return _semantic_dedupe(reasons)
 
 
