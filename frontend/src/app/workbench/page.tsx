@@ -1649,8 +1649,8 @@ function failureRetryContextSummary(
     missingArtifacts: Array.isArray(payload.missing_artifacts)
       ? payload.missing_artifacts.map((item) => String(item)).filter(Boolean)
       : [],
-    stdoutExcerpt: String(previousOutput.stdout_excerpt ?? ""),
-    stderrExcerpt: String(previousOutput.stderr_excerpt ?? ""),
+    stdoutExcerpt: artifact.content_redacted ? "" : String(previousOutput.stdout_excerpt ?? ""),
+    stderrExcerpt: artifact.content_redacted ? "" : String(previousOutput.stderr_excerpt ?? ""),
     mustProduceArtifacts: Array.isArray(retryInstructions.must_produce_artifacts)
       ? retryInstructions.must_produce_artifacts.map((item) => String(item)).filter(Boolean)
       : [],
@@ -5128,7 +5128,11 @@ export default function AgentWorkbenchPage() {
                             </div>
                           );
                         })()}
-                        {artifactContent.is_text ? (
+                        {artifactContent.content_redacted ? (
+                          <p className="mt-2 rounded bg-surface-container p-2 text-[11px] text-warning">
+                            Artifact content is redacted and hidden from inline preview.
+                          </p>
+                        ) : artifactContent.is_text ? (
                           <pre className="mt-2 max-h-52 overflow-auto whitespace-pre-wrap break-words rounded bg-surface-container p-2 font-data text-[10px] text-on-surface">
                             {artifactContent.content}
                           </pre>

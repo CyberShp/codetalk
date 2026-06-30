@@ -524,6 +524,7 @@ test("agent workbench searches semantic cases and evidence memory", async ({ pag
 
 test("agent workbench previews task run artifact content", async ({ page }) => {
   await routeWorkbenchShell(page);
+  const redactedArtifactSecret = "agent-redacted-artifact-secret";
   await page.route("**/api/workbench/task-runs/prepare", async (route) => {
     await route.fulfill({
       headers: corsHeaders(route.request().headers().origin),
@@ -1032,7 +1033,7 @@ test("agent workbench previews task run artifact content", async ({ page }) => {
             },
             previous_output: {
               stdout_excerpt: "partial stdout before failure",
-              stderr_excerpt: "fatal diagnostic",
+              stderr_excerpt: `fatal diagnostic ${redactedArtifactSecret}`,
             },
             retry_instructions: {
               must_produce_artifacts: ["source_scope.json"],
@@ -1297,8 +1298,8 @@ test("agent workbench previews task run artifact content", async ({ page }) => {
   await expect(
     page.getByText("do-not:do not treat raw stdout/stderr as accepted evidence"),
   ).toBeVisible();
-  await expect(page.getByText("stderr:fatal diagnostic")).toBeVisible();
   await expect(page.getByText("redacted", { exact: true }).nth(1)).toBeVisible();
+  await expect(page.locator("body")).not.toContainText(redactedArtifactSecret);
 
   await page.getByRole("button", { name: "验收审计" }).click();
   await expect(page.getByText("Agent instruction policy")).toBeVisible();
