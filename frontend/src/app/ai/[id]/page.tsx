@@ -377,10 +377,17 @@ export default function AIThreadPage() {
   return (
     <div className={`ct-codex-ai ${contextOpen ? "is-context-open" : ""}`}>
       <aside className="ct-codex-ai__rail">
-        <Link href="/ai" className="ct-codex-ai__back">
-          <ChevronLeft size={16} />
-          项目与线程
-        </Link>
+        {threadNavigationBusy ? (
+          <span className="ct-codex-ai__back is-disabled" role="link" aria-disabled="true">
+            <ChevronLeft size={16} />
+            项目与线程
+          </span>
+        ) : (
+          <Link href="/ai" className="ct-codex-ai__back">
+            <ChevronLeft size={16} />
+            项目与线程
+          </Link>
+        )}
         <div className="ct-codex-ai__project">
           <span>当前项目</span>
           <strong>{workspace?.name ?? "未绑定项目"}</strong>
@@ -392,16 +399,29 @@ export default function AIThreadPage() {
             项目
           </div>
           <div className="ct-codex-ai__project-list">
-            {railProjects.map((project) => (
-              <Link
-                key={project.id}
-                href="/ai"
-                className={`ct-codex-ai__project-row ${project.id === workspace?.id ? "is-active" : ""}`}
-              >
-                <span>{project.name}</span>
-                <em>{project.reports.length + project.materials.length}</em>
-              </Link>
-            ))}
+            {railProjects.map((project) => {
+              const projectRowClass = `ct-codex-ai__project-row ${project.id === workspace?.id ? "is-active" : ""}`;
+              const projectRowContent = (
+                <>
+                  <span>{project.name}</span>
+                  <em>{project.reports.length + project.materials.length}</em>
+                </>
+              );
+              return threadNavigationBusy ? (
+                <span
+                  key={project.id}
+                  className={`${projectRowClass} is-disabled`}
+                  role="link"
+                  aria-disabled="true"
+                >
+                  {projectRowContent}
+                </span>
+              ) : (
+                <Link key={project.id} href="/ai" className={projectRowClass}>
+                  {projectRowContent}
+                </Link>
+              );
+            })}
           </div>
         </div>
         <button
@@ -418,17 +438,30 @@ export default function AIThreadPage() {
           对话
         </div>
         <div className="ct-codex-ai__thread-list">
-          {visibleThreads.map((thread) => (
-            <Link
-              key={thread.id}
-              href={`/ai/${thread.id}`}
-              className={`ct-codex-ai__thread ${thread.id === conversationId ? "is-active" : ""}`}
-            >
-              <MessageSquareText size={14} />
-              <span>{thread.title}</span>
-              {thread.status === "running" && <Loader2 size={12} className="animate-spin" />}
-            </Link>
-          ))}
+          {visibleThreads.map((thread) => {
+            const threadClass = `ct-codex-ai__thread ${thread.id === conversationId ? "is-active" : ""}`;
+            const threadContent = (
+              <>
+                <MessageSquareText size={14} />
+                <span>{thread.title}</span>
+                {thread.status === "running" && <Loader2 size={12} className="animate-spin" />}
+              </>
+            );
+            return threadNavigationBusy ? (
+              <span
+                key={thread.id}
+                className={`${threadClass} is-disabled`}
+                role="link"
+                aria-disabled="true"
+              >
+                {threadContent}
+              </span>
+            ) : (
+              <Link key={thread.id} href={`/ai/${thread.id}`} className={threadClass}>
+                {threadContent}
+              </Link>
+            );
+          })}
         </div>
       </aside>
 
@@ -612,20 +645,41 @@ export default function AIThreadPage() {
           </div>
           <div className="ct-ai-side-actions">
             {workspace ? (
-              <Link href={`/workspaces/${workspace.id}`} className="ct-ai-action">
-                <FilePlus2 size={15} />
-                添加/管理文件
-              </Link>
+              threadNavigationBusy ? (
+                <span className="ct-ai-action is-disabled" role="link" aria-disabled="true">
+                  <FilePlus2 size={15} />
+                  添加/管理文件
+                </span>
+              ) : (
+                <Link href={`/workspaces/${workspace.id}`} className="ct-ai-action">
+                  <FilePlus2 size={15} />
+                  添加/管理文件
+                </Link>
+              )
             ) : (
-              <Link href="/workspaces/new" className="ct-ai-action">
-                <FilePlus2 size={15} />
-                新建项目并添加文件
+              threadNavigationBusy ? (
+                <span className="ct-ai-action is-disabled" role="link" aria-disabled="true">
+                  <FilePlus2 size={15} />
+                  新建项目并添加文件
+                </span>
+              ) : (
+                <Link href="/workspaces/new" className="ct-ai-action">
+                  <FilePlus2 size={15} />
+                  新建项目并添加文件
+                </Link>
+              )
+            )}
+            {threadNavigationBusy ? (
+              <span className="ct-ai-action is-disabled" role="link" aria-disabled="true">
+                <PlayCircle size={15} />
+                运行智能体任务
+              </span>
+            ) : (
+              <Link href="/workbench" className="ct-ai-action">
+                <PlayCircle size={15} />
+                运行智能体任务
               </Link>
             )}
-            <Link href="/workbench" className="ct-ai-action">
-              <PlayCircle size={15} />
-              运行智能体任务
-            </Link>
           </div>
         </section>
         <section>
