@@ -462,6 +462,71 @@ test.describe("Workspace smoke tests", () => {
     expect(workspace.repo_path).toBe(repo);
   });
 
+  test("prevents duplicate workspace analysis starts from a real double click", async ({
+    page,
+    request,
+  }) => {
+    test.setTimeout(60_000);
+    const repo = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), "codetalk-double-analysis-")));
+    fs.mkdirSync(path.join(repo, "lib", "bdev"), { recursive: true });
+    fs.writeFileSync(path.join(repo, "README.md"), "double analysis start e2e\n", "utf8");
+    fs.writeFileSync(
+      path.join(repo, "lib", "bdev", "double_analysis.c"),
+      "int codetalk_double_analysis_probe(void) { return 17; }\n",
+      "utf8",
+    );
+    const workspaceName = `double-analysis-${Date.now()}`;
+
+    await page.goto("/workspaces/new", { waitUntil: "domcontentloaded" });
+    await page.getByPlaceholder(/项目 A/).fill(workspaceName);
+    await page.getByPlaceholder(/本地文件夹路径/).fill(repo);
+    await page.getByRole("button", { name: "创建工作空间" }).hover();
+    await page.getByRole("button", { name: "创建工作空间" }).click();
+    await page.waitForURL(/\/workspaces\/[0-9a-f-]{36}$/, { timeout: 30_000 });
+    const workspaceId = page.url().split("/").pop() ?? "";
+    await expect(page.getByText(workspaceName)).toBeVisible({ timeout: 30_000 });
+    await expect(page.getByText("已索引")).toBeVisible({ timeout: 120_000 });
+
+    await page.getByRole("button", { name: "生成报告" }).hover();
+    await page.getByRole("button", { name: "生成报告" }).click();
+    await expect(page.getByRole("heading", { name: "生成测试视角报告 · 分析任务" })).toBeVisible({
+      timeout: 15_000,
+    });
+    await expect(page.getByRole("button", { name: "启动分析" })).toBeEnabled({
+      timeout: 15_000,
+    });
+
+    const analyzeRequests: string[] = [];
+    page.on("request", (req) => {
+      if (
+        req.method() === "POST" &&
+        new URL(req.url()).pathname === `/api/workspaces/${workspaceId}/analyze`
+      ) {
+        analyzeRequests.push(req.url());
+      }
+    });
+    const firstAnalyze = page.waitForRequest(
+      (req) =>
+        req.method() === "POST" &&
+        new URL(req.url()).pathname === `/api/workspaces/${workspaceId}/analyze`,
+    );
+
+    const startButton = page.getByRole("button", { name: "启动分析" });
+    await startButton.hover();
+    await startButton.dblclick();
+    await firstAnalyze;
+
+    await expect(page.getByRole("heading", { name: "生成测试视角报告 · 分析任务" })).toHaveCount(0, {
+      timeout: 15_000,
+    });
+    await expect.poll(() => analyzeRequests.length).toBe(1);
+
+    const statusResp = await request.get(`${backendBase}/api/workspaces/${workspaceId}/analyze-status`);
+    expect(statusResp.ok()).toBeTruthy();
+    const status = (await statusResp.json()) as { analyze_status: string | null };
+    expect(["running", "completed", "failed"].includes(status.analyze_status ?? "")).toBeTruthy();
+  });
+
   test("workspace API returns list", async ({ request }) => {
     const resp = await request.get(`${backendBase}/api/workspaces`);
     expect(resp.ok()).toBeTruthy();

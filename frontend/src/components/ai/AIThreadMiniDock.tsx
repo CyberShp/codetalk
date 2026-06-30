@@ -11,6 +11,7 @@ export default function AIThreadMiniDock() {
   const pathname = usePathname();
   const [items, setItems] = useState<AIConversation[]>([]);
   const [loading, setLoading] = useState(false);
+  const [modalOpen, setModalOpen] = useState(false);
 
   useEffect(() => {
     if (pathname.startsWith("/ai")) return;
@@ -36,14 +37,25 @@ export default function AIThreadMiniDock() {
     };
   }, [pathname]);
 
+  useEffect(() => {
+    const updateModalState = () => {
+      setModalOpen(Boolean(document.querySelector(".ct-modal-backdrop")));
+    };
+    updateModalState();
+    const observer = new MutationObserver(updateModalState);
+    observer.observe(document.body, { childList: true, subtree: true });
+    return () => observer.disconnect();
+  }, []);
+
   if (pathname.startsWith("/ai")) return null;
 
   const active = items.find((item) => item.status === "running");
   const target = active ?? items[0];
+  const dockWrapperClass = `fixed bottom-5 right-5 z-30 ${modalOpen ? "pointer-events-none opacity-0" : ""}`;
 
   if (!target) {
     return (
-      <div className="fixed bottom-5 right-5 z-50 hidden md:block">
+      <div className={`${dockWrapperClass} hidden md:block`} aria-hidden={modalOpen}>
         <Link href="/ai" className="ct-ai-dock opacity-75">
           <Bot size={17} />
           <span>AI 线程</span>
@@ -54,7 +66,7 @@ export default function AIThreadMiniDock() {
   }
 
   return (
-    <div className="fixed bottom-5 right-5 z-50">
+    <div className={dockWrapperClass} aria-hidden={modalOpen}>
       <Link
         href={`/ai/${target.id}`}
         className="ct-ai-dock group"

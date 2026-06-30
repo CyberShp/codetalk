@@ -1,6 +1,6 @@
 "use client";
 
-import React, { useCallback, useEffect, useMemo, useState } from "react";
+import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { Loader2, X, Eye, Play, BarChart3 } from "lucide-react";
 import type {
   AnalysisObject,
@@ -40,6 +40,7 @@ export default function AnalysisTaskModal({
 
   const [submitting, setSubmitting] = useState(false);
   const [submitError, setSubmitError] = useState<string | null>(null);
+  const submittingRef = useRef(false);
 
   const [includeCoverageGaps, setIncludeCoverageGaps] = useState(true);
   const [coverageAnalyses, setCoverageAnalyses] = useState<CoverageAnalysis[]>(
@@ -146,7 +147,8 @@ export default function AnalysisTaskModal({
   };
 
   const handleStart = async () => {
-    if (!effectivePlan || !canStart) return;
+    if (!effectivePlan || !canStart || submittingRef.current) return;
+    submittingRef.current = true;
     setSubmitting(true);
     setSubmitError(null);
     try {
@@ -163,6 +165,7 @@ export default function AnalysisTaskModal({
     } catch (e: unknown) {
       setSubmitError(e instanceof Error ? e.message : "启动分析失败");
     } finally {
+      submittingRef.current = false;
       setSubmitting(false);
     }
   };
@@ -170,7 +173,10 @@ export default function AnalysisTaskModal({
   if (!open) return null;
 
   return (
-    <div className="ct-modal-backdrop fixed inset-0 z-50 flex items-center justify-center bg-black/40">
+    <div
+      className="ct-modal-backdrop fixed inset-0 flex items-center justify-center bg-black/40"
+      style={{ zIndex: 70 }}
+    >
       <div className="ct-modal-panel w-[920px] max-w-[95vw] max-h-[92vh] rounded-2xl bg-surface border border-outline-variant/30 shadow-xl flex flex-col overflow-hidden">
         <header className="flex items-center justify-between px-5 py-3 border-b border-outline-variant/20">
           <div>
