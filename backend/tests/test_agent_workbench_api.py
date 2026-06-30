@@ -1784,6 +1784,88 @@ async def test_workbench_task_run_run_api_prepares_executes_and_audits(
     assert any(item["kind"] == "workflow_output" for item in search.json()["items"])
 
 
+async def test_builtin_mr_blackbox_run_produces_executable_black_box_case_contract(
+    workbench_client,
+    tmp_path,
+):
+    repo = tmp_path / "spdk-like"
+    source_file = repo / "lib" / "nvmf" / "tcp.c"
+    source_file.parent.mkdir(parents=True)
+    source_file.write_text(
+        "int nvmf_tcp_qpair_init(void) { return 0; }\n",
+        encoding="utf-8",
+    )
+    test_dir = repo / "test" / "nvmf"
+    test_dir.mkdir(parents=True)
+    (test_dir / "nvmf.sh").write_text("# public nvmf smoke harness\n", encoding="utf-8")
+    diff_text = (
+        "diff --git a/lib/nvmf/tcp.c b/lib/nvmf/tcp.c\n"
+        "--- a/lib/nvmf/tcp.c\n"
+        "+++ b/lib/nvmf/tcp.c\n"
+        "@@ -1 +1 @@\n"
+        "-int nvmf_tcp_qpair_init(void) { return 0; }\n"
+        "+int nvmf_tcp_qpair_init(void) { return -1; }\n"
+    )
+
+    installed = await workbench_client.post(
+        "/api/workbench/workflow-presets/mr_blackbox_test/install"
+    )
+    assert installed.status_code == 201
+
+    response = await workbench_client.post(
+        "/api/workbench/task-runs/run",
+        json={
+            "workflow_id": "mr_blackbox_test",
+            "workspace_id": "ws-mr-blackbox-contract",
+            "repo_path": str(repo),
+            "inputs": {
+                "patch_diff": diff_text,
+                "repo_path": str(repo),
+            },
+            "timeout_sec": 10,
+        },
+    )
+
+    assert response.status_code == 201
+    body = response.json()
+    assert body["status"] == "completed"
+    assert body["execution"]["outputs"][1]["id"] == "black_box_cases"
+    assert body["execution"]["outputs"][1]["status"] == "ok"
+    assert body["semantic_output_import"]["status"] == "ok"
+    assert body["semantic_output_import"]["imported_count"] == 1
+    assert body["acceptance_audit"]["status"] == "ready"
+
+    task_dir = Path(body["task_run"]["artifact_dir"])
+    cases_path = task_dir / "steps" / "collect_mr" / "black_box_cases.json"
+    assert cases_path.exists()
+    cases = json.loads(cases_path.read_text(encoding="utf-8"))
+    assert len(cases) == 1
+    case = cases[0]
+    assert case["case_type"] == "black_box_ready"
+    assert case["file_path"] == "lib/nvmf/tcp.c"
+    assert case["module"] == "nvmf"
+    for field in (
+        "scenario",
+        "preconditions",
+        "inputs",
+        "steps",
+        "expected",
+        "observable_signals",
+        "diagnostics",
+    ):
+        assert case[field]
+    assert "test/nvmf" in json.dumps(case["preconditions"] + case["diagnostics"])
+    assert "public workflow" in case["inputs"] or "host connection" in case["inputs"]
+    assert all("nvmf_tcp_qpair_init" not in step for step in case["steps"])
+    assert any("RPC" in signal or "log" in signal for signal in case["observable_signals"])
+    assert case["trace"]["changed_file"]["path"] == "lib/nvmf/tcp.c"
+
+    materialized = task_dir / "semantic_output_import.json"
+    assert materialized.exists()
+    imported = json.loads(materialized.read_text(encoding="utf-8"))
+    assert imported["result"]["source_ref"] == f"task_run:{body['task_run_id']}:black_box_cases"
+
+
 async def test_workbench_task_run_run_auto_imports_declared_semantic_outputs(
     workbench_client,
     tmp_path,
