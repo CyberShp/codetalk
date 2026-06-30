@@ -166,6 +166,52 @@ class NativeDeployerTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn("CGC 启动已跳过", messages)
         self.assertIn("offline wheelhouse missing", messages)
 
+    async def test_health_check_does_not_fail_deployment_when_optional_cgc_is_unhealthy(self) -> None:
+        """CGC health is diagnostic only; backend/frontend readiness is enough to deploy."""
+        queue: asyncio.Queue = asyncio.Queue()
+        deployer = NativeDeployer(
+            {
+                "backend_port": 3004,
+                "frontend_port": 3003,
+                "install_gitnexus": False,
+                "install_cgc": True,
+                "cgc_port": 7072,
+            },
+            queue,
+        )
+        deployer._processes["cgc"] = object()  # type: ignore[assignment]
+
+        class FakeResponse:
+            def __init__(self, status_code: int) -> None:
+                self.status_code = status_code
+
+        class FakeAsyncClient:
+            def __init__(self, *args, **kwargs) -> None:
+                pass
+
+            async def __aenter__(self):
+                return self
+
+            async def __aexit__(self, exc_type, exc, tb) -> None:
+                return None
+
+            async def get(self, url: str) -> FakeResponse:
+                if url.endswith("/api/v1/status"):
+                    return FakeResponse(503)
+                return FakeResponse(200)
+
+        fake_httpx = types.SimpleNamespace(AsyncClient=FakeAsyncClient)
+
+        with patch.dict(sys.modules, {"httpx": fake_httpx}):
+            await deployer._step_health_check()
+
+        events = []
+        while not queue.empty():
+            events.append(await queue.get())
+        messages = "\n".join(str(event.get("message", "")) for event in events)
+        self.assertIn("CGC 健康检查未通过", messages)
+        self.assertIn("所有核心服务健康运行", messages)
+
 
 if __name__ == "__main__":
     unittest.main()

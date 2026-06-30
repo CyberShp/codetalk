@@ -977,6 +977,7 @@ class NativeDeployer:
         max_wait = 60
         interval = 3
         elapsed = 0
+        cgc_warning_emitted = False
 
         while elapsed < max_wait:
             if self._stopped:
@@ -997,13 +998,27 @@ class NativeDeployer:
                     async with httpx.AsyncClient(timeout=3, trust_env=False) as client:
                         resp = await client.get(f"http://localhost:{cgc_port}/api/v1/status")
                         if not (200 <= resp.status_code < 400):
-                            all_ok = False
+                            if not cgc_warning_emitted:
+                                await self._emit(
+                                    "health_check",
+                                    "running",
+                                    f"CGC 健康检查未通过（HTTP {resp.status_code}），核心服务继续可用；调用链/符号图能力可能暂不可用。",
+                                    step,
+                                )
+                                cgc_warning_emitted = True
                 except Exception:
-                    all_ok = False
+                    if not cgc_warning_emitted:
+                        await self._emit(
+                            "health_check",
+                            "running",
+                            "CGC 健康检查未通过，核心服务继续可用；调用链/符号图能力可能暂不可用。",
+                            step,
+                        )
+                        cgc_warning_emitted = True
 
 
             if all_ok:
-                await self._emit("health_check", "done", "所有服务健康运行！", step)
+                await self._emit("health_check", "done", "所有核心服务健康运行！", step)
                 return
 
             await self._emit("health_check", "running", f"等待中...（{elapsed}s / {max_wait}s）", step)
