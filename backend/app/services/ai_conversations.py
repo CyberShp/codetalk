@@ -624,8 +624,9 @@ async def build_context_references(
     async with aiosqlite.connect(db_file) as db:
         db.row_factory = aiosqlite.Row
         if workspace_id != "global":
+            source_query = _source_query_for_conversation(conversation, user_message)
             append_refs(await _workspace_material_refs(db, workspace_id))
-            append_refs(await _workspace_source_refs(db, workspace_id, user_message))
+            append_refs(await _workspace_source_refs(db, workspace_id, source_query))
             append_refs(await _workspace_refs(db, workspace_id))
             append_refs(await _workspace_chat_refs(db, workspace_id))
         if scope_type == "report":
@@ -637,6 +638,16 @@ async def build_context_references(
         append_refs(await _evidence_memory_refs(workspace_id, user_message))
         append_refs(await _semantic_case_refs(scope_id, user_message))
     return refs[:_MAX_CONTEXT_REFERENCES]
+
+
+def _source_query_for_conversation(conversation: dict[str, Any], user_message: str) -> str:
+    scope_type = str(conversation.get("scope_type") or "")
+    scope_id = str(conversation.get("scope_id") or "")
+    if scope_type == "module" and ":" in scope_id:
+        _, _, module_path = scope_id.partition(":")
+        if module_path.strip():
+            return f"{module_path.strip()} {user_message}"
+    return user_message
 
 
 async def run_generation(
@@ -982,6 +993,7 @@ def _collect_source_refs_sync(repo: Path, workspace_id: str, query: str) -> list
     repo_root = repo.resolve()
     refs: list[ContextReference] = []
     seen: set[str] = set()
+    matched_path_hint = False
     for path_hint in _path_hints(query):
         candidate = (repo_root / path_hint).resolve()
         if _safe_source_dir(repo_root, candidate):
@@ -990,6 +1002,7 @@ def _collect_source_refs_sync(repo: Path, workspace_id: str, query: str) -> list
                 if ref and ref.source_id not in seen:
                     refs.append(ref)
                     seen.add(ref.source_id)
+                    matched_path_hint = True
                 if len(refs) >= 4:
                     return refs
             continue
@@ -998,8 +1011,11 @@ def _collect_source_refs_sync(repo: Path, workspace_id: str, query: str) -> list
             if ref and ref.source_id not in seen:
                 refs.append(ref)
                 seen.add(ref.source_id)
+                matched_path_hint = True
         if len(refs) >= 4:
             return refs
+    if matched_path_hint and refs:
+        return refs
 
     for term in _query_terms(query):
         for rel_path, line_no in _rg_matches(repo_root, term):

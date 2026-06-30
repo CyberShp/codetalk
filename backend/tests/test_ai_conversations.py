@@ -379,6 +379,61 @@ class TestAIConversationsAPI:
         assert "nvmf_dir_target" in source_refs[0].excerpt
         assert all(not ref.metadata["path"].startswith("lib/iscsi/") for ref in source_refs[:2])
 
+    async def test_module_thread_uses_scope_path_as_source_hint_when_prompt_is_vague(
+        self,
+        sqlite_db,
+        tmp_path: Path,
+    ):
+        repo = tmp_path / "repo"
+        nvmf_dir = repo / "lib" / "nvmf"
+        bdev_dir = repo / "lib" / "bdev"
+        nvmf_dir.mkdir(parents=True)
+        bdev_dir.mkdir(parents=True)
+        (bdev_dir / "bdev.c").write_text(
+            "int bdev_generic_entry(void) { return 0; }\n",
+            encoding="utf-8",
+        )
+        (nvmf_dir / "ctrlr.c").write_text(
+            "\n".join(
+                [
+                    "int nvmf_scope_path_entry(void) {",
+                    "    return 1;",
+                    "}",
+                ]
+            ),
+            encoding="utf-8",
+        )
+        ws_id = "ws-module-scope-source"
+        now = datetime.now(timezone.utc).isoformat()
+        async with aiosqlite.connect(sqlite_db) as db:
+            await db.execute(
+                "INSERT INTO workspaces (id, name, repo_path, indexed, created_at, updated_at) "
+                "VALUES (?, 'Module Scope Source WS', ?, 1, ?, ?)",
+                (ws_id, str(repo), now, now),
+            )
+            await db.commit()
+
+        from app.services.ai_conversations import build_context_references
+
+        refs = await build_context_references(
+            conversation={
+                "id": "conv-module-scope-source",
+                "scope_type": "module",
+                "scope_id": f"{ws_id}:lib/nvmf",
+                "workspace_id": ws_id,
+                "memory_namespace": f"workspace:{ws_id}",
+                "initial_context": {},
+            },
+            user_message="请分析这个模块的主流程和外部可观测行为",
+            db_path=sqlite_db,
+        )
+        source_refs = [ref for ref in refs if ref.source_type == "workspace_source"]
+
+        assert source_refs
+        assert source_refs[0].metadata["path"].startswith("lib/nvmf/")
+        assert "nvmf_scope_path_entry" in source_refs[0].excerpt
+        assert all(not ref.metadata["path"].startswith("lib/bdev/") for ref in source_refs[:2])
+
     async def test_workspace_source_refs_fallback_prefers_implementation_source(
         self,
         sqlite_db,
