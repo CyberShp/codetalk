@@ -130,13 +130,22 @@ test("locks conflicting task run actions while a real prepare request is in flig
   await page.getByLabel("Workflow input repo_path").fill(repo);
   await page.getByLabel("Workflow input analysis_object").fill("lib/nvmf busy connect");
 
+  const prepareRequests: string[] = [];
+  page.on("request", (request) => {
+    if (
+      request.method() === "POST" &&
+      request.url().includes("/api/workbench/task-runs/prepare")
+    ) {
+      prepareRequests.push(request.url());
+    }
+  });
   const prepareRequest = page.waitForRequest(
     (request) =>
       request.method() === "POST" &&
       request.url().includes("/api/workbench/task-runs/prepare"),
   );
   await page.getByRole("button", { name: "准备运行" }).hover();
-  await page.getByRole("button", { name: "准备运行" }).click();
+  await page.getByRole("button", { name: "准备运行" }).dblclick();
   await prepareRequest;
 
   await expect(page.getByRole("button", { name: "创建并运行" })).toBeDisabled();
@@ -145,6 +154,7 @@ test("locks conflicting task run actions while a real prepare request is in flig
   await expect(page.getByRole("button", { name: "审计产物" })).toBeDisabled();
 
   await expect(page.getByText(/Task run prepared:/)).toBeVisible({ timeout: 15_000 });
+  await expect.poll(() => prepareRequests.length).toBe(1);
 });
 
 test("locks sibling agent-run actions while a real step execution is in flight", async ({
