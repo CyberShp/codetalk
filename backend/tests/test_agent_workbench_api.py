@@ -3300,10 +3300,12 @@ async def test_workbench_task_run_artifact_content_api_is_safe(workbench_client,
     task_run_id = prepared.json()["task_run_id"]
     task_dir = Path(prepared.json()["artifact_dir"])
     secret = "sk-artifact-secret-value"
+    bare_sk_secret = "sk-artifactBareSecretValue1234567890"
     csv_secret = "artifactCsvSecretLeakValue1234567890"
     boundary_secret = "boundaryArtifactSecretLeakValue1234567890"
     (task_dir / "diagnostics.log").write_text(
-        f"provider failed --api-key {secret}; token={secret}; Authorization: Bearer {secret}",
+        f"provider failed --api-key {secret}; token={secret}; "
+        f"Authorization: Bearer {secret}; copied key {bare_sk_secret}",
         encoding="utf-8",
     )
     text_diagnostics = {
@@ -3353,6 +3355,7 @@ async def test_workbench_task_run_artifact_content_api_is_safe(workbench_client,
     assert diagnostic_content.status_code == 200
     diagnostic_body = diagnostic_content.json()
     assert secret not in diagnostic_body["content"]
+    assert bare_sk_secret not in diagnostic_body["content"]
     assert "<redacted>" in diagnostic_body["content"]
     assert diagnostic_body["content_redacted"] is True
     assert (task_dir / "diagnostics.log").read_text(encoding="utf-8").count(secret) == 3

@@ -4840,6 +4840,11 @@ export default function AgentWorkbenchPage() {
                           {artifactContent.is_text && (
                             <button
                               type="button"
+                              title={
+                                artifactContent.content_redacted
+                                  ? "下载当前脱敏后的预览内容"
+                                  : "下载当前预览内容"
+                              }
                               onClick={() =>
                                 downloadTextFile(
                                   safeArtifactDownloadFilename(artifactContent.relative_path),
@@ -4850,7 +4855,7 @@ export default function AgentWorkbenchPage() {
                               className="inline-flex items-center gap-1 rounded bg-surface-container px-1.5 py-0.5 font-medium text-on-surface transition-colors hover:bg-surface-container-high"
                             >
                               <Download size={12} />
-                              下载预览
+                              {artifactContent.content_redacted ? "下载脱敏预览" : "下载预览"}
                             </button>
                           )}
                         </div>

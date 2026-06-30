@@ -1176,6 +1176,7 @@ test("agent workbench previews task run artifact content", async ({ page }) => {
 
   await expect(page.getByText("sha:abc123abc123")).toBeVisible();
   await expect(page.getByText("\"provider\":\"claude-code\"", { exact: false })).toBeVisible();
+  await expect(page.getByRole("button", { name: "下载预览" })).toBeVisible();
 
   await page
     .getByRole("button", {
@@ -1299,6 +1300,7 @@ test("agent workbench previews task run artifact content", async ({ page }) => {
     page.getByText("do-not:do not treat raw stdout/stderr as accepted evidence"),
   ).toBeVisible();
   await expect(page.getByText("redacted", { exact: true }).nth(1)).toBeVisible();
+  await expect(page.getByRole("button", { name: "下载脱敏预览" })).toBeVisible();
   await expect(page.locator("body")).not.toContainText(redactedArtifactSecret);
 
   await page.getByRole("button", { name: "验收审计" }).click();
