@@ -580,6 +580,46 @@ def test_agent_run_harness_executes_cli_with_task_bundle_and_audit_events(tmp_pa
     assert "agent_run_completed" in events
 
 
+def test_agent_run_harness_decodes_noisy_gbk_output(tmp_path):
+    from app.services.agent_run_harness import AgentRunHarness
+
+    artifact_dir = tmp_path / "agent-run-gbk"
+    script = (
+        "import sys; "
+        "sys.stdout.write('\\x1b[32m47%\\n12/100\\n'); "
+        "sys.stdout.buffer.write(bytes([0x80, 0x81, 0x8D, 0x90, 0x9D]) + b'\\n'); "
+        "sys.stdout.flush(); "
+        "sys.stdout.write('\\r\\x1b[2K⠋ 12\\r\\x1b[2K⠙ 47\\r\\x1b[2K'); "
+        "sys.stdout.flush(); "
+        "sys.stdout.buffer.write('源码证据：连接失败\\n'.encode('gbk')); "
+        "sys.stdout.write('FINAL_NOISE_CLEAN_ANSWER: 已完成源码分析。\\n'); "
+        "sys.stdout.write('\\x1b[0m'); "
+        "sys.stdout.flush()"
+    )
+    harness = AgentRunHarness(artifact_dir)
+    run = harness.create_run(
+        run_id="agent_run_gbk",
+        provider="local-python",
+        command=["python", "-c", script],
+        cwd=str(tmp_path),
+        workflow_snapshot={"id": "wf"},
+        task_bundle={"task_id": "task-gbk"},
+    )
+
+    executed = harness.execute_run(run.run_id, timeout_sec=10)
+
+    assert executed.status == "completed"
+    raw_output = (artifact_dir / "raw_output.txt").read_text(encoding="utf-8")
+    execution_input = json.loads((artifact_dir / "execution_input.json").read_text(encoding="utf-8"))
+    first_attempt = execution_input["transport_attempts"][0]
+    assert "源码证据：连接失败" in raw_output
+    assert "FINAL_NOISE_CLEAN_ANSWER: 已完成源码分析。" in raw_output
+    assert "源码证据：连接失败" in first_attempt["stdout_excerpt"]
+    assert "47%" not in raw_output
+    assert "12/100" not in raw_output
+    assert "�" not in raw_output
+
+
 def test_agent_run_harness_injects_custom_provider_env_without_persisting_secret(
     tmp_path, monkeypatch
 ):
