@@ -10,6 +10,7 @@ from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, Field
 
+from app.config import settings
 from app.database import get_db
 
 router = APIRouter(prefix="/api/tasks", tags=["任务管理"])

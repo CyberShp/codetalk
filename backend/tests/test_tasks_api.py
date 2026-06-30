@@ -43,7 +43,7 @@ async def test_create_task(client, tmp_path):
 async def test_create_task_default_tools(client, tmp_path):
     response = await client.post("/api/tasks", json=_task_payload(tmp_path, name="t"))
     assert response.status_code == 201
-    assert response.json()["tools"] == ["gitnexus", "deepwiki"]
+    assert response.json()["tools"] == ["gitnexus"]
 
 
 async def test_create_task_custom_tools(client, tmp_path):
@@ -74,24 +74,6 @@ async def test_create_task_missing_required_fields(client, tmp_path):
         json={"name": "bad", "repo_path": str(tmp_path)},
     )
     assert response.status_code == 422
-
-
-async def test_create_task_deepwiki_depth_values(client, tmp_path):
-    for depth in ("fast", "balanced", "deep"):
-        resp = await client.post(
-            "/api/tasks",
-            json=_task_payload(tmp_path, name=f"d-{depth}", deepwiki_depth=depth),
-        )
-        assert resp.status_code == 201
-        assert resp.json()["deepwiki_depth"] == depth
-
-
-async def test_create_task_invalid_deepwiki_depth(client, tmp_path):
-    resp = await client.post(
-        "/api/tasks",
-        json=_task_payload(tmp_path, deepwiki_depth="invalid"),
-    )
-    assert resp.status_code == 422
 
 
 async def test_list_tasks_after_create(client, tmp_path):
@@ -357,27 +339,20 @@ async def test_run_task_already_running(client, tmp_path, db):
     assert response.status_code == 409
 
 
-async def test_run_task_gitnexus_health_fail_starts_with_degradation_warning(client, tmp_path):
+async def test_run_task_gitnexus_launch_contract(client, tmp_path):
     created = await client.post("/api/tasks", json=_task_payload(tmp_path, tools=["gitnexus"]))
     task_id = created.json()["id"]
 
-    with patch("app.api.tasks.httpx.AsyncClient") as mock_cls, patch(
+    with patch(
         "app.services.analysis_pipeline.AnalysisPipeline.run",
         new_callable=AsyncMock,
     ):
-        mock_client = AsyncMock()
-        mock_client.__aenter__ = AsyncMock(return_value=mock_client)
-        mock_client.__aexit__ = AsyncMock(return_value=False)
-        mock_client.get = AsyncMock(side_effect=ConnectionError("refused"))
-        mock_cls.return_value = mock_client
-
         response = await client.post(f"/api/tasks/{task_id}/run")
     assert response.status_code == 200
     data = response.json()
     assert data["status"] == "running"
     assert data["task_id"] == task_id
-    assert "GitNexus" in data["warnings"][0]
-    assert "refused" in data["warnings"][0]
+    assert data["warnings"] == []
 
 
 async def test_run_task_success_launches_pipeline(client, tmp_path):

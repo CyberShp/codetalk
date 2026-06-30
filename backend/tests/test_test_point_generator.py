@@ -75,7 +75,7 @@ class GitNexusContextTests(unittest.IsolatedAsyncioTestCase):
 
         with (
             patch.object(test_point_generator, "create_adapter", return_value=fake_adapter),
-            patch.object(test_point_generator.httpx, "AsyncClient", return_value=fake_client),
+            patch.object(test_point_generator, "local_http_client", return_value=fake_client),
         ):
             result = await test_point_generator._get_gitnexus_context(
                 "/data/repos/repo-uuid",

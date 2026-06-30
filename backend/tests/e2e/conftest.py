@@ -11,6 +11,7 @@ Strategy:
 """
 
 import os
+import asyncio
 from contextlib import asynccontextmanager
 
 import pytest
@@ -47,19 +48,24 @@ def _build_e2e_app() -> FastAPI:
     )
 
     from app.api import (
+        agent_runtimes,
+        agent_workbench,
+        ai_conversations,
         coverage,
         export,
         prompts,
-        repo_wiki,
         settings as settings_router,
         tasks,
         tools,
         ws,
     )
-    from app.api.deepwiki_pages import router as deepwiki_router
+    from app.api.repo_analysis import router as repo_analysis_router
     from app.api.workspaces import router as workspaces_router
 
     app.include_router(tasks.router)
+    app.include_router(agent_workbench.router)
+    app.include_router(ai_conversations.router)
+    app.include_router(agent_runtimes.router)
     app.include_router(settings_router.router)
     app.include_router(tools.router)
     app.include_router(export.router)
@@ -67,8 +73,7 @@ def _build_e2e_app() -> FastAPI:
     app.include_router(coverage.router)
     app.include_router(ws.router)
     app.include_router(workspaces_router)
-    app.include_router(deepwiki_router)
-    app.include_router(repo_wiki.router)
+    app.include_router(repo_analysis_router)
 
     @app.get("/health")
     async def health():
@@ -97,17 +102,46 @@ async def e2e_client(tmp_path, monkeypatch):
     from app.api import workspaces
 
     monkeypatch.setattr(workspaces, "_MATERIALS_ROOT", ws_dir)
+    background_tasks: set[asyncio.Task] = set()
+
+    def _track_background_task(coro):
+        # API contract tests assert that fire-and-forget work is accepted and
+        # status fields are updated by the endpoint. Running the full workspace
+        # pipeline here can leave blocking executor threads alive after pytest
+        # has already finished its assertions.
+        coro.close()
+
+        async def _park():
+            await asyncio.Event().wait()
+
+        task = asyncio.create_task(_park())
+        background_tasks.add(task)
+        task.add_done_callback(background_tasks.discard)
+        return task
+
+    monkeypatch.setattr(workspaces, "_schedule_background_task", _track_background_task)
 
     # Call the real init_db() to cover database.py and get proper schema+seeds
     from app.database import init_db
     await init_db()
 
     app = _build_e2e_app()
+    from app.services.process_manager import ProcessManager
+
+    app.state.process_manager = ProcessManager()
+    monkeypatch.setattr(ProcessManager, "_instance", app.state.process_manager)
 
     async with AsyncClient(
         transport=ASGITransport(app=app), base_url="http://e2e-test"
     ) as client:
-        yield client
+        try:
+            yield client
+        finally:
+            for task in list(background_tasks):
+                task.cancel()
+            if background_tasks:
+                await asyncio.gather(*background_tasks, return_exceptions=True)
+            await app.state.process_manager.shutdown_all()
 
 
 @pytest.fixture

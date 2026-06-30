@@ -74,12 +74,12 @@ async def test_tools_status_includes_registered_tools(e2e_client: AsyncClient):
 
 
 async def test_stop_deepwiki_api_not_running(e2e_client: AsyncClient):
-    """Stopping deepwiki-api with no running process succeeds."""
+    """DeepWiki process controls were removed with the DeepWiki feature."""
     resp = await e2e_client.post("/api/tools/deepwiki-api/stop")
-    assert resp.status_code == 200
+    assert resp.status_code == 400
 
 
 async def test_stop_deepwiki_ui_not_running(e2e_client: AsyncClient):
-    """Stopping deepwiki-ui with no running process succeeds."""
+    """DeepWiki process controls were removed with the DeepWiki feature."""
     resp = await e2e_client.post("/api/tools/deepwiki-ui/stop")
-    assert resp.status_code == 200
+    assert resp.status_code == 400

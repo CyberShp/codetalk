@@ -12,10 +12,9 @@ def _task_payload(repo_path: str, **overrides) -> dict:
     base = {
         "name": "Test Analysis Task",
         "repo_path": repo_path,
-        "tools": ["gitnexus", "deepwiki"],
+        "tools": ["gitnexus"],
         "analysis_focus": "Analyze code structure and dependencies",
         "prompt_content": "Please analyze this repository thoroughly.",
-        "deepwiki_depth": "balanced",
     }
     base.update(overrides)
     return base
@@ -91,7 +90,7 @@ async def test_task_status_fields(e2e_client: AsyncClient, repo_path: str):
     expected_fields = {
         "id", "name", "repo_path", "status", "tools",
         "requirements_doc", "design_doc", "analysis_focus",
-        "prompt_content", "deepwiki_depth", "material_ids",
+        "prompt_content", "material_ids",
         "progress", "error_message", "current_step",
         "created_at", "updated_at",
     }
@@ -116,55 +115,41 @@ async def test_task_output_empty(e2e_client: AsyncClient, repo_path: str):
     assert resp.json() == []
 
 
-async def test_task_run_tools_unavailable_starts_with_warnings(e2e_client: AsyncClient, repo_path: str):
-    """Running a task should start even if optional tool services are unavailable."""
+async def test_task_run_starts_pipeline(e2e_client: AsyncClient, repo_path: str):
+    """Running a task starts the background pipeline and returns the launch contract."""
     create_resp = await e2e_client.post("/api/tasks", json=_task_payload(repo_path))
     task_id = create_resp.json()["id"]
 
-    with patch("app.api.tasks.httpx.AsyncClient") as mock_cls, patch(
+    with patch(
         "app.services.analysis_pipeline.AnalysisPipeline.run",
         new_callable=AsyncMock,
     ):
-        mock_client = AsyncMock()
-        mock_client.__aenter__ = AsyncMock(return_value=mock_client)
-        mock_client.__aexit__ = AsyncMock(return_value=False)
-        mock_client.get = AsyncMock(side_effect=ConnectionError("refused"))
-        mock_cls.return_value = mock_client
-
         resp = await e2e_client.post(f"/api/tasks/{task_id}/run")
 
     assert resp.status_code == 200
     body = resp.json()
     assert body["status"] == "running"
-    assert any("GitNexus" in warning for warning in body["warnings"])
+    assert body["warnings"] == []
 
 
-async def test_task_run_deepwiki_only_unavailable_starts_with_warning(e2e_client: AsyncClient, repo_path: str):
-    """Running with only deepwiki selected still starts and reports degraded wiki context."""
+async def test_task_run_with_removed_tool_name_still_launches(e2e_client: AsyncClient, repo_path: str):
+    """Unknown legacy tool selections do not block task launch."""
     create_resp = await e2e_client.post(
         "/api/tasks",
         json=_task_payload(repo_path, tools=["deepwiki"]),
     )
     task_id = create_resp.json()["id"]
 
-    with patch("app.api.tasks.httpx.AsyncClient") as mock_cls, patch(
+    with patch(
         "app.services.analysis_pipeline.AnalysisPipeline.run",
         new_callable=AsyncMock,
     ):
-        mock_client = AsyncMock()
-        mock_client.__aenter__ = AsyncMock(return_value=mock_client)
-        mock_client.__aexit__ = AsyncMock(return_value=False)
-        mock_client.get = AsyncMock(side_effect=ConnectionError("refused"))
-        mock_cls.return_value = mock_client
-
         resp = await e2e_client.post(f"/api/tasks/{task_id}/run")
 
     assert resp.status_code == 200
     body = resp.json()
     assert body["status"] == "running"
-    assert body["warnings"] == [
-        "DeepWiki service is not available; pipeline will continue without wiki context: refused"
-    ]
+    assert body["warnings"] == []
 
 
 async def test_task_crud_roundtrip(e2e_client: AsyncClient, repo_path: str):
@@ -222,7 +207,6 @@ async def test_run_task_no_tools_exercises_pipeline(e2e_client: AsyncClient, rep
             "tools": [],
             "analysis_focus": "Smoke test",
             "prompt_content": "Test pipeline with no external tools.",
-            "deepwiki_depth": "balanced",
         },
     )
     assert create_resp.status_code == 201
@@ -257,7 +241,6 @@ async def test_run_already_running_task_returns_409(e2e_client: AsyncClient, rep
             "tools": [],
             "analysis_focus": "test",
             "prompt_content": "test",
-            "deepwiki_depth": "balanced",
         },
     )
     task_id = create_resp.json()["id"]

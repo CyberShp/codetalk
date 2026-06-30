@@ -448,9 +448,9 @@ class TestIndexAndAnalyze:
             )
             await db.execute(
                 "INSERT INTO tasks (id, name, repo_path, status, tools, "
-                "analysis_focus, prompt_content, deepwiki_depth, workspace_id, progress, created_at, updated_at) "
+                "analysis_focus, prompt_content, workspace_id, progress, created_at, updated_at) "
                 "VALUES ('latest-done-task', ?, '/repo', 'completed', '[]', "
-                "'focus', 'prompt', 'balanced', ?, 100, ?, ?)",
+                "'focus', 'prompt', ?, 100, ?, ?)",
                 (f"__ws_{ws_id}", ws_id, now, now),
             )
             await db.commit()
@@ -475,8 +475,8 @@ class TestIndexAndAnalyze:
             )
             await db.execute(
                 "INSERT INTO tasks (id, name, repo_path, status, tools, "
-                "analysis_focus, prompt_content, deepwiki_depth, progress, created_at, updated_at) "
-                "VALUES (?, ?, '/repo', 'running', '[]', 'focus', 'prompt', 'balanced', 42, ?, ?)",
+                "analysis_focus, prompt_content, progress, created_at, updated_at) "
+                "VALUES (?, ?, '/repo', 'running', '[]', 'focus', 'prompt', 42, ?, ?)",
                 (str(uuid.uuid4()), f"__ws_{ws_id}", now, now),
             )
             await db.commit()
@@ -500,9 +500,9 @@ class TestIndexAndAnalyze:
             )
             await db.execute(
                 "INSERT INTO tasks (id, name, repo_path, status, tools, "
-                "analysis_focus, prompt_content, deepwiki_depth, progress, created_at, updated_at) "
+                "analysis_focus, prompt_content, progress, created_at, updated_at) "
                 "VALUES ('old-completed-task', ?, '/repo', 'completed', '[]', "
-                "'focus', 'prompt', 'balanced', 100, ?, ?)",
+                "'focus', 'prompt', 100, ?, ?)",
                 (f"__ws_{ws_id}", now, now),
             )
             await db.commit()

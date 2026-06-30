@@ -65,16 +65,22 @@ _DUP_PAYLOAD = [
     {"name": "spdk", "path": r"E:\codetalk_test\codetalks-Test\fixtures\spdk",
      "stats": {"files": 1931, "nodes": 50401, "edges": 101699}},
 ]
-_TARGET = r"E:\codetalk_test\codetalks-Test\fixtures\spdk"
+_LOCAL_SPDK = Path("/Volumes/Media/dpdk/spdk")
+_DUP_TARGET = r"E:\codetalk_test\codetalks-Test\fixtures\spdk"
+_TARGET = str(_LOCAL_SPDK) if _LOCAL_SPDK.exists() else r"E:\codetalk_test\codetalks-Test\fixtures\spdk"
+
+
+def _target_file(*parts: str) -> str:
+    return str(Path(_TARGET).joinpath(*parts))
 
 
 def test_descriptor_resolves_target_with_stats_and_ambiguity() -> None:
-    d = resolve_indexed_repo(_DUP_PAYLOAD, _TARGET)
+    d = resolve_indexed_repo(_DUP_PAYLOAD, _DUP_TARGET)
     assert d is not None
     assert d["name"] == "spdk"
     assert d["ambiguous"] is True
     assert d["node_count"] == 50401 and d["edge_count"] == 101699
-    assert d["path"] == _TARGET
+    assert d["path"] == _DUP_TARGET
 
 
 def test_descriptor_none_for_unknown_target() -> None:
@@ -226,7 +232,7 @@ def test_symbol_evidence_snippet_focuses_on_definition() -> None:
         text="spdk_log_set_flag",
         candidate_files=[
             ScopeCandidate(
-                path=r"lib\log\log_flags.c",
+                    path="lib/log/log_flags.c",
                 symbol="spdk_log_set_flag",
                 source="repo_search",
                 confidence="high",
@@ -320,7 +326,7 @@ def test_evidence_builder_reads_source_through_gitnexus_first(monkeypatch) -> No
         text="spdk_log_deprecated",
         candidate_files=[
             ScopeCandidate(
-                path=r"lib\log\log_deprecated.c",
+                path="lib/log/log_deprecated.c",
                 symbol="spdk_log_deprecated",
                 source="repo_search",
                 confidence="high",
@@ -381,7 +387,7 @@ def test_evidence_builder_prefers_gitnexus_cli_source_before_http(monkeypatch) -
         text="spdk_log_set_flag",
         candidate_files=[
             ScopeCandidate(
-                path=r"lib\log\log_flags.c",
+                path="lib/log/log_flags.c",
                 symbol="spdk_log_set_flag",
                 source="repo_search",
                 confidence="high",
@@ -604,7 +610,7 @@ def test_vlog_file_source_summary_reads_free_ext_buf_window() -> None:
         object_id="obj_vlog_file",
         title="代码证据：log.c",
         source="repo_search",
-        file_path=str(_TARGET + r"\lib\log\log.c"),
+        file_path=_target_file("lib", "log", "log.c"),
         symbol=None,
         snippet="char *buf, _buf[MAX_TMPBUF], *ext_buf = NULL;\nvasprintf(&ext_buf, format, ap_copy);",
         confidence="high",
@@ -620,7 +626,7 @@ def test_vlog_file_source_summary_captures_vasprintf_failure_truncation() -> Non
         object_id="obj_vlog_file",
         title="代码证据：log.c",
         source="repo_search",
-        file_path=str(_TARGET + r"\lib\log\log.c"),
+        file_path=_target_file("lib", "log", "log.c"),
         symbol="spdk_vlog",
         snippet="rc = vasprintf(&ext_buf, format, ap_copy);",
         confidence="high",
@@ -1871,7 +1877,6 @@ def test_generate_from_plan_writes_all_seven_reports_with_safe_names(tmp_path) -
             evidence_cards=[],
             module_summaries=[],
             gitnexus_data={"nodes": [], "relationships": []},
-            deepwiki_data={},
             requirements_doc="### req.md\nANCHOR-A runtime flag control",
             design_doc="### design.md\nANCHOR-B timestamp precision",
             pipeline_mode="gitnexus_only",
@@ -1925,7 +1930,6 @@ def test_generate_from_plan_forgives_provider_truncation_after_retry(tmp_path) -
                 evidence_cards=[],
                 module_summaries=[],
                 gitnexus_data={"nodes": [], "relationships": []},
-                deepwiki_data={},
                 pipeline_mode="dual",
             )
         )
@@ -1963,7 +1967,6 @@ def test_generate_from_plan_canonicalizes_mojibake_report_titles(tmp_path) -> No
             evidence_cards=[],
             module_summaries=[],
             gitnexus_data={"nodes": [], "relationships": []},
-            deepwiki_data={},
             pipeline_mode="gitnexus_only",
         )
     )
@@ -2015,7 +2018,6 @@ def test_generate_from_plan_injects_tool_orchestration_into_non_structure_report
             evidence_cards=[],
             module_summaries=[],
             gitnexus_data={"nodes": [], "relationships": []},
-            deepwiki_data={},
             pipeline_mode="dual",
             index_coverage={
                 "agent_cwd": r"E:\codetalk_test\codetalks-Test\codetalk",
@@ -2067,7 +2069,6 @@ def test_generate_from_plan_scrubs_false_missing_tool_orchestration_claim(tmp_pa
             evidence_cards=[],
             module_summaries=[],
             gitnexus_data={"nodes": [], "relationships": []},
-            deepwiki_data={},
             pipeline_mode="dual",
             index_coverage={
                 "target_path": _TARGET,
@@ -2111,7 +2112,6 @@ def test_generate_from_plan_scrubs_false_ext_buf_leak_claim(tmp_path) -> None:
             evidence_cards=[],
             module_summaries=[],
             gitnexus_data={"nodes": [], "relationships": []},
-            deepwiki_data={},
             pipeline_mode="dual",
             index_coverage={
                 "target_path": _TARGET,
@@ -2282,7 +2282,7 @@ class _FakeClient:
     async def get(self, url, params=None, timeout=None):
         params = dict(params or {})
         self.calls.append(params)
-        if self.honor_path and params.get("path") == _TARGET:
+        if self.honor_path and params.get("path") == _DUP_TARGET:
             return _Resp(200, _graph(50401, 101699))  # correct repo
         return _Resp(200, _graph(50259, 101329))      # wrong same-named repo
 
@@ -2293,7 +2293,7 @@ class _FakeEdgesClient(_FakeClient):
     async def get(self, url, params=None, timeout=None):
         params = dict(params or {})
         self.calls.append(params)
-        if self.honor_path and params.get("path") == _TARGET:
+        if self.honor_path and params.get("path") == _DUP_TARGET:
             return _Resp(200, _graph_edges(50401, 101699))
         return _Resp(200, _graph_edges(50259, 101329))
 
@@ -2307,7 +2307,7 @@ def _silence_log_step(monkeypatch):
 
 def test_fetch_graph_disambiguates_by_path() -> None:
     pipe = AnalysisPipeline()
-    descriptor = resolve_indexed_repo(_DUP_PAYLOAD, _TARGET)
+    descriptor = resolve_indexed_repo(_DUP_PAYLOAD, _DUP_TARGET)
     client = _FakeClient(honor_path=True)
     graph = asyncio.run(pipe._fetch_gitnexus_graph(client, "spdk", descriptor))
     assert len(graph["nodes"]) == 50401  # picked the correct repo
@@ -2317,7 +2317,7 @@ def test_fetch_graph_disambiguates_by_path() -> None:
 
 def test_fetch_graph_accepts_edges_field_from_real_gitnexus() -> None:
     pipe = AnalysisPipeline()
-    descriptor = resolve_indexed_repo(_DUP_PAYLOAD, _TARGET)
+    descriptor = resolve_indexed_repo(_DUP_PAYLOAD, _DUP_TARGET)
     client = _FakeEdgesClient(honor_path=True)
     graph = asyncio.run(pipe._fetch_gitnexus_graph(client, "spdk", descriptor))
     assert len(graph["nodes"]) == 50401
@@ -2329,7 +2329,7 @@ def test_fetch_graph_accepts_edges_field_from_real_gitnexus() -> None:
 
 def test_fetch_graph_flags_degraded_when_params_ignored() -> None:
     pipe = AnalysisPipeline()
-    descriptor = resolve_indexed_repo(_DUP_PAYLOAD, _TARGET)
+    descriptor = resolve_indexed_repo(_DUP_PAYLOAD, _DUP_TARGET)
     client = _FakeClient(honor_path=False)  # GitNexus ignores path -> always wrong
     graph = asyncio.run(pipe._fetch_gitnexus_graph(client, "spdk", descriptor))
     assert len(graph["nodes"]) == 50259  # could not get the right one

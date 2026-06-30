@@ -2490,7 +2490,7 @@ def _filter_route_input_hints(hints: object) -> list[str]:
     route_internal_keys = {
         "app", "application", "engine", "router", "route", "routes", "mux",
         "server", "srv", "controller", "handler", "handlers", "ctl",
-        "c", "r", "w",
+        "c", "e", "r", "w",
     }
     filtered: list[str] = []
     seen: set[str] = set()
@@ -2520,11 +2520,28 @@ def _black_box_input_hints(entry: dict, hit: FunctionHit) -> list[str]:
     }
     hints: list[str] = []
     for hint in _coerce_input_hints(entry.get("input_hints")):
+        if (
+            str(entry.get("entry_kind") or "").strip().lower() != "file"
+            and _input_hint_is_internal_access_expression(hint)
+        ):
+            continue
         normalized = _input_hint_dedupe_key(re.sub(r"\(\s*\)$", "", hint.strip()))
         if normalized in banned:
             continue
         hints.append(hint)
     return hints
+
+
+def _input_hint_is_internal_access_expression(value: str) -> bool:
+    text = str(value or "").strip()
+    if not text:
+        return True
+    return bool(re.match(
+        r"^(?:request|req|response|res|ctx|context|this|self)\s*"
+        r"(?:\?\.|\.|->|\[\s*['\"])",
+        text,
+        flags=re.IGNORECASE,
+    ))
 
 
 def _input_hint_is_internal_context(value: str) -> bool:
@@ -4203,8 +4220,11 @@ def _route_registration_metadata_for_symbol(repo_root: Path, entry_symbol: str) 
         trigger = _route_external_trigger_from_texts([context, site["text"]])
         if not trigger:
             continue
+        route_prefix = _route_mount_prefix_for_site_file(site["abs_file"], context)
+        if route_prefix:
+            trigger = _route_trigger_with_prefix(trigger, route_prefix)
         metadata["external_trigger"] = trigger
-        hints = _route_template_input_hints([context, site["text"]])
+        hints = _route_template_input_hints([trigger, context, site["text"]])
         if hints:
             metadata["input_hints"] = hints
         return metadata
@@ -4424,9 +4444,10 @@ def _request_field_hints(abs_file: str, line_number: int, enclosing_fn: str | No
     statement_text = " ".join(statement)
     hints = _request_field_hints_from_text(statement_text)
     if Path(abs_file).suffix.lower() == ".go":
+        bind_hints = _go_bind_input_hints(lines, start, end)
         hints = _merge_ordered_input_hints(
+            bind_hints,
             hints,
-            _go_bind_input_hints(lines, start, end),
         )
     elif Path(abs_file).suffix.lower() == ".py":
         hints = _merge_ordered_input_hints(
@@ -6501,13 +6522,19 @@ def _class_method_route_entry_for_symbol(
     metadata["external_trigger"] = trigger
 
     rel_file = _relative_path(repo_root, reg_file)
+    original_symbol = re.sub(r"\([^()]*\)\s*$", "", str(function_name or "").strip())
+    entry_symbol = (
+        original_symbol
+        if original_symbol.endswith(f"{class_name}.{source_method_name}")
+        else f"{class_name}.{source_method_name}"
+    )
     entry = {
         "entry_kind": "route",
-        "entry_symbol": f"{class_name}.{source_method_name}",
+        "entry_symbol": entry_symbol,
         "entry_file": rel_file,
         "entry_label": f"{_ENTRY_DISCOVERY_KIND_LABELS.get('route', 'Route')} {trigger}",
         "call_line": call_line,
-        "chain": [f"{class_name}.{source_method_name}"],
+        "chain": [entry_symbol],
         "depth": 0,
         "evidence": f"{rel_file}:{call_line} {context[:220]}",
         "tool": "source-registration",
@@ -8841,8 +8868,9 @@ def _has_structured_entry_path(entry_paths: list[dict]) -> bool:
 
 def _entry_path_discovery_priority(entry: dict) -> int:
     tool = str(entry.get("tool") or "").strip()
+    if tool == "source-table":
+        return 0
     if tool in {
-        "source-table",
         "source-registration",
         "source-cli-registration",
         "source-grpc-registration",
@@ -8850,13 +8878,13 @@ def _entry_path_discovery_priority(entry: dict) -> int:
         "graphql-schema",
         "kafka-consumer",
     }:
-        return 0
+        return 2
+    if tool == "cgc":
+        return 5
     if tool.startswith("source-"):
         return 10
     if tool and tool not in {"ripgrep", "cgc"}:
         return 20
-    if tool == "cgc":
-        return 70
     if tool == "ripgrep":
         return 80
     return 60
@@ -8865,9 +8893,21 @@ def _entry_path_discovery_priority(entry: dict) -> int:
 def _merge_duplicate_entry_path(existing: dict, incoming: dict) -> None:
     if _entry_path_discovery_priority(incoming) < _entry_path_discovery_priority(existing):
         original = dict(existing)
+        incoming_tool = str(incoming.get("tool") or "").strip()
         existing.clear()
         existing.update(incoming)
         _merge_duplicate_entry_path(existing, original)
+        merged_hints = _merge_ordered_input_hints(
+            original.get("input_hints"),
+            incoming.get("input_hints"),
+        )
+        if merged_hints:
+            existing["input_hints"] = merged_hints
+        if incoming_tool:
+            existing["confirming_tools"] = [incoming_tool]
+        incoming_evidence = str(incoming.get("evidence") or "").strip()
+        if incoming_evidence:
+            existing["confirming_evidence"] = [incoming_evidence]
         return
     _merge_entry_external_trigger(existing, incoming)
     merged_hints = _merge_ordered_input_hints(
@@ -8980,6 +9020,53 @@ def _augment_entry_input_hints_from_symbol_source(
     )
     if entry_kind == "route":
         merged_hints = _filter_route_input_hints(merged_hints)
+        route_param_hints = set(_route_template_input_hints([
+            str(entry.get("external_trigger") or "")
+        ]))
+        if route_param_hints:
+            abs_file_text = str(abs_file).lower()
+            if abs_file_text.endswith((".js", ".jsx", ".ts", ".tsx", ".mjs", ".cjs", ".mts", ".cts")):
+                body_hints = [hint for hint in merged_hints if hint not in route_param_hints]
+                path_hints = [hint for hint in merged_hints if hint in route_param_hints]
+                evidence_text = str(entry.get("evidence") or "")
+                tool_name = str(entry.get("tool") or "")
+                route_object_like = (
+                    "route({" in evidence_text
+                    or ("handler:" in evidence_text and "method:" in evidence_text)
+                    or (tool_name == "source-table" and "handler:" in evidence_text)
+                )
+                nest_decorator_like = (
+                    "@Controller" in evidence_text
+                    or "@Post" in evidence_text
+                    or ".controller." in abs_file_text
+                )
+                if route_object_like:
+                    merged_hints = [*path_hints, *body_hints]
+                elif nest_decorator_like and body_hints:
+                    try:
+                        source_text = Path(abs_file).read_text(
+                            encoding="utf-8",
+                            errors="replace",
+                        )
+                    except OSError:
+                        source_text = ""
+                    symbol_pos = source_text.find(str(entry_symbol or ""))
+                    signature_window = source_text[symbol_pos:symbol_pos + 600] if symbol_pos >= 0 else source_text
+                    param_first = (
+                        "@Param" in signature_window
+                        and "@Body" in signature_window
+                        and signature_window.find("@Param") < signature_window.find("@Body")
+                    )
+                    if param_first:
+                        merged_hints = [body_hints[0], *path_hints, *body_hints[1:]]
+                    else:
+                        merged_hints = [*body_hints, *path_hints]
+                else:
+                    merged_hints = [*body_hints, *path_hints]
+            elif abs_file_text.endswith(".go"):
+                path_hints = [hint for hint in merged_hints if hint in route_param_hints]
+                body_hints = [hint for hint in merged_hints if hint not in route_param_hints]
+                merged_hints = [*path_hints, *body_hints]
     if entry_kind == "config":
         config_hints = _explicit_config_input_hints(merged_hints)
         if config_hints:
@@ -10288,6 +10375,10 @@ def _filesystem_operation_input_hints(window_text: str) -> list[str]:
             if re.fullmatch(r"[A-Za-z_]\w*", arg_text):
                 add(variable_file_hint(arg_text))
     lowered = (window_text or "").lower()
+    for glob_match in re.finditer(r"""glob\s*\(\s*['"][^'"]*\.([A-Za-z0-9]+)['"]\s*\)""", window_text or ""):
+        label = format_labels.get(glob_match.group(1).lower())
+        if label:
+            add(label)
     if any(token in lowered for token in ("glob(", "rglob(", "iterdir(", "listdir(", "scandir(", "walk(")):
         add("input directory")
     if not hints and any(
@@ -10295,7 +10386,18 @@ def _filesystem_operation_input_hints(window_text: str) -> list[str]:
         for token in ("read_text(", "read_bytes(", "open(", "read_csv(", "read_json(", "read_excel(")
     ):
         add("input file")
-    return hints[:6]
+    if any(hint.endswith(" file") and hint != "input file" for hint in hints):
+        hints = [hint for hint in hints if hint != "input file"]
+    if "input directory" in hints:
+        hints = [hint for hint in hints if hint != "input path"]
+    format_hints = [hint for hint in hints if hint.endswith(" file") and hint != "input file"]
+    other_hints = [hint for hint in hints if hint not in format_hints]
+    has_literal_path = any(
+        ("/" in hint or "\\" in hint) and not hint.endswith(" file")
+        for hint in other_hints
+    )
+    ordered_hints = [*other_hints, *format_hints] if has_literal_path else [*format_hints, *other_hints]
+    return ordered_hints[:6]
 
 
 _CONFIG_OPERATION_RE = re.compile(
@@ -11031,7 +11133,8 @@ def _dispatch_table_handler_symbol_candidates(handler_symbol: str) -> list[str]:
     candidates: list[str] = []
 
     def add(value: str) -> None:
-        text = str(value or "").strip().strip("[](){}")
+        text = _unwrap_dispatch_table_handler_symbol(str(value or "").strip())
+        text = text.strip().strip("[](){}")
         text = _strip_callback_assignment_prefix(text)
         text = text.strip().strip(",")
         if not text or text in seen:
@@ -11060,6 +11163,31 @@ def _dispatch_table_handler_symbol_candidates(handler_symbol: str) -> list[str]:
     if keyword_match:
         add(keyword_match.group("symbol").lstrip("&"))
     return candidates
+
+
+def _unwrap_dispatch_table_handler_symbol(value: str) -> str:
+    text = str(value or "").strip().strip(",")
+    if not text:
+        return ""
+    static_cast = re.match(
+        r"^static_cast\s*<[^>]+>\s*\(\s*(?P<symbol>&?[A-Za-z_]\w*(?:(?:::|\.)[A-Za-z_]\w*)*)\s*\)$",
+        text,
+    )
+    if static_cast:
+        return static_cast.group("symbol").lstrip("&")
+    c_cast = re.match(
+        r"^\(\s*[^()]+\s*\)\s*(?P<symbol>&?[A-Za-z_]\w*(?:(?:::|\.)[A-Za-z_]\w*)*)$",
+        text,
+    )
+    if c_cast:
+        return c_cast.group("symbol").lstrip("&")
+    macro_wrapper = re.match(
+        r"^[A-Za-z_]\w*\s*\(\s*(?P<symbol>&?[A-Za-z_]\w*(?:(?:::|\.)[A-Za-z_]\w*)*)\s*\)$",
+        text,
+    )
+    if macro_wrapper:
+        return macro_wrapper.group("symbol").lstrip("&")
+    return text.lstrip("&")
 
 
 def _dispatch_table_positional_metadata_for_symbol(text: str, traced_symbol: str) -> dict | None:
@@ -11297,7 +11425,7 @@ def _strip_callback_assignment_prefix(rhs: str) -> str:
     value = str(rhs or "").strip()
     while True:
         keyword_match = re.match(
-            r"(?P<name>[A-Za-z_]\w*)\s*[:=]\s*(?P<inner>.+)$",
+            r"(?P<name>[A-Za-z_]\w*)\s*(?::(?!:)|=)\s*(?P<inner>.+)$",
             value,
         )
         if not keyword_match:

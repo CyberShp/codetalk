@@ -18,6 +18,7 @@ from app.adapters.gitnexus import GitNexusAdapter
 from app.adapters.joern import JoernAdapter
 from app.config import settings
 from app.llm.factory import create_llm_client_from_active
+from app.utils.local_client import local_http_client
 
 logger = logging.getLogger(__name__)
 
