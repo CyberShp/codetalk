@@ -279,12 +279,16 @@ def _looks_like_protocol_noise(event: dict[str, Any]) -> bool:
 
 def _diagnostic_event_text(event: dict[str, Any]) -> str | None:
     event_type = str(event.get("type") or event.get("event") or event.get("kind") or "").strip().lower()
-    if event_type not in {"status", "diagnostic", "thinking", "reasoning", "trace", "error"}:
+    tool_event = event_type in {"tool_use", "tool_result", "function_call", "function_result"}
+    if event_type not in {"status", "diagnostic", "thinking", "reasoning", "trace", "error"} and not tool_event:
         return None
     text = _event_error_text(event) if event_type == "error" else _event_text(event)
     if not text:
         return ""
-    prefix = "THINKING" if event_type == "reasoning" else event_type.upper()
+    if tool_event:
+        prefix = "TOOL"
+    else:
+        prefix = "THINKING" if event_type == "reasoning" else event_type.upper()
     return f"{prefix}: {_clean_agent_text(text)}"
 
 

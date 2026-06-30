@@ -610,6 +610,76 @@ class TestAgentRuntimes:
             ]
             assert any("临时工具错误：索引尚未就绪" in item for item in diagnostics)
 
+    async def test_ai_thread_agent_runtime_keeps_tool_events_out_of_final_answer(self, sqlite_db):
+        ws_id = await _seed_workspace(sqlite_db)
+        app = _test_app(sqlite_db)
+        agent_code = (
+            "import json; "
+            "print(json.dumps({'type':'tool_use','message':'正在调用 rg 搜索源码'}, ensure_ascii=False)); "
+            "print(json.dumps({'content':'最终答案：已根据源码证据完成分析。'}, ensure_ascii=False))"
+        )
+
+        async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+            runtime = await client.post(
+                "/api/settings/agent-runtimes",
+                json={
+                    "name": "JSON Tool Agent",
+                    "command": sys.executable,
+                    "args": ["-c", agent_code],
+                    "prompt_transport": "stdin",
+                    "output_mode": "stream_json",
+                    "working_dir_mode": "project",
+                    "timeout_seconds": 10,
+                },
+            )
+            assert runtime.status_code == 201
+
+            created = await client.post(
+                "/api/ai/conversations",
+                json={
+                    "scope_type": "workspace",
+                    "scope_id": ws_id,
+                    "workspace_id": ws_id,
+                    "title": "JSON Agent 工具诊断折叠",
+                    "runtime_type": "agent_runtime",
+                    "agent_runtime_id": runtime.json()["id"],
+                },
+            )
+            assert created.status_code == 201
+            conversation = created.json()
+
+            posted = await client.post(
+                f"/api/ai/conversations/{conversation['id']}/messages",
+                json={"content": "分析外部 agent 工具事件"},
+            )
+            assert posted.status_code == 202
+
+            for _ in range(30):
+                messages = await client.get(f"/api/ai/conversations/{conversation['id']}/messages")
+                items = messages.json()["items"]
+                if len(items) == 2:
+                    break
+                await asyncio.sleep(0.1)
+
+            messages = await client.get(f"/api/ai/conversations/{conversation['id']}/messages")
+            body = messages.json()
+            assert [item["role"] for item in body["items"]] == ["user", "assistant"]
+            assert "最终答案：已根据源码证据完成分析。" in body["items"][1]["content"]
+            assert "正在调用 rg 搜索源码" not in body["items"][1]["content"]
+
+            stream = await client.get(f"/api/ai/conversations/{conversation['id']}/stream")
+            events = [
+                json.loads(line.removeprefix("data: "))
+                for line in stream.text.splitlines()
+                if line.startswith("data: ")
+            ]
+            diagnostics = [
+                event["payload"].get("content", "")
+                for event in events
+                if event["event_type"] == "delta" and event["payload"].get("kind") == "diagnostic"
+            ]
+            assert any("正在调用 rg 搜索源码" in item for item in diagnostics)
+
     async def test_agent_runtime_output_parser_cleans_terminal_noise_and_unwraps_json(self):
         from app.services.agent_cli_bridge import _decode, _parse_event_text
 
@@ -655,6 +725,13 @@ class TestAgentRuntimes:
                 "stream_json",
             )
             == "Claude 源码证据"
+        )
+        assert (
+            _parse_event_text(
+                json.dumps({"type": "tool_use", "message": "正在调用 rg 搜索源码"}, ensure_ascii=False),
+                "stream_json",
+            )
+            == "TOOL: 正在调用 rg 搜索源码"
         )
         assert _parse_event_text(json.dumps({"type": "message_start", "index": 0}), "stream_json") == ""
 

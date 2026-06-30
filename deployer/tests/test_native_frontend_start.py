@@ -24,6 +24,24 @@ class NativeFrontendStartTests(unittest.TestCase):
         self.assertEqual(args["env_extra"], {"PORT": "3003"})
         self.assertNotIn("standalone", " ".join(args["cmd"]))
 
+    def test_start_service_spawns_frontend_once(self) -> None:
+        class RecordingDeployer(NativeDeployer):
+            def __init__(self) -> None:
+                super().__init__({"frontend_port": 3003}, asyncio.Queue())
+                self.spawned: list[str] = []
+
+            async def _spawn_process(self, name, cmd, cwd, step_name, step_index, env_extra=None):
+                self.spawned.append(name)
+
+        async def run() -> RecordingDeployer:
+            deployer = RecordingDeployer()
+            result = await deployer.start_service("frontend")
+            self.assertEqual(result, {"ok": True, "service": "frontend", "action": "started"})
+            return deployer
+
+        deployer = asyncio.run(run())
+        self.assertEqual(deployer.spawned, ["frontend"])
+
 
 if __name__ == "__main__":
     unittest.main()
