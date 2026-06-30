@@ -321,6 +321,68 @@ test("AI mini dock keeps idle background polling quiet on non-AI pages", async (
   expect(dockListRequests).toBeLessThanOrEqual(2);
 });
 
+test("AI mini dock does not add body-wide mutation observers on non-AI pages", async ({ page }) => {
+  await page.addInitScript(() => {
+    const NativeMutationObserver = window.MutationObserver;
+    let bodySubtreeObserveCount = 0;
+    class CountingMutationObserver extends NativeMutationObserver {
+      constructor(callback: MutationCallback) {
+        super(callback);
+      }
+
+      observe(target: Node, options?: MutationObserverInit) {
+        if (target === document.body && options?.subtree) {
+          bodySubtreeObserveCount += 1;
+        }
+        return super.observe(target, options);
+      }
+    }
+    Object.defineProperty(window, "MutationObserver", {
+      configurable: true,
+      writable: true,
+      value: CountingMutationObserver,
+    });
+    Object.defineProperty(window, "__codetalkBodySubtreeObserverCount", {
+      configurable: true,
+      get: () => bodySubtreeObserveCount,
+    });
+  });
+  await page.route("**/api/workspaces", async (route) => {
+    await route.fulfill({ headers: jsonHeaders(route.request().headers().origin), json: [] });
+  });
+  await page.route("**/api/ai/conversations?limit=3", async (route) => {
+    await route.fulfill({
+      headers: jsonHeaders(route.request().headers().origin),
+      json: {
+        items: [
+          {
+            id: "idle-dock-thread",
+            scope_type: "global",
+            scope_id: "global",
+            workspace_id: null,
+            memory_namespace: "global",
+            title: "空闲线程",
+            status: "idle",
+            initial_context: {},
+            created_at: "2026-06-28T00:00:00Z",
+            updated_at: "2026-06-28T00:00:00Z",
+          },
+        ],
+      },
+    });
+  });
+
+  await page.goto("/", { waitUntil: "domcontentloaded" });
+  await expect(page.getByRole("link", { name: /空闲线程/ })).toBeVisible();
+
+  const observerCount = await page.evaluate(() => {
+    const value = (window as Window & { __codetalkBodySubtreeObserverCount?: number })
+      .__codetalkBodySubtreeObserverCount;
+    return typeof value === "number" ? value : -1;
+  });
+  expect(observerCount).toBeLessThanOrEqual(1);
+});
+
 test("AI conversation keeps long threads inside the reader and does not force document scrolling", async ({ page }) => {
   const longBlock = Array.from({ length: 14 }, (_, index) =>
     `第 ${index + 1} 段：补充登录失败、权限失效、弱网重试、审计日志验证和恢复路径。`,

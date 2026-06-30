@@ -814,6 +814,11 @@ body {
     box-shadow var(--motion-medium) var(--motion-spring);
 }
 
+body:has(.ct-modal-backdrop) .ct-ai-dock-wrap {
+  pointer-events: none;
+  opacity: 0;
+}
+
 .ct-ai-dock:hover {
   transform: translateY(-3px);
   box-shadow:
