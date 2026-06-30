@@ -354,6 +354,107 @@ test("completes an agent-runtime AI thread and exports the persisted answer", as
   }
 });
 
+test("redacts persisted AI thread message secrets from exported markdown", async ({
+  page,
+  request,
+}, testInfo) => {
+  test.setTimeout(70_000);
+  const repo = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), "codetalk-ai-redact-repo-")));
+  fs.writeFileSync(path.join(repo, "README.md"), "AI export redaction e2e workspace\n", "utf8");
+  const runtimeDir = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), "codetalk-agent-redact-")));
+  const runtimeScript = path.join(runtimeDir, "redact_agent.py");
+  fs.writeFileSync(
+    runtimeScript,
+    [
+      "import sys",
+      "sys.stdin.read()",
+      "print('AI export redaction probe complete', flush=True)",
+      "print('agent key: ' + 'sk' + '-' + 'aiThreadExportLeakValue1234567890', flush=True)",
+      "print('runtime ' + 'tok' + 'en=' + 'aiThreadTokenLeakValue1234567890', flush=True)",
+      "print('Authorization: Bearer ' + 'aiThreadBearerLeakValue1234567890', flush=True)",
+      "",
+    ].join("\n"),
+    "utf8",
+  );
+  const workspaceName = `ai-redact-e2e-${Date.now()}`;
+  const runtimeName = `Redaction runtime ${Date.now()}`;
+  const threadTitle = `${workspaceName} export redaction`;
+  const userSecret = ["sk", "userThreadExportLeakValue1234567890"].join("-");
+  const runtimeSecret = ["sk", "aiThreadExportLeakValue1234567890"].join("-");
+  const tokenSecret = "aiThreadTokenLeakValue1234567890";
+  const bearerSecret = "aiThreadBearerLeakValue1234567890";
+  const prompt = `请分析导出脱敏，并确认不要泄露 ${userSecret}`;
+
+  const runtimeResp = await request.post(`${backendBase}/api/settings/agent-runtimes`, {
+    data: {
+      name: runtimeName,
+      command: "python3",
+      args: [runtimeScript],
+      prompt_transport: "stdin",
+      output_mode: "plain",
+      working_dir_mode: "project",
+      fixed_working_dir: "",
+      env: {},
+      health_command: "",
+      timeout_seconds: 30,
+      enabled: true,
+    },
+  });
+  expect(runtimeResp.status()).toBe(201);
+  const runtime = (await runtimeResp.json()) as { id: string };
+
+  const workspaceResp = await request.post(`${backendBase}/api/workspaces`, {
+    data: { name: workspaceName, repo_path: repo },
+  });
+  expect(workspaceResp.status()).toBe(201);
+
+  try {
+    await page.goto("/ai", { waitUntil: "domcontentloaded" });
+    const projectButton = page.locator("button").filter({ hasText: workspaceName }).first();
+    await expect(projectButton).toBeVisible({ timeout: 15_000 });
+    await projectButton.hover();
+    await projectButton.click();
+    await expect(page.getByRole("heading", { name: workspaceName })).toBeVisible();
+
+    await page.getByLabel("AI 线程执行器").selectOption({ label: runtimeName });
+    await page.getByPlaceholder(/线程名称/).fill(threadTitle);
+    await page.getByRole("button", { name: "新建线程" }).hover();
+    await page.getByRole("button", { name: "新建线程" }).click();
+
+    await page.waitForURL(/\/ai\/[^/]+$/, { timeout: 15_000 });
+    await expect(page.getByRole("heading", { name: threadTitle })).toBeVisible({
+      timeout: 15_000,
+    });
+    await expect(page.getByLabel("当前 AI 执行器")).toHaveValue(runtime.id);
+
+    await page.getByPlaceholder(/像 Codex 一样继续追问/).fill(prompt);
+    await page.getByRole("button", { name: "发送" }).hover();
+    await page.getByRole("button", { name: "发送" }).click();
+    await expect(page.locator(".ct-codex-message.is-user").filter({ hasText: "请分析导出脱敏" })).toHaveCount(1);
+    await expect(page.getByText("AI export redaction probe complete")).toBeVisible({ timeout: 30_000 });
+
+    const downloadPromise = page.waitForEvent("download");
+    await page.getByRole("button", { name: "导出" }).hover();
+    await page.getByRole("button", { name: "导出" }).click();
+    const download = await downloadPromise;
+    const exportPath = testInfo.outputPath("real-ai-thread-redacted-export.md");
+    await download.saveAs(exportPath);
+    const exported = fs.readFileSync(exportPath, "utf8");
+    expect(exported).toContain(`# ${threadTitle}`);
+    expect(exported).toContain("AI export redaction probe complete");
+    expect(exported).toContain("<redacted>");
+    expect(exported).not.toContain(userSecret);
+    expect(exported).not.toContain(runtimeSecret);
+    expect(exported).not.toContain(tokenSecret);
+    expect(exported).not.toContain(bearerSecret);
+    expect(exported).not.toMatch(/sk-[A-Za-z0-9_-]{12,}/);
+    expect(exported).not.toMatch(/Authorization:\s*Bearer\s+(?!<redacted>)[^\s"']+/i);
+    expect(exported).not.toMatch(/(?:api[-_]?key|token|secret|password)=['"]?(?!<redacted>)[^\s"']+/i);
+  } finally {
+    await request.delete(`${backendBase}/api/settings/agent-runtimes/${encodeURIComponent(runtime.id)}`);
+  }
+});
+
 test("sends an AI thread message with Enter while Shift+Enter keeps a newline", async ({
   page,
   request,

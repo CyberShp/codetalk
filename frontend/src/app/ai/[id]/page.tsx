@@ -103,13 +103,13 @@ function buildThreadMarkdown(conversation: AIConversation | null, messages: AIMe
   for (const message of messages) {
     lines.push(`## ${message.role === "user" ? "用户" : message.role === "assistant" ? "AI" : "系统"}`);
     lines.push("");
-    lines.push(message.content || "_空消息_");
+    lines.push(message.content ? redactDiagnosticText(message.content) : "_空消息_");
     if (message.references?.length) {
       lines.push("");
       lines.push("### 证据引用");
       for (const ref of message.references) {
-        lines.push(`- ${ref.title} (${ref.source_type}:${ref.source_id})`);
-        if (ref.excerpt) lines.push(`  - ${ref.excerpt}`);
+        lines.push(`- ${redactDiagnosticText(ref.title)} (${ref.source_type}:${ref.source_id})`);
+        if (ref.excerpt) lines.push(`  - ${redactDiagnosticText(ref.excerpt)}`);
       }
     }
     lines.push("");
