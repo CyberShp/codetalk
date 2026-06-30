@@ -96,3 +96,18 @@ test("mobile app shell keeps navigation and primary controls usable", async ({ p
     "aside a, aside button, main a, main button, .ct-home-topbar a, .ct-home-topbar button",
   );
 });
+
+test("removed legacy navigation pages stay deleted", async ({ page }) => {
+  const removedRoutes = [
+    { path: "/deepwiki", label: "DeepWiki" },
+    { path: "/tools/status", label: "工具状态" },
+    { path: "/tool-status", label: "工具状态" },
+    { path: "/history", label: "历史任务" },
+  ];
+
+  for (const route of removedRoutes) {
+    const response = await page.goto(route.path, { waitUntil: "domcontentloaded" });
+    expect(response?.status(), `${route.path} should not resurrect a removed page`).toBe(404);
+    await expect(page.getByRole("main").getByText(route.label, { exact: true })).toHaveCount(0);
+  }
+});
