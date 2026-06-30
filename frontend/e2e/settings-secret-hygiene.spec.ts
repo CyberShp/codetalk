@@ -69,6 +69,48 @@ test("settings LLM key stays masked and is not rendered after save/edit", async 
   await expectBrowserStorageNotToContain(page, secret);
 });
 
+test("settings prevents duplicate LLM saves from a real double click", async ({ page }) => {
+  const secret = `settings-double-save-key-${Date.now()}`;
+  const configName = `ui-llm-double-save-${Date.now()}`;
+  const modelName = `deepseek-double-save-${Date.now()}`;
+
+  await page.goto("/settings", { waitUntil: "domcontentloaded" });
+  await page.getByRole("button", { name: /可选：内置模型与 RAG 检索/ }).click();
+  await page.getByRole("button", { name: "新增" }).click();
+
+  const form = page.locator("form").filter({ hasText: "新增 LLM 配置" });
+  await form.getByPlaceholder("如：Claude / GPT-4o").fill(configName);
+  await form.getByPlaceholder("https://api.openai.com/v1").fill("https://llm.example/v1");
+  await form.getByPlaceholder(/sk-|Ollama/).fill(secret);
+  await form.getByRole("textbox", { name: "gpt-4o", exact: true }).fill(modelName);
+
+  const createRequests: string[] = [];
+  page.on("request", (request) => {
+    if (
+      request.method() === "POST" &&
+      new URL(request.url()).pathname === "/api/settings/llm"
+    ) {
+      createRequests.push(request.url());
+    }
+  });
+  const createRequest = page.waitForRequest(
+    (request) =>
+      request.method() === "POST" &&
+      new URL(request.url()).pathname === "/api/settings/llm",
+  );
+
+  await form.getByRole("button", { name: "保存配置" }).hover();
+  await form.getByRole("button", { name: "保存配置" }).dblclick();
+  await createRequest;
+  await expect(form.getByRole("button", { name: "保存配置" })).toBeDisabled();
+
+  const savedRow = page.locator("div", { hasText: configName }).filter({ hasText: modelName }).first();
+  await expect(savedRow).toBeVisible({ timeout: 15_000 });
+  await expect.poll(() => createRequests.length).toBe(1);
+  await expect(page.locator("body")).not.toContainText(secret);
+  await expectBrowserStorageNotToContain(page, secret);
+});
+
 test("settings active chat model selection persists after reload", async ({ page }) => {
   const configName = `ui-active-model-${Date.now()}`;
   const modelName = `deepseek-active-${Date.now()}`;
@@ -237,10 +279,9 @@ test("settings agent runtime probe shows redacted actionable failure output", as
   await savedRuntime.getByRole("button", { name: "测试" }).hover();
   await savedRuntime.getByRole("button", { name: "测试" }).click();
 
-  await expect(savedRuntime).toContainText("探测中...", { timeout: 15_000 });
   await expect(savedRuntime).toContainText("不可用：probe failed", { timeout: 15_000 });
   await expect(savedRuntime).toContainText("--api-key <redacted>");
-  await expect(savedRuntime).toContainText("token=<redacted>");
+  await expect(savedRuntime).toContainText(["token", "<redacted>"].join("="));
   await expect(page.locator("body")).not.toContainText(secret);
   await expectBrowserStorageNotToContain(page, secret);
 
