@@ -6,6 +6,8 @@ import asyncio
 import inspect
 import json
 import logging
+import re
+import subprocess
 import uuid
 from contextlib import asynccontextmanager
 from dataclasses import dataclass
@@ -33,7 +35,45 @@ AI_SCOPE_TYPES = {
 }
 
 _MAX_REFERENCE_CHARS = 1200
+_MAX_CONTEXT_REFERENCES = 14
 _MAX_HISTORY_MESSAGES = 24
+_SOURCE_SUFFIXES = {
+    ".c",
+    ".cc",
+    ".cpp",
+    ".cxx",
+    ".h",
+    ".hh",
+    ".hpp",
+    ".py",
+    ".rs",
+    ".go",
+    ".java",
+    ".js",
+    ".jsx",
+    ".ts",
+    ".tsx",
+    ".sh",
+    ".md",
+    ".rst",
+    ".txt",
+}
+_QUERY_STOPWORDS = {
+    "the",
+    "and",
+    "for",
+    "with",
+    "from",
+    "this",
+    "that",
+    "workspace",
+    "source",
+    "code",
+    "file",
+    "files",
+    "read",
+    "analyze",
+}
 
 
 def _now() -> str:
@@ -574,6 +614,8 @@ async def build_context_references(
     async with aiosqlite.connect(db_file) as db:
         db.row_factory = aiosqlite.Row
         if scope_type == "workspace":
+            refs.extend(await _workspace_material_refs(db, scope_id))
+            refs.extend(await _workspace_source_refs(db, scope_id, user_message))
             refs.extend(await _workspace_refs(db, scope_id))
             refs.extend(await _workspace_chat_refs(db, scope_id))
         elif scope_type == "report":
@@ -584,7 +626,7 @@ async def build_context_references(
     if workspace_id != "global":
         refs.extend(await _evidence_memory_refs(workspace_id, user_message))
         refs.extend(await _semantic_case_refs(scope_id, user_message))
-    return refs[:10]
+    return refs[:_MAX_CONTEXT_REFERENCES]
 
 
 async def run_generation(
@@ -687,7 +729,14 @@ async def run_agent_generation(
     await store.mark_run_running(run_id)
     repo_path = await _conversation_repo_path(conversation)
     cwd = resolve_agent_cwd(runtime, repo_path=repo_path)
-    prompt = _build_agent_prompt(conversation, messages, references, user_message["content"], runtime)
+    prompt = _build_agent_prompt(
+        conversation,
+        messages,
+        references,
+        user_message["content"],
+        runtime,
+        repo_path=repo_path,
+    )
     chunks: list[str] = []
     try:
         async for delta in stream_agent_runtime(runtime=runtime, prompt=prompt, cwd=cwd):
@@ -740,7 +789,10 @@ def _build_prompt(
         "你是 CodeTalks 的 AI 测试调查助手。你要帮助测试人员围绕需求、代码、报告、"
         "Workbench 任务和测试用例持续追问。\n"
         "回答必须使用中文，先给结论，再给证据与下一步测试建议。"
-        "如果引用不足，请明确标记“待验证”。\n\n"
+        "如果引用不足，请明确标记“待验证”。\n"
+        "当线程绑定 workspace 时，workspace_source 和 workspace_material 是优先证据；"
+        "必须先依据源码片段和输入材料回答，再用报告或记忆补充。"
+        "不要声称读过未出现在引用里的文件。\n\n"
         f"线程范围: {conversation['scope_type']} / {conversation['scope_id']}\n"
         f"上下文引用:\n{chr(10).join(context_lines) if context_lines else '（暂无可用引用）'}"
     )
@@ -753,6 +805,8 @@ def _build_agent_prompt(
     references: list[dict[str, Any]],
     user_message: str,
     runtime: dict[str, Any],
+    *,
+    repo_path: str | None = None,
 ) -> str:
     llm_messages = _build_prompt(conversation, messages, references, user_message)
     lines = [
@@ -760,6 +814,8 @@ def _build_agent_prompt(
         f"执行器：{runtime.get('name') or runtime.get('id')}",
         f"线程：{conversation.get('title')} ({conversation.get('id')})",
         f"项目/工作区：{conversation.get('workspace_id')}",
+        f"源码根目录：{repo_path or repo_path_hint(conversation)}",
+        "执行要求：如果线程绑定 workspace，先检查当前工作目录中的源码和输入材料，再回答；不要只凭模型记忆。",
         "",
     ]
     for message in llm_messages:
@@ -776,6 +832,15 @@ def _build_agent_prompt(
     return "\n".join(lines).strip()
 
 
+def repo_path_hint(conversation: dict[str, Any]) -> str:
+    context = conversation.get("initial_context")
+    if isinstance(context, dict):
+        value = context.get("repo_path")
+        if isinstance(value, str) and value.strip():
+            return value.strip()
+    return str(conversation.get("workspace_id") or "global")
+
+
 async def _conversation_repo_path(conversation: dict[str, Any]) -> str | None:
     workspace_id = _conversation_workspace_id(conversation)
     if workspace_id == "global":
@@ -787,6 +852,235 @@ async def _conversation_repo_path(conversation: dict[str, Any]) -> str | None:
     if row and row["repo_path"]:
         return str(row["repo_path"])
     return None
+
+
+async def _workspace_material_refs(db: aiosqlite.Connection, workspace_id: str) -> list[ContextReference]:
+    async with db.execute(
+        """
+        SELECT id, filename, content_type, file_path
+        FROM workspace_materials
+        WHERE workspace_id = ? AND is_active = 1
+        ORDER BY created_at DESC
+        LIMIT 4
+        """,
+        (workspace_id,),
+    ) as cur:
+        rows = await cur.fetchall()
+    refs: list[ContextReference] = []
+    for row in rows:
+        path = Path(str(row["file_path"] or ""))
+        if not path.exists() or not path.is_file():
+            continue
+        try:
+            text = await _read_text(path)
+        except Exception:
+            continue
+        refs.append(
+            ContextReference(
+                source_type="workspace_material",
+                source_id=str(row["id"]),
+                title=str(row["filename"] or path.name),
+                excerpt=_clip(text),
+                metadata={
+                    "workspace_id": workspace_id,
+                    "content_type": row["content_type"],
+                    "file_path": str(path),
+                },
+            )
+        )
+    return refs
+
+
+async def _workspace_source_refs(
+    db: aiosqlite.Connection,
+    workspace_id: str,
+    query: str,
+) -> list[ContextReference]:
+    async with db.execute("SELECT repo_path FROM workspaces WHERE id = ?", (workspace_id,)) as cur:
+        row = await cur.fetchone()
+    if not row or not row["repo_path"]:
+        return []
+    repo = Path(str(row["repo_path"])).expanduser()
+    if not repo.exists() or not repo.is_dir():
+        return []
+    return await _to_thread(_collect_source_refs_sync, repo, workspace_id, query)
+
+
+def _collect_source_refs_sync(repo: Path, workspace_id: str, query: str) -> list[ContextReference]:
+    repo_root = repo.resolve()
+    refs: list[ContextReference] = []
+    seen: set[str] = set()
+    for path_hint in _path_hints(query):
+        candidate = (repo_root / path_hint).resolve()
+        if _safe_source_file(repo_root, candidate):
+            ref = _source_file_ref(repo_root, workspace_id, candidate, line=1)
+            if ref and ref.source_id not in seen:
+                refs.append(ref)
+                seen.add(ref.source_id)
+        if len(refs) >= 4:
+            return refs
+
+    for term in _query_terms(query):
+        for rel_path, line_no in _rg_matches(repo_root, term):
+            candidate = (repo_root / rel_path).resolve()
+            if not _safe_source_file(repo_root, candidate):
+                continue
+            ref = _source_file_ref(repo_root, workspace_id, candidate, line=line_no)
+            if ref and ref.source_id not in seen:
+                refs.append(ref)
+                seen.add(ref.source_id)
+            if len(refs) >= 4:
+                return refs
+
+    if refs:
+        return refs
+    for rel_path in _repo_file_candidates(repo_root):
+        candidate = (repo_root / rel_path).resolve()
+        if not _safe_source_file(repo_root, candidate):
+            continue
+        ref = _source_file_ref(repo_root, workspace_id, candidate, line=1)
+        if ref and ref.source_id not in seen:
+            refs.append(ref)
+            seen.add(ref.source_id)
+        if len(refs) >= 2:
+            break
+    return refs
+
+
+def _query_terms(text: str) -> list[str]:
+    raw = re.findall(r"[A-Za-z_][A-Za-z0-9_./-]{2,}", text or "")
+    terms: list[str] = []
+    for item in raw:
+        term = item.strip("./").lower()
+        if len(term) < 3 or term in _QUERY_STOPWORDS:
+            continue
+        if "/" in term or "." in term:
+            continue
+        if term not in terms:
+            terms.append(term)
+        if len(terms) >= 5:
+            break
+    return terms
+
+
+def _path_hints(text: str) -> list[str]:
+    hints: list[str] = []
+    for item in re.findall(r"[A-Za-z0-9_.-]+(?:/[A-Za-z0-9_.-]+)+", text or ""):
+        clean = item.strip("/")
+        if clean and ".." not in clean and clean not in hints:
+            hints.append(clean)
+    return hints[:4]
+
+
+def _rg_matches(repo_root: Path, term: str) -> list[tuple[str, int]]:
+    try:
+        result = subprocess.run(
+            [
+                "rg",
+                "--line-number",
+                "--no-heading",
+                "--smart-case",
+                "--max-count",
+                "2",
+                "--glob",
+                "!**/.git/**",
+                "--glob",
+                "!**/build/**",
+                "--glob",
+                "!**/node_modules/**",
+                term,
+                ".",
+            ],
+            cwd=repo_root,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.DEVNULL,
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+            timeout=3,
+        )
+    except Exception:
+        return []
+    matches: list[tuple[str, int]] = []
+    for line in result.stdout.splitlines():
+        path_text, sep, rest = line.partition(":")
+        if not sep:
+            continue
+        line_text, _, _ = rest.partition(":")
+        try:
+            line_no = max(1, int(line_text))
+        except ValueError:
+            line_no = 1
+        if path_text:
+            matches.append((path_text, line_no))
+    return matches[:6]
+
+
+def _repo_file_candidates(repo_root: Path) -> list[str]:
+    try:
+        result = subprocess.run(
+            ["rg", "--files", "--glob", "!**/.git/**", "--glob", "!**/build/**"],
+            cwd=repo_root,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.DEVNULL,
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+            timeout=2,
+        )
+    except Exception:
+        return []
+    preferred: list[str] = []
+    rest: list[str] = []
+    for rel in result.stdout.splitlines()[:400]:
+        suffix = Path(rel).suffix.lower()
+        if suffix not in _SOURCE_SUFFIXES:
+            continue
+        if Path(rel).name.lower() in {"readme.md", "agents.md", "claude.md"}:
+            preferred.append(rel)
+        else:
+            rest.append(rel)
+    return [*preferred, *rest]
+
+
+def _safe_source_file(repo_root: Path, path: Path) -> bool:
+    try:
+        path.relative_to(repo_root)
+    except ValueError:
+        return False
+    return path.exists() and path.is_file() and path.suffix.lower() in _SOURCE_SUFFIXES
+
+
+def _source_file_ref(
+    repo_root: Path,
+    workspace_id: str,
+    path: Path,
+    *,
+    line: int,
+) -> ContextReference | None:
+    try:
+        rel = path.relative_to(repo_root).as_posix()
+        lines = path.read_text(encoding="utf-8", errors="ignore").splitlines()
+    except Exception:
+        return None
+    if not lines:
+        return None
+    start = max(1, line - 12)
+    end = min(len(lines), line + 40)
+    snippet = "\n".join(f"{idx}: {lines[idx - 1]}" for idx in range(start, end + 1))
+    return ContextReference(
+        source_type="workspace_source",
+        source_id=f"{workspace_id}:{rel}:{start}-{end}",
+        title=f"{rel}:{line}",
+        excerpt=_clip(snippet),
+        metadata={
+            "workspace_id": workspace_id,
+            "path": rel,
+            "start_line": start,
+            "end_line": end,
+            "repo_path": str(repo_root),
+        },
+    )
 
 
 async def _workspace_refs(db: aiosqlite.Connection, workspace_id: str) -> list[ContextReference]:

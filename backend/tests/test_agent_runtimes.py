@@ -289,3 +289,23 @@ class TestAgentRuntimes:
 
             messages = await client.get(f"/api/ai/conversations/{conversation['id']}/messages")
             assert secret not in json.dumps(messages.json(), ensure_ascii=False)
+
+    async def test_agent_runtime_output_parser_cleans_terminal_noise_and_unwraps_json(self):
+        from app.services.agent_cli_bridge import _parse_event_text
+
+        assert _parse_event_text("\x1b[32m正文片段\x1b[0m\r\n", "plain") == "正文片段"
+        assert (
+            _parse_event_text(
+                json.dumps({"choices": [{"delta": {"content": "源码证据"}}]}, ensure_ascii=False),
+                "stream_json",
+            )
+            == "源码证据"
+        )
+        assert (
+            _parse_event_text(
+                json.dumps({"content": [{"type": "text", "text": "材料证据"}]}, ensure_ascii=False),
+                "stream_json",
+            )
+            == "材料证据"
+        )
+        assert _parse_event_text(json.dumps({"type": "message_start", "index": 0}), "stream_json") == ""

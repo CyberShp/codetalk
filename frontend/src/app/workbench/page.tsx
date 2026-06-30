@@ -16,8 +16,6 @@ import {
   MessageSquareText,
 } from "lucide-react";
 import { AnimatePresence, motion } from "framer-motion";
-import gsap from "gsap";
-import { useGSAP } from "@gsap/react";
 import { api } from "@/lib/api";
 import type {
   EvidenceMemoryItem,
@@ -49,8 +47,6 @@ import type {
   WorkbenchTaskArtifactManifest,
   WorkflowDraftServerAudit,
 } from "@/lib/types";
-
-gsap.registerPlugin(useGSAP);
 
 const DEFAULT_WORKFLOW = {
   id: "mr-blackbox-workflow",
@@ -1976,26 +1972,6 @@ export default function AgentWorkbenchPage() {
   const [message, setMessage] = useState<string | null>(null);
   const [openingConversation, setOpeningConversation] = useState(false);
   const [error, setError] = useState<string | null>(null);
-
-  useGSAP(
-    () => {
-      const root = workbenchRootRef.current;
-      if (!root || window.matchMedia("(prefers-reduced-motion: reduce)").matches) return;
-
-      const handlePointerMove = (event: PointerEvent) => {
-        const bounds = root.getBoundingClientRect();
-        gsap.set(root, {
-          "--ct-wb-x": `${event.clientX - bounds.left}px`,
-          "--ct-wb-y": `${event.clientY - bounds.top}px`,
-        });
-      };
-
-      root.addEventListener("pointermove", handlePointerMove, { passive: true });
-
-      return () => root.removeEventListener("pointermove", handlePointerMove);
-    },
-    { scope: workbenchRootRef },
-  );
 
   const workflowOptions = useMemo(
     () => workflows.map((workflow) => ({

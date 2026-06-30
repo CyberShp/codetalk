@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import json
 import os
+import re
 from collections.abc import AsyncIterator
 from pathlib import Path
 from typing import Any
@@ -150,27 +151,93 @@ async def _read_stdout(proc: asyncio.subprocess.Process, output_mode: str) -> As
 
 
 def _parse_event_text(text: str, output_mode: str) -> str | None:
-    stripped = text.strip()
+    stripped = _clean_agent_text(text).strip()
     if not stripped:
         return ""
     try:
         event = json.loads(stripped)
     except json.JSONDecodeError:
-        return None if output_mode != "plain" else text
+        return None if output_mode != "plain" else stripped
     if isinstance(event, str):
-        return event
+        return _clean_agent_text(event)
     if not isinstance(event, dict):
         return None
+    unwrapped = _event_text(event)
+    if unwrapped is not None:
+        return _clean_agent_text(unwrapped)
+    if _looks_like_protocol_noise(event):
+        return ""
+    return None
+
+
+def _event_text(event: dict[str, Any]) -> str | None:
     for key in ("delta", "text", "content", "message"):
         value = event.get(key)
         if isinstance(value, str):
             return value
+        if isinstance(value, dict):
+            nested = _event_text(value)
+            if nested is not None:
+                return nested
+        if isinstance(value, list):
+            parts = _content_parts(value)
+            if parts:
+                return "".join(parts)
     part = event.get("part")
     if isinstance(part, dict):
         value = part.get("text") or part.get("content")
         if isinstance(value, str):
             return value
+    choices = event.get("choices")
+    if isinstance(choices, list):
+        parts: list[str] = []
+        for choice in choices:
+            if not isinstance(choice, dict):
+                continue
+            for key in ("delta", "message"):
+                value = choice.get(key)
+                if isinstance(value, dict):
+                    nested = _event_text(value)
+                    if nested:
+                        parts.append(nested)
+            direct = choice.get("text")
+            if isinstance(direct, str):
+                parts.append(direct)
+        if parts:
+            return "".join(parts)
+    candidates = event.get("candidates")
+    if isinstance(candidates, list):
+        parts = []
+        for candidate in candidates:
+            if isinstance(candidate, dict):
+                nested = _event_text(candidate)
+                if nested:
+                    parts.append(nested)
+        if parts:
+            return "".join(parts)
     return None
+
+
+def _content_parts(value: list[Any]) -> list[str]:
+    parts: list[str] = []
+    for item in value:
+        if isinstance(item, str):
+            parts.append(item)
+        elif isinstance(item, dict):
+            text = item.get("text") or item.get("content")
+            if isinstance(text, str):
+                parts.append(text)
+    return parts
+
+
+def _looks_like_protocol_noise(event: dict[str, Any]) -> bool:
+    keys = set(event)
+    if not keys:
+        return True
+    if keys <= {"id", "index", "created", "created_at", "model", "object", "type", "role", "finish_reason", "usage"}:
+        return True
+    event_type = str(event.get("type") or event.get("event") or "")
+    return event_type in {"message_start", "message_stop", "content_block_start", "content_block_stop", "done"}
 
 
 def _probe_args(runtime: dict[str, Any], args: list[str]) -> list[str]:
@@ -190,7 +257,17 @@ def _build_env(runtime: dict[str, Any]) -> dict[str, str]:
 
 
 def _decode(value: bytes) -> str:
-    return value.decode("utf-8", "replace")
+    return _clean_agent_text(value.decode("utf-8", "replace"))
+
+
+_ANSI_RE = re.compile(r"\x1b\[[0-?]*[ -/]*[@-~]|\x1b\][^\x07]*(?:\x07|\x1b\\)")
+_CONTROL_RE = re.compile(r"[\x00-\x08\x0b\x0c\x0e-\x1f\x7f]")
+
+
+def _clean_agent_text(value: str) -> str:
+    cleaned = _ANSI_RE.sub("", value)
+    cleaned = cleaned.replace("\r", "\n")
+    return _CONTROL_RE.sub("", cleaned)
 
 
 def resolve_agent_cwd(runtime: dict[str, Any], *, repo_path: str | None) -> str | None:

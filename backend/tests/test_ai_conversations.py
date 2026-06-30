@@ -2,6 +2,7 @@ import asyncio
 import json
 from contextlib import asynccontextmanager
 from datetime import datetime, timezone
+from pathlib import Path
 
 import aiosqlite
 import pytest
@@ -62,6 +63,23 @@ class FakeLLM:
         yield "可以继续追问。"
         await asyncio.sleep(0)
         yield "建议补充异常路径和边界值。"
+
+
+class SourceMaterialAssertingLLM:
+    def __init__(self) -> None:
+        self.joined = ""
+
+    async def stream_complete(self, messages, max_tokens=4096, temperature=0.3):
+        self.joined = "\n".join(str(m.get("content", "")) for m in messages)
+        assert "workspace_material" in self.joined
+        assert "requirements.md" in self.joined
+        assert "必须覆盖 reconnect timeout" in self.joined
+        assert "workspace_source" in self.joined
+        assert "lib/nvmf/connect.c" in self.joined
+        assert "spdk_nvmf_connect_probe" in self.joined
+        assert self.joined.index("workspace_material") < self.joined.index("workspace_report")
+        assert self.joined.index("workspace_source") < self.joined.index("workspace_report")
+        yield "已基于源码和材料回答。"
 
 
 class HangingStreamLLM:
@@ -131,6 +149,81 @@ class TestAIConversationsAPI:
             assert listed.status_code == 200
             items = listed.json()["items"]
             assert [item["id"] for item in items] == [body_a["id"]]
+
+    async def test_workspace_thread_prioritizes_active_materials_and_source_refs(
+        self,
+        sqlite_db,
+        tmp_path: Path,
+        monkeypatch,
+    ):
+        repo = tmp_path / "repo"
+        src = repo / "lib" / "nvmf"
+        src.mkdir(parents=True)
+        (src / "connect.c").write_text(
+            "\n".join(
+                [
+                    "int spdk_nvmf_connect_probe(void) {",
+                    "    return 42;",
+                    "}",
+                ]
+            ),
+            encoding="utf-8",
+        )
+        material = repo / "requirements.md"
+        material.write_text("# 输入材料\n\n必须覆盖 reconnect timeout。\n", encoding="utf-8")
+        ws_id = "ws-source-material"
+        now = datetime.now(timezone.utc).isoformat()
+        async with aiosqlite.connect(sqlite_db) as db:
+            await db.execute(
+                "INSERT INTO workspaces (id, name, repo_path, indexed, created_at, updated_at) "
+                "VALUES (?, 'Source Material WS', ?, 1, ?, ?)",
+                (ws_id, str(repo), now, now),
+            )
+            await db.execute(
+                "INSERT INTO workspace_materials (id, workspace_id, filename, content_type, file_path, is_active, created_at) "
+                "VALUES ('mat-source', ?, 'requirements.md', 'requirements', ?, 1, ?)",
+                (ws_id, str(material), now),
+            )
+            await db.execute(
+                "INSERT INTO workspace_reports "
+                "(id, workspace_id, report_type, title, content, status, created_at) "
+                "VALUES ('report-source', ?, 'analysis', '旧报告', 'workspace_report should be lower priority', 'completed', ?)",
+                (ws_id, now),
+            )
+            await db.commit()
+
+        from app.api import ai_conversations
+
+        fake_llm = SourceMaterialAssertingLLM()
+        monkeypatch.setattr(ai_conversations, "create_llm_client_from_active", lambda: fake_llm)
+        app = _test_app(sqlite_db)
+        async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+            created = await client.post(
+                "/api/ai/conversations",
+                json={"scope_type": "workspace", "scope_id": ws_id, "title": "源码材料优先"},
+            )
+            assert created.status_code == 201
+            conversation = created.json()
+
+            posted = await client.post(
+                f"/api/ai/conversations/{conversation['id']}/messages",
+                json={"content": "请读取 lib/nvmf connect 并分析 reconnect timeout 测试"},
+            )
+            assert posted.status_code == 202
+            refs = posted.json()["references"]
+            assert [ref["source_type"] for ref in refs[:2]] == ["workspace_material", "workspace_source"]
+
+            for _ in range(30):
+                messages = await client.get(f"/api/ai/conversations/{conversation['id']}/messages")
+                items = messages.json()["items"]
+                if len(items) == 2:
+                    break
+                await asyncio.sleep(0.1)
+
+            messages = await client.get(f"/api/ai/conversations/{conversation['id']}/messages")
+            body = messages.json()
+            assert [item["role"] for item in body["items"]] == ["user", "assistant"]
+            assert "已基于源码和材料回答" in body["items"][1]["content"]
 
     async def test_legacy_conversation_backfills_workspace_namespace(self, sqlite_db):
         ws_id = await _seed_workspace(sqlite_db, "legacy-ws")

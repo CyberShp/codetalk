@@ -610,7 +610,6 @@ body {
     linear-gradient(90deg, rgba(100, 116, 139, 0.075) 1px, transparent 1px);
   background-size: 42px 42px;
   mask-image: linear-gradient(115deg, transparent 0%, #000 22%, #000 68%, transparent 100%);
-  animation: ct-grid-glide 18s linear infinite;
 }
 
 .ct-atmosphere__ribbon {
@@ -632,8 +631,6 @@ body {
   filter: blur(38px);
   opacity: 0.54;
   mix-blend-mode: multiply;
-  will-change: transform, opacity;
-  animation: ct-halo-orbit 12s var(--motion-ease) infinite;
 }
 
 .ct-atmosphere__halo-a {
@@ -648,8 +645,6 @@ body {
   bottom: 8vh;
   background:
     radial-gradient(circle at 55% 45%, rgba(255, 255, 255, 0.9), rgba(203, 213, 225, 0.2) 38%, rgba(148, 163, 184, 0.12) 58%, transparent 72%);
-  animation-duration: 15s;
-  animation-direction: reverse;
 }
 
 .ct-atmosphere__ribbon-a {
