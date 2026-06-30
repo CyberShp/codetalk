@@ -675,34 +675,40 @@ class NativeDeployer:
             )
 
         if cfg.get("install_cgc", True):
-            await self._ensure_cgc(step)
-            cgc_cmd = self._resolve_cgc_cmd()
-            if cgc_cmd:
-                cgc_port = self._config_port("cgc_port", _CGC_DEFAULT_PORT)
-                await self._release_ports([cgc_port], step, force_takeover=force_takeover)
-                # PATCH: tell CGC which paths it's allowed to index.
-                # Without this, CGC's path-traversal guard rejects any repo
-                # outside cwd (~/.codegraphcontext/) with WSAEACCES-equivalent error.
-                # Allow the entire codetalks-Test workspace root (PROJECT_ROOT.parent)
-                # plus the user's home dir for CGC's own state files.
-                _cgc_allowed_roots = ";".join([
-                    str(PROJECT_ROOT.parent),
-                    os.path.expanduser("~"),
-                ])
-                await self._start_process(
-                    "cgc",
-                    [*cgc_cmd, "api", "start", "--host", "127.0.0.1", "--port", str(cgc_port)],
-                    cwd=self._cgc_cwd(),
-                    step_name="start_services",
-                    step_index=step,
-                    env_extra={"CGC_ALLOWED_ROOTS": _cgc_allowed_roots},
-                )
-            else:
+            try:
+                await self._ensure_cgc(step)
+                cgc_cmd = self._resolve_cgc_cmd()
+                if cgc_cmd:
+                    cgc_port = self._config_port("cgc_port", _CGC_DEFAULT_PORT)
+                    await self._release_ports([cgc_port], step, force_takeover=force_takeover)
+                    # Tell CGC which paths it may index; otherwise its path guard rejects
+                    # repos outside the CGC cwd.
+                    _cgc_allowed_roots = ";".join([
+                        str(PROJECT_ROOT.parent),
+                        os.path.expanduser("~"),
+                    ])
+                    await self._start_process(
+                        "cgc",
+                        [*cgc_cmd, "api", "start", "--host", "127.0.0.1", "--port", str(cgc_port)],
+                        cwd=self._cgc_cwd(),
+                        step_name="start_services",
+                        step_index=step,
+                        env_extra={"CGC_ALLOWED_ROOTS": _cgc_allowed_roots},
+                    )
+                else:
+                    await self._emit(
+                        "start_services", "running",
+                        "CGC 启动已跳过：Python 解释器未找到（安装尝试后仍缺失或路径未配置）。"
+                        "请确认 cgc-venv 存在且包含有效的 python.exe，或在部署配置中设置 cgcVenvPath。",
+                        step,
+                    )
+            except Exception as exc:
+                self._processes.pop("cgc", None)
+                self._start_args.pop("cgc", None)
                 await self._emit(
-                    "start_services", "running",
-                    "⚠️ CGC Python 解释器未找到（安装尝试后仍缺失或路径未配置），跳过 CGC 启动。"
-                    "请确认 cgc-venv 存在且包含有效的 python.exe，"
-                    "或在部署配置中设置 cgcVenvPath。",
+                    "start_services",
+                    "running",
+                    f"CGC 启动已跳过：{exc}。核心服务将继续启动；需要调用链/符号图能力时再修复 CGC 配置。",
                     step,
                 )
 

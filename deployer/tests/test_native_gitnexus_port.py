@@ -126,6 +126,46 @@ class NativeDeployerTests(unittest.IsolatedAsyncioTestCase):
             ],
         )
 
+    async def test_start_services_keeps_core_running_when_cgc_install_fails(self) -> None:
+        """CGC is an optional enhancer; install failure must not fail CodeTalk startup."""
+        queue: asyncio.Queue = asyncio.Queue()
+        deployer = NativeDeployer(
+            {
+                "backend_port": 3004,
+                "frontend_port": 3003,
+                "install_gitnexus": False,
+                "install_cgc": True,
+                "dev_mode": True,
+            },
+            queue,
+        )
+        started: list[str] = []
+
+        async def fake_release_ports(*args, **kwargs) -> None:
+            return None
+
+        async def fake_start_process(name, *args, **kwargs) -> None:
+            started.append(name)
+
+        async def fake_ensure_cgc(step: int) -> None:
+            raise RuntimeError("offline wheelhouse missing")
+
+        with (
+            patch.object(deployer, "_release_ports", fake_release_ports),
+            patch.object(deployer, "_start_process", fake_start_process),
+            patch.object(deployer, "_ensure_cgc", fake_ensure_cgc),
+        ):
+            await deployer._step_start_services()
+
+        self.assertEqual(started, ["backend", "frontend"])
+
+        events = []
+        while not queue.empty():
+            events.append(await queue.get())
+        messages = "\n".join(str(event.get("message", "")) for event in events)
+        self.assertIn("CGC 启动已跳过", messages)
+        self.assertIn("offline wheelhouse missing", messages)
+
 
 if __name__ == "__main__":
     unittest.main()

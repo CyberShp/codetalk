@@ -1,92 +1,62 @@
-# Local Folder Analysis — Docker Mode Configuration
+# Local Folder Analysis
 
-This guide explains how to configure CodeTalks to analyze **local directories** (not GitHub repos)
-when running in Docker Compose mode.
+This guide explains how CodeTalk analyzes local source directories in the
+current runtime.
 
-## Problem
+## Current Runtime
 
-When a user enters a local path (e.g. `D:\projects\myapp`) instead of a GitHub URL,
-CodeTalks calls deepwiki's `/local_repo/structure` endpoint with that path.
-By default, the deepwiki container cannot see the host's filesystem, so the path is
-unreachable and a 404 error is returned.
+CodeTalk no longer deploys or manages DeepWiki. Local folder analysis is handled
+by the CodeTalk backend, GitNexus, AI threads, and Workbench workflows.
 
-## Solution: Mount the Local Repos Directory
+Default local ports:
 
-You need to tell Docker Compose which host directory to mount into the containers.
+| Service | Default |
+|---|---:|
+| Frontend | 3003 |
+| Backend API | 3004 |
+| GitNexus | 7100 |
+| CGC optional enhancer | 7072 |
 
-### Step 1 — Set `LOCAL_REPOS_HOST_PATH` in `.env`
+## Host-Run Mode
 
-Open your `.env` file (copy from `.env.example` if you haven't yet) and add:
+No extra mount configuration is required. The backend reads paths that exist on
+the host.
 
-**Windows host:**
-```env
-LOCAL_REPOS_HOST_PATH=D:\projects
+Use the exact local path when creating a workspace, for example:
+
+```text
+/Volumes/Media/dpdk/spdk
 ```
 
-**Linux / macOS host:**
-```env
-LOCAL_REPOS_HOST_PATH=/home/yourname/projects
-```
+If the path is wrong, the UI should report that the directory does not exist.
 
-> Set this to the **parent directory** that contains your local repos,
-> not to a specific repo. All subdirectories become accessible.
+## Deployer Mode
 
-### Step 2 — Restart the containers
+Use `deployer/start.sh` or `deployer/start.bat`, then choose native deployment.
+The deployer writes:
 
-```bash
-docker compose down
-docker compose up -d
-```
+- `backend/.env`
+- `frontend/.env.local`
+- the deployer local config file
 
-Docker Compose picks up `LOCAL_REPOS_HOST_PATH` from `.env` automatically and mounts it
-at `/local_repos` inside both the `backend` and `deepwiki` containers.
-
-### Step 3 — Analyze a local folder
-
-In the CodeTalks UI, enter the full local path to the repo you want to analyze.
-The path must be **under** `LOCAL_REPOS_HOST_PATH`:
-
-| `LOCAL_REPOS_HOST_PATH` | Analyzable paths |
-|---|---|
-| `D:\projects` | `D:\projects\myapp`, `D:\projects\another-repo` |
-| `/home/user/work` | `/home/user/work/service-a`, `/home/user/work/service-b` |
-
-## What happens without configuration
-
-If `LOCAL_REPOS_HOST_PATH` is not set and a user enters a local path, the backend returns
-a clear error:
-
-```
-Directory not found in deepwiki container: /some/path.
-In Docker mode, set LOCAL_REPOS_HOST_PATH in .env to the host directory
-containing your local repos, then restart containers.
-See docs/LOCAL_DEPLOYMENT.md for details.
-```
-
-## Host-run (non-Docker) mode
-
-No extra configuration needed. The backend reads the host filesystem directly,
-so any path that exists on the host is accessible. `LOCAL_REPOS_HOST_PATH` is ignored
-when not running in Docker.
-
-## Environment variables reference
-
-| Variable | Default | Description |
-|---|---|---|
-| `LOCAL_REPOS_HOST_PATH` | _(empty)_ | Host directory to mount for local repo analysis |
-| `LOCAL_REPOS_CONTAINER_PATH` | `/local_repos` | Container mount point (rarely needs changing) |
-| `REPOS_BASE_PATH` | _(auto)_ | Host path to the managed `.repos` clone directory |
+GitNexus and CGC are installed under the configured workspace directory. CGC is
+optional: if its install/startup fails, CodeTalk should still start
+backend/frontend/GitNexus and show a clear warning in the deploy log.
 
 ## Troubleshooting
 
-**Still getting 404 after setting `LOCAL_REPOS_HOST_PATH`?**
+**Backend or frontend port conflict**
 
-1. Confirm the variable is in `.env` (not only in `.env.local`).
-2. Run `docker compose config | grep local_repos` to verify the variable is expanded.
-3. Check the mount is present: `docker exec codetalk-backend-1 ls /local_repos`
-4. Ensure the path you analyze starts with `LOCAL_REPOS_HOST_PATH` exactly.
+Change the ports in the deployer advanced settings, or use force takeover when
+you are sure the running process belongs to the previous local deployment.
 
-**Path not matching on Windows?**
+**CGC install or startup failure**
 
-Use backslashes in `.env`: `LOCAL_REPOS_HOST_PATH=D:\projects`
-(Docker Desktop for Windows translates this correctly.)
+Core CodeTalk can still run. Fix CGC only when you need symbol graph or call-chain
+enhancement. Check the deploy log for the exact Python environment or wheelhouse
+error.
+
+**Local path not found**
+
+Confirm the path exists on the same machine that runs the backend. In native
+deployment, no container path translation is needed.
