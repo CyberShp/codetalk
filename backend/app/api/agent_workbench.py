@@ -4965,6 +4965,14 @@ def _black_box_case_quality_reasons(case: dict[str, Any]) -> list[str]:
         or case.get("triage")
         or case.get("debug_hints")
     )
+    test_directory = str(
+        case.get("suggested_spdk_test_dir")
+        or case.get("suggested_test_directory")
+        or case.get("test_directory")
+        or case.get("test_dir")
+        or case.get("mapped_test_dir")
+        or ""
+    ).strip()
     if not steps:
         reasons.append("missing_steps")
     if not expected:
@@ -4975,6 +4983,8 @@ def _black_box_case_quality_reasons(case: dict[str, Any]) -> list[str]:
         reasons.append("missing_observability")
     if not diagnostics:
         reasons.append("missing_diagnostics")
+    if not test_directory.startswith("test/"):
+        reasons.append("missing_test_directory_mapping")
     boundary_text = " ".join([
         str(case.get("title") or ""),
         str(case.get("scenario") or ""),
@@ -4984,6 +4994,7 @@ def _black_box_case_quality_reasons(case: dict[str, Any]) -> list[str]:
         " ".join(preconditions),
         " ".join(observability),
         " ".join(diagnostics),
+        test_directory,
     ])
     if _BLACK_BOX_WHITE_BOX_RE.search(boundary_text):
         reasons.append("white_box_boundary")
