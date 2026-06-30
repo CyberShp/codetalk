@@ -313,6 +313,13 @@ test("persists semantic cases and evidence source slices through the real workbe
   await expect(page.getByText(/lib\/nvmf\/tcp\.c:1-/)).toBeVisible();
   await expect(page.getByText("verified_current")).toBeVisible();
   await expect(page.getByText("int nvmf_tcp_connect(void) {")).toBeVisible();
+
+  fs.unlinkSync(path.join(repo, "lib", "nvmf", "tcp.c"));
+  await page.getByRole("button", { name: "源码切片" }).hover();
+  await page.getByRole("button", { name: "源码切片" }).click();
+  await expect(page.getByText("源码切片已加载: 1")).toBeVisible({ timeout: 15_000 });
+  await expect(page.getByText("file_missing").first()).toBeVisible();
+  await expect(page.getByText("verified_current")).toHaveCount(0);
 });
 
 test("executes resource leak hunt and previews materialized artifacts through the real workbench UI", async ({
