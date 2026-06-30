@@ -407,6 +407,61 @@ test.describe("Workspace smoke tests", () => {
     });
   });
 
+  test("prevents duplicate workspace reindex requests from a real double click", async ({
+    page,
+    request,
+  }) => {
+    const repo = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), "codetalk-double-reindex-")));
+    fs.mkdirSync(path.join(repo, "lib", "nvmf"), { recursive: true });
+    fs.writeFileSync(path.join(repo, "README.md"), "double reindex workspace e2e\n", "utf8");
+    fs.writeFileSync(
+      path.join(repo, "lib", "nvmf", "double_reindex.c"),
+      "int codetalk_double_reindex_probe(void) { return 11; }\n",
+      "utf8",
+    );
+    const workspaceName = `double-reindex-${Date.now()}`;
+
+    await page.goto("/workspaces/new", { waitUntil: "domcontentloaded" });
+    await page.getByPlaceholder(/项目 A/).fill(workspaceName);
+    await page.getByPlaceholder(/本地文件夹路径/).fill(repo);
+    await page.getByRole("button", { name: "创建工作空间" }).hover();
+    await page.getByRole("button", { name: "创建工作空间" }).click();
+    await page.waitForURL(/\/workspaces\/[0-9a-f-]{36}$/, { timeout: 30_000 });
+    const workspaceId = page.url().split("/").pop() ?? "";
+    await expect(page.getByText(workspaceName)).toBeVisible({ timeout: 30_000 });
+    await expect(page.getByText("已索引")).toBeVisible({ timeout: 120_000 });
+
+    const reindexRequests: string[] = [];
+    page.on("request", (req) => {
+      if (
+        req.method() === "POST" &&
+        new URL(req.url()).pathname === `/api/workspaces/${workspaceId}/reindex`
+      ) {
+        reindexRequests.push(req.url());
+      }
+    });
+    const firstReindex = page.waitForRequest(
+      (req) =>
+        req.method() === "POST" &&
+        new URL(req.url()).pathname === `/api/workspaces/${workspaceId}/reindex`,
+    );
+
+    const reindexButton = page.getByRole("button", { name: "重新索引" });
+    await reindexButton.hover();
+    await reindexButton.dblclick();
+    await firstReindex;
+
+    await expect(page.getByText(/索引中/)).toBeVisible({ timeout: 15_000 });
+    await expect(page.getByText("已索引")).toBeVisible({ timeout: 120_000 });
+    await expect.poll(() => reindexRequests.length).toBe(1);
+
+    const workspaceResp = await request.get(`${backendBase}/api/workspaces/${workspaceId}`);
+    expect(workspaceResp.ok()).toBeTruthy();
+    const workspace = (await workspaceResp.json()) as { indexed: number; repo_path: string };
+    expect(workspace.indexed).toBe(1);
+    expect(workspace.repo_path).toBe(repo);
+  });
+
   test("workspace API returns list", async ({ request }) => {
     const resp = await request.get(`${backendBase}/api/workspaces`);
     expect(resp.ok()).toBeTruthy();
