@@ -184,3 +184,86 @@ test("executes resource leak hunt and previews materialized artifacts through th
     .first();
   await expect(testHooksArtifact).toBeVisible();
 });
+
+test("executes patch impact review and previews flow impact artifacts through the real workbench UI", async ({
+  page,
+}) => {
+  const repo = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), "codetalk-patch-impact-")));
+  fs.mkdirSync(path.join(repo, "lib", "bdev"), { recursive: true });
+  fs.mkdirSync(path.join(repo, "test", "bdev"), { recursive: true });
+  fs.writeFileSync(
+    path.join(repo, "lib", "bdev", "bdev.c"),
+    "int spdk_bdev_submit_request(void) { return 0; }\n",
+    "utf8",
+  );
+  const patchDiff = [
+    "diff --git a/lib/bdev/bdev.c b/lib/bdev/bdev.c",
+    "index 0000000..1111111 100644",
+    "--- a/lib/bdev/bdev.c",
+    "+++ b/lib/bdev/bdev.c",
+    "@@ -1,1 +1,1 @@",
+    "-int spdk_bdev_submit_request(void) { return 0; }",
+    "+int spdk_bdev_submit_request(void) { return -22; }",
+  ].join("\n");
+
+  await page.goto("/workbench", { waitUntil: "domcontentloaded" });
+  await page.getByRole("button", { name: "工作流设计" }).hover();
+  await page.getByRole("button", { name: "工作流设计" }).click();
+  await page.getByLabel("工作流预设").selectOption("patch_impact_review");
+  await page.getByRole("button", { name: "安装预设" }).hover();
+  await page.getByRole("button", { name: "安装预设" }).click();
+  await expect(page.getByText("预设已安装: 补丁影响面评审工作流")).toBeVisible({
+    timeout: 15_000,
+  });
+
+  await page.getByRole("button", { name: "运行驾驶舱" }).hover();
+  await page.getByRole("button", { name: "运行驾驶舱" }).click();
+  await page.getByLabel("Repo path").fill(repo);
+  await page.getByLabel("Inputs JSON").fill(
+    JSON.stringify(
+      {
+        patch_diff: patchDiff,
+        repo_path: repo,
+      },
+      null,
+      2,
+    ),
+  );
+
+  await page.getByRole("button", { name: "准备运行" }).hover();
+  await page.getByRole("button", { name: "准备运行" }).click();
+  await expect(page.getByText(/Task run prepared:/)).toBeVisible({ timeout: 15_000 });
+  await expect(page.getByRole("button", { name: "执行工作流" })).toBeEnabled({
+    timeout: 15_000,
+  });
+  await page.getByRole("button", { name: "执行工作流" }).hover();
+  await page.getByRole("button", { name: "执行工作流" }).click();
+  await expect(page.getByText(/Workflow execution completed:/)).toBeVisible({
+    timeout: 30_000,
+  });
+  await expect(page.getByText(/工作流: completed/)).toBeVisible();
+
+  const impactArtifact = page
+    .getByRole("button")
+    .filter({ hasText: /impact_scope\.json/ })
+    .first();
+  await expect(impactArtifact).toBeVisible({ timeout: 15_000 });
+  await impactArtifact.hover();
+  await impactArtifact.click();
+  await expect(page.getByText("impact_scope.json").first()).toBeVisible();
+  await expect(page.getByText("local-patch-impact").first()).toBeVisible();
+  await expect(page.getByText("lib/bdev/bdev.c").first()).toBeVisible();
+  await expect(page.getByText("spdk_bdev_submit_request").first()).toBeVisible();
+  await expect(page.getByText(/test\/bdev/).first()).toBeVisible();
+
+  const flowDeltaArtifact = page
+    .getByRole("button")
+    .filter({ hasText: /flow_delta\.json/ })
+    .first();
+  await expect(flowDeltaArtifact).toBeVisible();
+  const testRecommendationsArtifact = page
+    .getByRole("button")
+    .filter({ hasText: /test_recommendations\.json/ })
+    .first();
+  await expect(testRecommendationsArtifact).toBeVisible();
+});
