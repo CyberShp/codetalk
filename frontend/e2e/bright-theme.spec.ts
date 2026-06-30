@@ -11,13 +11,6 @@ function luminance(rgb: string): number {
 }
 
 test("global app shell uses a bright professional testing theme", async ({ page }) => {
-  await page.route("http://localhost:8100/api/workspaces", async (route) => {
-    await route.fulfill({ json: [] });
-  });
-  await page.route("http://localhost:8100/api/deepwiki/repos", async (route) => {
-    await route.fulfill({ json: [] });
-  });
-
   await page.goto("/");
   await expect(page.getByRole("heading", { name: "CODETALK", exact: true })).toBeVisible();
 
