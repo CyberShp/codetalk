@@ -656,7 +656,13 @@ export default function AIThreadPage() {
           </h2>
           <div className="ct-ai-side-actions">
             {["沉淀到当前项目记忆", "加入测试设计", "生成复跑建议"].map((action) => (
-              <button key={action} type="button" className="ct-ai-action" onClick={() => setInput(action)}>
+              <button
+                key={action}
+                type="button"
+                className="ct-ai-action"
+                onClick={() => setInput(action)}
+                disabled={composerDisabled}
+              >
                 {action}
               </button>
             ))}

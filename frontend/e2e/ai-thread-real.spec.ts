@@ -190,6 +190,9 @@ test("cancels a running agent-runtime AI thread through the real UI", async ({
     await expect(page.getByRole("button", { name: "补充黑盒边界条件和异常路径" })).toBeDisabled();
     await expect(page.getByRole("button", { name: "新建线程" })).toBeDisabled();
     await expect(page.getByRole("button", { name: "导出" })).toBeDisabled();
+    await expect(page.getByRole("button", { name: "沉淀到当前项目记忆" })).toBeDisabled();
+    await expect(page.getByRole("button", { name: "加入测试设计" })).toBeDisabled();
+    await expect(page.getByRole("button", { name: "生成复跑建议" })).toBeDisabled();
 
     await page.getByRole("button", { name: "停止" }).hover();
     await page.getByRole("button", { name: "停止" }).click();
