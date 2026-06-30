@@ -63,6 +63,9 @@ async def test_app_js_served(client):
     ct = resp.headers.get("content-type", "")
     assert "javascript" in ct or "text/" in ct
     assert "deepwiki" not in resp.text.lower()
+    assert "function errorDetailMessage(detail, fallback)" in resp.text
+    assert "showServiceActionMessage('error'" in resp.text
+    assert "[object Object]" not in resp.text
 
 
 async def test_start_app_js_has_no_deepwiki_service(client):

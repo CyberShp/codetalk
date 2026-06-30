@@ -1713,6 +1713,35 @@ input, select, textarea {
   border-color: rgba(239, 68, 68, 0.5);
 }
 
+.service-action-message {
+  display: none;
+  width: min(100%, 720px);
+  margin: 0 auto;
+  padding: 0.75rem 0.875rem;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md);
+  background: rgba(15, 23, 42, 0.58);
+  color: var(--text-secondary);
+  font-size: 0.875rem;
+  line-height: 1.45;
+}
+
+.service-action-message.visible {
+  display: block;
+}
+
+.service-action-message.error {
+  border-color: rgba(239, 68, 68, 0.42);
+  background: rgba(127, 29, 29, 0.18);
+  color: #fecaca;
+}
+
+.service-action-message.success {
+  border-color: rgba(34, 197, 94, 0.38);
+  background: rgba(20, 83, 45, 0.16);
+  color: #bbf7d0;
+}
+
 .health-result {
   background: var(--bg-card);
   border: 1px solid var(--border);
