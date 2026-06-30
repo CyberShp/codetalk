@@ -8,7 +8,7 @@ const backendBase = `http://localhost:${process.env.CODETALK_BACKEND_PORT ?? "30
 test("creates an AI investigation thread from the project hub and restores it after refresh", async ({
   page,
   request,
-}) => {
+}, testInfo) => {
   const repo = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), "codetalk-ai-thread-")));
   fs.writeFileSync(path.join(repo, "README.md"), "AI thread real e2e workspace\n", "utf8");
   const workspaceName = `ai-thread-e2e-${Date.now()}`;
@@ -35,6 +35,7 @@ test("creates an AI investigation thread from the project hub and restores it af
 
   await page.waitForURL(/\/ai\/[^/]+$/, { timeout: 15_000 });
   const threadUrl = page.url();
+  const threadId = threadUrl.split("/").pop() ?? "";
   await expect(page.getByRole("heading", { name: threadTitle })).toBeVisible({ timeout: 15_000 });
   await expect(page.getByText("直接提问。这个线程会持续保存")).toBeVisible();
   const composer = page.getByPlaceholder(/像 Codex 一样继续追问/);
@@ -61,6 +62,24 @@ test("creates an AI investigation thread from the project hub and restores it af
   await expect(page.locator(".ct-codex-message.is-user").filter({ hasText: prompt })).toHaveCount(2);
   await expect(alert).toBeVisible({ timeout: 20_000 });
 
+  const downloadPromise = page.waitForEvent("download");
+  await page.getByRole("button", { name: "导出" }).hover();
+  await page.getByRole("button", { name: "导出" }).click();
+  const download = await downloadPromise;
+  expect(download.suggestedFilename()).toMatch(new RegExp(`${workspaceName}.*\\.md$`));
+  const exportPath = testInfo.outputPath("real-ai-thread-failure-export.md");
+  await download.saveAs(exportPath);
+  const exported = fs.readFileSync(exportPath, "utf8");
+  expect(exported).toContain(`# ${threadTitle}`);
+  expect(exported).toContain("## 最近失败");
+  expect(exported).toContain("LLM 不可用");
+  expect(exported).toContain("未配置活跃的聊天模型");
+  expect(exported).toContain(prompt);
+  expect(exported.match(/## 用户/g)?.length).toBe(2);
+  expect(exported).not.toMatch(/sk-[A-Za-z0-9_-]{12,}/);
+  expect(exported).not.toMatch(/Authorization:\s*Bearer\s+[^\s"']+/i);
+  expect(exported).not.toMatch(/(?:api[-_]?key|token|secret|password)=['"]?[^\s"']+/i);
+
   await page.goto("/ai", { waitUntil: "domcontentloaded" });
   await projectButton.hover();
   await projectButton.click();
@@ -78,4 +97,12 @@ test("creates an AI investigation thread from the project hub and restores it af
       expect.objectContaining({ title: threadTitle, workspace_id: workspace.id }),
     ]),
   );
+
+  const messagesResp = await request.get(
+    `${backendBase}/api/ai/conversations/${encodeURIComponent(threadId)}/messages`,
+  );
+  expect(messagesResp.ok()).toBeTruthy();
+  const messageBody = (await messagesResp.json()) as { items: Array<{ role: string; content: string }> };
+  expect(messageBody.items.filter((item) => item.role === "user" && item.content === prompt)).toHaveLength(2);
+  expect(messageBody.items.filter((item) => item.role === "assistant")).toHaveLength(0);
 });
