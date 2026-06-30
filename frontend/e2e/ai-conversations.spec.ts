@@ -164,6 +164,7 @@ test("AI conversation page is a wide persistent reading surface", async ({ page 
 
 test("AI conversation shows latest failed run reason instead of going silent", async ({ page }) => {
   let retryPosted = false;
+  const secret = "agent-export-secret-value";
   await page.route("**/api/workspaces", async (route) => {
     await route.fulfill({
       headers: jsonHeaders(route.request().headers().origin),
@@ -213,7 +214,7 @@ test("AI conversation shows latest failed run reason instead of going silent", a
           conversation_id: "conv-error",
           status: "failed",
           cursor: 1,
-          error: "LLM 不可用：未配置活跃的聊天模型，请先在设置中选择 LLM 模型",
+          error: `LLM 不可用：未配置活跃的聊天模型，请先在设置中选择 LLM 模型；token=<redacted>`,
           model: null,
           token_usage: {},
           created_at: "2026-06-28T00:00:01Z",
@@ -309,6 +310,19 @@ test("AI conversation shows latest failed run reason instead of going silent", a
   await page.goto("/ai/conv-error");
 
   await expect(page.locator(".ct-codex-ai__error")).toContainText("未配置活跃的聊天模型");
+  await expect(page.locator(".ct-codex-ai__error")).not.toContainText(secret);
+
+  const downloadPromise = page.waitForEvent("download");
+  await page.getByRole("button", { name: "导出" }).click();
+  const download = await downloadPromise;
+  const exportPath = test.info().outputPath("ai-thread-failed-export.md");
+  await download.saveAs(exportPath);
+  const exported = fs.readFileSync(exportPath, "utf8");
+  expect(exported).toContain("## 最近失败");
+  expect(exported).toContain("未配置活跃的聊天模型");
+  expect(exported).toContain("<redacted>");
+  expect(exported).not.toContain(secret);
+
   await page.getByRole("button", { name: "重试上一条" }).click();
   await expect.poll(() => retryPosted).toBe(true);
   await expect(page.getByText("重试已启动。")).toBeVisible();

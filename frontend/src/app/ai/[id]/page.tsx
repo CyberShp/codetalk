@@ -43,7 +43,7 @@ function eventContent(event: AIRunEvent): string {
 
 function eventError(event: AIRunEvent): string {
   const value = event.payload.error;
-  return typeof value === "string" ? value : "";
+  return typeof value === "string" ? redactDiagnosticText(value) : "";
 }
 
 function threadWorkspaceId(thread: AIConversation | null): string {
@@ -73,6 +73,14 @@ function safeFilename(value: string): string {
   return trimmed || "ai-thread";
 }
 
+function redactDiagnosticText(value: string): string {
+  return value
+    .replace(/(\b(?:api[-_]?key|token|access[-_]?token|secret|password)=)(['"]?)([^\s"']+)(['"]?)/gi, "$1$2<redacted>$4")
+    .replace(/(--?(?:api[-_]?key|token|access[-_]?token|secret|password)(?:\s+|=))(['"]?)([^\s"']+)(['"]?)/gi, "$1$2<redacted>$4")
+    .replace(/(Authorization:\s*Bearer\s+)[^\s"']+/gi, "$1<redacted>")
+    .replace(/\bsk-[A-Za-z0-9_-]{12,}\b/g, "<redacted>");
+}
+
 function buildThreadMarkdown(conversation: AIConversation | null, messages: AIMessage[]): string {
   const title = conversation?.title ?? "AI 调查线程";
   const lines = [
@@ -84,6 +92,13 @@ function buildThreadMarkdown(conversation: AIConversation | null, messages: AIMe
     `- 导出时间: ${new Date().toISOString()}`,
     "",
   ];
+
+  if (conversation?.latest_run?.status === "failed" && conversation.latest_run.error) {
+    lines.push("## 最近失败");
+    lines.push("");
+    lines.push(redactDiagnosticText(conversation.latest_run.error));
+    lines.push("");
+  }
 
   for (const message of messages) {
     lines.push(`## ${message.role === "user" ? "用户" : message.role === "assistant" ? "AI" : "系统"}`);
@@ -136,7 +151,7 @@ export default function AIThreadPage() {
   const reportCount = workspace?.reports?.length ?? 0;
   const latestRunError =
     conversation?.latest_run?.status === "failed" && conversation.latest_run.error
-      ? conversation.latest_run.error
+      ? redactDiagnosticText(conversation.latest_run.error)
       : "";
   const visibleError = error || latestRunError;
   const lastUserMessage = useMemo(
