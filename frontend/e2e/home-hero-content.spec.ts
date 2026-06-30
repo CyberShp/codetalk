@@ -163,6 +163,37 @@ test("home desktop hero and topbar keep the optimized light layout", async ({ pa
   expect(layout.overlaps).toEqual([]);
 });
 
+test("home reduced motion disables decorative atmosphere and pointer spotlight", async ({ page }) => {
+  await mockEmptyWorkspaceList(page);
+  await page.emulateMedia({ reducedMotion: "reduce" });
+  await page.setViewportSize({ width: 1440, height: 900 });
+  await page.goto("/", { waitUntil: "domcontentloaded" });
+
+  await expect(page.locator(".ct-home-shell")).toBeVisible();
+  await expect(page.locator(".ct-atmosphere")).toHaveCount(0);
+
+  const before = await page.locator(".ct-home-shell").evaluate((node) => {
+    const style = getComputedStyle(node as HTMLElement);
+    return {
+      x: style.getPropertyValue("--ct-home-x").trim(),
+      y: style.getPropertyValue("--ct-home-y").trim(),
+    };
+  });
+
+  await page.mouse.move(420, 260);
+  await page.waitForTimeout(700);
+
+  const after = await page.locator(".ct-home-shell").evaluate((node) => {
+    const style = getComputedStyle(node as HTMLElement);
+    return {
+      x: style.getPropertyValue("--ct-home-x").trim(),
+      y: style.getPropertyValue("--ct-home-y").trim(),
+    };
+  });
+
+  expect(after).toEqual(before);
+});
+
 test("home mobile hero keeps primary paths tappable without horizontal overflow", async ({ page }) => {
   await mockEmptyWorkspaceList(page);
   await page.setViewportSize({ width: 390, height: 844 });

@@ -54,6 +54,7 @@ export default function WorkbenchPage() {
     () => {
       const root = homeShellRef.current;
       if (!root) return;
+      if (window.matchMedia("(prefers-reduced-motion: reduce)").matches) return;
 
       const movePointer = (event: PointerEvent) => {
         const rect = root.getBoundingClientRect();
