@@ -408,7 +408,7 @@ class GitNexusAdapter(BaseToolAdapter):
                     "skipping analyze",
                     self._repo_name, resolved.get("path"),
                 )
-                asyncio.ensure_future(self._trigger_embed())
+                self._schedule_embed_if_enabled()
                 return
 
             resp = await self._post_analyze_with_busy_retry(tool_repo_path)
@@ -431,7 +431,7 @@ class GitNexusAdapter(BaseToolAdapter):
                         )
                         self._repo_name = repo_name
                         self._indexed_repo_by_path[cache_key] = repo_name
-                        asyncio.ensure_future(self._trigger_embed())
+                        self._schedule_embed_if_enabled()
                         return
                     raise RuntimeError(
                         "GitNexus 正在分析一个包含此路径的父项目，请等待该任务完成后再试"
@@ -485,8 +485,7 @@ class GitNexusAdapter(BaseToolAdapter):
                         )
                     self._indexed_repo_by_path[cache_key] = self._repo_name
                     logger.info("gitnexus: indexing complete for %s", self._repo_name)
-                    # Fire-and-forget embedding so semantic search can upgrade from BM25
-                    asyncio.ensure_future(self._trigger_embed())
+                    self._schedule_embed_if_enabled()
                     return
                 if status["status"] == "failed":
                     raise RuntimeError(
@@ -540,6 +539,13 @@ class GitNexusAdapter(BaseToolAdapter):
         except Exception as exc:
             logger.debug("gitnexus: repo resolve by path failed (non-fatal): %s", exc)
             return None
+
+    def _schedule_embed_if_enabled(self) -> None:
+        """Optionally start semantic embedding without making indexing depend on it."""
+        if not settings.gitnexus_auto_embed_enabled:
+            logger.debug("gitnexus: auto embed disabled; skipping embed trigger")
+            return
+        asyncio.ensure_future(self._trigger_embed())
 
     async def _trigger_embed(self) -> None:
         """Start embedding job for the indexed repo (non-blocking).

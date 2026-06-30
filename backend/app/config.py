@@ -54,6 +54,7 @@ class Settings(BaseSettings):
     gitnexus_bin: str = "gitnexus"   # path to gitnexus binary
     gitnexus_source_reader: str = "cli_first"  # cli_first | http_only
     gitnexus_cli_timeout: int = 20    # seconds for short GitNexus CLI source reads
+    gitnexus_auto_embed_enabled: bool = False  # keep /api/embed from blocking sequential indexing by default
     cgc_cli_python: str = ""          # optional python executable for `python -m codegraphcontext`
     cgc_cli_timeout: int = 1800       # seconds for CGC CLI indexing / graph queries
     external_agents_enabled: bool = True

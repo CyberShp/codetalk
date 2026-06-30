@@ -922,6 +922,137 @@ test("completes an agent-runtime AI thread and exports the persisted answer", as
   }
 });
 
+test("injects requested workspace source into a real agent-runtime AI thread", async ({
+  page,
+  request,
+}) => {
+  test.setTimeout(70_000);
+  const repo = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), "codetalk-ai-source-repo-")));
+  const sourcePath = path.join(repo, "lib", "nvmf", "connect.c");
+  fs.mkdirSync(path.dirname(sourcePath), { recursive: true });
+  fs.writeFileSync(
+    sourcePath,
+    [
+      "int spdk_nvmf_source_injection_probe(void) {",
+      "    return 20260701;",
+      "}",
+      "",
+    ].join("\n"),
+    "utf8",
+  );
+  const runtimeDir = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), "codetalk-agent-source-")));
+  const runtimeScript = path.join(runtimeDir, "source_asserting_agent.py");
+  fs.writeFileSync(
+    runtimeScript,
+    [
+      "import sys",
+      "prompt = sys.stdin.read()",
+      "required = [",
+      "    'workspace_source',",
+      "    'lib/nvmf/connect.c',",
+      "    'spdk_nvmf_source_injection_probe',",
+      "    'return 20260701;',",
+      "]",
+      "missing = [item for item in required if item not in prompt]",
+      "if missing:",
+      "    print('SOURCE_CONTEXT_MISSING ' + ','.join(missing), flush=True)",
+      "else:",
+      "    print('SOURCE_CONTEXT_OK lib/nvmf/connect.c spdk_nvmf_source_injection_probe', flush=True)",
+      "",
+    ].join("\n"),
+    "utf8",
+  );
+  const workspaceName = `ai-source-e2e-${Date.now()}`;
+  const runtimeName = `Source asserting runtime ${Date.now()}`;
+  const threadTitle = `${workspaceName} source injection`;
+  const prompt = "请读取 lib/nvmf/connect.c 并基于 spdk_nvmf_source_injection_probe 分析 connect 流程";
+
+  const runtimeResp = await request.post(`${backendBase}/api/settings/agent-runtimes`, {
+    data: {
+      name: runtimeName,
+      command: "python3",
+      args: [runtimeScript],
+      prompt_transport: "stdin",
+      output_mode: "plain",
+      working_dir_mode: "project",
+      fixed_working_dir: "",
+      env: {},
+      health_command: "",
+      timeout_seconds: 30,
+      enabled: true,
+    },
+  });
+  expect(runtimeResp.status()).toBe(201);
+  const runtime = (await runtimeResp.json()) as { id: string };
+
+  const workspaceResp = await request.post(`${backendBase}/api/workspaces`, {
+    data: { name: workspaceName, repo_path: repo },
+  });
+  expect(workspaceResp.status()).toBe(201);
+  const workspace = (await workspaceResp.json()) as { id: string };
+
+  try {
+    await page.goto("/ai", { waitUntil: "domcontentloaded" });
+    const projectButton = page.locator("button").filter({ hasText: workspaceName }).first();
+    await expect(projectButton).toBeVisible({ timeout: 15_000 });
+    await projectButton.hover();
+    await projectButton.click();
+    await expect(page.getByRole("heading", { name: workspaceName })).toBeVisible();
+
+    await page.getByLabel("AI 线程执行器").selectOption({ label: runtimeName });
+    await page.getByPlaceholder(/线程名称/).fill(threadTitle);
+    await page.getByRole("button", { name: "新建线程" }).hover();
+    await page.getByRole("button", { name: "新建线程" }).click();
+
+    await page.waitForURL(/\/ai\/[^/]+$/, { timeout: 15_000 });
+    const threadId = page.url().split("/").pop() ?? "";
+    await expect(page.getByRole("heading", { name: threadTitle })).toBeVisible({
+      timeout: 15_000,
+    });
+    await expect(page.getByLabel("当前 AI 执行器")).toHaveValue(runtime.id);
+
+    await page.getByLabel("AI 线程消息").fill(prompt);
+    await page.getByRole("button", { name: "发送" }).hover();
+    await page.getByRole("button", { name: "发送" }).click();
+    await expect(page.locator(".ct-codex-message.is-user").filter({ hasText: prompt })).toHaveCount(1);
+    await expect(page.getByText("SOURCE_CONTEXT_OK lib/nvmf/connect.c")).toBeVisible({ timeout: 30_000 });
+    await expect(page.getByText("SOURCE_CONTEXT_MISSING")).toHaveCount(0);
+    await expect(page.getByText("源码位置")).toBeVisible();
+    await expect(page.getByText("lib/nvmf/connect.c:L1")).toBeVisible();
+
+    const messagesResp = await request.get(
+      `${backendBase}/api/ai/conversations/${encodeURIComponent(threadId)}/messages`,
+    );
+    expect(messagesResp.ok()).toBeTruthy();
+    const body = (await messagesResp.json()) as {
+      items: Array<{
+        role: string;
+        content: string;
+        references?: Array<{ source_type: string; metadata?: Record<string, unknown> }>;
+      }>;
+    };
+    const userMessage = body.items.find((item) => item.role === "user" && item.content === prompt);
+    expect(userMessage?.references).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          source_type: "workspace_source",
+          metadata: expect.objectContaining({
+            workspace_id: workspace.id,
+            path: "lib/nvmf/connect.c",
+          }),
+        }),
+      ]),
+    );
+    expect(
+      body.items.some(
+        (item) => item.role === "assistant" && item.content.includes("SOURCE_CONTEXT_OK lib/nvmf/connect.c"),
+      ),
+    ).toBeTruthy();
+  } finally {
+    await request.delete(`${backendBase}/api/settings/agent-runtimes/${encodeURIComponent(runtime.id)}`);
+  }
+});
+
 test("redacts persisted AI thread message secrets from exported markdown", async ({
   page,
   request,

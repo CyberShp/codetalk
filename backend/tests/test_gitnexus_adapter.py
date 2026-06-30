@@ -1,3 +1,4 @@
+import asyncio
 import unittest
 from unittest.mock import patch
 
@@ -156,6 +157,54 @@ class GitNexusAdapterPrepareTests(unittest.IsolatedAsyncioTestCase):
             ("/api/analyze", {"path": "/tmp/repos/spdk"}),
         ])
         self.assertEqual(adapter.current_repo_name, "spdk")
+
+    async def test_prepare_does_not_trigger_embed_by_default(self) -> None:
+        request = AnalysisRequest(repo_local_path="/tmp/repos/spdk")
+        adapter = GitNexusAdapter(base_url="http://gitnexus:7100")
+        adapter._client = _FakeAsyncClient(
+            get_responses=[
+                _FakeResponse(200, {"repos": []}),
+                _FakeResponse(200, {"status": "complete", "repoName": "spdk"}),
+            ],
+            post_responses=[
+                _FakeResponse(200, {"jobId": "job-no-embed"}),
+            ],
+        )
+
+        with (
+            patch("app.adapters.gitnexus.to_tool_repo_path", side_effect=lambda repo_local_path, **_: repo_local_path),
+            patch("app.adapters.gitnexus._POLL_INTERVAL", 0),
+            patch.object(settings, "gitnexus_auto_embed_enabled", False),
+        ):
+            await adapter.prepare(request)
+            await asyncio.sleep(0)
+
+        self.assertEqual(adapter._client.post_calls, [
+            ("/api/analyze", {"path": "/tmp/repos/spdk"}),
+        ])
+
+    async def test_prepare_triggers_embed_when_explicitly_enabled(self) -> None:
+        request = AnalysisRequest(repo_local_path="/tmp/repos/spdk")
+        adapter = GitNexusAdapter(base_url="http://gitnexus:7100")
+        adapter._client = _FakeAsyncClient(
+            get_responses=[
+                _FakeResponse(200, {"repos": []}),
+                _FakeResponse(200, {"status": "complete", "repoName": "spdk"}),
+            ],
+            post_responses=[
+                _FakeResponse(200, {"jobId": "job-with-embed"}),
+            ],
+        )
+
+        with (
+            patch("app.adapters.gitnexus.to_tool_repo_path", side_effect=lambda repo_local_path, **_: repo_local_path),
+            patch("app.adapters.gitnexus._POLL_INTERVAL", 0),
+            patch.object(settings, "gitnexus_auto_embed_enabled", True),
+        ):
+            await adapter.prepare(request)
+            await asyncio.sleep(0)
+
+        self.assertIn(("/api/embed", None), adapter._client.post_calls)
 
 
 class GitNexusAdapterProgressParsingTests(unittest.IsolatedAsyncioTestCase):
