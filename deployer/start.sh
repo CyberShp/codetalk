@@ -3,11 +3,13 @@
 #   chmod +x deployer/start.sh
 cd "$(dirname "$0")"
 
-if command -v python3 &>/dev/null; then
-    python3 start.py
-elif command -v python &>/dev/null; then
-    python start.py
-else
-    echo "Error: Python 3.10+ is required but neither 'python3' nor 'python' was found on PATH."
-    exit 1
-fi
+for candidate in python3.12 python3.11 python3.10 python3 python; do
+    if command -v "$candidate" &>/dev/null; then
+        if "$candidate" -c 'import sys; raise SystemExit(0 if sys.version_info >= (3, 10) else 1)' &>/dev/null; then
+            exec "$candidate" start.py
+        fi
+    fi
+done
+
+echo "Error: Python 3.10+ is required but no Python executable was found on PATH."
+exit 1

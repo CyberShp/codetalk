@@ -77,3 +77,16 @@ def test_deployer_url_uses_configured_host_port(monkeypatch):
     assert reloaded.HOST == "127.0.0.1"
     assert reloaded.PORT == 9041
     assert reloaded.URL == "http://127.0.0.1:9041"
+
+
+def test_unix_start_script_prefers_python_310_plus():
+    script = (start.DEPLOYER_DIR / "start.sh").read_text(encoding="utf-8")
+    assert "python3.12 python3.11 python3.10 python3 python" in script
+    assert "sys.version_info >= (3, 10)" in script
+    assert 'exec "$candidate" start.py' in script
+
+
+def test_windows_start_script_prefers_py_launcher_310_plus():
+    script = (start.DEPLOYER_DIR / "start.bat").read_text(encoding="utf-8")
+    assert '"py -3.12" "py -3.11" "py -3.10"' in script
+    assert '"python" "python3"' in script
