@@ -311,6 +311,80 @@ class TestAIConversationsAPI:
             assert "运行中再追问" not in json.dumps(body["items"], ensure_ascii=False)
             assert body["items"][1]["content"] == "第一段分析。最终结论。"
 
+    async def test_cancel_running_generation_prevents_assistant_message_and_allows_retry(
+        self,
+        sqlite_db,
+        monkeypatch,
+    ):
+        ws_id = await _seed_workspace(sqlite_db)
+
+        from app.api import ai_conversations
+
+        fake_llm = BlockingStreamLLM()
+        monkeypatch.setattr(
+            ai_conversations,
+            "create_llm_client_from_active",
+            lambda: fake_llm,
+        )
+
+        app = _test_app(sqlite_db)
+        async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+            created = await client.post(
+                "/api/ai/conversations",
+                json={
+                    "scope_type": "workspace",
+                    "scope_id": ws_id,
+                    "title": "取消后重试",
+                },
+            )
+            assert created.status_code == 201
+            conversation = created.json()
+
+            first = await client.post(
+                f"/api/ai/conversations/{conversation['id']}/messages",
+                json={"content": "先开始一个长分析"},
+            )
+            assert first.status_code == 202
+            await asyncio.wait_for(fake_llm.started.wait(), timeout=1)
+
+            cancelled = await client.post(f"/api/ai/conversations/{conversation['id']}/cancel")
+            assert cancelled.status_code == 200
+            assert cancelled.json()["run"]["status"] == "cancelled"
+            fake_llm.release.set()
+            await asyncio.sleep(0.05)
+
+            messages = await client.get(f"/api/ai/conversations/{conversation['id']}/messages")
+            assert messages.status_code == 200
+            assert [m["role"] for m in messages.json()["items"]] == ["user"]
+
+            second_llm = BlockingStreamLLM()
+            monkeypatch.setattr(
+                ai_conversations,
+                "create_llm_client_from_active",
+                lambda: second_llm,
+            )
+            retry = await client.post(
+                f"/api/ai/conversations/{conversation['id']}/messages",
+                json={"content": "取消后重新分析异常恢复路径"},
+            )
+            assert retry.status_code == 202
+            await asyncio.wait_for(second_llm.started.wait(), timeout=1)
+            second_llm.release.set()
+
+            for _ in range(20):
+                messages = await client.get(f"/api/ai/conversations/{conversation['id']}/messages")
+                items = messages.json()["items"]
+                if len(items) == 3 and items[-1]["role"] == "assistant":
+                    break
+                await asyncio.sleep(0.05)
+
+            messages = await client.get(f"/api/ai/conversations/{conversation['id']}/messages")
+            body = messages.json()
+            assert [m["role"] for m in body["items"]] == ["user", "user", "assistant"]
+            assert body["items"][0]["content"] == "先开始一个长分析"
+            assert body["items"][1]["content"] == "取消后重新分析异常恢复路径"
+            assert body["items"][2]["content"] == "第一段分析。最终结论。"
+
     async def test_message_stream_timeout_falls_back_to_non_stream_completion(self, sqlite_db, monkeypatch):
         ws_id = await _seed_workspace(sqlite_db)
 
