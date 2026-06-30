@@ -357,7 +357,7 @@ test("cancels a running agent-runtime AI thread through the real UI", async ({
       timeout: 15_000,
     });
     await expect(page.getByLabel("当前 AI 执行器")).toHaveValue(runtime.id);
-    await expect(page.locator("strong").filter({ hasText: runtimeName })).toBeVisible();
+    await expect(page.locator(".ct-ai-env-card").filter({ hasText: "执行器" })).toContainText(runtimeName);
 
     const prompt = "开始一个可以被取消的 Agent runtime 调查";
     const sendRequests: string[] = [];
@@ -546,6 +546,134 @@ test("keeps AI thread navigation locked while an agent run is streaming", async 
 
     await page.getByRole("button", { name: "停止" }).hover();
     await page.getByRole("button", { name: "停止" }).click();
+    await expect(page.getByRole("button", { name: "停止" })).toHaveCount(0, { timeout: 15_000 });
+  } finally {
+    await request.delete(`${backendBase}/api/settings/agent-runtimes/${encodeURIComponent(runtime.id)}`);
+  }
+});
+
+test("keeps historical AI thread reading stable while an agent run is streaming", async ({
+  page,
+  request,
+}) => {
+  test.setTimeout(120_000);
+  const repo = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), "codetalk-ai-scroll-repo-")));
+  fs.writeFileSync(path.join(repo, "README.md"), "AI scroll stability e2e workspace\n", "utf8");
+  const runtimeDir = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), "codetalk-agent-scroll-")));
+  const runtimeScript = path.join(runtimeDir, "scroll_agent.py");
+  fs.writeFileSync(
+    runtimeScript,
+    [
+      "import sys",
+      "import time",
+      "prompt = sys.stdin.read()",
+      "if 'LIVE_SCROLL_RUN' in prompt:",
+      "    print('STREAM-BEGIN stable-reader', flush=True)",
+      "    for i in range(1, 90):",
+      "        print(f'STREAM-LINE-{i:02d} user-should-not-be-yanked-to-bottom while reading history', flush=True)",
+      "        time.sleep(0.04)",
+      "    print('STREAM-END stable-reader', flush=True)",
+      "else:",
+      "    print('HISTORY-BEGIN stable-reader', flush=True)",
+      "    for i in range(1, 95):",
+      "        print(f'HISTORY-LINE-{i:02d} earlier evidence and reasoning that remains readable during generation', flush=True)",
+      "    print('HISTORY-END stable-reader', flush=True)",
+      "",
+    ].join("\n"),
+    "utf8",
+  );
+  const workspaceName = `ai-scroll-e2e-${Date.now()}`;
+  const runtimeName = `Scroll stability runtime ${Date.now()}`;
+  const threadTitle = `${workspaceName} stable reader`;
+
+  const runtimeResp = await request.post(`${backendBase}/api/settings/agent-runtimes`, {
+    data: {
+      name: runtimeName,
+      command: "python3",
+      args: [runtimeScript],
+      prompt_transport: "stdin",
+      output_mode: "plain",
+      working_dir_mode: "project",
+      fixed_working_dir: "",
+      env: {},
+      health_command: "",
+      timeout_seconds: 60,
+      enabled: true,
+    },
+  });
+  expect(runtimeResp.status()).toBe(201);
+  const runtime = (await runtimeResp.json()) as { id: string };
+
+  const workspaceResp = await request.post(`${backendBase}/api/workspaces`, {
+    data: { name: workspaceName, repo_path: repo },
+  });
+  expect(workspaceResp.status()).toBe(201);
+
+  try {
+    await page.goto("/ai", { waitUntil: "domcontentloaded" });
+    const projectButton = page.locator("button").filter({ hasText: workspaceName }).first();
+    await expect(projectButton).toBeVisible({ timeout: 15_000 });
+    await projectButton.hover();
+    await projectButton.click();
+    await expect(page.getByRole("heading", { name: workspaceName })).toBeVisible();
+
+    await page.getByLabel("AI 线程执行器").selectOption({ label: runtimeName });
+    await page.getByPlaceholder(/线程名称/).fill(threadTitle);
+    await page.getByRole("button", { name: "新建线程" }).hover();
+    await page.getByRole("button", { name: "新建线程" }).click();
+
+    await page.waitForURL(/\/ai\/[^/]+$/, { timeout: 15_000 });
+    await expect(page.getByRole("heading", { name: threadTitle })).toBeVisible({
+      timeout: 15_000,
+    });
+    await expect(page.getByLabel("当前 AI 执行器")).toHaveValue(runtime.id);
+
+    const composer = page.getByPlaceholder(/像 Codex 一样继续追问/);
+    await composer.fill("SEED_HISTORY_RUN 生成一段足够长的历史分析，供后续流式生成时阅读");
+    await page.getByRole("button", { name: "发送" }).hover();
+    await page.getByRole("button", { name: "发送" }).click();
+    await expect(page.getByText("HISTORY-END stable-reader")).toBeVisible({ timeout: 30_000 });
+    await expect(page.getByRole("button", { name: "停止" })).toHaveCount(0, { timeout: 15_000 });
+
+    const reader = page.getByLabel("AI 线程对话内容");
+    await expect
+      .poll(async () => reader.evaluate((element) => element.scrollHeight > element.clientHeight * 2))
+      .toBeTruthy();
+
+    await composer.fill("LIVE_SCROLL_RUN 继续生成长回答；我会在生成过程中向上滚动阅读历史");
+    await page.getByRole("button", { name: "发送" }).hover();
+    await page.getByRole("button", { name: "发送" }).click();
+    await expect(page.getByRole("button", { name: "停止" })).toBeVisible({ timeout: 15_000 });
+    await expect(page.getByText("STREAM-BEGIN stable-reader")).toBeVisible({ timeout: 20_000 });
+
+    await reader.hover();
+    await page.mouse.wheel(0, -2600);
+    await expect(page.getByText("HISTORY-LINE-40")).toBeVisible({ timeout: 10_000 });
+    const scrollTopWhileReading = await reader.evaluate((element) => element.scrollTop);
+    const distanceFromBottomWhileReading = await reader.evaluate(
+      (element) => element.scrollHeight - element.scrollTop - element.clientHeight,
+    );
+    expect(distanceFromBottomWhileReading).toBeGreaterThan(240);
+
+    await expect(page.getByText("STREAM-LINE-35 user-should-not-be-yanked-to-bottom")).toBeAttached({
+      timeout: 20_000,
+    });
+    const scrollTopAfterMoreDeltas = await reader.evaluate((element) => element.scrollTop);
+    const distanceFromBottomAfterMoreDeltas = await reader.evaluate(
+      (element) => element.scrollHeight - element.scrollTop - element.clientHeight,
+    );
+    expect(scrollTopAfterMoreDeltas).toBeLessThanOrEqual(scrollTopWhileReading + 96);
+    expect(distanceFromBottomAfterMoreDeltas).toBeGreaterThan(240);
+    await expect(page.getByRole("button", { name: "跳到最新回复" })).toBeVisible();
+
+    await page.getByRole("button", { name: "跳到最新回复" }).hover();
+    await page.getByRole("button", { name: "跳到最新回复" }).click();
+    await expect
+      .poll(async () =>
+        reader.evaluate((element) => element.scrollHeight - element.scrollTop - element.clientHeight),
+      )
+      .toBeLessThan(120);
+    await expect(page.getByText("STREAM-END stable-reader")).toBeVisible({ timeout: 30_000 });
     await expect(page.getByRole("button", { name: "停止" })).toHaveCount(0, { timeout: 15_000 });
   } finally {
     await request.delete(`${backendBase}/api/settings/agent-runtimes/${encodeURIComponent(runtime.id)}`);

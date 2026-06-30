@@ -312,7 +312,12 @@ export default function AIThreadPage() {
   const jumpToLatest = useCallback((behavior: ScrollBehavior = "smooth") => {
     autoScrollRef.current = true;
     setShowJumpToLatest(false);
-    bottomRef.current?.scrollIntoView({ behavior, block: "end" });
+    const reader = readerRef.current;
+    if (reader) {
+      reader.scrollTo({ top: reader.scrollHeight, behavior });
+    } else {
+      bottomRef.current?.scrollIntoView({ behavior, block: "end" });
+    }
   }, []);
 
   useEffect(() => {
