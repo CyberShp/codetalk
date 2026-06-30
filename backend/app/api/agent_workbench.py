@@ -4897,6 +4897,7 @@ def _acceptance_black_box_case_quality_check(
             "invalid_cases": [],
         }
     invalid_cases: list[dict[str, Any]] = []
+    seen_case_keys: set[str] = set()
     for index, case in enumerate(raw_cases, start=1):
         if not isinstance(case, dict):
             invalid_cases.append({
@@ -4907,6 +4908,12 @@ def _acceptance_black_box_case_quality_check(
             })
             continue
         reasons = _black_box_case_quality_reasons(case)
+        duplicate_key = _black_box_case_duplicate_key(case)
+        if duplicate_key:
+            if duplicate_key in seen_case_keys:
+                reasons.append("duplicate_black_box_case")
+            else:
+                seen_case_keys.add(duplicate_key)
         if reasons:
             invalid_cases.append({
                 "index": index,
@@ -4942,6 +4949,47 @@ _BLACK_BOX_WHITE_BOX_RE = re.compile(
 )
 
 
+def _black_box_case_duplicate_key(case: dict[str, Any]) -> str:
+    parts = [
+        _black_box_case_test_directory(case),
+        " ".join(_semantic_string_list(case.get("preconditions") or case.get("precondition") or case.get("setup"))),
+        " ".join(_semantic_string_list(case.get("steps"))),
+        " ".join(_semantic_string_list(case.get("expected"))),
+        " ".join(_semantic_string_list(
+            case.get("observability")
+            or case.get("observation_points")
+            or case.get("observed_outputs")
+            or case.get("metrics")
+            or case.get("logs")
+        )),
+        " ".join(_semantic_string_list(
+            case.get("diagnostics")
+            or case.get("failure_diagnostics")
+            or case.get("failure_diagnosis")
+            or case.get("triage")
+            or case.get("debug_hints")
+        )),
+    ]
+    normalized = [
+        re.sub(r"\s+", " ", re.sub(r"[^a-z0-9/]+", " ", str(part).lower())).strip()
+        for part in parts
+    ]
+    if not any(normalized):
+        return ""
+    return "|".join(normalized)
+
+
+def _black_box_case_test_directory(case: dict[str, Any]) -> str:
+    return str(
+        case.get("suggested_spdk_test_dir")
+        or case.get("suggested_test_directory")
+        or case.get("test_directory")
+        or case.get("test_dir")
+        or case.get("mapped_test_dir")
+        or ""
+    ).strip()
+
+
 def _black_box_case_quality_reasons(case: dict[str, Any]) -> list[str]:
     reasons: list[str] = []
     steps = _semantic_string_list(case.get("steps"))
@@ -4965,14 +5013,7 @@ def _black_box_case_quality_reasons(case: dict[str, Any]) -> list[str]:
         or case.get("triage")
         or case.get("debug_hints")
     )
-    test_directory = str(
-        case.get("suggested_spdk_test_dir")
-        or case.get("suggested_test_directory")
-        or case.get("test_directory")
-        or case.get("test_dir")
-        or case.get("mapped_test_dir")
-        or ""
-    ).strip()
+    test_directory = _black_box_case_test_directory(case)
     if not steps:
         reasons.append("missing_steps")
     if not expected:
