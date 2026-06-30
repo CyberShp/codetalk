@@ -224,7 +224,7 @@ def _check_ports(
     own_ports: set[int] | None = None,
 ) -> list[dict]:
     if ports is None:
-        ports = [5433, 8000, 3003, 8001, 7100, 8080, 16251]
+        ports = [5433, 3003, 3004, 7100, 8080, 16251]
     if own_ports is None:
         own_ports = set()
     hint = (

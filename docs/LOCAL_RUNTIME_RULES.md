@@ -19,20 +19,18 @@ As of 2026-04-17, the observed listeners are:
 | Frontend (Next.js) | `3003` | General CodeTalk host-run default |
 | Backend (FastAPI) | `3004` | General CodeTalk host-run API default |
 | PostgreSQL | `5433` | Docker `5432` exposed to host `5433` |
-| deepwiki-open | `8001` | Dockerized |
 | GitNexus | `7100` | Dockerized |
 | Joern | `8080` | Dockerized (CPG server, 8G memory limit) |
 
-Ports `3003/3004` are reserved for the SPDK validation run and other shared
-runtime scenarios that explicitly opt in via `CODETALK_FRONTEND_PORT` /
-`CODETALK_BACKEND_PORT`. Do not make unrelated CodeTalk host-run defaults bind
-those ports implicitly.
+Ports `3003/3004` are the public local defaults for CodeTalk. Use explicit
+`CODETALK_FRONTEND_PORT` / `CODETALK_BACKEND_PORT` overrides only for isolated
+test runs or known local conflicts.
 
 ## Root Cause Summary For "unable to fetch"
 
 The highest-confidence root cause is **runtime configuration drift**, not task-detail page logic:
 
-1. Frontend task detail calls `GET /api/tasks/:id` through `NEXT_PUBLIC_API_URL` or the fallback `http://localhost:8000`.
+1. Frontend task detail calls `GET /api/tasks/:id` through `NEXT_PUBLIC_API_URL` or the fallback `http://localhost:3004`.
 2. Backend settings only auto-load `.env` from the **current working directory**.
 3. The running backend process has cwd = `/Volumes/Media/codetalk/backend`.
 4. There is **no** `backend/.env`; the real file is repo-root `/.env`.
@@ -40,7 +38,7 @@ The highest-confidence root cause is **runtime configuration drift**, not task-d
 
 Direct evidence:
 
-- `frontend/src/lib/api.ts` defaults to `http://localhost:8000`
+- `frontend/src/lib/api.ts` defaults to `http://localhost:3004`
 - `backend/app/config.py` uses `model_config = {"env_file": ".env", ...}`
 - running backend cwd is `/Volumes/Media/codetalk/backend`
 - `backend/.env` does not exist
@@ -60,7 +58,6 @@ Implication:
 These values are for containers on the Docker network, not for host-run Python:
 
 - `postgres:5432`
-- `deepwiki:8001`
 - `/data/repos`
 
 If backend runs on the host, it must not rely on repo-root `.env` as-is.
@@ -71,7 +68,7 @@ Host-run repository clones should live under the repo-local `.repos/` directory 
 Compose mode:
 
 - backend can use `postgres:5432`
-- backend can resolve `deepwiki`, `gitnexus`
+- backend can resolve configured container service names such as `gitnexus`
 
 Host mode:
 
@@ -109,7 +106,6 @@ Valid examples:
 Invalid examples:
 
 - `http://postgres:5432`
-- `http://deepwiki:8001`
 - any container-only DNS name
 - `localhost` from the wrong machine/browser context
 
@@ -118,7 +114,7 @@ Invalid examples:
 Authoritative check:
 
 ```bash
-lsof -nP -iTCP -sTCP:LISTEN | rg ':(3003|3004|5433|7100|8001|8080)\b'
+lsof -nP -iTCP -sTCP:LISTEN | rg ':(3003|3004|5433|7100|8080)\b'
 ```
 
 This is the source of truth for "what is actually up".
@@ -142,8 +138,7 @@ This is the source of truth for "what is actually up".
 ### Database and tools
 
 1. PostgreSQL host port must be `5433`.
-2. deepwiki-open host port must be `8001`.
-3. GitNexus host port must be `7100`.
+2. GitNexus host port must be `7100`.
 
 ## Known Pitfalls
 
@@ -171,24 +166,23 @@ Reason:
 - `postgres` is a container DNS name
 - host uses `localhost:5433`
 
-### Pitfall D: inline `base_url="http://deepwiki:8001"` bypasses settings entirely
+### Pitfall D: inline local-service URLs bypass settings entirely
 
 Symptom:
 
-- backend starts, `/api/tasks` works, but `/api/tasks/{id}/wiki` or chat returns 500
+- backend starts, `/api/tasks` works, but a tool-backed workflow returns 500
 - backend log shows `httpx.ConnectError: nodename nor servname provided`
 
 Root cause:
 
-- Code constructs `httpx.AsyncClient(base_url="http://deepwiki:8001", ...)` inline,
-  hard-coding the Docker hostname instead of reading `settings.deepwiki_base_url`.
-- `config.py` and `backend/.env.local` are irrelevant — the URL is never even read from settings.
+- Code constructs `httpx.AsyncClient(base_url="http://gitnexus:7100", ...)` inline,
+  hard-coding a Docker hostname instead of reading settings.
 
 Fix and rule:
 
-- Every `httpx.AsyncClient` that calls deepwiki or gitnexus **must** use
-  `settings.deepwiki_base_url` or `settings.gitnexus_base_url`.
-- Never hard-code `http://deepwiki:*` or `http://gitnexus:*` in application code.
+- Every `httpx.AsyncClient` that calls GitNexus, CGC, Joern, or another local tool
+  **must** use the corresponding setting or adapter config.
+- Never hard-code container-only hostnames in application code.
 
 ### Pitfall C: "service is up" is not the same as "browser can fetch it"
 

@@ -10,7 +10,6 @@
 | Node.js | 18+ (推荐 20 LTS) |
 | Git | 2.x |
 | GitNexus | 最新版（放入 PATH 或配置绝对路径） |
-| DeepWiki-Open | 最新版（可选，需本地安装） |
 
 ## 2. 端口规划
 
@@ -19,10 +18,8 @@
 | 前端 (Next.js) | 3003 | 用户界面 |
 | 后端 API (FastAPI) | 3004 | REST API |
 | GitNexus | 7100 | 代码图谱服务 |
-| DeepWiki-Open API | 8091 | Wiki 生成 API |
-| DeepWiki-Open UI | 3001 | DeepWiki 自带界面 |
 
-> **禁用端口**: 3003, 3004 (Cat Cafe 保留)
+> **本地默认端口**: 3003 / 3004。测试或多实例运行需要换端口时，请显式设置 `CODETALK_FRONTEND_PORT` / `CODETALK_BACKEND_PORT`。
 
 ## 2.5 一键部署向导
 
@@ -49,10 +46,10 @@ python start.py
 | 7 | 健康检查（等待所有服务就绪） |
 
 部署向导支持自定义：
-- **端口配置**：前端、后端、GitNexus、DeepWiki 端口
+- **端口配置**：前端、后端、GitNexus 端口
 - **工作目录**：代码仓库存储路径
 - **LLM 配置**：API 地址、密钥、模型名称
-- **组件选择**：是否安装 GitNexus 和 DeepWiki
+- **组件选择**：是否安装 GitNexus 等增强组件
 
 部署完成后，页面自动跳转至「启动管理页」，可查看服务状态并管理服务生命周期。
 
@@ -129,14 +126,9 @@ SQLITE_DB=data/codetalk.db
 
 # 工具地址
 GITNEXUS_BASE_URL=http://localhost:7100
-DEEPWIKI_API_URL=http://localhost:8091
-DEEPWIKI_UI_URL=http://localhost:3001
 
 # 工具管理
 GITNEXUS_PORT=7100
-DEEPWIKI_API_PORT=8091
-DEEPWIKI_UI_PORT=3001
-DEEPWIKI_PATH=                   # DeepWiki-Open 安装目录
 GITNEXUS_BIN=gitnexus            # GitNexus 二进制路径
 TOOL_HEALTH_INTERVAL=30          # 健康检查间隔(秒)
 
@@ -166,26 +158,9 @@ gitnexus --version
 GITNEXUS_BIN=/usr/local/bin/gitnexus
 ```
 
-GitNexus 由后端 ProcessManager 自动管理，也可通过 UI「工具状态」页面手动启停。
+GitNexus 由后端 ProcessManager 自动管理。当前产品已移除 DeepWiki 页面、路由和进程管理；不要再为新部署配置 DeepWiki 端口或路径。
 
-### 5.2 DeepWiki-Open（可选）
-
-```bash
-# 克隆 DeepWiki-Open
-git clone https://github.com/AsyncFuncAI/deepwiki-open.git
-cd deepwiki-open
-
-# 安装 Python API 依赖
-cd api && pip install -r requirements.txt && cd ..
-
-# 安装前端依赖
-npm install
-
-# 设置 DEEPWIKI_PATH 环境变量指向此目录
-DEEPWIKI_PATH=/path/to/deepwiki-open
-```
-
-### 5.3 tiktoken 离线缓存
+### 5.2 tiktoken 离线缓存
 
 内网环境无法下载 tiktoken 编码文件，需提前准备：
 
@@ -201,9 +176,9 @@ python -c "import tiktoken; tiktoken.encoding_for_model('gpt-4')"
 TIKTOKEN_CACHE_DIR=data/tiktoken_cache
 ```
 
-### 5.4 补充部署
+### 5.3 补充部署
 
-已完成初始部署后，可通过 deployer UI 单独安装 DeepWiki 或 GitNexus，无需重新走全流程：
+已完成初始部署后，可通过 deployer UI 单独安装 GitNexus，无需重新走全流程：
 
 1. 打开 http://localhost:9000，进入「启动管理页」
 2. 找到对应组件，点击「补充安装」，填写路径后启动
@@ -213,7 +188,6 @@ TIKTOKEN_CACHE_DIR=data/tiktoken_cache
 
 | 方法 | 路径 | 说明 |
 |------|------|------|
-| POST | /api/deploy/supplement/deepwiki | 安装并启动 DeepWiki |
 | POST | /api/deploy/supplement/gitnexus | 安装并启动 GitNexus |
 
 补充部署会自动：
@@ -253,7 +227,7 @@ TIKTOKEN_CACHE_DIR=data/tiktoken_cache
 ## 7. 使用流程
 
 1. **配置 AI**: 设置页 → 添加 LLM 配置 → 测试连接
-2. **启动工具**: 工具状态页 → 启动 GitNexus（和 DeepWiki）
+2. **启动工具**: 在设置或 Workbench 探测区确认 GitNexus / Agent 可用
 3. **创建分析**: 新建分析 → 填写任务名称、仓库路径 → **填写分析内容**（必填） → 选择/编辑提示词模板 → 选择工具 → 开始
 4. **查看结果**: 任务详情 → 报告查看 → 导出
 
@@ -271,7 +245,7 @@ TIKTOKEN_CACHE_DIR=data/tiktoken_cache
 - **空模板校验**: 模板内容不可为空（API 层校验 `min_length=1`）
 
 **AI 管线集成**: 用户填写的"分析内容"和渲染后的提示词模板会贯穿整个分析流程：
-- DeepWiki 文档生成使用分析目标生成更聚焦的技术文档
+- 报告与 artifact 生成使用分析目标生成更聚焦的技术文档
 - 每个模块的 LLM 分析会接收分析目标作为上下文
 - 所有 6 份报告生成时都会以用户的分析目标为导向
 
@@ -279,10 +253,10 @@ TIKTOKEN_CACHE_DIR=data/tiktoken_cache
 
 ### 7.2 内网代理隔离
 
-内网环境中系统代理变量（`HTTP_PROXY`/`HTTPS_PROXY`）可能干扰后端与本地工具（GitNexus、DeepWiki）之间的通信。Sprint 4 引入了统一的 `local_http_client` 工厂函数，所有本地服务连接强制 `trust_env=False`，不受系统代理影响。
+内网环境中系统代理变量（`HTTP_PROXY`/`HTTPS_PROXY`）可能干扰后端与本地工具（GitNexus、CGC、Joern 等）之间的通信。Sprint 4 引入了统一的 `local_http_client` 工厂函数，所有本地服务连接强制 `trust_env=False`，不受系统代理影响。
 
 - **LLM 外部调用**仍尊重代理设置（"系统代理"模式保持 `trust_env=True`）
-- **本地服务调用**（GitNexus、DeepWiki、Joern 等）一律绕过代理
+- **本地服务调用**（GitNexus、CGC、Joern 等）一律绕过代理
 - 如遇 504/连接超时，检查代理变量是否误干扰了 localhost 请求
 
 ### 7.3 LLM 调试快照

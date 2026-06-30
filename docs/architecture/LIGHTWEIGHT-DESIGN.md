@@ -18,7 +18,7 @@
 | 工具 | 运行方式 | 用途 |
 |------|---------|------|
 | GitNexus | `gitnexus serve --port 7100` 本地进程 | 代码图谱、业务流程、社区发现 |
-| DeepWiki-Open | Python + Node 本地前后端 | RAG 代码知识库生成 |
+| 本机 Agent | Claude Code Router / OpenCode / NGA 等命令行执行器 | 智能体编排、证据补强、报告与测试设计 |
 
 ### 1.3 移除的功能
 
@@ -51,10 +51,9 @@
           │                 │                           │
           ▼                 ▼                           │
    ┌────────────┐   ┌─────────────┐  ┌──────────────┐  │
-   │ 内网 AI API │   │GitNexus:7100│  │DeepWiki-Open │  │
-   │ (LLM)      │   │(本地进程)    │  │:8091(API)    │  │
-   └────────────┘   └─────────────┘  │:3001(UI)     │  │
-                                     └──────────────┘  │
+   │ 内网 AI API │   │GitNexus:7100│  │Agent CLI     │  │
+   │ (LLM)      │   │(本地进程)    │  │(本机命令)     │  │
+   └────────────┘   └─────────────┘  └──────────────┘  │
 ```
 
 ### 2.1 端口规划
@@ -64,9 +63,7 @@
 | 前端 | 3003 | Next.js dev server |
 | 后端 API | 3004 | FastAPI |
 | GitNexus | 7100 | gitnexus serve |
-| DeepWiki-Open API | 8091 | Python API server |
-| DeepWiki-Open UI | 3001 | Next.js (DeepWiki 自带) |
-| **禁用** | 3003, 3004 | Cat Cafe 保留端口 |
+| 本地默认 | 3003 / 3004 | CodeTalk public local defaults |
 
 ### 2.2 数据存储
 
@@ -188,13 +185,13 @@ Phase 0: 准备
 
 Phase 1: 数据采集（无 AI）
 ├── GitNexus 图谱（nodes/edges/processes/communities）
-├── DeepWiki RAG embedding + wiki 生成
+├── Agent / 本地检索补充证据
 └── 结构数据存入 task context
 
 Phase 2: 逐模块分析（每次 ≤40K tokens）
 ├── 对每个 community:
 │   ├── GitNexus 模块文件 + 调用关系
-│   ├── DeepWiki 模块 wiki 内容
+│   ├── source slices / evidence cards
 │   └── AI 生成模块摘要（JSON）
 └── 存储模块摘要
 
@@ -207,8 +204,8 @@ Phase 3: 报告生成（每份独立调用）
 └── 06-代码追踪（可选）
 
 Phase 4: 交叉增强
-├── GitNexus processes → DeepWiki wiki 目录
-└── DeepWiki 摘要 → GitNexus 图谱节点描述
+├── GitNexus processes → evidence cards
+└── Agent 输出 → GitNexus 图谱节点描述 / 测试设计上下文
 ```
 
 ### 5.3 Token 预算
@@ -255,17 +252,6 @@ TOOL_REGISTRY = {
     "gitnexus": {
         "command": ["gitnexus", "serve", "--port", "7100", "--host", "0.0.0.0"],
         "health_url": "http://localhost:7100/api/info",
-    },
-    "deepwiki-api": {
-        "command": ["python", "-m", "api.main"],
-        "health_url": "http://localhost:8091/health",
-        "cwd": "{DEEPWIKI_PATH}/api",
-        "env": {"TIKTOKEN_CACHE_DIR": "{DATA_DIR}/tiktoken_cache"},
-    },
-    "deepwiki-ui": {
-        "command": ["npm", "run", "start"],
-        "health_url": "http://localhost:3001",
-        "cwd": "{DEEPWIKI_PATH}",
     },
 }
 ```
@@ -318,7 +304,7 @@ codetalk/
 │   │   │   └── factory.py
 │   │   ├── adapters/
 │   │   │   ├── gitnexus.py
-│   │   │   └── deepwiki.py
+│   │   │   └── external_agent.py
 │   │   └── prompts/
 │   │       ├── templates.py
 │   │       └── schemas.py
@@ -351,7 +337,7 @@ codetalk/
 
 ### Sprint 2: 工具集成 ✅
 - GitNexus adapter + 进程管理
-- DeepWiki adapter + 进程管理
+- Agent provider / evidence artifact 集成
 
 ### Sprint 3: AI Pipeline ✅
 - LLM Client 双协议（Anthropic + OpenAI 兼容）
@@ -366,10 +352,10 @@ codetalk/
 
 ### 当前: 部署向导 + 产品化打磨 ✅
 - 内置 Deployer 向导（7 步 SSE 流式部署，:9000）
-- 补充部署（独立安装 DeepWiki / GitNexus，热重启 backend）
+- 补充部署（独立安装 GitNexus，热重启 backend）
 - 真实流式聊天（stream_complete，SSE 逐 token 推送）
 - 报告内嵌 AI 问答面板（ReportChatPanel）
-- DeepWiki 端口修正（8091/3001）、健康检查覆盖
+- Agent / GitNexus 探测、健康检查覆盖
 
 ---
 
@@ -414,17 +400,15 @@ deployer/
 | 前端 key | 后端 key |
 |----------|----------|
 | portBackend | backend_port |
-| portDeepwiki | deepwiki_api_port |
-| deepwikiPath | deepwiki_path |
 | installGitnexus | install_gitnexus |
 
 ### 11.4 补充部署
 
-`POST /api/deploy/supplement/deepwiki` 调用链：
+`POST /api/deploy/supplement/gitnexus` 调用链：
 1. 从 `_deploy_state` 取旧 deployer，将其 `_processes` 复制到新 deployer
-2. `supplement_deepwiki()` 检查 `_processes["backend"]` 进程句柄
+2. 安装或定位 GitNexus 二进制
 3. 写入新 `.env` → 终止旧 backend → 重启 backend → 等待 5 秒
-4. 健康检查 `http://localhost:{deepwiki_api_port}/health`
+4. 健康检查 `http://localhost:{gitnexus_port}/api/info`
 
 ---
 
