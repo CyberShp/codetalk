@@ -195,7 +195,7 @@ function sanitizeReportValue(value: unknown, depth = 0): unknown {
   return String(value);
 }
 
-function sanitizeProblemCaseForReport(item: CaseResult): CaseResult {
+function sanitizeCaseForReport(item: CaseResult): CaseResult {
   return {
     id: item.id,
     title: item.title,
@@ -217,9 +217,10 @@ function acceptanceSummary() {
 
 function buildAcceptanceReport() {
   const cases = Array.from(results.values());
+  const sanitizedCases = cases.map(sanitizeCaseForReport);
   const summary = acceptanceSummary();
   const problemCases = cases.filter((item) => item.status === "fail" || item.status === "blocked" || item.status === "not_run");
-  const sanitizedProblemCases = problemCases.map(sanitizeProblemCaseForReport);
+  const sanitizedProblemCases = problemCases.map(sanitizeCaseForReport);
   return {
     run_id: RUN_ID,
     artifact_dir: ARTIFACT_DIR,
@@ -229,7 +230,7 @@ function buildAcceptanceReport() {
     audit_mode: auditMode,
     productized: problemCases.length === 0,
     summary,
-    cases,
+    cases: sanitizedCases,
     failure_report: {
       generated_at: new Date().toISOString(),
       total_problem_cases: problemCases.length,
@@ -2795,6 +2796,7 @@ test("matrix accounting: every planned case has an explicit status", async () =>
   const failed = Array.from(results.values()).filter((item) => item.status === "fail");
   const blocked = Array.from(results.values()).filter((item) => item.status === "blocked");
   const report = writeAcceptanceReports();
+  const acceptanceMatrixPath = path.join(ARTIFACT_DIR, "acceptance_matrix.final.json");
   const failureReportPath = path.join(ARTIFACT_DIR, "failure_report.json");
   const failureReportMarkdownPath = path.join(ARTIFACT_DIR, "failure_report.md");
   const failureReport = JSON.parse(fs.readFileSync(failureReportPath, "utf8")) as {
@@ -2805,6 +2807,7 @@ test("matrix accounting: every planned case has an explicit status", async () =>
     cases: CaseResult[];
   };
   const failureReportJsonText = fs.readFileSync(failureReportPath, "utf8");
+  const acceptanceMatrixJsonText = fs.readFileSync(acceptanceMatrixPath, "utf8");
   const failureReportMarkdown = fs.readFileSync(failureReportMarkdownPath, "utf8");
   expect(report.failure_report.total_problem_cases).toBe(failed.length + blocked.length + unresolved.length);
   expect(failureReport.total_problem_cases).toBe(report.failure_report.total_problem_cases);
@@ -2821,6 +2824,9 @@ test("matrix accounting: every planned case has an explicit status", async () =>
   expect(failureReportJsonText).not.toMatch(/\bsk-[A-Za-z0-9_-]{12,}\b/);
   expect(failureReportJsonText).not.toMatch(/Authorization:\s*Bearer\s+(?!<redacted>)[^\s"']+/i);
   expect(failureReportJsonText).not.toMatch(/\b(?:api[-_]?key|token|access[-_]?token|secret|password)=(?!<redacted>)[^\s"']+/i);
+  expect(acceptanceMatrixJsonText).not.toMatch(/\bsk-[A-Za-z0-9_-]{12,}\b/);
+  expect(acceptanceMatrixJsonText).not.toMatch(/Authorization:\s*Bearer\s+(?!<redacted>)[^\s"']+/i);
+  expect(acceptanceMatrixJsonText).not.toMatch(/\b(?:api[-_]?key|token|access[-_]?token|secret|password)=(?!<redacted>)[^\s"']+/i);
   expect(failureReport.cases).toEqual(
     expect.arrayContaining(
       [...failed, ...blocked, ...unresolved].map((item) =>
