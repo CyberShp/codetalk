@@ -29,14 +29,30 @@ test("creates an AI investigation thread from the project hub and restores it af
   await expect(page.getByRole("heading", { name: workspaceName })).toBeVisible();
   await expect(page.getByText("这个项目还没有 AI 调查线程")).toBeVisible();
 
+  const createRequests: string[] = [];
+  page.on("request", (request) => {
+    if (
+      request.method() === "POST" &&
+      request.url().endsWith("/api/ai/conversations")
+    ) {
+      createRequests.push(request.url());
+    }
+  });
+  const createRequest = page.waitForRequest(
+    (request) =>
+      request.method() === "POST" &&
+      request.url().endsWith("/api/ai/conversations"),
+  );
   await page.getByPlaceholder(/线程名称/).fill(threadTitle);
   await page.getByRole("button", { name: "新建线程" }).hover();
-  await page.getByRole("button", { name: "新建线程" }).click();
+  await page.getByRole("button", { name: "新建线程" }).dblclick();
+  await createRequest;
 
   await page.waitForURL(/\/ai\/[^/]+$/, { timeout: 15_000 });
   const threadUrl = page.url();
   const threadId = threadUrl.split("/").pop() ?? "";
   await expect(page.getByRole("heading", { name: threadTitle })).toBeVisible({ timeout: 15_000 });
+  await expect.poll(() => createRequests.length).toBe(1);
   await expect(page.getByText("直接提问。这个线程会持续保存")).toBeVisible();
   const composer = page.getByPlaceholder(/像 Codex 一样继续追问/);
   await expect(composer).toBeVisible();
