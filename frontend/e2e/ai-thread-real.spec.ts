@@ -73,9 +73,25 @@ test("creates an AI investigation thread from the project hub and restores it af
   await expect(page.getByRole("link", { name: "去设置执行器" })).toHaveAttribute("href", "/settings");
   const retryButton = page.getByRole("button", { name: "重试上一条" });
   await expect(retryButton).toBeVisible();
+  const retryRequests: string[] = [];
+  page.on("request", (request) => {
+    if (
+      request.method() === "POST" &&
+      request.url().includes(`/api/ai/conversations/${encodeURIComponent(threadId)}/messages`)
+    ) {
+      retryRequests.push(request.url());
+    }
+  });
+  const retryRequest = page.waitForRequest(
+    (request) =>
+      request.method() === "POST" &&
+      request.url().includes(`/api/ai/conversations/${encodeURIComponent(threadId)}/messages`),
+  );
   await retryButton.hover();
-  await retryButton.click();
+  await retryButton.dblclick();
+  await retryRequest;
   await expect(page.locator(".ct-codex-message.is-user").filter({ hasText: prompt })).toHaveCount(2);
+  await expect.poll(() => retryRequests.length).toBe(1);
   await expect(alert).toBeVisible({ timeout: 20_000 });
 
   const downloadPromise = page.waitForEvent("download");
