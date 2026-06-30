@@ -358,6 +358,19 @@ async def _run_quickstart(deployer: NativeDeployer) -> None:
             await q.put(None)
 
 
+def _service_action_error(service: str, action: str, message: str, status_code: int = 404) -> HTTPException:
+    """Build a deployer service-action error that the UI can render directly."""
+    return HTTPException(
+        status_code=status_code,
+        detail={
+            "message": message.strip("'\""),
+            "service": service,
+            "action": action,
+            "available_services": ["backend", "frontend", "gitnexus", "cgc"],
+        },
+    )
+
+
 @app.post("/api/services/{service}/restart")
 async def api_service_restart(service: str):
     """Restart a specific deployed service by name."""
@@ -369,7 +382,7 @@ async def api_service_restart(service: str):
     try:
         return await deployer.restart_service(service)
     except KeyError as exc:
-        raise HTTPException(status_code=404, detail=str(exc))
+        raise _service_action_error(service, "restart", str(exc))
     except RuntimeError as exc:
         raise HTTPException(status_code=500, detail=str(exc))
 
@@ -385,7 +398,7 @@ async def api_service_stop(service: str):
     try:
         return await deployer.stop_service(service)
     except KeyError as exc:
-        raise HTTPException(status_code=404, detail=str(exc))
+        raise _service_action_error(service, "stop", str(exc))
     except RuntimeError as exc:
         raise HTTPException(status_code=500, detail=str(exc))
 
@@ -401,7 +414,7 @@ async def api_service_start(service: str):
     try:
         return await deployer.start_service(service)
     except KeyError as exc:
-        raise HTTPException(status_code=404, detail=str(exc))
+        raise _service_action_error(service, "start", str(exc))
     except RuntimeError as exc:
         raise HTTPException(status_code=500, detail=str(exc))
 

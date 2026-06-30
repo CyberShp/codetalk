@@ -71,6 +71,14 @@ async def test_start_app_js_has_no_deepwiki_service(client):
     assert "deepwiki" not in resp.text.lower()
 
 
+async def test_start_app_js_renders_structured_service_errors(client):
+    resp = await client.get("/start-app.js")
+    assert resp.status_code == 200
+    assert "function errorDetailMessage(detail, fallback)" in resp.text
+    assert "errorDetailMessage(err.detail, 'HTTP ' + res.status)" in resp.text
+    assert "[object Object]" not in resp.text
+
+
 async def test_nonexistent_file_returns_404(client):
     resp = await client.get("/does-not-exist.html")
     assert resp.status_code == 404

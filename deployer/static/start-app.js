@@ -21,6 +21,15 @@
       .replace(/'/g, '&#39;');
   }
 
+  function errorDetailMessage(detail, fallback) {
+    if (typeof detail === 'string') return detail;
+    if (detail && typeof detail === 'object') {
+      if (detail.message) return String(detail.message);
+      if (detail.error) return String(detail.error);
+    }
+    return fallback;
+  }
+
   // ---------------------------------------------------------------------------
   // State
   // ---------------------------------------------------------------------------
@@ -367,7 +376,7 @@
           return res.json()
             .catch(function () { return {}; })
             .then(function (err) {
-              throw new Error(err.detail || 'HTTP ' + res.status);
+              throw new Error(errorDetailMessage(err.detail, 'HTTP ' + res.status));
             });
         }
         return res.json();

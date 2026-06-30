@@ -56,6 +56,12 @@ async def test_service_restart_with_deployer_unknown_service_raises_404(client):
     server._state.deployer = _make_deployer()
     resp = await client.post("/api/services/unknown_xyz/restart")
     assert resp.status_code == 404
+    detail = resp.json()["detail"]
+    assert detail["service"] == "unknown_xyz"
+    assert detail["action"] == "restart"
+    assert "unknown_xyz" in detail["message"]
+    assert "available_services" in detail
+    assert "backend" in detail["available_services"]
 
 
 async def test_service_restart_with_deployer_backend_uses_defaults(client):
@@ -93,6 +99,10 @@ async def test_service_start_with_deployer_unknown_service_raises_404(client):
     server._state.deployer = _make_deployer()
     resp = await client.post("/api/services/unknown_xyz/start")
     assert resp.status_code == 404
+    detail = resp.json()["detail"]
+    assert detail["service"] == "unknown_xyz"
+    assert detail["action"] == "start"
+    assert "available_services" in detail
 
 
 async def test_service_start_with_deployer_backend_uses_defaults(client):
