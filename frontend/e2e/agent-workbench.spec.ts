@@ -1311,3 +1311,80 @@ test("agent workbench previews task run artifact content", async ({ page }) => {
   await expect(page.getByText("reason:stdin_redacted_flag_missing")).toBeVisible();
   await expect(page.getByText("stdin-sha:stdinsha1234")).toBeVisible();
 });
+
+test("agent workbench opens one AI review thread on double click", async ({ page }) => {
+  await routeWorkbenchShell(page);
+  let createConversationCalls = 0;
+
+  await page.route("**/api/workbench/task-runs/prepare", async (route) => {
+    await route.fulfill({
+      headers: corsHeaders(route.request().headers().origin),
+      json: {
+        task_run_id: "task_run_ai_review",
+        workflow_id: "mr-blackbox-workflow",
+        workspace_id: "manual-workspace",
+        repo_path: "E:/repo",
+        artifact_dir: "E:/data/workbench/task_runs/task_run_ai_review",
+        workflow_snapshot: {},
+        input_snapshot: {},
+        task_bundle: {},
+        agent_runs: [],
+        created_at: "2026-06-23T00:00:00Z",
+      },
+    });
+  });
+  await page.route("**/api/workbench/task-runs/task_run_ai_review/artifacts", async (route) => {
+    await route.fulfill({
+      headers: corsHeaders(route.request().headers().origin),
+      json: {
+        task_run_id: "task_run_ai_review",
+        artifact_dir: "E:/data/workbench/task_runs/task_run_ai_review",
+        artifacts: [],
+      },
+    });
+  });
+  await page.route("**/api/ai/conversations?*", async (route) => {
+    await new Promise((resolve) => setTimeout(resolve, 150));
+    await route.fulfill({
+      headers: corsHeaders(route.request().headers().origin),
+      json: { items: [] },
+    });
+  });
+  await page.route("**/api/ai/conversations", async (route) => {
+    if (route.request().method() !== "POST") {
+      await route.continue();
+      return;
+    }
+    createConversationCalls += 1;
+    await route.fulfill({
+      headers: corsHeaders(route.request().headers().origin),
+      json: {
+        id: "conv-ai-review",
+        title: "MR blackbox · AI 复盘",
+        scope_type: "workbench_task_run",
+        scope_id: "task_run_ai_review",
+        workspace_id: "manual-workspace",
+        memory_namespace: "workspace:manual-workspace",
+        runtime_type: "builtin_llm",
+        agent_runtime_id: null,
+        latest_run: null,
+        created_at: "2026-06-23T00:00:00Z",
+        updated_at: "2026-06-23T00:00:00Z",
+      },
+    });
+  });
+
+  await gotoWorkbench(page);
+  await openWorkbenchView(page, "运行驾驶舱");
+  const repoInput = page
+    .locator("section")
+    .filter({ has: page.getByRole("heading", { name: "任务运行" }) })
+    .getByLabel("Repo path");
+  await repoInput.fill("E:/repo");
+  await page.getByRole("button", { name: "准备运行" }).click();
+  await expect(page.getByRole("paragraph").filter({ hasText: /^task_run_ai_review$/ })).toBeVisible();
+
+  await page.getByRole("button", { name: "围绕本次运行继续追问" }).dblclick();
+
+  await expect.poll(() => createConversationCalls).toBe(1);
+});
