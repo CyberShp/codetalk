@@ -3,7 +3,10 @@
 import uuid
 from unittest.mock import AsyncMock, patch
 
+import aiosqlite
 from httpx import AsyncClient
+
+from app.config import settings
 
 
 # -- Helpers --
@@ -132,13 +135,32 @@ async def test_task_run_starts_pipeline(e2e_client: AsyncClient, repo_path: str)
     assert body["warnings"] == []
 
 
-async def test_task_run_with_removed_tool_name_still_launches(e2e_client: AsyncClient, repo_path: str):
-    """Unknown legacy tool selections do not block task launch."""
-    create_resp = await e2e_client.post(
+async def test_create_task_rejects_removed_deepwiki_tool(e2e_client: AsyncClient, repo_path: str):
+    resp = await e2e_client.post(
         "/api/tasks",
         json=_task_payload(repo_path, tools=["deepwiki"]),
     )
+
+    assert resp.status_code == 422
+    detail = resp.json()["detail"]
+    assert detail["removed_tools"] == ["deepwiki"]
+
+
+async def test_task_run_with_removed_legacy_tool_name_warns_and_launches(
+    e2e_client: AsyncClient, repo_path: str
+):
+    """Persisted legacy tool selections do not block task launch, but are explicit."""
+    create_resp = await e2e_client.post(
+        "/api/tasks",
+        json=_task_payload(repo_path, tools=["gitnexus"]),
+    )
     task_id = create_resp.json()["id"]
+    async with aiosqlite.connect(settings.sqlite_db) as db:
+        await db.execute(
+            "UPDATE tasks SET tools = ? WHERE id = ?",
+            ('["deepwiki"]', task_id),
+        )
+        await db.commit()
 
     with patch(
         "app.services.analysis_pipeline.AnalysisPipeline.run",
@@ -149,7 +171,9 @@ async def test_task_run_with_removed_tool_name_still_launches(e2e_client: AsyncC
     assert resp.status_code == 200
     body = resp.json()
     assert body["status"] == "running"
-    assert body["warnings"] == []
+    assert body["warnings"] == [
+        "DeepWiki 已移除，请改用 GitNexus、AI 线程或 Workbench 智能体编排。"
+    ]
 
 
 async def test_task_crud_roundtrip(e2e_client: AsyncClient, repo_path: str):

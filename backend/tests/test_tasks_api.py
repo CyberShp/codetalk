@@ -49,10 +49,32 @@ async def test_create_task_default_tools(client, tmp_path):
 async def test_create_task_custom_tools(client, tmp_path):
     response = await client.post(
         "/api/tasks",
-        json=_task_payload(tmp_path, tools=["deepwiki"]),
+        json=_task_payload(tmp_path, tools=["gitnexus", "cgc"]),
     )
     assert response.status_code == 201
-    assert response.json()["tools"] == ["deepwiki"]
+    assert response.json()["tools"] == ["gitnexus", "cgc"]
+
+
+async def test_create_task_rejects_removed_deepwiki_tool(client, tmp_path):
+    response = await client.post(
+        "/api/tasks",
+        json=_task_payload(tmp_path, tools=["deepwiki"]),
+    )
+    assert response.status_code == 422
+    detail = response.json()["detail"]
+    assert detail["removed_tools"] == ["deepwiki"]
+    assert "DeepWiki" in detail["hint"]
+
+
+async def test_create_task_rejects_unknown_tool(client, tmp_path):
+    response = await client.post(
+        "/api/tasks",
+        json=_task_payload(tmp_path, tools=["gitnexus", "unknown-tool"]),
+    )
+    assert response.status_code == 422
+    detail = response.json()["detail"]
+    assert detail["unsupported_tools"] == ["unknown-tool"]
+    assert "gitnexus" in detail["supported_tools"]
 
 
 async def test_create_task_nonexistent_path(client):
@@ -300,7 +322,7 @@ async def test_get_steps_returns_entries(client, tmp_path):
     out_dir.mkdir(parents=True)
     lines = [
         json.dumps({"step": "gitnexus", "status": "done"}),
-        json.dumps({"step": "deepwiki", "status": "running"}),
+        json.dumps({"step": "cgc", "status": "running"}),
     ]
     (out_dir / "steps.jsonl").write_text("\n".join(lines), encoding="utf-8")
 
@@ -372,6 +394,35 @@ async def test_run_task_success_launches_pipeline(client, tmp_path):
     data = response.json()
     assert data["status"] == "running"
     assert data["task_id"] == task_id
+
+
+async def test_run_task_filters_removed_legacy_tool_selection(client, tmp_path, db):
+    created = await client.post(
+        "/api/tasks",
+        json=_task_payload(tmp_path, tools=["gitnexus"]),
+    )
+    task_id = created.json()["id"]
+    await db.execute(
+        "UPDATE tasks SET tools = ? WHERE id = ?",
+        (json.dumps(["deepwiki"]), task_id),
+    )
+    await db.commit()
+
+    with patch(
+        "app.services.analysis_pipeline.AnalysisPipeline.run",
+        new_callable=AsyncMock,
+    ):
+        response = await client.post(f"/api/tasks/{task_id}/run")
+
+    assert response.status_code == 200
+    data = response.json()
+    assert data["status"] == "running"
+    assert data["warnings"] == [
+        "DeepWiki 已移除，请改用 GitNexus、AI 线程或 Workbench 智能体编排。"
+    ]
+
+    stored = await client.get(f"/api/tasks/{task_id}")
+    assert stored.json()["tools"] == []
 
 
 # ---------------------------------------------------------------------------

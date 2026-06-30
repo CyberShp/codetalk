@@ -19,6 +19,10 @@ logger = logging.getLogger(__name__)
 # Maps task_id → cancel event for in-flight pipeline tasks.
 _cancel_events: dict[str, asyncio.Event] = {}
 
+_REMOVED_TOOLS: dict[str, str] = {
+    "deepwiki": "DeepWiki 已移除，请改用 GitNexus、AI 线程或 Workbench 智能体编排。",
+}
+
 
 # --- Schemas ---
 
@@ -74,6 +78,67 @@ def _row_to_task(row: aiosqlite.Row) -> dict:
     return d
 
 
+def _supported_tool_names() -> set[str]:
+    from app.adapters import ADAPTER_FACTORIES
+
+    return set(ADAPTER_FACTORIES)
+
+
+def _normalize_requested_tools(tools: list[str]) -> list[str]:
+    supported = _supported_tool_names()
+    normalized: list[str] = []
+    removed: list[str] = []
+    unsupported: list[str] = []
+
+    for raw_tool in tools:
+        tool = raw_tool.strip().lower()
+        if not tool:
+            unsupported.append(raw_tool)
+            continue
+        if tool in _REMOVED_TOOLS:
+            removed.append(tool)
+            continue
+        if tool not in supported:
+            unsupported.append(tool)
+            continue
+        if tool not in normalized:
+            normalized.append(tool)
+
+    if removed or unsupported:
+        raise HTTPException(
+            status_code=422,
+            detail={
+                "message": "包含不支持的工具选择",
+                "removed_tools": removed,
+                "unsupported_tools": unsupported,
+                "supported_tools": sorted(supported),
+                "hint": "DeepWiki 已从当前产品中移除；请选择 GitNexus、CGC 或通过 Workbench 配置本机 Agent。",
+            },
+        )
+    return normalized
+
+
+def _sanitize_persisted_tools(tools: list[str]) -> tuple[list[str], list[str]]:
+    supported = _supported_tool_names()
+    sanitized: list[str] = []
+    warnings: list[str] = []
+
+    for raw_tool in tools:
+        tool = str(raw_tool).strip().lower()
+        if not tool:
+            continue
+        if tool in _REMOVED_TOOLS:
+            warnings.append(_REMOVED_TOOLS[tool])
+            continue
+        if tool not in supported:
+            warnings.append(f"已忽略未知工具：{tool}")
+            continue
+        if tool not in sanitized:
+            sanitized.append(tool)
+
+    return sanitized, warnings
+
+
 # --- Endpoints ---
 
 @router.post("", response_model=TaskResponse, status_code=201)
@@ -81,6 +146,7 @@ async def create_task(data: TaskCreate, db: aiosqlite.Connection = Depends(get_d
     if not Path(data.repo_path).exists():
         raise HTTPException(status_code=422, detail=f"代码路径不存在：{data.repo_path}")
 
+    tools = _normalize_requested_tools(data.tools)
     now = datetime.now(timezone.utc).isoformat()
     task_id = str(uuid.uuid4())
     await db.execute(
@@ -88,7 +154,7 @@ async def create_task(data: TaskCreate, db: aiosqlite.Connection = Depends(get_d
            analysis_focus, prompt_content,
            progress, error_message, created_at, updated_at)
            VALUES (?, ?, ?, 'pending', ?, ?, ?, ?, ?, 0, NULL, ?, ?)""",
-        (task_id, data.name, data.repo_path, json.dumps(data.tools),
+        (task_id, data.name, data.repo_path, json.dumps(tools),
          data.requirements_doc, data.design_doc,
          data.analysis_focus, data.prompt_content, now, now),
     )
@@ -146,12 +212,15 @@ async def run_task(
     if task["status"] == "running":
         raise HTTPException(status_code=409, detail="任务正在运行中")
 
+    persisted_tools = json.loads(task.get("tools") or "[]")
+    sanitized_tools, warnings = _sanitize_persisted_tools(persisted_tools)
+
     # Reset status
     now = datetime.now(timezone.utc).isoformat()
     await db.execute(
-        "UPDATE tasks SET status = 'running', progress = 0, error_message = NULL, "
+        "UPDATE tasks SET status = 'running', tools = ?, progress = 0, error_message = NULL, "
         "updated_at = ? WHERE id = ?",
-        (now, task_id),
+        (json.dumps(sanitized_tools), now, task_id),
     )
     await db.commit()
 
@@ -174,7 +243,7 @@ async def run_task(
         "task_id": task_id,
         "status": "running",
         "message": "分析管道已启动",
-        "warnings": [],
+        "warnings": warnings,
     }
 
 
