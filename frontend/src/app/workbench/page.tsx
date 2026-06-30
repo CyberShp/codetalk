@@ -2594,7 +2594,7 @@ export default function AgentWorkbenchPage() {
     });
 
   const openPreparedConversation = async () => {
-    if (!preparedRun) return;
+    if (!preparedRun || taskRunActionBusy) return;
     setOpeningConversation(true);
     try {
       const conversation = await api.aiConversations.createForScope({
@@ -4248,7 +4248,7 @@ export default function AgentWorkbenchPage() {
                 <button
                   type="button"
                   onClick={openPreparedConversation}
-                  disabled={openingConversation}
+                  disabled={openingConversation || taskRunActionBusy}
                   className="mt-3 inline-flex items-center gap-2 rounded-lg bg-primary px-3 py-2 text-xs font-semibold text-on-primary shadow-sm transition-all hover:-translate-y-0.5 hover:shadow-md disabled:translate-y-0 disabled:opacity-50"
                 >
                   {openingConversation ? (

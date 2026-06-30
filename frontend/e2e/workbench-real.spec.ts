@@ -492,8 +492,16 @@ test("executes resource leak hunt and previews materialized artifacts through th
   await expect(page.getByRole("button", { name: "执行工作流" })).toBeEnabled({
     timeout: 15_000,
   });
+  const executeRequest = page.waitForRequest(
+    (request) =>
+      request.method() === "POST" &&
+      request.url().includes("/api/workbench/task-runs/") &&
+      request.url().endsWith("/execute"),
+  );
   await page.getByRole("button", { name: "执行工作流" }).hover();
   await page.getByRole("button", { name: "执行工作流" }).click();
+  await executeRequest;
+  await expect(page.getByRole("button", { name: "围绕本次运行继续追问" })).toBeDisabled();
   await expect(page.getByText(/Workflow execution completed:/)).toBeVisible({
     timeout: 30_000,
   });
