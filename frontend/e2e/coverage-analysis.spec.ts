@@ -6,6 +6,131 @@ const backendBase = `http://localhost:${process.env.CODETALK_BACKEND_PORT ?? "30
 test.describe("Coverage analysis", () => {
   test.setTimeout(60_000);
 
+  test("prevents duplicate coverage uploads from a real double click", async ({
+    page,
+    request,
+  }) => {
+    const analysisName = `double-upload-${Date.now()}`;
+
+    await page.goto("/coverage", { waitUntil: "domcontentloaded" });
+
+    await page.locator('input[type="text"]').first().fill(analysisName);
+    await page.getByRole("button", { name: "选择文件" }).hover();
+    await page.getByRole("button", { name: "选择文件" }).click();
+    await page.locator('input[type="file"]').setInputFiles({
+      name: "double-upload-function-hits.csv",
+      mimeType: "text/csv",
+      buffer: Buffer.from(
+        [
+          "function_name,code_location,triggered,hit_count",
+          "double_upload_gap,lib/nvmf/ctrlr.c:1-10,false,0",
+        ].join("\n"),
+        "utf8",
+      ),
+    });
+
+    await expect(page.getByText("double-upload-function-hits.csv")).toBeVisible();
+
+    const uploadRequests: string[] = [];
+    page.on("request", (req) => {
+      if (
+        req.method() === "POST" &&
+        new URL(req.url()).pathname === "/api/coverage/upload"
+      ) {
+        uploadRequests.push(req.url());
+      }
+    });
+    const firstUpload = page.waitForRequest(
+      (req) =>
+        req.method() === "POST" &&
+        new URL(req.url()).pathname === "/api/coverage/upload",
+    );
+
+    await page.getByRole("button", { name: "上传并解析" }).hover();
+    await page.getByRole("button", { name: "上传并解析" }).dblclick();
+    await firstUpload;
+
+    await expect(page.getByRole("button", { name: "上传并解析" })).toBeDisabled();
+    await expect(page.getByText(analysisName)).toBeVisible({ timeout: 15_000 });
+    await expect.poll(() => uploadRequests.length).toBe(1);
+
+    const listResp = await request.get(`${backendBase}/api/coverage/list`);
+    expect(listResp.ok()).toBeTruthy();
+    const analyses = (await listResp.json()) as Array<{ id: string; name: string }>;
+    const created = analyses.filter((item) => item.name === analysisName);
+    expect(created).toHaveLength(1);
+    for (const item of created) {
+      const deleteResp = await request.delete(`${backendBase}/api/coverage/${item.id}`);
+      expect(deleteResp.ok()).toBeTruthy();
+    }
+  });
+
+  test("prevents duplicate coverage AI analysis requests from a real double click", async ({
+    page,
+    request,
+  }) => {
+    const analysisName = `double-analysis-${Date.now()}`;
+
+    await page.goto("/coverage", { waitUntil: "domcontentloaded" });
+
+    await page.locator('input[type="text"]').first().fill(analysisName);
+    await page.locator('input[type="file"]').setInputFiles({
+      name: "double-analysis-function-hits.csv",
+      mimeType: "text/csv",
+      buffer: Buffer.from(
+        [
+          "function_name,code_location,triggered,hit_count",
+          "double_analysis_gap,lib/bdev/bdev.c:1-10,false,0",
+        ].join("\n"),
+        "utf8",
+      ),
+    });
+    await page.getByRole("button", { name: "上传并解析" }).hover();
+    await page.getByRole("button", { name: "上传并解析" }).click();
+    await expect(page.getByText(analysisName)).toBeVisible({ timeout: 15_000 });
+
+    const card = page
+      .locator(".bg-surface-container-low")
+      .filter({ hasText: analysisName })
+      .first();
+    await expect(card.getByRole("button", { name: "AI 分析" })).toBeVisible();
+
+    const analyzeRequests: string[] = [];
+    page.on("request", (req) => {
+      if (
+        req.method() === "POST" &&
+        new URL(req.url()).pathname.endsWith("/analyze") &&
+        new URL(req.url()).pathname.startsWith("/api/coverage/")
+      ) {
+        analyzeRequests.push(req.url());
+      }
+    });
+    const firstAnalyze = page.waitForRequest(
+      (req) =>
+        req.method() === "POST" &&
+        new URL(req.url()).pathname.endsWith("/analyze") &&
+        new URL(req.url()).pathname.startsWith("/api/coverage/"),
+    );
+
+    await card.getByRole("button", { name: "AI 分析" }).hover();
+    await card.getByRole("button", { name: "AI 分析" }).dblclick();
+    await firstAnalyze;
+
+    await expect(card.getByRole("button", { name: "AI 分析" })).toBeDisabled();
+    await expect.poll(() => analyzeRequests.length).toBe(1);
+    await expect(page.getByText("double_analysis_gap")).toBeVisible({ timeout: 20_000 });
+
+    const listResp = await request.get(`${backendBase}/api/coverage/list`);
+    expect(listResp.ok()).toBeTruthy();
+    const analyses = (await listResp.json()) as Array<{ id: string; name: string }>;
+    const created = analyses.filter((item) => item.name === analysisName);
+    expect(created).toHaveLength(1);
+    for (const item of created) {
+      const deleteResp = await request.delete(`${backendBase}/api/coverage/${item.id}`);
+      expect(deleteResp.ok()).toBeTruthy();
+    }
+  });
+
   test("shows actionable repair guidance when an uploaded coverage file is malformed", async ({
     page,
   }) => {
