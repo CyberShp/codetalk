@@ -31,6 +31,10 @@ class NativeFrontendStartTests(unittest.TestCase):
             def __init__(self) -> None:
                 super().__init__({"frontend_port": 3003}, asyncio.Queue())
                 self.spawned: list[str] = []
+                self.installed_frontend = 0
+
+            async def _step_install_frontend(self) -> None:
+                self.installed_frontend += 1
 
             async def _spawn_process(self, name, cmd, cwd, step_name, step_index, env_extra=None):
                 self.spawned.append(name)
@@ -43,6 +47,36 @@ class NativeFrontendStartTests(unittest.TestCase):
 
         deployer = asyncio.run(run())
         self.assertEqual(deployer.spawned, ["frontend"])
+        self.assertEqual(deployer.installed_frontend, 1)
+
+    def test_restart_service_rebuilds_frontend_before_spawn(self) -> None:
+        class RecordingDeployer(NativeDeployer):
+            def __init__(self) -> None:
+                super().__init__({"frontend_port": 3003}, asyncio.Queue())
+                self._start_args["frontend"] = {
+                    "cmd": ["npm", "run", "start"],
+                    "cwd": "/tmp/frontend",
+                    "env_extra": {"PORT": "3003"},
+                }
+                self.events: list[str] = []
+
+            async def _terminate_process(self, name: str, timeout: float = 5) -> None:
+                self.events.append(f"terminate:{name}")
+
+            async def _step_install_frontend(self) -> None:
+                self.events.append("install_frontend")
+
+            async def _spawn_process(self, name, cmd, cwd, step_name, step_index, env_extra=None):
+                self.events.append(f"spawn:{name}")
+
+        async def run() -> RecordingDeployer:
+            deployer = RecordingDeployer()
+            result = await deployer.restart_service("frontend")
+            self.assertEqual(result, {"ok": True, "service": "frontend"})
+            return deployer
+
+        deployer = asyncio.run(run())
+        self.assertEqual(deployer.events, ["terminate:frontend", "install_frontend", "spawn:frontend"])
 
     def test_generate_config_removes_legacy_deepwiki_env(self) -> None:
         with TemporaryDirectory() as tmpdir:

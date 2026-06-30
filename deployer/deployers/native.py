@@ -863,6 +863,8 @@ class NativeDeployer:
         for target in targets:
             await self._terminate_process(target)
 
+        if "frontend" in targets:
+            await self._step_install_frontend()
 
         for target in targets:
             args = self._start_args[target]
@@ -939,6 +941,9 @@ class NativeDeployer:
             proc = self._processes.get(target)
             if proc is not None and proc.returncode is None:
                 continue
+
+            if target == "frontend":
+                await self._step_install_frontend()
 
             args = self._start_args[target]
             await self._spawn_process(target, args["cmd"], args["cwd"], "start", 0, args.get("env_extra"))
