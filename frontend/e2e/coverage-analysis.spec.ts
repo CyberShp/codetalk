@@ -288,6 +288,52 @@ test.describe("Coverage analysis", () => {
     await expect(page.getByText(analysisName)).toHaveCount(0);
   });
 
+  test("keeps the entered analysis name after a failed upload retry", async ({
+    page,
+    request,
+  }) => {
+    const analysisName = `retry-name-${Date.now()}`;
+
+    await page.goto("/coverage", { waitUntil: "domcontentloaded" });
+
+    await page.locator('input[type="text"]').first().fill(analysisName);
+    await page.locator('input[type="file"]').setInputFiles({
+      name: "retry-broken-coverage.csv",
+      mimeType: "text/csv",
+      buffer: Buffer.from("not_a_coverage_header\nno usable rows\n", "utf8"),
+    });
+    await page.getByRole("button", { name: "上传并解析" }).hover();
+    await page.getByRole("button", { name: "上传并解析" }).click();
+
+    await expect(page.locator('div[role="alert"]').filter({ hasText: "修复建议" })).toBeVisible();
+    await expect(page.locator('input[type="text"]').first()).toHaveValue(analysisName);
+
+    await page.locator('input[type="file"]').setInputFiles({
+      name: "retry-valid-function-hits.csv",
+      mimeType: "text/csv",
+      buffer: Buffer.from(
+        [
+          "function_name,code_location,triggered,hit_count",
+          "retry_preserves_name,lib/nvmf/ctrlr.c:1-10,false,0",
+        ].join("\n"),
+        "utf8",
+      ),
+    });
+    await page.getByRole("button", { name: "上传并解析" }).click();
+
+    await expect(page.getByText(analysisName)).toBeVisible({ timeout: 15_000 });
+
+    const listResp = await request.get(`${backendBase}/api/coverage/list`);
+    expect(listResp.ok()).toBeTruthy();
+    const analyses = (await listResp.json()) as Array<{ id: string; name: string }>;
+    const created = analyses.filter((item) => item.name === analysisName);
+    expect(created).toHaveLength(1);
+    for (const item of created) {
+      const deleteResp = await request.delete(`${backendBase}/api/coverage/${item.id}`);
+      expect(deleteResp.ok()).toBeTruthy();
+    }
+  });
+
   test("uploads an internal function hit table and renders black-box recommendations", async ({
     page,
     request,

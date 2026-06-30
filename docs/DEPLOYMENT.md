@@ -309,7 +309,8 @@ pip list | findstr fastapi
 
 ### 工具进程启动失败
 - 检查 GitNexus 二进制是否在 PATH 中
-- 检查 `DEEPWIKI_PATH` 是否指向正确目录
+- 检查后端 `.env` 中的 GitNexus/CGC 路径和端口是否与部署器配置一致
+- 当前产品不再部署或管理 DeepWiki；不要配置 DeepWiki 路径或端口
 - 查看后端日志中的错误信息
 
 ### AI 分析报错
