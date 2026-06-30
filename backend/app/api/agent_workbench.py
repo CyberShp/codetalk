@@ -4361,6 +4361,13 @@ def _build_task_acceptance_audit(task_run: Any) -> dict[str, Any]:
                 description=f"required Agent artifact for step {step_id}",
                 severity="required",
             ))
+            if Path(artifact).name in {"black_box_cases.json", "test_cases.json"}:
+                checks.append(_acceptance_black_box_case_quality_check(
+                    check_id=f"black_box_case_quality:{step_id}:{Path(artifact).name}",
+                    relative_path=f"{base}/{artifact}",
+                    task_dir=task_dir,
+                    description=f"black-box case content quality for step {step_id}",
+                ))
         lifecycle = _read_json(task_dir / base / "agent_run_lifecycle.json")
         turn_count = _safe_int(
             lifecycle.get("turn_count") if isinstance(lifecycle, dict) else None
@@ -4854,6 +4861,97 @@ def _acceptance_agent_stdin_redaction_check(
         "stdin_redacted": True,
         "stdin_json_sha256": stdin_sha,
     }
+
+
+def _acceptance_black_box_case_quality_check(
+    *,
+    check_id: str,
+    relative_path: str,
+    task_dir: Path,
+    description: str,
+) -> dict[str, Any]:
+    payload = _read_json(task_dir / relative_path)
+    base = {
+        "id": check_id,
+        "severity": "required",
+        "relative_path": relative_path,
+        "kind": workbench_artifact_kind(relative_path),
+        "description": description,
+    }
+    raw_cases = payload.get("black_box_cases") if isinstance(payload, dict) else payload
+    if not isinstance(raw_cases, list):
+        return {
+            **base,
+            "status": "invalid",
+            "reason": "black_box_cases_must_be_list",
+            "case_count": 0,
+            "invalid_count": 0,
+            "invalid_cases": [],
+        }
+    invalid_cases: list[dict[str, Any]] = []
+    for index, case in enumerate(raw_cases, start=1):
+        if not isinstance(case, dict):
+            invalid_cases.append({
+                "index": index,
+                "case_id": "",
+                "title": "",
+                "reasons": ["case_must_be_object"],
+            })
+            continue
+        reasons = _black_box_case_quality_reasons(case)
+        if reasons:
+            invalid_cases.append({
+                "index": index,
+                "case_id": str(case.get("case_id") or ""),
+                "title": str(case.get("title") or case.get("scenario") or ""),
+                "reasons": reasons,
+            })
+    if invalid_cases:
+        return {
+            **base,
+            "status": "invalid",
+            "reason": "black_box_case_quality_failed",
+            "case_count": len(raw_cases),
+            "invalid_count": len(invalid_cases),
+            "invalid_cases": invalid_cases,
+        }
+    return {
+        **base,
+        "status": "ok",
+        "reason": "",
+        "case_count": len(raw_cases),
+        "invalid_count": 0,
+        "invalid_cases": [],
+    }
+
+
+_BLACK_BOX_WHITE_BOX_RE = re.compile(
+    r"(?i)\b("
+    r"invoke|call|mock|stub|patch|unit\s*test|internal\s+function|"
+    r"direct\s+function|private\s+function|return\s+value|"
+    r"[a-z_][a-z0-9_]*\s*\("
+    r")\b"
+)
+
+
+def _black_box_case_quality_reasons(case: dict[str, Any]) -> list[str]:
+    reasons: list[str] = []
+    steps = _semantic_string_list(case.get("steps"))
+    expected = _semantic_string_list(case.get("expected"))
+    if not steps:
+        reasons.append("missing_steps")
+    if not expected:
+        reasons.append("missing_expected")
+    boundary_text = " ".join([
+        str(case.get("title") or ""),
+        str(case.get("scenario") or ""),
+        str(case.get("inputs") or ""),
+        " ".join(steps),
+        " ".join(expected),
+    ])
+    if _BLACK_BOX_WHITE_BOX_RE.search(boundary_text):
+        reasons.append("white_box_boundary")
+    return _semantic_dedupe(reasons)
 
 
 def _acceptance_file_check(
