@@ -688,6 +688,27 @@ test("executes MR black-box workflow and previews public test cases through the 
   await expect(page.getByText(/black_box_cases:accepted artifact:black_box_cases\.json/).first()).toBeVisible();
   await expect(page.getByText(/workflow_outputs sha:/)).toBeVisible();
 
+  await expect(page.getByRole("button", { name: "导入语义" })).toBeEnabled({
+    timeout: 15_000,
+  });
+  await page.getByRole("button", { name: "导入语义" }).hover();
+  await page.getByRole("button", { name: "导入语义" }).click();
+  await expect(page.getByText(/Semantic outputs imported: \d+, rejected: \d+/)).toBeVisible({
+    timeout: 15_000,
+  });
+
+  await page.getByRole("button", { name: "证据与语义" }).hover();
+  await page.getByRole("button", { name: "证据与语义" }).click();
+  await page.getByLabel("Semantic search query").fill("nvmf changed path");
+  await page.getByRole("button", { name: "搜索", exact: true }).hover();
+  await page.getByRole("button", { name: "搜索", exact: true }).click();
+  await expect(page.getByText("local_mr_black_box_001").first()).toBeVisible({
+    timeout: 15_000,
+  });
+  await expect(
+    page.getByText("nvmf changed path black-box regression").first(),
+  ).toBeVisible();
+
   await page.reload({ waitUntil: "domcontentloaded" });
   const recentRun = page.getByRole("button", { name: /mr_blackbox_test/ }).first();
   await expect(recentRun).toBeVisible({ timeout: 15_000 });
