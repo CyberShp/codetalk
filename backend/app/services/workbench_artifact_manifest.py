@@ -213,7 +213,17 @@ def artifact_preview(path: Path, data: bytes, *, max_chars: int = 1200) -> str:
 def artifact_preview_with_redaction_status(path: Path, data: bytes, *, max_chars: int = 1200) -> tuple[str, bool]:
     if path.suffix.lower() not in TEXT_ARTIFACT_SUFFIXES:
         return "", False
-    text = data[: max_chars * 4].decode("utf-8", errors="replace")
-    preview = text[:max_chars]
-    redacted = redact_agent_diagnostic_text(preview)
-    return redacted, redacted != preview
+    text = data.decode("utf-8", errors="replace")
+    redacted = redact_agent_diagnostic_text(text)
+    return truncate_redacted_text(redacted, max_chars), redacted != text
+
+
+def truncate_redacted_text(text: str, max_chars: int) -> str:
+    if len(text) <= max_chars:
+        return text
+    truncated = text[:max_chars]
+    marker = "<redacted>"
+    for prefix_len in range(1, len(marker)):
+        if truncated.endswith(marker[:prefix_len]):
+            return truncated[: -prefix_len] + marker
+    return truncated

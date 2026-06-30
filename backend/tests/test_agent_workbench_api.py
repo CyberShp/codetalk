@@ -3301,6 +3301,7 @@ async def test_workbench_task_run_artifact_content_api_is_safe(workbench_client,
     task_dir = Path(prepared.json()["artifact_dir"])
     secret = "sk-artifact-secret-value"
     csv_secret = "artifactCsvSecretLeakValue1234567890"
+    boundary_secret = "boundaryArtifactSecretLeakValue1234567890"
     (task_dir / "diagnostics.log").write_text(
         f"provider failed --api-key {secret}; token={secret}; Authorization: Bearer {secret}",
         encoding="utf-8",
@@ -3315,6 +3316,10 @@ async def test_workbench_task_run_artifact_content_api_is_safe(workbench_client,
     }
     for filename, payload in text_diagnostics.items():
         (task_dir / filename).write_text(payload, encoding="utf-8")
+    (task_dir / "boundary-diagnostics.log").write_text(
+        ("x" * 1170) + f"\nAuthorization: Bearer {boundary_secret}\n",
+        encoding="utf-8",
+    )
 
     content = await workbench_client.get(
         f"/api/workbench/task-runs/{task_run_id}/artifacts/content/task_bundle.json"
@@ -3357,6 +3362,23 @@ async def test_workbench_task_run_artifact_content_api_is_safe(workbench_client,
             f"/api/workbench/task-runs/{task_run_id}/artifacts"
         )).json()["artifacts"]
     }
+    boundary_manifest_item = artifacts_by_path["boundary-diagnostics.log"]
+    assert boundary_secret not in boundary_manifest_item["preview"]
+    assert "boundary" not in boundary_manifest_item["preview"]
+    assert "<redacted>" in boundary_manifest_item["preview"]
+    assert boundary_manifest_item["preview_redacted"] is True
+
+    boundary_content = await workbench_client.get(
+        f"/api/workbench/task-runs/{task_run_id}/artifacts/content/boundary-diagnostics.log",
+        params={"max_chars": 1200},
+    )
+    assert boundary_content.status_code == 200
+    boundary_body = boundary_content.json()
+    assert boundary_secret not in boundary_body["content"]
+    assert "boundary" not in boundary_body["content"]
+    assert "<redacted>" in boundary_body["content"]
+    assert boundary_body["content_redacted"] is True
+
     for relative_path in text_diagnostics:
         manifest_item = artifacts_by_path[relative_path]
         assert secret not in manifest_item["preview"]

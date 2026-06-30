@@ -36,6 +36,7 @@ from app.services.workbench_artifact_manifest import (
     TEXT_ARTIFACT_SUFFIXES,
     artifact_preview,
     build_task_artifact_manifest,
+    truncate_redacted_text,
     workbench_artifact_kind,
     write_task_artifact_manifest,
 )
@@ -5250,10 +5251,10 @@ def _artifact_content_payload(task_dir: Path, path: Path, *, max_chars: int) -> 
     content_redacted = False
     if is_text:
         text = data.decode("utf-8", errors="replace")
-        truncated = len(text) > max_chars
-        raw_content = text[:max_chars]
-        content = redact_agent_diagnostic_text(raw_content)
-        content_redacted = content != raw_content
+        redacted = redact_agent_diagnostic_text(text)
+        truncated = len(redacted) > max_chars
+        content = truncate_redacted_text(redacted, max_chars)
+        content_redacted = redacted != text
     return {
         "relative_path": relative_path,
         "path": str(path.resolve()),
