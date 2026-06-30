@@ -1800,6 +1800,7 @@ function workflowOutputArtifactRank(relativePath: string): number {
     "impact_scope.json",
     "flow_delta.json",
     "test_recommendations.json",
+    "workflow_output_materialization.json",
     "report.md",
   ];
   const rank = order.indexOf(name);
@@ -2724,6 +2725,7 @@ export default function AgentWorkbenchPage() {
       );
       setWorkflowOutputMaterialize(result);
       setSemanticOutputImport(result.semantic_output_import ?? null);
+      await refreshArtifactManifest(preparedRun.task_run_id);
       setMessage(
         `Workflow outputs materialized: ${result.evidence_count}; semantics ${result.semantic_output_import?.status ?? "skipped"}`,
       );

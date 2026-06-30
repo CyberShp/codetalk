@@ -555,7 +555,29 @@ test("executes MR black-box workflow and previews public test cases through the 
   await expect(page.getByText(/call internal functions/i)).toHaveCount(0);
 
   await expect(page.getByText(/mr_scope:accepted artifact:mr_snapshot\.json/)).toBeVisible();
-  await expect(page.getByText(/black_box_cases:accepted artifact:black_box_cases\.json/)).toBeVisible();
+  await expect(page.getByText(/black_box_cases:accepted artifact:black_box_cases\.json/).first()).toBeVisible();
+
+  await expect(page.getByRole("button", { name: "固化输出" })).toBeEnabled({
+    timeout: 15_000,
+  });
+  await page.getByRole("button", { name: "固化输出" }).hover();
+  await page.getByRole("button", { name: "固化输出" }).click();
+  await expect(page.getByText(/Workflow outputs materialized:/)).toBeVisible({
+    timeout: 15_000,
+  });
+
+  const materializationArtifact = page
+    .getByRole("button")
+    .filter({ hasText: /workflow_output_materialization\.json/ })
+    .first();
+  await expect(materializationArtifact).toBeVisible({ timeout: 15_000 });
+  await materializationArtifact.hover();
+  await materializationArtifact.click();
+  await expect(page.getByText("workflow_output_materialization.json").first()).toBeVisible();
+  await expect(page.getByText(/Materialized evidence:/)).toBeVisible();
+  await expect(page.getByText(/Declared outputs:/)).toBeVisible();
+  await expect(page.getByText(/black_box_cases:accepted artifact:black_box_cases\.json/).first()).toBeVisible();
+  await expect(page.getByText(/workflow_outputs sha:/)).toBeVisible();
 
   await page.reload({ waitUntil: "domcontentloaded" });
   const recentRun = page.getByRole("button", { name: /mr_blackbox_test/ }).first();
