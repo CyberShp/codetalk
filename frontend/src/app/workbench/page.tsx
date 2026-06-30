@@ -2685,7 +2685,7 @@ export default function AgentWorkbenchPage() {
 
   const previewArtifact = (relativePath: string) =>
     runAction(`preview-artifact-${relativePath}`, async () => {
-      if (!preparedRun) return;
+      if (!preparedRun || taskRunActionBusy) return;
       const result = await api.workbench.taskRuns.artifactContent(
         preparedRun.task_run_id,
         relativePath,
@@ -4773,7 +4773,10 @@ export default function AgentWorkbenchPage() {
                         <button
                           key={artifact.relative_path}
                           onClick={() => previewArtifact(artifact.relative_path)}
-                          disabled={busyAction === `preview-artifact-${artifact.relative_path}`}
+                          disabled={
+                            taskRunActionBusy ||
+                            busyAction === `preview-artifact-${artifact.relative_path}`
+                          }
                           className="rounded bg-surface px-1.5 py-0.5 text-left font-data text-[10px] transition-colors hover:bg-surface-container-high disabled:opacity-50"
                         >
                           {artifact.kind}:{artifact.relative_path}

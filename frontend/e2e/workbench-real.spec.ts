@@ -157,6 +157,56 @@ test("locks conflicting task run actions while a real prepare request is in flig
   await expect.poll(() => prepareRequests.length).toBe(1);
 });
 
+test("locks artifact previews while a prepared workflow is executing", async ({
+  page,
+}) => {
+  const repo = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), "codetalk-artifact-busy-")));
+  fs.mkdirSync(path.join(repo, "lib", "nvmf"), { recursive: true });
+  fs.writeFileSync(
+    path.join(repo, "lib", "nvmf", "artifact_busy.c"),
+    "int nvmf_artifact_busy_probe(void) { return 0; }\n",
+    "utf8",
+  );
+
+  await page.goto("/workbench", { waitUntil: "domcontentloaded" });
+  await page.getByRole("button", { name: "工作流设计" }).hover();
+  await page.getByRole("button", { name: "工作流设计" }).click();
+  await page.getByLabel("工作流预设").selectOption("module_analysis");
+  await page.getByRole("button", { name: "安装预设" }).hover();
+  await page.getByRole("button", { name: "安装预设" }).click();
+  await expect(page.getByText("预设已安装: 模块分析工作流")).toBeVisible({
+    timeout: 15_000,
+  });
+
+  await page.getByRole("button", { name: "运行驾驶舱" }).hover();
+  await page.getByRole("button", { name: "运行驾驶舱" }).click();
+  await page.getByLabel("Repo path").fill(repo);
+  await page.getByLabel("Workflow input repo_path").fill(repo);
+  await page.getByLabel("Workflow input analysis_object").fill("lib/nvmf artifact busy");
+  await page.getByRole("button", { name: "准备运行" }).hover();
+  await page.getByRole("button", { name: "准备运行" }).click();
+  await expect(page.getByText(/Task run prepared:/)).toBeVisible({ timeout: 15_000 });
+
+  await page.getByRole("button", { name: "审计产物" }).hover();
+  await page.getByRole("button", { name: "审计产物" }).click();
+  await expect(page.getByText(/产物已加载:/)).toBeVisible({ timeout: 15_000 });
+  const taskBundleArtifact = page.getByRole("button", {
+    name: /task_bundle:task_bundle\.json/,
+  });
+  await expect(taskBundleArtifact).toBeVisible();
+
+  const executeRequest = page.waitForRequest(
+    (request) =>
+      request.method() === "POST" &&
+      /\/api\/workbench\/task-runs\/[^/]+\/execute$/.test(new URL(request.url()).pathname),
+  );
+  await page.getByRole("button", { name: "执行工作流" }).hover();
+  await page.getByRole("button", { name: "执行工作流" }).click();
+  await executeRequest;
+  await expect(page.getByRole("button", { name: "执行工作流" })).toBeDisabled();
+  await expect(taskBundleArtifact).toBeDisabled();
+});
+
 test("locks sibling agent-run actions while a real step execution is in flight", async ({
   page,
 }) => {
