@@ -1089,3 +1089,60 @@ test("creates a sibling AI thread from the existing thread sidebar through the r
     ]),
   );
 });
+
+test("collapses and restores the AI thread context panel through the real UI", async ({
+  page,
+  request,
+}) => {
+  await page.setViewportSize({ width: 1440, height: 900 });
+  const repo = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), "codetalk_ai_context_panel_")));
+  fs.writeFileSync(path.join(repo, "README.md"), "AI context panel e2e workspace\n", "utf8");
+  const workspaceName = `ai_context_panel_${Date.now()}`;
+  const threadTitle = `${workspaceName} layout probe`;
+
+  const workspaceResp = await request.post(`${backendBase}/api/workspaces`, {
+    data: { name: workspaceName, repo_path: repo },
+  });
+  expect(workspaceResp.status()).toBe(201);
+  const workspace = (await workspaceResp.json()) as { id: string };
+
+  await page.goto("/ai", { waitUntil: "domcontentloaded" });
+  const projectButton = page.locator("button").filter({ hasText: workspaceName }).first();
+  await expect(projectButton).toBeVisible({ timeout: 15_000 });
+  await projectButton.hover();
+  await projectButton.click();
+  await expect(page.getByRole("heading", { name: workspaceName })).toBeVisible();
+
+  await page.getByPlaceholder(/线程名称/).fill(threadTitle);
+  await page.getByRole("button", { name: "新建线程" }).hover();
+  await page.getByRole("button", { name: "新建线程" }).click();
+
+  await page.waitForURL(/\/ai\/[^/]+$/, { timeout: 15_000 });
+  await expect(page.getByRole("heading", { name: threadTitle })).toBeVisible({
+    timeout: 15_000,
+  });
+  await expect(page.getByText(`workspace:${workspace.id}`)).toBeVisible();
+
+  const shell = page.locator(".ct-codex-ai");
+  const contextPanel = page.locator(".ct-codex-ai__context");
+  await expect(shell).toHaveClass(/is-context-open/);
+  await expect(contextPanel).toBeVisible();
+  const openWidth = await contextPanel.evaluate((node) => node.getBoundingClientRect().width);
+  expect(openWidth).toBeGreaterThan(240);
+
+  await page.locator(".ct-codex-ai__context-toggle").hover();
+  await page.locator(".ct-codex-ai__context-toggle").click();
+  await expect(shell).not.toHaveClass(/is-context-open/);
+  await expect
+    .poll(() => contextPanel.evaluate((node) => node.getBoundingClientRect().width))
+    .toBeLessThan(Math.min(60, openWidth / 4));
+  await expect(page.getByLabel("AI 线程消息")).toBeVisible();
+
+  await page.getByRole("button", { name: "环境" }).hover();
+  await page.getByRole("button", { name: "环境" }).click();
+  await expect(shell).toHaveClass(/is-context-open/);
+  await expect
+    .poll(() => contextPanel.evaluate((node) => node.getBoundingClientRect().width))
+    .toBeGreaterThan(240);
+  await expect(page.getByText(`workspace:${workspace.id}`)).toBeVisible();
+});
