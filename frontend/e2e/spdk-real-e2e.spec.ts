@@ -576,9 +576,27 @@ async function runStartupScriptWithOccupiedPort(
   });
 }
 
+const TEXT_ARTIFACT_EXTENSIONS = new Set([
+  ".csv",
+  ".htm",
+  ".html",
+  ".json",
+  ".jsonl",
+  ".log",
+  ".md",
+  ".ndjson",
+  ".txt",
+  ".xml",
+  ".yaml",
+  ".yml",
+]);
+
+function isTextArtifactFile(name: string) {
+  return TEXT_ARTIFACT_EXTENSIONS.has(path.extname(name).toLowerCase());
+}
+
 function textArtifactSecretLeaks(secret: string) {
   const leaks: string[] = [];
-  const textExtensions = new Set([".json", ".md", ".txt", ".log", ".csv"]);
   const visit = (dir: string) => {
     if (!fs.existsSync(dir)) return;
     for (const entry of fs.readdirSync(dir, { withFileTypes: true })) {
@@ -587,7 +605,7 @@ function textArtifactSecretLeaks(secret: string) {
         visit(fullPath);
         continue;
       }
-      if (!entry.isFile() || !textExtensions.has(path.extname(entry.name))) continue;
+      if (!entry.isFile() || !isTextArtifactFile(entry.name)) continue;
       if (fileContainsPattern(fullPath, secret)) {
         leaks.push(fullPath);
       }
@@ -621,7 +639,7 @@ function fileContainsPattern(file: string, pattern: string | RegExp) {
 function verifyStreamingSecretScanner() {
   const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "codetalk-secret-scan-"));
   const file = path.join(tempDir, "chunk-boundary.txt");
-  const prefix = "x".repeat(1024 * 1024 - 4);
+  const prefix = `${"x".repeat(1024 * 1024 - 5)}\n`;
   const secret = "sk-streaming-boundary-secret";
   try {
     fs.writeFileSync(file, `${prefix}${secret}\n`, "utf8");
@@ -634,7 +652,6 @@ function verifyStreamingSecretScanner() {
 
 function textArtifactPatternLeaks() {
   const leaks: Array<{ file: string; pattern: string }> = [];
-  const textExtensions = new Set([".json", ".md", ".txt", ".log", ".csv"]);
   const secretPatterns: Array<{ name: string; regex: RegExp }> = [
     { name: "sk-token", regex: /\bsk-[A-Za-z0-9_-]{12,}\b/ },
     { name: "bearer-token", regex: /Authorization:\s*Bearer\s+(?!<redacted>)[^\s"']+/i },
@@ -649,7 +666,7 @@ function textArtifactPatternLeaks() {
         visit(fullPath);
         continue;
       }
-      if (!entry.isFile() || !textExtensions.has(path.extname(entry.name))) continue;
+      if (!entry.isFile() || !isTextArtifactFile(entry.name)) continue;
       for (const pattern of secretPatterns) {
         if (fileContainsPattern(fullPath, pattern.regex)) {
           leaks.push({ file: path.relative(ARTIFACT_DIR, fullPath).split(path.sep).join("/"), pattern: pattern.name });
@@ -659,6 +676,29 @@ function textArtifactPatternLeaks() {
   };
   visit(ARTIFACT_DIR);
   return leaks;
+}
+
+function verifyTextArtifactExtensionScanner() {
+  const tempDir = fs.mkdtempSync(path.join(ARTIFACT_DIR, "text-artifact-extension-scan-"));
+  const secret = "sk-extension-format-secret";
+  const files = [
+    "diagnostic.html",
+    "diagnostic.yaml",
+    "diagnostic.yml",
+    "diagnostic.jsonl",
+    "diagnostic.ndjson",
+    "diagnostic.xml",
+  ];
+  try {
+    for (const file of files) {
+      fs.writeFileSync(path.join(tempDir, file), `token=${secret}\n`, "utf8");
+    }
+    const leaks = textArtifactPatternLeaks().filter((leak) => leak.file.startsWith(path.basename(tempDir)));
+    const leakedFiles = [...new Set(leaks.map((leak) => path.basename(leak.file)))];
+    expect(leakedFiles.sort()).toEqual(files.sort());
+  } finally {
+    fs.rmSync(tempDir, { recursive: true, force: true });
+  }
 }
 
 function expectNoSecretLeak(serialized = "") {
@@ -2973,6 +3013,7 @@ test("matrix accounting: every planned case has an explicit status", async () =>
     files: Array<{ path: string; kind: string; size_bytes: number; sha256: string }>;
   };
   verifyStreamingSecretScanner();
+  verifyTextArtifactExtensionScanner();
   expect(report.git_commit).toMatch(/^[a-f0-9]{40}$/);
   expect(report.git_branch).not.toEqual("");
   expect(report.node_version).toMatch(/^v\d+\./);
