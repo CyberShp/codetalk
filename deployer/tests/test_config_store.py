@@ -35,9 +35,9 @@ def test_normalize_unknown_keys_pass_through():
 
 
 def test_normalize_frontend_key_map():
-    result = config_store.normalize_to_snake({"portFrontend": 3005, "portBackend": 8100})
-    assert result["frontend_port"] == 3005
-    assert result["backend_port"] == 8100
+    result = config_store.normalize_to_snake({"portFrontend": 3003, "portBackend": 3004})
+    assert result["frontend_port"] == 3003
+    assert result["backend_port"] == 3004
 
 
 # ---------------------------------------------------------------------------
@@ -75,10 +75,10 @@ def test_save_config_persists_to_file(isolated_config):
 
 
 def test_save_config_merges_with_existing(isolated_config):
-    isolated_config.write_text(json.dumps({"mode": "native", "frontend_port": 3005}), encoding="utf-8")
+    isolated_config.write_text(json.dumps({"mode": "native", "frontend_port": 3003}), encoding="utf-8")
     config_store.save_config({"portBackend": 9999})
     cfg = config_store.load_config()
-    assert cfg["frontend_port"] == 3005
+    assert cfg["frontend_port"] == 3003
     assert cfg["backend_port"] == 9999
 
 

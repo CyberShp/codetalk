@@ -16,8 +16,8 @@ As of 2026-04-17, the observed listeners are:
 
 | Service | Browser/Host Port | Notes |
 |---|---:|---|
-| Frontend (Next.js) | `3005` | General CodeTalk host-run default |
-| Backend (FastAPI) | `8100` | General CodeTalk host-run API default |
+| Frontend (Next.js) | `3003` | General CodeTalk host-run default |
+| Backend (FastAPI) | `3004` | General CodeTalk host-run API default |
 | PostgreSQL | `5433` | Docker `5432` exposed to host `5433` |
 | deepwiki-open | `8001` | Dockerized |
 | GitNexus | `7100` | Dockerized |
@@ -75,8 +75,8 @@ Compose mode:
 
 Host mode:
 
-- browser reaches frontend on `3005`
-- browser reaches backend on `8100`
+- browser reaches frontend on `3003`
+- browser reaches backend on `3004`
 - backend must use host-reachable dependency endpoints
 - database must use host port `5433`
 
@@ -104,7 +104,7 @@ export REPOS_BASE_PATH="$(pwd)/.repos"
 
 Valid examples:
 
-- `http://localhost:8100` when browsing locally on the same machine
+- `http://localhost:3004` when browsing locally on the same machine
 
 Invalid examples:
 
@@ -118,7 +118,7 @@ Invalid examples:
 Authoritative check:
 
 ```bash
-lsof -nP -iTCP -sTCP:LISTEN | rg ':(3005|8100|5433|7100|8001|8080)\b'
+lsof -nP -iTCP -sTCP:LISTEN | rg ':(3003|3004|5433|7100|8001|8080)\b'
 ```
 
 This is the source of truth for "what is actually up".
@@ -127,16 +127,16 @@ This is the source of truth for "what is actually up".
 
 ### Frontend
 
-1. Confirm the old listener is gone from `3005`.
+1. Confirm the old listener is gone from `3003`.
 2. Start the frontend from `frontend/`.
-3. Confirm `node` is listening on `3005`.
+3. Confirm `node` is listening on `3003`.
 
 ### Backend
 
 1. Decide runtime mode first: host-run or Compose.
 2. If host-run, export host-safe env vars before starting.
 3. Start from `backend/`.
-4. Confirm Python is listening on `8100`.
+4. Confirm Python is listening on `3004`.
 5. Do not assume repo-root `.env` was loaded.
 
 ### Database and tools

@@ -253,11 +253,11 @@
                   <div class="form-row form-row-ports">
                     <div class="form-group">
                       <label class="form-label" for="port-frontend">前端</label>
-                      <input type="number" id="port-frontend" name="portFrontend" class="form-input font-mono" value="3005" min="1024" max="65535" />
+                      <input type="number" id="port-frontend" name="portFrontend" class="form-input font-mono" value="3003" min="1024" max="65535" />
                     </div>
                     <div class="form-group">
                       <label class="form-label" for="port-backend">后端 API</label>
-                      <input type="number" id="port-backend" name="portBackend" class="form-input font-mono" value="8100" min="1024" max="65535" />
+                      <input type="number" id="port-backend" name="portBackend" class="form-input font-mono" value="3004" min="1024" max="65535" />
                     </div>
                     <div class="form-group" id="port-db-group">
                       <label class="form-label" for="port-db">PostgreSQL</label>
@@ -267,7 +267,7 @@
                 </div>
                 <div class="form-group">
                   <label class="form-label" for="cors-origins">CORS 允许来源</label>
-                  <input type="text" id="cors-origins" name="corsOrigins" class="form-input font-mono" placeholder="http://localhost:3005, https://your-domain.com" />
+                  <input type="text" id="cors-origins" name="corsOrigins" class="form-input font-mono" placeholder="http://localhost:3003, https://your-domain.com" />
                   <p class="form-hint">逗号分隔的允许跨域来源列表</p>
                 </div>
               </div>
@@ -371,26 +371,26 @@
           <p class="step-subtitle">所有服务已部署完成，可以正常使用</p>
 
           <div class="service-url-grid" id="service-url-grid">
-            <a class="service-url-card" href="http://localhost:3005" target="_blank" rel="noopener noreferrer" data-service="frontend">
+            <a class="service-url-card" href="http://localhost:3003" target="_blank" rel="noopener noreferrer" data-service="frontend">
               <div class="url-card-icon">
                 <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><rect x="3" y="3" width="18" height="14" rx="2"/><path d="M8 21h8M12 17v4"/></svg>
               </div>
               <div class="url-card-body">
                 <span class="url-card-name">前端界面</span>
-                <span class="url-card-url">localhost:3005</span>
+                <span class="url-card-url">localhost:3003</span>
               </div>
               <button class="restart-btn" title="重启此服务" aria-label="重启" onclick="event.preventDefault();event.stopPropagation();restartService(this)">
                 <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" aria-hidden="true"><path d="M1 4v6h6"/><path d="M23 20v-6h-6"/><path d="M20.49 9A9 9 0 0 0 5.64 5.64L1 10m22 4l-4.64 4.36A9 9 0 0 1 3.51 15"/></svg>
               </button>
               <svg class="url-card-arrow" viewBox="0 0 20 20" fill="currentColor" aria-hidden="true"><path d="M11 3a1 1 0 100 2h2.586l-6.293 6.293a1 1 0 101.414 1.414L15 6.414V9a1 1 0 102 0V4a1 1 0 00-1-1h-5z"/><path d="M5 5a2 2 0 00-2 2v8a2 2 0 002 2h8a2 2 0 002-2v-3a1 1 0 10-2 0v3H5V7h3a1 1 0 000-2H5z"/></svg>
             </a>
-            <a class="service-url-card" href="http://localhost:8100" target="_blank" rel="noopener noreferrer" data-service="backend">
+            <a class="service-url-card" href="http://localhost:3004" target="_blank" rel="noopener noreferrer" data-service="backend">
               <div class="url-card-icon">
                 <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><path d="M20 17l-8-4-8 4V5l8-4 8 4v12z"/></svg>
               </div>
               <div class="url-card-body">
                 <span class="url-card-name">后端 API</span>
-                <span class="url-card-url">localhost:8100</span>
+                <span class="url-card-url">localhost:3004</span>
               </div>
               <button class="restart-btn" title="重启此服务" aria-label="重启" onclick="event.preventDefault();event.stopPropagation();restartService(this)">
                 <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" aria-hidden="true"><path d="M1 4v6h6"/><path d="M23 20v-6h-6"/><path d="M20.49 9A9 9 0 0 0 5.64 5.64L1 10m22 4l-4.64 4.36A9 9 0 0 1 3.51 15"/></svg>
@@ -439,7 +439,7 @@
           </div>
 
           <div class="complete-actions">
-            <a href="http://localhost:3005" target="_blank" rel="noopener noreferrer" class="btn btn-primary btn-lg">
+            <a href="http://localhost:3003" target="_blank" rel="noopener noreferrer" class="btn btn-primary btn-lg">
               <svg class="btn-icon" viewBox="0 0 20 20" fill="currentColor" aria-hidden="true"><path d="M11 3a1 1 0 100 2h2.586l-6.293 6.293a1 1 0 101.414 1.414L15 6.414V9a1 1 0 102 0V4a1 1 0 00-1-1h-5z"/><path d="M5 5a2 2 0 00-2 2v8a2 2 0 002 2h8a2 2 0 002-2v-3a1 1 0 10-2 0v3H5V7h3a1 1 0 000-2H5z"/></svg>
               打开 CodeTalk
             </a>

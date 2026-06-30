@@ -1,7 +1,7 @@
 import { expect, test } from "@playwright/test";
 import type { Page } from "@playwright/test";
 
-function corsHeaders(origin = "http://localhost:3005") {
+function corsHeaders(origin = "http://localhost:3003") {
   return {
     "Access-Control-Allow-Origin": origin,
     "Access-Control-Allow-Credentials": "true",
@@ -397,7 +397,7 @@ test("agent workbench renders workflow and task-run controls", async ({ page }) 
 
 test("agent workbench searches semantic cases and evidence memory", async ({ page }) => {
   await routeWorkbenchShell(page);
-  await page.route("**:8100/api/workbench/semantic-cases/search*", async (route) => {
+  await page.route("**/api/workbench/semantic-cases/search*", async (route) => {
     await route.fulfill({
       headers: corsHeaders(route.request().headers().origin),
       json: {
@@ -421,7 +421,7 @@ test("agent workbench searches semantic cases and evidence memory", async ({ pag
       },
     });
   });
-  await page.route("**:8100/api/workbench/memory/search*", async (route) => {
+  await page.route("**/api/workbench/memory/search*", async (route) => {
     await route.fulfill({
       headers: corsHeaders(route.request().headers().origin),
       json: {

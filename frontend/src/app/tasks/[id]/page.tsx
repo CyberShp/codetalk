@@ -15,7 +15,7 @@ import {
   Loader2,
   RefreshCw,
 } from "lucide-react";
-import { api } from "@/lib/api";
+import { api, BASE } from "@/lib/api";
 import type { Task, TaskStatus, TaskStep } from "@/lib/types";
 import ProgressBar from "@/components/ui/ProgressBar";
 
@@ -112,8 +112,7 @@ export default function TaskDetailPage() {
   // WebSocket live events — connect while task is running, append events to steps
   useEffect(() => {
     if (task?.status !== "running" || !taskId || typeof window === "undefined") return;
-    const apiBase = process.env.NEXT_PUBLIC_API_URL ?? "http://localhost:8100";
-    const wsUrl = apiBase.replace(/^http/, "ws") + `/ws/tasks/${taskId}/logs`;
+    const wsUrl = BASE.replace(/^http/, "ws") + `/ws/tasks/${taskId}/logs`;
     const ws = new WebSocket(wsUrl);
     wsRef.current = ws;
 

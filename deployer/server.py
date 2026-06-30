@@ -67,7 +67,7 @@ app.add_middleware(
         "http://localhost:9000",
         "http://127.0.0.1:9000",
         "http://localhost:3000",
-        "http://localhost:3005",
+        "http://localhost:3003",
     ],
     allow_credentials=True,
     allow_methods=["*"],
@@ -127,8 +127,8 @@ async def api_deploy(body: dict):
             if old_deployer is not None and hasattr(old_deployer, "_start_args"):
                 deployer._start_args.update(old_deployer._start_args)
             if not force_takeover:
-                backend_port = cfg.get("backend_port", 8100)
-                frontend_port = cfg.get("frontend_port", 3005)
+                backend_port = cfg.get("backend_port", 3004)
+                frontend_port = cfg.get("frontend_port", 3003)
                 gitnexus_port = cfg.get("gitnexus_port", 7100)
                 cgc_port = cfg.get("cgc_port", 7072)
                 ports = [backend_port, frontend_port]
@@ -309,8 +309,8 @@ async def api_quickstart(request: Request):
             deployer._start_args.update(old_deployer._start_args)
 
         if not force_takeover:
-            backend_port = cfg.get("backend_port", 8100)
-            frontend_port = cfg.get("frontend_port", 3005)
+            backend_port = cfg.get("backend_port", 3004)
+            frontend_port = cfg.get("frontend_port", 3003)
             gitnexus_port = cfg.get("gitnexus_port", 7100)
             cgc_port = cfg.get("cgc_port", 7072)
             ports = [backend_port, frontend_port]

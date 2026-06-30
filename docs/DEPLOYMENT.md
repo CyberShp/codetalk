@@ -16,8 +16,8 @@
 
 | 服务 | 端口 | 说明 |
 |------|------|------|
-| 前端 (Next.js) | 3005 | 用户界面 |
-| 后端 API (FastAPI) | 8100 | REST API |
+| 前端 (Next.js) | 3003 | 用户界面 |
+| 后端 API (FastAPI) | 3004 | REST API |
 | GitNexus | 7100 | 代码图谱服务 |
 | DeepWiki-Open API | 8091 | Wiki 生成 API |
 | DeepWiki-Open UI | 3001 | DeepWiki 自带界面 |
@@ -98,7 +98,7 @@ cd frontend
 npm install
 
 # 创建环境文件（可选）
-echo "NEXT_PUBLIC_API_URL=http://localhost:8100" > .env.local
+echo "NEXT_PUBLIC_API_URL=http://localhost:3004" > .env.local
 ```
 
 ### 3.4 启动服务
@@ -107,7 +107,7 @@ echo "NEXT_PUBLIC_API_URL=http://localhost:8100" > .env.local
 ```bash
 cd backend
 .venv311\Scripts\activate     # Windows
-uvicorn app.main:app --host 0.0.0.0 --port 8100 --reload
+uvicorn app.main:app --host 0.0.0.0 --port 3004 --reload
 ```
 
 **前端:**
@@ -116,7 +116,7 @@ cd frontend
 npm run dev
 ```
 
-访问 http://localhost:3005 即可使用。
+访问 http://localhost:3003 即可使用。
 
 ## 4. 环境变量
 
@@ -141,18 +141,18 @@ GITNEXUS_BIN=gitnexus            # GitNexus 二进制路径
 TOOL_HEALTH_INTERVAL=30          # 健康检查间隔(秒)
 
 # CORS（内网部署需添加客户端 IP）
-CORS_ORIGINS=http://localhost:3005,http://127.0.0.1:3005
+CORS_ORIGINS=http://localhost:3003,http://127.0.0.1:3003
 ```
 
 ### 4.2 前端 (.env.local)
 
 ```env
-NEXT_PUBLIC_API_URL=http://localhost:8100
+NEXT_PUBLIC_API_URL=http://localhost:3004
 ```
 
 > 内网部署时，将 `localhost` 替换为服务器 IP，例如:
-> `NEXT_PUBLIC_API_URL=http://192.168.50.195:8100`
-> `CORS_ORIGINS=http://192.168.50.195:3005,http://localhost:3005`
+> `NEXT_PUBLIC_API_URL=http://192.168.50.195:3004`
+> `CORS_ORIGINS=http://192.168.50.195:3003,http://localhost:3003`
 
 ## 5. 工具部署
 
@@ -319,7 +319,7 @@ GitNexus 健康检查在 `/api/info` 返回 5xx 时，自动降级到 `POST /api
 ### 后端无法启动
 ```bash
 # 检查端口是否占用
-netstat -ano | findstr :8100
+netstat -ano | findstr :3004
 
 # 检查 Python 版本
 python --version  # 需要 3.11+
@@ -330,7 +330,7 @@ pip list | findstr fastapi
 
 ### 前端无法连接后端
 - 检查 `CORS_ORIGINS` 是否包含前端地址
-- 检查防火墙是否放行 8100 端口
+- 检查防火墙是否放行 3004 端口
 - 检查 `.env.local` 中 `NEXT_PUBLIC_API_URL` 是否正确
 
 ### 工具进程启动失败

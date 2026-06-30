@@ -7,7 +7,7 @@ import path from "node:path";
 
 const SPDK_REPO = process.env.CODETALK_E2E_REPO ?? "";
 const BAD_SPDK_REPO = "/Volums/Media/dpdk/spdk";
-const BACKEND_BASE = `http://localhost:${process.env.CODETALK_BACKEND_PORT ?? "8100"}`;
+const BACKEND_BASE = `http://localhost:${process.env.CODETALK_BACKEND_PORT ?? "3004"}`;
 const RUN_ID = new Date().toISOString().replace(/[:.]/g, "-");
 const ARTIFACT_DIR =
   process.env.CODETALK_E2E_ARTIFACT_DIR ??

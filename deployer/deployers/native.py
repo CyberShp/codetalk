@@ -30,8 +30,8 @@ except ImportError:  # safety net — shouldn't happen in normal deployment
 TOTAL_STEPS = 7
 
 SERVICE_DEFAULTS = [
-    ("backend", "backend_port", 8100, "http", "/health"),
-    ("frontend", "frontend_port", 3005, "http", "/"),
+    ("backend", "backend_port", 3004, "http", "/health"),
+    ("frontend", "frontend_port", 3003, "http", "/"),
     ("gitnexus", "gitnexus_port", 7100, "http", "/api/info"),
 ]
 
@@ -382,8 +382,8 @@ class NativeDeployer:
         repos_dir.mkdir(parents=True, exist_ok=True)
         cfg["repos_path"] = str(repos_dir)
 
-        backend_port = cfg.get("backend_port", 8100)
-        frontend_port = cfg.get("frontend_port", 3005)
+        backend_port = cfg.get("backend_port", 3004)
+        frontend_port = cfg.get("frontend_port", 3003)
         gitnexus_port = cfg.get("gitnexus_port", 7100)
 
         cgc_port = self._config_port("cgc_port", _CGC_DEFAULT_PORT)
@@ -623,8 +623,8 @@ class NativeDeployer:
         await self._emit("start_services", "running", "启动服务...", step)
 
         cfg = self._config
-        backend_port = cfg.get("backend_port", 8100)
-        frontend_port = cfg.get("frontend_port", 3005)
+        backend_port = cfg.get("backend_port", 3004)
+        frontend_port = cfg.get("frontend_port", 3003)
         gitnexus_port = cfg.get("gitnexus_port", 7100)
 
         ports_to_clear = [backend_port, frontend_port]
@@ -838,7 +838,7 @@ class NativeDeployer:
             backend_dir = PROJECT_ROOT / "backend"
             venv_python = backend_dir / (".venv311/Scripts/python.exe" if sys.platform == "win32" else ".venv311/bin/python")
             return {
-                "cmd": [str(venv_python), "-m", "uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", str(cfg.get("backend_port", 8100))],
+                "cmd": [str(venv_python), "-m", "uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", str(cfg.get("backend_port", 3004))],
                 "cwd": str(backend_dir),
                 "env_extra": None,
             }
@@ -847,7 +847,7 @@ class NativeDeployer:
             return {
                 "cmd": [npm_cmd, "run", "start"],
                 "cwd": str(PROJECT_ROOT / "frontend"),
-                "env_extra": {"PORT": str(cfg.get("frontend_port", 3005))},
+                "env_extra": {"PORT": str(cfg.get("frontend_port", 3003))},
             }
         if name == "gitnexus":
             gn_cmd = self._resolve_gitnexus_cmd()

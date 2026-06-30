@@ -284,8 +284,8 @@ function collectConfig() {
     portGitnexus:    (($('#port-gitnexus')     || {}).value || '7100').trim(),
     portCgc:         (($('#port-cgc')          || {}).value || '7072').trim(),
     reposPath:       (($('#repos-path')        || {}).value || './.repos'),
-    portFrontend:    (($('#port-frontend')     || {}).value || '3005'),
-    portBackend:     (($('#port-backend')      || {}).value || '8100'),
+    portFrontend:    (($('#port-frontend')     || {}).value || '3003'),
+    portBackend:     (($('#port-backend')      || {}).value || '3004'),
     corsOrigins:     (($('#cors-origins')      || {}).value || ''),
   };
   if (state.selectedMode !== 'native') {
@@ -349,8 +349,8 @@ function renderReview() {
 
   if (cfg.mode !== 'k8s') {
     rows.push(null,
-      { label: '前端端口',      value: cfg.portFrontend || '3005', mono: true },
-      { label: '后端 API 端口', value: cfg.portBackend  || '8100', mono: true },
+      { label: '前端端口',      value: cfg.portFrontend || '3003', mono: true },
+      { label: '后端 API 端口', value: cfg.portBackend  || '3004', mono: true },
     );
   }
 
@@ -573,16 +573,16 @@ function updateServiceUrls() {
   const gitnexusPort   = cfg.portGitnexus   || '7100';
 
   const NATIVE_URLS = {
-    frontend:    'http://localhost:' + (cfg.portFrontend  || '3005'),
-    backend:     'http://localhost:' + (cfg.portBackend   || '8100'),
+    frontend:    'http://localhost:' + (cfg.portFrontend  || '3003'),
+    backend:     'http://localhost:' + (cfg.portBackend   || '3004'),
     gitnexus:    installGitnexus ? 'http://localhost:' + gitnexusPort   : null,
     codecompass: null,
     joern:       null,
   };
 
   const COMPOSE_URLS = {
-    frontend:    'http://localhost:' + (cfg.portFrontend || '3005'),
-    backend:     'http://localhost:' + (cfg.portBackend  || '8100'),
+    frontend:    'http://localhost:' + (cfg.portFrontend || '3003'),
+    backend:     'http://localhost:' + (cfg.portBackend  || '3004'),
     gitnexus:    installGitnexus ? 'http://localhost:' + gitnexusPort   : null,
     codecompass: 'http://localhost:16251',
     joern:       'http://localhost:8080',
@@ -710,7 +710,7 @@ function attachNavHandlers() {
       await saveConfig();
     }
     if (state.currentStep === 6) {
-      const frontendUrl = state.selectedMode === 'k8s' ? 'http://localhost/' : 'http://localhost:' + (state.config.portFrontend || '3005');
+      const frontendUrl = state.selectedMode === 'k8s' ? 'http://localhost/' : 'http://localhost:' + (state.config.portFrontend || '3003');
       window.open(frontendUrl, '_blank', 'noopener,noreferrer');
       return;
     }

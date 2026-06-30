@@ -583,6 +583,22 @@ async def test_settings_config_has_no_deepwiki_runtime_side_effects():
     assert not hasattr(app_settings, "deepwiki_ui_port")
 
 
+async def test_settings_backend_port_defaults_to_public_local_api_port(monkeypatch):
+    from app.config import Settings
+
+    monkeypatch.delenv("CODETALK_BACKEND_PORT", raising=False)
+
+    assert Settings().backend_port == 3004
+
+
+async def test_settings_backend_port_can_be_overridden_for_isolated_runs(monkeypatch):
+    from app.config import Settings
+
+    monkeypatch.setenv("CODETALK_BACKEND_PORT", "39104")
+
+    assert Settings().backend_port == 39104
+
+
 # ---------------------------------------------------------------------------
 # Active model references on LLM config mutation
 # ---------------------------------------------------------------------------

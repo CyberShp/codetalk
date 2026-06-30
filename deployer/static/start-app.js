@@ -60,8 +60,8 @@
   }
 
   function applyConfigToUI(cfg) {
-    var backendPort  = cfg.portBackend     || 8100;
-    var frontendPort = cfg.portFrontend    || 3005;
+    var backendPort  = cfg.portBackend     || 3004;
+    var frontendPort = cfg.portFrontend    || 3003;
     var gitnexusPort = cfg.portGitnexus    || 7100;
     var cgcPort      = cfg.portCgc         || 7072;
 

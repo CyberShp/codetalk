@@ -33,8 +33,8 @@ class ConfigStoreTests(unittest.TestCase):
                     {
                         "mode": "native",
                         "portGitnexus": "7111",
-                        "portFrontend": "3005",
-                        "portBackend": "8100",
+                        "portFrontend": "3003",
+                        "portBackend": "3004",
                     }
                 )
 
@@ -71,8 +71,8 @@ class NativeDeployerTests(unittest.IsolatedAsyncioTestCase):
         fake_httpx = types.SimpleNamespace(AsyncClient=FakeAsyncClient)
         deployer = NativeDeployer(
             {
-                "backend_port": 8100,
-                "frontend_port": 3005,
+                "backend_port": 3004,
+                "frontend_port": 3003,
                 "gitnexus_port": 7111,
             },
             asyncio.Queue(),

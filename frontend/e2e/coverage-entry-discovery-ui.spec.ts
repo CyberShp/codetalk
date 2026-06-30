@@ -1,6 +1,6 @@
 import { expect, test } from "@playwright/test";
 
-const backendBase = `http://localhost:${process.env.CODETALK_BACKEND_PORT ?? "8100"}`;
+const backendBase = `http://localhost:${process.env.CODETALK_BACKEND_PORT ?? "3004"}`;
 
 test("coverage entry discovery renders source file, chain, and input hints", async ({ page }) => {
   const results = [

@@ -8,8 +8,8 @@ import { assertPortAvailable } from "./port-preflight.mjs";
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const backendDir = path.resolve(__dirname, "../../backend");
 const backendHost = process.env.CODETALK_BACKEND_BIND_HOST ?? "0.0.0.0";
-const backendPort = process.env.CODETALK_BACKEND_PORT ?? "8100";
-const frontendPort = process.env.CODETALK_FRONTEND_PORT ?? "3005";
+const backendPort = process.env.CODETALK_BACKEND_PORT ?? "3004";
+const frontendPort = process.env.CODETALK_FRONTEND_PORT ?? "3003";
 const browserHost = process.env.CODETALK_BROWSER_HOST ?? "localhost";
 const gitnexusPort = process.env.GITNEXUS_PORT ?? process.env.CODETALK_GITNEXUS_PORT ?? "7100";
 const gitnexusBaseUrl =

@@ -1,7 +1,7 @@
 import path from "node:path";
 import { test, expect } from "@playwright/test";
 
-const backendBase = `http://localhost:${process.env.CODETALK_BACKEND_PORT ?? "8100"}`;
+const backendBase = `http://localhost:${process.env.CODETALK_BACKEND_PORT ?? "3004"}`;
 
 test.describe("Coverage analysis", () => {
   test.setTimeout(60_000);

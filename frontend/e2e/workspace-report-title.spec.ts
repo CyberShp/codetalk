@@ -3,21 +3,21 @@ import { test, expect } from "@playwright/test";
 test("workspace report cards prefer backend report title over template id", async ({ page }) => {
   const now = "2026-05-31T00:00:00Z";
 
-  await page.route("http://localhost:8100/api/workspaces/ws-title/modules", async (route) => {
+  await page.route("**/api/workspaces/ws-title/modules", async (route) => {
     await route.fulfill({ json: [] });
   });
-  await page.route("http://localhost:8100/api/workspaces/ws-title/versions", async (route) => {
+  await page.route("**/api/workspaces/ws-title/versions", async (route) => {
     await route.fulfill({ json: [] });
   });
   await page.route(
-    "http://localhost:8100/api/workspaces/ws-title/materials/embedding-status",
+    "**/api/workspaces/ws-title/materials/embedding-status",
     async (route) => {
       await route.fulfill({
         json: { total_materials: 0, embedded_materials: 0, total_chunks: 0, rag_ready: false },
       });
     },
   );
-  await page.route("http://localhost:8100/api/workspaces/ws-title", async (route) => {
+  await page.route("**/api/workspaces/ws-title", async (route) => {
     await route.fulfill({
       json: {
         id: "ws-title",

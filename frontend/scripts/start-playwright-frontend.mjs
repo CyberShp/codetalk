@@ -2,9 +2,9 @@ import { spawn } from "node:child_process";
 import { assertPortAvailable } from "./port-preflight.mjs";
 
 const frontendHost = process.env.CODETALK_FRONTEND_BIND_HOST ?? "0.0.0.0";
-const frontendPort = process.env.CODETALK_FRONTEND_PORT ?? "3005";
+const frontendPort = process.env.CODETALK_FRONTEND_PORT ?? "3003";
 const browserHost = process.env.CODETALK_BROWSER_HOST ?? "localhost";
-const backendPort = process.env.CODETALK_BACKEND_PORT ?? "8100";
+const backendPort = process.env.CODETALK_BACKEND_PORT ?? "3004";
 const nextPublicApiUrl =
   process.env.NEXT_PUBLIC_API_URL ?? `http://${browserHost}:${backendPort}`;
 const npxCommand = process.platform === "win32" ? "npx.cmd" : "npx";

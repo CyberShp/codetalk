@@ -224,7 +224,7 @@ def _check_ports(
     own_ports: set[int] | None = None,
 ) -> list[dict]:
     if ports is None:
-        ports = [5433, 8000, 3005, 8001, 7100, 8080, 16251]
+        ports = [5433, 8000, 3003, 8001, 7100, 8080, 16251]
     if own_ports is None:
         own_ports = set()
     hint = (
@@ -337,8 +337,8 @@ async def run_checks(mode: str) -> list[dict]:
 
         saved = load_config()
         native_ports = [
-            int(saved.get("frontend_port", 3005)),
-            int(saved.get("backend_port", 8100)),
+            int(saved.get("frontend_port", 3003)),
+            int(saved.get("backend_port", 3004)),
             int(saved.get("gitnexus_port", 7100)),
         ]
         own_ports = _detect_own_running_ports(set(native_ports))

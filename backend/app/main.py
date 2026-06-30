@@ -34,7 +34,7 @@ async def lifespan(app: FastAPI):
     pm = ProcessManager.get_instance()
     pm.start_monitoring()
     app.state.process_manager = pm
-    logger.info("CodeTalk Lightweight backend started on port 8100")
+    logger.info("CodeTalk Lightweight backend started on port %s", settings.backend_port)
 
     yield
 

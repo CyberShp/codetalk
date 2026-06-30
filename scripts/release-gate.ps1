@@ -2,7 +2,7 @@ param(
     [switch]$SkipSlow,
     [switch]$SkipFrontendBuild,
     [switch]$RunE2E,
-    [int]$E2EFrontendPort = 3005
+    [int]$E2EFrontendPort = 3003
 )
 
 $ErrorActionPreference = "Stop"

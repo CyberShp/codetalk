@@ -22,7 +22,7 @@ from typing import Any
 import httpx
 
 
-DEFAULT_BACKEND = os.environ.get("CODETALK_BACKEND", "http://127.0.0.1:8100")
+DEFAULT_BACKEND = os.environ.get("CODETALK_BACKEND", "http://127.0.0.1:3004")
 DEFAULT_FRONTEND = os.environ.get("CODETALK_FRONTEND", "http://127.0.0.1:3205")
 DEFAULT_REPO = os.environ.get(
     "CODETALK_E2E_REPO",

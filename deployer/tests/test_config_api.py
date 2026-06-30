@@ -40,11 +40,11 @@ async def test_post_config_empty_body_tolerated(client):
 
 
 async def test_post_config_partial_merge_preserves_existing(client):
-    await client.post("/api/config", json={"portFrontend": 3005, "portBackend": 8100})
+    await client.post("/api/config", json={"portFrontend": 3003, "portBackend": 3004})
     await client.post("/api/config", json={"portBackend": 9000})
     resp = await client.get("/api/config")
     body = resp.json()
-    assert body.get("portFrontend") == 3005
+    assert body.get("portFrontend") == 3003
     assert body.get("portBackend") == 9000
 
 

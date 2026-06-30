@@ -1,6 +1,6 @@
 import { test, expect } from "@playwright/test";
 
-const backendBase = `http://localhost:${process.env.CODETALK_BACKEND_PORT ?? "8100"}`;
+const backendBase = `http://localhost:${process.env.CODETALK_BACKEND_PORT ?? "3004"}`;
 
 test.describe("Workspace smoke tests", () => {
   test("create workspace page loads with form", async ({ page }) => {

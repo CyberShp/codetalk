@@ -4,7 +4,7 @@ import net from "node:net";
 import path from "node:path";
 
 const frontendPort = Number(process.env.CODETALK_FRONTEND_PORT ?? "3205");
-const backendPort = Number(process.env.CODETALK_BACKEND_PORT ?? "8100");
+const backendPort = Number(process.env.CODETALK_BACKEND_PORT ?? "3004");
 
 const repoRoot = path.resolve(__dirname, "..", "..");
 const deployerDir = path.join(repoRoot, "deployer");

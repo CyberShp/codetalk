@@ -29,7 +29,7 @@ import {
   Terminal,
   Search,
 } from "lucide-react";
-import { api } from "@/lib/api";
+import { api, BASE } from "@/lib/api";
 import type {
   Workspace,
   WorkspaceReportMeta,
@@ -900,9 +900,7 @@ export default function WorkspaceDetailPage() {
     if (selectedVersionTaskId !== null && selectedVersionTaskId !== currentAnalysisTaskId) return;
     let live = true;
     const taskId = currentAnalysisTaskId;
-    const apiBase = process.env.NEXT_PUBLIC_API_URL ?? "http://localhost:8100";
-
-    const ws = new WebSocket(apiBase.replace(/^http/, "ws") + `/ws/tasks/${taskId}/logs`);
+    const ws = new WebSocket(BASE.replace(/^http/, "ws") + `/ws/tasks/${taskId}/logs`);
     wsLogRef.current = ws;
     ws.onmessage = (evt) => {
       try {

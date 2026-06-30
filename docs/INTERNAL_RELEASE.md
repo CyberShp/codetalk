@@ -22,7 +22,7 @@ powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\release-gate.ps1 -
 | Deployer 测试收集 | 129 tests collected |
 | Deployer full tests | 128 passed, 1 skipped |
 | Release gate | passed |
-| 端口释放 | 9000 / 8100 / 3205 均已释放 |
+| 端口释放 | 9000 / 3004 / 3205 均已释放 |
 
 ## Release 命令
 

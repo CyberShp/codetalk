@@ -20,6 +20,10 @@ class Settings(BaseSettings):
     # SQLite database path
     sqlite_db: str = "data/codetalk.db"
 
+    # Public local API port. Keep this aligned with the frontend dev and E2E
+    # defaults so logs and generated URLs do not point at stale runtimes.
+    backend_port: int = Field(default=3004, validation_alias="CODETALK_BACKEND_PORT")
+
     # Repository path translation (Docker host ↔ tool container)
     # Leave both empty for native mode or full-Docker mode (no translation needed).
     # Set for mixed mode (host backend + dockerized tools):
@@ -122,7 +126,7 @@ class Settings(BaseSettings):
     coverage_max_upload_mb: int = 100 # max single file size for coverage upload
 
     # CORS — comma-separated origins allowed to call the API
-    cors_origins: str = "http://localhost:3003,http://127.0.0.1:3003,http://localhost:3005,http://127.0.0.1:3005"
+    cors_origins: str = "http://localhost:3003,http://127.0.0.1:3003"
 
     @model_validator(mode="after")
     def _resolve_repos_paths(self) -> "Settings":
@@ -139,8 +143,6 @@ class Settings(BaseSettings):
         dev_origins = [
             "http://localhost:3003",
             "http://127.0.0.1:3003",
-            "http://localhost:3005",
-            "http://127.0.0.1:3005",
             "http://localhost:3205",
             "http://127.0.0.1:3205",
             "http://localhost:3218",
