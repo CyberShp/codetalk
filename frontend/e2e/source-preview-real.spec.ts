@@ -49,6 +49,56 @@ test("source preview opens an empty file with a valid line range through the UI"
   await expect(page.getByText("1-0 / 0 行")).toHaveCount(0);
 });
 
+test("source preview opens a searched function with real surrounding code", async ({ page }) => {
+  test.setTimeout(180_000);
+
+  const repo = fs.mkdtempSync(path.join(os.tmpdir(), "codetalk-source-window-"));
+  const sourceDir = path.join(repo, "lib", "nvmf");
+  fs.mkdirSync(sourceDir, { recursive: true });
+  fs.writeFileSync(path.join(repo, "README.md"), "source preview window e2e\n", "utf8");
+  const sourceLines = Array.from({ length: 40 }, (_, index) => {
+    const line = index + 1;
+    if (line === 1) return "/* window-start-sentinel */";
+    if (line === 21) return "int nvmf_source_window_target(void) { return 21; }";
+    if (line === 40) return "/* window-end-sentinel */";
+    return `int source_window_padding_${String(line).padStart(2, "0")}(void) { return ${line}; }`;
+  });
+  fs.writeFileSync(path.join(sourceDir, "preview.c"), `${sourceLines.join("\n")}\n`, "utf8");
+  const workspaceName = `source-window-e2e-${Date.now()}`;
+
+  await page.goto("/workspaces/new", { waitUntil: "domcontentloaded" });
+  await noFrameworkOverlay(page);
+  await page.getByPlaceholder(/项目 A/).fill(workspaceName);
+  await page.getByPlaceholder(/本地文件夹路径/).fill(repo);
+  await page.getByRole("button", { name: "创建工作空间" }).hover();
+  await page.getByRole("button", { name: "创建工作空间" }).click();
+  await page.waitForURL(/\/workspaces\/[0-9a-f-]{36}$/, { timeout: 30_000 });
+  await expect(page.getByText(workspaceName)).toBeVisible({ timeout: 30_000 });
+
+  await expect
+    .poll(async () => page.locator("body").innerText(), { timeout: 120_000 })
+    .toMatch(/已索引/);
+
+  await page.getByRole("button", { name: "源码搜索" }).hover();
+  await page.getByRole("button", { name: "源码搜索" }).click();
+  const sourceSearch = page.getByLabel("源码搜索");
+  await sourceSearch.fill("nvmf_source_window_target");
+  await sourceSearch.press("Enter");
+
+  const result = page.locator("button").filter({ hasText: "lib/nvmf/preview.c" }).first();
+  await expect(result).toBeVisible({ timeout: 20_000 });
+  await expect(result).toContainText("L21");
+  await expect(result).toContainText("nvmf_source_window_target");
+  await result.hover();
+  await result.click();
+
+  await expect(page.getByText("lib/nvmf/preview.c").first()).toBeVisible({ timeout: 10_000 });
+  await expect(page.getByText("1-40 / 40 行")).toBeVisible({ timeout: 10_000 });
+  await expect(page.locator("pre")).toContainText("window-start-sentinel");
+  await expect(page.locator("pre")).toContainText("int nvmf_source_window_target(void) { return 21; }");
+  await expect(page.locator("pre")).toContainText("window-end-sentinel");
+});
+
 test("source search does not expose files outside the workspace through symlinks", async ({ page }) => {
   test.setTimeout(180_000);
 
