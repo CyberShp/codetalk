@@ -1,6 +1,5 @@
-/* CodeTalk Deployer -- Nebula Deep Space Aurora Theme */
+/* CodeTalk Deployer -- focused operations theme */
 :root {
-  /* Nebula Palette */
   --bg-space: #020617;
   --bg-nebula: #0f172a;
   --bg-glass: rgba(15, 23, 42, 0.65);
@@ -14,11 +13,11 @@
   --text-secondary: #cbd5e1;
   --text-muted: #64748b;
   
-  --accent: #22d3ee; /* Aurora Cyan */
+  --accent: #22d3ee;
   --accent-glow: rgba(34, 211, 238, 0.5);
   --accent-hover: #06b6d4;
   
-  --secondary: #c084fc; /* Nebula Purple */
+  --secondary: #c084fc;
   --secondary-glow: rgba(192, 132, 252, 0.5);
   
   --success: #4ade80;
@@ -75,7 +74,7 @@ input, select, textarea {
 }
 
 /* ============================================================
-   Nebula Background
+   Background
    ============================================================ */
 
 .nebula-container {
@@ -94,39 +93,6 @@ input, select, textarea {
     linear-gradient(90deg, rgba(255,255,255,0.03) 1px, transparent 1px);
   background-size: 40px 40px;
   mask-image: radial-gradient(ellipse at 50% 50%, black, transparent 80%);
-}
-
-.nebula-orb {
-  position: absolute;
-  border-radius: 50%;
-  filter: blur(36px);
-  opacity: 0.18;
-  pointer-events: none;
-  transform: translateZ(0);
-}
-
-.orb-1 {
-  width: 420px;
-  height: 420px;
-  background: var(--accent);
-  top: -100px;
-  left: -100px;
-}
-
-.orb-2 {
-  width: 460px;
-  height: 460px;
-  background: var(--secondary);
-  bottom: -200px;
-  right: -100px;
-}
-
-.orb-3 {
-  width: 320px;
-  height: 320px;
-  background: #3b82f6;
-  top: 40%;
-  left: 60%;
 }
 
 @keyframes deploy-rise {
