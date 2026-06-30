@@ -233,6 +233,73 @@ test.describe("Workspace smoke tests", () => {
     expect(workspace.materials.filter((item) => item.filename === "requirements.md")).toHaveLength(1);
   });
 
+  test("prevents duplicate material deletes from a real double click", async ({
+    page,
+    request,
+  }) => {
+    const repo = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), "codetalk-double-material-delete-")));
+    fs.writeFileSync(path.join(repo, "README.md"), "double material delete e2e\n", "utf8");
+    const materialPath = path.join(repo, "delete-me.md");
+    fs.writeFileSync(materialPath, "# Delete me\n\nOnly one delete request should be sent.\n", "utf8");
+    const workspaceName = `double-material-delete-${Date.now()}`;
+
+    await page.goto("/workspaces/new", { waitUntil: "domcontentloaded" });
+    await page.getByPlaceholder(/项目 A/).fill(workspaceName);
+    await page.getByPlaceholder(/本地文件夹路径/).fill(repo);
+    await page.getByRole("button", { name: "创建工作空间" }).hover();
+    await page.getByRole("button", { name: "创建工作空间" }).click();
+    await page.waitForURL(/\/workspaces\/[0-9a-f-]{36}$/, { timeout: 30_000 });
+    const workspaceId = page.url().split("/").pop() ?? "";
+    await expect(page.getByText(workspaceName)).toBeVisible({ timeout: 30_000 });
+
+    await page.getByRole("button", { name: /材料 \(0\)/ }).hover();
+    await page.getByRole("button", { name: /材料 \(0\)/ }).click();
+    await page.getByPlaceholder(/输入文件绝对路径/).fill(materialPath);
+    await page.getByRole("button", { name: "添加" }).hover();
+    await page.getByRole("button", { name: "添加" }).click();
+    await expect(page.getByText("delete-me.md")).toBeVisible({ timeout: 15_000 });
+
+    const deleteRequests: string[] = [];
+    page.on("request", (req) => {
+      if (
+        req.method() === "DELETE" &&
+        new URL(req.url()).pathname.startsWith(`/api/workspaces/${workspaceId}/materials/`)
+      ) {
+        deleteRequests.push(req.url());
+      }
+    });
+    const firstDelete = page.waitForRequest(
+      (req) =>
+        req.method() === "DELETE" &&
+        new URL(req.url()).pathname.startsWith(`/api/workspaces/${workspaceId}/materials/`),
+    );
+
+    let confirmDialogs = 0;
+    page.on("dialog", async (dialog) => {
+      confirmDialogs += 1;
+      expect(dialog.message()).toContain("delete-me.md");
+      await dialog.accept();
+    });
+
+    const materialRow = page
+      .locator("div")
+      .filter({ hasText: "delete-me.md" })
+      .filter({ has: page.getByTitle("删除材料") })
+      .first();
+    await materialRow.hover();
+    await page.getByTitle("删除材料").dblclick();
+    await firstDelete;
+
+    await expect(page.getByText("尚未上传任何材料")).toBeVisible({ timeout: 15_000 });
+    await expect.poll(() => deleteRequests.length).toBe(1);
+    expect(confirmDialogs).toBe(1);
+
+    const workspaceResp = await request.get(`${backendBase}/api/workspaces/${workspaceId}`);
+    expect(workspaceResp.ok()).toBeTruthy();
+    const workspace = (await workspaceResp.json()) as { materials: Array<{ filename: string }> };
+    expect(workspace.materials.filter((item) => item.filename === "delete-me.md")).toHaveLength(0);
+  });
+
   test("workspace AI thread bridge opens a scoped investigation thread through the UI", async ({
     page,
     request,

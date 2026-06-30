@@ -763,6 +763,7 @@ export default function WorkspaceDetailPage() {
   const [indexProgress, setIndexProgress] = useState(0);
   const [reindexing, setReindexing] = useState(false);
   const [materialUploading, setMaterialUploading] = useState(false);
+  const [deletingMaterialIds, setDeletingMaterialIds] = useState<string[]>([]);
   const [embeddingStatus, setEmbeddingStatus] = useState<EmbeddingStatus | null>(null);
   const [showAnalysisModal, setShowAnalysisModal] = useState(false);
   const [versions, setVersions] = useState<WorkspaceVersion[]>([]);
@@ -779,6 +780,7 @@ export default function WorkspaceDetailPage() {
   const hasLoadedRef = useRef(false);
   const toggleVersion = useRef<Record<string, number>>({});
   const materialUploadingRef = useRef(false);
+  const deletingMaterialRef = useRef<Set<string>>(new Set());
   const wsLogRef = useRef<WebSocket | null>(null);
   const lastLogStepTimeRef = useRef<number | null>(null);
   const logEndRef = useRef<HTMLDivElement>(null);
@@ -1049,6 +1051,28 @@ export default function WorkspaceDetailPage() {
       setMaterialUploading(false);
     }
   }, [materialPath, wsId]);
+
+  const handleDeleteMaterial = useCallback(async (matId: string, filename: string) => {
+    if (deletingMaterialRef.current.has(matId)) return;
+    if (!window.confirm(`确定删除材料「${filename}」吗？`)) return;
+    deletingMaterialRef.current.add(matId);
+    setDeletingMaterialIds((current) => (
+      current.includes(matId) ? current : [...current, matId]
+    ));
+    try {
+      await api.workspaces.deleteMaterial(wsId, matId);
+      setWorkspace((prev) =>
+        prev
+          ? { ...prev, materials: prev.materials.filter((m) => m.id !== matId) }
+          : prev
+      );
+    } catch {
+      /* delete failed */
+    } finally {
+      deletingMaterialRef.current.delete(matId);
+      setDeletingMaterialIds((current) => current.filter((item) => item !== matId));
+    }
+  }, [wsId]);
 
   const openConversation = async ({
     scopeType,
@@ -1413,7 +1437,9 @@ export default function WorkspaceDetailPage() {
             </div>
           ) : (
             <div className="space-y-2">
-              {workspace.materials.map((mat) => (
+              {workspace.materials.map((mat) => {
+                const deletingMaterial = deletingMaterialIds.includes(mat.id);
+                return (
                 <div
                   key={mat.id}
                   className="flex items-center gap-3 px-4 py-3 rounded-lg border border-outline-variant/30 bg-surface-container-low group"
@@ -1450,26 +1476,16 @@ export default function WorkspaceDetailPage() {
                   </div>
                   <button
                     type="button"
-                    onClick={async () => {
-                      if (!window.confirm(`确定删除材料「${mat.filename}」吗？`)) return;
-                      try {
-                        await api.workspaces.deleteMaterial(wsId, mat.id);
-                        setWorkspace((prev) =>
-                          prev
-                            ? { ...prev, materials: prev.materials.filter((m) => m.id !== mat.id) }
-                            : prev
-                        );
-                      } catch {
-                        /* delete failed */
-                      }
-                    }}
-                    className="p-1.5 rounded-md text-on-surface-variant/50 hover:text-error hover:bg-error/10 opacity-0 group-hover:opacity-100 transition-all"
+                    onClick={() => void handleDeleteMaterial(mat.id, mat.filename)}
+                    disabled={deletingMaterial}
+                    className="p-1.5 rounded-md text-on-surface-variant/50 hover:text-error hover:bg-error/10 opacity-0 group-hover:opacity-100 transition-all disabled:opacity-50"
                     title="删除材料"
                   >
-                    <Trash2 size={14} />
+                    {deletingMaterial ? <Loader2 size={14} className="animate-spin" /> : <Trash2 size={14} />}
                   </button>
                 </div>
-              ))}
+                );
+              })}
             </div>
           )}
         </div>
