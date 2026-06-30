@@ -344,4 +344,24 @@ test("executes MR black-box workflow and previews public test cases through the 
 
   await expect(page.getByText(/mr_scope:accepted artifact:mr_snapshot\.json/)).toBeVisible();
   await expect(page.getByText(/black_box_cases:accepted artifact:black_box_cases\.json/)).toBeVisible();
+
+  await page.reload({ waitUntil: "domcontentloaded" });
+  const recentRun = page.getByRole("button", { name: /mr_blackbox_test/ }).first();
+  await expect(recentRun).toBeVisible({ timeout: 15_000 });
+  await recentRun.hover();
+  await recentRun.click();
+  await expect(page.getByText(/Task run restored: task_run_/)).toBeVisible({ timeout: 15_000 });
+  await expect(page.getByText(/工作流: completed/)).toBeVisible();
+  await expect(page.getByText(/Acceptance:\s*ready/)).toBeVisible();
+  await expect(page.getByText(/mr_scope:accepted artifact:mr_snapshot\.json/)).toBeVisible();
+
+  const restoredBlackBoxCasesArtifact = page
+    .getByRole("button")
+    .filter({ hasText: /black_box_cases\.json/ })
+    .first();
+  await expect(restoredBlackBoxCasesArtifact).toBeVisible();
+  await restoredBlackBoxCasesArtifact.hover();
+  await restoredBlackBoxCasesArtifact.click();
+  await expect(page.getByText("black_box_cases.json").first()).toBeVisible();
+  await expect(page.getByText("local-mr-blackbox").first()).toBeVisible();
 });
