@@ -127,6 +127,48 @@ test.describe("Workspace smoke tests", () => {
     expect(workspace.materials).toEqual([]);
   });
 
+  test("workspace can be reindexed through the UI and remains searchable", async ({ page }) => {
+    const repo = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), "codetalk-reindex-")));
+    fs.mkdirSync(path.join(repo, "lib", "nvmf"), { recursive: true });
+    fs.writeFileSync(path.join(repo, "README.md"), "reindex workspace e2e\n", "utf8");
+    fs.writeFileSync(
+      path.join(repo, "lib", "nvmf", "reindex.c"),
+      "int codetalk_reindex_probe(void) { return 7; }\n",
+      "utf8",
+    );
+    const workspaceName = `reindex-workspace-${Date.now()}`;
+
+    await page.goto("/workspaces/new", { waitUntil: "domcontentloaded" });
+    await page.getByPlaceholder(/项目 A/).fill(workspaceName);
+    await page.getByPlaceholder(/本地文件夹路径/).fill(repo);
+    await page.getByRole("button", { name: "创建工作空间" }).hover();
+    await page.getByRole("button", { name: "创建工作空间" }).click();
+    await page.waitForURL(/\/workspaces\/[0-9a-f-]{36}$/, { timeout: 30_000 });
+    await expect(page.getByText(workspaceName)).toBeVisible({ timeout: 30_000 });
+    await expect(page.getByText("已索引")).toBeVisible({ timeout: 120_000 });
+
+    const reindexButton = page.getByRole("button", { name: "重新索引" });
+    await reindexButton.hover();
+    await reindexButton.click();
+    await expect(reindexButton).toBeDisabled();
+    await expect(page.getByText(/索引中/)).toBeVisible({ timeout: 15_000 });
+    await expect(page.getByText("已索引")).toBeVisible({ timeout: 120_000 });
+    await expect(reindexButton).toBeEnabled();
+
+    await page.getByRole("button", { name: "源码搜索" }).hover();
+    await page.getByRole("button", { name: "源码搜索" }).click();
+    await page.getByLabel("源码搜索").fill("codetalk_reindex_probe");
+    await page.getByRole("button", { name: "搜索源码" }).hover();
+    await page.getByRole("button", { name: "搜索源码" }).click();
+    const result = page.locator("button").filter({ hasText: "reindex.c" }).first();
+    await expect(result).toBeVisible({ timeout: 20_000 });
+    await result.hover();
+    await result.click();
+    await expect(page.getByText("int codetalk_reindex_probe(void) { return 7; }")).toBeVisible({
+      timeout: 10_000,
+    });
+  });
+
   test("workspace API returns list", async ({ request }) => {
     const resp = await request.get(`${backendBase}/api/workspaces`);
     expect(resp.ok()).toBeTruthy();
