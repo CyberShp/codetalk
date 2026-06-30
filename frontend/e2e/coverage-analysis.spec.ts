@@ -248,5 +248,30 @@ test.describe("Coverage analysis", () => {
     expect(rejudge.high_rpn_rejudgements.every((item) => item.hallucination_flags.length === 0)).toBeTruthy();
     expect(rejudge.high_rpn_rejudgements.every((item) => item.boundary_issues.length === 0)).toBeTruthy();
     expect(rejudge.gap_report).toBeTruthy();
+
+    page.once("dialog", async (dialog) => {
+      expect(dialog.type()).toBe("confirm");
+      expect(dialog.message()).toContain("确定删除这次覆盖率分析吗");
+      await dialog.dismiss();
+    });
+    await card.getByRole("button", { name: "删除" }).hover();
+    await card.getByRole("button", { name: "删除" }).click();
+    await expect(page.getByText(analysisName)).toBeVisible();
+
+    page.once("dialog", async (dialog) => {
+      expect(dialog.type()).toBe("confirm");
+      expect(dialog.message()).toContain("确定删除这次覆盖率分析吗");
+      await dialog.accept();
+    });
+    await card.getByRole("button", { name: "删除" }).hover();
+    await card.getByRole("button", { name: "删除" }).click();
+    await expect(
+      page.locator(".bg-surface-container-low").filter({ hasText: analysisName }),
+    ).toHaveCount(0, { timeout: 15_000 });
+
+    const afterDeleteResp = await request.get(`${backendBase}/api/coverage/list`);
+    expect(afterDeleteResp.ok()).toBeTruthy();
+    const afterDeleteAnalyses = (await afterDeleteResp.json()) as Array<{ name: string }>;
+    expect(afterDeleteAnalyses.some((item) => item.name === analysisName)).toBe(false);
   });
 });

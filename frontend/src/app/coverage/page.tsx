@@ -1170,6 +1170,10 @@ export default function CoveragePage() {
   };
 
   const handleDelete = async (id: string) => {
+    if (!window.confirm("确定删除这次覆盖率分析吗？删除后不可恢复。")) {
+      return;
+    }
+
     try {
       await api.coverage.delete(id);
       if (expandedId === id) {
