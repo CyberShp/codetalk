@@ -103,6 +103,8 @@ test("removed legacy navigation pages stay deleted", async ({ page }) => {
     { path: "/tools/status", label: "工具状态" },
     { path: "/tool-status", label: "工具状态" },
     { path: "/history", label: "历史任务" },
+    { path: "/workbench/conversations", label: "AI 线程" },
+    { path: "/workbench/conversations/legacy-thread", label: "AI 调查线程" },
   ];
 
   for (const route of removedRoutes) {
