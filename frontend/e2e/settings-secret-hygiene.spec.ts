@@ -235,6 +235,63 @@ test("settings agent runtime env values are not rendered after save", async ({ p
   await expectBrowserStorageNotToContain(page, secret);
 });
 
+test("settings prevents duplicate agent runtime deletion from a real double click", async ({
+  page,
+  request,
+}) => {
+  const runtimeName = `ui-agent-delete-${Date.now()}`;
+
+  await page.goto("/settings", { waitUntil: "domcontentloaded" });
+  await page.getByPlaceholder("例如 Claude Code").fill(runtimeName);
+  await page.getByPlaceholder("ccr / opencode / nga").fill("python3");
+  await page.getByPlaceholder("code 或 run").fill("--version");
+  await page.getByRole("button", { name: "保存" }).hover();
+  await page.getByRole("button", { name: "保存" }).click();
+
+  const savedRuntime = page
+    .locator("div.rounded-xl.border")
+    .filter({ has: page.locator("strong", { hasText: runtimeName }) })
+    .filter({ hasText: "python3 --version" })
+    .first();
+  await expect(savedRuntime).toBeVisible({ timeout: 15_000 });
+
+  const deleteRequests: string[] = [];
+  page.on("request", (req) => {
+    if (
+      req.method() === "DELETE" &&
+      new URL(req.url()).pathname.startsWith("/api/settings/agent-runtimes/")
+    ) {
+      deleteRequests.push(req.url());
+    }
+  });
+  const firstDelete = page.waitForRequest(
+    (req) =>
+      req.method() === "DELETE" &&
+      new URL(req.url()).pathname.startsWith("/api/settings/agent-runtimes/"),
+  );
+
+  let confirmDialogs = 0;
+  page.on("dialog", async (dialog) => {
+    confirmDialogs += 1;
+    expect(dialog.type()).toBe("confirm");
+    expect(dialog.message()).toContain("确定要删除这个 AI 线程执行器吗");
+    await dialog.accept();
+  });
+
+  await savedRuntime.getByRole("button", { name: "删除" }).hover();
+  await savedRuntime.getByRole("button", { name: "删除" }).dblclick();
+  await firstDelete;
+
+  await expect(page.getByText(runtimeName)).toHaveCount(0, { timeout: 15_000 });
+  await expect.poll(() => deleteRequests.length).toBe(1);
+  expect(confirmDialogs).toBe(1);
+
+  const listResp = await request.get(`${backendBase}/api/settings/agent-runtimes`);
+  expect(listResp.ok()).toBeTruthy();
+  const runtimes = (await listResp.json()) as { items: Array<{ name: string }> };
+  expect(runtimes.items.some((item) => item.name === runtimeName)).toBe(false);
+});
+
 test("settings agent runtime probe shows redacted actionable failure output", async ({ page }) => {
   const secret = `agent-probe-secret-${Date.now()}`;
   const runtimeName = `ui-agent-probe-failure-${Date.now()}`;

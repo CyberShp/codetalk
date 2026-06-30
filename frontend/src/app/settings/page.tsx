@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useState, useCallback } from "react";
+import { useEffect, useState, useCallback, useRef } from "react";
 import {
   Plus,
   Trash2,
@@ -161,12 +161,14 @@ export default function SettingsPage() {
   const [agentRuntimeArgsText, setAgentRuntimeArgsText] = useState("");
   const [agentRuntimeEnvJson, setAgentRuntimeEnvJson] = useState("{}");
   const [savingAgentRuntime, setSavingAgentRuntime] = useState(false);
+  const [deletingAgentRuntimeIds, setDeletingAgentRuntimeIds] = useState<string[]>([]);
   const [agentRuntimeProbe, setAgentRuntimeProbe] = useState<Record<string, string>>({});
   const [showAgentAdvanced, setShowAgentAdvanced] = useState(false);
   const [showWorkbenchCliSettings, setShowWorkbenchCliSettings] = useState(false);
   const [showLlmSettings, setShowLlmSettings] = useState(false);
   const [customProvidersJson, setCustomProvidersJson] = useState("[]");
   const [savingAgentProviders, setSavingAgentProviders] = useState(false);
+  const deletingAgentRuntimeRef = useRef<Set<string>>(new Set());
 
   const loadData = useCallback(async () => {
     setLoading(true);
@@ -414,12 +416,20 @@ export default function SettingsPage() {
 
   const handleDeleteAgentRuntime = useCallback(
     async (id: string) => {
+      if (deletingAgentRuntimeRef.current.has(id)) return;
       if (!confirm("确定要删除这个 AI 线程执行器吗？")) return;
+      deletingAgentRuntimeRef.current.add(id);
+      setDeletingAgentRuntimeIds((current) => (
+        current.includes(id) ? current : [...current, id]
+      ));
       try {
         await api.settings.deleteAgentRuntime(id);
         await loadData();
       } catch (err: unknown) {
         setError(err instanceof Error ? err.message : "删除 Agent 执行器失败");
+      } finally {
+        deletingAgentRuntimeRef.current.delete(id);
+        setDeletingAgentRuntimeIds((current) => current.filter((item) => item !== id));
       }
     },
     [loadData],
@@ -670,7 +680,9 @@ export default function SettingsPage() {
                 还没有执行器。先点上面的 Claude Code Router、OpenCode 或 NGA，再点保存。
               </div>
             ) : (
-              agentRuntimes.map((runtime) => (
+              agentRuntimes.map((runtime) => {
+                const deletingRuntime = deletingAgentRuntimeIds.includes(runtime.id);
+                return (
                 <div key={runtime.id} className="flex flex-wrap items-center gap-3 rounded-xl border border-outline-variant/20 bg-surface px-4 py-3">
                   <div className="min-w-0 flex-1">
                     <div className="flex flex-wrap items-center gap-2">
@@ -692,19 +704,23 @@ export default function SettingsPage() {
                   <button
                     type="button"
                     onClick={() => handleProbeAgentRuntime(runtime)}
-                    className="rounded-lg border border-outline-variant/30 px-3 py-1.5 text-sm text-on-surface transition-colors hover:bg-surface-container-high"
+                    disabled={deletingRuntime}
+                    className="rounded-lg border border-outline-variant/30 px-3 py-1.5 text-sm text-on-surface transition-colors hover:bg-surface-container-high disabled:opacity-50"
                   >
                     测试
                   </button>
                   <button
                     type="button"
                     onClick={() => handleDeleteAgentRuntime(runtime.id)}
-                    className="rounded-lg border border-red-500/20 px-3 py-1.5 text-sm text-red-500 transition-colors hover:bg-red-500/10"
+                    disabled={deletingRuntime}
+                    className="inline-flex items-center gap-1.5 rounded-lg border border-red-500/20 px-3 py-1.5 text-sm text-red-500 transition-colors hover:bg-red-500/10 disabled:opacity-50"
                   >
-                    删除
+                    {deletingRuntime && <Loader2 size={13} className="animate-spin" />}
+                    {deletingRuntime ? "删除中..." : "删除"}
                   </button>
                 </div>
-              ))
+                );
+              })
             )}
           </div>
         </div>
