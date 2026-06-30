@@ -1,8 +1,12 @@
 "use client";
 
+import { usePathname } from "next/navigation";
 import { useEffect, useState } from "react";
 
+const ATMOSPHERE_ROUTES = new Set(["/", "/workbench"]);
+
 export default function PremiumAtmosphere() {
+  const pathname = usePathname();
   const [reducedMotion, setReducedMotion] = useState(false);
 
   useEffect(() => {
@@ -13,7 +17,7 @@ export default function PremiumAtmosphere() {
     return () => query.removeEventListener("change", update);
   }, []);
 
-  if (reducedMotion) return null;
+  if (reducedMotion || !ATMOSPHERE_ROUTES.has(pathname)) return null;
 
   return (
     <div className="ct-atmosphere" aria-hidden="true">

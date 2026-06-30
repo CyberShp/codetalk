@@ -267,6 +267,15 @@ test("AI conversation page is a wide persistent reading surface", async ({ page 
   expect(exported).toContain("测试设计报告 (workspace_report:report-1)");
 });
 
+test("AI conversation page skips decorative atmosphere layers for tool performance", async ({ page }) => {
+  await mockReadableConversation(page);
+  await page.setViewportSize({ width: 1440, height: 920 });
+  await page.goto("/ai/conv-1", { waitUntil: "domcontentloaded" });
+
+  await expect(page.getByRole("heading", { name: "登录模块 AI 调查线程" })).toBeVisible();
+  await expect(page.locator(".ct-atmosphere")).toHaveCount(0);
+});
+
 test("AI conversation keeps long threads inside the reader and does not force document scrolling", async ({ page }) => {
   const longBlock = Array.from({ length: 14 }, (_, index) =>
     `第 ${index + 1} 段：补充登录失败、权限失效、弱网重试、审计日志验证和恢复路径。`,
