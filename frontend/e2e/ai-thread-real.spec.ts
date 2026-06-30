@@ -680,6 +680,110 @@ test("keeps historical AI thread reading stable while an agent run is streaming"
   }
 });
 
+test("keeps real agent thinking diagnostics collapsed and out of the persisted answer", async ({
+  page,
+  request,
+}) => {
+  test.setTimeout(70_000);
+  const repo = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), "codetalk-ai-diag-repo-")));
+  fs.writeFileSync(path.join(repo, "README.md"), "AI diagnostic folding e2e workspace\n", "utf8");
+  const runtimeDir = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), "codetalk-agent-diag-")));
+  const runtimeScript = path.join(runtimeDir, "diagnostic_agent.py");
+  fs.writeFileSync(
+    runtimeScript,
+    [
+      "import sys",
+      "sys.stdin.read()",
+      "print('thinking: reading workspace source evidence from lib/nvmf/connect.c', flush=True)",
+      "print('diagnostic: provider emitted chain-of-thought-like internal note', flush=True)",
+      "print('FINAL_DIAGNOSTIC_ANSWER: black-box reconnect timeout should observe RPC error, log, and state recovery', flush=True)",
+      "",
+    ].join("\n"),
+    "utf8",
+  );
+  const workspaceName = `ai-diagnostic-e2e-${Date.now()}`;
+  const runtimeName = `Diagnostic runtime ${Date.now()}`;
+  const threadTitle = `${workspaceName} folded diagnostics`;
+  const prompt = "DIAGNOSTIC_FOLD_RUN 生成答案，并把思考过程默认折叠";
+
+  const runtimeResp = await request.post(`${backendBase}/api/settings/agent-runtimes`, {
+    data: {
+      name: runtimeName,
+      command: "python3",
+      args: [runtimeScript],
+      prompt_transport: "stdin",
+      output_mode: "plain",
+      working_dir_mode: "project",
+      fixed_working_dir: "",
+      env: {},
+      health_command: "",
+      timeout_seconds: 30,
+      enabled: true,
+    },
+  });
+  expect(runtimeResp.status()).toBe(201);
+  const runtime = (await runtimeResp.json()) as { id: string };
+
+  const workspaceResp = await request.post(`${backendBase}/api/workspaces`, {
+    data: { name: workspaceName, repo_path: repo },
+  });
+  expect(workspaceResp.status()).toBe(201);
+
+  try {
+    await page.goto("/ai", { waitUntil: "domcontentloaded" });
+    const projectButton = page.locator("button").filter({ hasText: workspaceName }).first();
+    await expect(projectButton).toBeVisible({ timeout: 15_000 });
+    await projectButton.hover();
+    await projectButton.click();
+    await expect(page.getByRole("heading", { name: workspaceName })).toBeVisible();
+
+    await page.getByLabel("AI 线程执行器").selectOption({ label: runtimeName });
+    await page.getByPlaceholder(/线程名称/).fill(threadTitle);
+    await page.getByRole("button", { name: "新建线程" }).hover();
+    await page.getByRole("button", { name: "新建线程" }).click();
+
+    await page.waitForURL(/\/ai\/[^/]+$/, { timeout: 15_000 });
+    const threadId = page.url().split("/").pop() ?? "";
+    await expect(page.getByRole("heading", { name: threadTitle })).toBeVisible({
+      timeout: 15_000,
+    });
+    await expect(page.getByLabel("当前 AI 执行器")).toHaveValue(runtime.id);
+
+    await page.getByPlaceholder(/像 Codex 一样继续追问/).fill(prompt);
+    await page.getByRole("button", { name: "发送" }).hover();
+    await page.getByRole("button", { name: "发送" }).click();
+
+    await expect(page.getByText("FINAL_DIAGNOSTIC_ANSWER")).toBeVisible({ timeout: 30_000 });
+    const reader = page.getByLabel("AI 线程对话内容");
+    await expect(reader).not.toContainText("reading workspace source evidence");
+    await expect(reader).not.toContainText("chain-of-thought-like internal note");
+    await expect(page.getByText("生成诊断：默认折叠")).toBeVisible();
+    await expect(page.getByText("reading workspace source evidence")).toBeHidden();
+    await expect(page.getByText("chain-of-thought-like internal note")).toBeHidden();
+
+    await page.getByText("生成诊断：默认折叠").click();
+    await expect(page.getByText("reading workspace source evidence")).toBeVisible();
+    await expect(page.getByText("chain-of-thought-like internal note")).toBeVisible();
+    await expect(page.getByRole("button", { name: "停止" })).toHaveCount(0, { timeout: 15_000 });
+
+    const messagesResp = await request.get(
+      `${backendBase}/api/ai/conversations/${encodeURIComponent(threadId)}/messages`,
+    );
+    expect(messagesResp.ok()).toBeTruthy();
+    const messageBody = (await messagesResp.json()) as {
+      items: Array<{ role: string; content: string }>;
+    };
+    const assistantMessages = messageBody.items.filter((item) => item.role === "assistant");
+    expect(assistantMessages).toHaveLength(1);
+    expect(assistantMessages[0].content).toContain("FINAL_DIAGNOSTIC_ANSWER");
+    expect(assistantMessages[0].content).not.toContain("thinking:");
+    expect(assistantMessages[0].content).not.toContain("diagnostic:");
+    expect(assistantMessages[0].content).not.toContain("chain-of-thought-like internal note");
+  } finally {
+    await request.delete(`${backendBase}/api/settings/agent-runtimes/${encodeURIComponent(runtime.id)}`);
+  }
+});
+
 test("completes an agent-runtime AI thread and exports the persisted answer", async ({
   page,
   request,
