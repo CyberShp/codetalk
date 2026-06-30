@@ -41,6 +41,11 @@ function eventContent(event: AIRunEvent): string {
   return typeof value === "string" ? value : "";
 }
 
+function eventDiagnosticText(event: AIRunEvent): string {
+  const value = event.payload.content ?? event.payload.message ?? event.payload.detail ?? event.payload.status;
+  return typeof value === "string" ? value : "";
+}
+
 function eventKind(event: AIRunEvent): string {
   const value = event.payload.kind ?? event.payload.channel ?? event.payload.type;
   return typeof value === "string" ? value : "";
@@ -241,10 +246,15 @@ export default function AIThreadPage() {
             if (!line.startsWith("data: ")) continue;
             const event = JSON.parse(line.slice(6)) as AIRunEvent;
             if (event.run_id !== runId) continue;
+            if (event.event_type === "status") {
+              const content = eventDiagnosticText(event);
+              setStreamingDiagnostics((prev) => [...prev, redactDiagnosticText(content)].filter(Boolean).slice(-12));
+            }
             if (event.event_type === "delta") {
               const content = eventContent(event);
               if (isDiagnosticEvent(event)) {
-                setStreamingDiagnostics((prev) => [...prev, redactDiagnosticText(content)].filter(Boolean).slice(-12));
+                const diagnostic = eventDiagnosticText(event);
+                setStreamingDiagnostics((prev) => [...prev, redactDiagnosticText(diagnostic)].filter(Boolean).slice(-12));
               } else {
                 setStreamingContent((prev) => prev + content);
               }

@@ -404,11 +404,13 @@ test("AI conversation keeps generation diagnostics collapsed outside the answer 
         "Content-Type": "text/event-stream",
       },
       body: [
-        'data: {"event_id":1,"run_id":"run-diag","conversation_id":"conv-diag","event_type":"delta","payload":{"kind":"diagnostic","content":"正在读取 lib/nvmf/connect.c"},"created_at":"2026-06-28T00:00:01Z"}',
+        'data: {"event_id":1,"run_id":"run-diag","conversation_id":"conv-diag","event_type":"status","payload":{"status":"running","message":"正在准备工作区源码上下文"},"created_at":"2026-06-28T00:00:01Z"}',
         "",
-        'data: {"event_id":2,"run_id":"run-diag","conversation_id":"conv-diag","event_type":"delta","payload":{"content":"最终答案：覆盖 reconnect timeout 的黑盒观察点。"},"created_at":"2026-06-28T00:00:02Z"}',
+        'data: {"event_id":2,"run_id":"run-diag","conversation_id":"conv-diag","event_type":"delta","payload":{"kind":"diagnostic","content":"正在读取 lib/nvmf/connect.c"},"created_at":"2026-06-28T00:00:01Z"}',
         "",
-        'data: {"event_id":3,"run_id":"run-diag","conversation_id":"conv-diag","event_type":"done","payload":{},"created_at":"2026-06-28T00:00:03Z"}',
+        'data: {"event_id":3,"run_id":"run-diag","conversation_id":"conv-diag","event_type":"delta","payload":{"content":"最终答案：覆盖 reconnect timeout 的黑盒观察点。"},"created_at":"2026-06-28T00:00:02Z"}',
+        "",
+        'data: {"event_id":4,"run_id":"run-diag","conversation_id":"conv-diag","event_type":"done","payload":{},"created_at":"2026-06-28T00:00:03Z"}',
         "",
       ].join("\n"),
     });
@@ -417,10 +419,13 @@ test("AI conversation keeps generation diagnostics collapsed outside the answer 
   await page.goto("/ai/conv-diag", { waitUntil: "domcontentloaded" });
 
   await expect(page.getByText("最终答案：覆盖 reconnect timeout 的黑盒观察点。")).toBeVisible();
+  await expect(page.locator(".ct-codex-ai__reader")).not.toContainText("正在准备工作区源码上下文");
   await expect(page.locator(".ct-codex-ai__reader")).not.toContainText("正在读取 lib/nvmf/connect.c");
   await expect(page.getByText("生成诊断：默认折叠")).toBeVisible();
+  await expect(page.getByText("正在准备工作区源码上下文")).toBeHidden();
   await expect(page.getByText("正在读取 lib/nvmf/connect.c")).toBeHidden();
   await page.getByText("生成诊断：默认折叠").click();
+  await expect(page.getByText("正在准备工作区源码上下文")).toBeVisible();
   await expect(page.getByText("正在读取 lib/nvmf/connect.c")).toBeVisible();
 });
 
