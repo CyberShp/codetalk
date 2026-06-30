@@ -329,10 +329,21 @@ def _collapse_terminal_repaints(value: str) -> str:
     for raw_line in normalized.split("\n"):
         line = raw_line.split("\r")[-1]
         stripped = line.strip()
-        if _SPINNER_PROGRESS_RE.match(stripped) or _PROGRESS_ONLY_RE.match(stripped):
+        if (
+            _SPINNER_PROGRESS_RE.match(stripped)
+            or _PROGRESS_ONLY_RE.match(stripped)
+            or _looks_like_replacement_gibberish(stripped)
+        ):
             continue
         lines.append(line)
     return "\n".join(lines)
+
+
+def _looks_like_replacement_gibberish(value: str) -> bool:
+    if len(value) < 3 or "�" not in value:
+        return False
+    replacement_count = value.count("�")
+    return replacement_count >= 3 and replacement_count / max(len(value), 1) >= 0.6
 
 
 def resolve_agent_cwd(runtime: dict[str, Any], *, repo_path: str | None) -> str | None:

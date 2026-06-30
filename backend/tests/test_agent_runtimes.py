@@ -623,3 +623,31 @@ class TestAgentRuntimes:
         assert output.strip() == "最终答案：已完成源码分析。"
         assert "47%" not in output
         assert "12/100" not in output
+
+    async def test_agent_runtime_stream_drops_binary_gibberish_replacement_noise(self):
+        from app.services.agent_cli_bridge import stream_agent_runtime
+
+        agent_code = (
+            "import sys; "
+            "sys.stdout.buffer.write(bytes([0x80, 0x81, 0x8D, 0x90, 0x9D]) + b'\\n'); "
+            "sys.stdout.flush(); "
+            "sys.stdout.write('最终答案：已完成源码分析。\\n'); "
+            "sys.stdout.flush()"
+        )
+        chunks = []
+        async for chunk in stream_agent_runtime(
+            runtime={
+                "command": sys.executable,
+                "args": ["-c", agent_code],
+                "prompt_transport": "stdin",
+                "output_mode": "plain",
+                "timeout_seconds": 10,
+            },
+            prompt="读取源码",
+            cwd=None,
+        ):
+            chunks.append(chunk)
+
+        output = "".join(chunks)
+        assert output.strip() == "最终答案：已完成源码分析。"
+        assert "�" not in output
