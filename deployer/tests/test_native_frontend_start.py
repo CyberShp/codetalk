@@ -4,6 +4,8 @@ import asyncio
 import sys
 import unittest
 from pathlib import Path
+from tempfile import TemporaryDirectory
+from unittest.mock import patch
 
 DEPLOYER_DIR = Path(__file__).parent.parent
 if str(DEPLOYER_DIR) not in sys.path:
@@ -41,6 +43,48 @@ class NativeFrontendStartTests(unittest.TestCase):
 
         deployer = asyncio.run(run())
         self.assertEqual(deployer.spawned, ["frontend"])
+
+    def test_generate_config_removes_legacy_deepwiki_env(self) -> None:
+        with TemporaryDirectory() as tmpdir:
+            project_root = Path(tmpdir)
+            backend_dir = project_root / "backend"
+            frontend_dir = project_root / "frontend"
+            backend_dir.mkdir()
+            frontend_dir.mkdir()
+            env_path = backend_dir / ".env"
+            env_path.write_text(
+                "\n".join(
+                    [
+                        "KEEP_ME=1",
+                        "DEEPWIKI_PATH=/tmp/deepwiki",
+                        "DEEPWIKI_EMBEDDING_API_KEY=sk-old",
+                        "# legacy DeepWiki runtime",
+                        "NOT_DEEPWIKI_BUT_HAS_deepwiki_NAME=bad",
+                    ]
+                )
+                + "\n",
+                encoding="utf-8",
+            )
+
+            deployer = NativeDeployer(
+                {
+                    "backend_port": 3004,
+                    "frontend_port": 3003,
+                    "gitnexus_port": 7100,
+                    "cgc_port": 7072,
+                    "workspace_path": str(project_root / "workspace"),
+                },
+                asyncio.Queue(),
+            )
+
+            with patch("deployers.native.PROJECT_ROOT", project_root):
+                asyncio.run(deployer._step_generate_config())
+
+            generated = env_path.read_text(encoding="utf-8")
+            self.assertIn("KEEP_ME=1", generated)
+            self.assertIn("GITNEXUS_BASE_URL=http://localhost:7100", generated)
+            self.assertNotIn("DEEPWIKI", generated)
+            self.assertNotIn("deepwiki", generated.lower())
 
 
 if __name__ == "__main__":

@@ -29,6 +29,17 @@ except ImportError:  # safety net — shouldn't happen in normal deployment
     _CGC_DEFAULT_PORT = 7072
 
 TOTAL_STEPS = 7
+REMOVED_ENV_PREFIXES = ("DEEPWIKI_",)
+REMOVED_ENV_KEYS = {
+    "DEEPWIKI_PATH",
+    "DEEPWIKI_API_PORT",
+    "DEEPWIKI_UI_PORT",
+    "DEEPWIKI_BASE_URL",
+    "DEEPWIKI_API_URL",
+    "DEEPWIKI_EMBEDDING_BASE_URL",
+    "DEEPWIKI_EMBEDDING_API_KEY",
+    "DEEPWIKI_EMBEDDING_MODEL",
+}
 
 SERVICE_DEFAULTS = [
     ("backend", "backend_port", 3004, "http", "/health"),
@@ -424,7 +435,10 @@ class NativeDeployer:
         backend_env = PROJECT_ROOT / "backend" / ".env"
         known_keys = {ln.split("=", 1)[0] for ln in env_lines if "=" in ln}
         existing_lines = backend_env.read_text(encoding="utf-8").splitlines() if backend_env.exists() else []
-        kept = [ln for ln in existing_lines if not ln.strip() or ln.startswith("#") or ln.split("=", 1)[0] not in known_keys]
+        kept = [
+            ln for ln in existing_lines
+            if _keep_existing_backend_env_line(ln, known_keys)
+        ]
         backend_env.write_text("\n".join(kept + env_lines) + "\n", encoding="utf-8")
         await self._emit("generate_config", "running", f"已写入 {backend_env}", step)
 
@@ -1162,3 +1176,19 @@ class NativeDeployer:
             "message": message,
             "progress": {"current": step_index, "total": TOTAL_STEPS},
         })
+
+
+def _keep_existing_backend_env_line(line: str, managed_keys: set[str]) -> bool:
+    stripped = line.strip()
+    if not stripped:
+        return True
+    if stripped.startswith("#"):
+        return "deepwiki" not in stripped.lower()
+    key = line.split("=", 1)[0].strip()
+    if key in managed_keys:
+        return False
+    if key in REMOVED_ENV_KEYS:
+        return False
+    if any(key.startswith(prefix) for prefix in REMOVED_ENV_PREFIXES):
+        return False
+    return "deepwiki" not in key.lower()
