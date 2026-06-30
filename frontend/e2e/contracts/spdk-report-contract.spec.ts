@@ -16,6 +16,7 @@ test("SPDK real E2E writes a dedicated failure report artifact", () => {
   expect(spec).toContain("function sanitizeCaseForReport");
   expect(spec).toContain("function textArtifactPatternLeaks");
   expect(spec).toContain("function fileContainsPattern");
+  expect(spec).toContain("function verifyStreamingSecretScanner");
   expect(spec).not.toContain("stat.size > 2_000_000");
   expect(spec).toContain("total_problem_cases");
   expect(spec).toContain("productized: problemCases.length === 0");

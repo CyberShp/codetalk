@@ -580,6 +580,7 @@ function fileContainsPattern(file: string, pattern: string | RegExp) {
       bytesRead = fs.readSync(fd, buffer, 0, buffer.length, null);
       if (bytesRead <= 0) continue;
       const text = carry + buffer.subarray(0, bytesRead).toString("utf8");
+      if (pattern instanceof RegExp) pattern.lastIndex = 0;
       if (typeof pattern === "string" ? text.includes(pattern) : pattern.test(text)) return true;
       carry = text.slice(-512);
       if (pattern instanceof RegExp) pattern.lastIndex = 0;
@@ -588,6 +589,20 @@ function fileContainsPattern(file: string, pattern: string | RegExp) {
     fs.closeSync(fd);
   }
   return false;
+}
+
+function verifyStreamingSecretScanner() {
+  const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "codetalk-secret-scan-"));
+  const file = path.join(tempDir, "chunk-boundary.txt");
+  const prefix = "x".repeat(1024 * 1024 - 4);
+  const secret = "sk-streaming-boundary-secret";
+  try {
+    fs.writeFileSync(file, `${prefix}${secret}\n`, "utf8");
+    expect(fileContainsPattern(file, secret)).toBe(true);
+    expect(fileContainsPattern(file, /\bsk-[A-Za-z0-9_-]{12,}\b/)).toBe(true);
+  } finally {
+    fs.rmSync(tempDir, { recursive: true, force: true });
+  }
 }
 
 function textArtifactPatternLeaks() {
@@ -2929,6 +2944,7 @@ test("matrix accounting: every planned case has an explicit status", async () =>
     total_size_bytes: number;
     files: Array<{ path: string; kind: string; size_bytes: number; sha256: string }>;
   };
+  verifyStreamingSecretScanner();
   expect(textArtifactPatternLeaks()).toEqual([]);
   expect(report.failure_report.total_problem_cases).toBe(failed.length + blocked.length + unresolved.length);
   expect(failureReport.total_problem_cases).toBe(report.failure_report.total_problem_cases);
