@@ -154,6 +154,7 @@ export default function AIThreadPage() {
       ? redactDiagnosticText(conversation.latest_run.error)
       : "";
   const visibleError = error || latestRunError;
+  const composerDisabled = sending || Boolean(streamingRunId);
   const lastUserMessage = useMemo(
     () => [...messages].reverse().find((message) => message.role === "user") ?? null,
     [messages],
@@ -527,12 +528,17 @@ export default function AIThreadPage() {
             }}
             placeholder="像 Codex 一样继续追问代码、需求、测试设计、复跑策略..."
             rows={3}
-            disabled={sending}
+            disabled={composerDisabled}
           />
           <div className="ct-codex-composer__footer">
             <div>
               {QUICK_ACTIONS.slice(0, 3).map((action) => (
-                <button key={action} type="button" onClick={() => setInput(action)}>
+                <button
+                  key={action}
+                  type="button"
+                  onClick={() => setInput(action)}
+                  disabled={composerDisabled}
+                >
                   {action}
                 </button>
               ))}
