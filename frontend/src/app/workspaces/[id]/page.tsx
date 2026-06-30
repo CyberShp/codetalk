@@ -1,6 +1,6 @@
 "use client";
 
-import React, { useEffect, useRef, useState, useCallback } from "react";
+import { useEffect, useRef, useState, useCallback } from "react";
 import { useParams, useRouter } from "next/navigation";
 import Link from "next/link";
 import {
@@ -16,14 +16,9 @@ import {
   ChevronRight,
   BarChart2,
   MessageSquare,
-  Send,
-  Square,
-  Bot,
-  User,
 
   Trash2,
   Sparkles,
-  Crosshair,
   FileSearch,
   Download,
   Terminal,
@@ -35,13 +30,10 @@ import type {
   WorkspaceReportMeta,
   WorkspaceVersion,
   TaskStep,
-  ChatMode,
   EmbeddingStatus,
-  WorkspaceModule,
   WorkspaceSourceFile,
   WorkspaceSourceSearchMatch,
 } from "@/lib/types";
-import { useWsChat } from "@/lib/chatContext";
 import MarkdownRenderer from "@/components/ui/MarkdownRenderer";
 import AnalysisTaskModal from "@/components/workspaces/AnalysisTaskModal";
 
@@ -394,312 +386,6 @@ function SourceSearchPanel({ wsId, indexed }: { wsId: string; indexed: number })
             </div>
           )}
         </div>
-      </div>
-    </div>
-  );
-}
-
-// eslint-disable-next-line @typescript-eslint/no-unused-vars -- legacy workspace chat retained for compatibility while AI threads are the primary UI.
-function ChatPanel({
-  wsId,
-  indexed,
-  lastIndexError,
-  reports,
-}: {
-  wsId: string;
-  indexed: number;
-  lastIndexError?: string | null;
-  reports: WorkspaceReportMeta[];
-}) {
-  const { messages, streaming, streamingContent, loadingHistory, init, send, stop } =
-    useWsChat(wsId);
-  const [input, setInput] = useState("");
-  const hasCompletedReports = reports.some((report) => report.status === "completed");
-  const [selectedMode, setSelectedMode] = useState<ChatMode>("freeqa");
-  const [modeTouched, setModeTouched] = useState(false);
-  const mode: ChatMode = modeTouched ? selectedMode : hasCompletedReports ? "report_qa" : selectedMode;
-  const [modules, setModules] = useState<WorkspaceModule[]>([]);
-  const [selectedModule, setSelectedModule] = useState<string | null>(null);
-  const userNearBottom = useRef(true);
-  const bottomRef = useRef<HTMLDivElement>(null);
-
-  const canChat = indexed === 1;
-
-  useEffect(() => { void init(); }, [init]);
-
-  useEffect(() => {
-    if (indexed === 1) {
-      api.workspaces.modules(wsId).then(setModules).catch(() => {});
-    }
-  }, [wsId, indexed]);
-
-  const handleChatScroll = useCallback((e: React.UIEvent<HTMLDivElement>) => {
-    const el = e.currentTarget;
-    userNearBottom.current =
-      el.scrollHeight - (el.scrollTop + el.clientHeight) < 80;
-  }, []);
-
-  useEffect(() => {
-    if (userNearBottom.current) {
-      bottomRef.current?.scrollIntoView({ behavior: "smooth" });
-    }
-  }, [messages, streamingContent]);
-
-  const handleSend = async () => {
-    const text = input.trim();
-    if (!text || streaming || !canChat) return;
-    setInput("");
-    await send(text, mode, selectedModule ?? undefined);
-  };
-
-  const handleKeyDown = (e: React.KeyboardEvent<HTMLTextAreaElement>) => {
-    if (e.key === "Enter" && !e.shiftKey) {
-      e.preventDefault();
-      handleSend();
-    }
-  };
-
-  return (
-    <div className="flex flex-col h-[calc(100vh-240px)] min-h-[520px]">
-      {/* Header row: mode toggle + chat export */}
-      <div className="flex items-center gap-2 mb-3">
-        <button
-          onClick={() => window.open(api.workspaces.chatExportUrl(wsId), "_blank")}
-          disabled={messages.length === 0}
-          title="导出对话记录（Markdown）"
-          className="ml-auto flex items-center gap-1 px-2.5 py-1.5 text-xs rounded-lg border border-outline-variant/30 text-on-surface-variant hover:bg-surface-container hover:text-on-surface disabled:opacity-30 disabled:cursor-not-allowed transition-colors shrink-0"
-        >
-          <Download size={12} />
-          导出
-        </button>
-      </div>
-      {/* Mode toggle */}
-      <div className="flex gap-2 mb-3">
-        {([
-          { m: "report_qa" as ChatMode, Icon: FileSearch, label: "报告追问", desc: "报告 + 代码 + 记忆" },
-          { m: "freeqa" as ChatMode, Icon: Sparkles, label: "自由问答", desc: "代码片段 + 记忆" },
-          { m: "targeted" as ChatMode, Icon: Crosshair, label: "结构化分析", desc: "材料 + 报告 + 记忆" },
-        ]).map(({ m, Icon, label, desc }) => (
-          <button
-            key={m}
-            onClick={() => {
-              setModeTouched(true);
-              setSelectedMode(m);
-            }}
-            className={`flex-1 flex items-center gap-2.5 px-3 py-2 rounded-lg border transition-all text-left ${
-              mode === m
-                ? "bg-primary/10 border-primary/40 shadow-sm"
-                : "border-outline-variant/30 hover:border-primary/20 hover:bg-surface-container-high/30"
-            }`}
-          >
-            <Icon size={15} className={mode === m ? "text-primary" : "text-on-surface-variant/60"} />
-            <div>
-              <div className={`text-xs font-medium leading-tight ${mode === m ? "text-primary" : "text-on-surface-variant"}`}>
-                {label}
-              </div>
-              <div className="text-[10px] leading-tight text-on-surface-variant/50 mt-0.5">{desc}</div>
-            </div>
-          </button>
-        ))}
-      </div>
-
-      {/* Module selector — shown when indexed and GitNexus clusters are available */}
-      {canChat && modules.length > 0 && (
-        <div className="flex flex-wrap items-center gap-1.5 mb-3">
-          <span className="text-[10px] text-on-surface-variant/50 shrink-0">聚焦模块：</span>
-          <button
-            onClick={() => setSelectedModule(null)}
-            className={`px-2 py-0.5 text-[11px] rounded-full border transition-colors ${
-              selectedModule === null
-                ? "bg-primary/10 border-primary/40 text-primary"
-                : "border-outline-variant/30 text-on-surface-variant/70 hover:border-primary/20"
-            }`}
-          >
-            全部
-          </button>
-          {modules.map((m) => (
-            <button
-              key={m.id}
-              onClick={() => setSelectedModule(selectedModule === m.id ? null : m.id)}
-              className={`px-2 py-0.5 text-[11px] rounded-full border transition-colors ${
-                selectedModule === m.id
-                  ? "bg-primary/10 border-primary/40 text-primary"
-                  : "border-outline-variant/30 text-on-surface-variant/70 hover:border-primary/20"
-              }`}
-            >
-              {m.name}
-            </button>
-          ))}
-        </div>
-      )}
-
-      {/* Message list */}
-      <div onScroll={handleChatScroll} className="flex-1 overflow-y-auto rounded-xl border border-outline-variant/20 bg-surface-container-low p-4 space-y-4">
-        {loadingHistory ? (
-          <div className="flex justify-center py-8">
-            <Loader2 size={18} className="animate-spin text-primary" />
-          </div>
-        ) : messages.length === 0 && !streamingContent ? (
-          <div className="flex flex-col items-center justify-center h-full gap-3 text-on-surface-variant/50">
-            <MessageSquare size={32} />
-            <p className="text-sm">向代码库提问，获取智能分析</p>
-          </div>
-        ) : (
-          <>
-            {messages.map((msg, index) => {
-              const previousUser = [...messages.slice(0, index)]
-                .reverse()
-                .find((candidate) => candidate.role === "user");
-              const content = msg.content.trim();
-              const failedAssistantMessage =
-                content.includes("⚠️ 发送失败") || content.includes("⚠️ 生成失败");
-              const canRetryMessage =
-                msg.role === "assistant" && failedAssistantMessage && previousUser !== undefined;
-              return (
-              <React.Fragment key={msg.id}>
-                <div
-                  className={`flex gap-2.5 ${msg.role === "user" ? "justify-end" : "justify-start"}`}
-                >
-                  {msg.role === "assistant" && (
-                    <div className="shrink-0 w-6 h-6 rounded-full bg-primary/10 flex items-center justify-center mt-0.5">
-                      <Bot size={13} className="text-primary" />
-                    </div>
-                  )}
-                  <div
-                    className={`max-w-[85%] rounded-2xl px-4 py-2.5 text-sm ${
-                      msg.role === "user"
-                        ? "bg-primary text-on-primary rounded-tr-sm"
-                        : "bg-surface-container rounded-tl-sm text-on-surface"
-                    }`}
-                  >
-                    {msg.role === "assistant" ? (
-                      <div className="prose-sm">
-                        <MarkdownRenderer content={msg.content} enableNumericCitations={false} />
-                      </div>
-                    ) : (
-                      <p className="whitespace-pre-wrap">{msg.content}</p>
-                    )}
-                  </div>
-                  {msg.role === "user" && (
-                    <div className="shrink-0 w-6 h-6 rounded-full bg-primary/20 flex items-center justify-center mt-0.5">
-                      <User size={13} className="text-primary" />
-                    </div>
-                  )}
-                </div>
-                {canRetryMessage && (
-                  <div className="flex justify-start mt-1 pl-8">
-                    <button
-                      onClick={() => {
-                        if (previousUser) void send(previousUser.content, previousUser.mode, selectedModule ?? undefined);
-                      }}
-                      disabled={streaming || !canChat}
-                      className="inline-flex items-center gap-1 rounded-md border border-outline-variant/30 bg-surface px-2 py-1 text-[11px] text-on-surface-variant transition-colors hover:bg-surface-container hover:text-on-surface disabled:opacity-50"
-                    >
-                      <RefreshCw size={11} />
-                      重试
-                    </button>
-                  </div>
-                )}
-                {msg.role === "user" && (
-                  <div className="flex justify-end mt-0.5 pr-8">
-                    <span className="inline-flex items-center gap-0.5 text-[10px] text-on-surface-variant/40">
-                      {msg.mode === "targeted" ? (
-                        <Crosshair size={9} />
-                      ) : msg.mode === "report_qa" ? (
-                        <FileSearch size={9} />
-                      ) : (
-                        <Sparkles size={9} />
-                      )}
-                      {msg.mode === "targeted" ? "结构化" : msg.mode === "report_qa" ? "报告追问" : "自由"}
-                    </span>
-                  </div>
-                )}
-              </React.Fragment>
-              );
-            })}
-
-            {streamingContent && (
-              <div className="flex gap-2.5 justify-start">
-                <div className="shrink-0 w-6 h-6 rounded-full bg-primary/10 flex items-center justify-center mt-0.5">
-                  <Bot size={13} className="text-primary" />
-                </div>
-                <div className="max-w-[85%] rounded-2xl rounded-tl-sm px-4 py-2.5 text-sm bg-surface-container text-on-surface">
-                  <div className="prose-sm">
-                    <MarkdownRenderer content={streamingContent} enableNumericCitations={false} />
-                  </div>
-                  <span className="inline-block w-1.5 h-4 bg-primary animate-pulse ml-0.5 rounded-sm" />
-                </div>
-              </div>
-            )}
-
-            {streaming && !streamingContent && (
-              <div className="flex gap-2.5 justify-start">
-                <div className="shrink-0 w-6 h-6 rounded-full bg-primary/10 flex items-center justify-center mt-0.5">
-                  <Bot size={13} className="text-primary" />
-                </div>
-                <div className="rounded-2xl rounded-tl-sm px-4 py-2.5 bg-surface-container">
-                  <Loader2 size={14} className="animate-spin text-primary" />
-                </div>
-              </div>
-            )}
-          </>
-        )}
-        <div ref={bottomRef} />
-      </div>
-
-      {/* Fix 1 (frontend): gate banner when not yet indexed */}
-      {!canChat && (
-        <div className="mt-3 px-4 py-2.5 rounded-xl bg-amber-400/10 border border-amber-400/20 text-xs text-amber-500">
-          {indexed === 0 ? "工作空间正在索引中，完成后可开始对话" : "工作空间索引失败，请重新索引后再对话"}
-          {indexed === -1 && lastIndexError && (
-            <div className="mt-1 text-amber-200/90 whitespace-pre-wrap">
-              {lastIndexError}
-            </div>
-          )}
-        </div>
-      )}
-
-      {canChat && hasCompletedReports && mode === "freeqa" && (
-        <div className="mt-3 px-4 py-2.5 rounded-xl bg-amber-400/10 border border-amber-400/20 text-xs text-amber-500">
-          自由问答不会加载已生成报告或材料；报告后追问请切换到「报告追问」。
-        </div>
-      )}
-
-      {/* Input area */}
-      <div className="mt-3 flex gap-2">
-        <textarea
-          value={input}
-          onChange={(e) => setInput(e.target.value)}
-          onKeyDown={handleKeyDown}
-          placeholder={canChat
-            ? mode === "report_qa"
-              ? "追问已生成报告，必要时结合代码片段… (Enter 发送)"
-              : mode === "freeqa"
-              ? "轻量问答，基于代码片段回答… (Enter 发送)"
-              : "深度分析，结合材料与报告… (Enter 发送)"
-            : "等待索引完成后可对话…"}
-          disabled={streaming || !canChat}
-          rows={2}
-          className="flex-1 resize-none rounded-xl border border-outline-variant/30 bg-surface-container-low px-3 py-2 text-sm text-on-surface placeholder:text-on-surface-variant/40 focus:outline-none focus:border-primary/50 disabled:opacity-50"
-        />
-        {streaming ? (
-          <button
-            onClick={stop}
-            className="self-end flex items-center gap-1.5 px-4 py-2 text-sm rounded-xl border border-outline-variant/40 text-on-surface hover:bg-surface-container transition-colors"
-          >
-            <Square size={14} />
-            停止
-          </button>
-        ) : (
-          <button
-            onClick={handleSend}
-            disabled={!input.trim() || !canChat}
-            className="self-end flex items-center gap-1.5 px-4 py-2 text-sm rounded-xl bg-primary text-on-primary hover:opacity-90 disabled:opacity-40 disabled:cursor-not-allowed transition-opacity"
-          >
-            <Send size={14} />
-            发送
-          </button>
-        )}
       </div>
     </div>
   );

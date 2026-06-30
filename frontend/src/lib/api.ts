@@ -587,9 +587,6 @@ export const api = {
       if (taskId) params.set("task_id", taskId);
       return `${BASE}/api/workspaces/${wsId}/export?${params.toString()}`;
     },
-
-    chatExportUrl: (wsId: string) =>
-      `${BASE}/api/workspaces/${wsId}/chat/export`,
   },
 
   aiConversations: {
