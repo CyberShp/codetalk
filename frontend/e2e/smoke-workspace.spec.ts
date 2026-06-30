@@ -180,6 +180,59 @@ test.describe("Workspace smoke tests", () => {
     expect(workspace.materials).toEqual([]);
   });
 
+  test("prevents duplicate material uploads from a real double click", async ({
+    page,
+    request,
+  }) => {
+    const repo = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), "codetalk-double-material-")));
+    fs.writeFileSync(path.join(repo, "README.md"), "double material upload e2e\n", "utf8");
+    const materialPath = path.join(repo, "requirements.md");
+    fs.writeFileSync(materialPath, "# Requirements\n\nOnly one copy should enter context.\n", "utf8");
+    const workspaceName = `double-material-${Date.now()}`;
+
+    await page.goto("/workspaces/new", { waitUntil: "domcontentloaded" });
+    await page.getByPlaceholder(/项目 A/).fill(workspaceName);
+    await page.getByPlaceholder(/本地文件夹路径/).fill(repo);
+    await page.getByRole("button", { name: "创建工作空间" }).hover();
+    await page.getByRole("button", { name: "创建工作空间" }).click();
+    await page.waitForURL(/\/workspaces\/[0-9a-f-]{36}$/, { timeout: 30_000 });
+    const workspaceId = page.url().split("/").pop() ?? "";
+    await expect(page.getByText(workspaceName)).toBeVisible({ timeout: 30_000 });
+
+    await page.getByRole("button", { name: /材料 \(0\)/ }).hover();
+    await page.getByRole("button", { name: /材料 \(0\)/ }).click();
+    await page.getByPlaceholder(/输入文件绝对路径/).fill(materialPath);
+
+    const uploadRequests: string[] = [];
+    page.on("request", (req) => {
+      if (
+        req.method() === "POST" &&
+        new URL(req.url()).pathname === `/api/workspaces/${workspaceId}/materials`
+      ) {
+        uploadRequests.push(req.url());
+      }
+    });
+    const firstUpload = page.waitForRequest(
+      (req) =>
+        req.method() === "POST" &&
+        new URL(req.url()).pathname === `/api/workspaces/${workspaceId}/materials`,
+    );
+
+    await page.getByRole("button", { name: "添加" }).hover();
+    await page.getByRole("button", { name: "添加" }).dblclick();
+    await firstUpload;
+
+    await expect(page.getByRole("button", { name: /材料 \(1\)/ })).toBeVisible({
+      timeout: 15_000,
+    });
+    await expect.poll(() => uploadRequests.length).toBe(1);
+
+    const workspaceResp = await request.get(`${backendBase}/api/workspaces/${workspaceId}`);
+    expect(workspaceResp.ok()).toBeTruthy();
+    const workspace = (await workspaceResp.json()) as { materials: Array<{ filename: string }> };
+    expect(workspace.materials.filter((item) => item.filename === "requirements.md")).toHaveLength(1);
+  });
+
   test("workspace AI thread bridge opens a scoped investigation thread through the UI", async ({
     page,
     request,

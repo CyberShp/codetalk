@@ -762,6 +762,7 @@ export default function WorkspaceDetailPage() {
   const [analyzeStatus, setAnalyzeStatus] = useState<string | null>(null);
   const [indexProgress, setIndexProgress] = useState(0);
   const [reindexing, setReindexing] = useState(false);
+  const [materialUploading, setMaterialUploading] = useState(false);
   const [embeddingStatus, setEmbeddingStatus] = useState<EmbeddingStatus | null>(null);
   const [showAnalysisModal, setShowAnalysisModal] = useState(false);
   const [versions, setVersions] = useState<WorkspaceVersion[]>([]);
@@ -777,6 +778,7 @@ export default function WorkspaceDetailPage() {
   const selectedVersionTaskIdRef = useRef<string | null>(null);
   const hasLoadedRef = useRef(false);
   const toggleVersion = useRef<Record<string, number>>({});
+  const materialUploadingRef = useRef(false);
   const wsLogRef = useRef<WebSocket | null>(null);
   const lastLogStepTimeRef = useRef<number | null>(null);
   const logEndRef = useRef<HTMLDivElement>(null);
@@ -1028,6 +1030,25 @@ export default function WorkspaceDetailPage() {
       setReindexing(false);
     }
   };
+
+  const handleAddMaterial = useCallback(async () => {
+    const path = materialPath.trim();
+    if (!path || materialUploadingRef.current) return;
+    materialUploadingRef.current = true;
+    setMaterialUploading(true);
+    try {
+      const mat = await api.workspaces.uploadMaterial(wsId, path);
+      setWorkspace((prev) =>
+        prev ? { ...prev, materials: [...prev.materials, mat] } : prev
+      );
+      setMaterialPath("");
+    } catch {
+      /* upload failed */
+    } finally {
+      materialUploadingRef.current = false;
+      setMaterialUploading(false);
+    }
+  }, [materialPath, wsId]);
 
   const openConversation = async ({
     scopeType,
@@ -1368,37 +1389,20 @@ export default function WorkspaceDetailPage() {
                 value={materialPath}
                 onChange={(e) => setMaterialPath(e.target.value)}
                 placeholder="输入文件绝对路径（需求文档、设计文档等）"
+                disabled={materialUploading}
                 className="flex-1 bg-transparent text-sm text-on-surface outline-none placeholder:text-on-surface-variant/40"
                 onKeyDown={async (e) => {
                   if (e.key !== "Enter") return;
-                  const path = materialPath.trim();
-                  if (!path) return;
-                  try {
-                    const mat = await api.workspaces.uploadMaterial(wsId, path);
-                    setWorkspace((prev) =>
-                      prev ? { ...prev, materials: [...prev.materials, mat] } : prev
-                    );
-                    setMaterialPath("");
-                  } catch { /* silent */ }
+                  await handleAddMaterial();
                 }}
               />
             </div>
             <button
-              onClick={async () => {
-                const path = materialPath.trim();
-                if (!path) return;
-                try {
-                  const mat = await api.workspaces.uploadMaterial(wsId, path);
-                  setWorkspace((prev) =>
-                    prev ? { ...prev, materials: [...prev.materials, mat] } : prev
-                  );
-                  setMaterialPath("");
-                } catch { /* silent */ }
-              }}
-              disabled={!materialPath.trim()}
+              onClick={() => void handleAddMaterial()}
+              disabled={!materialPath.trim() || materialUploading}
               className="px-3 py-2 rounded-lg bg-primary/10 text-primary text-sm font-medium hover:bg-primary/20 disabled:opacity-30 disabled:cursor-not-allowed transition-colors"
             >
-              添加
+              {materialUploading ? "添加中..." : "添加"}
             </button>
           </div>
 
