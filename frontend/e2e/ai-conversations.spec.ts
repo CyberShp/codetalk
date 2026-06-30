@@ -1,6 +1,8 @@
 import { expect, test } from "@playwright/test";
 import type { Page } from "@playwright/test";
 import fs from "node:fs";
+import http from "node:http";
+import type { AddressInfo } from "node:net";
 
 const frontendOrigin = `http://localhost:${process.env.CODETALK_FRONTEND_PORT ?? "3003"}`;
 
@@ -357,6 +359,201 @@ test("AI conversation keeps long threads inside the reader and does not force do
   await expect
     .poll(() => page.getByLabel("AI 线程对话内容").evaluate((element) => element.scrollTop))
     .toBeGreaterThan(100);
+});
+
+test("AI conversation preserves the reader position when the user scrolls up during streaming", async ({
+  page,
+}) => {
+  let releaseSecondChunk: (() => void) | null = null;
+  let streamRequestedResolve: (() => void) | null = null;
+  const streamRequested = new Promise<void>((resolve) => {
+    streamRequestedResolve = resolve;
+  });
+  const secondChunkGate = new Promise<void>((resolve) => {
+    releaseSecondChunk = resolve;
+  });
+  const server = http.createServer(async (_req, res) => {
+    streamRequestedResolve?.();
+    res.writeHead(200, {
+      "Access-Control-Allow-Origin": frontendOrigin,
+      "Access-Control-Allow-Credentials": "true",
+      "Content-Type": "text/event-stream",
+      "Cache-Control": "no-cache",
+      Connection: "keep-alive",
+    });
+    res.write(
+      [
+        'data: {"event_id":1,"run_id":"run-scroll","conversation_id":"conv-scroll","event_type":"delta","payload":{"content":"第一段流式回答。\\n\\n"},"created_at":"2026-06-28T00:00:02Z"}',
+        "",
+        "",
+      ].join("\n"),
+    );
+    await secondChunkGate;
+    res.write(
+      [
+        'data: {"event_id":2,"run_id":"run-scroll","conversation_id":"conv-scroll","event_type":"delta","payload":{"content":"第二段流式回答到达时，用户仍应停留在历史阅读位置。\\n\\n"},"created_at":"2026-06-28T00:00:03Z"}',
+        "",
+        "",
+      ].join("\n"),
+    );
+    await new Promise((resolve) => setTimeout(resolve, 2000));
+    res.end();
+  });
+  await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
+  const port = (server.address() as AddressInfo).port;
+  test.info().attach("stream-server-port", {
+    body: String(port),
+    contentType: "text/plain",
+  });
+
+  try {
+    const longAssistant = Array.from({ length: 24 }, (_, index) =>
+      `历史答案 ${index + 1}：登录失败、权限失效、弱网重试、审计日志验证和恢复路径。`,
+    ).join("\n\n");
+
+    await page.route("**/api/workspaces", async (route) => {
+      await route.fulfill({
+        headers: jsonHeaders(route.request().headers().origin),
+        json: [
+          {
+            id: "ws-scroll",
+            name: "滚动项目",
+            repo_path: "/repo/scroll",
+            indexed: 1,
+            index_job: null,
+            index_progress: 100,
+            analyze_status: null,
+            analyze_progress: 0,
+            last_index_error: null,
+            created_at: "2026-06-28T00:00:00Z",
+            updated_at: "2026-06-28T00:00:00Z",
+            materials: [],
+            reports: [],
+          },
+        ],
+      });
+    });
+    await page.route("**/api/settings/agent-runtimes?enabled=true", async (route) => {
+      await route.fulfill({ headers: jsonHeaders(route.request().headers().origin), json: { items: [] } });
+    });
+    await page.route("**/api/ai/conversations?workspace_id=ws-scroll&limit=50", async (route) => {
+      await route.fulfill({ headers: jsonHeaders(route.request().headers().origin), json: { items: [] } });
+    });
+    await page.route("**/api/ai/conversations/conv-scroll", async (route) => {
+      await route.fulfill({
+        headers: jsonHeaders(route.request().headers().origin),
+        json: {
+          id: "conv-scroll",
+          scope_type: "workspace",
+          scope_id: "ws-scroll",
+          workspace_id: "ws-scroll",
+          memory_namespace: "workspace:ws-scroll",
+          title: "流式滚动线程",
+          status: "running",
+          initial_context: {},
+          created_at: "2026-06-28T00:00:00Z",
+          updated_at: "2026-06-28T00:00:00Z",
+          latest_run: {
+            id: "run-scroll",
+            conversation_id: "conv-scroll",
+            status: "running",
+            cursor: 0,
+            error: null,
+            model: "test",
+            token_usage: {},
+            created_at: "2026-06-28T00:00:01Z",
+            started_at: "2026-06-28T00:00:01Z",
+            completed_at: null,
+          },
+        },
+      });
+    });
+    await page.route("**/api/ai/conversations/conv-scroll/messages", async (route) => {
+      if (route.request().method() !== "GET") return route.fallback();
+      await route.fulfill({
+        headers: jsonHeaders(route.request().headers().origin),
+        json: {
+          items: [
+            {
+              id: "msg-scroll-user",
+              conversation_id: "conv-scroll",
+              run_id: "run-history",
+              role: "user",
+              content: "先生成很长的历史回答",
+              references: [],
+              actions: [],
+              created_at: "2026-06-28T00:00:00Z",
+            },
+            {
+              id: "msg-scroll-assistant",
+              conversation_id: "conv-scroll",
+              run_id: "run-history",
+              role: "assistant",
+              content: longAssistant,
+              references: [],
+              actions: [],
+              created_at: "2026-06-28T00:00:01Z",
+            },
+          ],
+        },
+      });
+    });
+    await page.route("**/api/ai/conversations/conv-scroll/stream?cursor=0", async (route) => {
+      await route.continue({ url: `http://127.0.0.1:${port}/stream` });
+    });
+
+    await page.setViewportSize({ width: 1440, height: 760 });
+    await page.goto("/ai/conv-scroll", { waitUntil: "domcontentloaded" });
+    await streamRequested;
+    await expect(page.getByText("第一段流式回答。")).toBeVisible();
+
+    const reader = page.getByLabel("AI 线程对话内容");
+    await expect
+      .poll(() =>
+        reader.evaluate((element) => element.scrollHeight - element.clientHeight - element.scrollTop),
+      )
+      .toBeLessThan(120);
+
+    const readerBox = await reader.boundingBox();
+    expect(readerBox).not.toBeNull();
+    await page.mouse.move(readerBox!.x + readerBox!.width / 2, readerBox!.y + readerBox!.height / 2);
+    const beforeUserScroll = await reader.evaluate((element) => element.scrollTop);
+    await page.mouse.wheel(0, -900);
+    await expect
+      .poll(() => reader.evaluate((element) => element.scrollTop))
+      .toBeLessThan(beforeUserScroll - 100);
+    await page.waitForTimeout(50);
+    const userScrollTop = await reader.evaluate((element) => element.scrollTop);
+    await expect(page.getByRole("button", { name: "跳到最新回复" })).toBeVisible();
+
+    releaseSecondChunk?.();
+    await expect(page.getByText("第二段流式回答到达时")).toHaveCount(1);
+    await page.waitForTimeout(100);
+
+    const afterSecondChunk = await reader.evaluate((element) => ({
+      scrollTop: element.scrollTop,
+      distanceFromBottom: element.scrollHeight - element.clientHeight - element.scrollTop,
+    }));
+    expect(Math.abs(afterSecondChunk.scrollTop - userScrollTop)).toBeLessThan(80);
+    expect(afterSecondChunk.distanceFromBottom).toBeGreaterThan(180);
+    await expect(page.getByRole("button", { name: "跳到最新回复" })).toBeVisible();
+  } finally {
+    (
+      server as http.Server & {
+        closeAllConnections?: () => void;
+        closeIdleConnections?: () => void;
+      }
+    ).closeAllConnections?.();
+    (
+      server as http.Server & {
+        closeAllConnections?: () => void;
+        closeIdleConnections?: () => void;
+      }
+    ).closeIdleConnections?.();
+    await new Promise<void>((resolve, reject) => {
+      server.close((error) => (error ? reject(error) : resolve()));
+    });
+  }
 });
 
 test("AI conversation keeps generation diagnostics collapsed outside the answer body", async ({ page }) => {

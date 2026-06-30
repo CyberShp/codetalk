@@ -1,6 +1,6 @@
 "use client";
 
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import Link from "next/link";
 import { useParams, useRouter } from "next/navigation";
 import {
@@ -191,6 +191,7 @@ export default function AIThreadPage() {
   const readerRef = useRef<HTMLElement>(null);
   const bottomRef = useRef<HTMLDivElement>(null);
   const autoScrollRef = useRef(true);
+  const detachedScrollTopRef = useRef(0);
 
   const references = useMemo(() => uniqueReferences(messages), [messages]);
   const workspaceId = threadWorkspaceId(conversation);
@@ -364,19 +365,33 @@ export default function AIThreadPage() {
     const distanceFromBottom = reader.scrollHeight - reader.scrollTop - reader.clientHeight;
     const nearBottom = distanceFromBottom < 96;
     autoScrollRef.current = nearBottom;
+    if (!nearBottom) {
+      detachedScrollTopRef.current = reader.scrollTop;
+    }
     setShowJumpToLatest(!nearBottom && Boolean(streamingRunId || streamingContent));
   }, [streamingContent, streamingRunId]);
 
   const detachAutoScroll = useCallback(() => {
+    const reader = readerRef.current;
+    if (reader) {
+      detachedScrollTopRef.current = reader.scrollTop;
+    }
     autoScrollRef.current = false;
     if (streamingRunId || streamingContent) setShowJumpToLatest(true);
   }, [streamingContent, streamingRunId]);
 
   const handleReaderWheel = useCallback(
     (event: React.WheelEvent<HTMLElement>) => {
-      if (event.deltaY < 0) detachAutoScroll();
+      if (event.deltaY < 0) {
+        const reader = readerRef.current;
+        if (reader) {
+          detachedScrollTopRef.current = Math.max(0, reader.scrollTop + event.deltaY);
+        }
+        autoScrollRef.current = false;
+        if (streamingRunId || streamingContent) setShowJumpToLatest(true);
+      }
     },
-    [detachAutoScroll],
+    [streamingContent, streamingRunId],
   );
 
   const jumpToLatest = useCallback((behavior: ScrollBehavior = "smooth") => {
@@ -390,10 +405,20 @@ export default function AIThreadPage() {
     }
   }, []);
 
-  useEffect(() => {
+  useLayoutEffect(() => {
+    const reader = readerRef.current;
     if (autoScrollRef.current) {
       jumpToLatest(streamingRunId || streamingContent ? "auto" : "smooth");
     } else if (streamingRunId || streamingContent) {
+      if (reader) {
+        const targetScrollTop = detachedScrollTopRef.current;
+        reader.scrollTop = targetScrollTop;
+        window.requestAnimationFrame(() => {
+          if (!autoScrollRef.current && readerRef.current === reader) {
+            reader.scrollTop = targetScrollTop;
+          }
+        });
+      }
       setShowJumpToLatest(true);
     }
   }, [jumpToLatest, messages, streamingContent, streamingRunId]);
