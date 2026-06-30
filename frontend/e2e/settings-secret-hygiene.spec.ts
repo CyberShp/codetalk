@@ -1,5 +1,8 @@
 import { expect, test } from "@playwright/test";
 import type { Page } from "@playwright/test";
+import fs from "node:fs";
+import os from "node:os";
+import path from "node:path";
 
 async function expectBrowserStorageNotToContain(page: Page, secret: string) {
   const storageText = await page.evaluate(() =>
@@ -131,6 +134,68 @@ test("settings agent runtime env values are not rendered after save", async ({ p
   await page.reload({ waitUntil: "domcontentloaded" });
   const reloadedRuntime = page.locator("div", { hasText: runtimeName }).filter({ hasText: "python3 --version" }).first();
   await expect(reloadedRuntime).toBeVisible();
+  await expect(page.locator("body")).not.toContainText(secret);
+  await expectBrowserStorageNotToContain(page, secret);
+});
+
+test("settings agent runtime probe shows redacted actionable failure output", async ({ page }) => {
+  const secret = `agent-probe-secret-${Date.now()}`;
+  const runtimeName = `ui-agent-probe-failure-${Date.now()}`;
+  const scriptDir = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), "codetalk-agent-probe-")));
+  const scriptPath = path.join(scriptDir, "probe_failure.py");
+  fs.writeFileSync(
+    scriptPath,
+    [
+      "import sys",
+      `print('probe failed --api-key ${secret}; token=${secret}', file=sys.stderr)`,
+      "raise SystemExit(5)",
+      "",
+    ].join("\n"),
+    "utf8",
+  );
+
+  await page.goto("/settings", { waitUntil: "domcontentloaded" });
+  await page.getByPlaceholder("例如 Claude Code").fill(runtimeName);
+  await page.getByPlaceholder("ccr / opencode / nga").fill("python3");
+  await page.getByPlaceholder("code 或 run").fill(scriptPath);
+  await page.getByRole("button", { name: "高级选项" }).click();
+  await page.getByPlaceholder(/HTTPS_PROXY/).fill(
+    JSON.stringify(
+      {
+        AGENT_TOKEN: secret,
+      },
+      null,
+      2,
+    ),
+  );
+  await page.getByRole("button", { name: "保存" }).click();
+
+  const savedRuntime = page
+    .locator("div.rounded-xl.border")
+    .filter({ has: page.locator("strong", { hasText: runtimeName }) })
+    .filter({ hasText: scriptPath })
+    .first();
+  await expect(savedRuntime).toBeVisible({ timeout: 15_000 });
+  await expect(page.locator("body")).not.toContainText(secret);
+  await expectBrowserStorageNotToContain(page, secret);
+
+  await savedRuntime.getByRole("button", { name: "测试" }).hover();
+  await savedRuntime.getByRole("button", { name: "测试" }).click();
+
+  await expect(savedRuntime).toContainText("探测中...", { timeout: 15_000 });
+  await expect(savedRuntime).toContainText("不可用：probe failed", { timeout: 15_000 });
+  await expect(savedRuntime).toContainText("--api-key <redacted>");
+  await expect(savedRuntime).toContainText("token=<redacted>");
+  await expect(page.locator("body")).not.toContainText(secret);
+  await expectBrowserStorageNotToContain(page, secret);
+
+  await page.reload({ waitUntil: "domcontentloaded" });
+  const reloadedRuntime = page
+    .locator("div.rounded-xl.border")
+    .filter({ has: page.locator("strong", { hasText: runtimeName }) })
+    .filter({ hasText: scriptPath })
+    .first();
+  await expect(reloadedRuntime).toBeVisible({ timeout: 15_000 });
   await expect(page.locator("body")).not.toContainText(secret);
   await expectBrowserStorageNotToContain(page, secret);
 });
