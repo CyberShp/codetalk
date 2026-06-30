@@ -78,6 +78,38 @@ function uniqueReferences(messages: AIMessage[]): AIContextReference[] {
   return Array.from(map.values()).slice(0, 12);
 }
 
+function sourceLocationLabel(ref: AIContextReference): string {
+  if (ref.source_type !== "workspace_source") return "";
+  const path = ref.metadata?.path;
+  if (typeof path !== "string" || !path.trim()) return "";
+  const start = ref.metadata?.start_line;
+  const end = ref.metadata?.end_line;
+  const startLine = typeof start === "number" && Number.isFinite(start) ? Math.max(1, Math.trunc(start)) : null;
+  const endLine = typeof end === "number" && Number.isFinite(end) ? Math.max(1, Math.trunc(end)) : null;
+  if (startLine && endLine && endLine !== startLine) return `${path}:L${startLine}-L${endLine}`;
+  if (startLine) return `${path}:L${startLine}`;
+  return path;
+}
+
+function EvidenceReferenceCard({ refItem }: { refItem: AIContextReference }) {
+  const sourceLocation = sourceLocationLabel(refItem);
+  return (
+    <div className="ct-ai-ref">
+      <div className="flex items-center justify-between gap-2">
+        <span>{refItem.title}</span>
+        <code>{refItem.source_type}</code>
+      </div>
+      {sourceLocation && (
+        <div className="ct-ai-ref__meta">
+          <span>源码位置</span>
+          <code>{sourceLocation}</code>
+        </div>
+      )}
+      <p>{refItem.excerpt}</p>
+    </div>
+  );
+}
+
 function safeFilename(value: string): string {
   const trimmed = value
     .replace(/[\\/:*?"<>|]+/g, "-")
@@ -809,26 +841,14 @@ export default function AIThreadPage() {
           ) : (
             <div className="grid gap-3">
               {latestReferences.map((ref) => (
-                <div key={`${ref.source_type}:${ref.source_id}`} className="ct-ai-ref">
-                  <div className="flex items-center justify-between gap-2">
-                    <span>{ref.title}</span>
-                    <code>{ref.source_type}</code>
-                  </div>
-                  <p>{ref.excerpt}</p>
-                </div>
+                <EvidenceReferenceCard key={`${ref.source_type}:${ref.source_id}`} refItem={ref} />
               ))}
               {hiddenReferenceCount > 0 && (
                 <details className="ct-ai-disclosure">
                   <summary>展开其余 {hiddenReferenceCount} 条证据</summary>
                   <div className="grid gap-3 pt-3">
                     {references.slice(latestReferences.length).map((ref) => (
-                      <div key={`${ref.source_type}:${ref.source_id}`} className="ct-ai-ref">
-                        <div className="flex items-center justify-between gap-2">
-                          <span>{ref.title}</span>
-                          <code>{ref.source_type}</code>
-                        </div>
-                        <p>{ref.excerpt}</p>
-                      </div>
+                      <EvidenceReferenceCard key={`${ref.source_type}:${ref.source_id}`} refItem={ref} />
                     ))}
                   </div>
                 </details>

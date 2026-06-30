@@ -36,7 +36,12 @@ async function mockReadableConversation(
       source_id: "src-1",
       title: "lib/login/session.ts:42",
       excerpt: "会话过期时返回 401 并记录审计日志。",
-      metadata: { workspace_id: "ws-1" },
+      metadata: {
+        workspace_id: "ws-1",
+        path: "lib/login/session.ts",
+        start_line: 42,
+        end_line: 88,
+      },
     },
     {
       source_type: "workspace_material",
@@ -189,6 +194,8 @@ test("AI conversation page is a wide persistent reading surface", async ({ page 
   await expect(page.getByText("建议补充登录失败")).toBeVisible();
   await expect(page.getByText("测试设计报告")).toBeVisible();
   await expect(page.getByText("证据链")).toBeVisible();
+  await expect(page.getByText("源码位置")).toBeVisible();
+  await expect(page.getByText("lib/login/session.ts:L42-L88")).toBeVisible();
   await expect(page.getByText("执行轨迹")).toBeVisible();
   await expect(page.getByText("展开其余 1 条证据")).toBeVisible();
   await expect(page.getByText("审计日志应包含登录失败原因。")).toBeHidden();

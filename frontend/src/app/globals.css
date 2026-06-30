@@ -1253,6 +1253,28 @@ body {
   font-size: 10px;
 }
 
+.ct-ai-ref__meta {
+  margin-top: 8px;
+  display: flex;
+  min-width: 0;
+  align-items: center;
+  gap: 6px;
+}
+
+.ct-ai-ref__meta span {
+  flex: 0 0 auto;
+  color: #64748b;
+  font-size: 11px;
+  font-weight: 600;
+}
+
+.ct-ai-ref__meta code {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
 .ct-ai-ref p {
   margin-top: 9px;
   display: -webkit-box;
