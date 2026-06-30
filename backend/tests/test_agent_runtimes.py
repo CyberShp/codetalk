@@ -545,6 +545,7 @@ class TestAgentRuntimes:
 
         assert _parse_event_text("\x1b[32m正文片段\x1b[0m\r\n", "plain") == "正文片段"
         assert _parse_event_text("\r\x1b[2K⠋ 12\r\x1b[2K⠙ 47\r\x1b[2K最终答案\n", "plain") == "最终答案"
+        assert _parse_event_text("1\n2\n47%\n12/100\n最终答案\n", "plain") == "最终答案"
         assert _decode("源码证据：连接失败".encode("gbk")) == "源码证据：连接失败"
         assert (
             _parse_event_text(
@@ -593,3 +594,32 @@ class TestAgentRuntimes:
             chunks.append(chunk)
 
         assert "".join(chunks) == "源码证据：连接失败"
+
+    async def test_agent_runtime_stream_drops_numeric_progress_noise(self):
+        from app.services.agent_cli_bridge import stream_agent_runtime
+
+        agent_code = (
+            "import sys; "
+            "sys.stdout.write('1\\n2\\n47%\\n12/100\\n'); "
+            "sys.stdout.flush(); "
+            "sys.stdout.write('最终答案：已完成源码分析。\\n'); "
+            "sys.stdout.flush()"
+        )
+        chunks = []
+        async for chunk in stream_agent_runtime(
+            runtime={
+                "command": sys.executable,
+                "args": ["-c", agent_code],
+                "prompt_transport": "stdin",
+                "output_mode": "plain",
+                "timeout_seconds": 10,
+            },
+            prompt="读取源码",
+            cwd=None,
+        ):
+            chunks.append(chunk)
+
+        output = "".join(chunks)
+        assert output.strip() == "最终答案：已完成源码分析。"
+        assert "47%" not in output
+        assert "12/100" not in output

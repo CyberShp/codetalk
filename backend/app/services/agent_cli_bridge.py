@@ -314,6 +314,7 @@ def _candidate_decodings() -> list[str]:
 _ANSI_RE = re.compile(r"\x1b\[[0-?]*[ -/]*[@-~]|\x1b\][^\x07]*(?:\x07|\x1b\\)")
 _CONTROL_RE = re.compile(r"[\x00-\x08\x0b\x0c\x0e-\x1f\x7f]")
 _SPINNER_PROGRESS_RE = re.compile(r"^[⠁-⣿⣀-⣿|/\\\-·•●○◐◓◑◒]\s*(?:\d+(?:[./]\d+)?%?|[.\u2026]+)?\s*$")
+_PROGRESS_ONLY_RE = re.compile(r"^(?:\d{1,3}%|\d+/\d+|\d{1,4})$")
 
 
 def _clean_agent_text(value: str) -> str:
@@ -327,7 +328,8 @@ def _collapse_terminal_repaints(value: str) -> str:
     lines: list[str] = []
     for raw_line in normalized.split("\n"):
         line = raw_line.split("\r")[-1]
-        if _SPINNER_PROGRESS_RE.match(line.strip()):
+        stripped = line.strip()
+        if _SPINNER_PROGRESS_RE.match(stripped) or _PROGRESS_ONLY_RE.match(stripped):
             continue
         lines.append(line)
     return "\n".join(lines)
