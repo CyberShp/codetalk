@@ -1,4 +1,5 @@
 import { expect, test } from "@playwright/test";
+import type { Page } from "@playwright/test";
 import fs from "node:fs";
 
 const frontendOrigin = `http://localhost:${process.env.CODETALK_FRONTEND_PORT ?? "3003"}`;
@@ -13,7 +14,7 @@ function jsonHeaders(origin = frontendOrigin) {
   };
 }
 
-test("AI conversation page is a wide persistent reading surface", async ({ page }, testInfo) => {
+async function mockReadableConversation(page: Page) {
   await page.route("**/api/workspaces", async (route) => {
     await route.fulfill({
       headers: jsonHeaders(route.request().headers().origin),
@@ -138,7 +139,10 @@ test("AI conversation page is a wide persistent reading surface", async ({ page 
       },
     });
   });
+}
 
+test("AI conversation page is a wide persistent reading surface", async ({ page }, testInfo) => {
+  await mockReadableConversation(page);
   await page.setViewportSize({ width: 1440, height: 920 });
   await page.goto("/ai/conv-1");
 
@@ -217,6 +221,70 @@ test("AI conversation page is a wide persistent reading surface", async ({ page 
   expect(exported).toContain("这个测试设计还缺什么？");
   expect(exported).toContain("建议补充登录失败、权限失效、弱网重试和审计日志验证。");
   expect(exported).toContain("测试设计报告 (workspace_report:report-1)");
+});
+
+test("AI conversation remains usable on a narrow mobile viewport", async ({ page }) => {
+  await mockReadableConversation(page);
+  await page.setViewportSize({ width: 390, height: 844 });
+  await page.goto("/ai/conv-1");
+
+  await expect(page.getByRole("heading", { name: "登录模块 AI 调查线程" })).toBeVisible();
+  await expect(page.getByText("建议补充登录失败")).toBeVisible();
+  await expect(page.getByPlaceholder(/像 Codex 一样继续追问/)).toBeVisible();
+
+  const layout = await page.locator(".ct-codex-ai").evaluate((element) => {
+    const app = element.getBoundingClientRect();
+    const main = element.querySelector(".ct-codex-ai__main")!.getBoundingClientRect();
+    const reader = element.querySelector(".ct-codex-ai__reader")!.getBoundingClientRect();
+    const composer = element.querySelector(".ct-codex-composer")!.getBoundingClientRect();
+    const message = element.querySelector(".ct-codex-message__content > div")!.getBoundingClientRect();
+    const messageStyles = window.getComputedStyle(element.querySelector(".ct-codex-message__content > div")!);
+    const textareaStyles = window.getComputedStyle(element.querySelector(".ct-codex-composer textarea")!);
+    const nodes = Array.from(element.querySelectorAll(".ct-codex-ai__topbar button, .ct-codex-ai__topbar select, .ct-codex-composer button"));
+    const boxes = nodes.map((node) => {
+      const rect = node.getBoundingClientRect();
+      return { left: rect.left, top: rect.top, right: rect.right, bottom: rect.bottom, width: rect.width, height: rect.height };
+    });
+    const overflows = [
+      ["main", main],
+      ["reader", reader],
+      ["composer", composer],
+      ["message", message],
+    ]
+      .filter(([, rect]) => {
+        const box = rect as DOMRect;
+        return box.left < app.left - 1 || box.right > app.right + 1;
+      })
+      .map(([name]) => name);
+    const overlaps: string[] = [];
+    for (let i = 0; i < boxes.length; i += 1) {
+      for (let j = i + 1; j < boxes.length; j += 1) {
+        const a = boxes[i];
+        const b = boxes[j];
+        const x = Math.max(0, Math.min(a.right, b.right) - Math.max(a.left, b.left));
+        const y = Math.max(0, Math.min(a.bottom, b.bottom) - Math.max(a.top, b.top));
+        if (x * y > 20) overlaps.push(`${i}:${j}`);
+      }
+    }
+    return {
+      overflows,
+      overlaps,
+      messageFontSize: Number.parseFloat(messageStyles.fontSize),
+      textareaFontSize: Number.parseFloat(textareaStyles.fontSize),
+      composerWidth: composer.width,
+      appWidth: app.width,
+    };
+  });
+
+  expect(layout.overflows).toEqual([]);
+  expect(layout.overlaps).toEqual([]);
+  expect(layout.messageFontSize).toBeGreaterThanOrEqual(14);
+  expect(layout.messageFontSize).toBeLessThanOrEqual(16);
+  expect(layout.textareaFontSize).toBeGreaterThanOrEqual(14);
+  expect(layout.textareaFontSize).toBeLessThanOrEqual(16);
+  expect(layout.composerWidth).toBeLessThanOrEqual(layout.appWidth);
+  await page.getByRole("button", { name: "环境" }).click();
+  await expect(page.getByRole("heading", { name: "环境信息" })).toHaveCount(0);
 });
 
 test("AI conversation shows latest failed run reason instead of going silent", async ({ page }) => {
