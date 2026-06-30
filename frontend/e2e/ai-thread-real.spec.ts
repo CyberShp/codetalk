@@ -215,3 +215,104 @@ test("cancels a running agent-runtime AI thread through the real UI", async ({
     await request.delete(`${backendBase}/api/settings/agent-runtimes/${encodeURIComponent(runtime.id)}`);
   }
 });
+
+test("switches an idle AI thread executor through the real UI and persists it", async ({
+  page,
+  request,
+}) => {
+  const repo = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), "codetalk-ai-runtime-switch-")));
+  fs.writeFileSync(path.join(repo, "README.md"), "AI runtime switch e2e workspace\n", "utf8");
+  const workspaceName = `ai-runtime-switch-${Date.now()}`;
+  const runtimeName = `Runtime switch ${Date.now()}`;
+  const threadTitle = `${workspaceName} runtime picker`;
+
+  const runtimeResp = await request.post(`${backendBase}/api/settings/agent-runtimes`, {
+    data: {
+      name: runtimeName,
+      command: "python3",
+      args: ["--version"],
+      prompt_transport: "stdin",
+      output_mode: "plain",
+      working_dir_mode: "project",
+      fixed_working_dir: "",
+      env: {},
+      health_command: "",
+      timeout_seconds: 30,
+      enabled: true,
+    },
+  });
+  expect(runtimeResp.status()).toBe(201);
+  const runtime = (await runtimeResp.json()) as { id: string };
+
+  const workspaceResp = await request.post(`${backendBase}/api/workspaces`, {
+    data: { name: workspaceName, repo_path: repo },
+  });
+  expect(workspaceResp.status()).toBe(201);
+  const workspace = (await workspaceResp.json()) as { id: string };
+
+  try {
+    await page.goto("/ai", { waitUntil: "domcontentloaded" });
+    const projectButton = page.locator("button").filter({ hasText: workspaceName }).first();
+    await expect(projectButton).toBeVisible({ timeout: 15_000 });
+    await projectButton.hover();
+    await projectButton.click();
+    await expect(page.getByRole("heading", { name: workspaceName })).toBeVisible();
+
+    await page.getByLabel("AI 线程执行器").selectOption("builtin_llm");
+    await page.getByPlaceholder(/线程名称/).fill(threadTitle);
+    await page.getByRole("button", { name: "新建线程" }).hover();
+    await page.getByRole("button", { name: "新建线程" }).click();
+
+    await page.waitForURL(/\/ai\/[^/]+$/, { timeout: 15_000 });
+    const threadId = page.url().split("/").pop() ?? "";
+    await expect(page.getByRole("heading", { name: threadTitle })).toBeVisible({
+      timeout: 15_000,
+    });
+    const threadRuntimeSelect = page.getByLabel("当前 AI 执行器");
+    await expect(threadRuntimeSelect).toHaveValue("builtin_llm");
+    await expect(page.locator(".ct-ai-env-card").filter({ hasText: "执行器" })).toContainText("内置模型");
+
+    await threadRuntimeSelect.hover();
+    await threadRuntimeSelect.selectOption(runtime.id);
+    await expect(threadRuntimeSelect).toHaveValue(runtime.id);
+    await expect(page.locator(".ct-ai-env-card").filter({ hasText: "执行器" })).toContainText(runtimeName);
+
+    const switchedResp = await request.get(
+      `${backendBase}/api/ai/conversations/${encodeURIComponent(threadId)}`,
+    );
+    expect(switchedResp.ok()).toBeTruthy();
+    const switched = (await switchedResp.json()) as {
+      runtime_type: string;
+      agent_runtime_id: string | null;
+      workspace_id: string;
+    };
+    expect(switched.runtime_type).toBe("agent_runtime");
+    expect(switched.agent_runtime_id).toBe(runtime.id);
+    expect(switched.workspace_id).toBe(workspace.id);
+
+    await page.reload({ waitUntil: "domcontentloaded" });
+    await expect(page.getByRole("heading", { name: threadTitle })).toBeVisible({
+      timeout: 15_000,
+    });
+    await expect(threadRuntimeSelect).toHaveValue(runtime.id);
+    await expect(page.locator(".ct-ai-env-card").filter({ hasText: "执行器" })).toContainText(runtimeName);
+
+    await threadRuntimeSelect.hover();
+    await threadRuntimeSelect.selectOption("builtin_llm");
+    await expect(threadRuntimeSelect).toHaveValue("builtin_llm");
+    await expect(page.locator(".ct-ai-env-card").filter({ hasText: "执行器" })).toContainText("内置模型");
+
+    const restoredResp = await request.get(
+      `${backendBase}/api/ai/conversations/${encodeURIComponent(threadId)}`,
+    );
+    expect(restoredResp.ok()).toBeTruthy();
+    const restored = (await restoredResp.json()) as {
+      runtime_type: string;
+      agent_runtime_id: string | null;
+    };
+    expect(restored.runtime_type).toBe("builtin_llm");
+    expect(restored.agent_runtime_id).toBeNull();
+  } finally {
+    await request.delete(`${backendBase}/api/settings/agent-runtimes/${encodeURIComponent(runtime.id)}`);
+  }
+});
