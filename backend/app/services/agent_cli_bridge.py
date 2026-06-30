@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import locale
 import os
 import re
 from collections.abc import AsyncIterator
@@ -257,7 +258,26 @@ def _build_env(runtime: dict[str, Any]) -> dict[str, str]:
 
 
 def _decode(value: bytes) -> str:
+    for encoding in _candidate_decodings():
+        try:
+            return _clean_agent_text(value.decode(encoding, "strict"))
+        except UnicodeDecodeError:
+            continue
     return _clean_agent_text(value.decode("utf-8", "replace"))
+
+
+def _candidate_decodings() -> list[str]:
+    candidates = ["utf-8", "utf-8-sig"]
+    preferred = locale.getpreferredencoding(False)
+    if preferred:
+        candidates.append(preferred)
+    candidates.extend(["gb18030", "gbk"])
+    deduped: list[str] = []
+    for item in candidates:
+        normalized = item.strip().lower()
+        if normalized and normalized not in deduped:
+            deduped.append(normalized)
+    return deduped
 
 
 _ANSI_RE = re.compile(r"\x1b\[[0-?]*[ -/]*[@-~]|\x1b\][^\x07]*(?:\x07|\x1b\\)")

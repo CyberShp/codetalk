@@ -291,9 +291,10 @@ class TestAgentRuntimes:
             assert secret not in json.dumps(messages.json(), ensure_ascii=False)
 
     async def test_agent_runtime_output_parser_cleans_terminal_noise_and_unwraps_json(self):
-        from app.services.agent_cli_bridge import _parse_event_text
+        from app.services.agent_cli_bridge import _decode, _parse_event_text
 
         assert _parse_event_text("\x1b[32m正文片段\x1b[0m\r\n", "plain") == "正文片段"
+        assert _decode("源码证据：连接失败".encode("gbk")) == "源码证据：连接失败"
         assert (
             _parse_event_text(
                 json.dumps({"choices": [{"delta": {"content": "源码证据"}}]}, ensure_ascii=False),
@@ -309,3 +310,27 @@ class TestAgentRuntimes:
             == "材料证据"
         )
         assert _parse_event_text(json.dumps({"type": "message_start", "index": 0}), "stream_json") == ""
+
+    async def test_agent_runtime_stream_decodes_gbk_stdout(self):
+        from app.services.agent_cli_bridge import stream_agent_runtime
+
+        agent_code = (
+            "import sys; "
+            "sys.stdout.buffer.write('源码证据：连接失败'.encode('gbk')); "
+            "sys.stdout.flush()"
+        )
+        chunks = []
+        async for chunk in stream_agent_runtime(
+            runtime={
+                "command": sys.executable,
+                "args": ["-c", agent_code],
+                "prompt_transport": "stdin",
+                "output_mode": "plain",
+                "timeout_seconds": 10,
+            },
+            prompt="读取源码",
+            cwd=None,
+        ):
+            chunks.append(chunk)
+
+        assert "".join(chunks) == "源码证据：连接失败"
