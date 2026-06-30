@@ -66,6 +66,67 @@ test.describe("Workspace smoke tests", () => {
     expect(workspaces.some((item) => item.name === duplicateName)).toBe(false);
   });
 
+  test("workspace materials can be added, deactivated, restored after reload, and deleted through the UI", async ({
+    page,
+    request,
+  }) => {
+    const repo = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), "codetalk-materials-")));
+    fs.writeFileSync(path.join(repo, "README.md"), "materials lifecycle e2e\n", "utf8");
+    const materialPath = path.join(repo, "requirements.md");
+    fs.writeFileSync(
+      materialPath,
+      "# Requirements\n\nNever expose workspace materials outside the selected project.\n",
+      "utf8",
+    );
+    const workspaceName = `materials-workspace-${Date.now()}`;
+
+    await page.goto("/workspaces/new", { waitUntil: "domcontentloaded" });
+    await page.getByPlaceholder(/项目 A/).fill(workspaceName);
+    await page.getByPlaceholder(/本地文件夹路径/).fill(repo);
+    await page.getByRole("button", { name: "创建工作空间" }).hover();
+    await page.getByRole("button", { name: "创建工作空间" }).click();
+    await page.waitForURL(/\/workspaces\/[0-9a-f-]{36}$/, { timeout: 30_000 });
+    const workspaceUrl = page.url();
+    const workspaceId = workspaceUrl.split("/").pop() ?? "";
+    await expect(page.getByText(workspaceName)).toBeVisible({ timeout: 30_000 });
+
+    await page.getByRole("button", { name: /材料 \(0\)/ }).hover();
+    await page.getByRole("button", { name: /材料 \(0\)/ }).click();
+    await page.getByPlaceholder(/输入文件绝对路径/).fill(materialPath);
+    await page.getByRole("button", { name: "添加" }).hover();
+    await page.getByRole("button", { name: "添加" }).click();
+
+    await expect(page.getByRole("button", { name: /材料 \(1\)/ })).toBeVisible({
+      timeout: 15_000,
+    });
+    await expect(page.getByText("requirements.md")).toBeVisible();
+    await expect(page.getByText("requirements").first()).toBeVisible();
+    await expect(page.getByText("1 个活跃材料将参与分析")).toBeVisible();
+
+    await page.getByTitle("已激活（参与对话上下文）").uncheck();
+    await expect(page.getByTitle("已停用（不参与对话）")).toBeVisible({
+      timeout: 15_000,
+    });
+
+    await page.reload({ waitUntil: "domcontentloaded" });
+    await page.getByRole("button", { name: /材料 \(1\)/ }).click();
+    await expect(page.getByText("requirements.md")).toBeVisible({ timeout: 15_000 });
+    await expect(page.getByTitle("已停用（不参与对话）")).toBeVisible();
+    await expect(page.getByText("1 个活跃材料将参与分析")).toHaveCount(0);
+
+    const materialRow = page.locator("div").filter({ hasText: "requirements.md" }).filter({ hasText: "requirements" }).first();
+    await materialRow.hover();
+    await page.getByTitle("删除材料").click();
+    await expect(page.getByText("尚未上传任何材料")).toBeVisible({ timeout: 15_000 });
+    await expect(page.getByRole("button", { name: /材料 \(0\)/ })).toBeVisible();
+    expect(fs.existsSync(materialPath)).toBe(false);
+
+    const workspaceResp = await request.get(`${backendBase}/api/workspaces/${workspaceId}`);
+    expect(workspaceResp.ok()).toBeTruthy();
+    const workspace = (await workspaceResp.json()) as { materials: Array<{ filename: string }> };
+    expect(workspace.materials).toEqual([]);
+  });
+
   test("workspace API returns list", async ({ request }) => {
     const resp = await request.get(`${backendBase}/api/workspaces`);
     expect(resp.ok()).toBeTruthy();
