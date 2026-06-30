@@ -5069,6 +5069,7 @@ def _acceptance_risk_finding_quality_check(
             "invalid_findings": [],
         }
     invalid_findings: list[dict[str, Any]] = []
+    seen_finding_keys: set[str] = set()
     for index, finding in enumerate(raw_findings, start=1):
         if not isinstance(finding, dict):
             invalid_findings.append({
@@ -5079,6 +5080,12 @@ def _acceptance_risk_finding_quality_check(
             })
             continue
         reasons = _risk_finding_quality_reasons(finding, repo_path=repo_path)
+        duplicate_key = _risk_finding_duplicate_key(finding)
+        if duplicate_key:
+            if duplicate_key in seen_finding_keys:
+                reasons.append("duplicate_risk_finding")
+            else:
+                seen_finding_keys.add(duplicate_key)
         if reasons:
             invalid_findings.append({
                 "index": index,
@@ -5114,6 +5121,28 @@ _SFMEA_TEXT_FIELDS = (
     "mitigation",
 )
 _SFMEA_SCORE_FIELDS = ("severity_score", "occurrence_score", "detection_score", "rpn")
+
+
+def _risk_finding_duplicate_key(finding: dict[str, Any]) -> str:
+    parts = [
+        str(finding.get("file_path") or finding.get("path") or ""),
+        str(finding.get("function") or finding.get("symbol") or ""),
+        str(finding.get("failure_mode") or ""),
+        str(finding.get("cause") or ""),
+        str(finding.get("effect") or ""),
+        str(finding.get("detection") or ""),
+        str(finding.get("mitigation") or ""),
+        str(_safe_int(finding.get("severity_score"))),
+        str(_safe_int(finding.get("occurrence_score"))),
+        str(_safe_int(finding.get("detection_score"))),
+    ]
+    normalized = [
+        re.sub(r"\s+", " ", re.sub(r"[^a-z0-9/]+", " ", str(part).lower())).strip()
+        for part in parts
+    ]
+    if not any(normalized):
+        return ""
+    return "|".join(normalized)
 
 
 def _risk_finding_quality_reasons(finding: dict[str, Any], *, repo_path: str) -> list[str]:
