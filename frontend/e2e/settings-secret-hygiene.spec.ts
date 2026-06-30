@@ -64,6 +64,42 @@ test("settings LLM key stays masked and is not rendered after save/edit", async 
   await expectBrowserStorageNotToContain(page, secret);
 });
 
+test("settings active chat model selection persists after reload", async ({ page }) => {
+  const configName = `ui-active-model-${Date.now()}`;
+  const modelName = `deepseek-active-${Date.now()}`;
+
+  await page.goto("/settings", { waitUntil: "domcontentloaded" });
+  await page.getByRole("button", { name: /可选：内置模型与 RAG 检索/ }).click();
+  await page.getByRole("button", { name: "新增" }).click();
+
+  const form = page.locator("form").filter({ hasText: "新增 LLM 配置" });
+  await form.getByPlaceholder("如：Claude / GPT-4o").fill(configName);
+  await form.getByPlaceholder("https://api.openai.com/v1").fill("https://llm.example/v1");
+  await form.getByPlaceholder(/sk-|Ollama/).fill(`sk-active-model-${Date.now()}`);
+  await form.getByRole("textbox", { name: "gpt-4o", exact: true }).fill(modelName);
+  await form.getByRole("button", { name: "保存配置" }).click();
+
+  const activeModelSelect = page.locator("select").filter({
+    has: page.locator("option", { hasText: configName }),
+  });
+  await expect(activeModelSelect).toBeEnabled({ timeout: 15_000 });
+  await activeModelSelect.selectOption({ label: `${configName} (${modelName})` });
+  await expect(activeModelSelect).toHaveValue(/.+/);
+  const selectedModelId = await activeModelSelect.inputValue();
+
+  const savedRow = page.locator("div", { hasText: configName }).filter({ hasText: modelName }).first();
+  await expect(savedRow).toContainText("活跃", { timeout: 15_000 });
+
+  await page.reload({ waitUntil: "domcontentloaded" });
+  await page.getByRole("button", { name: /可选：内置模型与 RAG 检索/ }).click();
+  const reloadedSelect = page.locator("select").filter({
+    has: page.locator("option", { hasText: configName }),
+  });
+  await expect(reloadedSelect).toHaveValue(selectedModelId);
+  const reloadedRow = page.locator("div", { hasText: configName }).filter({ hasText: modelName }).first();
+  await expect(reloadedRow).toContainText("活跃", { timeout: 15_000 });
+});
+
 test("settings agent runtime env values are not rendered after save", async ({ page }) => {
   const secret = `sk-agent-ui-${Date.now()}`;
   const runtimeName = `ui-agent-secret-${Date.now()}`;
