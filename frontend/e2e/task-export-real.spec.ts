@@ -160,6 +160,75 @@ test("task export format selection downloads redacted XML through the UI", async
   expect(exported).not.toMatch(/(?:api[-_]?key|token|secret|password)=['"]?(?!&lt;redacted&gt;)[^\s"'<]+/i);
 });
 
+test("task export prevents duplicate downloads from a real double click", async ({
+  page,
+  request,
+}, testInfo) => {
+  test.setTimeout(60_000);
+  test.skip(!process.env.CODETALK_PLAYWRIGHT_DATA_DIR, "requires explicit Playwright data dir");
+  const dataDir = process.env.CODETALK_PLAYWRIGHT_DATA_DIR!;
+  const repo = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), "codetalk_task_export_double_")));
+  fs.writeFileSync(path.join(repo, "README.md"), "task export double click e2e\n", "utf8");
+
+  const createResp = await request.post(`${backendBase}/api/tasks`, {
+    data: {
+      name: `task_export_double_${Date.now()}`,
+      repo_path: repo,
+      tools: [],
+      analysis_focus: "Task export double click",
+      prompt_content: "Prepare a task whose export should not duplicate.",
+    },
+  });
+  expect(createResp.status()).toBe(201);
+  const task = (await createResp.json()) as { id: string };
+
+  execFileSync(
+    "python3",
+    [
+      "-c",
+      [
+        "import pathlib, sys",
+        "data_dir, task_id = sys.argv[1:]",
+        "output_dir = pathlib.Path(data_dir) / 'outputs' / task_id",
+        "output_dir.mkdir(parents=True, exist_ok=True)",
+        "(output_dir / 'double-click-safe-report.md').write_text('# Double Export\\ntask export double click complete', encoding='utf-8')",
+      ].join("\n"),
+      dataDir,
+      task.id,
+    ],
+    { stdio: "pipe" },
+  );
+
+  await page.goto(`/tasks/${task.id}/export`, { waitUntil: "domcontentloaded" });
+  await expect(page.getByRole("heading", { name: "导出结果" })).toBeVisible();
+
+  const downloads: string[] = [];
+  page.on("download", (item) => downloads.push(item.suggestedFilename()));
+
+  const downloadPromise = page.waitForEvent("download");
+  await page.getByRole("button", { name: /下载 Markdown 文件/ }).hover();
+  await page.getByRole("button", { name: /下载 Markdown 文件/ }).dblclick();
+  const download = await downloadPromise;
+  expect(download.suggestedFilename()).toMatch(/^codetalk-.*\.zip$/);
+  const zipPath = testInfo.outputPath("task_export_double_click.zip");
+  await download.saveAs(zipPath);
+  const exported = execFileSync(
+    "python3",
+    [
+      "-c",
+      [
+        "import sys, zipfile",
+        "with zipfile.ZipFile(sys.argv[1]) as zf:",
+        "    print(zf.read('double-click-safe-report.md').decode('utf-8'))",
+      ].join("\n"),
+      zipPath,
+    ],
+    { encoding: "utf8" },
+  );
+  expect(exported).toContain("task export double click complete");
+  await expect.poll(() => downloads.length).toBe(1);
+});
+
 test("task report page redacts persisted markdown report secrets through the UI", async ({
   page,
   request,

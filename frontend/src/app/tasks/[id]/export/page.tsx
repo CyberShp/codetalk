@@ -1,6 +1,6 @@
 "use client";
 
-import { useState } from "react";
+import { useRef, useState } from "react";
 import { useParams } from "next/navigation";
 import Link from "next/link";
 import {
@@ -46,10 +46,19 @@ export default function ExportPage() {
   const params = useParams<{ id: string }>();
   const taskId = params.id;
   const [selectedFormat, setSelectedFormat] = useState<ExportFormat>("md");
+  const [downloading, setDownloading] = useState(false);
+  const downloadingRef = useRef(false);
 
   const handleDownload = () => {
+    if (downloadingRef.current) return;
+    downloadingRef.current = true;
+    setDownloading(true);
     const url = api.tasks.exportUrl(taskId, selectedFormat);
     window.open(url, "_blank");
+    window.setTimeout(() => {
+      downloadingRef.current = false;
+      setDownloading(false);
+    }, 1000);
   };
 
   return (
@@ -115,7 +124,8 @@ export default function ExportPage() {
 
       <button
         onClick={handleDownload}
-        className="w-full flex items-center justify-center gap-2 px-4 py-3 bg-primary text-on-primary font-medium rounded-lg hover:opacity-90 transition-opacity"
+        disabled={downloading}
+        className="w-full flex items-center justify-center gap-2 px-4 py-3 bg-primary text-on-primary font-medium rounded-lg hover:opacity-90 transition-opacity disabled:opacity-50"
       >
         <Download size={16} />
         下载 {FORMATS.find((f) => f.id === selectedFormat)?.label} 文件
