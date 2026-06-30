@@ -102,3 +102,85 @@ test("installs a workflow preset and validates required inputs through the real 
 
   await expect(page.getByText(repo).first()).toBeVisible();
 });
+
+test("executes resource leak hunt and previews materialized artifacts through the real workbench UI", async ({
+  page,
+}) => {
+  const repo = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), "codetalk-risk-hunt-")));
+  fs.mkdirSync(path.join(repo, "lib", "bdev"), { recursive: true });
+  fs.mkdirSync(path.join(repo, "test", "bdev"), { recursive: true });
+  fs.writeFileSync(
+    path.join(repo, "lib", "bdev", "cleanup.c"),
+    [
+      "#include <stdlib.h>",
+      "void *bdev_create(void) {",
+      "    void *buf = malloc(128);",
+      "    if (!buf) { return NULL; }",
+      "    if (spdk_bdev_open_ext(\"Malloc0\", true, NULL, NULL, NULL) != 0) { goto err; }",
+      "    free(buf);",
+      "    return buf;",
+      "err:",
+      "    return NULL;",
+      "}",
+      "",
+    ].join("\n"),
+    "utf8",
+  );
+
+  await page.goto("/workbench", { waitUntil: "domcontentloaded" });
+  await page.getByRole("button", { name: "工作流设计" }).hover();
+  await page.getByRole("button", { name: "工作流设计" }).click();
+  await page.getByLabel("工作流预设").selectOption("resource_leak_hunt");
+  await page.getByRole("button", { name: "安装预设" }).hover();
+  await page.getByRole("button", { name: "安装预设" }).click();
+  await expect(page.getByText("预设已安装: 资源/异常路径排查工作流")).toBeVisible({
+    timeout: 15_000,
+  });
+
+  await page.getByRole("button", { name: "运行驾驶舱" }).hover();
+  await page.getByRole("button", { name: "运行驾驶舱" }).click();
+  await page.getByLabel("Repo path").fill(repo);
+  await page.getByLabel("Inputs JSON").fill(
+    JSON.stringify(
+      {
+        target_scope: "lib/bdev cleanup",
+        risk_pattern: "cleanup",
+        repo_path: repo,
+      },
+      null,
+      2,
+    ),
+  );
+
+  await page.getByRole("button", { name: "准备运行" }).hover();
+  await page.getByRole("button", { name: "准备运行" }).click();
+  await expect(page.getByText(/Task run prepared:/)).toBeVisible({ timeout: 15_000 });
+  await expect(page.getByRole("button", { name: "执行工作流" })).toBeEnabled({
+    timeout: 15_000,
+  });
+  await page.getByRole("button", { name: "执行工作流" }).hover();
+  await page.getByRole("button", { name: "执行工作流" }).click();
+  await expect(page.getByText(/Workflow execution completed:/)).toBeVisible({
+    timeout: 30_000,
+  });
+  await expect(page.getByText(/工作流: completed/)).toBeVisible();
+
+  const riskArtifact = page
+    .getByRole("button")
+    .filter({ hasText: /risk_findings\.json/ })
+    .first();
+  await expect(riskArtifact).toBeVisible({ timeout: 15_000 });
+  await riskArtifact.hover();
+  await riskArtifact.click();
+  await expect(page.getByText("risk_findings.json").first()).toBeVisible();
+  await expect(page.getByText("local-resource-scan").first()).toBeVisible();
+  await expect(page.getByText("lib/bdev/cleanup.c").first()).toBeVisible();
+  await expect(page.getByText(/failure_mode/).first()).toBeVisible();
+  await expect(page.getByText(/test\/bdev/).first()).toBeVisible();
+
+  const testHooksArtifact = page
+    .getByRole("button")
+    .filter({ hasText: /test_hooks\.json/ })
+    .first();
+  await expect(testHooksArtifact).toBeVisible();
+});
