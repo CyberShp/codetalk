@@ -1949,6 +1949,7 @@ export default function AgentWorkbenchPage() {
   const [activeWorkbenchView, setActiveWorkbenchView] = useState<WorkbenchView>("run");
   const [loading, setLoading] = useState(false);
   const [busyAction, setBusyAction] = useState<string | null>(null);
+  const busyActionRef = useRef<string | null>(null);
   const [message, setMessage] = useState<string | null>(null);
   const [openingConversation, setOpeningConversation] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -2114,6 +2115,8 @@ export default function AgentWorkbenchPage() {
   }, [loadWorkflows]);
 
   async function runAction(name: string, action: () => Promise<void>) {
+    if (busyActionRef.current) return;
+    busyActionRef.current = name;
     setBusyAction(name);
     setError(null);
     setMessage(null);
@@ -2122,7 +2125,10 @@ export default function AgentWorkbenchPage() {
     } catch (err: unknown) {
       setError(err instanceof Error ? err.message : "Action failed");
     } finally {
-      setBusyAction(null);
+      if (busyActionRef.current === name) {
+        busyActionRef.current = null;
+        setBusyAction(null);
+      }
     }
   }
 

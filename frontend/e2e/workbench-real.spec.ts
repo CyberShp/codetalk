@@ -250,6 +250,61 @@ test("locks conflicting task run actions while a real prepare request is in flig
   await expect.poll(() => prepareRequests.length).toBe(1);
 });
 
+test("prevents duplicate create-and-run task runs from a real double click", async ({
+  page,
+}) => {
+  const repo = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), "codetalk-create-run-")));
+  fs.mkdirSync(path.join(repo, "lib", "nvmf"), { recursive: true });
+  fs.writeFileSync(
+    path.join(repo, "lib", "nvmf", "create_run.c"),
+    "int nvmf_create_run_probe(void) { return 0; }\n",
+    "utf8",
+  );
+
+  await page.goto("/workbench", { waitUntil: "domcontentloaded" });
+  await page.getByRole("button", { name: "工作流设计" }).hover();
+  await page.getByRole("button", { name: "工作流设计" }).click();
+  await page.getByLabel("工作流预设").selectOption("module_analysis");
+  await page.getByRole("button", { name: "安装预设" }).hover();
+  await page.getByRole("button", { name: "安装预设" }).click();
+  await expect(page.getByText("预设已安装: 模块分析工作流")).toBeVisible({
+    timeout: 15_000,
+  });
+
+  await page.getByRole("button", { name: "运行驾驶舱" }).hover();
+  await page.getByRole("button", { name: "运行驾驶舱" }).click();
+  await page.getByLabel("Repo path").fill(repo);
+  await page.getByLabel("Workflow input repo_path").fill(repo);
+  await page.getByLabel("Workflow input analysis_object").fill("lib/nvmf create run");
+
+  const runRequests: string[] = [];
+  page.on("request", (request) => {
+    if (
+      request.method() === "POST" &&
+      new URL(request.url()).pathname === "/api/workbench/task-runs/run"
+    ) {
+      runRequests.push(request.url());
+    }
+  });
+  const runRequest = page.waitForRequest(
+    (request) =>
+      request.method() === "POST" &&
+      new URL(request.url()).pathname === "/api/workbench/task-runs/run",
+  );
+
+  await page.getByRole("button", { name: "创建并运行" }).hover();
+  await page.getByRole("button", { name: "创建并运行" }).dblclick();
+  await runRequest;
+
+  await expect(page.getByRole("button", { name: "创建并运行" })).toBeDisabled();
+  await expect(page.getByRole("button", { name: "准备运行" })).toBeDisabled();
+  await expect(page.getByRole("button", { name: "执行工作流" })).toBeDisabled();
+  await expect(page.getByRole("button", { name: "审计产物" })).toBeDisabled();
+
+  await expect(page.getByText(/Task run completed:/)).toBeVisible({ timeout: 30_000 });
+  await expect.poll(() => runRequests.length).toBe(1);
+});
+
 test("locks artifact previews while a prepared workflow is executing", async ({
   page,
 }) => {
