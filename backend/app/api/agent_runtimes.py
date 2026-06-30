@@ -77,19 +77,25 @@ class AgentRuntimeResponse(AgentRuntimeBase):
     updated_at: str
 
 
+def _redact_runtime_response(runtime: dict[str, Any]) -> dict[str, Any]:
+    body = dict(runtime)
+    body["env"] = {str(key): "<redacted>" for key in (runtime.get("env") or {})}
+    return body
+
+
 def _store() -> AgentRuntimeStore:
     return AgentRuntimeStore()
 
 
 @router.get("")
 async def list_agent_runtimes(enabled: bool | None = Query(default=None)) -> dict[str, Any]:
-    return {"items": await _store().list_runtimes(enabled=enabled)}
+    return {"items": [_redact_runtime_response(item) for item in await _store().list_runtimes(enabled=enabled)]}
 
 
 @router.post("", response_model=AgentRuntimeResponse, status_code=status.HTTP_201_CREATED)
 async def create_agent_runtime(body: AgentRuntimeCreate) -> dict[str, Any]:
     try:
-        return await _store().create_runtime(body.model_dump())
+        return _redact_runtime_response(await _store().create_runtime(body.model_dump()))
     except ValueError as exc:
         raise HTTPException(status_code=422, detail=str(exc))
 
@@ -97,7 +103,7 @@ async def create_agent_runtime(body: AgentRuntimeCreate) -> dict[str, Any]:
 @router.get("/{runtime_id}", response_model=AgentRuntimeResponse)
 async def get_agent_runtime(runtime_id: str) -> dict[str, Any]:
     try:
-        return await _store().get_runtime(runtime_id)
+        return _redact_runtime_response(await _store().get_runtime(runtime_id))
     except KeyError:
         raise HTTPException(status_code=404, detail="Agent runtime not found")
 
@@ -105,7 +111,9 @@ async def get_agent_runtime(runtime_id: str) -> dict[str, Any]:
 @router.put("/{runtime_id}", response_model=AgentRuntimeResponse)
 async def update_agent_runtime(runtime_id: str, body: AgentRuntimeUpdate) -> dict[str, Any]:
     try:
-        return await _store().update_runtime(runtime_id, body.model_dump(exclude_none=True))
+        return _redact_runtime_response(
+            await _store().update_runtime(runtime_id, body.model_dump(exclude_none=True))
+        )
     except KeyError:
         raise HTTPException(status_code=404, detail="Agent runtime not found")
     except ValueError as exc:

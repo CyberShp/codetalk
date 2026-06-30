@@ -75,6 +75,48 @@ class TestAgentRuntimes:
             assert listed.status_code == 200
             assert listed.json()["items"][0]["name"] == "Windows Claude Code"
 
+    async def test_agent_runtime_api_redacts_env_values_but_runtime_keeps_them(self, sqlite_db):
+        app = _test_app(sqlite_db)
+        secret = "agent-runtime-secret-value"
+        async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+            created = await client.post(
+                "/api/settings/agent-runtimes",
+                json={
+                    "name": "Secret Agent",
+                    "command": sys.executable,
+                    "args": ["-V"],
+                    "prompt_transport": "stdin",
+                    "output_mode": "plain",
+                    "working_dir_mode": "project",
+                    "env": {
+                        "AGENT_TOKEN": secret,
+                        "SAFE_FLAG": "enabled",
+                    },
+                },
+            )
+            assert created.status_code == 201
+            runtime_id = created.json()["id"]
+            assert created.json()["env"] == {
+                "AGENT_TOKEN": "<redacted>",
+                "SAFE_FLAG": "<redacted>",
+            }
+            assert secret not in json.dumps(created.json())
+
+            listed = await client.get("/api/settings/agent-runtimes")
+            assert listed.status_code == 200
+            assert listed.json()["items"][0]["env"]["AGENT_TOKEN"] == "<redacted>"
+            assert secret not in json.dumps(listed.json())
+
+            loaded = await client.get(f"/api/settings/agent-runtimes/{runtime_id}")
+            assert loaded.status_code == 200
+            assert loaded.json()["env"]["AGENT_TOKEN"] == "<redacted>"
+            assert secret not in json.dumps(loaded.json())
+
+        from app.services.agent_runtimes import AgentRuntimeStore
+
+        stored = await AgentRuntimeStore(sqlite_db).get_runtime(runtime_id)
+        assert stored["env"]["AGENT_TOKEN"] == secret
+
     async def test_ai_thread_uses_agent_runtime_without_active_llm(self, sqlite_db, monkeypatch):
         ws_id = await _seed_workspace(sqlite_db)
         app = _test_app(sqlite_db)

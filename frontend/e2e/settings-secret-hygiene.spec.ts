@@ -36,3 +36,31 @@ test("settings LLM key stays masked and is not rendered after save/edit", async 
   await expect(reopenedApiKeyInput).toHaveValue("");
   await expect(page.locator("body")).not.toContainText(secret);
 });
+
+test("settings agent runtime env values are not rendered after save", async ({ page }) => {
+  const secret = `sk-agent-ui-${Date.now()}`;
+  const runtimeName = `ui-agent-secret-${Date.now()}`;
+
+  await page.goto("/settings", { waitUntil: "domcontentloaded" });
+  await page.getByPlaceholder("例如 Claude Code").fill(runtimeName);
+  await page.getByPlaceholder("ccr / opencode / nga").fill("python3");
+  await page.getByPlaceholder("code 或 run").fill("--version");
+  await page.getByRole("button", { name: "高级选项" }).click();
+  await page.getByPlaceholder(/HTTPS_PROXY/).fill(
+    JSON.stringify(
+      {
+        AGENT_TOKEN: secret,
+        SAFE_FLAG: "enabled",
+      },
+      null,
+      2,
+    ),
+  );
+
+  await page.getByRole("button", { name: "保存" }).click();
+
+  const savedRuntime = page.locator("div", { hasText: runtimeName }).filter({ hasText: "python3 --version" }).first();
+  await expect(savedRuntime).toBeVisible();
+  await savedRuntime.getByRole("button", { name: "测试" }).hover();
+  await expect(page.locator("body")).not.toContainText(secret);
+});
