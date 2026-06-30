@@ -27,6 +27,80 @@ test("home hero speaks to the broader AI testing workbench", async ({ page }) =>
   await expect(page.getByLabel("AI 测试中枢视觉面板").getByText("证据报告")).toBeVisible();
 });
 
+test("home current UI renders against the real backend without legacy navigation", async ({ page }) => {
+  await page.setViewportSize({ width: 1440, height: 900 });
+  await page.goto("/", { waitUntil: "domcontentloaded" });
+
+  const nav = page.getByRole("navigation", { name: "CodeTalk 主导航" });
+  await expect(page.getByText(/Unhandled Runtime Error|Build Error|Application error/i)).toHaveCount(0);
+  await expect(page.getByText("AI 测试协同工作台")).toBeVisible();
+  await expect(page.getByRole("heading", { name: /把代码理解\s*变成测试行动/ })).toBeVisible();
+  await expect(page.locator(".ct-home-topbar")).toBeVisible();
+  await expect(page.locator(".ct-home-hero")).toBeVisible();
+  await expect(page.getByLabel("AI 测试中枢视觉面板")).toBeVisible();
+
+  for (const label of ["工作台", "工作空间", "智能体编排", "AI 线程", "覆盖率分析", "设置"]) {
+    await expect(nav.getByRole("link", { name: label })).toBeVisible();
+  }
+  for (const removedLabel of ["DeepWiki", "历史任务", "工具状态"]) {
+    await expect(nav.getByRole("link", { name: removedLabel })).toHaveCount(0);
+  }
+
+  const collapseButton = page.getByRole("button", { name: "折叠 CodeTalk 导航" });
+  await collapseButton.hover();
+  await collapseButton.click();
+  await expect(page.locator("html")).toHaveAttribute("data-nav-collapsed", "true");
+  await page.getByRole("button", { name: "展开 CodeTalk 导航" }).click();
+  await expect(page.locator("html")).toHaveAttribute("data-nav-collapsed", "false");
+
+  const layout = await page.evaluate(() => {
+    const body = getComputedStyle(document.body);
+    const nodes = Array.from(
+      document.querySelectorAll(
+        ".ct-home-topbar h1, .ct-home-topbar p, .ct-home-topbar a, .ct-home-hero h2, .ct-home-primary-action, .ct-home-secondary-action",
+      ),
+    ) as HTMLElement[];
+    const boxes = nodes.map((node, index) => {
+      const rect = node.getBoundingClientRect();
+      return {
+        index,
+        text: (node.innerText || node.getAttribute("aria-label") || node.tagName).trim(),
+        left: rect.left,
+        top: rect.top,
+        right: rect.right,
+        bottom: rect.bottom,
+        width: rect.width,
+        height: rect.height,
+      };
+    }).filter((box) => box.width > 8 && box.height > 8);
+    const overlaps: string[] = [];
+    for (let i = 0; i < boxes.length; i += 1) {
+      for (let j = i + 1; j < boxes.length; j += 1) {
+        const a = boxes[i];
+        const b = boxes[j];
+        const x = Math.max(0, Math.min(a.right, b.right) - Math.max(a.left, b.left));
+        const y = Math.max(0, Math.min(a.bottom, b.bottom) - Math.max(a.top, b.top));
+        if (x * y > 20) overlaps.push(`${a.text || a.index} overlaps ${b.text || b.index}`);
+      }
+    }
+    return {
+      bodyBackground: body.backgroundColor,
+      documentWidth: document.documentElement.scrollWidth,
+      viewportWidth: window.innerWidth,
+      overlaps,
+    };
+  });
+
+  expect(luminance(layout.bodyBackground)).toBeGreaterThan(230);
+  expect(layout.documentWidth).toBeLessThanOrEqual(layout.viewportWidth + 1);
+  expect(layout.overlaps).toEqual([]);
+
+  await page.getByRole("link", { name: "进入智能体编排" }).hover();
+  await page.getByRole("link", { name: "进入智能体编排" }).click();
+  await expect(page).toHaveURL(/\/workbench$/);
+  await expect(page.getByRole("heading", { name: "智能体编排台" })).toBeVisible();
+});
+
 test("home desktop hero and topbar keep the optimized light layout", async ({ page }) => {
   await mockEmptyWorkspaceList(page);
   await page.setViewportSize({ width: 1440, height: 900 });
