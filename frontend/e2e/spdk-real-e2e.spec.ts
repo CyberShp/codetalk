@@ -591,8 +591,17 @@ const TEXT_ARTIFACT_EXTENSIONS = new Set([
   ".yml",
 ]);
 
+const TEXT_ARTIFACT_BASENAMES = new Set([
+  ".env",
+  ".env.local",
+  "config",
+  "credentials",
+  "env",
+]);
+
 function isTextArtifactFile(name: string) {
-  return TEXT_ARTIFACT_EXTENSIONS.has(path.extname(name).toLowerCase());
+  const lowerName = path.basename(name).toLowerCase();
+  return TEXT_ARTIFACT_EXTENSIONS.has(path.extname(lowerName)) || TEXT_ARTIFACT_BASENAMES.has(lowerName);
 }
 
 function textArtifactSecretLeaks(secret: string) {
@@ -682,6 +691,8 @@ function verifyTextArtifactExtensionScanner() {
   const tempDir = fs.mkdtempSync(path.join(ARTIFACT_DIR, "text-artifact-extension-scan-"));
   const secret = "sk-extension-format-secret";
   const files = [
+    ".env",
+    "config",
     "diagnostic.html",
     "diagnostic.yaml",
     "diagnostic.yml",
