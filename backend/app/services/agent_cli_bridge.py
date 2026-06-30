@@ -279,13 +279,25 @@ def _looks_like_protocol_noise(event: dict[str, Any]) -> bool:
 
 def _diagnostic_event_text(event: dict[str, Any]) -> str | None:
     event_type = str(event.get("type") or event.get("event") or event.get("kind") or "").strip().lower()
-    if event_type not in {"status", "diagnostic", "thinking", "reasoning", "trace"}:
+    if event_type not in {"status", "diagnostic", "thinking", "reasoning", "trace", "error"}:
         return None
-    text = _event_text(event)
+    text = _event_error_text(event) if event_type == "error" else _event_text(event)
     if not text:
         return ""
     prefix = "THINKING" if event_type == "reasoning" else event_type.upper()
     return f"{prefix}: {_clean_agent_text(text)}"
+
+
+def _event_error_text(event: dict[str, Any]) -> str | None:
+    error = event.get("error")
+    if isinstance(error, str):
+        return error
+    if isinstance(error, dict):
+        for key in ("message", "detail", "content", "text"):
+            value = error.get(key)
+            if isinstance(value, str):
+                return value
+    return _event_text(event)
 
 
 def _probe_args(runtime: dict[str, Any], args: list[str]) -> list[str]:

@@ -825,7 +825,7 @@ def _agent_output_segments(chunk: str) -> list[tuple[str, str]]:
 
 def _agent_diagnostic_text(text: str) -> str:
     lowered = text.lower()
-    for prefix in ("status:", "diagnostic:", "thinking:", "trace:"):
+    for prefix in ("status:", "diagnostic:", "thinking:", "trace:", "error:"):
         if lowered.startswith(prefix):
             return redact_agent_diagnostic_text(text[len(prefix):].strip())
     return ""
