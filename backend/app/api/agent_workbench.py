@@ -5157,6 +5157,9 @@ def _risk_finding_quality_reasons(finding: dict[str, Any], *, repo_path: str) ->
     ]
     if missing_text or missing_scores:
         reasons.append("missing_sfmea_fields")
+    score_explanation = str(finding.get("score_explanation") or "").strip()
+    if not score_explanation:
+        reasons.append("missing_score_explanation")
     severity_score = _safe_int(finding.get("severity_score"))
     occurrence_score = _safe_int(finding.get("occurrence_score"))
     detection_score = _safe_int(finding.get("detection_score"))
