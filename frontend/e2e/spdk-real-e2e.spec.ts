@@ -1,5 +1,6 @@
 import { expect, test, type Locator, type Page } from "@playwright/test";
 import { spawn, spawnSync, type ChildProcess } from "node:child_process";
+import crypto from "node:crypto";
 import fs from "node:fs";
 import net from "node:net";
 import os from "node:os";
@@ -162,6 +163,54 @@ function writeText(name: string, payload: string) {
   fs.writeFileSync(path.join(ARTIFACT_DIR, name), payload);
 }
 
+function artifactKind(relativePath: string) {
+  const extension = path.extname(relativePath).toLowerCase();
+  if (extension === ".json") return "json";
+  if (extension === ".md") return "markdown";
+  if (extension === ".png") return "screenshot";
+  if (extension === ".csv") return "csv";
+  if (extension === ".log") return "log";
+  if (extension === ".txt") return "text";
+  return extension.replace(/^\./, "") || "unknown";
+}
+
+function collectArtifactFiles(dir = ARTIFACT_DIR, root = ARTIFACT_DIR): Array<{
+  path: string;
+  kind: string;
+  size_bytes: number;
+  sha256: string;
+}> {
+  if (!fs.existsSync(dir)) return [];
+  return fs.readdirSync(dir, { withFileTypes: true }).flatMap((entry) => {
+    const fullPath = path.join(dir, entry.name);
+    if (entry.isDirectory()) return collectArtifactFiles(fullPath, root);
+    if (!entry.isFile()) return [];
+    const relativePath = path.relative(root, fullPath).split(path.sep).join("/");
+    if (relativePath === "artifact_manifest.json") return [];
+    const content = fs.readFileSync(fullPath);
+    return [{
+      path: relativePath,
+      kind: artifactKind(relativePath),
+      size_bytes: content.byteLength,
+      sha256: crypto.createHash("sha256").update(content).digest("hex"),
+    }];
+  });
+}
+
+function writeArtifactManifest() {
+  const files = collectArtifactFiles().sort((a, b) => a.path.localeCompare(b.path));
+  const manifest = {
+    run_id: RUN_ID,
+    artifact_dir: ARTIFACT_DIR,
+    generated_at: new Date().toISOString(),
+    file_count: files.length,
+    total_size_bytes: files.reduce((sum, file) => sum + file.size_bytes, 0),
+    files,
+  };
+  writeJson("artifact_manifest.json", manifest);
+  return manifest;
+}
+
 function redactReportText(value: string) {
   return value
     .replace(/(\b(?:api[-_]?key|token|access[-_]?token|secret|password)=)(['"]?)([^\s"']+)(['"]?)/gi, "$1$2<redacted>$4")
@@ -247,6 +296,7 @@ function writeAcceptanceReports() {
   writeJson("acceptance_matrix.final.json", report);
   writeJson("failure_report.json", report.failure_report);
   writeText("failure_report.md", formatFailureReportMarkdown(report));
+  writeArtifactManifest();
   return report;
 }
 
@@ -2799,6 +2849,7 @@ test("matrix accounting: every planned case has an explicit status", async () =>
   const acceptanceMatrixPath = path.join(ARTIFACT_DIR, "acceptance_matrix.final.json");
   const failureReportPath = path.join(ARTIFACT_DIR, "failure_report.json");
   const failureReportMarkdownPath = path.join(ARTIFACT_DIR, "failure_report.md");
+  const artifactManifestPath = path.join(ARTIFACT_DIR, "artifact_manifest.json");
   const failureReport = JSON.parse(fs.readFileSync(failureReportPath, "utf8")) as {
     total_problem_cases: number;
     fail_count: number;
@@ -2809,6 +2860,11 @@ test("matrix accounting: every planned case has an explicit status", async () =>
   const failureReportJsonText = fs.readFileSync(failureReportPath, "utf8");
   const acceptanceMatrixJsonText = fs.readFileSync(acceptanceMatrixPath, "utf8");
   const failureReportMarkdown = fs.readFileSync(failureReportMarkdownPath, "utf8");
+  const artifactManifest = JSON.parse(fs.readFileSync(artifactManifestPath, "utf8")) as {
+    file_count: number;
+    total_size_bytes: number;
+    files: Array<{ path: string; kind: string; size_bytes: number; sha256: string }>;
+  };
   expect(report.failure_report.total_problem_cases).toBe(failed.length + blocked.length + unresolved.length);
   expect(failureReport.total_problem_cases).toBe(report.failure_report.total_problem_cases);
   expect(failureReport.fail_count).toBe(failed.length);
@@ -2827,6 +2883,20 @@ test("matrix accounting: every planned case has an explicit status", async () =>
   expect(acceptanceMatrixJsonText).not.toMatch(/\bsk-[A-Za-z0-9_-]{12,}\b/);
   expect(acceptanceMatrixJsonText).not.toMatch(/Authorization:\s*Bearer\s+(?!<redacted>)[^\s"']+/i);
   expect(acceptanceMatrixJsonText).not.toMatch(/\b(?:api[-_]?key|token|access[-_]?token|secret|password)=(?!<redacted>)[^\s"']+/i);
+  expect(artifactManifest.file_count).toBeGreaterThanOrEqual(3);
+  expect(artifactManifest.total_size_bytes).toBeGreaterThan(0);
+  expect(artifactManifest.files).toEqual(
+    expect.arrayContaining([
+      expect.objectContaining({ path: "acceptance_matrix.final.json", kind: "json" }),
+      expect.objectContaining({ path: "failure_report.json", kind: "json" }),
+      expect.objectContaining({ path: "failure_report.md", kind: "markdown" }),
+    ]),
+  );
+  for (const file of artifactManifest.files) {
+    expect(file.path).not.toContain("..");
+    expect(file.size_bytes).toBeGreaterThanOrEqual(0);
+    expect(file.sha256).toMatch(/^[a-f0-9]{64}$/);
+  }
   expect(failureReport.cases).toEqual(
     expect.arrayContaining(
       [...failed, ...blocked, ...unresolved].map((item) =>
