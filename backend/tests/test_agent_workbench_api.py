@@ -3300,6 +3300,7 @@ async def test_workbench_task_run_artifact_content_api_is_safe(workbench_client,
     task_run_id = prepared.json()["task_run_id"]
     task_dir = Path(prepared.json()["artifact_dir"])
     secret = "sk-artifact-secret-value"
+    csv_secret = "artifactCsvSecretLeakValue1234567890"
     (task_dir / "diagnostics.log").write_text(
         f"provider failed --api-key {secret}; token={secret}; Authorization: Bearer {secret}",
         encoding="utf-8",
@@ -3310,7 +3311,7 @@ async def test_workbench_task_run_artifact_content_api_is_safe(workbench_client,
         "diagnostics.jsonl": f'{{"api_key":"{secret}","status":"failed"}}\n',
         "diagnostics.ndjson": f'{{"access_token":"{secret}","status":"failed"}}\n',
         "diagnostics.xml": f"<diagnostic password=\"{secret}\" />",
-        "diagnostics.csv": f"name,secret\nagent,{secret}\n",
+        "diagnostics.csv": f"name,secret,status\nagent,{csv_secret},failed\n",
     }
     for filename, payload in text_diagnostics.items():
         (task_dir / filename).write_text(payload, encoding="utf-8")
@@ -3359,6 +3360,7 @@ async def test_workbench_task_run_artifact_content_api_is_safe(workbench_client,
     for relative_path in text_diagnostics:
         manifest_item = artifacts_by_path[relative_path]
         assert secret not in manifest_item["preview"]
+        assert csv_secret not in manifest_item["preview"]
         assert "<redacted>" in manifest_item["preview"]
         assert manifest_item["preview_redacted"] is True
 
@@ -3370,7 +3372,10 @@ async def test_workbench_task_run_artifact_content_api_is_safe(workbench_client,
         assert content_body["is_text"] is True
         assert content_body["content_redacted"] is True
         assert secret not in content_body["content"]
+        assert csv_secret not in content_body["content"]
         assert "<redacted>" in content_body["content"]
+        if relative_path == "diagnostics.csv":
+            assert "agent,<redacted>,failed" in content_body["content"]
 
 
 async def test_workbench_task_run_artifacts_api_labels_agent_execution_input(

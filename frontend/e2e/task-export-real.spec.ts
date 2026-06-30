@@ -98,6 +98,7 @@ test("task export download redacts structured JSON and YAML secrets through the 
   fs.writeFileSync(path.join(repo, "README.md"), "task structured export redaction e2e\n", "utf8");
   const jsonSecret = "taskUiStructuredJsonTokenLeakValue1234567890";
   const yamlSecret = "taskUiStructuredYamlSecretLeakValue1234567890";
+  const csvSecret = "taskUiStructuredCsvSecretLeakValue1234567890";
 
   const createResp = await request.post(`${backendBase}/api/tasks`, {
     data: {
@@ -117,16 +118,17 @@ test("task export download redacts structured JSON and YAML secrets through the 
       "-c",
       [
         "import json, pathlib, sys",
-        "data_dir, task_id, json_secret, yaml_secret = sys.argv[1:]",
+        "data_dir, task_id, json_secret, yaml_secret, csv_secret = sys.argv[1:]",
         "output_dir = pathlib.Path(data_dir) / 'outputs' / task_id",
         "output_dir.mkdir(parents=True, exist_ok=True)",
-        "content = '\\n'.join(['# Structured Task Report', 'task ui structured export complete', json.dumps({'access_token': json_secret}), f'secret: {yaml_secret}'])",
+        "content = '\\n'.join(['# Structured Task Report', 'task ui structured export complete', json.dumps({'access_token': json_secret}), f'secret: {yaml_secret}', 'name,secret,status', f'agent,{csv_secret},failed'])",
         "(output_dir / 'task-structured-redacted-report.md').write_text(content, encoding='utf-8')",
       ].join("\n"),
       dataDir,
       task.id,
       jsonSecret,
       yamlSecret,
+      csvSecret,
     ],
     { stdio: "pipe" },
   );
@@ -158,8 +160,10 @@ test("task export download redacts structured JSON and YAML secrets through the 
   expect(exported).toContain("task ui structured export complete");
   expect(exported).toContain('"access_token": "<redacted>"');
   expect(exported).toContain("secret: <redacted>");
+  expect(exported).toContain("agent,<redacted>,failed");
   expect(exported).not.toContain(jsonSecret);
   expect(exported).not.toContain(yamlSecret);
+  expect(exported).not.toContain(csvSecret);
 });
 
 test("task export format selection downloads redacted XML through the UI", async ({

@@ -7,6 +7,8 @@ entries, but only locally validated repository paths enter formal evidence.
 from __future__ import annotations
 
 import asyncio
+import csv
+import io
 import json
 import os
 import platform
@@ -649,6 +651,16 @@ _SECRET_BARE_VALUE_RE = re.compile(
 )
 _BEARER_RE = re.compile(r"(?i)(bearer\s+)([A-Za-z0-9._~+/=-]{8,})")
 _OPENAI_STYLE_KEY_RE = re.compile(r"\bsk-[A-Za-z0-9][A-Za-z0-9._-]{6,}\b")
+_SECRET_FIELD_NAMES = frozenset({
+    "apikey",
+    "api_key",
+    "api-key",
+    "token",
+    "access_token",
+    "access-token",
+    "secret",
+    "password",
+})
 
 
 def _redact_agent_diagnostic_text(value: str) -> str:
@@ -659,7 +671,83 @@ def _redact_agent_diagnostic_text(value: str) -> str:
     text = _SECRET_BARE_VALUE_RE.sub(r"\1\2<redacted>\4", text)
     text = _BEARER_RE.sub(r"\1<redacted>", text)
     text = _OPENAI_STYLE_KEY_RE.sub("<redacted>", text)
-    return text
+    return _redact_secret_csv_columns(text)
+
+
+def _redact_secret_csv_columns(value: str) -> str:
+    lines = value.splitlines(keepends=True)
+    if not lines:
+        return value
+    output: list[str] = []
+    secret_columns: set[int] = set()
+    expected_columns = 0
+    in_csv_block = False
+    changed = False
+
+    for raw_line in lines:
+        line = raw_line.rstrip("\r\n")
+        newline = raw_line[len(line):]
+        parsed = _parse_csv_row(line)
+        if parsed is None:
+            secret_columns = set()
+            expected_columns = 0
+            in_csv_block = False
+            output.append(raw_line)
+            continue
+
+        if not in_csv_block:
+            columns = _secret_csv_columns(parsed)
+            if columns:
+                secret_columns = columns
+                expected_columns = len(parsed)
+                in_csv_block = True
+            output.append(raw_line)
+            continue
+
+        if len(parsed) < expected_columns or not line.strip():
+            secret_columns = set()
+            expected_columns = 0
+            in_csv_block = False
+            output.append(raw_line)
+            continue
+
+        row = list(parsed)
+        for index in secret_columns:
+            if index < len(row) and row[index]:
+                row[index] = "<redacted>"
+                changed = True
+        output.append(_format_csv_row(row) + newline)
+
+    return "".join(output) if changed else value
+
+
+def _parse_csv_row(line: str) -> list[str] | None:
+    if "," not in line:
+        return None
+    try:
+        rows = list(csv.reader([line]))
+    except csv.Error:
+        return None
+    if not rows or len(rows[0]) < 2:
+        return None
+    return rows[0]
+
+
+def _secret_csv_columns(row: list[str]) -> set[int]:
+    result: set[int] = set()
+    for index, column in enumerate(row):
+        key = column.strip().strip("\"'").lower()
+        compact = re.sub(r"[^a-z0-9_-]+", "", key)
+        if compact in _SECRET_FIELD_NAMES:
+            result.add(index)
+    return result
+
+
+def _format_csv_row(row: list[str]) -> str:
+    buffer = io.StringIO()
+    writer = csv.writer(buffer, lineterminator="")
+    writer.writerow(row)
+    return buffer.getvalue()
 
 
 def redact_agent_diagnostic_text(value: str) -> str:

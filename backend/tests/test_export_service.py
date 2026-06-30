@@ -99,6 +99,7 @@ class TestExportTaskReports:
         task_id = "job_structured_redacted_export"
         json_secret = "taskReportJsonTokenLeakValue1234567890"
         yaml_secret = "taskReportYamlSecretLeakValue1234567890"
+        csv_secret = "taskReportCsvSecretLeakValue1234567890"
         output_dir = settings.outputs_path / task_id
         output_dir.mkdir(parents=True, exist_ok=True)
         (output_dir / "task-structured-report.md").write_text(
@@ -108,6 +109,8 @@ class TestExportTaskReports:
                     "task structured export complete",
                     f'{{"access_token": "{json_secret}"}}',
                     f"secret: {yaml_secret}",
+                    "name,secret,status",
+                    f"agent,{csv_secret},failed",
                 ]
             ),
             encoding="utf-8",
@@ -121,8 +124,10 @@ class TestExportTaskReports:
         assert "<redacted>" in text
         assert json_secret not in text
         assert yaml_secret not in text
+        assert csv_secret not in text
         assert '"access_token": "<redacted>"' in text
         assert "secret: <redacted>" in text
+        assert "agent,<redacted>,failed" in text
 
 
 # ---------------------------------------------------------------------------
