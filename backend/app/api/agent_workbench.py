@@ -4946,16 +4946,44 @@ def _black_box_case_quality_reasons(case: dict[str, Any]) -> list[str]:
     reasons: list[str] = []
     steps = _semantic_string_list(case.get("steps"))
     expected = _semantic_string_list(case.get("expected"))
+    preconditions = _semantic_string_list(
+        case.get("preconditions")
+        or case.get("precondition")
+        or case.get("setup")
+    )
+    observability = _semantic_string_list(
+        case.get("observability")
+        or case.get("observation_points")
+        or case.get("observed_outputs")
+        or case.get("metrics")
+        or case.get("logs")
+    )
+    diagnostics = _semantic_string_list(
+        case.get("diagnostics")
+        or case.get("failure_diagnostics")
+        or case.get("failure_diagnosis")
+        or case.get("triage")
+        or case.get("debug_hints")
+    )
     if not steps:
         reasons.append("missing_steps")
     if not expected:
         reasons.append("missing_expected")
+    if not preconditions:
+        reasons.append("missing_preconditions")
+    if not observability:
+        reasons.append("missing_observability")
+    if not diagnostics:
+        reasons.append("missing_diagnostics")
     boundary_text = " ".join([
         str(case.get("title") or ""),
         str(case.get("scenario") or ""),
         str(case.get("inputs") or ""),
         " ".join(steps),
         " ".join(expected),
+        " ".join(preconditions),
+        " ".join(observability),
+        " ".join(diagnostics),
     ])
     if _BLACK_BOX_WHITE_BOX_RE.search(boundary_text):
         reasons.append("white_box_boundary")
