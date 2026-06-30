@@ -572,6 +572,38 @@ function textArtifactSecretLeaks(secret: string) {
   return leaks;
 }
 
+function textArtifactPatternLeaks() {
+  const leaks: Array<{ file: string; pattern: string }> = [];
+  const textExtensions = new Set([".json", ".md", ".txt", ".log", ".csv"]);
+  const secretPatterns: Array<{ name: string; regex: RegExp }> = [
+    { name: "sk-token", regex: /\bsk-[A-Za-z0-9_-]{12,}\b/ },
+    { name: "bearer-token", regex: /Authorization:\s*Bearer\s+(?!<redacted>)[^\s"']+/i },
+    { name: "key-value-secret", regex: /\b(?:api[-_]?key|token|access[-_]?token|secret|password)=(?!<redacted>)[^\s"']+/i },
+    { name: "flag-secret", regex: /--?(?:api[-_]?key|token|access[-_]?token|secret|password)(?:\s+|=)(?!<redacted>)[^\s"']+/i },
+  ];
+  const visit = (dir: string) => {
+    if (!fs.existsSync(dir)) return;
+    for (const entry of fs.readdirSync(dir, { withFileTypes: true })) {
+      const fullPath = path.join(dir, entry.name);
+      if (entry.isDirectory()) {
+        visit(fullPath);
+        continue;
+      }
+      if (!entry.isFile() || !textExtensions.has(path.extname(entry.name))) continue;
+      const stat = fs.statSync(fullPath);
+      if (stat.size > 2_000_000) continue;
+      const content = fs.readFileSync(fullPath, "utf8");
+      for (const pattern of secretPatterns) {
+        if (pattern.regex.test(content)) {
+          leaks.push({ file: path.relative(ARTIFACT_DIR, fullPath).split(path.sep).join("/"), pattern: pattern.name });
+        }
+      }
+    }
+  };
+  visit(ARTIFACT_DIR);
+  return leaks;
+}
+
 function expectNoSecretLeak(serialized = "") {
   const secret = process.env.CODETALK_E2E_LLM_API_KEY;
   if (!secret) return;
@@ -2882,6 +2914,7 @@ test("matrix accounting: every planned case has an explicit status", async () =>
     total_size_bytes: number;
     files: Array<{ path: string; kind: string; size_bytes: number; sha256: string }>;
   };
+  expect(textArtifactPatternLeaks()).toEqual([]);
   expect(report.failure_report.total_problem_cases).toBe(failed.length + blocked.length + unresolved.length);
   expect(failureReport.total_problem_cases).toBe(report.failure_report.total_problem_cases);
   expect(failureReport.fail_count).toBe(failed.length);
