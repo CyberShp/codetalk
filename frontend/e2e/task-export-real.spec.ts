@@ -160,6 +160,92 @@ test("task export format selection downloads redacted XML through the UI", async
   expect(exported).not.toMatch(/(?:api[-_]?key|token|secret|password)=['"]?(?!&lt;redacted&gt;)[^\s"'<]+/i);
 });
 
+test("task export format selection downloads redacted Word document through the UI", async ({
+  page,
+  request,
+}, testInfo) => {
+  test.setTimeout(60_000);
+  test.skip(!process.env.CODETALK_PLAYWRIGHT_DATA_DIR, "requires explicit Playwright data dir");
+  const dataDir = process.env.CODETALK_PLAYWRIGHT_DATA_DIR!;
+  const repo = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), "codetalk_docx_export_")));
+  fs.writeFileSync(path.join(repo, "README.md"), "task docx export redaction e2e\n", "utf8");
+  const reportSecret = ["sk", "taskDocxExportLeakValue1234567890"].join("-");
+  const tokenSecret = "taskDocxExportTokenLeakValue1234567890";
+  const bearerSecret = "taskDocxExportBearerLeakValue1234567890";
+
+  const createResp = await request.post(`${backendBase}/api/tasks`, {
+    data: {
+      name: `docx_export_${Date.now()}`,
+      repo_path: repo,
+      tools: [],
+      analysis_focus: "Task DOCX export redaction",
+      prompt_content: "Prepare a task whose Word export must be safe.",
+    },
+  });
+  expect(createResp.status()).toBe(201);
+  const task = (await createResp.json()) as { id: string };
+
+  execFileSync(
+    "python3",
+    [
+      "-c",
+      [
+        "import pathlib, sys",
+        "data_dir, task_id, report_secret, token_secret, bearer_secret = sys.argv[1:]",
+        "output_dir = pathlib.Path(data_dir) / 'outputs' / task_id",
+        "output_dir.mkdir(parents=True, exist_ok=True)",
+        "content = '\\n'.join(['# DOCX Task Report', 'task ui docx export complete', f'model key: {report_secret}', 'runtime ' + 'tok' + f'en={token_secret}', 'Authorization:' + f' Bearer {bearer_secret}'])",
+        "(output_dir / 'docx-safe-report.md').write_text(content, encoding='utf-8')",
+      ].join("\n"),
+      dataDir,
+      task.id,
+      reportSecret,
+      tokenSecret,
+      bearerSecret,
+    ],
+    { stdio: "pipe" },
+  );
+
+  await page.goto(`/tasks/${task.id}/export`, { waitUntil: "domcontentloaded" });
+  await expect(page.getByRole("heading", { name: "导出结果" })).toBeVisible();
+  await page.getByRole("button", { name: "Word 文档 适用于正式报告提交" }).hover();
+  await page.getByRole("button", { name: "Word 文档 适用于正式报告提交" }).click();
+  await expect(page.getByRole("button", { name: /下载 Word 文档 文件/ })).toBeVisible();
+
+  const downloadPromise = page.waitForEvent("download");
+  await page.getByRole("button", { name: /下载 Word 文档 文件/ }).hover();
+  await page.getByRole("button", { name: /下载 Word 文档 文件/ }).click();
+  const download = await downloadPromise;
+  expect(download.suggestedFilename()).toMatch(/^codetalk-.*\.docx$/);
+  const docxPath = testInfo.outputPath("task_report_redacted_export.docx");
+  await download.saveAs(docxPath);
+  const exported = execFileSync(
+    "python3",
+    [
+      "-c",
+      [
+        "import html, re, sys, zipfile",
+        "with zipfile.ZipFile(sys.argv[1]) as zf:",
+        "    xml = zf.read('word/document.xml').decode('utf-8')",
+        "text = html.unescape(re.sub('<[^>]+>', '', xml))",
+        "print(text)",
+      ].join("\n"),
+      docxPath,
+    ],
+    { encoding: "utf8" },
+  );
+
+  expect(exported).toContain("DOCX Task Report");
+  expect(exported).toContain("task ui docx export complete");
+  expect(exported).toContain("<redacted>");
+  expect(exported).not.toContain(reportSecret);
+  expect(exported).not.toContain(tokenSecret);
+  expect(exported).not.toContain(bearerSecret);
+  expect(exported).not.toMatch(/sk-[A-Za-z0-9_-]{12,}/);
+  expect(exported).not.toMatch(/Authorization:\s*Bearer\s+(?!<redacted>)[^\s"']+/i);
+  expect(exported).not.toMatch(/(?:api[-_]?key|token|secret|password)=['"]?(?!<redacted>)[^\s"']+/i);
+});
+
 test("task export prevents duplicate downloads from a real double click", async ({
   page,
   request,
