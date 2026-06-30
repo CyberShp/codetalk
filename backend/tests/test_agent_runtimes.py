@@ -708,3 +708,64 @@ class TestAgentRuntimes:
         assert output.strip() == "最终答案：auto 模式已完成源码分析。"
         assert "47%" not in output
         assert "�" not in output
+
+    async def test_agent_runtime_failure_cleans_stderr_noise(self):
+        from app.services.agent_cli_bridge import AgentRuntimeError, stream_agent_runtime
+
+        agent_code = (
+            "import sys; "
+            "sys.stderr.write('1\\n47%\\n'); "
+            "sys.stderr.buffer.write(bytes([0x80, 0x81, 0x8D, 0x90, 0x9D]) + b'\\n'); "
+            "sys.stderr.write('fatal: agent failed while reading workspace source\\n'); "
+            "sys.stderr.flush(); "
+            "raise SystemExit(7)"
+        )
+
+        with pytest.raises(AgentRuntimeError) as excinfo:
+            async for _ in stream_agent_runtime(
+                runtime={
+                    "command": sys.executable,
+                    "args": ["-c", agent_code],
+                    "prompt_transport": "stdin",
+                    "output_mode": "plain",
+                    "timeout_seconds": 10,
+                },
+                prompt="读取源码",
+                cwd=None,
+            ):
+                pass
+
+        message = str(excinfo.value)
+        assert "fatal: agent failed while reading workspace source" in message
+        assert "47%" not in message
+        assert "�" not in message
+
+    async def test_agent_runtime_failure_preserves_stderr_utf8_split_across_read_boundary(self):
+        from app.services.agent_cli_bridge import AgentRuntimeError, stream_agent_runtime
+
+        agent_code = (
+            "import sys; "
+            "sys.stderr.buffer.write(b'a' * 4095 + bytes([0xe6])); "
+            "sys.stderr.flush(); "
+            "sys.stderr.buffer.write(bytes([0xba, 0x90]) + '码读取失败'.encode('utf-8')); "
+            "sys.stderr.flush(); "
+            "raise SystemExit(7)"
+        )
+
+        with pytest.raises(AgentRuntimeError) as excinfo:
+            async for _ in stream_agent_runtime(
+                runtime={
+                    "command": sys.executable,
+                    "args": ["-c", agent_code],
+                    "prompt_transport": "stdin",
+                    "output_mode": "plain",
+                    "timeout_seconds": 10,
+                },
+                prompt="读取源码",
+                cwd=None,
+            ):
+                pass
+
+        message = str(excinfo.value)
+        assert message.endswith("源码读取失败")
+        assert "�" not in message

@@ -91,11 +91,18 @@ async def stream_agent_runtime(
     async def _drain_stderr() -> None:
         if proc.stderr is None:
             return
+        pending = bytearray()
         while True:
             chunk = await proc.stderr.read(4096)
             if not chunk:
                 break
-            stderr_chunks.append(_decode(chunk))
+            pending.extend(chunk)
+            text = _decode_strict_if_complete(bytes(pending))
+            if text is not None:
+                stderr_chunks.append(text)
+                pending.clear()
+        if pending:
+            stderr_chunks.append(_decode(bytes(pending)))
 
     stderr_task = asyncio.create_task(_drain_stderr())
     try:
