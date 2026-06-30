@@ -178,6 +178,33 @@ function markdownCell(value: unknown) {
     .slice(0, 500);
 }
 
+function sanitizeReportValue(value: unknown, depth = 0): unknown {
+  if (depth > 4) return "[truncated]";
+  if (typeof value === "string") return redactReportText(value).slice(0, 4000);
+  if (typeof value === "number" || typeof value === "boolean" || value == null) return value;
+  if (Array.isArray(value)) {
+    return value.slice(0, 20).map((item) => sanitizeReportValue(item, depth + 1));
+  }
+  if (typeof value === "object") {
+    return Object.fromEntries(
+      Object.entries(value as Record<string, unknown>)
+        .slice(0, 50)
+        .map(([key, item]) => [key, sanitizeReportValue(item, depth + 1)]),
+    );
+  }
+  return String(value);
+}
+
+function sanitizeProblemCaseForReport(item: CaseResult): CaseResult {
+  return {
+    id: item.id,
+    title: item.title,
+    status: item.status,
+    evidence: item.evidence ? redactReportText(item.evidence).slice(0, 4000) : item.evidence,
+    details: item.details === undefined ? undefined : sanitizeReportValue(item.details),
+  };
+}
+
 function acceptanceSummary() {
   return Array.from(results.values()).reduce<Record<CaseStatus, number>>(
     (acc, item) => {
@@ -192,6 +219,7 @@ function buildAcceptanceReport() {
   const cases = Array.from(results.values());
   const summary = acceptanceSummary();
   const problemCases = cases.filter((item) => item.status === "fail" || item.status === "blocked" || item.status === "not_run");
+  const sanitizedProblemCases = problemCases.map(sanitizeProblemCaseForReport);
   return {
     run_id: RUN_ID,
     artifact_dir: ARTIFACT_DIR,
@@ -208,7 +236,7 @@ function buildAcceptanceReport() {
       fail_count: summary.fail,
       blocked_count: summary.blocked,
       not_run_count: summary.not_run,
-      cases: problemCases,
+      cases: sanitizedProblemCases,
     },
   };
 }
@@ -2776,6 +2804,7 @@ test("matrix accounting: every planned case has an explicit status", async () =>
     not_run_count: number;
     cases: CaseResult[];
   };
+  const failureReportJsonText = fs.readFileSync(failureReportPath, "utf8");
   const failureReportMarkdown = fs.readFileSync(failureReportMarkdownPath, "utf8");
   expect(report.failure_report.total_problem_cases).toBe(failed.length + blocked.length + unresolved.length);
   expect(failureReport.total_problem_cases).toBe(report.failure_report.total_problem_cases);
@@ -2789,6 +2818,9 @@ test("matrix accounting: every planned case has an explicit status", async () =>
   expect(failureReportMarkdown).not.toMatch(/\bsk-[A-Za-z0-9_-]{12,}\b/);
   expect(failureReportMarkdown).not.toMatch(/Authorization:\s*Bearer\s+(?!<redacted>)[^\s"']+/i);
   expect(failureReportMarkdown).not.toMatch(/\b(?:api[-_]?key|token|access[-_]?token|secret|password)=(?!<redacted>)[^\s"']+/i);
+  expect(failureReportJsonText).not.toMatch(/\bsk-[A-Za-z0-9_-]{12,}\b/);
+  expect(failureReportJsonText).not.toMatch(/Authorization:\s*Bearer\s+(?!<redacted>)[^\s"']+/i);
+  expect(failureReportJsonText).not.toMatch(/\b(?:api[-_]?key|token|access[-_]?token|secret|password)=(?!<redacted>)[^\s"']+/i);
   expect(failureReport.cases).toEqual(
     expect.arrayContaining(
       [...failed, ...blocked, ...unresolved].map((item) =>
