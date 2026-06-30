@@ -296,6 +296,25 @@ async def test_llm_connection_failure(client):
     assert "refused" in data["message"]
 
 
+async def test_llm_connection_failure_redacts_api_key_from_message(client):
+    secret = "sk-settings-secret-123"
+    payload = {**_LLM, "api_key": secret}
+    with patch(
+        "app.llm.anthropic.AnthropicClient",
+        side_effect=ConnectionError(
+            f"request failed Authorization: Bearer {secret}; api_key={secret}"
+        ),
+    ):
+        response = await client.post("/api/settings/llm/test", json=payload)
+
+    assert response.status_code == 200
+    data = response.json()
+    assert data["success"] is False
+    assert "request failed" in data["message"]
+    assert secret not in data["message"]
+    assert "<redacted>" in data["message"]
+
+
 async def test_llm_connection_unknown_api_type(client):
     payload = {**_LLM, "api_type": "unknown_type"}
     response = await client.post("/api/settings/llm/test", json=payload)

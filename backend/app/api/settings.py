@@ -15,6 +15,7 @@ from app.services.agent_provider_settings import (
     apply_agent_provider_settings,
     read_agent_provider_settings_from_db,
 )
+from app.services.external_agent_discovery import redact_agent_diagnostic_text
 
 logger = logging.getLogger(__name__)
 
@@ -243,7 +244,8 @@ async def test_llm_connection(
         return {"success": success, "message": message}
 
     except Exception as exc:
-        return {"success": False, "message": f"连接失败: {exc}"}
+        message = redact_agent_diagnostic_text(str(exc))
+        return {"success": False, "message": f"连接失败: {message}"}
 
 
 # --- General settings endpoints ---
