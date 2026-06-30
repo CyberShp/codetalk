@@ -15,6 +15,8 @@ from datetime import datetime, timezone
 from pathlib import Path, PurePosixPath, PureWindowsPath
 from typing import Any
 
+from app.services.agent_cli_bridge import _decode as _decode_agent_cli_output
+
 
 def _now() -> str:
     return datetime.now(timezone.utc).isoformat()
@@ -1234,5 +1236,5 @@ def _decode_subprocess_text(value: str | bytes | None) -> str:
     if value is None:
         return ""
     if isinstance(value, bytes):
-        return value.decode("utf-8", errors="replace")
-    return value
+        return _decode_agent_cli_output(value)
+    return _decode_agent_cli_output(value.encode("utf-8", errors="surrogatepass"))
