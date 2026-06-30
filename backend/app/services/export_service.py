@@ -40,7 +40,10 @@ async def export_reports(task_id: str, fmt: str) -> tuple[bytes, str, str]:
     if not md_files:
         raise FileNotFoundError(f"任务无输出文件: {task_id}")
 
-    docs = [_ReportDoc(name=f.name, content=f.read_text(encoding="utf-8")) for f in md_files]
+    docs = [
+        _ReportDoc(name=f.name, content=redact_agent_diagnostic_text(f.read_text(encoding="utf-8")))
+        for f in md_files
+    ]
     return _dispatch(docs, f"codetalk-{task_id[:8]}", fmt)
 
 

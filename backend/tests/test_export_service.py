@@ -18,6 +18,7 @@ from app.services.export_service import (
     _export_docx,
     _export_md_zip,
     _export_xml,
+    export_reports,
     export_workspace_chat,
     export_workspace_reports,
 )
@@ -48,6 +49,48 @@ class TestExportMdZip:
         data, _, _ = _export_md_zip([], "empty")
         with zipfile.ZipFile(io.BytesIO(data)) as zf:
             assert zf.namelist() == []
+
+
+# ---------------------------------------------------------------------------
+# export_reports — task output directory integration
+# ---------------------------------------------------------------------------
+
+
+class TestExportTaskReports:
+    async def test_redacts_secret_values_from_task_report_export(self, tmp_path, monkeypatch):
+        from app.config import settings
+
+        monkeypatch.setattr(settings, "data_dir", str(tmp_path))
+        task_id = "job_redacted_export"
+        report_secret = "-".join(["sk", "taskReportLeakValue1234567890"])
+        token_secret = "taskReportTokenLeakValue1234567890"
+        bearer_secret = "taskReportBearerLeakValue1234567890"
+        output_dir = settings.outputs_path / task_id
+        output_dir.mkdir(parents=True, exist_ok=True)
+        (output_dir / "task-report.md").write_text(
+            "\n".join(
+                [
+                    "# Task Report",
+                    "task report export complete",
+                    f"model key: {report_secret}",
+                    "runtime " + "tok" + f"en={token_secret}",
+                    "Authorization:" + f" Bearer {bearer_secret}",
+                ]
+            ),
+            encoding="utf-8",
+        )
+
+        data, _, _ = await export_reports(task_id, "md")
+
+        with zipfile.ZipFile(io.BytesIO(data)) as zf:
+            text = zf.read("task-report.md").decode("utf-8")
+        assert "task report export complete" in text
+        assert "<redacted>" in text
+        assert report_secret not in text
+        assert token_secret not in text
+        assert bearer_secret not in text
+        assert "Authorization: Bearer <redacted>" in text
+        assert "token=<redacted>" in text
 
 
 # ---------------------------------------------------------------------------
