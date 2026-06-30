@@ -155,6 +155,7 @@ export default function AIThreadPage() {
       : "";
   const visibleError = error || latestRunError;
   const composerDisabled = sending || Boolean(streamingRunId);
+  const threadNavigationBusy = savingRuntime || Boolean(streamingRunId);
   const lastUserMessage = useMemo(
     () => [...messages].reverse().find((message) => message.role === "user") ?? null,
     [messages],
@@ -347,7 +348,7 @@ export default function AIThreadPage() {
   };
 
   const createSiblingThread = async () => {
-    if (!workspace) return;
+    if (!workspace || threadNavigationBusy) return;
     const next = await api.aiConversations.create({
       scope_type: "workspace",
       scope_id: workspace.id,
@@ -401,7 +402,12 @@ export default function AIThreadPage() {
             ))}
           </div>
         </div>
-        <button type="button" className="ct-codex-ai__new" onClick={createSiblingThread} disabled={!workspace}>
+        <button
+          type="button"
+          className="ct-codex-ai__new"
+          onClick={createSiblingThread}
+          disabled={!workspace || threadNavigationBusy}
+        >
           <MessageSquarePlus size={15} />
           新建线程
         </button>
