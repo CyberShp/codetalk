@@ -1,4 +1,21 @@
 import { expect, test } from "@playwright/test";
+import type { Page } from "@playwright/test";
+
+async function expectBrowserStorageNotToContain(page: Page, secret: string) {
+  const storageText = await page.evaluate(() =>
+    JSON.stringify({
+      localStorage: Object.fromEntries(Array.from({ length: window.localStorage.length }, (_, index) => {
+        const key = window.localStorage.key(index) ?? "";
+        return [key, window.localStorage.getItem(key)];
+      })),
+      sessionStorage: Object.fromEntries(Array.from({ length: window.sessionStorage.length }, (_, index) => {
+        const key = window.sessionStorage.key(index) ?? "";
+        return [key, window.sessionStorage.getItem(key)];
+      })),
+    }),
+  );
+  expect(storageText).not.toContain(secret);
+}
 
 test("settings LLM key stays masked and is not rendered after save/edit", async ({ page }) => {
   const secret = `sk-settings-ui-${Date.now()}`;
@@ -14,6 +31,7 @@ test("settings LLM key stays masked and is not rendered after save/edit", async 
   const apiKeyInput = form.getByPlaceholder(/sk-|Ollama/);
   await expect(apiKeyInput).toHaveAttribute("type", "password");
   await apiKeyInput.fill(secret);
+  await expect(apiKeyInput).toHaveValue(secret);
 
   await form.getByRole("button", { name: "显示 API 密钥" }).hover();
   await form.getByRole("button", { name: "显示 API 密钥" }).click();
@@ -27,14 +45,23 @@ test("settings LLM key stays masked and is not rendered after save/edit", async 
   const savedRow = page.locator("div", { hasText: configName }).filter({ hasText: "deepseek-chat" }).first();
   await expect(savedRow).toBeVisible();
   await expect(page.locator("body")).not.toContainText(secret);
+  await expectBrowserStorageNotToContain(page, secret);
 
-  await savedRow.getByTitle("编辑").hover();
-  await savedRow.getByTitle("编辑").click();
+  await page.reload({ waitUntil: "domcontentloaded" });
+  await page.getByRole("button", { name: /可选：内置模型与 RAG 检索/ }).click();
+  const reloadedRow = page.locator("div", { hasText: configName }).filter({ hasText: "deepseek-chat" }).first();
+  await expect(reloadedRow).toBeVisible();
+  await expect(page.locator("body")).not.toContainText(secret);
+  await expectBrowserStorageNotToContain(page, secret);
+
+  await reloadedRow.getByTitle("编辑").hover();
+  await reloadedRow.getByTitle("编辑").click();
   const editForm = page.locator("form").filter({ hasText: "编辑 LLM 配置" });
   const reopenedApiKeyInput = editForm.getByPlaceholder(/留空则保持原密钥不变/);
   await expect(reopenedApiKeyInput).toHaveAttribute("type", "password");
   await expect(reopenedApiKeyInput).toHaveValue("");
   await expect(page.locator("body")).not.toContainText(secret);
+  await expectBrowserStorageNotToContain(page, secret);
 });
 
 test("settings agent runtime env values are not rendered after save", async ({ page }) => {
@@ -63,4 +90,11 @@ test("settings agent runtime env values are not rendered after save", async ({ p
   await expect(savedRuntime).toBeVisible();
   await savedRuntime.getByRole("button", { name: "测试" }).hover();
   await expect(page.locator("body")).not.toContainText(secret);
+  await expectBrowserStorageNotToContain(page, secret);
+
+  await page.reload({ waitUntil: "domcontentloaded" });
+  const reloadedRuntime = page.locator("div", { hasText: runtimeName }).filter({ hasText: "python3 --version" }).first();
+  await expect(reloadedRuntime).toBeVisible();
+  await expect(page.locator("body")).not.toContainText(secret);
+  await expectBrowserStorageNotToContain(page, secret);
 });
