@@ -561,6 +561,13 @@ class TestAgentRuntimes:
             )
             == "SSE 源码证据"
         )
+        assert (
+            _parse_event_text(
+                f"event: message\ndata: {json.dumps({'content': 'SSE event 源码证据'}, ensure_ascii=False)}\n\n",
+                "stream_json",
+            )
+            == "SSE event 源码证据"
+        )
         assert _parse_event_text("data: [DONE]\n", "stream_json") == ""
         assert (
             _parse_event_text(
@@ -568,6 +575,16 @@ class TestAgentRuntimes:
                 "stream_json",
             )
             == "材料证据"
+        )
+        assert (
+            _parse_event_text(
+                json.dumps(
+                    {"type": "content_block_delta", "delta": {"type": "text_delta", "text": "Claude 源码证据"}},
+                    ensure_ascii=False,
+                ),
+                "stream_json",
+            )
+            == "Claude 源码证据"
         )
         assert _parse_event_text(json.dumps({"type": "message_start", "index": 0}), "stream_json") == ""
 
@@ -708,6 +725,32 @@ class TestAgentRuntimes:
         assert output.strip() == "最终答案：auto 模式已完成源码分析。"
         assert "47%" not in output
         assert "�" not in output
+
+    async def test_agent_runtime_stream_json_accepts_sse_event_metadata(self):
+        from app.services.agent_cli_bridge import stream_agent_runtime
+
+        agent_code = (
+            "import json, sys; "
+            "print('event: message'); "
+            "print('data: ' + json.dumps({'content':'SSE event 源码证据'}, ensure_ascii=False)); "
+            "print(); "
+            "sys.stdout.flush()"
+        )
+        chunks = []
+        async for chunk in stream_agent_runtime(
+            runtime={
+                "command": sys.executable,
+                "args": ["-c", agent_code],
+                "prompt_transport": "stdin",
+                "output_mode": "stream_json",
+                "timeout_seconds": 10,
+            },
+            prompt="读取源码",
+            cwd=None,
+        ):
+            chunks.append(chunk)
+
+        assert "".join(chunks).strip() == "SSE event 源码证据"
 
     async def test_agent_runtime_failure_cleans_stderr_noise(self):
         from app.services.agent_cli_bridge import AgentRuntimeError, stream_agent_runtime

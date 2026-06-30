@@ -189,12 +189,14 @@ def _parse_event_text(text: str, output_mode: str) -> str | None:
 
 
 def _sse_payload_text(text: str) -> str:
-    if not text.startswith("data:"):
+    if not text.startswith("data:") and not text.startswith("event:"):
         return text
     payload_lines: list[str] = []
     for line in text.splitlines():
         stripped = line.strip()
         if not stripped:
+            continue
+        if stripped.startswith(("event:", "id:", "retry:")):
             continue
         if not stripped.startswith("data:"):
             return text
