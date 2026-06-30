@@ -131,6 +131,62 @@ test.describe("Coverage analysis", () => {
     }
   });
 
+  test("prevents duplicate coverage delete requests after confirmation", async ({
+    page,
+    request,
+  }) => {
+    const analysisName = `double-delete-${Date.now()}`;
+
+    await page.goto("/coverage", { waitUntil: "domcontentloaded" });
+
+    await page.locator('input[type="text"]').first().fill(analysisName);
+    await page.locator('input[type="file"]').setInputFiles({
+      name: "double-delete-function-hits.csv",
+      mimeType: "text/csv",
+      buffer: Buffer.from(
+        [
+          "function_name,code_location,triggered,hit_count",
+          "double_delete_gap,lib/iscsi/iscsi.c:1-10,false,0",
+        ].join("\n"),
+        "utf8",
+      ),
+    });
+    await page.getByRole("button", { name: "上传并解析" }).hover();
+    await page.getByRole("button", { name: "上传并解析" }).click();
+    await expect(page.getByText(analysisName)).toBeVisible({ timeout: 15_000 });
+
+    const listResp = await request.get(`${backendBase}/api/coverage/list`);
+    expect(listResp.ok()).toBeTruthy();
+    const analyses = (await listResp.json()) as Array<{ id: string; name: string }>;
+    const created = analyses.find((item) => item.name === analysisName);
+    expect(created).toBeTruthy();
+
+    const deleteRequests: string[] = [];
+    page.on("request", (req) => {
+      if (
+        req.method() === "DELETE" &&
+        new URL(req.url()).pathname === `/api/coverage/${created?.id}`
+      ) {
+        deleteRequests.push(req.url());
+      }
+    });
+
+    page.once("dialog", async (dialog) => {
+      expect(dialog.type()).toBe("confirm");
+      expect(dialog.message()).toContain("确定删除这次覆盖率分析吗");
+      await dialog.accept();
+    });
+    const card = page
+      .locator(".bg-surface-container-low")
+      .filter({ hasText: analysisName })
+      .first();
+    await card.getByRole("button", { name: "删除" }).hover();
+    await card.getByRole("button", { name: "删除" }).dblclick();
+
+    await expect(card).toHaveCount(0, { timeout: 15_000 });
+    await expect.poll(() => deleteRequests.length).toBe(1);
+  });
+
   test("shows actionable repair guidance when an uploaded coverage file is malformed", async ({
     page,
   }) => {
