@@ -87,6 +87,79 @@ test("task export download redacts completed markdown report secrets through the
   expect(exported).not.toMatch(/(?:api[-_]?key|token|secret|password)=['"]?(?!<redacted>)[^\s"']+/i);
 });
 
+test("task export format selection downloads redacted XML through the UI", async ({
+  page,
+  request,
+}, testInfo) => {
+  test.setTimeout(60_000);
+  test.skip(!process.env.CODETALK_PLAYWRIGHT_DATA_DIR, "requires explicit Playwright data dir");
+  const dataDir = process.env.CODETALK_PLAYWRIGHT_DATA_DIR!;
+  const repo = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), "codetalk-task-xml-export-")));
+  fs.writeFileSync(path.join(repo, "README.md"), "task xml export redaction e2e\n", "utf8");
+  const reportSecret = ["sk", "taskXmlExportLeakValue1234567890"].join("-");
+  const tokenSecret = "taskXmlExportTokenLeakValue1234567890";
+  const bearerSecret = "taskXmlExportBearerLeakValue1234567890";
+
+  const createResp = await request.post(`${backendBase}/api/tasks`, {
+    data: {
+      name: `task-export-xml-${Date.now()}`,
+      repo_path: repo,
+      tools: [],
+      analysis_focus: "Task XML export redaction",
+      prompt_content: "Prepare a task whose XML export must be safe.",
+    },
+  });
+  expect(createResp.status()).toBe(201);
+  const task = (await createResp.json()) as { id: string };
+
+  execFileSync(
+    "python3",
+    [
+      "-c",
+      [
+        "import pathlib, sys",
+        "data_dir, task_id, report_secret, token_secret, bearer_secret = sys.argv[1:]",
+        "output_dir = pathlib.Path(data_dir) / 'outputs' / task_id",
+        "output_dir.mkdir(parents=True, exist_ok=True)",
+        "content = '\\n'.join(['# XML Task Report', 'task ui xml export complete', f'model key: {report_secret}', 'runtime ' + 'tok' + f'en={token_secret}', 'Authorization:' + f' Bearer {bearer_secret}'])",
+        "(output_dir / 'xml-safe-report.md').write_text(content, encoding='utf-8')",
+      ].join("\n"),
+      dataDir,
+      task.id,
+      reportSecret,
+      tokenSecret,
+      bearerSecret,
+    ],
+    { stdio: "pipe" },
+  );
+
+  await page.goto(`/tasks/${task.id}/export`, { waitUntil: "domcontentloaded" });
+  await expect(page.getByRole("heading", { name: "导出结果" })).toBeVisible();
+  await page.getByRole("button", { name: "XML 适用于系统集成 / 数据交换" }).hover();
+  await page.getByRole("button", { name: "XML 适用于系统集成 / 数据交换" }).click();
+  await expect(page.getByRole("button", { name: /下载 XML 文件/ })).toBeVisible();
+
+  const downloadPromise = page.waitForEvent("download");
+  await page.getByRole("button", { name: /下载 XML 文件/ }).hover();
+  await page.getByRole("button", { name: /下载 XML 文件/ }).click();
+  const download = await downloadPromise;
+  expect(download.suggestedFilename()).toMatch(/^codetalk-.*\.xml$/);
+  const xmlPath = testInfo.outputPath("task_report_redacted_export.xml");
+  await download.saveAs(xmlPath);
+  const exported = fs.readFileSync(xmlPath, "utf8");
+
+  expect(exported).toContain("<codetalk-reports");
+  expect(exported).toContain('filename="xml-safe-report.md"');
+  expect(exported).toContain("task ui xml export complete");
+  expect(exported).toContain("&lt;redacted&gt;");
+  expect(exported).not.toContain(reportSecret);
+  expect(exported).not.toContain(tokenSecret);
+  expect(exported).not.toContain(bearerSecret);
+  expect(exported).not.toMatch(/sk-[A-Za-z0-9_-]{12,}/);
+  expect(exported).not.toMatch(/Authorization:\s*Bearer\s+(?!&lt;redacted&gt;)[^\s"'<]+/i);
+  expect(exported).not.toMatch(/(?:api[-_]?key|token|secret|password)=['"]?(?!&lt;redacted&gt;)[^\s"'<]+/i);
+});
+
 test("task report page redacts persisted markdown report secrets through the UI", async ({
   page,
   request,
