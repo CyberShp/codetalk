@@ -318,7 +318,7 @@ class AIConversationStore:
             run_id=run_id,
             conversation_id=conversation_id,
             event_type="status",
-            payload={"status": "queued"},
+            payload={"status": "queued", "message": "已进入生成队列，正在准备上下文。"},
         )
         return {
             "message": await self.get_message(message_id),
@@ -378,7 +378,7 @@ class AIConversationStore:
             run_id=run_id,
             conversation_id=run["conversation_id"],
             event_type="status",
-            payload={"status": "running"},
+            payload={"status": "running", "message": "已开始生成，正在读取线程上下文。"},
         )
 
     async def append_event(
@@ -647,6 +647,12 @@ async def run_generation(
         return
     references = user_message.get("references") or []
     await store.mark_run_running(run_id)
+    await store.append_event(
+        run_id=run_id,
+        conversation_id=conversation["id"],
+        event_type="status",
+        payload={"status": "running", "message": _context_status_message(references)},
+    )
     prompt = _build_prompt(conversation, messages, references, user_message["content"])
     chunks: list[str] = []
     max_tokens = min(settings.ai_conversation_max_output_tokens, settings.llm_max_output_tokens)
@@ -728,6 +734,12 @@ async def run_agent_generation(
     references = user_message.get("references") or []
     await store.mark_run_running(run_id)
     repo_path = await _conversation_repo_path(conversation)
+    await store.append_event(
+        run_id=run_id,
+        conversation_id=conversation["id"],
+        event_type="status",
+        payload={"status": "running", "message": _context_status_message(references)},
+    )
     cwd = resolve_agent_cwd(runtime, repo_path=repo_path)
     prompt = _build_agent_prompt(
         conversation,
@@ -767,6 +779,22 @@ async def maybe_await(value: Any) -> Any:
     if inspect.isawaitable(value):
         return await value
     return value
+
+
+def _context_status_message(references: list[dict[str, Any]]) -> str:
+    source_types = {str(ref.get("source_type") or "") for ref in references}
+    parts: list[str] = []
+    if "workspace_source" in source_types:
+        parts.append("工作区源码")
+    if "workspace_material" in source_types:
+        parts.append("输入材料")
+    if "workspace_report" in source_types:
+        parts.append("历史报告")
+    if "semantic_case" in source_types:
+        parts.append("语义案例")
+    if not parts:
+        return "正在准备可用上下文；未找到直接匹配的工作区源码或输入材料。"
+    return f"正在读取{'、'.join(parts)}上下文。"
 
 
 def _build_prompt(

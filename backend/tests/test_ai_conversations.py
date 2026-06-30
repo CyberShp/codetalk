@@ -225,6 +225,23 @@ class TestAIConversationsAPI:
             assert [item["role"] for item in body["items"]] == ["user", "assistant"]
             assert "已基于源码和材料回答" in body["items"][1]["content"]
 
+            stream = await client.get(
+                f"/api/ai/conversations/{conversation['id']}/stream",
+                params={"cursor": 0},
+            )
+            assert stream.status_code == 200
+            events = [
+                json.loads(line.removeprefix("data: "))
+                for line in stream.text.splitlines()
+                if line.startswith("data: ")
+            ]
+            status_messages = [
+                event["payload"].get("message", "")
+                for event in events
+                if event["event_type"] == "status"
+            ]
+            assert any("工作区源码" in message and "输入材料" in message for message in status_messages)
+
     async def test_legacy_conversation_backfills_workspace_namespace(self, sqlite_db):
         ws_id = await _seed_workspace(sqlite_db, "legacy-ws")
         now = datetime.now(timezone.utc).isoformat()
