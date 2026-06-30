@@ -153,6 +153,21 @@ class EvidenceMemoryStore:
             )
         return rid
 
+    def get_analysis_run(self, run_id: str) -> dict[str, Any]:
+        self.initialize()
+        with self._connect() as db:
+            row = db.execute(
+                """
+                SELECT run_id, workspace_id, repo_path, object_text, workflow_id, status, created_at, updated_at
+                FROM analysis_runs
+                WHERE run_id = ?
+                """,
+                (run_id,),
+            ).fetchone()
+        if row is None:
+            raise KeyError(run_id)
+        return dict(row)
+
     def upsert_evidence_item(
         self,
         *,
@@ -301,6 +316,17 @@ class EvidenceMemoryStore:
                 params,
             ).fetchall()
         return [_row_to_evidence(row) for row in rows]
+
+    def get_evidence_item(self, evidence_id: str) -> EvidenceItem:
+        self.initialize()
+        with self._connect() as db:
+            row = db.execute(
+                "SELECT * FROM evidence_items WHERE evidence_id = ?",
+                (evidence_id,),
+            ).fetchone()
+        if row is None:
+            raise KeyError(evidence_id)
+        return _row_to_evidence(row)
 
     def list_evidence_items(
         self,

@@ -2798,6 +2798,10 @@ async def test_workbench_materialize_source_scope_output_as_structured_memory(
     assert source_files
     assert source_files[0]["subject_key"] == "nof/nvmf_tcp/transport/tls/tls.c"
     assert source_files[0]["status"] == "verified_output"
+    assert source_files[0]["workspace_id"] == "ws-source-scope-memory"
+    assert source_files[0]["source_read_status"] == "source_slices_attached"
+    assert source_files[0]["usable_as_source_evidence"] is True
+    assert source_files[0]["source_slices"][0]["integrity_status"] == "verified_current"
     assert source_files[0]["provenance"]["agent_replay_plan"]["artifact"] == (
         "agent_runs/discover/agent_replay_plan.json"
     )
@@ -2813,6 +2817,8 @@ async def test_workbench_materialize_source_scope_output_as_structured_memory(
     assert slice_items[0]["start_line"] == 1
     assert "nvmf_tcp_tls_handshake" in slice_items[0]["excerpt"]
     assert slice_items[0]["sha256"]
+    assert slice_items[0]["integrity_status"] == "verified_current"
+    assert slice_items[0]["current_sha256"] == slice_items[0]["sha256"]
 
     symbol_search = await workbench_client.get(
         "/api/workbench/memory/search",

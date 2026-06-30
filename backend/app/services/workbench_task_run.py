@@ -2108,6 +2108,7 @@ def _evidence_item_payload(
     payload = {
         "evidence_id": item.evidence_id,
         "run_id": item.run_id,
+        "workspace_id": item.workspace_id,
         "kind": item.kind,
         "subject_key": item.subject_key,
         "status": item.status,

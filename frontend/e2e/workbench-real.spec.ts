@@ -103,6 +103,128 @@ test("installs a workflow preset and validates required inputs through the real 
   await expect(page.getByText(repo).first()).toBeVisible();
 });
 
+test("persists semantic cases and evidence source slices through the real workbench UI", async ({
+  page,
+}) => {
+  const unique = Date.now();
+  const repo = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), "codetalk-knowledge-")));
+  fs.mkdirSync(path.join(repo, "lib", "nvmf"), { recursive: true });
+  fs.writeFileSync(
+    path.join(repo, "lib", "nvmf", "tcp.c"),
+    [
+      "int nvmf_tcp_connect(void) {",
+      "    return 0;",
+      "}",
+      "int nvmf_tcp_disconnect(void) {",
+      "    return -1;",
+      "}",
+      "",
+    ].join("\n"),
+    "utf8",
+  );
+  const workspaceId = `knowledge-ws-${unique}`;
+  const semanticScenario = `NVMe TCP reconnect drops stale qp ${unique}`;
+  const fileScenario = `NVMe TCP exported semantic case ${unique}`;
+  const caseId = `tc_nvmf_tcp_reconnect_${unique}`;
+  const fileCaseId = `tc_nvmf_tcp_file_import_${unique}`;
+  const evidenceSubject = `nvmf_tcp_connect_${unique}`;
+  const evidenceText = `Manual evidence for ${evidenceSubject} covers reconnect public behavior`;
+
+  await page.goto("/workbench", { waitUntil: "domcontentloaded" });
+  await page.getByLabel("Workspace ID").fill(workspaceId);
+  await page.getByLabel("Repo path").fill(repo);
+  await page.getByRole("button", { name: "证据与语义" }).hover();
+  await page.getByRole("button", { name: "证据与语义" }).click();
+
+  await expect(page.getByRole("heading", { name: "测试语义库" })).toBeVisible();
+  await page.getByLabel("Semantic feature").fill("NVMe TCP reconnect");
+  await page.getByLabel("Semantic module").fill("nvmf_tcp");
+  await page.getByLabel("Semantic case lines").fill(semanticScenario);
+  await page.getByRole("button", { name: "生成语义 JSON" }).hover();
+  await page.getByRole("button", { name: "生成语义 JSON" }).click();
+  await expect(page.getByText("语义导入草稿已生成: 1 cases")).toBeVisible({
+    timeout: 15_000,
+  });
+  await expect(page.getByLabel("Semantic JSON")).toHaveValue(new RegExp(semanticScenario));
+
+  await page.getByLabel("Semantic JSON").fill(
+    JSON.stringify(
+      {
+        case_id: caseId,
+        feature: "NVMe TCP reconnect",
+        module: "nvmf_tcp",
+        test_level: "black_box",
+        scenario: semanticScenario,
+        terms: ["reconnect", "stale qp"],
+        tags: ["recovery", "spdk"],
+        preconditions: "NVMe-oF target is reachable over TCP.",
+        steps: ["Disconnect the initiator connection.", "Reconnect through the public CLI."],
+        expected: "The public connection state recovers without stale queue pairs.",
+        assertion_style: "black_box_observable",
+      },
+      null,
+      2,
+    ),
+  );
+  await page.getByRole("button", { name: "导入用例" }).hover();
+  await page.getByRole("button", { name: "导入用例" }).click();
+  await expect(page.getByText(`语义用例已保存: ${caseId}`)).toBeVisible({
+    timeout: 15_000,
+  });
+
+  await page.getByLabel("Semantic case file").setInputFiles({
+    name: "semantic-cases.jsonl",
+    mimeType: "application/jsonl",
+    buffer: Buffer.from(
+      `${JSON.stringify({
+        case_id: fileCaseId,
+        scenario: fileScenario,
+        terms: ["exported semantic", "black-box"],
+        tags: ["file-import"],
+      })}\n`,
+    ),
+  });
+  await expect(page.getByText("semantic-cases.jsonl")).toBeVisible();
+  await page.getByRole("button", { name: "导入文件" }).hover();
+  await page.getByRole("button", { name: "导入文件" }).click();
+  await expect(page.getByText("语义文件已导入: 1, rejected: 0")).toBeVisible({
+    timeout: 15_000,
+  });
+
+  await page.getByLabel("Semantic search query").fill(String(unique));
+  await page.getByRole("button", { name: "搜索", exact: true }).hover();
+  await page.getByRole("button", { name: "搜索", exact: true }).click();
+  await expect(page.getByText("语义搜索结果: 2")).toBeVisible({ timeout: 15_000 });
+  await expect(page.locator("p").filter({ hasText: caseId })).toBeVisible();
+  await expect(page.locator("p").filter({ hasText: semanticScenario })).toBeVisible();
+  await expect(page.locator("p").filter({ hasText: fileCaseId })).toBeVisible();
+  await expect(page.locator("p").filter({ hasText: fileScenario })).toBeVisible();
+
+  await page.getByLabel("Evidence subject").fill(evidenceSubject);
+  await page.getByLabel("Evidence path").fill("lib/nvmf/tcp.c");
+  await page.getByLabel("Evidence text").fill(evidenceText);
+  await page.getByRole("button", { name: "保存证据" }).hover();
+  await page.getByRole("button", { name: "保存证据" }).click();
+  await expect(page.getByText(/证据已保存: .*source slices 1/)).toBeVisible({
+    timeout: 15_000,
+  });
+
+  await page.getByRole("button", { name: "搜索证据" }).hover();
+  await page.getByRole("button", { name: "搜索证据" }).click();
+  await expect(page.getByText("证据搜索结果: 1")).toBeVisible({ timeout: 15_000 });
+  await expect(page.locator("span").filter({ hasText: evidenceSubject })).toBeVisible();
+  await expect(page.getByText("lib/nvmf/tcp.c").first()).toBeVisible();
+  await expect(page.getByText("usable:true")).toBeVisible();
+
+  await page.getByRole("button", { name: "源码切片" }).hover();
+  await page.getByRole("button", { name: "源码切片" }).click();
+  await expect(page.getByText("源码切片已加载: 1")).toBeVisible({ timeout: 15_000 });
+  await expect(page.getByText("1 slice(s)")).toBeVisible();
+  await expect(page.getByText(/lib\/nvmf\/tcp\.c:1-/)).toBeVisible();
+  await expect(page.getByText("verified_current")).toBeVisible();
+  await expect(page.getByText("int nvmf_tcp_connect(void) {")).toBeVisible();
+});
+
 test("executes resource leak hunt and previews materialized artifacts through the real workbench UI", async ({
   page,
 }) => {

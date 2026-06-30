@@ -5736,6 +5736,7 @@ export default function AgentWorkbenchPage() {
                 value={semanticQuery}
                 onChange={(event) => setSemanticQuery(event.target.value)}
                 className="min-w-0 flex-1 rounded-lg border border-outline-variant/30 bg-surface px-3 py-2 text-sm text-on-surface outline-none focus:border-primary"
+                aria-label="Semantic search query"
               />
               <button
                 onClick={searchSemanticCases}
@@ -5815,6 +5816,7 @@ export default function AgentWorkbenchPage() {
                 value={memoryQuery}
                 onChange={(event) => setMemoryQuery(event.target.value)}
                 className="min-w-0 flex-1 rounded-lg border border-outline-variant/30 bg-surface px-3 py-2 text-sm text-on-surface outline-none focus:border-primary"
+                aria-label="Evidence search query"
               />
               <button
                 onClick={searchMemory}

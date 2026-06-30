@@ -43,6 +43,7 @@ from app.services.workbench_task_run import WorkbenchTaskRunPreparer
 from app.services.workbench_task_run import WorkbenchTaskRunStore
 from app.services.workbench_task_run import build_agent_cli_provider_diagnostics
 from app.services.workbench_task_run import build_codetalk_provider_snapshot
+from app.services.workbench_task_run import _evidence_item_payload
 from app.services.workbench_workflow_runner import build_workflow_rerun_plan
 from app.services.workbench_workflow_runner import WorkbenchWorkflowRunner
 from app.services.workflow_dsl import (
@@ -169,6 +170,17 @@ def _semantic_store() -> TestSemanticLibraryStore:
 
 def _memory_store() -> EvidenceMemoryStore:
     return EvidenceMemoryStore(_workbench_dir() / "evidence_memory.db")
+
+
+def _evidence_repo_path(store: EvidenceMemoryStore, item: Any) -> str:
+    provenance = item.provenance or {}
+    repo_path = str(provenance.get("repo_path") or "").strip()
+    if repo_path:
+        return repo_path
+    try:
+        return str(store.get_analysis_run(item.run_id).get("repo_path") or "")
+    except KeyError:
+        return ""
 
 
 def _agent_runs_dir() -> Path:
@@ -620,17 +632,37 @@ async def search_memory(
     workspace_id: str = "",
     limit: int = Query(10, ge=1, le=50),
 ) -> dict[str, Any]:
-    items = _memory_store().search_analysis_memory(
+    store = _memory_store()
+    items = store.search_analysis_memory(
         q,
         workspace_id=workspace_id or None,
         limit=limit,
     )
-    return {"items": [asdict(item) for item in items]}
+    return {
+        "items": [
+            _evidence_item_payload(
+                item,
+                source_slices=store.list_source_slices(item.evidence_id),
+                repo_path=_evidence_repo_path(store, item),
+            )
+            for item in items
+        ],
+    }
 
 
 @router.get("/memory/evidence/{evidence_id}/source-slices")
 async def list_memory_source_slices(evidence_id: str) -> dict[str, Any]:
-    return {"items": [asdict(item) for item in _memory_store().list_source_slices(evidence_id)]}
+    store = _memory_store()
+    try:
+        item = store.get_evidence_item(evidence_id)
+    except KeyError:
+        raise HTTPException(status_code=404, detail=f"Unknown evidence item: {evidence_id}")
+    payload = _evidence_item_payload(
+        item,
+        source_slices=store.list_source_slices(evidence_id),
+        repo_path=_evidence_repo_path(store, item),
+    )
+    return {"items": payload.get("source_slices", [])}
 
 
 @router.get("/memory/recent")
