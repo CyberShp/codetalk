@@ -98,6 +98,17 @@ async def test_create_task_missing_required_fields(client, tmp_path):
     assert response.status_code == 422
 
 
+async def test_create_task_rejects_removed_deepwiki_depth_field(client, tmp_path):
+    response = await client.post(
+        "/api/tasks",
+        json=_task_payload(tmp_path, deepwiki_depth="balanced"),
+    )
+
+    assert response.status_code == 422
+    errors = response.json()["detail"]
+    assert any(error["loc"] == ["body", "deepwiki_depth"] for error in errors)
+
+
 async def test_list_tasks_after_create(client, tmp_path):
     await client.post("/api/tasks", json=_task_payload(tmp_path, name="t1"))
     await client.post("/api/tasks", json=_task_payload(tmp_path, name="t2"))

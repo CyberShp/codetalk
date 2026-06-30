@@ -20,7 +20,6 @@ async def test_export_task_no_outputs(e2e_client: AsyncClient, repo_path: str):
             "tools": ["gitnexus"],
             "analysis_focus": "Test export",
             "prompt_content": "Test prompt.",
-            "deepwiki_depth": "balanced",
         },
     )
     task_id = create_resp.json()["id"]
@@ -39,7 +38,6 @@ async def test_export_invalid_format(e2e_client: AsyncClient, repo_path: str):
             "tools": ["gitnexus"],
             "analysis_focus": "Test export format",
             "prompt_content": "Test prompt.",
-            "deepwiki_depth": "balanced",
         },
     )
     task_id = create_resp.json()["id"]
@@ -65,7 +63,6 @@ async def test_export_with_output_files(e2e_client: AsyncClient, repo_path: str,
             "tools": ["gitnexus"],
             "analysis_focus": "Test export with files",
             "prompt_content": "Test prompt.",
-            "deepwiki_depth": "balanced",
         },
     )
     task_id = create_resp.json()["id"]
@@ -95,7 +92,6 @@ async def test_export_md_format(e2e_client: AsyncClient, repo_path: str, tmp_pat
             "tools": ["gitnexus"],
             "analysis_focus": "Markdown export test",
             "prompt_content": "Test prompt.",
-            "deepwiki_depth": "balanced",
         },
     )
     task_id = create_resp.json()["id"]
@@ -123,7 +119,6 @@ async def test_export_task_output_dir_exists_but_empty_returns_404(e2e_client: A
             "tools": [],
             "analysis_focus": "test",
             "prompt_content": "test",
-            "deepwiki_depth": "balanced",
         },
     )
     task_id = create_resp.json()["id"]
@@ -148,7 +143,6 @@ async def test_export_unsupported_format_with_files_returns_422(e2e_client: Asyn
             "tools": [],
             "analysis_focus": "test",
             "prompt_content": "test",
-            "deepwiki_depth": "balanced",
         },
     )
     task_id = create_resp.json()["id"]

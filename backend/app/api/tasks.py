@@ -8,7 +8,7 @@ from pathlib import Path
 import aiosqlite
 from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException
 from fastapi.responses import StreamingResponse
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, ConfigDict, Field
 
 from app.config import settings
 from app.database import get_db
@@ -27,6 +27,8 @@ _REMOVED_TOOLS: dict[str, str] = {
 # --- Schemas ---
 
 class TaskCreate(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
     name: str = Field(min_length=1, max_length=200)
     repo_path: str = Field(min_length=1, max_length=1000)
     tools: list[str] = Field(default=["gitnexus"], max_length=10)
