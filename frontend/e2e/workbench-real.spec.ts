@@ -69,6 +69,63 @@ test("prevents duplicate workflow preset install requests from a real double cli
   await expect.poll(() => installRequests.length).toBe(1);
 });
 
+test("prevents duplicate workflow saves from a real double click", async ({
+  page,
+}) => {
+  const unique = Date.now();
+  const workflowId = `double_save_${unique}`;
+
+  await page.goto("/workbench", { waitUntil: "domcontentloaded" });
+  await page.getByRole("button", { name: "工作流设计" }).hover();
+  await page.getByRole("button", { name: "工作流设计" }).click();
+  await page.getByLabel("Workflow JSON").fill(
+    JSON.stringify(
+      {
+        id: workflowId,
+        name: "Double Save E2E",
+        version: 1,
+        inputs: [{ id: "analysis_object", type: "free_text", required: true }],
+        steps: [
+          {
+            id: "inspect",
+            type: "agent_task",
+            provider: "local-search",
+            required_artifacts: ["double_save.json"],
+            goal: "Inspect duplicate save guard.",
+          },
+        ],
+        outputs: [{ id: "result", type: "json", artifact: "double_save.json" }],
+      },
+      null,
+      2,
+    ),
+  );
+
+  const saveRequests: string[] = [];
+  page.on("request", (request) => {
+    if (
+      request.method() === "POST" &&
+      new URL(request.url()).pathname === "/api/workbench/workflows"
+    ) {
+      saveRequests.push(request.url());
+    }
+  });
+  const saveRequest = page.waitForRequest(
+    (request) =>
+      request.method() === "POST" &&
+      new URL(request.url()).pathname === "/api/workbench/workflows",
+  );
+
+  await page.getByRole("button", { name: "保存工作流" }).hover();
+  await page.getByRole("button", { name: "保存工作流" }).dblclick();
+  await saveRequest;
+  await expect(page.getByRole("button", { name: "保存工作流" })).toBeDisabled();
+  await expect(page.getByText(`工作流已保存: ${workflowId}`)).toBeVisible({
+    timeout: 15_000,
+  });
+  await expect.poll(() => saveRequests.length).toBe(1);
+});
+
 test("installs a workflow preset and validates required inputs through the real workbench UI", async ({
   page,
 }) => {
