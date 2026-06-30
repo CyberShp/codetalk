@@ -299,9 +299,13 @@ test("AI conversation keeps long threads inside the reader and does not force do
     readerScrollHeight: element.scrollHeight,
     documentScrollHeight: document.documentElement.scrollHeight,
     viewportHeight: window.innerHeight,
+    scrollBehavior: window.getComputedStyle(element).scrollBehavior,
+    overscrollBehavior: window.getComputedStyle(element).overscrollBehavior,
   }));
   expect(metrics.readerScrollHeight).toBeGreaterThan(metrics.readerClientHeight + 300);
   expect(metrics.documentScrollHeight).toBeLessThanOrEqual(metrics.viewportHeight + 24);
+  expect(metrics.scrollBehavior).not.toBe("smooth");
+  expect(metrics.overscrollBehavior).toBe("contain");
 
   const readerBox = await page.getByLabel("AI 线程对话内容").boundingBox();
   expect(readerBox).not.toBeNull();

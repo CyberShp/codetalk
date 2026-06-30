@@ -335,6 +335,18 @@ export default function AIThreadPage() {
     setShowJumpToLatest(!nearBottom && Boolean(streamingRunId || streamingContent));
   }, [streamingContent, streamingRunId]);
 
+  const detachAutoScroll = useCallback(() => {
+    autoScrollRef.current = false;
+    if (streamingRunId || streamingContent) setShowJumpToLatest(true);
+  }, [streamingContent, streamingRunId]);
+
+  const handleReaderWheel = useCallback(
+    (event: React.WheelEvent<HTMLElement>) => {
+      if (event.deltaY < 0) detachAutoScroll();
+    },
+    [detachAutoScroll],
+  );
+
   const jumpToLatest = useCallback((behavior: ScrollBehavior = "smooth") => {
     autoScrollRef.current = true;
     setShowJumpToLatest(false);
@@ -348,7 +360,7 @@ export default function AIThreadPage() {
 
   useEffect(() => {
     if (autoScrollRef.current) {
-      jumpToLatest("smooth");
+      jumpToLatest(streamingRunId || streamingContent ? "auto" : "smooth");
     } else if (streamingRunId || streamingContent) {
       setShowJumpToLatest(true);
     }
@@ -607,6 +619,8 @@ export default function AIThreadPage() {
           ref={readerRef}
           className="ct-codex-ai__reader"
           onScroll={updateReaderStickiness}
+          onWheel={handleReaderWheel}
+          onTouchMove={detachAutoScroll}
           aria-label="AI 线程对话内容"
         >
           {messages.length === 0 && !streamingContent ? (

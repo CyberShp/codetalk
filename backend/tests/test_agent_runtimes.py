@@ -38,13 +38,18 @@ def _test_app(sqlite_db: str) -> FastAPI:
     return app
 
 
-async def _seed_workspace(db_path: str, ws_id: str = "ws-agent") -> str:
+async def _seed_workspace(
+    db_path: str,
+    ws_id: str = "ws-agent",
+    *,
+    repo_path: str = "/tmp/codetalk-agent-project",
+) -> str:
     now = datetime.now(timezone.utc).isoformat()
     async with aiosqlite.connect(db_path) as db:
         await db.execute(
             "INSERT INTO workspaces (id, name, repo_path, indexed, created_at, updated_at) "
             "VALUES (?, 'Agent 项目', ?, 1, ?, ?)",
-            (ws_id, "/tmp/codetalk-agent-project", now, now),
+            (ws_id, repo_path, now, now),
         )
         await db.commit()
     return ws_id
@@ -222,6 +227,106 @@ class TestAgentRuntimes:
                 if line.startswith("data: ")
             ]
             assert any(evt["event_type"] == "delta" for evt in events)
+
+    async def test_ai_thread_agent_runtime_reads_selected_workspace_source_from_cwd(
+        self,
+        sqlite_db,
+        tmp_path,
+        monkeypatch,
+    ):
+        repo = tmp_path / "spdk"
+        source = repo / "lib" / "nvmf" / "connect.c"
+        source.parent.mkdir(parents=True)
+        source.write_text(
+            "int spdk_nvmf_agent_cwd_probe(void) { return 42; }\n",
+            encoding="utf-8",
+        )
+        ws_id = await _seed_workspace(sqlite_db, "ws-agent-cwd", repo_path=str(repo))
+        app = _test_app(sqlite_db)
+
+        from app.api import ai_conversations
+
+        async def fail_if_llm_is_used():
+            raise AssertionError("agent runtime conversations must not call the builtin LLM")
+
+        monkeypatch.setattr(ai_conversations, "create_llm_client_from_active", fail_if_llm_is_used)
+
+        agent_code = (
+            "from pathlib import Path\n"
+            "import os\n"
+            "import sys\n"
+            "prompt = sys.stdin.read()\n"
+            "src = Path('lib/nvmf/connect.c')\n"
+            "if not src.exists():\n"
+            "    print('missing workspace source in cwd=' + os.getcwd(), file=sys.stderr)\n"
+            "    raise SystemExit(9)\n"
+            "text = src.read_text(encoding='utf-8')\n"
+            "if 'spdk_nvmf_agent_cwd_probe' not in text:\n"
+            "    print('source marker missing', file=sys.stderr)\n"
+            "    raise SystemExit(10)\n"
+            "if 'workspace_source' not in prompt or 'lib/nvmf/connect.c' not in prompt:\n"
+            "    print('prompt lacks selected workspace source reference', file=sys.stderr)\n"
+            "    raise SystemExit(11)\n"
+            "print('AGENT_CWD_SOURCE_OK:' + os.getcwd())\n"
+        )
+
+        async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+            runtime = await client.post(
+                "/api/settings/agent-runtimes",
+                json={
+                    "name": "Workspace Source Agent",
+                    "command": sys.executable,
+                    "args": ["-c", agent_code],
+                    "prompt_transport": "stdin",
+                    "output_mode": "plain",
+                    "working_dir_mode": "project",
+                    "timeout_seconds": 10,
+                },
+            )
+            assert runtime.status_code == 201
+
+            created = await client.post(
+                "/api/ai/conversations",
+                json={
+                    "scope_type": "workspace",
+                    "scope_id": ws_id,
+                    "workspace_id": ws_id,
+                    "title": "Agent workspace 源码读取",
+                    "runtime_type": "agent_runtime",
+                    "agent_runtime_id": runtime.json()["id"],
+                },
+            )
+            assert created.status_code == 201
+            conversation = created.json()
+
+            posted = await client.post(
+                f"/api/ai/conversations/{conversation['id']}/messages",
+                json={"content": "请读取 lib/nvmf/connect.c 并确认 agent cwd"},
+            )
+            assert posted.status_code == 202
+
+            for _ in range(40):
+                messages = await client.get(f"/api/ai/conversations/{conversation['id']}/messages")
+                items = messages.json()["items"]
+                if len(items) == 2:
+                    break
+                await asyncio.sleep(0.1)
+
+            messages = await client.get(f"/api/ai/conversations/{conversation['id']}/messages")
+            body = messages.json()
+            assert [item["role"] for item in body["items"]] == ["user", "assistant"]
+            assert f"AGENT_CWD_SOURCE_OK:{repo}" in body["items"][1]["content"]
+
+            stream = await client.get(f"/api/ai/conversations/{conversation['id']}/stream")
+            events = [
+                json.loads(line.removeprefix("data: "))
+                for line in stream.text.splitlines()
+                if line.startswith("data: ")
+            ]
+            assert any(
+                evt["event_type"] == "status" and "工作区源码" in evt["payload"].get("message", "")
+                for evt in events
+            )
 
     async def test_ai_thread_agent_runtime_failure_redacts_stderr_secrets(self, sqlite_db):
         ws_id = await _seed_workspace(sqlite_db)

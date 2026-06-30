@@ -2047,7 +2047,7 @@ body {
   min-height: 0;
   overflow: auto;
   padding: clamp(14px, 2.4vw, 28px);
-  scroll-behavior: smooth;
+  overscroll-behavior: contain;
 }
 
 .ct-codex-ai__empty {
