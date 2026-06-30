@@ -20,6 +20,7 @@ from app.services.ai_conversations import (
     run_generation,
 )
 from app.services.agent_runtimes import AgentRuntimeStore
+from app.services.external_agent_discovery import redact_agent_diagnostic_text
 
 router = APIRouter(prefix="/api/ai/conversations", tags=["ai-conversations"])
 
@@ -46,6 +47,16 @@ class UpdateConversationRequest(BaseModel):
 
 def _store() -> AIConversationStore:
     return AIConversationStore()
+
+
+def _redact_payload(value: Any) -> Any:
+    if isinstance(value, str):
+        return redact_agent_diagnostic_text(value)
+    if isinstance(value, list):
+        return [_redact_payload(item) for item in value]
+    if isinstance(value, dict):
+        return {str(key): _redact_payload(item) for key, item in value.items()}
+    return value
 
 
 def schedule_conversation_run(run_id: str) -> None:
@@ -144,7 +155,7 @@ async def list_messages(conversation_id: str) -> dict[str, Any]:
         await _store().get_conversation(conversation_id)
     except KeyError:
         raise HTTPException(status_code=404, detail="AI conversation not found")
-    return {"items": await _store().list_messages(conversation_id)}
+    return {"items": _redact_payload(await _store().list_messages(conversation_id))}
 
 
 @router.post("/{conversation_id}/messages", status_code=status.HTTP_202_ACCEPTED)
@@ -167,7 +178,7 @@ async def create_message(conversation_id: str, body: CreateMessageRequest) -> di
         references=refs,
     )
     schedule_conversation_run(result["run"]["id"])
-    return result
+    return _redact_payload(result)
 
 
 @router.get("/{conversation_id}/stream")
@@ -188,7 +199,7 @@ async def stream_events(
             events = await store.list_events_after(conversation_id, cursor=current)
             for event in events:
                 current = max(current, int(event["event_id"]))
-                yield f"data: {json.dumps(event, ensure_ascii=False)}\n\n"
+                yield f"data: {json.dumps(_redact_payload(event), ensure_ascii=False)}\n\n"
             latest = await store.latest_run(conversation_id)
             if not latest or latest["status"] not in {"queued", "running"}:
                 break

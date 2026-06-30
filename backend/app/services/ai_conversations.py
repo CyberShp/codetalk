@@ -405,6 +405,7 @@ class AIConversationStore:
     ) -> None:
         run = await self.get_run(run_id)
         now = _now()
+        safe_content = redact_agent_diagnostic_text(content)
         async with self._connect() as db:
             await db.execute("BEGIN")
             await db.execute(
@@ -417,7 +418,7 @@ class AIConversationStore:
                     _new_id("msg"),
                     run["conversation_id"],
                     run_id,
-                    content,
+                    safe_content,
                     _json_dumps(references),
                     _json_dumps(_default_actions()),
                     now,

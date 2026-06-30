@@ -679,6 +679,20 @@ test("redacts persisted AI thread message secrets from exported markdown", async
     await page.getByRole("button", { name: "发送" }).click();
     await expect(page.locator(".ct-codex-message.is-user").filter({ hasText: "请分析导出脱敏" })).toHaveCount(1);
     await expect(page.getByText("AI export redaction probe complete")).toBeVisible({ timeout: 30_000 });
+    await expect(page.locator("body")).toContainText("<redacted>");
+    await expect(page.locator("body")).not.toContainText(userSecret);
+    await expect(page.locator("body")).not.toContainText(runtimeSecret);
+    await expect(page.locator("body")).not.toContainText(tokenSecret);
+    await expect(page.locator("body")).not.toContainText(bearerSecret);
+
+    await page.reload({ waitUntil: "domcontentloaded" });
+    await expect(page.getByRole("heading", { name: threadTitle })).toBeVisible({ timeout: 15_000 });
+    await expect(page.getByText("AI export redaction probe complete")).toBeVisible({ timeout: 15_000 });
+    await expect(page.locator("body")).toContainText("<redacted>");
+    await expect(page.locator("body")).not.toContainText(userSecret);
+    await expect(page.locator("body")).not.toContainText(runtimeSecret);
+    await expect(page.locator("body")).not.toContainText(tokenSecret);
+    await expect(page.locator("body")).not.toContainText(bearerSecret);
 
     const downloadPromise = page.waitForEvent("download");
     await page.getByRole("button", { name: "导出" }).hover();

@@ -546,9 +546,9 @@ export default function AIThreadPage() {
                   <span>{message.role === "user" ? "你" : "CodeTalk AI"}</span>
                   <div>
                     {message.role === "assistant" ? (
-                      <MarkdownRenderer content={message.content} enableNumericCitations={false} />
+                      <MarkdownRenderer content={redactDiagnosticText(message.content)} enableNumericCitations={false} />
                     ) : (
-                      <p className="whitespace-pre-wrap">{message.content}</p>
+                      <p className="whitespace-pre-wrap">{redactDiagnosticText(message.content)}</p>
                     )}
                   </div>
                 </div>
@@ -566,7 +566,7 @@ export default function AIThreadPage() {
                   CodeTalk AI <Loader2 size={12} className="animate-spin" />
                 </span>
                 <div>
-                  <MarkdownRenderer content={streamingContent} enableNumericCitations={false} />
+                  <MarkdownRenderer content={redactDiagnosticText(streamingContent)} enableNumericCitations={false} />
                 </div>
               </div>
             </article>
