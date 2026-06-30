@@ -6,6 +6,20 @@ import { ArrowLeft, FolderSearch, Loader2 } from "lucide-react";
 import Link from "next/link";
 import { api, DuplicateWorkspaceError } from "@/lib/api";
 
+function workspaceCreateErrorMessage(error: unknown): string {
+  const message = error instanceof Error ? error.message : "创建工作空间失败";
+  if (/该代码路径已存在工作空间/.test(message)) {
+    return message;
+  }
+  if (/代码路径不存在|代码路径不是目录|repo_path|路径/.test(message)) {
+    return [
+      message,
+      "修复建议：请确认路径拼写、挂载点和权限；macOS 外置盘通常是 /Volumes/...，不是 /Volums/...",
+    ].join("\n");
+  }
+  return message;
+}
+
 export default function NewWorkspacePage() {
   const router = useRouter();
   const [name, setName] = useState("");
@@ -39,7 +53,7 @@ export default function NewWorkspacePage() {
             name: err.existingWorkspaceName,
           });
         }
-        setError(err instanceof Error ? err.message : "创建工作空间失败");
+        setError(workspaceCreateErrorMessage(err));
       } finally {
         setSubmitting(false);
       }
@@ -67,7 +81,10 @@ export default function NewWorkspacePage() {
       </div>
 
       {error && (
-        <div className="mb-5 px-4 py-3 bg-red-500/10 border border-red-500/20 rounded-lg text-sm text-red-400">
+        <div
+          role="alert"
+          className="mb-5 whitespace-pre-line px-4 py-3 bg-red-500/10 border border-red-500/20 rounded-lg text-sm text-red-400"
+        >
           <div>{error}</div>
           {existingWorkspace && (
             <Link
