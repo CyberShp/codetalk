@@ -131,6 +131,77 @@ test.describe("Coverage analysis", () => {
     }
   });
 
+  test("prevents duplicate coverage reanalysis requests from a real double click", async ({
+    page,
+    request,
+  }) => {
+    const analysisName = `double-reanalysis-${Date.now()}`;
+
+    await page.goto("/coverage", { waitUntil: "domcontentloaded" });
+
+    await page.locator('input[type="text"]').first().fill(analysisName);
+    await page.locator('input[type="file"]').setInputFiles({
+      name: "double-reanalysis-function-hits.csv",
+      mimeType: "text/csv",
+      buffer: Buffer.from(
+        [
+          "function_name,code_location,triggered,hit_count",
+          "double_reanalysis_gap,lib/nvmf/subsystem.c:1-10,false,0",
+        ].join("\n"),
+        "utf8",
+      ),
+    });
+    await page.getByRole("button", { name: "上传并解析" }).hover();
+    await page.getByRole("button", { name: "上传并解析" }).click();
+    await expect(page.getByText(analysisName)).toBeVisible({ timeout: 15_000 });
+
+    const card = page
+      .locator(".bg-surface-container-low")
+      .filter({ hasText: analysisName })
+      .first();
+    await card.getByRole("button", { name: "AI 分析" }).hover();
+    await card.getByRole("button", { name: "AI 分析" }).click();
+    await expect(page.getByText("double_reanalysis_gap")).toBeVisible({ timeout: 20_000 });
+    await expect(card.getByRole("button", { name: "重新分析" })).toBeVisible({
+      timeout: 15_000,
+    });
+
+    const reanalysisRequests: string[] = [];
+    page.on("request", (req) => {
+      if (
+        req.method() === "POST" &&
+        new URL(req.url()).pathname.endsWith("/analyze") &&
+        new URL(req.url()).pathname.startsWith("/api/coverage/")
+      ) {
+        reanalysisRequests.push(req.url());
+      }
+    });
+    const firstReanalysis = page.waitForRequest(
+      (req) =>
+        req.method() === "POST" &&
+        new URL(req.url()).pathname.endsWith("/analyze") &&
+        new URL(req.url()).pathname.startsWith("/api/coverage/"),
+    );
+
+    await card.getByRole("button", { name: "重新分析" }).hover();
+    await card.getByRole("button", { name: "重新分析" }).dblclick();
+    await firstReanalysis;
+
+    await expect(card.getByRole("button", { name: "重新分析" })).toBeDisabled();
+    await expect(page.getByText("double_reanalysis_gap")).toBeVisible({ timeout: 20_000 });
+    await expect.poll(() => reanalysisRequests.length).toBe(1);
+
+    const listResp = await request.get(`${backendBase}/api/coverage/list`);
+    expect(listResp.ok()).toBeTruthy();
+    const analyses = (await listResp.json()) as Array<{ id: string; name: string }>;
+    const created = analyses.filter((item) => item.name === analysisName);
+    expect(created).toHaveLength(1);
+    for (const item of created) {
+      const deleteResp = await request.delete(`${backendBase}/api/coverage/${item.id}`);
+      expect(deleteResp.ok()).toBeTruthy();
+    }
+  });
+
   test("prevents duplicate coverage delete requests after confirmation", async ({
     page,
     request,
