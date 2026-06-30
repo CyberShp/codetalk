@@ -12,6 +12,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import aiosqlite
 import pytest
+from app.adapters.base import ToolHealth
 
 pytestmark = [pytest.mark.asyncio, pytest.mark.integration]
 
@@ -368,6 +369,60 @@ class TestIndexAndAnalyze:
         resp = await client_v2.post("/api/workspaces/ws-ri/reindex")
         assert resp.status_code == 202
         assert any("_index_workspace" in c for c in background_tasks)
+
+    async def test_workspace_indexing_serializes_gitnexus_prepare_calls(
+        self, sqlite_db, tmp_path, monkeypatch
+    ):
+        from app.api import workspaces
+
+        repo_a = tmp_path / "repo-a"
+        repo_b = tmp_path / "repo-b"
+        repo_a.mkdir()
+        repo_b.mkdir()
+        await _seed_ws(sqlite_db, "ws-serial-a", indexed=0, repo_path=str(repo_a))
+        await _seed_ws(sqlite_db, "ws-serial-b", indexed=0, repo_path=str(repo_b))
+
+        state = {"active": 0, "max_active": 0}
+        entered_prepare = asyncio.Event()
+        release_prepare = asyncio.Event()
+
+        class FakeGitNexusAdapter:
+            def __init__(self, base_url: str | None = None):
+                self.base_url = base_url
+
+            async def health_check(self):
+                return ToolHealth(is_healthy=True, container_status="running")
+
+            async def prepare(self, request, on_progress=None):
+                state["active"] += 1
+                state["max_active"] = max(state["max_active"], state["active"])
+                entered_prepare.set()
+                await release_prepare.wait()
+                if on_progress:
+                    await on_progress(50)
+                state["active"] -= 1
+
+        monkeypatch.setattr("app.adapters.gitnexus.GitNexusAdapter", FakeGitNexusAdapter)
+
+        task_a = asyncio.create_task(workspaces._index_workspace("ws-serial-a", str(repo_a)))
+        await asyncio.wait_for(entered_prepare.wait(), timeout=2)
+        task_b = asyncio.create_task(workspaces._index_workspace("ws-serial-b", str(repo_b)))
+        await asyncio.sleep(0.05)
+
+        assert state["max_active"] == 1
+
+        release_prepare.set()
+        await asyncio.gather(task_a, task_b)
+
+        async with aiosqlite.connect(sqlite_db) as db:
+            async with db.execute(
+                "SELECT id, indexed, index_progress, last_index_error FROM workspaces "
+                "WHERE id IN ('ws-serial-a', 'ws-serial-b') ORDER BY id"
+            ) as cur:
+                rows = await cur.fetchall()
+        assert [row[1] for row in rows] == [1, 1]
+        assert [row[2] for row in rows] == [100, 100]
+        assert [row[3] for row in rows] == [None, None]
 
     async def test_analyze_requires_indexed(self, client_v2, sqlite_db):
         await _seed_ws(sqlite_db, "ws-noidx", indexed=0)

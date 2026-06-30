@@ -27,11 +27,27 @@ router = APIRouter(prefix="/api/workspaces", tags=["工作空间"])
 logger = logging.getLogger(__name__)
 
 _MATERIALS_ROOT = settings.data_path / "workspaces"
+_GITNEXUS_INDEX_LOCKS: dict[tuple[str, int], asyncio.Lock] = {}
 
 
 def _schedule_background_task(coro):
     """Schedule a fire-and-forget workspace background coroutine."""
     return asyncio.create_task(coro)
+
+
+def _gitnexus_index_lock(base_url: str) -> asyncio.Lock:
+    """Return a loop-local lock for GitNexus indexing calls.
+
+    GitNexus accepts one repository analysis at a time in practice; concurrent
+    workspace background tasks otherwise surface as 409/429 busy errors.
+    """
+    loop = asyncio.get_running_loop()
+    key = (base_url, id(loop))
+    lock = _GITNEXUS_INDEX_LOCKS.get(key)
+    if lock is None:
+        lock = asyncio.Lock()
+        _GITNEXUS_INDEX_LOCKS[key] = lock
+    return lock
 
 
 def _canonical_repo_path(repo_path: str) -> str:
@@ -337,7 +353,8 @@ async def _index_workspace(ws_id: str, repo_path: str) -> None:
             logger.error("Workspace indexing skipped for %s: %s", ws_id, error_msg)
             return
 
-        await adapter.prepare(AnalysisRequest(repo_local_path=repo_path), on_progress=_on_index_progress)
+        async with _gitnexus_index_lock(settings.gitnexus_base_url):
+            await adapter.prepare(AnalysisRequest(repo_local_path=repo_path), on_progress=_on_index_progress)
 
         async with aiosqlite.connect(settings.sqlite_db) as db:
             await db.execute(
