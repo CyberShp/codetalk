@@ -25,6 +25,7 @@ from app.services.external_agent_discovery import (
     external_agent_provider_spec,
     external_agent_provider_specs,
     probe_external_agent_startup,
+    redact_agent_diagnostic_text,
     split_agent_command,
 )
 from app.services.test_semantic_library import (
@@ -4888,7 +4889,7 @@ def _artifact_content_payload(task_dir: Path, path: Path, *, max_chars: int) -> 
     if is_text:
         text = data.decode("utf-8", errors="replace")
         truncated = len(text) > max_chars
-        content = text[:max_chars]
+        content = redact_agent_diagnostic_text(text[:max_chars])
     return {
         "relative_path": relative_path,
         "path": str(path.resolve()),

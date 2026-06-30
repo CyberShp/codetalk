@@ -6,6 +6,8 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
+from app.services.external_agent_discovery import redact_agent_diagnostic_text
+
 
 def write_task_artifact_manifest(task_dir: Path, *, task_run_id: str) -> dict[str, Any]:
     artifacts = [
@@ -190,4 +192,4 @@ def artifact_preview(path: Path, data: bytes, *, max_chars: int = 1200) -> str:
     if path.suffix.lower() not in {".json", ".md", ".txt", ".patch", ".diff", ".log"}:
         return ""
     text = data[: max_chars * 4].decode("utf-8", errors="replace")
-    return text[:max_chars]
+    return redact_agent_diagnostic_text(text[:max_chars])

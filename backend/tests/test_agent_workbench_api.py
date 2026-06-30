@@ -3250,6 +3250,12 @@ async def test_workbench_task_run_artifact_content_api_is_safe(workbench_client,
         },
     )
     task_run_id = prepared.json()["task_run_id"]
+    task_dir = Path(prepared.json()["artifact_dir"])
+    secret = "artifact-secret-value"
+    (task_dir / "diagnostics.log").write_text(
+        f"provider failed --api-key {secret}; token={secret}; Authorization: Bearer {secret}",
+        encoding="utf-8",
+    )
 
     content = await workbench_client.get(
         f"/api/workbench/task-runs/{task_run_id}/artifacts/content/task_bundle.json"
@@ -3267,6 +3273,22 @@ async def test_workbench_task_run_artifact_content_api_is_safe(workbench_client,
         f"/api/workbench/task-runs/{task_run_id}/artifacts/content/%2E%2E/outside.txt"
     )
     assert escaped.status_code == 400
+
+    artifacts = await workbench_client.get(f"/api/workbench/task-runs/{task_run_id}/artifacts")
+    diagnostics = next(
+        item for item in artifacts.json()["artifacts"] if item["relative_path"] == "diagnostics.log"
+    )
+    assert secret not in diagnostics["preview"]
+    assert "<redacted>" in diagnostics["preview"]
+
+    diagnostic_content = await workbench_client.get(
+        f"/api/workbench/task-runs/{task_run_id}/artifacts/content/diagnostics.log"
+    )
+    assert diagnostic_content.status_code == 200
+    diagnostic_body = diagnostic_content.json()
+    assert secret not in diagnostic_body["content"]
+    assert "<redacted>" in diagnostic_body["content"]
+    assert (task_dir / "diagnostics.log").read_text(encoding="utf-8").count(secret) == 3
 
 
 async def test_workbench_task_run_artifacts_api_labels_agent_execution_input(
