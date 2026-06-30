@@ -316,3 +316,89 @@ test("switches an idle AI thread executor through the real UI and persists it", 
     await request.delete(`${backendBase}/api/settings/agent-runtimes/${encodeURIComponent(runtime.id)}`);
   }
 });
+
+test("creates a sibling AI thread from the existing thread sidebar through the real UI", async ({
+  page,
+  request,
+}) => {
+  const repo = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), "codetalk-ai-sibling-")));
+  fs.writeFileSync(path.join(repo, "README.md"), "AI sibling thread e2e workspace\n", "utf8");
+  const workspaceName = `ai-sibling-e2e-${Date.now()}`;
+  const firstThreadTitle = `${workspaceName} first investigation`;
+
+  const workspaceResp = await request.post(`${backendBase}/api/workspaces`, {
+    data: { name: workspaceName, repo_path: repo },
+  });
+  expect(workspaceResp.status()).toBe(201);
+  const workspace = (await workspaceResp.json()) as { id: string };
+
+  await page.goto("/ai", { waitUntil: "domcontentloaded" });
+  const projectButton = page.locator("button").filter({ hasText: workspaceName }).first();
+  await expect(projectButton).toBeVisible({ timeout: 15_000 });
+  await projectButton.hover();
+  await projectButton.click();
+  await expect(page.getByRole("heading", { name: workspaceName })).toBeVisible();
+
+  await page.getByPlaceholder(/线程名称/).fill(firstThreadTitle);
+  await page.getByRole("button", { name: "新建线程" }).hover();
+  await page.getByRole("button", { name: "新建线程" }).click();
+
+  await page.waitForURL(/\/ai\/[^/]+$/, { timeout: 15_000 });
+  const firstThreadUrl = page.url();
+  const firstThreadId = firstThreadUrl.split("/").pop() ?? "";
+  await expect(page.getByRole("heading", { name: firstThreadTitle })).toBeVisible({
+    timeout: 15_000,
+  });
+
+  const sidebarNewThread = page.locator(".ct-codex-ai__rail").getByRole("button", {
+    name: "新建线程",
+  });
+  await sidebarNewThread.hover();
+  await sidebarNewThread.click();
+  await page.waitForURL((url) => /\/ai\/[^/]+$/.test(url.pathname) && url.toString() !== firstThreadUrl, {
+    timeout: 15_000,
+  });
+  const siblingThreadUrl = page.url();
+  const siblingThreadId = siblingThreadUrl.split("/").pop() ?? "";
+  expect(siblingThreadId).not.toEqual(firstThreadId);
+  await expect(page.getByRole("heading", { name: `${workspaceName} · 新调查` })).toBeVisible({
+    timeout: 15_000,
+  });
+  await expect(page.getByText(`workspace / ${workspace.id}`)).toBeVisible();
+  await expect(page.getByText(`workspace:${workspace.id}`)).toBeVisible();
+  await expect(page.locator(".ct-codex-ai__thread-list").getByText(firstThreadTitle)).toBeVisible();
+  await expect(page.locator(".ct-codex-ai__thread-list").getByText(`${workspaceName} · 新调查`)).toBeVisible();
+
+  const listResp = await request.get(`${backendBase}/api/ai/conversations?workspace_id=${workspace.id}&limit=10`);
+  expect(listResp.ok()).toBeTruthy();
+  const conversations = (await listResp.json()) as {
+    items: Array<{
+      id: string;
+      title: string;
+      scope_type: string;
+      scope_id: string;
+      workspace_id: string;
+      memory_namespace: string;
+    }>;
+  };
+  expect(conversations.items).toEqual(
+    expect.arrayContaining([
+      expect.objectContaining({
+        id: firstThreadId,
+        title: firstThreadTitle,
+        scope_type: "workspace",
+        scope_id: workspace.id,
+        workspace_id: workspace.id,
+        memory_namespace: `workspace:${workspace.id}`,
+      }),
+      expect.objectContaining({
+        id: siblingThreadId,
+        title: `${workspaceName} · 新调查`,
+        scope_type: "workspace",
+        scope_id: workspace.id,
+        workspace_id: workspace.id,
+        memory_namespace: `workspace:${workspace.id}`,
+      }),
+    ]),
+  );
+});
