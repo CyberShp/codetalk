@@ -81,6 +81,18 @@ class HangingStreamLLM:
         return LLMResponse(content="非流式 fallback 已完成。", usage={"total_tokens": 3}, model="fake")
 
 
+class BlockingStreamLLM:
+    def __init__(self):
+        self.started = asyncio.Event()
+        self.release = asyncio.Event()
+
+    async def stream_complete(self, messages, max_tokens=4096, temperature=0.3):
+        self.started.set()
+        yield "第一段分析。"
+        await self.release.wait()
+        yield "最终结论。"
+
+
 class TestAIConversationsAPI:
     async def test_create_and_list_project_scoped_conversations(self, sqlite_db):
         ws_a = await _seed_workspace(sqlite_db, "ws-a")
@@ -239,6 +251,65 @@ class TestAIConversationsAPI:
             )
             assert reconnect.status_code == 200
             assert "data:" not in reconnect.text
+
+    async def test_rejects_second_message_while_generation_is_running_without_duplication(
+        self,
+        sqlite_db,
+        monkeypatch,
+    ):
+        ws_id = await _seed_workspace(sqlite_db)
+
+        from app.api import ai_conversations
+
+        fake_llm = BlockingStreamLLM()
+        monkeypatch.setattr(
+            ai_conversations,
+            "create_llm_client_from_active",
+            lambda: fake_llm,
+        )
+
+        app = _test_app(sqlite_db)
+        async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+            created = await client.post(
+                "/api/ai/conversations",
+                json={
+                    "scope_type": "workspace",
+                    "scope_id": ws_id,
+                    "title": "并发提交保护",
+                },
+            )
+            assert created.status_code == 201
+            conversation = created.json()
+
+            first = await client.post(
+                f"/api/ai/conversations/{conversation['id']}/messages",
+                json={"content": "先分析 SPDK nvmf connect 流程"},
+            )
+            assert first.status_code == 202
+            await asyncio.wait_for(fake_llm.started.wait(), timeout=1)
+
+            second = await client.post(
+                f"/api/ai/conversations/{conversation['id']}/messages",
+                json={"content": "运行中再追问异常链路"},
+            )
+            assert second.status_code == 409
+            assert second.json()["detail"] == "当前线程仍在生成中"
+
+            fake_llm.release.set()
+            for _ in range(20):
+                messages = await client.get(f"/api/ai/conversations/{conversation['id']}/messages")
+                items = messages.json()["items"]
+                if len(items) == 2 and items[-1]["role"] == "assistant":
+                    break
+                await asyncio.sleep(0.05)
+
+            messages = await client.get(f"/api/ai/conversations/{conversation['id']}/messages")
+            assert messages.status_code == 200
+            body = messages.json()
+            assert [m["role"] for m in body["items"]] == ["user", "assistant"]
+            assert body["items"][0]["content"] == "先分析 SPDK nvmf connect 流程"
+            assert "运行中再追问" not in json.dumps(body["items"], ensure_ascii=False)
+            assert body["items"][1]["content"] == "第一段分析。最终结论。"
 
     async def test_message_stream_timeout_falls_back_to_non_stream_completion(self, sqlite_db, monkeypatch):
         ws_id = await _seed_workspace(sqlite_db)
