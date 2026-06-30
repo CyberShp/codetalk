@@ -211,6 +211,10 @@ function writeArtifactManifest() {
   return manifest;
 }
 
+function fileSha256(file: string) {
+  return crypto.createHash("sha256").update(fs.readFileSync(file)).digest("hex");
+}
+
 function redactReportText(value: string) {
   return value
     .replace(/(\b(?:api[-_]?key|token|access[-_]?token|secret|password)=)(['"]?)([^\s"']+)(['"]?)/gi, "$1$2<redacted>$4")
@@ -2860,6 +2864,7 @@ test("matrix accounting: every planned case has an explicit status", async () =>
   const failureReportJsonText = fs.readFileSync(failureReportPath, "utf8");
   const acceptanceMatrixJsonText = fs.readFileSync(acceptanceMatrixPath, "utf8");
   const failureReportMarkdown = fs.readFileSync(failureReportMarkdownPath, "utf8");
+  const artifactManifestJsonText = fs.readFileSync(artifactManifestPath, "utf8");
   const artifactManifest = JSON.parse(fs.readFileSync(artifactManifestPath, "utf8")) as {
     file_count: number;
     total_size_bytes: number;
@@ -2883,6 +2888,9 @@ test("matrix accounting: every planned case has an explicit status", async () =>
   expect(acceptanceMatrixJsonText).not.toMatch(/\bsk-[A-Za-z0-9_-]{12,}\b/);
   expect(acceptanceMatrixJsonText).not.toMatch(/Authorization:\s*Bearer\s+(?!<redacted>)[^\s"']+/i);
   expect(acceptanceMatrixJsonText).not.toMatch(/\b(?:api[-_]?key|token|access[-_]?token|secret|password)=(?!<redacted>)[^\s"']+/i);
+  expect(artifactManifestJsonText).not.toMatch(/\bsk-[A-Za-z0-9_-]{12,}\b/);
+  expect(artifactManifestJsonText).not.toMatch(/Authorization:\s*Bearer\s+(?!<redacted>)[^\s"']+/i);
+  expect(artifactManifestJsonText).not.toMatch(/\b(?:api[-_]?key|token|access[-_]?token|secret|password)=(?!<redacted>)[^\s"']+/i);
   expect(artifactManifest.file_count).toBeGreaterThanOrEqual(3);
   expect(artifactManifest.total_size_bytes).toBeGreaterThan(0);
   expect(artifactManifest.files).toEqual(
@@ -2896,6 +2904,11 @@ test("matrix accounting: every planned case has an explicit status", async () =>
     expect(file.path).not.toContain("..");
     expect(file.size_bytes).toBeGreaterThanOrEqual(0);
     expect(file.sha256).toMatch(/^[a-f0-9]{64}$/);
+  }
+  for (const relativePath of ["acceptance_matrix.final.json", "failure_report.json", "failure_report.md"]) {
+    const entry = artifactManifest.files.find((file) => file.path === relativePath);
+    expect(entry, `${relativePath} should be listed in artifact_manifest.json`).toBeTruthy();
+    expect(entry?.sha256).toBe(fileSha256(path.join(ARTIFACT_DIR, relativePath)));
   }
   expect(failureReport.cases).toEqual(
     expect.arrayContaining(
