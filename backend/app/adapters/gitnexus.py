@@ -29,6 +29,8 @@ logger = logging.getLogger(__name__)
 
 _POLL_INTERVAL = 2  # seconds between job status polls
 _POLL_TIMEOUT = 1800  # max seconds to wait for analysis (30 min for large repos)
+_ANALYZE_BUSY_RETRY_ATTEMPTS = 8
+_ANALYZE_BUSY_RETRY_INTERVAL = 2.0
 
 
 # ---------------------------------------------------------------------------
@@ -409,10 +411,7 @@ class GitNexusAdapter(BaseToolAdapter):
                 asyncio.ensure_future(self._trigger_embed())
                 return
 
-            resp = await self.client.post(
-                "/api/analyze",
-                json={"path": tool_repo_path},
-            )
+            resp = await self._post_analyze_with_busy_retry(tool_repo_path)
 
             if resp.status_code == 409:
                 body = resp.json() if resp.content else {}
@@ -495,6 +494,25 @@ class GitNexusAdapter(BaseToolAdapter):
                     )
 
             raise RuntimeError("GitNexus indexing timed out")
+
+    async def _post_analyze_with_busy_retry(self, tool_repo_path: str) -> httpx.Response:
+        """Start a GitNexus analyze job, tolerating transient 429 busy replies."""
+        payload = {"path": tool_repo_path}
+        attempts = max(1, _ANALYZE_BUSY_RETRY_ATTEMPTS)
+        for attempt in range(attempts):
+            resp = await self.client.post("/api/analyze", json=payload)
+            if resp.status_code != 429:
+                return resp
+            if attempt >= attempts - 1:
+                return resp
+            logger.info(
+                "gitnexus: analyze busy for %s (HTTP 429), retrying %d/%d",
+                tool_repo_path,
+                attempt + 1,
+                attempts - 1,
+            )
+            await asyncio.sleep(_ANALYZE_BUSY_RETRY_INTERVAL)
+        return resp
 
     async def _repo_exists(self, repo_name: str) -> bool:
         """Lightweight existence check so fresh adapter instances can reuse indexed repos."""

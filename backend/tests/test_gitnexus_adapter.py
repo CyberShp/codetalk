@@ -130,6 +130,33 @@ class GitNexusAdapterPrepareTests(unittest.IsolatedAsyncioTestCase):
         ])
         self.assertEqual(adapter.current_repo_name, "open-iscsi")
 
+    async def test_prepare_retries_analyze_when_gitnexus_is_temporarily_busy(self) -> None:
+        request = AnalysisRequest(repo_local_path="/tmp/repos/spdk")
+        adapter = GitNexusAdapter(base_url="http://gitnexus:7100")
+        adapter._client = _FakeAsyncClient(
+            get_responses=[
+                _FakeResponse(200, {"repos": []}),
+                _FakeResponse(200, {"status": "complete", "repoName": "spdk"}),
+            ],
+            post_responses=[
+                _FakeResponse(429, {"error": "too many requests"}),
+                _FakeResponse(200, {"jobId": "job-retry"}),
+            ],
+        )
+
+        with (
+            patch("app.adapters.gitnexus.to_tool_repo_path", side_effect=lambda repo_local_path, **_: repo_local_path),
+            patch("app.adapters.gitnexus._POLL_INTERVAL", 0),
+            patch("app.adapters.gitnexus._ANALYZE_BUSY_RETRY_INTERVAL", 0),
+        ):
+            await adapter.prepare(request)
+
+        self.assertEqual(adapter._client.post_calls[:2], [
+            ("/api/analyze", {"path": "/tmp/repos/spdk"}),
+            ("/api/analyze", {"path": "/tmp/repos/spdk"}),
+        ])
+        self.assertEqual(adapter.current_repo_name, "spdk")
+
 
 class GitNexusAdapterProgressParsingTests(unittest.IsolatedAsyncioTestCase):
     """Verify on_progress handles all known GitNexus progress field shapes."""
