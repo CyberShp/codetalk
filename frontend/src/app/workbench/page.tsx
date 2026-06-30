@@ -6,6 +6,7 @@ import {
   AlertTriangle,
   ClipboardList,
   Database,
+  Download,
   Library,
   Loader2,
   PlayCircle,
@@ -359,6 +360,28 @@ function parseWorkflowSpecList(value: string, defaultType: string): Array<{
       ...(artifactPart ? { artifact: artifactPart } : {}),
     };
   });
+}
+
+function safeArtifactDownloadFilename(relativePath: string): string {
+  const filename = relativePath
+    .split("/")
+    .filter(Boolean)
+    .join("__")
+    .replace(/[\\/:*?"<>|]+/g, "-")
+    .slice(0, 120);
+  return filename || "workbench-artifact.txt";
+}
+
+function downloadTextFile(filename: string, content: string, type: string) {
+  const blob = new Blob([content], { type });
+  const url = URL.createObjectURL(blob);
+  const link = document.createElement("a");
+  link.href = url;
+  link.download = filename;
+  document.body.appendChild(link);
+  link.click();
+  link.remove();
+  URL.revokeObjectURL(url);
 }
 
 function outputArtifactForSpec(outputId: string, outputType: string, artifacts: string[]): string {
@@ -4807,6 +4830,22 @@ export default function AgentWorkbenchPage() {
                           )}
                           {artifactContent.content_redacted && (
                             <span className="text-warning">redacted</span>
+                          )}
+                          {artifactContent.is_text && (
+                            <button
+                              type="button"
+                              onClick={() =>
+                                downloadTextFile(
+                                  safeArtifactDownloadFilename(artifactContent.relative_path),
+                                  artifactContent.content,
+                                  "text/plain;charset=utf-8",
+                                )
+                              }
+                              className="inline-flex items-center gap-1 rounded bg-surface-container px-1.5 py-0.5 font-medium text-on-surface transition-colors hover:bg-surface-container-high"
+                            >
+                              <Download size={12} />
+                              下载预览
+                            </button>
                           )}
                         </div>
                         {(() => {

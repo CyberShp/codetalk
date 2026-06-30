@@ -726,7 +726,7 @@ test("persists semantic cases and evidence source slices through the real workbe
 
 test("executes resource leak hunt and previews materialized artifacts through the real workbench UI", async ({
   page,
-}) => {
+}, testInfo) => {
   const repo = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), "codetalk-risk-hunt-")));
   fs.mkdirSync(path.join(repo, "lib", "bdev"), { recursive: true });
   fs.mkdirSync(path.join(repo, "test", "bdev"), { recursive: true });
@@ -809,6 +809,18 @@ test("executes resource leak hunt and previews materialized artifacts through th
   await expect(page.getByText("lib/bdev/cleanup.c").first()).toBeVisible();
   await expect(page.getByText(/failure_mode/).first()).toBeVisible();
   await expect(page.getByText(/test\/bdev/).first()).toBeVisible();
+  const downloadPromise = page.waitForEvent("download");
+  await page.getByRole("button", { name: "下载预览" }).hover();
+  await page.getByRole("button", { name: "下载预览" }).click();
+  const download = await downloadPromise;
+  expect(download.suggestedFilename()).toMatch(/risk_findings\.json$/);
+  expect(download.suggestedFilename()).toContain("steps__hunt_risks__");
+  const downloadPath = testInfo.outputPath("risk_findings_preview.json");
+  await download.saveAs(downloadPath);
+  const downloadedArtifact = fs.readFileSync(downloadPath, "utf8");
+  expect(downloadedArtifact).toContain("local-resource-scan");
+  expect(downloadedArtifact).toContain("lib/bdev/cleanup.c");
+  expect(downloadedArtifact).toContain("failure_mode");
 
   const testHooksArtifact = page
     .getByRole("button")
