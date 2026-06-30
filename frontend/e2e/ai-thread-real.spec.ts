@@ -216,6 +216,144 @@ test("cancels a running agent-runtime AI thread through the real UI", async ({
   }
 });
 
+test("completes an agent-runtime AI thread and exports the persisted answer", async ({
+  page,
+  request,
+}, testInfo) => {
+  test.setTimeout(70_000);
+  const repo = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), "codetalk-ai-complete-repo-")));
+  fs.mkdirSync(path.join(repo, "lib", "nvmf"), { recursive: true });
+  fs.writeFileSync(
+    path.join(repo, "lib", "nvmf", "ctrlr.c"),
+    "int nvmf_ctrlr_connect(void) { return 0; }\n",
+    "utf8",
+  );
+  const runtimeDir = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), "codetalk-agent-complete-")));
+  const runtimeScript = path.join(runtimeDir, "complete_agent.py");
+  fs.writeFileSync(
+    runtimeScript,
+    [
+      "import sys",
+      "prompt = sys.stdin.read()",
+      "print('SPDK agent completed analysis', flush=True)",
+      "print('Evidence: lib/nvmf/ctrlr.c nvmf_ctrlr_connect', flush=True)",
+      "print('Flow: connect request -> controller setup -> IO queue ready', flush=True)",
+      "print('Prompt echoed:', prompt[:80].replace('\\n', ' '), flush=True)",
+      "",
+    ].join("\n"),
+    "utf8",
+  );
+  const workspaceName = `ai-complete-e2e-${Date.now()}`;
+  const runtimeName = `Complete runtime ${Date.now()}`;
+  const threadTitle = `${workspaceName} successful agent run`;
+  const prompt = "分析 SPDK NVMe-oF target connect 到 IO 提交流程，并列出关键文件证据";
+
+  const runtimeResp = await request.post(`${backendBase}/api/settings/agent-runtimes`, {
+    data: {
+      name: runtimeName,
+      command: "python3",
+      args: [runtimeScript],
+      prompt_transport: "stdin",
+      output_mode: "plain",
+      working_dir_mode: "project",
+      fixed_working_dir: "",
+      env: {},
+      health_command: "",
+      timeout_seconds: 30,
+      enabled: true,
+    },
+  });
+  expect(runtimeResp.status()).toBe(201);
+  const runtime = (await runtimeResp.json()) as { id: string };
+
+  const workspaceResp = await request.post(`${backendBase}/api/workspaces`, {
+    data: { name: workspaceName, repo_path: repo },
+  });
+  expect(workspaceResp.status()).toBe(201);
+  const workspace = (await workspaceResp.json()) as { id: string };
+
+  try {
+    await page.goto("/ai", { waitUntil: "domcontentloaded" });
+    const projectButton = page.locator("button").filter({ hasText: workspaceName }).first();
+    await expect(projectButton).toBeVisible({ timeout: 15_000 });
+    await projectButton.hover();
+    await projectButton.click();
+    await expect(page.getByRole("heading", { name: workspaceName })).toBeVisible();
+
+    await page.getByLabel("AI 线程执行器").selectOption({ label: runtimeName });
+    await page.getByPlaceholder(/线程名称/).fill(threadTitle);
+    await page.getByRole("button", { name: "新建线程" }).hover();
+    await page.getByRole("button", { name: "新建线程" }).click();
+
+    await page.waitForURL(/\/ai\/[^/]+$/, { timeout: 15_000 });
+    const threadId = page.url().split("/").pop() ?? "";
+    await expect(page.getByRole("heading", { name: threadTitle })).toBeVisible({
+      timeout: 15_000,
+    });
+    await expect(page.getByLabel("当前 AI 执行器")).toHaveValue(runtime.id);
+
+    await page.getByPlaceholder(/像 Codex 一样继续追问/).fill(prompt);
+    await page.getByRole("button", { name: "发送" }).hover();
+    await page.getByRole("button", { name: "发送" }).click();
+    await expect(page.locator(".ct-codex-message.is-user").filter({ hasText: prompt })).toHaveCount(1);
+    await expect(page.getByText("SPDK agent completed analysis")).toBeVisible({ timeout: 30_000 });
+    await expect(page.getByText("Evidence: lib/nvmf/ctrlr.c nvmf_ctrlr_connect")).toBeVisible();
+    await expect(page.getByRole("button", { name: "停止" })).toHaveCount(0, { timeout: 15_000 });
+
+    await page.reload({ waitUntil: "domcontentloaded" });
+    await expect(page.getByRole("heading", { name: threadTitle })).toBeVisible({
+      timeout: 15_000,
+    });
+    await expect(page.getByText("SPDK agent completed analysis")).toBeVisible({ timeout: 15_000 });
+    await expect(page.getByText("Evidence: lib/nvmf/ctrlr.c nvmf_ctrlr_connect")).toBeVisible();
+
+    const downloadPromise = page.waitForEvent("download");
+    await page.getByRole("button", { name: "导出" }).hover();
+    await page.getByRole("button", { name: "导出" }).click();
+    const download = await downloadPromise;
+    expect(download.suggestedFilename()).toMatch(new RegExp(`${workspaceName}.*\\.md$`));
+    const exportPath = testInfo.outputPath("real-ai-thread-success-export.md");
+    await download.saveAs(exportPath);
+    const exported = fs.readFileSync(exportPath, "utf8");
+    expect(exported).toContain(`# ${threadTitle}`);
+    expect(exported).toContain(prompt);
+    expect(exported).toContain("SPDK agent completed analysis");
+    expect(exported).toContain("Evidence: lib/nvmf/ctrlr.c nvmf_ctrlr_connect");
+    expect(exported).not.toMatch(/sk-[A-Za-z0-9_-]{12,}/);
+    expect(exported).not.toMatch(/Authorization:\s*Bearer\s+[^\s"']+/i);
+    expect(exported).not.toMatch(/(?:api[-_]?key|token|secret|password)=['"]?[^\s"']+/i);
+
+    const conversationResp = await request.get(
+      `${backendBase}/api/ai/conversations/${encodeURIComponent(threadId)}`,
+    );
+    expect(conversationResp.ok()).toBeTruthy();
+    const conversation = (await conversationResp.json()) as {
+      status: string;
+      latest_run: { status: string; model: string | null } | null;
+      workspace_id: string;
+    };
+    expect(conversation.status).toBe("idle");
+    expect(conversation.latest_run?.status).toBe("completed");
+    expect(conversation.workspace_id).toBe(workspace.id);
+
+    const messagesResp = await request.get(
+      `${backendBase}/api/ai/conversations/${encodeURIComponent(threadId)}/messages`,
+    );
+    expect(messagesResp.ok()).toBeTruthy();
+    const messageBody = (await messagesResp.json()) as {
+      items: Array<{ role: string; content: string }>;
+    };
+    expect(messageBody.items.filter((item) => item.role === "user" && item.content === prompt)).toHaveLength(1);
+    expect(
+      messageBody.items.some(
+        (item) => item.role === "assistant" && item.content.includes("SPDK agent completed analysis"),
+      ),
+    ).toBeTruthy();
+  } finally {
+    await request.delete(`${backendBase}/api/settings/agent-runtimes/${encodeURIComponent(runtime.id)}`);
+  }
+});
+
 test("switches an idle AI thread executor through the real UI and persists it", async ({
   page,
   request,
