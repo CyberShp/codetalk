@@ -305,6 +305,119 @@ test("prevents duplicate create-and-run task runs from a real double click", asy
   await expect.poll(() => runRequests.length).toBe(1);
 });
 
+test("creates, runs, previews, and downloads workflow artifacts through the real workbench UI", async ({
+  page,
+  request,
+}, testInfo) => {
+  test.setTimeout(90_000);
+  const repo = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), "codetalk-run-artifacts-")));
+  fs.mkdirSync(path.join(repo, "lib", "nvmf"), { recursive: true });
+  fs.writeFileSync(
+    path.join(repo, "lib", "nvmf", "artifact_flow.c"),
+    [
+      "int nvmf_artifact_flow_connect(void) {",
+      "    return 0;",
+      "}",
+      "",
+    ].join("\n"),
+    "utf8",
+  );
+
+  await page.goto("/workbench", { waitUntil: "domcontentloaded" });
+  await page.getByRole("button", { name: "工作流设计" }).hover();
+  await page.getByRole("button", { name: "工作流设计" }).click();
+  await page.getByLabel("工作流预设").selectOption("module_analysis");
+  await page.getByRole("button", { name: "安装预设" }).hover();
+  await page.getByRole("button", { name: "安装预设" }).click();
+  await expect(page.getByText("预设已安装: 模块分析工作流")).toBeVisible({
+    timeout: 15_000,
+  });
+
+  await page.getByRole("button", { name: "运行驾驶舱" }).hover();
+  await page.getByRole("button", { name: "运行驾驶舱" }).click();
+  await page.getByLabel("Repo path").fill(repo);
+  await page.getByLabel("Workflow input repo_path").fill(repo);
+  await page.getByLabel("Workflow input analysis_object").fill("lib/nvmf artifact flow");
+  await page.getByRole("button", { name: "创建并运行" }).hover();
+  await page.getByRole("button", { name: "创建并运行" }).click();
+
+  await expect(page.getByText(/Task run completed:/)).toBeVisible({ timeout: 45_000 });
+  const bodyText = await page.locator("body").innerText();
+  const taskRunId = bodyText.match(/Task run completed:\s*(task_run_[a-f0-9]+)/)?.[1] ?? "";
+  expect(taskRunId).not.toEqual("");
+  await expect(page.getByText(/工作流: completed/)).toBeVisible();
+  await expect(page.getByText(/审计产物: \d+/)).toBeVisible({ timeout: 15_000 });
+  const hiddenArtifactsToggle = page.getByText(/展开其余 \d+ 个产物/);
+  await expect(hiddenArtifactsToggle).toBeVisible();
+  await hiddenArtifactsToggle.hover();
+  await hiddenArtifactsToggle.click();
+
+  const workflowOutputsButton = page.getByRole("button", {
+    name: /workflow_outputs:workflow_outputs\.json/,
+  });
+  await expect(workflowOutputsButton).toBeVisible({ timeout: 15_000 });
+  await workflowOutputsButton.hover();
+  await workflowOutputsButton.click();
+  await expect(page.getByText("workflow_outputs.json").first()).toBeVisible();
+  await expect(page.locator("pre").filter({ hasText: "source_scope" }).first()).toBeVisible({
+    timeout: 15_000,
+  });
+  await expect(page.locator("pre").filter({ hasText: "evidence_cards" }).first()).toBeVisible();
+  await expect(page.locator("pre").filter({ hasText: "report.md" }).first()).toBeVisible();
+
+  const downloadPromise = page.waitForEvent("download");
+  await page.getByRole("button", { name: "下载预览" }).hover();
+  await page.getByRole("button", { name: "下载预览" }).click();
+  const download = await downloadPromise;
+  expect(download.suggestedFilename()).toBe("workflow_outputs.json");
+  const exportPath = testInfo.outputPath("workbench-workflow-outputs.json");
+  await download.saveAs(exportPath);
+  const exported = JSON.parse(fs.readFileSync(exportPath, "utf8")) as {
+    task_run_id: string;
+    status: string;
+    outputs: Array<{ id: string; artifact: string; status: string; type: string }>;
+  };
+  expect(exported.task_run_id).toBe(taskRunId);
+  expect(exported.status).toBe("completed");
+  expect(exported.outputs).toEqual(
+    expect.arrayContaining([
+      expect.objectContaining({ id: "scope", artifact: "source_scope.json", status: "ok" }),
+      expect.objectContaining({ id: "evidence_cards", artifact: "evidence_cards.json", status: "ok" }),
+      expect.objectContaining({ id: "report", artifact: "report.md", status: "ok" }),
+    ]),
+  );
+
+  const manifestResp = await request.get(
+    `http://localhost:${process.env.CODETALK_BACKEND_PORT ?? "3004"}/api/workbench/task-runs/${encodeURIComponent(taskRunId)}/artifacts`,
+  );
+  expect(manifestResp.ok()).toBeTruthy();
+  const manifest = (await manifestResp.json()) as {
+    task_run_id: string;
+    artifacts: Array<{ relative_path: string; kind: string; size_bytes: number; sha256: string }>;
+  };
+  expect(manifest.task_run_id).toBe(taskRunId);
+  expect(manifest.artifacts).toEqual(
+    expect.arrayContaining([
+      expect.objectContaining({
+        relative_path: "task_artifact_manifest.json",
+        kind: "task_artifact_manifest",
+      }),
+      expect.objectContaining({
+        relative_path: "workflow_outputs.json",
+        kind: "workflow_outputs",
+      }),
+      expect.objectContaining({
+        relative_path: "task_acceptance_audit.json",
+        kind: "task_acceptance_audit",
+      }),
+    ]),
+  );
+  for (const artifact of manifest.artifacts) {
+    expect(artifact.size_bytes, `${artifact.relative_path} should not be empty`).toBeGreaterThan(0);
+    expect(artifact.sha256, `${artifact.relative_path} should have sha256`).toMatch(/^[a-f0-9]{64}$/);
+  }
+});
+
 test("prevents duplicate workbench smoke E2E probes from a real double click", async ({
   page,
 }) => {

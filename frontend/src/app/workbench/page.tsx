@@ -4783,8 +4783,11 @@ export default function AgentWorkbenchPage() {
                 {artifactManifest && artifactManifest.task_run_id === preparedRun.task_run_id && (
                   <div className="mt-2 rounded bg-surface-container px-2 py-1.5 text-on-surface-variant">
                     审计产物: {artifactManifest.artifacts.length}
-                    <div className="mt-1 flex flex-wrap gap-1.5">
-                      {prioritizedAuditArtifacts(artifactManifest.artifacts).slice(0, 12).map((artifact) => (
+                    {(() => {
+                      const sortedArtifacts = prioritizedAuditArtifacts(artifactManifest.artifacts);
+                      const visibleArtifacts = sortedArtifacts.slice(0, 12);
+                      const hiddenArtifacts = sortedArtifacts.slice(visibleArtifacts.length);
+                      const artifactButton = (artifact: WorkbenchTaskArtifact) => (
                         <button
                           key={artifact.relative_path}
                           onClick={() => previewArtifact(artifact.relative_path)}
@@ -4799,8 +4802,25 @@ export default function AgentWorkbenchPage() {
                             <span className="ml-1 text-warning">redacted</span>
                           )}
                         </button>
-                      ))}
-                    </div>
+                      );
+                      return (
+                        <>
+                          <div className="mt-1 flex flex-wrap gap-1.5">
+                            {visibleArtifacts.map(artifactButton)}
+                          </div>
+                          {hiddenArtifacts.length > 0 && (
+                            <details className="mt-1 rounded bg-surface/70 px-2 py-1">
+                              <summary className="cursor-pointer text-[11px] font-medium text-on-surface">
+                                展开其余 {hiddenArtifacts.length} 个产物
+                              </summary>
+                              <div className="mt-1 flex flex-wrap gap-1.5">
+                                {hiddenArtifacts.map(artifactButton)}
+                              </div>
+                            </details>
+                          )}
+                        </>
+                      );
+                    })()}
                     {artifactContent && (
                       <div className="mt-2 rounded border border-outline-variant/30 bg-surface p-2">
                         <div className="flex flex-wrap items-center gap-2 text-[11px]">
