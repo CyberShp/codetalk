@@ -1,6 +1,6 @@
 "use client";
 
-import { useState, useEffect, useRef, useCallback } from "react";
+import { useState, useEffect, useRef, useCallback, useLayoutEffect } from "react";
 import { Send, MessageCircle, Bot } from "lucide-react";
 import { useTaskChat } from "@/lib/taskChatContext";
 import MarkdownRenderer from "@/components/ui/MarkdownRenderer";
@@ -9,28 +9,64 @@ export default function ReportChatPanel({ taskId }: { taskId: string }) {
   const { messages, streaming, streamingContent, loadingHistory, init, send } =
     useTaskChat(taskId);
   const [input, setInput] = useState("");
+  const [showJumpToLatest, setShowJumpToLatest] = useState(false);
   const chatContainerRef = useRef<HTMLDivElement>(null);
-  const userNearBottom = useRef(true);
+  const autoScrollRef = useRef(true);
+  const detachedScrollTopRef = useRef(0);
 
   useEffect(() => { void init(); }, [init]);
 
   const handleScroll = useCallback(() => {
     const el = chatContainerRef.current;
     if (!el) return;
-    userNearBottom.current =
-      el.scrollHeight - (el.scrollTop + el.clientHeight) < 80;
+    const nearBottom = el.scrollHeight - (el.scrollTop + el.clientHeight) < 80;
+    autoScrollRef.current = nearBottom;
+    if (!nearBottom) {
+      detachedScrollTopRef.current = el.scrollTop;
+    }
+    setShowJumpToLatest(!nearBottom && (streaming || Boolean(streamingContent)));
+  }, [streaming, streamingContent]);
+
+  const detachAutoScroll = useCallback(() => {
+    const el = chatContainerRef.current;
+    if (el) detachedScrollTopRef.current = el.scrollTop;
+    autoScrollRef.current = false;
+    if (streaming || streamingContent) setShowJumpToLatest(true);
+  }, [streaming, streamingContent]);
+
+  const jumpToLatest = useCallback(() => {
+    const el = chatContainerRef.current;
+    autoScrollRef.current = true;
+    setShowJumpToLatest(false);
+    if (el) {
+      el.scrollTop = el.scrollHeight;
+    }
   }, []);
 
-  useEffect(() => {
-    if (userNearBottom.current && chatContainerRef.current) {
-      chatContainerRef.current.scrollTop = chatContainerRef.current.scrollHeight;
+  useLayoutEffect(() => {
+    const el = chatContainerRef.current;
+    if (!el) return;
+    if (autoScrollRef.current) {
+      el.scrollTop = el.scrollHeight;
+      return;
     }
-  }, [messages, streamingContent]);
+    if (streaming || streamingContent) {
+      const target = detachedScrollTopRef.current;
+      el.scrollTop = target;
+      window.requestAnimationFrame(() => {
+        if (!autoScrollRef.current && chatContainerRef.current === el) {
+          el.scrollTop = target;
+        }
+      });
+    }
+  }, [messages, streaming, streamingContent]);
 
   const handleSend = useCallback(async () => {
     const text = input.trim();
     if (!text || streaming) return;
     setInput("");
+    autoScrollRef.current = true;
+    setShowJumpToLatest(false);
     await send(text);
   }, [input, streaming, send]);
 
@@ -56,11 +92,17 @@ export default function ReportChatPanel({ taskId }: { taskId: string }) {
       </div>
 
       {/* Messages */}
-      <div
-        ref={chatContainerRef}
-        onScroll={handleScroll}
-        className="flex-1 overflow-y-auto px-4 py-3 space-y-4 min-h-0"
-      >
+      <div className="relative flex-1 min-h-0">
+        <div
+          ref={chatContainerRef}
+          onScroll={handleScroll}
+          onWheelCapture={(event) => {
+            if (event.deltaY < 0) detachAutoScroll();
+          }}
+          onTouchMove={detachAutoScroll}
+          className="h-full overflow-y-auto overscroll-contain px-4 py-3 space-y-4"
+          aria-label="报告 AI 助手对话内容"
+        >
         {loadingHistory ? (
           <div className="flex justify-center py-8">
             <div className="w-4 h-4 border-2 border-primary border-t-transparent rounded-full animate-spin" />
@@ -113,6 +155,16 @@ export default function ReportChatPanel({ taskId }: { taskId: string }) {
             )}
           </>
         )}
+        </div>
+        {showJumpToLatest && (
+          <button
+            type="button"
+            onClick={jumpToLatest}
+            className="absolute bottom-3 left-1/2 -translate-x-1/2 rounded-full border border-outline-variant/30 bg-surface-container-high px-3 py-1.5 text-xs font-medium text-on-surface shadow-sm hover:bg-surface-container-highest"
+          >
+            跳到最新回复
+          </button>
+        )}
       </div>
 
       {/* Input */}
@@ -131,6 +183,7 @@ export default function ReportChatPanel({ taskId }: { taskId: string }) {
             onClick={() => void handleSend()}
             disabled={!input.trim() || streaming}
             className="p-2.5 rounded-lg bg-primary text-on-primary hover:bg-primary/90 disabled:opacity-40 disabled:cursor-not-allowed transition-colors shrink-0"
+            aria-label="发送"
           >
             <Send size={16} />
           </button>
