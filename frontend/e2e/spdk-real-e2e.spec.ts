@@ -561,15 +561,33 @@ function textArtifactSecretLeaks(secret: string) {
         continue;
       }
       if (!entry.isFile() || !textExtensions.has(path.extname(entry.name))) continue;
-      const stat = fs.statSync(fullPath);
-      if (stat.size > 2_000_000) continue;
-      if (fs.readFileSync(fullPath, "utf8").includes(secret)) {
+      if (fileContainsPattern(fullPath, secret)) {
         leaks.push(fullPath);
       }
     }
   };
   visit(ARTIFACT_DIR);
   return leaks;
+}
+
+function fileContainsPattern(file: string, pattern: string | RegExp) {
+  const fd = fs.openSync(file, "r");
+  const buffer = Buffer.allocUnsafe(1024 * 1024);
+  let carry = "";
+  try {
+    let bytesRead = 0;
+    do {
+      bytesRead = fs.readSync(fd, buffer, 0, buffer.length, null);
+      if (bytesRead <= 0) continue;
+      const text = carry + buffer.subarray(0, bytesRead).toString("utf8");
+      if (typeof pattern === "string" ? text.includes(pattern) : pattern.test(text)) return true;
+      carry = text.slice(-512);
+      if (pattern instanceof RegExp) pattern.lastIndex = 0;
+    } while (bytesRead > 0);
+  } finally {
+    fs.closeSync(fd);
+  }
+  return false;
 }
 
 function textArtifactPatternLeaks() {
@@ -590,11 +608,8 @@ function textArtifactPatternLeaks() {
         continue;
       }
       if (!entry.isFile() || !textExtensions.has(path.extname(entry.name))) continue;
-      const stat = fs.statSync(fullPath);
-      if (stat.size > 2_000_000) continue;
-      const content = fs.readFileSync(fullPath, "utf8");
       for (const pattern of secretPatterns) {
-        if (pattern.regex.test(content)) {
+        if (fileContainsPattern(fullPath, pattern.regex)) {
           leaks.push({ file: path.relative(ARTIFACT_DIR, fullPath).split(path.sep).join("/"), pattern: pattern.name });
         }
       }
