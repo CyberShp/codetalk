@@ -179,10 +179,26 @@ test("cancels a running agent-runtime AI thread through the real UI", async ({
     await expect(page.locator("strong").filter({ hasText: runtimeName })).toBeVisible();
 
     const prompt = "开始一个可以被取消的 Agent runtime 调查";
+    const sendRequests: string[] = [];
+    page.on("request", (request) => {
+      if (
+        request.method() === "POST" &&
+        request.url().includes(`/api/ai/conversations/${encodeURIComponent(threadId)}/messages`)
+      ) {
+        sendRequests.push(request.url());
+      }
+    });
+    const sendRequest = page.waitForRequest(
+      (request) =>
+        request.method() === "POST" &&
+        request.url().includes(`/api/ai/conversations/${encodeURIComponent(threadId)}/messages`),
+    );
     await page.getByPlaceholder(/像 Codex 一样继续追问/).fill(prompt);
     await page.getByRole("button", { name: "发送" }).hover();
-    await page.getByRole("button", { name: "发送" }).click();
+    await page.getByRole("button", { name: "发送" }).dblclick();
+    await sendRequest;
     await expect(page.locator(".ct-codex-message.is-user").filter({ hasText: prompt })).toHaveCount(1);
+    await expect.poll(() => sendRequests.length).toBe(1);
     await expect(page.getByRole("button", { name: "停止" })).toBeVisible({ timeout: 15_000 });
     await expect(page.getByText("agent-runtime-first-delta")).toBeVisible({ timeout: 20_000 });
     await expect(page.getByLabel("AI 线程消息")).toBeDisabled();
