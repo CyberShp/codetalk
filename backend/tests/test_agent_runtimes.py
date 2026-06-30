@@ -450,6 +450,14 @@ class TestAgentRuntimes:
         )
         assert (
             _parse_event_text(
+                f"data: {json.dumps({'choices': [{'delta': {'content': 'SSE 源码证据'}}]}, ensure_ascii=False)}\n",
+                "stream_json",
+            )
+            == "SSE 源码证据"
+        )
+        assert _parse_event_text("data: [DONE]\n", "stream_json") == ""
+        assert (
+            _parse_event_text(
                 json.dumps({"content": [{"type": "text", "text": "材料证据"}]}, ensure_ascii=False),
                 "stream_json",
             )

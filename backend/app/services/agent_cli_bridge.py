@@ -152,7 +152,7 @@ async def _read_stdout(proc: asyncio.subprocess.Process, output_mode: str) -> As
 
 
 def _parse_event_text(text: str, output_mode: str) -> str | None:
-    stripped = _clean_agent_text(text).strip()
+    stripped = _sse_payload_text(_clean_agent_text(text).strip())
     if not stripped:
         return ""
     try:
@@ -172,6 +172,23 @@ def _parse_event_text(text: str, output_mode: str) -> str | None:
     if _looks_like_protocol_noise(event):
         return ""
     return None
+
+
+def _sse_payload_text(text: str) -> str:
+    if not text.startswith("data:"):
+        return text
+    payload_lines: list[str] = []
+    for line in text.splitlines():
+        stripped = line.strip()
+        if not stripped:
+            continue
+        if not stripped.startswith("data:"):
+            return text
+        payload = stripped.removeprefix("data:").strip()
+        if payload == "[DONE]":
+            continue
+        payload_lines.append(payload)
+    return "\n".join(payload_lines)
 
 
 def _event_text(event: dict[str, Any]) -> str | None:
