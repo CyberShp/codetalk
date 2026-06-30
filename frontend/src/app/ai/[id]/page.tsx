@@ -161,6 +161,7 @@ export default function AIThreadPage() {
     [messages],
   );
   const canRetryLatestFailure = Boolean(latestRunError && lastUserMessage && !sending && !streamingRunId);
+  const canExportThread = messages.length > 0 && !streamingRunId;
 
   const load = useCallback(async () => {
     setError(null);
@@ -310,6 +311,7 @@ export default function AIThreadPage() {
   };
 
   const exportThreadMarkdown = () => {
+    if (!canExportThread) return;
     const markdown = buildThreadMarkdown(conversation, messages);
     const blob = new Blob([markdown], { type: "text/markdown;charset=utf-8" });
     const url = URL.createObjectURL(blob);
@@ -453,7 +455,7 @@ export default function AIThreadPage() {
             {contextOpen ? <PanelRightClose size={17} /> : <PanelRightOpen size={17} />}
             环境
           </button>
-          <button type="button" onClick={exportThreadMarkdown} disabled={messages.length === 0} title="导出 AI 线程为 Markdown">
+          <button type="button" onClick={exportThreadMarkdown} disabled={!canExportThread} title="导出 AI 线程为 Markdown">
             <Download size={17} />
             导出
           </button>
