@@ -869,6 +869,49 @@ test("executes resource leak hunt and previews materialized artifacts through th
   expect(downloadedArtifact).toContain("local-resource-scan");
   expect(downloadedArtifact).toContain("lib/bdev/cleanup.c");
   expect(downloadedArtifact).toContain("failure_mode");
+  const riskFindings = JSON.parse(downloadedArtifact) as Array<Record<string, unknown>>;
+  expect(riskFindings.length).toBeGreaterThan(0);
+  const sfmeaFinding = riskFindings[0] as {
+    failure_mode?: string;
+    cause?: string;
+    effect?: string;
+    detection?: string;
+    severity?: string;
+    severity_score?: number;
+    occurrence_score?: number;
+    detection_score?: number;
+    rpn?: number;
+    mitigation?: string;
+    score_explanation?: string;
+    sfmea_source?: string;
+    sfmea_scope?: string;
+  };
+  for (const field of [
+    "failure_mode",
+    "cause",
+    "effect",
+    "detection",
+    "severity",
+    "severity_score",
+    "occurrence_score",
+    "detection_score",
+    "rpn",
+    "mitigation",
+    "score_explanation",
+  ] as const) {
+    expect(sfmeaFinding[field], `SFMEA field ${field}`).toBeTruthy();
+  }
+  expect(sfmeaFinding.rpn).toBe(
+    Number(sfmeaFinding.severity_score) *
+      Number(sfmeaFinding.occurrence_score) *
+      Number(sfmeaFinding.detection_score),
+  );
+  expect(sfmeaFinding.score_explanation).toContain(`severity=${sfmeaFinding.severity_score}`);
+  expect(sfmeaFinding.score_explanation).toContain(`occurrence=${sfmeaFinding.occurrence_score}`);
+  expect(sfmeaFinding.score_explanation).toContain(`detection=${sfmeaFinding.detection_score}`);
+  expect(sfmeaFinding.mitigation).toMatch(/test\/bdev|black-box|logs|public status|reconnect/i);
+  expect(sfmeaFinding.sfmea_source).toBe("local_static_scan");
+  expect(sfmeaFinding.sfmea_scope).toBe("lib/bdev/cleanup.c");
 
   const testHooksArtifact = page
     .getByRole("button")
