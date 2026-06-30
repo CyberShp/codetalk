@@ -4373,6 +4373,7 @@ def _build_task_acceptance_audit(task_run: Any) -> dict[str, Any]:
                     check_id=f"risk_finding_quality:{step_id}:{Path(artifact).name}",
                     relative_path=f"{base}/{artifact}",
                     task_dir=task_dir,
+                    repo_path=str(task_run.repo_path or ""),
                     description=f"SFMEA risk finding content quality for step {step_id}",
                 ))
         lifecycle = _read_json(task_dir / base / "agent_run_lifecycle.json")
@@ -4966,6 +4967,7 @@ def _acceptance_risk_finding_quality_check(
     check_id: str,
     relative_path: str,
     task_dir: Path,
+    repo_path: str,
     description: str,
 ) -> dict[str, Any]:
     payload = _read_json(task_dir / relative_path)
@@ -4996,7 +4998,7 @@ def _acceptance_risk_finding_quality_check(
                 "reasons": ["finding_must_be_object"],
             })
             continue
-        reasons = _risk_finding_quality_reasons(finding)
+        reasons = _risk_finding_quality_reasons(finding, repo_path=repo_path)
         if reasons:
             invalid_findings.append({
                 "index": index,
@@ -5034,7 +5036,7 @@ _SFMEA_TEXT_FIELDS = (
 _SFMEA_SCORE_FIELDS = ("severity_score", "occurrence_score", "detection_score", "rpn")
 
 
-def _risk_finding_quality_reasons(finding: dict[str, Any]) -> list[str]:
+def _risk_finding_quality_reasons(finding: dict[str, Any], *, repo_path: str) -> list[str]:
     reasons: list[str] = []
     missing_text = [
         field for field in _SFMEA_TEXT_FIELDS
@@ -5053,6 +5055,9 @@ def _risk_finding_quality_reasons(finding: dict[str, Any]) -> list[str]:
     if severity_score and occurrence_score and detection_score and rpn:
         if rpn != severity_score * occurrence_score * detection_score:
             reasons.append("rpn_mismatch")
+    file_path = str(finding.get("file_path") or finding.get("path") or "").strip()
+    if file_path and _validated_repo_source_path(repo_path, file_path) is None:
+        reasons.append("source_file_missing")
     return _semantic_dedupe(reasons)
 
 
