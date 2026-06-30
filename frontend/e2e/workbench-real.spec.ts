@@ -103,6 +103,96 @@ test("installs a workflow preset and validates required inputs through the real 
   await expect(page.getByText(repo).first()).toBeVisible();
 });
 
+test("opens a persisted AI review thread from a prepared workbench run through the real UI", async ({
+  page,
+  request,
+}) => {
+  test.setTimeout(60_000);
+  const repo = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), "codetalk-ai-review-run-")));
+  fs.mkdirSync(path.join(repo, "lib", "nvmf"), { recursive: true });
+  fs.writeFileSync(
+    path.join(repo, "lib", "nvmf", "connect.c"),
+    "int nvmf_connect_review_target(void) { return 0; }\n",
+    "utf8",
+  );
+  const workspaceId = `ai-review-ws-${Date.now()}`;
+
+  await page.goto("/workbench", { waitUntil: "domcontentloaded" });
+  await page.getByLabel("Workspace ID").fill(workspaceId);
+  await page.getByRole("button", { name: "工作流设计" }).hover();
+  await page.getByRole("button", { name: "工作流设计" }).click();
+  await page.getByLabel("工作流预设").selectOption("module_analysis");
+  await page.getByRole("button", { name: "安装预设" }).hover();
+  await page.getByRole("button", { name: "安装预设" }).click();
+  await expect(page.getByText("预设已安装: 模块分析工作流")).toBeVisible({
+    timeout: 15_000,
+  });
+
+  await page.getByRole("button", { name: "运行驾驶舱" }).hover();
+  await page.getByRole("button", { name: "运行驾驶舱" }).click();
+  await page.getByLabel("Repo path").fill(repo);
+  await page.getByLabel("Workflow input repo_path").fill(repo);
+  await page.getByLabel("Workflow input analysis_object").fill("lib/nvmf connect review");
+  await page.getByRole("button", { name: "准备运行" }).hover();
+  await page.getByRole("button", { name: "准备运行" }).click();
+  await expect(page.getByText(/Task run prepared:/)).toBeVisible({ timeout: 15_000 });
+  const preparedText = await page.locator("body").innerText();
+  const taskRunId = preparedText.match(/Task run prepared:\s*(task_run_[a-f0-9]+)/)?.[1] ?? "";
+  expect(taskRunId).not.toEqual("");
+  await expect(page.getByText(repo).first()).toBeVisible();
+
+  const conversationPromise = page.waitForResponse(
+    (response) =>
+      response.request().method() === "POST" &&
+      response.url().includes("/api/ai/conversations") &&
+      response.status() === 201,
+  );
+  await page.getByRole("button", { name: "围绕本次运行继续追问" }).hover();
+  await page.getByRole("button", { name: "围绕本次运行继续追问" }).click();
+  const conversationResponse = await conversationPromise;
+  const conversationFromCreate = (await conversationResponse.json()) as {
+    id: string;
+    title: string;
+    scope_type: string;
+    scope_id: string;
+    workspace_id: string;
+    memory_namespace: string;
+    initial_context: Record<string, unknown>;
+  };
+
+  await page.waitForURL(/\/ai\/[^/]+$/, { timeout: 15_000 });
+  await expect(page.getByRole("heading", { name: "模块分析工作流 · AI 复盘" })).toBeVisible({
+    timeout: 15_000,
+  });
+  await expect(page.getByText(`workbench_task_run / ${taskRunId}`)).toBeVisible();
+  await expect(page.getByPlaceholder(/像 Codex 一样继续追问/)).toBeVisible();
+  await expect(page.locator("code").filter({ hasText: `workspace:${workspaceId}` })).toBeVisible();
+
+  const conversationResp = await request.get(
+    `http://localhost:${process.env.CODETALK_BACKEND_PORT ?? "3004"}/api/ai/conversations/${conversationFromCreate.id}`,
+  );
+  expect(conversationResp.ok()).toBeTruthy();
+  const persisted = (await conversationResp.json()) as {
+    title: string;
+    scope_type: string;
+    scope_id: string;
+    workspace_id: string;
+    memory_namespace: string;
+    initial_context: Record<string, unknown>;
+  };
+  expect(persisted.title).toBe("模块分析工作流 · AI 复盘");
+  expect(persisted.scope_type).toBe("workbench_task_run");
+  expect(persisted.scope_id).toBe(taskRunId);
+  expect(persisted.workspace_id).toBe(workspaceId);
+  expect(persisted.memory_namespace).toBe(`workspace:${workspaceId}`);
+  expect(persisted.initial_context).toMatchObject({
+    workflow_id: "module_analysis",
+    workspace_id: workspaceId,
+    memory_namespace: `workspace:${workspaceId}`,
+    repo_path: repo,
+  });
+});
+
 test("persists semantic cases and evidence source slices through the real workbench UI", async ({
   page,
 }) => {
