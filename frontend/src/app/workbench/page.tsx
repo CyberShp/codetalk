@@ -4765,6 +4765,9 @@ export default function AgentWorkbenchPage() {
                           className="rounded bg-surface px-1.5 py-0.5 text-left font-data text-[10px] transition-colors hover:bg-surface-container-high disabled:opacity-50"
                         >
                           {artifact.kind}:{artifact.relative_path}
+                          {artifact.preview_redacted && (
+                            <span className="ml-1 text-warning">redacted</span>
+                          )}
                         </button>
                       ))}
                     </div>

@@ -684,6 +684,7 @@ test("agent workbench previews task run artifact content", async ({ page }) => {
             size_bytes: 768,
             sha256: "retryhash111122223333444455556666",
             preview: "{\"kind\":\"agent_failure_retry_context\",\"failure_kind\":\"agent_error\"}",
+            preview_redacted: true,
           },
           {
             relative_path: "agent_runs/discover/execution_input.json",
@@ -1162,6 +1163,11 @@ test("agent workbench previews task run artifact content", async ({ page }) => {
     page.getByText("manual:POST /api/tools/claude-code/startup-probe", { exact: false }),
   ).toBeVisible();
   await expect(page.getByText(/审计产物:\s*11/)).toBeVisible();
+  await expect(
+    page.getByRole("button", {
+      name: /agent_failure_retry_context:agent_runs\/discover\/failure_retry_context\.json\s*redacted/,
+    }),
+  ).toBeVisible();
 
   await page.getByRole("button", { name: "task_bundle:task_bundle.json" }).click();
 
@@ -1290,7 +1296,7 @@ test("agent workbench previews task run artifact content", async ({ page }) => {
     page.getByText("do-not:do not treat raw stdout/stderr as accepted evidence"),
   ).toBeVisible();
   await expect(page.getByText("stderr:fatal diagnostic")).toBeVisible();
-  await expect(page.getByText("redacted", { exact: true })).toBeVisible();
+  await expect(page.getByText("redacted", { exact: true }).nth(1)).toBeVisible();
 
   await page.getByRole("button", { name: "验收审计" }).click();
   await expect(page.getByText("Agent instruction policy")).toBeVisible();
