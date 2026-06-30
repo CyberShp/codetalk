@@ -18,8 +18,9 @@ test.describe("Health smoke tests", () => {
 
   test("settings page loads", async ({ page }) => {
     await page.goto("/settings", { waitUntil: "domcontentloaded" });
-    await expect(page.locator("h1, h2").first()).toBeVisible();
-    await expect(page.getByRole("heading", { name: "Agent CLI Settings" })).toBeVisible();
+    await expect(page.getByRole("heading", { name: "设置", exact: true })).toBeVisible();
+    await expect(page.getByRole("heading", { name: "先配置你平时用的 Agent" })).toBeVisible();
+    await page.getByRole("button", { name: /高级：Workbench 探测配置/ }).click();
     await expect(page.getByLabel("Claude Code command")).toBeVisible();
   });
 
