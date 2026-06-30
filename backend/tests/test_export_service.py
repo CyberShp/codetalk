@@ -363,3 +363,54 @@ class TestExportWorkspaceChat:
             data, _, _ = await export_workspace_chat(ws_id, "chat", db)
 
         assert "custom_mode" in data.decode("utf-8")
+
+    async def test_redacts_secret_values_from_chat_export(self, sqlite_db):
+        ws_id = "ws-chat-redact"
+        now = datetime.now(timezone.utc).isoformat()
+        user_secret = "-".join(["sk", "workspaceChatUserLeakValue1234567890"])
+        assistant_secret = "-".join(["sk", "workspaceChatAssistantLeakValue1234567890"])
+        token_secret = "workspaceChatTokenLeakValue1234567890"
+        bearer_secret = "workspaceChatBearerLeakValue1234567890"
+        async with aiosqlite.connect(sqlite_db) as db:
+            db.row_factory = aiosqlite.Row
+            await db.execute(
+                "INSERT INTO workspaces (id, name, repo_path, indexed, created_at, updated_at) "
+                "VALUES (?, 'chat-redact', '/r', 1, ?, ?)",
+                (ws_id, now, now),
+            )
+            await db.execute(
+                "INSERT INTO workspace_chats "
+                "(id, workspace_id, mode, role, content, created_at) "
+                "VALUES ('cu', ?, 'freeqa', 'user', ?, ?)",
+                (ws_id, f"please do not export {user_secret}", "2025-06-01T10:00:00"),
+            )
+            await db.execute(
+                "INSERT INTO workspace_chats "
+                "(id, workspace_id, mode, role, content, created_at) "
+                "VALUES ('ca', ?, 'freeqa', 'assistant', ?, ?)",
+                (
+                    ws_id,
+                    "\n".join(
+                        [
+                            "analysis complete",
+                            f"agent key: {assistant_secret}",
+                            "runtime " + "tok" + f"en={token_secret}",
+                            "Authorization:" + f" Bearer {bearer_secret}",
+                        ]
+                    ),
+                    "2025-06-01T10:01:00",
+                ),
+            )
+            await db.commit()
+
+            data, _, _ = await export_workspace_chat(ws_id, "chat-redact", db)
+
+        text = data.decode("utf-8")
+        assert "analysis complete" in text
+        assert "<redacted>" in text
+        assert user_secret not in text
+        assert assistant_secret not in text
+        assert token_secret not in text
+        assert bearer_secret not in text
+        assert "Authorization: Bearer <redacted>" in text
+        assert "token=<redacted>" in text

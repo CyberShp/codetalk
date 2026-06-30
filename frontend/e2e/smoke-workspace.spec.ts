@@ -140,6 +140,56 @@ test.describe("Workspace smoke tests", () => {
     expect(workspace.materials).toEqual([]);
   });
 
+  test("workspace AI thread bridge opens a scoped investigation thread through the UI", async ({
+    page,
+    request,
+  }) => {
+    test.setTimeout(60_000);
+    const repo = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), "codetalk-ai-bridge-")));
+    fs.writeFileSync(path.join(repo, "README.md"), "workspace AI thread bridge e2e\n", "utf8");
+    const workspaceName = `ai-bridge-${Date.now()}`;
+
+    await page.goto("/workspaces/new", { waitUntil: "domcontentloaded" });
+    await page.getByPlaceholder(/项目 A/).fill(workspaceName);
+    await page.getByPlaceholder(/本地文件夹路径/).fill(repo);
+    await page.getByRole("button", { name: "创建工作空间" }).hover();
+    await page.getByRole("button", { name: "创建工作空间" }).click();
+    await page.waitForURL(/\/workspaces\/[0-9a-f-]{36}$/, { timeout: 30_000 });
+    const workspaceId = page.url().split("/").pop() ?? "";
+    await expect(page.getByText(workspaceName)).toBeVisible({ timeout: 30_000 });
+
+    await page.getByRole("button", { name: /AI线程/ }).hover();
+    await page.getByRole("button", { name: /AI线程/ }).click();
+    await expect(page.getByText("在宽屏 AI 线程中继续分析")).toBeVisible();
+    const openThread = page.getByRole("button", { name: "打开工作空间 AI 线程" });
+    await openThread.hover();
+    await openThread.click();
+    await page.waitForURL(/\/ai\/[^/]+$/, { timeout: 15_000 });
+    const threadId = page.url().split("/").pop() ?? "";
+    await expect(page.getByRole("heading", { name: `${workspaceName} · AI 调查线程` })).toBeVisible({
+      timeout: 15_000,
+    });
+    await expect(page.getByText(`workspace / ${workspaceId}`)).toBeVisible();
+    await expect(page.getByText(`workspace:${workspaceId}`)).toBeVisible();
+    await expect(page.getByText(repo)).toBeVisible();
+
+    const threadResp = await request.get(`${backendBase}/api/ai/conversations/${encodeURIComponent(threadId)}`);
+    expect(threadResp.ok()).toBeTruthy();
+    const thread = (await threadResp.json()) as {
+      scope_type: string;
+      scope_id: string;
+      workspace_id: string;
+      memory_namespace: string;
+      initial_context: { repo_path?: string; completed_reports?: number };
+    };
+    expect(thread.scope_type).toBe("workspace");
+    expect(thread.scope_id).toBe(workspaceId);
+    expect(thread.workspace_id).toBe(workspaceId);
+    expect(thread.memory_namespace).toBe(`workspace:${workspaceId}`);
+    expect(thread.initial_context.repo_path).toBe(repo);
+    expect(thread.initial_context.completed_reports).toBe(0);
+  });
+
   test("workspace can be reindexed through the UI and remains searchable", async ({ page }) => {
     const repo = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), "codetalk-reindex-")));
     fs.mkdirSync(path.join(repo, "lib", "nvmf"), { recursive: true });

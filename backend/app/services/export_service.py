@@ -8,6 +8,7 @@ from pathlib import Path
 from typing import NamedTuple
 
 from app.config import settings
+from app.services.external_agent_discovery import redact_agent_diagnostic_text
 
 logger = logging.getLogger(__name__)
 
@@ -152,7 +153,7 @@ async def export_workspace_chat(
         ts = row["created_at"][:16].replace("T", " ")
         lines.append(f"## [{mode_label}] {role_label} ({ts})")
         lines.append("")
-        lines.append(row["content"] or "")
+        lines.append(redact_agent_diagnostic_text(row["content"] or ""))
         lines.append("")
         lines.append("---")
         lines.append("")
