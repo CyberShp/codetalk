@@ -199,6 +199,95 @@ test("prevents duplicate sibling AI thread creation from a real double click", a
   expect(conversations.items.filter((item) => item.title === siblingTitle)).toHaveLength(1);
 });
 
+test("sends quick actions and memory actions through the real AI thread composer", async ({
+  page,
+  request,
+}) => {
+  const repo = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), "codetalk-ai-actions-")));
+  fs.writeFileSync(path.join(repo, "README.md"), "AI action buttons e2e workspace\n", "utf8");
+  const workspaceName = `ai-actions-e2e-${Date.now()}`;
+  const threadTitle = `${workspaceName} action prompts`;
+  const quickPrompt = "补充黑盒边界条件和异常路径";
+  const memoryPrompt = "生成复跑建议";
+
+  const workspaceResp = await request.post(`${backendBase}/api/workspaces`, {
+    data: { name: workspaceName, repo_path: repo },
+  });
+  expect(workspaceResp.status()).toBe(201);
+  const workspace = (await workspaceResp.json()) as { id: string };
+
+  await page.goto("/ai", { waitUntil: "domcontentloaded" });
+  const projectButton = page.locator("button").filter({ hasText: workspaceName }).first();
+  await expect(projectButton).toBeVisible({ timeout: 15_000 });
+  await projectButton.hover();
+  await projectButton.click();
+  await page.getByPlaceholder(/线程名称/).fill(threadTitle);
+  await page.getByRole("button", { name: "新建线程" }).hover();
+  await page.getByRole("button", { name: "新建线程" }).click();
+
+  await page.waitForURL(/\/ai\/[^/]+$/, { timeout: 15_000 });
+  const threadId = page.url().split("/").pop() ?? "";
+  await expect(page.getByRole("heading", { name: threadTitle })).toBeVisible({
+    timeout: 15_000,
+  });
+
+  const sendRequests: string[] = [];
+  page.on("request", (req) => {
+    if (
+      req.method() === "POST" &&
+      req.url().includes(`/api/ai/conversations/${encodeURIComponent(threadId)}/messages`)
+    ) {
+      sendRequests.push(req.url());
+    }
+  });
+  const composer = page.getByLabel("AI 线程消息");
+
+  const quickRequest = page.waitForRequest(
+    (req) =>
+      req.method() === "POST" &&
+      req.url().includes(`/api/ai/conversations/${encodeURIComponent(threadId)}/messages`),
+  );
+  await page.getByRole("button", { name: quickPrompt }).hover();
+  await page.getByRole("button", { name: quickPrompt }).click();
+  await expect(composer).toHaveValue(quickPrompt);
+  await composer.focus();
+  await page.keyboard.press("Enter");
+  await quickRequest;
+  await expect(page.locator(".ct-codex-message.is-user").filter({ hasText: quickPrompt })).toHaveCount(1);
+  await expect(page.locator('div[role="alert"]').filter({ hasText: "未配置活跃的聊天模型" })).toBeVisible({
+    timeout: 20_000,
+  });
+
+  const memoryRequest = page.waitForRequest(
+    (req) =>
+      req.method() === "POST" &&
+      req.url().includes(`/api/ai/conversations/${encodeURIComponent(threadId)}/messages`),
+  );
+  await page.getByRole("button", { name: memoryPrompt }).hover();
+  await page.getByRole("button", { name: memoryPrompt }).click();
+  await expect(composer).toHaveValue(memoryPrompt);
+  await composer.focus();
+  await page.keyboard.press("Enter");
+  await memoryRequest;
+  await expect(page.locator(".ct-codex-message.is-user").filter({ hasText: memoryPrompt })).toHaveCount(1);
+  await expect.poll(() => sendRequests.length).toBe(2);
+
+  const messagesResp = await request.get(
+    `${backendBase}/api/ai/conversations/${encodeURIComponent(threadId)}/messages`,
+  );
+  expect(messagesResp.ok()).toBeTruthy();
+  const messageBody = (await messagesResp.json()) as { items: Array<{ role: string; content: string }> };
+  expect(messageBody.items.filter((item) => item.role === "user" && item.content === quickPrompt)).toHaveLength(1);
+  expect(messageBody.items.filter((item) => item.role === "user" && item.content === memoryPrompt)).toHaveLength(1);
+
+  const listResp = await request.get(`${backendBase}/api/ai/conversations?workspace_id=${workspace.id}&limit=10`);
+  expect(listResp.ok()).toBeTruthy();
+  const conversations = (await listResp.json()) as { items: Array<{ id: string; workspace_id: string }> };
+  expect(conversations.items).toEqual(
+    expect.arrayContaining([expect.objectContaining({ id: threadId, workspace_id: workspace.id })]),
+  );
+});
+
 test("cancels a running agent-runtime AI thread through the real UI", async ({
   page,
   request,
