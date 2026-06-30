@@ -106,3 +106,112 @@ test("creates an AI investigation thread from the project hub and restores it af
   expect(messageBody.items.filter((item) => item.role === "user" && item.content === prompt)).toHaveLength(2);
   expect(messageBody.items.filter((item) => item.role === "assistant")).toHaveLength(0);
 });
+
+test("cancels a running agent-runtime AI thread through the real UI", async ({
+  page,
+  request,
+}) => {
+  test.setTimeout(70_000);
+  const repo = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), "codetalk-ai-cancel-repo-")));
+  fs.writeFileSync(path.join(repo, "README.md"), "AI cancel runtime e2e workspace\n", "utf8");
+  const runtimeDir = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), "codetalk-agent-runtime-")));
+  const runtimeScript = path.join(runtimeDir, "slow_agent.py");
+  fs.writeFileSync(
+    runtimeScript,
+    [
+      "import sys",
+      "import time",
+      "sys.stdin.read()",
+      "print('agent-runtime-first-delta', flush=True)",
+      "time.sleep(20)",
+      "print('agent-runtime-after-cancel', flush=True)",
+      "",
+    ].join("\n"),
+    "utf8",
+  );
+  const workspaceName = `ai-cancel-e2e-${Date.now()}`;
+  const runtimeName = `Slow cancel runtime ${Date.now()}`;
+  const threadTitle = `${workspaceName} runtime cancel`;
+
+  const runtimeResp = await request.post(`${backendBase}/api/settings/agent-runtimes`, {
+    data: {
+      name: runtimeName,
+      command: "python3",
+      args: [runtimeScript],
+      prompt_transport: "stdin",
+      output_mode: "plain",
+      working_dir_mode: "project",
+      fixed_working_dir: "",
+      env: {},
+      health_command: "",
+      timeout_seconds: 60,
+      enabled: true,
+    },
+  });
+  expect(runtimeResp.status()).toBe(201);
+  const runtime = (await runtimeResp.json()) as { id: string };
+
+  const workspaceResp = await request.post(`${backendBase}/api/workspaces`, {
+    data: { name: workspaceName, repo_path: repo },
+  });
+  expect(workspaceResp.status()).toBe(201);
+  await workspaceResp.json();
+
+  try {
+    await page.goto("/ai", { waitUntil: "domcontentloaded" });
+    const projectButton = page.locator("button").filter({ hasText: workspaceName }).first();
+    await expect(projectButton).toBeVisible({ timeout: 15_000 });
+    await projectButton.hover();
+    await projectButton.click();
+    await expect(page.getByRole("heading", { name: workspaceName })).toBeVisible();
+
+    await page.getByLabel("AI 线程执行器").selectOption({ label: runtimeName });
+    await page.getByPlaceholder(/线程名称/).fill(threadTitle);
+    await page.getByRole("button", { name: "新建线程" }).hover();
+    await page.getByRole("button", { name: "新建线程" }).click();
+
+    await page.waitForURL(/\/ai\/[^/]+$/, { timeout: 15_000 });
+    const threadId = page.url().split("/").pop() ?? "";
+    await expect(page.getByRole("heading", { name: threadTitle })).toBeVisible({
+      timeout: 15_000,
+    });
+    await expect(page.getByLabel("当前 AI 执行器")).toHaveValue(runtime.id);
+    await expect(page.locator("strong").filter({ hasText: runtimeName })).toBeVisible();
+
+    const prompt = "开始一个可以被取消的 Agent runtime 调查";
+    await page.getByPlaceholder(/像 Codex 一样继续追问/).fill(prompt);
+    await page.getByRole("button", { name: "发送" }).hover();
+    await page.getByRole("button", { name: "发送" }).click();
+    await expect(page.locator(".ct-codex-message.is-user").filter({ hasText: prompt })).toHaveCount(1);
+    await expect(page.getByRole("button", { name: "停止" })).toBeVisible({ timeout: 15_000 });
+    await expect(page.getByText("agent-runtime-first-delta")).toBeVisible({ timeout: 20_000 });
+
+    await page.getByRole("button", { name: "停止" }).hover();
+    await page.getByRole("button", { name: "停止" }).click();
+    await expect(page.getByRole("button", { name: "停止" })).toHaveCount(0, { timeout: 15_000 });
+    await expect(page.getByText("agent-runtime-after-cancel")).toHaveCount(0);
+
+    const conversationResp = await request.get(
+      `${backendBase}/api/ai/conversations/${encodeURIComponent(threadId)}`,
+    );
+    expect(conversationResp.ok()).toBeTruthy();
+    const conversation = (await conversationResp.json()) as {
+      status: string;
+      latest_run: { status: string; model: string | null } | null;
+    };
+    expect(conversation.status).toBe("idle");
+    expect(conversation.latest_run?.status).toBe("cancelled");
+
+    const messagesResp = await request.get(
+      `${backendBase}/api/ai/conversations/${encodeURIComponent(threadId)}/messages`,
+    );
+    expect(messagesResp.ok()).toBeTruthy();
+    const messageBody = (await messagesResp.json()) as {
+      items: Array<{ role: string; content: string }>;
+    };
+    expect(messageBody.items.filter((item) => item.role === "user" && item.content === prompt)).toHaveLength(1);
+    expect(messageBody.items.filter((item) => item.role === "assistant")).toHaveLength(0);
+  } finally {
+    await request.delete(`${backendBase}/api/settings/agent-runtimes/${encodeURIComponent(runtime.id)}`);
+  }
+});
