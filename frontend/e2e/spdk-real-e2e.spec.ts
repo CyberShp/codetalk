@@ -139,11 +139,14 @@ let brokenLlmConfigId = "";
 let brokenLlmConfigName = "";
 
 function runMetadata() {
-  const git = (args: string[]) =>
-    spawnSync("git", args, {
+  const git = (args: string[]) => {
+    const result = spawnSync("git", args, {
       cwd: path.resolve(process.cwd(), ".."),
       encoding: "utf8",
-    }).stdout.trim();
+    });
+    if (result.status !== 0) return "unavailable";
+    return result.stdout.trim() || "unavailable";
+  };
   return {
     run_id: RUN_ID,
     generated_at: new Date().toISOString(),
@@ -158,8 +161,15 @@ function runMetadata() {
     arch: process.arch,
     git_commit: git(["rev-parse", "HEAD"]),
     git_branch: git(["branch", "--show-current"]),
-    git_remote: git(["remote", "get-url", "origin"]),
+    git_remote: redactMetadataText(git(["remote", "get-url", "origin"])),
   };
+}
+
+function redactMetadataText(value: string) {
+  return value
+    .replace(/(https?:\/\/)([^/@\s]+)@/gi, "$1<redacted>@")
+    .replace(/(https?:\/\/[^/:@\s]+:)([^/@\s]+)@/gi, "$1<redacted>@")
+    .replace(/(ghp_|github_pat_|glpat-)[A-Za-z0-9_~-]+/g, "<redacted>");
 }
 
 function ensureArtifactDir() {
@@ -2966,9 +2976,12 @@ test("matrix accounting: every planned case has an explicit status", async () =>
   expect(report.git_commit).toMatch(/^[a-f0-9]{40}$/);
   expect(report.git_branch).not.toEqual("");
   expect(report.node_version).toMatch(/^v\d+\./);
+  expect(report.git_remote).not.toMatch(/https?:\/\/[^/\s]+:[^/@\s]+@/i);
+  expect(report.git_remote).not.toMatch(/(ghp_|github_pat_|glpat-)[A-Za-z0-9_~-]+/);
   expect(artifactManifest.metadata.git_commit).toBe(report.git_commit);
   expect(artifactManifest.metadata.git_branch).toBe(report.git_branch);
   expect(artifactManifest.metadata.node_version).toBe(report.node_version);
+  expect(artifactManifest.metadata.git_remote).toBe(report.git_remote);
   expect(textArtifactPatternLeaks()).toEqual([]);
   expect(report.failure_report.total_problem_cases).toBe(failed.length + blocked.length + unresolved.length);
   expect(failureReport.total_problem_cases).toBe(report.failure_report.total_problem_cases);

@@ -7,7 +7,9 @@ test("SPDK real E2E writes a dedicated failure report artifact", () => {
 
   expect(spec).toContain("function writeAcceptanceReports()");
   expect(spec).toContain("function runMetadata");
+  expect(spec).toContain("function redactMetadataText");
   expect(spec).toContain("git_commit");
+  expect(spec).toContain("git_remote");
   expect(spec).toContain("node_version");
   expect(spec).toContain('"failure_report.json"');
   expect(spec).toContain('"failure_report.md"');
