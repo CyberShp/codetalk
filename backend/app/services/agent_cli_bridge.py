@@ -324,7 +324,7 @@ def _decode(value: bytes) -> str:
     text = _decode_strict_if_complete(value)
     if text is not None:
         return text
-    return _clean_agent_text(value.decode("utf-8", "replace"))
+    return _clean_agent_text(_decode_mixed_terminal_bytes(value))
 
 
 def _decode_strict_if_complete(value: bytes) -> str | None:
@@ -334,6 +334,28 @@ def _decode_strict_if_complete(value: bytes) -> str | None:
         except UnicodeDecodeError:
             continue
     return None
+
+
+def _decode_mixed_terminal_bytes(value: bytes) -> str:
+    """Decode noisy CLI output where terminal repaint noise and text use mixed encodings."""
+    parts: list[str] = []
+    for raw_line in value.splitlines(keepends=True):
+        has_newline = raw_line.endswith((b"\n", b"\r"))
+        line = raw_line.rstrip(b"\r\n")
+        repaint = line.split(b"\r")[-1]
+        parts.append(_decode_bytes_best_effort(repaint))
+        if has_newline:
+            parts.append("\n")
+    return "".join(parts)
+
+
+def _decode_bytes_best_effort(value: bytes) -> str:
+    for encoding in _candidate_decodings():
+        try:
+            return value.decode(encoding, "strict")
+        except UnicodeDecodeError:
+            continue
+    return value.decode("utf-8", "replace")
 
 
 def _candidate_decodings() -> list[str]:

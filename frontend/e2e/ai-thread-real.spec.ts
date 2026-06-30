@@ -784,6 +784,136 @@ test("keeps real agent thinking diagnostics collapsed and out of the persisted a
   }
 });
 
+test("cleans real external-agent terminal noise before display, persistence, and export", async ({
+  page,
+  request,
+}, testInfo) => {
+  test.setTimeout(70_000);
+  const repo = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), "codetalk-ai-noise-repo-")));
+  fs.writeFileSync(path.join(repo, "README.md"), "AI terminal noise e2e workspace\n", "utf8");
+  const runtimeDir = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), "codetalk-agent-noise-")));
+  const runtimeScript = path.join(runtimeDir, "noisy_agent.py");
+  fs.writeFileSync(
+    runtimeScript,
+    [
+      "import sys",
+      "sys.stdin.read()",
+      "sys.stdout.write('\\x1b[32m')",
+      "sys.stdout.write('47%\\n12/100\\n')",
+      "sys.stdout.buffer.write(bytes([0x80, 0x81, 0x8D, 0x90, 0x9D]) + b'\\n')",
+      "sys.stdout.flush()",
+      "sys.stdout.write('\\r\\x1b[2K⠋ 12\\r\\x1b[2K⠙ 47\\r\\x1b[2K')",
+      "sys.stdout.flush()",
+      "sys.stdout.buffer.write('源码证据：连接失败\\n'.encode('gbk'))",
+      "sys.stdout.write('FINAL_NOISE_CLEAN_ANSWER: 已完成源码分析。\\n')",
+      "sys.stdout.write('\\x1b[0m')",
+      "sys.stdout.flush()",
+      "",
+    ].join("\n"),
+    "utf8",
+  );
+  const workspaceName = `ai-noise-e2e-${Date.now()}`;
+  const runtimeName = `Noisy external runtime ${Date.now()}`;
+  const threadTitle = `${workspaceName} terminal noise`;
+  const prompt = "NOISE_CLEAN_RUN 请读取工作区并生成最终答案，不能把终端进度噪声混入回答";
+
+  const runtimeResp = await request.post(`${backendBase}/api/settings/agent-runtimes`, {
+    data: {
+      name: runtimeName,
+      command: "python3",
+      args: [runtimeScript],
+      prompt_transport: "stdin",
+      output_mode: "plain",
+      working_dir_mode: "project",
+      fixed_working_dir: "",
+      env: {},
+      health_command: "",
+      timeout_seconds: 30,
+      enabled: true,
+    },
+  });
+  expect(runtimeResp.status()).toBe(201);
+  const runtime = (await runtimeResp.json()) as { id: string };
+
+  const workspaceResp = await request.post(`${backendBase}/api/workspaces`, {
+    data: { name: workspaceName, repo_path: repo },
+  });
+  expect(workspaceResp.status()).toBe(201);
+
+  try {
+    await page.goto("/ai", { waitUntil: "domcontentloaded" });
+    const projectButton = page.locator("button").filter({ hasText: workspaceName }).first();
+    await expect(projectButton).toBeVisible({ timeout: 15_000 });
+    await projectButton.hover();
+    await projectButton.click();
+    await expect(page.getByRole("heading", { name: workspaceName })).toBeVisible();
+
+    await page.getByLabel("AI 线程执行器").selectOption({ label: runtimeName });
+    await page.getByPlaceholder(/线程名称/).fill(threadTitle);
+    await page.getByRole("button", { name: "新建线程" }).hover();
+    await page.getByRole("button", { name: "新建线程" }).click();
+
+    await page.waitForURL(/\/ai\/[^/]+$/, { timeout: 15_000 });
+    const threadId = page.url().split("/").pop() ?? "";
+    await expect(page.getByRole("heading", { name: threadTitle })).toBeVisible({
+      timeout: 15_000,
+    });
+    await expect(page.getByLabel("当前 AI 执行器")).toHaveValue(runtime.id);
+
+    await page.getByLabel("AI 线程消息").fill(prompt);
+    await page.getByRole("button", { name: "发送" }).hover();
+    await page.getByRole("button", { name: "发送" }).click();
+    await expect(page.getByText("FINAL_NOISE_CLEAN_ANSWER")).toBeVisible({ timeout: 30_000 });
+    await expect(page.getByText("源码证据：连接失败")).toBeVisible();
+    await expect(page.locator("body")).not.toContainText("47%");
+    await expect(page.locator("body")).not.toContainText("12/100");
+    await expect(page.locator("body")).not.toContainText("⠋");
+    await expect(page.locator("body")).not.toContainText("⠙");
+    await expect(page.locator("body")).not.toContainText("�");
+    await expect(page.locator("body")).not.toContainText("[32m");
+    await expect(page.getByRole("button", { name: "停止" })).toHaveCount(0, { timeout: 15_000 });
+
+    await page.reload({ waitUntil: "domcontentloaded" });
+    await expect(page.getByRole("heading", { name: threadTitle })).toBeVisible({ timeout: 15_000 });
+    await expect(page.getByText("FINAL_NOISE_CLEAN_ANSWER")).toBeVisible({ timeout: 15_000 });
+    await expect(page.getByText("源码证据：连接失败")).toBeVisible();
+    await expect(page.locator("body")).not.toContainText("47%");
+    await expect(page.locator("body")).not.toContainText("12/100");
+    await expect(page.locator("body")).not.toContainText("�");
+
+    const messagesResp = await request.get(
+      `${backendBase}/api/ai/conversations/${encodeURIComponent(threadId)}/messages`,
+    );
+    expect(messagesResp.ok()).toBeTruthy();
+    const messageBody = (await messagesResp.json()) as {
+      items: Array<{ role: string; content: string }>;
+    };
+    const assistant = messageBody.items.find((item) => item.role === "assistant");
+    expect(assistant?.content).toContain("FINAL_NOISE_CLEAN_ANSWER");
+    expect(assistant?.content).toContain("源码证据：连接失败");
+    expect(assistant?.content).not.toContain("47%");
+    expect(assistant?.content).not.toContain("12/100");
+    expect(assistant?.content).not.toContain("�");
+    expect(assistant?.content).not.toContain("[32m");
+
+    const downloadPromise = page.waitForEvent("download");
+    await page.getByRole("button", { name: "导出" }).hover();
+    await page.getByRole("button", { name: "导出" }).click();
+    const download = await downloadPromise;
+    const exportPath = testInfo.outputPath("real-ai-thread-noise-clean-export.md");
+    await download.saveAs(exportPath);
+    const exported = fs.readFileSync(exportPath, "utf8");
+    expect(exported).toContain("FINAL_NOISE_CLEAN_ANSWER");
+    expect(exported).toContain("源码证据：连接失败");
+    expect(exported).not.toContain("47%");
+    expect(exported).not.toContain("12/100");
+    expect(exported).not.toContain("�");
+    expect(exported).not.toContain("[32m");
+  } finally {
+    await request.delete(`${backendBase}/api/settings/agent-runtimes/${encodeURIComponent(runtime.id)}`);
+  }
+});
+
 test("completes an agent-runtime AI thread and exports the persisted answer", async ({
   page,
   request,
