@@ -41,4 +41,34 @@ test("installs a workflow preset and validates required inputs through the real 
   await expect(page.getByText(/Task run prepared:/)).toBeVisible({ timeout: 15_000 });
   await expect(page.getByText(/Agent runs:/)).toBeVisible();
   await expect(page.getByText(repo)).toBeVisible();
+
+  await page.getByRole("button", { name: "审计产物" }).hover();
+  await page.getByRole("button", { name: "审计产物" }).click();
+  await expect(page.getByText(/产物已加载:/)).toBeVisible({ timeout: 15_000 });
+  await expect(page.getByText(/审计产物: \d+/)).toBeVisible();
+
+  const taskBundleArtifact = page.getByRole("button", {
+    name: /task_bundle:task_bundle\.json/,
+  });
+  await expect(taskBundleArtifact).toBeVisible();
+  await taskBundleArtifact.hover();
+  await taskBundleArtifact.click();
+  await expect(page.getByText("task_bundle.json").first()).toBeVisible();
+  await expect(page.getByText("module_analysis").first()).toBeVisible();
+  await expect(page.getByText("lib/nvmf").first()).toBeVisible();
+
+  await page.getByRole("button", { name: "复跑计划" }).hover();
+  await page.getByRole("button", { name: "复跑计划" }).click();
+  await expect(page.getByText(/Rerun plan .*:/)).toBeVisible({ timeout: 15_000 });
+  await expect(page.getByText(/Rerun: .* \/ steps \d+/)).toBeVisible();
+  await expect(page.getByText(/validation:/)).toBeVisible();
+  await expect(page.getByText(/can-rerun:/)).toBeVisible();
+
+  await page.getByRole("button", { name: "验收审计" }).hover();
+  await page.getByRole("button", { name: "验收审计" }).click();
+  await expect(page.getByText(/Acceptance audit .*:/)).toBeVisible({ timeout: 15_000 });
+  await expect(page.getByText(/Acceptance:/)).toBeVisible();
+  await expect(page.getByText(/missing-required:/)).toBeVisible();
+
+  await expect(page.getByText(repo).first()).toBeVisible();
 });
