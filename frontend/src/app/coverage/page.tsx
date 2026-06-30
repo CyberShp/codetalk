@@ -111,6 +111,30 @@ const ENTRY_TRACE_STATUS_LABEL: Record<string, string> = {
   tool_unavailable: "工具不可用",
 };
 
+const COVERAGE_MODULE_RESULT_PREVIEW_LIMIT = 80;
+const COVERAGE_DETAIL_PREVIEW_LIMITS = {
+  triggerBranches: 12,
+  entryPaths: 8,
+  scenarios: 6,
+  blackBoxCases: 8,
+  evidenceGaps: 8,
+};
+
+function HiddenItemsNote({
+  hiddenCount,
+  label,
+}: {
+  hiddenCount: number;
+  label: string;
+}) {
+  if (hiddenCount <= 0) return null;
+  return (
+    <div className="rounded-md bg-surface-container-high/50 px-2 py-1 text-[11px] text-on-surface-variant/80">
+      还有 {hiddenCount} 条{label}未在页面展开；完整内容请使用上方导出。
+    </div>
+  );
+}
+
 function entryTraceStatusLabel(status?: string): string {
   if (!status) return "入口发现状态未知";
   return ENTRY_TRACE_STATUS_LABEL[status] ?? status;
@@ -684,6 +708,23 @@ function GapDesignDetail({ mr }: { mr: CoverageModuleResult }) {
     mr.deterministic_case_role === "fallback_recommendation";
   const cases = mr.black_box_cases ?? [];
   const gaps = mr.evidence_gaps ?? [];
+  const visibleTriggers = triggers.slice(
+    0,
+    COVERAGE_DETAIL_PREVIEW_LIMITS.triggerBranches,
+  );
+  const visibleEntries = entries.slice(
+    0,
+    COVERAGE_DETAIL_PREVIEW_LIMITS.entryPaths,
+  );
+  const visibleScenarios = scenarios.slice(
+    0,
+    COVERAGE_DETAIL_PREVIEW_LIMITS.scenarios,
+  );
+  const visibleCases = cases.slice(
+    0,
+    COVERAGE_DETAIL_PREVIEW_LIMITS.blackBoxCases,
+  );
+  const visibleGaps = gaps.slice(0, COVERAGE_DETAIL_PREVIEW_LIMITS.evidenceGaps);
   const sw = mr.source_window ?? null;
   const grayRequired = mr.gray_box_required ?? false;
   const discovery = mr.entry_discovery ?? null;
@@ -867,7 +908,7 @@ function GapDesignDetail({ mr }: { mr: CoverageModuleResult }) {
             <GitBranch size={12} /> 触发条件 / 分支
           </div>
           <ul className="space-y-1">
-            {triggers.map((b, i) => (
+            {visibleTriggers.map((b, i) => (
               <li
                 key={`trig-${i}-${b.file ?? ""}-${b.line_number ?? ""}`}
                 className="text-xs text-on-surface-variant"
@@ -886,6 +927,10 @@ function GapDesignDetail({ mr }: { mr: CoverageModuleResult }) {
               </li>
             ))}
           </ul>
+          <HiddenItemsNote
+            hiddenCount={triggers.length - visibleTriggers.length}
+            label="触发条件"
+          />
         </div>
       )}
 
@@ -896,7 +941,7 @@ function GapDesignDetail({ mr }: { mr: CoverageModuleResult }) {
             外部入口路径（入口导向分层追踪）
           </div>
           <ul className="space-y-1">
-            {entries.map((e, i) => (
+            {visibleEntries.map((e, i) => (
               <li
                 key={`entry-${i}-${e.entry_symbol ?? ""}`}
                 className="text-xs text-on-surface-variant"
@@ -930,6 +975,10 @@ function GapDesignDetail({ mr }: { mr: CoverageModuleResult }) {
               </li>
             ))}
           </ul>
+          <HiddenItemsNote
+            hiddenCount={entries.length - visibleEntries.length}
+            label="入口路径"
+          />
         </div>
       ) : grayRequired && mr.gray_box ? (
         <div className="text-xs text-amber-300/90">
@@ -946,10 +995,14 @@ function GapDesignDetail({ mr }: { mr: CoverageModuleResult }) {
         <div>
           <div className="text-xs font-medium text-on-surface mb-1">AI 生成的测试场景</div>
           <div className="space-y-2">
-            {scenarios.map((scenario) => (
+            {visibleScenarios.map((scenario) => (
               <TestScenarioCard key={scenario.scenario_id} scenario={scenario} />
             ))}
           </div>
+          <HiddenItemsNote
+            hiddenCount={scenarios.length - visibleScenarios.length}
+            label="测试场景"
+          />
         </div>
       )}
 
@@ -966,7 +1019,7 @@ function GapDesignDetail({ mr }: { mr: CoverageModuleResult }) {
         <div>
           <div className="text-xs font-medium text-on-surface mb-1">测试用例</div>
           <div className="space-y-2">
-            {cases.map((c, i) => (
+            {visibleCases.map((c, i) => (
               <div
                 key={`case-${i}-${c.title}`}
                 className="rounded-lg bg-surface-container-high/60 p-2 space-y-0.5"
@@ -1002,6 +1055,10 @@ function GapDesignDetail({ mr }: { mr: CoverageModuleResult }) {
               </div>
             ))}
           </div>
+          <HiddenItemsNote
+            hiddenCount={cases.length - visibleCases.length}
+            label="测试用例"
+          />
         </div>
       )}
 
@@ -1012,12 +1069,16 @@ function GapDesignDetail({ mr }: { mr: CoverageModuleResult }) {
             <AlertTriangle size={12} className="text-amber-400" /> 待验证 / 证据缺口
           </div>
           <ul className="list-disc list-inside space-y-0.5">
-            {gaps.map((g) => (
+            {visibleGaps.map((g) => (
               <li key={g} className="text-[11px] text-on-surface-variant">
                 {g}
               </li>
             ))}
           </ul>
+          <HiddenItemsNote
+            hiddenCount={gaps.length - visibleGaps.length}
+            label="证据缺口"
+          />
         </div>
       )}
 
@@ -1201,6 +1262,12 @@ export default function CoveragePage() {
       setError(e instanceof Error ? e.message : "加载详情失败");
     }
   };
+
+  const visibleModuleResults = moduleResults.slice(
+    0,
+    COVERAGE_MODULE_RESULT_PREVIEW_LIMIT,
+  );
+  const hiddenModuleResultCount = moduleResults.length - visibleModuleResults.length;
 
   return (
     <div className="w-full px-4 xl:px-6 space-y-6">
@@ -1544,7 +1611,13 @@ export default function CoveragePage() {
                         <CheckCircle2 size={14} className="text-green-400" />
                         AI 分析结果
                       </h3>
-                      {moduleResults.map((mr) => {
+                      {hiddenModuleResultCount > 0 && (
+                        <div className="rounded-lg bg-surface-container-high/60 px-3 py-2 text-xs text-on-surface-variant">
+                          页面预览前 {visibleModuleResults.length} 条 AI 分析结果，
+                          其余 {hiddenModuleResultCount} 条请通过导出查看，避免大结果拖慢页面。
+                        </div>
+                      )}
+                      {visibleModuleResults.map((mr) => {
                         const resultId = [
                           mr.module_path,
                           mr.function_name ?? "",

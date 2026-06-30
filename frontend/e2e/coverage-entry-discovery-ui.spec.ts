@@ -99,6 +99,111 @@ test("coverage entry discovery renders source file, chain, and input hints", asy
   await expect(page.getByText("oversized capsule")).toBeVisible();
 });
 
+test("coverage page keeps large AI result previews bounded while exports stay complete", async ({
+  page,
+}) => {
+  const results = Array.from({ length: 95 }, (_, index) => ({
+    module_path: "lib/nvmf",
+    file_path: `lib/nvmf/large_${index}.c`,
+    function_name: `gap_${String(index).padStart(3, "0")}`,
+    kind: "function",
+    risk_level: "medium",
+    confidence: "high",
+    hit_count: 0,
+    line_start: index + 1,
+    trigger_branches: Array.from({ length: 14 }, (__, branchIndex) => ({
+      source: "function",
+      condition: `branch_${branchIndex}`,
+      file: `lib/nvmf/large_${index}.c`,
+      line_number: branchIndex + 10,
+    })),
+    entry_paths: Array.from({ length: 10 }, (__, entryIndex) => ({
+      entry_kind: "rpc",
+      entry_symbol: `rpc_gap_${entryIndex}`,
+      chain: [`rpc_gap_${entryIndex}`, `gap_${String(index).padStart(3, "0")}`],
+      evidence: `entry evidence ${entryIndex}`,
+    })),
+    test_scenarios: Array.from({ length: 8 }, (__, scenarioIndex) => ({
+      scenario_id: `scenario-${index}-${scenarioIndex}`,
+      case_type: "black_box_ready",
+      priority: "medium",
+      confidence: "high",
+      flow_purpose: `scenario ${scenarioIndex}`,
+      external_trigger: "public RPC request",
+      input_construction: "documented request body",
+      normal_path: "request accepted",
+      error_path: "request rejected",
+      expected_result: "controlled result",
+      observable_signals: ["response", "logs"],
+    })),
+    black_box_cases: Array.from({ length: 12 }, (__, caseIndex) => ({
+      title: `case_${caseIndex}`,
+      preconditions: "service is running",
+      inputs: "public RPC input",
+      steps: ["send request", "observe response"],
+      expected: "documented response",
+      observable_signals: ["response", "logs"],
+    })),
+    evidence_gaps: Array.from({ length: 10 }, (__, gapIndex) => `gap reason ${gapIndex}`),
+  }));
+
+  await page.route(`${backendBase}/api/coverage/list`, async (route) => {
+    await route.fulfill({
+      json: [
+        {
+          id: "cov-large-ui",
+          name: "large coverage ui",
+          status: "analyzed",
+          workspace_id: "ws-1",
+          source_format: "internal_function_hits",
+          created_at: "2026-06-07T00:00:00Z",
+        },
+      ],
+    });
+  });
+  await page.route(`${backendBase}/api/coverage/cov-large-ui`, async (route) => {
+    await route.fulfill({
+      json: {
+        id: "cov-large-ui",
+        name: "large coverage ui",
+        status: "analyzed",
+        workspace_id: "ws-1",
+        source_format: "internal_function_hits",
+        analysis_results_json: JSON.stringify(results),
+      },
+    });
+  });
+  await page.route(`${backendBase}/api/workspaces`, async (route) => {
+    await route.fulfill({ json: [] });
+  });
+
+  await page.goto("/coverage", { waitUntil: "domcontentloaded" });
+
+  await expect(page.getByText("页面预览前 80 条 AI 分析结果")).toBeVisible();
+  await expect(page.getByRole("button", { name: /gap_/ })).toHaveCount(80);
+  await expect(page.getByText("gap_094")).toHaveCount(0);
+
+  await page.getByRole("button", { name: /gap_000/ }).hover();
+  await page.getByRole("button", { name: /gap_000/ }).click();
+  await expect(page.getByText("case_0", { exact: true })).toBeVisible();
+  await expect(page.getByText("case_7", { exact: true })).toBeVisible();
+  await expect(page.getByText("case_8", { exact: true })).toHaveCount(0);
+  await expect(page.getByText("还有 4 条测试用例未在页面展开")).toBeVisible();
+  await expect(page.getByText("还有 2 条测试场景未在页面展开")).toBeVisible();
+  await expect(page.getByText("还有 2 条入口路径未在页面展开")).toBeVisible();
+
+  const downloadPromise = page.waitForEvent("download");
+  await page.getByRole("button", { name: "导出黑盒用例" }).hover();
+  await page.getByRole("button", { name: "导出黑盒用例" }).click();
+  const download = await downloadPromise;
+  const exportPath = test.info().outputPath("large-black-box-cases.json");
+  await download.saveAs(exportPath);
+  const exported = JSON.parse(fs.readFileSync(exportPath, "utf8")) as {
+    cases: Array<{ function_name: string | null }>;
+  };
+  expect(exported.cases.some((item) => item.function_name === "gap_094")).toBeTruthy();
+});
+
 test("coverage entry discovery is rendered after real workspace upload and AI analysis", async ({
   page,
 }) => {
