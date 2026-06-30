@@ -2,40 +2,67 @@
 
 import Link from "next/link";
 import { usePathname } from "next/navigation";
-import { useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { Bot, Loader2, MessageSquareText, Sparkles } from "lucide-react";
 import { api } from "@/lib/api";
 import type { AIConversation } from "@/lib/types";
+
+const ACTIVE_THREAD_POLL_MS = 8000;
+const IDLE_THREAD_POLL_MS = 60000;
 
 export default function AIThreadMiniDock() {
   const pathname = usePathname();
   const [items, setItems] = useState<AIConversation[]>([]);
   const [loading, setLoading] = useState(false);
   const [modalOpen, setModalOpen] = useState(false);
+  const mountedRef = useRef(true);
+
+  const loadThreads = useCallback(async (options: { showSpinner?: boolean } = {}) => {
+    if (document.hidden) return;
+    if (options.showSpinner) setLoading(true);
+    try {
+      const result = await api.aiConversations.list({ limit: 3 });
+      if (mountedRef.current) setItems(result.items);
+    } catch {
+      if (mountedRef.current) setItems([]);
+    } finally {
+      if (mountedRef.current && options.showSpinner) setLoading(false);
+    }
+  }, []);
+
+  useEffect(() => {
+    mountedRef.current = true;
+    return () => {
+      mountedRef.current = false;
+    };
+  }, []);
 
   useEffect(() => {
     if (pathname.startsWith("/ai")) return;
-    let cancelled = false;
-    let hasLoaded = false;
-    const load = async () => {
-      if (!hasLoaded) setLoading(true);
-      try {
-        const result = await api.aiConversations.list({ limit: 3 });
-        if (!cancelled) setItems(result.items);
-      } catch {
-        if (!cancelled) setItems([]);
-      } finally {
-        hasLoaded = true;
-        if (!cancelled) setLoading(false);
-      }
-    };
-    void load();
-    const timer = window.setInterval(load, 8000);
+    void loadThreads({ showSpinner: true });
+  }, [loadThreads, pathname]);
+
+  const hasRunningThread = items.some((item) => item.status === "running");
+  const pollDelay = hasRunningThread ? ACTIVE_THREAD_POLL_MS : IDLE_THREAD_POLL_MS;
+
+  useEffect(() => {
+    if (pathname.startsWith("/ai")) return;
+    const timer = window.setInterval(() => {
+      void loadThreads();
+    }, pollDelay);
     return () => {
-      cancelled = true;
       window.clearInterval(timer);
     };
-  }, [pathname]);
+  }, [loadThreads, pathname, pollDelay]);
+
+  useEffect(() => {
+    if (pathname.startsWith("/ai")) return;
+    const handleVisibilityChange = () => {
+      if (!document.hidden) void loadThreads();
+    };
+    document.addEventListener("visibilitychange", handleVisibilityChange);
+    return () => document.removeEventListener("visibilitychange", handleVisibilityChange);
+  }, [loadThreads, pathname]);
 
   useEffect(() => {
     const updateModalState = () => {

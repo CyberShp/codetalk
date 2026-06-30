@@ -283,6 +283,42 @@ test("AI conversation page skips decorative atmosphere layers for tool performan
   await expect(page.locator(".ct-atmosphere")).toHaveCount(0);
 });
 
+test("AI mini dock keeps idle background polling quiet on non-AI pages", async ({ page }) => {
+  let dockListRequests = 0;
+  await page.route("**/api/workspaces", async (route) => {
+    await route.fulfill({ headers: jsonHeaders(route.request().headers().origin), json: [] });
+  });
+  await page.route("**/api/ai/conversations?limit=3", async (route) => {
+    dockListRequests += 1;
+    await route.fulfill({
+      headers: jsonHeaders(route.request().headers().origin),
+      json: {
+        items: [
+          {
+            id: "idle-dock-thread",
+            scope_type: "global",
+            scope_id: "global",
+            workspace_id: null,
+            memory_namespace: "global",
+            title: "空闲线程",
+            status: "idle",
+            initial_context: {},
+            created_at: "2026-06-28T00:00:00Z",
+            updated_at: "2026-06-28T00:00:00Z",
+          },
+        ],
+      },
+    });
+  });
+
+  await page.goto("/", { waitUntil: "domcontentloaded" });
+  await expect(page.getByRole("link", { name: /空闲线程/ })).toBeVisible();
+  await expect.poll(() => dockListRequests).toBeGreaterThanOrEqual(1);
+  await page.waitForTimeout(9500);
+
+  expect(dockListRequests).toBeLessThanOrEqual(2);
+});
+
 test("AI conversation keeps long threads inside the reader and does not force document scrolling", async ({ page }) => {
   const longBlock = Array.from({ length: 14 }, (_, index) =>
     `第 ${index + 1} 段：补充登录失败、权限失效、弱网重试、审计日志验证和恢复路径。`,
