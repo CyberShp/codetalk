@@ -1,9 +1,7 @@
 "use client";
 
-import { useEffect, useRef, useState, useCallback } from "react";
+import { useEffect, useState, useCallback } from "react";
 import Link from "next/link";
-import gsap from "gsap";
-import { useGSAP } from "@gsap/react";
 import {
   FolderOpen,
   Plus,
@@ -20,10 +18,7 @@ import {
 import { api } from "@/lib/api";
 import type { Workspace } from "@/lib/types";
 
-gsap.registerPlugin(useGSAP);
-
 export default function WorkbenchPage() {
-  const homeShellRef = useRef<HTMLDivElement | null>(null);
   const [workspaces, setWorkspaces] = useState<Workspace[]>([]);
   const [loading, setLoading] = useState(true);
   const [sectionErrors, setSectionErrors] = useState<{
@@ -50,31 +45,6 @@ export default function WorkbenchPage() {
     });
   }, [loadData]);
 
-  useGSAP(
-    () => {
-      const root = homeShellRef.current;
-      if (!root) return;
-      if (window.matchMedia("(prefers-reduced-motion: reduce)").matches) return;
-
-      const movePointer = (event: PointerEvent) => {
-        const rect = root.getBoundingClientRect();
-        gsap.to(root, {
-          "--ct-home-x": `${event.clientX - rect.left}px`,
-          "--ct-home-y": `${event.clientY - rect.top}px`,
-          duration: 0.55,
-          ease: "power3.out",
-        });
-      };
-
-      root.addEventListener("pointermove", movePointer);
-
-      return () => {
-        root.removeEventListener("pointermove", movePointer);
-      };
-    },
-    { scope: homeShellRef },
-  );
-
   const indexedWorkspaces = workspaces.filter((workspace) => workspace.indexed === 1).length;
   const reportCount = workspaces.reduce((total, workspace) => total + workspace.reports.length, 0);
   const heroMetrics = [
@@ -90,7 +60,7 @@ export default function WorkbenchPage() {
   ];
 
   return (
-    <div ref={homeShellRef} className="ct-home-shell w-full px-4 xl:px-6">
+    <div className="ct-home-shell w-full px-4 xl:px-6">
       {/* Header */}
       <div className="ct-home-topbar ct-reveal flex flex-col gap-4 mb-6 sm:flex-row sm:items-center sm:justify-between">
         <div>

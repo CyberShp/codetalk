@@ -1,4 +1,6 @@
 import { expect, test } from "@playwright/test";
+import fs from "node:fs";
+import path from "node:path";
 
 function luminance(rgb: string): number {
   const match = rgb.match(/rgba?\((\d+),\s*(\d+),\s*(\d+)/);
@@ -192,6 +194,45 @@ test("home reduced motion disables decorative atmosphere and pointer spotlight",
   });
 
   expect(after).toEqual(before);
+});
+
+test("home shell avoids runtime animation dependencies and continuous decorative animations", async ({ page }) => {
+  await mockEmptyWorkspaceList(page);
+  await page.setViewportSize({ width: 1440, height: 900 });
+  await page.goto("/", { waitUntil: "domcontentloaded" });
+
+  const packageJson = JSON.parse(
+    fs.readFileSync(path.join(process.cwd(), "package.json"), "utf8"),
+  ) as { dependencies?: Record<string, string> };
+  const lockText = fs.readFileSync(path.join(process.cwd(), "package-lock.json"), "utf8");
+  expect(packageJson.dependencies ?? {}).not.toHaveProperty("gsap");
+  expect(packageJson.dependencies ?? {}).not.toHaveProperty("@gsap/react");
+  expect(lockText).not.toContain("node_modules/gsap");
+  expect(lockText).not.toContain("node_modules/@gsap/react");
+
+  const runningHomeAnimations = await page.locator(".ct-home-shell").evaluate((shell) =>
+    document
+      .getAnimations()
+      .filter((animation) => {
+        const target = animation.effect instanceof KeyframeEffect ? animation.effect.target : null;
+        return target instanceof Element && shell.contains(target);
+      })
+      .map((animation) => {
+        const target = animation.effect instanceof KeyframeEffect ? animation.effect.target : null;
+        const timing = animation.effect?.getComputedTiming();
+        return {
+          className: target instanceof HTMLElement ? target.className : "",
+          playState: animation.playState,
+          iterations: timing?.iterations,
+          duration: timing?.duration,
+        };
+      })
+      .filter((animation) => animation.playState !== "finished" && animation.iterations === Infinity),
+  );
+
+  expect(
+    runningHomeAnimations.filter((animation) => !String(animation.className).includes("animate-pulse")),
+  ).toEqual([]);
 });
 
 test("home mobile hero keeps primary paths tappable without horizontal overflow", async ({ page }) => {

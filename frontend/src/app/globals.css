@@ -2810,14 +2810,12 @@ body {
 .ct-home-orbit-field span:nth-child(2) {
   width: min(32vw, 420px);
   border-style: dashed;
-  animation: ct-ring-turn 34s linear infinite;
 }
 
 .ct-home-orbit-field span:nth-child(3) {
   width: min(22vw, 300px);
   border-color: rgba(15, 23, 42, 0.12);
   background: radial-gradient(circle, rgba(255, 255, 255, 0.7), transparent 56%);
-  animation: ct-orbit-pulse 5.8s ease-in-out infinite;
 }
 
 .ct-home-kicker {
@@ -2932,14 +2930,12 @@ body {
   background:
     conic-gradient(from 60deg, transparent, rgba(15, 23, 42, 0.34), transparent 34%, rgba(148, 163, 184, 0.28), transparent 70%);
   mask: radial-gradient(circle, transparent 57%, #000 58%, #000 60%, transparent 61%);
-  animation: ct-ring-turn 26s linear infinite;
 }
 
 .ct-home-core__rings span:nth-child(2) {
   width: 66%;
   aspect-ratio: 1;
   border: 1px dashed rgba(15, 23, 42, 0.18);
-  animation: ct-ring-turn 18s linear infinite reverse;
 }
 
 .ct-home-core__rings span:nth-child(3) {
@@ -2947,7 +2943,6 @@ body {
   aspect-ratio: 1;
   background:
     radial-gradient(circle at 50% 50%, rgba(15, 23, 42, 0.16), rgba(226, 232, 240, 0.58) 48%, transparent 72%);
-  animation: ct-core-breathe 4.8s ease-in-out infinite;
 }
 
 .ct-home-core__screen {
@@ -3054,9 +3049,7 @@ body {
   color: #172033;
   box-shadow: 0 20px 48px rgba(15, 23, 42, 0.11);
   backdrop-filter: blur(18px);
-  animation:
-    ct-luxury-rise 620ms var(--motion-spring) both,
-    ct-node-glow 4.8s ease-in-out infinite;
+  animation: ct-luxury-rise 620ms var(--motion-spring) both;
 }
 
 .ct-home-satellite svg {
@@ -3084,13 +3077,13 @@ body {
 .ct-home-satellite-b {
   right: 3%;
   top: 16%;
-  animation-delay: 90ms, -1.4s;
+  animation-delay: 90ms;
 }
 
 .ct-home-satellite-c {
   right: 10%;
   bottom: 12%;
-  animation-delay: 160ms, -2.6s;
+  animation-delay: 160ms;
 }
 
 .ct-home-system-strip {
@@ -3254,7 +3247,7 @@ body {
   inset: 0;
   background:
     linear-gradient(90deg, transparent, rgba(255, 255, 255, 0.84), transparent);
-  animation: ct-data-sweep 2.8s ease-in-out infinite;
+  opacity: 0.5;
 }
 
 .ct-home-pipeline-grid span {
@@ -4131,7 +4124,7 @@ body {
   position: absolute;
   inset: 0;
   background: linear-gradient(90deg, transparent, rgba(255, 255, 255, 0.82), transparent);
-  animation: ct-data-sweep 2.8s ease-in-out infinite;
+  opacity: 0.46;
 }
 
 .ct-premium-empty {
