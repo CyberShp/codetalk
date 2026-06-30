@@ -1183,6 +1183,130 @@ test("injects requested workspace source into a real agent-runtime AI thread", a
   }
 });
 
+test("injects default workspace source into an agent-runtime AI thread for vague prompts", async ({
+  page,
+  request,
+}) => {
+  test.setTimeout(70_000);
+  const repo = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), "codetalk-ai-default-source-")));
+  const sourcePath = path.join(repo, "src", "entry.c");
+  fs.mkdirSync(path.dirname(sourcePath), { recursive: true });
+  fs.writeFileSync(path.join(repo, "README.md"), "默认源码注入验证工作区\n", "utf8");
+  fs.writeFileSync(
+    sourcePath,
+    [
+      "int codetalk_default_workspace_source_probe(void) {",
+      "    return 314159;",
+      "}",
+      "",
+    ].join("\n"),
+    "utf8",
+  );
+  const runtimeDir = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), "codetalk-agent-default-source-")));
+  const runtimeScript = path.join(runtimeDir, "default_source_asserting_agent.py");
+  fs.writeFileSync(
+    runtimeScript,
+    [
+      "import sys",
+      "prompt = sys.stdin.read()",
+      "required = [",
+      "    'workspace_source',",
+      "    'src/entry.c',",
+      "    'codetalk_default_workspace_source_probe',",
+      "    'return 314159;',",
+      "]",
+      "missing = [item for item in required if item not in prompt]",
+      "if missing:",
+      "    print('DEFAULT_SOURCE_CONTEXT_MISSING ' + ','.join(missing), flush=True)",
+      "else:",
+      "    print('DEFAULT_SOURCE_CONTEXT_OK src/entry.c codetalk_default_workspace_source_probe', flush=True)",
+      "",
+    ].join("\n"),
+    "utf8",
+  );
+  const workspaceName = `ai-default-source-${Date.now()}`;
+  const runtimeName = `Default source runtime ${Date.now()}`;
+  const threadTitle = `${workspaceName} vague source`;
+  const prompt = "分析这个工作区的主流程，优先依据本地源码，不要只凭模型记忆";
+
+  const runtimeResp = await request.post(`${backendBase}/api/settings/agent-runtimes`, {
+    data: {
+      name: runtimeName,
+      command: "python3",
+      args: [runtimeScript],
+      prompt_transport: "stdin",
+      output_mode: "plain",
+      working_dir_mode: "project",
+      fixed_working_dir: "",
+      env: {},
+      health_command: "",
+      timeout_seconds: 30,
+      enabled: true,
+    },
+  });
+  expect(runtimeResp.status()).toBe(201);
+  const runtime = (await runtimeResp.json()) as { id: string };
+
+  const workspaceResp = await request.post(`${backendBase}/api/workspaces`, {
+    data: { name: workspaceName, repo_path: repo },
+  });
+  expect(workspaceResp.status()).toBe(201);
+  const workspace = (await workspaceResp.json()) as { id: string };
+
+  try {
+    await page.goto("/ai", { waitUntil: "domcontentloaded" });
+    const projectButton = page.locator("button").filter({ hasText: workspaceName }).first();
+    await expect(projectButton).toBeVisible({ timeout: 15_000 });
+    await projectButton.hover();
+    await projectButton.click();
+    await expect(page.getByRole("heading", { name: workspaceName })).toBeVisible();
+
+    await page.getByLabel("AI 线程执行器").selectOption({ label: runtimeName });
+    await page.getByPlaceholder(/线程名称/).fill(threadTitle);
+    await page.getByRole("button", { name: "新建线程" }).hover();
+    await page.getByRole("button", { name: "新建线程" }).click();
+
+    await page.waitForURL(/\/ai\/[^/]+$/, { timeout: 15_000 });
+    const threadId = page.url().split("/").pop() ?? "";
+    await expect(page.getByRole("heading", { name: threadTitle })).toBeVisible({ timeout: 15_000 });
+    await expect(page.getByLabel("当前 AI 执行器")).toHaveValue(runtime.id);
+
+    await page.getByLabel("AI 线程消息").fill(prompt);
+    await page.getByRole("button", { name: "发送" }).hover();
+    await page.getByRole("button", { name: "发送" }).click();
+    await expect(page.locator(".ct-codex-message.is-user").filter({ hasText: prompt })).toHaveCount(1);
+    await expect(page.getByText("DEFAULT_SOURCE_CONTEXT_OK src/entry.c")).toBeVisible({ timeout: 30_000 });
+    await expect(page.getByText("DEFAULT_SOURCE_CONTEXT_MISSING")).toHaveCount(0);
+    await expect(page.getByText("src/entry.c:L1")).toBeVisible();
+
+    const messagesResp = await request.get(
+      `${backendBase}/api/ai/conversations/${encodeURIComponent(threadId)}/messages`,
+    );
+    expect(messagesResp.ok()).toBeTruthy();
+    const body = (await messagesResp.json()) as {
+      items: Array<{
+        role: string;
+        content: string;
+        references?: Array<{ source_type: string; metadata?: Record<string, unknown> }>;
+      }>;
+    };
+    const userMessage = body.items.find((item) => item.role === "user" && item.content === prompt);
+    expect(userMessage?.references).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          source_type: "workspace_source",
+          metadata: expect.objectContaining({
+            workspace_id: workspace.id,
+            path: "src/entry.c",
+          }),
+        }),
+      ]),
+    );
+  } finally {
+    await request.delete(`${backendBase}/api/settings/agent-runtimes/${encodeURIComponent(runtime.id)}`);
+  }
+});
+
 test("redacts persisted AI thread message secrets from exported markdown", async ({
   page,
   request,
