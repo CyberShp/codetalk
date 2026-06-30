@@ -139,6 +139,66 @@ test("creates an AI investigation thread from the project hub and restores it af
   expect(messageBody.items.filter((item) => item.role === "assistant")).toHaveLength(0);
 });
 
+test("prevents duplicate sibling AI thread creation from a real double click", async ({
+  page,
+  request,
+}) => {
+  const repo = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), "codetalk-ai-sibling-")));
+  fs.writeFileSync(path.join(repo, "README.md"), "AI sibling thread e2e workspace\n", "utf8");
+  const workspaceName = `ai-sibling-e2e-${Date.now()}`;
+  const firstThreadTitle = `${workspaceName} primary investigation`;
+  const siblingTitle = `${workspaceName} · 新调查`;
+
+  const workspaceResp = await request.post(`${backendBase}/api/workspaces`, {
+    data: { name: workspaceName, repo_path: repo },
+  });
+  expect(workspaceResp.status()).toBe(201);
+  const workspace = (await workspaceResp.json()) as { id: string };
+
+  await page.goto("/ai", { waitUntil: "domcontentloaded" });
+  const projectButton = page.locator("button").filter({ hasText: workspaceName }).first();
+  await expect(projectButton).toBeVisible({ timeout: 15_000 });
+  await projectButton.hover();
+  await projectButton.click();
+
+  await page.getByPlaceholder(/线程名称/).fill(firstThreadTitle);
+  await page.getByRole("button", { name: "新建线程" }).hover();
+  await page.getByRole("button", { name: "新建线程" }).click();
+  await page.waitForURL(/\/ai\/[^/]+$/, { timeout: 15_000 });
+  await expect(page.getByRole("heading", { name: firstThreadTitle })).toBeVisible({
+    timeout: 15_000,
+  });
+
+  const createRequests: string[] = [];
+  page.on("request", (req) => {
+    if (req.method() === "POST" && req.url().endsWith("/api/ai/conversations")) {
+      createRequests.push(req.url());
+    }
+  });
+  const firstSiblingCreate = page.waitForRequest(
+    (req) => req.method() === "POST" && req.url().endsWith("/api/ai/conversations"),
+  );
+
+  const railNewThread = page.locator(".ct-codex-ai__rail").getByRole("button", { name: "新建线程" });
+  await railNewThread.hover();
+  await railNewThread.dblclick();
+  await firstSiblingCreate;
+
+  await page.waitForURL((url) => /\/ai\/[^/]+$/.test(url.pathname), { timeout: 15_000 });
+  await expect(page.getByRole("heading", { name: siblingTitle })).toBeVisible({
+    timeout: 15_000,
+  });
+  await expect.poll(() => createRequests.length).toBe(1);
+
+  const listResp = await request.get(
+    `${backendBase}/api/ai/conversations?workspace_id=${workspace.id}&limit=10`,
+  );
+  expect(listResp.ok()).toBeTruthy();
+  const conversations = (await listResp.json()) as { items: Array<{ title: string }> };
+  expect(conversations.items.filter((item) => item.title === firstThreadTitle)).toHaveLength(1);
+  expect(conversations.items.filter((item) => item.title === siblingTitle)).toHaveLength(1);
+});
+
 test("cancels a running agent-runtime AI thread through the real UI", async ({
   page,
   request,

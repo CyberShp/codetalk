@@ -131,11 +131,13 @@ export default function AIThreadPage() {
   const [input, setInput] = useState("");
   const [loading, setLoading] = useState(true);
   const [sending, setSending] = useState(false);
+  const [creatingSiblingThread, setCreatingSiblingThread] = useState(false);
   const [streamingRunId, setStreamingRunId] = useState<string | null>(null);
   const [streamingContent, setStreamingContent] = useState("");
   const [contextOpen, setContextOpen] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const abortRef = useRef<AbortController | null>(null);
+  const creatingSiblingThreadRef = useRef(false);
   const bottomRef = useRef<HTMLDivElement>(null);
 
   const references = useMemo(() => uniqueReferences(messages), [messages]);
@@ -155,7 +157,7 @@ export default function AIThreadPage() {
       : "";
   const visibleError = error || latestRunError;
   const composerDisabled = sending || Boolean(streamingRunId);
-  const threadNavigationBusy = savingRuntime || Boolean(streamingRunId);
+  const threadNavigationBusy = savingRuntime || creatingSiblingThread || Boolean(streamingRunId);
   const lastUserMessage = useMemo(
     () => [...messages].reverse().find((message) => message.role === "user") ?? null,
     [messages],
@@ -350,20 +352,27 @@ export default function AIThreadPage() {
   };
 
   const createSiblingThread = async () => {
-    if (!workspace || threadNavigationBusy) return;
-    const next = await api.aiConversations.create({
-      scope_type: "workspace",
-      scope_id: workspace.id,
-      workspace_id: workspace.id,
-      memory_namespace: `workspace:${workspace.id}`,
-      title: `${workspace.name} · 新调查`,
-      initial_context: {
+    if (!workspace || threadNavigationBusy || creatingSiblingThreadRef.current) return;
+    creatingSiblingThreadRef.current = true;
+    setCreatingSiblingThread(true);
+    try {
+      const next = await api.aiConversations.create({
+        scope_type: "workspace",
+        scope_id: workspace.id,
         workspace_id: workspace.id,
-        project_name: workspace.name,
         memory_namespace: `workspace:${workspace.id}`,
-      },
-    });
-    router.push(`/ai/${next.id}`);
+        title: `${workspace.name} · 新调查`,
+        initial_context: {
+          workspace_id: workspace.id,
+          project_name: workspace.name,
+          memory_namespace: `workspace:${workspace.id}`,
+        },
+      });
+      router.push(`/ai/${next.id}`);
+    } finally {
+      creatingSiblingThreadRef.current = false;
+      setCreatingSiblingThread(false);
+    }
   };
 
   if (loading) {
