@@ -1,7 +1,9 @@
 import { expect, test } from "@playwright/test";
 import fs from "node:fs";
 
-function jsonHeaders(origin = "http://localhost:3003") {
+const frontendOrigin = `http://localhost:${process.env.CODETALK_FRONTEND_PORT ?? "3003"}`;
+
+function jsonHeaders(origin = frontendOrigin) {
   return {
     "Access-Control-Allow-Origin": origin,
     "Access-Control-Allow-Credentials": "true",

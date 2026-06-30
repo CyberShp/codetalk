@@ -1,7 +1,9 @@
 import { expect, test } from "@playwright/test";
 import type { Page } from "@playwright/test";
 
-function corsHeaders(origin = "http://localhost:3003") {
+const frontendOrigin = `http://localhost:${process.env.CODETALK_FRONTEND_PORT ?? "3003"}`;
+
+function corsHeaders(origin = frontendOrigin) {
   return {
     "Access-Control-Allow-Origin": origin,
     "Access-Control-Allow-Credentials": "true",

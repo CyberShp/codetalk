@@ -7,7 +7,9 @@ import path from "node:path";
 
 const SPDK_REPO = process.env.CODETALK_E2E_REPO ?? "";
 const BAD_SPDK_REPO = "/Volums/Media/dpdk/spdk";
-const BACKEND_BASE = `http://localhost:${process.env.CODETALK_BACKEND_PORT ?? "3004"}`;
+const FRONTEND_PORT = process.env.CODETALK_FRONTEND_PORT ?? "3003";
+const BACKEND_PORT = process.env.CODETALK_BACKEND_PORT ?? "3004";
+const BACKEND_BASE = `http://localhost:${BACKEND_PORT}`;
 const RUN_ID = new Date().toISOString().replace(/[:.]/g, "-");
 const ARTIFACT_DIR =
   process.env.CODETALK_E2E_ARTIFACT_DIR ??
@@ -308,10 +310,10 @@ async function startIsolatedBackend(port: number, dataDir: string) {
       DATA_DIR: dataDir,
       SQLITE_DB: path.join(dataDir, "codetalk.db"),
       CORS_ORIGINS: [
-        "http://localhost:3003",
-        "http://127.0.0.1:3003",
-        "http://localhost:3004",
-        "http://127.0.0.1:3004",
+        `http://localhost:${FRONTEND_PORT}`,
+        `http://127.0.0.1:${FRONTEND_PORT}`,
+        `http://localhost:${BACKEND_PORT}`,
+        `http://127.0.0.1:${BACKEND_PORT}`,
       ].join(","),
       GITNEXUS_BASE_URL: process.env.GITNEXUS_BASE_URL ?? "http://localhost:7100",
       GITNEXUS_PORT: process.env.GITNEXUS_PORT ?? process.env.CODETALK_GITNEXUS_PORT ?? "7100",
