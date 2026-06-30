@@ -37,11 +37,29 @@ test("creates an AI investigation thread from the project hub and restores it af
   const threadUrl = page.url();
   await expect(page.getByRole("heading", { name: threadTitle })).toBeVisible({ timeout: 15_000 });
   await expect(page.getByText("直接提问。这个线程会持续保存")).toBeVisible();
-  await expect(page.getByPlaceholder(/像 Codex 一样继续追问/)).toBeVisible();
+  const composer = page.getByPlaceholder(/像 Codex 一样继续追问/);
+  await expect(composer).toBeVisible();
 
   await page.reload({ waitUntil: "domcontentloaded" });
   await expect(page.getByRole("heading", { name: threadTitle })).toBeVisible({ timeout: 15_000 });
   await expect(page.getByText("直接提问。这个线程会持续保存")).toBeVisible();
+
+  const prompt = "分析 SPDK NVMe-oF target connect 到 IO 提交流程";
+  await composer.fill(prompt);
+  await page.getByRole("button", { name: "发送" }).hover();
+  await page.getByRole("button", { name: "发送" }).click();
+  await expect(page.locator(".ct-codex-message.is-user").filter({ hasText: prompt })).toHaveCount(1);
+
+  const alert = page.locator('div[role="alert"]').filter({ hasText: "未配置活跃的聊天模型" });
+  await expect(alert).toBeVisible({ timeout: 20_000 });
+  await expect(alert).toContainText("LLM 不可用");
+  await expect(page.getByRole("link", { name: "去设置执行器" })).toHaveAttribute("href", "/settings");
+  const retryButton = page.getByRole("button", { name: "重试上一条" });
+  await expect(retryButton).toBeVisible();
+  await retryButton.hover();
+  await retryButton.click();
+  await expect(page.locator(".ct-codex-message.is-user").filter({ hasText: prompt })).toHaveCount(2);
+  await expect(alert).toBeVisible({ timeout: 20_000 });
 
   await page.goto("/ai", { waitUntil: "domcontentloaded" });
   await projectButton.hover();
