@@ -404,6 +404,108 @@ test("executes resource leak hunt and previews materialized artifacts through th
   await expect(testHooksArtifact).toBeVisible();
 });
 
+test("executes rerun twice from the real workbench UI and keeps distinct history artifacts", async ({
+  page,
+}) => {
+  const repo = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), "codetalk-rerun-ui-")));
+  fs.mkdirSync(path.join(repo, "lib", "bdev"), { recursive: true });
+  fs.mkdirSync(path.join(repo, "test", "bdev"), { recursive: true });
+  fs.writeFileSync(
+    path.join(repo, "lib", "bdev", "rerun.c"),
+    [
+      "#include <stdlib.h>",
+      "void bdev_rerun_probe(void) {",
+      "    void *buf = malloc(64);",
+      "    if (!buf) { return; }",
+      "    if (spdk_bdev_open_ext(\"Malloc0\", true, NULL, NULL, NULL) != 0) { return; }",
+      "    free(buf);",
+      "}",
+      "",
+    ].join("\n"),
+    "utf8",
+  );
+
+  const latestRerun = async () => {
+    const body = await page.locator("body").innerText();
+    const rerunIds = [...body.matchAll(/rerun-id:(task_run_[^\s]+)/g)].map((match) => match[1]);
+    const artifactPaths = [
+      ...body.matchAll(/history-latest:(task_reruns\/[^\s]+task_rerun_execution\.json)/g),
+    ].map((match) => match[1]);
+    const sequenceMatches = [...body.matchAll(/sequence:(\d+)/g)].map((match) => match[1]);
+    return {
+      rerunId: rerunIds.at(-1) ?? "",
+      artifactPath: artifactPaths.at(-1) ?? "",
+      sequence: sequenceMatches.at(-1) ?? "",
+    };
+  };
+
+  await page.goto("/workbench", { waitUntil: "domcontentloaded" });
+  await page.getByRole("button", { name: "工作流设计" }).hover();
+  await page.getByRole("button", { name: "工作流设计" }).click();
+  await page.getByLabel("工作流预设").selectOption("resource_leak_hunt");
+  await page.getByRole("button", { name: "安装预设" }).hover();
+  await page.getByRole("button", { name: "安装预设" }).click();
+  await expect(page.getByText("预设已安装: 资源/异常路径排查工作流")).toBeVisible({
+    timeout: 15_000,
+  });
+
+  await page.getByRole("button", { name: "运行驾驶舱" }).hover();
+  await page.getByRole("button", { name: "运行驾驶舱" }).click();
+  await page.getByLabel("Repo path").fill(repo);
+  await page.getByLabel("Inputs JSON").fill(
+    JSON.stringify(
+      {
+        target_scope: "lib/bdev rerun",
+        risk_pattern: "cleanup",
+        repo_path: repo,
+      },
+      null,
+      2,
+    ),
+  );
+
+  await page.getByRole("button", { name: "准备运行" }).hover();
+  await page.getByRole("button", { name: "准备运行" }).click();
+  await expect(page.getByText(/Task run prepared:/)).toBeVisible({ timeout: 15_000 });
+
+  await page.getByRole("button", { name: "执行工作流" }).hover();
+  await page.getByRole("button", { name: "执行工作流" }).click();
+  await expect(page.getByText(/Workflow execution completed:/)).toBeVisible({
+    timeout: 30_000,
+  });
+
+  await page.getByRole("button", { name: "复跑计划" }).hover();
+  await page.getByRole("button", { name: "复跑计划" }).click();
+  await expect(page.getByText(/can-rerun:true/)).toBeVisible({ timeout: 15_000 });
+  await expect(page.getByText(/history:0/)).toBeVisible();
+
+  await page.getByRole("button", { name: "执行复跑" }).hover();
+  await page.getByRole("button", { name: "执行复跑" }).click();
+  await expect(page.getByText(/Rerun execution completed:/)).toBeVisible({
+    timeout: 30_000,
+  });
+  await expect(page.getByText(/history:1/)).toBeVisible();
+  await expect(page.getByText(/rerun-execution:executed workflow:completed/)).toBeVisible();
+  await expect(page.getByText(/history-latest:task_reruns\//)).toBeVisible();
+  const firstRerun = await latestRerun();
+  expect(firstRerun.rerunId).toMatch(/_rerun_1$/);
+  expect(firstRerun.sequence).toBe("1");
+  expect(firstRerun.artifactPath).toMatch(/task_reruns\/.+_rerun_1\/task_rerun_execution\.json/);
+
+  await page.getByRole("button", { name: "执行复跑" }).hover();
+  await page.getByRole("button", { name: "执行复跑" }).click();
+  await expect(page.getByText(/Rerun execution completed:/)).toBeVisible({
+    timeout: 30_000,
+  });
+  await expect(page.getByText(/history:2/)).toBeVisible();
+  const secondRerun = await latestRerun();
+  expect(secondRerun.rerunId).toMatch(/_rerun_2$/);
+  expect(secondRerun.sequence).toBe("2");
+  expect(secondRerun.artifactPath).toMatch(/task_reruns\/.+_rerun_2\/task_rerun_execution\.json/);
+  expect(secondRerun.rerunId).not.toBe(firstRerun.rerunId);
+  expect(secondRerun.artifactPath).not.toBe(firstRerun.artifactPath);
+});
+
 test("executes patch impact review and previews flow impact artifacts through the real workbench UI", async ({
   page,
 }) => {
