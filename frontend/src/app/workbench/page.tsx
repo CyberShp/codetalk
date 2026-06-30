@@ -133,12 +133,15 @@ const WORKBENCH_VIEWS: Array<{
 
 const WORKFLOW_NAME_ZH: Record<string, string> = {
   "MR Black-box Test Workflow": "MR 黑盒测试工作流",
+  "MR Black-box Test Design": "MR 黑盒测试工作流",
   "MR Blackbox Test Workflow": "MR 黑盒测试工作流",
   "Module Analysis": "模块分析工作流",
+  "Resource Leak and Error Branch Hunt": "资源/异常路径排查工作流",
   "Resource Leak Hunt": "资源/异常路径排查工作流",
   "Patch Impact Review": "补丁影响面评审工作流",
   "custom_mr_blackbox": "自定义 MR 黑盒测试工作流",
   "mr-blackbox-workflow": "MR 黑盒测试工作流",
+  mr_blackbox_test: "MR 黑盒测试工作流",
   module_analysis: "模块分析工作流",
   resource_leak_hunt: "资源/异常路径排查工作流",
   patch_impact: "补丁影响面计划工作流",

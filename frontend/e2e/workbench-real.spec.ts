@@ -3,6 +3,36 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 
+test("lists and installs every required workflow preset through the real workbench UI", async ({
+  page,
+}) => {
+  const presets = [
+    { id: "module_analysis", label: "模块分析工作流" },
+    { id: "resource_leak_hunt", label: "资源/异常路径排查工作流" },
+    { id: "mr_blackbox_test", label: "MR 黑盒测试工作流" },
+    { id: "patch_impact_review", label: "补丁影响面评审工作流" },
+  ];
+
+  await page.goto("/workbench", { waitUntil: "domcontentloaded" });
+  await page.getByRole("button", { name: "工作流设计" }).hover();
+  await page.getByRole("button", { name: "工作流设计" }).click();
+
+  const presetSelect = page.getByLabel("工作流预设");
+  await expect(presetSelect).toBeVisible({ timeout: 15_000 });
+
+  for (const preset of presets) {
+    await expect(
+      page.locator(`select[aria-label="工作流预设"] option[value="${preset.id}"]`),
+    ).toHaveCount(1);
+    await presetSelect.selectOption(preset.id);
+    await page.getByRole("button", { name: "安装预设" }).hover();
+    await page.getByRole("button", { name: "安装预设" }).click();
+    await expect(page.getByText(`预设已安装: ${preset.label}`)).toBeVisible({
+      timeout: 15_000,
+    });
+  }
+});
+
 test("installs a workflow preset and validates required inputs through the real workbench UI", async ({
   page,
 }) => {
