@@ -2893,6 +2893,8 @@ export default function AgentWorkbenchPage() {
       setMessage(`源码切片已加载: ${result.items.length}`);
     });
 
+  const taskRunActionBusy = Boolean(busyAction);
+
   return (
     <div ref={workbenchRootRef} className="ct-workbench-shell w-full px-4 xl:px-6">
       <div className="ct-workbench-hero ct-liquid-glass mb-6 overflow-hidden rounded-[28px] p-5 sm:p-6">
@@ -4111,7 +4113,7 @@ export default function AgentWorkbenchPage() {
             </label>
             <button
               onClick={createAndRunTaskRun}
-              disabled={busyAction === "create-and-run-task-run" || !repoPath.trim()}
+              disabled={taskRunActionBusy || !repoPath.trim()}
               className="inline-flex items-center gap-2 rounded-lg bg-primary px-3 py-2 text-sm font-medium text-on-primary transition-opacity hover:opacity-90 disabled:opacity-50"
             >
               {busyAction === "create-and-run-task-run" ? (
@@ -4123,7 +4125,7 @@ export default function AgentWorkbenchPage() {
             </button>
             <button
               onClick={prepareTaskRun}
-              disabled={busyAction === "prepare-task-run" || !repoPath.trim()}
+              disabled={taskRunActionBusy || !repoPath.trim()}
               className="ml-2 inline-flex items-center gap-2 rounded-lg bg-surface px-3 py-2 text-sm font-medium text-on-surface transition-colors hover:bg-surface-container-high disabled:opacity-50"
             >
               {busyAction === "prepare-task-run" ? (
@@ -4135,7 +4137,7 @@ export default function AgentWorkbenchPage() {
             </button>
             <button
               onClick={executePreparedWorkflow}
-              disabled={busyAction === "execute-workflow" || !preparedRun}
+              disabled={taskRunActionBusy || !preparedRun}
               className="ml-2 inline-flex items-center gap-2 rounded-lg bg-surface px-3 py-2 text-sm font-medium text-on-surface transition-colors hover:bg-surface-container-high disabled:opacity-50"
             >
               {busyAction === "execute-workflow" ? (
@@ -4147,7 +4149,7 @@ export default function AgentWorkbenchPage() {
             </button>
             <button
               onClick={loadPreparedArtifacts}
-              disabled={busyAction === "load-artifacts" || !preparedRun}
+              disabled={taskRunActionBusy || !preparedRun}
               className="ml-2 inline-flex items-center gap-2 rounded-lg bg-surface px-3 py-2 text-sm font-medium text-on-surface transition-colors hover:bg-surface-container-high disabled:opacity-50"
             >
               {busyAction === "load-artifacts" ? (
@@ -4159,7 +4161,7 @@ export default function AgentWorkbenchPage() {
             </button>
             <button
               onClick={loadTaskRerunPlan}
-              disabled={busyAction === "load-rerun-plan" || !preparedRun}
+              disabled={taskRunActionBusy || !preparedRun}
               className="ml-2 inline-flex items-center gap-2 rounded-lg bg-surface px-3 py-2 text-sm font-medium text-on-surface transition-colors hover:bg-surface-container-high disabled:opacity-50"
             >
               {busyAction === "load-rerun-plan" ? (
@@ -4171,7 +4173,7 @@ export default function AgentWorkbenchPage() {
             </button>
             <button
               onClick={generateTaskAcceptanceAudit}
-              disabled={busyAction === "acceptance-audit" || !preparedRun}
+              disabled={taskRunActionBusy || !preparedRun}
               className="ml-2 inline-flex items-center gap-2 rounded-lg bg-surface px-3 py-2 text-sm font-medium text-on-surface transition-colors hover:bg-surface-container-high disabled:opacity-50"
             >
               {busyAction === "acceptance-audit" ? (
@@ -4184,7 +4186,7 @@ export default function AgentWorkbenchPage() {
             <button
               onClick={executeTaskRerunPlan}
               disabled={
-                busyAction === "execute-rerun-plan" ||
+                taskRunActionBusy ||
                 !preparedRun ||
                 !taskRerunPlanValidation?.can_rerun
               }
@@ -4200,7 +4202,7 @@ export default function AgentWorkbenchPage() {
             <button
               onClick={materializePreparedWorkflowOutputs}
               disabled={
-                busyAction === "materialize-workflow-outputs" ||
+                taskRunActionBusy ||
                 !preparedRun ||
                 !workflowExecution
               }
@@ -4216,7 +4218,7 @@ export default function AgentWorkbenchPage() {
             <button
               onClick={importPreparedSemanticOutputs}
               disabled={
-                busyAction === "import-semantic-outputs" ||
+                taskRunActionBusy ||
                 !preparedRun ||
                 semanticImportOutputIds.length === 0
               }

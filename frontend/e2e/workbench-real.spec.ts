@@ -103,6 +103,50 @@ test("installs a workflow preset and validates required inputs through the real 
   await expect(page.getByText(repo).first()).toBeVisible();
 });
 
+test("locks conflicting task run actions while a real prepare request is in flight", async ({
+  page,
+}) => {
+  const repo = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), "codetalk-busy-run-")));
+  fs.mkdirSync(path.join(repo, "lib", "nvmf"), { recursive: true });
+  fs.writeFileSync(
+    path.join(repo, "lib", "nvmf", "connect.c"),
+    "int nvmf_busy_connect(void) { return 0; }\n",
+    "utf8",
+  );
+
+  await page.goto("/workbench", { waitUntil: "domcontentloaded" });
+  await page.getByRole("button", { name: "工作流设计" }).hover();
+  await page.getByRole("button", { name: "工作流设计" }).click();
+  await page.getByLabel("工作流预设").selectOption("module_analysis");
+  await page.getByRole("button", { name: "安装预设" }).hover();
+  await page.getByRole("button", { name: "安装预设" }).click();
+  await expect(page.getByText("预设已安装: 模块分析工作流")).toBeVisible({
+    timeout: 15_000,
+  });
+
+  await page.getByRole("button", { name: "运行驾驶舱" }).hover();
+  await page.getByRole("button", { name: "运行驾驶舱" }).click();
+  await page.getByLabel("Repo path").fill(repo);
+  await page.getByLabel("Workflow input repo_path").fill(repo);
+  await page.getByLabel("Workflow input analysis_object").fill("lib/nvmf busy connect");
+
+  const prepareRequest = page.waitForRequest(
+    (request) =>
+      request.method() === "POST" &&
+      request.url().includes("/api/workbench/task-runs/prepare"),
+  );
+  await page.getByRole("button", { name: "准备运行" }).hover();
+  await page.getByRole("button", { name: "准备运行" }).click();
+  await prepareRequest;
+
+  await expect(page.getByRole("button", { name: "创建并运行" })).toBeDisabled();
+  await expect(page.getByRole("button", { name: "准备运行" })).toBeDisabled();
+  await expect(page.getByRole("button", { name: "执行工作流" })).toBeDisabled();
+  await expect(page.getByRole("button", { name: "审计产物" })).toBeDisabled();
+
+  await expect(page.getByText(/Task run prepared:/)).toBeVisible({ timeout: 15_000 });
+});
+
 test("opens a persisted AI review thread from a prepared workbench run through the real UI", async ({
   page,
   request,
