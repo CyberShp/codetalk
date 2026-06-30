@@ -4,6 +4,8 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 
+const backendBase = `http://localhost:${process.env.CODETALK_BACKEND_PORT ?? "3004"}`;
+
 async function expectBrowserStorageNotToContain(page: Page, secret: string) {
   const storageText = await page.evaluate(() =>
     JSON.stringify({
@@ -101,6 +103,59 @@ test("settings active chat model selection persists after reload", async ({ page
   await expect(reloadedSelect).toHaveValue(selectedModelId);
   const reloadedRow = page.locator("div", { hasText: configName }).filter({ hasText: modelName }).first();
   await expect(reloadedRow).toContainText("活跃", { timeout: 15_000 });
+});
+
+test("settings LLM deletion requires confirmation and persists after reload", async ({
+  page,
+  request,
+}) => {
+  const configName = `ui-delete-model-${Date.now()}`;
+  const modelName = `delete-model-${Date.now()}`;
+
+  await page.goto("/settings", { waitUntil: "domcontentloaded" });
+  await page.getByRole("button", { name: /可选：内置模型与 RAG 检索/ }).click();
+  await page.getByRole("button", { name: "新增" }).click();
+
+  const form = page.locator("form").filter({ hasText: "新增 LLM 配置" });
+  await form.getByPlaceholder("如：Claude / GPT-4o").fill(configName);
+  await form.getByPlaceholder("https://api.openai.com/v1").fill("https://llm.example/v1");
+  await form.getByPlaceholder(/sk-|Ollama/).fill(`delete-key-${Date.now()}`);
+  await form.getByRole("textbox", { name: "gpt-4o", exact: true }).fill(modelName);
+  await form.getByRole("button", { name: "保存配置" }).hover();
+  await form.getByRole("button", { name: "保存配置" }).click();
+
+  const savedRow = page
+    .locator("p.text-sm", { hasText: configName })
+    .locator("xpath=ancestor::div[contains(@class,'bg-surface-container')][1]");
+  const deleteButton = savedRow.locator('button[title="删除"]');
+  await expect(savedRow).toBeVisible({ timeout: 15_000 });
+
+  page.once("dialog", async (dialog) => {
+    expect(dialog.type()).toBe("confirm");
+    expect(dialog.message()).toContain("确定要删除此配置吗");
+    await dialog.dismiss();
+  });
+  await deleteButton.hover();
+  await deleteButton.click();
+  await expect(savedRow).toBeVisible();
+
+  page.once("dialog", async (dialog) => {
+    expect(dialog.type()).toBe("confirm");
+    expect(dialog.message()).toContain("确定要删除此配置吗");
+    await dialog.accept();
+  });
+  await deleteButton.hover();
+  await deleteButton.click();
+  await expect(page.getByText(configName)).toHaveCount(0, { timeout: 15_000 });
+
+  await page.reload({ waitUntil: "domcontentloaded" });
+  await page.getByRole("button", { name: /可选：内置模型与 RAG 检索/ }).click();
+  await expect(page.getByText(configName)).toHaveCount(0);
+
+  const listResp = await request.get(`${backendBase}/api/settings/llm`);
+  expect(listResp.ok()).toBeTruthy();
+  const configs = (await listResp.json()) as Array<{ name: string; model: string }>;
+  expect(configs.some((item) => item.name === configName || item.model === modelName)).toBe(false);
 });
 
 test("settings agent runtime env values are not rendered after save", async ({ page }) => {
