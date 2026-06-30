@@ -3267,6 +3267,7 @@ async def test_workbench_task_run_artifact_content_api_is_safe(workbench_client,
     assert body["kind"] == "task_bundle"
     assert body["sha256"]
     assert body["truncated"] is False
+    assert body["content_redacted"] is False
     assert "artifact_content_workflow" in body["content"]
 
     escaped = await workbench_client.get(
@@ -3280,6 +3281,7 @@ async def test_workbench_task_run_artifact_content_api_is_safe(workbench_client,
     )
     assert secret not in diagnostics["preview"]
     assert "<redacted>" in diagnostics["preview"]
+    assert diagnostics["preview_redacted"] is True
 
     diagnostic_content = await workbench_client.get(
         f"/api/workbench/task-runs/{task_run_id}/artifacts/content/diagnostics.log"
@@ -3288,6 +3290,7 @@ async def test_workbench_task_run_artifact_content_api_is_safe(workbench_client,
     diagnostic_body = diagnostic_content.json()
     assert secret not in diagnostic_body["content"]
     assert "<redacted>" in diagnostic_body["content"]
+    assert diagnostic_body["content_redacted"] is True
     assert (task_dir / "diagnostics.log").read_text(encoding="utf-8").count(secret) == 3
 
 

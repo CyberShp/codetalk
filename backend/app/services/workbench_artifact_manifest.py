@@ -58,13 +58,14 @@ def build_task_artifact_manifest(task_dir: Path) -> list[dict[str, Any]]:
             "size_bytes": len(data),
             "sha256": hashlib.sha256(data).hexdigest(),
         }
-        preview = artifact_preview(
+        preview, preview_redacted = artifact_preview_with_redaction_status(
             resolved,
             data,
             max_chars=3200 if relative_path.endswith("execution_input.json") else 1200,
         )
         if preview:
             item["preview"] = preview
+            item["preview_redacted"] = preview_redacted
         artifacts.append(item)
     return artifacts
 
@@ -189,7 +190,13 @@ def workbench_artifact_kind(relative_path: str) -> str:
 
 
 def artifact_preview(path: Path, data: bytes, *, max_chars: int = 1200) -> str:
+    return artifact_preview_with_redaction_status(path, data, max_chars=max_chars)[0]
+
+
+def artifact_preview_with_redaction_status(path: Path, data: bytes, *, max_chars: int = 1200) -> tuple[str, bool]:
     if path.suffix.lower() not in {".json", ".md", ".txt", ".patch", ".diff", ".log"}:
-        return ""
+        return "", False
     text = data[: max_chars * 4].decode("utf-8", errors="replace")
-    return redact_agent_diagnostic_text(text[:max_chars])
+    preview = text[:max_chars]
+    redacted = redact_agent_diagnostic_text(preview)
+    return redacted, redacted != preview

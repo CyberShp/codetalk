@@ -1016,6 +1016,7 @@ test("agent workbench previews task run artifact content", async ({ page }) => {
           preview: "{\"kind\":\"agent_failure_retry_context\",\"failure_kind\":\"agent_error\"}",
           is_text: true,
           truncated: false,
+          content_redacted: true,
           content: JSON.stringify({
             kind: "agent_failure_retry_context",
             step_id: "discover",
@@ -1289,6 +1290,7 @@ test("agent workbench previews task run artifact content", async ({ page }) => {
     page.getByText("do-not:do not treat raw stdout/stderr as accepted evidence"),
   ).toBeVisible();
   await expect(page.getByText("stderr:fatal diagnostic")).toBeVisible();
+  await expect(page.getByText("redacted", { exact: true })).toBeVisible();
 
   await page.getByRole("button", { name: "验收审计" }).click();
   await expect(page.getByText("Agent instruction policy")).toBeVisible();

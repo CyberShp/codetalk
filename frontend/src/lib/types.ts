@@ -837,6 +837,7 @@ export interface WorkbenchTaskArtifact {
   size_bytes: number;
   sha256: string;
   preview?: string;
+  preview_redacted?: boolean;
 }
 
 export interface WorkbenchTaskArtifactManifest {
@@ -848,6 +849,7 @@ export interface WorkbenchTaskArtifactManifest {
 export interface WorkbenchTaskArtifactContent extends WorkbenchTaskArtifact {
   is_text: boolean;
   truncated: boolean;
+  content_redacted?: boolean;
   content: string;
 }
 

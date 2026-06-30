@@ -4886,10 +4886,13 @@ def _artifact_content_payload(task_dir: Path, path: Path, *, max_chars: int) -> 
     is_text = path.suffix.lower() in {".json", ".md", ".txt", ".patch", ".diff", ".log"}
     content = ""
     truncated = False
+    content_redacted = False
     if is_text:
         text = data.decode("utf-8", errors="replace")
         truncated = len(text) > max_chars
-        content = redact_agent_diagnostic_text(text[:max_chars])
+        raw_content = text[:max_chars]
+        content = redact_agent_diagnostic_text(raw_content)
+        content_redacted = content != raw_content
     return {
         "relative_path": relative_path,
         "path": str(path.resolve()),
@@ -4898,6 +4901,7 @@ def _artifact_content_payload(task_dir: Path, path: Path, *, max_chars: int) -> 
         "sha256": hashlib.sha256(data).hexdigest(),
         "is_text": is_text,
         "truncated": truncated,
+        "content_redacted": content_redacted,
         "content": content,
     }
 

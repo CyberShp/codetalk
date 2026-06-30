@@ -4781,6 +4781,9 @@ export default function AgentWorkbenchPage() {
                           {artifactContent.truncated && (
                             <span className="text-warning">truncated</span>
                           )}
+                          {artifactContent.content_redacted && (
+                            <span className="text-warning">redacted</span>
+                          )}
                         </div>
                         {(() => {
                           const summary = evidenceValidationSummary(artifactContent);
