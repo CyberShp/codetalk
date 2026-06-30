@@ -53,6 +53,38 @@ function expectProductApiOk(response: import("@playwright/test").Response) {
   expect(response.status(), `${response.request().method()} ${response.url()}`).toBeLessThan(500);
 }
 
+async function expectNoContinuousDecorativeAnimations(
+  page: import("@playwright/test").Page,
+  selector: string,
+) {
+  const runningAnimations = await page.locator(selector).evaluate((root) =>
+    document
+      .getAnimations()
+      .filter((animation) => {
+        const target = animation.effect instanceof KeyframeEffect ? animation.effect.target : null;
+        return target instanceof Element && root.contains(target);
+      })
+      .map((animation) => {
+        const target = animation.effect instanceof KeyframeEffect ? animation.effect.target : null;
+        const timing = animation.effect?.getComputedTiming();
+        return {
+          className: target instanceof HTMLElement ? target.className : "",
+          tagName: target instanceof Element ? target.tagName : "",
+          playState: animation.playState,
+          iterations: timing?.iterations,
+          duration: timing?.duration,
+        };
+      })
+      .filter((animation) => animation.playState !== "finished" && animation.iterations === Infinity),
+  );
+
+  const allowedFeedbackAnimations = runningAnimations.filter((animation) => {
+    const className = String(animation.className);
+    return className.includes("spinner") || className.includes("loading") || className.includes("spinning");
+  });
+  expect(runningAnimations).toEqual(allowedFeedbackAnimations);
+}
+
 async function uncheckIfChecked(selector: string, page: import("@playwright/test").Page) {
   const checkbox = page.locator(selector);
   if (await checkbox.isChecked()) {
@@ -89,6 +121,13 @@ test.describe.serial("internal release click-through", () => {
 
   test.afterAll(() => {
     [frontendEnv, backendEnv, deployConfig].forEach(restoreFile);
+  });
+
+  test("deployer pages avoid continuous decorative animations", async ({ page }) => {
+    for (const pathName of ["/", "/deploy.html", "/start.html"]) {
+      await page.goto(pathName, { waitUntil: "domcontentloaded" });
+      await expectNoContinuousDecorativeAnimations(page, "body");
+    }
   });
 
   test("deploy, start, and validate core product by clicking through the UI", async ({

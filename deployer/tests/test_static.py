@@ -38,6 +38,25 @@ async def test_static_background_avoids_heavy_infinite_orb_animation(client):
     assert "blur(80px)" not in css
 
 
+async def test_deployer_static_avoids_continuous_decorative_animations(client):
+    css_resp = await client.get("/style.css")
+    start_resp = await client.get("/start.html")
+    assert css_resp.status_code == 200
+    assert start_resp.status_code == 200
+
+    decorative_animation_tokens = [
+        "animation: deploy-pulse-ring",
+        "animation: deploy-flow",
+        "animation: pulse-aura",
+    ]
+    combined = css_resp.text + "\n" + start_resp.text
+    for token in decorative_animation_tokens:
+        assert token not in combined
+
+    assert "animation: spin" in css_resp.text
+    assert "animation: svc-spin" in start_resp.text
+
+
 async def test_app_js_served(client):
     resp = await client.get("/app.js")
     assert resp.status_code == 200

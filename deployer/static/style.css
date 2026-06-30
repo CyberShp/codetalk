@@ -300,7 +300,6 @@ input, select, textarea {
   border-color: var(--accent);
   box-shadow: 0 0 20px var(--accent-glow);
   transform: scale(1.1);
-  animation: deploy-pulse-ring 1.8s ease-in-out infinite;
 }
 
 .step-dot.completed::before {
@@ -997,7 +996,6 @@ input, select, textarea {
   box-shadow: 0 0 15px var(--accent-glow);
   width: 0%;
   transition: width 0.5s cubic-bezier(0.4, 0, 0.2, 1);
-  animation: deploy-flow 900ms linear infinite;
 }
 
 .service-pills {
@@ -1028,12 +1026,6 @@ input, select, textarea {
 .pill-running .pill-dot {
   background: var(--accent);
   box-shadow: 0 0 8px var(--accent);
-  animation: pulse-aura 2s infinite;
-}
-
-@keyframes pulse-aura {
-  0% { transform: scale(1); opacity: 1; }
-  100% { transform: scale(2.5); opacity: 0; }
 }
 
 /* ============================================================
@@ -1770,7 +1762,6 @@ input, select, textarea {
 .health-ok .health-dot {
   background: var(--success);
   box-shadow: 0 0 6px rgba(74, 222, 128, 0.5);
-  animation: deploy-pulse-ring 2s ease-in-out infinite;
 }
 
 @media (prefers-reduced-motion: reduce) {
