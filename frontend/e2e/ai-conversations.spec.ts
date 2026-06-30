@@ -151,6 +151,61 @@ test("AI conversation page is a wide persistent reading surface", async ({ page 
   const readerBox = await reader.boundingBox();
   expect(readerBox?.width ?? 0).toBeGreaterThan(560);
 
+  const density = await page.locator(".ct-codex-message__content > div").first().evaluate((element) => {
+    const rect = element.getBoundingClientRect();
+    const styles = window.getComputedStyle(element);
+    return {
+      fontSize: Number.parseFloat(styles.fontSize),
+      lineHeight: Number.parseFloat(styles.lineHeight),
+      width: rect.width,
+      paddingTop: Number.parseFloat(styles.paddingTop),
+      paddingLeft: Number.parseFloat(styles.paddingLeft),
+    };
+  });
+  expect(density.fontSize).toBeGreaterThanOrEqual(14);
+  expect(density.fontSize).toBeLessThanOrEqual(16);
+  expect(density.lineHeight / density.fontSize).toBeLessThanOrEqual(1.7);
+  expect(density.width).toBeLessThanOrEqual(760);
+  expect(density.paddingTop).toBeLessThanOrEqual(14);
+  expect(density.paddingLeft).toBeLessThanOrEqual(16);
+
+  const composerFontSize = await page.locator(".ct-codex-composer textarea").evaluate((element) =>
+    Number.parseFloat(window.getComputedStyle(element).fontSize),
+  );
+  expect(composerFontSize).toBeGreaterThanOrEqual(14);
+  expect(composerFontSize).toBeLessThanOrEqual(16);
+
+  const topbarLayout = await page.locator(".ct-codex-ai__topbar > *").evaluateAll((nodes) => {
+    const boxes = nodes.map((node) => {
+      const rect = node.getBoundingClientRect();
+      return {
+        left: rect.left,
+        top: rect.top,
+        right: rect.right,
+        bottom: rect.bottom,
+        width: rect.width,
+        height: rect.height,
+      };
+    });
+    const overlaps: string[] = [];
+    const sameRowGaps: number[] = [];
+    for (let i = 0; i < boxes.length; i += 1) {
+      for (let j = i + 1; j < boxes.length; j += 1) {
+        const a = boxes[i];
+        const b = boxes[j];
+        const xOverlap = Math.max(0, Math.min(a.right, b.right) - Math.max(a.left, b.left));
+        const yOverlap = Math.max(0, Math.min(a.bottom, b.bottom) - Math.max(a.top, b.top));
+        if (xOverlap * yOverlap > 1) overlaps.push(`${i}:${j}`);
+        if (yOverlap > Math.min(a.height, b.height) * 0.5 && b.left >= a.right) {
+          sameRowGaps.push(Math.round(b.left - a.right));
+        }
+      }
+    }
+    return { overlaps, sameRowGaps };
+  });
+  expect(topbarLayout.overlaps).toEqual([]);
+  expect(topbarLayout.sameRowGaps.every((gap) => gap >= 8)).toBe(true);
+
   const downloadPromise = page.waitForEvent("download");
   await page.getByRole("button", { name: "导出" }).click();
   const download = await downloadPromise;
