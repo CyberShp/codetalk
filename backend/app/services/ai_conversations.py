@@ -755,13 +755,22 @@ async def run_agent_generation(
             current = await store.get_run(run_id)
             if current["status"] == "cancelled":
                 return
-            chunks.append(delta)
-            await store.append_event(
-                run_id=run_id,
-                conversation_id=conversation["id"],
-                event_type="delta",
-                payload={"content": delta},
-            )
+            for kind, content in _agent_output_segments(delta):
+                if kind == "diagnostic":
+                    await store.append_event(
+                        run_id=run_id,
+                        conversation_id=conversation["id"],
+                        event_type="delta",
+                        payload={"kind": "diagnostic", "content": content},
+                    )
+                    continue
+                chunks.append(content)
+                await store.append_event(
+                    run_id=run_id,
+                    conversation_id=conversation["id"],
+                    event_type="delta",
+                    payload={"content": content},
+                )
         content = "".join(chunks).strip() or "执行器没有返回有效内容，请检查命令输出模式。"
         await store.complete_run(
             run_id=run_id,
@@ -795,6 +804,31 @@ def _context_status_message(references: list[dict[str, Any]]) -> str:
     if not parts:
         return "正在准备可用上下文；未找到直接匹配的工作区源码或输入材料。"
     return f"正在读取{'、'.join(parts)}上下文。"
+
+
+def _agent_output_segments(chunk: str) -> list[tuple[str, str]]:
+    text = str(chunk or "")
+    if not text.strip():
+        return []
+    segments: list[tuple[str, str]] = []
+    for line in text.splitlines(keepends=True):
+        content = line.strip()
+        if not content:
+            continue
+        diagnostic = _agent_diagnostic_text(content)
+        if diagnostic:
+            segments.append(("diagnostic", diagnostic))
+        else:
+            segments.append(("answer", line))
+    return segments
+
+
+def _agent_diagnostic_text(text: str) -> str:
+    lowered = text.lower()
+    for prefix in ("status:", "diagnostic:", "thinking:", "trace:"):
+        if lowered.startswith(prefix):
+            return redact_agent_diagnostic_text(text[len(prefix):].strip())
+    return ""
 
 
 def _build_prompt(
