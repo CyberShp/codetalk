@@ -516,6 +516,85 @@ test("opens a persisted AI review thread from a prepared workbench run through t
   });
 });
 
+test("prevents duplicate workbench AI review threads from a real double click", async ({
+  page,
+  request,
+}) => {
+  test.setTimeout(60_000);
+  const repo = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), "codetalk-ai-review-double-")));
+  fs.mkdirSync(path.join(repo, "lib", "nvmf"), { recursive: true });
+  fs.writeFileSync(
+    path.join(repo, "lib", "nvmf", "connect.c"),
+    "int nvmf_connect_review_double_target(void) { return 0; }\n",
+    "utf8",
+  );
+  const workspaceId = `ai-review-double-ws-${Date.now()}`;
+
+  await page.goto("/workbench", { waitUntil: "domcontentloaded" });
+  await page.getByLabel("Workspace ID").fill(workspaceId);
+  await page.getByRole("button", { name: "工作流设计" }).hover();
+  await page.getByRole("button", { name: "工作流设计" }).click();
+  await page.getByLabel("工作流预设").selectOption("module_analysis");
+  await page.getByRole("button", { name: "安装预设" }).hover();
+  await page.getByRole("button", { name: "安装预设" }).click();
+  await expect(page.getByText("预设已安装: 模块分析工作流")).toBeVisible({
+    timeout: 15_000,
+  });
+
+  await page.getByRole("button", { name: "运行驾驶舱" }).hover();
+  await page.getByRole("button", { name: "运行驾驶舱" }).click();
+  await page.getByLabel("Repo path").fill(repo);
+  await page.getByLabel("Workflow input repo_path").fill(repo);
+  await page.getByLabel("Workflow input analysis_object").fill("lib/nvmf connect review double");
+  await page.getByRole("button", { name: "准备运行" }).hover();
+  await page.getByRole("button", { name: "准备运行" }).click();
+  await expect(page.getByText(/Task run prepared:/)).toBeVisible({ timeout: 15_000 });
+  const preparedText = await page.locator("body").innerText();
+  const taskRunId = preparedText.match(/Task run prepared:\s*(task_run_[a-f0-9]+)/)?.[1] ?? "";
+  expect(taskRunId).not.toEqual("");
+
+  const createRequests: string[] = [];
+  page.on("request", (req) => {
+    if (
+      req.method() === "POST" &&
+      new URL(req.url()).pathname === "/api/ai/conversations"
+    ) {
+      createRequests.push(req.url());
+    }
+  });
+  const createResponse = page.waitForResponse(
+    (response) =>
+      response.request().method() === "POST" &&
+      new URL(response.url()).pathname === "/api/ai/conversations" &&
+      response.status() === 201,
+  );
+
+  await page.getByRole("button", { name: "围绕本次运行继续追问" }).hover();
+  await page.getByRole("button", { name: "围绕本次运行继续追问" }).dblclick();
+  await createResponse;
+  await page.waitForURL(/\/ai\/[^/]+$/, { timeout: 15_000 });
+  await expect(page.getByText(`workbench_task_run / ${taskRunId}`)).toBeVisible({
+    timeout: 15_000,
+  });
+  await expect.poll(() => createRequests.length).toBe(1);
+
+  const listResponse = await request.get(
+    `http://localhost:${process.env.CODETALK_BACKEND_PORT ?? "3004"}/api/ai/conversations?workspace_id=${encodeURIComponent(workspaceId)}`,
+  );
+  expect(listResponse.ok()).toBeTruthy();
+  const listed = (await listResponse.json()) as {
+    items: Array<{ scope_type: string; scope_id: string; workspace_id: string }>;
+  };
+  expect(
+    listed.items.filter(
+      (item) =>
+        item.scope_type === "workbench_task_run" &&
+        item.scope_id === taskRunId &&
+        item.workspace_id === workspaceId,
+    ),
+  ).toHaveLength(1);
+});
+
 test("persists semantic cases and evidence source slices through the real workbench UI", async ({
   page,
 }) => {
