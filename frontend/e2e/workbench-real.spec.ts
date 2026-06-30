@@ -147,6 +147,77 @@ test("locks conflicting task run actions while a real prepare request is in flig
   await expect(page.getByText(/Task run prepared:/)).toBeVisible({ timeout: 15_000 });
 });
 
+test("locks sibling agent-run actions while a real step execution is in flight", async ({
+  page,
+}) => {
+  test.skip(
+    process.env.CODETALK_E2E_SLOW_AGENT_PROVIDER !== "1",
+    "requires EXTERNAL_AGENT_CUSTOM_PROVIDERS with a slow-agent command",
+  );
+
+  const unique = Date.now();
+  const repo = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), "codetalk-step-busy-")));
+  fs.writeFileSync(path.join(repo, "README.md"), "step busy e2e\n", "utf8");
+  const workflowId = `step_busy_${unique}`;
+
+  await page.goto("/workbench", { waitUntil: "domcontentloaded" });
+  await page.getByRole("button", { name: "工作流设计" }).hover();
+  await page.getByRole("button", { name: "工作流设计" }).click();
+  await page.getByLabel("Workflow JSON").fill(
+    JSON.stringify(
+      {
+        id: workflowId,
+        name: "Step Busy E2E",
+        version: 1,
+        inputs: [{ id: "analysis_object", type: "free_text", required: true }],
+        steps: [
+          {
+            id: "slow_step",
+            type: "agent_task",
+            provider: "slow-agent",
+            required_artifacts: ["result.json"],
+            goal: "Write result.json after a short delay.",
+          },
+        ],
+        outputs: [{ id: "result", type: "json", artifact: "result.json" }],
+      },
+      null,
+      2,
+    ),
+  );
+  await page.getByRole("button", { name: "保存工作流" }).hover();
+  await page.getByRole("button", { name: "保存工作流" }).click();
+  await expect(page.getByText(`工作流已保存: ${workflowId}`)).toBeVisible({
+    timeout: 15_000,
+  });
+
+  await page.getByRole("button", { name: "运行驾驶舱" }).hover();
+  await page.getByRole("button", { name: "运行驾驶舱" }).click();
+  await page.getByLabel("Repo path").fill(repo);
+  await page.getByLabel("Workflow input analysis_object").fill("lib/nvmf step busy");
+  await page.getByRole("button", { name: "准备运行" }).hover();
+  await page.getByRole("button", { name: "准备运行" }).click();
+  await expect(page.getByText(/Task run prepared:/)).toBeVisible({ timeout: 15_000 });
+  await expect(page.getByText("slow-agent").first()).toBeVisible();
+
+  const executeRequest = page.waitForRequest(
+    (request) =>
+      request.method() === "POST" &&
+      request.url().includes("/api/workbench/task-runs/") &&
+      request.url().includes("/agent-runs/") &&
+      request.url().endsWith("/execute"),
+  );
+  await page.getByRole("button", { name: "Execute" }).first().hover();
+  await page.getByRole("button", { name: "Execute" }).first().click();
+  await executeRequest;
+
+  await expect(page.getByRole("button", { name: "Execute" }).first()).toBeDisabled();
+  await expect(page.getByRole("button", { name: "Validate" }).first()).toBeDisabled();
+  await expect(page.getByRole("button", { name: "Materialize" }).first()).toBeDisabled();
+
+  await expect(page.getByText(/Agent run completed:/)).toBeVisible({ timeout: 20_000 });
+});
+
 test("opens a persisted AI review thread from a prepared workbench run through the real UI", async ({
   page,
   request,
