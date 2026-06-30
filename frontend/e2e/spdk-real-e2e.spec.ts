@@ -157,6 +157,27 @@ function writeJson(name: string, payload: unknown) {
   fs.writeFileSync(path.join(ARTIFACT_DIR, name), JSON.stringify(payload, null, 2));
 }
 
+function writeText(name: string, payload: string) {
+  ensureArtifactDir();
+  fs.writeFileSync(path.join(ARTIFACT_DIR, name), payload);
+}
+
+function redactReportText(value: string) {
+  return value
+    .replace(/(\b(?:api[-_]?key|token|access[-_]?token|secret|password)=)(['"]?)([^\s"']+)(['"]?)/gi, "$1$2<redacted>$4")
+    .replace(/(--?(?:api[-_]?key|token|access[-_]?token|secret|password)(?:\s+|=))(['"]?)([^\s"']+)(['"]?)/gi, "$1$2<redacted>$4")
+    .replace(/(Authorization:\s*Bearer\s+)[^\s"']+/gi, "$1<redacted>")
+    .replace(/\bsk-[A-Za-z0-9_-]{12,}\b/g, "<redacted>");
+}
+
+function markdownCell(value: unknown) {
+  return redactReportText(String(value ?? ""))
+    .replace(/\s+/g, " ")
+    .replaceAll("|", "\\|")
+    .trim()
+    .slice(0, 500);
+}
+
 function acceptanceSummary() {
   return Array.from(results.values()).reduce<Record<CaseStatus, number>>(
     (acc, item) => {
@@ -196,7 +217,35 @@ function writeAcceptanceReports() {
   const report = buildAcceptanceReport();
   writeJson("acceptance_matrix.final.json", report);
   writeJson("failure_report.json", report.failure_report);
+  writeText("failure_report.md", formatFailureReportMarkdown(report));
   return report;
+}
+
+function formatFailureReportMarkdown(report: ReturnType<typeof buildAcceptanceReport>) {
+  const lines = [
+    "# CodeTalk SPDK E2E Failure Report",
+    "",
+    `- Run ID: ${markdownCell(report.run_id)}`,
+    `- Artifact dir: ${markdownCell(report.artifact_dir)}`,
+    `- SPDK repo: ${markdownCell(report.spdk_repo || "not configured")}`,
+    `- Audit mode: ${report.audit_mode ? "true" : "false"}`,
+    `- Productized: ${report.productized ? "true" : "false"}`,
+    `- Summary: pass=${report.summary.pass}, fail=${report.summary.fail}, blocked=${report.summary.blocked}, not_run=${report.summary.not_run}`,
+    "",
+    "| ID | Status | Title | Evidence |",
+    "| --- | --- | --- | --- |",
+  ];
+
+  if (report.failure_report.cases.length === 0) {
+    lines.push("| all | pass | No failed, blocked, or not-run cases | |");
+  } else {
+    for (const item of report.failure_report.cases) {
+      lines.push(`| ${markdownCell(item.id)} | ${markdownCell(item.status)} | ${markdownCell(item.title)} | ${markdownCell(item.evidence)} |`);
+    }
+  }
+
+  lines.push("");
+  return lines.join("\n");
 }
 
 function buildLargeSpdkCoverageCsv() {
@@ -2719,6 +2768,7 @@ test("matrix accounting: every planned case has an explicit status", async () =>
   const blocked = Array.from(results.values()).filter((item) => item.status === "blocked");
   const report = writeAcceptanceReports();
   const failureReportPath = path.join(ARTIFACT_DIR, "failure_report.json");
+  const failureReportMarkdownPath = path.join(ARTIFACT_DIR, "failure_report.md");
   const failureReport = JSON.parse(fs.readFileSync(failureReportPath, "utf8")) as {
     total_problem_cases: number;
     fail_count: number;
@@ -2726,11 +2776,19 @@ test("matrix accounting: every planned case has an explicit status", async () =>
     not_run_count: number;
     cases: CaseResult[];
   };
+  const failureReportMarkdown = fs.readFileSync(failureReportMarkdownPath, "utf8");
   expect(report.failure_report.total_problem_cases).toBe(failed.length + blocked.length + unresolved.length);
   expect(failureReport.total_problem_cases).toBe(report.failure_report.total_problem_cases);
   expect(failureReport.fail_count).toBe(failed.length);
   expect(failureReport.blocked_count).toBe(blocked.length);
   expect(failureReport.not_run_count).toBe(unresolved.length);
+  expect(failureReportMarkdown).toContain("# CodeTalk SPDK E2E Failure Report");
+  expect(failureReportMarkdown).toContain(`fail=${failed.length}`);
+  expect(failureReportMarkdown).toContain(`blocked=${blocked.length}`);
+  expect(failureReportMarkdown).toContain("| ID | Status | Title | Evidence |");
+  expect(failureReportMarkdown).not.toMatch(/\bsk-[A-Za-z0-9_-]{12,}\b/);
+  expect(failureReportMarkdown).not.toMatch(/Authorization:\s*Bearer\s+(?!<redacted>)[^\s"']+/i);
+  expect(failureReportMarkdown).not.toMatch(/\b(?:api[-_]?key|token|access[-_]?token|secret|password)=(?!<redacted>)[^\s"']+/i);
   expect(failureReport.cases).toEqual(
     expect.arrayContaining(
       [...failed, ...blocked, ...unresolved].map((item) =>
