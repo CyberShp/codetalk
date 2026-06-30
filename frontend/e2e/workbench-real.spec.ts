@@ -267,3 +267,81 @@ test("executes patch impact review and previews flow impact artifacts through th
     .first();
   await expect(testRecommendationsArtifact).toBeVisible();
 });
+
+test("executes MR black-box workflow and previews public test cases through the real workbench UI", async ({
+  page,
+}) => {
+  const repo = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), "codetalk-mr-blackbox-")));
+  fs.mkdirSync(path.join(repo, "lib", "nvmf"), { recursive: true });
+  fs.mkdirSync(path.join(repo, "test", "nvmf"), { recursive: true });
+  fs.writeFileSync(
+    path.join(repo, "lib", "nvmf", "ctrlr.c"),
+    "int nvmf_ctrlr_connect(void) { return 0; }\n",
+    "utf8",
+  );
+  const patchDiff = [
+    "diff --git a/lib/nvmf/ctrlr.c b/lib/nvmf/ctrlr.c",
+    "index 0000000..1111111 100644",
+    "--- a/lib/nvmf/ctrlr.c",
+    "+++ b/lib/nvmf/ctrlr.c",
+    "@@ -1,1 +1,1 @@",
+    "-int nvmf_ctrlr_connect(void) { return 0; }",
+    "+int nvmf_ctrlr_connect(void) { return -1; }",
+  ].join("\n");
+
+  await page.goto("/workbench", { waitUntil: "domcontentloaded" });
+  await page.getByRole("button", { name: "工作流设计" }).hover();
+  await page.getByRole("button", { name: "工作流设计" }).click();
+  await page.getByLabel("工作流预设").selectOption("mr_blackbox_test");
+  await page.getByRole("button", { name: "安装预设" }).hover();
+  await page.getByRole("button", { name: "安装预设" }).click();
+  await expect(page.getByText("预设已安装: MR 黑盒测试工作流")).toBeVisible({
+    timeout: 15_000,
+  });
+
+  await page.getByRole("button", { name: "运行驾驶舱" }).hover();
+  await page.getByRole("button", { name: "运行驾驶舱" }).click();
+  await page.getByLabel("Repo path").fill(repo);
+  await page.getByLabel("Inputs JSON").fill(
+    JSON.stringify(
+      {
+        patch_diff: patchDiff,
+        repo_path: repo,
+      },
+      null,
+      2,
+    ),
+  );
+
+  await page.getByRole("button", { name: "准备运行" }).hover();
+  await page.getByRole("button", { name: "准备运行" }).click();
+  await expect(page.getByText(/Task run prepared:/)).toBeVisible({ timeout: 15_000 });
+  await expect(page.getByRole("button", { name: "执行工作流" })).toBeEnabled({
+    timeout: 15_000,
+  });
+  await page.getByRole("button", { name: "执行工作流" }).hover();
+  await page.getByRole("button", { name: "执行工作流" }).click();
+  await expect(page.getByText(/Workflow execution completed:/)).toBeVisible({
+    timeout: 30_000,
+  });
+  await expect(page.getByText(/工作流: completed/)).toBeVisible();
+
+  const blackBoxCasesArtifact = page
+    .getByRole("button")
+    .filter({ hasText: /black_box_cases\.json/ })
+    .first();
+  await expect(blackBoxCasesArtifact).toBeVisible({ timeout: 15_000 });
+  await blackBoxCasesArtifact.hover();
+  await blackBoxCasesArtifact.click();
+  await expect(page.getByText("black_box_cases.json").first()).toBeVisible();
+  await expect(page.getByText("local-mr-blackbox").first()).toBeVisible();
+  await expect(page.getByText("black_box_ready").first()).toBeVisible();
+  await expect(page.getByText("lib/nvmf/ctrlr.c").first()).toBeVisible();
+  await expect(page.getByText("test/nvmf").first()).toBeVisible();
+  await expect(page.getByText("observable_signals").first()).toBeVisible();
+  await expect(page.getByText("no direct internal function invocation").first()).toBeVisible();
+  await expect(page.getByText(/call internal functions/i)).toHaveCount(0);
+
+  await expect(page.getByText(/mr_scope:accepted artifact:mr_snapshot\.json/)).toBeVisible();
+  await expect(page.getByText(/black_box_cases:accepted artifact:black_box_cases\.json/)).toBeVisible();
+});
