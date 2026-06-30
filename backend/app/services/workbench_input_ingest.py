@@ -37,6 +37,8 @@ def ingest_workbench_inputs(
     for input_id, value in (inputs or {}).items():
         input_key = str(input_id)
         definition = defs_by_id.get(input_key, {})
+        if definition and not bool(definition.get("required", False)) and _is_missing_input(value):
+            continue
         input_type = str(definition.get("type") or "")
         if input_type in {"diff", "patch"} and _is_inline_patch_text(value):
             snapshot[input_key] = _ingest_inline_text_file(

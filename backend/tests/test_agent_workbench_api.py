@@ -3171,6 +3171,48 @@ async def test_workbench_prepare_task_run_api_rejects_missing_required_input(wor
     assert "required input target_scope is missing" in resp.json()["detail"]
 
 
+async def test_workbench_prepare_task_run_api_ignores_empty_optional_file_inputs(
+    workbench_client,
+    tmp_path,
+):
+    workflow = {
+        "id": "optional_empty_files_workflow",
+        "name": "Optional empty files workflow",
+        "version": 1,
+        "inputs": [
+            {"id": "analysis_object", "type": "free_text", "required": True},
+            {"id": "repo_path", "type": "directory", "required": True},
+            {"id": "design_doc", "type": "file", "required": False},
+            {"id": "coverage_report", "type": "coverage_report", "required": False},
+        ],
+        "steps": [{"id": "render", "type": "report_render"}],
+        "outputs": [{"id": "report", "type": "markdown"}],
+    }
+    assert (await workbench_client.post("/api/workbench/workflows", json=workflow)).status_code == 201
+
+    prepared = await workbench_client.post(
+        "/api/workbench/task-runs/prepare",
+        json={
+            "workflow_id": "optional_empty_files_workflow",
+            "workspace_id": "ws-optional-empty",
+            "repo_path": str(tmp_path),
+            "inputs": {
+                "analysis_object": "lib/nvmf",
+                "repo_path": str(tmp_path),
+                "design_doc": "",
+                "coverage_report": "",
+            },
+        },
+    )
+
+    assert prepared.status_code == 201
+    input_snapshot = prepared.json()["input_snapshot"]
+    assert input_snapshot["analysis_object"] == "lib/nvmf"
+    assert input_snapshot["repo_path"] == str(tmp_path)
+    assert "design_doc" not in input_snapshot
+    assert "coverage_report" not in input_snapshot
+
+
 async def test_workbench_task_run_artifacts_api_lists_audit_files(workbench_client, tmp_path):
     repo = tmp_path / "repo"
     repo.mkdir()
