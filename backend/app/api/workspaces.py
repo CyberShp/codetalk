@@ -20,6 +20,7 @@ from app.schemas.workspace_analysis import (
     ScopePreview,
     build_default_plan,
 )
+from app.services.external_agent_discovery import redact_agent_diagnostic_text
 from app.services.process_manager import ProcessManager
 
 router = APIRouter(prefix="/api/workspaces", tags=["工作空间"])
@@ -838,7 +839,10 @@ async def get_report(
         row = await cur.fetchone()
     if not row:
         raise HTTPException(status_code=404, detail="报告不存在")
-    return dict(row)
+    body = dict(row)
+    if body.get("content") is not None:
+        body["content"] = redact_agent_diagnostic_text(body["content"])
+    return body
 
 
 @router.get("/{ws_id}/export")

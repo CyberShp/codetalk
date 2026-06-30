@@ -432,6 +432,65 @@ test.describe("Workspace smoke tests", () => {
     expect(exported).not.toMatch(/(?:api[-_]?key|token|secret|password)=['"]?(?!<redacted>)[^\s"']+/i);
   });
 
+  test("workspace report card redacts persisted report secrets when expanded through the UI", async ({
+    page,
+  }) => {
+    test.setTimeout(60_000);
+    test.skip(!process.env.CODETALK_PLAYWRIGHT_SQLITE_DB, "requires explicit Playwright sqlite path");
+    const sqliteDb = process.env.CODETALK_PLAYWRIGHT_SQLITE_DB!;
+    const repo = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), "codetalk-report-card-")));
+    fs.writeFileSync(path.join(repo, "README.md"), "workspace report card redaction e2e\n", "utf8");
+    const workspaceName = `report-card-redact-${Date.now()}`;
+    const reportSecret = ["sk", "workspaceUiReportCardLeakValue1234567890"].join("-");
+    const tokenSecret = "workspaceUiReportCardTokenLeakValue1234567890";
+    const bearerSecret = "workspaceUiReportCardBearerLeakValue1234567890";
+
+    await page.goto("/workspaces/new", { waitUntil: "domcontentloaded" });
+    await page.getByPlaceholder(/项目 A/).fill(workspaceName);
+    await page.getByPlaceholder(/本地文件夹路径/).fill(repo);
+    await page.getByRole("button", { name: "创建工作空间" }).hover();
+    await page.getByRole("button", { name: "创建工作空间" }).click();
+    await page.waitForURL(/\/workspaces\/[0-9a-f-]{36}$/, { timeout: 30_000 });
+    const workspaceId = page.url().split("/").pop() ?? "";
+    await expect(page.getByText(workspaceName)).toBeVisible({ timeout: 30_000 });
+
+    execFileSync(
+      "python3",
+      [
+        "-c",
+        [
+          "import sqlite3, sys, uuid",
+          "db, ws, report_secret, token_secret, bearer_secret = sys.argv[1:]",
+          "auth_header = 'Authori' + 'zation:' + ' Bearer ' + bearer_secret",
+          "conn = sqlite3.connect(db)",
+          "conn.execute(",
+          "  'INSERT INTO workspace_reports (id, workspace_id, report_type, title, content, status, created_at) VALUES (?, ?, ?, ?, ?, ?, ?)',",
+          "  (str(uuid.uuid4()), ws, 'analysis', 'redacted-report-card.md', '\\n'.join(['# Report', 'workspace report card complete', f'model key: {report_secret}', 'runtime ' + 'tok' + f'en={token_secret}', auth_header]), 'completed', '2025-06-01T10:00:00')",
+          ")",
+          "conn.commit()",
+          "conn.close()",
+        ].join("\n"),
+        sqliteDb,
+        workspaceId,
+        reportSecret,
+        tokenSecret,
+        bearerSecret,
+      ],
+      { stdio: "pipe" },
+    );
+
+    await page.reload({ waitUntil: "domcontentloaded" });
+    await expect(page.getByRole("button", { name: /报告 \(1\)/ })).toBeVisible({ timeout: 15_000 });
+    const reportCard = page.getByRole("button", { name: /redacted-report-card\.md/ });
+    await reportCard.hover();
+    await reportCard.click();
+    await expect(page.getByText("workspace report card complete")).toBeVisible({ timeout: 15_000 });
+    await expect(page.getByText("<redacted>")).toBeVisible();
+    await expect(page.locator("body")).not.toContainText(reportSecret);
+    await expect(page.locator("body")).not.toContainText(tokenSecret);
+    await expect(page.locator("body")).not.toContainText(bearerSecret);
+  });
+
   test("workspace can be reindexed through the UI and remains searchable", async ({ page }) => {
     const repo = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), "codetalk-reindex-")));
     fs.mkdirSync(path.join(repo, "lib", "nvmf"), { recursive: true });
