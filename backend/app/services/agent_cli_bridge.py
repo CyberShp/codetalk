@@ -296,12 +296,24 @@ def _candidate_decodings() -> list[str]:
 
 _ANSI_RE = re.compile(r"\x1b\[[0-?]*[ -/]*[@-~]|\x1b\][^\x07]*(?:\x07|\x1b\\)")
 _CONTROL_RE = re.compile(r"[\x00-\x08\x0b\x0c\x0e-\x1f\x7f]")
+_SPINNER_PROGRESS_RE = re.compile(r"^[⠁-⣿⣀-⣿|/\\\-·•●○◐◓◑◒]\s*(?:\d+(?:[./]\d+)?%?|[.\u2026]+)?\s*$")
 
 
 def _clean_agent_text(value: str) -> str:
     cleaned = _ANSI_RE.sub("", value)
-    cleaned = cleaned.replace("\r", "\n")
+    cleaned = _collapse_terminal_repaints(cleaned)
     return _CONTROL_RE.sub("", cleaned)
+
+
+def _collapse_terminal_repaints(value: str) -> str:
+    normalized = value.replace("\r\n", "\n")
+    lines: list[str] = []
+    for raw_line in normalized.split("\n"):
+        line = raw_line.split("\r")[-1]
+        if _SPINNER_PROGRESS_RE.match(line.strip()):
+            continue
+        lines.append(line)
+    return "\n".join(lines)
 
 
 def resolve_agent_cwd(runtime: dict[str, Any], *, repo_path: str | None) -> str | None:

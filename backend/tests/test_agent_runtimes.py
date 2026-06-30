@@ -439,6 +439,7 @@ class TestAgentRuntimes:
         from app.services.agent_cli_bridge import _decode, _parse_event_text
 
         assert _parse_event_text("\x1b[32m正文片段\x1b[0m\r\n", "plain") == "正文片段"
+        assert _parse_event_text("\r\x1b[2K⠋ 12\r\x1b[2K⠙ 47\r\x1b[2K最终答案\n", "plain") == "最终答案"
         assert _decode("源码证据：连接失败".encode("gbk")) == "源码证据：连接失败"
         assert (
             _parse_event_text(
