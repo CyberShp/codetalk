@@ -354,6 +354,104 @@ test("completes an agent-runtime AI thread and exports the persisted answer", as
   }
 });
 
+test("sends an AI thread message with Enter while Shift+Enter keeps a newline", async ({
+  page,
+  request,
+}) => {
+  test.setTimeout(70_000);
+  const repo = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), "codetalk-ai-keyboard-repo-")));
+  fs.writeFileSync(path.join(repo, "README.md"), "AI keyboard e2e workspace\n", "utf8");
+  const runtimeDir = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), "codetalk-agent-keyboard-")));
+  const runtimeScript = path.join(runtimeDir, "keyboard_agent.py");
+  fs.writeFileSync(
+    runtimeScript,
+    [
+      "import sys",
+      "prompt = sys.stdin.read()",
+      "print('KEYBOARD_AGENT_REPLY')",
+      "print('lines=' + str(prompt.count('\\n') + 1))",
+      "",
+    ].join("\n"),
+    "utf8",
+  );
+  const workspaceName = `ai-keyboard-e2e-${Date.now()}`;
+  const runtimeName = `Keyboard runtime ${Date.now()}`;
+  const threadTitle = `${workspaceName} keyboard send`;
+  const firstLine = "第一行：分析 SPDK reconnect";
+  const secondLine = "第二行：保留上下文再发送";
+  const prompt = `${firstLine}\n${secondLine}`;
+
+  const runtimeResp = await request.post(`${backendBase}/api/settings/agent-runtimes`, {
+    data: {
+      name: runtimeName,
+      command: "python3",
+      args: [runtimeScript],
+      prompt_transport: "stdin",
+      output_mode: "plain",
+      working_dir_mode: "project",
+      fixed_working_dir: "",
+      env: {},
+      health_command: "",
+      timeout_seconds: 30,
+      enabled: true,
+    },
+  });
+  expect(runtimeResp.status()).toBe(201);
+  const runtime = (await runtimeResp.json()) as { id: string };
+
+  const workspaceResp = await request.post(`${backendBase}/api/workspaces`, {
+    data: { name: workspaceName, repo_path: repo },
+  });
+  expect(workspaceResp.status()).toBe(201);
+
+  try {
+    await page.goto("/ai", { waitUntil: "domcontentloaded" });
+    const projectButton = page.locator("button").filter({ hasText: workspaceName }).first();
+    await expect(projectButton).toBeVisible({ timeout: 15_000 });
+    await projectButton.hover();
+    await projectButton.click();
+
+    await page.getByLabel("AI 线程执行器").selectOption({ label: runtimeName });
+    await page.getByPlaceholder(/线程名称/).fill(threadTitle);
+    await page.getByRole("button", { name: "新建线程" }).hover();
+    await page.getByRole("button", { name: "新建线程" }).click();
+
+    await page.waitForURL(/\/ai\/[^/]+$/, { timeout: 15_000 });
+    const threadId = page.url().split("/").pop() ?? "";
+    await expect(page.getByRole("heading", { name: threadTitle })).toBeVisible({
+      timeout: 15_000,
+    });
+    await expect(page.getByLabel("当前 AI 执行器")).toHaveValue(runtime.id);
+
+    const composer = page.getByLabel("AI 线程消息");
+    await composer.fill(firstLine);
+    await page.keyboard.press("Shift+Enter");
+    await composer.pressSequentially(secondLine);
+    await expect(composer).toHaveValue(prompt);
+
+    await page.keyboard.press("Enter");
+    await expect(page.locator(".ct-codex-message.is-user").filter({ hasText: firstLine })).toHaveCount(1);
+    await expect(page.locator(".ct-codex-message.is-user").filter({ hasText: secondLine })).toHaveCount(1);
+    await expect(page.getByText("KEYBOARD_AGENT_REPLY")).toBeVisible({ timeout: 30_000 });
+    await expect(page.getByText("lines=2")).toBeVisible();
+    await expect(composer).toHaveValue("");
+
+    const messagesResp = await request.get(
+      `${backendBase}/api/ai/conversations/${encodeURIComponent(threadId)}/messages`,
+    );
+    expect(messagesResp.ok()).toBeTruthy();
+    const messageBody = (await messagesResp.json()) as {
+      items: Array<{ role: string; content: string }>;
+    };
+    expect(messageBody.items.filter((item) => item.role === "user" && item.content === prompt)).toHaveLength(1);
+    expect(
+      messageBody.items.some((item) => item.role === "assistant" && item.content.includes("KEYBOARD_AGENT_REPLY")),
+    ).toBeTruthy();
+  } finally {
+    await request.delete(`${backendBase}/api/settings/agent-runtimes/${encodeURIComponent(runtime.id)}`);
+  }
+});
+
 test("switches an idle AI thread executor through the real UI and persists it", async ({
   page,
   request,
