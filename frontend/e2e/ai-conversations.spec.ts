@@ -303,6 +303,127 @@ test("AI conversation keeps long threads inside the reader and does not force do
     .toBeGreaterThan(100);
 });
 
+test("AI conversation keeps generation diagnostics collapsed outside the answer body", async ({ page }) => {
+  let completed = false;
+  await page.route("**/api/workspaces", async (route) => {
+    await route.fulfill({
+      headers: jsonHeaders(route.request().headers().origin),
+      json: [
+        {
+          id: "ws-diag",
+          name: "诊断项目",
+          repo_path: "/repo/diag",
+          indexed: 1,
+          index_job: null,
+          index_progress: 100,
+          analyze_status: null,
+          analyze_progress: 0,
+          last_index_error: null,
+          created_at: "2026-06-28T00:00:00Z",
+          updated_at: "2026-06-28T00:00:00Z",
+          materials: [],
+          reports: [],
+        },
+      ],
+    });
+  });
+  await page.route("**/api/settings/agent-runtimes?enabled=true", async (route) => {
+    await route.fulfill({ headers: jsonHeaders(route.request().headers().origin), json: { items: [] } });
+  });
+  await page.route("**/api/ai/conversations?workspace_id=ws-diag&limit=50", async (route) => {
+    await route.fulfill({ headers: jsonHeaders(route.request().headers().origin), json: { items: [] } });
+  });
+  await page.route("**/api/ai/conversations/conv-diag", async (route) => {
+    await route.fulfill({
+      headers: jsonHeaders(route.request().headers().origin),
+      json: {
+        id: "conv-diag",
+        scope_type: "workspace",
+        scope_id: "ws-diag",
+        workspace_id: "ws-diag",
+        memory_namespace: "workspace:ws-diag",
+        title: "诊断折叠线程",
+        status: completed ? "idle" : "running",
+        initial_context: {},
+        created_at: "2026-06-28T00:00:00Z",
+        updated_at: "2026-06-28T00:00:00Z",
+        latest_run: {
+          id: "run-diag",
+          conversation_id: "conv-diag",
+          status: completed ? "completed" : "running",
+          cursor: completed ? 3 : 0,
+          error: null,
+          model: "test",
+          token_usage: {},
+          created_at: "2026-06-28T00:00:01Z",
+          started_at: "2026-06-28T00:00:01Z",
+          completed_at: completed ? "2026-06-28T00:00:03Z" : null,
+        },
+      },
+    });
+  });
+  await page.route("**/api/ai/conversations/conv-diag/messages", async (route) => {
+    if (route.request().method() !== "GET") return route.fallback();
+    await route.fulfill({
+      headers: jsonHeaders(route.request().headers().origin),
+      json: {
+        items: [
+          {
+            id: "msg-diag-user",
+            conversation_id: "conv-diag",
+            run_id: "run-diag",
+            role: "user",
+            content: "分析 reconnect timeout",
+            references: [],
+            actions: [],
+            created_at: "2026-06-28T00:00:01Z",
+          },
+          ...(completed
+            ? [
+                {
+                  id: "msg-diag-assistant",
+                  conversation_id: "conv-diag",
+                  run_id: "run-diag",
+                  role: "assistant",
+                  content: "最终答案：覆盖 reconnect timeout 的黑盒观察点。",
+                  references: [],
+                  actions: [],
+                  created_at: "2026-06-28T00:00:03Z",
+                },
+              ]
+            : []),
+        ],
+      },
+    });
+  });
+  await page.route("**/api/ai/conversations/conv-diag/stream?cursor=0", async (route) => {
+    completed = true;
+    await route.fulfill({
+      headers: {
+        ...jsonHeaders(route.request().headers().origin),
+        "Content-Type": "text/event-stream",
+      },
+      body: [
+        'data: {"event_id":1,"run_id":"run-diag","conversation_id":"conv-diag","event_type":"delta","payload":{"kind":"diagnostic","content":"正在读取 lib/nvmf/connect.c"},"created_at":"2026-06-28T00:00:01Z"}',
+        "",
+        'data: {"event_id":2,"run_id":"run-diag","conversation_id":"conv-diag","event_type":"delta","payload":{"content":"最终答案：覆盖 reconnect timeout 的黑盒观察点。"},"created_at":"2026-06-28T00:00:02Z"}',
+        "",
+        'data: {"event_id":3,"run_id":"run-diag","conversation_id":"conv-diag","event_type":"done","payload":{},"created_at":"2026-06-28T00:00:03Z"}',
+        "",
+      ].join("\n"),
+    });
+  });
+
+  await page.goto("/ai/conv-diag", { waitUntil: "domcontentloaded" });
+
+  await expect(page.getByText("最终答案：覆盖 reconnect timeout 的黑盒观察点。")).toBeVisible();
+  await expect(page.locator(".ct-codex-ai__reader")).not.toContainText("正在读取 lib/nvmf/connect.c");
+  await expect(page.getByText("生成诊断：默认折叠")).toBeVisible();
+  await expect(page.getByText("正在读取 lib/nvmf/connect.c")).toBeHidden();
+  await page.getByText("生成诊断：默认折叠").click();
+  await expect(page.getByText("正在读取 lib/nvmf/connect.c")).toBeVisible();
+});
+
 test("AI conversation remains usable on a narrow mobile viewport", async ({ page }) => {
   await mockReadableConversation(page);
   await page.setViewportSize({ width: 390, height: 844 });

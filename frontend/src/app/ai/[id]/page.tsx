@@ -41,6 +41,15 @@ function eventContent(event: AIRunEvent): string {
   return typeof value === "string" ? value : "";
 }
 
+function eventKind(event: AIRunEvent): string {
+  const value = event.payload.kind ?? event.payload.channel ?? event.payload.type;
+  return typeof value === "string" ? value : "";
+}
+
+function isDiagnosticEvent(event: AIRunEvent): boolean {
+  return ["diagnostic", "thinking", "reasoning", "trace"].includes(eventKind(event));
+}
+
 function eventError(event: AIRunEvent): string {
   const value = event.payload.error;
   return typeof value === "string" ? redactDiagnosticText(value) : "";
@@ -135,6 +144,7 @@ export default function AIThreadPage() {
   const [creatingSiblingThread, setCreatingSiblingThread] = useState(false);
   const [streamingRunId, setStreamingRunId] = useState<string | null>(null);
   const [streamingContent, setStreamingContent] = useState("");
+  const [streamingDiagnostics, setStreamingDiagnostics] = useState<string[]>([]);
   const [contextOpen, setContextOpen] = useState(true);
   const [showJumpToLatest, setShowJumpToLatest] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -214,6 +224,7 @@ export default function AIThreadPage() {
       abortRef.current?.abort();
       const abort = new AbortController();
       abortRef.current = abort;
+      setStreamingDiagnostics([]);
       try {
         const res = await api.aiConversations.stream(conversationId, cursor, abort.signal);
         if (!res.ok || !res.body) throw new Error(`SSE ${res.status}`);
@@ -231,7 +242,12 @@ export default function AIThreadPage() {
             const event = JSON.parse(line.slice(6)) as AIRunEvent;
             if (event.run_id !== runId) continue;
             if (event.event_type === "delta") {
-              setStreamingContent((prev) => prev + eventContent(event));
+              const content = eventContent(event);
+              if (isDiagnosticEvent(event)) {
+                setStreamingDiagnostics((prev) => [...prev, redactDiagnosticText(content)].filter(Boolean).slice(-12));
+              } else {
+                setStreamingContent((prev) => prev + content);
+              }
             }
             if (event.event_type === "done" || event.event_type === "error") {
               if (event.event_type === "error") {
@@ -339,6 +355,7 @@ export default function AIThreadPage() {
     setError(null);
     setInput("");
     setStreamingContent("");
+    setStreamingDiagnostics([]);
     autoScrollRef.current = true;
     setShowJumpToLatest(false);
     try {
@@ -383,6 +400,7 @@ export default function AIThreadPage() {
       await api.aiConversations.cancel(conversationId).catch(() => {});
       setStreamingRunId(null);
       setStreamingContent("");
+      setStreamingDiagnostics([]);
       await load().catch(() => {});
     } finally {
       cancellingRef.current = false;
@@ -832,6 +850,16 @@ export default function AIThreadPage() {
               )}
             </div>
           </details>
+          {streamingDiagnostics.length > 0 && (
+            <details className="ct-ai-disclosure">
+              <summary>生成诊断：默认折叠</summary>
+              <div className="ct-ai-diagnostic">
+                {streamingDiagnostics.map((item, index) => (
+                  <p key={`${index}-${item}`}>{item}</p>
+                ))}
+              </div>
+            </details>
+          )}
         </section>
         <section>
           <h2>
