@@ -637,6 +637,10 @@ _SECRET_ASSIGNMENT_RE = re.compile(
 _SECRET_KV_RE = re.compile(
     r"(?i)\b((?:api[-_]?key|token|access[-_]?token|secret|password)=)(['\"]?)([^\s\"']+)(['\"]?)"
 )
+_SECRET_STRUCTURED_KV_RE = re.compile(
+    r"(?i)([\"']?\b(?:api[-_]?key|token|access[-_]?token|secret|password)\b[\"']?\s*:\s*)"
+    r"(['\"]?)([A-Za-z0-9._~+/=-]{8,})(['\"]?)"
+)
 _SECRET_BARE_VALUE_RE = re.compile(
     r"(?i)\b((?:api[-_]?key|token|access[-_]?token|secret|password)"
     r"(?:\s+(?:is|was|missing|invalid|expired|provided|value))?\s+)"
@@ -651,6 +655,7 @@ def _redact_agent_diagnostic_text(value: str) -> str:
     text = value
     text = _SECRET_ASSIGNMENT_RE.sub(r"\1\2<redacted>\4", text)
     text = _SECRET_KV_RE.sub(r"\1\2<redacted>\4", text)
+    text = _SECRET_STRUCTURED_KV_RE.sub(r"\1\2<redacted>\4", text)
     text = _SECRET_BARE_VALUE_RE.sub(r"\1\2<redacted>\4", text)
     text = _BEARER_RE.sub(r"\1<redacted>", text)
     text = _OPENAI_STYLE_KEY_RE.sub("<redacted>", text)

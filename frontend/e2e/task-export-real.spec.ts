@@ -87,6 +87,81 @@ test("task export download redacts completed markdown report secrets through the
   expect(exported).not.toMatch(/(?:api[-_]?key|token|secret|password)=['"]?(?!<redacted>)[^\s"']+/i);
 });
 
+test("task export download redacts structured JSON and YAML secrets through the UI", async ({
+  page,
+  request,
+}, testInfo) => {
+  test.setTimeout(60_000);
+  test.skip(!process.env.CODETALK_PLAYWRIGHT_DATA_DIR, "requires explicit Playwright data dir");
+  const dataDir = process.env.CODETALK_PLAYWRIGHT_DATA_DIR!;
+  const repo = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), "codetalk-task-structured-export-")));
+  fs.writeFileSync(path.join(repo, "README.md"), "task structured export redaction e2e\n", "utf8");
+  const jsonSecret = "taskUiStructuredJsonTokenLeakValue1234567890";
+  const yamlSecret = "taskUiStructuredYamlSecretLeakValue1234567890";
+
+  const createResp = await request.post(`${backendBase}/api/tasks`, {
+    data: {
+      name: `task-export-structured-${Date.now()}`,
+      repo_path: repo,
+      tools: [],
+      analysis_focus: "Task structured export redaction",
+      prompt_content: "Prepare a task whose structured diagnostics must be safe to export.",
+    },
+  });
+  expect(createResp.status()).toBe(201);
+  const task = (await createResp.json()) as { id: string };
+
+  execFileSync(
+    "python3",
+    [
+      "-c",
+      [
+        "import json, pathlib, sys",
+        "data_dir, task_id, json_secret, yaml_secret = sys.argv[1:]",
+        "output_dir = pathlib.Path(data_dir) / 'outputs' / task_id",
+        "output_dir.mkdir(parents=True, exist_ok=True)",
+        "content = '\\n'.join(['# Structured Task Report', 'task ui structured export complete', json.dumps({'access_token': json_secret}), f'secret: {yaml_secret}'])",
+        "(output_dir / 'task-structured-redacted-report.md').write_text(content, encoding='utf-8')",
+      ].join("\n"),
+      dataDir,
+      task.id,
+      jsonSecret,
+      yamlSecret,
+    ],
+    { stdio: "pipe" },
+  );
+
+  await page.goto(`/tasks/${task.id}/export`, { waitUntil: "domcontentloaded" });
+  await expect(page.getByRole("heading", { name: "导出结果" })).toBeVisible();
+
+  const downloadPromise = page.waitForEvent("download");
+  await page.getByRole("button", { name: /下载 Markdown 文件/ }).hover();
+  await page.getByRole("button", { name: /下载 Markdown 文件/ }).click();
+  const download = await downloadPromise;
+  expect(download.suggestedFilename()).toMatch(/^codetalk-.*\.zip$/);
+  const zipPath = testInfo.outputPath("task-structured-report-redacted-export.zip");
+  await download.saveAs(zipPath);
+  const exported = execFileSync(
+    "python3",
+    [
+      "-c",
+      [
+        "import sys, zipfile",
+        "with zipfile.ZipFile(sys.argv[1]) as zf:",
+        "    print(zf.read('task-structured-redacted-report.md').decode('utf-8'))",
+      ].join("\n"),
+      zipPath,
+    ],
+    { encoding: "utf8" },
+  );
+
+  expect(exported).toContain("task ui structured export complete");
+  expect(exported).toContain('"access_token": "<redacted>"');
+  expect(exported).toContain("secret: <redacted>");
+  expect(exported).not.toContain(jsonSecret);
+  expect(exported).not.toContain(yamlSecret);
+});
+
 test("task export format selection downloads redacted XML through the UI", async ({
   page,
   request,

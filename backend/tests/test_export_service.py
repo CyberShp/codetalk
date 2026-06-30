@@ -92,6 +92,38 @@ class TestExportTaskReports:
         assert "Authorization: Bearer <redacted>" in text
         assert "token=<redacted>" in text
 
+    async def test_redacts_json_and_yaml_secret_values_from_task_report_export(self, tmp_path, monkeypatch):
+        from app.config import settings
+
+        monkeypatch.setattr(settings, "data_dir", str(tmp_path))
+        task_id = "job_structured_redacted_export"
+        json_secret = "taskReportJsonTokenLeakValue1234567890"
+        yaml_secret = "taskReportYamlSecretLeakValue1234567890"
+        output_dir = settings.outputs_path / task_id
+        output_dir.mkdir(parents=True, exist_ok=True)
+        (output_dir / "task-structured-report.md").write_text(
+            "\n".join(
+                [
+                    "# Structured Diagnostics",
+                    "task structured export complete",
+                    f'{{"access_token": "{json_secret}"}}',
+                    f"secret: {yaml_secret}",
+                ]
+            ),
+            encoding="utf-8",
+        )
+
+        data, _, _ = await export_reports(task_id, "md")
+
+        with zipfile.ZipFile(io.BytesIO(data)) as zf:
+            text = zf.read("task-structured-report.md").decode("utf-8")
+        assert "task structured export complete" in text
+        assert "<redacted>" in text
+        assert json_secret not in text
+        assert yaml_secret not in text
+        assert '"access_token": "<redacted>"' in text
+        assert "secret: <redacted>" in text
+
 
 # ---------------------------------------------------------------------------
 # _export_xml — pure function
