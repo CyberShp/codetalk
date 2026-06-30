@@ -61,7 +61,7 @@ class NativeDeployer:
             if self._stopped:
                 return
             if self._config.get("install_gitnexus", True):
-                await self._step_install_gitnexus()
+                await self._step_install_optional_gitnexus()
                 if self._stopped:
                     return
             await self._step_start_services()
@@ -373,6 +373,19 @@ class NativeDeployer:
             "GitNexus 不可用：本地安装失败且 vendor/gitnexus 未找到", step,
         )
         raise RuntimeError("GitNexus installation failed")
+
+    async def _step_install_optional_gitnexus(self) -> None:
+        """Install GitNexus when available, but do not block core CodeTalk startup."""
+        try:
+            await self._step_install_gitnexus()
+        except Exception as exc:
+            self._config["install_gitnexus"] = False
+            await self._emit(
+                "install_gitnexus",
+                "running",
+                f"GitNexus 安装已跳过：{exc}。核心 backend/frontend 将继续部署；需要代码图谱增强时再补充安装 GitNexus。",
+                4,
+            )
 
     # ------------------------------------------------------------------
     # Step 5: Generate config files

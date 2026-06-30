@@ -338,7 +338,7 @@ async def _run_quickstart(deployer: NativeDeployer) -> None:
         await deployer._step_generate_config()
         await deployer._step_install_frontend()
         if deployer._config.get("install_gitnexus", True):
-            await deployer._step_install_gitnexus()
+            await deployer._step_install_optional_gitnexus()
         await deployer._step_start_services()
         await deployer._step_health_check()
     except asyncio.CancelledError:

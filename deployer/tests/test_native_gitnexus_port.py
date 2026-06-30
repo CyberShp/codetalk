@@ -166,6 +166,59 @@ class NativeDeployerTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn("CGC 启动已跳过", messages)
         self.assertIn("offline wheelhouse missing", messages)
 
+    async def test_deploy_keeps_core_running_when_gitnexus_install_fails(self) -> None:
+        """GitNexus is optional in intranet deployments; install failure must not block core services."""
+        queue: asyncio.Queue = asyncio.Queue()
+        deployer = NativeDeployer(
+            {
+                "backend_port": 3004,
+                "frontend_port": 3003,
+                "install_gitnexus": True,
+                "install_cgc": False,
+            },
+            queue,
+        )
+        calls: list[str] = []
+
+        async def record(name: str) -> None:
+            calls.append(name)
+
+        async def fail_gitnexus() -> None:
+            calls.append("install_gitnexus")
+            raise RuntimeError("npm registry unavailable")
+
+        with (
+            patch.object(deployer, "_step_check_env", lambda: record("check_env")),
+            patch.object(deployer, "_step_install_backend", lambda: record("install_backend")),
+            patch.object(deployer, "_step_generate_config", lambda: record("generate_config")),
+            patch.object(deployer, "_step_install_frontend", lambda: record("install_frontend")),
+            patch.object(deployer, "_step_install_gitnexus", fail_gitnexus),
+            patch.object(deployer, "_step_start_services", lambda: record("start_services")),
+            patch.object(deployer, "_step_health_check", lambda: record("health_check")),
+        ):
+            await deployer.deploy()
+
+        self.assertEqual(
+            calls,
+            [
+                "check_env",
+                "install_backend",
+                "generate_config",
+                "install_frontend",
+                "install_gitnexus",
+                "start_services",
+                "health_check",
+            ],
+        )
+        self.assertFalse(deployer._config["install_gitnexus"])
+
+        events = []
+        while not queue.empty():
+            events.append(await queue.get())
+        messages = "\n".join(str(event.get("message", "")) for event in events)
+        self.assertIn("GitNexus 安装已跳过", messages)
+        self.assertIn("npm registry unavailable", messages)
+
     async def test_health_check_does_not_fail_deployment_when_optional_cgc_is_unhealthy(self) -> None:
         """CGC health is diagnostic only; backend/frontend readiness is enough to deploy."""
         queue: asyncio.Queue = asyncio.Queue()
