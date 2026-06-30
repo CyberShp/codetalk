@@ -117,6 +117,37 @@ class TestAgentRuntimes:
         stored = await AgentRuntimeStore(sqlite_db).get_runtime(runtime_id)
         assert stored["env"]["AGENT_TOKEN"] == secret
 
+    async def test_agent_runtime_probe_redacts_stderr_secrets(self, sqlite_db):
+        app = _test_app(sqlite_db)
+        secret = "agent-probe-secret-value"
+        probe_code = (
+            "import sys; "
+            f"print('probe failed --api-key {secret}; token={secret}', file=sys.stderr); "
+            "raise SystemExit(5)"
+        )
+        async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+            runtime = await client.post(
+                "/api/settings/agent-runtimes",
+                json={
+                    "name": "Probe Secret Agent",
+                    "command": sys.executable,
+                    "args": ["-c", probe_code],
+                    "prompt_transport": "stdin",
+                    "output_mode": "plain",
+                    "working_dir_mode": "project",
+                },
+            )
+            assert runtime.status_code == 201
+
+            probed = await client.post(f"/api/settings/agent-runtimes/{runtime.json()['id']}/probe")
+
+            assert probed.status_code == 200
+            body = probed.json()
+            assert body["success"] is False
+            assert "probe failed" in body["message"]
+            assert secret not in body["message"]
+            assert "<redacted>" in body["message"]
+
     async def test_ai_thread_uses_agent_runtime_without_active_llm(self, sqlite_db, monkeypatch):
         ws_id = await _seed_workspace(sqlite_db)
         app = _test_app(sqlite_db)
@@ -191,3 +222,70 @@ class TestAgentRuntimes:
                 if line.startswith("data: ")
             ]
             assert any(evt["event_type"] == "delta" for evt in events)
+
+    async def test_ai_thread_agent_runtime_failure_redacts_stderr_secrets(self, sqlite_db):
+        ws_id = await _seed_workspace(sqlite_db)
+        app = _test_app(sqlite_db)
+        secret = "agent-thread-secret-value"
+        agent_code = (
+            "import sys; "
+            f"print('auth failed --token {secret}; Authorization: Bearer {secret}', file=sys.stderr); "
+            "raise SystemExit(7)"
+        )
+
+        async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+            runtime = await client.post(
+                "/api/settings/agent-runtimes",
+                json={
+                    "name": "Failing Agent",
+                    "command": sys.executable,
+                    "args": ["-c", agent_code],
+                    "prompt_transport": "stdin",
+                    "output_mode": "plain",
+                    "working_dir_mode": "project",
+                    "timeout_seconds": 10,
+                },
+            )
+            assert runtime.status_code == 201
+
+            created = await client.post(
+                "/api/ai/conversations",
+                json={
+                    "scope_type": "workspace",
+                    "scope_id": ws_id,
+                    "workspace_id": ws_id,
+                    "title": "Agent 失败脱敏",
+                    "runtime_type": "agent_runtime",
+                    "agent_runtime_id": runtime.json()["id"],
+                },
+            )
+            assert created.status_code == 201
+            conversation = created.json()
+
+            posted = await client.post(
+                f"/api/ai/conversations/{conversation['id']}/messages",
+                json={"content": "触发失败"},
+            )
+            assert posted.status_code == 202
+
+            latest = None
+            for _ in range(30):
+                fetched = await client.get(f"/api/ai/conversations/{conversation['id']}")
+                latest = fetched.json()["latest_run"]
+                if latest and latest["status"] == "failed":
+                    break
+                await asyncio.sleep(0.1)
+
+            assert latest is not None
+            assert latest["status"] == "failed"
+            serialized_run = json.dumps(latest, ensure_ascii=False)
+            assert secret not in serialized_run
+            assert "<redacted>" in serialized_run
+
+            stream = await client.get(f"/api/ai/conversations/{conversation['id']}/stream")
+            serialized_events = stream.text
+            assert secret not in serialized_events
+            assert "<redacted>" in serialized_events
+
+            messages = await client.get(f"/api/ai/conversations/{conversation['id']}/messages")
+            assert secret not in json.dumps(messages.json(), ensure_ascii=False)

@@ -9,6 +9,8 @@ from collections.abc import AsyncIterator
 from pathlib import Path
 from typing import Any
 
+from app.services.external_agent_discovery import redact_agent_diagnostic_text
+
 
 class AgentRuntimeError(RuntimeError):
     pass
@@ -36,13 +38,14 @@ async def probe_agent_runtime(runtime: dict[str, Any]) -> dict[str, Any]:
             await proc.wait()
             return {"success": False, "message": "探测超时"}
     except FileNotFoundError:
-        return {"success": False, "message": f"找不到命令：{command}"}
+        return {"success": False, "message": redact_agent_diagnostic_text(f"找不到命令：{command}")}
     except Exception as exc:
-        return {"success": False, "message": f"启动失败：{exc}"}
+        return {"success": False, "message": f"启动失败：{redact_agent_diagnostic_text(str(exc))}"}
     output = _decode(stdout or stderr).strip()
     if proc.returncode == 0:
         return {"success": True, "message": output or "执行器可启动"}
-    return {"success": False, "message": output or f"命令退出码：{proc.returncode}"}
+    message = output or f"命令退出码：{proc.returncode}"
+    return {"success": False, "message": redact_agent_diagnostic_text(message)}
 
 
 async def stream_agent_runtime(
@@ -77,9 +80,9 @@ async def stream_agent_runtime(
             env=env,
         )
     except FileNotFoundError as exc:
-        raise AgentRuntimeError(f"找不到命令：{command}") from exc
+        raise AgentRuntimeError(redact_agent_diagnostic_text(f"找不到命令：{command}")) from exc
     except Exception as exc:
-        raise AgentRuntimeError(f"启动执行器失败：{exc}") from exc
+        raise AgentRuntimeError(f"启动执行器失败：{redact_agent_diagnostic_text(str(exc))}") from exc
 
     stderr_chunks: list[str] = []
 
@@ -116,7 +119,7 @@ async def stream_agent_runtime(
 
     if return_code != 0:
         error = "".join(stderr_chunks).strip()
-        raise AgentRuntimeError(error or f"执行器退出码：{return_code}")
+        raise AgentRuntimeError(redact_agent_diagnostic_text(error or f"执行器退出码：{return_code}"))
 
 
 async def _read_stdout(proc: asyncio.subprocess.Process, output_mode: str) -> AsyncIterator[str]:

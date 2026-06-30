@@ -17,6 +17,7 @@ import aiosqlite
 
 from app.config import settings
 from app.services.agent_cli_bridge import resolve_agent_cwd, stream_agent_runtime
+from app.services.external_agent_discovery import redact_agent_diagnostic_text
 
 logger = logging.getLogger(__name__)
 
@@ -707,8 +708,9 @@ async def run_agent_generation(
             model=f"agent:{runtime.get('name') or runtime.get('id')}",
         )
     except Exception as exc:
-        logger.exception("AI agent runtime run failed: %s", exc)
-        await store.fail_run(run_id, str(exc))
+        message = redact_agent_diagnostic_text(str(exc))
+        logger.exception("AI agent runtime run failed: %s", message)
+        await store.fail_run(run_id, message)
 
 
 async def maybe_await(value: Any) -> Any:
