@@ -7,7 +7,7 @@
 截至 2026-05-31，核心链路达到 Internal Release 标准：
 
 ```powershell
-powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\release-gate.ps1 -RunE2E -E2EFrontendPort 3205
+powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\release-gate.ps1 -RunE2E
 ```
 
 最近一次验证结果：
@@ -22,7 +22,7 @@ powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\release-gate.ps1 -
 | Deployer 测试收集 | 129 tests collected |
 | Deployer full tests | 128 passed, 1 skipped |
 | Release gate | passed |
-| 端口释放 | 9000 / 3004 / 3205 均已释放 |
+| 端口释放 | 9000 / 3004 / 3003 均已释放 |
 
 ## Release 命令
 
@@ -35,7 +35,7 @@ powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\release-gate.ps1
 完整内部 release 门禁：
 
 ```powershell
-powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\release-gate.ps1 -RunE2E -E2EFrontendPort 3205
+powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\release-gate.ps1 -RunE2E
 ```
 
 ## 必须覆盖的真实点击流
