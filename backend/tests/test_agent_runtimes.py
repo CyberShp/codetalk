@@ -793,6 +793,32 @@ class TestAgentRuntimes:
 
         assert "".join(chunks) == "源码证据：连接失败"
 
+    async def test_agent_runtime_stream_decodes_utf16le_stdout_from_windows_shells(self):
+        from app.services.agent_cli_bridge import stream_agent_runtime
+
+        agent_code = (
+            "import sys; "
+            "sys.stdout.buffer.write('最终答案：已完成源码分析。'.encode('utf-16le')); "
+            "sys.stdout.flush()"
+        )
+        chunks = []
+        async for chunk in stream_agent_runtime(
+            runtime={
+                "command": sys.executable,
+                "args": ["-c", agent_code],
+                "prompt_transport": "stdin",
+                "output_mode": "plain",
+                "timeout_seconds": 10,
+            },
+            prompt="读取源码",
+            cwd=None,
+        ):
+            chunks.append(chunk)
+
+        output = "".join(chunks)
+        assert output == "最终答案：已完成源码分析。"
+        assert "�" not in output
+
     async def test_agent_runtime_stream_preserves_gbk_text_in_mixed_terminal_noise(self):
         from app.services.agent_cli_bridge import stream_agent_runtime
 
@@ -942,6 +968,36 @@ class TestAgentRuntimes:
         assert output.strip() == "最终答案：auto 模式已完成源码分析。"
         assert "47%" not in output
         assert "�" not in output
+
+    async def test_agent_runtime_auto_mode_cleans_plain_fallback_chunks(self):
+        from app.services.agent_cli_bridge import stream_agent_runtime
+
+        agent_code = (
+            "import sys; "
+            "sys.stdout.write('\\x1b]0;agent title\\x07'); "
+            "sys.stdout.write('\\x1b[33m\\r\\x1b[2K⠋ 12\\r\\x1b[2K'); "
+            "sys.stdout.write('最终答案：auto fallback 已完成源码分析。\\x1b[0m\\n'); "
+            "sys.stdout.flush()"
+        )
+        chunks = []
+        async for chunk in stream_agent_runtime(
+            runtime={
+                "command": sys.executable,
+                "args": ["-c", agent_code],
+                "prompt_transport": "stdin",
+                "output_mode": "auto",
+                "timeout_seconds": 10,
+            },
+            prompt="读取源码",
+            cwd=None,
+        ):
+            chunks.append(chunk)
+
+        output = "".join(chunks)
+        assert output.strip() == "最终答案：auto fallback 已完成源码分析。"
+        assert "\x1b" not in output
+        assert "agent title" not in output
+        assert "⠋ 12" not in output
 
     async def test_agent_runtime_stream_json_accepts_sse_event_metadata(self):
         from app.services.agent_cli_bridge import stream_agent_runtime

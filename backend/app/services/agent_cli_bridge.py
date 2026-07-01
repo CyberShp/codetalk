@@ -7,6 +7,7 @@ import json
 import locale
 import os
 import re
+import unicodedata
 from collections.abc import AsyncIterator
 from pathlib import Path
 from typing import Any
@@ -322,6 +323,8 @@ def _build_env(runtime: dict[str, Any]) -> dict[str, str]:
 
 
 def _decode(value: bytes) -> str:
+    if _looks_like_short_binary_noise_bytes(value):
+        return ""
     text = _decode_strict_if_complete(value)
     if text is not None:
         return text
@@ -329,11 +332,23 @@ def _decode(value: bytes) -> str:
 
 
 def _decode_strict_if_complete(value: bytes) -> str | None:
+    best_text: str | None = None
     for encoding in _candidate_decodings():
         try:
-            return _clean_agent_text(value.decode(encoding, "strict"))
+            decoded = _clean_agent_text(value.decode(encoding, "strict"))
         except UnicodeDecodeError:
             continue
+        if not _looks_like_mojibake(decoded):
+            return decoded
+        if best_text is None or _mojibake_score(decoded) < _mojibake_score(best_text):
+            best_text = decoded
+    utf16_text = _decode_utf16_if_plausible(value)
+    if utf16_text is not None and (
+        best_text is None or _mojibake_score(utf16_text) < _mojibake_score(best_text)
+    ):
+        return utf16_text
+    if best_text is not None:
+        return best_text
     return None
 
 
@@ -348,6 +363,20 @@ def _decode_mixed_terminal_bytes(value: bytes) -> str:
         if has_newline:
             parts.append("\n")
     return "".join(parts)
+
+
+def _looks_like_short_binary_noise_bytes(value: bytes) -> bool:
+    lines = [line.strip() for line in value.splitlines() if line.strip()]
+    if not lines:
+        return False
+    for line in lines:
+        if not (3 <= len(line) <= 7):
+            return False
+        if any(byte < 0x80 for byte in line):
+            return False
+        if len(line) % 2 == 0:
+            return False
+    return True
 
 
 def _decode_bytes_best_effort(value: bytes) -> str:
@@ -371,6 +400,54 @@ def _candidate_decodings() -> list[str]:
         if normalized and normalized not in deduped:
             deduped.append(normalized)
     return deduped
+
+
+def _decode_utf16_if_plausible(value: bytes) -> str | None:
+    if len(value) < 4 or len(value) % 2 != 0:
+        return None
+    candidates: list[str] = []
+    for encoding in ("utf-16", "utf-16le", "utf-16be"):
+        try:
+            decoded = _clean_agent_text(value.decode(encoding, "strict"))
+        except (UnicodeDecodeError, UnicodeError):
+            continue
+        if decoded.strip():
+            candidates.append(decoded)
+    if not candidates:
+        return None
+    candidates.sort(key=_mojibake_score)
+    best = candidates[0]
+    return best if not _looks_like_mojibake(best) else None
+
+
+def _looks_like_mojibake(value: str) -> bool:
+    return _mojibake_score(value) >= 3
+
+
+def _mojibake_score(value: str) -> int:
+    stripped = value.strip()
+    if not stripped:
+        return 0
+    replacement_count = stripped.count("�")
+    control_count = sum(1 for char in stripped if ord(char) < 32 and char not in "\n\t")
+    private_or_invalid = sum(
+        1
+        for char in stripped
+        if unicodedata.category(char) in {"Co", "Cs", "Cn"}
+    )
+    suspicious_ascii = sum(1 for char in stripped if char in "{}[]~^`")
+    dominant_repeat = 0
+    if len(stripped) >= 20:
+        most_common = max(stripped.count(char) for char in set(stripped))
+        if most_common / len(stripped) > 0.45:
+            dominant_repeat = 6
+    return (
+        (replacement_count * 3)
+        + (control_count * 2)
+        + (private_or_invalid * 4)
+        + suspicious_ascii
+        + dominant_repeat
+    )
 
 
 _ANSI_RE = re.compile(r"\x1b\[[0-?]*[ -/]*[@-~]|\x1b\][^\x07]*(?:\x07|\x1b\\)")
@@ -400,6 +477,7 @@ def _collapse_terminal_repaints(value: str) -> str:
             _SPINNER_PROGRESS_RE.match(stripped)
             or _PROGRESS_ONLY_RE.match(stripped)
             or _looks_like_replacement_gibberish(stripped)
+            or _looks_like_short_binary_gibberish(stripped)
         ):
             continue
         lines.append(line)
@@ -411,6 +489,29 @@ def _looks_like_replacement_gibberish(value: str) -> bool:
         return False
     replacement_count = value.count("�")
     return replacement_count >= 3 and replacement_count / max(len(value), 1) >= 0.6
+
+
+def _looks_like_short_binary_gibberish(value: str) -> bool:
+    if not 2 <= len(value) <= 6:
+        return False
+    if any(char.isascii() and char.isalnum() for char in value):
+        return False
+    cjk_count = sum(1 for char in value if _is_cjk(char))
+    other_letter_count = sum(1 for char in value if char.isalpha() and not _is_cjk(char))
+    return cjk_count > 0 and other_letter_count > 0
+
+
+def _is_cjk(char: str) -> bool:
+    codepoint = ord(char)
+    return (
+        0x3400 <= codepoint <= 0x4DBF
+        or 0x4E00 <= codepoint <= 0x9FFF
+        or 0xF900 <= codepoint <= 0xFAFF
+        or 0x20000 <= codepoint <= 0x2A6DF
+        or 0x2A700 <= codepoint <= 0x2B73F
+        or 0x2B740 <= codepoint <= 0x2B81F
+        or 0x2B820 <= codepoint <= 0x2CEAF
+    )
 
 
 def resolve_agent_cwd(runtime: dict[str, Any], *, repo_path: str | None) -> str | None:
