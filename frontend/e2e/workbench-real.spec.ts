@@ -527,6 +527,64 @@ test("locks artifact previews while a prepared workflow is executing", async ({
   await expect.poll(() => executeRequests.length).toBe(1);
 });
 
+test("prevents duplicate recent task restore requests from a real double click", async ({
+  page,
+}) => {
+  const repo = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), "codetalk-restore-run-")));
+  fs.mkdirSync(path.join(repo, "lib", "nvmf"), { recursive: true });
+  fs.writeFileSync(
+    path.join(repo, "lib", "nvmf", "restore_run.c"),
+    "int nvmf_restore_run_probe(void) { return 0; }\n",
+    "utf8",
+  );
+
+  await page.goto("/workbench", { waitUntil: "domcontentloaded" });
+  await page.getByRole("button", { name: "工作流设计" }).hover();
+  await page.getByRole("button", { name: "工作流设计" }).click();
+  await page.getByLabel("工作流预设").selectOption("module_analysis");
+  await page.getByRole("button", { name: "安装预设" }).hover();
+  await page.getByRole("button", { name: "安装预设" }).click();
+  await expect(page.getByText("预设已安装: 模块分析工作流")).toBeVisible({
+    timeout: 15_000,
+  });
+
+  await page.getByRole("button", { name: "运行驾驶舱" }).hover();
+  await page.getByRole("button", { name: "运行驾驶舱" }).click();
+  await page.getByLabel("Repo path").fill(repo);
+  await page.getByLabel("Workflow input repo_path").fill(repo);
+  await page.getByLabel("Workflow input analysis_object").fill("lib/nvmf restore run");
+  await page.getByRole("button", { name: "准备运行" }).hover();
+  await page.getByRole("button", { name: "准备运行" }).click();
+  await expect(page.getByText(/Task run prepared:/)).toBeVisible({ timeout: 15_000 });
+
+  const preparedText = await page.locator("body").innerText();
+  const taskRunId = preparedText.match(/Task run prepared:\s*(task_run_[a-f0-9]+)/)?.[1] ?? "";
+  expect(taskRunId).toMatch(/^task_run_[a-f0-9]+$/);
+  const restoreRequests: string[] = [];
+  const restorePath = `/api/workbench/task-runs/${taskRunId}`;
+  page.on("request", (request) => {
+    const url = new URL(request.url());
+    if (request.method() === "GET" && url.pathname === restorePath) {
+      restoreRequests.push(request.url());
+    }
+  });
+
+  const recentTaskButton = page.getByRole("button").filter({ hasText: taskRunId }).first();
+  await expect(recentTaskButton).toBeVisible();
+  const restoreRequest = page.waitForRequest(
+    (request) =>
+      request.method() === "GET" &&
+      new URL(request.url()).pathname === restorePath,
+  );
+  await recentTaskButton.hover();
+  await recentTaskButton.dblclick();
+  await restoreRequest;
+  await expect(page.getByText(`Task run restored: ${taskRunId}`)).toBeVisible({
+    timeout: 15_000,
+  });
+  await expect.poll(() => restoreRequests.length).toBe(1);
+});
+
 test("locks sibling agent-run actions while a real step execution is in flight", async ({
   page,
 }) => {
