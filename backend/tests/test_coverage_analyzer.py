@@ -12565,3 +12565,15 @@ class TestCoverageTestDesign:
         }
 
         assert _black_box_scenario_has_white_box_leak(scenario) is True
+
+    async def test_ai_black_box_leak_flags_dot_internal_state_access(self):
+        scenario = {
+            "external_trigger": "Send a public API request.",
+            "input_construction": "Set ctrlr.state to failed before sending the request.",
+            "normal_path": "The public request succeeds.",
+            "error_path": "The public request returns a controlled error.",
+            "expected_result": "The client sees a response and logs are emitted.",
+            "observable_signals": ["client response", "service logs"],
+        }
+
+        assert _black_box_scenario_has_white_box_leak(scenario) is True
