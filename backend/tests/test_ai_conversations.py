@@ -138,6 +138,26 @@ async def test_agent_output_segments_strip_terminal_noise_before_diagnostic_dete
     ]
 
 
+async def test_agent_output_segments_keep_chinese_answer_while_dropping_terminal_noise():
+    from app.services.ai_conversations import _agent_output_segments
+
+    segments = _agent_output_segments(
+        "\x1b[32m47%\n"
+        "12/100\n"
+        "\ufffd\ufffd\ufffd\ufffd\n"
+        "\r\x1b[2K⠋ 12\r\x1b[2K⠙ 47\r\x1b[2K"
+        "diagnostic: provider emitted transient status\n"
+        "源码证据：连接失败\n"
+        "FINAL_NOISE_CLEAN_ANSWER: 已完成源码分析。\x1b[0m\n"
+    )
+
+    assert segments == [
+        ("diagnostic", "provider emitted transient status"),
+        ("answer", "源码证据：连接失败\n"),
+        ("answer", "FINAL_NOISE_CLEAN_ANSWER: 已完成源码分析。\n"),
+    ]
+
+
 async def test_context_status_message_names_workbench_task_artifacts():
     from app.services.ai_conversations import _context_status_message
 
