@@ -92,6 +92,36 @@ def _now() -> str:
     return datetime.now(timezone.utc).isoformat()
 
 
+def _public_workbench_initial_context(
+    *,
+    scope_type: str,
+    scope_id: str,
+    initial_context: dict[str, Any],
+) -> dict[str, Any]:
+    if scope_type != "workbench_task_run":
+        return dict(initial_context)
+    context = dict(initial_context)
+    if "artifact_dir" in context:
+        context["artifact_dir"] = "."
+    agent_runs = context.get("agent_runs")
+    if isinstance(agent_runs, list):
+        public_runs: list[Any] = []
+        for item in agent_runs:
+            if not isinstance(item, dict):
+                public_runs.append(item)
+                continue
+            public_item = dict(item)
+            artifact_dir = str(public_item.get("artifact_dir") or "").replace("\\", "/")
+            marker = f"/{scope_id}/agent_runs/"
+            if marker in artifact_dir:
+                public_item["artifact_dir"] = f"agent_runs/{artifact_dir.split(marker, 1)[1].strip('/')}"
+            elif artifact_dir.startswith("/") or re.match(r"^[A-Za-z]:/", artifact_dir):
+                public_item["artifact_dir"] = ""
+            public_runs.append(public_item)
+        context["agent_runs"] = public_runs
+    return context
+
+
 def _new_id(prefix: str) -> str:
     return f"{prefix}_{uuid.uuid4().hex}"
 
@@ -158,7 +188,11 @@ class AIConversationStore:
             raise ValueError("agent_runtime_id is required when runtime_type is agent_runtime")
         cid = _new_id("conv")
         now = _now()
-        initial = initial_context or {}
+        initial = _public_workbench_initial_context(
+            scope_type=scope_type,
+            scope_id=scope_id,
+            initial_context=initial_context or {},
+        )
         async with self._connect() as db:
             resolved_workspace_id = await _resolve_workspace_id(
                 db,

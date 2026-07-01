@@ -743,7 +743,7 @@ test("opens a persisted AI review thread from a prepared workbench run through t
     workspace_id: workspaceId,
     memory_namespace: `workspace:${workspaceId}`,
     repo_path: repo,
-    artifact_dir: expect.stringContaining(taskRunId),
+    artifact_dir: ".",
     agent_runs_count: 0,
     agent_runs: [],
   });
