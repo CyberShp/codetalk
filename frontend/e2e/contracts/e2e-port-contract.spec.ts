@@ -3,6 +3,7 @@ import fs from "node:fs";
 import path from "node:path";
 
 const e2eDir = path.join(process.cwd(), "e2e");
+const repoRoot = path.resolve(process.cwd(), "..");
 
 function readE2eFiles(dir: string): Array<{ file: string; content: string }> {
   return fs.readdirSync(dir, { withFileTypes: true }).flatMap((entry) => {
@@ -25,4 +26,18 @@ test("E2E helpers derive frontend origin from CODETALK_FRONTEND_PORT", () => {
     .map(({ file }) => file);
 
   expect(offenders, "E2E code should not hardcode the default frontend port").toEqual([]);
+});
+
+test("release and diagnostic entrypoints use the public 3003 frontend default", () => {
+  const files = [
+    path.join(process.cwd(), "release-e2e", "release-clickthrough.spec.ts"),
+    path.join(repoRoot, "scripts", "coverage_real_e2e.py"),
+    path.join(repoRoot, "docs", "INTERNAL_RELEASE.md"),
+  ];
+  const offenders = files
+    .map((file) => ({ file: path.relative(repoRoot, file), content: fs.readFileSync(file, "utf8") }))
+    .filter(({ content }) => content.includes("3205") || content.includes("CODETALK_FRONTEND_PORT ?? \"3205\""))
+    .map(({ file }) => file);
+
+  expect(offenders, "release/diagnostic flows must not default to the retired 3205 frontend port").toEqual([]);
 });
