@@ -1,4 +1,5 @@
 import { spawn } from "node:child_process";
+import { clearNextDevCache } from "./next-dev-cache.mjs";
 import { assertPortAvailable } from "./port-preflight.mjs";
 
 const frontendHost = process.env.CODETALK_FRONTEND_BIND_HOST ?? "0.0.0.0";
@@ -16,6 +17,8 @@ await assertPortAvailable({
   serviceName: "CodeTalk frontend",
   clientHost: browserHost,
 });
+
+await clearNextDevCache({ reason: "before Playwright next dev" });
 
 const child = spawn(npxCommand, ["next", "dev", "-H", frontendHost, "-p", frontendPort], {
   env: {
