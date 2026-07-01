@@ -17,6 +17,7 @@ import shlex
 import shutil
 import subprocess
 import sys
+import tempfile
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
 from typing import Literal
@@ -792,6 +793,10 @@ def _agent_process_env(provider: str, repo_path: str | Path) -> dict[str, str]:
     env = os.environ.copy()
     env["CODETALK_AGENT_READONLY"] = "1"
     env["CODETALK_REPO_PATH"] = str(Path(repo_path).resolve())
+    if not env.get("CODETALK_AGENT_ARTIFACT_DIR"):
+        env["CODETALK_AGENT_ARTIFACT_DIR"] = tempfile.mkdtemp(
+            prefix="codetalk-agent-probe-"
+        )
     env.update(external_agent_provider_env_hints(provider))
     if provider == "claude-code":
         configured = str(getattr(settings, "claude_code_config_path", "") or "").strip()
