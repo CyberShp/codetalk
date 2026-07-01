@@ -644,6 +644,79 @@ class TestAgentRuntimes:
             ]
             assert any("临时工具错误：索引尚未就绪" in item for item in diagnostics)
 
+    async def test_ai_thread_agent_runtime_keeps_response_reasoning_out_of_final_answer(self, sqlite_db):
+        ws_id = await _seed_workspace(sqlite_db)
+        app = _test_app(sqlite_db)
+        agent_code = (
+            "import json; "
+            "print(json.dumps({'type':'response.reasoning_text.delta','delta':'内部推理：先搜索源码'}, ensure_ascii=False)); "
+            "print(json.dumps({'type':'response.output_text.delta','delta':'最终答案：已完成可交付分析。'}, ensure_ascii=False)); "
+            "print(json.dumps({'type':'response.refusal.delta','delta':'拒绝诊断：策略提示'}, ensure_ascii=False))"
+        )
+
+        async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+            runtime = await client.post(
+                "/api/settings/agent-runtimes",
+                json={
+                    "name": "Responses Reasoning Agent",
+                    "command": sys.executable,
+                    "args": ["-c", agent_code],
+                    "prompt_transport": "stdin",
+                    "output_mode": "auto",
+                    "working_dir_mode": "project",
+                    "timeout_seconds": 10,
+                },
+            )
+            assert runtime.status_code == 201
+
+            created = await client.post(
+                "/api/ai/conversations",
+                json={
+                    "scope_type": "workspace",
+                    "scope_id": ws_id,
+                    "workspace_id": ws_id,
+                    "title": "Responses reasoning 诊断折叠",
+                    "runtime_type": "agent_runtime",
+                    "agent_runtime_id": runtime.json()["id"],
+                },
+            )
+            assert created.status_code == 201
+            conversation = created.json()
+
+            posted = await client.post(
+                f"/api/ai/conversations/{conversation['id']}/messages",
+                json={"content": "分析 Responses reasoning 输出"},
+            )
+            assert posted.status_code == 202
+
+            for _ in range(30):
+                messages = await client.get(f"/api/ai/conversations/{conversation['id']}/messages")
+                items = messages.json()["items"]
+                if len(items) == 2:
+                    break
+                await asyncio.sleep(0.1)
+
+            messages = await client.get(f"/api/ai/conversations/{conversation['id']}/messages")
+            body = messages.json()
+            assert [item["role"] for item in body["items"]] == ["user", "assistant"]
+            assert body["items"][1]["content"] == "最终答案：已完成可交付分析。"
+            assert "内部推理" not in body["items"][1]["content"]
+            assert "拒绝诊断" not in body["items"][1]["content"]
+
+            stream = await client.get(f"/api/ai/conversations/{conversation['id']}/stream")
+            events = [
+                json.loads(line.removeprefix("data: "))
+                for line in stream.text.splitlines()
+                if line.startswith("data: ")
+            ]
+            diagnostics = [
+                event["payload"].get("content", "")
+                for event in events
+                if event["event_type"] == "delta" and event["payload"].get("kind") == "diagnostic"
+            ]
+            assert any("内部推理：先搜索源码" in item for item in diagnostics)
+            assert any("拒绝诊断：策略提示" in item for item in diagnostics)
+
     async def test_ai_thread_agent_runtime_keeps_tool_events_out_of_final_answer(self, sqlite_db):
         ws_id = await _seed_workspace(sqlite_db)
         app = _test_app(sqlite_db)
@@ -998,6 +1071,40 @@ class TestAgentRuntimes:
         assert output.strip() == "最终答案：auto 模式保留正文。"
         assert "response.created" not in output
         assert "response.completed" not in output
+
+    async def test_agent_runtime_auto_mode_keeps_response_reasoning_out_of_answer(self):
+        from app.services.agent_cli_bridge import stream_agent_runtime
+        from app.services.ai_conversations import _agent_output_segments
+
+        agent_code = (
+            "import json, sys; "
+            "print(json.dumps({'type':'response.reasoning_text.delta','delta':'内部推理：先搜索源码。'}, ensure_ascii=False)); "
+            "print(json.dumps({'type':'response.output_text.delta','delta':'最终答案：只展示可交付正文。'}, ensure_ascii=False)); "
+            "print(json.dumps({'type':'response.refusal.delta','delta':'拒绝诊断：策略提示。'}, ensure_ascii=False)); "
+            "sys.stdout.flush()"
+        )
+        chunks = []
+        async for chunk in stream_agent_runtime(
+            runtime={
+                "command": sys.executable,
+                "args": ["-c", agent_code],
+                "prompt_transport": "stdin",
+                "output_mode": "auto",
+                "timeout_seconds": 10,
+            },
+            prompt="读取源码",
+            cwd=None,
+        ):
+            chunks.append(chunk)
+
+        segments = [segment for chunk in chunks for segment in _agent_output_segments(chunk)]
+        answer = "".join(content for kind, content in segments if kind == "answer")
+        diagnostics = [content for kind, content in segments if kind == "diagnostic"]
+        assert answer.strip() == "最终答案：只展示可交付正文。"
+        assert "内部推理" not in answer
+        assert "拒绝诊断" not in answer
+        assert any("内部推理：先搜索源码。" in item for item in diagnostics)
+        assert any("拒绝诊断：策略提示。" in item for item in diagnostics)
 
     async def test_agent_runtime_auto_mode_cleans_plain_fallback_chunks(self):
         from app.services.agent_cli_bridge import stream_agent_runtime
