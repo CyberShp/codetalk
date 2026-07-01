@@ -78,7 +78,7 @@ _STORAGE_DOMAIN_PATH_HINTS: tuple[tuple[tuple[str, ...], tuple[str, ...]], ...] 
     (("nvme-of", "nvmeof", "nvmf", "nvmf target", "target connect"), ("lib/nvmf", "test/nvmf")),
     (("iscsi", "chap", "login digest"), ("lib/iscsi", "test/iscsi_tgt")),
     (("bdev", "block device"), ("lib/bdev", "test/bdev")),
-    (("blobstore", "blob store"), ("lib/blob", "test/blobfs")),
+    (("blobstore", "blob store"), ("lib/blob", "test/blobstore")),
     (("ftl",), ("lib/ftl", "test/ftl")),
     (("vhost",), ("lib/vhost", "test/vhost")),
     (("vfio-user", "vfiouser"), ("lib/vfio-user", "lib/vfu_tgt", "test/vfio_user")),

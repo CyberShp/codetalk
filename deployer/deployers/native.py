@@ -1084,7 +1084,7 @@ class NativeDeployer:
             await asyncio.to_thread(_cgc.ensure_cgc_installed, venv_path)
             await self._emit("start_services", "running", "CGC 安装完成", step)
         except _cgc.CGCInstallError as exc:
-            await self._emit("start_services", "error", f"CGC 安装失败：{exc}", step)
+            await self._emit("start_services", "running", f"CGC 安装失败：{exc}", step)
             raise RuntimeError(str(exc)) from exc
 
     async def _get_git_hash(self, cwd: Path) -> str:

@@ -776,19 +776,21 @@ class TestAIConversationsAPI:
         from app.services.ai_conversations import _storage_domain_path_hints
 
         cases = {
-            "iSCSI login CHAP digest 异常链路": "lib/iscsi",
-            "bdev IO submit complete 错误返回": "lib/bdev",
-            "blobstore metadata 恢复和空间不足": "lib/blob",
-            "FTL 异常关闭恢复": "lib/ftl",
-            "vhost device lifecycle guest detach": "lib/vhost",
-            "vfio-user queue 配置": "lib/vfio-user",
-            "reactor poller 跨线程调度": "lib/event",
-            "thread poller 阻塞": "lib/thread",
-            "RPC config 非法参数": "lib/rpc",
+            "iSCSI login CHAP digest 异常链路": ["lib/iscsi"],
+            "bdev IO submit complete 错误返回": ["lib/bdev"],
+            "blobstore metadata 恢复和空间不足": ["lib/blob", "test/blobstore"],
+            "FTL 异常关闭恢复": ["lib/ftl"],
+            "vhost device lifecycle guest detach": ["lib/vhost"],
+            "vfio-user queue 配置": ["lib/vfio-user"],
+            "reactor poller 跨线程调度": ["lib/event"],
+            "thread poller 阻塞": ["lib/thread"],
+            "RPC config 非法参数": ["lib/rpc"],
         }
 
-        for query, expected_path in cases.items():
-            assert expected_path in _storage_domain_path_hints(query)
+        for query, expected_paths in cases.items():
+            hints = _storage_domain_path_hints(query)
+            for expected_path in expected_paths:
+                assert expected_path in hints
 
     async def test_legacy_conversation_backfills_workspace_namespace(self, sqlite_db):
         ws_id = await _seed_workspace(sqlite_db, "legacy-ws")
