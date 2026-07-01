@@ -115,6 +115,7 @@ async def test_workbench_workflow_preset_api(workbench_client):
     preset_ids = {item["id"] for item in presets.json()["items"]}
     assert "mr_blackbox_test" in preset_ids
     assert "resource_leak_hunt" in preset_ids
+    assert "source_flow_sfmea_blackbox" in preset_ids
 
     installed = await workbench_client.post(
         "/api/workbench/workflow-presets/mr_blackbox_test/install"
@@ -154,7 +155,7 @@ async def test_workbench_core_workflow_readiness_api_covers_builtin_scenarios(wo
     assert resp.status_code == 200
     body = resp.json()
     assert body["status"] == "ready"
-    assert body["summary"]["workflow_count"] == 4
+    assert body["summary"]["workflow_count"] == 5
     assert body["summary"]["missing_required"] == 0
     by_id = {item["id"]: item for item in body["workflows"]}
     assert set(by_id) == {
@@ -162,9 +163,18 @@ async def test_workbench_core_workflow_readiness_api_covers_builtin_scenarios(wo
         "resource_leak_hunt",
         "mr_blackbox_test",
         "patch_impact_review",
+        "source_flow_sfmea_blackbox",
     }
     assert by_id["module_analysis"]["scenario"] == "module_analysis"
     assert by_id["resource_leak_hunt"]["scenario"] == "risk_hunt"
+    assert by_id["source_flow_sfmea_blackbox"]["scenario"] == "source_flow_sfmea_blackbox"
+    assert by_id["source_flow_sfmea_blackbox"]["required_artifacts"] == [
+        "source_scope.json",
+        "evidence_cards.json",
+        "flow_map.md",
+        "sfmea.json",
+        "black_box_cases.json",
+    ]
     assert by_id["mr_blackbox_test"]["agent_mcp_required"] is False
     assert by_id["mr_blackbox_test"]["required_artifacts"] == [
         "mr_snapshot.json",
@@ -195,6 +205,11 @@ async def test_workbench_core_workflow_readiness_api_covers_builtin_scenarios(wo
     assert by_id["patch_impact_review"]["builtin_steps"] == [
         "parse_patch",
         "analyze_impact",
+        "validate_evidence",
+        "render_report",
+    ]
+    assert by_id["source_flow_sfmea_blackbox"]["builtin_steps"] == [
+        "analyze_source_flow",
         "validate_evidence",
         "render_report",
     ]
@@ -2019,6 +2034,85 @@ async def test_builtin_mr_blackbox_run_produces_executable_black_box_case_contra
     assert materialized.exists()
     imported = json.loads(materialized.read_text(encoding="utf-8"))
     assert imported["result"]["source_ref"] == f"task_run:{body['task_run_id']}:black_box_cases"
+
+
+async def test_builtin_source_flow_sfmea_blackbox_run_produces_four_piece_chain(
+    workbench_client,
+    tmp_path,
+):
+    repo = tmp_path / "spdk-like"
+    source_file = repo / "lib" / "nvmf" / "ctrlr.c"
+    source_file.parent.mkdir(parents=True)
+    source_file.write_text(
+        "\n".join(
+            [
+                "int spdk_nvmf_ctrlr_connect(void) {",
+                "    return 0;",
+                "}",
+                "int spdk_nvmf_ctrlr_submit_io(void) {",
+                "    return 0;",
+                "}",
+            ]
+        ),
+        encoding="utf-8",
+    )
+    test_dir = repo / "test" / "nvmf"
+    test_dir.mkdir(parents=True)
+    (test_dir / "nvmf.sh").write_text("# public nvmf workflow\n", encoding="utf-8")
+
+    installed = await workbench_client.post(
+        "/api/workbench/workflow-presets/source_flow_sfmea_blackbox/install"
+    )
+    assert installed.status_code == 201
+
+    response = await workbench_client.post(
+        "/api/workbench/task-runs/run",
+        json={
+            "workflow_id": "source_flow_sfmea_blackbox",
+            "workspace_id": "ws-source-flow-sfmea",
+            "repo_path": str(repo),
+            "inputs": {
+                "analysis_object": "lib/nvmf connect to IO submit flow",
+                "repo_path": str(repo),
+            },
+            "timeout_sec": 10,
+        },
+    )
+
+    assert response.status_code == 201
+    body = response.json()
+    assert body["status"] == "completed"
+    outputs = {item["id"]: item for item in body["execution"]["outputs"]}
+    assert outputs["code_evidence"]["status"] == "ok"
+    assert outputs["flow_map"]["status"] == "ok"
+    assert outputs["sfmea"]["status"] == "ok"
+    assert outputs["black_box_cases"]["status"] == "ok"
+    assert body["semantic_output_import"]["status"] == "ok"
+    assert body["semantic_output_import"]["imported_count"] >= 1
+
+    task_dir = _task_run_dir(body["task_run"]["task_run_id"])
+    step_dir = task_dir / "steps" / "analyze_source_flow"
+    assert (step_dir / "source_scope.json").exists()
+    assert (step_dir / "evidence_cards.json").exists()
+    assert (step_dir / "flow_map.md").exists()
+    sfmea = json.loads((step_dir / "sfmea.json").read_text(encoding="utf-8"))
+    cases = json.loads((step_dir / "black_box_cases.json").read_text(encoding="utf-8"))
+    assert sfmea
+    assert cases
+    assert {
+        "failure_mode",
+        "cause",
+        "effect",
+        "detection",
+        "severity",
+        "occurrence",
+        "detection_score",
+        "rpn",
+        "mitigation",
+    }.issubset(sfmea[0])
+    assert cases[0]["case_type"] == "black_box_ready"
+    assert "public workflow" in cases[0]["inputs"]
+    assert all("spdk_nvmf_ctrlr_connect" not in step for step in cases[0]["steps"])
 
 
 async def test_workbench_task_run_run_auto_imports_declared_semantic_outputs(

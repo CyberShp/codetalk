@@ -397,6 +397,168 @@ class TestAIConversationsAPI:
             ]
             assert any("工作区源码" in message and "输入材料" in message for message in status_messages)
 
+    async def test_workspace_thread_prioritizes_gitnexus_and_cgc_report_artifacts(
+        self,
+        sqlite_db,
+        tmp_path: Path,
+    ):
+        repo = tmp_path / "repo"
+        src = repo / "lib" / "nvmf"
+        src.mkdir(parents=True)
+        (src / "ctrlr.c").write_text(
+            "int spdk_nvmf_cgc_priority_probe(void) { return 0; }\n",
+            encoding="utf-8",
+        )
+        ws_id = "ws-gitnexus-cgc"
+        now = datetime.now(timezone.utc).isoformat()
+        async with aiosqlite.connect(sqlite_db) as db:
+            await db.execute(
+                "INSERT INTO workspaces (id, name, repo_path, indexed, created_at, updated_at) "
+                "VALUES (?, 'GitNexus CGC WS', ?, 1, ?, ?)",
+                (ws_id, str(repo), now, now),
+            )
+            for report_id, report_type, title, content in [
+                ("report-normal", "test_design", "普通测试设计", "普通报告不应排在图谱前"),
+                ("report-gitnexus", "gitnexus_reliability", "GitNexus 可信度评估", "GitNexus community and ownership evidence"),
+                ("report-cgc", "cgc_call_graph", "CGC 调用图产物", "CGC connect to io submit call chain"),
+            ]:
+                await db.execute(
+                    "INSERT INTO workspace_reports "
+                    "(id, workspace_id, report_type, title, content, status, created_at) "
+                    "VALUES (?, ?, ?, ?, ?, 'completed', ?)",
+                    (report_id, ws_id, report_type, title, content, now),
+                )
+            await db.commit()
+
+        from app.services.ai_conversations import build_context_references
+
+        refs = await build_context_references(
+            conversation={
+                "id": "conv-gitnexus-cgc",
+                "scope_type": "workspace",
+                "scope_id": ws_id,
+                "workspace_id": ws_id,
+                "memory_namespace": f"workspace:{ws_id}",
+                "initial_context": {},
+            },
+            user_message="梳理 connect 到 IO submit 的测试风险",
+            db_path=sqlite_db,
+        )
+        report_refs = [ref for ref in refs if ref.source_type == "workspace_report"]
+        assert [ref.metadata["report_type"] for ref in report_refs[:2]] == [
+            "gitnexus_reliability",
+            "cgc_call_graph",
+        ]
+        assert "GitNexus" in report_refs[0].excerpt
+        assert "CGC" in report_refs[1].excerpt
+
+    async def test_agent_prompt_defaults_to_gitnexus_cgc_source_artifact_priority(self):
+        from app.services.ai_conversations import _build_agent_prompt
+
+        prompt = _build_agent_prompt(
+            {
+                "id": "conv-source-artifact-priority",
+                "title": "图谱优先",
+                "scope_type": "workspace",
+                "scope_id": "ws-source-artifact-priority",
+                "workspace_id": "ws-source-artifact-priority",
+                "initial_context": {},
+            },
+            [{"role": "user", "content": "梳理 NVMe-oF connect 流程"}],
+            [
+                {
+                    "source_type": "workspace_report",
+                    "source_id": "report-gitnexus",
+                    "title": "GitNexus 可信度评估",
+                    "excerpt": "GitNexus community and ownership evidence",
+                    "metadata": {"report_type": "gitnexus_reliability"},
+                },
+                {
+                    "source_type": "workspace_report",
+                    "source_id": "report-cgc",
+                    "title": "CGC 调用图产物",
+                    "excerpt": "CGC connect call chain",
+                    "metadata": {"report_type": "cgc_call_graph"},
+                },
+            ],
+            "梳理 NVMe-oF connect 流程",
+            {"id": "runtime-source-artifact-priority", "name": "Runtime"},
+        )
+
+        assert "SOURCE_ARTIFACT_PRIORITY" in prompt
+        assert "GitNexus" in prompt
+        assert "CGC" in prompt
+        assert "除非用户明确要求不要基于源码" in prompt
+
+    async def test_agent_prompt_honors_explicit_no_source_analysis_request(self):
+        from app.services.ai_conversations import _build_agent_prompt
+
+        prompt = _build_agent_prompt(
+            {
+                "id": "conv-no-source",
+                "title": "不基于源码",
+                "scope_type": "workspace",
+                "scope_id": "ws-no-source",
+                "workspace_id": "ws-no-source",
+                "initial_context": {},
+            },
+            [{"role": "user", "content": "不要基于源码，只根据我给的描述回答"}],
+            [],
+            "不要基于源码，只根据我给的描述回答",
+            {"id": "runtime-no-source", "name": "Runtime"},
+        )
+
+        assert "source_analysis_declined: true" in prompt
+        assert "不要强制查 GitNexus/CGC 或工作区源码" in prompt
+
+    async def test_context_references_skip_source_and_graph_artifacts_when_source_declined(
+        self,
+        sqlite_db,
+        tmp_path: Path,
+    ):
+        repo = tmp_path / "repo"
+        src = repo / "lib" / "nvmf"
+        src.mkdir(parents=True)
+        (src / "ctrlr.c").write_text(
+            "int spdk_nvmf_declined_source_probe(void) { return 0; }\n",
+            encoding="utf-8",
+        )
+        ws_id = "ws-decline-source"
+        now = datetime.now(timezone.utc).isoformat()
+        async with aiosqlite.connect(sqlite_db) as db:
+            await db.execute(
+                "INSERT INTO workspaces (id, name, repo_path, indexed, created_at, updated_at) "
+                "VALUES (?, 'Decline Source WS', ?, 1, ?, ?)",
+                (ws_id, str(repo), now, now),
+            )
+            await db.execute(
+                "INSERT INTO workspace_reports "
+                "(id, workspace_id, report_type, title, content, status, created_at) "
+                "VALUES ('report-decline-gitnexus', ?, 'gitnexus_reliability', 'GitNexus 可信度评估', "
+                "'GitNexus evidence should not be injected', 'completed', ?)",
+                (ws_id, now),
+            )
+            await db.commit()
+
+        from app.services.ai_conversations import build_context_references
+
+        refs = await build_context_references(
+            conversation={
+                "id": "conv-decline-source",
+                "scope_type": "workspace",
+                "scope_id": ws_id,
+                "workspace_id": ws_id,
+                "memory_namespace": f"workspace:{ws_id}",
+                "initial_context": {},
+            },
+            user_message="不要基于源码，只根据我给的描述回答",
+            db_path=sqlite_db,
+        )
+
+        source_types = {ref.source_type for ref in refs}
+        assert "workspace_source" not in source_types
+        assert "workspace_report" not in source_types
+
     async def test_workspace_bound_non_workspace_thread_reads_workspace_source(
         self,
         sqlite_db,

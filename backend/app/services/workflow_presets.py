@@ -88,6 +88,68 @@ def builtin_workflow_presets() -> list[dict[str, Any]]:
             },
         },
         {
+            "id": "source_flow_sfmea_blackbox",
+            "name": "Code Analysis -> Flow -> SFMEA -> Black-box Cases",
+            "description": (
+                "Run the workspace-report style chain: source-backed code analysis, flow mapping, "
+                "SFMEA, and externally executable black-box test cases. GitNexus and CGC artifacts "
+                "are treated as first-priority evidence when present."
+            ),
+            "definition": {
+                "id": "source_flow_sfmea_blackbox",
+                "name": "Code Analysis -> Flow -> SFMEA -> Black-box Cases",
+                "version": 1,
+                "inputs": [
+                    {"id": "analysis_object", "type": "free_text", "required": True, "role": "module, feature, or flow under test"},
+                    {"id": "repo_path", "type": "directory", "required": True, "resolver": "local"},
+                    {"id": "requirements_doc", "type": "file", "required": False, "role": "requirements"},
+                    {"id": "design_doc", "type": "file", "required": False, "role": "design"},
+                    {"id": "coverage_report", "type": "coverage_report", "required": False, "role": "coverage context"},
+                    {"id": "semantic_library_ref", "type": "semantic_library_ref", "required": False, "role": "test terminology"},
+                ],
+                "steps": [
+                    {
+                        "id": "analyze_source_flow",
+                        "type": "local_source_flow_sfmea_blackbox",
+                        "goal": (
+                            "First check GitNexus and CGC artifacts when available, then read local source "
+                            "evidence to produce code evidence, externally observable flow steps, SFMEA, "
+                            "and black-box test cases."
+                        ),
+                        "required_artifacts": [
+                            "source_scope.json",
+                            "evidence_cards.json",
+                            "flow_map.md",
+                            "sfmea.json",
+                            "black_box_cases.json",
+                        ],
+                    },
+                    {"id": "validate_evidence", "type": "evidence_validate"},
+                    {"id": "render_report", "type": "report_render"},
+                ],
+                "outputs": [
+                    {"id": "source_scope", "type": "json", "from": "analyze_source_flow", "artifact": "source_scope.json"},
+                    {"id": "code_evidence", "type": "json", "from": "analyze_source_flow", "artifact": "evidence_cards.json"},
+                    {"id": "flow_map", "type": "markdown", "from": "analyze_source_flow", "artifact": "flow_map.md"},
+                    {"id": "sfmea", "type": "json", "from": "analyze_source_flow", "artifact": "sfmea.json"},
+                    {
+                        "id": "black_box_cases",
+                        "type": "test_cases",
+                        "from": "analyze_source_flow",
+                        "artifact": "black_box_cases.json",
+                        "semantic_import": {
+                            "enabled": True,
+                            "defaults": {
+                                "test_level": "black_box",
+                                "tags": ["source_flow_sfmea_blackbox"],
+                            },
+                        },
+                    },
+                    {"id": "report", "type": "markdown", "from": "render_report"},
+                ],
+            },
+        },
+        {
             "id": "mr_blackbox_test",
             "name": "MR Black-box Test Design",
             "description": "Let the Agent CLI fetch MR context through its MCP credentials, then validate artifacts and produce black-box test cases.",

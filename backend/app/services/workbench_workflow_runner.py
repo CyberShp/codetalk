@@ -327,6 +327,32 @@ class WorkbenchWorkflowRunner:
                 "count": len(payloads.get("evidence_cards.json") or []),
             }
 
+        if step_type == "local_source_flow_sfmea_blackbox":
+            payloads = _local_source_flow_sfmea_blackbox_payloads(
+                task_run=task_run,
+                step=step,
+            )
+            written: list[str] = []
+            for artifact_name, payload in payloads.items():
+                artifact_path = artifact_dir / artifact_name
+                if isinstance(payload, str):
+                    artifact_path.write_text(payload, encoding="utf-8")
+                else:
+                    _write_json(artifact_path, payload)
+                written.append(artifact_name)
+            return {
+                "step_id": step_id,
+                "type": step_type,
+                "status": "completed",
+                "artifact_dir": str(artifact_dir),
+                "artifact": "black_box_cases.json",
+                "artifacts": written,
+                "required_artifacts": [
+                    str(item) for item in step.get("required_artifacts") or []
+                ],
+                "count": len(payloads.get("black_box_cases.json") or []),
+            }
+
         if step_type == "local_resource_leak_hunt":
             payloads = _local_resource_leak_hunt_payloads(
                 task_run=task_run,
@@ -767,6 +793,176 @@ def _local_scope_discovery_payloads(
         "source_scope.json": scope_payload,
         "evidence_cards.json": evidence_cards,
     }
+
+
+def _local_source_flow_sfmea_blackbox_payloads(
+    *,
+    task_run: Any,
+    step: dict[str, Any],
+) -> dict[str, Any]:
+    scope_payloads = _local_scope_discovery_payloads(task_run=task_run, step=step)
+    scope = scope_payloads["source_scope.json"]
+    evidence_cards = scope_payloads["evidence_cards.json"]
+    files = [str(item) for item in scope.get("files") or []]
+    query = str(scope.get("query") or _public_local_scope_query(task_run))
+    selected_files = files[:8]
+    sfmea = [
+        _source_flow_sfmea_item(
+            task_run=task_run,
+            file_path=file_path,
+            evidence_card=_evidence_card_for_file(evidence_cards, file_path),
+            index=index,
+        )
+        for index, file_path in enumerate(selected_files or ["repo"], start=1)
+    ]
+    cases = [
+        _source_flow_black_box_case(
+            task_run=task_run,
+            file_path=file_path,
+            evidence_card=_evidence_card_for_file(evidence_cards, file_path),
+            index=index,
+        )
+        for index, file_path in enumerate(selected_files, start=1)
+    ]
+    if not cases:
+        cases = [_fallback_black_box_case(task_run=task_run)]
+    return {
+        "source_scope.json": scope,
+        "evidence_cards.json": evidence_cards,
+        "flow_map.md": _source_flow_map_markdown(
+            task_run=task_run,
+            query=query,
+            evidence_cards=evidence_cards,
+            files=selected_files,
+        ),
+        "sfmea.json": sfmea,
+        "black_box_cases.json": cases,
+    }
+
+
+def _evidence_card_for_file(evidence_cards: list[dict[str, Any]], file_path: str) -> dict[str, Any]:
+    for card in evidence_cards:
+        if str(card.get("file_path") or "") == file_path:
+            return card
+    return {}
+
+
+def _source_flow_map_markdown(
+    *,
+    task_run: Any,
+    query: str,
+    evidence_cards: list[dict[str, Any]],
+    files: list[str],
+) -> str:
+    lines = [
+        f"# Source Flow Map for {task_run.workflow_id}",
+        "",
+        f"- Query: {_redact_workbench_public_text(query, task_run=task_run)}",
+        f"- Repo: `{_public_repo_label(task_run.repo_path)}`",
+        "- Evidence policy: GitNexus/CGC artifacts first when present, then local source evidence.",
+        "",
+        "## Code Evidence",
+    ]
+    for card in evidence_cards[:12]:
+        symbols = ", ".join(str(item) for item in (card.get("symbols") or [])[:4])
+        lines.append(
+            f"- `{card.get('file_path')}`: {card.get('reason') or 'local source evidence'}"
+            + (f" Symbols: {symbols}." if symbols else "")
+        )
+    lines.extend(["", "## External Flow Steps"])
+    if files:
+        for index, file_path in enumerate(files[:8], start=1):
+            module = _module_label_for_path(file_path)
+            lines.append(
+                f"{index}. Exercise the public {module} workflow that reaches `{file_path}`; "
+                "observe API/RPC result, logs, reconnect/reset behavior, and persistent state."
+            )
+    else:
+        lines.append(
+            "1. Run the public smoke workflow for the selected workspace and collect logs, status, and state changes."
+        )
+    lines.extend([
+        "",
+        "## SFMEA To Test Link",
+        "- Convert each high-RPN item into externally observable tests: success path, invalid input, timeout, reconnect/reset, concurrency, recovery, and performance degradation.",
+    ])
+    return "\n".join(lines).strip() + "\n"
+
+
+def _source_flow_sfmea_item(
+    *,
+    task_run: Any,
+    file_path: str,
+    evidence_card: dict[str, Any],
+    index: int,
+) -> dict[str, Any]:
+    module = _module_label_for_path(file_path)
+    test_directory = _test_directory_for_source(file_path)
+    symbols = evidence_card.get("symbols") or []
+    evidence_line_count = int(evidence_card.get("line_count") or 0)
+    severity = 8 if module in {"nvmf", "iscsi", "bdev"} else 6
+    occurrence = min(10, 3 + len(symbols[:4]))
+    detection_score = 5 if evidence_line_count else 8
+    rpn = severity * occurrence * detection_score
+    failure_mode = f"{module} public workflow diverges from source-backed flow evidence"
+    cause = (
+        f"Source evidence in {file_path} changes or constrains the flow, but external tests may only cover the happy path."
+        if file_path != "repo"
+        else "No specific source file was discovered, so flow and failure coverage are under-specified."
+    )
+    return {
+        "sfmea_id": f"source_flow_sfmea_{index:03d}",
+        "module": module,
+        "file_path": file_path,
+        "failure_mode": failure_mode,
+        "cause": cause,
+        "effect": "Users may see incorrect status, stale sessions/devices, failed recovery, or missing diagnostics during public workflows.",
+        "detection": (
+            f"Run black-box cases under {test_directory}; collect RPC/tool output, logs, reconnect/reset behavior, metrics, and persisted state."
+        ),
+        "severity": severity,
+        "occurrence": occurrence,
+        "detection_score": detection_score,
+        "rpn": rpn,
+        "score_explanation": (
+            f"severity={severity} from externally visible {module} behavior; "
+            f"occurrence={occurrence} from {len(symbols[:4])} local symbol signal(s); "
+            f"detection={detection_score} from {evidence_line_count} source line(s) available for review."
+        ),
+        "mitigation": (
+            f"Add or extend tests in {test_directory} for normal path, invalid input, timeout, reconnect/reset, "
+            "concurrency, recovery, and performance degradation without calling internal functions."
+        ),
+        "evidence": {
+            "source": "local-source-flow-sfmea-blackbox",
+            "file_path": file_path,
+            "symbols": symbols[:6],
+            "sha256": evidence_card.get("sha256") or "",
+        },
+    }
+
+
+def _source_flow_black_box_case(
+    *,
+    task_run: Any,
+    file_path: str,
+    evidence_card: dict[str, Any],
+    index: int,
+) -> dict[str, Any]:
+    case = _black_box_case_for_changed_file(
+        task_run=task_run,
+        changed_file={"path": file_path},
+        index=index,
+    )
+    case["case_id"] = f"source_flow_black_box_{index:03d}"
+    case["source"] = "local-source-flow-sfmea-blackbox"
+    case["trace"] = {
+        "task_run_id": str(task_run.task_run_id),
+        "file_path": file_path,
+        "evidence_id": evidence_card.get("evidence_id") or "",
+        "symbols": (evidence_card.get("symbols") or [])[:6],
+    }
+    return case
 
 
 def _local_scope_query(input_snapshot: dict[str, Any]) -> str:

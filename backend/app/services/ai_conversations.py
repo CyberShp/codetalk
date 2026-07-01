@@ -721,6 +721,7 @@ async def build_context_references(
     scope_type = str(conversation["scope_type"])
     scope_id = str(conversation["scope_id"])
     workspace_id = _conversation_workspace_id(conversation)
+    source_analysis_declined = _source_analysis_declined(user_message)
     refs: list[ContextReference] = []
     seen: set[tuple[str, str]] = set()
 
@@ -737,15 +738,16 @@ async def build_context_references(
         if workspace_id != "global":
             source_query = _source_query_for_conversation(conversation, user_message)
             append_refs(await _workspace_material_refs(db, workspace_id))
-            append_refs(await _workspace_source_refs(db, workspace_id, source_query))
-            append_refs(await _workspace_refs(db, workspace_id))
+            if not source_analysis_declined:
+                append_refs(await _workspace_source_refs(db, workspace_id, source_query))
+                append_refs(await _workspace_refs(db, workspace_id))
             append_refs(await _workspace_chat_refs(db, workspace_id))
         if scope_type == "report":
             append_refs(await _report_refs(db, scope_id))
         elif scope_type == "module":
             append_refs(await _module_refs(db, scope_id))
     append_refs(await _workbench_task_refs(scope_type, scope_id))
-    if workspace_id != "global":
+    if workspace_id != "global" and not source_analysis_declined:
         append_refs(await _evidence_memory_refs(workspace_id, user_message))
         append_refs(await _semantic_case_refs(scope_id, user_message))
     return refs[:_MAX_CONTEXT_REFERENCES]
@@ -1057,7 +1059,7 @@ def _build_prompt(
         "必须先依据源码片段和输入材料回答，再用报告或记忆补充。"
         "不要声称读过未出现在引用里的文件。\n\n"
         f"{_codex_style_answer_instruction()}\n\n"
-        f"{_source_first_contract(references)}\n\n"
+        f"{_source_first_contract(references, user_message)}\n\n"
         f"线程范围: {conversation['scope_type']} / {conversation['scope_id']}\n"
         f"上下文引用:\n{chr(10).join(context_lines) if context_lines else '（暂无可用引用）'}"
     )
@@ -1083,7 +1085,7 @@ def _build_agent_prompt(
         "执行要求：CodeTalk 已把执行器工作目录切到绑定工作区；如果线程绑定 workspace，"
         "先检查当前工作目录中的源码和输入材料，再回答；不要只凭模型记忆。",
         _codex_style_answer_instruction(),
-        _source_first_contract(references),
+        _source_first_contract(references, user_message),
         "",
     ]
     sentinel = str(runtime.get("sentinel_text") or "").strip()
@@ -1107,11 +1109,13 @@ def _build_agent_prompt(
     return "\n".join(lines).strip()
 
 
-def _source_first_contract(references: list[dict[str, Any]]) -> str:
+def _source_first_contract(references: list[dict[str, Any]], user_message: str = "") -> str:
+    artifact_contract = _source_artifact_priority_contract(references, user_message)
     source_refs = [ref for ref in references if ref.get("source_type") == "workspace_source"]
     material_refs = [ref for ref in references if ref.get("source_type") == "workspace_material"]
     if not source_refs and not material_refs:
         return (
+            f"{artifact_contract}\n"
             "SOURCE_FIRST_CONTRACT:\n"
             "  workspace_sources: []\n"
             "  workspace_materials: []\n"
@@ -1119,6 +1123,7 @@ def _source_first_contract(references: list[dict[str, Any]]) -> str:
         )
 
     lines = [
+        artifact_contract,
         "SOURCE_FIRST_CONTRACT:",
         "  rule: 回答前先读取/核对 workspace_sources 与 workspace_materials；报告、记忆和模型知识只能补充，不能替代。",
         "  workspace_sources:",
@@ -1156,6 +1161,81 @@ def _source_first_contract(references: list[dict[str, Any]]) -> str:
     else:
         lines.append("    []")
     return "\n".join(lines)
+
+
+def _source_artifact_priority_contract(references: list[dict[str, Any]], user_message: str) -> str:
+    declined = _source_analysis_declined(user_message)
+    artifact_refs = _gitnexus_cgc_refs(references)
+    if declined:
+        return "\n".join([
+            "SOURCE_ARTIFACT_PRIORITY:",
+            "  source_analysis_declined: true",
+            "  rule: 用户明确要求不要基于源码；不要强制查 GitNexus/CGC 或工作区源码，只能基于用户提供内容回答并标记限制。",
+            "  gitnexus_cgc_artifacts: []",
+        ])
+    lines = [
+        "SOURCE_ARTIFACT_PRIORITY:",
+        "  source_analysis_declined: false",
+        "  rule: 除非用户明确要求不要基于源码，回答前先查 GitNexus 和 CGC 产物，再核对工作区源码与输入文件；图谱缺失时必须说明降级。",
+        "  gitnexus_cgc_artifacts:",
+    ]
+    if artifact_refs:
+        for ref in artifact_refs[:6]:
+            metadata = ref.get("metadata") if isinstance(ref.get("metadata"), dict) else {}
+            report_type = str(metadata.get("report_type") or "").strip()
+            title = str(ref.get("title") or ref.get("source_id") or "workspace report").strip()
+            excerpt = _clip(str(ref.get("excerpt") or ""), 360)
+            lines.extend([
+                f"    - report_type: {report_type or 'unknown'}",
+                f"      title: {title}",
+                "      evidence: |",
+            ])
+            lines.extend(f"        {line}" for line in excerpt.splitlines()[:8])
+    else:
+        lines.append("    []")
+    return "\n".join(lines)
+
+
+def _gitnexus_cgc_refs(references: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    refs: list[dict[str, Any]] = []
+    for ref in references:
+        metadata = ref.get("metadata") if isinstance(ref.get("metadata"), dict) else {}
+        haystack = " ".join(
+            str(value or "")
+            for value in (
+                ref.get("source_type"),
+                ref.get("source_id"),
+                ref.get("title"),
+                metadata.get("report_type"),
+            )
+        ).lower()
+        if "gitnexus" in haystack or "cgc" in haystack:
+            refs.append(ref)
+    return refs
+
+
+def _source_analysis_declined(user_message: str) -> bool:
+    text = str(user_message or "").lower()
+    declined_markers = (
+        "不要基于源码",
+        "不基于源码",
+        "不要看源码",
+        "不用看源码",
+        "不要读取源码",
+        "别查源码",
+        "不要查源码",
+        "不要使用源码",
+        "只根据我给的描述",
+        "只基于我给的内容",
+        "do not use source",
+        "don't use source",
+        "without source",
+        "do not read source",
+        "do not inspect source",
+        "do not use gitnexus",
+        "do not use cgc",
+    )
+    return any(marker in text for marker in declined_markers)
 
 
 def _public_workspace_label(conversation: dict[str, Any]) -> str:
@@ -1553,8 +1633,14 @@ async def _workspace_refs(db: aiosqlite.Connection, workspace_id: str) -> list[C
         FROM workspace_reports
         WHERE workspace_id = ? AND status = 'completed'
           AND content IS NOT NULL AND TRIM(content) != ''
-        ORDER BY created_at DESC
-        LIMIT 4
+        ORDER BY
+          CASE
+            WHEN lower(COALESCE(report_type, '') || ' ' || COALESCE(title, '')) LIKE '%gitnexus%' THEN 0
+            WHEN lower(COALESCE(report_type, '') || ' ' || COALESCE(title, '')) LIKE '%cgc%' THEN 1
+            ELSE 2
+          END,
+          created_at DESC
+        LIMIT 6
         """,
         (workspace_id,),
     ) as cur:

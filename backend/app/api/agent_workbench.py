@@ -412,6 +412,7 @@ async def get_core_workflow_readiness() -> dict[str, Any]:
             "resource_leak_hunt",
             "mr_blackbox_test",
             "patch_impact_review",
+            "source_flow_sfmea_blackbox",
         }
     ]
     missing_required = [
@@ -1819,6 +1820,7 @@ def _core_workflow_readiness_item(preset: dict[str, Any]) -> dict[str, Any]:
             "semantic_retrieve",
             "memory_retrieve",
             "local_scope_discover",
+            "local_source_flow_sfmea_blackbox",
             "local_resource_leak_hunt",
             "local_patch_impact_review",
             "local_mr_blackbox_test",
@@ -2359,6 +2361,7 @@ def _core_workflow_scenario(workflow_id: str) -> str:
         "resource_leak_hunt": "risk_hunt",
         "mr_blackbox_test": "mr_blackbox_test",
         "patch_impact_review": "patch_impact_review",
+        "source_flow_sfmea_blackbox": "source_flow_sfmea_blackbox",
     }.get(workflow_id, workflow_id or "workflow")
 
 
