@@ -13,6 +13,23 @@ if str(DEPLOYER_DIR) not in sys.path:
 import config_store
 
 
+def test_config_path_can_be_isolated_by_environment(monkeypatch, tmp_path):
+    custom_path = tmp_path / "browser-e2e-config.json"
+    monkeypatch.setenv("CODETALK_DEPLOYER_CONFIG_PATH", str(custom_path))
+
+    import importlib
+
+    reloaded = importlib.reload(config_store)
+    try:
+        assert reloaded.CONFIG_PATH == custom_path
+        reloaded.save_config({"mode": "native", "portBackend": 4567})
+        assert custom_path.exists()
+        assert json.loads(custom_path.read_text(encoding="utf-8"))["backend_port"] == 4567
+    finally:
+        monkeypatch.delenv("CODETALK_DEPLOYER_CONFIG_PATH", raising=False)
+        importlib.reload(config_store)
+
+
 # ---------------------------------------------------------------------------
 # normalize_to_snake
 # ---------------------------------------------------------------------------

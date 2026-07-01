@@ -91,6 +91,7 @@ async def test_app_js_served(client):
     assert "javascript" in ct or "text/" in ct
     assert resp.headers["cache-control"] == "no-cache, no-store, must-revalidate"
     assert "deepwiki" not in resp.text.lower()
+    assert "joern" not in resp.text.lower()
     assert "function errorDetailMessage(detail, fallback)" in resp.text
     assert "showServiceActionMessage('error'" in resp.text
     assert "[object Object]" not in resp.text
@@ -150,6 +151,13 @@ async def test_start_app_js_hides_disabled_optional_services(client):
     assert "function applyOptionalServiceVisibility(cfg)" in resp.text
     assert "cfg.installGitnexus === false" in resp.text
     assert "cfg.installCgc === false" in resp.text
+
+
+async def test_start_page_hidden_service_cards_stay_display_none(client):
+    resp = await client.get("/start.html")
+    assert resp.status_code == 200
+    assert ".svc-card[hidden]" in resp.text
+    assert "display: none !important" in resp.text
 
 
 async def test_deploy_js_makes_port_takeover_retry_explicit(client):

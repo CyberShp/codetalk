@@ -4,7 +4,9 @@ import json
 import os
 from pathlib import Path
 
-CONFIG_PATH = Path(__file__).parent / ".deploy-config.json"
+CONFIG_PATH = Path(
+    os.environ.get("CODETALK_DEPLOYER_CONFIG_PATH", Path(__file__).parent / ".deploy-config.json")
+)
 _PROJECT_ROOT = Path(__file__).parent.parent
 
 # camelCase (frontend) -> snake_case (backend/deployer canonical form)
