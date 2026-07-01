@@ -237,6 +237,7 @@ function spdkTestDirectory(mr: CoverageModuleResult) {
   if (text.includes("bdev")) return "test/bdev";
   if (text.includes("blob")) return "test/blobstore";
   if (text.includes("ftl")) return "test/ftl";
+  if (text.includes("vfio-user") || text.includes("vfio_user") || text.includes("/vfu")) return "test/vfio_user";
   if (text.includes("vhost")) return "test/vhost";
   if (text.includes("nvmf")) return "test/nvmf";
   if (text.includes("thread")) return "test/unit/lib/thread";
@@ -507,7 +508,7 @@ function buildCoverageFourPieceJson(name: string, results: CoverageModuleResult[
     }),
     buildBundle("E08", "vhost/vfio-user lifecycle", (mr) => {
       const text = matchText(mr);
-      return text.includes("lib/vhost/") || text.includes("vfio_user");
+      return text.includes("lib/vhost/") || text.includes("lib/vfio-user/") || text.includes("vfio_user");
     }),
     buildBundle("E09", "reactor/thread/poller 调度", (mr) => {
       const text = matchText(mr);

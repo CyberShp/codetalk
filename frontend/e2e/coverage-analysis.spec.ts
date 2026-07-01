@@ -350,6 +350,7 @@ test.describe("Coverage analysis", () => {
       "recover_session,lib/nvmf/ctrlr.c:1-20,false,0",
       "parse_config,lib/bdev/bdev.c:1-30,true,3",
       "cleanup_temp,lib/bdev/bdev.c:22,0,0",
+      "vfio_user_detach,lib/vfio-user/vfu.c:7-18,false,0",
     ].join("\n");
 
     await page.locator('input[type="file"]').setInputFiles({
@@ -507,6 +508,12 @@ test.describe("Coverage analysis", () => {
     const e05 = fourPiece.bundles.find((bundle) => bundle.id === "E05");
     expect(e05?.status).toBe("generated");
     expect(e05?.code_evidence.some((item) => item.file_path === "lib/bdev/bdev.c")).toBeTruthy();
+    const e08 = fourPiece.bundles.find((bundle) => bundle.id === "E08");
+    expect(e08?.status).toBe("generated");
+    expect(e08?.code_evidence.some((item) => item.file_path === "lib/vfio-user/vfu.c")).toBeTruthy();
+    expect(
+      e08?.black_box_cases.every((item) => item.diagnostics.suggested_spdk_test_dir === "test/vfio_user"),
+    ).toBeTruthy();
     for (const testCase of [...(e01?.black_box_cases ?? []), ...(e05?.black_box_cases ?? [])]) {
       expect(testCase.steps.join("\n")).not.toMatch(/\b(call|invoke)\s+spdk_|直接调用内部函数|修改源码/i);
     }
