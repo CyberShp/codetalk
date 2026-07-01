@@ -118,6 +118,7 @@ async def test_start_page_has_explicit_force_takeover_button_state(client):
     assert resp.status_code == 200
     assert "btn-start-label" in resp.text
     assert "force-takeover" in resp.text
+    assert 'aria-label="一键启动全部服务"' in resp.text
 
 
 async def test_start_app_js_renders_structured_service_errors(client):

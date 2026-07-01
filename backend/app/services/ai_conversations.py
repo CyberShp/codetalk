@@ -945,8 +945,9 @@ def _build_agent_prompt(
         f"执行器：{runtime.get('name') or runtime.get('id')}",
         f"线程：{conversation.get('title')} ({conversation.get('id')})",
         f"项目/工作区：{conversation.get('workspace_id')}",
-        f"源码根目录：{repo_path or repo_path_hint(conversation)}",
-        "执行要求：如果线程绑定 workspace，先检查当前工作目录中的源码和输入材料，再回答；不要只凭模型记忆。",
+        f"源码工作区：{_public_workspace_label(conversation)}",
+        "执行要求：CodeTalk 已把执行器工作目录切到绑定工作区；如果线程绑定 workspace，"
+        "先检查当前工作目录中的源码和输入材料，再回答；不要只凭模型记忆。",
         _agent_source_first_contract(references),
         "",
     ]
@@ -1000,7 +1001,7 @@ def _agent_source_first_contract(references: list[dict[str, Any]]) -> str:
     if material_refs:
         for ref in material_refs[:4]:
             metadata = ref.get("metadata") if isinstance(ref.get("metadata"), dict) else {}
-            material_path = str(metadata.get("file_path") or ref.get("title") or ref.get("source_id") or "").strip()
+            material_path = str(metadata.get("filename") or ref.get("title") or ref.get("source_id") or "").strip()
             excerpt = _clip(str(ref.get("excerpt") or ""), 500)
             lines.extend(
                 [
@@ -1013,6 +1014,13 @@ def _agent_source_first_contract(references: list[dict[str, Any]]) -> str:
     else:
         lines.append("    []")
     return "\n".join(lines)
+
+
+def _public_workspace_label(conversation: dict[str, Any]) -> str:
+    workspace_id = str(conversation.get("workspace_id") or "").strip()
+    if workspace_id and workspace_id != "global":
+        return f"workspace:{workspace_id}"
+    return "global"
 
 
 def repo_path_hint(conversation: dict[str, Any]) -> str:
@@ -1067,7 +1075,7 @@ async def _workspace_material_refs(db: aiosqlite.Connection, workspace_id: str) 
                 metadata={
                     "workspace_id": workspace_id,
                     "content_type": row["content_type"],
-                    "file_path": str(path),
+                    "filename": str(row["filename"] or path.name),
                 },
             )
         )
@@ -1357,7 +1365,6 @@ def _source_file_ref(
             "path": rel,
             "start_line": start,
             "end_line": end,
-            "repo_path": str(repo_root),
         },
     )
 

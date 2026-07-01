@@ -338,6 +338,12 @@ class TestAIConversationsAPI:
             assert posted.status_code == 202
             refs = posted.json()["references"]
             assert [ref["source_type"] for ref in refs[:2]] == ["workspace_material", "workspace_source"]
+            assert str(repo) not in json.dumps(refs, ensure_ascii=False)
+            assert str(material) not in json.dumps(refs, ensure_ascii=False)
+            for ref in refs:
+                metadata = ref.get("metadata") or {}
+                assert "repo_path" not in metadata
+                assert "file_path" not in metadata
 
             for _ in range(30):
                 messages = await client.get(f"/api/ai/conversations/{conversation['id']}/messages")
@@ -427,6 +433,7 @@ class TestAIConversationsAPI:
             assert source_refs
             assert source_refs[0]["metadata"]["workspace_id"] == ws_id
             assert source_refs[0]["metadata"]["path"] == "lib/nvmf/connect.c"
+            assert "repo_path" not in source_refs[0]["metadata"]
 
             for _ in range(30):
                 messages = await client.get(f"/api/ai/conversations/{conversation['id']}/messages")
@@ -490,8 +497,51 @@ class TestAIConversationsAPI:
 
         assert source_refs
         assert source_refs[0].metadata["path"].startswith("lib/nvmf/")
+        assert "repo_path" not in source_refs[0].metadata
         assert "nvmf_dir_target" in source_refs[0].excerpt
         assert all(not ref.metadata["path"].startswith("lib/iscsi/") for ref in source_refs[:2])
+
+    async def test_agent_prompt_uses_public_workspace_label_without_absolute_repo_path(self):
+        from app.services.ai_conversations import _build_agent_prompt
+
+        prompt = _build_agent_prompt(
+            {
+                "id": "conv-public-prompt",
+                "title": "公开路径 prompt",
+                "scope_type": "workspace",
+                "scope_id": "ws-public-prompt",
+                "workspace_id": "ws-public-prompt",
+                "initial_context": {"repo_path": "/Volumes/Media/dpdk/spdk"},
+            },
+            [
+                {
+                    "role": "user",
+                    "content": "读取 lib/nvmf/connect.c",
+                }
+            ],
+            [
+                {
+                    "source_type": "workspace_source",
+                    "source_id": "ws-public-prompt:lib/nvmf/connect.c:1-3",
+                    "title": "lib/nvmf/connect.c:1",
+                    "excerpt": "1: int spdk_public_path_probe(void) { return 1; }",
+                    "metadata": {
+                        "workspace_id": "ws-public-prompt",
+                        "path": "lib/nvmf/connect.c",
+                        "start_line": 1,
+                        "end_line": 3,
+                    },
+                }
+            ],
+            "读取 lib/nvmf/connect.c",
+            {"id": "runtime-public", "name": "Runtime Public"},
+            repo_path="/Volumes/Media/dpdk/spdk",
+        )
+
+        assert "workspace:ws-public-prompt" in prompt
+        assert "lib/nvmf/connect.c" in prompt
+        assert "spdk_public_path_probe" in prompt
+        assert "/Volumes/Media/dpdk/spdk" not in prompt
 
     async def test_directory_path_hint_prefers_implementation_over_docs(
         self,
