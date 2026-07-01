@@ -1927,6 +1927,80 @@ test("switches an idle AI thread executor through the real UI and persists it", 
   }
 });
 
+test("shows the thread-bound executor even after that runtime is disabled", async ({
+  page,
+  request,
+}) => {
+  const repo = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), "codetalk-ai-disabled-runtime-")));
+  fs.writeFileSync(path.join(repo, "README.md"), "AI disabled runtime visibility e2e workspace\n", "utf8");
+  const workspaceName = `ai-disabled-runtime-${Date.now()}`;
+  const runtimeName = `Disabled runtime ${Date.now()}`;
+  const threadTitle = `${workspaceName} disabled runtime`;
+
+  const runtimeResp = await request.post(`${backendBase}/api/settings/agent-runtimes`, {
+    data: {
+      name: runtimeName,
+      command: "python3",
+      args: ["--version"],
+      prompt_transport: "stdin",
+      output_mode: "plain",
+      working_dir_mode: "project",
+      fixed_working_dir: "",
+      env: {},
+      health_command: "",
+      timeout_seconds: 30,
+      enabled: true,
+    },
+  });
+  expect(runtimeResp.status()).toBe(201);
+  const runtime = (await runtimeResp.json()) as { id: string };
+
+  const workspaceResp = await request.post(`${backendBase}/api/workspaces`, {
+    data: { name: workspaceName, repo_path: repo },
+  });
+  expect(workspaceResp.status()).toBe(201);
+  const workspace = (await workspaceResp.json()) as { id: string };
+
+  try {
+    const created = await request.post(`${backendBase}/api/ai/conversations`, {
+      data: {
+        scope_type: "workspace",
+        scope_id: workspace.id,
+        workspace_id: workspace.id,
+        memory_namespace: `workspace:${workspace.id}`,
+        runtime_type: "agent_runtime",
+        agent_runtime_id: runtime.id,
+        title: threadTitle,
+      },
+    });
+    expect(created.status()).toBe(201);
+    const conversation = (await created.json()) as { id: string };
+
+    const disabled = await request.put(
+      `${backendBase}/api/settings/agent-runtimes/${encodeURIComponent(runtime.id)}`,
+      {
+        data: { enabled: false },
+      },
+    );
+    expect(disabled.ok()).toBeTruthy();
+
+    await page.goto(`/ai/${conversation.id}`, { waitUntil: "domcontentloaded" });
+    await expect(page.getByRole("heading", { name: threadTitle })).toBeVisible({
+      timeout: 15_000,
+    });
+    const threadRuntimeSelect = page.getByLabel("当前 AI 执行器");
+    await expect(threadRuntimeSelect).toHaveValue(runtime.id);
+    await expect(threadRuntimeSelect.locator(`option[value="${runtime.id}"]`)).toContainText(
+      `${runtimeName}（已停用）`,
+    );
+    await expect(threadRuntimeSelect.locator(`option[value="${runtime.id}"]`)).toBeDisabled();
+    await expect(page.locator(".ct-ai-env-card").filter({ hasText: "执行器" })).toContainText(runtimeName);
+    await expect(page.locator(".ct-ai-env-card").filter({ hasText: "执行器" })).toContainText("已停用");
+  } finally {
+    await request.delete(`${backendBase}/api/settings/agent-runtimes/${encodeURIComponent(runtime.id)}`);
+  }
+});
+
 test("creates a sibling AI thread from the existing thread sidebar through the real UI", async ({
   page,
   request,
