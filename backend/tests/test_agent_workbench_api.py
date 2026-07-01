@@ -3330,6 +3330,8 @@ async def test_workbench_task_run_artifact_content_api_is_safe(workbench_client,
     assert content.status_code == 200
     body = content.json()
     assert body["relative_path"] == "task_bundle.json"
+    assert body["path"] == "task_bundle.json"
+    assert str(task_dir) not in body["path"]
     assert body["kind"] == "task_bundle"
     assert body["sha256"]
     assert body["truncated"] is False
