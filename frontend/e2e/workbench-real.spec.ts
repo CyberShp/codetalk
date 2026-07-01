@@ -1054,6 +1054,7 @@ test("executes resource leak hunt and previews materialized artifacts through th
   expect(downloadedArtifact).toContain("local-resource-scan");
   expect(downloadedArtifact).toContain("lib/bdev/cleanup.c");
   expect(downloadedArtifact).toContain("failure_mode");
+  expect(downloadedArtifact).not.toContain(repo);
   const riskFindings = JSON.parse(downloadedArtifact) as Array<Record<string, unknown>>;
   expect(riskFindings.length).toBeGreaterThan(0);
   const sfmeaFinding = riskFindings[0] as {
@@ -1472,6 +1473,20 @@ test("executes MR black-box workflow and previews public test cases through the 
   await expect(page.getByText("observable_signals").first()).toBeVisible();
   await expect(page.getByText("no direct internal function invocation").first()).toBeVisible();
   await expect(page.getByText(/call internal functions/i)).toHaveCount(0);
+
+  const casesDownloadPromise = page.waitForEvent("download");
+  await page.getByRole("button", { name: "下载预览" }).hover();
+  await page.getByRole("button", { name: "下载预览" }).click();
+  const casesDownload = await casesDownloadPromise;
+  expect(casesDownload.suggestedFilename()).toMatch(/black_box_cases\.json$/);
+  const casesDownloadPath = test.info().outputPath("mr_black_box_cases_preview.json");
+  await casesDownload.saveAs(casesDownloadPath);
+  const downloadedCases = fs.readFileSync(casesDownloadPath, "utf8");
+  expect(downloadedCases).toContain("local-mr-blackbox");
+  expect(downloadedCases).toContain("lib/nvmf/ctrlr.c");
+  expect(downloadedCases).toContain("test/nvmf");
+  expect(downloadedCases).toContain("no direct internal function invocation");
+  expect(downloadedCases).not.toContain(repo);
 
   await expect(page.getByText(/mr_scope:accepted artifact:mr_snapshot\.json/)).toBeVisible();
   await expect(page.getByText(/black_box_cases:accepted artifact:black_box_cases\.json/).first()).toBeVisible();
