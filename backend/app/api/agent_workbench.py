@@ -4955,6 +4955,17 @@ _BLACK_BOX_WHITE_BOX_RE = re.compile(
     r"进入[^，。；;\n]*?:\d+[^，。；;\n]*?分支"
     r")"
 )
+_BLACK_BOX_OBSERVABLE_EXPECTED_RE = re.compile(
+    r"(?i)\b("
+    r"log|metric|status|state|exit\s*code|error|timeout|reject|accept|connect|disconnect|"
+    r"reconnect|response|message|event|alert|counter|latency|throughput|code|cli|stdout|stderr"
+    r")\b|"
+    r"(日志|指标|状态|退出码|错误|超时|拒绝|接受|连接|断开|重连|响应|消息|事件|告警|计数|延迟|吞吐|返回码|标准输出|标准错误)"
+)
+_BLACK_BOX_VAGUE_EXPECTED_RE = re.compile(
+    r"(?i)^\s*(success|successful|ok|pass|passed|works?|normal|valid|correct|done|"
+    r"成功|正常|通过|可用|有效|正确|完成|工作正常)\s*[。.!！]?\s*$"
+)
 
 
 def _black_box_case_duplicate_key(case: dict[str, Any]) -> str:
@@ -5026,6 +5037,8 @@ def _black_box_case_quality_reasons(case: dict[str, Any]) -> list[str]:
         reasons.append("missing_steps")
     if not expected:
         reasons.append("missing_expected")
+    elif not _black_box_expected_is_observable(expected):
+        reasons.append("vague_expected_result")
     if not preconditions:
         reasons.append("missing_preconditions")
     if not observability:
@@ -5048,6 +5061,19 @@ def _black_box_case_quality_reasons(case: dict[str, Any]) -> list[str]:
     if _BLACK_BOX_WHITE_BOX_RE.search(boundary_text):
         reasons.append("white_box_boundary")
     return _semantic_dedupe(reasons)
+
+
+def _black_box_expected_is_observable(expected: list[str]) -> bool:
+    combined = " ".join(str(item or "").strip() for item in expected if str(item or "").strip())
+    if not combined:
+        return False
+    if _BLACK_BOX_OBSERVABLE_EXPECTED_RE.search(combined):
+        return True
+    return any(
+        len(str(item or "").strip()) >= 18
+        and not _BLACK_BOX_VAGUE_EXPECTED_RE.match(str(item or ""))
+        for item in expected
+    )
 
 
 def _acceptance_risk_finding_quality_check(
