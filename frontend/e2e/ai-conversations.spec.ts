@@ -732,6 +732,37 @@ test("AI conversation keeps long threads inside the reader and does not force do
     .toBeGreaterThan(100);
 });
 
+test("AI conversation avoids per-message entry animations in long histories", async ({ page }) => {
+  const extraMessages = Array.from({ length: 78 }, (_, index) => ({
+    id: `msg-long-${index}`,
+    conversation_id: "conv-1",
+    run_id: `run-long-${index}`,
+    role: index % 2 === 0 ? "user" : "assistant",
+    content: `长历史消息 ${index + 1}：SPDK NVMe-oF connect、reconnect、timeout、黑盒观测点。`,
+    references: [],
+    actions: [],
+    created_at: `2026-06-28T00:${String(index).padStart(2, "0")}:00Z`,
+  }));
+  await mockReadableConversation(page, { extraMessages });
+  await page.setViewportSize({ width: 1440, height: 760 });
+  await page.goto("/ai/conv-1", { waitUntil: "domcontentloaded" });
+  await expect(page.locator(".ct-codex-message")).toHaveCount(80);
+
+  const messageMotion = await page.locator(".ct-codex-message").evaluateAll((nodes) =>
+    nodes.map((node) => {
+      const styles = window.getComputedStyle(node as HTMLElement);
+      return {
+        animationName: styles.animationName,
+        animationDuration: styles.animationDuration,
+      };
+    }),
+  );
+  expect(
+    messageMotion.filter((item) => item.animationName !== "none"),
+    "long AI histories should not animate every message on render",
+  ).toEqual([]);
+});
+
 test("AI conversation preserves the reader position when the user scrolls up during streaming", async ({
   page,
 }) => {
