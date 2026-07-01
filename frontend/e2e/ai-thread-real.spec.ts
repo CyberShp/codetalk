@@ -1437,7 +1437,8 @@ test("sends an AI thread message with Enter while Shift+Enter keeps a newline", 
       "import sys",
       "prompt = sys.stdin.read()",
       "print('KEYBOARD_AGENT_REPLY')",
-      "print('lines=' + str(prompt.count('\\n') + 1))",
+      "print('has_multiline_prompt=' + str('第一行：分析 SPDK reconnect\\n第二行：保留上下文再发送' in prompt).lower())",
+      "print('user_line_occurrences=' + str(prompt.count('第一行：分析 SPDK reconnect')) + '/' + str(prompt.count('第二行：保留上下文再发送')))",
       "",
     ].join("\n"),
     "utf8",
@@ -1501,7 +1502,8 @@ test("sends an AI thread message with Enter while Shift+Enter keeps a newline", 
     await expect(page.locator(".ct-codex-message.is-user").filter({ hasText: firstLine })).toHaveCount(1);
     await expect(page.locator(".ct-codex-message.is-user").filter({ hasText: secondLine })).toHaveCount(1);
     await expect(page.getByText("KEYBOARD_AGENT_REPLY")).toBeVisible({ timeout: 30_000 });
-    await expect(page.getByText("lines=2")).toBeVisible();
+    await expect(page.getByText("has_multiline_prompt=true")).toBeVisible();
+    await expect(page.getByText(/user_line_occurrences=[1-9]\d*\/[1-9]\d*/)).toBeVisible();
     await expect(composer).toHaveValue("");
 
     const messagesResp = await request.get(
