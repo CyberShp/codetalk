@@ -385,6 +385,11 @@ def _clean_agent_text(value: str) -> str:
     return _CONTROL_RE.sub("", cleaned)
 
 
+def clean_agent_output_text(value: str) -> str:
+    """Normalize terminal control noise before text is classified or displayed."""
+    return _clean_agent_text(value)
+
+
 def _collapse_terminal_repaints(value: str) -> str:
     normalized = value.replace("\r\n", "\n")
     lines: list[str] = []
