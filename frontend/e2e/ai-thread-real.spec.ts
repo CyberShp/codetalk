@@ -1322,6 +1322,160 @@ test("injects requested workspace source into a real agent-runtime AI thread", a
   }
 });
 
+test("injects UI-added workspace materials and source into an agent-runtime AI thread", async ({
+  page,
+  request,
+}) => {
+  test.setTimeout(90_000);
+  const repo = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), "codetalk-ai-material-source-")));
+  const sourcePath = path.join(repo, "lib", "nvmf", "material_probe.c");
+  const materialPath = path.join(repo, "requirements.md");
+  fs.mkdirSync(path.dirname(sourcePath), { recursive: true });
+  fs.writeFileSync(
+    sourcePath,
+    [
+      "int codetalk_workspace_source_material_probe(void) {",
+      "    return 271828;",
+      "}",
+      "",
+    ].join("\n"),
+    "utf8",
+  );
+  fs.writeFileSync(
+    materialPath,
+    [
+      "# Requirements",
+      "",
+      "REQUIREMENT_SENTINEL_RECONNECT_TIMEOUT must be covered before black-box cases.",
+      "",
+    ].join("\n"),
+    "utf8",
+  );
+  const runtimeDir = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), "codetalk-agent-material-source-")));
+  const runtimeScript = path.join(runtimeDir, "material_source_asserting_agent.py");
+  fs.writeFileSync(
+    runtimeScript,
+    [
+      "import sys",
+      "prompt = sys.stdin.read()",
+      "required = [",
+      "    'SOURCE_FIRST_CONTRACT',",
+      "    'workspace_sources',",
+      "    'workspace_materials',",
+      "    'lib/nvmf/material_probe.c',",
+      "    'codetalk_workspace_source_material_probe',",
+      "    'return 271828;',",
+      "    'requirements.md',",
+      "    'REQUIREMENT_SENTINEL_RECONNECT_TIMEOUT',",
+      "]",
+      "missing = [item for item in required if item not in prompt]",
+      "if missing:",
+      "    print('MATERIAL_SOURCE_CONTEXT_MISSING ' + ','.join(missing), flush=True)",
+      "else:",
+      "    print('MATERIAL_SOURCE_CONTEXT_OK requirements.md lib/nvmf/material_probe.c', flush=True)",
+      "",
+    ].join("\n"),
+    "utf8",
+  );
+  const workspaceName = `ai-material-source-${Date.now()}`;
+  const runtimeName = `Material source runtime ${Date.now()}`;
+  const threadTitle = `${workspaceName} material source`;
+  const prompt = "请分析 lib/nvmf/material_probe.c，并结合 requirements.md 生成黑盒测试重点";
+
+  const runtimeResp = await request.post(`${backendBase}/api/settings/agent-runtimes`, {
+    data: {
+      name: runtimeName,
+      command: "python3",
+      args: [runtimeScript],
+      prompt_transport: "stdin",
+      output_mode: "plain",
+      working_dir_mode: "project",
+      fixed_working_dir: "",
+      env: {},
+      health_command: "",
+      timeout_seconds: 30,
+      enabled: true,
+    },
+  });
+  expect(runtimeResp.status()).toBe(201);
+  const runtime = (await runtimeResp.json()) as { id: string };
+
+  const workspaceResp = await request.post(`${backendBase}/api/workspaces`, {
+    data: { name: workspaceName, repo_path: repo },
+  });
+  expect(workspaceResp.status()).toBe(201);
+  const workspace = (await workspaceResp.json()) as { id: string };
+
+  try {
+    await page.goto(`/workspaces/${workspace.id}`, { waitUntil: "domcontentloaded" });
+    await expect(page.getByRole("heading", { name: workspaceName })).toBeVisible({ timeout: 15_000 });
+    await page.getByRole("button", { name: /材料 \(0\)/ }).hover();
+    await page.getByRole("button", { name: /材料 \(0\)/ }).click();
+    await page.getByPlaceholder(/输入文件绝对路径/).fill(materialPath);
+    await page.getByRole("button", { name: "添加" }).hover();
+    await page.getByRole("button", { name: "添加" }).click();
+    await expect(page.getByRole("button", { name: /材料 \(1\)/ })).toBeVisible({ timeout: 15_000 });
+    await expect(page.getByText("requirements.md")).toBeVisible();
+    await expect(page.getByText("1 个活跃材料将参与分析")).toBeVisible();
+
+    await page.goto("/ai", { waitUntil: "domcontentloaded" });
+    const projectButton = page.locator("button").filter({ hasText: workspaceName }).first();
+    await expect(projectButton).toBeVisible({ timeout: 15_000 });
+    await projectButton.hover();
+    await projectButton.click();
+    await expect(page.getByRole("heading", { name: workspaceName })).toBeVisible();
+
+    await page.getByLabel("AI 线程执行器").selectOption({ label: runtimeName });
+    await page.getByPlaceholder(/线程名称/).fill(threadTitle);
+    await page.getByRole("button", { name: "新建线程" }).hover();
+    await page.getByRole("button", { name: "新建线程" }).click();
+
+    await page.waitForURL(/\/ai\/[^/]+$/, { timeout: 15_000 });
+    const threadId = page.url().split("/").pop() ?? "";
+    await expect(page.getByRole("heading", { name: threadTitle })).toBeVisible({
+      timeout: 15_000,
+    });
+    await expect(page.getByLabel("当前 AI 执行器")).toHaveValue(runtime.id);
+
+    await page.getByLabel("AI 线程消息").fill(prompt);
+    await page.getByRole("button", { name: "发送" }).hover();
+    await page.getByRole("button", { name: "发送" }).click();
+    await expect(page.getByText("MATERIAL_SOURCE_CONTEXT_OK requirements.md lib/nvmf/material_probe.c")).toBeVisible({
+      timeout: 30_000,
+    });
+    await expect(page.getByText("MATERIAL_SOURCE_CONTEXT_MISSING")).toHaveCount(0);
+
+    const messagesResp = await request.get(
+      `${backendBase}/api/ai/conversations/${encodeURIComponent(threadId)}/messages`,
+    );
+    expect(messagesResp.ok()).toBeTruthy();
+    const body = (await messagesResp.json()) as {
+      items: Array<{
+        role: string;
+        content: string;
+        references?: Array<{ source_type: string; title?: string; metadata?: Record<string, unknown> }>;
+      }>;
+    };
+    const userMessage = body.items.find((item) => item.role === "user" && item.content === prompt);
+    expect(userMessage?.references).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          source_type: "workspace_source",
+          metadata: expect.objectContaining({ path: "lib/nvmf/material_probe.c" }),
+        }),
+        expect.objectContaining({
+          source_type: "workspace_material",
+          title: "requirements.md",
+          metadata: expect.objectContaining({ filename: "requirements.md" }),
+        }),
+      ]),
+    );
+    expect(JSON.stringify(userMessage?.references ?? [])).not.toContain(repo);
+  } finally {
+    await request.delete(`${backendBase}/api/settings/agent-runtimes/${encodeURIComponent(runtime.id)}`);
+  }
+});
+
 test("injects default workspace source into an agent-runtime AI thread for vague prompts", async ({
   page,
   request,
