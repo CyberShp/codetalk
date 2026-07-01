@@ -276,6 +276,171 @@ test("AI conversation page is a wide persistent reading surface", async ({ page 
   expect(exported).toContain("测试设计报告 (workspace_report:report-1)");
 });
 
+test("AI conversation shows workspace source and material references after a real send", async ({ page }) => {
+  let messagePosted = false;
+  const runtimeRun = {
+    id: "run-send-source",
+    conversation_id: "conv-send-source",
+    status: "running",
+    cursor: 0,
+    error: null,
+    model: "test",
+    token_usage: {},
+    created_at: "2026-06-28T00:00:02Z",
+    started_at: "2026-06-28T00:00:02Z",
+    completed_at: null,
+  };
+  const sourceFirstRefs = [
+    {
+      source_type: "workspace_material",
+      source_id: "mat-reconnect",
+      title: "requirements.md",
+      excerpt: "必须覆盖 reconnect timeout 和恢复观测点。",
+      metadata: { workspace_id: "ws-send-source" },
+    },
+    {
+      source_type: "workspace_source",
+      source_id: "src-connect",
+      title: "lib/nvmf/connect.c",
+      excerpt: "spdk_nvmf_connect_probe validates queue setup before IO.",
+      metadata: {
+        workspace_id: "ws-send-source",
+        path: "lib/nvmf/connect.c",
+        start_line: 12,
+        end_line: 64,
+      },
+    },
+    {
+      source_type: "workspace_report",
+      source_id: "report-old",
+      title: "旧报告",
+      excerpt: "历史报告只能作为补充。",
+      metadata: { workspace_id: "ws-send-source" },
+    },
+  ];
+
+  await page.route("**/api/workspaces", async (route) => {
+    await route.fulfill({
+      headers: jsonHeaders(route.request().headers().origin),
+      json: [
+        {
+          id: "ws-send-source",
+          name: "SPDK 工作区",
+          repo_path: "/repo/spdk",
+          indexed: 1,
+          index_job: null,
+          index_progress: 100,
+          analyze_status: null,
+          analyze_progress: 0,
+          last_index_error: null,
+          created_at: "2026-06-28T00:00:00Z",
+          updated_at: "2026-06-28T00:00:00Z",
+          materials: [],
+          reports: [],
+        },
+      ],
+    });
+  });
+  await page.route("**/api/settings/agent-runtimes?enabled=true", async (route) => {
+    await route.fulfill({ headers: jsonHeaders(route.request().headers().origin), json: { items: [] } });
+  });
+  await page.route("**/api/ai/conversations?workspace_id=ws-send-source&limit=50", async (route) => {
+    await route.fulfill({
+      headers: jsonHeaders(route.request().headers().origin),
+      json: { items: [] },
+    });
+  });
+  await page.route("**/api/ai/conversations/conv-send-source", async (route) => {
+    await route.fulfill({
+      headers: jsonHeaders(route.request().headers().origin),
+      json: {
+        id: "conv-send-source",
+        scope_type: "workspace",
+        scope_id: "ws-send-source",
+        workspace_id: "ws-send-source",
+        memory_namespace: "workspace:ws-send-source",
+        title: "SPDK 源码优先线程",
+        status: messagePosted ? "running" : "idle",
+        initial_context: {},
+        created_at: "2026-06-28T00:00:00Z",
+        updated_at: "2026-06-28T00:00:00Z",
+        latest_run: messagePosted ? runtimeRun : null,
+      },
+    });
+  });
+  await page.route("**/api/ai/conversations/conv-send-source/messages", async (route) => {
+    if (route.request().method() === "POST") {
+      const body = JSON.parse(route.request().postData() ?? "{}") as { content?: string };
+      expect(body.content).toContain("connect");
+      messagePosted = true;
+      await route.fulfill({
+        headers: jsonHeaders(route.request().headers().origin),
+        json: {
+          message: {
+            id: "msg-send-user",
+            conversation_id: "conv-send-source",
+            run_id: "run-send-source",
+            role: "user",
+            content: body.content,
+            references: sourceFirstRefs,
+            actions: [],
+            created_at: "2026-06-28T00:00:02Z",
+          },
+          run: runtimeRun,
+          references: sourceFirstRefs,
+        },
+      });
+      return;
+    }
+    await route.fulfill({
+      headers: jsonHeaders(route.request().headers().origin),
+      json: {
+        items: messagePosted
+          ? [
+              {
+                id: "msg-send-user",
+                conversation_id: "conv-send-source",
+                run_id: "run-send-source",
+                role: "user",
+                content: "分析 SPDK nvmf connect 的外部可观测行为",
+                references: sourceFirstRefs,
+                actions: [],
+                created_at: "2026-06-28T00:00:02Z",
+              },
+            ]
+          : [],
+      },
+    });
+  });
+  await page.route("**/api/ai/conversations/conv-send-source/stream?cursor=0", async (route) => {
+    await route.fulfill({
+      headers: {
+        ...jsonHeaders(route.request().headers().origin),
+        "Content-Type": "text/event-stream",
+      },
+      body: [
+        'data: {"event_id":1,"run_id":"run-send-source","conversation_id":"conv-send-source","event_type":"status","payload":{"status":"running","message":"正在读取工作区源码、输入材料上下文。"},"created_at":"2026-06-28T00:00:03Z"}',
+        "",
+      ].join("\n"),
+    });
+  });
+
+  await page.goto("/ai/conv-send-source", { waitUntil: "domcontentloaded" });
+  await expect(page.getByText("还没有引用。发送问题后")).toBeVisible();
+
+  const input = page.getByPlaceholder(/像 Codex 一样继续追问/);
+  await input.fill("分析 SPDK nvmf connect 的外部可观测行为");
+  const sendButton = page.getByRole("button", { name: "发送" });
+  await sendButton.hover();
+  await sendButton.click();
+
+  await expect(page.getByText("requirements.md")).toBeVisible();
+  await expect(page.getByText("lib/nvmf/connect.c", { exact: true })).toBeVisible();
+  await expect(page.getByText("lib/nvmf/connect.c:L12-L64")).toBeVisible();
+  await expect(page.getByText("必须覆盖 reconnect timeout")).toBeVisible();
+  await expect(page.getByText("历史报告只能作为补充。")).toBeVisible();
+});
+
 test("AI conversation page skips decorative atmosphere layers for tool performance", async ({ page }) => {
   await mockReadableConversation(page);
   await page.setViewportSize({ width: 1440, height: 920 });
