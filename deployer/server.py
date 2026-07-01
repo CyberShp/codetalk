@@ -34,6 +34,7 @@ class DeploymentState:
 
 
 _state = DeploymentState()
+KNOWN_SERVICES = ("backend", "frontend", "gitnexus", "cgc")
 
 
 def _launch_job(coro) -> str:
@@ -366,14 +367,24 @@ def _service_action_error(service: str, action: str, message: str, status_code: 
             "message": message.strip("'\""),
             "service": service,
             "action": action,
-            "available_services": ["backend", "frontend", "gitnexus", "cgc"],
+            "available_services": list(KNOWN_SERVICES),
         },
     )
+
+
+def _reject_unknown_service(service: str, action: str) -> None:
+    if service not in KNOWN_SERVICES:
+        raise _service_action_error(
+            service,
+            action,
+            f"Unknown service '{service}'. Available services: {', '.join(KNOWN_SERVICES)}",
+        )
 
 
 @app.post("/api/services/{service}/restart")
 async def api_service_restart(service: str):
     """Restart a specific deployed service by name."""
+    _reject_unknown_service(service, "restart")
     deployer = _state.deployer
     if deployer is None:
         raise HTTPException(status_code=400, detail="No deployer instance — run a deployment first")
@@ -390,6 +401,7 @@ async def api_service_restart(service: str):
 @app.post("/api/services/{service}/stop")
 async def api_service_stop(service: str):
     """Stop a specific deployed service by name."""
+    _reject_unknown_service(service, "stop")
     deployer = _state.deployer
     if deployer is None:
         raise HTTPException(status_code=400, detail="No deployer instance — run a deployment first")
@@ -406,6 +418,7 @@ async def api_service_stop(service: str):
 @app.post("/api/services/{service}/start")
 async def api_service_start(service: str):
     """Start a specific deployed service by name (must have been started at least once before)."""
+    _reject_unknown_service(service, "start")
     deployer = _state.deployer
     if deployer is None:
         raise HTTPException(status_code=400, detail="No deployer instance — run a deployment first")
@@ -444,6 +457,8 @@ async def api_services_status():
     processes: dict = {}
     if deployer and hasattr(deployer, "_processes"):
         for name, proc in deployer._processes.items():
+            if name not in KNOWN_SERVICES:
+                continue
             processes[name] = {
                 "pid": proc.pid if proc.returncode is None else None,
                 "running": proc.returncode is None,
