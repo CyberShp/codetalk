@@ -2120,12 +2120,12 @@ body:has(.ct-modal-backdrop) .ct-ai-dock-wrap {
 .ct-codex-message__content > div {
   margin-top: 5px;
   border: 1px solid rgba(226, 232, 240, 0.84);
-  border-radius: 14px;
+  border-radius: 10px;
   background: #ffffff;
-  padding: 11px 13px;
+  padding: 10px 12px;
   color: #172033;
   font-size: 14px;
-  line-height: 1.62;
+  line-height: 1.55;
   box-shadow: 0 8px 18px rgba(15, 23, 42, 0.045);
 }
 
