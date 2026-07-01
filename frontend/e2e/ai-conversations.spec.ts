@@ -354,6 +354,50 @@ test("AI conversation shows workspace source and material references after a rea
       ],
     });
   });
+  await page.route("**/api/workspaces/ws-send-source", async (route) => {
+    await route.fulfill({
+      headers: jsonHeaders(route.request().headers().origin),
+      json: {
+        id: "ws-send-source",
+        name: "SPDK 工作区",
+        repo_path: "/repo/spdk",
+        indexed: 1,
+        index_job: null,
+        index_progress: 100,
+        analyze_status: null,
+        analyze_progress: 0,
+        last_index_error: null,
+        created_at: "2026-06-28T00:00:00Z",
+        updated_at: "2026-06-28T00:00:00Z",
+        materials: [],
+        reports: [],
+      },
+    });
+  });
+  await page.route("**/api/workspaces/ws-send-source/versions", async (route) => {
+    await route.fulfill({ headers: jsonHeaders(route.request().headers().origin), json: [] });
+  });
+  await page.route("**/api/workspaces/ws-send-source/embedding-status", async (route) => {
+    await route.fulfill({
+      headers: jsonHeaders(route.request().headers().origin),
+      json: { rag_ready: true, total_chunks: 2, active_materials: 0 },
+    });
+  });
+  await page.route("**/api/workspaces/ws-send-source/source-file?**", async (route) => {
+    const url = new URL(route.request().url());
+    expect(url.searchParams.get("path")).toBe("lib/nvmf/connect.c");
+    expect(url.searchParams.get("line")).toBe("12");
+    await route.fulfill({
+      headers: jsonHeaders(route.request().headers().origin),
+      json: {
+        path: "lib/nvmf/connect.c",
+        start_line: 12,
+        end_line: 64,
+        total_lines: 120,
+        content: "12: spdk_nvmf_connect_probe validates queue setup before IO.\n13: return 0;",
+      },
+    });
+  });
   await page.route("**/api/settings/agent-runtimes?enabled=true", async (route) => {
     await route.fulfill({ headers: jsonHeaders(route.request().headers().origin), json: { items: [] } });
   });
@@ -452,6 +496,11 @@ test("AI conversation shows workspace source and material references after a rea
   await expect(page.getByText("lib/nvmf/connect.c:L12-L64")).toBeVisible();
   await expect(page.getByText("必须覆盖 reconnect timeout")).toBeVisible();
   await expect(page.getByText("历史报告只能作为补充。")).toBeVisible();
+
+  await page.getByRole("link", { name: "打开源码" }).click();
+  await expect(page).toHaveURL(/\/workspaces\/ws-send-source\?tab=source&sourcePath=lib%2Fnvmf%2Fconnect\.c&line=12/);
+  await expect(page.getByLabel("源码搜索")).toHaveValue("lib/nvmf/connect.c");
+  await expect(page.locator("pre")).toContainText("spdk_nvmf_connect_probe validates queue setup");
 });
 
 test("AI conversation page skips decorative atmosphere layers for tool performance", async ({ page }) => {
