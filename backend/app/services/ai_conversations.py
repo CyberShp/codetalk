@@ -74,6 +74,18 @@ _QUERY_STOPWORDS = {
     "read",
     "analyze",
 }
+_STORAGE_DOMAIN_PATH_HINTS: tuple[tuple[tuple[str, ...], tuple[str, ...]], ...] = (
+    (("nvme-of", "nvmeof", "nvmf", "nvmf target", "target connect"), ("lib/nvmf", "test/nvmf")),
+    (("iscsi", "chap", "login digest"), ("lib/iscsi", "test/iscsi_tgt")),
+    (("bdev", "block device"), ("lib/bdev", "test/bdev")),
+    (("blobstore", "blob store"), ("lib/blob", "test/blobfs")),
+    (("ftl",), ("lib/ftl", "test/ftl")),
+    (("vhost",), ("lib/vhost", "test/vhost")),
+    (("vfio-user", "vfiouser"), ("lib/vfio-user", "lib/vfu_tgt", "test/vfio_user")),
+    (("reactor",), ("lib/event", "test/event")),
+    (("poller", "thread"), ("lib/thread", "test/thread")),
+    (("jsonrpc", "rpc config", "rpc"), ("lib/rpc", "lib/jsonrpc", "test/rpc")),
+)
 
 
 def _now() -> str:
@@ -1068,7 +1080,24 @@ def _path_hints(text: str) -> list[str]:
         clean = item.strip("/")
         if clean and ".." not in clean and clean not in hints:
             hints.append(clean)
-    return hints[:4]
+    for hint in _storage_domain_path_hints(text):
+        if hint not in hints:
+            hints.append(hint)
+    return hints[:6]
+
+
+def _storage_domain_path_hints(text: str) -> list[str]:
+    normalized = (text or "").lower()
+    if not normalized:
+        return []
+    normalized = normalized.replace("nvme‑of", "nvme-of").replace("nvme_of", "nvme-of")
+    hints: list[str] = []
+    for aliases, paths in _STORAGE_DOMAIN_PATH_HINTS:
+        if any(alias in normalized for alias in aliases):
+            for path in paths:
+                if path not in hints:
+                    hints.append(path)
+    return hints
 
 
 def _rg_matches(repo_root: Path, term: str) -> list[tuple[str, int]]:

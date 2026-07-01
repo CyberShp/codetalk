@@ -668,6 +668,76 @@ class TestAIConversationsAPI:
         assert "nvmf_connect_primary_flow" in source_refs[0].excerpt
         assert all(not ref.metadata["path"].endswith(".md") for ref in source_refs[:2])
 
+    async def test_storage_domain_terms_prioritize_matching_workspace_module(
+        self,
+        sqlite_db,
+        tmp_path: Path,
+    ):
+        repo = tmp_path / "repo"
+        (repo / "lib" / "misc").mkdir(parents=True)
+        (repo / "lib" / "nvmf").mkdir(parents=True)
+        (repo / "lib" / "misc" / "connect.c").write_text(
+            "int unrelated_connect_helper(void) { return 0; }\n",
+            encoding="utf-8",
+        )
+        (repo / "lib" / "nvmf" / "ctrlr.c").write_text(
+            "\n".join(
+                [
+                    "int nvmf_io_path(void) {",
+                    "    return 1;",
+                    "}",
+                ]
+            ),
+            encoding="utf-8",
+        )
+        ws_id = "ws-storage-domain-nvmf"
+        now = datetime.now(timezone.utc).isoformat()
+        async with aiosqlite.connect(sqlite_db) as db:
+            await db.execute(
+                "INSERT INTO workspaces (id, name, repo_path, indexed, created_at, updated_at) "
+                "VALUES (?, 'Storage Domain WS', ?, 1, ?, ?)",
+                (ws_id, str(repo), now, now),
+            )
+            await db.commit()
+
+        from app.services.ai_conversations import build_context_references
+
+        refs = await build_context_references(
+            conversation={
+                "id": "conv-storage-domain-nvmf",
+                "scope_type": "workspace",
+                "scope_id": ws_id,
+                "workspace_id": ws_id,
+                "memory_namespace": f"workspace:{ws_id}",
+                "initial_context": {},
+            },
+            user_message="分析 SPDK NVMe-oF target connect 到 IO 提交流程",
+            db_path=sqlite_db,
+        )
+        source_refs = [ref for ref in refs if ref.source_type == "workspace_source"]
+
+        assert source_refs
+        assert source_refs[0].metadata["path"].startswith("lib/nvmf/")
+        assert "nvmf_io_path" in source_refs[0].excerpt
+
+    async def test_storage_domain_path_hints_cover_spdk_workflow_modules(self):
+        from app.services.ai_conversations import _storage_domain_path_hints
+
+        cases = {
+            "iSCSI login CHAP digest 异常链路": "lib/iscsi",
+            "bdev IO submit complete 错误返回": "lib/bdev",
+            "blobstore metadata 恢复和空间不足": "lib/blob",
+            "FTL 异常关闭恢复": "lib/ftl",
+            "vhost device lifecycle guest detach": "lib/vhost",
+            "vfio-user queue 配置": "lib/vfio-user",
+            "reactor poller 跨线程调度": "lib/event",
+            "thread poller 阻塞": "lib/thread",
+            "RPC config 非法参数": "lib/rpc",
+        }
+
+        for query, expected_path in cases.items():
+            assert expected_path in _storage_domain_path_hints(query)
+
     async def test_legacy_conversation_backfills_workspace_namespace(self, sqlite_db):
         ws_id = await _seed_workspace(sqlite_db, "legacy-ws")
         now = datetime.now(timezone.utc).isoformat()
