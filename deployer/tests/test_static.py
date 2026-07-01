@@ -13,6 +13,8 @@ async def test_deploy_page_loads(client):
     assert "CodeTalk 部署系统" in resp.text
     assert "DeepWiki" not in resp.text
     assert "deepwiki" not in resp.text.lower()
+    assert "Joern" not in resp.text
+    assert 'data-service="joern"' not in resp.text
 
 
 async def test_start_page_loads(client):
@@ -21,6 +23,8 @@ async def test_start_page_loads(client):
     assert "CodeTalk 服务启动" in resp.text
     assert "DeepWiki" not in resp.text
     assert "deepwiki" not in resp.text.lower()
+    assert "Joern" not in resp.text
+    assert 'data-svc="joern"' not in resp.text
 
 
 async def test_style_css_served(client):
