@@ -182,6 +182,25 @@ async def test_agent_output_segments_apply_backspace_repaints_before_filtering_p
     ]
 
 
+async def test_agent_output_segments_fold_indented_diagnostic_continuations():
+    from app.services.ai_conversations import _agent_output_segments
+
+    segments = _agent_output_segments(
+        "thinking: planning source read\n"
+        "  internal step 1: inspect lib/nvmf/connect.c\n"
+        "  internal step 2: decide risk scoring\n"
+        "FINAL_MULTILINE_DIAGNOSTIC_ANSWER: 已给出可见结论。\n"
+    )
+
+    assert segments == [
+        (
+            "diagnostic",
+            "planning source read\ninternal step 1: inspect lib/nvmf/connect.c\ninternal step 2: decide risk scoring",
+        ),
+        ("answer", "FINAL_MULTILINE_DIAGNOSTIC_ANSWER: 已给出可见结论。\n"),
+    ]
+
+
 async def test_context_status_message_names_workbench_task_artifacts():
     from app.services.ai_conversations import _context_status_message
 

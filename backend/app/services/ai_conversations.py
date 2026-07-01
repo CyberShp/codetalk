@@ -880,15 +880,29 @@ def _agent_output_segments(chunk: str) -> list[tuple[str, str]]:
     if not text.strip():
         return []
     segments: list[tuple[str, str]] = []
+    diagnostic_buffer: list[str] = []
+
+    def flush_diagnostic() -> None:
+        nonlocal diagnostic_buffer
+        if diagnostic_buffer:
+            segments.append(("diagnostic", "\n".join(diagnostic_buffer)))
+            diagnostic_buffer = []
+
     for line in text.splitlines(keepends=True):
         content = line.strip()
         if not content:
+            flush_diagnostic()
             continue
         diagnostic = _agent_diagnostic_text(content)
         if diagnostic:
-            segments.append(("diagnostic", diagnostic))
+            flush_diagnostic()
+            diagnostic_buffer.append(diagnostic)
+        elif diagnostic_buffer and line[:1].isspace():
+            diagnostic_buffer.append(redact_agent_diagnostic_text(content))
         else:
+            flush_diagnostic()
             segments.append(("answer", line))
+    flush_diagnostic()
     return segments
 
 
