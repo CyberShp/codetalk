@@ -130,6 +130,82 @@ test.describe.serial("internal release click-through", () => {
     }
   });
 
+  test("native deploy wizard completes core deployment by clicking through the UI", async ({
+    page,
+  }) => {
+    let deployStarted = false;
+    let servicesStopped = false;
+
+    try {
+      await expect.poll(() => canBindEverywhere(backendPort), { timeout: 5_000 }).toBeTruthy();
+      await expect.poll(() => canBindEverywhere(frontendPort), { timeout: 5_000 }).toBeTruthy();
+
+      await page.goto("/deploy.html", { waitUntil: "domcontentloaded" });
+      await page.locator('.mode-card[data-mode="native"]').click();
+      await expect(page.locator("#btn-next")).toBeEnabled();
+      await page.locator("#btn-next").click();
+
+      await expect(page.locator("#checks-list .check-item")).not.toHaveCount(0, {
+        timeout: 30_000,
+      });
+      await expect(page.locator("#btn-next")).toBeEnabled({ timeout: 30_000 });
+      await page.locator("#btn-next").click();
+
+      await expect(page.locator("#install-deepwiki")).toHaveCount(0);
+      await expect(page.getByText("DeepWiki")).toHaveCount(0);
+      await uncheckIfChecked("#install-gitnexus", page);
+      await uncheckIfChecked("#install-cgc", page);
+
+      const advanced = page.locator("#advanced-section");
+      if (!(await advanced.evaluate((el) => (el as HTMLDetailsElement).open))) {
+        await page.locator("#advanced-section summary").click();
+      }
+      await page.locator("#port-frontend").fill(String(frontendPort));
+      await page.locator("#port-backend").fill(String(backendPort));
+      await page
+        .locator("#cors-origins")
+        .fill(`http://localhost:${frontendPort},http://127.0.0.1:${frontendPort}`);
+      await page.locator("#btn-next").click();
+
+      await expect(page.locator("#review-content")).toContainText(String(frontendPort));
+      await expect(page.locator("#review-content")).toContainText(String(backendPort));
+      await page.locator("#btn-next").click();
+
+      deployStarted = true;
+      await expect(page.locator("#deploy-step-name")).toBeVisible();
+      await expect(page.locator("#terminal-log")).toContainText("部署", { timeout: 30_000 });
+      await expect(page.locator('section[data-step="6"].step-active')).toBeVisible({
+        timeout: 180_000,
+      });
+      await expect(page.locator("#step6-title")).toContainText("CodeTalk 已启动");
+      await expect(page.locator('a[data-service="frontend"]')).toHaveAttribute(
+        "href",
+        `http://localhost:${frontendPort}`,
+      );
+      await expect(page.locator('a[data-service="backend"]')).toHaveAttribute(
+        "href",
+        `http://localhost:${backendPort}`,
+      );
+
+      await page.goto("/start.html", { waitUntil: "domcontentloaded" });
+      await page.locator("#btn-stop-all").click();
+      await waitForPortReleased(backendPort);
+      await waitForPortReleased(frontendPort);
+      servicesStopped = true;
+    } finally {
+      if (deployStarted && !servicesStopped) {
+        try {
+          await page.goto("/start.html", { waitUntil: "domcontentloaded" });
+          await page.locator("#btn-stop-all").click();
+          await waitForPortReleased(backendPort);
+          await waitForPortReleased(frontendPort);
+        } catch {
+          // Preserve the original deployment failure while still attempting cleanup.
+        }
+      }
+    }
+  });
+
   test("deploy, start, and validate core product by clicking through the UI", async ({
     page,
     context,

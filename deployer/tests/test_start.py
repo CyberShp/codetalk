@@ -212,6 +212,32 @@ def test_deployer_port_preflight_reports_occupied_port(monkeypatch, capsys):
     assert "CODETALK_DEPLOYER_PORT" in err
 
 
+def test_deployer_port_preflight_allows_fast_restart_reuse(monkeypatch):
+    calls = []
+
+    class FakeSocket:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, exc_type, exc, tb):
+            return False
+
+        def setsockopt(self, level, option, value):
+            calls.append(("setsockopt", level, option, value))
+
+        def bind(self, address):
+            calls.append(("bind", address))
+
+    monkeypatch.setattr(start, "HOST", "127.0.0.1")
+    monkeypatch.setattr(start, "PORT", 9000)
+    monkeypatch.setattr(start.socket, "socket", lambda *args: FakeSocket())
+
+    start._assert_deployer_port_available()
+
+    assert calls[0] == ("setsockopt", socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+    assert calls[1] == ("bind", ("127.0.0.1", 9000))
+
+
 def test_deployer_url_uses_configured_host_port(monkeypatch):
     monkeypatch.setenv("CODETALK_DEPLOYER_HOST", "127.0.0.1")
     monkeypatch.setenv("CODETALK_DEPLOYER_PORT", "9041")

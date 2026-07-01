@@ -178,6 +178,7 @@ def _assert_deployer_port_available() -> None:
     bind_host = HOST if HOST not in {"::"} else "::"
     family = socket.AF_INET6 if ":" in bind_host and bind_host != "0.0.0.0" else socket.AF_INET
     with socket.socket(family, socket.SOCK_STREAM) as sock:
+        sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
         try:
             sock.bind((bind_host, PORT))
         except OSError as exc:
