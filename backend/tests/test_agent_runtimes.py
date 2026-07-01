@@ -985,6 +985,36 @@ class TestAgentRuntimes:
         assert output.strip() == "最终答案：已完成源码分析。"
         assert "�" not in output
 
+    async def test_agent_runtime_stream_drops_mojibake_numeric_noise(self):
+        from app.services.agent_cli_bridge import stream_agent_runtime
+
+        agent_code = (
+            "import sys; "
+            "sys.stdout.write('æº\\x90ç\\xa0\\x8112345\\n'); "
+            "sys.stdout.write('榛戠爜67890\\n'); "
+            "sys.stdout.write('最终答案：已完成源码分析，覆盖 3 条风险。\\n'); "
+            "sys.stdout.flush()"
+        )
+        chunks = []
+        async for chunk in stream_agent_runtime(
+            runtime={
+                "command": sys.executable,
+                "args": ["-c", agent_code],
+                "prompt_transport": "stdin",
+                "output_mode": "plain",
+                "timeout_seconds": 10,
+            },
+            prompt="读取源码",
+            cwd=None,
+        ):
+            chunks.append(chunk)
+
+        output = "".join(chunks)
+        assert output.strip() == "最终答案：已完成源码分析，覆盖 3 条风险。"
+        assert "æº" not in output
+        assert "榛戠爜" not in output
+        assert "67890" not in output
+
     async def test_agent_runtime_plain_stream_preserves_utf8_split_across_read_boundary(self):
         from app.services.agent_cli_bridge import stream_agent_runtime
 
