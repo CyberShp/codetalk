@@ -1,5 +1,6 @@
 import asyncio
 import json
+import pathlib
 import sys
 from contextlib import asynccontextmanager
 from datetime import datetime, timezone
@@ -965,6 +966,38 @@ class TestAgentRuntimes:
             chunks.append(chunk)
 
         assert "".join(chunks) == "源码证据：连接失败"
+
+    async def test_agent_runtime_stream_uses_isolated_artifact_dir_by_default(self, tmp_path):
+        from app.services.agent_cli_bridge import stream_agent_runtime
+
+        cwd = tmp_path / "agent-cwd"
+        cwd.mkdir()
+        agent_code = (
+            "import json, os, pathlib, sys; "
+            "artifact_dir=pathlib.Path(os.environ['CODETALK_AGENT_ARTIFACT_DIR']); "
+            "artifact_dir.mkdir(parents=True, exist_ok=True); "
+            "(artifact_dir/'result.json').write_text(json.dumps({'ok': True}), encoding='utf-8'); "
+            "print(str(artifact_dir)); "
+            "sys.stdout.flush()"
+        )
+        chunks = []
+        async for chunk in stream_agent_runtime(
+            runtime={
+                "command": sys.executable,
+                "args": ["-c", agent_code],
+                "prompt_transport": "stdin",
+                "output_mode": "plain",
+                "timeout_seconds": 10,
+            },
+            prompt="write artifact",
+            cwd=str(cwd),
+        ):
+            chunks.append(chunk)
+
+        artifact_dir = "".join(chunks).strip()
+        assert artifact_dir
+        assert (tmp_path / "agent-cwd" / "result.json").exists() is False
+        assert pathlib.Path(artifact_dir, "result.json").exists()
 
     async def test_agent_runtime_stream_decodes_utf16le_stdout_from_windows_shells(self):
         from app.services.agent_cli_bridge import stream_agent_runtime
