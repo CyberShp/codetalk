@@ -1309,7 +1309,13 @@ async def _workbench_task_refs(scope_type: str, scope_id: str) -> list[ContextRe
     if not safe or "/" in safe or "\\" in safe or ".." in safe:
         return []
     task_dir = settings.data_path / "workbench" / "task_runs" / safe
-    candidates = ["task_run.json", "task_bundle.json", "workflow_execution.json", "artifact_manifest.json"]
+    candidates = [
+        "task_run.json",
+        "task_bundle.json",
+        "workflow_execution.json",
+        "task_artifact_manifest.json",
+        "artifact_manifest.json",
+    ]
     refs: list[ContextReference] = []
     for name in candidates:
         path = task_dir / name
