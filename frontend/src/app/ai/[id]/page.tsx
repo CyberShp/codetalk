@@ -180,6 +180,10 @@ function buildThreadMarkdown(conversation: AIConversation | null, messages: AIMe
   for (const message of messages) {
     lines.push(`## ${message.role === "user" ? "用户" : message.role === "assistant" ? "AI" : "系统"}`);
     lines.push("");
+    if (message.created_at) {
+      lines.push(`- 时间: ${redactDiagnosticText(message.created_at)}`);
+      lines.push("");
+    }
     lines.push(message.content ? redactDiagnosticText(message.content) : "_空消息_");
     if (message.references?.length) {
       lines.push("");

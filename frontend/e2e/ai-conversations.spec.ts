@@ -287,6 +287,8 @@ test("AI conversation page is a wide persistent reading surface", async ({ page 
   expect(exported).toContain("这个测试设计还缺什么？");
   expect(exported).toContain("建议补充登录失败、权限失效、弱网重试和审计日志验证。");
   expect(exported).toContain("测试设计报告 (workspace_report:report-1)");
+  expect(exported).toContain("时间: 2026-06-28T00:00:00Z");
+  expect(exported).toContain("时间: 2026-06-28T00:00:01Z");
 });
 
 test("AI conversation shows workspace source and material references after a real send", async ({ page }) => {
