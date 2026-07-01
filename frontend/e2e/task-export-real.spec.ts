@@ -326,6 +326,7 @@ test("task export format selection downloads redacted Word document through the 
 });
 
 test("task export prevents duplicate downloads from a real double click", async ({
+  context,
   page,
   request,
 }, testInfo) => {
@@ -368,7 +369,16 @@ test("task export prevents duplicate downloads from a real double click", async 
   await expect(page.getByRole("heading", { name: "导出结果" })).toBeVisible();
 
   const downloads: string[] = [];
+  const exportRequests: string[] = [];
   page.on("download", (item) => downloads.push(item.suggestedFilename()));
+  context.on("request", (req) => {
+    if (
+      req.method() === "GET" &&
+      new URL(req.url()).pathname === `/api/tasks/${task.id}/export`
+    ) {
+      exportRequests.push(req.url());
+    }
+  });
 
   const downloadPromise = page.waitForEvent("download");
   await page.getByRole("button", { name: /下载 Markdown 文件/ }).hover();
@@ -392,6 +402,7 @@ test("task export prevents duplicate downloads from a real double click", async 
   );
   expect(exported).toContain("task export double click complete");
   await expect.poll(() => downloads.length).toBe(1);
+  await expect.poll(() => exportRequests.length).toBe(1);
 });
 
 test("task report page redacts persisted markdown report secrets through the UI", async ({
