@@ -85,6 +85,67 @@ if (!python) {
 fs.mkdirSync(isolatedDataDir, { recursive: true });
 fs.mkdirSync(path.dirname(isolatedSqliteDb), { recursive: true });
 
+function buildExternalAgentProviders(existing, slowAgentCommand) {
+  const slowAgent = {
+    id: "slow-agent",
+    command: slowAgentCommand,
+    prompt_transport: "stdin",
+    supports_artifact_export: true,
+    supports_json_output: true,
+  };
+  const raw = String(existing ?? "").trim();
+  if (!raw) return JSON.stringify([slowAgent]);
+  try {
+    const parsed = JSON.parse(raw);
+    const providers = Array.isArray(parsed) ? parsed : [parsed];
+    if (providers.some((item) => item && typeof item === "object" && item.id === "slow-agent")) {
+      return raw;
+    }
+    return JSON.stringify([...providers, slowAgent]);
+  } catch {
+    return JSON.stringify([
+      { id: "external-agent", command: raw, prompt_transport: "stdin" },
+      slowAgent,
+    ]);
+  }
+}
+
+const slowAgentScript = path.join(isolatedDataDir, "playwright-slow-agent.py");
+fs.writeFileSync(
+  slowAgentScript,
+  [
+    "import json",
+    "import os",
+    "import pathlib",
+    "import sys",
+    "import time",
+    "",
+    "prompt = sys.stdin.read()",
+    "time.sleep(float(os.environ.get('CODETALK_E2E_SLOW_AGENT_DELAY', '2.0')))",
+    "artifact_dir = pathlib.Path(os.environ.get('CODETALK_AGENT_ARTIFACT_DIR', '.'))",
+    "artifact_dir.mkdir(parents=True, exist_ok=True)",
+    "payload = {'status': 'ok', 'provider': 'slow-agent', 'prompt_chars': len(prompt)}",
+    "(artifact_dir / 'result.json').write_text(json.dumps(payload, ensure_ascii=False), encoding='utf-8')",
+    "print(json.dumps({'status': 'ok', 'summary': 'slow-agent completed', 'candidate_files': [], 'warnings': []}, ensure_ascii=False))",
+    "",
+  ].join("\n"),
+  "utf8",
+);
+
+const externalAgentCustomProviders = buildExternalAgentProviders(
+  process.env.EXTERNAL_AGENT_CUSTOM_PROVIDERS,
+  `${python} ${slowAgentScript}`,
+);
+const backendEnv = {
+  ...process.env,
+  DATA_DIR: isolatedDataDir,
+  SQLITE_DB: isolatedSqliteDb,
+  CORS_ORIGINS: corsOrigins,
+  GITNEXUS_BASE_URL: gitnexusBaseUrl,
+  GITNEXUS_PORT: gitnexusPort,
+  EXTERNAL_AGENT_CUSTOM_PROVIDERS: externalAgentCustomProviders,
+};
+
 let cleanedDataDir = false;
 function cleanupDataDir() {
   if (!shouldCleanupDataDir || cleanedDataDir) return;
@@ -101,14 +162,7 @@ const child = spawn(
   ["-m", "uvicorn", "app.main:app", "--host", backendHost, "--port", backendPort],
   {
     cwd: backendDir,
-    env: {
-      ...process.env,
-      DATA_DIR: isolatedDataDir,
-      SQLITE_DB: isolatedSqliteDb,
-      CORS_ORIGINS: corsOrigins,
-      GITNEXUS_BASE_URL: gitnexusBaseUrl,
-      GITNEXUS_PORT: gitnexusPort,
-    },
+    env: backendEnv,
     stdio: "inherit",
   },
 );

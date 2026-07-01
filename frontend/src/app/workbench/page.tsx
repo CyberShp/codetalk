@@ -5528,6 +5528,7 @@ export default function AgentWorkbenchPage() {
                     const isValidating = busyAction === `validate-${stepId}`;
                     const isMaterializing = busyAction === `materialize-${stepId}`;
                     const requiredArtifacts = agentRun.required_artifacts ?? [];
+                    const disableAgentActions = taskRunActionBusy || agentRunActionBusy;
                     return (
                       <div
                         key={agentRun.run_id}
@@ -5542,7 +5543,7 @@ export default function AgentWorkbenchPage() {
                           </div>
                           <button
                             onClick={() => executePreparedAgentRun(stepId)}
-                            disabled={agentRunActionBusy}
+                            disabled={disableAgentActions}
                             className="inline-flex items-center gap-1.5 rounded bg-primary px-2.5 py-1.5 text-xs font-medium text-on-primary transition-opacity hover:opacity-90 disabled:opacity-50"
                           >
                             {isExecuting ? (
@@ -5556,7 +5557,7 @@ export default function AgentWorkbenchPage() {
                             onClick={() =>
                               validatePreparedAgentRun(stepId, requiredArtifacts)
                             }
-                            disabled={agentRunActionBusy || requiredArtifacts.length === 0}
+                            disabled={disableAgentActions || requiredArtifacts.length === 0}
                             className="inline-flex items-center gap-1.5 rounded bg-surface px-2.5 py-1.5 text-xs font-medium text-on-surface transition-colors hover:bg-surface-container-high disabled:opacity-50"
                           >
                             {isValidating ? (
@@ -5570,7 +5571,7 @@ export default function AgentWorkbenchPage() {
                             onClick={() =>
                               materializePreparedAgentRun(stepId, requiredArtifacts)
                             }
-                            disabled={agentRunActionBusy || requiredArtifacts.length === 0}
+                            disabled={disableAgentActions || requiredArtifacts.length === 0}
                             className="inline-flex items-center gap-1.5 rounded bg-surface px-2.5 py-1.5 text-xs font-medium text-on-surface transition-colors hover:bg-surface-container-high disabled:opacity-50"
                           >
                             {isMaterializing ? (

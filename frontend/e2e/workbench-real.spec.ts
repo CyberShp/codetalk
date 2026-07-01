@@ -588,11 +588,7 @@ test("prevents duplicate recent task restore requests from a real double click",
 test("locks sibling agent-run actions while a real step execution is in flight", async ({
   page,
 }) => {
-  test.skip(
-    process.env.CODETALK_E2E_SLOW_AGENT_PROVIDER !== "1",
-    "requires EXTERNAL_AGENT_CUSTOM_PROVIDERS with a slow-agent command",
-  );
-
+  test.setTimeout(60_000);
   const unique = Date.now();
   const repo = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), "codetalk-step-busy-")));
   fs.writeFileSync(path.join(repo, "README.md"), "step busy e2e\n", "utf8");
@@ -638,21 +634,24 @@ test("locks sibling agent-run actions while a real step execution is in flight",
   await expect(page.getByText(/Task run prepared:/)).toBeVisible({ timeout: 15_000 });
   await expect(page.getByText("slow-agent").first()).toBeVisible();
 
-  const executeRequest = page.waitForRequest(
-    (request) =>
-      request.method() === "POST" &&
-      request.url().includes("/api/workbench/task-runs/") &&
-      request.url().includes("/agent-runs/") &&
-      request.url().endsWith("/execute"),
+  const executeButton = page.getByRole("button", { name: "Execute" }).first();
+  await expect(executeButton).toBeEnabled({ timeout: 10_000 });
+  const executeResponse = page.waitForResponse(
+    (response) =>
+      response.request().method() === "POST" &&
+      response.url().includes("/api/workbench/task-runs/") &&
+      response.url().includes("/agent-runs/") &&
+      response.url().endsWith("/execute") &&
+      response.status() < 500,
   );
-  await page.getByRole("button", { name: "Execute" }).first().hover();
-  await page.getByRole("button", { name: "Execute" }).first().click();
-  await executeRequest;
+  await executeButton.hover();
+  await executeButton.click();
 
-  await expect(page.getByRole("button", { name: "Execute" }).first()).toBeDisabled();
+  await expect(executeButton).toBeDisabled();
   await expect(page.getByRole("button", { name: "Validate" }).first()).toBeDisabled();
   await expect(page.getByRole("button", { name: "Materialize" }).first()).toBeDisabled();
 
+  await executeResponse;
   await expect(page.getByText(/Agent run completed:/)).toBeVisible({ timeout: 20_000 });
 });
 
