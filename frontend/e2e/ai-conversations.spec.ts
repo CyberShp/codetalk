@@ -1055,6 +1055,8 @@ test("AI conversation remains usable on a narrow mobile viewport", async ({ page
       overflows,
       overlaps,
       messageFontSize: Number.parseFloat(messageStyles.fontSize),
+      messageLineHeight: Number.parseFloat(messageStyles.lineHeight),
+      messageRadius: Number.parseFloat(messageStyles.borderTopLeftRadius),
       textareaFontSize: Number.parseFloat(textareaStyles.fontSize),
       composerWidth: composer.width,
       appWidth: app.width,
@@ -1065,6 +1067,8 @@ test("AI conversation remains usable on a narrow mobile viewport", async ({ page
   expect(layout.overlaps).toEqual([]);
   expect(layout.messageFontSize).toBeGreaterThanOrEqual(14);
   expect(layout.messageFontSize).toBeLessThanOrEqual(16);
+  expect(layout.messageLineHeight).toBeLessThanOrEqual(22);
+  expect(layout.messageRadius).toBeLessThanOrEqual(10);
   expect(layout.textareaFontSize).toBeGreaterThanOrEqual(14);
   expect(layout.textareaFontSize).toBeLessThanOrEqual(16);
   expect(layout.composerWidth).toBeLessThanOrEqual(layout.appWidth);
