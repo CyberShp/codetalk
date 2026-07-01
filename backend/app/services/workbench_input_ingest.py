@@ -8,6 +8,8 @@ import shutil
 from pathlib import Path
 from typing import Any
 
+from app.config import settings
+
 
 TEXT_EXTS = frozenset({
     ".md", ".txt", ".patch", ".diff", ".json", ".xml", ".lcov", ".info",
@@ -117,7 +119,7 @@ def _ingest_file(*, input_id: str, value: Any, root: Path) -> dict[str, Any]:
     path_text = str(value.get("path") if isinstance(value, dict) else value or "").strip()
     if not path_text:
         raise ValueError(f"file input {input_id} is missing path")
-    source = Path(path_text)
+    source = _resolve_input_source(path_text)
     if not source.exists() or not source.is_file():
         raise FileNotFoundError(path_text)
     input_root = root / _safe_name(input_id)
@@ -153,6 +155,19 @@ def _ingest_file(*, input_id: str, value: Any, root: Path) -> dict[str, Any]:
     metadata_path.write_text(json.dumps(metadata, ensure_ascii=False, indent=2), encoding="utf-8")
     metadata["metadata_path"] = str(metadata_path)
     return metadata
+
+
+def _resolve_input_source(path_text: str) -> Path:
+    source = Path(path_text)
+    if source.is_absolute():
+        return source
+    normalized = path_text.replace("\\", "/").strip("/")
+    if normalized.startswith("input_uploads/"):
+        root = (settings.data_path / "workbench").expanduser().resolve()
+        resolved = (root / normalized).resolve()
+        if resolved == root or root in resolved.parents:
+            return resolved
+    return source
 
 
 def _ingest_inline_text_file(

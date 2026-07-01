@@ -1016,8 +1016,52 @@ async def test_workbench_input_file_upload_api_returns_prepare_payload(workbench
     assert body["size"] == len(b"# Requirements\nTLS must fail closed\n")
     assert body["sha256"]
     assert body["input_payload"] == {"path": body["path"]}
-    assert Path(body["path"]).exists()
-    assert Path(body["path"]).read_text(encoding="utf-8").startswith("# Requirements")
+    assert body["path"].startswith("input_uploads/")
+    assert not Path(body["path"]).is_absolute()
+    assert str(settings.data_path) not in body["path"]
+    stored_path = _workbench_path(body["path"])
+    assert stored_path.exists()
+    assert stored_path.read_text(encoding="utf-8").startswith("# Requirements")
+
+
+async def test_workbench_prepare_task_run_api_resolves_public_upload_path(workbench_client):
+    workflow = {
+        "id": "uploaded_file_context",
+        "name": "Uploaded file context",
+        "version": 1,
+        "inputs": [{"id": "requirements_doc", "type": "file", "required": True}],
+        "steps": [{"id": "analyze", "type": "agent_task", "goal": "read_uploaded_file"}],
+        "outputs": [{"id": "report", "type": "markdown"}],
+    }
+    assert (await workbench_client.post("/api/workbench/workflows", json=workflow)).status_code == 201
+    upload = await workbench_client.post(
+        "/api/workbench/input-files/upload",
+        files={"file": ("requirements.md", b"# Requirements\nTLS must fail closed\n", "text/markdown")},
+        data={"input_id": "requirements_doc"},
+    )
+    assert upload.status_code == 201
+    upload_body = upload.json()
+
+    prepared = await workbench_client.post(
+        "/api/workbench/task-runs/prepare",
+        json={
+            "workflow_id": "uploaded_file_context",
+            "workspace_id": "ws-upload",
+            "repo_path": "E:/repo",
+            "inputs": {"requirements_doc": {"path": upload_body["path"]}},
+        },
+    )
+
+    assert prepared.status_code == 201
+    body = prepared.json()
+    file_info = body["input_snapshot"]["requirements_doc"]
+    assert file_info["kind"] == "file"
+    assert file_info["filename"] == "requirements.md"
+    assert Path(file_info["copied_path"]).exists()
+    assert Path(file_info["parsed_text_path"]).read_text(encoding="utf-8").startswith("# Requirements")
+    input_material = body["task_bundle"]["input_materials"]["materials"][0]
+    assert input_material["input_id"] == "requirements_doc"
+    assert input_material["agent_action"].startswith("read parsed_text_path first")
 
 
 async def test_workbench_semantic_library_bulk_import_api(workbench_client):
