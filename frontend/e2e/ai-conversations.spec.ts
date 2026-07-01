@@ -211,6 +211,10 @@ test("AI conversation page is a wide persistent reading surface", async ({ page 
   await expect(page.getByText("lib/login/session.ts:L42-L88")).toBeVisible();
   await expect(page.getByText("任务产物", { exact: true })).toBeVisible();
   await expect(page.getByText("run-spdk-001 · task_artifact_manifest.json")).toBeVisible();
+  await expect(page.getByRole("link", { name: "打开产物" })).toHaveAttribute(
+    "href",
+    "/api/workbench/task-runs/run-spdk-001/artifacts/content/task_artifact_manifest.json",
+  );
   await expect(page.getByText("执行轨迹")).toBeVisible();
   await expect(page.getByText("展开其余 2 条证据")).toBeVisible();
   await expect(page.getByText("审计日志应包含登录失败原因。")).toBeHidden();

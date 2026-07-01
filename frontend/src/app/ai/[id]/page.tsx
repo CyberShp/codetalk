@@ -114,9 +114,25 @@ function sourceReferenceHref(ref: AIContextReference): string {
   return `/workspaces/${encodeURIComponent(workspaceId)}?${query.toString()}`;
 }
 
+function artifactReferenceHref(ref: AIContextReference): string {
+  if (ref.source_type !== "workbench_task_artifact") return "";
+  const taskRunId = typeof ref.metadata?.task_run_id === "string" ? ref.metadata.task_run_id.trim() : "";
+  if (!taskRunId) return "";
+  const sourceId = ref.source_id.trim();
+  const artifactPath =
+    sourceId && sourceId.startsWith(`${taskRunId}/`) ? sourceId.slice(taskRunId.length + 1) : ref.title.trim();
+  if (!artifactPath || artifactPath.includes("..")) return "";
+  const encodedPath = artifactPath
+    .split("/")
+    .map((part) => encodeURIComponent(part))
+    .join("/");
+  return `/api/workbench/task-runs/${encodeURIComponent(taskRunId)}/artifacts/content/${encodedPath}`;
+}
+
 function EvidenceReferenceCard({ refItem }: { refItem: AIContextReference }) {
   const sourceLocation = sourceLocationLabel(refItem);
   const sourceHref = sourceReferenceHref(refItem);
+  const artifactHref = artifactReferenceHref(refItem);
   return (
     <div className="ct-ai-ref">
       <div className="flex items-center justify-between gap-2">
@@ -134,6 +150,7 @@ function EvidenceReferenceCard({ refItem }: { refItem: AIContextReference }) {
         <div className="ct-ai-ref__meta">
           <span>任务产物</span>
           <code>{sourceLocation}</code>
+          {artifactHref && <Link href={artifactHref}>打开产物</Link>}
         </div>
       )}
       <p>{refItem.excerpt}</p>
