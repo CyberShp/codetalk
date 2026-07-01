@@ -407,7 +407,6 @@ body {
     border-radius: 999px;
     background: #16a34a;
     box-shadow: 0 0 0 4px rgba(22, 163, 74, 0.12);
-    animation: ct-nav-status-pulse 2.8s var(--motion-ease) infinite;
   }
 
   .ct-app-sidebar.is-collapsed .ct-app-sidebar__brand {
