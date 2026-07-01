@@ -91,7 +91,12 @@ def load_config() -> dict:
     if CONFIG_PATH.exists():
         try:
             with open(CONFIG_PATH, "r", encoding="utf-8") as f:
-                return _drop_removed_legacy_tool_keys(normalize_to_snake(json.load(f)))
+                raw = json.load(f)
+            cleaned = _drop_removed_legacy_tool_keys(normalize_to_snake(raw))
+            if cleaned != raw:
+                with open(CONFIG_PATH, "w", encoding="utf-8") as f:
+                    json.dump(cleaned, f, indent=2)
+            return cleaned
         except (json.JSONDecodeError, OSError):
             pass
     return get_default_config("native")
