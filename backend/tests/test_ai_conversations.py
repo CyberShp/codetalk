@@ -431,6 +431,59 @@ class TestAIConversationsAPI:
         assert "nvmf_dir_target" in source_refs[0].excerpt
         assert all(not ref.metadata["path"].startswith("lib/iscsi/") for ref in source_refs[:2])
 
+    async def test_directory_path_hint_prefers_implementation_over_docs(
+        self,
+        sqlite_db,
+        tmp_path: Path,
+    ):
+        repo = tmp_path / "repo"
+        nvmf_dir = repo / "lib" / "nvmf"
+        nvmf_dir.mkdir(parents=True)
+        (nvmf_dir / "README.md").write_text(
+            "directory overview should not be the first source reference\n",
+            encoding="utf-8",
+        )
+        (nvmf_dir / "ctrlr.c").write_text(
+            "\n".join(
+                [
+                    "int nvmf_directory_impl_priority(void) {",
+                    "    return 1;",
+                    "}",
+                ]
+            ),
+            encoding="utf-8",
+        )
+        ws_id = "ws-dir-impl-priority"
+        now = datetime.now(timezone.utc).isoformat()
+        async with aiosqlite.connect(sqlite_db) as db:
+            await db.execute(
+                "INSERT INTO workspaces (id, name, repo_path, indexed, created_at, updated_at) "
+                "VALUES (?, 'Directory Impl Priority WS', ?, 1, ?, ?)",
+                (ws_id, str(repo), now, now),
+            )
+            await db.commit()
+
+        from app.services.ai_conversations import build_context_references
+
+        refs = await build_context_references(
+            conversation={
+                "id": "conv-dir-impl-priority",
+                "scope_type": "workspace",
+                "scope_id": ws_id,
+                "workspace_id": ws_id,
+                "memory_namespace": f"workspace:{ws_id}",
+                "initial_context": {},
+            },
+            user_message="请读取 lib/nvmf 并梳理主流程",
+            db_path=sqlite_db,
+        )
+        source_refs = [ref for ref in refs if ref.source_type == "workspace_source"]
+
+        assert source_refs
+        assert source_refs[0].metadata["path"] == "lib/nvmf/ctrlr.c"
+        assert "nvmf_directory_impl_priority" in source_refs[0].excerpt
+        assert all(not ref.metadata["path"].endswith(".md") for ref in source_refs[:1])
+
     async def test_module_thread_uses_scope_path_as_source_hint_when_prompt_is_vague(
         self,
         sqlite_db,

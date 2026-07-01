@@ -1174,7 +1174,7 @@ def _directory_source_candidates(repo_root: Path, directory: Path) -> list[Path]
     ignored_parts = {".git", "build", "node_modules", ".next", ".venv", "__pycache__"}
     candidates: list[Path] = []
     try:
-        paths = sorted(directory.rglob("*"))
+        paths = sorted(directory.rglob("*"), key=_source_candidate_rank)
     except Exception:
         return []
     for path in paths:
@@ -1186,6 +1186,24 @@ def _directory_source_candidates(repo_root: Path, directory: Path) -> list[Path]
         if _safe_source_file(repo_root, resolved):
             candidates.append(resolved)
     return candidates
+
+
+def _source_candidate_rank(path: Path) -> tuple[int, str]:
+    suffix = path.suffix.lower()
+    if suffix in {
+        ".c", ".cc", ".cpp", ".cxx", ".rs", ".go", ".java",
+        ".py", ".js", ".jsx", ".ts", ".tsx",
+    }:
+        bucket = 0
+    elif suffix in {".h", ".hh", ".hpp"}:
+        bucket = 1
+    elif suffix == ".sh":
+        bucket = 2
+    elif suffix in {".md", ".rst", ".txt"}:
+        bucket = 4
+    else:
+        bucket = 3
+    return (bucket, path.as_posix().lower())
 
 
 def _source_file_ref(
