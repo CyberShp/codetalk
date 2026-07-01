@@ -18,7 +18,7 @@ from typing import Any
 import aiosqlite
 
 from app.config import settings
-from app.services.agent_cli_bridge import resolve_agent_cwd, stream_agent_runtime
+from app.services.agent_cli_bridge import clean_agent_output_text, resolve_agent_cwd, stream_agent_runtime
 from app.services.external_agent_discovery import redact_agent_diagnostic_text
 
 logger = logging.getLogger(__name__)
@@ -828,7 +828,7 @@ def _context_status_message(references: list[dict[str, Any]]) -> str:
 
 
 def _agent_output_segments(chunk: str) -> list[tuple[str, str]]:
-    text = str(chunk or "")
+    text = clean_agent_output_text(str(chunk or ""))
     if not text.strip():
         return []
     segments: list[tuple[str, str]] = []

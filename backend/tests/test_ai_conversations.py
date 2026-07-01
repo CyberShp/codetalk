@@ -123,6 +123,21 @@ class BlockingStreamLLM:
         yield "最终结论。"
 
 
+async def test_agent_output_segments_strip_terminal_noise_before_diagnostic_detection():
+    from app.services.ai_conversations import _agent_output_segments
+
+    segments = _agent_output_segments(
+        "\x1b[2K\r47%\r\x1b[2Kthinking: 正在读取 lib/nvmf/connect.c\n"
+        "12/100\n"
+        "\x1b[32m最终答案：已基于工作区源码回答。\x1b[0m\n"
+    )
+
+    assert segments == [
+        ("diagnostic", "正在读取 lib/nvmf/connect.c"),
+        ("answer", "最终答案：已基于工作区源码回答。\n"),
+    ]
+
+
 class TestAIConversationsAPI:
     async def test_create_and_list_project_scoped_conversations(self, sqlite_db):
         ws_a = await _seed_workspace(sqlite_db, "ws-a")
