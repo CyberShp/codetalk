@@ -12,6 +12,7 @@ from app.services.agent_runtimes import (
     COMPLETION_MODES,
     OUTPUT_MODES,
     PROMPT_TRANSPORTS,
+    SESSION_PERSISTENCE_MODES,
     WORKING_DIR_MODES,
     AgentRuntimeStore,
 )
@@ -33,6 +34,8 @@ class AgentRuntimeBase(BaseModel):
     completion_mode: str = "process_exit"
     idle_complete_seconds: int = Field(default=5, ge=1, le=300)
     sentinel_text: str = ""
+    session_persistence: str = "none"
+    resume_args: list[str] = Field(default_factory=list)
     enabled: bool = True
 
     @field_validator("prompt_transport")
@@ -63,6 +66,13 @@ class AgentRuntimeBase(BaseModel):
             raise ValueError(f"unsupported completion_mode: {value}")
         return value
 
+    @field_validator("session_persistence")
+    @classmethod
+    def _valid_session_persistence(cls, value: str) -> str:
+        if value not in SESSION_PERSISTENCE_MODES:
+            raise ValueError(f"unsupported session_persistence: {value}")
+        return value
+
 
 class AgentRuntimeCreate(AgentRuntimeBase):
     pass
@@ -82,6 +92,8 @@ class AgentRuntimeUpdate(BaseModel):
     completion_mode: str | None = None
     idle_complete_seconds: int | None = Field(default=None, ge=1, le=300)
     sentinel_text: str | None = None
+    session_persistence: str | None = None
+    resume_args: list[str] | None = None
     enabled: bool | None = None
 
 

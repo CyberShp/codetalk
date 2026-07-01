@@ -81,6 +81,8 @@ CREATE TABLE IF NOT EXISTS agent_runtimes (
     completion_mode TEXT NOT NULL DEFAULT 'process_exit',
     idle_complete_seconds INTEGER DEFAULT 5,
     sentinel_text TEXT DEFAULT '',
+    session_persistence TEXT NOT NULL DEFAULT 'none',
+    resume_args_json TEXT DEFAULT '[]',
     enabled INTEGER DEFAULT 1,
     created_at TEXT NOT NULL,
     updated_at TEXT NOT NULL
@@ -217,6 +219,17 @@ CREATE TABLE IF NOT EXISTS ai_run_events (
     created_at TEXT NOT NULL
 );
 
+CREATE TABLE IF NOT EXISTS ai_agent_runtime_sessions (
+    conversation_id TEXT NOT NULL REFERENCES ai_conversations(id) ON DELETE CASCADE,
+    agent_runtime_id TEXT NOT NULL REFERENCES agent_runtimes(id) ON DELETE CASCADE,
+    cli_session_id TEXT NOT NULL,
+    resume_session_id TEXT NOT NULL,
+    metadata_json TEXT DEFAULT '{}',
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL,
+    PRIMARY KEY (conversation_id, agent_runtime_id)
+);
+
 CREATE INDEX IF NOT EXISTS idx_workspace_materials_ws ON workspace_materials(workspace_id);
 CREATE INDEX IF NOT EXISTS idx_workspace_reports_ws ON workspace_reports(workspace_id);
 CREATE INDEX IF NOT EXISTS idx_workspace_chats_ws ON workspace_chats(workspace_id);
@@ -227,6 +240,7 @@ CREATE INDEX IF NOT EXISTS idx_ai_conversations_scope ON ai_conversations(scope_
 CREATE INDEX IF NOT EXISTS idx_ai_messages_conversation ON ai_messages(conversation_id, created_at);
 CREATE INDEX IF NOT EXISTS idx_ai_runs_conversation ON ai_conversation_runs(conversation_id, created_at);
 CREATE INDEX IF NOT EXISTS idx_ai_run_events_stream ON ai_run_events(conversation_id, event_id);
+CREATE INDEX IF NOT EXISTS idx_ai_agent_runtime_sessions_runtime ON ai_agent_runtime_sessions(agent_runtime_id, updated_at);
 
 """
 
@@ -264,6 +278,8 @@ _MIGRATIONS = [
     "ALTER TABLE agent_runtimes ADD COLUMN completion_mode TEXT NOT NULL DEFAULT 'process_exit'",
     "ALTER TABLE agent_runtimes ADD COLUMN idle_complete_seconds INTEGER DEFAULT 5",
     "ALTER TABLE agent_runtimes ADD COLUMN sentinel_text TEXT DEFAULT ''",
+    "ALTER TABLE agent_runtimes ADD COLUMN session_persistence TEXT NOT NULL DEFAULT 'none'",
+    "ALTER TABLE agent_runtimes ADD COLUMN resume_args_json TEXT DEFAULT '[]'",
     "UPDATE ai_conversations SET workspace_id = scope_id WHERE workspace_id = 'global' AND scope_type = 'workspace'",
     "UPDATE ai_conversations SET workspace_id = substr(scope_id, 1, instr(scope_id, ':') - 1) WHERE workspace_id = 'global' AND scope_type = 'module' AND instr(scope_id, ':') > 1",
     "UPDATE ai_conversations SET workspace_id = COALESCE(json_extract(initial_context_json, '$.workspace_id'), workspace_id) WHERE workspace_id = 'global' AND json_valid(initial_context_json)",
@@ -271,6 +287,8 @@ _MIGRATIONS = [
     "CREATE INDEX IF NOT EXISTS idx_ai_conversations_workspace ON ai_conversations(workspace_id, updated_at)",
     "CREATE INDEX IF NOT EXISTS idx_ai_conversations_memory_namespace ON ai_conversations(memory_namespace, updated_at)",
     "CREATE INDEX IF NOT EXISTS idx_agent_runtimes_enabled ON agent_runtimes(enabled, updated_at)",
+    "CREATE TABLE IF NOT EXISTS ai_agent_runtime_sessions (conversation_id TEXT NOT NULL REFERENCES ai_conversations(id) ON DELETE CASCADE, agent_runtime_id TEXT NOT NULL REFERENCES agent_runtimes(id) ON DELETE CASCADE, cli_session_id TEXT NOT NULL, resume_session_id TEXT NOT NULL, metadata_json TEXT DEFAULT '{}', created_at TEXT NOT NULL, updated_at TEXT NOT NULL, PRIMARY KEY (conversation_id, agent_runtime_id))",
+    "CREATE INDEX IF NOT EXISTS idx_ai_agent_runtime_sessions_runtime ON ai_agent_runtime_sessions(agent_runtime_id, updated_at)",
 ]
 
 

@@ -688,6 +688,107 @@ class TestAgentRuntimes:
             final_conversation = await client.get(f"/api/ai/conversations/{conversation.json()['id']}")
             assert final_conversation.json()["status"] == "idle"
 
+    async def test_ai_thread_agent_runtime_resumes_saved_cli_session(self, sqlite_db):
+        app = _test_app(sqlite_db)
+        repo = pathlib.Path(sqlite_db).parent / "resume-repo"
+        repo.mkdir()
+        ws_id = await _seed_workspace(sqlite_db, "ws-agent-resume", repo_path=str(repo))
+        agent_code = (
+            "import json, sys; "
+            "resume=''; "
+            "args=sys.argv[1:]; "
+            "resume=args[args.index('--resume') + 1] if '--resume' in args else ''; "
+            "sys.stdin.read(); "
+            "sid='session-second' if resume else 'session-first'; "
+            "print(json.dumps({'type':'system','subtype':'init','session_id':sid}, ensure_ascii=False)); "
+            "print(('resumed:' + resume) if resume else 'fresh session'); "
+            "sys.stdout.flush()"
+        )
+
+        async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+            runtime = await client.post(
+                "/api/settings/agent-runtimes",
+                json={
+                    "name": "Resume Agent",
+                    "command": sys.executable,
+                    "args": ["-c", agent_code],
+                    "prompt_transport": "stdin",
+                    "output_mode": "auto",
+                    "working_dir_mode": "project",
+                    "timeout_seconds": 10,
+                    "session_persistence": "resume_args",
+                    "resume_args": ["-c", agent_code, "--resume", "{session_id}"],
+                },
+            )
+            assert runtime.status_code == 201
+            runtime_id = runtime.json()["id"]
+
+            created = await client.post(
+                "/api/ai/conversations",
+                json={
+                    "scope_type": "workspace",
+                    "scope_id": ws_id,
+                    "workspace_id": ws_id,
+                    "title": "Agent resume",
+                    "runtime_type": "agent_runtime",
+                    "agent_runtime_id": runtime_id,
+                },
+            )
+            assert created.status_code == 201
+            conversation = created.json()
+
+            first = await client.post(
+                f"/api/ai/conversations/{conversation['id']}/messages",
+                json={"content": "第一轮"},
+            )
+            assert first.status_code == 202
+            for _ in range(30):
+                messages = await client.get(f"/api/ai/conversations/{conversation['id']}/messages")
+                if len(messages.json()["items"]) == 2:
+                    break
+                await asyncio.sleep(0.1)
+            else:
+                pytest.fail("first agent run did not complete")
+
+            messages = await client.get(f"/api/ai/conversations/{conversation['id']}/messages")
+            assert messages.json()["items"][-1]["content"] == "fresh session"
+
+            async with aiosqlite.connect(sqlite_db) as db:
+                db.row_factory = aiosqlite.Row
+                async with db.execute(
+                    "SELECT * FROM ai_agent_runtime_sessions WHERE conversation_id = ? AND agent_runtime_id = ?",
+                    (conversation["id"], runtime_id),
+                ) as cur:
+                    row = await cur.fetchone()
+            assert row is not None
+            assert row["resume_session_id"] == "session-first"
+
+            second = await client.post(
+                f"/api/ai/conversations/{conversation['id']}/messages",
+                json={"content": "第二轮"},
+            )
+            assert second.status_code == 202
+            for _ in range(30):
+                messages = await client.get(f"/api/ai/conversations/{conversation['id']}/messages")
+                if len(messages.json()["items"]) == 4:
+                    break
+                await asyncio.sleep(0.1)
+            else:
+                pytest.fail("second agent run did not complete")
+
+            messages = await client.get(f"/api/ai/conversations/{conversation['id']}/messages")
+            assert messages.json()["items"][-1]["content"] == "resumed:session-first"
+
+            async with aiosqlite.connect(sqlite_db) as db:
+                db.row_factory = aiosqlite.Row
+                async with db.execute(
+                    "SELECT * FROM ai_agent_runtime_sessions WHERE conversation_id = ? AND agent_runtime_id = ?",
+                    (conversation["id"], runtime_id),
+                ) as cur:
+                    updated = await cur.fetchone()
+            assert updated is not None
+            assert updated["resume_session_id"] == "session-second"
+
     async def test_ai_thread_agent_runtime_keeps_json_status_events_out_of_final_answer(self, sqlite_db):
         ws_id = await _seed_workspace(sqlite_db)
         app = _test_app(sqlite_db)

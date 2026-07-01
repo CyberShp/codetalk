@@ -577,6 +577,71 @@ class AIConversationStore:
         )
         return await self.get_run(run["id"])
 
+    async def get_agent_runtime_session(
+        self,
+        *,
+        conversation_id: str,
+        agent_runtime_id: str,
+    ) -> dict[str, Any] | None:
+        if not conversation_id or not agent_runtime_id:
+            return None
+        async with self._connect() as db:
+            async with db.execute(
+                """
+                SELECT *
+                FROM ai_agent_runtime_sessions
+                WHERE conversation_id = ? AND agent_runtime_id = ?
+                """,
+                (conversation_id, agent_runtime_id),
+            ) as cur:
+                row = await cur.fetchone()
+        if row is None:
+            return None
+        data = dict(row)
+        data["metadata"] = _json_loads(data.pop("metadata_json", "{}"), {})
+        return data
+
+    async def upsert_agent_runtime_session(
+        self,
+        *,
+        conversation_id: str,
+        agent_runtime_id: str,
+        cli_session_id: str,
+        resume_session_id: str,
+        metadata: dict[str, Any] | None = None,
+    ) -> None:
+        if not conversation_id or not agent_runtime_id:
+            return
+        cli_session_id = str(cli_session_id or "").strip()
+        resume_session_id = str(resume_session_id or cli_session_id).strip()
+        if not cli_session_id or not resume_session_id:
+            return
+        now = _now()
+        async with self._connect() as db:
+            await db.execute(
+                """
+                INSERT INTO ai_agent_runtime_sessions
+                    (conversation_id, agent_runtime_id, cli_session_id, resume_session_id,
+                     metadata_json, created_at, updated_at)
+                VALUES (?, ?, ?, ?, ?, ?, ?)
+                ON CONFLICT(conversation_id, agent_runtime_id) DO UPDATE SET
+                    cli_session_id = excluded.cli_session_id,
+                    resume_session_id = excluded.resume_session_id,
+                    metadata_json = excluded.metadata_json,
+                    updated_at = excluded.updated_at
+                """,
+                (
+                    conversation_id,
+                    agent_runtime_id,
+                    cli_session_id,
+                    resume_session_id,
+                    _json_dumps(metadata or {}),
+                    now,
+                    now,
+                ),
+            )
+            await db.commit()
+
     @asynccontextmanager
     async def _connect(self):
         db = await aiosqlite.connect(self.db_path)
@@ -808,6 +873,15 @@ async def run_agent_generation(
         payload={"status": "running", "message": _context_status_message(references)},
     )
     cwd = resolve_agent_cwd(runtime, repo_path=repo_path)
+    runtime_id = str(runtime.get("id") or conversation.get("agent_runtime_id") or "").strip()
+    resume_session_id = ""
+    if runtime_id and str(runtime.get("session_persistence") or "none") == "resume_args":
+        session = await store.get_agent_runtime_session(
+            conversation_id=conversation["id"],
+            agent_runtime_id=runtime_id,
+        )
+        if session:
+            resume_session_id = str(session.get("resume_session_id") or session.get("cli_session_id") or "")
     prompt = _build_agent_prompt(
         conversation,
         messages,
@@ -817,8 +891,15 @@ async def run_agent_generation(
         repo_path=repo_path,
     )
     chunks: list[str] = []
+    session_updates: list[dict[str, Any]] = []
     try:
-        async for delta in stream_agent_runtime(runtime=runtime, prompt=prompt, cwd=cwd):
+        async for delta in stream_agent_runtime(
+            runtime=runtime,
+            prompt=prompt,
+            cwd=cwd,
+            resume_session_id=resume_session_id,
+            session_update=session_updates.append,
+        ):
             current = await store.get_run(run_id)
             if current["status"] == "cancelled":
                 return
@@ -839,6 +920,18 @@ async def run_agent_generation(
                     payload={"content": content},
                 )
         content = "".join(chunks).strip() or "执行器没有返回有效内容，请检查命令输出模式。"
+        if runtime_id and session_updates:
+            latest_session = session_updates[-1]
+            await store.upsert_agent_runtime_session(
+                conversation_id=conversation["id"],
+                agent_runtime_id=runtime_id,
+                cli_session_id=str(latest_session.get("session_id") or ""),
+                resume_session_id=str(latest_session.get("resume_session_id") or latest_session.get("session_id") or ""),
+                metadata={
+                    "run_id": run_id,
+                    "event_type": str(latest_session.get("event_type") or ""),
+                },
+            )
         await store.complete_run(
             run_id=run_id,
             content=content,

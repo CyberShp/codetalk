@@ -65,6 +65,8 @@ const EMPTY_AGENT_RUNTIME_FORM: AgentRuntimeCreate = {
   completion_mode: "process_exit",
   idle_complete_seconds: 5,
   sentinel_text: "",
+  session_persistence: "none",
+  resume_args: [],
   enabled: true,
 };
 
@@ -166,6 +168,7 @@ export default function SettingsPage() {
     ...EMPTY_AGENT_RUNTIME_FORM,
   });
   const [agentRuntimeArgsText, setAgentRuntimeArgsText] = useState("");
+  const [agentRuntimeResumeArgsText, setAgentRuntimeResumeArgsText] = useState("");
   const [agentRuntimeEnvJson, setAgentRuntimeEnvJson] = useState("{}");
   const [savingAgentRuntime, setSavingAgentRuntime] = useState(false);
   const [deletingAgentRuntimeIds, setDeletingAgentRuntimeIds] = useState<string[]>([]);
@@ -391,6 +394,7 @@ export default function SettingsPage() {
   const applyAgentRuntimePreset = useCallback((preset: (typeof AGENT_RUNTIME_PRESETS)[number]) => {
     setAgentRuntimeForm({ ...preset.form });
     setAgentRuntimeArgsText(preset.form.args.join(" "));
+    setAgentRuntimeResumeArgsText(preset.form.resume_args.join(" "));
     setAgentRuntimeEnvJson(JSON.stringify(preset.form.env ?? {}, null, 2));
     setShowAgentAdvanced(false);
   }, []);
@@ -418,10 +422,12 @@ export default function SettingsPage() {
       await api.settings.createAgentRuntime({
         ...agentRuntimeForm,
         args: agentRuntimeArgsText.split(/\s+/).map((item) => item.trim()).filter(Boolean),
+        resume_args: agentRuntimeResumeArgsText.split(/\s+/).map((item) => item.trim()).filter(Boolean),
         env,
       });
       setAgentRuntimeForm({ ...EMPTY_AGENT_RUNTIME_FORM });
       setAgentRuntimeArgsText("");
+      setAgentRuntimeResumeArgsText("");
       setAgentRuntimeEnvJson("{}");
       await loadData();
     } catch (err: unknown) {
@@ -429,7 +435,7 @@ export default function SettingsPage() {
     } finally {
       setSavingAgentRuntime(false);
     }
-  }, [agentRuntimeArgsText, agentRuntimeEnvJson, agentRuntimeForm, loadData]);
+  }, [agentRuntimeArgsText, agentRuntimeEnvJson, agentRuntimeForm, agentRuntimeResumeArgsText, loadData]);
 
   const handleDeleteAgentRuntime = useCallback(
     async (id: string) => {
@@ -743,6 +749,32 @@ export default function SettingsPage() {
                     />
                   </div>
                 )}
+                <div>
+                  <label className="mb-1 block text-xs font-medium text-on-surface-variant">
+                    会话续接
+                  </label>
+                  <select
+                    value={agentRuntimeForm.session_persistence}
+                    onChange={(event) => updateAgentRuntimeForm("session_persistence", event.target.value as AgentRuntimeCreate["session_persistence"])}
+                    className="w-full rounded-lg border border-outline-variant/30 bg-surface px-3 py-2 text-sm text-on-surface focus:border-primary/50 focus:outline-none"
+                  >
+                    <option value="none">不续接</option>
+                    <option value="resume_args">使用 resume 参数</option>
+                  </select>
+                </div>
+                {agentRuntimeForm.session_persistence === "resume_args" && (
+                  <div className="lg:col-span-3">
+                    <label className="mb-1 block text-xs font-medium text-on-surface-variant">
+                      Resume 参数
+                    </label>
+                    <input
+                      value={agentRuntimeResumeArgsText}
+                      onChange={(event) => setAgentRuntimeResumeArgsText(event.target.value)}
+                      placeholder="例如 exec resume {session_id} --json"
+                      className="w-full rounded-lg border border-outline-variant/30 bg-surface px-3 py-2 font-data text-sm text-on-surface placeholder:text-on-surface-variant/50 focus:border-primary/50 focus:outline-none"
+                    />
+                  </div>
+                )}
                 {agentRuntimeForm.working_dir_mode === "fixed" && (
                   <div className="lg:col-span-4">
                     <label className="mb-1 block text-xs font-medium text-on-surface-variant">
@@ -797,6 +829,11 @@ export default function SettingsPage() {
                       <span className="rounded-full bg-surface-container-high px-2 py-0.5 text-[11px] text-on-surface-variant">
                         {runtime.output_mode}
                       </span>
+                      {runtime.session_persistence === "resume_args" && (
+                        <span className="rounded-full bg-primary-container px-2 py-0.5 text-[11px] text-on-primary-container">
+                          resume
+                        </span>
+                      )}
                     </div>
                     <p className="mt-1 break-all font-data text-xs text-on-surface-variant">
                       {runtime.command} {runtime.args.join(" ")}

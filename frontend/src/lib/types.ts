@@ -113,6 +113,7 @@ export type AgentRuntimePromptTransport = "stdin" | "argv_last";
 export type AgentRuntimeOutputMode = "plain" | "ndjson" | "stream_json" | "auto";
 export type AgentRuntimeWorkingDirMode = "project" | "fixed" | "none";
 export type AgentRuntimeCompletionMode = "process_exit" | "idle_after_output" | "sentinel";
+export type AgentRuntimeSessionPersistence = "none" | "resume_args";
 
 export interface AgentRuntime {
   id: string;
@@ -129,6 +130,8 @@ export interface AgentRuntime {
   completion_mode: AgentRuntimeCompletionMode;
   idle_complete_seconds: number;
   sentinel_text: string;
+  session_persistence: AgentRuntimeSessionPersistence;
+  resume_args: string[];
   enabled: boolean;
   created_at: string;
   updated_at: string;

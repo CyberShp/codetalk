@@ -12,7 +12,7 @@ import tempfile
 import unicodedata
 from collections.abc import AsyncIterator
 from pathlib import Path
-from typing import Any
+from typing import Any, Callable
 
 from app.services.external_agent_discovery import redact_agent_diagnostic_text
 from app.services.agent_runtimes import validate_agent_command
@@ -62,13 +62,15 @@ async def stream_agent_runtime(
     runtime: dict[str, Any],
     prompt: str,
     cwd: str | None,
+    resume_session_id: str | None = None,
+    session_update: Callable[[dict[str, Any]], None] | None = None,
 ) -> AsyncIterator[str]:
     command = str(runtime.get("command") or "").strip()
     try:
         command = validate_agent_command(command)
     except ValueError as exc:
         raise AgentRuntimeError(str(exc)) from exc
-    args = [str(item) for item in (runtime.get("args") or [])]
+    args = _runtime_args(runtime, resume_session_id=resume_session_id)
     prompt_transport = str(runtime.get("prompt_transport") or "stdin")
     if prompt_transport == "argv_last":
         args = [*args, prompt]
@@ -122,7 +124,12 @@ async def stream_agent_runtime(
             proc.stdin.close()
 
         async with asyncio.timeout(timeout):
-            async for chunk in _read_stdout(proc, str(runtime.get("output_mode") or "plain"), runtime=runtime):
+            async for chunk in _read_stdout(
+                proc,
+                str(runtime.get("output_mode") or "plain"),
+                runtime=runtime,
+                session_update=session_update,
+            ):
                 if chunk:
                     yield chunk
             if proc.returncode is None:
@@ -174,6 +181,22 @@ def _completion_mode(runtime: dict[str, Any]) -> str:
     return str(runtime.get("completion_mode") or "process_exit").strip()
 
 
+def _runtime_args(runtime: dict[str, Any], *, resume_session_id: str | None = None) -> list[str]:
+    base_args = [str(item) for item in (runtime.get("args") or [])]
+    if str(runtime.get("session_persistence") or "none") != "resume_args":
+        return base_args
+    session_id = str(resume_session_id or "").strip()
+    if not session_id:
+        return base_args
+    resume_args = [str(item) for item in (runtime.get("resume_args") or [])]
+    if not resume_args:
+        return base_args
+    return [
+        item.replace("{session_id}", session_id).replace("{resume_session_id}", session_id)
+        for item in resume_args
+    ]
+
+
 async def _terminate_process(proc: asyncio.subprocess.Process) -> None:
     if proc.returncode is not None:
         return
@@ -190,6 +213,7 @@ async def _read_stdout(
     output_mode: str,
     *,
     runtime: dict[str, Any] | None = None,
+    session_update: Callable[[dict[str, Any]], None] | None = None,
 ) -> AsyncIterator[str]:
     if proc.stdout is None:
         return
@@ -223,7 +247,7 @@ async def _read_stdout(
                 break
             if not raw:
                 if buffer.strip():
-                    parsed = _parse_event_text(buffer, output_mode)
+                    parsed = _parse_event_text(buffer, output_mode, session_update=session_update)
                     if parsed:
                         parsed, done = apply_completion_policy(parsed)
                         if parsed:
@@ -233,7 +257,7 @@ async def _read_stdout(
                             break
                 break
             text = _decode(raw)
-            parsed = _parse_event_text(text, output_mode)
+            parsed = _parse_event_text(text, output_mode, session_update=session_update)
             if parsed is None and output_mode == "auto":
                 parsed, done = apply_completion_policy(text)
                 if parsed:
@@ -272,7 +296,12 @@ async def _read_stdout(
                 yield text
 
 
-def _parse_event_text(text: str, output_mode: str) -> str | None:
+def _parse_event_text(
+    text: str,
+    output_mode: str,
+    *,
+    session_update: Callable[[dict[str, Any]], None] | None = None,
+) -> str | None:
     stripped = _sse_payload_text(_clean_agent_text(text).strip())
     if not stripped:
         return ""
@@ -284,6 +313,9 @@ def _parse_event_text(text: str, output_mode: str) -> str | None:
         return _clean_agent_text(event)
     if not isinstance(event, dict):
         return None
+    session = _agent_session_update(event)
+    if session and session_update is not None:
+        session_update(session)
     diagnostic = _diagnostic_event_text(event)
     if diagnostic is not None:
         return diagnostic
@@ -302,6 +334,51 @@ def _looks_like_agent_json_envelope(event: dict[str, Any]) -> bool:
         set(event)
         & {"type", "event", "kind", "item", "message", "role", "subtype", "session_id", "thread_id"}
     )
+
+
+def _agent_session_update(event: dict[str, Any]) -> dict[str, Any] | None:
+    event_type = str(event.get("type") or event.get("event") or event.get("kind") or "").strip()
+    session_id = _first_event_string(
+        event,
+        ("session_id", "sessionId", "thread_id", "threadId"),
+    )
+    resume_session_id = _first_event_string(
+        event,
+        ("resume_session_id", "resumeSessionId", "next_session_id", "nextSessionId"),
+    )
+    state = event.get("state")
+    if isinstance(state, dict):
+        resume_session_id = resume_session_id or _first_event_string(
+            state,
+            ("resume_session_id", "resumeSessionId", "session_id", "sessionId"),
+        )
+    metadata = event.get("metadata")
+    if isinstance(metadata, dict):
+        resume_session_id = resume_session_id or _first_event_string(
+            metadata,
+            ("resume_session_id", "resumeSessionId", "session_id", "sessionId"),
+        )
+    if not session_id and event_type in {"thread.started", "session_init"}:
+        session_id = resume_session_id
+    if not resume_session_id:
+        resume_session_id = session_id
+    if not session_id and resume_session_id:
+        session_id = resume_session_id
+    if not session_id or not resume_session_id:
+        return None
+    return {
+        "session_id": session_id,
+        "resume_session_id": resume_session_id,
+        "event_type": event_type or "unknown",
+    }
+
+
+def _first_event_string(event: dict[str, Any], keys: tuple[str, ...]) -> str:
+    for key in keys:
+        value = event.get(key)
+        if isinstance(value, str) and value.strip():
+            return value.strip()
+    return ""
 
 
 def _sse_payload_text(text: str) -> str:

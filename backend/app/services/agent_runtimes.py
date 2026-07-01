@@ -17,6 +17,7 @@ PROMPT_TRANSPORTS = {"stdin", "argv_last"}
 OUTPUT_MODES = {"plain", "ndjson", "stream_json", "auto"}
 WORKING_DIR_MODES = {"project", "fixed", "none"}
 COMPLETION_MODES = {"process_exit", "idle_after_output", "sentinel"}
+SESSION_PERSISTENCE_MODES = {"none", "resume_args"}
 
 
 def _now() -> str:
@@ -42,6 +43,10 @@ def _clean_args(args: list[str] | None) -> list[str]:
 
 def _clean_env(env: dict[str, str] | None) -> dict[str, str]:
     return {str(key): str(value) for key, value in (env or {}).items() if str(key).strip()}
+
+
+def _clean_resume_args(args: list[str] | None) -> list[str]:
+    return [str(item) for item in (args or []) if str(item).strip()]
 
 
 def validate_agent_command(command: str) -> str:
@@ -77,8 +82,8 @@ class AgentRuntimeStore:
                     (id, name, command, args_json, prompt_transport, output_mode,
                      working_dir_mode, fixed_working_dir, env_json, health_command,
                      timeout_seconds, completion_mode, idle_complete_seconds, sentinel_text,
-                     enabled, created_at, updated_at)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                     session_persistence, resume_args_json, enabled, created_at, updated_at)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     rid,
@@ -95,6 +100,8 @@ class AgentRuntimeStore:
                     payload["completion_mode"],
                     payload["idle_complete_seconds"],
                     payload["sentinel_text"],
+                    payload["session_persistence"],
+                    _json_dumps(payload["resume_args"]),
                     int(payload["enabled"]),
                     now,
                     now,
@@ -135,6 +142,8 @@ class AgentRuntimeStore:
         for key, value in payload.items():
             if key == "args":
                 stored["args_json"] = _json_dumps(value)
+            elif key == "resume_args":
+                stored["resume_args_json"] = _json_dumps(value)
             elif key == "env":
                 stored["env_json"] = _json_dumps(value)
             elif key == "enabled":
@@ -173,6 +182,8 @@ class AgentRuntimeStore:
             "completion_mode",
             "idle_complete_seconds",
             "sentinel_text",
+            "session_persistence",
+            "resume_args",
             "enabled",
         ):
             if key in data:
@@ -187,6 +198,11 @@ class AgentRuntimeStore:
             result["command"] = validate_agent_command(str(result.get("command", "")))
 
         result["args"] = _clean_args(result.get("args")) if "args" in result else ([] if not partial else result.get("args"))
+        result["resume_args"] = (
+            _clean_resume_args(result.get("resume_args"))
+            if "resume_args" in result
+            else ([] if not partial else result.get("resume_args"))
+        )
         result["env"] = _clean_env(result.get("env")) if "env" in result else ({} if not partial else result.get("env"))
 
         if not partial or "prompt_transport" in result:
@@ -223,6 +239,17 @@ class AgentRuntimeStore:
             result["sentinel_text"] = str(result.get("sentinel_text") or "").strip()
         if result.get("completion_mode") == "sentinel" and not result.get("sentinel_text"):
             raise ValueError("sentinel completion_mode 需要填写 sentinel_text")
+        if not partial or "session_persistence" in result:
+            value = str(result.get("session_persistence") or "none").strip()
+            if value not in SESSION_PERSISTENCE_MODES:
+                raise ValueError(f"不支持的 session_persistence: {value}")
+            result["session_persistence"] = value
+        if result.get("session_persistence") == "resume_args" and not result.get("resume_args"):
+            raise ValueError("resume_args 会话策略需要填写 resume_args")
+        if result.get("resume_args"):
+            joined = "\n".join(result["resume_args"])
+            if "{session_id}" not in joined and "{resume_session_id}" not in joined:
+                raise ValueError("resume_args 必须包含 {session_id} 或 {resume_session_id} 占位符")
         if not partial or "enabled" in result:
             result["enabled"] = bool(result.get("enabled", True))
 
@@ -241,9 +268,11 @@ class AgentRuntimeStore:
 def _runtime_from_row(row: aiosqlite.Row) -> dict[str, Any]:
     data = dict(row)
     data["args"] = _json_loads(data.pop("args_json", "[]"), [])
+    data["resume_args"] = _json_loads(data.pop("resume_args_json", "[]"), [])
     data["env"] = _json_loads(data.pop("env_json", "{}"), {})
     data["completion_mode"] = data.get("completion_mode") or "process_exit"
     data["idle_complete_seconds"] = int(data.get("idle_complete_seconds") or 5)
     data["sentinel_text"] = data.get("sentinel_text") or ""
+    data["session_persistence"] = data.get("session_persistence") or "none"
     data["enabled"] = bool(data.get("enabled", 1))
     return data
