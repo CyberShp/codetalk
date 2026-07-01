@@ -1320,7 +1320,7 @@ async def list_task_run_artifacts(task_run_id: str) -> dict[str, Any]:
     task_dir = Path(task_run.artifact_dir)
     return {
         "task_run_id": task_run.task_run_id,
-        "artifact_dir": str(task_dir),
+        "artifact_dir": ".",
         "artifacts": _public_artifact_manifest(task_dir),
     }
 
