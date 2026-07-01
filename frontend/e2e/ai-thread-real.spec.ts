@@ -680,6 +680,118 @@ test("keeps historical AI thread reading stable while an agent run is streaming"
   }
 });
 
+test("jumps to latest when sending from a detached AI thread reading position", async ({
+  page,
+  request,
+}) => {
+  test.setTimeout(90_000);
+  const repo = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), "codetalk-ai-send-scroll-repo-")));
+  fs.writeFileSync(path.join(repo, "README.md"), "AI send-scroll e2e workspace\n", "utf8");
+  const runtimeDir = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), "codetalk-agent-send-scroll-")));
+  const runtimeScript = path.join(runtimeDir, "send_scroll_agent.py");
+  fs.writeFileSync(
+    runtimeScript,
+    [
+      "import sys",
+      "import time",
+      "prompt = sys.stdin.read()",
+      "if 'SEND_FROM_DETACHED_READER' in prompt:",
+      "    print('NEW-TURN-BEGIN latest-position-check', flush=True)",
+      "    for i in range(1, 16):",
+      "        print(f'NEW-TURN-LINE-{i:02d} should be near latest after user sends', flush=True)",
+      "        time.sleep(0.02)",
+      "    print('NEW-TURN-END latest-position-check', flush=True)",
+      "else:",
+      "    print('LONG-HISTORY-BEGIN latest-position-check', flush=True)",
+      "    for i in range(1, 100):",
+      "        print(f'LONG-HISTORY-LINE-{i:02d} retained context before next prompt', flush=True)",
+      "    print('LONG-HISTORY-END latest-position-check', flush=True)",
+      "",
+    ].join("\n"),
+    "utf8",
+  );
+  const workspaceName = `ai-send-scroll-e2e-${Date.now()}`;
+  const runtimeName = `Send scroll runtime ${Date.now()}`;
+  const threadTitle = `${workspaceName} send from history`;
+
+  const runtimeResp = await request.post(`${backendBase}/api/settings/agent-runtimes`, {
+    data: {
+      name: runtimeName,
+      command: "python3",
+      args: [runtimeScript],
+      prompt_transport: "stdin",
+      output_mode: "plain",
+      working_dir_mode: "project",
+      fixed_working_dir: "",
+      env: {},
+      health_command: "",
+      timeout_seconds: 30,
+      enabled: true,
+    },
+  });
+  expect(runtimeResp.status()).toBe(201);
+  const runtime = (await runtimeResp.json()) as { id: string };
+
+  const workspaceResp = await request.post(`${backendBase}/api/workspaces`, {
+    data: { name: workspaceName, repo_path: repo },
+  });
+  expect(workspaceResp.status()).toBe(201);
+
+  try {
+    await page.goto("/ai", { waitUntil: "domcontentloaded" });
+    const projectButton = page.locator("button").filter({ hasText: workspaceName }).first();
+    await expect(projectButton).toBeVisible({ timeout: 15_000 });
+    await projectButton.hover();
+    await projectButton.click();
+
+    await page.getByLabel("AI 线程执行器").selectOption({ label: runtimeName });
+    await page.getByPlaceholder(/线程名称/).fill(threadTitle);
+    await page.getByRole("button", { name: "新建线程" }).hover();
+    await page.getByRole("button", { name: "新建线程" }).click();
+
+    await page.waitForURL(/\/ai\/[^/]+$/, { timeout: 15_000 });
+    await expect(page.getByRole("heading", { name: threadTitle })).toBeVisible({
+      timeout: 15_000,
+    });
+    await expect(page.getByLabel("当前 AI 执行器")).toHaveValue(runtime.id);
+
+    const composer = page.getByPlaceholder(/像 Codex 一样继续追问/);
+    await composer.fill("SEED_LONG_HISTORY 生成长历史，随后从旧位置继续提问");
+    await page.getByRole("button", { name: "发送" }).hover();
+    await page.getByRole("button", { name: "发送" }).click();
+    await expect(page.getByText("LONG-HISTORY-END latest-position-check")).toBeVisible({ timeout: 30_000 });
+    await expect(page.getByRole("button", { name: "停止" })).toHaveCount(0, { timeout: 15_000 });
+
+    const reader = page.getByLabel("AI 线程对话内容");
+    await expect
+      .poll(async () => reader.evaluate((element) => element.scrollHeight > element.clientHeight * 2))
+      .toBeTruthy();
+    await reader.hover();
+    await page.mouse.wheel(0, -2600);
+    await expect(page.getByText("LONG-HISTORY-LINE-45")).toBeVisible({ timeout: 10_000 });
+    await expect
+      .poll(async () =>
+        reader.evaluate((element) => element.scrollHeight - element.scrollTop - element.clientHeight),
+      )
+      .toBeGreaterThan(240);
+
+    await composer.fill("SEND_FROM_DETACHED_READER 发送新问题时应该回到最新回复区域");
+    await page.getByRole("button", { name: "发送" }).hover();
+    await page.getByRole("button", { name: "发送" }).click();
+
+    await expect(page.getByText("NEW-TURN-BEGIN latest-position-check")).toBeVisible({ timeout: 20_000 });
+    await expect
+      .poll(async () =>
+        reader.evaluate((element) => element.scrollHeight - element.scrollTop - element.clientHeight),
+      )
+      .toBeLessThan(120);
+    await expect(page.getByRole("button", { name: "跳到最新回复" })).toHaveCount(0);
+    await expect(page.getByText("NEW-TURN-END latest-position-check")).toBeVisible({ timeout: 30_000 });
+  } finally {
+    await request.delete(`${backendBase}/api/settings/agent-runtimes/${encodeURIComponent(runtime.id)}`);
+  }
+});
+
 test("keeps real agent thinking diagnostics collapsed and out of the persisted answer", async ({
   page,
   request,
