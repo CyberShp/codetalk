@@ -1063,7 +1063,7 @@ def _collect_source_refs_sync(repo: Path, workspace_id: str, query: str) -> list
     for path_hint in _path_hints(query):
         candidate = (repo_root / path_hint).resolve()
         if _safe_source_dir(repo_root, candidate):
-            for source_path in _directory_source_candidates(repo_root, candidate):
+            for source_path in _directory_source_candidates(repo_root, candidate, query=query):
                 ref = _source_file_ref(repo_root, workspace_id, source_path, line=1)
                 if ref and ref.source_id not in seen:
                     refs.append(ref)
@@ -1251,11 +1251,12 @@ def _safe_source_dir(repo_root: Path, path: Path) -> bool:
     return path.exists() and path.is_dir()
 
 
-def _directory_source_candidates(repo_root: Path, directory: Path) -> list[Path]:
+def _directory_source_candidates(repo_root: Path, directory: Path, *, query: str = "") -> list[Path]:
     ignored_parts = {".git", "build", "node_modules", ".next", ".venv", "__pycache__"}
     candidates: list[Path] = []
+    query_terms = _query_terms(query)
     try:
-        paths = sorted(directory.rglob("*"), key=_source_candidate_rank)
+        paths = sorted(directory.rglob("*"), key=lambda path: _source_candidate_rank_for_query(path, query_terms))
     except Exception:
         return []
     for path in paths:
@@ -1267,6 +1268,14 @@ def _directory_source_candidates(repo_root: Path, directory: Path) -> list[Path]
         if _safe_source_file(repo_root, resolved):
             candidates.append(resolved)
     return candidates
+
+
+def _source_candidate_rank_for_query(path: Path, query_terms: list[str]) -> tuple[int, int, str]:
+    rel_text = path.as_posix().lower()
+    name_text = path.stem.lower()
+    matched = any(term in name_text or term in rel_text for term in query_terms)
+    bucket, normalized = _source_candidate_rank(path)
+    return (0 if matched else 1, bucket, normalized)
 
 
 def _source_candidate_rank(path: Path) -> tuple[int, str]:

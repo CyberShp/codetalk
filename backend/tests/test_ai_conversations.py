@@ -720,6 +720,58 @@ class TestAIConversationsAPI:
         assert source_refs[0].metadata["path"].startswith("lib/nvmf/")
         assert "nvmf_io_path" in source_refs[0].excerpt
 
+    async def test_storage_domain_directory_hint_prefers_query_matching_source_file(
+        self,
+        sqlite_db,
+        tmp_path: Path,
+    ):
+        repo = tmp_path / "repo"
+        nvmf_dir = repo / "lib" / "nvmf"
+        nvmf_dir.mkdir(parents=True)
+        (nvmf_dir / "admin.c").write_text(
+            "int nvmf_admin_unrelated(void) { return 0; }\n",
+            encoding="utf-8",
+        )
+        (nvmf_dir / "connect.c").write_text(
+            "\n".join(
+                [
+                    "int nvmf_connect_target_flow(void) {",
+                    "    return 1;",
+                    "}",
+                ]
+            ),
+            encoding="utf-8",
+        )
+        ws_id = "ws-storage-domain-connect"
+        now = datetime.now(timezone.utc).isoformat()
+        async with aiosqlite.connect(sqlite_db) as db:
+            await db.execute(
+                "INSERT INTO workspaces (id, name, repo_path, indexed, created_at, updated_at) "
+                "VALUES (?, 'Storage Connect WS', ?, 1, ?, ?)",
+                (ws_id, str(repo), now, now),
+            )
+            await db.commit()
+
+        from app.services.ai_conversations import build_context_references
+
+        refs = await build_context_references(
+            conversation={
+                "id": "conv-storage-domain-connect",
+                "scope_type": "workspace",
+                "scope_id": ws_id,
+                "workspace_id": ws_id,
+                "memory_namespace": f"workspace:{ws_id}",
+                "initial_context": {},
+            },
+            user_message="分析 SPDK NVMe-oF target connect 到 IO 提交流程",
+            db_path=sqlite_db,
+        )
+        source_refs = [ref for ref in refs if ref.source_type == "workspace_source"]
+
+        assert source_refs
+        assert source_refs[0].metadata["path"] == "lib/nvmf/connect.c"
+        assert "nvmf_connect_target_flow" in source_refs[0].excerpt
+
     async def test_storage_domain_path_hints_cover_spdk_workflow_modules(self):
         from app.services.ai_conversations import _storage_domain_path_hints
 
