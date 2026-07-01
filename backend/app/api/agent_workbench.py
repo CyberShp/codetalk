@@ -4942,11 +4942,18 @@ def _acceptance_black_box_case_quality_check(
 
 
 _BLACK_BOX_WHITE_BOX_RE = re.compile(
-    r"(?i)\b("
-    r"invoke|call|mock|stub|patch|unit\s*test|internal\s+function|"
-    r"direct\s+function|private\s+function|return\s+value|"
-    r"[a-z_][a-z0-9_]*\s*\("
-    r")\b"
+    r"(?i)("
+    r"\b(?:invoke|call|mock|stub|patch|unit\s*test|internal\s+function|"
+    r"direct\s+function|private\s+function|return\s+value)\b|"
+    r"\b[a-z_][a-z0-9_]*\s*\(|"
+    r"\b[a-z0-9_./-]+\.(?:c|cc|cpp|cxx|h|hpp):\d+\b|"
+    r"->|::|"
+    r"调用\s*(?:内部|私有)?\s*(?:函数|方法)|"
+    r"(?:内部|私有)(?:函数|方法|变量|状态|字段|调用栈)|"
+    r"返回值|调用栈|"
+    r"修改[^，。；;\n]*?(?:变量|状态|字段)|"
+    r"进入[^，。；;\n]*?:\d+[^，。；;\n]*?分支"
+    r")"
 )
 
 

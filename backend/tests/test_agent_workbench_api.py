@@ -4034,6 +4034,88 @@ async def test_workbench_task_run_acceptance_audit_rejects_non_black_box_case_co
     assert any("white_box_boundary" in item["reasons"] for item in quality_check["invalid_cases"])
 
 
+async def test_workbench_task_run_acceptance_audit_rejects_chinese_white_box_case_content(
+    workbench_client,
+    tmp_path,
+    monkeypatch,
+):
+    from app.config import settings
+
+    script_path = tmp_path / "agent_bad_chinese_black_box_case.py"
+    script_path.write_text(
+        "import json, os, pathlib, sys\n"
+        "json.load(sys.stdin)\n"
+        "root=pathlib.Path(os.environ['CODETALK_AGENT_ARTIFACT_DIR'])\n"
+        "case = {"
+        "'case_id':'bb_nvmf_connect_internal_state',"
+        "'title':'NVMe-oF connect 内部状态断言',"
+        "'preconditions':['SPDK NVMe-oF target 已启动，测试主机可以连接 target'],"
+        "'steps':['调用 spdk_nvmf_ctrlr_connect() 并断言返回值',"
+        "'修改内部变量 ctrlr->state 后进入 lib/nvmf/ctrlr.c:42 分支'],"
+        "'expected':['返回值为 0 且内部状态字段符合预期'],"
+        "'observability':['观察 target 日志和 initiator 连接结果'],"
+        "'diagnostics':['检查内部函数调用栈和私有状态字段'],"
+        "'suggested_spdk_test_dir':'test/nvmf'}\n"
+        "(root/'black_box_cases.json').write_text(json.dumps([case]), encoding='utf-8')\n",
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(settings, "external_agent_custom_providers", [
+        {"id": "local-python", "command": f"python {script_path}"}
+    ])
+    workflow = {
+        "id": "acceptance_chinese_bad_black_box_cases_workflow",
+        "name": "Acceptance Chinese bad black-box cases workflow",
+        "version": 1,
+        "inputs": [{"id": "module", "type": "free_text"}],
+        "steps": [
+            {
+                "id": "design",
+                "type": "agent_task",
+                "provider": "local-python",
+                "required_artifacts": ["black_box_cases.json"],
+            }
+        ],
+        "outputs": [
+            {
+                "id": "black_box_cases",
+                "type": "test_cases",
+                "from": "design",
+                "artifact": "black_box_cases.json",
+                "semantic_import": {"enabled": True},
+            }
+        ],
+    }
+    assert (await workbench_client.post("/api/workbench/workflows", json=workflow)).status_code == 201
+    prepared = await workbench_client.post(
+        "/api/workbench/task-runs/prepare",
+        json={
+            "workflow_id": "acceptance_chinese_bad_black_box_cases_workflow",
+            "workspace_id": "ws-acceptance-chinese-bad-black-box",
+            "repo_path": str(tmp_path),
+            "inputs": {"module": "lib/nvmf"},
+        },
+    )
+    task_run_id = prepared.json()["task_run_id"]
+    executed = await workbench_client.post(
+        f"/api/workbench/task-runs/{task_run_id}/execute",
+        json={"timeout_sec": 10},
+    )
+    assert executed.status_code == 200
+
+    response = await workbench_client.post(
+        f"/api/workbench/task-runs/{task_run_id}/acceptance-audit"
+    )
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["status"] == "incomplete"
+    checks = {item["id"]: item for item in body["checks"]}
+    quality_check = checks["black_box_case_quality:design:black_box_cases.json"]
+    assert quality_check["status"] == "invalid"
+    assert quality_check["invalid_count"] == 1
+    assert any("white_box_boundary" in item["reasons"] for item in quality_check["invalid_cases"])
+
+
 async def test_workbench_task_run_acceptance_audit_requires_black_box_observability_fields(
     workbench_client,
     tmp_path,
