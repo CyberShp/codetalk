@@ -68,6 +68,12 @@ function threadWorkspaceId(thread: AIConversation | null): string {
   return "global";
 }
 
+function publicWorkspaceLabel(workspace: Workspace | null, thread: AIConversation | null): string {
+  const id = workspace?.id ?? threadWorkspaceId(thread);
+  if (id && id !== "global") return `workspace:${id}`;
+  return thread?.memory_namespace ?? "global";
+}
+
 function uniqueReferences(messages: AIMessage[]): AIContextReference[] {
   const map = new Map<string, AIContextReference>();
   for (const msg of messages) {
@@ -652,7 +658,7 @@ export default function AIThreadPage() {
         <div className="ct-codex-ai__project">
           <span>当前项目</span>
           <strong>{workspace?.name ?? "未绑定项目"}</strong>
-          <small>{workspace?.repo_path ?? conversation?.memory_namespace ?? "global"}</small>
+          <small>{publicWorkspaceLabel(workspace, conversation)}</small>
         </div>
         <div className="ct-codex-ai__rail-group">
           <div className="ct-codex-ai__rail-label">
