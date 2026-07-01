@@ -2090,7 +2090,6 @@ body:has(.ct-modal-backdrop) .ct-ai-dock-wrap {
   gap: 10px;
   margin: 0 auto 14px;
   max-width: 820px;
-  animation: ct-thread-item-in var(--motion-medium) var(--motion-ease) both;
 }
 
 .ct-codex-message.is-user {
