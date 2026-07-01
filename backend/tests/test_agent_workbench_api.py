@@ -1629,6 +1629,18 @@ async def test_workbench_task_run_list_get_and_materialize_evidence_api(workbenc
     assert search.json()["items"][0]["kind"] == "changed_file"
     assert search.json()["items"][0]["subject_key"] == "src/tls.c"
 
+    artifact_search = await workbench_client.get(
+        "/api/workbench/memory/search",
+        params={"q": "diff.patch", "workspace_id": "ws-materialize"},
+    )
+    assert artifact_search.status_code == 200
+    artifact_items = [
+        item for item in artifact_search.json()["items"] if item["kind"] == "agent_artifact"
+    ]
+    assert artifact_items
+    assert artifact_items[0]["path"] == f"agent_runs/{step_id}/diff.patch"
+    assert str(_task_run_dir(task_run_id)) not in json.dumps(artifact_items, ensure_ascii=False)
+
 
 async def test_workbench_task_run_execute_workflow_api(workbench_client, tmp_path, monkeypatch):
     from app.config import settings
