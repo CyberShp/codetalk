@@ -62,12 +62,11 @@ export default function WorkspacesPage() {
 
       {!loading && workspaces.length > 0 && (
         <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-4">
-          {workspaces.map((ws, index) => (
+          {workspaces.map((ws) => (
             <Link
               key={ws.id}
               href={`/workspaces/${ws.id}`}
               className="ct-interactive-card block p-5 rounded-xl border border-outline-variant/30 bg-surface-container-low hover:bg-surface-container transition-colors"
-              style={{ animationDelay: `${80 + index * 55}ms` }}
             >
               <div className="flex items-start gap-3">
                 <FolderOpen size={20} className="text-primary shrink-0 mt-0.5" />

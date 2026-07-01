@@ -37,6 +37,19 @@ _state = DeploymentState()
 KNOWN_SERVICES = ("backend", "frontend", "gitnexus", "cgc")
 
 
+def _enabled_service_ports(cfg: dict) -> list[int]:
+    """Return ports for services that this deployment is configured to start."""
+    ports = [
+        int(cfg.get("backend_port", 3004)),
+        int(cfg.get("frontend_port", 3003)),
+    ]
+    if cfg.get("install_gitnexus", True):
+        ports.append(int(cfg.get("gitnexus_port", 7100)))
+    if cfg.get("install_cgc", True):
+        ports.append(int(cfg.get("cgc_port", 7072)))
+    return ports
+
+
 def _launch_job(coro) -> str:
     """Start a deployment coroutine as an asyncio task and return the job_id."""
     job_id = str(uuid.uuid4())
@@ -128,12 +141,7 @@ async def api_deploy(body: dict):
             if old_deployer is not None and hasattr(old_deployer, "_start_args"):
                 deployer._start_args.update(old_deployer._start_args)
             if not force_takeover:
-                backend_port = cfg.get("backend_port", 3004)
-                frontend_port = cfg.get("frontend_port", 3003)
-                gitnexus_port = cfg.get("gitnexus_port", 7100)
-                ports = [backend_port, frontend_port]
-                if cfg.get("install_gitnexus", True):
-                    ports.append(gitnexus_port)
+                ports = _enabled_service_ports(cfg)
                 conflicts = await deployer._scan_port_conflicts(ports)
                 if conflicts:
                     raise HTTPException(
@@ -307,12 +315,7 @@ async def api_quickstart(request: Request):
             deployer._start_args.update(old_deployer._start_args)
 
         if not force_takeover:
-            backend_port = cfg.get("backend_port", 3004)
-            frontend_port = cfg.get("frontend_port", 3003)
-            gitnexus_port = cfg.get("gitnexus_port", 7100)
-            ports = [backend_port, frontend_port]
-            if cfg.get("install_gitnexus", True):
-                ports.append(gitnexus_port)
+            ports = _enabled_service_ports(cfg)
             conflicts = await deployer._scan_port_conflicts(ports)
             if conflicts:
                 raise HTTPException(
