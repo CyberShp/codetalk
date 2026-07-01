@@ -206,7 +206,16 @@ function buildThreadMarkdown(conversation: AIConversation | null, messages: AIMe
       lines.push("");
       lines.push("### 证据引用");
       for (const ref of message.references) {
+        const location = sourceLocationLabel(ref);
+        const sourceHref = sourceReferenceHref(ref);
+        const artifactHref = artifactReferenceHref(ref);
         lines.push(`- ${redactDiagnosticText(ref.title)} (${ref.source_type}:${ref.source_id})`);
+        if (location) {
+          const label = ref.source_type === "workbench_task_artifact" ? "任务产物" : "源码位置";
+          lines.push(`  - ${label}: ${redactDiagnosticText(location)}`);
+        }
+        if (sourceHref) lines.push(`  - 源码链接: ${redactDiagnosticText(sourceHref)}`);
+        if (artifactHref) lines.push(`  - 产物链接: ${redactDiagnosticText(artifactHref)}`);
         if (ref.excerpt) lines.push(`  - ${redactDiagnosticText(ref.excerpt)}`);
       }
     }
