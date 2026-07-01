@@ -79,6 +79,13 @@ function uniqueReferences(messages: AIMessage[]): AIContextReference[] {
 }
 
 function sourceLocationLabel(ref: AIContextReference): string {
+  if (ref.source_type === "workbench_task_artifact") {
+    const taskRunId = typeof ref.metadata?.task_run_id === "string" ? ref.metadata.task_run_id.trim() : "";
+    const sourceId = ref.source_id.trim();
+    const artifactName =
+      taskRunId && sourceId.startsWith(`${taskRunId}/`) ? sourceId.slice(taskRunId.length + 1) : ref.title.trim();
+    return [taskRunId, artifactName].filter(Boolean).join(" · ");
+  }
   if (ref.source_type !== "workspace_source") return "";
   const path = ref.metadata?.path;
   if (typeof path !== "string" || !path.trim()) return "";
@@ -99,9 +106,15 @@ function EvidenceReferenceCard({ refItem }: { refItem: AIContextReference }) {
         <span>{refItem.title}</span>
         <code>{refItem.source_type}</code>
       </div>
-      {sourceLocation && (
+      {refItem.source_type === "workspace_source" && sourceLocation && (
         <div className="ct-ai-ref__meta">
           <span>源码位置</span>
+          <code>{sourceLocation}</code>
+        </div>
+      )}
+      {refItem.source_type === "workbench_task_artifact" && sourceLocation && (
+        <div className="ct-ai-ref__meta">
+          <span>任务产物</span>
           <code>{sourceLocation}</code>
         </div>
       )}
