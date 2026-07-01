@@ -100,6 +100,108 @@ SFMEA_SCHEMA: dict[str, Any] = {
 }
 
 
+SOURCE_FLOW_REQUIRED_ARTIFACTS = [
+    "source_scope.json",
+    "evidence_cards.json",
+    "flow_map.md",
+    "sfmea.json",
+    "black_box_cases.json",
+]
+
+
+def _source_flow_outputs(tag: str) -> list[dict[str, Any]]:
+    return [
+        {
+            "id": "source_scope",
+            "type": "json",
+            "from": "analyze_source_flow",
+            "artifact": "source_scope.json",
+            "schema": SOURCE_SCOPE_SCHEMA,
+        },
+        {
+            "id": "code_evidence",
+            "type": "json",
+            "from": "analyze_source_flow",
+            "artifact": "evidence_cards.json",
+            "schema": EVIDENCE_CARDS_SCHEMA,
+        },
+        {
+            "id": "flow_map",
+            "type": "markdown",
+            "from": "analyze_source_flow",
+            "artifact": "flow_map.md",
+        },
+        {
+            "id": "sfmea",
+            "type": "json",
+            "from": "analyze_source_flow",
+            "artifact": "sfmea.json",
+            "schema": SFMEA_SCHEMA,
+        },
+        {
+            "id": "black_box_cases",
+            "type": "test_cases",
+            "from": "analyze_source_flow",
+            "artifact": "black_box_cases.json",
+            "semantic_import": {
+                "enabled": True,
+                "defaults": {
+                    "test_level": "black_box",
+                    "tags": [tag],
+                },
+            },
+        },
+        {"id": "report", "type": "markdown", "from": "render_report"},
+    ]
+
+
+def _source_flow_scenario_preset(
+    *,
+    preset_id: str,
+    name: str,
+    description: str,
+    default_query: str,
+) -> dict[str, Any]:
+    return {
+        "id": preset_id,
+        "name": name,
+        "description": description,
+        "definition": {
+            "id": preset_id,
+            "name": name,
+            "version": 1,
+            "inputs": [
+                {
+                    "id": "analysis_object",
+                    "type": "free_text",
+                    "required": False,
+                    "role": "optional override for the preset scenario scope",
+                },
+                {"id": "repo_path", "type": "directory", "required": True, "resolver": "local"},
+                {"id": "requirements_doc", "type": "file", "required": False, "role": "requirements"},
+                {"id": "design_doc", "type": "file", "required": False, "role": "design"},
+                {"id": "coverage_report", "type": "coverage_report", "required": False, "role": "coverage context"},
+                {"id": "semantic_library_ref", "type": "semantic_library_ref", "required": False, "role": "test terminology"},
+            ],
+            "steps": [
+                {
+                    "id": "analyze_source_flow",
+                    "type": "local_source_flow_sfmea_blackbox",
+                    "goal": (
+                        "Run a scenario-focused source evidence, flow, SFMEA, and black-box "
+                        "test generation chain. Check GitNexus/CGC artifacts first when present."
+                    ),
+                    "default_query": default_query,
+                    "required_artifacts": SOURCE_FLOW_REQUIRED_ARTIFACTS,
+                },
+                {"id": "validate_evidence", "type": "evidence_validate"},
+                {"id": "render_report", "type": "report_render"},
+            ],
+            "outputs": _source_flow_outputs(preset_id),
+        },
+    }
+
+
 def builtin_workflow_presets() -> list[dict[str, Any]]:
     """Return versioned workflow presets users can install and customize."""
 
@@ -259,6 +361,67 @@ def builtin_workflow_presets() -> list[dict[str, Any]]:
                 ],
             },
         },
+        _source_flow_scenario_preset(
+            preset_id="nvmf_connect_io_blackbox",
+            name="NVMe-oF Connect / IO Black-box Scenario",
+            description=(
+                "Analyze SPDK NVMe-oF connect, authentication, queue setup, IO submit, "
+                "disconnect/reconnect, timeout, and reset behavior for source-backed SFMEA "
+                "and black-box cases."
+            ),
+            default_query=(
+                "lib/nvmf test/nvmf NVMe-oF connect authentication queue setup IO submit "
+                "disconnect reconnect timeout controller reset"
+            ),
+        ),
+        _source_flow_scenario_preset(
+            preset_id="iscsi_login_session_blackbox",
+            name="iSCSI Login / Session Black-box Scenario",
+            description=(
+                "Analyze SPDK iSCSI login, CHAP, digest, multi-connection, session reset, "
+                "redirect, and initiator disconnect behavior for SFMEA and black-box cases."
+            ),
+            default_query=(
+                "lib/iscsi test/iscsi_tgt iSCSI login CHAP digest multi-connection session "
+                "reset redirect initiator disconnect authentication failure"
+            ),
+        ),
+        _source_flow_scenario_preset(
+            preset_id="bdev_io_reset_blackbox",
+            name="bdev IO / Reset Black-box Scenario",
+            description=(
+                "Analyze SPDK bdev open, submit, complete, error returns, pending reset, "
+                "IO drain, reconnect, failover, and resource pressure behavior."
+            ),
+            default_query=(
+                "lib/bdev module/bdev test/bdev bdev open submit complete error return "
+                "pending reset IO drain reconnect failover resource pressure"
+            ),
+        ),
+        _source_flow_scenario_preset(
+            preset_id="rpc_config_negative_blackbox",
+            name="RPC / Config Negative Black-box Scenario",
+            description=(
+                "Analyze public RPC/config flows for invalid parameters, repeated calls, "
+                "ordering errors, partial success, rollback, idempotency, and diagnostics."
+            ),
+            default_query=(
+                "rpc config app test/json_config invalid parameter repeated call ordering "
+                "partial success rollback idempotency diagnostics"
+            ),
+        ),
+        _source_flow_scenario_preset(
+            preset_id="reactor_thread_poller_blackbox",
+            name="Reactor / Thread / Poller Black-box Scenario",
+            description=(
+                "Analyze reactor, thread, message passing, poller scheduling, blocking pollers, "
+                "long task dispatch, concurrency, recovery, and performance degradation."
+            ),
+            default_query=(
+                "lib/thread lib/event lib/scheduler test/thread reactor thread message poller "
+                "scheduling blocking long task concurrency recovery performance degradation"
+            ),
+        ),
         {
             "id": "mr_blackbox_test",
             "name": "MR Black-box Test Design",

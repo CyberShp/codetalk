@@ -116,6 +116,13 @@ async def test_workbench_workflow_preset_api(workbench_client):
     assert "mr_blackbox_test" in preset_ids
     assert "resource_leak_hunt" in preset_ids
     assert "source_flow_sfmea_blackbox" in preset_ids
+    assert {
+        "nvmf_connect_io_blackbox",
+        "iscsi_login_session_blackbox",
+        "bdev_io_reset_blackbox",
+        "rpc_config_negative_blackbox",
+        "reactor_thread_poller_blackbox",
+    }.issubset(preset_ids)
 
     installed = await workbench_client.post(
         "/api/workbench/workflow-presets/mr_blackbox_test/install"
@@ -2121,6 +2128,58 @@ async def test_builtin_source_flow_sfmea_blackbox_run_produces_four_piece_chain(
     assert cases[0]["case_type"] == "black_box_ready"
     assert "public workflow" in cases[0]["inputs"]
     assert all("spdk_nvmf_ctrlr_connect" not in step for step in cases[0]["steps"])
+
+
+async def test_builtin_common_scenario_preset_uses_default_query_when_scope_is_empty(
+    workbench_client,
+    tmp_path,
+):
+    repo = tmp_path / "spdk-like"
+    nvmf_file = repo / "lib" / "nvmf" / "ctrlr.c"
+    iscsi_file = repo / "lib" / "iscsi" / "conn.c"
+    nvmf_file.parent.mkdir(parents=True)
+    iscsi_file.parent.mkdir(parents=True)
+    nvmf_file.write_text(
+        "int spdk_nvmf_connect_default_query_probe(void) { return 0; }\n",
+        encoding="utf-8",
+    )
+    iscsi_file.write_text(
+        "int spdk_iscsi_should_not_be_first_for_nvmf(void) { return 0; }\n",
+        encoding="utf-8",
+    )
+
+    installed = await workbench_client.post(
+        "/api/workbench/workflow-presets/nvmf_connect_io_blackbox/install"
+    )
+    assert installed.status_code == 201
+    assert installed.json()["id"] == "nvmf_connect_io_blackbox"
+
+    response = await workbench_client.post(
+        "/api/workbench/task-runs/run",
+        json={
+            "workflow_id": "nvmf_connect_io_blackbox",
+            "workspace_id": "ws-nvmf-default-query",
+            "repo_path": str(repo),
+            "inputs": {
+                "repo_path": str(repo),
+            },
+            "timeout_sec": 10,
+        },
+    )
+
+    assert response.status_code == 201
+    body = response.json()
+    assert body["status"] == "completed"
+    outputs = {item["id"]: item for item in body["execution"]["outputs"]}
+    assert outputs["source_scope"]["status"] == "ok"
+    assert outputs["black_box_cases"]["status"] == "ok"
+
+    task_dir = _task_run_dir(body["task_run"]["task_run_id"])
+    scope_path = task_dir / "steps" / "analyze_source_flow" / "source_scope.json"
+    scope = json.loads(scope_path.read_text(encoding="utf-8"))
+    assert "lib/nvmf" in scope["query"]
+    assert scope["files"]
+    assert scope["files"][0].startswith("lib/nvmf/")
 
 
 async def test_workbench_task_run_run_auto_imports_declared_semantic_outputs(

@@ -763,7 +763,10 @@ def _local_scope_discovery_payloads(
     step: dict[str, Any],
 ) -> dict[str, Any]:
     repo = Path(str(task_run.repo_path or ""))
-    query = _public_local_scope_query(task_run)
+    query = _public_local_scope_query(
+        task_run,
+        default_query=str(step.get("default_query") or ""),
+    )
     files = _discover_local_source_files(repo, query)
     evidence_cards = [
         _local_evidence_card(repo=repo, file_path=file_path, query=query, index=index)
@@ -965,12 +968,11 @@ def _source_flow_black_box_case(
     return case
 
 
-def _local_scope_query(input_snapshot: dict[str, Any]) -> str:
+def _local_scope_query(input_snapshot: dict[str, Any], *, default_query: str = "") -> str:
     preferred_keys = (
         "analysis_object",
         "target_scope",
         "module",
-        "repo_path",
         "patch_diff",
         "patch_plan",
         "mr_link",
@@ -980,6 +982,10 @@ def _local_scope_query(input_snapshot: dict[str, Any]) -> str:
         for key in preferred_keys
         if str(input_snapshot.get(key) or "").strip()
     ]
+    if not parts and default_query.strip():
+        parts = [default_query.strip()]
+    if not parts and str(input_snapshot.get("repo_path") or "").strip():
+        parts = [str(input_snapshot.get("repo_path") or "").strip()]
     if not parts:
         parts = [
             str(value).strip()
@@ -989,9 +995,9 @@ def _local_scope_query(input_snapshot: dict[str, Any]) -> str:
     return " ".join(parts)[:2000]
 
 
-def _public_local_scope_query(task_run: Any) -> str:
+def _public_local_scope_query(task_run: Any, *, default_query: str = "") -> str:
     return _redact_workbench_public_text(
-        _local_scope_query(task_run.input_snapshot),
+        _local_scope_query(task_run.input_snapshot, default_query=default_query),
         task_run=task_run,
     )
 

@@ -183,6 +183,11 @@ const WORKFLOW_NAME_ZH: Record<string, string> = {
   module_analysis: "模块分析工作流",
   resource_leak_hunt: "资源/异常路径排查工作流",
   source_flow_sfmea_blackbox: "代码分析-流程-SFMEA-黑盒用例工作流",
+  nvmf_connect_io_blackbox: "NVMe-oF 连接/IO 黑盒场景",
+  iscsi_login_session_blackbox: "iSCSI 登录/会话黑盒场景",
+  bdev_io_reset_blackbox: "bdev IO/reset 黑盒场景",
+  rpc_config_negative_blackbox: "RPC/config 负例黑盒场景",
+  reactor_thread_poller_blackbox: "reactor/thread/poller 调度黑盒场景",
   patch_impact: "补丁影响面计划工作流",
 };
 

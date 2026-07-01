@@ -9,6 +9,12 @@ def test_builtin_workflow_presets_are_valid_and_cover_core_scenarios():
         "resource_leak_hunt",
         "mr_blackbox_test",
         "patch_impact_review",
+        "source_flow_sfmea_blackbox",
+        "nvmf_connect_io_blackbox",
+        "iscsi_login_session_blackbox",
+        "bdev_io_reset_blackbox",
+        "rpc_config_negative_blackbox",
+        "reactor_thread_poller_blackbox",
     }.issubset({item["id"] for item in presets})
 
     for preset in presets:
@@ -67,6 +73,24 @@ def test_builtin_workflow_presets_are_valid_and_cover_core_scenarios():
     assert impact_output["artifact"] == "impact_scope.json"
     assert impact_output["evidence_memory"]["enabled"] is True
     assert impact_output["evidence_memory"]["kind"] == "patch_impact_scope"
+
+    scenario_preset = next(item for item in presets if item["id"] == "nvmf_connect_io_blackbox")
+    scenario_step = next(
+        item
+        for item in scenario_preset["definition"]["steps"]
+        if item["id"] == "analyze_source_flow"
+    )
+    assert scenario_step["type"] == "local_source_flow_sfmea_blackbox"
+    assert "lib/nvmf" in scenario_step["default_query"]
+    assert "black_box_cases.json" in scenario_step["required_artifacts"]
+    scenario_outputs = {
+        item["id"]: item
+        for item in scenario_preset["definition"]["outputs"]
+    }
+    assert scenario_outputs["source_scope"]["schema"]["type"] == "object"
+    assert scenario_outputs["code_evidence"]["schema"]["type"] == "array"
+    assert scenario_outputs["sfmea"]["schema"]["type"] == "array"
+    assert scenario_outputs["black_box_cases"]["semantic_import"]["enabled"] is True
 
 
 def test_workflow_preset_can_be_installed_into_store(tmp_path):
