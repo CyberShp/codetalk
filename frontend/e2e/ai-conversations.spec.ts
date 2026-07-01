@@ -947,6 +947,16 @@ test("AI conversation keeps generation diagnostics collapsed outside the answer 
   await page.getByText("生成诊断：默认折叠").click();
   await expect(page.getByText("正在准备工作区源码上下文")).toBeVisible();
   await expect(page.getByText("正在读取 lib/nvmf/connect.c")).toBeVisible();
+
+  const downloadPromise = page.waitForEvent("download");
+  await page.getByRole("button", { name: "导出" }).click();
+  const download = await downloadPromise;
+  const exportPath = test.info().outputPath("ai-thread-diagnostic-export.md");
+  await download.saveAs(exportPath);
+  const exported = fs.readFileSync(exportPath, "utf8");
+  expect(exported).toContain("最终答案：覆盖 reconnect timeout 的黑盒观察点。");
+  expect(exported).not.toContain("正在准备工作区源码上下文");
+  expect(exported).not.toContain("正在读取 lib/nvmf/connect.c");
 });
 
 test("AI conversation remains usable on a narrow mobile viewport", async ({ page }) => {
