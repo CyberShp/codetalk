@@ -292,7 +292,16 @@ def _parse_event_text(text: str, output_mode: str) -> str | None:
         return _clean_agent_text(unwrapped)
     if _looks_like_protocol_noise(event):
         return ""
+    if output_mode == "auto" and _looks_like_agent_json_envelope(event):
+        return ""
     return None
+
+
+def _looks_like_agent_json_envelope(event: dict[str, Any]) -> bool:
+    return bool(
+        set(event)
+        & {"type", "event", "kind", "item", "message", "role", "subtype", "session_id", "thread_id"}
+    )
 
 
 def _sse_payload_text(text: str) -> str:
@@ -315,6 +324,15 @@ def _sse_payload_text(text: str) -> str:
 
 
 def _event_text(event: dict[str, Any]) -> str | None:
+    codex_item = event.get("item")
+    if isinstance(codex_item, dict):
+        if str(codex_item.get("type") or "").strip() == "agent_message":
+            value = codex_item.get("text") or codex_item.get("content")
+            return value if isinstance(value, str) else None
+        return None
+    if str(event.get("type") or "").strip() == "message" and str(event.get("role") or "").strip() == "assistant":
+        value = event.get("content")
+        return value if isinstance(value, str) else None
     for key in ("delta", "text", "content", "message"):
         value = event.get(key)
         if isinstance(value, str):
@@ -393,8 +411,22 @@ def _looks_like_protocol_noise(event: dict[str, Any]) -> bool:
     if keys <= {"id", "index", "created", "created_at", "model", "object", "type", "role", "finish_reason", "usage"}:
         return True
     event_type = str(event.get("type") or event.get("event") or "")
-    if event_type in {"message_start", "message_stop", "content_block_start", "content_block_stop", "done"}:
+    if event_type in {
+        "message_start",
+        "message_stop",
+        "content_block_start",
+        "content_block_stop",
+        "done",
+        "system",
+        "thread.started",
+        "turn.started",
+        "turn.completed",
+        "result",
+    }:
         return True
+    if event_type == "item.completed":
+        item = event.get("item")
+        return not (isinstance(item, dict) and str(item.get("type") or "") == "agent_message")
     if event_type.startswith("response.") and event_type not in {
         "response.output_text.delta",
         "response.reasoning_text.delta",
@@ -613,6 +645,21 @@ _PROGRESS_STATUS_RE = re.compile(
     r"[\s:：.\-_/\\]*(?:\d{1,3}%|\d+/\d+|\d{1,6})\s*$",
     re.IGNORECASE,
 )
+_CLI_BANNER_RE = re.compile(
+    r"^(?:"
+    r"(?:claude(?:\s+code)?|codex|gemini|opencode|nga)(?:\s+(?:cli|code))?\s+v?\d"
+    r"|cwd\s*:"
+    r"|working directory\s*:"
+    r"|session(?:\s+id)?\s*:"
+    r"|thread(?:\s+id)?\s*:"
+    r"|initiali[sz]ing\b"
+    r"|starting\b"
+    r"|thinking[.…]*$"
+    r"|>\s+.+$"
+    r")",
+    re.IGNORECASE,
+)
+_TUI_BORDER_RE = re.compile(r"^[╭╮╰╯│─┌┐└┘├┤┬┴┼═║╔╗╚╝╠╣╦╩╬\s]+$")
 
 
 def _clean_agent_text(value: str) -> str:
@@ -652,6 +699,7 @@ def _collapse_terminal_repaints(value: str) -> str:
             or _looks_like_replacement_gibberish(stripped)
             or _looks_like_short_binary_gibberish(stripped)
             or _looks_like_mojibake_numeric_noise(stripped)
+            or _looks_like_cli_ui_noise(stripped)
         ):
             continue
         lines.append(line)
@@ -660,6 +708,16 @@ def _collapse_terminal_repaints(value: str) -> str:
 
 def _strip_progress_glyph_prefix(value: str) -> str:
     return _PROGRESS_GLYPH_PREFIX_RE.sub("", value)
+
+
+def _looks_like_cli_ui_noise(value: str) -> bool:
+    stripped = value.strip()
+    if not stripped:
+        return False
+    if _TUI_BORDER_RE.match(stripped):
+        return True
+    normalized = stripped.strip("│ ").strip()
+    return bool(_CLI_BANNER_RE.match(normalized))
 
 
 def _looks_like_replacement_gibberish(value: str) -> bool:

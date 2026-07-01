@@ -1361,6 +1361,87 @@ class TestAgentRuntimes:
         assert "response.created" not in output
         assert "response.completed" not in output
 
+    async def test_agent_runtime_auto_mode_only_surfaces_clowder_style_agent_text_events(self):
+        from app.services.agent_cli_bridge import stream_agent_runtime
+        from app.services.ai_conversations import _agent_output_segments
+
+        agent_code = (
+            "import json, sys; "
+            "events=["
+            "{'type':'system','subtype':'init','session_id':'claude-session'},"
+            "{'type':'assistant','message':{'content':[{'type':'tool_use','name':'Read','input':{'file':'secret.py'}}]}},"
+            "{'type':'assistant','message':{'content':[{'type':'text','text':'Claude 正文回答。'}]}},"
+            "{'type':'thread.started','thread_id':'codex-thread'},"
+            "{'type':'turn.started'},"
+            "{'type':'item.completed','item':{'type':'command_execution','command':'rg token'}},"
+            "{'type':'item.completed','item':{'type':'agent_message','text':'Codex 正文回答。'}},"
+            "{'type':'message','role':'assistant','content':'Gemini 正文回答。'},"
+            "{'type':'tool_result','content':'internal result'},"
+            "{'type':'result','status':'success'}"
+            "]; "
+            "[print(json.dumps(event, ensure_ascii=False)) for event in events]; "
+            "sys.stdout.flush()"
+        )
+        chunks = []
+        async for chunk in stream_agent_runtime(
+            runtime={
+                "command": sys.executable,
+                "args": ["-c", agent_code],
+                "prompt_transport": "stdin",
+                "output_mode": "auto",
+                "timeout_seconds": 10,
+            },
+            prompt="读取源码",
+            cwd=None,
+        ):
+            chunks.append(chunk)
+
+        segments = [segment for chunk in chunks for segment in _agent_output_segments(chunk)]
+        answer = "".join(content for kind, content in segments if kind == "answer")
+        diagnostics = "\n".join(content for kind, content in segments if kind == "diagnostic")
+        all_visible = answer + diagnostics
+        assert answer == "Claude 正文回答。Codex 正文回答。Gemini 正文回答。"
+        assert "session_id" not in all_visible
+        assert "command_execution" not in all_visible
+        assert "thread.started" not in all_visible
+        assert "tool_use" not in answer
+        assert "tool_result" not in answer
+        assert "internal result" in diagnostics
+
+    async def test_agent_runtime_plain_mode_drops_cli_banner_without_hiding_answer(self):
+        from app.services.agent_cli_bridge import stream_agent_runtime
+
+        agent_code = (
+            "import sys; "
+            "sys.stdout.write('Claude Code v1.2.3\\n'); "
+            "sys.stdout.write('cwd: /tmp/project\\n'); "
+            "sys.stdout.write('╭──────────────────────────────╮\\n'); "
+            "sys.stdout.write('│ Thinking…                    │\\n'); "
+            "sys.stdout.write('> 分析 SPDK 流程\\n'); "
+            "sys.stdout.write('最终答案：只展示用户需要看的回答。\\n'); "
+            "sys.stdout.write('╰──────────────────────────────╯\\n'); "
+            "sys.stdout.flush()"
+        )
+        chunks = []
+        async for chunk in stream_agent_runtime(
+            runtime={
+                "command": sys.executable,
+                "args": ["-c", agent_code],
+                "prompt_transport": "stdin",
+                "output_mode": "plain",
+                "timeout_seconds": 10,
+            },
+            prompt="读取源码",
+            cwd=None,
+        ):
+            chunks.append(chunk)
+
+        output = "".join(chunks)
+        assert output.strip() == "最终答案：只展示用户需要看的回答。"
+        assert "Claude Code" not in output
+        assert "cwd:" not in output
+        assert "Thinking" not in output
+
     async def test_agent_runtime_auto_mode_keeps_response_reasoning_out_of_answer(self):
         from app.services.agent_cli_bridge import stream_agent_runtime
         from app.services.ai_conversations import _agent_output_segments
