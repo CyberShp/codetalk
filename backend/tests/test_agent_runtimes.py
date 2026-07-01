@@ -926,6 +926,20 @@ class TestAgentRuntimes:
         )
         assert (
             _parse_event_text(
+                json.dumps({"event": "message", "data": {"content": "NGA 包装正文：源码证据"}}, ensure_ascii=False),
+                "stream_json",
+            )
+            == "NGA 包装正文：源码证据"
+        )
+        assert (
+            _parse_event_text(
+                json.dumps({"event": "reasoning", "payload": {"text": "内部推理：先搜索源码"}}, ensure_ascii=False),
+                "stream_json",
+            )
+            == "THINKING: 内部推理：先搜索源码"
+        )
+        assert (
+            _parse_event_text(
                 json.dumps(
                     {"type": "content_block_delta", "delta": {"type": "text_delta", "text": "Claude 源码证据"}},
                     ensure_ascii=False,
