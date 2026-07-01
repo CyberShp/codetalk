@@ -2020,7 +2020,14 @@ test("D/I: agent workbench real UI workflow, semantic library, memory, and artif
     record("D08", "pass", "acceptance audit visible");
     await page.getByRole("button", { name: "审计产物" }).click();
     await expect(page.getByText(/审计产物:/)).toBeVisible({ timeout: 30_000 });
-    const artifactButton = page.locator("button").filter({ hasText: /task_bundle|evidence|workflow|input|artifact/i }).last();
+    const hiddenArtifactsToggle = page.getByText(/展开其余 \d+ 个产物/);
+    if (await hiddenArtifactsToggle.isVisible().catch(() => false)) {
+      await hiddenArtifactsToggle.click();
+    }
+    const artifactButton = page
+      .locator("button:visible")
+      .filter({ hasText: /task_bundle|evidence|workflow|input|artifact/i })
+      .first();
     await expect(artifactButton).toBeVisible({ timeout: 15_000 });
     await artifactButton.click();
     await expect(page.getByText(/sha:/)).toBeVisible({ timeout: 30_000 });
