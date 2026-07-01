@@ -3632,6 +3632,8 @@ def test_startup_probe_launches_agent_and_parses_json(tmp_path, monkeypatch):
     assert captured["argv"][3:] == ("--output-format", "json")
     assert captured["cwd"] == str(tmp_path.resolve())
     assert captured["env"]["CODETALK_AGENT_READONLY"] == "1"
+    assert captured["env"]["CODETALK_AGENT_ARTIFACT_DIR"]
+    assert captured["env"]["CODETALK_AGENT_ARTIFACT_DIR"] != str(tmp_path.resolve())
     assert captured["stdin"] == ""
 
 
