@@ -31,6 +31,8 @@ async def test_style_css_served(client):
     resp = await client.get("/style.css")
     assert resp.status_code == 200
     assert "css" in resp.headers.get("content-type", "")
+    assert resp.headers["cache-control"] == "no-cache, no-store, must-revalidate"
+    assert resp.headers["expires"] == "0"
 
 
 async def test_static_background_avoids_heavy_infinite_orb_animation(client):
@@ -87,6 +89,7 @@ async def test_app_js_served(client):
     assert resp.status_code == 200
     ct = resp.headers.get("content-type", "")
     assert "javascript" in ct or "text/" in ct
+    assert resp.headers["cache-control"] == "no-cache, no-store, must-revalidate"
     assert "deepwiki" not in resp.text.lower()
     assert "function errorDetailMessage(detail, fallback)" in resp.text
     assert "showServiceActionMessage('error'" in resp.text
@@ -154,6 +157,20 @@ async def test_deploy_js_makes_port_takeover_retry_explicit(client):
     assert resp.status_code == 200
     assert "强制接管并重试" in resp.text
     assert "function setRetryButtonForceTakeover(enabled)" in resp.text
+
+
+async def test_static_pages_version_runtime_assets(client):
+    for path in ("/", "/deploy.html", "/start.html"):
+        resp = await client.get(path)
+        assert resp.status_code == 200
+        assert "style.css?v=20260701" in resp.text
+        assert resp.headers["cache-control"] == "no-cache, no-store, must-revalidate"
+
+    deploy_resp = await client.get("/deploy.html")
+    start_resp = await client.get("/start.html")
+    assert "app-helpers.js?v=20260701" in deploy_resp.text
+    assert "app.js?v=20260701" in deploy_resp.text
+    assert "start-app.js?v=20260701" in start_resp.text
 
 
 async def test_nonexistent_file_returns_404(client):

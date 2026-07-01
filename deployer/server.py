@@ -96,19 +96,25 @@ def _launch_job(coro) -> str:
 app = FastAPI(title="CodeTalk Deployer", version="1.0.0")
 
 
-class NoCacheHTMLMiddleware(BaseHTTPMiddleware):
-    """Prevent browsers from caching HTML pages so stale JS never runs."""
+class NoCacheStaticMiddleware(BaseHTTPMiddleware):
+    """Prevent browsers from caching the deployer shell and stale startup JS."""
 
     async def dispatch(self, request: Request, call_next):
         response = await call_next(request)
+        path = request.url.path
         ct = response.headers.get("content-type", "")
-        if "text/html" in ct:
+        if (
+            "text/html" in ct
+            or path.endswith((".js", ".css"))
+            or path in {"/", "/deploy.html", "/start.html"}
+        ):
             response.headers["Cache-Control"] = "no-cache, no-store, must-revalidate"
             response.headers["Pragma"] = "no-cache"
+            response.headers["Expires"] = "0"
         return response
 
 
-app.add_middleware(NoCacheHTMLMiddleware)
+app.add_middleware(NoCacheStaticMiddleware)
 
 app.add_middleware(
     CORSMiddleware,
