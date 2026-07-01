@@ -2662,16 +2662,16 @@ test("H/G/F/E/J: coverage upload, AI test-design, and artifact quality gates", a
   expect(fourPiecePayload.version).toBe("codetalk-coverage-four-piece-v1");
 
   for (const scenario of [
-    { id: "E01", pathFragments: ["lib/nvmf"], testDirs: ["test/nvmf"], minEvidence: 2 },
-    { id: "E02", pathFragments: ["lib/nvmf"], testDirs: ["test/nvmf"], minEvidence: 2 },
+    { id: "E01", pathFragments: ["lib/nvmf"], testDirs: ["test/nvmf", "test/vfio_user"], minEvidence: 2 },
+    { id: "E02", pathFragments: ["lib/nvmf"], testDirs: ["test/nvmf", "test/vfio_user"], minEvidence: 2 },
     { id: "E03", pathFragments: ["lib/iscsi"], testDirs: ["test/iscsi_tgt"], minEvidence: 1 },
     { id: "E04", pathFragments: ["lib/iscsi"], testDirs: ["test/iscsi_tgt"], minEvidence: 2 },
     { id: "E05", pathFragments: ["lib/bdev"], testDirs: ["test/bdev"], minEvidence: 1 },
     { id: "E06", pathFragments: ["lib/bdev"], testDirs: ["test/bdev"], minEvidence: 2 },
     { id: "E07", pathFragments: ["lib/blob", "lib/ftl"], testDirs: ["test/blobstore", "test/ftl"], minEvidence: 2 },
-    { id: "E08", pathFragments: ["lib/vhost", "lib/nvmf/vfio_user.c"], testDirs: ["test/vhost", "test/nvmf"], minEvidence: 2 },
-    { id: "E09", pathFragments: ["lib/thread", "lib/event/reactor.c"], testDirs: ["test/unit/lib/thread", "test/event"], minEvidence: 2 },
-    { id: "E10", pathFragments: ["lib/rpc", "lib/jsonrpc"], testDirs: ["test/json_config"], minEvidence: 1 },
+    { id: "E08", pathFragments: ["lib/vhost", "lib/nvmf/vfio_user.c"], testDirs: ["test/vhost", "test/nvmf", "test/vfio_user"], minEvidence: 2 },
+    { id: "E09", pathFragments: ["lib/thread", "lib/event/reactor.c"], testDirs: ["test/unit/lib/thread", "test/thread", "test/event"], minEvidence: 2 },
+    { id: "E10", pathFragments: ["lib/rpc", "lib/jsonrpc"], testDirs: ["test/json_config", "test/rpc"], minEvidence: 1 },
   ]) {
     const bundle = fourPiecePayload.bundles?.find((item) => item.id === scenario.id);
     expect(bundle?.status).toBe("generated");
