@@ -649,6 +649,7 @@ test.describe("Workspace smoke tests", () => {
   });
 
   test("workspace can be reindexed through the UI and remains searchable", async ({ page }) => {
+    test.setTimeout(120_000);
     const repo = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), "codetalk-reindex-")));
     fs.mkdirSync(path.join(repo, "lib", "nvmf"), { recursive: true });
     fs.writeFileSync(path.join(repo, "README.md"), "reindex workspace e2e\n", "utf8");

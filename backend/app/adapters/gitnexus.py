@@ -29,8 +29,8 @@ logger = logging.getLogger(__name__)
 
 _POLL_INTERVAL = 2  # seconds between job status polls
 _POLL_TIMEOUT = 1800  # max seconds to wait for analysis (30 min for large repos)
-_ANALYZE_BUSY_RETRY_ATTEMPTS = 8
-_ANALYZE_BUSY_RETRY_INTERVAL = 2.0
+_ANALYZE_BUSY_RETRY_ATTEMPTS = 45
+_ANALYZE_BUSY_RETRY_INTERVAL = 1.0
 
 
 # ---------------------------------------------------------------------------
@@ -400,9 +400,7 @@ class GitNexusAdapter(BaseToolAdapter):
             # array with duplicate `spdk` names, so name-only matching is unsafe).
             resolved = await self._resolve_repo_for_path(tool_repo_path)
             if resolved:
-                self._repo_name = resolved["name"]
-                self._repo_index_path = resolved.get("path") or ""
-                self._indexed_repo_by_path[cache_key] = self._repo_name
+                self._adopt_resolved_repo(cache_key, resolved)
                 logger.info(
                     "gitnexus: repo already indexed as %s (resolved by path %s), "
                     "skipping analyze",
@@ -437,6 +435,18 @@ class GitNexusAdapter(BaseToolAdapter):
                         "GitNexus 正在分析一个包含此路径的父项目，请等待该任务完成后再试"
                     )
             elif resp.is_error:
+                resolved = await self._resolve_repo_for_path(tool_repo_path)
+                if resolved:
+                    self._adopt_resolved_repo(cache_key, resolved)
+                    logger.info(
+                        "gitnexus: analyze returned HTTP %s for %s, but repo is now "
+                        "indexed as %s; recovering without reindex",
+                        resp.status_code,
+                        tool_repo_path,
+                        self._repo_name,
+                    )
+                    self._schedule_embed_if_enabled()
+                    return
                 resp.raise_for_status()
             else:
                 job = resp.json()
@@ -539,6 +549,11 @@ class GitNexusAdapter(BaseToolAdapter):
         except Exception as exc:
             logger.debug("gitnexus: repo resolve by path failed (non-fatal): %s", exc)
             return None
+
+    def _adopt_resolved_repo(self, cache_key: tuple[str, str], resolved: dict) -> None:
+        self._repo_name = resolved["name"]
+        self._repo_index_path = resolved.get("path") or ""
+        self._indexed_repo_by_path[cache_key] = self._repo_name
 
     def _schedule_embed_if_enabled(self) -> None:
         """Optionally start semantic embedding without making indexing depend on it."""

@@ -1,4 +1,6 @@
 import { defineConfig, devices } from "@playwright/test";
+import os from "node:os";
+import path from "node:path";
 
 const frontendPort = Number(process.env.CODETALK_FRONTEND_PORT ?? "3003");
 const backendPort = Number(process.env.CODETALK_BACKEND_PORT ?? "3004");
@@ -7,6 +9,26 @@ const browserHost = process.env.CODETALK_BROWSER_HOST ?? "localhost";
 const reuseExistingServer = process.env.CODETALK_REUSE_EXISTING_SERVER !== "0";
 const startGitNexus = process.env.CODETALK_PLAYWRIGHT_GITNEXUS === "1";
 const chromiumExecutablePath = process.env.PLAYWRIGHT_CHROMIUM_EXECUTABLE_PATH;
+const runId =
+  process.env.CODETALK_PLAYWRIGHT_RUN_ID ??
+  `${new Date().toISOString().replace(/[:.]/g, "-")}-${process.pid}`;
+
+if (!process.env.CODETALK_PLAYWRIGHT_DATA_DIR) {
+  process.env.CODETALK_PLAYWRIGHT_DATA_DIR = path.join(
+    os.tmpdir(),
+    "codetalk-playwright",
+    `backend-${backendPort}`,
+    runId,
+  );
+  process.env.CODETALK_PLAYWRIGHT_AUTO_DATA_DIR = "1";
+}
+if (!process.env.CODETALK_PLAYWRIGHT_SQLITE_DB) {
+  process.env.CODETALK_PLAYWRIGHT_SQLITE_DB = path.join(
+    process.env.CODETALK_PLAYWRIGHT_DATA_DIR,
+    "codetalk.db",
+  );
+  process.env.CODETALK_PLAYWRIGHT_AUTO_SQLITE_DB = "1";
+}
 
 const webServer = [
   ...(startGitNexus

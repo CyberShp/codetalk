@@ -36,8 +36,12 @@ export default function NewWorkspacePage() {
     async (e: React.FormEvent) => {
       e.preventDefault();
       if (submittingRef.current) return;
-      if (!name.trim()) { setError("请输入工作空间名称"); return; }
-      if (!repoPath.trim()) { setError("请输入代码仓库路径"); return; }
+      const form = e.currentTarget as HTMLFormElement;
+      const formData = new FormData(form);
+      const submittedName = String(formData.get("name") ?? name).trim();
+      const submittedRepoPath = String(formData.get("repoPath") ?? repoPath).trim();
+      if (!submittedName) { setError("请输入工作空间名称"); return; }
+      if (!submittedRepoPath) { setError("请输入代码仓库路径"); return; }
 
       submittingRef.current = true;
       setSubmitting(true);
@@ -45,8 +49,8 @@ export default function NewWorkspacePage() {
       setExistingWorkspace(null);
       try {
         const ws = await api.workspaces.create({
-          name: name.trim(),
-          repo_path: repoPath.trim(),
+          name: submittedName,
+          repo_path: submittedRepoPath,
         });
         router.push(`/workspaces/${ws.id}`);
       } catch (err: unknown) {
@@ -107,6 +111,7 @@ export default function NewWorkspacePage() {
             工作空间名称
           </label>
           <input
+            name="name"
             type="text"
             value={name}
             onChange={(e) => setName(e.target.value)}
@@ -125,6 +130,7 @@ export default function NewWorkspacePage() {
               className="absolute left-3 top-1/2 -translate-y-1/2 text-on-surface-variant/50"
             />
             <input
+              name="repoPath"
               type="text"
               value={repoPath}
               onChange={(e) => setRepoPath(e.target.value)}
