@@ -73,6 +73,18 @@ async def test_app_js_served(client):
     assert "[object Object]" not in resp.text
 
 
+async def test_deploy_static_uses_cgc_not_legacy_codecompass(client):
+    deploy_resp = await client.get("/deploy.html")
+    app_resp = await client.get("/app.js")
+    assert deploy_resp.status_code == 200
+    assert app_resp.status_code == 200
+
+    combined = deploy_resp.text + "\n" + app_resp.text
+    assert "codecompass" not in combined.lower()
+    assert 'data-service="cgc"' in deploy_resp.text
+    assert "cgc:" in app_resp.text
+
+
 async def test_start_app_js_has_no_deepwiki_service(client):
     resp = await client.get("/start-app.js")
     assert resp.status_code == 200

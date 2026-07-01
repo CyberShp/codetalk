@@ -34,7 +34,7 @@ const SERVICE_STEP_MAP = {
   postgres:    ['postgres', 'database', 'db'],
   redis:       ['redis', 'cache'],
   gitnexus:    ['gitnexus', 'git'],
-  codecompass: ['codecompass', 'compass'],
+  cgc:         ['cgc'],
 };
 
 // ---------------------------------------------------------------------------
@@ -397,6 +397,7 @@ function resetDeployUI() {
   setRetryButtonForceTakeover(false);
 
   const installGitnexus = state.config.installGitnexus !== false;
+  const installCgc = state.config.installCgc !== false;
 
   $$('.service-pill').forEach(p => {
     p.className = 'service-pill pill-pending';
@@ -404,6 +405,7 @@ function resetDeployUI() {
     const svc   = p.dataset.service;
     let visible = modes.includes(state.selectedMode);
     if (svc === 'gitnexus' && !installGitnexus) visible = false;
+    if (svc === 'cgc' && !installCgc) visible = false;
     p.style.display = visible ? '' : 'none';
   });
 }
@@ -589,14 +591,16 @@ function updateServiceUrls() {
   const cfg = state.config;
   const mode = state.selectedMode;
   const installGitnexus = cfg.installGitnexus !== false;
+  const installCgc = cfg.installCgc !== false;
 
   const gitnexusPort   = cfg.portGitnexus   || '7100';
+  const cgcPort        = cfg.portCgc        || '7072';
 
   const NATIVE_URLS = {
     frontend:    'http://localhost:' + (cfg.portFrontend  || '3003'),
     backend:     'http://localhost:' + (cfg.portBackend   || '3004'),
     gitnexus:    installGitnexus ? 'http://localhost:' + gitnexusPort   : null,
-    codecompass: null,
+    cgc:         installCgc ? 'http://localhost:' + cgcPort : null,
     joern:       null,
   };
 
@@ -604,7 +608,7 @@ function updateServiceUrls() {
     frontend:    'http://localhost:' + (cfg.portFrontend || '3003'),
     backend:     'http://localhost:' + (cfg.portBackend  || '3004'),
     gitnexus:    installGitnexus ? 'http://localhost:' + gitnexusPort   : null,
-    codecompass: 'http://localhost:16251',
+    cgc:         installCgc ? 'http://localhost:' + cgcPort : null,
     joern:       'http://localhost:8080',
   };
 
@@ -612,7 +616,7 @@ function updateServiceUrls() {
     frontend:    'http://localhost/',
     backend:     'http://localhost/api',
     gitnexus:    null,
-    codecompass: null,
+    cgc:         null,
     joern:       null,
   };
 
