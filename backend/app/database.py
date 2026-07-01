@@ -1,3 +1,5 @@
+import json
+
 import aiosqlite
 
 from app.config import settings
@@ -292,6 +294,67 @@ _MIGRATIONS = [
 ]
 
 
+_DEFAULT_AGENT_RUNTIMES = [
+    {
+        "id": "default-claude-code",
+        "name": "Claude Code",
+        "command": "claude",
+        "args": [],
+        "prompt_transport": "claude_print_arg",
+        "output_mode": "stream_json",
+        "working_dir_mode": "project",
+        "fixed_working_dir": "",
+        "env": {},
+        "health_command": "",
+        "timeout_seconds": 900,
+        "completion_mode": "process_exit",
+        "idle_complete_seconds": 5,
+        "sentinel_text": "",
+        "session_persistence": "resume_args",
+        "resume_args": [],
+        "enabled": 1,
+    },
+    {
+        "id": "default-codex",
+        "name": "Codex",
+        "command": "codex",
+        "args": [],
+        "prompt_transport": "codex_exec_json",
+        "output_mode": "stream_json",
+        "working_dir_mode": "project",
+        "fixed_working_dir": "",
+        "env": {},
+        "health_command": "",
+        "timeout_seconds": 900,
+        "completion_mode": "process_exit",
+        "idle_complete_seconds": 5,
+        "sentinel_text": "",
+        "session_persistence": "resume_args",
+        "resume_args": [],
+        "enabled": 1,
+    },
+    {
+        "id": "default-opencode",
+        "name": "OpenCode",
+        "command": "opencode",
+        "args": [],
+        "prompt_transport": "opencode_run_arg",
+        "output_mode": "auto",
+        "working_dir_mode": "project",
+        "fixed_working_dir": "",
+        "env": {},
+        "health_command": "",
+        "timeout_seconds": 900,
+        "completion_mode": "process_exit",
+        "idle_complete_seconds": 5,
+        "sentinel_text": "",
+        "session_persistence": "none",
+        "resume_args": [],
+        "enabled": 1,
+    },
+]
+
+
 async def init_db() -> None:
     async with aiosqlite.connect(settings.sqlite_db) as db:
         await db.executescript(_SCHEMA)
@@ -322,6 +385,8 @@ async def init_db() -> None:
             " updated_at = CURRENT_TIMESTAMP"
             " WHERE status = 'running'"
         )
+        await _seed_default_agent_runtimes(db)
+        await _migrate_legacy_agent_runtimes(db)
 
         await db.commit()
 
@@ -330,6 +395,82 @@ async def init_db() -> None:
     async with aiosqlite.connect(settings.sqlite_db) as db:
         db.row_factory = aiosqlite.Row
         await seed_default_template(db)
+
+
+async def _seed_default_agent_runtimes(db: aiosqlite.Connection) -> None:
+    for runtime in _DEFAULT_AGENT_RUNTIMES:
+        await db.execute(
+            """
+            INSERT INTO agent_runtimes
+                (id, name, command, args_json, prompt_transport, output_mode,
+                 working_dir_mode, fixed_working_dir, env_json, health_command,
+                 timeout_seconds, completion_mode, idle_complete_seconds, sentinel_text,
+                 session_persistence, resume_args_json, enabled, created_at, updated_at)
+            VALUES
+                (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
+            ON CONFLICT(id) DO UPDATE SET
+                name = excluded.name,
+                command = excluded.command,
+                args_json = excluded.args_json,
+                prompt_transport = excluded.prompt_transport,
+                output_mode = excluded.output_mode,
+                working_dir_mode = excluded.working_dir_mode,
+                fixed_working_dir = excluded.fixed_working_dir,
+                env_json = excluded.env_json,
+                health_command = excluded.health_command,
+                timeout_seconds = excluded.timeout_seconds,
+                completion_mode = excluded.completion_mode,
+                idle_complete_seconds = excluded.idle_complete_seconds,
+                sentinel_text = excluded.sentinel_text,
+                session_persistence = excluded.session_persistence,
+                resume_args_json = excluded.resume_args_json,
+                enabled = excluded.enabled,
+                updated_at = CURRENT_TIMESTAMP
+            """,
+            (
+                runtime["id"],
+                runtime["name"],
+                runtime["command"],
+                json.dumps(runtime["args"], ensure_ascii=False),
+                runtime["prompt_transport"],
+                runtime["output_mode"],
+                runtime["working_dir_mode"],
+                runtime["fixed_working_dir"],
+                json.dumps(runtime["env"], ensure_ascii=False, sort_keys=True),
+                runtime["health_command"],
+                runtime["timeout_seconds"],
+                runtime["completion_mode"],
+                runtime["idle_complete_seconds"],
+                runtime["sentinel_text"],
+                runtime["session_persistence"],
+                json.dumps(runtime["resume_args"], ensure_ascii=False),
+                runtime["enabled"],
+            ),
+        )
+
+
+async def _migrate_legacy_agent_runtimes(db: aiosqlite.Connection) -> None:
+    await db.execute(
+        """
+        UPDATE agent_runtimes
+        SET
+            command = 'claude',
+            args_json = '[]',
+            prompt_transport = 'claude_print_arg',
+            output_mode = 'stream_json',
+            timeout_seconds = MAX(timeout_seconds, 900),
+            completion_mode = 'process_exit',
+            idle_complete_seconds = 5,
+            sentinel_text = '',
+            session_persistence = 'resume_args',
+            resume_args_json = '[]',
+            updated_at = CURRENT_TIMESTAMP
+        WHERE id != 'default-claude-code'
+          AND lower(name) IN ('claude code', 'claude code router')
+          AND prompt_transport IN ('stdin', 'argv_last')
+          AND output_mode IN ('plain', 'auto')
+        """
+    )
 
 
 async def get_db():

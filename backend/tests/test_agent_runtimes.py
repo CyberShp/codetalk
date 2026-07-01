@@ -81,6 +81,37 @@ class TestAgentRuntimes:
             assert listed.status_code == 200
             assert listed.json()["items"][0]["name"] == "Windows Claude Code"
 
+    async def test_agent_runtime_list_orders_managed_defaults_for_thread_default(self, sqlite_db):
+        now = datetime.now(timezone.utc).isoformat()
+        async with aiosqlite.connect(sqlite_db) as db:
+            await db.executemany(
+                """
+                INSERT INTO agent_runtimes
+                    (id, name, command, args_json, prompt_transport, output_mode,
+                     working_dir_mode, timeout_seconds, completion_mode,
+                     session_persistence, resume_args_json, enabled, created_at, updated_at)
+                VALUES (?, ?, ?, '[]', ?, ?, 'project', 900, 'process_exit', ?, '[]', 1, ?, ?)
+                """,
+                [
+                    ("default-opencode", "OpenCode", "opencode", "opencode_run_arg", "auto", "none", now, now),
+                    ("custom-agent", "Custom Agent", "custom", "stdin", "plain", "none", now, now),
+                    ("default-codex", "Codex", "codex", "codex_exec_json", "stream_json", "resume_args", now, now),
+                    ("default-claude-code", "Claude Code", "claude", "claude_print_arg", "stream_json", "resume_args", now, now),
+                ],
+            )
+            await db.commit()
+
+        app = _test_app(sqlite_db)
+        async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+            listed = await client.get("/api/settings/agent-runtimes")
+
+        assert listed.status_code == 200
+        assert [item["id"] for item in listed.json()["items"][:3]] == [
+            "default-claude-code",
+            "default-codex",
+            "default-opencode",
+        ]
+
     async def test_agent_runtime_rejects_shell_command_in_command_field(self, sqlite_db):
         app = _test_app(sqlite_db)
         async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:

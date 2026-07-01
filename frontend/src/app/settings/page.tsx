@@ -871,7 +871,7 @@ export default function SettingsPage() {
             </div>
             {agentRuntimes.length === 0 ? (
               <div className="rounded-xl border border-dashed border-outline-variant/40 bg-surface/60 px-4 py-5 text-sm text-on-surface-variant">
-                还没有执行器。先点上面的 Claude Code Router、OpenCode 或 NGA，再点保存。
+                首次启动会自动创建 Claude Code、Codex 和 OpenCode 托管执行器；如果这里仍为空，可以点上面的预设手动补建。
               </div>
             ) : (
               agentRuntimes.map((runtime) => {

@@ -1,6 +1,7 @@
 """Layer 0 tests: schema creation, migration idempotency, and crash recovery."""
 
 import re
+import json
 from unittest.mock import patch
 
 import aiosqlite
@@ -125,6 +126,88 @@ class TestMigrationIdempotency:
             async with db.execute("PRAGMA table_info(material_chunks)") as cur:
                 columns = {row[1] for row in await cur.fetchall()}
         assert "embedding_model_id" in columns
+
+
+# ---------------------------------------------------------------------------
+# Default agent runtime seed
+# ---------------------------------------------------------------------------
+
+
+class TestDefaultAgentRuntimes:
+    @pytest.mark.asyncio
+    async def test_init_db_seeds_managed_agent_runtimes(self, fresh_db):
+        with patch("app.config.settings.sqlite_db", fresh_db), \
+             patch("app.api.prompts.seed_default_template", return_value=None):
+            await init_db()
+
+        async with aiosqlite.connect(fresh_db) as db:
+            db.row_factory = aiosqlite.Row
+            async with db.execute(
+                "SELECT id, name, command, args_json, prompt_transport, output_mode, "
+                "completion_mode, session_persistence, resume_args_json, timeout_seconds "
+                "FROM agent_runtimes ORDER BY id"
+            ) as cur:
+                rows = {row["id"]: row for row in await cur.fetchall()}
+
+        assert rows["default-claude-code"]["name"] == "Claude Code"
+        assert rows["default-claude-code"]["command"] == "claude"
+        assert json.loads(rows["default-claude-code"]["args_json"]) == []
+        assert rows["default-claude-code"]["prompt_transport"] == "claude_print_arg"
+        assert rows["default-claude-code"]["output_mode"] == "stream_json"
+        assert rows["default-claude-code"]["completion_mode"] == "process_exit"
+        assert rows["default-claude-code"]["session_persistence"] == "resume_args"
+        assert json.loads(rows["default-claude-code"]["resume_args_json"]) == []
+        assert rows["default-claude-code"]["timeout_seconds"] == 900
+
+        assert rows["default-codex"]["name"] == "Codex"
+        assert rows["default-codex"]["prompt_transport"] == "codex_exec_json"
+        assert rows["default-codex"]["output_mode"] == "stream_json"
+        assert rows["default-codex"]["session_persistence"] == "resume_args"
+
+        assert rows["default-opencode"]["name"] == "OpenCode"
+        assert rows["default-opencode"]["prompt_transport"] == "opencode_run_arg"
+        assert rows["default-opencode"]["output_mode"] == "auto"
+
+    @pytest.mark.asyncio
+    async def test_init_db_migrates_legacy_claude_runtime_to_managed_defaults(self, fresh_db):
+        async with aiosqlite.connect(fresh_db) as db:
+            await db.executescript(_SCHEMA)
+            await db.execute(
+                """
+                INSERT INTO agent_runtimes
+                    (id, name, command, args_json, prompt_transport, output_mode,
+                     working_dir_mode, timeout_seconds, completion_mode, idle_complete_seconds,
+                     session_persistence, resume_args_json, enabled, created_at, updated_at)
+                VALUES
+                    ('legacy-claude', 'Claude Code', 'claude', '["code"]', 'stdin', 'plain',
+                     'project', 120, 'idle_after_output', 5, 'none', '[]', 1,
+                     '2026-01-01T00:00:00+00:00', '2026-01-01T00:00:00+00:00')
+                """
+            )
+            await db.commit()
+
+        with patch("app.config.settings.sqlite_db", fresh_db), \
+             patch("app.api.prompts.seed_default_template", return_value=None):
+            await init_db()
+
+        async with aiosqlite.connect(fresh_db) as db:
+            db.row_factory = aiosqlite.Row
+            async with db.execute(
+                "SELECT command, args_json, prompt_transport, output_mode, completion_mode, "
+                "session_persistence, resume_args_json, timeout_seconds "
+                "FROM agent_runtimes WHERE id = 'legacy-claude'"
+            ) as cur:
+                row = await cur.fetchone()
+
+        assert row is not None
+        assert row["command"] == "claude"
+        assert json.loads(row["args_json"]) == []
+        assert row["prompt_transport"] == "claude_print_arg"
+        assert row["output_mode"] == "stream_json"
+        assert row["completion_mode"] == "process_exit"
+        assert row["session_persistence"] == "resume_args"
+        assert json.loads(row["resume_args_json"]) == []
+        assert row["timeout_seconds"] == 900
 
 
 # ---------------------------------------------------------------------------

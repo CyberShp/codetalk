@@ -120,7 +120,18 @@ class AgentRuntimeStore:
         where = f"WHERE {' AND '.join(clauses)}" if clauses else ""
         async with self._connect() as db:
             async with db.execute(
-                f"SELECT * FROM agent_runtimes {where} ORDER BY updated_at DESC",
+                f"""
+                SELECT * FROM agent_runtimes
+                {where}
+                ORDER BY
+                    CASE id
+                        WHEN 'default-claude-code' THEN 0
+                        WHEN 'default-codex' THEN 1
+                        WHEN 'default-opencode' THEN 2
+                        ELSE 10
+                    END,
+                    updated_at DESC
+                """,
                 params,
             ) as cur:
                 return [_runtime_from_row(row) for row in await cur.fetchall()]
