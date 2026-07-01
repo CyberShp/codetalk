@@ -3345,6 +3345,8 @@ async def test_workbench_task_run_artifact_content_api_is_safe(workbench_client,
 
     artifacts = await workbench_client.get(f"/api/workbench/task-runs/{task_run_id}/artifacts")
     artifact_body = artifacts.json()
+    assert artifact_body["artifact_dir"] == "."
+    assert str(task_dir) not in artifact_body["artifact_dir"]
     bundle_manifest = next(
         item for item in artifact_body["artifacts"] if item["relative_path"] == "task_bundle.json"
     )
