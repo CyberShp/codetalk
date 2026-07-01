@@ -466,7 +466,16 @@ def _mojibake_score(value: str) -> int:
 
 
 _ANSI_RE = re.compile(r"\x1b\[[0-?]*[ -/]*[@-~]|\x1b\][^\x07]*(?:\x07|\x1b\\)")
-_CONTROL_RE = re.compile(r"[\x00-\x08\x0b\x0c\x0e-\x1f\x7f]")
+_CONTROL_RE = re.compile(r"[\x00-\x08\x0b\x0c\x0e-\x1f\x7f-\x9f]")
+_CJK_MOJIBAKE_MARKERS = (
+    "榛戠爜",
+    "涓",
+    "鍚",
+    "骞",
+    "鐨",
+    "妯",
+    "绋",
+)
 _SPINNER_PROGRESS_RE = re.compile(r"^[⠁-⣿⣀-⣿|/\\\-·•●○◐◓◑◒]\s*(?:\d+(?:[./]\d+)?%?|[.\u2026]+)?\s*$")
 _PROGRESS_ONLY_RE = re.compile(r"^(?:\d{1,3}%|\d+/\d+|\d{1,4})$")
 
@@ -493,6 +502,7 @@ def _collapse_terminal_repaints(value: str) -> str:
             or _PROGRESS_ONLY_RE.match(stripped)
             or _looks_like_replacement_gibberish(stripped)
             or _looks_like_short_binary_gibberish(stripped)
+            or _looks_like_mojibake_numeric_noise(stripped)
         ):
             continue
         lines.append(line)
@@ -514,6 +524,39 @@ def _looks_like_short_binary_gibberish(value: str) -> bool:
     cjk_count = sum(1 for char in value if _is_cjk(char))
     other_letter_count = sum(1 for char in value if char.isalpha() and not _is_cjk(char))
     return cjk_count > 0 and other_letter_count > 0
+
+
+def _looks_like_mojibake_numeric_noise(value: str) -> bool:
+    if not 4 <= len(value) <= 80:
+        return False
+    if not any(char.isdigit() for char in value):
+        return False
+    if _contains_cjk_sentence_punctuation(value):
+        return False
+    if _mojibake_score(value) >= 3:
+        return True
+    if any(marker in value for marker in _CJK_MOJIBAKE_MARKERS):
+        return True
+    cjk_count = sum(1 for char in value if _is_cjk(char))
+    latin_letter_count = sum(1 for char in value if char.isalpha() and char.isascii())
+    non_ascii_latin_count = sum(
+        1
+        for char in value
+        if char.isalpha() and not char.isascii() and not _is_cjk(char)
+    )
+    digit_count = sum(1 for char in value if char.isdigit())
+    if digit_count >= 3 and non_ascii_latin_count >= 2 and len(value.split()) <= 2:
+        return True
+    return (
+        digit_count >= 3
+        and cjk_count > 0
+        and (latin_letter_count + non_ascii_latin_count) >= 2
+        and len(value.split()) <= 2
+    )
+
+
+def _contains_cjk_sentence_punctuation(value: str) -> bool:
+    return any(char in value for char in "，。！？；：、")
 
 
 def _is_cjk(char: str) -> bool:
