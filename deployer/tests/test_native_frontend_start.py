@@ -120,6 +120,53 @@ class NativeFrontendStartTests(unittest.TestCase):
             self.assertNotIn("DEEPWIKI", generated)
             self.assertNotIn("deepwiki", generated.lower())
 
+    def test_emit_redacts_secret_values_before_queueing(self) -> None:
+        queue: asyncio.Queue = asyncio.Queue()
+        deployer = NativeDeployer({}, queue)
+        secret = "sk-deployer-log-secret-1234567890"
+
+        asyncio.run(deployer._emit(
+            "install_backend",
+            "running",
+            f"pip output Authorization: Bearer deployerBearerSecret123 token={secret}",
+            2,
+        ))
+
+        event = queue.get_nowait()
+        message = event["message"]
+        self.assertIn("<redacted>", message)
+        self.assertNotIn(secret, message)
+        self.assertNotIn("deployerBearerSecret123", message)
+        self.assertNotIn("Authorization: Bearer deployerBearerSecret123", message)
+
+    def test_run_stream_redacts_subprocess_output_before_queueing(self) -> None:
+        queue: asyncio.Queue = asyncio.Queue()
+        deployer = NativeDeployer({}, queue)
+        secret = "sk-deployer-stream-secret-1234567890"
+
+        async def run() -> int:
+            return await deployer._run_stream(
+                "install_backend",
+                2,
+                sys.executable,
+                "-c",
+                (
+                    "print('install log token=%s Authorization: Bearer streamBearerSecret123')"
+                    % secret
+                ),
+            )
+
+        rc = asyncio.run(run())
+        self.assertEqual(rc, 0)
+
+        messages = []
+        while not queue.empty():
+            messages.append(queue.get_nowait()["message"])
+        joined = "\n".join(messages)
+        self.assertIn("<redacted>", joined)
+        self.assertNotIn(secret, joined)
+        self.assertNotIn("streamBearerSecret123", joined)
+
 
 if __name__ == "__main__":
     unittest.main()
