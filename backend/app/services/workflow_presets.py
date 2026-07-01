@@ -100,6 +100,68 @@ SFMEA_SCHEMA: dict[str, Any] = {
 }
 
 
+RISK_FINDINGS_SCHEMA: dict[str, Any] = {
+    "type": "array",
+    "items": {
+        "type": "object",
+        "required": ["finding_id", "file_path", "risk", "summary", "source"],
+        "properties": {
+            "finding_id": {"type": "string"},
+            "file_path": {"type": "string"},
+            "function": {"type": "string"},
+            "resource": {"type": "string"},
+            "risk_pattern": {"type": "string"},
+            "risk": {"type": "string"},
+            "summary": {"type": "string"},
+            "severity": {"type": "string"},
+            "confidence": {"type": "string"},
+            "source": {"type": "string"},
+        },
+        "additionalProperties": True,
+    },
+}
+
+
+MR_SNAPSHOT_SCHEMA: dict[str, Any] = {
+    "type": "object",
+    "required": ["kind", "source", "status", "summary"],
+    "properties": {
+        "kind": {"type": "string"},
+        "source": {"type": "string"},
+        "status": {"type": "string"},
+        "mr_link": {"type": "string"},
+        "repo": {"type": "string"},
+        "changed_files_count": {"type": "integer"},
+        "changed_files": {"type": "array"},
+        "summary": {"type": "string"},
+    },
+    "additionalProperties": True,
+}
+
+
+IMPACT_SCOPE_SCHEMA: dict[str, Any] = {
+    "type": "array",
+    "items": {
+        "type": "object",
+        "required": ["impact_id", "file_path", "summary", "impact", "risk", "source"],
+        "properties": {
+            "impact_id": {"type": "string"},
+            "file_path": {"type": "string"},
+            "symbol": {"type": "string"},
+            "status": {"type": "string"},
+            "module": {"type": "string"},
+            "summary": {"type": "string"},
+            "impact": {"type": "string"},
+            "risk": {"type": "string"},
+            "test_scope": {"type": "string"},
+            "source": {"type": "string"},
+            "evidence": {"type": "object"},
+        },
+        "additionalProperties": True,
+    },
+}
+
+
 SOURCE_FLOW_REQUIRED_ARTIFACTS = [
     "source_scope.json",
     "evidence_cards.json",
@@ -231,8 +293,19 @@ def builtin_workflow_presets() -> list[dict[str, Any]]:
                     {"id": "render_report", "type": "report_render"},
                 ],
                 "outputs": [
-                    {"id": "scope", "type": "json", "from": "discover_scope"},
-                    {"id": "evidence_cards", "type": "json", "from": "discover_scope", "artifact": "evidence_cards.json"},
+                    {
+                        "id": "scope",
+                        "type": "json",
+                        "from": "discover_scope",
+                        "schema": SOURCE_SCOPE_SCHEMA,
+                    },
+                    {
+                        "id": "evidence_cards",
+                        "type": "json",
+                        "from": "discover_scope",
+                        "artifact": "evidence_cards.json",
+                        "schema": EVIDENCE_CARDS_SCHEMA,
+                    },
                     {"id": "report", "type": "markdown", "from": "render_report"},
                 ],
             },
@@ -266,6 +339,7 @@ def builtin_workflow_presets() -> list[dict[str, Any]]:
                         "type": "json",
                         "from": "hunt_risks",
                         "artifact": "risk_findings.json",
+                        "schema": RISK_FINDINGS_SCHEMA,
                         "evidence_memory": {
                             "enabled": True,
                             "kind": "resource_risk_finding",
@@ -276,7 +350,13 @@ def builtin_workflow_presets() -> list[dict[str, Any]]:
                             "text_fields": ["summary", "risk", "resource", "function"],
                         },
                     },
-                    {"id": "evidence_cards", "type": "json", "from": "hunt_risks", "artifact": "evidence_cards.json"},
+                    {
+                        "id": "evidence_cards",
+                        "type": "json",
+                        "from": "hunt_risks",
+                        "artifact": "evidence_cards.json",
+                        "schema": EVIDENCE_CARDS_SCHEMA,
+                    },
                     {"id": "report", "type": "markdown", "from": "render_report"},
                 ],
             },
@@ -431,7 +511,7 @@ def builtin_workflow_presets() -> list[dict[str, Any]]:
                 "name": "MR Black-box Test Design",
                 "version": 1,
                 "inputs": [
-                    {"id": "mr_link", "type": "mr_link", "required": False, "resolver": "agent_mcp", "role": "merge request URL"},
+                    {"id": "mr_link", "type": "mr_link", "required": False, "role": "merge request URL"},
                     {"id": "patch_diff", "type": "patch", "required": False, "role": "local patch diff"},
                     {"id": "repo_path", "type": "directory", "required": False, "resolver": "local"},
                     {"id": "design_doc", "type": "file", "required": False, "role": "design context"},
@@ -450,7 +530,13 @@ def builtin_workflow_presets() -> list[dict[str, Any]]:
                     {"id": "render_blackbox_cases", "type": "report_render"},
                 ],
                 "outputs": [
-                    {"id": "mr_scope", "type": "json", "from": "collect_mr", "artifact": "mr_snapshot.json"},
+                    {
+                        "id": "mr_scope",
+                        "type": "json",
+                        "from": "collect_mr",
+                        "artifact": "mr_snapshot.json",
+                        "schema": MR_SNAPSHOT_SCHEMA,
+                    },
                     {
                         "id": "black_box_cases",
                         "type": "test_cases",
@@ -497,6 +583,7 @@ def builtin_workflow_presets() -> list[dict[str, Any]]:
                         "type": "json",
                         "from": "analyze_impact",
                         "artifact": "impact_scope.json",
+                        "schema": IMPACT_SCOPE_SCHEMA,
                         "evidence_memory": {
                             "enabled": True,
                             "kind": "patch_impact_scope",

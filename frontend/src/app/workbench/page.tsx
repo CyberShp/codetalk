@@ -189,6 +189,7 @@ const WORKFLOW_NAME_ZH: Record<string, string> = {
   rpc_config_negative_blackbox: "RPC/config 负例黑盒场景",
   reactor_thread_poller_blackbox: "reactor/thread/poller 调度黑盒场景",
   patch_impact: "补丁影响面计划工作流",
+  patch_impact_review: "补丁影响面评审工作流",
 };
 
 function workflowDisplayName(workflow: Pick<WorkflowDefinition, "id" | "name"> | string): string {

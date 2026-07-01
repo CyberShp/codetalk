@@ -1,5 +1,5 @@
 def test_builtin_workflow_presets_are_valid_and_cover_core_scenarios():
-    from app.services.workflow_dsl import validate_workflow_definition
+    from app.services.workflow_dsl import audit_workflow_definition, validate_workflow_definition
     from app.services.workflow_presets import builtin_workflow_presets
 
     presets = builtin_workflow_presets()
@@ -22,10 +22,11 @@ def test_builtin_workflow_presets_are_valid_and_cover_core_scenarios():
         assert workflow.id == preset["definition"]["id"]
         assert workflow.steps
         assert workflow.outputs
+        assert audit_workflow_definition(preset["definition"])["warnings"] == []
 
     mr_preset = next(item for item in presets if item["id"] == "mr_blackbox_test")
     assert any(
-        item["type"] == "mr_link" and item.get("resolver") == "agent_mcp"
+        item["id"] == "mr_link" and item["type"] == "mr_link" and "resolver" not in item
         for item in mr_preset["definition"]["inputs"]
     )
     assert any(item["id"] == "patch_diff" and item["type"] == "patch" for item in mr_preset["definition"]["inputs"])
