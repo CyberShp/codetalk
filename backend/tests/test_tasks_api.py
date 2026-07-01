@@ -63,7 +63,8 @@ async def test_create_task_rejects_removed_deepwiki_tool(client, tmp_path):
     assert response.status_code == 422
     detail = response.json()["detail"]
     assert detail["removed_tools"] == ["deepwiki"]
-    assert "DeepWiki" in detail["hint"]
+    assert "DeepWiki" not in detail["hint"]
+    assert "已移除" in detail["hint"]
 
 
 async def test_create_task_rejects_unknown_tool(client, tmp_path):
@@ -429,7 +430,7 @@ async def test_run_task_filters_removed_legacy_tool_selection(client, tmp_path, 
     data = response.json()
     assert data["status"] == "running"
     assert data["warnings"] == [
-        "DeepWiki 已移除，请改用 GitNexus、AI 线程或 Workbench 智能体编排。"
+        "已忽略一个已移除的旧工具；请使用 GitNexus、CGC、AI 线程或 Workbench 智能体编排。"
     ]
 
     stored = await client.get(f"/api/tasks/{task_id}")

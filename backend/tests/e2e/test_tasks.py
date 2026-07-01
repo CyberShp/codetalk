@@ -172,7 +172,7 @@ async def test_task_run_with_removed_legacy_tool_name_warns_and_launches(
     body = resp.json()
     assert body["status"] == "running"
     assert body["warnings"] == [
-        "DeepWiki 已移除，请改用 GitNexus、AI 线程或 Workbench 智能体编排。"
+        "已忽略一个已移除的旧工具；请使用 GitNexus、CGC、AI 线程或 Workbench 智能体编排。"
     ]
 
 

@@ -21,7 +21,7 @@ logger = logging.getLogger(__name__)
 _cancel_events: dict[str, asyncio.Event] = {}
 
 _REMOVED_TOOLS: dict[str, str] = {
-    "deepwiki": "DeepWiki 已移除，请改用 GitNexus、AI 线程或 Workbench 智能体编排。",
+    "deepwiki": "已忽略一个已移除的旧工具；请使用 GitNexus、CGC、AI 线程或 Workbench 智能体编排。",
 }
 
 
@@ -115,7 +115,7 @@ def _normalize_requested_tools(tools: list[str]) -> list[str]:
                 "removed_tools": removed,
                 "unsupported_tools": unsupported,
                 "supported_tools": sorted(supported),
-                "hint": "DeepWiki 已从当前产品中移除；请选择 GitNexus、CGC 或通过 Workbench 配置本机 Agent。",
+                "hint": "包含已移除或不支持的旧工具；请选择 GitNexus、CGC 或通过 Workbench 配置本机 Agent。",
             },
         )
     return normalized
