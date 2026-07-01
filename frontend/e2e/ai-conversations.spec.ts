@@ -20,6 +20,7 @@ async function mockReadableConversation(
   page: Page,
   options: {
     assistantContent?: string;
+    extraReferences?: Array<Record<string, unknown>>;
     extraMessages?: Array<Record<string, unknown>>;
   } = {},
 ) {
@@ -77,6 +78,7 @@ async function mockReadableConversation(
       excerpt: "审计日志应包含登录失败原因。",
       metadata: { workspace_id: "ws-1" },
     },
+    ...(options.extraReferences ?? []),
   ];
 
   await page.route("**/api/workspaces", async (route) => {
@@ -301,6 +303,43 @@ test("AI conversation page is a wide persistent reading surface", async ({ page 
   );
   expect(exported).toContain("时间: 2026-06-28T00:00:00Z");
   expect(exported).toContain("时间: 2026-06-28T00:00:01Z");
+});
+
+test("AI conversation degrades unsafe workspace source references without source links", async ({ page }, testInfo) => {
+  await mockReadableConversation(page, {
+    extraReferences: [
+      {
+        source_type: "workspace_source",
+        source_id: "src-unsafe",
+        title: "../secrets.env",
+        excerpt: "异常证据路径来自外部 agent，不能作为可打开源码链接。",
+        metadata: {
+          workspace_id: "ws-1",
+          path: "../secrets.env",
+          start_line: 1,
+          end_line: 2,
+        },
+      },
+    ],
+  });
+  await page.setViewportSize({ width: 1440, height: 920 });
+  await page.goto("/ai/conv-1", { waitUntil: "domcontentloaded" });
+
+  await page.getByText(/展开其余/).click();
+  await expect(page.getByText("../secrets.env", { exact: true })).toBeVisible();
+  const unsafeCard = page.locator(".ct-ai-ref", { hasText: "../secrets.env" });
+  await expect(unsafeCard).toBeVisible();
+  await expect(unsafeCard.getByRole("link", { name: "打开源码" })).toHaveCount(0);
+
+  const downloadPromise = page.waitForEvent("download");
+  await page.getByRole("button", { name: "导出" }).click();
+  const download = await downloadPromise;
+  const exportPath = testInfo.outputPath("ai-thread-unsafe-source-export.md");
+  await download.saveAs(exportPath);
+  const exported = fs.readFileSync(exportPath, "utf8");
+  expect(exported).toContain("../secrets.env");
+  expect(exported).toContain("源码位置: ../secrets.env:L1-L2");
+  expect(exported).not.toContain("sourcePath=..%2Fsecrets.env");
 });
 
 test("AI conversation shows workspace source and material references after a real send", async ({ page }) => {

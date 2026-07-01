@@ -98,12 +98,21 @@ function sourceLocationLabel(ref: AIContextReference): string {
   return path;
 }
 
+function isSafeWorkspaceSourcePath(path: string): boolean {
+  const normalized = path.trim();
+  if (!normalized) return false;
+  if (normalized.startsWith("/") || normalized.startsWith("\\") || /^[A-Za-z]:[\\/]/.test(normalized)) return false;
+  const parts = normalized.split(/[\\/]+/);
+  return parts.every((part) => part !== "" && part !== "." && part !== "..");
+}
+
 function sourceReferenceHref(ref: AIContextReference): string {
   if (ref.source_type !== "workspace_source") return "";
   const workspaceId = ref.metadata?.workspace_id;
   const path = ref.metadata?.path;
   if (typeof workspaceId !== "string" || !workspaceId.trim()) return "";
   if (typeof path !== "string" || !path.trim()) return "";
+  if (!isSafeWorkspaceSourcePath(path)) return "";
   const start = ref.metadata?.start_line;
   const startLine = typeof start === "number" && Number.isFinite(start) ? Math.max(1, Math.trunc(start)) : null;
   const query = new URLSearchParams({
