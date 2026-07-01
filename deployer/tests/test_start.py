@@ -37,13 +37,36 @@ def test_check_python_version_passes_on_310_plus():
     start._check_python_version()
 
 
-def test_check_python_version_exits_on_old_python():
-    """Simulate Python 3.9 — function must call sys.exit(1)."""
+def test_check_python_version_reexecs_with_newer_python(monkeypatch):
+    """Simulate Python 3.9 — launcher must recover when Python 3.10+ exists."""
     mock_vi = MagicMock(major=3, minor=9)
+    exec_calls: list[tuple[str, list[str]]] = []
+
+    def fake_execv(executable, argv):
+        exec_calls.append((executable, argv))
+        raise SystemExit(0)
+
+    monkeypatch.setattr(start, "_find_compatible_python", lambda: "/opt/homebrew/bin/python3.11")
+    monkeypatch.setattr(start.os, "execv", fake_execv)
+
     with patch.object(sys, "version_info", mock_vi):
         with pytest.raises(SystemExit) as exc_info:
             start._check_python_version()
-        assert exc_info.value.code == 1
+
+    assert exc_info.value.code == 0
+    assert exec_calls == [
+        ("/opt/homebrew/bin/python3.11", ["/opt/homebrew/bin/python3.11", *sys.argv])
+    ]
+
+
+def test_check_python_version_exits_on_old_python_when_no_newer_candidate(monkeypatch):
+    """Simulate Python 3.9 with no compatible interpreter — show actionable error."""
+    mock_vi = MagicMock(major=3, minor=9)
+    monkeypatch.setattr(start, "_find_compatible_python", lambda: None)
+    with patch.object(sys, "version_info", mock_vi):
+        with pytest.raises(SystemExit) as exc_info:
+            start._check_python_version()
+    assert exc_info.value.code == 1
 
 
 def test_create_venv_skips_if_python_exists(tmp_path, monkeypatch):

@@ -7,7 +7,9 @@ import time
 import webbrowser
 import os
 import socket
+import shutil
 from pathlib import Path
+from typing import Optional
 
 
 DEPLOYER_DIR = Path(__file__).parent
@@ -18,6 +20,7 @@ HOST = os.environ.get("CODETALK_DEPLOYER_HOST", "0.0.0.0")
 PORT = int(os.environ.get("CODETALK_DEPLOYER_PORT", "9000"))
 DISPLAY_HOST = "localhost" if HOST in {"0.0.0.0", "::"} else HOST
 URL = f"http://{DISPLAY_HOST}:{PORT}"
+PYTHON_CANDIDATES = ("python3.12", "python3.11", "python3.10", "python3", "python")
 
 
 def _venv_python() -> Path:
@@ -27,11 +30,53 @@ def _venv_python() -> Path:
     return VENV_DIR / "bin" / "python"
 
 
+def _python_version_ok(executable: str) -> bool:
+    try:
+        proc = subprocess.run(
+            [
+                executable,
+                "-c",
+                "import sys; raise SystemExit(0 if sys.version_info >= (3, 10) else 1)",
+            ],
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+            check=False,
+        )
+    except (OSError, subprocess.SubprocessError):
+        return False
+    return proc.returncode == 0
+
+
+def _find_compatible_python() -> Optional[str]:
+    current = Path(sys.executable).resolve()
+    for name in PYTHON_CANDIDATES:
+        candidate = shutil.which(name)
+        if not candidate:
+            continue
+        try:
+            if Path(candidate).resolve() == current:
+                continue
+        except OSError:
+            pass
+        if _python_version_ok(candidate):
+            return candidate
+    return None
+
+
 def _check_python_version() -> None:
-    """Exit with an error if the host Python is older than 3.10."""
+    """Relaunch with Python 3.10+ when possible, otherwise exit clearly."""
     major, minor = sys.version_info.major, sys.version_info.minor
     if (major, minor) < (3, 10):
-        print(f"Error: Python 3.10+ is required (found {major}.{minor}). Please upgrade.")
+        compatible_python = _find_compatible_python()
+        if compatible_python:
+            print(
+                f"Python {major}.{minor} is too old; relaunching deployer with {compatible_python}..."
+            )
+            os.execv(compatible_python, [compatible_python, *sys.argv])
+        print(
+            f"Error: Python 3.10+ is required (found {major}.{minor}). "
+            "Install Python 3.10+ or run deployer/start.sh so CodeTalk can select a compatible interpreter."
+        )
         sys.exit(1)
 
 
