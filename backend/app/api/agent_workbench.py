@@ -216,9 +216,47 @@ def _public_task_artifact_path(task_dir: Path, path: Path) -> str:
     return path.resolve().relative_to(task_dir.resolve()).as_posix()
 
 
+def _public_repo_path_label(repo_path: Any) -> str:
+    text = str(repo_path or "").strip()
+    if not text:
+        return "local-repo"
+    try:
+        return f"repo:{Path(text).expanduser().name or 'local-repo'}"
+    except (OSError, RuntimeError):
+        return "repo:local-repo"
+
+
+def _redact_public_repo_paths(payload: Any, repo_path: Any) -> Any:
+    raw = str(repo_path or "").strip()
+    replacements = [raw] if raw else []
+    if raw:
+        try:
+            resolved = str(Path(raw).expanduser().resolve())
+            if resolved not in replacements:
+                replacements.append(resolved)
+        except (OSError, RuntimeError):
+            pass
+    if isinstance(payload, str):
+        redacted = payload
+        for item in replacements:
+            if item:
+                redacted = redacted.replace(item, "<repo>")
+        return redacted
+    if isinstance(payload, list):
+        return [_redact_public_repo_paths(item, repo_path) for item in payload]
+    if isinstance(payload, dict):
+        return {
+            key: _redact_public_repo_paths(value, repo_path)
+            for key, value in payload.items()
+        }
+    return payload
+
+
 def _public_task_run_payload(task_run: Any) -> dict[str, Any]:
     payload = asdict(task_run)
     task_root = Path(str(payload.get("artifact_dir") or "")).resolve()
+    if "repo_path" in payload:
+        payload["repo_path"] = _public_repo_path_label(payload.get("repo_path"))
     if "artifact_dir" in payload:
         payload["artifact_dir"] = "."
     agent_runs = payload.get("agent_runs")
@@ -539,7 +577,7 @@ async def run_workbench_deployment_probe(payload: DeploymentProbeRequest) -> dic
     response = {
         "probe_id": probe_id,
         "status": status,
-        "repo_path": payload.repo_path,
+        "repo_path": _public_repo_path_label(payload.repo_path),
         "started_at": started_at.isoformat(),
         "completed_at": completed_at.isoformat(),
         "duration_ms": int((completed_at - started_at).total_seconds() * 1000),
@@ -557,6 +595,7 @@ async def run_workbench_deployment_probe(payload: DeploymentProbeRequest) -> dic
             "latest_path": _public_workbench_artifact_path(artifact_dir / "deployment_probe_latest.json"),
         },
     }
+    response = _redact_public_repo_paths(response, payload.repo_path)
     evidence_ids = _materialize_deployment_probe_evidence(response)
     response["evidence_ids"] = evidence_ids
     response["evidence_count"] = len(evidence_ids)
@@ -2001,6 +2040,7 @@ def _run_provider_task_probe_core(
             "missing_artifacts": validation.get("missing") or [],
         },
     }
+    result = _redact_public_repo_paths(result, str(repo))
     artifact_path = task_dir / "provider_task_probe_result.json"
     result["artifact"] = {"path": _public_task_artifact_path(task_dir, artifact_path)}
     _write_json(artifact_path, result)
