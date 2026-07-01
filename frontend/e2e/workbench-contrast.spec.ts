@@ -286,6 +286,53 @@ test("workbench skips global decorative atmosphere for tool performance", async 
   expect(runningWorkbenchAnimations).toEqual([]);
 });
 
+test("workbench respects reduced motion when switching tool panels", async ({ page }) => {
+  await routeDiagnosticsWorkbench(page);
+  await page.emulateMedia({ reducedMotion: "reduce" });
+  await page.setViewportSize({ width: 1440, height: 900 });
+  await page.goto("/workbench", { waitUntil: "domcontentloaded" });
+
+  await expect(page.getByRole("heading", { name: "任务运行" })).toBeVisible();
+  await page.getByRole("button", { name: "工作流设计" }).hover();
+  await page.getByRole("button", { name: "工作流设计" }).click();
+  await expect(page.getByRole("heading", { name: "工作流编排" })).toBeVisible();
+
+  const stageMotion = await page.locator(".ct-workbench-stage").first().evaluate((stage) => {
+    const style = getComputedStyle(stage);
+    const animations = document
+      .getAnimations()
+      .filter((animation) => {
+        const target = animation.effect instanceof KeyframeEffect ? animation.effect.target : null;
+        return target instanceof Element && stage.contains(target);
+      })
+      .map((animation) => ({
+        playState: animation.playState,
+        targetClass:
+          animation.effect instanceof KeyframeEffect &&
+          animation.effect.target instanceof Element
+            ? animation.effect.target.className
+            : "",
+        targetTag:
+          animation.effect instanceof KeyframeEffect &&
+          animation.effect.target instanceof Element
+            ? animation.effect.target.tagName
+            : "",
+        timing: animation.effect?.getComputedTiming(),
+      }))
+      .filter((animation) => animation.playState !== "finished");
+    return {
+      animationCount: animations.length,
+      animations,
+      opacity: Number(style.opacity),
+      transform: style.transform,
+    };
+  });
+
+  expect(stageMotion.animations, JSON.stringify(stageMotion, null, 2)).toHaveLength(0);
+  expect(stageMotion.opacity).toBe(1);
+  expect(stageMotion.transform).toBe("none");
+});
+
 test("workflow selector shows Chinese workflow names", async ({ page }) => {
   await routeDiagnosticsWorkbench(page);
   await page.goto("/workbench");
