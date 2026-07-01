@@ -4,6 +4,7 @@ No Docker required. Targets Windows intranet environments for black-box testers.
 """
 
 import asyncio
+import hashlib
 import os
 import re
 import signal
@@ -284,7 +285,8 @@ class NativeDeployer:
             env_text = env_file.read_text(encoding="utf-8")
         except OSError:
             env_text = ""
-        return f"{git_hash}\n{env_text.strip()}"
+        source_hash = await asyncio.to_thread(_frontend_source_fingerprint, frontend_dir)
+        return f"{git_hash}\n{source_hash}\n{env_text.strip()}"
 
     def _resolve_cgc_cmd(self) -> list[str] | None:
         """Resolve the cgc startup command, or None if no usable venv is found."""
@@ -1204,6 +1206,47 @@ def _keep_existing_backend_env_line(line: str, managed_keys: set[str]) -> bool:
     if any(key.startswith(prefix) for prefix in REMOVED_LEGACY_ENV_PREFIXES):
         return False
     return "deepwiki" not in key.lower()
+
+
+def _frontend_source_fingerprint(frontend_dir: Path) -> str:
+    """Hash frontend inputs so deploy packages without .git still rebuild stale .next."""
+    hasher = hashlib.sha256()
+    roots = [
+        "src",
+        "public",
+        "package.json",
+        "package-lock.json",
+        "pnpm-lock.yaml",
+        "pnpm-workspace.yaml",
+        "next.config.js",
+        "next.config.mjs",
+        "next.config.ts",
+        "postcss.config.js",
+        "postcss.config.mjs",
+        "tailwind.config.js",
+        "tailwind.config.ts",
+        "tsconfig.json",
+    ]
+    for rel_root in roots:
+        root = frontend_dir / rel_root
+        if not root.exists():
+            continue
+        files = [root] if root.is_file() else sorted(path for path in root.rglob("*") if path.is_file())
+        for path in files:
+            try:
+                rel_path = path.relative_to(frontend_dir).as_posix()
+            except ValueError:
+                rel_path = str(path)
+            hasher.update(rel_path.encode("utf-8", errors="replace"))
+            hasher.update(b"\0")
+            try:
+                with path.open("rb") as handle:
+                    for chunk in iter(lambda: handle.read(1024 * 1024), b""):
+                        hasher.update(chunk)
+            except OSError:
+                hasher.update(b"<unreadable>")
+            hasher.update(b"\0")
+    return hasher.hexdigest()
 
 
 def _redact_deployer_message(message: object) -> str:
