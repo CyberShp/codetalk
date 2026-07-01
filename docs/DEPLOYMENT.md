@@ -30,7 +30,7 @@ cd deployer
 # Windows
 start.bat
 # Linux/macOS
-python3 start.py
+./start.sh
 ```
 
 浏览器打开 http://localhost:9000，向导将自动完成当前本机部署流程：

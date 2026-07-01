@@ -88,6 +88,22 @@ def _create_venv() -> None:
     subprocess.run([sys.executable, "-m", "venv", str(VENV_DIR)], check=True)
 
 
+def _ensure_venv_compatible() -> None:
+    """Rebuild an existing venv if it was created with an unsupported Python."""
+    venv_python = _venv_python()
+    if not venv_python.exists():
+        _create_venv()
+        return
+    if _python_version_ok(str(venv_python)):
+        return
+    print(
+        "Existing deployer virtual environment uses Python < 3.10; rebuilding it with "
+        f"{sys.executable}..."
+    )
+    shutil.rmtree(VENV_DIR)
+    _create_venv()
+
+
 def _install_dependencies() -> None:
     """Install packages from requirements.txt into the venv."""
     print("Installing dependencies...")
@@ -170,7 +186,7 @@ def _assert_deployer_port_available() -> None:
                 f"\nError: 部署器端口 {PORT} 无法绑定：{exc}\n"
                 f"当前监听进程：{listener}\n"
                 f"处理方式：关闭占用端口的进程，或设置 CODETALK_DEPLOYER_PORT 为其他端口后重试。\n"
-                f"例如：CODETALK_DEPLOYER_PORT=9060 python start.py",
+                f"例如：CODETALK_DEPLOYER_PORT=9060 ./start.sh",
                 file=sys.stderr,
             )
             sys.exit(1)
@@ -180,7 +196,7 @@ def main() -> None:
     """Entry point: bootstrap the venv and launch uvicorn."""
     _check_python_version()
     try:
-        _create_venv()
+        _ensure_venv_compatible()
     except subprocess.CalledProcessError as exc:
         _exit_on_subprocess_error("创建部署器虚拟环境失败", exc)
     try:

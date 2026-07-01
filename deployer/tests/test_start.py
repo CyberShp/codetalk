@@ -84,6 +84,61 @@ def test_create_venv_skips_if_python_exists(tmp_path, monkeypatch):
     assert calls == [], "subprocess.run must not be called when venv already exists"
 
 
+def test_ensure_venv_compatible_creates_missing_venv(monkeypatch):
+    created: list[str] = []
+
+    class FakePython:
+        def exists(self):
+            return False
+
+    monkeypatch.setattr(start, "_venv_python", lambda: FakePython())
+    monkeypatch.setattr(start, "_create_venv", lambda: created.append("created"))
+
+    start._ensure_venv_compatible()
+
+    assert created == ["created"]
+
+
+def test_ensure_venv_compatible_keeps_supported_venv(monkeypatch, tmp_path):
+    fake_venv = tmp_path / ".venv"
+    fake_python = fake_venv / "bin" / "python"
+    fake_python.parent.mkdir(parents=True)
+    fake_python.touch()
+    created: list[str] = []
+    removed: list[str] = []
+
+    monkeypatch.setattr(start, "VENV_DIR", fake_venv)
+    monkeypatch.setattr(start, "_venv_python", lambda: fake_python)
+    monkeypatch.setattr(start, "_python_version_ok", lambda _: True)
+    monkeypatch.setattr(start, "_create_venv", lambda: created.append("created"))
+    monkeypatch.setattr(start.shutil, "rmtree", lambda path: removed.append(str(path)))
+
+    start._ensure_venv_compatible()
+
+    assert created == []
+    assert removed == []
+
+
+def test_ensure_venv_compatible_rebuilds_old_venv(monkeypatch, tmp_path):
+    fake_venv = tmp_path / ".venv"
+    fake_python = fake_venv / "bin" / "python"
+    fake_python.parent.mkdir(parents=True)
+    fake_python.touch()
+    created: list[str] = []
+    removed: list[str] = []
+
+    monkeypatch.setattr(start, "VENV_DIR", fake_venv)
+    monkeypatch.setattr(start, "_venv_python", lambda: fake_python)
+    monkeypatch.setattr(start, "_python_version_ok", lambda _: False)
+    monkeypatch.setattr(start, "_create_venv", lambda: created.append("created"))
+    monkeypatch.setattr(start.shutil, "rmtree", lambda path: removed.append(str(path)))
+
+    start._ensure_venv_compatible()
+
+    assert removed == [str(fake_venv)]
+    assert created == ["created"]
+
+
 def test_open_browser_after_delay_opens_url(monkeypatch):
     """_open_browser_after_delay opens the deployer URL via webbrowser."""
     opened: list[str] = []
