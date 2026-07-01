@@ -1441,6 +1441,17 @@ test("injects default workspace source into an agent-runtime AI thread for vague
         }),
       ]),
     );
+
+    const downloadPromise = page.waitForEvent("download");
+    await page.getByRole("button", { name: "导出" }).hover();
+    await page.getByRole("button", { name: "导出" }).click();
+    const download = await downloadPromise;
+    const exportPath = test.info().outputPath("real-ai-thread-default-source-public-path-export.md");
+    await download.saveAs(exportPath);
+    const exported = fs.readFileSync(exportPath, "utf8");
+    expect(exported).toContain("DEFAULT_SOURCE_CONTEXT_OK src/entry.c");
+    expect(exported).toContain("源码位置: src/entry.c:L1");
+    expect(exported).not.toContain(repo);
   } finally {
     await request.delete(`${backendBase}/api/settings/agent-runtimes/${encodeURIComponent(runtime.id)}`);
   }
