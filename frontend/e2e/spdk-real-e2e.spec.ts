@@ -203,6 +203,20 @@ function appendCaseResultJournal(item: CaseResult) {
   fs.appendFileSync(path.join(ARTIFACT_DIR, CASE_RESULTS_JOURNAL), `${JSON.stringify(payload)}\n`, "utf8");
 }
 
+function shouldReplaceMergedCaseResult(
+  previous: { at: number; item: CaseResult } | undefined,
+  candidate: { at: number; item: CaseResult },
+) {
+  if (!previous) return true;
+
+  const previousConcrete = previous.item.status === "pass" || previous.item.status === "fail";
+  const candidateConcrete = candidate.item.status === "pass" || candidate.item.status === "fail";
+
+  if (previousConcrete && !candidateConcrete) return false;
+  if (!previousConcrete && candidateConcrete) return true;
+  return previous.at <= candidate.at;
+}
+
 function mergeShardCaseResultsIntoMemory() {
   if (!mergeShardResults || !fs.existsSync(ARTIFACT_ROOT)) return;
   const current = runMetadata();
@@ -230,8 +244,9 @@ function mergeShardCaseResultsIntoMemory() {
         const at = Date.parse(parsed.recorded_at ?? "");
         if (!Number.isFinite(at)) continue;
         const previous = latestById.get(parsed.case.id);
-        if (!previous || previous.at <= at) {
-          latestById.set(parsed.case.id, { at, item: parsed.case });
+        const candidate = { at, item: parsed.case };
+        if (shouldReplaceMergedCaseResult(previous, candidate)) {
+          latestById.set(parsed.case.id, candidate);
         }
       } catch {
         // Ignore partial journal lines from an interrupted shard; the matrix will
