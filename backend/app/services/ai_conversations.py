@@ -1312,8 +1312,8 @@ async def _workbench_task_refs(scope_type: str, scope_id: str) -> list[ContextRe
     candidates = [
         "task_run.json",
         "task_bundle.json",
-        "workflow_execution.json",
         "task_artifact_manifest.json",
+        "workflow_execution.json",
         "artifact_manifest.json",
     ]
     refs: list[ContextReference] = []

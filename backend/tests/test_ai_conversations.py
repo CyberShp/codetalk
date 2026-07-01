@@ -470,6 +470,10 @@ class TestAIConversationsAPI:
             json.dumps({"workflow_id": "module_analysis", "repo_path": "/repo/spdk"}),
             encoding="utf-8",
         )
+        (task_dir / "workflow_execution.json").write_text(
+            json.dumps({"task_run_id": task_run_id, "status": "completed"}),
+            encoding="utf-8",
+        )
         (task_dir / "task_artifact_manifest.json").write_text(
             json.dumps(
                 {
@@ -482,6 +486,10 @@ class TestAIConversationsAPI:
                     ],
                 }
             ),
+            encoding="utf-8",
+        )
+        (task_dir / "artifact_manifest.json").write_text(
+            json.dumps({"legacy": True, "task_run_id": task_run_id}),
             encoding="utf-8",
         )
         monkeypatch.setattr(settings, "data_dir", str(data_root))
