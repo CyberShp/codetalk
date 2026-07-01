@@ -2593,7 +2593,7 @@ def _materialize_mr_artifact_evidence(
         "task_run_id": task_run.task_run_id,
         "step_id": step_id,
         "provider": provider,
-        "artifact_dir": str(artifact_dir),
+        "artifact_dir": _public_task_artifact_path(Path(str(task_run.artifact_dir)), artifact_dir),
         "provenance_status": "agent_mcp_provenance",
     }
     if isinstance(snapshot, dict):
@@ -2618,7 +2618,7 @@ def _materialize_mr_artifact_evidence(
             subject_key=f"{task_run.task_run_id}/{step_id}/{artifact}",
             status="verified_artifact",
             source=provider,
-            path=str(path),
+            path=_public_task_artifact_path(Path(str(task_run.artifact_dir)), path),
             reason="Required Agent artifact passed CodeTalk validation.",
             text=artifact,
             provenance={**provenance_base, "artifact": artifact},
