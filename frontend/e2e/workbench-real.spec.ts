@@ -509,11 +509,22 @@ test("locks artifact previews while a prepared workflow is executing", async ({
       request.method() === "POST" &&
       /\/api\/workbench\/task-runs\/[^/]+\/execute$/.test(new URL(request.url()).pathname),
   );
+  const executeRequests: string[] = [];
+  page.on("request", (request) => {
+    if (
+      request.method() === "POST" &&
+      /\/api\/workbench\/task-runs\/[^/]+\/execute$/.test(new URL(request.url()).pathname)
+    ) {
+      executeRequests.push(request.url());
+    }
+  });
+
   await page.getByRole("button", { name: "执行工作流" }).hover();
-  await page.getByRole("button", { name: "执行工作流" }).click();
+  await page.getByRole("button", { name: "执行工作流" }).dblclick();
   await executeRequest;
   await expect(page.getByRole("button", { name: "执行工作流" })).toBeDisabled();
   await expect(taskBundleArtifact).toBeDisabled();
+  await expect.poll(() => executeRequests.length).toBe(1);
 });
 
 test("locks sibling agent-run actions while a real step execution is in flight", async ({
