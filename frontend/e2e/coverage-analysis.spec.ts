@@ -352,6 +352,7 @@ test.describe("Coverage analysis", () => {
       "cleanup_temp,lib/bdev/bdev.c:22,0,0",
       "vfio_user_detach,lib/vfio-user/vfu.c:7-18,false,0",
       "rpc_config_apply,lib/rpc/rpc.c:4-12,false,0",
+      "thread_poller_wait,lib/thread/thread.c:30-44,false,0",
     ].join("\n");
 
     await page.locator('input[type="file"]').setInputFiles({
@@ -514,6 +515,12 @@ test.describe("Coverage analysis", () => {
     expect(e08?.code_evidence.some((item) => item.file_path === "lib/vfio-user/vfu.c")).toBeTruthy();
     expect(
       e08?.black_box_cases.every((item) => item.diagnostics.suggested_spdk_test_dir === "test/vfio_user"),
+    ).toBeTruthy();
+    const e09 = fourPiece.bundles.find((bundle) => bundle.id === "E09");
+    expect(e09?.status).toBe("generated");
+    expect(e09?.code_evidence.some((item) => item.file_path === "lib/thread/thread.c")).toBeTruthy();
+    expect(
+      e09?.black_box_cases.every((item) => item.diagnostics.suggested_spdk_test_dir === "test/thread"),
     ).toBeTruthy();
     const e10 = fourPiece.bundles.find((bundle) => bundle.id === "E10");
     expect(e10?.status).toBe("generated");

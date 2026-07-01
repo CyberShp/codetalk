@@ -240,7 +240,7 @@ function spdkTestDirectory(mr: CoverageModuleResult) {
   if (text.includes("vfio-user") || text.includes("vfio_user") || text.includes("/vfu")) return "test/vfio_user";
   if (text.includes("vhost")) return "test/vhost";
   if (text.includes("nvmf")) return "test/nvmf";
-  if (text.includes("thread")) return "test/unit/lib/thread";
+  if (text.includes("thread")) return "test/thread";
   if (text.includes("event") || text.includes("reactor")) return "test/event";
   if (text.includes("jsonrpc") || text.includes("json_config")) return "test/json_config";
   if (text.includes("lib/rpc/") || text.includes("_rpc") || text.includes("rpc")) return "test/rpc";
