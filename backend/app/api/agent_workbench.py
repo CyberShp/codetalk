@@ -2631,7 +2631,7 @@ def _materialize_workflow_output_evidence(
         if output.get("status") != "ok":
             rejected.append(_workflow_output_rejection_detail(output, reason="output_not_ok"))
             continue
-        path = Path(str(output.get("path") or ""))
+        path = _workflow_output_artifact_path(task_run, output)
         if not _is_workflow_output_path_within_task_artifacts(task_run, path):
             rejected.append({
                 "output": output_id,
@@ -2841,6 +2841,18 @@ def _is_workflow_output_path_within_task_artifacts(task_run: Any, path: Path) ->
         return resolved == task_root or task_root in resolved.parents
     except OSError:
         return False
+
+
+def _workflow_output_artifact_path(task_run: Any, output: dict[str, Any]) -> Path:
+    raw = str(output.get("path") or "").strip()
+    if not raw:
+        source_step = _safe_artifact_segment(str(output.get("from") or ""))
+        artifact = str(output.get("artifact") or "").strip()
+        raw = f"{source_step}/{artifact}" if source_step and artifact else artifact
+    path = Path(raw)
+    if path.is_absolute():
+        return path
+    return Path(str(task_run.artifact_dir)) / path
 
 
 def _workflow_output_rejection_detail(output: dict[str, Any], *, reason: str) -> dict[str, Any]:
@@ -3142,7 +3154,7 @@ def _semantic_cases_from_workflow_output(
         return [], [{"output": output_id, "reason": "output_is_not_test_cases"}], ""
     if output.get("status") != "ok":
         return [], [_workflow_output_rejection_detail(output, reason="output_not_ok")], ""
-    path = Path(str(output.get("path") or ""))
+    path = _workflow_output_artifact_path(task_run, output)
     if not _is_workflow_output_path_within_task_artifacts(task_run, path):
         return [], [{
             "output": output_id,

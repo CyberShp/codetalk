@@ -99,6 +99,7 @@ class WorkbenchWorkflowRunner:
                 break
 
         outputs = self._collect_workflow_outputs(
+            task_run=task_run,
             workflow_snapshot=task_run.workflow_snapshot,
             step_results=step_results,
         )
@@ -516,6 +517,7 @@ class WorkbenchWorkflowRunner:
     def _collect_workflow_outputs(
         self,
         *,
+        task_run: Any,
         workflow_snapshot: dict[str, Any],
         step_results: list[dict[str, Any]],
     ) -> list[dict[str, Any]]:
@@ -575,7 +577,10 @@ class WorkbenchWorkflowRunner:
                 item.update({
                     "status": "missing",
                     "reason": "artifact file was not produced",
-                    "path": str(artifact_path),
+                    "path": _public_workflow_artifact_path(
+                        task_run=task_run,
+                        artifact_path=artifact_path,
+                    ),
                 })
                 outputs.append(item)
                 continue
@@ -589,17 +594,26 @@ class WorkbenchWorkflowRunner:
                 item.update({
                     "status": "invalid",
                     "reason": "schema_validation_failed",
-                    "path": str(artifact_path),
+                    "path": _public_workflow_artifact_path(
+                        task_run=task_run,
+                        artifact_path=artifact_path,
+                    ),
                     "schema_errors": schema_errors,
                 })
                 outputs.append(item)
                 continue
             item.update({
                 "status": "ok",
-                "path": str(artifact_path),
+                "path": _public_workflow_artifact_path(
+                    task_run=task_run,
+                    artifact_path=artifact_path,
+                ),
                 "sha256": hashlib.sha256(data).hexdigest(),
                 "size_bytes": len(data),
-                "preview": _preview_bytes(data),
+                "preview": _redact_workbench_public_text(
+                    _preview_bytes(data),
+                    task_run=task_run,
+                ),
             })
             outputs.append(item)
         return outputs
@@ -723,7 +737,7 @@ def _local_scope_discovery_payloads(
     step: dict[str, Any],
 ) -> dict[str, Any]:
     repo = Path(str(task_run.repo_path or ""))
-    query = _local_scope_query(task_run.input_snapshot)
+    query = _public_local_scope_query(task_run)
     files = _discover_local_source_files(repo, query)
     evidence_cards = [
         _local_evidence_card(repo=repo, file_path=file_path, query=query, index=index)
@@ -732,7 +746,7 @@ def _local_scope_discovery_payloads(
     scope_payload = {
         "scope_id": str(step.get("id") or "local_scope_discover"),
         "query": query,
-        "repo_path": str(repo),
+        "repo": _public_repo_label(repo),
         "discovery": {
             "provider": "local-search",
             "method": "filesystem_source_scan",
@@ -779,6 +793,13 @@ def _local_scope_query(input_snapshot: dict[str, Any]) -> str:
     return " ".join(parts)[:2000]
 
 
+def _public_local_scope_query(task_run: Any) -> str:
+    return _redact_workbench_public_text(
+        _local_scope_query(task_run.input_snapshot),
+        task_run=task_run,
+    )
+
+
 def _local_resource_leak_hunt_payloads(
     *,
     task_run: Any,
@@ -786,7 +807,7 @@ def _local_resource_leak_hunt_payloads(
     prior_step_results: list[dict[str, Any]] | None = None,
 ) -> dict[str, Any]:
     repo = Path(str(task_run.repo_path or ""))
-    query = _local_scope_query(task_run.input_snapshot)
+    query = _public_local_scope_query(task_run)
     risk_pattern = str(task_run.input_snapshot.get("risk_pattern") or "cleanup").strip() or "cleanup"
     files = _discover_local_source_files(repo, query, limit=20)
     evidence_cards: list[dict[str, Any]] = []
@@ -980,7 +1001,7 @@ def _local_mr_blackbox_payloads(
         "source": "local-mr-blackbox",
         "status": "local_patch",
         "mr_link": mr_link,
-        "repo_path": str(task_run.repo_path or ""),
+        "repo": _public_repo_label(task_run.repo_path),
         "changed_files_count": len(changed_files),
         "changed_files": changed_files,
         "summary": "Generated from local patch_diff input without external MR credentials.",
@@ -3065,8 +3086,8 @@ def _render_report_content(
         "",
         f"- Task run: `{task_run.task_run_id}`",
         f"- Workspace: `{task_run.workspace_id}`",
-        f"- Repo: `{task_run.repo_path}`",
-        f"- Query: {context_bundle.get('query') or ''}",
+        f"- Repo: `{_public_repo_label(task_run.repo_path)}`",
+        f"- Query: {_redact_workbench_public_text(str(context_bundle.get('query') or ''), task_run=task_run)}",
         "",
         "## Workflow Steps",
     ]
@@ -3184,6 +3205,48 @@ def _preview_bytes(data: bytes, *, max_chars: int = 4000) -> str:
     if len(text) > max_chars:
         return text[:max_chars]
     return text
+
+
+def _public_workflow_artifact_path(*, task_run: Any, artifact_path: Path) -> str:
+    try:
+        task_root = Path(str(task_run.artifact_dir)).resolve()
+        resolved = artifact_path.resolve()
+        if resolved == task_root or task_root in resolved.parents:
+            return resolved.relative_to(task_root).as_posix()
+    except (OSError, ValueError):
+        pass
+    return artifact_path.name
+
+
+def _public_repo_label(repo_path: Any) -> str:
+    text = str(repo_path or "").strip()
+    if not text:
+        return "local-repo"
+    try:
+        return Path(text).expanduser().name or "local-repo"
+    except (OSError, RuntimeError):
+        return "local-repo"
+
+
+def _redact_workbench_public_text(text: str, *, task_run: Any) -> str:
+    redacted = str(text or "")
+    replacements: list[tuple[str, str]] = []
+    for raw, marker in (
+        (getattr(task_run, "repo_path", ""), "<repo>"),
+        (getattr(task_run, "artifact_dir", ""), "<artifact_dir>"),
+    ):
+        raw_text = str(raw or "").strip()
+        if not raw_text:
+            continue
+        replacements.append((raw_text, marker))
+        try:
+            replacements.append((str(Path(raw_text).expanduser().resolve()), marker))
+        except OSError:
+            pass
+    for needle, marker in sorted(set(replacements), key=lambda item: len(item[0]), reverse=True):
+        if needle:
+            redacted = redacted.replace(needle, marker)
+    return redacted
 
 
 def _safe_segment(value: str) -> str:

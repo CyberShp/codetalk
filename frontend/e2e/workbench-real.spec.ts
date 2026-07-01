@@ -372,7 +372,9 @@ test("creates, runs, previews, and downloads workflow artifacts through the real
   expect(download.suggestedFilename()).toBe("workflow_outputs.json");
   const exportPath = testInfo.outputPath("workbench-workflow-outputs.json");
   await download.saveAs(exportPath);
-  const exported = JSON.parse(fs.readFileSync(exportPath, "utf8")) as {
+  const exportedText = fs.readFileSync(exportPath, "utf8");
+  expect(exportedText).not.toContain(repo);
+  const exported = JSON.parse(exportedText) as {
     task_run_id: string;
     status: string;
     outputs: Array<{ id: string; artifact: string; status: string; type: string }>;
