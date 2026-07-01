@@ -1312,6 +1312,89 @@ test("agent workbench previews task run artifact content", async ({ page }) => {
   await expect(page.getByText("stdin-sha:stdinsha1234")).toBeVisible();
 });
 
+test("agent workbench prevents duplicate artifact preview requests from a real double click", async ({
+  page,
+}) => {
+  await routeWorkbenchShell(page);
+  await page.route("**/api/workbench/task-runs/prepare", async (route) => {
+    await route.fulfill({
+      headers: corsHeaders(route.request().headers().origin),
+      json: {
+        task_run_id: "task_run_preview_double",
+        workflow_id: "mr-blackbox-workflow",
+        workspace_id: "manual-workspace",
+        repo_path: "E:/repo",
+        artifact_dir: "E:/data/workbench/task_runs/task_run_preview_double",
+        workflow_snapshot: {},
+        input_snapshot: {},
+        task_bundle: {},
+        agent_runs: [],
+        created_at: "2026-06-23T00:00:00Z",
+      },
+    });
+  });
+  await page.route("**/api/workbench/task-runs/task_run_preview_double/artifacts", async (route) => {
+    await route.fulfill({
+      headers: corsHeaders(route.request().headers().origin),
+      json: {
+        task_run_id: "task_run_preview_double",
+        artifact_dir: "E:/data/workbench/task_runs/task_run_preview_double",
+        artifacts: [
+          {
+            relative_path: "task_bundle.json",
+            path: "E:/data/workbench/task_runs/task_run_preview_double/task_bundle.json",
+            kind: "task_bundle",
+            size_bytes: 128,
+            sha256: "abc123abc123abc123",
+            preview: "{\"workflow_id\":\"mr-blackbox-workflow\"}",
+          },
+        ],
+      },
+    });
+  });
+
+  let contentRequests = 0;
+  await page.route(
+    "**/api/workbench/task-runs/task_run_preview_double/artifacts/content/task_bundle.json",
+    async (route) => {
+      contentRequests += 1;
+      await page.waitForTimeout(250);
+      await route.fulfill({
+        headers: corsHeaders(route.request().headers().origin),
+        json: {
+          relative_path: "task_bundle.json",
+          path: "E:/data/workbench/task_runs/task_run_preview_double/task_bundle.json",
+          kind: "task_bundle",
+          size_bytes: 128,
+          sha256: "abc123abc123abc123",
+          preview: "{\"workflow_id\":\"mr-blackbox-workflow\"}",
+          is_text: true,
+          truncated: false,
+          content: "{\"workflow_id\":\"mr-blackbox-workflow\",\"double_click_safe\":true}",
+        },
+      });
+    },
+  );
+
+  await gotoWorkbench(page);
+  await openWorkbenchView(page, "运行驾驶舱");
+  const preparePanel = page
+    .locator("section")
+    .filter({ has: page.getByRole("heading", { name: "任务运行" }) });
+  await preparePanel.getByLabel("Repo path").fill("E:/repo");
+  await preparePanel.getByRole("button", { name: "准备运行" }).hover();
+  await preparePanel.getByRole("button", { name: "准备运行" }).click();
+  await expect(page.getByText(/审计产物:\s*1/)).toBeVisible();
+
+  const previewButton = page.getByRole("button", { name: "task_bundle:task_bundle.json" });
+  await previewButton.hover();
+  await previewButton.dblclick();
+
+  await expect(page.getByText("sha:abc123abc123")).toBeVisible();
+  await expect(page.getByText("\"double_click_safe\":true", { exact: false })).toBeVisible();
+  await expect.poll(() => contentRequests).toBe(1);
+});
+
 test("agent workbench opens one AI review thread on double click", async ({ page }) => {
   await routeWorkbenchShell(page);
   let createConversationCalls = 0;
