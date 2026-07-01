@@ -1235,6 +1235,9 @@ body:has(.ct-modal-backdrop) .ct-ai-dock-wrap {
 }
 
 .ct-ai-ref {
+  min-width: 0;
+  max-width: 100%;
+  overflow: hidden;
   border: 1px solid rgba(216, 227, 239, 0.82);
   border-radius: 16px;
   background: #ffffff;
@@ -1243,12 +1246,16 @@ body:has(.ct-modal-backdrop) .ct-ai-dock-wrap {
 }
 
 .ct-ai-ref span {
+  min-width: 0;
+  overflow-wrap: anywhere;
   color: #172033;
   font-size: 13px;
   font-weight: 700;
 }
 
 .ct-ai-ref code {
+  min-width: 0;
+  max-width: 100%;
   border-radius: 999px;
   background: #f1f5f9;
   padding: 3px 7px;
@@ -1262,6 +1269,7 @@ body:has(.ct-modal-backdrop) .ct-ai-dock-wrap {
   display: flex;
   min-width: 0;
   align-items: center;
+  flex-wrap: wrap;
   gap: 6px;
 }
 
@@ -1274,6 +1282,7 @@ body:has(.ct-modal-backdrop) .ct-ai-dock-wrap {
 
 .ct-ai-ref__meta code {
   min-width: 0;
+  max-width: 100%;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
@@ -1783,7 +1792,11 @@ body:has(.ct-modal-backdrop) .ct-ai-dock-wrap {
 }
 
 .ct-codex-ai.is-context-open {
-  grid-template-columns: minmax(232px, 260px) minmax(0, 1fr) minmax(252px, 292px);
+  grid-template-columns: minmax(232px, 260px) minmax(0, 1fr) minmax(0, 292px);
+}
+
+.ct-codex-ai > * {
+  min-width: 0;
 }
 
 .ct-codex-ai__rail,
@@ -2223,6 +2236,7 @@ body:has(.ct-modal-backdrop) .ct-ai-dock-wrap {
   position: sticky;
   top: 12px;
   height: calc(100vh - 24px);
+  min-width: 0;
   overflow: hidden auto;
   border-radius: 22px;
   padding: 16px;
@@ -2239,6 +2253,9 @@ body:has(.ct-modal-backdrop) .ct-ai-dock-wrap {
 }
 
 .ct-ai-env-card > div {
+  min-width: 0;
+  max-width: 100%;
+  overflow: hidden;
   border: 1px solid rgba(216, 227, 239, 0.82);
   border-radius: 15px;
   background: #ffffff;

@@ -228,6 +228,20 @@ test("AI conversation page is a wide persistent reading surface", async ({ page 
   const reader = page.locator(".ct-codex-ai__reader");
   const readerBox = await reader.boundingBox();
   expect(readerBox?.width ?? 0).toBeGreaterThan(560);
+  const rightOverflow = await page.locator(".ct-codex-ai").evaluate((root) => {
+    const viewportRight = window.innerWidth;
+    return Array.from(root.querySelectorAll("*"))
+      .map((node) => {
+        const rect = node.getBoundingClientRect();
+        return {
+          text: (node.textContent ?? "").trim().slice(0, 80),
+          right: rect.right,
+          width: rect.width,
+        };
+      })
+      .filter((box) => box.width > 1 && box.right > viewportRight + 1);
+  });
+  expect(rightOverflow).toEqual([]);
 
   const density = await page.locator(".ct-codex-message__content > div").first().evaluate((element) => {
     const rect = element.getBoundingClientRect();
