@@ -291,6 +291,14 @@ test("AI conversation page is a wide persistent reading surface", async ({ page 
   expect(exported).toContain("这个测试设计还缺什么？");
   expect(exported).toContain("建议补充登录失败、权限失效、弱网重试和审计日志验证。");
   expect(exported).toContain("测试设计报告 (workspace_report:report-1)");
+  expect(exported).toContain("源码位置: lib/login/session.ts:L42-L88");
+  expect(exported).toContain(
+    "源码链接: /workspaces/ws-1?tab=source&sourcePath=lib%2Flogin%2Fsession.ts&line=42",
+  );
+  expect(exported).toContain("任务产物: run-spdk-001 · task_artifact_manifest.json");
+  expect(exported).toContain(
+    "产物链接: /api/workbench/task-runs/run-spdk-001/artifacts/content/task_artifact_manifest.json",
+  );
   expect(exported).toContain("时间: 2026-06-28T00:00:00Z");
   expect(exported).toContain("时间: 2026-06-28T00:00:01Z");
 });
