@@ -185,6 +185,7 @@ function safeFilename(value: string): string {
 function redactDiagnosticText(value: string): string {
   return value
     .replace(/(\b(?:api[-_]?key|token|access[-_]?token|secret|password)=)(['"]?)([^\s"']+)(['"]?)/gi, "$1$2<redacted>$4")
+    .replace(/((?:"|')?(?:api[-_]?key|token|access[-_]?token|secret|password)(?:"|')?\s*:\s*)(["']?)([^\s"',}]+)(["']?)/gi, "$1$2<redacted>$4")
     .replace(/(--?(?:api[-_]?key|token|access[-_]?token|secret|password)(?:\s+|=))(['"]?)([^\s"']+)(['"]?)/gi, "$1$2<redacted>$4")
     .replace(/(Authorization:\s*Bearer\s+)[^\s"']+/gi, "$1<redacted>")
     .replace(/\bsk-[A-Za-z0-9_-]{12,}\b/g, "<redacted>");

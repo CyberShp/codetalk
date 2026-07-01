@@ -361,6 +361,42 @@ test("AI conversation degrades unsafe source and artifact references without lin
   expect(exported).not.toContain("artifacts/content//etc/passwd");
 });
 
+test("AI conversation export redacts JSON and YAML style secrets", async ({ page }, testInfo) => {
+  const jsonSecret = "jsonStyleSecretLeakValue1234567890";
+  const yamlSecret = "yamlStyleSecretLeakValue1234567890";
+  await mockReadableConversation(page, {
+    assistantContent:
+      `模型返回配置摘要：{"api_key":"${jsonSecret}","status":"failed"}\n` +
+      `诊断提示：password: ${yamlSecret}`,
+    extraReferences: [
+      {
+        source_type: "workspace_report",
+        source_id: "report-secret-json",
+        title: "密钥诊断片段",
+        excerpt:
+          `{"access_token": "${jsonSecret}", "note": "must be redacted"}\n` +
+          `password: ${yamlSecret}`,
+        metadata: { workspace_id: "ws-1" },
+      },
+    ],
+  });
+  await page.setViewportSize({ width: 1440, height: 920 });
+  await page.goto("/ai/conv-1", { waitUntil: "domcontentloaded" });
+
+  const downloadPromise = page.waitForEvent("download");
+  await page.getByRole("button", { name: "导出" }).click();
+  const download = await downloadPromise;
+  const exportPath = testInfo.outputPath("ai-thread-json-yaml-secret-export.md");
+  await download.saveAs(exportPath);
+  const exported = fs.readFileSync(exportPath, "utf8");
+
+  expect(exported).toContain("<redacted>");
+  expect(exported).not.toContain(jsonSecret);
+  expect(exported).not.toContain(yamlSecret);
+  expect(exported).not.toMatch(/"api_key"\s*:\s*"(?!<redacted>)[^"]+"/i);
+  expect(exported).not.toMatch(/password:\s*(?!<redacted>)[^\s]+/i);
+});
+
 test("AI conversation shows workspace source and material references after a real send", async ({ page }) => {
   let messagePosted = false;
   const runtimeRun = {
