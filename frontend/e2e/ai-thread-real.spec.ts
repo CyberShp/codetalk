@@ -807,6 +807,8 @@ test("keeps real agent thinking diagnostics collapsed and out of the persisted a
       "import sys",
       "sys.stdin.read()",
       "print('thinking: reading workspace source evidence from lib/nvmf/connect.c', flush=True)",
+      "print('  internal multiline note: select evidence cards before answering', flush=True)",
+      "print('  internal multiline note: avoid exposing chain-of-thought', flush=True)",
       "print('diagnostic: provider emitted chain-of-thought-like internal note', flush=True)",
       "print('FINAL_DIAGNOSTIC_ANSWER: black-box reconnect timeout should observe RPC error, log, and state recovery', flush=True)",
       "",
@@ -868,13 +870,18 @@ test("keeps real agent thinking diagnostics collapsed and out of the persisted a
     await expect(page.getByText("FINAL_DIAGNOSTIC_ANSWER")).toBeVisible({ timeout: 30_000 });
     const reader = page.getByLabel("AI 线程对话内容");
     await expect(reader).not.toContainText("reading workspace source evidence");
+    await expect(reader).not.toContainText("internal multiline note");
     await expect(reader).not.toContainText("chain-of-thought-like internal note");
     await expect(page.getByText("生成诊断：默认折叠")).toBeVisible();
     await expect(page.getByText("reading workspace source evidence")).toBeHidden();
+    await expect(page.getByText("internal multiline note: select evidence cards")).toBeHidden();
+    await expect(page.getByText("internal multiline note: avoid exposing")).toBeHidden();
     await expect(page.getByText("chain-of-thought-like internal note")).toBeHidden();
 
     await page.getByText("生成诊断：默认折叠").click();
     await expect(page.getByText("reading workspace source evidence")).toBeVisible();
+    await expect(page.getByText("internal multiline note: select evidence cards")).toBeVisible();
+    await expect(page.getByText("internal multiline note: avoid exposing")).toBeVisible();
     await expect(page.getByText("chain-of-thought-like internal note")).toBeVisible();
     await expect(page.getByRole("button", { name: "停止" })).toHaveCount(0, { timeout: 15_000 });
 
@@ -890,6 +897,7 @@ test("keeps real agent thinking diagnostics collapsed and out of the persisted a
     expect(assistantMessages[0].content).toContain("FINAL_DIAGNOSTIC_ANSWER");
     expect(assistantMessages[0].content).not.toContain("thinking:");
     expect(assistantMessages[0].content).not.toContain("diagnostic:");
+    expect(assistantMessages[0].content).not.toContain("internal multiline note");
     expect(assistantMessages[0].content).not.toContain("chain-of-thought-like internal note");
 
     const downloadPromise = page.waitForEvent("download");
@@ -901,6 +909,7 @@ test("keeps real agent thinking diagnostics collapsed and out of the persisted a
     expect(exported).toContain("FINAL_DIAGNOSTIC_ANSWER");
     expect(exported).not.toContain("thinking:");
     expect(exported).not.toContain("diagnostic:");
+    expect(exported).not.toContain("internal multiline note");
     expect(exported).not.toContain("chain-of-thought-like internal note");
   } finally {
     await request.delete(`${backendBase}/api/settings/agent-runtimes/${encodeURIComponent(runtime.id)}`);
