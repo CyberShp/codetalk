@@ -138,6 +138,23 @@ async def test_agent_output_segments_strip_terminal_noise_before_diagnostic_dete
     ]
 
 
+async def test_context_status_message_names_workbench_task_artifacts():
+    from app.services.ai_conversations import _context_status_message
+
+    message = _context_status_message(
+        [
+            {
+                "source_type": "workbench_task_artifact",
+                "source_id": "task_run_1/task_artifact_manifest.json",
+                "title": "task_artifact_manifest.json",
+            }
+        ]
+    )
+
+    assert "任务产物" in message
+    assert "未找到直接匹配" not in message
+
+
 class TestAIConversationsAPI:
     async def test_create_and_list_project_scoped_conversations(self, sqlite_db):
         ws_a = await _seed_workspace(sqlite_db, "ws-a")
