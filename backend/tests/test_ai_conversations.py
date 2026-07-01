@@ -234,6 +234,48 @@ class TestAIConversationsAPI:
             items = listed.json()["items"]
             assert [item["id"] for item in items] == [body_a["id"]]
 
+    async def test_create_workbench_conversation_publicizes_artifact_context(self, sqlite_db):
+        task_run_id = "task_run_public_context"
+        app = _test_app(sqlite_db)
+        async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+            created = await client.post(
+                "/api/ai/conversations",
+                json={
+                    "scope_type": "workbench_task_run",
+                    "scope_id": task_run_id,
+                    "workspace_id": "ws-workbench",
+                    "memory_namespace": "workspace:ws-workbench",
+                    "title": "Workbench AI 复盘",
+                    "initial_context": {
+                        "workspace_id": "ws-workbench",
+                        "repo_path": "/Volumes/Media/dpdk/spdk",
+                        "artifact_dir": (
+                            f"/Volumes/Media/codetalk/data/workbench/task_runs/{task_run_id}"
+                        ),
+                        "agent_runs": [
+                            {
+                                "step_id": "discover",
+                                "artifact_dir": (
+                                    "/Volumes/Media/codetalk/data/workbench/task_runs/"
+                                    f"{task_run_id}/agent_runs/discover"
+                                ),
+                            },
+                            {
+                                "step_id": "external",
+                                "artifact_dir": "E:/data/workbench/task_runs/other/agent_runs/external",
+                            },
+                        ],
+                    },
+                },
+            )
+
+        assert created.status_code == 201
+        context = created.json()["initial_context"]
+        assert context["repo_path"] == "/Volumes/Media/dpdk/spdk"
+        assert context["artifact_dir"] == "."
+        assert context["agent_runs"][0]["artifact_dir"] == "agent_runs/discover"
+        assert context["agent_runs"][1]["artifact_dir"] == ""
+
     async def test_workspace_thread_prioritizes_active_materials_and_source_refs(
         self,
         sqlite_db,
