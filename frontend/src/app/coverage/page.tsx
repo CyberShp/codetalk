@@ -242,7 +242,8 @@ function spdkTestDirectory(mr: CoverageModuleResult) {
   if (text.includes("nvmf")) return "test/nvmf";
   if (text.includes("thread")) return "test/unit/lib/thread";
   if (text.includes("event") || text.includes("reactor")) return "test/event";
-  if (text.includes("rpc") || text.includes("jsonrpc")) return "test/json_config";
+  if (text.includes("jsonrpc") || text.includes("json_config")) return "test/json_config";
+  if (text.includes("lib/rpc/") || text.includes("_rpc") || text.includes("rpc")) return "test/rpc";
   return "test";
 }
 

@@ -351,6 +351,7 @@ test.describe("Coverage analysis", () => {
       "parse_config,lib/bdev/bdev.c:1-30,true,3",
       "cleanup_temp,lib/bdev/bdev.c:22,0,0",
       "vfio_user_detach,lib/vfio-user/vfu.c:7-18,false,0",
+      "rpc_config_apply,lib/rpc/rpc.c:4-12,false,0",
     ].join("\n");
 
     await page.locator('input[type="file"]').setInputFiles({
@@ -513,6 +514,12 @@ test.describe("Coverage analysis", () => {
     expect(e08?.code_evidence.some((item) => item.file_path === "lib/vfio-user/vfu.c")).toBeTruthy();
     expect(
       e08?.black_box_cases.every((item) => item.diagnostics.suggested_spdk_test_dir === "test/vfio_user"),
+    ).toBeTruthy();
+    const e10 = fourPiece.bundles.find((bundle) => bundle.id === "E10");
+    expect(e10?.status).toBe("generated");
+    expect(e10?.code_evidence.some((item) => item.file_path === "lib/rpc/rpc.c")).toBeTruthy();
+    expect(
+      e10?.black_box_cases.every((item) => item.diagnostics.suggested_spdk_test_dir === "test/rpc"),
     ).toBeTruthy();
     for (const testCase of [...(e01?.black_box_cases ?? []), ...(e05?.black_box_cases ?? [])]) {
       expect(testCase.steps.join("\n")).not.toMatch(/\b(call|invoke)\s+spdk_|直接调用内部函数|修改源码/i);
