@@ -10,6 +10,7 @@ import re
 import signal
 import shutil
 import sys
+from contextlib import suppress
 from pathlib import Path
 from typing import Optional
 
@@ -54,6 +55,42 @@ SERVICE_DEFAULTS = [
     ("frontend", "frontend_port", 3003, "http", "/"),
     ("gitnexus", "gitnexus_port", 7100, "http", "/api/info"),
 ]
+
+
+async def _close_subprocess_transport(proc: asyncio.subprocess.Process) -> None:
+    transport = getattr(proc, "_transport", None)
+    if transport is not None:
+        transport.close()
+    await asyncio.sleep(0)
+    await asyncio.sleep(0)
+
+
+async def _terminate_subprocess(proc: asyncio.subprocess.Process, timeout: float = 5) -> None:
+    if proc.returncode is None:
+        with suppress(ProcessLookupError):
+            proc.terminate()
+        try:
+            await asyncio.wait_for(proc.wait(), timeout=timeout)
+        except asyncio.TimeoutError:
+            with suppress(ProcessLookupError):
+                proc.kill()
+            with suppress(asyncio.TimeoutError):
+                await asyncio.wait_for(proc.wait(), timeout=timeout)
+    await _close_subprocess_transport(proc)
+
+
+async def _communicate_with_timeout(
+    proc: asyncio.subprocess.Process,
+    timeout: float,
+) -> tuple[bytes, bytes]:
+    try:
+        return await asyncio.wait_for(proc.communicate(), timeout=timeout)
+    except (asyncio.TimeoutError, asyncio.CancelledError):
+        await _terminate_subprocess(proc)
+        raise
+    finally:
+        if proc.returncode is not None:
+            await _close_subprocess_transport(proc)
 
 
 class NativeDeployer:
@@ -159,7 +196,7 @@ class NativeDeployer:
                 stdout=asyncio.subprocess.PIPE,
                 stderr=asyncio.subprocess.PIPE,
             )
-            stdout, _ = await asyncio.wait_for(proc.communicate(), timeout=10)
+            stdout, _ = await _communicate_with_timeout(proc, timeout=10)
             if proc.returncode != 0:
                 return False
             if min_version:
@@ -486,7 +523,7 @@ class NativeDeployer:
                         stdout=asyncio.subprocess.PIPE,
                         stderr=asyncio.subprocess.DEVNULL,
                     )
-                    stdout, _ = await asyncio.wait_for(scan.communicate(), timeout=10)
+                    stdout, _ = await _communicate_with_timeout(scan, timeout=10)
                     for line in stdout.decode(errors="replace").splitlines():
                         if f":{port} " not in line or "LISTENING" not in line:
                             continue
@@ -504,7 +541,7 @@ class NativeDeployer:
                                 stdout=asyncio.subprocess.PIPE,
                                 stderr=asyncio.subprocess.DEVNULL,
                             )
-                            name_out, _ = await asyncio.wait_for(name_proc.communicate(), timeout=5)
+                            name_out, _ = await _communicate_with_timeout(name_proc, timeout=5)
                             first_line = name_out.decode(errors="replace").strip().splitlines()[0]
                             proc_name = first_line.split(",")[0].strip('"') or pid_str
                         except Exception:
@@ -525,7 +562,7 @@ class NativeDeployer:
                         stdout=asyncio.subprocess.PIPE,
                         stderr=asyncio.subprocess.DEVNULL,
                     )
-                    stdout, _ = await asyncio.wait_for(scan.communicate(), timeout=10)
+                    stdout, _ = await _communicate_with_timeout(scan, timeout=10)
                     for pid_str in stdout.decode(errors="replace").split():
                         if not pid_str.isdigit():
                             continue
@@ -539,7 +576,7 @@ class NativeDeployer:
                                 stdout=asyncio.subprocess.PIPE,
                                 stderr=asyncio.subprocess.DEVNULL,
                             )
-                            name_out, _ = await asyncio.wait_for(name_proc.communicate(), timeout=5)
+                            name_out, _ = await _communicate_with_timeout(name_proc, timeout=5)
                             proc_name = name_out.decode(errors="replace").strip() or pid_str
                         except Exception:
                             pass
@@ -585,7 +622,7 @@ class NativeDeployer:
                         stdout=asyncio.subprocess.PIPE,
                         stderr=asyncio.subprocess.DEVNULL,
                     )
-                    stdout, _ = await asyncio.wait_for(scan.communicate(), timeout=10)
+                    stdout, _ = await _communicate_with_timeout(scan, timeout=10)
                     for line in stdout.decode(errors="replace").splitlines():
                         if f":{port} " not in line or "LISTENING" not in line:
                             continue
@@ -607,7 +644,7 @@ class NativeDeployer:
                                 stdout=asyncio.subprocess.PIPE,
                                 stderr=asyncio.subprocess.DEVNULL,
                             )
-                            name_out, _ = await asyncio.wait_for(name_proc.communicate(), timeout=5)
+                            name_out, _ = await _communicate_with_timeout(name_proc, timeout=5)
                             first_line = name_out.decode(errors="replace").strip().splitlines()[0]
                             proc_name = first_line.split(",")[0].strip('"') or pid_str
                         except Exception:
@@ -618,6 +655,7 @@ class NativeDeployer:
                             stderr=asyncio.subprocess.DEVNULL,
                         )
                         await asyncio.wait_for(kill_proc.wait(), timeout=5)
+                        await _close_subprocess_transport(kill_proc)
                         await self._emit("start_services", "running",
                                          f"已释放端口 {port}（PID {pid_str}, {proc_name}）", step)
                 except (asyncio.TimeoutError, Exception):
@@ -629,7 +667,7 @@ class NativeDeployer:
                         stdout=asyncio.subprocess.PIPE,
                         stderr=asyncio.subprocess.DEVNULL,
                     )
-                    stdout, _ = await asyncio.wait_for(scan.communicate(), timeout=10)
+                    stdout, _ = await _communicate_with_timeout(scan, timeout=10)
                     for pid_str in stdout.decode(errors="replace").split():
                         if not pid_str.isdigit():
                             continue
@@ -647,7 +685,7 @@ class NativeDeployer:
                                 stdout=asyncio.subprocess.PIPE,
                                 stderr=asyncio.subprocess.DEVNULL,
                             )
-                            name_out, _ = await asyncio.wait_for(name_proc.communicate(), timeout=5)
+                            name_out, _ = await _communicate_with_timeout(name_proc, timeout=5)
                             proc_name = name_out.decode(errors="replace").strip() or pid_str
                         except Exception:
                             pass
@@ -657,6 +695,7 @@ class NativeDeployer:
                             stderr=asyncio.subprocess.DEVNULL,
                         )
                         await asyncio.wait_for(kill_proc.wait(), timeout=5)
+                        await _close_subprocess_transport(kill_proc)
                         await self._emit("start_services", "running",
                                          f"已释放端口 {port}（PID {pid_str}, {proc_name}）", step)
                 except (asyncio.TimeoutError, Exception):
@@ -824,7 +863,10 @@ class NativeDeployer:
 
     async def _terminate_process(self, name: str, timeout: float = 5) -> None:
         proc = self._processes.get(name)
-        if proc is None or proc.returncode is not None:
+        if proc is None:
+            return
+        if proc.returncode is not None:
+            await _close_subprocess_transport(proc)
             return
         if sys.platform == "win32":
             try:
@@ -838,7 +880,9 @@ class NativeDeployer:
                     stderr=asyncio.subprocess.DEVNULL,
                 )
                 await asyncio.wait_for(kill_tree.wait(), timeout=timeout)
+                await _close_subprocess_transport(kill_tree)
                 await asyncio.wait_for(proc.wait(), timeout=timeout)
+                await _close_subprocess_transport(proc)
                 return
             except (ProcessLookupError, asyncio.TimeoutError, FileNotFoundError):
                 pass
@@ -856,6 +900,8 @@ class NativeDeployer:
                     proc.kill()
             except ProcessLookupError:
                 pass
+        finally:
+            await _close_subprocess_transport(proc)
 
     async def restart_service(self, name: str) -> dict:
         """Restart a named service using stored startup args."""
@@ -1096,7 +1142,7 @@ class NativeDeployer:
                 stderr=asyncio.subprocess.DEVNULL,
                 cwd=str(cwd),
             )
-            stdout, _ = await asyncio.wait_for(proc.communicate(), timeout=10)
+            stdout, _ = await _communicate_with_timeout(proc, timeout=10)
             if proc.returncode == 0:
                 return stdout.decode(errors="replace").strip()
         except (FileNotFoundError, asyncio.TimeoutError):
@@ -1130,32 +1176,34 @@ class NativeDeployer:
         start_time = time.monotonic()
 
         assert proc.stdout is not None
-        async for raw_line in proc.stdout:
-            if self._stopped:
-                proc.terminate()
-                break
-            if time.monotonic() - start_time > timeout_seconds:
-                proc.terminate()
-                try:
-                    await asyncio.wait_for(proc.wait(), timeout=5)
-                except asyncio.TimeoutError:
-                    proc.kill()
-                await self._emit(
-                    step_name, "error",
-                    f"进程超时（{timeout_seconds}s）：{cmd[0]}",
-                    step_index,
-                )
-                return 1
-            line = raw_line.decode(errors="replace").rstrip()
-            if line:
-                await self._queue.put({
-                    "step": step_name,
-                    "status": "running",
-                    "message": _redact_deployer_message(line),
-                    "progress": {"current": step_index, "total": TOTAL_STEPS},
-                })
-        await proc.wait()
-        return proc.returncode or 0
+        try:
+            async for raw_line in proc.stdout:
+                if self._stopped:
+                    await _terminate_subprocess(proc)
+                    break
+                if time.monotonic() - start_time > timeout_seconds:
+                    await _terminate_subprocess(proc)
+                    await self._emit(
+                        step_name, "error",
+                        f"进程超时（{timeout_seconds}s）：{cmd[0]}",
+                        step_index,
+                    )
+                    return 1
+                line = raw_line.decode(errors="replace").rstrip()
+                if line:
+                    await self._queue.put({
+                        "step": step_name,
+                        "status": "running",
+                        "message": _redact_deployer_message(line),
+                        "progress": {"current": step_index, "total": TOTAL_STEPS},
+                    })
+            await proc.wait()
+            return proc.returncode or 0
+        except asyncio.CancelledError:
+            await _terminate_subprocess(proc)
+            raise
+        finally:
+            await _close_subprocess_transport(proc)
 
     async def _run_capture(self, *cmd: str) -> tuple[int, str, str]:
         try:
@@ -1164,7 +1212,7 @@ class NativeDeployer:
                 stdout=asyncio.subprocess.PIPE,
                 stderr=asyncio.subprocess.PIPE,
             )
-            stdout, stderr = await asyncio.wait_for(proc.communicate(), timeout=15)
+            stdout, stderr = await _communicate_with_timeout(proc, timeout=15)
             return proc.returncode or 0, stdout.decode(errors="replace"), stderr.decode(errors="replace")
         except (FileNotFoundError, asyncio.TimeoutError):
             return 1, "", ""
