@@ -24,11 +24,28 @@ pytestmark = [
     ),
 ]
 
-_BASE_URL = "https://api.deepseek.com"
-_MODEL = "deepseek-chat"
+_BASE_URL = os.environ.get("DEEPSEEK_BASE_URL", "https://api.deepseek.com")
+_MODEL = os.environ.get("DEEPSEEK_MODEL", "deepseek-chat")
 _API_KEY = os.environ.get("DEEPSEEK_API_KEY", "")
 
-_SPDK_ROOT = Path(r"D:\coworkers\spdk")
+def _resolve_spdk_root() -> Path:
+    configured = (
+        os.environ.get("CODETALK_E2E_SPDK_ROOT")
+        or os.environ.get("SPDK_ROOT")
+        or os.environ.get("SPDK_REPO")
+    )
+    candidates = [
+        Path(configured).expanduser() if configured else None,
+        Path("/Volumes/Media/dpdk/spdk"),
+        Path(r"D:\coworkers\spdk"),
+    ]
+    for candidate in candidates:
+        if candidate and (candidate / "lib" / "nvme" / "nvme_ns.c").exists():
+            return candidate
+    return candidates[0] or Path("/Volumes/Media/dpdk/spdk")
+
+
+_SPDK_ROOT = _resolve_spdk_root()
 _NVME_NS_PATH = _SPDK_ROOT / "lib" / "nvme" / "nvme_ns.c"
 
 _SYSTEM_PROMPT = (
