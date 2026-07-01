@@ -4,7 +4,10 @@ Uses ASGITransport to drive the real FastAPI app in-process.
 Zero mocks: config isolation is done by redirecting CONFIG_PATH to a tmp file.
 """
 
+import asyncio
+import gc
 import sys
+from contextlib import suppress
 from pathlib import Path
 
 import httpx
@@ -41,17 +44,31 @@ async def client(deployer_app):
 
 
 @pytest.fixture(autouse=True)
-def reset_deploy_state():
+async def reset_deploy_state():
     """Reset module-level deployment state before and after every test.
 
     Recreates the entire DeploymentState (including the asyncio.Lock) so that
-    each test starts with a fresh lock bound to the current event loop.
+    each test starts with a fresh lock bound to the current event loop. Any
+    background deployment task started by a test is cancelled and awaited before
+    the loop closes so asyncio subprocess transports do not leak.
     """
     import server
 
-    def _clear():
+    async def _cleanup():
+        task = server._state.task
+        deployer = server._state.deployer
+        if task is not None and not task.done():
+            task.cancel()
+            with suppress(asyncio.CancelledError, Exception):
+                await task
+        if deployer is not None and hasattr(deployer, "stop"):
+            with suppress(Exception):
+                await deployer.stop()
         server._state = server.DeploymentState()
+        gc.collect()
+        await asyncio.sleep(0)
+        await asyncio.sleep(0)
 
-    _clear()
+    server._state = server.DeploymentState()
     yield
-    _clear()
+    await _cleanup()
