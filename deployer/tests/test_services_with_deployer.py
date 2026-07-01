@@ -64,17 +64,28 @@ async def test_service_restart_with_deployer_unknown_service_raises_404(client):
     assert "backend" in detail["available_services"]
 
 
-async def test_service_restart_with_deployer_backend_uses_defaults(client):
-    """backend has _default_start_args so restart attempts to spawn the backend process.
-    Outcome depends on the test environment:
-    - 200: venv exists and uvicorn starts (port free) — success
-    - 500: venv exists but spawn fails (e.g. port conflict or immediate crash)
-    - 404: service unknown (shouldn't happen for 'backend', included for safety)
-    """
+async def test_service_restart_with_deployer_backend_uses_defaults(client, monkeypatch):
+    """backend restart must reconstruct default args and reach spawn, not 404."""
     import server
-    server._state.deployer = _make_deployer()
+
+    deployer = _make_deployer()
+    spawned: list[tuple[str, list[str], str, dict | None]] = []
+
+    async def fake_spawn(name, cmd, cwd, step_name, step_index, env_extra=None):
+        spawned.append((name, cmd, cwd, env_extra))
+
+    monkeypatch.setattr(deployer, "_spawn_process", fake_spawn)
+    server._state.deployer = deployer
+
     resp = await client.post("/api/services/backend/restart")
-    assert resp.status_code in (200, 404, 500)
+    assert resp.status_code == 200
+    assert resp.json() == {"ok": True, "service": "backend"}
+    assert spawned
+    name, cmd, cwd, env_extra = spawned[0]
+    assert name == "backend"
+    assert "uvicorn" in cmd
+    assert cwd.endswith("/backend")
+    assert env_extra is None
 
 
 async def test_service_stop_with_deployer_unknown_service_raises_404(client):
@@ -105,12 +116,23 @@ async def test_service_start_with_deployer_unknown_service_raises_404(client):
     assert "available_services" in detail
 
 
-async def test_service_start_with_deployer_backend_uses_defaults(client):
-    """backend has _default_start_args, so start tries to spawn → RuntimeError → 500."""
+async def test_service_start_with_deployer_backend_uses_defaults(client, monkeypatch):
+    """backend start must reconstruct default args and reach spawn, not 404."""
     import server
-    server._state.deployer = _make_deployer()
+
+    deployer = _make_deployer()
+    spawned: list[str] = []
+
+    async def fake_spawn(name, cmd, cwd, step_name, step_index, env_extra=None):
+        spawned.append(name)
+
+    monkeypatch.setattr(deployer, "_spawn_process", fake_spawn)
+    server._state.deployer = deployer
+
     resp = await client.post("/api/services/backend/start")
-    assert resp.status_code in (200, 404, 500)
+    assert resp.status_code == 200
+    assert resp.json() == {"ok": True, "service": "backend", "action": "started"}
+    assert spawned == ["backend"]
 
 
 async def test_services_stop_all_with_deployer_calls_stop(client):
@@ -155,14 +177,27 @@ async def test_services_health_with_deployer_uses_real_check(client):
     assert isinstance(body["services"], list)
 
 
-async def test_service_frontend_restart_with_deployer_uses_defaults(client):
-    """frontend has _default_start_args, so restart attempts to spawn the frontend process.
-    Outcome depends on the test environment, matching the backend restart contract.
-    """
+async def test_service_frontend_restart_with_deployer_uses_defaults(client, monkeypatch):
+    """frontend restart must rebuild and spawn through default args, not 404."""
     import server
-    server._state.deployer = _make_deployer()
+
+    deployer = _make_deployer()
+    events: list[str] = []
+
+    async def fake_install_frontend():
+        events.append("install_frontend")
+
+    async def fake_spawn(name, cmd, cwd, step_name, step_index, env_extra=None):
+        events.append(f"spawn:{name}:{env_extra.get('PORT') if env_extra else ''}")
+
+    monkeypatch.setattr(deployer, "_step_install_frontend", fake_install_frontend)
+    monkeypatch.setattr(deployer, "_spawn_process", fake_spawn)
+    server._state.deployer = deployer
+
     resp = await client.post("/api/services/frontend/restart")
-    assert resp.status_code in (200, 404, 500)
+    assert resp.status_code == 200
+    assert resp.json() == {"ok": True, "service": "frontend"}
+    assert events == ["install_frontend", "spawn:frontend:3003"]
 
 
 async def test_service_gitnexus_stop_with_deployer_raises_404(client):
