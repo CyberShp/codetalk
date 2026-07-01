@@ -13497,7 +13497,30 @@ def _black_box_scenario_has_white_box_leak(scenario: dict) -> bool:
         re.compile(r"\b[A-Za-z_]\w*->[A-Za-z_]\w*\b"),
         re.compile(r"修改.*内部变量|设置.*内部变量"),
     )
-    return any(rule.search(text) for rule in leak_rules)
+    return any(rule.search(text) for rule in leak_rules) or _scenario_has_private_member_access(text)
+
+
+def _scenario_has_private_member_access(text: str) -> bool:
+    for match in re.finditer(r"\b[A-Za-z_]\w*\.[A-Za-z_]\w*\b", text or ""):
+        value = match.group(0).strip().lower()
+        base, _, member = value.partition(".")
+        token_start = match.start()
+        token_end = match.end()
+        while token_start > 0 and re.match(r"[\w.:-]", text[token_start - 1]):
+            token_start -= 1
+        while token_end < len(text) and re.match(r"[\w.:-]", text[token_end]):
+            token_end += 1
+        token = text[token_start:token_end]
+        if re.search(r"\d|:|-", token):
+            continue
+        if base in {"ctrlr", "conn", "req", "ctx", "pdu", "bdev", "qpair", "poller"}:
+            return True
+        if member in {"state", "flags", "flag", "opts", "ctx", "private", "internal"}:
+            return True
+        if _private_member_looks_like_public_surface(text, match):
+            continue
+        return True
+    return False
 
 
 def _scenario_function_call_looks_like_public_surface(text: str, match: re.Match) -> bool:
