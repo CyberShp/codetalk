@@ -228,6 +228,18 @@ def _event_text(event: dict[str, Any]) -> str | None:
         value = part.get("text") or part.get("content")
         if isinstance(value, str):
             return value
+    for key in ("data", "payload"):
+        value = event.get(key)
+        if isinstance(value, str):
+            return value
+        if isinstance(value, dict):
+            nested = _event_text(value)
+            if nested is not None:
+                return nested
+        if isinstance(value, list):
+            parts = _content_parts(value)
+            if parts:
+                return "".join(parts)
     choices = event.get("choices")
     if isinstance(choices, list):
         parts: list[str] = []
