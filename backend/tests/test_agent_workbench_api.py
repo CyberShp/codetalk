@@ -4353,6 +4353,86 @@ async def test_workbench_task_run_acceptance_audit_rejects_vague_black_box_expec
     assert any("vague_expected_result" in item["reasons"] for item in quality_check["invalid_cases"])
 
 
+async def test_workbench_task_run_acceptance_audit_rejects_vague_black_box_steps(
+    workbench_client,
+    tmp_path,
+    monkeypatch,
+):
+    from app.config import settings
+
+    script_path = tmp_path / "agent_vague_black_box_steps.py"
+    script_path.write_text(
+        "import json, os, pathlib, sys\n"
+        "json.load(sys.stdin)\n"
+        "root=pathlib.Path(os.environ['CODETALK_AGENT_ARTIFACT_DIR'])\n"
+        "(root/'black_box_cases.json').write_text(json.dumps([\n"
+        "  {'case_id':'bb_tls_vague_steps',"
+        "'title':'TLS reconnect has observable recovery',"
+        "'preconditions':['NVMe-oF target is configured with TLS enabled'],"
+        "'steps':['执行测试','验证功能','观察结果'],"
+        "'expected':['initiator reports reconnect timeout and target logs a reconnect event'],"
+        "'observability':['initiator exit code, target log, connection state metric'],"
+        "'diagnostics':['compare target log timestamps with initiator timeout window'],"
+        "'suggested_spdk_test_dir':'test/nvmf'}\n"
+        "]), encoding='utf-8')\n",
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(settings, "external_agent_custom_providers", [
+        {"id": "local-python", "command": f"python {script_path}"}
+    ])
+    workflow = {
+        "id": "acceptance_vague_black_box_steps_workflow",
+        "name": "Acceptance vague black-box steps workflow",
+        "version": 1,
+        "inputs": [{"id": "module", "type": "free_text"}],
+        "steps": [
+            {
+                "id": "design",
+                "type": "agent_task",
+                "provider": "local-python",
+                "required_artifacts": ["black_box_cases.json"],
+            }
+        ],
+        "outputs": [
+            {
+                "id": "black_box_cases",
+                "type": "test_cases",
+                "from": "design",
+                "artifact": "black_box_cases.json",
+                "semantic_import": {"enabled": True},
+            }
+        ],
+    }
+    assert (await workbench_client.post("/api/workbench/workflows", json=workflow)).status_code == 201
+    prepared = await workbench_client.post(
+        "/api/workbench/task-runs/prepare",
+        json={
+            "workflow_id": "acceptance_vague_black_box_steps_workflow",
+            "workspace_id": "ws-acceptance-vague-black-box-steps",
+            "repo_path": str(tmp_path),
+            "inputs": {"module": "nvme-tcp-tls"},
+        },
+    )
+    task_run_id = prepared.json()["task_run_id"]
+    executed = await workbench_client.post(
+        f"/api/workbench/task-runs/{task_run_id}/execute",
+        json={"timeout_sec": 10},
+    )
+    assert executed.status_code == 200
+
+    response = await workbench_client.post(
+        f"/api/workbench/task-runs/{task_run_id}/acceptance-audit"
+    )
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["status"] == "incomplete"
+    checks = {item["id"]: item for item in body["checks"]}
+    quality_check = checks["black_box_case_quality:design:black_box_cases.json"]
+    assert quality_check["status"] == "invalid"
+    assert any("vague_steps" in item["reasons"] for item in quality_check["invalid_cases"])
+
+
 async def test_workbench_task_run_acceptance_audit_rejects_duplicate_black_box_cases(
     workbench_client,
     tmp_path,
