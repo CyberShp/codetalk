@@ -424,6 +424,7 @@ async def upload_workbench_input_file(
         )
     destination = upload_dir / filename
     destination.write_bytes(data)
+    public_path = _public_workbench_artifact_path(destination)
     metadata = {
         "kind": "workbench_input_upload",
         "upload_id": upload_id,
@@ -432,8 +433,8 @@ async def upload_workbench_input_file(
         "content_type": file.content_type or "",
         "size": len(data),
         "sha256": hashlib.sha256(data).hexdigest(),
-        "path": str(destination),
-        "input_payload": {"path": str(destination)},
+        "path": public_path,
+        "input_payload": {"path": public_path},
     }
     (upload_dir / "upload_metadata.json").write_text(
         json.dumps(metadata, ensure_ascii=False, indent=2),
