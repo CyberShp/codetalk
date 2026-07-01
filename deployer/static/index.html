@@ -23,7 +23,7 @@
     .launcher-header {
       text-align: center;
       margin-bottom: 64px;
-      animation: step-fade-in 0.6s cubic-bezier(0.2, 0.8, 0.2, 1) forwards;
+      animation: step-fade-in 0.18s ease-out forwards;
     }
 
     .launcher-logo {
@@ -37,7 +37,6 @@
     .launcher-logo .logo-icon {
       width: 48px;
       height: 48px;
-      filter: drop-shadow(0 0 12px var(--accent-glow));
     }
 
     .launcher-logo .logo-text {
@@ -49,10 +48,8 @@
     .launcher-title {
       font-size: 3rem;
       font-weight: 800;
-      letter-spacing: -0.04em;
-      background: linear-gradient(135deg, #fff 0%, #94a3b8 50%, var(--accent) 100%);
-      -webkit-background-clip: text;
-      -webkit-text-fill-color: transparent;
+      letter-spacing: 0;
+      color: var(--text-primary);
       margin-bottom: 12px;
     }
 
@@ -69,7 +66,7 @@
       gap: 32px;
       max-width: 800px;
       width: 100%;
-      animation: step-fade-in 0.7s cubic-bezier(0.2, 0.8, 0.2, 1) 0.1s both;
+      animation: step-fade-in 0.18s ease-out 0.04s both;
     }
 
     .launcher-card {
@@ -101,10 +98,8 @@
     .launcher-card:hover {
       background: var(--bg-card-hover);
       border-color: rgba(255,255,255,0.2);
-      transform: translateY(-6px);
       box-shadow:
-        0 24px 48px rgba(0,0,0,0.35),
-        0 0 40px rgba(34, 211, 238, 0.08);
+        0 18px 36px rgba(15, 23, 42, 0.12);
     }
 
     .launcher-card:hover::before {
@@ -113,7 +108,6 @@
 
     .launcher-card:hover .card-icon-wrap {
       transform: scale(1.08);
-      box-shadow: 0 0 30px var(--accent-glow);
     }
 
     .card-icon-wrap {
@@ -174,7 +168,7 @@
       text-align: center;
       color: var(--text-muted);
       font-size: 0.85rem;
-      animation: step-fade-in 0.8s cubic-bezier(0.2, 0.8, 0.2, 1) 0.2s both;
+      animation: step-fade-in 0.18s ease-out 0.08s both;
     }
 
     .launcher-footer code {
@@ -197,11 +191,8 @@
   </style>
 </head>
 <body>
-  <!-- Nebula Background -->
+  <!-- Static background -->
   <div class="nebula-container" aria-hidden="true">
-    <div class="nebula-orb orb-1"></div>
-    <div class="nebula-orb orb-2"></div>
-    <div class="nebula-orb orb-3"></div>
     <div class="nebula-grid"></div>
   </div>
 

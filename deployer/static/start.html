@@ -34,7 +34,6 @@
     .topbar-left .logo-icon {
       width: 28px;
       height: 28px;
-      filter: drop-shadow(0 0 8px var(--accent-glow));
     }
 
     .topbar-title {
@@ -67,10 +66,8 @@
     .start-header h1 {
       font-size: 2.25rem;
       font-weight: 800;
-      letter-spacing: -0.04em;
-      background: linear-gradient(to bottom right, #fff, #94a3b8);
-      -webkit-background-clip: text;
-      -webkit-text-fill-color: transparent;
+      letter-spacing: 0;
+      color: var(--text-primary);
       margin-bottom: 8px;
     }
 
@@ -90,14 +87,13 @@
 
     .btn-start-all {
       background: linear-gradient(135deg, var(--accent), #06b6d4);
-      color: var(--bg-space);
-      box-shadow: 0 0 20px var(--accent-glow);
+      color: #ffffff;
+      box-shadow: 0 10px 24px rgba(37, 99, 235, 0.18);
     }
 
     .btn-start-all:hover:not(:disabled) {
-      background: #fff;
-      transform: translateY(-2px);
-      box-shadow: 0 0 30px var(--accent-glow);
+      background: var(--accent-hover);
+      box-shadow: 0 12px 28px rgba(37, 99, 235, 0.2);
     }
 
     .btn-start-all.force-takeover {
@@ -410,11 +406,8 @@
   </style>
 </head>
 <body>
-  <!-- Nebula Background -->
+  <!-- Static background -->
   <div class="nebula-container" aria-hidden="true">
-    <div class="nebula-orb orb-1"></div>
-    <div class="nebula-orb orb-2"></div>
-    <div class="nebula-orb orb-3"></div>
     <div class="nebula-grid"></div>
   </div>
 
