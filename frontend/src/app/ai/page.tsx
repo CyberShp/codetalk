@@ -186,12 +186,11 @@ export default function AIHomePage() {
               项目
             </div>
             <div className="grid gap-2">
-              {projectRows.map((project, index) => (
+              {projectRows.map((project) => (
                 <button
                   key={project.id}
                   type="button"
                   className={`ct-thread-project ${project.id === selectedProject?.id ? "is-active" : ""}`}
-                  style={{ animationDelay: `${index * 35}ms` }}
                   onClick={() => setSelectedProjectId(project.id)}
                 >
                   <span>
@@ -245,12 +244,11 @@ export default function AIHomePage() {
               </div>
             ) : (
               <div className="ct-thread-timeline">
-                {visibleThreads.slice(0, 50).map((thread, index) => (
+                {visibleThreads.slice(0, 50).map((thread) => (
                   <Link
                     key={thread.id}
                     href={`/ai/${thread.id}`}
                     className="ct-thread-card"
-                    style={{ animationDelay: `${index * 35}ms` }}
                   >
                     <div>
                       <span>{scopeLabel(thread)}</span>
