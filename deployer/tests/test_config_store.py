@@ -154,22 +154,28 @@ def test_distribute_api_key_none_is_noop():
 
 
 # ---------------------------------------------------------------------------
-# _pick_api_key_for_frontend
+# _summarize_api_key_for_frontend
 # ---------------------------------------------------------------------------
 
-def test_pick_api_key_openai():
+def test_summarize_api_key_openai():
     cfg = {"llm_provider": "openai", "openai_api_key": "sk-test"}
-    result = config_store._pick_api_key_for_frontend(cfg)
-    assert result["api_key"] == "sk-test"
+    result = config_store._summarize_api_key_for_frontend(cfg)
+    assert result["api_key_configured"] is True
+    assert result["api_key_preview"] == "sk-t••••••••"
+    assert "api_key" not in result
 
 
-def test_pick_api_key_anthropic():
+def test_summarize_api_key_anthropic():
     cfg = {"llm_provider": "anthropic", "anthropic_api_key": "ant-test"}
-    result = config_store._pick_api_key_for_frontend(cfg)
-    assert result["api_key"] == "ant-test"
+    result = config_store._summarize_api_key_for_frontend(cfg)
+    assert result["api_key_configured"] is True
+    assert result["api_key_preview"] == "ant-••••••••"
+    assert "api_key" not in result
 
 
-def test_pick_api_key_missing_returns_empty():
+def test_summarize_api_key_missing_returns_empty():
     cfg = {"llm_provider": "openai"}
-    result = config_store._pick_api_key_for_frontend(cfg)
-    assert result["api_key"] == ""
+    result = config_store._summarize_api_key_for_frontend(cfg)
+    assert result["api_key_configured"] is False
+    assert result["api_key_preview"] == ""
+    assert "api_key" not in result

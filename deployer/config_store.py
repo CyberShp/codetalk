@@ -22,6 +22,8 @@ _KEY_MAP = {
     "llmBaseUrl": "llm_base_url",
     "llmApiKey": "llm_api_key",
     "llmModel": "llm_model",
+    "apiKeyConfigured": "api_key_configured",
+    "apiKeyPreview": "api_key_preview",
     "installGitnexus": "install_gitnexus",
     "installCgc": "install_cgc",
     "portCgc": "cgc_port",
@@ -44,6 +46,21 @@ _REMOVED_LEGACY_TOOL_KEYS = {
     "deepwiki_ui_port",
 }
 
+_FRONTEND_ONLY_KEYS = {
+    "apiKeyConfigured",
+    "api_key_configured",
+    "apiKeyPreview",
+    "api_key_preview",
+}
+
+_PROVIDER_SECRET_KEYS = {
+    "api_key",
+    "llm_api_key",
+    "openai_api_key",
+    "anthropic_api_key",
+    "google_api_key",
+}
+
 
 def _drop_removed_legacy_tool_keys(cfg: dict) -> dict:
     """Remove deployment fields that belonged to removed optional tools."""
@@ -54,6 +71,8 @@ def normalize_to_snake(cfg: dict) -> dict:
     """Convert any camelCase frontend keys to snake_case backend keys."""
     out = {}
     for k, v in _drop_removed_legacy_tool_keys(cfg).items():
+        if k in _FRONTEND_ONLY_KEYS:
+            continue
         out[_KEY_MAP.get(k, k)] = v
     return out
 
@@ -79,9 +98,9 @@ def load_config() -> dict:
 
 
 def load_config_for_frontend() -> dict:
-    """Load config, resolve provider-specific key to apiKey, return camelCase."""
+    """Load config, summarize provider-specific key safely, return camelCase."""
     cfg = load_config()
-    cfg = _pick_api_key_for_frontend(cfg)
+    cfg = _summarize_api_key_for_frontend(cfg)
     return _normalize_to_camel(cfg)
 
 
@@ -103,8 +122,14 @@ def _distribute_api_key(cfg: dict) -> dict:
     return cfg
 
 
-def _pick_api_key_for_frontend(cfg: dict) -> dict:
-    """Pick the correct provider-specific key and surface it as apiKey."""
+def _mask_secret_preview(secret: str) -> str:
+    if not secret:
+        return ""
+    return f"{secret[:4]}••••••••"
+
+
+def _summarize_api_key_for_frontend(cfg: dict) -> dict:
+    """Surface only whether a provider key exists plus a non-sensitive preview."""
     provider = cfg.get("llm_provider", "openai")
     provider_key_map = {
         "openai": "openai_api_key",
@@ -113,7 +138,11 @@ def _pick_api_key_for_frontend(cfg: dict) -> dict:
         "ollama": "ollama_base_url",
     }
     source_field = provider_key_map.get(provider, "openai_api_key")
-    cfg["api_key"] = cfg.get(source_field, "")
+    secret = str(cfg.get(source_field) or "")
+    for key in _PROVIDER_SECRET_KEYS:
+        cfg.pop(key, None)
+    cfg["api_key_configured"] = bool(secret)
+    cfg["api_key_preview"] = _mask_secret_preview(secret)
     return cfg
 
 
