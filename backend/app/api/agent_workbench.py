@@ -5181,6 +5181,8 @@ def _risk_finding_quality_reasons(finding: dict[str, Any], *, repo_path: str) ->
     occurrence_score = _safe_int(finding.get("occurrence_score"))
     detection_score = _safe_int(finding.get("detection_score"))
     rpn = _safe_int(finding.get("rpn"))
+    if any(score and not (1 <= score <= 10) for score in (severity_score, occurrence_score, detection_score)):
+        reasons.append("sfmea_score_out_of_range")
     if severity_score and occurrence_score and detection_score and rpn:
         if rpn != severity_score * occurrence_score * detection_score:
             reasons.append("rpn_mismatch")
