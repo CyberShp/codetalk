@@ -98,7 +98,7 @@ function sourceLocationLabel(ref: AIContextReference): string {
   return path;
 }
 
-function isSafeWorkspaceSourcePath(path: string): boolean {
+function isSafeRelativeReferencePath(path: string): boolean {
   const normalized = path.trim();
   if (!normalized) return false;
   if (normalized.startsWith("/") || normalized.startsWith("\\") || /^[A-Za-z]:[\\/]/.test(normalized)) return false;
@@ -112,7 +112,7 @@ function sourceReferenceHref(ref: AIContextReference): string {
   const path = ref.metadata?.path;
   if (typeof workspaceId !== "string" || !workspaceId.trim()) return "";
   if (typeof path !== "string" || !path.trim()) return "";
-  if (!isSafeWorkspaceSourcePath(path)) return "";
+  if (!isSafeRelativeReferencePath(path)) return "";
   const start = ref.metadata?.start_line;
   const startLine = typeof start === "number" && Number.isFinite(start) ? Math.max(1, Math.trunc(start)) : null;
   const query = new URLSearchParams({
@@ -130,7 +130,7 @@ function artifactReferenceHref(ref: AIContextReference): string {
   const sourceId = ref.source_id.trim();
   const artifactPath =
     sourceId && sourceId.startsWith(`${taskRunId}/`) ? sourceId.slice(taskRunId.length + 1) : ref.title.trim();
-  if (!artifactPath || artifactPath.includes("..")) return "";
+  if (!isSafeRelativeReferencePath(artifactPath)) return "";
   const encodedPath = artifactPath
     .split("/")
     .map((part) => encodeURIComponent(part))
