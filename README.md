@@ -34,7 +34,7 @@ cd deployer
 ./start.sh
 ```
 
-也可以直接运行启动器脚本：Windows 使用 `py -3 start.py` 或 `python start.py`，macOS/Linux 使用 `python3 start.py`。启动脚本会自动创建部署器 `.venv` 并安装依赖，避免因为缺少 `psutil`、`uvicorn` 等包导致部署系统起不来。
+推荐始终使用 `start.bat` / `start.sh` 启动部署器。脚本会选择可用的 Python 3.10+，并自动创建或修复部署器 `.venv`，避免因为系统 `python` 命令不存在、版本过旧，或缺少 `psutil`、`uvicorn` 等包导致部署系统起不来。
 
 浏览器打开：
 
