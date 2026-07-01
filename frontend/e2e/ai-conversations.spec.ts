@@ -686,6 +686,51 @@ test("AI mini dock keeps idle background polling quiet on non-AI pages", async (
   expect(dockListRequests).toBeLessThanOrEqual(2);
 });
 
+test("AI mini dock keeps the last known thread when a background refresh fails", async ({ page }) => {
+  let dockListRequests = 0;
+  await page.route("**/api/workspaces", async (route) => {
+    await route.fulfill({ headers: jsonHeaders(route.request().headers().origin), json: [] });
+  });
+  await page.route("**/api/ai/conversations?limit=3", async (route) => {
+    dockListRequests += 1;
+    if (dockListRequests > 1) {
+      await route.fulfill({
+        headers: jsonHeaders(route.request().headers().origin),
+        status: 500,
+        json: { detail: "temporary backend restart" },
+      });
+      return;
+    }
+    await route.fulfill({
+      headers: jsonHeaders(route.request().headers().origin),
+      json: {
+        items: [
+          {
+            id: "running-dock-thread",
+            scope_type: "workspace",
+            scope_id: "ws-spdk",
+            workspace_id: "ws-spdk",
+            memory_namespace: "workspace:ws-spdk",
+            title: "SPDK 生成中线程",
+            status: "running",
+            initial_context: {},
+            created_at: "2026-06-28T00:00:00Z",
+            updated_at: "2026-06-28T00:00:00Z",
+          },
+        ],
+      },
+    });
+  });
+
+  await page.goto("/", { waitUntil: "domcontentloaded" });
+  await expect(page.getByRole("link", { name: /SPDK 生成中线程/ })).toBeVisible();
+  await page.evaluate(() => document.dispatchEvent(new Event("visibilitychange")));
+  await expect.poll(() => dockListRequests).toBe(2);
+  const dock = page.locator(".ct-ai-dock");
+  await expect(dock).toContainText("SPDK 生成中线程");
+  await expect(dock).not.toHaveText(/^AI 线程$/);
+});
+
 test("AI mini dock does not add body-wide mutation observers on non-AI pages", async ({ page }) => {
   await page.addInitScript(() => {
     const NativeMutationObserver = window.MutationObserver;
