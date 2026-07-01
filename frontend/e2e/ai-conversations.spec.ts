@@ -439,7 +439,7 @@ test("AI conversation shows workspace source and material references after a rea
   });
 
   await page.goto("/ai/conv-send-source", { waitUntil: "domcontentloaded" });
-  await expect(page.getByText("还没有引用。发送问题后")).toBeVisible();
+  await expect(page.getByText("优先召回源码、输入材料")).toBeVisible();
 
   const input = page.getByPlaceholder(/像 Codex 一样继续追问/);
   await input.fill("分析 SPDK nvmf connect 的外部可观测行为");
