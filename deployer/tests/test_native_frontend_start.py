@@ -11,6 +11,7 @@ DEPLOYER_DIR = Path(__file__).parent.parent
 if str(DEPLOYER_DIR) not in sys.path:
     sys.path.insert(0, str(DEPLOYER_DIR))
 
+import deployers.native as native_module  # noqa: E402
 from deployers.native import NativeDeployer, _frontend_source_fingerprint  # noqa: E402
 
 
@@ -179,6 +180,28 @@ class NativeFrontendStartTests(unittest.TestCase):
         self.assertNotIn(secret, message)
         self.assertNotIn("deployerBearerSecret123", message)
         self.assertNotIn("Authorization: Bearer deployerBearerSecret123", message)
+
+    def test_optional_cgc_install_failure_does_not_emit_error_status(self) -> None:
+        if native_module._cgc is None:
+            raise unittest.SkipTest("CGC launcher module is unavailable")
+
+        queue: asyncio.Queue = asyncio.Queue()
+        deployer = NativeDeployer({}, queue)
+
+        with patch.object(
+            native_module._cgc,
+            "ensure_cgc_installed",
+            side_effect=native_module._cgc.CGCInstallError("pip failed"),
+        ):
+            with self.assertRaises(RuntimeError):
+                asyncio.run(deployer._ensure_cgc(step=6))
+
+        events = []
+        while not queue.empty():
+            events.append(queue.get_nowait())
+
+        self.assertTrue(any("CGC 安装失败" in event["message"] for event in events))
+        self.assertNotIn("error", [event["status"] for event in events])
 
     def test_run_stream_redacts_subprocess_output_before_queueing(self) -> None:
         queue: asyncio.Queue = asyncio.Queue()
