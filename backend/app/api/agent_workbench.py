@@ -5187,9 +5187,36 @@ def _risk_finding_quality_reasons(finding: dict[str, Any], *, repo_path: str) ->
     file_path = str(finding.get("file_path") or finding.get("path") or "").strip()
     if not file_path:
         reasons.append("source_file_required")
-    elif _validated_repo_source_path(repo_path, file_path) is None:
-        reasons.append("source_file_missing")
+    else:
+        resolved = _validated_repo_source_path(repo_path, file_path)
+        if resolved is None:
+            reasons.append("source_file_missing")
+        elif not _risk_finding_source_lines_valid(finding, resolved[1]):
+            reasons.append("source_line_out_of_range")
     return _semantic_dedupe(reasons)
+
+
+def _risk_finding_source_lines_valid(finding: dict[str, Any], source_path: Path) -> bool:
+    start_line = _safe_int(
+        finding.get("line_start")
+        or finding.get("start_line")
+        or finding.get("line")
+        or finding.get("lineno")
+    )
+    end_line = _safe_int(finding.get("line_end") or finding.get("end_line"))
+    if start_line <= 0 and end_line <= 0:
+        return True
+    try:
+        line_count = len(source_path.read_text(encoding="utf-8", errors="replace").splitlines())
+    except OSError:
+        return False
+    if line_count <= 0:
+        return False
+    if start_line <= 0:
+        start_line = end_line
+    if end_line <= 0:
+        end_line = start_line
+    return 1 <= start_line <= end_line <= line_count
 
 
 def _acceptance_file_check(
