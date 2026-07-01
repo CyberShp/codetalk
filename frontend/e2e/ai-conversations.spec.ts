@@ -305,7 +305,7 @@ test("AI conversation page is a wide persistent reading surface", async ({ page 
   expect(exported).toContain("时间: 2026-06-28T00:00:01Z");
 });
 
-test("AI conversation degrades unsafe workspace source references without source links", async ({ page }, testInfo) => {
+test("AI conversation degrades unsafe source and artifact references without links", async ({ page }, testInfo) => {
   await mockReadableConversation(page, {
     extraReferences: [
       {
@@ -320,6 +320,16 @@ test("AI conversation degrades unsafe workspace source references without source
           end_line: 2,
         },
       },
+      {
+        source_type: "workbench_task_artifact",
+        source_id: "run-spdk-001//etc/passwd",
+        title: "/etc/passwd",
+        excerpt: "异常产物路径来自外部 agent，不能作为可下载产物链接。",
+        metadata: {
+          workspace_id: "ws-1",
+          task_run_id: "run-spdk-001",
+        },
+      },
     ],
   });
   await page.setViewportSize({ width: 1440, height: 920 });
@@ -330,6 +340,9 @@ test("AI conversation degrades unsafe workspace source references without source
   const unsafeCard = page.locator(".ct-ai-ref", { hasText: "../secrets.env" });
   await expect(unsafeCard).toBeVisible();
   await expect(unsafeCard.getByRole("link", { name: "打开源码" })).toHaveCount(0);
+  const unsafeArtifactCard = page.locator(".ct-ai-ref", { hasText: "/etc/passwd" });
+  await expect(unsafeArtifactCard).toBeVisible();
+  await expect(unsafeArtifactCard.getByRole("link", { name: "打开产物" })).toHaveCount(0);
 
   const downloadPromise = page.waitForEvent("download");
   await page.getByRole("button", { name: "导出" }).click();
@@ -339,7 +352,11 @@ test("AI conversation degrades unsafe workspace source references without source
   const exported = fs.readFileSync(exportPath, "utf8");
   expect(exported).toContain("../secrets.env");
   expect(exported).toContain("源码位置: ../secrets.env:L1-L2");
+  expect(exported).toContain("/etc/passwd");
+  expect(exported).toContain("任务产物: run-spdk-001 · /etc/passwd");
   expect(exported).not.toContain("sourcePath=..%2Fsecrets.env");
+  expect(exported).not.toContain("artifacts/content/%2Fetc%2Fpasswd");
+  expect(exported).not.toContain("artifacts/content//etc/passwd");
 });
 
 test("AI conversation shows workspace source and material references after a real send", async ({ page }) => {
