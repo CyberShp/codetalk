@@ -158,6 +158,49 @@ class GitNexusAdapterPrepareTests(unittest.IsolatedAsyncioTestCase):
         ])
         self.assertEqual(adapter.current_repo_name, "spdk")
 
+    async def test_prepare_recovers_when_busy_analyze_finishes_existing_repo(self) -> None:
+        request = AnalysisRequest(repo_local_path="/tmp/repos/spdk")
+        adapter = GitNexusAdapter(base_url="http://gitnexus:7100")
+        adapter._client = _FakeAsyncClient(
+            get_responses=[
+                _FakeResponse(200, {"repos": []}),
+                _FakeResponse(
+                    200,
+                    {
+                        "repos": [
+                            {
+                                "name": "spdk",
+                                "path": "/tmp/repos/spdk",
+                                "fileCount": 42,
+                            }
+                        ]
+                    },
+                ),
+            ],
+            post_responses=[
+                _FakeResponse(429, {"error": "too many requests"}),
+                _FakeResponse(429, {"error": "too many requests"}),
+            ],
+        )
+
+        with (
+            patch("app.adapters.gitnexus.to_tool_repo_path", side_effect=lambda repo_local_path, **_: repo_local_path),
+            patch("app.adapters.gitnexus._ANALYZE_BUSY_RETRY_ATTEMPTS", 2),
+            patch("app.adapters.gitnexus._ANALYZE_BUSY_RETRY_INTERVAL", 0),
+            patch.object(settings, "gitnexus_auto_embed_enabled", False),
+        ):
+            await adapter.prepare(request)
+
+        self.assertEqual(adapter._client.post_calls, [
+            ("/api/analyze", {"path": "/tmp/repos/spdk"}),
+            ("/api/analyze", {"path": "/tmp/repos/spdk"}),
+        ])
+        self.assertEqual(adapter._client.get_calls, [
+            ("/api/repos", None, 10),
+            ("/api/repos", None, 10),
+        ])
+        self.assertEqual(adapter.current_repo_name, "spdk")
+
     async def test_prepare_does_not_trigger_embed_by_default(self) -> None:
         request = AnalysisRequest(repo_local_path="/tmp/repos/spdk")
         adapter = GitNexusAdapter(base_url="http://gitnexus:7100")

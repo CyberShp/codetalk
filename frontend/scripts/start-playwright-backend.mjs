@@ -25,8 +25,10 @@ const isolatedSqliteDb =
   process.env.CODETALK_PLAYWRIGHT_SQLITE_DB ?? path.join(isolatedDataDir, "codetalk.db");
 const shouldCleanupDataDir =
   process.env.CODETALK_PLAYWRIGHT_KEEP_DATA !== "1" &&
-  !process.env.CODETALK_PLAYWRIGHT_DATA_DIR &&
-  !process.env.CODETALK_PLAYWRIGHT_SQLITE_DB;
+  (!process.env.CODETALK_PLAYWRIGHT_DATA_DIR ||
+    process.env.CODETALK_PLAYWRIGHT_AUTO_DATA_DIR === "1") &&
+  (!process.env.CODETALK_PLAYWRIGHT_SQLITE_DB ||
+    process.env.CODETALK_PLAYWRIGHT_AUTO_SQLITE_DB === "1");
 const candidates = configuredPython
   ? [configuredPython]
   : ["python3.11", "python3.10", "python3", "python"];
