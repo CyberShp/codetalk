@@ -4903,6 +4903,99 @@ async def test_workbench_task_run_acceptance_audit_rejects_duplicate_sfmea_risk_
     assert any("duplicate_risk_finding" in item["reasons"] for item in quality_check["invalid_findings"])
 
 
+async def test_workbench_task_run_acceptance_audit_rejects_out_of_range_sfmea_scores(
+    workbench_client,
+    tmp_path,
+    monkeypatch,
+):
+    from app.config import settings
+
+    source_path = tmp_path / "src" / "tls.c"
+    source_path.parent.mkdir()
+    source_path.write_text("void tls_cleanup(void) {}\n", encoding="utf-8")
+    script_path = tmp_path / "agent_out_of_range_sfmea_scores.py"
+    script_path.write_text(
+        "import json, os, pathlib, sys\n"
+        "json.load(sys.stdin)\n"
+        "root=pathlib.Path(os.environ['CODETALK_AGENT_ARTIFACT_DIR'])\n"
+        "(root/'risk_findings.json').write_text(json.dumps([\n"
+        "  {'finding_id':'risk_tls_cleanup','file_path':'src/tls.c',"
+        "'function':'tls_cleanup','summary':'cleanup branch risk',"
+        "'failure_mode':'cleanup path leaks TLS context',"
+        "'cause':'disconnect during handshake skips release',"
+        "'effect':'subsequent connections observe stale TLS state',"
+        "'detection':'watch target logs and connection state after disconnect',"
+        "'severity':'high',"
+        "'severity_score':99,'occurrence_score':99,'detection_score':99,'rpn':970299,"
+        "'mitigation':'add disconnect/reconnect black-box test and monitor logs',"
+        "'score_explanation':'severity=99, occurrence=99, detection=99 are intentionally invalid scores'}\n"
+        "]), encoding='utf-8')\n",
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(settings, "external_agent_custom_providers", [
+        {"id": "local-python", "command": f"python {script_path}"}
+    ])
+    workflow = {
+        "id": "acceptance_out_of_range_sfmea_scores_workflow",
+        "name": "Acceptance out-of-range SFMEA scores workflow",
+        "version": 1,
+        "inputs": [{"id": "module", "type": "free_text"}],
+        "steps": [
+            {
+                "id": "hunt",
+                "type": "agent_task",
+                "provider": "local-python",
+                "required_artifacts": ["risk_findings.json"],
+            }
+        ],
+        "outputs": [
+            {
+                "id": "risk_findings",
+                "type": "json",
+                "from": "hunt",
+                "artifact": "risk_findings.json",
+                "evidence_memory": {
+                    "enabled": True,
+                    "kind": "resource_risk_finding",
+                    "subject_key_field": "finding_id",
+                    "path_field": "file_path",
+                    "symbol_field": "function",
+                    "status": "candidate_output",
+                    "text_fields": ["summary", "function"],
+                },
+            }
+        ],
+    }
+    assert (await workbench_client.post("/api/workbench/workflows", json=workflow)).status_code == 201
+    prepared = await workbench_client.post(
+        "/api/workbench/task-runs/prepare",
+        json={
+            "workflow_id": "acceptance_out_of_range_sfmea_scores_workflow",
+            "workspace_id": "ws-acceptance-out-of-range-sfmea-scores",
+            "repo_path": str(tmp_path),
+            "inputs": {"module": "nvme-tcp-tls"},
+        },
+    )
+    task_run_id = prepared.json()["task_run_id"]
+    executed = await workbench_client.post(
+        f"/api/workbench/task-runs/{task_run_id}/execute",
+        json={"timeout_sec": 10},
+    )
+    assert executed.status_code == 200
+
+    response = await workbench_client.post(
+        f"/api/workbench/task-runs/{task_run_id}/acceptance-audit"
+    )
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["status"] == "incomplete"
+    checks = {item["id"]: item for item in body["checks"]}
+    quality_check = checks["risk_finding_quality:hunt:risk_findings.json"]
+    assert quality_check["status"] == "invalid"
+    assert any("sfmea_score_out_of_range" in item["reasons"] for item in quality_check["invalid_findings"])
+
+
 async def test_workbench_task_run_acceptance_audit_requires_sfmea_score_explanation(
     workbench_client,
     tmp_path,
