@@ -914,7 +914,7 @@ test("cleans real external-agent terminal noise before display, persistence, and
       "sys.stdout.write('47%\\n12/100\\n')",
       "sys.stdout.buffer.write(bytes([0x80, 0x81, 0x8D, 0x90, 0x9D]) + b'\\n')",
       "sys.stdout.flush()",
-      "sys.stdout.write('\\r\\x1b[2K⠋ 12\\r\\x1b[2K⠙ 47\\r\\x1b[2K')",
+      "sys.stdout.write('\\r\\x1b[2K⠋ 12\\r\\x1b[2K⠙ 47\\r\\x1b[2K\\x1b(B')",
       "sys.stdout.flush()",
       "sys.stdout.buffer.write('源码证据：连接失败\\n'.encode('gbk'))",
       "sys.stdout.write('FINAL_NOISE_CLEAN_ANSWER: 已完成源码分析。\\n')",
@@ -979,6 +979,7 @@ test("cleans real external-agent terminal noise before display, persistence, and
     await expect(page.getByText("源码证据：连接失败")).toBeVisible();
     await expect(page.locator("body")).not.toContainText("47%");
     await expect(page.locator("body")).not.toContainText("12/100");
+    await expect(page.locator("body")).not.toContainText("(B");
     await expect(page.locator("body")).not.toContainText("⠋");
     await expect(page.locator("body")).not.toContainText("⠙");
     await expect(page.locator("body")).not.toContainText("�");
@@ -991,6 +992,7 @@ test("cleans real external-agent terminal noise before display, persistence, and
     await expect(page.getByText("源码证据：连接失败")).toBeVisible();
     await expect(page.locator("body")).not.toContainText("47%");
     await expect(page.locator("body")).not.toContainText("12/100");
+    await expect(page.locator("body")).not.toContainText("(B");
     await expect(page.locator("body")).not.toContainText("�");
 
     const messagesResp = await request.get(
@@ -1005,6 +1007,7 @@ test("cleans real external-agent terminal noise before display, persistence, and
     expect(assistant?.content).toContain("源码证据：连接失败");
     expect(assistant?.content).not.toContain("47%");
     expect(assistant?.content).not.toContain("12/100");
+    expect(assistant?.content).not.toContain("(B");
     expect(assistant?.content).not.toContain("�");
     expect(assistant?.content).not.toContain("[32m");
 
@@ -1019,6 +1022,7 @@ test("cleans real external-agent terminal noise before display, persistence, and
     expect(exported).toContain("源码证据：连接失败");
     expect(exported).not.toContain("47%");
     expect(exported).not.toContain("12/100");
+    expect(exported).not.toContain("(B");
     expect(exported).not.toContain("�");
     expect(exported).not.toContain("[32m");
   } finally {

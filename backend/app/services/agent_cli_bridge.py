@@ -482,7 +482,11 @@ def _mojibake_score(value: str) -> int:
     )
 
 
-_ANSI_RE = re.compile(r"\x1b\[[0-?]*[ -/]*[@-~]|\x1b\][^\x07]*(?:\x07|\x1b\\)")
+_ANSI_RE = re.compile(
+    r"\x1b\[[0-?]*[ -/]*[@-~]"
+    r"|\x1b\][^\x07]*(?:\x07|\x1b\\)"
+    r"|\x1b(?:[@-Z\\-_]|\([A-Za-z0-9]|\)[A-Za-z0-9]|\*[A-Za-z0-9]|\+[A-Za-z0-9]|[#%][A-Za-z0-9])"
+)
 _CONTROL_RE = re.compile(r"[\x00-\x08\x0b\x0c\x0e-\x1f\x7f-\x9f]")
 _CJK_MOJIBAKE_MARKERS = (
     "榛戠爜",

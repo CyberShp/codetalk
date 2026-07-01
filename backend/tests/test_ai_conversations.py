@@ -146,6 +146,7 @@ async def test_agent_output_segments_keep_chinese_answer_while_dropping_terminal
         "12/100\n"
         "\ufffd\ufffd\ufffd\ufffd\n"
         "\r\x1b[2K⠋ 12\r\x1b[2K⠙ 47\r\x1b[2K"
+        "\x1b(B"
         "diagnostic: provider emitted transient status\n"
         "源码证据：连接失败\n"
         "FINAL_NOISE_CLEAN_ANSWER: 已完成源码分析。\x1b[0m\n"
