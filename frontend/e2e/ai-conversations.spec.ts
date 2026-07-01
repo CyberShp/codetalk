@@ -605,12 +605,16 @@ test("AI conversation preserves the reader position when the user scrolls up dur
   page,
 }) => {
   let releaseSecondChunk: (() => void) | null = null;
+  let releaseThirdChunk: (() => void) | null = null;
   let streamRequestedResolve: (() => void) | null = null;
   const streamRequested = new Promise<void>((resolve) => {
     streamRequestedResolve = resolve;
   });
   const secondChunkGate = new Promise<void>((resolve) => {
     releaseSecondChunk = resolve;
+  });
+  const thirdChunkGate = new Promise<void>((resolve) => {
+    releaseThirdChunk = resolve;
   });
   const server = http.createServer(async (_req, res) => {
     streamRequestedResolve?.();
@@ -632,6 +636,14 @@ test("AI conversation preserves the reader position when the user scrolls up dur
     res.write(
       [
         'data: {"event_id":2,"run_id":"run-scroll","conversation_id":"conv-scroll","event_type":"delta","payload":{"content":"第二段流式回答到达时，用户仍应停留在历史阅读位置。\\n\\n"},"created_at":"2026-06-28T00:00:03Z"}',
+        "",
+        "",
+      ].join("\n"),
+    );
+    await thirdChunkGate;
+    res.write(
+      [
+        'data: {"event_id":3,"run_id":"run-scroll","conversation_id":"conv-scroll","event_type":"delta","payload":{"content":"第三段流式回答到达时，点击跳转后的阅读器应继续跟随最新内容。\\n\\n"},"created_at":"2026-06-28T00:00:04Z"}',
         "",
         "",
       ].join("\n"),
@@ -777,6 +789,21 @@ test("AI conversation preserves the reader position when the user scrolls up dur
     expect(Math.abs(afterSecondChunk.scrollTop - userScrollTop)).toBeLessThan(80);
     expect(afterSecondChunk.distanceFromBottom).toBeGreaterThan(180);
     await expect(page.getByRole("button", { name: "跳到最新回复" })).toBeVisible();
+
+    await page.getByRole("button", { name: "跳到最新回复" }).click();
+    await expect
+      .poll(() =>
+        reader.evaluate((element) => element.scrollHeight - element.clientHeight - element.scrollTop),
+      )
+      .toBeLessThan(120);
+    releaseThirdChunk?.();
+    await expect(page.getByText("第三段流式回答到达时")).toHaveCount(1);
+    await expect
+      .poll(() =>
+        reader.evaluate((element) => element.scrollHeight - element.clientHeight - element.scrollTop),
+      )
+      .toBeLessThan(120);
+    await expect(page.getByRole("button", { name: "跳到最新回复" })).toBeHidden();
   } finally {
     (
       server as http.Server & {
