@@ -235,7 +235,17 @@ function ReportCard({
   );
 }
 
-function SourceSearchPanel({ wsId, indexed }: { wsId: string; indexed: number }) {
+function SourceSearchPanel({
+  wsId,
+  indexed,
+  initialPath = "",
+  initialLine = null,
+}: {
+  wsId: string;
+  indexed: number;
+  initialPath?: string;
+  initialLine?: number | null;
+}) {
   const [query, setQuery] = useState("");
   const [results, setResults] = useState<WorkspaceSourceSearchMatch[]>([]);
   const [selected, setSelected] = useState<WorkspaceSourceSearchMatch | null>(null);
@@ -243,6 +253,7 @@ function SourceSearchPanel({ wsId, indexed }: { wsId: string; indexed: number })
   const [searching, setSearching] = useState(false);
   const [loadingFile, setLoadingFile] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const openedInitialSourceRef = useRef("");
   const canSearch = indexed === 1;
 
   const runSearch = async () => {
@@ -280,6 +291,42 @@ function SourceSearchPanel({ wsId, indexed }: { wsId: string; indexed: number })
       setLoadingFile(false);
     }
   };
+
+  const openSourcePath = useCallback(
+    async (path: string, line: number | null) => {
+      const cleanPath = path.trim();
+      if (!cleanPath || !canSearch) return;
+      setQuery(cleanPath);
+      setSelected({
+        path: cleanPath,
+        line,
+        text: cleanPath,
+        match_type: "path",
+      });
+      setResults([]);
+      setLoadingFile(true);
+      setError(null);
+      try {
+        const content = await api.workspaces.sourceFile(wsId, cleanPath, line ?? undefined, 120);
+        setFile(content);
+      } catch (e) {
+        setFile(null);
+        setError(e instanceof Error ? e.message : String(e));
+      } finally {
+        setLoadingFile(false);
+      }
+    },
+    [canSearch, wsId],
+  );
+
+  useEffect(() => {
+    const cleanPath = initialPath.trim();
+    if (!cleanPath || !canSearch) return;
+    const key = `${cleanPath}:${initialLine ?? ""}`;
+    if (openedInitialSourceRef.current === key) return;
+    openedInitialSourceRef.current = key;
+    void openSourcePath(cleanPath, initialLine);
+  }, [canSearch, initialLine, initialPath, openSourcePath]);
 
   return (
     <div className="space-y-4">
@@ -442,6 +489,8 @@ export default function WorkspaceDetailPage() {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [tab, setTab] = useState<Tab>("reports");
+  const [initialSourcePath, setInitialSourcePath] = useState("");
+  const [initialSourceLine, setInitialSourceLine] = useState<number | null>(null);
   const [materialPath, setMaterialPath] = useState("");
   const [analyzing, setAnalyzing] = useState(false);
   const [analyzeProgress, setAnalyzeProgress] = useState(0);
@@ -470,6 +519,16 @@ export default function WorkspaceDetailPage() {
   const wsLogRef = useRef<WebSocket | null>(null);
   const lastLogStepTimeRef = useRef<number | null>(null);
   const logEndRef = useRef<HTMLDivElement>(null);
+
+  useEffect(() => {
+    const search = new URLSearchParams(window.location.search);
+    if (search.get("tab") === "source") {
+      const line = Number(search.get("line") ?? "");
+      setInitialSourcePath(search.get("sourcePath") ?? "");
+      setInitialSourceLine(Number.isFinite(line) && line > 0 ? Math.trunc(line) : null);
+      setTab("source");
+    }
+  }, [wsId]);
 
   // Keep ref in sync so WS cleanup can read current value even after re-render
   selectedVersionTaskIdRef.current = selectedVersionTaskId;
@@ -1200,6 +1259,8 @@ export default function WorkspaceDetailPage() {
         <SourceSearchPanel
           wsId={wsId}
           indexed={workspace.indexed}
+          initialPath={initialSourcePath}
+          initialLine={initialSourceLine}
         />
       )}
 

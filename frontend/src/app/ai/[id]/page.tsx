@@ -98,8 +98,25 @@ function sourceLocationLabel(ref: AIContextReference): string {
   return path;
 }
 
+function sourceReferenceHref(ref: AIContextReference): string {
+  if (ref.source_type !== "workspace_source") return "";
+  const workspaceId = ref.metadata?.workspace_id;
+  const path = ref.metadata?.path;
+  if (typeof workspaceId !== "string" || !workspaceId.trim()) return "";
+  if (typeof path !== "string" || !path.trim()) return "";
+  const start = ref.metadata?.start_line;
+  const startLine = typeof start === "number" && Number.isFinite(start) ? Math.max(1, Math.trunc(start)) : null;
+  const query = new URLSearchParams({
+    tab: "source",
+    sourcePath: path,
+    ...(startLine ? { line: String(startLine) } : {}),
+  });
+  return `/workspaces/${encodeURIComponent(workspaceId)}?${query.toString()}`;
+}
+
 function EvidenceReferenceCard({ refItem }: { refItem: AIContextReference }) {
   const sourceLocation = sourceLocationLabel(refItem);
+  const sourceHref = sourceReferenceHref(refItem);
   return (
     <div className="ct-ai-ref">
       <div className="flex items-center justify-between gap-2">
@@ -110,6 +127,7 @@ function EvidenceReferenceCard({ refItem }: { refItem: AIContextReference }) {
         <div className="ct-ai-ref__meta">
           <span>源码位置</span>
           <code>{sourceLocation}</code>
+          {sourceHref && <Link href={sourceHref}>打开源码</Link>}
         </div>
       )}
       {refItem.source_type === "workbench_task_artifact" && sourceLocation && (
