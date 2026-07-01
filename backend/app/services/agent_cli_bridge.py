@@ -7,6 +7,7 @@ import json
 import locale
 import os
 import re
+import tempfile
 import unicodedata
 from collections.abc import AsyncIterator
 from pathlib import Path
@@ -334,6 +335,10 @@ def _build_env(runtime: dict[str, Any]) -> dict[str, str]:
         name = str(key).strip()
         if name:
             env[name] = str(value)
+    if not env.get("CODETALK_AGENT_ARTIFACT_DIR"):
+        env["CODETALK_AGENT_ARTIFACT_DIR"] = tempfile.mkdtemp(
+            prefix="codetalk-agent-runtime-"
+        )
     return env
 
 
