@@ -319,7 +319,7 @@ export default function AIThreadPage() {
       api.aiConversations.get(conversationId),
       api.aiConversations.messages(conversationId),
       api.workspaces.list(),
-      api.settings.listAgentRuntimes({ enabled: true }).catch(() => ({ items: [] as AgentRuntime[] })),
+      api.settings.listAgentRuntimes().catch(() => ({ items: [] as AgentRuntime[] })),
     ]);
     setConversation(conv);
     setMessages(msgResult.items);
@@ -745,8 +745,8 @@ export default function AIThreadPage() {
             aria-label="当前 AI 执行器"
           >
             {agentRuntimes.map((runtime) => (
-              <option key={runtime.id} value={runtime.id}>
-                {runtime.name}
+              <option key={runtime.id} value={runtime.id} disabled={!runtime.enabled}>
+                {runtime.name}{runtime.enabled ? "" : "（已停用）"}
               </option>
             ))}
             <option value="builtin_llm">内置模型</option>
@@ -904,7 +904,13 @@ export default function AIThreadPage() {
             </div>
             <div>
               <span>执行器</span>
-              <strong>{activeRuntime?.name ?? (conversation?.runtime_type === "agent_runtime" ? "未找到执行器" : "内置模型")}</strong>
+              <strong>
+                {activeRuntime
+                  ? `${activeRuntime.name}${activeRuntime.enabled ? "" : "（已停用）"}`
+                  : conversation?.runtime_type === "agent_runtime"
+                    ? "未找到执行器"
+                    : "内置模型"}
+              </strong>
             </div>
           </div>
         </section>
@@ -1001,7 +1007,13 @@ export default function AIThreadPage() {
               </div>
               <div>
                 <span>当前执行器</span>
-                <strong>{activeRuntime?.name ?? (conversation?.runtime_type === "agent_runtime" ? "未找到执行器" : "内置模型")}</strong>
+                <strong>
+                  {activeRuntime
+                    ? `${activeRuntime.name}${activeRuntime.enabled ? "" : "（已停用）"}`
+                    : conversation?.runtime_type === "agent_runtime"
+                      ? "未找到执行器"
+                      : "内置模型"}
+                </strong>
               </div>
               <div>
                 <span>源码/材料优先</span>
