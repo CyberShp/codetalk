@@ -8,6 +8,98 @@ from typing import Any
 from app.services.workflow_dsl import WorkflowDefinition, WorkflowStore, validate_workflow_definition
 
 
+SOURCE_SCOPE_SCHEMA: dict[str, Any] = {
+    "type": "object",
+    "required": ["scope_id", "query", "repo", "discovery", "files", "entry_points"],
+    "properties": {
+        "scope_id": {"type": "string"},
+        "query": {"type": "string"},
+        "repo": {"type": "string"},
+        "discovery": {
+            "type": "object",
+            "required": ["provider", "method", "file_count"],
+            "properties": {
+                "provider": {"type": "string"},
+                "method": {"type": "string"},
+                "file_count": {"type": "integer"},
+            },
+            "additionalProperties": True,
+        },
+        "files": {"type": "array", "items": {"type": "string"}},
+        "entry_points": {
+            "type": "array",
+            "items": {
+                "type": "object",
+                "required": ["file_path", "symbol", "reason"],
+                "properties": {
+                    "file_path": {"type": "string"},
+                    "symbol": {"type": "string"},
+                    "reason": {"type": "string"},
+                },
+                "additionalProperties": True,
+            },
+        },
+    },
+    "additionalProperties": True,
+}
+
+
+EVIDENCE_CARDS_SCHEMA: dict[str, Any] = {
+    "type": "array",
+    "items": {
+        "type": "object",
+        "required": ["evidence_id", "kind", "file_path", "symbols", "reason", "source"],
+        "properties": {
+            "evidence_id": {"type": "string"},
+            "kind": {"type": "string"},
+            "file_path": {"type": "string"},
+            "symbols": {"type": "array", "items": {"type": "string"}},
+            "reason": {"type": "string"},
+            "sha256": {"type": "string"},
+            "line_count": {"type": "integer"},
+            "source": {"type": "string"},
+        },
+        "additionalProperties": True,
+    },
+}
+
+
+SFMEA_SCHEMA: dict[str, Any] = {
+    "type": "array",
+    "items": {
+        "type": "object",
+        "required": [
+            "failure_mode",
+            "cause",
+            "effect",
+            "detection",
+            "severity",
+            "occurrence",
+            "detection_score",
+            "rpn",
+            "mitigation",
+        ],
+        "properties": {
+            "sfmea_id": {"type": "string"},
+            "module": {"type": "string"},
+            "file_path": {"type": "string"},
+            "failure_mode": {"type": "string"},
+            "cause": {"type": "string"},
+            "effect": {"type": "string"},
+            "detection": {"type": "string"},
+            "severity": {"type": "integer"},
+            "occurrence": {"type": "integer"},
+            "detection_score": {"type": "integer"},
+            "rpn": {"type": "integer"},
+            "score_explanation": {"type": "string"},
+            "mitigation": {"type": "string"},
+            "evidence": {"type": "object"},
+        },
+        "additionalProperties": True,
+    },
+}
+
+
 def builtin_workflow_presets() -> list[dict[str, Any]]:
     """Return versioned workflow presets users can install and customize."""
 
@@ -128,10 +220,28 @@ def builtin_workflow_presets() -> list[dict[str, Any]]:
                     {"id": "render_report", "type": "report_render"},
                 ],
                 "outputs": [
-                    {"id": "source_scope", "type": "json", "from": "analyze_source_flow", "artifact": "source_scope.json"},
-                    {"id": "code_evidence", "type": "json", "from": "analyze_source_flow", "artifact": "evidence_cards.json"},
+                    {
+                        "id": "source_scope",
+                        "type": "json",
+                        "from": "analyze_source_flow",
+                        "artifact": "source_scope.json",
+                        "schema": SOURCE_SCOPE_SCHEMA,
+                    },
+                    {
+                        "id": "code_evidence",
+                        "type": "json",
+                        "from": "analyze_source_flow",
+                        "artifact": "evidence_cards.json",
+                        "schema": EVIDENCE_CARDS_SCHEMA,
+                    },
                     {"id": "flow_map", "type": "markdown", "from": "analyze_source_flow", "artifact": "flow_map.md"},
-                    {"id": "sfmea", "type": "json", "from": "analyze_source_flow", "artifact": "sfmea.json"},
+                    {
+                        "id": "sfmea",
+                        "type": "json",
+                        "from": "analyze_source_flow",
+                        "artifact": "sfmea.json",
+                        "schema": SFMEA_SCHEMA,
+                    },
                     {
                         "id": "black_box_cases",
                         "type": "test_cases",

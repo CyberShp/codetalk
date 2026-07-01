@@ -175,6 +175,10 @@ async def test_workbench_core_workflow_readiness_api_covers_builtin_scenarios(wo
         "sfmea.json",
         "black_box_cases.json",
     ]
+    assert not any(
+        warning["code"] == "json_output_missing_schema"
+        for warning in by_id["source_flow_sfmea_blackbox"]["warnings"]
+    )
     assert by_id["mr_blackbox_test"]["agent_mcp_required"] is False
     assert by_id["mr_blackbox_test"]["required_artifacts"] == [
         "mr_snapshot.json",
@@ -2064,6 +2068,10 @@ async def test_builtin_source_flow_sfmea_blackbox_run_produces_four_piece_chain(
         "/api/workbench/workflow-presets/source_flow_sfmea_blackbox/install"
     )
     assert installed.status_code == 201
+    assert not any(
+        warning["code"] == "json_output_missing_schema"
+        for warning in installed.json()["audit"]["warnings"]
+    )
 
     response = await workbench_client.post(
         "/api/workbench/task-runs/run",
