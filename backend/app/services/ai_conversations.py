@@ -1475,7 +1475,7 @@ async def _workbench_task_refs(scope_type: str, scope_id: str) -> list[ContextRe
                 source_id=f"{scope_id}/{name}",
                 title=name,
                 excerpt=_clip(text),
-                metadata={"task_run_id": scope_id, "path": str(path)},
+                metadata={"task_run_id": scope_id, "path": name},
             )
         )
     return refs[:3]

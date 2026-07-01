@@ -667,6 +667,8 @@ class TestAIConversationsAPI:
 
         assert manifest_refs
         assert manifest_refs[0].source_id == f"{task_run_id}/task_artifact_manifest.json"
+        assert manifest_refs[0].metadata["path"] == "task_artifact_manifest.json"
+        assert not Path(str(manifest_refs[0].metadata["path"])).is_absolute()
         assert "task_bundle.json" in manifest_refs[0].excerpt
 
     async def test_workspace_source_refs_fallback_prefers_implementation_source(
