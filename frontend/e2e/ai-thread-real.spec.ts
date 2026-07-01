@@ -795,7 +795,7 @@ test("jumps to latest when sending from a detached AI thread reading position", 
 test("keeps real agent thinking diagnostics collapsed and out of the persisted answer", async ({
   page,
   request,
-}) => {
+}, testInfo) => {
   test.setTimeout(70_000);
   const repo = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), "codetalk-ai-diag-repo-")));
   fs.writeFileSync(path.join(repo, "README.md"), "AI diagnostic folding e2e workspace\n", "utf8");
@@ -891,6 +891,17 @@ test("keeps real agent thinking diagnostics collapsed and out of the persisted a
     expect(assistantMessages[0].content).not.toContain("thinking:");
     expect(assistantMessages[0].content).not.toContain("diagnostic:");
     expect(assistantMessages[0].content).not.toContain("chain-of-thought-like internal note");
+
+    const downloadPromise = page.waitForEvent("download");
+    await page.getByRole("button", { name: "导出" }).click();
+    const download = await downloadPromise;
+    const exportPath = testInfo.outputPath("real-ai-thread-diagnostic-export.md");
+    await download.saveAs(exportPath);
+    const exported = fs.readFileSync(exportPath, "utf8");
+    expect(exported).toContain("FINAL_DIAGNOSTIC_ANSWER");
+    expect(exported).not.toContain("thinking:");
+    expect(exported).not.toContain("diagnostic:");
+    expect(exported).not.toContain("chain-of-thought-like internal note");
   } finally {
     await request.delete(`${backendBase}/api/settings/agent-runtimes/${encodeURIComponent(runtime.id)}`);
   }
