@@ -87,6 +87,35 @@ def test_exit_on_subprocess_error_reports_actionable_stage(capsys):
     assert "依赖源不可达" in err
 
 
+def test_install_dependencies_uses_vendor_wheels_when_available(tmp_path, monkeypatch):
+    vendor = tmp_path / "vendor" / "wheels"
+    vendor.mkdir(parents=True)
+    (vendor / "fastapi-0.0.0-py3-none-any.whl").touch()
+    fake_python = tmp_path / ".venv" / "bin" / "python"
+    fake_python.parent.mkdir(parents=True)
+    fake_python.touch()
+
+    monkeypatch.setattr(start, "VENDOR_WHEELS_DIR", vendor)
+    monkeypatch.setattr(start, "REQUIREMENTS", tmp_path / "requirements.txt")
+    monkeypatch.setattr(start, "_venv_python", lambda: fake_python)
+
+    calls: list[list[str]] = []
+
+    def fake_run(cmd, check):
+        calls.append(cmd)
+
+    monkeypatch.setattr(subprocess, "run", fake_run)
+
+    start._install_dependencies()
+
+    assert calls
+    cmd = calls[0]
+    assert "--disable-pip-version-check" in cmd
+    assert "--no-index" in cmd
+    assert "--find-links" in cmd
+    assert str(vendor) in cmd
+
+
 def test_deployer_port_preflight_reports_occupied_port(monkeypatch, capsys):
     with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as listener:
         listener.bind(("127.0.0.1", 0))
