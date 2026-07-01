@@ -495,10 +495,17 @@ _CJK_MOJIBAKE_MARKERS = (
 )
 _SPINNER_PROGRESS_RE = re.compile(r"^[⠁-⣿⣀-⣿|/\\\-·•●○◐◓◑◒]\s*(?:\d+(?:[./]\d+)?%?|[.\u2026]+)?\s*$")
 _PROGRESS_ONLY_RE = re.compile(r"^(?:\d{1,3}%|\d+/\d+|\d{1,4})$")
+_PROGRESS_STATUS_RE = re.compile(
+    r"^(?:progress|loading|reading|scanning|generating|thinking|tokens?|"
+    r"进度|加载中?|读取中?|扫描中?|生成中?|思考中?)"
+    r"[\s:：.\-_/\\]*(?:\d{1,3}%|\d+/\d+|\d{1,6})\s*$",
+    re.IGNORECASE,
+)
 
 
 def _clean_agent_text(value: str) -> str:
     cleaned = _ANSI_RE.sub("", value)
+    cleaned = _apply_backspace_repaints(cleaned)
     cleaned = _collapse_terminal_repaints(cleaned)
     return _CONTROL_RE.sub("", cleaned)
 
@@ -506,6 +513,17 @@ def _clean_agent_text(value: str) -> str:
 def clean_agent_output_text(value: str) -> str:
     """Normalize terminal control noise before text is classified or displayed."""
     return _clean_agent_text(value)
+
+
+def _apply_backspace_repaints(value: str) -> str:
+    chars: list[str] = []
+    for char in value:
+        if char == "\b":
+            if chars and chars[-1] not in "\n\r":
+                chars.pop()
+            continue
+        chars.append(char)
+    return "".join(chars)
 
 
 def _collapse_terminal_repaints(value: str) -> str:
@@ -517,6 +535,7 @@ def _collapse_terminal_repaints(value: str) -> str:
         if (
             _SPINNER_PROGRESS_RE.match(stripped)
             or _PROGRESS_ONLY_RE.match(stripped)
+            or _PROGRESS_STATUS_RE.match(stripped)
             or _looks_like_replacement_gibberish(stripped)
             or _looks_like_short_binary_gibberish(stripped)
             or _looks_like_mojibake_numeric_noise(stripped)
