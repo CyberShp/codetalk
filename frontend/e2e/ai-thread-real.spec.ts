@@ -1285,11 +1285,23 @@ test("injects requested workspace source into a real agent-runtime AI thread", a
         }),
       ]),
     );
+    expect(JSON.stringify(userMessage?.references ?? [])).not.toContain(repo);
     expect(
       body.items.some(
         (item) => item.role === "assistant" && item.content.includes("SOURCE_CONTEXT_OK lib/nvmf/connect.c"),
       ),
     ).toBeTruthy();
+
+    const downloadPromise = page.waitForEvent("download");
+    await page.getByRole("button", { name: "导出" }).hover();
+    await page.getByRole("button", { name: "导出" }).click();
+    const download = await downloadPromise;
+    const exportPath = test.info().outputPath("real-ai-thread-source-public-path-export.md");
+    await download.saveAs(exportPath);
+    const exported = fs.readFileSync(exportPath, "utf8");
+    expect(exported).toContain("SOURCE_CONTEXT_OK lib/nvmf/connect.c");
+    expect(exported).toContain("源码位置: lib/nvmf/connect.c:L1");
+    expect(exported).not.toContain(repo);
   } finally {
     await request.delete(`${backendBase}/api/settings/agent-runtimes/${encodeURIComponent(runtime.id)}`);
   }
