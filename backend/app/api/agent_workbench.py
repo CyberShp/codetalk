@@ -1321,7 +1321,7 @@ async def list_task_run_artifacts(task_run_id: str) -> dict[str, Any]:
     return {
         "task_run_id": task_run.task_run_id,
         "artifact_dir": str(task_dir),
-        "artifacts": _artifact_manifest(task_dir),
+        "artifacts": _public_artifact_manifest(task_dir),
     }
 
 
@@ -4173,6 +4173,15 @@ def _safe_int(value: Any) -> int:
 
 def _artifact_manifest(task_dir: Path) -> list[dict[str, Any]]:
     return build_task_artifact_manifest(task_dir)
+
+
+def _public_artifact_manifest(task_dir: Path) -> list[dict[str, Any]]:
+    artifacts = _artifact_manifest(task_dir)
+    for artifact in artifacts:
+        relative_path = str(artifact.get("relative_path") or "")
+        if relative_path:
+            artifact["path"] = relative_path
+    return artifacts
 
 
 def _build_task_acceptance_audit(task_run: Any) -> dict[str, Any]:
