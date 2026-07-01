@@ -820,6 +820,8 @@ def _context_status_message(references: list[dict[str, Any]]) -> str:
         parts.append("输入材料")
     if "workspace_report" in source_types:
         parts.append("历史报告")
+    if "workbench_task_artifact" in source_types:
+        parts.append("任务产物")
     if "semantic_case" in source_types:
         parts.append("语义案例")
     if not parts:
