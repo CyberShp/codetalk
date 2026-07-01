@@ -254,16 +254,37 @@ class TestStartToolSuccess:
         mock_pm.start = AsyncMock(return_value=False)
         managed = MagicMock()
         managed.last_error = "Working directory does not exist: X"
-        mock_pm._processes = {"deepwiki-api": managed}
+        mock_pm._processes = {"gitnexus": managed}
 
         app = _make_app(mock_pm)
         async with AsyncClient(
             transport=ASGITransport(app=app), base_url="http://test"
         ) as client:
-            resp = await client.post("/api/tools/deepwiki-api/start")
+            resp = await client.post("/api/tools/gitnexus/start")
 
         assert resp.status_code == 400
         assert "Working directory does not exist: X" in resp.json()["detail"]
+
+    async def test_removed_deepwiki_process_controls_do_not_call_process_manager(self):
+        """Removed DeepWiki names must not be resurrected by stale ProcessManager state."""
+        mock_pm = MagicMock()
+        mock_pm.start = AsyncMock(return_value=True)
+        mock_pm.stop = AsyncMock(return_value=True)
+        mock_pm.restart = AsyncMock(return_value=True)
+        mock_pm._processes = {"deepwiki-api": MagicMock(), "deepwiki-ui": MagicMock()}
+
+        app = _make_app(mock_pm)
+        async with AsyncClient(
+            transport=ASGITransport(app=app), base_url="http://test"
+        ) as client:
+            for action in ("start", "stop", "restart"):
+                resp = await client.post(f"/api/tools/deepwiki-api/{action}")
+                assert resp.status_code == 400
+                assert "not a managed process" in resp.json()["detail"]
+
+        mock_pm.start.assert_not_awaited()
+        mock_pm.stop.assert_not_awaited()
+        mock_pm.restart.assert_not_awaited()
 
 
 class TestRestartToolSuccess:
