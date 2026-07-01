@@ -4253,6 +4253,18 @@ textarea:focus-visible {
     transform: none;
   }
 
+  .ct-page-shell,
+  .ct-reveal,
+  .ct-reveal-delay-1,
+  .ct-reveal-delay-2,
+  .ct-reveal-delay-3,
+  .ct-reveal-delay-4 {
+    animation: none !important;
+    animation-delay: 0ms !important;
+    opacity: 1 !important;
+    transform: none !important;
+  }
+
   .ct-app-sidebar__status,
   .ct-app-sidebar.is-switching .ct-app-sidebar__shine::after,
   .ct-app-sidebar.is-switching .ct-app-sidebar__mark::before,

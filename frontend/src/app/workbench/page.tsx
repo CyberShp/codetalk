@@ -1,6 +1,7 @@
 "use client";
 
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import type { ReactNode } from "react";
 import { flushSync } from "react-dom";
 import { useRouter } from "next/navigation";
 import {
@@ -103,6 +104,43 @@ const DEFAULT_INPUTS = {
 };
 
 type WorkbenchView = "run" | "workflow" | "knowledge" | "diagnostics";
+
+function WorkbenchStageFrame({
+  activeWorkbenchView,
+  reducedMotion,
+  children,
+}: {
+  activeWorkbenchView: WorkbenchView;
+  reducedMotion: boolean;
+  children: ReactNode;
+}) {
+  const className = `ct-workbench-stage grid grid-cols-1 gap-5 ${
+    activeWorkbenchView === "knowledge" ? "2xl:grid-cols-2" : ""
+  }`;
+
+  if (reducedMotion) {
+    return (
+      <div key={activeWorkbenchView} className={className}>
+        {children}
+      </div>
+    );
+  }
+
+  return (
+    <AnimatePresence mode="wait">
+      <motion.div
+        key={activeWorkbenchView}
+        initial={{ opacity: 0, y: 18, scale: 0.985 }}
+        animate={{ opacity: 1, y: 0, scale: 1 }}
+        exit={{ opacity: 0, y: -10, scale: 0.99 }}
+        transition={{ duration: 0.36, ease: [0.22, 1, 0.36, 1] }}
+        className={className}
+      >
+        {children}
+      </motion.div>
+    </AnimatePresence>
+  );
+}
 
 const WORKBENCH_VIEWS: Array<{
   id: WorkbenchView;
@@ -1969,6 +2007,8 @@ export default function AgentWorkbenchPage() {
     Record<string, MaterializeEvidenceResult>
   >({});
   const [activeWorkbenchView, setActiveWorkbenchView] = useState<WorkbenchView>("run");
+  const [prefersReducedMotion, setPrefersReducedMotion] = useState(false);
+  const [motionPreferenceReady, setMotionPreferenceReady] = useState(false);
   const [loading, setLoading] = useState(false);
   const [busyAction, setBusyAction] = useState<string | null>(null);
   const busyActionRef = useRef<string | null>(null);
@@ -1983,6 +2023,15 @@ export default function AgentWorkbenchPage() {
     })),
     [workflows],
   );
+
+  useEffect(() => {
+    const query = window.matchMedia("(prefers-reduced-motion: reduce)");
+    const updatePreference = () => setPrefersReducedMotion(query.matches);
+    updatePreference();
+    setMotionPreferenceReady(true);
+    query.addEventListener("change", updatePreference);
+    return () => query.removeEventListener("change", updatePreference);
+  }, []);
   const builderProviderOptions = useMemo(() => {
     const providers = (providerMatrix?.providers ?? [])
       .filter((provider) => provider.agent_owned || provider.command.length > 0)
@@ -3047,17 +3096,10 @@ export default function AgentWorkbenchPage() {
         })}
       </div>
 
-      <AnimatePresence mode="wait">
-        <motion.div
-          key={activeWorkbenchView}
-          initial={{ opacity: 0, y: 18, scale: 0.985 }}
-          animate={{ opacity: 1, y: 0, scale: 1 }}
-          exit={{ opacity: 0, y: -10, scale: 0.99 }}
-          transition={{ duration: 0.36, ease: [0.22, 1, 0.36, 1] }}
-          className={`ct-workbench-stage grid grid-cols-1 gap-5 ${
-            activeWorkbenchView === "knowledge" ? "2xl:grid-cols-2" : ""
-          }`}
-        >
+      <WorkbenchStageFrame
+        activeWorkbenchView={activeWorkbenchView}
+        reducedMotion={motionPreferenceReady && Boolean(prefersReducedMotion)}
+      >
       {activeWorkbenchView === "diagnostics" && (
       <Panel title="执行器矩阵" icon={<AlertTriangle size={16} />}>
         <div className="mb-3 flex flex-wrap items-center justify-between gap-2">
@@ -6053,8 +6095,7 @@ export default function AgentWorkbenchPage() {
         </Panel>
         </>
       )}
-        </motion.div>
-      </AnimatePresence>
+      </WorkbenchStageFrame>
       </div>
   );
 }
