@@ -144,10 +144,8 @@ export default function ReportChatPanel({ taskId }: { taskId: string }) {
                       enableNumericCitations={false}
                     />
                   ) : (
-                    <div className="flex items-center gap-1 py-1">
-                      <span className="w-1.5 h-1.5 bg-on-surface-variant/60 rounded-full animate-bounce [animation-delay:0ms]" />
-                      <span className="w-1.5 h-1.5 bg-on-surface-variant/60 rounded-full animate-bounce [animation-delay:150ms]" />
-                      <span className="w-1.5 h-1.5 bg-on-surface-variant/60 rounded-full animate-bounce [animation-delay:300ms]" />
+                    <div className="py-1 text-xs text-on-surface-variant" aria-live="polite">
+                      正在生成回答...
                     </div>
                   )}
                 </div>
