@@ -882,6 +882,63 @@ class TestAIConversationsAPI:
             assert body["workspace_id"] == ws_id
             assert body["memory_namespace"] == f"workspace:{ws_id}"
 
+    async def test_legacy_workbench_conversation_read_publicizes_artifact_context(
+        self,
+        sqlite_db,
+    ):
+        task_run_id = "task_run_legacy_context"
+        now = datetime.now(timezone.utc).isoformat()
+        legacy_context = {
+            "workspace_id": "legacy-workbench",
+            "repo_path": "/Volumes/Media/dpdk/spdk",
+            "artifact_dir": f"/Volumes/Media/codetalk/data/workbench/task_runs/{task_run_id}",
+            "agent_runs": [
+                {
+                    "step_id": "discover",
+                    "artifact_dir": (
+                        "/Volumes/Media/codetalk/data/workbench/task_runs/"
+                        f"{task_run_id}/agent_runs/discover"
+                    ),
+                }
+            ],
+        }
+        async with aiosqlite.connect(sqlite_db) as db:
+            await db.execute(
+                """
+                INSERT INTO ai_conversations
+                    (id, scope_type, scope_id, workspace_id, memory_namespace, title, status,
+                     initial_context_json, created_at, updated_at)
+                VALUES (?, 'workbench_task_run', ?, 'legacy-workbench',
+                        'workspace:legacy-workbench', '旧 Workbench 线程', 'idle', ?, ?, ?)
+                """,
+                (
+                    "conv-legacy-workbench",
+                    task_run_id,
+                    json.dumps(legacy_context),
+                    now,
+                    now,
+                ),
+            )
+            await db.commit()
+
+        app = _test_app(sqlite_db)
+        async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+            fetched = await client.get("/api/ai/conversations/conv-legacy-workbench")
+            listed = await client.get(
+                "/api/ai/conversations",
+                params={"workspace_id": "legacy-workbench"},
+            )
+
+        assert fetched.status_code == 200
+        context = fetched.json()["initial_context"]
+        assert context["repo_path"] == "/Volumes/Media/dpdk/spdk"
+        assert context["artifact_dir"] == "."
+        assert context["agent_runs"][0]["artifact_dir"] == "agent_runs/discover"
+        assert listed.status_code == 200
+        listed_context = listed.json()["items"][0]["initial_context"]
+        assert listed_context["artifact_dir"] == "."
+        assert listed_context["agent_runs"][0]["artifact_dir"] == "agent_runs/discover"
+
     async def test_context_recall_filters_evidence_memory_by_workspace(self, sqlite_db, monkeypatch):
         ws_id = await _seed_workspace(sqlite_db)
         calls: list[str | None] = []
