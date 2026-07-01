@@ -895,7 +895,7 @@ export default function AIThreadPage() {
             证据链
           </h2>
           {references.length === 0 ? (
-            <p className="ct-ai-side-empty">还没有引用。发送问题后，系统会按当前项目召回报告、记忆和语义用例。</p>
+            <p className="ct-ai-side-empty">还没有引用。发送问题后，系统会按当前项目优先召回源码、输入材料，再补充报告、记忆和语义用例。</p>
           ) : (
             <div className="grid gap-3">
               {latestReferences.map((ref) => (
