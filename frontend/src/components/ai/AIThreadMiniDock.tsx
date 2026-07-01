@@ -23,7 +23,7 @@ export default function AIThreadMiniDock() {
       const result = await api.aiConversations.list({ limit: 3 });
       if (mountedRef.current) setItems(result.items);
     } catch {
-      if (mountedRef.current) setItems([]);
+      if (mountedRef.current) setItems((current) => (current.length ? current : []));
     } finally {
       if (mountedRef.current && options.showSpinner) setLoading(false);
     }
