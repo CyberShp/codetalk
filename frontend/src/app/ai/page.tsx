@@ -31,6 +31,10 @@ function projectIdForThread(thread: AIConversation): string {
   return "global";
 }
 
+function publicProjectDetail(workspace: Workspace): string {
+  return `workspace:${workspace.id}`;
+}
+
 function formatTime(value: string): string {
   const date = new Date(value);
   if (Number.isNaN(date.getTime())) return value;
@@ -106,7 +110,7 @@ export default function AIHomePage() {
     const rows: ProjectRow[] = workspaces.map((workspace) => ({
       id: workspace.id,
       name: workspace.name,
-      detail: workspace.repo_path,
+      detail: publicProjectDetail(workspace),
       count: counts.get(workspace.id) ?? 0,
       workspace,
     }));

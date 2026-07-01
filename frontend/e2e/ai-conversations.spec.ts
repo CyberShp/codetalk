@@ -206,6 +206,8 @@ test("AI conversation page is a wide persistent reading surface", async ({ page 
   await page.goto("/ai/conv-1");
 
   await expect(page.getByRole("heading", { name: "登录模块 AI 调查线程" })).toBeVisible();
+  await expect(page.locator(".ct-codex-ai__project small")).toHaveText("workspace:ws-1");
+  await expect(page.getByText("/repo/login")).toHaveCount(0);
   await expect(page.getByText("建议补充登录失败")).toBeVisible();
   await expect(page.getByText("测试设计报告")).toBeVisible();
   await expect(page.getByText("证据链")).toBeVisible();
