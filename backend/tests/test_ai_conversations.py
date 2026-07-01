@@ -449,6 +449,66 @@ class TestAIConversationsAPI:
         assert "nvmf_scope_path_entry" in source_refs[0].excerpt
         assert all(not ref.metadata["path"].startswith("lib/bdev/") for ref in source_refs[:2])
 
+    async def test_workbench_task_thread_references_task_artifact_manifest(
+        self,
+        sqlite_db,
+        tmp_path: Path,
+        monkeypatch,
+    ):
+        from app.config import settings
+        from app.services.ai_conversations import build_context_references
+
+        data_root = tmp_path / "data"
+        task_run_id = "task_run_ai_manifest"
+        task_dir = data_root / "workbench" / "task_runs" / task_run_id
+        task_dir.mkdir(parents=True)
+        (task_dir / "task_run.json").write_text(
+            json.dumps({"task_run_id": task_run_id, "status": "prepared"}),
+            encoding="utf-8",
+        )
+        (task_dir / "task_bundle.json").write_text(
+            json.dumps({"workflow_id": "module_analysis", "repo_path": "/repo/spdk"}),
+            encoding="utf-8",
+        )
+        (task_dir / "task_artifact_manifest.json").write_text(
+            json.dumps(
+                {
+                    "task_run_id": task_run_id,
+                    "artifacts": [
+                        {
+                            "relative_path": "task_bundle.json",
+                            "kind": "task_bundle",
+                        }
+                    ],
+                }
+            ),
+            encoding="utf-8",
+        )
+        monkeypatch.setattr(settings, "data_dir", str(data_root))
+
+        refs = await build_context_references(
+            conversation={
+                "id": "conv-workbench-manifest",
+                "scope_type": "workbench_task_run",
+                "scope_id": task_run_id,
+                "workspace_id": "ws-workbench",
+                "memory_namespace": "workspace:ws-workbench",
+                "initial_context": {"workspace_id": "ws-workbench"},
+            },
+            user_message="请读取本次任务产物清单并复盘",
+            db_path=sqlite_db,
+        )
+        manifest_refs = [
+            ref
+            for ref in refs
+            if ref.source_type == "workbench_task_artifact"
+            and ref.title == "task_artifact_manifest.json"
+        ]
+
+        assert manifest_refs
+        assert manifest_refs[0].source_id == f"{task_run_id}/task_artifact_manifest.json"
+        assert "task_bundle.json" in manifest_refs[0].excerpt
+
     async def test_workspace_source_refs_fallback_prefers_implementation_source(
         self,
         sqlite_db,
