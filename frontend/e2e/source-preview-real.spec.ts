@@ -99,6 +99,38 @@ test("source preview opens a searched function with real surrounding code", asyn
   await expect(page.locator("pre")).toContainText("window-end-sentinel");
 });
 
+test("source preview degrades clearly when a linked source file is missing", async ({ page }) => {
+  test.setTimeout(180_000);
+
+  const repo = fs.mkdtempSync(path.join(os.tmpdir(), "codetalk-missing-source-"));
+  fs.writeFileSync(path.join(repo, "README.md"), "missing linked source preview e2e\n", "utf8");
+  const workspaceName = `missing-source-e2e-${Date.now()}`;
+
+  await page.goto("/workspaces/new", { waitUntil: "domcontentloaded" });
+  await noFrameworkOverlay(page);
+  await page.getByPlaceholder(/项目 A/).fill(workspaceName);
+  await page.getByPlaceholder(/本地文件夹路径/).fill(repo);
+  await page.getByRole("button", { name: "创建工作空间" }).hover();
+  await page.getByRole("button", { name: "创建工作空间" }).click();
+  await page.waitForURL(/\/workspaces\/[0-9a-f-]{36}$/, { timeout: 30_000 });
+  await expect(page.getByText(workspaceName)).toBeVisible({ timeout: 30_000 });
+
+  await expect
+    .poll(async () => page.locator("body").innerText(), { timeout: 120_000 })
+    .toMatch(/已索引/);
+  const workspaceUrl = page.url();
+  const missingPath = "lib/nvmf/deleted.c";
+
+  await page.goto(`${workspaceUrl}?tab=source&sourcePath=${encodeURIComponent(missingPath)}&line=12`, {
+    waitUntil: "domcontentloaded",
+  });
+  await noFrameworkOverlay(page);
+
+  await expect(page.getByLabel("源码搜索")).toHaveValue(missingPath);
+  await expect(page.getByText(`源码文件不存在：${missingPath}`)).toBeVisible({ timeout: 20_000 });
+  await expect(page.locator("pre")).toHaveCount(0);
+});
+
 test("source search does not expose files outside the workspace through symlinks", async ({ page }) => {
   test.setTimeout(180_000);
 

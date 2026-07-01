@@ -11,7 +11,7 @@ DEPLOYER_DIR = Path(__file__).parent.parent
 if str(DEPLOYER_DIR) not in sys.path:
     sys.path.insert(0, str(DEPLOYER_DIR))
 
-from deployers.native import NativeDeployer  # noqa: E402
+from deployers.native import NativeDeployer, _frontend_source_fingerprint  # noqa: E402
 
 
 class NativeFrontendStartTests(unittest.TestCase):
@@ -119,6 +119,47 @@ class NativeFrontendStartTests(unittest.TestCase):
             self.assertIn("GITNEXUS_BASE_URL=http://localhost:7100", generated)
             self.assertNotIn("DEEPWIKI", generated)
             self.assertNotIn("deepwiki", generated.lower())
+
+    def test_frontend_build_key_changes_without_git_when_source_changes(self) -> None:
+        with TemporaryDirectory() as tmpdir:
+            project_root = Path(tmpdir)
+            frontend_dir = project_root / "frontend"
+            app_dir = frontend_dir / "src" / "app"
+            app_dir.mkdir(parents=True)
+            (frontend_dir / ".env.local").write_text(
+                "NEXT_PUBLIC_API_URL=http://localhost:3004\n",
+                encoding="utf-8",
+            )
+            (frontend_dir / "package.json").write_text('{"scripts":{"build":"next build"}}\n', encoding="utf-8")
+            page = app_dir / "page.tsx"
+            page.write_text("export default function Page(){return <main>old ui</main>}\n", encoding="utf-8")
+
+            deployer = NativeDeployer({}, asyncio.Queue())
+
+            with patch("deployers.native.PROJECT_ROOT", project_root), patch.object(deployer, "_get_git_hash", return_value=""):
+                first = asyncio.run(deployer._frontend_build_key(frontend_dir))
+                page.write_text("export default function Page(){return <main>new ui</main>}\n", encoding="utf-8")
+                second = asyncio.run(deployer._frontend_build_key(frontend_dir))
+
+            self.assertIn("nogit", first)
+            self.assertIn("nogit", second)
+            self.assertNotEqual(first, second)
+
+    def test_frontend_source_fingerprint_ignores_next_build_outputs(self) -> None:
+        with TemporaryDirectory() as tmpdir:
+            frontend_dir = Path(tmpdir) / "frontend"
+            app_dir = frontend_dir / "src" / "app"
+            next_dir = frontend_dir / ".next"
+            app_dir.mkdir(parents=True)
+            next_dir.mkdir(parents=True)
+            (app_dir / "page.tsx").write_text("export default function Page(){return null}\n", encoding="utf-8")
+            (next_dir / "BUILD_ID").write_text("build-1\n", encoding="utf-8")
+
+            first = _frontend_source_fingerprint(frontend_dir)
+            (next_dir / "BUILD_ID").write_text("build-2\n", encoding="utf-8")
+            second = _frontend_source_fingerprint(frontend_dir)
+
+            self.assertEqual(first, second)
 
     def test_emit_redacts_secret_values_before_queueing(self) -> None:
         queue: asyncio.Queue = asyncio.Queue()
