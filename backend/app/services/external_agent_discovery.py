@@ -652,6 +652,11 @@ _SECRET_BARE_VALUE_RE = re.compile(
 )
 _BEARER_RE = re.compile(r"(?i)(bearer\s+)([A-Za-z0-9._~+/=-]{8,})")
 _OPENAI_STYLE_KEY_RE = re.compile(r"\bsk-[A-Za-z0-9][A-Za-z0-9._-]{6,}\b")
+_ANSI_ESCAPE_RE = re.compile(
+    r"(?:\x1B\[[0-?]*[ -/]*[@-~]|\x1B\][^\x07]*(?:\x07|\x1B\\)|\x1B[@-Z\\-_])"
+)
+_TERMINAL_CONTROL_RE = re.compile(r"[\x00-\x08\x0B\x0C\x0E-\x1F\x7F]")
+_REPLACEMENT_CHAR_RUN_RE = re.compile("\ufffd+")
 _SECRET_FIELD_NAMES = frozenset({
     "apikey",
     "api_key",
@@ -664,8 +669,15 @@ _SECRET_FIELD_NAMES = frozenset({
 })
 
 
+def _strip_terminal_noise(value: str) -> str:
+    text = _ANSI_ESCAPE_RE.sub("", value)
+    text = _TERMINAL_CONTROL_RE.sub("", text)
+    text = _REPLACEMENT_CHAR_RUN_RE.sub("", text)
+    return text
+
+
 def _redact_agent_diagnostic_text(value: str) -> str:
-    text = value
+    text = _strip_terminal_noise(value)
     text = _SECRET_ASSIGNMENT_RE.sub(r"\1\2<redacted>\4", text)
     text = _SECRET_KV_RE.sub(r"\1\2<redacted>\4", text)
     text = _SECRET_STRUCTURED_KV_RE.sub(r"\1\2<redacted>\4", text)
@@ -2186,7 +2198,7 @@ def _candidate_suffixes_for_root(root: Path, normalized: str) -> list[str]:
 
 
 def parse_agent_output(provider: str, raw_output: str, repo_path: str | Path) -> AgentDiscoveryResult:
-    raw = (raw_output or "")[: settings.external_agent_max_output_chars]
+    raw = _strip_terminal_noise((raw_output or "")[: settings.external_agent_max_output_chars])
     cli_error = _extract_cli_error(raw)
     if cli_error:
         return AgentDiscoveryResult(
@@ -2208,14 +2220,14 @@ def parse_agent_output(provider: str, raw_output: str, repo_path: str | Path) ->
         return AgentDiscoveryResult(
             provider=provider,
             status="invalid_output",
-            raw_summary=raw,
+            raw_summary=_redact_agent_diagnostic_text(raw),
             warnings=["agent JSON root must be an object"],
         )
     if not _has_discovery_schema(payload):
         return AgentDiscoveryResult(
             provider=provider,
             status="invalid_output",
-            raw_summary=json.dumps(payload, ensure_ascii=False)[:4000],
+            raw_summary=_redact_agent_diagnostic_text(json.dumps(payload, ensure_ascii=False))[:4000],
             warnings=["agent JSON schema missing discovery fields"],
         )
 
@@ -2223,9 +2235,9 @@ def parse_agent_output(provider: str, raw_output: str, repo_path: str | Path) ->
     for item in _coerce_dict_items(payload.get("candidate_files")):
         candidate = AgentCandidateFile(
             path=_candidate_path_value(item),
-            reason=str(item.get("reason") or ""),
+            reason=_redact_agent_diagnostic_text(str(item.get("reason") or "")),
             confidence=_normalize_confidence(item.get("confidence")),
-            evidence_excerpt=str(item.get("evidence_excerpt") or ""),
+            evidence_excerpt=_redact_agent_diagnostic_text(str(item.get("evidence_excerpt") or "")),
         )
         validation = validate_agent_candidate_file(repo_path, candidate.path)
         candidate.validated = validation.validated
@@ -2241,9 +2253,9 @@ def parse_agent_output(provider: str, raw_output: str, repo_path: str | Path) ->
             entry_symbol=str(item.get("entry_symbol") or item.get("symbol") or ""),
             entry_file=_candidate_path_value(item, "entry_file") or None,
             chain=_coerce_entry_chain(item.get("chain")),
-            external_trigger=str(item.get("external_trigger") or ""),
+            external_trigger=_redact_agent_diagnostic_text(str(item.get("external_trigger") or "")),
             input_hints=_coerce_string_list(item.get("input_hints")),
-            reason=str(item.get("reason") or ""),
+            reason=_redact_agent_diagnostic_text(str(item.get("reason") or "")),
         )
         if entry.entry_file:
             validation = validate_agent_candidate_file(
@@ -2265,7 +2277,7 @@ def parse_agent_output(provider: str, raw_output: str, repo_path: str | Path) ->
         {
             "file_path": _candidate_path_value(item, "file_path"),
             "symbol": str(item.get("symbol") or "") or None,
-            "reason": str(item.get("reason") or ""),
+            "reason": _redact_agent_diagnostic_text(str(item.get("reason") or "")),
         }
         for item in _coerce_dict_items(payload.get("need_source_slices"))
     ]
@@ -2277,8 +2289,13 @@ def parse_agent_output(provider: str, raw_output: str, repo_path: str | Path) ->
         candidate_entries=entries,
         need_source_slices=need_source_slices,
         commands=commands,
-        raw_summary=str(payload.get("raw_summary") or payload.get("summary") or "")[:4000],
-        warnings=_coerce_string_list(payload.get("warnings")),
+        raw_summary=_redact_agent_diagnostic_text(
+            str(payload.get("raw_summary") or payload.get("summary") or "")
+        )[:4000],
+        warnings=[
+            _redact_agent_diagnostic_text(item)
+            for item in _coerce_string_list(payload.get("warnings"))
+        ],
     )
 
 
@@ -2477,8 +2494,8 @@ def _has_discovery_schema(payload: dict) -> bool:
 def _invalid_output_summary(raw: str) -> str:
     wrapper_text = _extract_wrapper_text_result(raw)
     if wrapper_text:
-        return wrapper_text[:4000]
-    return (raw or "")[:4000]
+        return _redact_agent_diagnostic_text(wrapper_text)[:4000]
+    return _redact_agent_diagnostic_text(raw or "")[:4000]
 
 
 def _invalid_output_warning(raw: str, exc: json.JSONDecodeError) -> str:
@@ -3489,7 +3506,7 @@ def _record_agent_turn(
             provider=provider,
             goal=request.goal,
             prompt=prompt,
-            raw_output=raw_output,
+            raw_output=_redact_agent_diagnostic_text(raw_output),
             parsed_result=asdict(result),
             validation_result={
                 "validated_files": sum(1 for item in result.candidate_files if item.validated),

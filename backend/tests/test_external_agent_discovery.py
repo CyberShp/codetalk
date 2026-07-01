@@ -356,6 +356,48 @@ def test_invalid_json_does_not_enter_candidate_merge(tmp_path):
     assert "not json" in result.raw_summary
 
 
+def test_agent_invalid_output_summary_strips_terminal_noise(tmp_path):
+    from app.services.external_agent_discovery import parse_agent_output
+
+    raw = "\x1b[32m12345\x00\bnot json\x1b[0m"
+
+    result = parse_agent_output("nga", raw, tmp_path)
+
+    assert result.status == "invalid_output"
+    assert result.candidate_files == []
+    assert "\x1b" not in result.raw_summary
+    assert "\x00" not in result.raw_summary
+    assert "\b" not in result.raw_summary
+    assert "not json" in result.raw_summary
+
+
+def test_agent_jsonl_event_stream_uses_final_discovery_payload(tmp_path):
+    from app.services.external_agent_discovery import parse_agent_output
+
+    src = tmp_path / "lib"
+    src.mkdir()
+    (src / "nvmf.c").write_text("int nvmf_connect(void) { return 0; }\n", encoding="utf-8")
+    raw = "\n".join([
+        json.dumps({"type": "status", "seq": 12345, "delta": "\x1b[32mworking\x1b[0m"}),
+        json.dumps({
+            "type": "result",
+            "result": json.dumps({
+                "candidate_files": [
+                    {"path": "lib/nvmf.c", "reason": "source-backed match", "confidence": "high"}
+                ],
+                "raw_summary": "\x1b[31mfound nvmf source\x1b[0m",
+            }),
+        }),
+    ])
+
+    result = parse_agent_output("nga", raw, tmp_path)
+
+    assert result.status == "ok"
+    assert result.candidate_files[0].validated is True
+    assert result.candidate_files[0].path == "lib/nvmf.c"
+    assert result.raw_summary == "found nvmf source"
+
+
 def test_agent_output_extracts_json_from_markdown_fence(tmp_path):
     from app.services.external_agent_discovery import parse_agent_output
 
