@@ -71,6 +71,9 @@ class SourceMaterialAssertingLLM:
 
     async def stream_complete(self, messages, max_tokens=4096, temperature=0.3):
         self.joined = "\n".join(str(m.get("content", "")) for m in messages)
+        assert "SOURCE_FIRST_CONTRACT" in self.joined
+        assert "workspace_sources" in self.joined
+        assert "workspace_materials" in self.joined
         assert "workspace_material" in self.joined
         assert "requirements.md" in self.joined
         assert "必须覆盖 reconnect timeout" in self.joined

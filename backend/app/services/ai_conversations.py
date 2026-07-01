@@ -924,6 +924,7 @@ def _build_prompt(
         "当线程绑定 workspace 时，workspace_source 和 workspace_material 是优先证据；"
         "必须先依据源码片段和输入材料回答，再用报告或记忆补充。"
         "不要声称读过未出现在引用里的文件。\n\n"
+        f"{_source_first_contract(references)}\n\n"
         f"线程范围: {conversation['scope_type']} / {conversation['scope_id']}\n"
         f"上下文引用:\n{chr(10).join(context_lines) if context_lines else '（暂无可用引用）'}"
     )
@@ -948,7 +949,7 @@ def _build_agent_prompt(
         f"源码工作区：{_public_workspace_label(conversation)}",
         "执行要求：CodeTalk 已把执行器工作目录切到绑定工作区；如果线程绑定 workspace，"
         "先检查当前工作目录中的源码和输入材料，再回答；不要只凭模型记忆。",
-        _agent_source_first_contract(references),
+        _source_first_contract(references),
         "",
     ]
     for message in llm_messages:
@@ -965,7 +966,7 @@ def _build_agent_prompt(
     return "\n".join(lines).strip()
 
 
-def _agent_source_first_contract(references: list[dict[str, Any]]) -> str:
+def _source_first_contract(references: list[dict[str, Any]]) -> str:
     source_refs = [ref for ref in references if ref.get("source_type") == "workspace_source"]
     material_refs = [ref for ref in references if ref.get("source_type") == "workspace_material"]
     if not source_refs and not material_refs:
