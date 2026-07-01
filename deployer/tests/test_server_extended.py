@@ -98,8 +98,8 @@ async def test_quickstart_409_when_running(client):
     assert resp.status_code == 409
 
 
-async def test_quickstart_port_preflight_includes_enabled_cgc(client, monkeypatch):
-    """When CGC is enabled, quickstart reports its port conflicts before starting work."""
+async def test_quickstart_port_preflight_excludes_optional_cgc(client, monkeypatch):
+    """CGC is optional, so its port conflict must not block core quickstart."""
     import config_store
     import server
 
@@ -151,11 +151,11 @@ async def test_quickstart_port_preflight_includes_enabled_cgc(client, monkeypatc
     resp = await client.post("/api/quickstart", json={})
 
     assert resp.status_code == 200
-    assert scanned_ports == [3004, 3003, 7100, 7072]
+    assert scanned_ports == [3004, 3003, 7100]
 
 
-async def test_deploy_port_preflight_includes_enabled_cgc(client, monkeypatch):
-    """Native deployment uses the same enabled-service port preflight as quickstart."""
+async def test_deploy_port_preflight_excludes_optional_cgc(client, monkeypatch):
+    """Native deployment should not fail early on optional CGC port conflicts."""
     import server
 
     scanned_ports: list[int] = []
@@ -189,4 +189,4 @@ async def test_deploy_port_preflight_includes_enabled_cgc(client, monkeypatch):
     )
 
     assert resp.status_code == 200
-    assert scanned_ports == [3004, 3003, 7100, 7072]
+    assert scanned_ports == [3004, 3003, 7100]

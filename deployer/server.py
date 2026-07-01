@@ -38,15 +38,18 @@ KNOWN_SERVICES = ("backend", "frontend", "gitnexus", "cgc")
 
 
 def _enabled_service_ports(cfg: dict) -> list[int]:
-    """Return ports for services that this deployment is configured to start."""
+    """Return ports whose conflicts block the core deployment.
+
+    CGC is an optional enhancer and is already started inside a best-effort
+    branch. Its port conflict should degrade CGC only, not prevent
+    backend/frontend from starting.
+    """
     ports = [
         int(cfg.get("backend_port", 3004)),
         int(cfg.get("frontend_port", 3003)),
     ]
     if cfg.get("install_gitnexus", True):
         ports.append(int(cfg.get("gitnexus_port", 7100)))
-    if cfg.get("install_cgc", True):
-        ports.append(int(cfg.get("cgc_port", 7072)))
     return ports
 
 
