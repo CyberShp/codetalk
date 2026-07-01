@@ -46,6 +46,17 @@ async function mockReadableConversation(
       },
     },
     {
+      source_type: "workbench_task_artifact",
+      source_id: "run-spdk-001/task_artifact_manifest.json",
+      title: "task_artifact_manifest.json",
+      excerpt: "任务产物包含 flow.md、sfmea.md、blackbox_cases.md。",
+      metadata: {
+        workspace_id: "ws-1",
+        task_run_id: "run-spdk-001",
+        path: "/tmp/codetalk-e2e-spdk/run-spdk-001/task_artifact_manifest.json",
+      },
+    },
+    {
       source_type: "workspace_material",
       source_id: "mat-1",
       title: "登录验收标准.md",
@@ -198,8 +209,10 @@ test("AI conversation page is a wide persistent reading surface", async ({ page 
   await expect(page.getByText("证据链")).toBeVisible();
   await expect(page.getByText("源码位置")).toBeVisible();
   await expect(page.getByText("lib/login/session.ts:L42-L88")).toBeVisible();
+  await expect(page.getByText("任务产物", { exact: true })).toBeVisible();
+  await expect(page.getByText("run-spdk-001 · task_artifact_manifest.json")).toBeVisible();
   await expect(page.getByText("执行轨迹")).toBeVisible();
-  await expect(page.getByText("展开其余 1 条证据")).toBeVisible();
+  await expect(page.getByText("展开其余 2 条证据")).toBeVisible();
   await expect(page.getByText("审计日志应包含登录失败原因。")).toBeHidden();
   await expect(page.getByText("诊断详情：默认折叠")).toBeVisible();
   await expect(page.getByPlaceholder(/像 Codex 一样继续追问/)).toBeVisible();
