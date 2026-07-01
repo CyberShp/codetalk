@@ -5349,7 +5349,7 @@ def _artifact_content_payload(task_dir: Path, path: Path, *, max_chars: int) -> 
         content_redacted = redacted != text
     return {
         "relative_path": relative_path,
-        "path": str(path.resolve()),
+        "path": relative_path,
         "kind": _artifact_kind(relative_path),
         "size_bytes": len(data),
         "sha256": hashlib.sha256(data).hexdigest(),
