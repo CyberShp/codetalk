@@ -362,6 +362,106 @@ class TestAgentRuntimes:
                 for evt in events
             )
 
+    async def test_ai_thread_agent_runtime_prompt_has_machine_readable_source_first_contract(
+        self,
+        sqlite_db,
+        tmp_path,
+        monkeypatch,
+    ):
+        repo = tmp_path / "spdk"
+        source = repo / "lib" / "nvmf" / "connect.c"
+        source.parent.mkdir(parents=True)
+        source.write_text(
+            "int spdk_nvmf_source_first_contract_probe(void) { return 42; }\n",
+            encoding="utf-8",
+        )
+        material = repo / "requirements.md"
+        material.write_text("必须覆盖 reconnect timeout。\n", encoding="utf-8")
+        ws_id = await _seed_workspace(sqlite_db, "ws-agent-source-contract", repo_path=str(repo))
+        now = datetime.now(timezone.utc).isoformat()
+        async with aiosqlite.connect(sqlite_db) as db:
+            await db.execute(
+                "INSERT INTO workspace_materials "
+                "(id, workspace_id, filename, content_type, file_path, is_active, created_at) "
+                "VALUES ('mat-agent-contract', ?, 'requirements.md', 'requirements', ?, 1, ?)",
+                (ws_id, str(material), now),
+            )
+            await db.commit()
+        app = _test_app(sqlite_db)
+
+        from app.api import ai_conversations
+
+        async def fail_if_llm_is_used():
+            raise AssertionError("agent runtime conversations must not call the builtin LLM")
+
+        monkeypatch.setattr(ai_conversations, "create_llm_client_from_active", fail_if_llm_is_used)
+
+        agent_code = (
+            "import sys\n"
+            "prompt = sys.stdin.read()\n"
+            "required = [\n"
+            "  'SOURCE_FIRST_CONTRACT',\n"
+            "  'workspace_sources:',\n"
+            "  'lib/nvmf/connect.c',\n"
+            "  'spdk_nvmf_source_first_contract_probe',\n"
+            "  'workspace_materials:',\n"
+            "  'requirements.md',\n"
+            "  '必须覆盖 reconnect timeout',\n"
+            "]\n"
+            "missing = [item for item in required if item not in prompt]\n"
+            "if missing:\n"
+            "    print('missing source-first contract fields: ' + ', '.join(missing), file=sys.stderr)\n"
+            "    raise SystemExit(12)\n"
+            "print('AGENT_SOURCE_FIRST_CONTRACT_OK')\n"
+        )
+
+        async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+            runtime = await client.post(
+                "/api/settings/agent-runtimes",
+                json={
+                    "name": "Source Contract Agent",
+                    "command": sys.executable,
+                    "args": ["-c", agent_code],
+                    "prompt_transport": "stdin",
+                    "output_mode": "plain",
+                    "working_dir_mode": "project",
+                    "timeout_seconds": 10,
+                },
+            )
+            assert runtime.status_code == 201
+
+            created = await client.post(
+                "/api/ai/conversations",
+                json={
+                    "scope_type": "workspace",
+                    "scope_id": ws_id,
+                    "workspace_id": ws_id,
+                    "title": "Agent source-first contract",
+                    "runtime_type": "agent_runtime",
+                    "agent_runtime_id": runtime.json()["id"],
+                },
+            )
+            assert created.status_code == 201
+            conversation = created.json()
+
+            posted = await client.post(
+                f"/api/ai/conversations/{conversation['id']}/messages",
+                json={"content": "请读取 lib/nvmf/connect.c 和 requirements.md 再回答"},
+            )
+            assert posted.status_code == 202
+
+            for _ in range(40):
+                messages = await client.get(f"/api/ai/conversations/{conversation['id']}/messages")
+                items = messages.json()["items"]
+                if len(items) == 2:
+                    break
+                await asyncio.sleep(0.1)
+
+            messages = await client.get(f"/api/ai/conversations/{conversation['id']}/messages")
+            body = messages.json()
+            assert [item["role"] for item in body["items"]] == ["user", "assistant"]
+            assert "AGENT_SOURCE_FIRST_CONTRACT_OK" in body["items"][1]["content"]
+
     async def test_ai_thread_agent_runtime_failure_redacts_stderr_secrets(self, sqlite_db):
         ws_id = await _seed_workspace(sqlite_db)
         app = _test_app(sqlite_db)

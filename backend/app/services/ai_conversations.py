@@ -913,6 +913,7 @@ def _build_agent_prompt(
         f"项目/工作区：{conversation.get('workspace_id')}",
         f"源码根目录：{repo_path or repo_path_hint(conversation)}",
         "执行要求：如果线程绑定 workspace，先检查当前工作目录中的源码和输入材料，再回答；不要只凭模型记忆。",
+        _agent_source_first_contract(references),
         "",
     ]
     for message in llm_messages:
@@ -927,6 +928,57 @@ def _build_agent_prompt(
         lines.append(content)
         lines.append("")
     return "\n".join(lines).strip()
+
+
+def _agent_source_first_contract(references: list[dict[str, Any]]) -> str:
+    source_refs = [ref for ref in references if ref.get("source_type") == "workspace_source"]
+    material_refs = [ref for ref in references if ref.get("source_type") == "workspace_material"]
+    if not source_refs and not material_refs:
+        return (
+            "SOURCE_FIRST_CONTRACT:\n"
+            "  workspace_sources: []\n"
+            "  workspace_materials: []\n"
+            "  rule: 未找到直接源码或输入材料时，必须说明未验证，不得声称已读取工作区源码。"
+        )
+
+    lines = [
+        "SOURCE_FIRST_CONTRACT:",
+        "  rule: 回答前先读取/核对 workspace_sources 与 workspace_materials；报告、记忆和模型知识只能补充，不能替代。",
+        "  workspace_sources:",
+    ]
+    if source_refs:
+        for ref in source_refs[:6]:
+            metadata = ref.get("metadata") if isinstance(ref.get("metadata"), dict) else {}
+            path = str(metadata.get("path") or ref.get("title") or ref.get("source_id") or "").strip()
+            excerpt = _clip(str(ref.get("excerpt") or ""), 500)
+            lines.extend(
+                [
+                    f"    - path: {path or 'unknown'}",
+                    f"      title: {ref.get('title') or path or 'workspace source'}",
+                    f"      evidence: |",
+                ]
+            )
+            lines.extend(f"        {line}" for line in excerpt.splitlines()[:14])
+    else:
+        lines.append("    []")
+
+    lines.append("  workspace_materials:")
+    if material_refs:
+        for ref in material_refs[:4]:
+            metadata = ref.get("metadata") if isinstance(ref.get("metadata"), dict) else {}
+            material_path = str(metadata.get("file_path") or ref.get("title") or ref.get("source_id") or "").strip()
+            excerpt = _clip(str(ref.get("excerpt") or ""), 500)
+            lines.extend(
+                [
+                    f"    - path: {material_path or 'unknown'}",
+                    f"      title: {ref.get('title') or material_path or 'workspace material'}",
+                    f"      evidence: |",
+                ]
+            )
+            lines.extend(f"        {line}" for line in excerpt.splitlines()[:14])
+    else:
+        lines.append("    []")
+    return "\n".join(lines)
 
 
 def repo_path_hint(conversation: dict[str, Any]) -> str:
