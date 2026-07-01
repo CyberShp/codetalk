@@ -64,7 +64,11 @@ _PROVIDER_SECRET_KEYS = {
 
 def _drop_removed_legacy_tool_keys(cfg: dict) -> dict:
     """Remove deployment fields that belonged to removed optional tools."""
-    return {k: v for k, v in cfg.items() if k not in _REMOVED_LEGACY_TOOL_KEYS}
+    return {
+        k: v
+        for k, v in cfg.items()
+        if k not in _REMOVED_LEGACY_TOOL_KEYS and "deepwiki" not in k.lower()
+    }
 
 
 def normalize_to_snake(cfg: dict) -> dict:
