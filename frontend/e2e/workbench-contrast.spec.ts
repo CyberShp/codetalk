@@ -257,6 +257,35 @@ test("workbench removes noninteractive summary cards", async ({ page }) => {
   await expect(page.getByText("核心工作流就绪度")).toHaveCount(0);
 });
 
+test("workbench skips global decorative atmosphere for tool performance", async ({ page }) => {
+  await routeDiagnosticsWorkbench(page);
+  await page.setViewportSize({ width: 1440, height: 900 });
+  await page.goto("/workbench", { waitUntil: "domcontentloaded" });
+
+  await expect(page.getByRole("heading", { name: "智能体编排台" })).toBeVisible();
+  await expect(page.locator(".ct-atmosphere")).toHaveCount(0);
+
+  const runningWorkbenchAnimations = await page.evaluate(() =>
+    document
+      .getAnimations()
+      .filter((animation) => {
+        const target = animation.effect instanceof KeyframeEffect ? animation.effect.target : null;
+        return target instanceof Element && !target.closest(".animate-spin");
+      })
+      .map((animation) => {
+        const target = animation.effect instanceof KeyframeEffect ? animation.effect.target : null;
+        const timing = animation.effect?.getComputedTiming();
+        return {
+          className: target instanceof HTMLElement ? target.className : "",
+          playState: animation.playState,
+          iterations: timing?.iterations,
+        };
+      })
+      .filter((animation) => animation.playState !== "finished" && animation.iterations === Infinity),
+  );
+  expect(runningWorkbenchAnimations).toEqual([]);
+});
+
 test("workflow selector shows Chinese workflow names", async ({ page }) => {
   await routeDiagnosticsWorkbench(page);
   await page.goto("/workbench");

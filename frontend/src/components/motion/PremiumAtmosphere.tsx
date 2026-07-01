@@ -3,7 +3,7 @@
 import { usePathname } from "next/navigation";
 import { useEffect, useState } from "react";
 
-const ATMOSPHERE_ROUTES = new Set(["/", "/workbench"]);
+const ATMOSPHERE_ROUTES = new Set(["/"]);
 
 export default function PremiumAtmosphere() {
   const pathname = usePathname();
