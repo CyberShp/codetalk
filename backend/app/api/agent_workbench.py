@@ -156,7 +156,7 @@ class ProviderTaskProbeRequest(BaseModel):
 
 
 def _workbench_dir() -> Path:
-    root = settings.data_path / "workbench"
+    root = (settings.data_path / "workbench").expanduser().resolve()
     root.mkdir(parents=True, exist_ok=True)
     return root
 
@@ -206,6 +206,21 @@ def _deployment_probes_dir() -> Path:
     root = _workbench_dir() / "deployment_probes"
     root.mkdir(parents=True, exist_ok=True)
     return root
+
+
+def _public_workbench_artifact_path(path: Path) -> str:
+    return path.resolve().relative_to(_workbench_dir().resolve()).as_posix()
+
+
+def _public_task_artifact_path(task_dir: Path, path: Path) -> str:
+    return path.resolve().relative_to(task_dir.resolve()).as_posix()
+
+
+def _public_task_run_payload(task_run: Any) -> dict[str, Any]:
+    payload = asdict(task_run)
+    if "artifact_dir" in payload:
+        payload["artifact_dir"] = "."
+    return payload
 
 
 def _agent_run_dir(run_id: str) -> Path:
@@ -515,8 +530,8 @@ async def run_workbench_deployment_probe(payload: DeploymentProbeRequest) -> dic
         },
         "providers": results,
         "artifact": {
-            "path": str(artifact_path),
-            "latest_path": str(artifact_dir / "deployment_probe_latest.json"),
+            "path": _public_workbench_artifact_path(artifact_path),
+            "latest_path": _public_workbench_artifact_path(artifact_dir / "deployment_probe_latest.json"),
         },
     }
     evidence_ids = _materialize_deployment_probe_evidence(response)
@@ -1171,12 +1186,12 @@ async def run_task_smoke_e2e(payload: SmokeE2ERequest) -> dict[str, Any]:
             "status": acceptance.get("status") or execution.status,
             "workflow_id": workflow["id"],
             "task_run_id": refreshed.task_run_id,
-            "task_run": asdict(refreshed),
+            "task_run": _public_task_run_payload(refreshed),
             "execution": asdict(execution),
             "acceptance_audit": acceptance,
         }
         smoke_artifact = task_dir / "smoke_e2e_result.json"
-        result["artifact"] = {"path": str(smoke_artifact)}
+        result["artifact"] = {"path": _public_task_artifact_path(task_dir, smoke_artifact)}
         _write_json(smoke_artifact, result)
         write_task_artifact_manifest(task_dir, task_run_id=refreshed.task_run_id)
         result["artifact"]["sha256"] = hashlib.sha256(smoke_artifact.read_bytes()).hexdigest()
@@ -1947,7 +1962,7 @@ def _run_provider_task_probe_core(
         "provider": provider,
         "workflow_id": workflow["id"],
         "task_run_id": refreshed.task_run_id,
-        "task_run": asdict(refreshed),
+        "task_run": _public_task_run_payload(refreshed),
         "execution": asdict(execution),
         "acceptance_audit": acceptance,
         "contract": {
@@ -1964,7 +1979,7 @@ def _run_provider_task_probe_core(
         },
     }
     artifact_path = task_dir / "provider_task_probe_result.json"
-    result["artifact"] = {"path": str(artifact_path)}
+    result["artifact"] = {"path": _public_task_artifact_path(task_dir, artifact_path)}
     _write_json(artifact_path, result)
     write_task_artifact_manifest(task_dir, task_run_id=refreshed.task_run_id)
     result["artifact"]["sha256"] = hashlib.sha256(artifact_path.read_bytes()).hexdigest()
@@ -2394,6 +2409,7 @@ def _agent_cli_launch_recommended_actions(failed: list[dict[str, Any]]) -> list[
 
 def _latest_deployment_task_probe_check() -> dict[str, Any]:
     latest_path = _deployment_probes_dir() / "deployment_probe_latest.json"
+    public_latest_path = _public_workbench_artifact_path(latest_path)
     latest = _read_json(latest_path)
     if not isinstance(latest, dict):
         return _system_audit_check(
@@ -2402,7 +2418,7 @@ def _latest_deployment_task_probe_check() -> dict[str, Any]:
             severity="recommended",
             description="Latest deployment probe includes task contract evidence",
             details={
-                "artifact_path": str(latest_path),
+                "artifact_path": public_latest_path,
                 "reason": "deployment_probe_latest.json has not been generated",
                 "recommended_action": "Run Workbench Provider Matrix -> Task probe all",
             },
@@ -2436,7 +2452,7 @@ def _latest_deployment_task_probe_check() -> dict[str, Any]:
         severity="recommended",
         description="Latest deployment probe includes task contract evidence",
         details={
-            "artifact_path": str(latest_path),
+            "artifact_path": public_latest_path,
             "probe_id": str(latest.get("probe_id") or ""),
             "status": str(latest.get("status") or ""),
             "task_contract_probe": task_contract_probe,

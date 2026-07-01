@@ -13,6 +13,14 @@ from app.config import settings
 pytestmark = [pytest.mark.asyncio]
 
 
+def _workbench_path(relative_path: str) -> Path:
+    return settings.data_path / "workbench" / relative_path
+
+
+def _task_run_dir(task_run_id: str) -> Path:
+    return settings.data_path / "workbench" / "task_runs" / task_run_id
+
+
 @asynccontextmanager
 async def _no_lifespan(app: FastAPI):
     yield
@@ -594,9 +602,11 @@ async def test_workbench_deployment_probe_runs_agent_cli_startup_checks(
     assert by_id["claude-code"]["status"] == "ok"
     assert by_id["opencode"]["status"] == "unavailable"
     assert body["evidence_count"] == 3
-    artifact_path = Path(body["artifact"]["path"])
+    assert not Path(body["artifact"]["path"]).is_absolute()
+    assert not Path(body["artifact"]["latest_path"]).is_absolute()
+    artifact_path = _workbench_path(body["artifact"]["path"])
     assert artifact_path.exists()
-    latest_path = artifact_path.parent / "deployment_probe_latest.json"
+    latest_path = _workbench_path(body["artifact"]["latest_path"])
     assert latest_path.exists()
     latest = json.loads(latest_path.read_text(encoding="utf-8"))
     assert latest["probe_id"] == body["probe_id"]
@@ -675,10 +685,13 @@ async def test_workbench_deployment_probe_can_run_task_contract_probe(
     assert provider["provider"] == "deployment-agent"
     assert provider["task_probe"]["status"] == "ready"
     assert provider["task_probe"]["summary"]["task_contract_status"] == "ok"
-    assert Path(provider["task_probe"]["artifact"]["path"]).exists()
+    assert not Path(provider["task_probe"]["artifact"]["path"]).is_absolute()
+    provider_task_dir = _task_run_dir(provider["task_probe"]["task_run_id"])
+    assert (provider_task_dir / provider["task_probe"]["artifact"]["path"]).exists()
     assert body["evidence_count"] == 3
     assert len(body["evidence_ids"]) == 3
-    latest = json.loads(Path(body["artifact"]["latest_path"]).read_text(encoding="utf-8"))
+    assert not Path(body["artifact"]["latest_path"]).is_absolute()
+    latest = json.loads(_workbench_path(body["artifact"]["latest_path"]).read_text(encoding="utf-8"))
     assert latest["providers"][0]["task_probe"]["task_run_id"] == provider["task_probe"]["task_run_id"]
     assert latest["evidence_ids"] == body["evidence_ids"]
 
@@ -807,12 +820,14 @@ async def test_workbench_task_smoke_e2e_runs_prepare_execute_acceptance(
     assert body["acceptance_audit"]["status"] == "ready"
     assert body["acceptance_audit"]["summary"]["missing_required"] == 0
     assert body["task_run"]["task_run_id"]
-    artifact_path = Path(body["artifact"]["path"])
+    assert body["task_run"]["artifact_dir"] == "."
+    assert not Path(body["artifact"]["path"]).is_absolute()
+    task_dir = _task_run_dir(body["task_run"]["task_run_id"])
+    artifact_path = task_dir / body["artifact"]["path"]
     assert artifact_path.exists()
     payload = json.loads(artifact_path.read_text(encoding="utf-8"))
     assert payload["task_run_id"] == body["task_run"]["task_run_id"]
     assert payload["acceptance_audit"]["status"] == "ready"
-    task_dir = Path(body["task_run"]["artifact_dir"])
     assert (task_dir / "workflow_execution.json").exists()
     assert (task_dir / "task_acceptance_audit.json").exists()
     assert (task_dir / "agent_runs" / "discover_scope" / "source_scope.json").exists()
@@ -876,14 +891,16 @@ async def test_workbench_provider_task_probe_executes_configured_provider_contra
     assert body["summary"]["missing_required"] == 0
     assert body["summary"]["execution_status"] == "completed"
     assert body["summary"]["task_contract_status"] == "ok"
-    task_dir = Path(body["task_run"]["artifact_dir"])
+    assert body["task_run"]["artifact_dir"] == "."
+    task_dir = _task_run_dir(body["task_run"]["task_run_id"])
     probe_artifact = task_dir / "agent_runs" / "agent_task_probe" / "agent_task_probe.json"
     assert probe_artifact.exists()
     payload = json.loads(probe_artifact.read_text(encoding="utf-8"))
     assert payload["provider"] == "probe-agent"
     assert payload["has_task_bundle"] is True
-    assert Path(body["artifact"]["path"]).exists()
-    persisted = json.loads(Path(body["artifact"]["path"]).read_text(encoding="utf-8"))
+    assert not Path(body["artifact"]["path"]).is_absolute()
+    assert (task_dir / body["artifact"]["path"]).exists()
+    persisted = json.loads((task_dir / body["artifact"]["path"]).read_text(encoding="utf-8"))
     assert persisted["task_run_id"] == body["task_run_id"]
 
 
@@ -901,6 +918,25 @@ async def test_workbench_provider_task_probe_rejects_unknown_provider(
 
     assert resp.status_code == 422
     assert "Unknown provider" in resp.text
+
+
+async def test_smoke_agent_provider_uses_absolute_script_path(tmp_path, monkeypatch):
+    from app.api import agent_workbench
+
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setattr(settings, "data_dir", "data")
+
+    script_path = agent_workbench._ensure_smoke_agent_script()
+    providers = agent_workbench._with_smoke_agent_provider(
+        [],
+        provider_id="codetalk-smoke-agent",
+        script_path=script_path,
+    )
+
+    assert script_path.is_absolute()
+    assert script_path.exists()
+    assert str(script_path) in providers[0]["command"]
+    assert '"data/workbench/smoke_agent.py"' not in providers[0]["command"]
 
 
 async def test_workbench_semantic_library_api(workbench_client):
