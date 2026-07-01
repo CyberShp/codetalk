@@ -185,6 +185,13 @@ test("report AI assistant avoids continuous decorative loading animations", asyn
   });
   await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
   const port = (server.address() as AddressInfo).port;
+  const persistedMessages: Array<{
+    id: number;
+    task_id: string;
+    role: "user" | "assistant";
+    content: string;
+    created_at: string;
+  }> = [];
 
   try {
     await page.route("**/api/workspaces", async (route) => {
@@ -225,10 +232,18 @@ test("report AI assistant avoids continuous decorative loading animations", asyn
       if (route.request().method() === "GET") {
         await route.fulfill({
           headers: jsonHeaders(route.request().headers().origin),
-          json: [],
+          json: persistedMessages,
         });
         return;
       }
+      const body = route.request().postDataJSON() as { message?: string } | null;
+      persistedMessages.push({
+        id: 1,
+        task_id: "report-animation",
+        role: "user",
+        content: body?.message ?? "",
+        created_at: "2026-07-01T00:00:00Z",
+      });
       await route.continue({ url: `http://127.0.0.1:${port}/stream` });
     });
 
@@ -262,6 +277,13 @@ test("report AI assistant avoids continuous decorative loading animations", asyn
     expect(runningDecorativeAnimations, JSON.stringify(runningDecorativeAnimations, null, 2)).toEqual([]);
 
     releaseStream?.();
+    persistedMessages.push({
+      id: 2,
+      task_id: "report-animation",
+      role: "assistant",
+      content: "报告助手最终回答。",
+      created_at: "2026-07-01T00:00:01Z",
+    });
     await expect(page.getByText("报告助手最终回答。")).toBeVisible();
   } finally {
     (
