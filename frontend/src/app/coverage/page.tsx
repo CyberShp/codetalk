@@ -1380,11 +1380,10 @@ export default function CoveragePage() {
         </div>
       ) : (
         <div className="space-y-3">
-          {analyses.map((a, index) => (
+          {analyses.map((a) => (
             <div
               key={a.id}
               className="ct-interactive-card bg-surface-container-low rounded-xl border border-outline-variant/20 overflow-hidden"
-              style={{ animationDelay: `${80 + index * 45}ms` }}
             >
               {/* Summary row */}
               <div className="p-4 flex flex-col gap-4 lg:flex-row lg:items-center">

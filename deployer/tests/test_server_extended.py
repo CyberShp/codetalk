@@ -98,8 +98,8 @@ async def test_quickstart_409_when_running(client):
     assert resp.status_code == 409
 
 
-async def test_quickstart_port_preflight_ignores_optional_cgc(client, monkeypatch):
-    """CGC is optional, so its port cannot block quickstart before core services start."""
+async def test_quickstart_port_preflight_includes_enabled_cgc(client, monkeypatch):
+    """When CGC is enabled, quickstart reports its port conflicts before starting work."""
     import config_store
     import server
 
@@ -151,4 +151,42 @@ async def test_quickstart_port_preflight_ignores_optional_cgc(client, monkeypatc
     resp = await client.post("/api/quickstart", json={})
 
     assert resp.status_code == 200
-    assert scanned_ports == [3004, 3003, 7100]
+    assert scanned_ports == [3004, 3003, 7100, 7072]
+
+
+async def test_deploy_port_preflight_includes_enabled_cgc(client, monkeypatch):
+    """Native deployment uses the same enabled-service port preflight as quickstart."""
+    import server
+
+    scanned_ports: list[int] = []
+
+    class FakeNativeDeployer:
+        def __init__(self, cfg, event_queue):
+            self._config = cfg
+            self._processes = {}
+            self._start_args = {}
+
+        async def _scan_port_conflicts(self, ports):
+            scanned_ports.extend(ports)
+            return []
+
+        async def deploy(self):
+            return None
+
+    monkeypatch.setattr(server, "NativeDeployer", FakeNativeDeployer)
+
+    resp = await client.post(
+        "/api/deploy",
+        json={
+            "mode": "native",
+            "backend_port": 3004,
+            "frontend_port": 3003,
+            "gitnexus_port": 7100,
+            "cgc_port": 7072,
+            "install_gitnexus": True,
+            "install_cgc": True,
+        },
+    )
+
+    assert resp.status_code == 200
+    assert scanned_ports == [3004, 3003, 7100, 7072]

@@ -2650,13 +2650,11 @@ body:has(.ct-modal-backdrop) .ct-ai-dock-wrap {
 .ct-interactive-card {
   position: relative;
   overflow: hidden;
-  animation: ct-rise-in var(--motion-slow) var(--motion-spring) both;
   transition:
     transform var(--motion-medium) var(--motion-ease),
     border-color var(--motion-medium) var(--motion-ease),
     box-shadow var(--motion-medium) var(--motion-ease),
     background-color var(--motion-medium) var(--motion-ease);
-  will-change: transform;
 }
 
 .ct-interactive-card::after {
