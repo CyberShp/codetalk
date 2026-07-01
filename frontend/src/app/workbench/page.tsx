@@ -2620,9 +2620,17 @@ export default function AgentWorkbenchPage() {
         title: `${workflowDisplayName(preparedRun.workflow_id)} · AI 复盘`,
         initial_context: {
           workflow_id: preparedRun.workflow_id,
+          task_run_id: preparedRun.task_run_id,
           workspace_id: preparedRun.workspace_id,
           memory_namespace: `workspace:${preparedRun.workspace_id}`,
           repo_path: preparedRun.repo_path,
+          artifact_dir: preparedRun.artifact_dir,
+          agent_runs_count: preparedRun.agent_runs.length,
+          agent_runs: preparedRun.agent_runs.map((agentRun) => ({
+            step_id: agentRun.step_id,
+            run_id: agentRun.run_id,
+            artifact_dir: agentRun.artifact_dir,
+          })),
         },
       });
       router.push(`/ai/${conversation.id}`);

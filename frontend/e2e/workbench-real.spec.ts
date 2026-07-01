@@ -740,9 +740,13 @@ test("opens a persisted AI review thread from a prepared workbench run through t
   expect(persisted.memory_namespace).toBe(`workspace:${workspaceId}`);
   expect(persisted.initial_context).toMatchObject({
     workflow_id: "module_analysis",
+    task_run_id: taskRunId,
     workspace_id: workspaceId,
     memory_namespace: `workspace:${workspaceId}`,
     repo_path: repo,
+    artifact_dir: expect.stringContaining(taskRunId),
+    agent_runs_count: 0,
+    agent_runs: [],
   });
 });
 
