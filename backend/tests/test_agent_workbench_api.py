@@ -3344,9 +3344,17 @@ async def test_workbench_task_run_artifact_content_api_is_safe(workbench_client,
     assert escaped.status_code == 400
 
     artifacts = await workbench_client.get(f"/api/workbench/task-runs/{task_run_id}/artifacts")
-    diagnostics = next(
-        item for item in artifacts.json()["artifacts"] if item["relative_path"] == "diagnostics.log"
+    artifact_body = artifacts.json()
+    bundle_manifest = next(
+        item for item in artifact_body["artifacts"] if item["relative_path"] == "task_bundle.json"
     )
+    assert bundle_manifest["path"] == "task_bundle.json"
+    assert str(task_dir) not in bundle_manifest["path"]
+    diagnostics = next(
+        item for item in artifact_body["artifacts"] if item["relative_path"] == "diagnostics.log"
+    )
+    assert diagnostics["path"] == "diagnostics.log"
+    assert str(task_dir) not in diagnostics["path"]
     assert secret not in diagnostics["preview"]
     assert "<redacted>" in diagnostics["preview"]
     assert diagnostics["preview_redacted"] is True
