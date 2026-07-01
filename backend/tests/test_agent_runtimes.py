@@ -969,6 +969,36 @@ class TestAgentRuntimes:
         assert "47%" not in output
         assert "�" not in output
 
+    async def test_agent_runtime_auto_mode_drops_openai_response_metadata_events(self):
+        from app.services.agent_cli_bridge import stream_agent_runtime
+
+        agent_code = (
+            "import json, sys; "
+            "print(json.dumps({'type':'response.created','response':{'id':'resp_1'}}, ensure_ascii=False)); "
+            "print(json.dumps({'type':'response.output_item.added','item':{'id':'msg_1','type':'message'}}, ensure_ascii=False)); "
+            "print(json.dumps({'type':'response.output_text.delta','delta':'最终答案：auto 模式保留正文。'}, ensure_ascii=False)); "
+            "print(json.dumps({'type':'response.completed','response':{'status':'completed'}}, ensure_ascii=False)); "
+            "sys.stdout.flush()"
+        )
+        chunks = []
+        async for chunk in stream_agent_runtime(
+            runtime={
+                "command": sys.executable,
+                "args": ["-c", agent_code],
+                "prompt_transport": "stdin",
+                "output_mode": "auto",
+                "timeout_seconds": 10,
+            },
+            prompt="读取源码",
+            cwd=None,
+        ):
+            chunks.append(chunk)
+
+        output = "".join(chunks)
+        assert output.strip() == "最终答案：auto 模式保留正文。"
+        assert "response.created" not in output
+        assert "response.completed" not in output
+
     async def test_agent_runtime_auto_mode_cleans_plain_fallback_chunks(self):
         from app.services.agent_cli_bridge import stream_agent_runtime
 
