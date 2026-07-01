@@ -448,6 +448,18 @@ async def test_workbench_system_audit_api_reports_control_plane_readiness(workbe
     assert body["summary"]["missing_required"] == 0
     checks = {item["id"]: item for item in body["checks"]}
     assert checks["workbench_data_dir"]["status"] == "ok"
+    public_path_checks = {
+        "workbench_data_dir": ".",
+        "workflow_store": "workflows.db",
+        "evidence_memory_store": "evidence_memory.db",
+        "semantic_library_store": "test_semantics.db",
+        "task_runs_dir": "task_runs",
+        "agent_runs_dir": "agent_runs",
+    }
+    for check_id, expected_path in public_path_checks.items():
+        path = checks[check_id]["details"]["path"]
+        assert path == expected_path
+        assert not Path(path).is_absolute()
     assert checks["workflow_presets"]["status"] == "ok"
     assert {
         "module_analysis",
