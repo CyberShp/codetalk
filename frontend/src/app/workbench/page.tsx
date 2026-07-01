@@ -182,6 +182,7 @@ const WORKFLOW_NAME_ZH: Record<string, string> = {
   mr_blackbox_test: "MR 黑盒测试工作流",
   module_analysis: "模块分析工作流",
   resource_leak_hunt: "资源/异常路径排查工作流",
+  source_flow_sfmea_blackbox: "代码分析-流程-SFMEA-黑盒用例工作流",
   patch_impact: "补丁影响面计划工作流",
 };
 
@@ -190,7 +191,7 @@ function workflowDisplayName(workflow: Pick<WorkflowDefinition, "id" | "name"> |
   const name = typeof workflow === "string" ? "" : String(workflow.name ?? "").trim();
   const normalizedName = WORKFLOW_NAME_ZH[name] ?? name;
   if (normalizedName && !/[A-Za-z]{4,}/.test(normalizedName)) return normalizedName;
-  return WORKFLOW_NAME_ZH[id] ?? normalizedName ?? id;
+  return WORKFLOW_NAME_ZH[id] || normalizedName || id;
 }
 
 const WORKFLOW_BUILDER_SCENARIOS = {
