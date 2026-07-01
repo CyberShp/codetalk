@@ -18,6 +18,17 @@ import config_store
 from deployers.native import NativeDeployer
 
 STATIC_DIR = Path(__file__).parent / "static"
+PROJECT_ROOT = Path(__file__).parent.parent
+REMOVED_DEEPWIKI_BYTECODE_PREFIXES = {
+    "deepwiki",
+    "deepwiki_pages",
+    "repo_wiki",
+    "wiki",
+    "wiki_artifacts",
+    "wiki_cache_meta",
+    "wiki_orchestrator",
+    "wiki_prompts",
+}
 
 # ---------------------------------------------------------------------------
 # Module-level deployment state
@@ -35,6 +46,27 @@ class DeploymentState:
 
 _state = DeploymentState()
 KNOWN_SERVICES = ("backend", "frontend", "gitnexus", "cgc")
+
+
+def purge_removed_deepwiki_bytecode(root: Path = PROJECT_ROOT) -> list[Path]:
+    """Delete stale bytecode for removed DeepWiki modules from deploy/start runtimes."""
+    removed: list[Path] = []
+    app_root = root / "backend" / "app"
+    if not app_root.exists():
+        return removed
+    for path in app_root.rglob("*.pyc"):
+        stem = path.name.split(".", 1)[0].lower()
+        if stem not in REMOVED_DEEPWIKI_BYTECODE_PREFIXES:
+            continue
+        try:
+            path.unlink()
+            removed.append(path)
+        except OSError:
+            continue
+    return removed
+
+
+purge_removed_deepwiki_bytecode()
 
 
 def _enabled_service_ports(cfg: dict) -> list[int]:
