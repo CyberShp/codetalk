@@ -158,6 +158,26 @@ async def test_agent_output_segments_keep_chinese_answer_while_dropping_terminal
     ]
 
 
+async def test_agent_output_segments_apply_backspace_repaints_before_filtering_progress_noise():
+    from app.services.ai_conversations import _agent_output_segments
+
+    segments = _agent_output_segments(
+        "thinking: scanning workspace source\n"
+        "progress 000\b\b\b47%\n"
+        "progress \b47%\n"
+        "读取中 000\b\b\b12/100\n"
+        "读取中 \b12/100\n"
+        "源码证据：lib/nvmf/connect.c\n"
+        "FINAL_BACKSPACE_CLEAN_ANSWER: 已完成源码分析。\n"
+    )
+
+    assert segments == [
+        ("diagnostic", "scanning workspace source"),
+        ("answer", "源码证据：lib/nvmf/connect.c\n"),
+        ("answer", "FINAL_BACKSPACE_CLEAN_ANSWER: 已完成源码分析。\n"),
+    ]
+
+
 async def test_context_status_message_names_workbench_task_artifacts():
     from app.services.ai_conversations import _context_status_message
 
