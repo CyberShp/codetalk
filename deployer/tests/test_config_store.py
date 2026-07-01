@@ -84,6 +84,11 @@ def test_load_config_reads_existing_file(isolated_config):
     assert "deepwiki_path" not in cfg
     assert "deepwiki_api_port" not in cfg
     assert "deepwiki_ui_port" not in cfg
+    raw = json.loads(isolated_config.read_text(encoding="utf-8"))
+    assert "install_deepwiki" not in raw
+    assert "deepwiki_path" not in raw
+    assert "deepwiki_api_port" not in raw
+    assert "deepwiki_ui_port" not in raw
 
 
 def test_load_config_fallback_on_corrupt_json(isolated_config):
