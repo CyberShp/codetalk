@@ -1546,6 +1546,15 @@ async def _read_text(path: Path) -> str:
 def _conversation_from_row(row: aiosqlite.Row) -> dict[str, Any]:
     data = dict(row)
     data["initial_context"] = _json_loads(data.pop("initial_context_json", "{}"), {})
+    data["initial_context"] = _public_workbench_initial_context(
+        scope_type=str(data.get("scope_type") or ""),
+        scope_id=str(data.get("scope_id") or ""),
+        initial_context=(
+            data["initial_context"]
+            if isinstance(data["initial_context"], dict)
+            else {}
+        ),
+    )
     workspace_id = _conversation_workspace_id(data)
     if data.get("workspace_id") in {None, "", "global"} and workspace_id != "global":
         data["workspace_id"] = workspace_id
