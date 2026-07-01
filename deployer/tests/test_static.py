@@ -77,6 +77,15 @@ async def test_start_app_js_has_no_deepwiki_service(client):
     resp = await client.get("/start-app.js")
     assert resp.status_code == 200
     assert "deepwiki" not in resp.text.lower()
+    assert "强制接管并启动" in resp.text
+    assert "function setForceTakeoverMode(enabled)" in resp.text
+
+
+async def test_start_page_has_explicit_force_takeover_button_state(client):
+    resp = await client.get("/start.html")
+    assert resp.status_code == 200
+    assert "btn-start-label" in resp.text
+    assert "force-takeover" in resp.text
 
 
 async def test_start_app_js_renders_structured_service_errors(client):
@@ -85,6 +94,13 @@ async def test_start_app_js_renders_structured_service_errors(client):
     assert "function errorDetailMessage(detail, fallback)" in resp.text
     assert "errorDetailMessage(err.detail, 'HTTP ' + res.status)" in resp.text
     assert "[object Object]" not in resp.text
+
+
+async def test_deploy_js_makes_port_takeover_retry_explicit(client):
+    resp = await client.get("/app.js")
+    assert resp.status_code == 200
+    assert "强制接管并重试" in resp.text
+    assert "function setRetryButtonForceTakeover(enabled)" in resp.text
 
 
 async def test_nonexistent_file_returns_404(client):

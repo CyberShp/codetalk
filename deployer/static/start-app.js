@@ -307,7 +307,7 @@
     });
 
     var ft = forceTakeover;
-    forceTakeover = false;
+    setForceTakeoverMode(false);
 
     fetch('/api/quickstart', {
       method: 'POST',
@@ -319,11 +319,11 @@
           return res.json().then(function (err) {
             var detail = err.detail;
             if (detail && typeof detail === 'object' && detail.conflicts) {
-              forceTakeover = true;
+              setForceTakeoverMode(true);
               var lines = detail.conflicts.map(function (c) {
                 return '端口 ' + c.port + ' 被 ' + c.process_name + '(PID ' + c.pid + ')' + (c.is_own ? '（本实例）' : '') + ' 占用';
               });
-              throw new Error('端口冲突：' + lines.join('；') + '。再次点击「启动」将强制接管。');
+              throw new Error('端口冲突：' + lines.join('；') + '。请确认这些进程可被关闭，然后点击「强制接管并启动」。');
             }
             throw new Error(typeof detail === 'string' ? detail : (detail && detail.message) || 'HTTP ' + res.status);
           }).catch(function (e) {
@@ -331,7 +331,7 @@
             throw new Error('HTTP ' + res.status);
           });
         }
-        forceTakeover = false;
+        setForceTakeoverMode(false);
         // Connect to SSE for live logs
         openEventStream();
       })
@@ -346,6 +346,7 @@
   function stopAll() {
     closeEventStream();
     isStarting = false;
+    setForceTakeoverMode(false);
     appendLog('info', '正在停止全部服务...');
     hideSuccessBanner();
 
@@ -407,6 +408,23 @@
     var btnStop = $('#btn-stop-all');
     if (btnStart) btnStart.disabled = !enabled;
     if (btnStop) btnStop.disabled = !enabled;
+  }
+
+  function setForceTakeoverMode(enabled) {
+    forceTakeover = !!enabled;
+    var btnStart = $('#btn-start-all');
+    var label = $('#btn-start-label');
+    if (btnStart) {
+      btnStart.classList.toggle('force-takeover', forceTakeover);
+      btnStart.setAttribute(
+        'aria-label',
+        forceTakeover ? '强制接管并启动全部服务' : '一键启动全部服务'
+      );
+      btnStart.title = forceTakeover
+        ? '将关闭占用端口的进程后重新启动 CodeTalk'
+        : '';
+    }
+    if (label) label.textContent = forceTakeover ? '强制接管并启动' : '一键启动全部';
   }
 
   function showSuccessBanner() {
