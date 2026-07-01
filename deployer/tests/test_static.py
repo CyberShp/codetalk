@@ -128,6 +128,26 @@ async def test_start_app_js_renders_structured_service_errors(client):
     assert "[object Object]" not in resp.text
 
 
+async def test_start_app_js_initializes_config_once(client):
+    resp = await client.get("/start-app.js")
+    assert resp.status_code == 200
+    assert resp.text.count("fetchConfig();") == 1
+
+
+async def test_start_app_js_has_single_service_error_throw(client):
+    resp = await client.get("/start-app.js")
+    assert resp.status_code == 200
+    assert resp.text.count("throw new Error(errorDetailMessage(err.detail, 'HTTP ' + res.status));") == 1
+
+
+async def test_start_app_js_hides_disabled_optional_services(client):
+    resp = await client.get("/start-app.js")
+    assert resp.status_code == 200
+    assert "function applyOptionalServiceVisibility(cfg)" in resp.text
+    assert "cfg.installGitnexus === false" in resp.text
+    assert "cfg.installCgc === false" in resp.text
+
+
 async def test_deploy_js_makes_port_takeover_retry_explicit(client):
     resp = await client.get("/app.js")
     assert resp.status_code == 200
