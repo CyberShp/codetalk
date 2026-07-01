@@ -1298,8 +1298,12 @@ def _directory_source_candidates(repo_root: Path, directory: Path, *, query: str
     ignored_parts = {".git", "build", "node_modules", ".next", ".venv", "__pycache__"}
     candidates: list[Path] = []
     query_terms = _query_terms(query)
+    symbol_terms = _symbol_query_terms(query)
     try:
-        paths = sorted(directory.rglob("*"), key=lambda path: _source_candidate_rank_for_query(path, query_terms))
+        paths = sorted(
+            directory.rglob("*"),
+            key=lambda path: _source_candidate_rank_for_query(path, query_terms, symbol_terms),
+        )
     except Exception:
         return []
     for path in paths:
@@ -1313,12 +1317,43 @@ def _directory_source_candidates(repo_root: Path, directory: Path, *, query: str
     return candidates
 
 
-def _source_candidate_rank_for_query(path: Path, query_terms: list[str]) -> tuple[int, int, str]:
+def _source_candidate_rank_for_query(
+    path: Path,
+    query_terms: list[str],
+    symbol_terms: list[str] | None = None,
+) -> tuple[int, int, int, str]:
     rel_text = path.as_posix().lower()
     name_text = path.stem.lower()
+    symbol_terms = symbol_terms or []
+    symbol_matched = _source_file_contains_any(path, symbol_terms)
     matched = any(term in name_text or term in rel_text for term in query_terms)
     bucket, normalized = _source_candidate_rank(path)
-    return (0 if matched else 1, bucket, normalized)
+    return (0 if symbol_matched else 1, 0 if matched else 1, bucket, normalized)
+
+
+def _symbol_query_terms(text: str) -> list[str]:
+    terms: list[str] = []
+    for item in re.findall(r"[A-Za-z_][A-Za-z0-9_]{4,}", text or ""):
+        token = item.strip("_")
+        if "_" not in token:
+            continue
+        lowered = token.lower()
+        if lowered in _QUERY_STOPWORDS or lowered in terms:
+            continue
+        terms.append(lowered)
+        if len(terms) >= 4:
+            break
+    return terms
+
+
+def _source_file_contains_any(path: Path, terms: list[str]) -> bool:
+    if not terms or path.suffix.lower() not in _SOURCE_SUFFIXES:
+        return False
+    try:
+        text = path.read_text(encoding="utf-8", errors="ignore")[:262_144].lower()
+    except Exception:
+        return False
+    return any(term in text for term in terms)
 
 
 def _source_candidate_rank(path: Path) -> tuple[int, str]:
