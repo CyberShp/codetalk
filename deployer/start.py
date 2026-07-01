@@ -13,6 +13,7 @@ from pathlib import Path
 DEPLOYER_DIR = Path(__file__).parent
 VENV_DIR = DEPLOYER_DIR / ".venv"
 REQUIREMENTS = DEPLOYER_DIR / "requirements.txt"
+VENDOR_WHEELS_DIR = DEPLOYER_DIR / "vendor" / "wheels"
 HOST = os.environ.get("CODETALK_DEPLOYER_HOST", "0.0.0.0")
 PORT = int(os.environ.get("CODETALK_DEPLOYER_PORT", "9000"))
 DISPLAY_HOST = "localhost" if HOST in {"0.0.0.0", "::"} else HOST
@@ -45,10 +46,19 @@ def _create_venv() -> None:
 def _install_dependencies() -> None:
     """Install packages from requirements.txt into the venv."""
     print("Installing dependencies...")
-    subprocess.run(
-        [str(_venv_python()), "-m", "pip", "install", "-r", str(REQUIREMENTS), "--quiet"],
-        check=True,
-    )
+    cmd = [
+        str(_venv_python()),
+        "-m",
+        "pip",
+        "install",
+        "-r",
+        str(REQUIREMENTS),
+        "--quiet",
+        "--disable-pip-version-check",
+    ]
+    if VENDOR_WHEELS_DIR.exists() and any(VENDOR_WHEELS_DIR.iterdir()):
+        cmd.extend(["--no-index", "--find-links", str(VENDOR_WHEELS_DIR)])
+    subprocess.run(cmd, check=True)
 
 
 def _open_browser_after_delay(delay: float) -> None:
