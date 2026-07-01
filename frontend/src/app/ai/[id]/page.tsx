@@ -422,6 +422,14 @@ export default function AIThreadPage() {
     if (streamingRunId || streamingContent) setShowJumpToLatest(true);
   }, [streamingContent, streamingRunId]);
 
+  const handleReaderKeyDown = useCallback(
+    (event: React.KeyboardEvent<HTMLElement>) => {
+      if (!["ArrowUp", "PageUp", "Home"].includes(event.key)) return;
+      detachAutoScroll();
+    },
+    [detachAutoScroll],
+  );
+
   useEffect(() => {
     const reader = readerRef.current;
     if (!reader) return undefined;
@@ -727,7 +735,9 @@ export default function AIThreadPage() {
         <section
           ref={readerRef}
           className="ct-codex-ai__reader"
+          tabIndex={0}
           onScroll={updateReaderStickiness}
+          onKeyDown={handleReaderKeyDown}
           onTouchMove={detachAutoScroll}
           aria-label="AI 线程对话内容"
         >

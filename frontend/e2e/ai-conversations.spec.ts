@@ -635,11 +635,13 @@ test("AI conversation keeps long threads inside the reader and does not force do
     viewportHeight: window.innerHeight,
     scrollBehavior: window.getComputedStyle(element).scrollBehavior,
     overscrollBehavior: window.getComputedStyle(element).overscrollBehavior,
+    tabIndex: (element as HTMLElement).tabIndex,
   }));
   expect(metrics.readerScrollHeight).toBeGreaterThan(metrics.readerClientHeight + 300);
   expect(metrics.documentScrollHeight).toBeLessThanOrEqual(metrics.viewportHeight + 24);
   expect(metrics.scrollBehavior).not.toBe("smooth");
   expect(metrics.overscrollBehavior).toBe("contain");
+  expect(metrics.tabIndex).toBe(0);
 
   const readerBox = await page.getByLabel("AI 线程对话内容").boundingBox();
   expect(readerBox).not.toBeNull();
@@ -809,6 +811,23 @@ test("AI conversation preserves the reader position when the user scrolls up dur
     await expect(page.getByText("第一段流式回答。")).toBeVisible();
 
     const reader = page.getByLabel("AI 线程对话内容");
+    await expect
+      .poll(() =>
+        reader.evaluate((element) => element.scrollHeight - element.clientHeight - element.scrollTop),
+      )
+      .toBeLessThan(120);
+
+    await reader.focus();
+    await expect
+      .poll(() => page.evaluate(() => document.activeElement?.getAttribute("aria-label")))
+      .toBe("AI 线程对话内容");
+    const beforeKeyboardScroll = await reader.evaluate((element) => element.scrollTop);
+    await page.keyboard.press("PageUp");
+    await expect
+      .poll(() => reader.evaluate((element) => element.scrollTop))
+      .toBeLessThan(beforeKeyboardScroll - 80);
+    await expect(page.getByRole("button", { name: "跳到最新回复" })).toBeVisible();
+    await page.getByRole("button", { name: "跳到最新回复" }).click();
     await expect
       .poll(() =>
         reader.evaluate((element) => element.scrollHeight - element.clientHeight - element.scrollTop),
