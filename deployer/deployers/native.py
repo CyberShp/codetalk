@@ -5,6 +5,7 @@ No Docker required. Targets Windows intranet environments for black-box testers.
 
 import asyncio
 import os
+import re
 import signal
 import shutil
 import sys
@@ -40,6 +41,12 @@ REMOVED_LEGACY_ENV_KEYS = {
     "DEEPWIKI_EMBEDDING_API_KEY",
     "DEEPWIKI_EMBEDDING_MODEL",
 }
+
+SECRET_PATTERNS = (
+    re.compile(r"\bsk-[A-Za-z0-9_-]{12,}\b"),
+    re.compile(r"(?i)\b(authorization\s*:\s*bearer\s+)([^\s\"']+)"),
+    re.compile(r"(?i)\b(api[-_ ]?key|token|secret|password)\s*=\s*([^\s\"']+)"),
+)
 
 SERVICE_DEFAULTS = [
     ("backend", "backend_port", 3004, "http", "/health"),
@@ -986,14 +993,14 @@ class NativeDeployer:
                     await self._queue.put({
                         "step": step_name,
                         "status": "running",
-                        "message": f"[{name}] {line}",
+                        "message": _redact_deployer_message(f"[{name}] {line}"),
                         "progress": {"current": step_index, "total": TOTAL_STEPS},
                     })
         except Exception as exc:
             await self._queue.put({
                 "step": step_name,
                 "status": "running",
-                "message": f"[{name}] (drain stopped: {exc!r})",
+                "message": _redact_deployer_message(f"[{name}] (drain stopped: {exc!r})"),
                 "progress": {"current": step_index, "total": TOTAL_STEPS},
             })
 
@@ -1142,7 +1149,7 @@ class NativeDeployer:
                 await self._queue.put({
                     "step": step_name,
                     "status": "running",
-                    "message": line,
+                    "message": _redact_deployer_message(line),
                     "progress": {"current": step_index, "total": TOTAL_STEPS},
                 })
         await proc.wait()
@@ -1178,7 +1185,7 @@ class NativeDeployer:
         await self._queue.put({
             "step": step,
             "status": status,
-            "message": message,
+            "message": _redact_deployer_message(message),
             "progress": {"current": step_index, "total": TOTAL_STEPS},
         })
 
@@ -1197,3 +1204,11 @@ def _keep_existing_backend_env_line(line: str, managed_keys: set[str]) -> bool:
     if any(key.startswith(prefix) for prefix in REMOVED_LEGACY_ENV_PREFIXES):
         return False
     return "deepwiki" not in key.lower()
+
+
+def _redact_deployer_message(message: object) -> str:
+    text = str(message)
+    text = SECRET_PATTERNS[0].sub("<redacted>", text)
+    text = SECRET_PATTERNS[1].sub(lambda match: match.group(1) + "<redacted>", text)
+    text = SECRET_PATTERNS[2].sub(lambda match: f"{match.group(1)}=<redacted>", text)
+    return text
