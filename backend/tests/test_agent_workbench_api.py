@@ -1479,6 +1479,9 @@ async def test_workbench_task_run_list_get_and_materialize_evidence_api(workbenc
     task_run = prepared.json()
     task_run_id = task_run["task_run_id"]
     step_id = "collect_mr"
+    assert task_run["artifact_dir"] == "."
+    assert task_run["agent_runs"][0]["artifact_dir"] == f"agent_runs/{step_id}"
+    assert not Path(task_run["agent_runs"][0]["artifact_dir"]).is_absolute()
 
     listed = await workbench_client.get(
         "/api/workbench/task-runs",
@@ -1486,12 +1489,15 @@ async def test_workbench_task_run_list_get_and_materialize_evidence_api(workbenc
     )
     assert listed.status_code == 200
     assert listed.json()["items"][0]["task_run_id"] == task_run_id
+    assert listed.json()["items"][0]["artifact_dir"] == "."
 
     loaded = await workbench_client.get(f"/api/workbench/task-runs/{task_run_id}")
     assert loaded.status_code == 200
     assert loaded.json()["workflow_id"] == "mr_test_design"
+    assert loaded.json()["artifact_dir"] == "."
+    assert loaded.json()["agent_runs"][0]["artifact_dir"] == f"agent_runs/{step_id}"
 
-    artifact_dir = Path(task_run["artifact_dir"]) / "agent_runs" / step_id
+    artifact_dir = _task_run_dir(task_run["task_run_id"]) / "agent_runs" / step_id
     diff_text = "diff --git a/src/tls.c b/src/tls.c\n--- a/src/tls.c\n+++ b/src/tls.c\n"
     diff_sha = hashlib.sha256(diff_text.encode("utf-8")).hexdigest()
     (artifact_dir / "mr_snapshot.json").write_text(
@@ -1604,7 +1610,7 @@ async def test_workbench_task_run_execute_workflow_api(workbench_client, tmp_pat
     assert body["outputs"][0]["status"] == "ok"
     assert body["outputs"][0]["from"] == "discover"
     assert body["outputs"][0]["artifact"] == "result.json"
-    artifact_dir = Path(prepared.json()["artifact_dir"])
+    artifact_dir = _task_run_dir(prepared.json()["task_run_id"])
     assert (artifact_dir / "workflow_execution.json").exists()
     assert (artifact_dir / "workflow_outputs.json").exists()
     assert "secret-value" not in (
@@ -1677,10 +1683,10 @@ async def test_workbench_task_run_materialize_workflow_outputs_api(
         for item in search_after_execute.json()["items"]
     )
     auto_materialization_artifact = (
-        Path(prepared.json()["artifact_dir"]) / "workflow_output_materialization.json"
+        _task_run_dir(prepared.json()["task_run_id"]) / "workflow_output_materialization.json"
     )
     assert auto_materialization_artifact.exists()
-    acceptance_artifact = Path(prepared.json()["artifact_dir"]) / "task_acceptance_audit.json"
+    acceptance_artifact = _task_run_dir(prepared.json()["task_run_id"]) / "task_acceptance_audit.json"
     assert acceptance_artifact.exists()
     acceptance_payload = json.loads(acceptance_artifact.read_text(encoding="utf-8"))
     assert acceptance_payload["task_run_id"] == task_run_id
@@ -1700,7 +1706,7 @@ async def test_workbench_task_run_materialize_workflow_outputs_api(
     assert body["materialization_audit"]["outputs"][0]["materialization_status"] == "accepted"
     assert body["materialization_audit"]["outputs"][0]["materialized_count"] == 1
     materialization_artifact = (
-        Path(prepared.json()["artifact_dir"]) / "workflow_output_materialization.json"
+        _task_run_dir(prepared.json()["task_run_id"]) / "workflow_output_materialization.json"
     )
     assert materialization_artifact.exists()
     materialization = json.loads(materialization_artifact.read_text(encoding="utf-8"))
@@ -1717,7 +1723,7 @@ async def test_workbench_task_run_materialize_workflow_outputs_api(
         == "workflow_output_materialization"
     )
     manifest = json.loads(
-        (Path(prepared.json()["artifact_dir"]) / "task_artifact_manifest.json")
+        (_task_run_dir(prepared.json()["task_run_id"]) / "task_artifact_manifest.json")
         .read_text(encoding="utf-8")
     )
     manifest_paths = {item["relative_path"]: item for item in manifest["artifacts"]}
@@ -1814,12 +1820,16 @@ async def test_workbench_task_run_run_api_prepares_executes_and_audits(
     body = response.json()
     assert body["status"] == "completed"
     assert body["task_run"]["task_run_id"] == body["task_run_id"]
+    assert body["task_run"]["artifact_dir"] == "."
+    assert not Path(body["artifact"]["path"]).is_absolute()
+    assert body["artifact"]["path"] == "task_run.json"
+    assert body["artifact"]["manifest_path"] == "task_artifact_manifest.json"
     assert body["execution"]["status"] == "completed"
     assert body["execution"]["outputs"][0]["status"] == "ok"
     assert body["evidence_materialization"]["status"] == "ok"
     assert body["evidence_materialization"]["evidence_count"] == 1
     assert body["acceptance_audit"]["status"] == "ready"
-    task_dir = Path(body["task_run"]["artifact_dir"])
+    task_dir = _task_run_dir(body["task_run"]["task_run_id"])
     assert (task_dir / "workflow_execution.json").exists()
     assert (task_dir / "workflow_output_materialization.json").exists()
     assert (task_dir / "task_acceptance_audit.json").exists()
@@ -1883,7 +1893,7 @@ async def test_builtin_mr_blackbox_run_produces_executable_black_box_case_contra
     assert body["semantic_output_import"]["imported_count"] == 1
     assert body["acceptance_audit"]["status"] == "ready"
 
-    task_dir = Path(body["task_run"]["artifact_dir"])
+    task_dir = _task_run_dir(body["task_run"]["task_run_id"])
     cases_path = task_dir / "steps" / "collect_mr" / "black_box_cases.json"
     assert cases_path.exists()
     cases = json.loads(cases_path.read_text(encoding="utf-8"))
@@ -1986,7 +1996,7 @@ async def test_workbench_task_run_run_auto_imports_declared_semantic_outputs(
     body = response.json()
     assert body["semantic_output_import"]["status"] == "ok"
     assert body["semantic_output_import"]["imported_count"] == 1
-    task_dir = Path(body["task_run"]["artifact_dir"])
+    task_dir = _task_run_dir(body["task_run"]["task_run_id"])
     artifact = task_dir / "semantic_output_import.json"
     assert artifact.exists()
     artifact_payload = json.loads(artifact.read_text(encoding="utf-8"))
@@ -2087,7 +2097,7 @@ async def test_workbench_imports_black_box_workflow_output_into_semantic_library
     assert body["rejected_count"] == 0
     assert body["imported"][0]["case_id"].startswith(f"{task_run_id}_black_box_cases_")
     assert body["source_ref"] == f"task_run:{task_run_id}:black_box_cases"
-    artifact = Path(prepared.json()["artifact_dir"]) / "semantic_output_import.json"
+    artifact = _task_run_dir(prepared.json()["task_run_id"]) / "semantic_output_import.json"
     assert artifact.exists()
     artifact_payload = json.loads(artifact.read_text(encoding="utf-8"))
     assert artifact_payload["result"]["imported_count"] == 1
@@ -2187,7 +2197,7 @@ async def test_workbench_materialize_outputs_auto_imports_declared_semantic_outp
     body = materialized.json()
     assert body["semantic_output_import"]["status"] == "ok"
     assert body["semantic_output_import"]["imported_count"] == 1
-    artifact = Path(prepared.json()["artifact_dir"]) / "semantic_output_import.json"
+    artifact = _task_run_dir(prepared.json()["task_run_id"]) / "semantic_output_import.json"
     assert json.loads(artifact.read_text(encoding="utf-8"))["mode"] == "auto"
 
     search = await workbench_client.get(
@@ -2286,7 +2296,7 @@ async def test_workbench_materialize_workflow_outputs_preserves_rejection_detail
         }
     ]
     materialization = json.loads(
-        (Path(prepared.json()["artifact_dir"]) / "workflow_output_materialization.json")
+        (_task_run_dir(prepared.json()["task_run_id"]) / "workflow_output_materialization.json")
         .read_text(encoding="utf-8")
     )
     assert materialization["rejected_outputs"] == body["rejected_outputs"]
@@ -2353,7 +2363,7 @@ async def test_workbench_materialize_rejects_output_path_outside_task_artifacts(
     outside = tmp_path / "outside_scope.json"
     outside.write_text(json.dumps({"files": [{"path": "outside.c"}]}), encoding="utf-8")
     outside_sha = hashlib.sha256(outside.read_bytes()).hexdigest()
-    workflow_outputs_path = Path(prepared.json()["artifact_dir"]) / "workflow_outputs.json"
+    workflow_outputs_path = _task_run_dir(prepared.json()["task_run_id"]) / "workflow_outputs.json"
     workflow_outputs = json.loads(workflow_outputs_path.read_text(encoding="utf-8"))
     workflow_outputs["outputs"][0]["path"] = str(outside)
     workflow_outputs["outputs"][0]["sha256"] = outside_sha
@@ -2535,7 +2545,7 @@ async def test_workbench_materialize_custom_json_output_with_evidence_mapping(
     assert body["status"] == "ok"
     assert body["evidence_count"] == 2
     materialization = json.loads(
-        (Path(prepared.json()["artifact_dir"]) / "workflow_output_materialization.json")
+        (_task_run_dir(prepared.json()["task_run_id"]) / "workflow_output_materialization.json")
         .read_text(encoding="utf-8")
     )
     audit = materialization["materialization_audit"]
@@ -2963,7 +2973,7 @@ async def test_workbench_materialize_evidence_cards_output_as_structured_memory(
         "card_id": "card_missing",
     } in body["rejected_outputs"]
     materialization = json.loads(
-        (Path(prepared.json()["artifact_dir"]) / "workflow_output_materialization.json")
+        (_task_run_dir(prepared.json()["task_run_id"]) / "workflow_output_materialization.json")
         .read_text(encoding="utf-8")
     )
     materialized_evidence = materialization["materialized_evidence"]
@@ -3177,7 +3187,7 @@ async def test_workbench_prepare_task_run_api_lazily_materializes_rerun_plan(
     )
     assert prepared.status_code == 201
     task_run_id = prepared.json()["task_run_id"]
-    task_dir = Path(prepared.json()["artifact_dir"])
+    task_dir = _task_run_dir(prepared.json()["task_run_id"])
     rerun_plan_path = task_dir / "task_rerun_plan.json"
     assert not rerun_plan_path.exists()
 
@@ -3346,7 +3356,7 @@ async def test_workbench_task_run_artifact_content_api_is_safe(workbench_client,
         },
     )
     task_run_id = prepared.json()["task_run_id"]
-    task_dir = Path(prepared.json()["artifact_dir"])
+    task_dir = _task_run_dir(prepared.json()["task_run_id"])
     secret = "sk-artifact-secret-value"
     bare_sk_secret = "sk-artifactBareSecretValue1234567890"
     csv_secret = "artifactCsvSecretLeakValue1234567890"
@@ -3657,7 +3667,7 @@ async def test_workbench_task_run_artifacts_api_labels_failure_recovery(
         "execution_input.json": "ok",
         "agent_replay_plan.json": "ok",
     }
-    (Path(prepared.json()["artifact_dir"]) / "agent_runs" / "discover" / "agent_replay_plan.json").unlink()
+    (_task_run_dir(prepared.json()["task_run_id"]) / "agent_runs" / "discover" / "agent_replay_plan.json").unlink()
     blocked_validation_response = await workbench_client.get(
         f"/api/workbench/task-runs/{task_run_id}/rerun-plan/validation"
     )
@@ -3705,7 +3715,7 @@ async def test_workbench_task_run_artifacts_api_labels_failure_recovery(
     assert paths_after_rerun["workflow_output_materialization.json"]["kind"] == "workflow_output_materialization"
     assert paths_after_rerun["task_acceptance_audit.json"]["kind"] == "task_acceptance_audit"
     rerun_manifest = json.loads(
-        (Path(prepared.json()["artifact_dir"]) / "task_artifact_manifest.json")
+        (_task_run_dir(prepared.json()["task_run_id"]) / "task_artifact_manifest.json")
         .read_text(encoding="utf-8")
     )
     rerun_manifest_paths = {
@@ -3743,7 +3753,7 @@ async def test_workbench_task_run_artifacts_api_labels_failure_recovery(
     assert history["records"][0]["execution"]["status"] == "invalid"
     assert history["records"][0]["evidence_materialization"]["status"] == "partial"
     assert history["records"][0]["acceptance_audit"]["status"] == "incomplete"
-    first_rerun_artifact = Path(prepared.json()["artifact_dir"]) / history["records"][0]["artifact"]["path"]
+    first_rerun_artifact = _task_run_dir(prepared.json()["task_run_id"]) / history["records"][0]["artifact"]["path"]
     assert first_rerun_artifact.exists()
 
     second_rerun_response = await workbench_client.post(
@@ -3761,7 +3771,7 @@ async def test_workbench_task_run_artifacts_api_labels_failure_recovery(
         f"task_reruns/{task_run_id}_rerun_2/task_rerun_execution.json"
     )
     assert second_history["records"][1]["artifact"]["path"] != history["records"][0]["artifact"]["path"]
-    second_rerun_artifact = Path(prepared.json()["artifact_dir"]) / second_history["records"][1]["artifact"]["path"]
+    second_rerun_artifact = _task_run_dir(prepared.json()["task_run_id"]) / second_history["records"][1]["artifact"]["path"]
     assert second_rerun_artifact.exists()
 
 
@@ -3847,7 +3857,7 @@ async def test_workbench_task_run_acceptance_audit_api_records_required_evidence
     assert checks["workflow_output:scope"]["status"] == "ok"
     assert checks["workflow_execution"]["status"] == "ok"
     assert checks["task_artifact_manifest"]["status"] == "ok"
-    artifact = Path(prepared.json()["artifact_dir"]) / "task_acceptance_audit.json"
+    artifact = _task_run_dir(prepared.json()["task_run_id"]) / "task_acceptance_audit.json"
     assert artifact.exists()
     assert json.loads(artifact.read_text(encoding="utf-8"))["status"] == "ready"
     artifacts = await workbench_client.get(f"/api/workbench/task-runs/{task_run_id}/artifacts")
@@ -3917,7 +3927,7 @@ async def test_workbench_task_run_acceptance_audit_reports_missing_black_box_pol
         json={"timeout_sec": 10},
     )
     assert executed.status_code == 200
-    (Path(prepared.json()["artifact_dir"]) / "black_box_generation_policy.json").unlink()
+    (_task_run_dir(prepared.json()["task_run_id"]) / "black_box_generation_policy.json").unlink()
 
     response = await workbench_client.post(
         f"/api/workbench/task-runs/{task_run_id}/acceptance-audit"
@@ -4654,7 +4664,7 @@ async def test_workbench_task_run_acceptance_audit_requires_declared_evidence_ma
     )
     assert executed.status_code == 200
     assert executed.json()["acceptance_audit"]["status"] == "ready"
-    materialization = Path(prepared.json()["artifact_dir"]) / "workflow_output_materialization.json"
+    materialization = _task_run_dir(prepared.json()["task_run_id"]) / "workflow_output_materialization.json"
     assert materialization.exists()
     materialization.unlink()
 
@@ -5742,7 +5752,7 @@ async def test_workbench_task_run_artifacts_api_labels_agent_turn_snapshots(
     assert checks["agent_turn_source_slice_requests:discover:turn_1"]["status"] == "ok"
     assert checks["agent_turn_source_slices:discover:turn_2"]["status"] == "ok"
 
-    task_dir = Path(prepared.json()["artifact_dir"])
+    task_dir = _task_run_dir(prepared.json()["task_run_id"])
     turn_1_execution_input = (
         task_dir
         / "agent_runs"

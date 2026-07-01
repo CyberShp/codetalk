@@ -218,8 +218,30 @@ def _public_task_artifact_path(task_dir: Path, path: Path) -> str:
 
 def _public_task_run_payload(task_run: Any) -> dict[str, Any]:
     payload = asdict(task_run)
+    task_root = Path(str(payload.get("artifact_dir") or "")).resolve()
     if "artifact_dir" in payload:
         payload["artifact_dir"] = "."
+    agent_runs = payload.get("agent_runs")
+    if isinstance(agent_runs, list):
+        public_agent_runs: list[dict[str, Any]] = []
+        for item in agent_runs:
+            if not isinstance(item, dict):
+                continue
+            public_item = dict(item)
+            artifact_dir = str(public_item.get("artifact_dir") or "")
+            if artifact_dir:
+                try:
+                    resolved = Path(artifact_dir).resolve()
+                    if resolved == task_root:
+                        public_item["artifact_dir"] = "."
+                    elif task_root in resolved.parents:
+                        public_item["artifact_dir"] = resolved.relative_to(task_root).as_posix()
+                    else:
+                        public_item["artifact_dir"] = ""
+                except OSError:
+                    public_item["artifact_dir"] = ""
+            public_agent_runs.append(public_item)
+        payload["agent_runs"] = public_agent_runs
     return payload
 
 
@@ -1140,7 +1162,7 @@ async def list_task_runs(
         workspace_id=workspace_id or None,
         limit=limit,
     )
-    return {"items": [asdict(item) for item in items]}
+    return {"items": [_public_task_run_payload(item) for item in items]}
 
 
 @router.post("/task-runs/smoke-e2e")
@@ -1209,7 +1231,7 @@ async def get_task_run(task_run_id: str) -> dict[str, Any]:
         task_run = WorkbenchTaskRunStore(_task_runs_dir()).load(task_run_id)
     except KeyError:
         raise HTTPException(status_code=404, detail=f"Unknown task run: {task_run_id}")
-    return asdict(task_run)
+    return _public_task_run_payload(task_run)
 
 
 @router.get("/task-runs/{task_run_id}/rerun-plan")
@@ -1377,7 +1399,7 @@ async def prepare_task_run(payload: PrepareTaskRunRequest) -> dict[str, Any]:
         raise HTTPException(status_code=404, detail=f"Unknown workflow: {payload.workflow_id}")
     except (FileNotFoundError, ValueError) as exc:
         raise HTTPException(status_code=422, detail=str(exc))
-    return asdict(result)
+    return _public_task_run_payload(result)
 
 
 @router.post("/task-runs/run", status_code=201)
@@ -1415,14 +1437,14 @@ async def prepare_and_execute_task_run(payload: RunTaskRunRequest) -> dict[str, 
         "task_run_id": prepared.task_run_id,
         "workflow_id": prepared.workflow_id,
         "workspace_id": prepared.workspace_id,
-        "task_run": asdict(prepared),
+        "task_run": _public_task_run_payload(prepared),
         "execution": execution,
         "evidence_materialization": execution.get("evidence_materialization") or {},
         "semantic_output_import": execution.get("semantic_output_import") or {},
         "acceptance_audit": execution.get("acceptance_audit") or {},
         "artifact": {
-            "path": str(task_dir / "task_run.json"),
-            "manifest_path": str(task_dir / "task_artifact_manifest.json"),
+            "path": _public_task_artifact_path(task_dir, task_dir / "task_run.json"),
+            "manifest_path": _public_task_artifact_path(task_dir, task_dir / "task_artifact_manifest.json"),
         },
     }
 
