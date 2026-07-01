@@ -16,6 +16,7 @@ from app.config import settings
 PROMPT_TRANSPORTS = {"stdin", "argv_last"}
 OUTPUT_MODES = {"plain", "ndjson", "stream_json", "auto"}
 WORKING_DIR_MODES = {"project", "fixed", "none"}
+COMPLETION_MODES = {"process_exit", "idle_after_output", "sentinel"}
 
 
 def _now() -> str:
@@ -43,6 +44,24 @@ def _clean_env(env: dict[str, str] | None) -> dict[str, str]:
     return {str(key): str(value) for key, value in (env or {}).items() if str(key).strip()}
 
 
+def validate_agent_command(command: str) -> str:
+    value = str(command or "").strip()
+    if not value:
+        raise ValueError("执行器命令不能为空")
+    if any(char.isspace() for char in value) and not Path(value).exists():
+        parts = value.split()
+        arg_hint = (
+            f"args={json.dumps(parts[1:], ensure_ascii=False)}"
+            if len(parts) > 1
+            else "args=[]"
+        )
+        raise ValueError(
+            "Agent Runtime command 只能填写可执行文件，例如 ccr、nga、python 或完整 .exe/.cmd/.bat 路径。"
+            f"请把参数拆到 args，例如 command={parts[0]}，{arg_hint}。"
+        )
+    return value
+
+
 class AgentRuntimeStore:
     def __init__(self, db_path: str | Path | None = None) -> None:
         self.db_path = str(db_path or settings.sqlite_db)
@@ -57,8 +76,9 @@ class AgentRuntimeStore:
                 INSERT INTO agent_runtimes
                     (id, name, command, args_json, prompt_transport, output_mode,
                      working_dir_mode, fixed_working_dir, env_json, health_command,
-                     timeout_seconds, enabled, created_at, updated_at)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                     timeout_seconds, completion_mode, idle_complete_seconds, sentinel_text,
+                     enabled, created_at, updated_at)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     rid,
@@ -72,6 +92,9 @@ class AgentRuntimeStore:
                     _json_dumps(payload["env"]),
                     payload["health_command"],
                     payload["timeout_seconds"],
+                    payload["completion_mode"],
+                    payload["idle_complete_seconds"],
+                    payload["sentinel_text"],
                     int(payload["enabled"]),
                     now,
                     now,
@@ -147,6 +170,9 @@ class AgentRuntimeStore:
             "env",
             "health_command",
             "timeout_seconds",
+            "completion_mode",
+            "idle_complete_seconds",
+            "sentinel_text",
             "enabled",
         ):
             if key in data:
@@ -158,10 +184,7 @@ class AgentRuntimeStore:
                 raise ValueError("执行器名称不能为空")
             result["name"] = name
         if not partial or "command" in result:
-            command = str(result.get("command", "")).strip()
-            if not command:
-                raise ValueError("执行器命令不能为空")
-            result["command"] = command
+            result["command"] = validate_agent_command(str(result.get("command", "")))
 
         result["args"] = _clean_args(result.get("args")) if "args" in result else ([] if not partial else result.get("args"))
         result["env"] = _clean_env(result.get("env")) if "env" in result else ({} if not partial else result.get("env"))
@@ -188,6 +211,18 @@ class AgentRuntimeStore:
         if not partial or "timeout_seconds" in result:
             seconds = int(result.get("timeout_seconds") or 120)
             result["timeout_seconds"] = max(1, min(seconds, 3600))
+        if not partial or "completion_mode" in result:
+            value = str(result.get("completion_mode") or "process_exit").strip()
+            if value not in COMPLETION_MODES:
+                raise ValueError(f"不支持的 completion_mode: {value}")
+            result["completion_mode"] = value
+        if not partial or "idle_complete_seconds" in result:
+            seconds = int(result.get("idle_complete_seconds") or 5)
+            result["idle_complete_seconds"] = max(1, min(seconds, 300))
+        if not partial or "sentinel_text" in result:
+            result["sentinel_text"] = str(result.get("sentinel_text") or "").strip()
+        if result.get("completion_mode") == "sentinel" and not result.get("sentinel_text"):
+            raise ValueError("sentinel completion_mode 需要填写 sentinel_text")
         if not partial or "enabled" in result:
             result["enabled"] = bool(result.get("enabled", True))
 
@@ -207,5 +242,8 @@ def _runtime_from_row(row: aiosqlite.Row) -> dict[str, Any]:
     data = dict(row)
     data["args"] = _json_loads(data.pop("args_json", "[]"), [])
     data["env"] = _json_loads(data.pop("env_json", "{}"), {})
+    data["completion_mode"] = data.get("completion_mode") or "process_exit"
+    data["idle_complete_seconds"] = int(data.get("idle_complete_seconds") or 5)
+    data["sentinel_text"] = data.get("sentinel_text") or ""
     data["enabled"] = bool(data.get("enabled", 1))
     return data

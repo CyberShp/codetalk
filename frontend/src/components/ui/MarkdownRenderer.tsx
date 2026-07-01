@@ -57,7 +57,7 @@ function extractText(node: React.ReactNode): string {
  */
 const FILE_CITATION_RE = /^([\w./\-]+\.\w+)(?::(\d+)-(\d+))?$/;
 const NUMERIC_CITATION_RE = /^\[(\d+)\]$/;
-type MarkdownVariant = "default" | "report";
+type MarkdownVariant = "default" | "report" | "ai";
 
 export default function MarkdownRenderer({
   content,
@@ -107,7 +107,9 @@ export default function MarkdownRenderer({
         return (
           <h2
             id={id}
-            className="font-display text-xl font-semibold text-on-surface mb-3 mt-5 scroll-mt-6 border-l-[3px] border-primary pl-3"
+            className={`font-display font-semibold text-on-surface scroll-mt-6 border-l-[3px] border-primary pl-3 ${
+              variant === "ai" ? "mb-2 mt-4 text-base" : "mb-3 mt-5 text-xl"
+            }`}
           >
             {children}
           </h2>
@@ -118,7 +120,9 @@ export default function MarkdownRenderer({
         return (
           <h3
             id={id}
-            className="font-display text-lg font-medium text-on-surface mb-2 mt-4 scroll-mt-6 border-l-2 border-primary/40 pl-2.5"
+            className={`font-display font-medium text-on-surface scroll-mt-6 border-l-2 border-primary/40 pl-2.5 ${
+              variant === "ai" ? "mb-1.5 mt-3 text-sm" : "mb-2 mt-4 text-lg"
+            }`}
           >
             {children}
           </h3>
@@ -136,7 +140,7 @@ export default function MarkdownRenderer({
         );
       },
       p: ({ children }) => (
-        <p className="text-on-surface/90 leading-relaxed mb-3">{children}</p>
+        <p className={`text-on-surface/90 ${variant === "ai" ? "mb-2 leading-6" : "mb-3 leading-relaxed"}`}>{children}</p>
       ),
       code: ({ className, children }) => {
         const isBlock = className?.startsWith("language-");
@@ -157,13 +161,15 @@ export default function MarkdownRenderer({
             highlighted = escapeHtml(raw);
           }
           return (
-            <div className="relative mb-4">
+            <div className={variant === "ai" ? "relative mb-3" : "relative mb-4"}>
               {lang && (
                 <span className="absolute top-0 right-0 text-[10px] font-mono text-on-surface-variant bg-surface-container-high px-2.5 py-1 rounded-bl-lg rounded-tr-lg border-b border-l border-outline-variant/40 select-none z-10">
                   {lang}
                 </span>
               )}
-              <pre className="bg-surface-container-lowest rounded-lg p-4 overflow-x-auto border border-outline-variant/40">
+              <pre className={`bg-surface-container-lowest overflow-x-auto border border-outline-variant/40 ${
+                variant === "ai" ? "rounded-md p-3" : "rounded-lg p-4"
+              }`}>
                 <code
                   className="font-data text-xs hljs text-on-surface"
                   dangerouslySetInnerHTML={{ __html: highlighted }}
@@ -173,23 +179,29 @@ export default function MarkdownRenderer({
           );
         }
         return (
-          <code className="font-data text-xs bg-primary-container px-1.5 py-0.5 rounded text-primary-fixed-dim border border-primary/10">
+          <code className={`font-data text-xs bg-primary-container px-1.5 py-0.5 text-primary-fixed-dim border border-primary/10 ${
+            variant === "ai" ? "rounded" : "rounded"
+          }`}>
             {children}
           </code>
         );
       },
       ul: ({ children }) => (
-        <ul className="pl-5 list-disc list-outside text-on-surface/90 mb-3 space-y-1.5 marker:text-primary/50">
+        <ul className={`pl-5 list-disc list-outside text-on-surface/90 marker:text-primary/50 ${
+          variant === "ai" ? "mb-2 space-y-1" : "mb-3 space-y-1.5"
+        }`}>
           {children}
         </ul>
       ),
       ol: ({ children }) => (
-        <ol className="pl-5 list-decimal list-outside text-on-surface/90 mb-3 space-y-1.5 marker:text-primary/60 marker:font-medium">
+        <ol className={`pl-5 list-decimal list-outside text-on-surface/90 marker:text-primary/60 marker:font-medium ${
+          variant === "ai" ? "mb-2 space-y-1" : "mb-3 space-y-1.5"
+        }`}>
           {children}
         </ol>
       ),
       li: ({ children }) => (
-        <li className="leading-relaxed">{children}</li>
+        <li className={variant === "ai" ? "leading-6" : "leading-relaxed"}>{children}</li>
       ),
       table: ({ children }) => (
         <div className="overflow-x-auto mb-4 rounded-lg border border-outline-variant/40 bg-surface-container-low">
@@ -343,7 +355,7 @@ export default function MarkdownRenderer({
         );
       },
     }),
-    [anchorBaseUrl, enableNumericCitations, onCitationClick]
+    [anchorBaseUrl, enableNumericCitations, onCitationClick, variant]
   );
   const appliedRehypePlugins = useMemo<PluggableList>(
     () => [rehypeRaw, ...rehypePlugins],
@@ -357,7 +369,7 @@ export default function MarkdownRenderer({
   return (
     <div
       className={`prose-kinetic max-w-full overflow-hidden break-words ${
-        variant === "report" ? "prose-report" : ""
+        variant === "report" ? "prose-report" : variant === "ai" ? "prose-ai text-[14px]" : ""
       }`}
     >
       <ReactMarkdown

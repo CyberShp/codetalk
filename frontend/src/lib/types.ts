@@ -112,6 +112,7 @@ export interface GeneralSettings {
 export type AgentRuntimePromptTransport = "stdin" | "argv_last";
 export type AgentRuntimeOutputMode = "plain" | "ndjson" | "stream_json" | "auto";
 export type AgentRuntimeWorkingDirMode = "project" | "fixed" | "none";
+export type AgentRuntimeCompletionMode = "process_exit" | "idle_after_output" | "sentinel";
 
 export interface AgentRuntime {
   id: string;
@@ -125,6 +126,9 @@ export interface AgentRuntime {
   env: Record<string, string>;
   health_command: string;
   timeout_seconds: number;
+  completion_mode: AgentRuntimeCompletionMode;
+  idle_complete_seconds: number;
+  sentinel_text: string;
   enabled: boolean;
   created_at: string;
   updated_at: string;

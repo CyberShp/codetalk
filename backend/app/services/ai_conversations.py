@@ -908,10 +908,35 @@ def _agent_output_segments(chunk: str) -> list[tuple[str, str]]:
 
 def _agent_diagnostic_text(text: str) -> str:
     lowered = text.lower()
-    for prefix in ("status:", "diagnostic:", "thinking:", "trace:", "error:", "tool:"):
+    for prefix in (
+        "status:",
+        "diagnostic:",
+        "thinking:",
+        "reasoning:",
+        "trace:",
+        "error:",
+        "tool:",
+        "tool_use:",
+        "tool_result:",
+    ):
         if lowered.startswith(prefix):
             return redact_agent_diagnostic_text(text[len(prefix):].strip())
     return ""
+
+
+def _codex_style_answer_instruction() -> str:
+    return (
+        "输出格式要求：\n"
+        "- 默认使用 Markdown。\n"
+        "- 先用 1-2 句话给结论。\n"
+        "- 然后使用二级标题分节。\n"
+        "- 每节使用短段落或 bullet。\n"
+        "- 文件路径、函数名、配置项、命令参数使用 inline code。\n"
+        "- 多行命令、日志、补丁、代码必须使用 fenced code block。\n"
+        "- 风险、原因、修改点、验证方式分开写。\n"
+        "- 不要输出大段无标题文本。\n"
+        "- 不要把 STATUS、THINKING、TOOL、TRACE、reasoning、tool_use、tool_result 混入最终答案。"
+    )
 
 
 def _build_prompt(
@@ -938,6 +963,7 @@ def _build_prompt(
         "当线程绑定 workspace 时，workspace_source 和 workspace_material 是优先证据；"
         "必须先依据源码片段和输入材料回答，再用报告或记忆补充。"
         "不要声称读过未出现在引用里的文件。\n\n"
+        f"{_codex_style_answer_instruction()}\n\n"
         f"{_source_first_contract(references)}\n\n"
         f"线程范围: {conversation['scope_type']} / {conversation['scope_id']}\n"
         f"上下文引用:\n{chr(10).join(context_lines) if context_lines else '（暂无可用引用）'}"
@@ -963,9 +989,17 @@ def _build_agent_prompt(
         f"源码工作区：{_public_workspace_label(conversation)}",
         "执行要求：CodeTalk 已把执行器工作目录切到绑定工作区；如果线程绑定 workspace，"
         "先检查当前工作目录中的源码和输入材料，再回答；不要只凭模型记忆。",
+        _codex_style_answer_instruction(),
         _source_first_contract(references),
         "",
     ]
+    sentinel = str(runtime.get("sentinel_text") or "").strip()
+    if str(runtime.get("completion_mode") or "") == "sentinel" and sentinel:
+        lines.extend([
+            f"本轮回答结束后，请单独输出一行：{sentinel}",
+            "不要在正文中解释这个结束标记。",
+            "",
+        ])
     for message in llm_messages:
         role = message.get("role", "user")
         content = message.get("content", "")

@@ -289,18 +289,23 @@ export default function AIThreadPage() {
       ? redactDiagnosticText(latestRun.error)
       : "";
   const visibleError = error || latestRunError;
-  const composerDisabled = sending || Boolean(streamingRunId);
+  const isActuallyRunning = Boolean(
+    streamingRunId &&
+      latestRun?.id === streamingRunId &&
+      ["queued", "running"].includes(latestRun?.status ?? ""),
+  );
+  const composerDisabled = sending || isActuallyRunning;
   const threadNavigationBusy =
-    savingRuntime || cancelling || creatingSiblingThread || Boolean(streamingRunId);
+    savingRuntime || cancelling || creatingSiblingThread || isActuallyRunning;
   const lastUserMessage = useMemo(
     () => [...messages].reverse().find((message) => message.role === "user") ?? null,
     [messages],
   );
-  const canRetryLatestFailure = Boolean(latestRunError && lastUserMessage && !sending && !streamingRunId);
-  const canExportThread = messages.length > 0 && !streamingRunId;
+  const canRetryLatestFailure = Boolean(latestRunError && lastUserMessage && !sending && !isActuallyRunning);
+  const canExportThread = messages.length > 0 && !isActuallyRunning;
   const latestReferences = references.slice(0, 4);
   const hiddenReferenceCount = Math.max(0, references.length - latestReferences.length);
-  const runStatusLabel = streamingRunId
+  const runStatusLabel = isActuallyRunning
     ? "生成中"
     : latestRun?.status === "failed"
       ? "失败"
@@ -314,7 +319,7 @@ export default function AIThreadPage() {
     `报告 ${reportCount}`,
   ].join(" · ");
 
-  const load = useCallback(async () => {
+  const loadInitialPage = useCallback(async () => {
     setError(null);
     const [conv, msgResult, workspaceItems, runtimeResult] = await Promise.all([
       api.aiConversations.get(conversationId),
@@ -334,6 +339,22 @@ export default function AIThreadPage() {
     if (conv.latest_run?.status === "queued" || conv.latest_run?.status === "running") {
       setStreamingRunId(conv.latest_run.id);
     }
+  }, [conversationId]);
+
+  const refreshRunStatus = useCallback(async () => {
+    const nextConversation = await api.aiConversations.get(conversationId);
+    setConversation(nextConversation);
+    return nextConversation;
+  }, [conversationId]);
+
+  const refreshMessagesAfterDone = useCallback(async () => {
+    const [nextConversation, msgResult] = await Promise.all([
+      api.aiConversations.get(conversationId),
+      api.aiConversations.messages(conversationId),
+    ]);
+    setConversation(nextConversation);
+    setMessages(msgResult.items);
+    return nextConversation;
   }, [conversationId]);
 
   const streamRun = useCallback(
@@ -376,33 +397,49 @@ export default function AIThreadPage() {
                 setError(eventError(event) || "AI 生成失败，请检查模型配置后重试。");
               }
               setStreamingRunId(null);
+              await refreshMessagesAfterDone();
               setStreamingContent("");
-              await load();
               return;
             }
           }
         }
         if (!abort.signal.aborted) {
-          setStreamingRunId(null);
-          setStreamingContent("");
+          const nextConversation = await refreshRunStatus().catch(() => null);
+          const nextRun = nextConversation?.latest_run;
+          if (
+            nextRun?.id === runId &&
+            nextRun.status !== "queued" &&
+            nextRun.status !== "running"
+          ) {
+            setStreamingRunId(null);
+            await refreshMessagesAfterDone();
+            setStreamingContent("");
+          }
         }
-        await load();
       } catch (exc) {
         if (!abort.signal.aborted) {
           setError(exc instanceof Error ? exc.message : "订阅生成状态失败");
-          setStreamingRunId(null);
-          setStreamingContent("");
-          await load().catch(() => {});
+          const nextConversation = await refreshRunStatus().catch(() => null);
+          const nextRun = nextConversation?.latest_run;
+          if (
+            nextRun?.id === runId &&
+            nextRun.status !== "queued" &&
+            nextRun.status !== "running"
+          ) {
+            setStreamingRunId(null);
+            await refreshMessagesAfterDone().catch(() => {});
+            setStreamingContent("");
+          }
         }
       }
     },
-    [conversationId, load],
+    [conversationId, refreshMessagesAfterDone, refreshRunStatus],
   );
 
   useEffect(() => {
     let cancelled = false;
     setLoading(true);
-    load()
+    loadInitialPage()
       .catch((exc) => {
         if (!cancelled) setError(exc instanceof Error ? exc.message : "加载线程失败");
       })
@@ -413,7 +450,7 @@ export default function AIThreadPage() {
       cancelled = true;
       abortRef.current?.abort();
     };
-  }, [load]);
+  }, [loadInitialPage]);
 
   useEffect(() => {
     if (!streamingRunId) return;
@@ -427,16 +464,17 @@ export default function AIThreadPage() {
       void api.aiConversations
         .get(conversationId)
         .then(async (nextConversation) => {
+          setConversation(nextConversation);
           if (nextConversation.latest_run?.id !== streamingRunId) return;
           if (nextConversation.latest_run.status === "queued" || nextConversation.latest_run.status === "running") return;
           setStreamingRunId(null);
+          await refreshMessagesAfterDone();
           setStreamingContent("");
-          await load();
         })
         .catch(() => undefined);
     }, 3000);
     return () => window.clearInterval(timer);
-  }, [conversationId, load, streamingRunId]);
+  }, [conversationId, refreshMessagesAfterDone, streamingRunId]);
 
   useEffect(() => {
     streamingActiveRef.current = Boolean(streamingRunId || streamingContent);
@@ -531,7 +569,7 @@ export default function AIThreadPage() {
 
   const send = async () => {
     const text = input.trim();
-    if (!text || sending || streamingRunId) return;
+    if (!text || sending || isActuallyRunning) return;
     await sendText(text);
   };
 
@@ -546,6 +584,15 @@ export default function AIThreadPage() {
     try {
       const result = await api.aiConversations.send(conversationId, text);
       setMessages((prev) => [...prev, result.message]);
+      setConversation((prev) =>
+        prev
+          ? {
+              ...prev,
+              status: "running",
+              latest_run: result.run,
+            }
+          : prev,
+      );
       setStreamingRunId(result.run.id);
       setContextOpen(true);
     } catch (exc) {
@@ -586,7 +633,7 @@ export default function AIThreadPage() {
       setStreamingRunId(null);
       setStreamingContent("");
       setStreamingDiagnostics([]);
-      await load().catch(() => {});
+      await refreshMessagesAfterDone().catch(() => {});
     } finally {
       cancellingRef.current = false;
       setCancelling(false);
@@ -594,7 +641,7 @@ export default function AIThreadPage() {
   };
 
   const changeRuntime = async (value: string) => {
-    if (!conversation || savingRuntime || streamingRunId) return;
+    if (!conversation || savingRuntime || isActuallyRunning) return;
     setSavingRuntime(true);
     setError(null);
     try {
@@ -742,7 +789,7 @@ export default function AIThreadPage() {
           <select
             value={conversation?.runtime_type === "agent_runtime" ? conversation.agent_runtime_id ?? "" : "builtin_llm"}
             onChange={(event) => void changeRuntime(event.target.value)}
-            disabled={savingRuntime || Boolean(streamingRunId)}
+            disabled={savingRuntime || isActuallyRunning}
             aria-label="当前 AI 执行器"
           >
             {agentRuntimes.map((runtime) => (
@@ -802,7 +849,7 @@ export default function AIThreadPage() {
                   <span>{message.role === "user" ? "你" : "CodeTalk AI"}</span>
                   <div>
                     {message.role === "assistant" ? (
-                      <MarkdownRenderer content={redactDiagnosticText(message.content)} enableNumericCitations={false} />
+                      <MarkdownRenderer content={redactDiagnosticText(message.content)} enableNumericCitations={false} variant="ai" />
                     ) : (
                       <p className="whitespace-pre-wrap">{redactDiagnosticText(message.content)}</p>
                     )}
@@ -822,7 +869,7 @@ export default function AIThreadPage() {
                   CodeTalk AI <Loader2 size={12} className="animate-spin" />
                 </span>
                 <div>
-                  <MarkdownRenderer content={redactDiagnosticText(streamingContent)} enableNumericCitations={false} />
+                  <MarkdownRenderer content={redactDiagnosticText(streamingContent)} enableNumericCitations={false} variant="ai" />
                 </div>
               </div>
             </article>

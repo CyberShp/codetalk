@@ -194,7 +194,7 @@ def test_install_dependencies_uses_vendor_wheels_when_available(tmp_path, monkey
     assert str(vendor) in cmd
 
 
-def test_deployer_port_preflight_reports_occupied_port(monkeypatch, capsys):
+def test_deployer_port_preflight_falls_back_when_default_port_is_occupied(monkeypatch, capsys):
     with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as listener:
         listener.bind(("127.0.0.1", 0))
         listener.listen(1)
@@ -202,14 +202,37 @@ def test_deployer_port_preflight_reports_occupied_port(monkeypatch, capsys):
 
         monkeypatch.setattr(start, "HOST", "127.0.0.1")
         monkeypatch.setattr(start, "PORT", occupied_port)
+        monkeypatch.setattr(start, "URL", f"http://localhost:{occupied_port}")
+        monkeypatch.delenv("CODETALK_DEPLOYER_PORT", raising=False)
+        monkeypatch.setattr(start, "_candidate_deployer_ports", lambda preferred: [preferred, 9060])
+
+        selected = start._select_deployer_port()
+
+    assert selected == 9060
+    assert start.PORT == 9060
+    assert start.URL == "http://localhost:9060"
+    out = capsys.readouterr().out
+    assert f"{occupied_port} 不可用" in out
+    assert "已自动切换到 9060" in out
+
+
+def test_deployer_port_preflight_respects_explicit_port(monkeypatch, capsys):
+    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as listener:
+        listener.bind(("127.0.0.1", 0))
+        listener.listen(1)
+        occupied_port = listener.getsockname()[1]
+
+        monkeypatch.setattr(start, "HOST", "127.0.0.1")
+        monkeypatch.setattr(start, "PORT", occupied_port)
+        monkeypatch.setenv("CODETALK_DEPLOYER_PORT", str(occupied_port))
 
         with pytest.raises(SystemExit) as exc_info:
-            start._assert_deployer_port_available()
+            start._select_deployer_port()
 
     assert exc_info.value.code == 1
     err = capsys.readouterr().err
     assert f"部署器端口 {occupied_port} 无法绑定" in err
-    assert "CODETALK_DEPLOYER_PORT" in err
+    assert "显式设置" in err
 
 
 def test_deployer_port_preflight_allows_fast_restart_reuse(monkeypatch):
@@ -230,9 +253,10 @@ def test_deployer_port_preflight_allows_fast_restart_reuse(monkeypatch):
 
     monkeypatch.setattr(start, "HOST", "127.0.0.1")
     monkeypatch.setattr(start, "PORT", 9000)
+    monkeypatch.setattr(start, "URL", "http://localhost:9000")
     monkeypatch.setattr(start.socket, "socket", lambda *args: FakeSocket())
 
-    start._assert_deployer_port_available()
+    assert start._select_deployer_port() == 9000
 
     assert calls[0] == ("setsockopt", socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
     assert calls[1] == ("bind", ("127.0.0.1", 9000))

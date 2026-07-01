@@ -81,6 +81,26 @@ class TestAgentRuntimes:
             assert listed.status_code == 200
             assert listed.json()["items"][0]["name"] == "Windows Claude Code"
 
+    async def test_agent_runtime_rejects_shell_command_in_command_field(self, sqlite_db):
+        app = _test_app(sqlite_db)
+        async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+            created = await client.post(
+                "/api/settings/agent-runtimes",
+                json={
+                    "name": "Bad CCR",
+                    "command": "ccr code",
+                    "args": [],
+                    "prompt_transport": "stdin",
+                    "output_mode": "plain",
+                    "working_dir_mode": "project",
+                },
+            )
+
+            assert created.status_code == 422
+            detail = created.json()["detail"]
+            assert "command 只能填写可执行文件" in detail
+            assert 'args=["code"]' in detail
+
     async def test_agent_runtime_api_redacts_env_values_but_runtime_keeps_them(self, sqlite_db):
         app = _test_app(sqlite_db)
         secret = "agent-runtime-secret-value"
@@ -605,6 +625,69 @@ class TestAgentRuntimes:
             assert any("正在读取工作区源码" in item for item in diagnostics)
             assert all("正在读取工作区源码" not in item for item in answer_chunks)
 
+    async def test_ai_thread_agent_runtime_idle_after_output_completes_without_process_exit(self, sqlite_db):
+        app = _test_app(sqlite_db)
+        repo = pathlib.Path(sqlite_db).parent / "repo"
+        repo.mkdir()
+        await _seed_workspace(sqlite_db, repo_path=str(repo))
+        agent_code = (
+            "import sys, time; "
+            "sys.stdout.write('最终答案：NGA 已输出完整内容。\\n'); "
+            "sys.stdout.flush(); "
+            "time.sleep(30)"
+        )
+
+        async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test", timeout=10) as client:
+            runtime = await client.post(
+                "/api/settings/agent-runtimes",
+                json={
+                    "name": "Idle Agent",
+                    "command": sys.executable,
+                    "args": ["-c", agent_code],
+                    "prompt_transport": "stdin",
+                    "output_mode": "plain",
+                    "working_dir_mode": "project",
+                    "completion_mode": "idle_after_output",
+                    "idle_complete_seconds": 1,
+                    "timeout_seconds": 20,
+                },
+            )
+            assert runtime.status_code == 201
+
+            conversation = await client.post(
+                "/api/ai/conversations",
+                json={
+                    "scope_type": "workspace",
+                    "scope_id": "ws-agent",
+                    "workspace_id": "ws-agent",
+                    "runtime_type": "agent_runtime",
+                    "agent_runtime_id": runtime.json()["id"],
+                    "title": "Idle completion",
+                },
+            )
+            assert conversation.status_code == 201
+            sent = await client.post(
+                f"/api/ai/conversations/{conversation.json()['id']}/messages",
+                json={"content": "运行 NGA"},
+            )
+            assert sent.status_code == 202
+            run_id = sent.json()["run"]["id"]
+
+            for _ in range(30):
+                current = await client.get(f"/api/ai/conversations/{conversation.json()['id']}")
+                latest = current.json()["latest_run"]
+                if latest and latest["id"] == run_id and latest["status"] == "completed":
+                    break
+                await asyncio.sleep(0.2)
+            else:
+                pytest.fail("idle_after_output runtime did not complete")
+
+            messages = await client.get(f"/api/ai/conversations/{conversation.json()['id']}/messages")
+            assistant = [item for item in messages.json()["items"] if item["role"] == "assistant"][-1]
+            assert "最终答案：NGA 已输出完整内容。" in assistant["content"]
+            final_conversation = await client.get(f"/api/ai/conversations/{conversation.json()['id']}")
+            assert final_conversation.json()["status"] == "idle"
+
     async def test_ai_thread_agent_runtime_keeps_json_status_events_out_of_final_answer(self, sqlite_db):
         ws_id = await _seed_workspace(sqlite_db)
         app = _test_app(sqlite_db)
@@ -895,6 +978,7 @@ class TestAgentRuntimes:
         assert _parse_event_text("\r\x1b[2K⠋ 12\r\x1b[2K⠙ 47\r\x1b[2K最终答案\n", "plain") == "最终答案"
         assert _parse_event_text("\x1b(B最终答案：字符集切换噪声已清理\n", "plain") == "最终答案：字符集切换噪声已清理"
         assert _parse_event_text("1\n2\n47%\n12/100\n最终答案\n", "plain") == "最终答案"
+        assert _parse_event_text("■■■■⬝⬝⬝⬝■■■■■⬝⬝⬝兼容\n", "plain") == "兼容"
         assert _decode("源码证据：连接失败".encode("gbk")) == "源码证据：连接失败"
         assert (
             _parse_event_text(
@@ -1104,6 +1188,33 @@ class TestAgentRuntimes:
         assert output.strip() == "最终答案：已完成源码分析。"
         assert "47%" not in output
         assert "12/100" not in output
+
+    async def test_agent_runtime_stream_strips_progress_glyph_prefix_before_answer(self):
+        from app.services.agent_cli_bridge import stream_agent_runtime
+
+        agent_code = (
+            "import sys; "
+            "sys.stdout.write('■■■■⬝⬝⬝⬝■■■■■⬝⬝⬝兼容\\n'); "
+            "sys.stdout.flush()"
+        )
+        chunks = []
+        async for chunk in stream_agent_runtime(
+            runtime={
+                "command": sys.executable,
+                "args": ["-c", agent_code],
+                "prompt_transport": "stdin",
+                "output_mode": "plain",
+                "timeout_seconds": 10,
+            },
+            prompt="读取源码",
+            cwd=None,
+        ):
+            chunks.append(chunk)
+
+        output = "".join(chunks)
+        assert output.strip() == "兼容"
+        assert "■" not in output
+        assert "⬝" not in output
 
     async def test_agent_runtime_stream_drops_binary_gibberish_replacement_noise(self):
         from app.services.agent_cli_bridge import stream_agent_runtime

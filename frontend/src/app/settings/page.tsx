@@ -17,7 +17,7 @@ import {
   Bot,
   Terminal,
 } from "lucide-react";
-import { api } from "@/lib/api";
+import { api, apiBaseInfo, probeApiHealth } from "@/lib/api";
 import type {
   LLMConfig,
   LLMConfigCreate,
@@ -62,6 +62,9 @@ const EMPTY_AGENT_RUNTIME_FORM: AgentRuntimeCreate = {
   env: {},
   health_command: "",
   timeout_seconds: 120,
+  completion_mode: "process_exit",
+  idle_complete_seconds: 5,
+  sentinel_text: "",
   enabled: true,
 };
 
@@ -78,6 +81,8 @@ const AGENT_RUNTIME_PRESETS = [
       args: ["code"],
       prompt_transport: "stdin",
       output_mode: "plain",
+      completion_mode: "idle_after_output",
+      idle_complete_seconds: 5,
     },
   },
   {
@@ -106,6 +111,8 @@ const AGENT_RUNTIME_PRESETS = [
       args: [],
       prompt_transport: "stdin",
       output_mode: "plain",
+      completion_mode: "idle_after_output",
+      idle_complete_seconds: 5,
     },
   },
   {
@@ -163,6 +170,8 @@ export default function SettingsPage() {
   const [savingAgentRuntime, setSavingAgentRuntime] = useState(false);
   const [deletingAgentRuntimeIds, setDeletingAgentRuntimeIds] = useState<string[]>([]);
   const [agentRuntimeProbe, setAgentRuntimeProbe] = useState<Record<string, string>>({});
+  const [apiHealthResult, setApiHealthResult] = useState<string | null>(null);
+  const [testingApiHealth, setTestingApiHealth] = useState(false);
   const [showAgentAdvanced, setShowAgentAdvanced] = useState(false);
   const [showWorkbenchCliSettings, setShowWorkbenchCliSettings] = useState(false);
   const [showLlmSettings, setShowLlmSettings] = useState(false);
@@ -459,6 +468,16 @@ export default function SettingsPage() {
     }
   }, []);
 
+  const handleProbeApiHealth = useCallback(async () => {
+    setTestingApiHealth(true);
+    try {
+      const result = await probeApiHealth();
+      setApiHealthResult(`${result.ok ? "可用" : "不可用"}：${result.message}`);
+    } finally {
+      setTestingApiHealth(false);
+    }
+  }, []);
+
   if (loading) {
     return (
       <div className="flex items-center justify-center py-24 text-on-surface-variant">
@@ -483,6 +502,37 @@ export default function SettingsPage() {
         </div>
       )}
 
+      <div className="mb-6 rounded-xl border border-outline-variant/20 bg-surface-container p-4">
+        <div className="flex flex-wrap items-center justify-between gap-3">
+          <div>
+            <h2 className="text-sm font-semibold text-on-surface">后端连接</h2>
+            <p className="mt-1 break-all font-data text-xs text-on-surface-variant">
+              API Base: {apiBaseInfo().base}
+            </p>
+            {apiBaseInfo().override && (
+              <p className="mt-1 text-xs text-amber-600">
+                当前 API 地址被浏览器本地覆盖：{apiBaseInfo().override}。如端口配置已修改，请清除 localStorage 中的 codetalk.apiBaseOverride。
+              </p>
+            )}
+            <p className="mt-1 text-xs text-on-surface-variant">
+              来源：{apiBaseInfo().source}
+            </p>
+          </div>
+          <button
+            type="button"
+            onClick={handleProbeApiHealth}
+            disabled={testingApiHealth}
+            className="inline-flex items-center gap-2 rounded-lg border border-outline-variant/30 px-3 py-1.5 text-sm text-on-surface transition-colors hover:bg-surface-container-high disabled:opacity-50"
+          >
+            {testingApiHealth ? <Loader2 size={14} className="animate-spin" /> : <TestTube2 size={14} />}
+            检查后端连接
+          </button>
+        </div>
+        {apiHealthResult && (
+          <p className="mt-3 text-xs text-on-surface-variant">{apiHealthResult}</p>
+        )}
+      </div>
+
       {/* AI thread runtime settings */}
       <div className="mb-6 overflow-hidden rounded-2xl border border-outline-variant/20 bg-surface-container shadow-[0_18px_60px_rgba(15,23,42,0.08)]">
         <div className="border-b border-outline-variant/15 bg-[linear-gradient(135deg,rgba(255,255,255,0.92),rgba(248,250,252,0.74))] p-5">
@@ -494,6 +544,10 @@ export default function SettingsPage() {
               </h2>
               <p className="mt-1 max-w-2xl text-sm text-on-surface-variant">
                 选择你在终端里常用的启动方式。AI 线程会直接调用这些本机 Agent；只有选择“内置模型”时，才需要下面的 LLM 配置。
+              </p>
+              <p className="mt-2 max-w-2xl text-xs leading-5 text-on-surface-variant">
+                Command 只填可执行文件，例如 <code className="font-data">ccr</code>、<code className="font-data">nga</code>、<code className="font-data">python</code>；
+                参数放到 Args，例如 <code className="font-data">code</code>。不要把 <code className="font-data">ccr code</code> 整体填进 Command。
               </p>
             </div>
             <span className="rounded-full border border-outline-variant/20 bg-surface px-3 py-1 text-xs font-medium text-on-surface-variant">
@@ -550,7 +604,7 @@ export default function SettingsPage() {
               </div>
               <div>
                 <label className="mb-1 block text-xs font-medium text-on-surface-variant">
-                  启动命令
+                  Command
                 </label>
                 <input
                   value={agentRuntimeForm.command}
@@ -561,7 +615,7 @@ export default function SettingsPage() {
               </div>
               <div>
                 <label className="mb-1 block text-xs font-medium text-on-surface-variant">
-                  启动参数
+                  Args
                 </label>
                 <input
                   value={agentRuntimeArgsText}
@@ -647,6 +701,48 @@ export default function SettingsPage() {
                     className="w-full rounded-lg border border-outline-variant/30 bg-surface px-3 py-2 font-data text-sm text-on-surface focus:border-primary/50 focus:outline-none"
                   />
                 </div>
+                <div>
+                  <label className="mb-1 block text-xs font-medium text-on-surface-variant">
+                    完成判据
+                  </label>
+                  <select
+                    value={agentRuntimeForm.completion_mode}
+                    onChange={(event) => updateAgentRuntimeForm("completion_mode", event.target.value as AgentRuntimeCreate["completion_mode"])}
+                    className="w-full rounded-lg border border-outline-variant/30 bg-surface px-3 py-2 text-sm text-on-surface focus:border-primary/50 focus:outline-none"
+                  >
+                    <option value="process_exit">进程退出</option>
+                    <option value="idle_after_output">输出空闲后结束</option>
+                    <option value="sentinel">看到结束标记</option>
+                  </select>
+                </div>
+                {agentRuntimeForm.completion_mode === "idle_after_output" && (
+                  <div>
+                    <label className="mb-1 block text-xs font-medium text-on-surface-variant">
+                      空闲秒数
+                    </label>
+                    <input
+                      type="number"
+                      min={1}
+                      max={300}
+                      value={agentRuntimeForm.idle_complete_seconds}
+                      onChange={(event) => updateAgentRuntimeForm("idle_complete_seconds", Number(event.target.value) || 5)}
+                      className="w-full rounded-lg border border-outline-variant/30 bg-surface px-3 py-2 font-data text-sm text-on-surface focus:border-primary/50 focus:outline-none"
+                    />
+                  </div>
+                )}
+                {agentRuntimeForm.completion_mode === "sentinel" && (
+                  <div className="lg:col-span-2">
+                    <label className="mb-1 block text-xs font-medium text-on-surface-variant">
+                      结束标记
+                    </label>
+                    <input
+                      value={agentRuntimeForm.sentinel_text}
+                      onChange={(event) => updateAgentRuntimeForm("sentinel_text", event.target.value)}
+                      placeholder="__CODETALK_DONE__"
+                      className="w-full rounded-lg border border-outline-variant/30 bg-surface px-3 py-2 font-data text-sm text-on-surface placeholder:text-on-surface-variant/50 focus:border-primary/50 focus:outline-none"
+                    />
+                  </div>
+                )}
                 {agentRuntimeForm.working_dir_mode === "fixed" && (
                   <div className="lg:col-span-4">
                     <label className="mb-1 block text-xs font-medium text-on-surface-variant">

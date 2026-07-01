@@ -6,6 +6,7 @@ import threading
 import time
 import webbrowser
 import os
+import errno
 import socket
 import shutil
 from pathlib import Path
@@ -122,6 +123,15 @@ def _install_dependencies() -> None:
     subprocess.run(cmd, check=True)
 
 
+def _display_url(port: int) -> str:
+    return f"http://{DISPLAY_HOST}:{port}"
+
+
+def _refresh_deployer_url() -> None:
+    global URL
+    URL = _display_url(PORT)
+
+
 def _open_browser_after_delay(delay: float) -> None:
     """Open the deployer URL in the default browser after *delay* seconds."""
     time.sleep(delay)
@@ -173,24 +183,75 @@ def _port_listener_summary(port: int) -> str:
     return ", ".join(sorted(set(listeners))) or "unknown process"
 
 
-def _assert_deployer_port_available() -> None:
-    """Fail early with an actionable message when the deployer port is occupied."""
-    bind_host = HOST if HOST not in {"::"} else "::"
+def _candidate_deployer_ports(preferred: int) -> list[int]:
+    candidates = [preferred, 9001, 9002, 9060, 19000, *range(9000, 9021)]
+    deduped: list[int] = []
+    for port in candidates:
+        if port not in deduped:
+            deduped.append(port)
+    return deduped
+
+
+def _deployer_bind_error_hint(exc: OSError) -> str:
+    code = getattr(exc, "errno", None)
+    if code == errno.EADDRINUSE:
+        return "端口已被其他进程占用"
+    if code == errno.EACCES:
+        return "端口被系统保留、权限不足，或被 Windows/Hyper-V/WSL/Docker/安全策略拦截"
+    return f"绑定失败：{exc}"
+
+
+def _try_bind_deployer_port(port: int) -> OSError | None:
+    bind_host = HOST if HOST != "::" else "::"
     family = socket.AF_INET6 if ":" in bind_host and bind_host != "0.0.0.0" else socket.AF_INET
     with socket.socket(family, socket.SOCK_STREAM) as sock:
         sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
         try:
-            sock.bind((bind_host, PORT))
+            sock.bind((bind_host, port))
         except OSError as exc:
-            listener = _port_listener_summary(PORT)
-            print(
-                f"\nError: 部署器端口 {PORT} 无法绑定：{exc}\n"
-                f"当前监听进程：{listener}\n"
-                f"处理方式：关闭占用端口的进程，或设置 CODETALK_DEPLOYER_PORT 为其他端口后重试。\n"
-                f"例如：CODETALK_DEPLOYER_PORT=9060 ./start.sh",
-                file=sys.stderr,
-            )
-            sys.exit(1)
+            return exc
+    return None
+
+
+def _select_deployer_port() -> int:
+    """Pick a bindable deployer port, falling back when the default is blocked."""
+    global PORT
+    explicit = "CODETALK_DEPLOYER_PORT" in os.environ
+    failures: list[tuple[int, OSError]] = []
+    candidates = [PORT] if explicit else _candidate_deployer_ports(PORT)
+
+    for port in candidates:
+        error = _try_bind_deployer_port(port)
+        if error is None:
+            if port != PORT:
+                failed_port, failed_error = failures[0]
+                print(
+                    f"{failed_port} 不可用（{_deployer_bind_error_hint(failed_error)}），"
+                    f"已自动切换到 {port}"
+                )
+            PORT = port
+            _refresh_deployer_url()
+            return PORT
+        failures.append((port, error))
+
+    first_port, first_error = failures[0]
+    listener = _port_listener_summary(first_port)
+    explicit_note = "你显式设置了 CODETALK_DEPLOYER_PORT，因此不会自动切换端口。\n" if explicit else ""
+    print(
+        f"\nError: 部署器端口 {first_port} 无法绑定：{first_error}\n"
+        f"原因判断：{_deployer_bind_error_hint(first_error)}\n"
+        f"当前监听进程：{listener}\n"
+        f"{explicit_note}"
+        f"处理方式：关闭占用端口的进程，或设置 CODETALK_DEPLOYER_PORT 为其他端口后重试。\n"
+        f"例如：CODETALK_DEPLOYER_PORT=9060 ./start.sh",
+        file=sys.stderr,
+    )
+    sys.exit(1)
+
+
+def _assert_deployer_port_available() -> None:
+    """Backward-compatible preflight wrapper used by older tests/scripts."""
+    _select_deployer_port()
 
 
 def main() -> None:
@@ -205,7 +266,7 @@ def main() -> None:
     except subprocess.CalledProcessError as exc:
         _exit_on_subprocess_error("安装部署器依赖失败", exc)
 
-    _assert_deployer_port_available()
+    _select_deployer_port()
     print(f"Starting CodeTalk Deployer at {URL}")
 
     # Open the browser a couple of seconds after uvicorn starts binding.

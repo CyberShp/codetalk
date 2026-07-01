@@ -81,6 +81,32 @@ export const BASE =
     ? `${window.location.protocol}//${window.location.hostname}:3004`
     : "http://localhost:3004");
 
+export function apiBaseInfo() {
+  const override = browserApiBaseOverride();
+  return {
+    base: BASE,
+    configured: CONFIGURED_API_BASE || "",
+    override,
+    source: override ? "localStorage" : CONFIGURED_API_BASE ? "NEXT_PUBLIC_API_URL" : "fallback",
+  };
+}
+
+export async function probeApiHealth(): Promise<{ ok: boolean; message: string }> {
+  try {
+    const res = await fetch(`${BASE}/health`, { credentials: "include" });
+    const text = await res.text();
+    return {
+      ok: res.ok,
+      message: res.ok ? `后端连接正常：${BASE}` : `后端返回 ${res.status}：${text || BASE}`,
+    };
+  } catch (exc) {
+    return {
+      ok: false,
+      message: exc instanceof Error ? `网络连接失败：${exc.message}` : "网络连接失败，请检查后端服务是否运行",
+    };
+  }
+}
+
 export class DuplicateWorkspaceError extends Error {
   existingWorkspaceId: string;
   existingWorkspaceName?: string;

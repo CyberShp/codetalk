@@ -7,6 +7,7 @@ import json
 import locale
 import os
 import re
+import shutil
 import tempfile
 import unicodedata
 from collections.abc import AsyncIterator
@@ -14,6 +15,7 @@ from pathlib import Path
 from typing import Any
 
 from app.services.external_agent_discovery import redact_agent_diagnostic_text
+from app.services.agent_runtimes import validate_agent_command
 
 
 class AgentRuntimeError(RuntimeError):
@@ -23,8 +25,10 @@ class AgentRuntimeError(RuntimeError):
 async def probe_agent_runtime(runtime: dict[str, Any]) -> dict[str, Any]:
     """Run a lightweight command probe for the configured runtime."""
     command = str(runtime.get("command") or "").strip()
-    if not command:
-        return {"success": False, "message": "执行器命令为空"}
+    try:
+        command = validate_agent_command(command)
+    except ValueError as exc:
+        return {"success": False, "message": str(exc)}
     args = list(runtime.get("args") or [])
     probe_args = _probe_args(runtime, args)
     try:
@@ -42,7 +46,7 @@ async def probe_agent_runtime(runtime: dict[str, Any]) -> dict[str, Any]:
             await proc.wait()
             return {"success": False, "message": "探测超时"}
     except FileNotFoundError:
-        return {"success": False, "message": redact_agent_diagnostic_text(f"找不到命令：{command}")}
+        return {"success": False, "message": await _missing_command_message(command)}
     except Exception as exc:
         return {"success": False, "message": f"启动失败：{redact_agent_diagnostic_text(str(exc))}"}
     stdout_text = _decode(stdout).strip() if stdout else ""
@@ -60,8 +64,10 @@ async def stream_agent_runtime(
     cwd: str | None,
 ) -> AsyncIterator[str]:
     command = str(runtime.get("command") or "").strip()
-    if not command:
-        raise AgentRuntimeError("执行器命令为空")
+    try:
+        command = validate_agent_command(command)
+    except ValueError as exc:
+        raise AgentRuntimeError(str(exc)) from exc
     args = [str(item) for item in (runtime.get("args") or [])]
     prompt_transport = str(runtime.get("prompt_transport") or "stdin")
     if prompt_transport == "argv_last":
@@ -85,11 +91,12 @@ async def stream_agent_runtime(
             env=env,
         )
     except FileNotFoundError as exc:
-        raise AgentRuntimeError(redact_agent_diagnostic_text(f"找不到命令：{command}")) from exc
+        raise AgentRuntimeError(await _missing_command_message(command)) from exc
     except Exception as exc:
         raise AgentRuntimeError(f"启动执行器失败：{redact_agent_diagnostic_text(str(exc))}") from exc
 
     stderr_chunks: list[str] = []
+    completed_by_policy = False
 
     async def _drain_stderr() -> None:
         if proc.stderr is None:
@@ -115,9 +122,13 @@ async def stream_agent_runtime(
             proc.stdin.close()
 
         async with asyncio.timeout(timeout):
-            async for chunk in _read_stdout(proc, str(runtime.get("output_mode") or "plain")):
+            async for chunk in _read_stdout(proc, str(runtime.get("output_mode") or "plain"), runtime=runtime):
                 if chunk:
                     yield chunk
+            if proc.returncode is None:
+                completed_by_policy = _completion_mode(runtime) in {"idle_after_output", "sentinel"}
+                if completed_by_policy:
+                    await _terminate_process(proc)
             return_code = await proc.wait()
             await stderr_task
     except TimeoutError as exc:
@@ -129,43 +140,136 @@ async def stream_agent_runtime(
         if not stderr_task.done():
             stderr_task.cancel()
 
-    if return_code != 0:
+    if return_code != 0 and not completed_by_policy:
         error = "".join(stderr_chunks).strip()
         raise AgentRuntimeError(redact_agent_diagnostic_text(error or f"执行器退出码：{return_code}"))
 
 
-async def _read_stdout(proc: asyncio.subprocess.Process, output_mode: str) -> AsyncIterator[str]:
+async def _missing_command_message(command: str) -> str:
+    where_detail = ""
+    if os.name == "nt":
+        where = shutil.which("where.exe") or "where"
+        try:
+            proc = await asyncio.create_subprocess_exec(
+                where,
+                command,
+                stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.PIPE,
+            )
+            stdout, stderr = await asyncio.wait_for(proc.communicate(), timeout=5)
+            output = _decode(stdout or stderr).strip()
+            where_detail = f"\nwhere {command}: {output or '未找到'}"
+        except Exception:
+            where_detail = f"\nwhere {command}: 未找到"
+    return redact_agent_diagnostic_text(
+        f"找不到命令：{command}。系统 PATH 中找不到该命令。请确认："
+        "1. 命令在普通 cmd.exe/终端中可执行；"
+        "2. 它不是只在 PowerShell profile 中生效的 alias；"
+        "3. 如需使用 .exe/.cmd/.bat，请填写完整路径。"
+        f"{where_detail}"
+    )
+
+
+def _completion_mode(runtime: dict[str, Any]) -> str:
+    return str(runtime.get("completion_mode") or "process_exit").strip()
+
+
+async def _terminate_process(proc: asyncio.subprocess.Process) -> None:
+    if proc.returncode is not None:
+        return
+    proc.terminate()
+    try:
+        await asyncio.wait_for(proc.wait(), timeout=2)
+    except TimeoutError:
+        proc.kill()
+        await proc.wait()
+
+
+async def _read_stdout(
+    proc: asyncio.subprocess.Process,
+    output_mode: str,
+    *,
+    runtime: dict[str, Any] | None = None,
+) -> AsyncIterator[str]:
     if proc.stdout is None:
         return
+    runtime = runtime or {}
+    completion_mode = _completion_mode(runtime)
+    idle_seconds = max(1, int(runtime.get("idle_complete_seconds") or 5))
+    sentinel = str(runtime.get("sentinel_text") or "").strip()
+    saw_output = False
+
+    async def read_with_idle(read_coro):
+        nonlocal saw_output
+        if completion_mode == "idle_after_output" and saw_output:
+            try:
+                return await asyncio.wait_for(read_coro, timeout=idle_seconds)
+            except TimeoutError:
+                return None
+        return await read_coro
+
+    def apply_completion_policy(parsed: str) -> tuple[str, bool]:
+        if completion_mode != "sentinel" or not sentinel:
+            return parsed, False
+        if sentinel not in parsed:
+            return parsed, False
+        return parsed.replace(sentinel, ""), True
+
     if output_mode in {"ndjson", "stream_json", "auto"}:
         buffer = ""
         while True:
-            raw = await proc.stdout.readline()
+            raw = await read_with_idle(proc.stdout.readline())
+            if raw is None:
+                break
             if not raw:
                 if buffer.strip():
                     parsed = _parse_event_text(buffer, output_mode)
                     if parsed:
-                        yield parsed
+                        parsed, done = apply_completion_policy(parsed)
+                        if parsed:
+                            saw_output = True
+                            yield parsed
+                        if done:
+                            break
                 break
             text = _decode(raw)
             parsed = _parse_event_text(text, output_mode)
             if parsed is None and output_mode == "auto":
-                yield text
+                parsed, done = apply_completion_policy(text)
+                if parsed:
+                    saw_output = True
+                    yield parsed
+                if done:
+                    break
             elif parsed:
-                yield parsed
+                parsed, done = apply_completion_policy(parsed)
+                if parsed:
+                    saw_output = True
+                    yield parsed
+                if done:
+                    break
     else:
         pending = bytearray()
         while True:
-            raw = await proc.stdout.read(4096)
+            raw = await read_with_idle(proc.stdout.read(4096))
+            if raw is None:
+                break
             if not raw:
                 break
             pending.extend(raw)
             text = _decode_strict_if_complete(bytes(pending))
             if text is not None:
-                yield text
+                text, done = apply_completion_policy(text)
+                if text:
+                    saw_output = True
+                    yield text
                 pending.clear()
+                if done:
+                    break
         if pending:
-            yield _decode(bytes(pending))
+            text, _done = apply_completion_policy(_decode(bytes(pending)))
+            if text:
+                yield text
 
 
 def _parse_event_text(text: str, output_mode: str) -> str | None:
@@ -497,7 +601,11 @@ _CJK_MOJIBAKE_MARKERS = (
     "妯",
     "绋",
 )
-_SPINNER_PROGRESS_RE = re.compile(r"^[⠁-⣿⣀-⣿|/\\\-·•●○◐◓◑◒]\s*(?:\d+(?:[./]\d+)?%?|[.\u2026]+)?\s*$")
+_PROGRESS_GLYPHS = r"■□▪▫⬝●○·•⠁-⣿⣀-⣿◐◓◑◒"
+_SPINNER_PROGRESS_RE = re.compile(
+    rf"^[\s{_PROGRESS_GLYPHS}|/\\\-]+(?:\d+(?:[./]\d+)?%?|[.\u2026]+)?\s*$"
+)
+_PROGRESS_GLYPH_PREFIX_RE = re.compile(rf"^[\s{_PROGRESS_GLYPHS}|/\\\-]{{4,}}")
 _PROGRESS_ONLY_RE = re.compile(r"^(?:\d{1,3}%|\d+/\d+|\d{1,4})$")
 _PROGRESS_STATUS_RE = re.compile(
     r"^(?:progress|loading|reading|scanning|generating|thinking|tokens?|"
@@ -535,6 +643,7 @@ def _collapse_terminal_repaints(value: str) -> str:
     lines: list[str] = []
     for raw_line in normalized.split("\n"):
         line = raw_line.split("\r")[-1]
+        line = _strip_progress_glyph_prefix(line)
         stripped = line.strip()
         if (
             _SPINNER_PROGRESS_RE.match(stripped)
@@ -547,6 +656,10 @@ def _collapse_terminal_repaints(value: str) -> str:
             continue
         lines.append(line)
     return "\n".join(lines)
+
+
+def _strip_progress_glyph_prefix(value: str) -> str:
+    return _PROGRESS_GLYPH_PREFIX_RE.sub("", value)
 
 
 def _looks_like_replacement_gibberish(value: str) -> bool:

@@ -9,6 +9,7 @@ from pydantic import BaseModel, Field, field_validator
 
 from app.services.agent_cli_bridge import probe_agent_runtime
 from app.services.agent_runtimes import (
+    COMPLETION_MODES,
     OUTPUT_MODES,
     PROMPT_TRANSPORTS,
     WORKING_DIR_MODES,
@@ -29,6 +30,9 @@ class AgentRuntimeBase(BaseModel):
     env: dict[str, str] = Field(default_factory=dict)
     health_command: str = ""
     timeout_seconds: int = Field(default=120, ge=1, le=3600)
+    completion_mode: str = "process_exit"
+    idle_complete_seconds: int = Field(default=5, ge=1, le=300)
+    sentinel_text: str = ""
     enabled: bool = True
 
     @field_validator("prompt_transport")
@@ -52,6 +56,13 @@ class AgentRuntimeBase(BaseModel):
             raise ValueError(f"unsupported working_dir_mode: {value}")
         return value
 
+    @field_validator("completion_mode")
+    @classmethod
+    def _valid_completion_mode(cls, value: str) -> str:
+        if value not in COMPLETION_MODES:
+            raise ValueError(f"unsupported completion_mode: {value}")
+        return value
+
 
 class AgentRuntimeCreate(AgentRuntimeBase):
     pass
@@ -68,6 +79,9 @@ class AgentRuntimeUpdate(BaseModel):
     env: dict[str, str] | None = None
     health_command: str | None = None
     timeout_seconds: int | None = Field(default=None, ge=1, le=3600)
+    completion_mode: str | None = None
+    idle_complete_seconds: int | None = Field(default=None, ge=1, le=300)
+    sentinel_text: str | None = None
     enabled: bool | None = None
 
 
