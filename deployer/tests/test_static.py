@@ -32,15 +32,31 @@ async def test_style_css_served(client):
 async def test_static_background_avoids_heavy_infinite_orb_animation(client):
     css_resp = await client.get("/style.css")
     deploy_resp = await client.get("/deploy.html")
+    index_resp = await client.get("/")
+    start_resp = await client.get("/start.html")
     assert css_resp.status_code == 200
     assert deploy_resp.status_code == 200
+    assert index_resp.status_code == 200
+    assert start_resp.status_code == 200
     css = css_resp.text
     assert "animation: orb-float" not in css
     assert "@keyframes orb-float" not in css
     assert "nebula-orb" not in css
     assert "nebula-orb" not in deploy_resp.text
+    assert "nebula-orb" not in index_resp.text
+    assert "nebula-orb" not in start_resp.text
     assert "filter: blur(36px)" not in css
     assert "blur(80px)" not in css
+
+
+async def test_deployer_static_theme_does_not_regress_to_black_shell(client):
+    css_resp = await client.get("/style.css")
+    assert css_resp.status_code == 200
+    css = css_resp.text.lower()
+    assert "#020617" not in css
+    assert "#010409" not in css
+    assert "radial-gradient(circle at 50% 50%, #0f172a" not in css
+    assert "--bg-space: #f7f9fc" in css
 
 
 async def test_deployer_static_avoids_continuous_decorative_animations(client):

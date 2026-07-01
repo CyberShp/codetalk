@@ -1,32 +1,32 @@
 /* CodeTalk Deployer -- focused operations theme */
 :root {
-  --bg-space: #020617;
-  --bg-nebula: #0f172a;
-  --bg-glass: rgba(15, 23, 42, 0.65);
-  --bg-glass-heavy: rgba(15, 23, 42, 0.85);
-  --bg-card: rgba(30, 41, 59, 0.4);
-  --bg-card-hover: rgba(30, 41, 59, 0.7);
-  --bg-input: rgba(2, 6, 23, 0.5);
-  --bg-terminal: #010409;
+  --bg-space: #f7f9fc;
+  --bg-nebula: #edf2f7;
+  --bg-glass: rgba(255, 255, 255, 0.82);
+  --bg-glass-heavy: rgba(255, 255, 255, 0.94);
+  --bg-card: #ffffff;
+  --bg-card-hover: #f8fafc;
+  --bg-input: #ffffff;
+  --bg-terminal: #101827;
   
-  --text-primary: #f8fafc;
-  --text-secondary: #cbd5e1;
+  --text-primary: #111827;
+  --text-secondary: #475569;
   --text-muted: #64748b;
   
-  --accent: #22d3ee;
-  --accent-glow: rgba(34, 211, 238, 0.5);
-  --accent-hover: #06b6d4;
+  --accent: #2563eb;
+  --accent-glow: rgba(37, 99, 235, 0.18);
+  --accent-hover: #1d4ed8;
   
-  --secondary: #c084fc;
-  --secondary-glow: rgba(192, 132, 252, 0.5);
+  --secondary: #0891b2;
+  --secondary-glow: rgba(8, 145, 178, 0.16);
   
-  --success: #4ade80;
-  --success-glow: rgba(74, 222, 128, 0.5);
-  --error: #f87171;
-  --error-glow: rgba(248, 113, 113, 0.5);
-  --warning: #fbbf24;
+  --success: #16a34a;
+  --success-glow: rgba(22, 163, 74, 0.18);
+  --error: #dc2626;
+  --error-glow: rgba(220, 38, 38, 0.16);
+  --warning: #b45309;
   
-  --border: rgba(255, 255, 255, 0.1);
+  --border: #dbe3ef;
   --border-focus: var(--accent);
   
   --radius-sm: 8px;
@@ -81,7 +81,8 @@ input, select, textarea {
   position: fixed;
   inset: 0;
   z-index: -1;
-  background: radial-gradient(circle at 50% 50%, #0f172a 0%, #020617 100%);
+  background:
+    linear-gradient(180deg, #ffffff 0%, #f7f9fc 42%, #eef4fb 100%);
   overflow: hidden;
 }
 
@@ -89,10 +90,10 @@ input, select, textarea {
   position: absolute;
   inset: 0;
   background-image: 
-    linear-gradient(rgba(255,255,255,0.03) 1px, transparent 1px),
-    linear-gradient(90deg, rgba(255,255,255,0.03) 1px, transparent 1px);
+    linear-gradient(rgba(37, 99, 235, 0.045) 1px, transparent 1px),
+    linear-gradient(90deg, rgba(37, 99, 235, 0.045) 1px, transparent 1px);
   background-size: 40px 40px;
-  mask-image: radial-gradient(ellipse at 50% 50%, black, transparent 80%);
+  mask-image: linear-gradient(to bottom, black, transparent 92%);
 }
 
 @keyframes deploy-rise {
@@ -152,19 +153,12 @@ input, select, textarea {
 }
 
 .logo-orb {
-  position: absolute;
-  width: 24px;
-  height: 24px;
-  background: var(--accent);
-  filter: blur(10px);
-  opacity: 0.5;
-  left: 2px;
+  display: none;
 }
 
 .logo-icon {
   width: 32px;
   height: 32px;
-  filter: drop-shadow(0 0 8px var(--accent-glow));
 }
 
 .logo-text {
@@ -264,7 +258,7 @@ input, select, textarea {
 .step-dot.active::before {
   background: var(--accent);
   border-color: var(--accent);
-  box-shadow: 0 0 20px var(--accent-glow);
+  box-shadow: 0 0 0 4px var(--accent-glow);
   transform: scale(1.1);
 }
 
@@ -285,7 +279,6 @@ input, select, textarea {
 .step-dot.active .dot-label {
   color: var(--text-primary);
   font-weight: 700;
-  text-shadow: 0 0 10px rgba(255,255,255,0.2);
 }
 
 .step-dot.completed .dot-label {
@@ -320,7 +313,7 @@ input, select, textarea {
 
 .step.step-active {
   display: block;
-  animation: step-fade-in 0.5s cubic-bezier(0.2, 0.8, 0.2, 1) forwards;
+  animation: step-fade-in 0.18s ease-out forwards;
 }
 
 @keyframes step-fade-in {
@@ -331,11 +324,9 @@ input, select, textarea {
 .step-title {
   font-size: 2.5rem;
   font-weight: 800;
-  letter-spacing: -0.04em;
+  letter-spacing: 0;
   margin-bottom: 12px;
-  background: linear-gradient(to bottom right, #fff, #94a3b8);
-  -webkit-background-clip: text;
-  -webkit-text-fill-color: transparent;
+  color: var(--text-primary);
 }
 
 .step-subtitle {
@@ -369,34 +360,27 @@ input, select, textarea {
 }
 
 .mode-card::before {
-  content: '';
-  position: absolute;
-  inset: 0;
-  background: radial-gradient(circle at top left, rgba(255,255,255,0.05), transparent);
-  opacity: 0;
-  transition: opacity var(--transition);
+  content: none;
 }
 
 .mode-card:hover {
   background: var(--bg-card-hover);
-  border-color: rgba(255,255,255,0.2);
-  transform: translateY(-4px);
-  box-shadow: 0 20px 40px rgba(0,0,0,0.3);
+  border-color: #b7c6d9;
+  box-shadow: 0 14px 32px rgba(15, 23, 42, 0.08);
 }
 
 .mode-card:hover::before { opacity: 1; }
 
 .mode-card.selected {
   border-color: var(--accent);
-  background: rgba(34, 211, 238, 0.05);
-  box-shadow: 0 0 30px rgba(34, 211, 238, 0.15);
+  background: #eff6ff;
+  box-shadow: 0 0 0 4px var(--accent-glow);
 }
 
 .mode-card-icon {
   width: 48px;
   height: 48px;
   color: var(--accent);
-  filter: drop-shadow(0 0 10px var(--accent-glow));
 }
 
 .mode-card-title {
@@ -504,8 +488,8 @@ input, select, textarea {
 .form-input:focus, .form-select:focus {
   outline: none;
   border-color: var(--accent);
-  background: rgba(2, 6, 23, 0.8);
-  box-shadow: 0 0 0 4px rgba(34, 211, 238, 0.1);
+  background: #ffffff;
+  box-shadow: 0 0 0 4px var(--accent-glow);
 }
 
 .form-hint {
@@ -520,24 +504,15 @@ input, select, textarea {
 
 .terminal-wrap {
   background: var(--bg-terminal);
-  border: 1px solid rgba(255, 255, 255, 0.1);
+  border: 1px solid #1f2937;
   border-radius: var(--radius-md);
   overflow: hidden;
   position: relative;
-  box-shadow: 0 20px 50px rgba(0,0,0,0.5);
+  box-shadow: 0 18px 36px rgba(15, 23, 42, 0.16);
 }
 
-/* CRT Scanlines */
 .terminal-wrap::after {
-  content: " ";
-  display: block;
-  position: absolute;
-  top: 0; left: 0; bottom: 0; right: 0;
-  background: linear-gradient(rgba(18, 16, 16, 0) 50%, rgba(0, 0, 0, 0.25) 50%), 
-              linear-gradient(90deg, rgba(255, 0, 0, 0.06), rgba(0, 255, 0, 0.02), rgba(0, 0, 255, 0.06));
-  z-index: 2;
-  background-size: 100% 4px, 3px 100%;
-  pointer-events: none;
+  content: none;
 }
 
 .terminal-header {
@@ -577,11 +552,10 @@ input, select, textarea {
   padding: 24px;
   font-family: var(--font-mono);
   font-size: 0.9rem;
-  color: #a5f3fc; /* Cyan text */
+  color: #dbeafe;
   overflow-y: auto;
   position: relative;
   line-height: 1.5;
-  text-shadow: 0 0 5px rgba(165, 243, 252, 0.5);
 }
 
 .log-line {
@@ -589,8 +563,8 @@ input, select, textarea {
 }
 
 .log-ts { color: var(--text-muted); margin-right: 12px; }
-.log-error .log-msg { color: #f87171; text-shadow: 0 0 5px rgba(248, 113, 113, 0.5); }
-.log-success .log-msg { color: #4ade80; text-shadow: 0 0 5px rgba(74, 222, 128, 0.5); }
+.log-error .log-msg { color: #fca5a5; }
+.log-success .log-msg { color: #86efac; }
 
 /* ============================================================
    Buttons
@@ -609,14 +583,13 @@ input, select, textarea {
 
 .btn-primary {
   background: var(--accent);
-  color: var(--bg-space);
-  box-shadow: 0 0 20px var(--accent-glow);
+  color: #ffffff;
+  box-shadow: 0 10px 24px rgba(37, 99, 235, 0.18);
 }
 
 .btn-primary:hover:not(:disabled) {
-  background: #fff;
-  transform: translateY(-2px);
-  box-shadow: 0 0 30px var(--accent-glow);
+  background: var(--accent-hover);
+  box-shadow: 0 12px 28px rgba(37, 99, 235, 0.2);
 }
 
 .btn-ghost {
@@ -625,9 +598,9 @@ input, select, textarea {
 }
 
 .btn-ghost:hover {
-  background: rgba(255,255,255,0.05);
-  color: #fff;
-  border-color: rgba(255,255,255,0.2);
+  background: #f1f5f9;
+  color: var(--text-primary);
+  border-color: #cbd5e1;
 }
 
 .btn:disabled {
@@ -649,7 +622,7 @@ input, select, textarea {
   border: 1px solid var(--border);
   background: var(--bg-card);
   transition: all var(--transition);
-  animation: deploy-rise 420ms var(--motion-ease) both;
+  animation: deploy-rise 180ms ease-out both;
 }
 
 .check-item:nth-child(2) { animation-delay: 45ms; }
@@ -660,8 +633,7 @@ input, select, textarea {
 .check-item:nth-child(7) { animation-delay: 270ms; }
 
 .check-item:hover {
-  transform: translateY(-2px);
-  border-color: rgba(34, 211, 238, 0.26);
+  border-color: #b7c6d9;
   background: var(--bg-card-hover);
 }
 
